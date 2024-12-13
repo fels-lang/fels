@@ -9,7 +9,7 @@ pub const Span = struct {
         };
     }
 
-    pub fn join(self: *Span, other: Span) Span {
+    pub fn join(self: Span, other: Span) Span {
         return .{
             .start = @min(self.start, other.start),
             .end = @max(self.end, other.end),
@@ -21,7 +21,7 @@ pub const Span = struct {
         col: usize,
     };
 
-    pub fn line_col(self: *Span, source: []const u8) LineColResult {
+    pub fn line_col(self: Span, source: []const u8) LineColResult {
         var line: usize = 1;
         var col: usize = 1;
 

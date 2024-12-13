@@ -1,0 +1,1475 @@
+const std = @import("std");
+const ast = @import("ast.zig");
+const pipeline = @import("pipeline.zig");
+const sema = @import("sema.zig");
+
+pub const RegId = u32;
+pub const BlockId = u32;
+
+pub const IrModule = struct {
+    file_name: []const u8,
+    structs: []const StructDef = &.{},
+    variants: []const VariantDef = &.{},
+    functions: []const IrFunction = &.{},
+    globals: []const IrGlobal = &.{},
+
+    pub fn empty(file_name: []const u8) IrModule {
+        return .{ .file_name = file_name };
+    }
+};
+
+pub const IrGlobal = struct {
+    name: []const u8,
+    ty: IrType,
+    init: ConstInit,
+    mutable: bool,
+};
+
+pub const ConstInit = union(enum) {
+    imm: Imm,
+    struct_init: StructInit,
+};
+
+pub const StructInit = struct {
+    ty_name: []const u8,
+    fields: []const ConstFieldInit,
+};
+
+pub const ConstFieldInit = struct {
+    name: []const u8,
+    value: ConstInit,
+};
+
+pub const IrFunction = struct {
+    name: []const u8,
+    params: []const IrParam,
+    return_ty: IrType,
+    error_ty: ?IrType,
+    blocks: []const IrBlock,
+    extern_name: ?[]const u8,
+    inline_hint: bool,
+    entry: bool,
+    naked: bool,
+};
+
+pub const IrParam = struct {
+    name: []const u8,
+    ty: IrType,
+};
+
+pub const IrBlock = struct {
+    id: BlockId,
+    name: []const u8,
+    instrs: []const Instr,
+    terminator: ?Terminator,
+};
+
+pub const IrType = union(enum) {
+    i: u16,
+    u: u16,
+    f32,
+    f64,
+    bool,
+    byte,
+    usize,
+    isize,
+    addr,
+    void,
+    text,
+    rune,
+    zone,
+    opaque_type: []const u8,
+    ptr: *const IrType,
+    slice: *const IrType,
+    array: ArrayType,
+    range: *const IrType,
+    struct_type: []const u8,
+    variant_type: []const u8,
+    fallible: FallibleType,
+    fn_ptr: FnPtrType,
+    list: *const IrType,
+    map: *const IrType,
+    unknown,
+
+    pub fn isVoid(self: IrType) bool {
+        return self == .void;
+    }
+};
+
+pub const ArrayType = struct {
+    elem: *const IrType,
+    len: u64,
+};
+
+pub const FallibleType = struct {
+    ok: *const IrType,
+    err: *const IrType,
+};
+
+pub const FnPtrType = struct {
+    params: []const IrType,
+    ret: *const IrType,
+};
+
+pub const StructDef = struct {
+    name: []const u8,
+    fields: []const FieldDef,
+    is_packed: bool,
+};
+
+pub const FieldDef = struct {
+    name: []const u8,
+    ty: IrType,
+};
+
+pub const VariantDef = struct {
+    name: []const u8,
+    variants: []const VariantCase,
+};
+
+pub const VariantCase = struct {
+    name: []const u8,
+    payload: ?IrType,
+};
+
+pub const Instr = struct {
+    id: ?RegId,
+    ty: IrType,
+    kind: InstrKind,
+};
+
+pub const InstrKind = union(enum) {
+    const_value: Imm,
+    unary: UnaryInstr,
+    binary: BinaryInstr,
+    cast: CastInstr,
+    call: CallInstr,
+    call_indirect: CallIndirectInstr,
+    builtin: BuiltinInstr,
+    inline_asm: []const u8,
+    struct_lit: StructLitInstr,
+    variant_lit: VariantLitInstr,
+    field: FieldInstr,
+    field_addr: FieldInstr,
+    index: IndexInstr,
+    variant_is: VariantCheckInstr,
+    variant_payload: VariantCheckInstr,
+    try_is_ok: Value,
+    try_ok: Value,
+    try_err: Value,
+    iter_init: Value,
+    iter_has_next: Value,
+    iter_next: Value,
+    alloc: AllocInstr,
+    alloc_slice: AllocSliceInstr,
+    zone_push: ZonePushInstr,
+    zone_pop: []const u8,
+    zone_free: ZoneFreeInstr,
+    at: AtInstr,
+    raw_pointer: RawPointerInstr,
+    store_local: StoreLocalInstr,
+    global_load: []const u8,
+    global_store: GlobalStoreInstr,
+    store: StoreInstr,
+};
+
+pub const UnaryInstr = struct {
+    op: UnaryOp,
+    value: Value,
+};
+
+pub const BinaryInstr = struct {
+    op: BinOp,
+    lhs: Value,
+    rhs: Value,
+};
+
+pub const CastInstr = struct {
+    kind: CastKind,
+    value: Value,
+};
+
+pub const CallInstr = struct {
+    callee: []const u8,
+    args: []const Value,
+};
+
+pub const CallIndirectInstr = struct {
+    callee: Value,
+    args: []const Value,
+};
+
+pub const BuiltinInstr = struct {
+    name: []const u8,
+    args: []const Value,
+};
+
+pub const StructFieldValue = struct {
+    name: []const u8,
+    value: Value,
+};
+
+pub const StructLitInstr = struct {
+    ty_name: []const u8,
+    fields: []const StructFieldValue,
+};
+
+pub const VariantLitInstr = struct {
+    type_name: []const u8,
+    variant: []const u8,
+    payload: ?Value,
+};
+
+pub const FieldInstr = struct {
+    base: Value,
+    name: []const u8,
+};
+
+pub const IndexInstr = struct {
+    base: Value,
+    index: Value,
+};
+
+pub const VariantCheckInstr = struct {
+    value: Value,
+    variant: []const u8,
+};
+
+pub const AllocInstr = struct {
+    ty: IrType,
+    zone: []const u8,
+};
+
+pub const AllocSliceInstr = struct {
+    elem_ty: IrType,
+    count: Value,
+    zone: []const u8,
+};
+
+pub const ZonePushInstr = struct {
+    name: []const u8,
+    kind: []const u8,
+};
+
+pub const ZoneFreeInstr = struct {
+    zone: []const u8,
+    ptr: Value,
+};
+
+pub const AtInstr = struct {
+    value: Value,
+    zone: []const u8,
+};
+
+pub const RawPointerInstr = struct {
+    ty: IrType,
+    address: Value,
+};
+
+pub const StoreLocalInstr = struct {
+    name: []const u8,
+    value: Value,
+};
+
+pub const GlobalStoreInstr = struct {
+    name: []const u8,
+    value: Value,
+};
+
+pub const StoreInstr = struct {
+    target: Value,
+    value: Value,
+};
+
+pub const Terminator = union(enum) {
+    return_value: ?Value,
+    fail: Value,
+    branch: BlockId,
+    cond_branch: CondBranch,
+    unreachable_term,
+};
+
+pub const CondBranch = struct {
+    cond: Value,
+    then_block: BlockId,
+    else_block: BlockId,
+};
+
+pub const UnaryOp = enum {
+    neg,
+    not,
+    bit_not,
+    ref,
+    deref,
+};
+
+pub const BinOp = enum {
+    add,
+    sub,
+    mul,
+    div,
+    rem,
+    shl,
+    shr,
+    lt,
+    le,
+    gt,
+    ge,
+    eq,
+    ne,
+    bit_and,
+    bit_xor,
+    bit_or,
+    and_op,
+    or_op,
+    range,
+    range_exclusive,
+};
+
+pub const CastKind = enum {
+    as,
+};
+
+pub const Value = union(enum) {
+    reg: RegId,
+    param: []const u8,
+    local: []const u8,
+    global: []const u8,
+    imm: Imm,
+};
+
+pub const Imm = union(enum) {
+    int: i128,
+    uint: u128,
+    float: f64,
+    bool: bool,
+    text: []const u8,
+    rune: u21,
+    null,
+};
+
+pub const LowerError = error{
+    LoweringFailed,
+    OutOfMemory,
+};
+
+pub const ValidationError = error{
+    InvalidIr,
+};
+
+pub const Pass = enum {
+    const_fold,
+    branch,
+    dce,
+};
+
+pub fn lowerFrontend(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) LowerError!IrModule {
+    return lowerModule(allocator, front_end);
+}
+
+pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) LowerError!IrModule {
+    var structs: std.ArrayList(StructDef) = .empty;
+    var functions: std.ArrayList(IrFunction) = .empty;
+    var globals: std.ArrayList(IrGlobal) = .empty;
+    errdefer structs.deinit(allocator);
+    errdefer functions.deinit(allocator);
+    errdefer globals.deinit(allocator);
+
+    for (front_end.module.items) |item| {
+        switch (item) {
+            .import => {},
+            .type_decl => |decl| switch (decl.kind) {
+                .struct_type => |strukt| try structs.append(allocator, try lowerStruct(allocator, decl, strukt)),
+                .distinct, .opaque_type => {},
+            },
+            .const_decl => |decl| try globals.append(allocator, .{
+                .name = decl.name,
+                .ty = inferConstType(decl.value),
+                .init = .{ .imm = lowerImm(decl.value) },
+                .mutable = false,
+            }),
+            .function => |decl| try functions.append(allocator, try lowerFunction(allocator, front_end.types, front_end.symbols, decl)),
+        }
+    }
+
+    return .{
+        .file_name = front_end.module.file_name,
+        .structs = try structs.toOwnedSlice(allocator),
+        .variants = &.{},
+        .functions = try functions.toOwnedSlice(allocator),
+        .globals = try globals.toOwnedSlice(allocator),
+    };
+}
+
+pub fn validateModule(module: IrModule) ValidationError!void {
+    for (module.functions) |function| {
+        try validateFunction(function);
+    }
+}
+
+pub fn runDefaultPasses(allocator: std.mem.Allocator, module: *IrModule) !void {
+    try runPasses(allocator, module, &.{ .const_fold, .branch, .dce });
+    try validateModule(module.*);
+}
+
+pub fn runPasses(allocator: std.mem.Allocator, module: *IrModule, passes: []const Pass) !void {
+    for (passes) |pass| {
+        switch (pass) {
+            .const_fold => try foldConstants(allocator, module),
+            .branch     => try simplifyBranches(allocator, module),
+            .dce        => try eliminateDeadCode(allocator, module),
+        }
+    }
+}
+
+fn validateFunction(function: IrFunction) ValidationError!void {
+    if (function.extern_name != null and function.blocks.len == 0) return;
+    if (function.blocks.len == 0) return error.InvalidIr;
+    if (function.blocks[0].id != 0) return error.InvalidIr;
+
+    for (function.blocks, 0..) |block, block_index| {
+        if (block.terminator == null) return error.InvalidIr;
+        for (function.blocks[block_index + 1 ..]) |other| {
+            if (block.id == other.id) return error.InvalidIr;
+        }
+
+        for (block.instrs, 0..) |instr, instr_index| {
+            if (instr.id) |id| {
+                for (function.blocks[0 .. block_index + 1], 0..) |seen_block, seen_block_index| {
+                    const end = if (seen_block_index == block_index) instr_index else seen_block.instrs.len;
+                    for (seen_block.instrs[0..end]) |seen| {
+                        if (seen.id != null and seen.id.? == id) return error.InvalidIr;
+                    }
+                }
+            }
+            try validateInstr(function, instr);
+        }
+
+        try validateTerminator(function, block.terminator.?);
+    }
+}
+
+fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
+    switch (instr.kind) {
+        .const_value, .inline_asm, .alloc, .alloc_slice, .zone_push, .zone_pop, .global_load => {},
+        .zone_free => |zf| try validateValue(function, zf.ptr),
+        .unary => |unary| try validateValue(function, unary.value),
+        .binary => |binary| {
+            try validateValue(function, binary.lhs);
+            try validateValue(function, binary.rhs);
+        },
+        .cast => |cast| try validateValue(function, cast.value),
+        .call => |call| for (call.args) |arg| try validateValue(function, arg),
+        .call_indirect => |call| {
+            try validateValue(function, call.callee);
+            for (call.args) |arg| try validateValue(function, arg);
+        },
+        .builtin => |builtin| for (builtin.args) |arg| try validateValue(function, arg),
+        .struct_lit => |strukt| for (strukt.fields) |field| try validateValue(function, field.value),
+        .variant_lit => |variant| if (variant.payload) |payload| try validateValue(function, payload),
+        .field, .field_addr => |field| try validateValue(function, field.base),
+        .index => |index| {
+            try validateValue(function, index.base);
+            try validateValue(function, index.index);
+        },
+        .variant_is, .variant_payload => |variant| try validateValue(function, variant.value),
+        .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| try validateValue(function, value),
+        .at => |at| try validateValue(function, at.value),
+        .raw_pointer => |ptr| try validateValue(function, ptr.address),
+        .store_local => |store| try validateValue(function, store.value),
+        .global_store => |store| try validateValue(function, store.value),
+        .store => |store| {
+            try validateValue(function, store.target);
+            try validateValue(function, store.value);
+        },
+    }
+}
+
+fn validateTerminator(function: IrFunction, terminator: Terminator) ValidationError!void {
+    switch (terminator) {
+        .return_value => |value| if (value) |ret| try validateValue(function, ret),
+        .fail => |value| try validateValue(function, value),
+        .branch => |target| if (!hasBlock(function, target)) return error.InvalidIr,
+        .cond_branch => |branch| {
+            try validateValue(function, branch.cond);
+            if (!hasBlock(function, branch.then_block)) return error.InvalidIr;
+            if (!hasBlock(function, branch.else_block)) return error.InvalidIr;
+        },
+        .unreachable_term => {},
+    }
+}
+
+fn validateValue(function: IrFunction, value: Value) ValidationError!void {
+    switch (value) {
+        .reg => |id| if (!hasReg(function, id)) return error.InvalidIr,
+        .param => |name| if (!hasParam(function, name)) return error.InvalidIr,
+        .local, .global, .imm => {},
+    }
+}
+
+fn hasBlock(function: IrFunction, id: BlockId) bool {
+    for (function.blocks) |block| {
+        if (block.id == id) return true;
+    }
+    return false;
+}
+
+fn hasReg(function: IrFunction, id: RegId) bool {
+    for (function.blocks) |block| {
+        for (block.instrs) |instr| {
+            if (instr.id != null and instr.id.? == id) return true;
+        }
+    }
+    return false;
+}
+
+fn hasParam(function: IrFunction, name: []const u8) bool {
+    for (function.params) |param| {
+        if (std.mem.eql(u8, param.name, name)) return true;
+    }
+    return false;
+}
+
+fn foldConstants(allocator: std.mem.Allocator, module: *IrModule) !void {
+    var functions: std.ArrayList(IrFunction) = .empty;
+    errdefer functions.deinit(allocator);
+    for (module.functions) |function| {
+        try functions.append(allocator, try foldFunctionConstants(allocator, function));
+    }
+    module.functions = try functions.toOwnedSlice(allocator);
+}
+
+const ConstMap = std.AutoHashMap(RegId, Imm);
+
+fn foldFunctionConstants(allocator: std.mem.Allocator, function: IrFunction) !IrFunction {
+    var blocks: std.ArrayList(IrBlock) = .empty;
+    errdefer blocks.deinit(allocator);
+
+    var consts = ConstMap.init(allocator);
+    defer consts.deinit();
+
+    for (function.blocks) |block| {
+        var instrs: std.ArrayList(Instr) = .empty;
+        errdefer instrs.deinit(allocator);
+
+        for (block.instrs) |instr| {
+            const folded = tryFoldInstr(&consts, instr);
+            if (folded.id) |id| {
+                if (folded.kind == .const_value) {
+                    try consts.put(id, folded.kind.const_value);
+                }
+            }
+            try instrs.append(allocator, folded);
+        }
+
+        try blocks.append(allocator, .{
+            .id = block.id,
+            .name = block.name,
+            .instrs = try instrs.toOwnedSlice(allocator),
+            .terminator = foldTerminator(&consts, block.terminator),
+        });
+    }
+
+    return .{
+        .name = function.name,
+        .params = function.params,
+        .return_ty = function.return_ty,
+        .error_ty = function.error_ty,
+        .blocks = try blocks.toOwnedSlice(allocator),
+        .extern_name = function.extern_name,
+        .inline_hint = function.inline_hint,
+        .entry = function.entry,
+        .naked = function.naked,
+    };
+}
+
+fn resolveVal(consts: *const ConstMap, value: Value) Value {
+    return switch (value) {
+        .reg => |id| if (consts.get(id)) |imm| .{ .imm = imm } else value,
+        else => value,
+    };
+}
+
+fn tryFoldInstr(consts: *const ConstMap, instr: Instr) Instr {
+    switch (instr.kind) {
+        .const_value => return instr,
+        .binary => |binary| {
+            const lhs = resolveVal(consts, binary.lhs);
+            const rhs = resolveVal(consts, binary.rhs);
+            if (lhs == .imm and rhs == .imm) {
+                if (foldBinaryImm(binary.op, lhs.imm, rhs.imm)) |result| {
+                    return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .const_value = result } };
+                }
+            }
+            return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .binary = .{ .op = binary.op, .lhs = lhs, .rhs = rhs } } };
+        },
+        .unary => |unary| {
+            const value = resolveVal(consts, unary.value);
+            if (value == .imm) {
+                if (foldUnaryImm(unary.op, value.imm)) |result| {
+                    return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .const_value = result } };
+                }
+            }
+            return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .unary = .{ .op = unary.op, .value = value } } };
+        },
+        else => return instr,
+    }
+}
+
+fn foldTerminator(consts: *const ConstMap, terminator: ?Terminator) ?Terminator {
+    const term = terminator orelse return null;
+    return switch (term) {
+        .cond_branch => |branch| {
+            const cond = resolveVal(consts, branch.cond);
+            if (cond == .imm) switch (cond.imm) {
+                .bool => |b| return .{ .branch = if (b) branch.then_block else branch.else_block },
+                else => {},
+            };
+            return .{ .cond_branch = .{ .cond = cond, .then_block = branch.then_block, .else_block = branch.else_block } };
+        },
+        .return_value => |v| if (v) |val| .{ .return_value = resolveVal(consts, val) } else term,
+        .fail => |v| .{ .fail = resolveVal(consts, v) },
+        else => term,
+    };
+}
+
+fn foldBinaryImm(op: BinOp, lhs: Imm, rhs: Imm) ?Imm {
+    const l: i128 = switch (lhs) {
+        .int => |v| v,
+        .uint => |v| @intCast(v),
+        else => return null,
+    };
+    const r: i128 = switch (rhs) {
+        .int => |v| v,
+        .uint => |v| @intCast(v),
+        else => return null,
+    };
+    return switch (op) {
+        .add => .{ .int = l +% r },
+        .sub => .{ .int = l -% r },
+        .mul => .{ .int = l *% r },
+        .div => if (r == 0) null else .{ .int = @divTrunc(l, r) },
+        .rem => if (r == 0) null else .{ .int = @rem(l, r) },
+        .shl => if (r >= 0 and r < 128) .{ .int = l << @as(u7, @intCast(r)) } else null,
+        .shr => if (r >= 0 and r < 128) .{ .int = l >> @as(u7, @intCast(r)) } else null,
+        .bit_and => .{ .int = l & r },
+        .bit_or  => .{ .int = l | r },
+        .bit_xor => .{ .int = l ^ r },
+        .eq => .{ .bool = l == r },
+        .ne => .{ .bool = l != r },
+        .lt => .{ .bool = l < r },
+        .le => .{ .bool = l <= r },
+        .gt => .{ .bool = l > r },
+        .ge => .{ .bool = l >= r },
+        else => null,
+    };
+}
+
+fn foldUnaryImm(op: UnaryOp, value: Imm) ?Imm {
+    return switch (op) {
+        .neg => switch (value) {
+            .int  => |v| .{ .int = -%v },
+            .uint => |v| .{ .int = -@as(i128, @intCast(v)) },
+            else  => null,
+        },
+        .not => switch (value) {
+            .bool => |v| .{ .bool = !v },
+            else  => null,
+        },
+        .bit_not => switch (value) {
+            .int  => |v| .{ .int = ~v },
+            .uint => |v| .{ .uint = ~v },
+            else  => null,
+        },
+        else => null,
+    };
+}
+
+fn simplifyBranches(allocator: std.mem.Allocator, module: *IrModule) !void {
+    var functions: std.ArrayList(IrFunction) = .empty;
+    errdefer functions.deinit(allocator);
+
+    for (module.functions) |function| {
+        var blocks: std.ArrayList(IrBlock) = .empty;
+        errdefer blocks.deinit(allocator);
+
+        for (function.blocks) |block| {
+            try blocks.append(allocator, .{
+                .id = block.id,
+                .name = block.name,
+                .instrs = block.instrs,
+                .terminator = simplifyTerminator(block.terminator),
+            });
+        }
+
+        try functions.append(allocator, .{
+            .name = function.name,
+            .params = function.params,
+            .return_ty = function.return_ty,
+            .error_ty = function.error_ty,
+            .blocks = try blocks.toOwnedSlice(allocator),
+            .extern_name = function.extern_name,
+            .inline_hint = function.inline_hint,
+            .entry = function.entry,
+            .naked = function.naked,
+        });
+    }
+
+    module.functions = try functions.toOwnedSlice(allocator);
+}
+
+fn simplifyTerminator(terminator: ?Terminator) ?Terminator {
+    const term = terminator orelse return null;
+    return switch (term) {
+        .cond_branch => |branch| if (branch.then_block == branch.else_block) .{ .branch = branch.then_block } else term,
+        else => term,
+    };
+}
+
+fn eliminateDeadCode(allocator: std.mem.Allocator, module: *IrModule) !void {
+    var functions: std.ArrayList(IrFunction) = .empty;
+    errdefer functions.deinit(allocator);
+
+    for (module.functions) |function| {
+        try functions.append(allocator, try eliminateFunctionDeadCode(allocator, function));
+    }
+
+    module.functions = try functions.toOwnedSlice(allocator);
+}
+
+fn eliminateFunctionDeadCode(allocator: std.mem.Allocator, function: IrFunction) !IrFunction {
+    var blocks: std.ArrayList(IrBlock) = .empty;
+    errdefer blocks.deinit(allocator);
+
+    for (function.blocks) |block| {
+        var instrs: std.ArrayList(Instr) = .empty;
+        errdefer instrs.deinit(allocator);
+
+        for (block.instrs) |instr| {
+            if (instr.id) |id| {
+                if (!instrHasSideEffects(instr) and !regIsUsed(function, id)) continue;
+            }
+            try instrs.append(allocator, instr);
+        }
+
+        try blocks.append(allocator, .{
+            .id = block.id,
+            .name = block.name,
+            .instrs = try instrs.toOwnedSlice(allocator),
+            .terminator = block.terminator,
+        });
+    }
+
+    return .{
+        .name = function.name,
+        .params = function.params,
+        .return_ty = function.return_ty,
+        .error_ty = function.error_ty,
+        .blocks = try blocks.toOwnedSlice(allocator),
+        .extern_name = function.extern_name,
+        .inline_hint = function.inline_hint,
+        .entry = function.entry,
+        .naked = function.naked,
+    };
+}
+
+fn instrHasSideEffects(instr: Instr) bool {
+    return switch (instr.kind) {
+        .call, .call_indirect, .builtin, .inline_asm,
+        .store_local, .global_store, .store,
+        .alloc, .alloc_slice, .zone_push, .zone_pop, .zone_free => true,
+        else => instr.id == null,
+    };
+}
+
+fn regIsUsed(function: IrFunction, id: RegId) bool {
+    for (function.blocks) |block| {
+        for (block.instrs) |instr| {
+            if (instrUsesReg(instr, id)) return true;
+        }
+        if (block.terminator) |terminator| {
+            if (terminatorUsesReg(terminator, id)) return true;
+        }
+    }
+    return false;
+}
+
+fn instrUsesReg(instr: Instr, id: RegId) bool {
+    return switch (instr.kind) {
+        .const_value, .inline_asm, .alloc, .alloc_slice, .zone_push, .zone_pop, .global_load => false,
+        .zone_free => |zf| valueUsesReg(zf.ptr, id),
+        .unary => |unary| valueUsesReg(unary.value, id),
+        .binary => |binary| valueUsesReg(binary.lhs, id) or valueUsesReg(binary.rhs, id),
+        .cast => |cast| valueUsesReg(cast.value, id),
+        .call => |call| valuesUseReg(call.args, id),
+        .call_indirect => |call| valueUsesReg(call.callee, id) or valuesUseReg(call.args, id),
+        .builtin => |builtin| valuesUseReg(builtin.args, id),
+        .struct_lit => |strukt| for (strukt.fields) |field| {
+            if (valueUsesReg(field.value, id)) break true;
+        } else false,
+        .variant_lit => |variant| variant.payload != null and valueUsesReg(variant.payload.?, id),
+        .field, .field_addr => |field| valueUsesReg(field.base, id),
+        .index => |index| valueUsesReg(index.base, id) or valueUsesReg(index.index, id),
+        .variant_is, .variant_payload => |variant| valueUsesReg(variant.value, id),
+        .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| valueUsesReg(value, id),
+        .at => |at| valueUsesReg(at.value, id),
+        .raw_pointer => |ptr| valueUsesReg(ptr.address, id),
+        .store_local => |store| valueUsesReg(store.value, id),
+        .global_store => |store| valueUsesReg(store.value, id),
+        .store => |store| valueUsesReg(store.target, id) or valueUsesReg(store.value, id),
+    };
+}
+
+fn terminatorUsesReg(terminator: Terminator, id: RegId) bool {
+    return switch (terminator) {
+        .return_value => |value| value != null and valueUsesReg(value.?, id),
+        .fail => |value| valueUsesReg(value, id),
+        .branch, .unreachable_term => false,
+        .cond_branch => |branch| valueUsesReg(branch.cond, id),
+    };
+}
+
+fn valuesUseReg(values: []const Value, id: RegId) bool {
+    for (values) |value| {
+        if (valueUsesReg(value, id)) return true;
+    }
+    return false;
+}
+
+fn valueUsesReg(value: Value, id: RegId) bool {
+    return switch (value) {
+        .reg => |reg| reg == id,
+        .param, .local, .global, .imm => false,
+    };
+}
+
+fn lowerStruct(allocator: std.mem.Allocator, decl: ast.TypeDecl, strukt: ast.StructDecl) !StructDef {
+    var fields: std.ArrayList(FieldDef) = .empty;
+    errdefer fields.deinit(allocator);
+
+    for (strukt.fields) |field| {
+        try fields.append(allocator, .{
+            .name = field.name,
+            .ty = try lowerType(allocator, field.ty),
+        });
+    }
+
+    return .{
+        .name = decl.name,
+        .fields = try fields.toOwnedSlice(allocator),
+        .is_packed = hasAttr(decl.attrs, "packed"),
+    };
+}
+
+fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, decl: ast.FunctionDecl) !IrFunction {
+    var params: std.ArrayList(IrParam) = .empty;
+    errdefer params.deinit(allocator);
+
+    for (decl.params) |param| {
+        try params.append(allocator, .{
+            .name = param.name,
+            .ty = try lowerType(allocator, param.ty),
+        });
+    }
+
+    const blocks = if (decl.body) |body| blk: {
+        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl.params);
+        break :blk try lowerer.lowerBody(body);
+    } else &.{};
+
+    return .{
+        .name = decl.name,
+        .params = try params.toOwnedSlice(allocator),
+        .return_ty = try lowerType(allocator, decl.return_ty),
+        .error_ty = null,
+        .blocks = blocks,
+        .extern_name = externName(decl.attrs),
+        .inline_hint = hasAttr(decl.attrs, "inline"),
+        .entry = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
+        .naked = hasAttr(decl.attrs, "naked"),
+    };
+}
+
+const LoopContext = struct {
+    cond_id: BlockId,
+    after_id: BlockId,
+    zone_depth: usize,
+    defer_floor: usize,
+};
+
+const FunctionLowerer = struct {
+    allocator: std.mem.Allocator,
+    types: sema.TypeEnv,
+    symbols: sema.SymbolTable,
+    params: []const ast.Param,
+    blocks: std.ArrayList(IrBlock) = .empty,
+    current_instrs: std.ArrayList(Instr) = .empty,
+    current_id: BlockId = 0,
+    current_name: []const u8 = "entry",
+    current_terminated: bool = false,
+    next_reg: RegId = 1,
+    next_block_id: BlockId = 1,
+    loop_stack: std.ArrayList(LoopContext) = .empty,
+    active_zones: std.ArrayList([]const u8) = .empty,
+    defers: std.ArrayList(ast.Block) = .empty,
+
+    fn init(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, params: []const ast.Param) FunctionLowerer {
+        return .{ .allocator = allocator, .types = types, .symbols = symbols, .params = params };
+    }
+
+    fn lowerBody(self: *FunctionLowerer, body: ast.Block) LowerError![]const IrBlock {
+        try self.lowerBlock(body.statements, .unreachable_term);
+        return self.blocks.toOwnedSlice(self.allocator);
+    }
+
+    fn lowerStmt(self: *FunctionLowerer, stmt: ast.Stmt) LowerError!void {
+        switch (stmt) {
+            .local_infer => |local| {
+                const value = try self.lowerExpr(local.value);
+                try self.emitNoResult(self.exprType(local.value), .{ .store_local = .{ .name = local.name, .value = value } });
+            },
+            .local_typed => |local| {
+                const value = try self.lowerExpr(local.value);
+                try self.emitNoResult(try lowerType(self.allocator, local.ty), .{ .store_local = .{ .name = local.name, .value = value } });
+            },
+            .assign => |assign| {
+                const value = try self.lowerExpr(assign.value);
+                const bin_op = assignBinOp(assign.op);
+                switch (assign.target.kind) {
+                    .ident => |name| {
+                        if (bin_op) |op| {
+                            const current: Value = .{ .local = name };
+                            const result = try self.emit(self.exprType(assign.target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } });
+                            try self.emitNoResult(self.exprType(assign.target), .{ .store_local = .{ .name = name, .value = result } });
+                        } else {
+                            try self.emitNoResult(self.exprType(assign.target), .{ .store_local = .{ .name = name, .value = value } });
+                        }
+                    },
+                    else => {
+                        const target = try self.lowerExpr(assign.target);
+                        if (bin_op) |op| {
+                            const current = try self.emit(self.exprType(assign.target), .{ .unary = .{ .op = .deref, .value = target } });
+                            const result = try self.emit(self.exprType(assign.target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } });
+                            try self.emitNoResult(.void, .{ .store = .{ .target = target, .value = result } });
+                        } else {
+                            try self.emitNoResult(.void, .{ .store = .{ .target = target, .value = value } });
+                        }
+                    },
+                }
+            },
+            .return_stmt => |ret| {
+                const ret_val: ?Value = if (ret.value) |value| try self.lowerExpr(value) else null;
+                try self.emitDefersDown(0);
+                var i = self.active_zones.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    try self.emitNoResult(.void, .{ .zone_pop = self.active_zones.items[i] });
+                }
+                try self.terminate(.{ .return_value = ret_val });
+            },
+            .if_stmt => |iff| try self.lowerIf(iff),
+            .while_stmt => |while_stmt| try self.lowerWhile(while_stmt),
+            .zone_block => |zb| {
+                try self.emitNoResult(.void, .{ .zone_push = .{ .name = zb.name, .kind = zb.kind } });
+                try self.active_zones.append(self.allocator, zb.name);
+                try self.lowerBlock(zb.body.statements, null);
+                _ = self.active_zones.pop();
+                if (!self.current_terminated) {
+                    try self.emitNoResult(.void, .{ .zone_pop = zb.name });
+                }
+            },
+            .defer_stmt => |ds| try self.defers.append(self.allocator, ds.body),
+            .unsafe_block => |block| try self.lowerBlock(block.statements, null),
+            .break_stmt => {
+                const ctx = self.loop_stack.items[self.loop_stack.items.len - 1];
+                try self.emitDefersDown(ctx.defer_floor);
+                var i = self.active_zones.items.len;
+                while (i > ctx.zone_depth) {
+                    i -= 1;
+                    try self.emitNoResult(.void, .{ .zone_pop = self.active_zones.items[i] });
+                }
+                try self.terminate(.{ .branch = ctx.after_id });
+            },
+            .continue_stmt => {
+                const ctx = self.loop_stack.items[self.loop_stack.items.len - 1];
+                try self.emitDefersDown(ctx.defer_floor);
+                var i = self.active_zones.items.len;
+                while (i > ctx.zone_depth) {
+                    i -= 1;
+                    try self.emitNoResult(.void, .{ .zone_pop = self.active_zones.items[i] });
+                }
+                try self.terminate(.{ .branch = ctx.cond_id });
+            },
+            .expr => |expr| _ = try self.lowerExpr(expr),
+        }
+    }
+
+    fn lowerIf(self: *FunctionLowerer, iff: ast.IfStmt) LowerError!void {
+        const cond = if (iff.binding) |binding| blk: {
+            const value = try self.lowerExpr(binding.value);
+            try self.emitNoResult(.void, .{ .store_local = .{ .name = binding.name, .value = value } });
+            break :blk value;
+        } else try self.lowerExpr(iff.condition);
+
+        const then_id = self.allocBlockId();
+        const else_id = if (iff.else_block != null) self.allocBlockId() else null;
+        const after_id = self.allocBlockId();
+        try self.terminate(.{ .cond_branch = .{
+            .cond = cond,
+            .then_block = then_id,
+            .else_block = else_id orelse after_id,
+        } });
+
+        self.startBlock(then_id, "if.then");
+        try self.lowerBlock(iff.then_block.statements, .{ .branch = after_id });
+
+        if (iff.else_block) |else_block| {
+            self.startBlock(else_id.?, "if.else");
+            try self.lowerBlock(else_block.statements, .{ .branch = after_id });
+        }
+
+        self.startBlock(after_id, "if.after");
+    }
+
+    fn lowerWhile(self: *FunctionLowerer, while_stmt: ast.WhileStmt) LowerError!void {
+        const cond_id = self.allocBlockId();
+        const body_id = self.allocBlockId();
+        const after_id = self.allocBlockId();
+
+        try self.loop_stack.append(self.allocator, .{
+            .cond_id = cond_id,
+            .after_id = after_id,
+            .zone_depth = self.active_zones.items.len,
+            .defer_floor = self.defers.items.len,
+        });
+
+        try self.terminate(.{ .branch = cond_id });
+
+        self.startBlock(cond_id, "while.cond");
+        const cond = try self.lowerExpr(while_stmt.condition);
+        try self.terminate(.{ .cond_branch = .{
+            .cond = cond,
+            .then_block = body_id,
+            .else_block = after_id,
+        } });
+
+        self.startBlock(body_id, "while.body");
+        try self.lowerBlock(while_stmt.body.statements, .{ .branch = cond_id });
+
+        _ = self.loop_stack.pop();
+        self.startBlock(after_id, "while.after");
+    }
+
+    fn lowerExpr(self: *FunctionLowerer, expr: ast.Expr) LowerError!Value {
+        return switch (expr.kind) {
+            .ident => |name| blk: {
+                for (self.params) |p| {
+                    if (std.mem.eql(u8, p.name, name)) break :blk Value{ .param = name };
+                }
+                if (self.symbols.resolve(self.symbols.root_scope, name)) |id| {
+                    const kind = self.symbols.symbol(id).kind;
+                    if (kind == .function or kind == .const_symbol) break :blk Value{ .global = name };
+                }
+                break :blk Value{ .local = name };
+            },
+            .type_ref => .{ .imm = .null },
+            .int => |text| .{ .imm = .{ .int = parseIntLiteral(text) } },
+            .string => |text| .{ .imm = .{ .text = trimQuotes(text) } },
+            .bool => |value| .{ .imm = .{ .bool = value } },
+            .null => .{ .imm = .null },
+            .compound_literal => |values| blk: {
+                var args = std.ArrayList(Value).empty;
+                errdefer args.deinit(self.allocator);
+                for (values) |value| try args.append(self.allocator, try self.lowerExpr(value));
+                break :blk try self.emit(self.exprType(expr), .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
+            },
+            .unary => |unary| blk: {
+                const value = try self.lowerExpr(unary.expr.*);
+                break :blk switch (unary.op) {
+                    .address_of => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .ref, .value = value } }),
+                    .deref      => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .deref, .value = value } }),
+                    .neg        => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .neg, .value = value } }),
+                    .not        => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .not, .value = value } }),
+                    .bit_not    => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .bit_not, .value = value } }),
+                };
+            },
+            .binary => |binary| blk: {
+                const lhs = try self.lowerExpr(binary.left.*);
+                const rhs = try self.lowerExpr(binary.right.*);
+                break :blk try self.emit(self.exprType(expr), .{ .binary = .{ .op = lowerBinOp(binary.op), .lhs = lhs, .rhs = rhs } });
+            },
+            .call => |call| blk: {
+                // Detect zone method calls: sema marks the field-callee expr with zone_handle.
+                if (call.callee.kind == .field) {
+                    if (self.types.expr_types.get(call.callee.id)) |callee_ty| {
+                        if (callee_ty == .zone_handle) {
+                            const fld = call.callee.kind.field;
+                            const zone_name = switch (fld.base.kind) {
+                                .ident => |n| n,
+                                else => break :blk Value{ .imm = .null },
+                            };
+                            break :blk try self.lowerZoneMethod(zone_name, fld.name, call.args, expr);
+                        }
+                    }
+                }
+
+                const callee_name = switch (call.callee.kind) {
+                    .ident => |name| name,
+                    else => "<expr>",
+                };
+                var args = std.ArrayList(Value).empty;
+                errdefer args.deinit(self.allocator);
+                for (call.args) |arg| switch (arg) {
+                    .positional => |value| try args.append(self.allocator, try self.lowerExpr(value)),
+                    .named => |named| try args.append(self.allocator, try self.lowerExpr(named.value)),
+                };
+                const arg_slice = try args.toOwnedSlice(self.allocator);
+                if (isBuiltinName(callee_name)) {
+                    break :blk try self.emit(self.exprType(expr), .{ .builtin = .{ .name = callee_name, .args = arg_slice } });
+                }
+                break :blk try self.emit(self.exprType(expr), .{ .call = .{ .callee = callee_name, .args = arg_slice } });
+            },
+            .field => |field| blk: {
+                const base = try self.lowerExpr(field.base.*);
+                break :blk try self.emit(self.exprType(expr), .{ .field = .{ .base = base, .name = field.name } });
+            },
+            .index => |index| blk: {
+                const base = try self.lowerExpr(index.base.*);
+                const idx = try self.lowerExpr(index.index.*);
+                break :blk try self.emit(self.exprType(expr), .{ .index = .{ .base = base, .index = idx } });
+            },
+            .slice => |slice| blk: {
+                const base = try self.lowerExpr(slice.base.*);
+                break :blk try self.emit(self.exprType(expr), .{ .builtin = .{ .name = "slice", .args = try self.allocator.dupe(Value, &.{base}) } });
+            },
+        };
+    }
+
+    fn emitDefersDown(self: *FunctionLowerer, floor: usize) LowerError!void {
+        var i = self.defers.items.len;
+        while (i > floor) {
+            i -= 1;
+            for (self.defers.items[i].statements) |ds| try self.lowerStmt(ds);
+        }
+    }
+
+    // Lower a lexical block with automatic defer cleanup on normal fallthrough.
+    // on_fallthrough: terminator to emit if the block does not terminate itself
+    // (pass null to let the caller handle it).
+    fn lowerBlock(self: *FunctionLowerer, stmts: []const ast.Stmt, on_fallthrough: ?Terminator) LowerError!void {
+        const floor = self.defers.items.len;
+        for (stmts) |s| try self.lowerStmt(s);
+        if (!self.current_terminated) {
+            try self.emitDefersDown(floor);
+            if (on_fallthrough) |term| try self.terminate(term);
+        }
+        self.defers.items.len = floor;
+    }
+
+    fn lowerZoneMethod(self: *FunctionLowerer, zone_name: []const u8, method: []const u8, args: []const ast.CallArg, expr: ast.Expr) LowerError!Value {
+        if (std.mem.eql(u8, method, "new")) {
+            if (args.len == 0) return .{ .imm = .null };
+            const ty_expr = switch (args[0]) { .positional => |e| e, .named => |n| n.value };
+            const alloc_ty = try self.lowerTypeArg(ty_expr);
+            const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, alloc_ty) };
+            return try self.emit(ptr_ty, .{ .alloc = .{ .ty = alloc_ty, .zone = zone_name } });
+        }
+        if (std.mem.eql(u8, method, "new_slice")) {
+            if (args.len < 2) return .{ .imm = .null };
+            const ty_expr = switch (args[0]) { .positional => |e| e, .named => |n| n.value };
+            const cnt_expr = switch (args[1]) { .positional => |e| e, .named => |n| n.value };
+            const elem_ty = try self.lowerTypeArg(ty_expr);
+            const count = try self.lowerExpr(cnt_expr);
+            const slice_ty: IrType = .{ .slice = try boxType(self.allocator, elem_ty) };
+            return try self.emit(slice_ty, .{ .alloc_slice = .{ .elem_ty = elem_ty, .count = count, .zone = zone_name } });
+        }
+        if (std.mem.eql(u8, method, "free")) {
+            if (args.len > 0) {
+                const ptr_expr = switch (args[0]) { .positional => |e| e, .named => |n| n.value };
+                const ptr = try self.lowerExpr(ptr_expr);
+                try self.emitNoResult(.void, .{ .zone_free = .{ .zone = zone_name, .ptr = ptr } });
+            }
+            return .{ .imm = .null };
+        }
+        _ = expr;
+        return .{ .imm = .null };
+    }
+
+    fn lowerTypeArg(self: *FunctionLowerer, expr: ast.Expr) LowerError!IrType {
+        return switch (expr.kind) {
+            .type_ref => |ty| lowerType(self.allocator, ty),
+            .ident    => |name| lowerNamedType(name),
+            else      => .unknown,
+        };
+    }
+
+    fn emit(self: *FunctionLowerer, ty: IrType, kind: InstrKind) LowerError!Value {
+        if (self.current_terminated) return .{ .imm = .null };
+        const id = self.next_reg;
+        self.next_reg += 1;
+        try self.current_instrs.append(self.allocator, .{ .id = id, .ty = ty, .kind = kind });
+        return .{ .reg = id };
+    }
+
+    fn emitNoResult(self: *FunctionLowerer, ty: IrType, kind: InstrKind) LowerError!void {
+        if (self.current_terminated) return;
+        try self.current_instrs.append(self.allocator, .{ .id = null, .ty = ty, .kind = kind });
+    }
+
+    fn exprType(self: FunctionLowerer, expr: ast.Expr) IrType {
+        const ty = self.types.expr_types.get(expr.id) orelse return .unknown;
+        return lowerSemaType(self.allocator, ty, self.symbols) catch .unknown;
+    }
+
+    fn allocBlockId(self: *FunctionLowerer) BlockId {
+        const id = self.next_block_id;
+        self.next_block_id += 1;
+        return id;
+    }
+
+    fn startBlock(self: *FunctionLowerer, id: BlockId, name: []const u8) void {
+        self.current_id = id;
+        self.current_name = name;
+        self.current_instrs = .empty;
+        self.current_terminated = false;
+    }
+
+    fn terminate(self: *FunctionLowerer, terminator: Terminator) LowerError!void {
+        if (self.current_terminated) return;
+
+        try self.blocks.append(self.allocator, .{
+            .id = self.current_id,
+            .name = self.current_name,
+            .instrs = try self.current_instrs.toOwnedSlice(self.allocator),
+            .terminator = terminator,
+        });
+        self.current_terminated = true;
+    }
+};
+
+fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
+    return switch (ty) {
+        .named => |named| lowerNamedType(named.name),
+        .pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },
+        .many_pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },
+        .optional => |optional| .{ .ptr = try boxType(allocator, try lowerType(allocator, optional.inner.*)) },
+        .slice => |slice| .{ .slice = try boxType(allocator, try lowerType(allocator, slice.inner.*)) },
+        .array => |array| .{ .array = .{
+            .elem = try boxType(allocator, try lowerType(allocator, array.inner.*)),
+            .len = parseArrayLen(array.len.*),
+        } },
+        .atomic => |atomic| try lowerType(allocator, atomic.inner.*),
+        .fn_type => |func| blk: {
+            var params = std.ArrayList(IrType).empty;
+            errdefer params.deinit(allocator);
+            for (func.params) |param| try params.append(allocator, try lowerType(allocator, param));
+            break :blk .{ .fn_ptr = .{
+                .params = try params.toOwnedSlice(allocator),
+                .ret = try boxType(allocator, try lowerType(allocator, func.ret.*)),
+            } };
+        },
+        .opaque_type => .{ .opaque_type = "opaque" },
+    };
+}
+
+fn lowerNamedType(name: []const u8) IrType {
+    if (std.mem.eql(u8, name, "i8")) return .{ .i = 8 };
+    if (std.mem.eql(u8, name, "i16")) return .{ .i = 16 };
+    if (std.mem.eql(u8, name, "i32")) return .{ .i = 32 };
+    if (std.mem.eql(u8, name, "i64")) return .{ .i = 64 };
+    if (std.mem.eql(u8, name, "u8")) return .{ .u = 8 };
+    if (std.mem.eql(u8, name, "u16")) return .{ .u = 16 };
+    if (std.mem.eql(u8, name, "u32")) return .{ .u = 32 };
+    if (std.mem.eql(u8, name, "u64")) return .{ .u = 64 };
+    if (std.mem.eql(u8, name, "bool")) return .bool;
+    if (std.mem.eql(u8, name, "void")) return .void;
+    if (std.mem.eql(u8, name, "usize")) return .usize;
+    if (std.mem.eql(u8, name, "isize")) return .isize;
+    return .{ .struct_type = name };
+}
+
+fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.SymbolTable) !IrType {
+    return switch (ty) {
+        .i8 => .{ .i = 8 },
+        .i16 => .{ .i = 16 },
+        .i32 => .{ .i = 32 },
+        .i64 => .{ .i = 64 },
+        .u8, .byte => .{ .u = 8 },
+        .u16 => .{ .u = 16 },
+        .u32 => .{ .u = 32 },
+        .u64 => .{ .u = 64 },
+        .bool => .bool,
+        .void => .void,
+        .usize => .usize,
+        .isize => .isize,
+        .pointer => |inner| .{ .ptr = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
+        .optional => |inner| .{ .ptr = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
+        .slice => |inner| .{ .slice = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
+        .array => |array| .{ .array = .{
+            .elem = try boxType(allocator, try lowerSemaType(allocator, array.elem.*, symbols)),
+            .len = array.len,
+        } },
+        .named => |id| .{ .struct_type = symbols.symbol(id).name },
+        .int_lit => .{ .i = 32 },
+        .float_lit => .f64,
+        .null_ptr => .{ .ptr = try boxType(allocator, .void) },
+        .unknown, .error_ty => .unknown,
+        else => .unknown,
+    };
+}
+
+fn boxType(allocator: std.mem.Allocator, ty: IrType) !*const IrType {
+    const ptr = try allocator.create(IrType);
+    ptr.* = ty;
+    return ptr;
+}
+
+fn assignBinOp(op: ast.AssignOp) ?BinOp {
+    return switch (op) {
+        .assign  => null,
+        .add     => .add,
+        .sub     => .sub,
+        .mul     => .mul,
+        .div     => .div,
+        .rem     => .rem,
+        .bit_and => .bit_and,
+        .bit_or  => .bit_or,
+        .bit_xor => .bit_xor,
+        .shl     => .shl,
+        .shr     => .shr,
+    };
+}
+
+fn lowerBinOp(op: ast.BinaryOp) BinOp {
+    return switch (op) {
+        .or_or   => .or_op,
+        .and_and => .and_op,
+        .equal   => .eq,
+        .not_equal => .ne,
+        .less => .lt,
+        .le   => .le,
+        .gt   => .gt,
+        .ge   => .ge,
+        .bit_and => .bit_and,
+        .bit_or  => .bit_or,
+        .bit_xor => .bit_xor,
+        .shl => .shl,
+        .shr => .shr,
+        .add => .add,
+        .sub => .sub,
+        .mul => .mul,
+        .div => .div,
+        .rem => .rem,
+    };
+}
+
+fn isBuiltinName(name: []const u8) bool {
+    inline for (.{
+        "truncate_to",
+        "ptr_from_int",
+        "volatile_store",
+        "sizeof",
+        "unaligned_read",
+        "asm",
+        "atomic_load",
+        "compound_literal",
+        "slice",
+    }) |builtin| {
+        if (std.mem.eql(u8, name, builtin)) return true;
+    }
+    return false;
+}
+
+fn inferConstType(expr: ast.Expr) IrType {
+    return switch (expr.kind) {
+        .int => .{ .i = 32 },
+        .unary => |u| if (u.op == .neg) inferConstType(u.expr.*) else .unknown,
+        .bool => .bool,
+        .string => .text,
+        .null => .unknown,
+        else => .unknown,
+    };
+}
+
+fn lowerImm(expr: ast.Expr) Imm {
+    return switch (expr.kind) {
+        .int => |text| .{ .int = parseIntLiteral(text) },
+        .unary => |u| switch (u.op) {
+            .neg => switch (u.expr.kind) {
+                .int => |text| .{ .int = -parseIntLiteral(text) },
+                else => .null,
+            },
+            else => .null,
+        },
+        .bool => |value| .{ .bool = value },
+        .string => |text| .{ .text = trimQuotes(text) },
+        .null => .null,
+        else => .null,
+    };
+}
+
+fn parseArrayLen(expr: ast.Expr) u64 {
+    return switch (expr.kind) {
+        .int => |text| @intCast(@max(parseIntLiteral(text), 0)),
+        else => 0,
+    };
+}
+
+fn parseIntLiteral(text: []const u8) i128 {
+    var end = text.len;
+    while (end > 0 and std.ascii.isAlphabetic(text[end - 1])) end -= 1;
+    const number_text = text[0..end];
+
+    var value: i128 = 0;
+    var negative = false;
+    var start: usize = 0;
+    if (number_text.len > 0 and number_text[0] == '-') {
+        negative = true;
+        start = 1;
+    }
+
+    const radix: i128 = if (number_text.len >= start + 2 and number_text[start] == '0' and (number_text[start + 1] == 'x' or number_text[start + 1] == 'X')) blk: {
+        start += 2;
+        break :blk 16;
+    } else 10;
+
+    for (number_text[start..]) |ch| {
+        if (ch == '_') continue;
+        const digit: i128 = if (ch >= '0' and ch <= '9')
+            ch - '0'
+        else if (ch >= 'a' and ch <= 'f')
+            10 + ch - 'a'
+        else if (ch >= 'A' and ch <= 'F')
+            10 + ch - 'A'
+        else
+            break;
+        value = value * radix + digit;
+    }
+
+    return if (negative) -value else value;
+}
+
+fn hasAttr(attrs: []const ast.Attribute, name: []const u8) bool {
+    for (attrs) |attr| {
+        if (std.mem.eql(u8, attr.name, name)) return true;
+    }
+    return false;
+}
+
+fn externName(attrs: []const ast.Attribute) ?[]const u8 {
+    for (attrs) |attr| {
+        if (!std.mem.eql(u8, attr.name, "extern") or attr.args.len < 2) continue;
+        return switch (attr.args[1].kind) {
+            .string => |value| trimQuotes(value),
+            else => null,
+        };
+    }
+    return null;
+}
+
+fn trimQuotes(text: []const u8) []const u8 {
+    if (text.len >= 2 and text[0] == '"' and text[text.len - 1] == '"') {
+        return text[1 .. text.len - 1];
+    }
+    return text;
+}

@@ -3,6 +3,11 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const basalt_lib_dir = b.option(
+        []const u8,
+        "basalt-lib-dir",
+        "Directory containing libbasalt.a",
+    ) orelse "C:\\Users\\chris\\backend\\basalt\\bin";
 
     const compiler_mod = b.addModule("k2_compiler", .{
         .root_source_file = b.path("src/root.zig"),
@@ -31,6 +36,7 @@ pub fn build(b: *std.Build) void {
     });
 
     exe.root_module.addImport("k2_compiler", compiler_mod);
+    exe.root_module.addLibraryPath(.{ .cwd_relative = basalt_lib_dir });
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
