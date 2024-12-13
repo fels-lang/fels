@@ -402,7 +402,31 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
                 .init = .{ .imm = lowerImm(decl.value) },
                 .mutable = false,
             }),
-            .function => |decl| try functions.append(allocator, try lowerFunction(allocator, front_end.types, front_end.symbols, decl)),
+            .function => |decl| {
+                // Generic templates are lowered per-instantiation below; skip the template itself.
+                if (decl.type_params.len == 0) {
+                    try functions.append(allocator, try lowerFunction(allocator, front_end.types, front_end.symbols, decl));
+                }
+            },
+        }
+    }
+
+    // Lower each generic instantiation with its concrete type binding
+    for (front_end.types.generic_instantiations.items) |*inst| {
+        for (front_end.module.items) |item| {
+            switch (item) {
+                .function => |decl| {
+                    if (decl.type_params.len == 0) continue;
+                    const sym_id = front_end.symbols.resolve(front_end.symbols.root_scope, decl.name) orelse continue;
+                    if (sym_id != inst.sym_id) continue;
+                    var inst_types = front_end.types;
+                    inst_types.expr_types = inst.expr_types;
+                    try functions.append(allocator, try lowerFunctionInstantiation(
+                        allocator, inst_types, front_end.symbols, decl, inst.mangled_name, inst.type_args,
+                    ));
+                },
+                else => {},
+            }
         }
     }
 
@@ -891,11 +915,82 @@ fn lowerErrorDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, error_decl: a
     };
 }
 
+fn lowerFunctionInstantiation(
+    allocator: std.mem.Allocator,
+    types: sema.TypeEnv,
+    symbols: sema.SymbolTable,
+    decl: ast.FunctionDecl,
+    mangled_name: []const u8,
+    type_args: []const sema.TypeArg,
+) !IrFunction {
+    var params: std.ArrayList(IrParam) = .empty;
+    errdefer params.deinit(allocator);
+
+    for (decl.params) |param| {
+        if (param.is_type_param) continue;
+        try params.append(allocator, .{
+            .name = param.name,
+            .ty = lowerTypeWithBinding(allocator, param.ty, type_args) catch .unknown,
+        });
+    }
+
+    const ret_ty = lowerTypeWithBinding(allocator, decl.return_ty, type_args) catch .unknown;
+
+    const blocks = if (decl.body) |body| blk: {
+        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl.params);
+        lowerer.type_binding = type_args;
+        break :blk try lowerer.lowerBody(body);
+    } else &.{};
+
+    return .{
+        .name = mangled_name,
+        .params = try params.toOwnedSlice(allocator),
+        .return_ty = ret_ty,
+        .error_ty = null,
+        .blocks = blocks,
+        .extern_name = null,
+        .inline_hint = hasAttr(decl.attrs, "inline"),
+        .entry = false,
+        .naked = false,
+    };
+}
+
+fn lowerTypeWithBinding(allocator: std.mem.Allocator, ty: ast.TypeRef, binding: []const sema.TypeArg) !IrType {
+    switch (ty) {
+        .type_param => |tp| {
+            for (binding) |arg| {
+                if (std.mem.eql(u8, arg.name, tp.name)) {
+                    return lowerSemaType(allocator, arg.ty, sema.SymbolTable{ .scopes = .empty, .symbols = .empty }) catch .unknown;
+                }
+            }
+            return .unknown;
+        },
+        .named => |named| {
+            for (binding) |arg| {
+                if (std.mem.eql(u8, arg.name, named.name)) {
+                    return lowerSemaType(allocator, arg.ty, sema.SymbolTable{ .scopes = .empty, .symbols = .empty }) catch .unknown;
+                }
+            }
+            return lowerNamedType(named.name);
+        },
+        .pointer => |ptr| return .{ .ptr = try boxType(allocator, try lowerTypeWithBinding(allocator, ptr.inner.*, binding)) },
+        .many_pointer => |ptr| return .{ .ptr = try boxType(allocator, try lowerTypeWithBinding(allocator, ptr.inner.*, binding)) },
+        .optional => |opt| return .{ .ptr = try boxType(allocator, try lowerTypeWithBinding(allocator, opt.inner.*, binding)) },
+        .slice => |sl| return .{ .slice = try boxType(allocator, try lowerTypeWithBinding(allocator, sl.inner.*, binding)) },
+        .array => |arr| return .{ .array = .{
+            .elem = try boxType(allocator, try lowerTypeWithBinding(allocator, arr.inner.*, binding)),
+            .len = parseArrayLen(arr.len.*),
+        } },
+        else => return try lowerType(allocator, ty),
+    }
+}
+
 fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, decl: ast.FunctionDecl) !IrFunction {
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
 
     for (decl.params) |param| {
+        if (param.is_type_param) continue;
         try params.append(allocator, .{
             .name = param.name,
             .ty = try lowerType(allocator, param.ty),
@@ -955,6 +1050,7 @@ const FunctionLowerer = struct {
     loop_stack: std.ArrayList(LoopContext) = .empty,
     active_zones: std.ArrayList([]const u8) = .empty,
     defers: std.ArrayList(ast.DeferStmt) = .empty,
+    type_binding: []const sema.TypeArg = &.{},
 
     fn init(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, params: []const ast.Param) FunctionLowerer {
         return .{ .allocator = allocator, .types = types, .symbols = symbols, .params = params };
@@ -1310,7 +1406,8 @@ const FunctionLowerer = struct {
 
     fn exprType(self: FunctionLowerer, expr: ast.Expr) IrType {
         const ty = self.types.expr_types.get(expr.id) orelse return .unknown;
-        return lowerSemaType(self.allocator, ty, self.symbols) catch .unknown;
+        const resolved = resolveTypeParamInTy(ty, self.type_binding);
+        return lowerSemaType(self.allocator, resolved, self.symbols) catch .unknown;
     }
 
     fn allocBlockId(self: *FunctionLowerer) BlockId {
@@ -1341,6 +1438,7 @@ const FunctionLowerer = struct {
 
 fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
     return switch (ty) {
+        .type_param => .unknown,  // resolved per-instantiation
         .named => |named| lowerNamedType(named.name),
         .pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },
         .many_pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },
@@ -1398,6 +1496,18 @@ fn lowerNamedType(name: []const u8) IrType {
     if (std.mem.eql(u8, name, "usize")) return .usize;
     if (std.mem.eql(u8, name, "isize")) return .isize;
     return .{ .struct_type = name };
+}
+
+fn resolveTypeParamInTy(ty: sema.Ty, binding: []const sema.TypeArg) sema.Ty {
+    return switch (ty) {
+        .type_param => |name| blk: {
+            for (binding) |arg| {
+                if (std.mem.eql(u8, arg.name, name)) break :blk arg.ty;
+            }
+            break :blk ty;
+        },
+        else => ty,
+    };
 }
 
 fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.SymbolTable) !IrType {

@@ -87,6 +87,8 @@ pub const TokenKind = enum {
     keyword_continue,
     keyword_zone,
     keyword_defer,
+    keyword_type,
+    dollar, // $
     keyword_errors,
     keyword_fail,
     keyword_catch,
@@ -209,6 +211,7 @@ pub const Lexer = struct {
                 return token(.caret, start, self.index);
             },
             '~' => return token(.tilde, start, self.index),
+            '$' => return token(.dollar, start, self.index),
             '=' => {
                 if (self.match('=')) return token(.eq_eq, start, self.index);
                 return token(.eq, start, self.index);

@@ -36,7 +36,7 @@ pub fn compileSource(
     options: CompileOptions,
 ) DriverError!CompileOutput {
     var front_end = pipeline.compile(allocator, file_name, source) catch |err| switch (err) {
-        error.ParseFailed, error.SemanticFailed => return error.CompileFailed,
+        error.ParseFailed, error.SemanticFailed, error.IoError => return error.CompileFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer front_end.deinit(allocator);

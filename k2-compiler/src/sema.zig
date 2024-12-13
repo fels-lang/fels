@@ -1,6 +1,9 @@
 const std = @import("std");
 const ast = @import("ast.zig");
-const Diagnostic = @import("diagnostic.zig").Diagnostic;
+const NodeId = ast.NodeId;
+const diag_mod = @import("diagnostic.zig");
+const Diagnostic = diag_mod.Diagnostic;
+const DiagKind = diag_mod.DiagKind;
 const Span = @import("lexer/span.zig").Span;
 
 pub const ScopeId = usize;
@@ -293,6 +296,7 @@ pub const FnSig = struct {
 pub const ParamSig = struct {
     name: []const u8,
     ty: Ty,
+    is_type_param: bool = false,
 };
 
 pub const TypeEnv = struct {
@@ -304,6 +308,7 @@ pub const TypeEnv = struct {
     expr_symbols: std.AutoHashMap(ast.NodeId, SymbolId),
     expr_scopes: std.AutoHashMap(ast.NodeId, ScopeId),
     generic_instantiations: std.ArrayList(GenericInstantiation) = .empty,
+    diagnostics: std.ArrayList(Diagnostic) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) TypeEnv {
         return .{
@@ -325,7 +330,9 @@ pub const TypeEnv = struct {
         self.expr_types.deinit();
         self.expr_symbols.deinit();
         self.expr_scopes.deinit();
+        for (self.generic_instantiations.items) |*gi| gi.expr_types.deinit();
         self.generic_instantiations.deinit(allocator);
+        self.diagnostics.deinit(allocator);
     }
 
     pub fn set(self: *TypeEnv, id: SymbolId, ty: Ty) !void {
@@ -337,10 +344,18 @@ pub const TypeEnv = struct {
     }
 };
 
+pub const TypeArg = struct {
+    name: []const u8,
+    ty: Ty,
+};
+
 pub const GenericInstantiation = struct {
+    sym_id: SymbolId,
     fn_name: []const u8,
-    type_args: []const ast.TypeRef,
     mangled_name: []const u8,
+    type_args: []const TypeArg,
+    /// Per-instantiation expression types filled during checkGenericInstantiation.
+    expr_types: std.AutoHashMap(NodeId, Ty),
 };
 
 pub fn fromBuiltinName(name: []const u8) ?Ty {
@@ -420,10 +435,32 @@ pub fn checkTypes(
     module: ast.Module,
     symbols: SymbolTable,
 ) SemanticError!TypeEnv {
+    return checkTypesWithContext(allocator, module, symbols, "", "");
+}
+
+pub fn checkTypesWithContext(
+    allocator: std.mem.Allocator,
+    module: ast.Module,
+    symbols: SymbolTable,
+    source: []const u8,
+    file: []const u8,
+) SemanticError!TypeEnv {
     var checker = Checker.init(allocator, symbols);
+    checker.source = source;
+    checker.file = file;
     defer checker.deinit();
 
     try checker.checkModule(module);
+
+    // Check each generic instantiation discovered during the main pass.
+    // New instantiations may be discovered while checking (e.g. generic calls inside
+    // generic bodies), so iterate until stable.
+    var checked: usize = 0;
+    while (checked < checker.env.generic_instantiations.items.len) {
+        try checker.checkGenericInstantiation(module, checked);
+        checked += 1;
+    }
+
     return checker.finish();
 }
 
@@ -444,6 +481,12 @@ const Checker = struct {
     current_return_ty: Ty = .void,
     current_error_ty: ?Ty = null,
     loop_depth: usize = 0,
+    current_type_params: []const []const u8 = &.{},
+    current_type_binding: []const TypeArg = &.{},
+    // Diagnostics — collected instead of failing immediately where possible.
+    diagnostics: std.ArrayList(Diagnostic) = .empty,
+    source: []const u8 = "",
+    file:   []const u8 = "",
 
     fn init(allocator: std.mem.Allocator, symbols: SymbolTable) Checker {
         return .{
@@ -457,10 +500,44 @@ const Checker = struct {
     fn deinit(self: *Checker) void {
         for (self.scope_stack.items) |*s| s.deinit();
         self.scope_stack.deinit(self.allocator);
+        self.diagnostics.deinit(self.allocator);
+    }
+
+    // ── Diagnostics ──────────────────────────────────────────────────────────
+
+    fn emitError(self: *Checker, span: Span, comptime fmt: []const u8, args: anytype) void {
+        const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
+        self.diagnostics.append(self.allocator, Diagnostic.err(msg, span, self.file)) catch {};
+    }
+
+    /// Format a Ty as a human-readable string (caller owns result).
+    fn formatTy(self: *Checker, ty: Ty) []const u8 {
+        return switch (ty) {
+            .i8 => "i8", .i16 => "i16", .i32 => "i32", .i64 => "i64",
+            .u8  => "u8",  .u16 => "u16", .u32 => "u32", .u64 => "u64",
+            .bool => "bool", .void => "void", .usize => "usize", .isize => "isize",
+            .f32 => "f32", .f64 => "f64",
+            .int_lit => "integer literal",
+            .float_lit => "float literal",
+            .null_ptr => "null",
+            .zone_handle => "Zone",
+            .error_ty => "error",
+            .unknown => "unknown",
+            .optional => |inner| std.fmt.allocPrint(self.allocator, "?{s}", .{self.formatTy(inner.*)}) catch "?T",
+            .pointer => |inner| std.fmt.allocPrint(self.allocator, "*{s}", .{self.formatTy(inner.*)}) catch "*T",
+            .slice => |inner| std.fmt.allocPrint(self.allocator, "[]{s}", .{self.formatTy(inner.*)}) catch "[]T",
+            .named => |id| self.symbols.symbol(id).name,
+            .type_param => |n| n,
+            .fallible => |f| std.fmt.allocPrint(self.allocator, "{s} ! error", .{self.formatTy(f.ok.*)}) catch "T!E",
+            else => "T",
+        };
     }
 
     fn finish(self: *Checker) TypeEnv {
-        const env = self.env;
+        var env = self.env;
+        // Transfer diagnostics into the TypeEnv so callers can inspect them.
+        env.diagnostics = self.diagnostics;
+        self.diagnostics = .empty;
         self.env = TypeEnv.init(self.allocator);
         return env;
     }
@@ -534,12 +611,17 @@ const Checker = struct {
                     }
                 },
                 .function => |decl| {
+                    // Set type param context so typeFromRef can resolve $T as Ty.type_param
+                    self.current_type_params = decl.type_params;
+                    defer self.current_type_params = &.{};
+
                     var params = std.ArrayList(ParamSig).empty;
                     errdefer params.deinit(self.allocator);
                     for (decl.params) |param| {
                         try params.append(self.allocator, .{
                             .name = param.name,
                             .ty = try self.typeFromRef(param.ty),
+                            .is_type_param = param.is_type_param,
                         });
                     }
                     const ret = try self.typeFromRef(decl.return_ty);
@@ -552,7 +634,7 @@ const Checker = struct {
                         .inline_hint = hasAttr(decl.attrs, "inline"),
                         .entry = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
                         .naked = hasAttr(decl.attrs, "naked"),
-                        .type_params = &.{},
+                        .type_params = decl.type_params,
                         .type_binding = null,
                     });
                     try self.env.set(id, .{ .fn_ptr = .{
@@ -581,12 +663,19 @@ const Checker = struct {
     }
 
     fn checkFunction(self: *Checker, decl: ast.FunctionDecl) SemanticError!void {
+        // Generic functions with unbound type params are checked per-instantiation, not here.
+        if (decl.type_params.len > 0 and self.current_type_binding.len == 0) return;
+
+        self.current_type_params = decl.type_params;
+        defer self.current_type_params = &.{};
+
         self.current_return_ty = try self.typeFromRef(decl.return_ty);
         self.current_error_ty = if (decl.error_ty) |err| try self.typeFromErrorSpec(err) else null;
         try self.pushScope();
         defer self.popScope();
 
         for (decl.params) |param| {
+            if (param.is_type_param) continue; // type-only params aren't values in scope
             const param_ty = try self.typeFromRef(param.ty);
             try self.declareLocal(param.name, param_ty);
         }
@@ -624,13 +713,23 @@ const Checker = struct {
             },
             .return_stmt => |ret| {
                 const actual_ty: Ty = if (ret.value) |value| try self.inferExpr(value) else .void;
-                if (!try self.compatible(actual_ty, self.current_return_ty)) return error.SemanticFailed;
+                if (!try self.compatible(actual_ty, self.current_return_ty)) {
+                    self.emitError(ret.span,
+                        "return type mismatch: expected `{s}`, found `{s}`",
+                        .{ self.formatTy(self.current_return_ty), self.formatTy(actual_ty) });
+                    return error.SemanticFailed;
+                }
             },
             .fail_stmt => |fail| try self.checkFail(fail),
             .if_stmt => |iff| {
                 if (iff.binding) |binding| {
                     const bound_ty = try self.inferExpr(binding.value);
-                    if (bound_ty != .optional) return error.SemanticFailed;
+                    if (bound_ty != .optional) {
+                        self.emitError(binding.value.span,
+                            "`if {s} :=` requires an optional type, found `{s}`",
+                            .{ binding.name, self.formatTy(bound_ty) });
+                        return error.SemanticFailed;
+                    }
                     const inner_ty = bound_ty.optional.*;
                     try self.pushScope();
                     defer self.popScope();
@@ -655,8 +754,14 @@ const Checker = struct {
                 try self.checkBlock(while_stmt.body);
             },
             .unsafe_block => |unsafe_block| try self.checkBlock(unsafe_block),
-            .break_stmt => if (self.loop_depth == 0) return error.SemanticFailed,
-            .continue_stmt => if (self.loop_depth == 0) return error.SemanticFailed,
+            .break_stmt => |span| if (self.loop_depth == 0) {
+                self.emitError(span, "`break` outside of a loop", .{});
+                return error.SemanticFailed;
+            },
+            .continue_stmt => |span| if (self.loop_depth == 0) {
+                self.emitError(span, "`continue` outside of a loop", .{});
+                return error.SemanticFailed;
+            },
             .zone_block => |zb| {
                 try self.pushScope();
                 defer self.popScope();
@@ -683,6 +788,7 @@ const Checker = struct {
                     return self.env.get(id) orelse .{ .named = id };
                 }
                 if (fromBuiltinName(name)) |builtin_ty| return builtin_ty;
+                self.emitError(expr.span, "unknown name `{s}`", .{name});
                 return error.SemanticFailed;
             },
             .type_ref => |type_ref| try self.typeFromRef(type_ref),
@@ -819,17 +925,46 @@ const Checker = struct {
         if (std.mem.eql(u8, name, "asm")) return .void;
         if (std.mem.eql(u8, name, "atomic_load")) return .u32;
 
-        const id = self.symbols.resolve(self.symbols.root_scope, name) orelse return error.SemanticFailed;
-        if (self.symbols.symbol(id).kind != .function) return error.SemanticFailed;
+        const id = self.symbols.resolve(self.symbols.root_scope, name) orelse {
+            self.emitError(call.callee.span, "unknown function `{s}`", .{name});
+            return error.SemanticFailed;
+        };
+        if (self.symbols.symbol(id).kind != .function) {
+            self.emitError(call.callee.span, "`{s}` is not a function", .{name});
+            return error.SemanticFailed;
+        }
         const sig = self.env.fn_sigs.get(id) orelse return error.SemanticFailed;
-        if (call.args.len != sig.params.len) return error.SemanticFailed;
 
-        for (call.args, sig.params) |arg, param| {
-            const arg_ty = switch (arg) {
-                .positional => |value| try self.inferExpr(value),
-                .named => |named| try self.inferExpr(named.value),
+        // Generic call: infer type binding and record instantiation
+        if (sig.type_params.len > 0) {
+            return try self.inferGenericCall(id, name, sig, call);
+        }
+
+        // Count only value params for arg matching
+        var value_param_count: usize = 0;
+        for (sig.params) |p| { if (!p.is_type_param) value_param_count += 1; }
+        if (call.args.len != value_param_count) {
+            self.emitError(call.callee.span,
+                "`{s}` expects {d} argument(s), but {d} were provided",
+                .{ name, value_param_count, call.args.len });
+            return error.SemanticFailed;
+        }
+
+        var arg_i: usize = 0;
+        for (sig.params) |param| {
+            if (param.is_type_param) continue;
+            const arg_expr = switch (call.args[arg_i]) {
+                .positional => |e| e,
+                .named => |n| n.value,
             };
-            if (!try self.compatible(arg_ty, param.ty)) return error.SemanticFailed;
+            const arg_ty = try self.inferExpr(arg_expr);
+            if (!try self.compatible(arg_ty, param.ty)) {
+                self.emitError(arg_expr.span,
+                    "argument {d} of `{s}`: expected `{s}`, found `{s}`",
+                    .{ arg_i + 1, name, self.formatTy(param.ty), self.formatTy(arg_ty) });
+                return error.SemanticFailed;
+            }
+            arg_i += 1;
         }
         if (sig.error_ty) |err_ty| {
             return .{ .fallible = .{ .ok = try self.boxTy(sig.return_ty), .err = try self.boxTy(err_ty) } };
@@ -888,6 +1023,141 @@ const Checker = struct {
         };
     }
 
+    fn inferGenericCall(self: *Checker, sym_id: SymbolId, fn_name: []const u8, sig: FnSig, call: ast.CallExpr) SemanticError!Ty {
+        if (call.args.len != sig.params.len) return error.SemanticFailed;
+
+        // Infer type args by matching call args to type_param-typed params
+        var binding = std.StringHashMap(Ty).init(self.allocator);
+        defer binding.deinit();
+
+        var arg_tys = std.ArrayList(Ty).empty;
+        defer arg_tys.deinit(self.allocator);
+
+        for (call.args, sig.params) |arg, param| {
+            const arg_ty = switch (arg) {
+                .positional => |value| try self.inferExpr(value),
+                .named => |named| try self.inferExpr(named.value),
+            };
+            try arg_tys.append(self.allocator, arg_ty);
+            if (param.ty == .type_param) {
+                const tp = param.ty.type_param;
+                if (!binding.contains(tp)) {
+                    // Coerce unresolved literal types to concrete defaults
+                    const concrete = switch (arg_ty) {
+                        .int_lit   => Ty.i32,
+                        .float_lit => Ty.f64,
+                        else       => arg_ty,
+                    };
+                    try binding.put(tp, concrete);
+                }
+            }
+        }
+
+        // Verify all args are compatible with substituted param types
+        for (sig.params, arg_tys.items) |param, arg_ty| {
+            const expected = self.substituteTy(param.ty, &binding);
+            if (!try self.compatible(arg_ty, expected)) return error.SemanticFailed;
+        }
+
+        // Build ordered type_args list
+        var type_args = std.ArrayList(TypeArg).empty;
+        errdefer type_args.deinit(self.allocator);
+        for (sig.type_params) |tp_name| {
+            const concrete = binding.get(tp_name) orelse .unknown;
+            try type_args.append(self.allocator, .{ .name = tp_name, .ty = concrete });
+        }
+
+        // Compute mangled name
+        const mangled = try self.mangleInstantiation(fn_name, type_args.items);
+
+        // Record if not already seen
+        var already = false;
+        for (self.env.generic_instantiations.items) |*gi| {
+            if (std.mem.eql(u8, gi.mangled_name, mangled)) { already = true; break; }
+        }
+        if (!already) {
+            try self.env.generic_instantiations.append(self.allocator, .{
+                .sym_id = sym_id,
+                .fn_name = fn_name,
+                .mangled_name = mangled,
+                .type_args = try type_args.toOwnedSlice(self.allocator),
+                .expr_types = std.AutoHashMap(NodeId, Ty).init(self.allocator),
+            });
+        } else type_args.deinit(self.allocator);
+
+        // Return substituted return type
+        const ret = self.substituteTy(sig.return_ty, &binding);
+        if (sig.error_ty) |err| {
+            const err_sub = self.substituteTy(err, &binding);
+            return .{ .fallible = .{ .ok = try self.boxTy(ret), .err = try self.boxTy(err_sub) } };
+        }
+        return ret;
+    }
+
+    fn substituteTy(self: *Checker, ty: Ty, binding: *const std.StringHashMap(Ty)) Ty {
+        return switch (ty) {
+            .type_param => |name| binding.get(name) orelse ty,
+            .pointer => |inner| blk: {
+                const sub = self.allocator.create(Ty) catch return ty;
+                sub.* = self.substituteTy(inner.*, binding);
+                break :blk .{ .pointer = sub };
+            },
+            .optional => |inner| blk: {
+                const sub = self.allocator.create(Ty) catch return ty;
+                sub.* = self.substituteTy(inner.*, binding);
+                break :blk .{ .optional = sub };
+            },
+            .slice => |inner| blk: {
+                const sub = self.allocator.create(Ty) catch return ty;
+                sub.* = self.substituteTy(inner.*, binding);
+                break :blk .{ .slice = sub };
+            },
+            else => ty,
+        };
+    }
+
+    fn mangleInstantiation(self: *Checker, fn_name: []const u8, type_args: []const TypeArg) ![]const u8 {
+        var buf = std.ArrayList(u8).empty;
+        errdefer buf.deinit(self.allocator);
+        try buf.appendSlice(self.allocator, fn_name);
+        for (type_args) |arg| {
+            try buf.appendSlice(self.allocator, "__");
+            try buf.appendSlice(self.allocator, arg.name);
+            try buf.append(self.allocator, '_');
+            try buf.appendSlice(self.allocator, tyMangle(arg.ty));
+        }
+        return buf.toOwnedSlice(self.allocator);
+    }
+
+    /// Type-check a previously recorded generic instantiation, filling its per-instance expr_types.
+    fn checkGenericInstantiation(self: *Checker, module: ast.Module, inst_idx: usize) SemanticError!void {
+        const inst = &self.env.generic_instantiations.items[inst_idx];
+        // Find the generic function decl
+        for (module.items) |item| {
+            switch (item) {
+                .function => |decl| {
+                    if (decl.type_params.len == 0) continue;
+                    const sym_id = self.symbols.resolve(self.symbols.root_scope, decl.name) orelse continue;
+                    if (sym_id != inst.sym_id) continue;
+
+                    // Swap in a fresh expr_types for this instantiation
+                    const saved = self.env.expr_types;
+                    self.env.expr_types = inst.expr_types;
+                    self.current_type_binding = inst.type_args;
+                    defer {
+                        inst.expr_types = self.env.expr_types;
+                        self.env.expr_types = saved;
+                        self.current_type_binding = &.{};
+                    }
+
+                    try self.checkFunction(decl);
+                    return;
+                },
+                else => {},
+            }
+        }
+    }
+
     fn checkCallable(self: *Checker, expr: ast.Expr) SemanticError!void {
         switch (expr.kind) {
             .ident => |name| {
@@ -904,9 +1174,25 @@ const Checker = struct {
         _ = try self.typeFromRef(ty);
     }
 
+    fn resolveTypeParam(self: *Checker, name: []const u8) ?Ty {
+        // Check concrete binding first (during instantiation)
+        for (self.current_type_binding) |arg| {
+            if (std.mem.eql(u8, arg.name, name)) return arg.ty;
+        }
+        // Then check if it's a declared type param (unbound — stays as type_param)
+        for (self.current_type_params) |tp| {
+            if (std.mem.eql(u8, tp, name)) return .{ .type_param = name };
+        }
+        return null;
+    }
+
     fn typeFromRef(self: *Checker, ty: ast.TypeRef) SemanticError!Ty {
         switch (ty) {
+            .type_param => |tp| {
+                return self.resolveTypeParam(tp.name) orelse .{ .type_param = tp.name };
+            },
             .named => |named| {
+                if (self.resolveTypeParam(named.name)) |tp_ty| return tp_ty;
                 if (fromBuiltinName(named.name)) |builtin_ty| return builtin_ty;
                 const id = self.symbols.resolve(self.symbols.root_scope, named.name) orelse return error.SemanticFailed;
                 if (self.symbols.symbol(id).kind != .type) return error.SemanticFailed;
@@ -969,7 +1255,10 @@ const Checker = struct {
     }
 
     fn checkFail(self: *Checker, fail: ast.FailStmt) SemanticError!void {
-        const err_ty = self.current_error_ty orelse return error.SemanticFailed;
+        const err_ty = self.current_error_ty orelse {
+            self.emitError(fail.span, "`fail` used in a function without a `!` error return type", .{});
+            return error.SemanticFailed;
+        };
         const variant = try self.findErrorVariant(err_ty, fail.variant);
         if (variant.payload) |payload_ty| {
             if (fail.payload.len != 1) return error.SemanticFailed;
@@ -1061,6 +1350,17 @@ const Checker = struct {
         return ptr;
     }
 
+    fn isErrorType(self: *const Checker, ty: Ty) bool {
+        return switch (ty) {
+            .error_ty, .error_set => true,
+            .named => |id| blk: {
+                const layout = self.env.layouts.get(id) orelse break :blk false;
+                break :blk layout.kind == .error_set;
+            },
+            else => false,
+        };
+    }
+
     fn compatible(self: *Checker, actual: Ty, expected: Ty) !bool {
         if (sameTy(actual, expected)) return true;
         if (expected == .optional) {
@@ -1072,8 +1372,8 @@ const Checker = struct {
             .pointer, .slice, .named, .optional => true,
             else => false,
         };
-        if (actual == .error_ty and isErrorTy(expected)) return true;
-        if (expected == .error_ty and isErrorTy(actual)) return true;
+        if (actual == .error_ty and self.isErrorType(expected)) return true;
+        if (expected == .error_ty and self.isErrorType(actual)) return true;
         if (expected == .unknown or actual == .unknown) return true;
         return false;
     }
@@ -1097,6 +1397,17 @@ fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
         .zone_block => |zb| blockDefinitelyReturns(zb.body),
         .defer_stmt => false,
         else => false,
+    };
+}
+
+fn tyMangle(ty: Ty) []const u8 {
+    return switch (ty) {
+        .i8 => "i8", .i16 => "i16", .i32 => "i32", .i64 => "i64",
+        .u8  => "u8",  .u16 => "u16", .u32 => "u32", .u64 => "u64",
+        .bool => "bool", .void => "void", .usize => "usize", .isize => "isize",
+        .pointer  => "ptr",  .optional => "opt", .slice => "slice",
+        .named    => "named", .type_param => |n| n,
+        else      => "unknown",
     };
 }
 
@@ -1125,12 +1436,6 @@ fn sameErrorVariants(a: []const ErrorVariantInfo, b: []const ErrorVariantInfo) b
     return true;
 }
 
-fn isErrorTy(ty: Ty) bool {
-    return switch (ty) {
-        .error_ty, .error_set, .named => true,
-        else => false,
-    };
-}
 
 fn intLiteralType(text: []const u8) Ty {
     if (std.mem.endsWith(u8, text, "u32")) return .u32;

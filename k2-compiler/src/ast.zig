@@ -91,6 +91,7 @@ pub const FieldDecl = struct {
 pub const FunctionDecl = struct {
     attrs: []const Attribute,
     name: []const u8,
+    type_params: []const []const u8,
     params: []const Param,
     return_ty: TypeRef,
     error_ty: ?ErrorSpec,
@@ -101,6 +102,8 @@ pub const FunctionDecl = struct {
 pub const Param = struct {
     name: []const u8,
     ty: TypeRef,
+    // When true, the param IS a type argument ($T: type) — its name is the type var.
+    is_type_param: bool = false,
     span: Span,
 };
 
@@ -219,6 +222,7 @@ pub const TypeRef = union(enum) {
     atomic: AtomicType,
     fn_type: FnType,
     inline_error_set: InlineErrorSet,
+    type_param: NamedType,
     opaque_type,
 
     pub fn span(self: TypeRef) Span {
@@ -232,6 +236,7 @@ pub const TypeRef = union(enum) {
             .atomic => |ty| ty.span,
             .fn_type => |ty| ty.span,
             .inline_error_set => |ty| ty.span,
+            .type_param => |ty| ty.span,
             .opaque_type => Span.new(0, 0),
         };
     }
@@ -291,6 +296,7 @@ pub const AtomicType = struct {
 };
 
 pub const FnType = struct {
+    type_params: []const []const u8,
     params: []const TypeRef,
     ret: *const TypeRef,
     error_ty: ?ErrorSpec,

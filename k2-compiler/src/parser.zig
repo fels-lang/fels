@@ -211,17 +211,47 @@ pub const Parser = struct {
         _ = try self.expect(.l_paren, "expected ( after fn");
         var params: std.ArrayList(ast.Param) = .empty;
         errdefer params.deinit(self.allocator);
+        var type_params: std.ArrayList([]const u8) = .empty;
+        errdefer type_params.deinit(self.allocator);
 
         if (!self.check(.r_paren)) {
             while (true) {
-                const param_name = try self.expect(.ident, "expected parameter name");
-                _ = try self.expect(.colon, "expected : after parameter name");
-                const ty = try self.parseType();
-                try params.append(self.allocator, .{
-                    .name = param_name.text(self.source),
-                    .ty = ty,
-                    .span = ty.span(),
-                });
+                if (self.match(.dollar)) {
+                    // $T: type  — explicit type-only param; the param name IS the type variable.
+                    // Used as: zeroed($T: type) -> T
+                    const tp_name = try self.expect(.ident, "expected type parameter name after $");
+                    _ = try self.expect(.colon, "expected : after $T");
+                    _ = try self.expect(.keyword_type, "expected 'type' after $T:");
+                    try type_params.append(self.allocator, tp_name.text(self.source));
+                    try params.append(self.allocator, .{
+                        .name = tp_name.text(self.source),
+                        .ty = .{ .type_param = .{ .name = tp_name.text(self.source), .span = spanFrom(tp_name, tp_name) } },
+                        .is_type_param = true,
+                        .span = spanFrom(tp_name, tp_name),
+                    });
+                } else {
+                    // Regular param, but type may be $T (introducing a type variable).
+                    // Syntax: name: $T   or   name: T  (T already introduced)
+                    const param_name = try self.expect(.ident, "expected parameter name");
+                    _ = try self.expect(.colon, "expected : after parameter name");
+                    if (self.match(.dollar)) {
+                        // a: $T — introduces type variable T, param type is T
+                        const tp_name = try self.expect(.ident, "expected type variable name after $");
+                        try type_params.append(self.allocator, tp_name.text(self.source));
+                        try params.append(self.allocator, .{
+                            .name = param_name.text(self.source),
+                            .ty = .{ .type_param = .{ .name = tp_name.text(self.source), .span = spanFrom(tp_name, tp_name) } },
+                            .span = spanFrom(param_name, tp_name),
+                        });
+                    } else {
+                        const ty = try self.parseType();
+                        try params.append(self.allocator, .{
+                            .name = param_name.text(self.source),
+                            .ty = ty,
+                            .span = ty.span(),
+                        });
+                    }
+                }
                 if (!self.match(.comma)) break;
                 if (self.check(.r_paren)) break;
             }
@@ -239,6 +269,7 @@ pub const Parser = struct {
         return .{
             .attrs = attrs,
             .name = name.text(self.source),
+            .type_params = try type_params.toOwnedSlice(self.allocator),
             .params = try params.toOwnedSlice(self.allocator),
             .return_ty = return_ty,
             .error_ty = error_ty,
@@ -520,7 +551,7 @@ pub const Parser = struct {
             const ret = try self.allocType(try self.parseType());
             const error_ty = if (self.match(.bang)) try self.parseErrorSpec(self.previous()) else null;
             const end = if (error_ty) |err| err.span().end else ret.span().end;
-            return .{ .fn_type = .{ .params = try params.toOwnedSlice(self.allocator), .ret = ret, .error_ty = error_ty, .span = Span.new(start.start, end) } };
+            return .{ .fn_type = .{ .type_params = &.{}, .params = try params.toOwnedSlice(self.allocator), .ret = ret, .error_ty = error_ty, .span = Span.new(start.start, end) } };
         }
         if (self.match(.keyword_opaque)) return .opaque_type;
 
@@ -573,7 +604,13 @@ pub const Parser = struct {
                 continue;
             }
 
-            if (self.check(.pipe) and self.peekKind(1) == .ident and self.peekKind(2) == .pipe) break;
+            // Stop before |name| { — that is the payload capture in `if cond |name| { }`,
+            // not a bitwise-OR chain.  The l_brace at position +3 distinguishes this from
+            // a genuine `a | b | c` expression where position +3 would be another ident or operator.
+            if (self.check(.pipe) and
+                self.peekKind(1) == .ident and
+                self.peekKind(2) == .pipe and
+                self.peekKind(3) == .l_brace) break;
             const info = infixInfo(self.peek().kind) orelse break;
             if (info.left_bp < min_bp) break;
             _ = self.advance();

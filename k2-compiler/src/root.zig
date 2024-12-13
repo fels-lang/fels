@@ -28,11 +28,14 @@ pub const keywordKind = tokens.keywordKind;
 
 pub const Module = ast.Module;
 pub const Diagnostic = diagnostic.Diagnostic;
+pub const DiagKind = diagnostic.DiagKind;
 pub const renderDiagnostic = diagnostic.renderDiagnostic;
+pub const renderAll = diagnostic.renderAll;
 pub const parseSource = parser.parseSource;
 pub const parseSourceFrom = parser.parseSourceFrom;
 pub const compile = pipeline.compile;
 pub const compileMulti = pipeline.compileMulti;
+pub const compileFile = pipeline.compileFile;
 pub const FrontEnd = pipeline.FrontEnd;
 pub const NodeId = ast.NodeId;
 pub const SymbolKind = sema.SymbolKind;
