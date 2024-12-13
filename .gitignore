@@ -1,0 +1,6 @@
+*.exe
+*.dll
+*.obj
+*.lib
+**/.zig-cache/
+**/zig-out/
