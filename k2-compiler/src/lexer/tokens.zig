@@ -88,7 +88,7 @@ pub fn keywordKind(text: []const u8) TokenKind {
     const prefix = "keyword_";
 
     inline for (@typeInfo(TokenKind).@"enum".fields) |field| {
-        if (std.mem.startsWith(u8, field.name, prefix)) {
+        if (field.name.len >= prefix.len and std.mem.startsWith(u8, field.name, prefix)) {
             const keyword_text = field.name[prefix.len..];
 
             if (std.mem.eql(u8, text, keyword_text)) {
