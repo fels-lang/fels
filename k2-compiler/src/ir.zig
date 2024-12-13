@@ -9,6 +9,7 @@ pub const BlockId = u32;
 pub const IrModule = struct {
     file_name: []const u8,
     structs: []const StructDef = &.{},
+    errors: []const ErrorDef = &.{},
     variants: []const VariantDef = &.{},
     functions: []const IrFunction = &.{},
     globals: []const IrGlobal = &.{},
@@ -125,6 +126,16 @@ pub const FieldDef = struct {
 pub const VariantDef = struct {
     name: []const u8,
     variants: []const VariantCase,
+};
+
+pub const ErrorDef = struct {
+    name: []const u8,
+    variants: []const ErrorCase,
+};
+
+pub const ErrorCase = struct {
+    name: []const u8,
+    payload: ?IrType,
 };
 
 pub const VariantCase = struct {
@@ -369,9 +380,11 @@ pub fn lowerFrontend(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd)
 
 pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) LowerError!IrModule {
     var structs: std.ArrayList(StructDef) = .empty;
+    var errors: std.ArrayList(ErrorDef) = .empty;
     var functions: std.ArrayList(IrFunction) = .empty;
     var globals: std.ArrayList(IrGlobal) = .empty;
     errdefer structs.deinit(allocator);
+    errdefer errors.deinit(allocator);
     errdefer functions.deinit(allocator);
     errdefer globals.deinit(allocator);
 
@@ -380,6 +393,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
             .import => {},
             .type_decl => |decl| switch (decl.kind) {
                 .struct_type => |strukt| try structs.append(allocator, try lowerStruct(allocator, decl, strukt)),
+                .errors => |error_decl| try errors.append(allocator, try lowerErrorDef(allocator, decl, error_decl)),
                 .distinct, .opaque_type => {},
             },
             .const_decl => |decl| try globals.append(allocator, .{
@@ -395,6 +409,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
     return .{
         .file_name = front_end.module.file_name,
         .structs = try structs.toOwnedSlice(allocator),
+        .errors = try errors.toOwnedSlice(allocator),
         .variants = &.{},
         .functions = try functions.toOwnedSlice(allocator),
         .globals = try globals.toOwnedSlice(allocator),
@@ -416,8 +431,8 @@ pub fn runPasses(allocator: std.mem.Allocator, module: *IrModule, passes: []cons
     for (passes) |pass| {
         switch (pass) {
             .const_fold => try foldConstants(allocator, module),
-            .branch     => try simplifyBranches(allocator, module),
-            .dce        => try eliminateDeadCode(allocator, module),
+            .branch => try simplifyBranches(allocator, module),
+            .dce => try eliminateDeadCode(allocator, module),
         }
     }
 }
@@ -653,7 +668,7 @@ fn foldBinaryImm(op: BinOp, lhs: Imm, rhs: Imm) ?Imm {
         .shl => if (r >= 0 and r < 128) .{ .int = l << @as(u7, @intCast(r)) } else null,
         .shr => if (r >= 0 and r < 128) .{ .int = l >> @as(u7, @intCast(r)) } else null,
         .bit_and => .{ .int = l & r },
-        .bit_or  => .{ .int = l | r },
+        .bit_or => .{ .int = l | r },
         .bit_xor => .{ .int = l ^ r },
         .eq => .{ .bool = l == r },
         .ne => .{ .bool = l != r },
@@ -668,18 +683,18 @@ fn foldBinaryImm(op: BinOp, lhs: Imm, rhs: Imm) ?Imm {
 fn foldUnaryImm(op: UnaryOp, value: Imm) ?Imm {
     return switch (op) {
         .neg => switch (value) {
-            .int  => |v| .{ .int = -%v },
+            .int => |v| .{ .int = -%v },
             .uint => |v| .{ .int = -@as(i128, @intCast(v)) },
-            else  => null,
+            else => null,
         },
         .not => switch (value) {
             .bool => |v| .{ .bool = !v },
-            else  => null,
+            else => null,
         },
         .bit_not => switch (value) {
-            .int  => |v| .{ .int = ~v },
+            .int => |v| .{ .int = ~v },
             .uint => |v| .{ .uint = ~v },
-            else  => null,
+            else => null,
         },
         else => null,
     };
@@ -775,9 +790,7 @@ fn eliminateFunctionDeadCode(allocator: std.mem.Allocator, function: IrFunction)
 
 fn instrHasSideEffects(instr: Instr) bool {
     return switch (instr.kind) {
-        .call, .call_indirect, .builtin, .inline_asm,
-        .store_local, .global_store, .store,
-        .alloc, .alloc_slice, .zone_push, .zone_pop, .zone_free => true,
+        .call, .call_indirect, .builtin, .inline_asm, .store_local, .global_store, .store, .alloc, .alloc_slice, .zone_push, .zone_pop, .zone_free => true,
         else => instr.id == null,
     };
 }
@@ -861,6 +874,23 @@ fn lowerStruct(allocator: std.mem.Allocator, decl: ast.TypeDecl, strukt: ast.Str
     };
 }
 
+fn lowerErrorDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, error_decl: ast.ErrorDecl) !ErrorDef {
+    var variants: std.ArrayList(ErrorCase) = .empty;
+    errdefer variants.deinit(allocator);
+
+    for (error_decl.variants) |variant| {
+        try variants.append(allocator, .{
+            .name = variant.name,
+            .payload = if (variant.payload) |payload| try lowerType(allocator, payload) else null,
+        });
+    }
+
+    return .{
+        .name = decl.name,
+        .variants = try variants.toOwnedSlice(allocator),
+    };
+}
+
 fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, decl: ast.FunctionDecl) !IrFunction {
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
@@ -881,7 +911,7 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
         .name = decl.name,
         .params = try params.toOwnedSlice(allocator),
         .return_ty = try lowerType(allocator, decl.return_ty),
-        .error_ty = null,
+        .error_ty = if (decl.error_ty) |err| try lowerErrorSpec(allocator, err) else null,
         .blocks = blocks,
         .extern_name = externName(decl.attrs),
         .inline_hint = hasAttr(decl.attrs, "inline"),
@@ -897,6 +927,19 @@ const LoopContext = struct {
     defer_floor: usize,
 };
 
+const DeferPath = enum {
+    ok,
+    err,
+};
+
+fn deferRunsOn(mode: ast.DeferMode, path: DeferPath) bool {
+    return switch (mode) {
+        .always => true,
+        .ok => path == .ok,
+        .err => path == .err,
+    };
+}
+
 const FunctionLowerer = struct {
     allocator: std.mem.Allocator,
     types: sema.TypeEnv,
@@ -911,7 +954,7 @@ const FunctionLowerer = struct {
     next_block_id: BlockId = 1,
     loop_stack: std.ArrayList(LoopContext) = .empty,
     active_zones: std.ArrayList([]const u8) = .empty,
-    defers: std.ArrayList(ast.Block) = .empty,
+    defers: std.ArrayList(ast.DeferStmt) = .empty,
 
     fn init(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, params: []const ast.Param) FunctionLowerer {
         return .{ .allocator = allocator, .types = types, .symbols = symbols, .params = params };
@@ -959,13 +1002,29 @@ const FunctionLowerer = struct {
             },
             .return_stmt => |ret| {
                 const ret_val: ?Value = if (ret.value) |value| try self.lowerExpr(value) else null;
-                try self.emitDefersDown(0);
+                try self.emitDefersDown(0, .ok);
                 var i = self.active_zones.items.len;
                 while (i > 0) {
                     i -= 1;
                     try self.emitNoResult(.void, .{ .zone_pop = self.active_zones.items[i] });
                 }
                 try self.terminate(.{ .return_value = ret_val });
+            },
+            .fail_stmt => |fail| {
+                var payload_values = std.ArrayList(Value).empty;
+                errdefer payload_values.deinit(self.allocator);
+                for (fail.payload) |payload| try payload_values.append(self.allocator, try self.lowerExpr(payload));
+                const error_value = try self.emit(.{ .variant_type = "<error>" }, .{ .builtin = .{
+                    .name = try std.fmt.allocPrint(self.allocator, "error.{s}", .{fail.variant}),
+                    .args = try payload_values.toOwnedSlice(self.allocator),
+                } });
+                try self.emitDefersDown(0, .err);
+                var i = self.active_zones.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    try self.emitNoResult(.void, .{ .zone_pop = self.active_zones.items[i] });
+                }
+                try self.terminate(.{ .fail = error_value });
             },
             .if_stmt => |iff| try self.lowerIf(iff),
             .while_stmt => |while_stmt| try self.lowerWhile(while_stmt),
@@ -978,11 +1037,11 @@ const FunctionLowerer = struct {
                     try self.emitNoResult(.void, .{ .zone_pop = zb.name });
                 }
             },
-            .defer_stmt => |ds| try self.defers.append(self.allocator, ds.body),
+            .defer_stmt => |ds| try self.defers.append(self.allocator, ds),
             .unsafe_block => |block| try self.lowerBlock(block.statements, null),
             .break_stmt => {
                 const ctx = self.loop_stack.items[self.loop_stack.items.len - 1];
-                try self.emitDefersDown(ctx.defer_floor);
+                try self.emitDefersDown(ctx.defer_floor, .ok);
                 var i = self.active_zones.items.len;
                 while (i > ctx.zone_depth) {
                     i -= 1;
@@ -992,7 +1051,7 @@ const FunctionLowerer = struct {
             },
             .continue_stmt => {
                 const ctx = self.loop_stack.items[self.loop_stack.items.len - 1];
-                try self.emitDefersDown(ctx.defer_floor);
+                try self.emitDefersDown(ctx.defer_floor, .ok);
                 var i = self.active_zones.items.len;
                 while (i > ctx.zone_depth) {
                     i -= 1;
@@ -1087,16 +1146,35 @@ const FunctionLowerer = struct {
                 const value = try self.lowerExpr(unary.expr.*);
                 break :blk switch (unary.op) {
                     .address_of => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .ref, .value = value } }),
-                    .deref      => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .deref, .value = value } }),
-                    .neg        => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .neg, .value = value } }),
-                    .not        => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .not, .value = value } }),
-                    .bit_not    => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .bit_not, .value = value } }),
+                    .deref => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .deref, .value = value } }),
+                    .neg => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .neg, .value = value } }),
+                    .not => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .not, .value = value } }),
+                    .bit_not => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .bit_not, .value = value } }),
                 };
             },
             .binary => |binary| blk: {
                 const lhs = try self.lowerExpr(binary.left.*);
                 const rhs = try self.lowerExpr(binary.right.*);
                 break :blk try self.emit(self.exprType(expr), .{ .binary = .{ .op = lowerBinOp(binary.op), .lhs = lhs, .rhs = rhs } });
+            },
+            .try_expr => |try_expr| blk: {
+                const value = try self.lowerExpr(try_expr.value.*);
+                const with_context = try self.emit(self.exprType(try_expr.value.*), .{ .builtin = .{
+                    .name = "try_context",
+                    .args = try self.allocator.dupe(Value, &.{value}),
+                } });
+                break :blk try self.emit(self.exprType(expr), .{ .try_ok = with_context });
+            },
+            .catch_expr => |catch_expr| blk: {
+                const value = try self.lowerExpr(catch_expr.value.*);
+                const err_value = try self.emit(.{ .variant_type = "<error>" }, .{ .try_err = value });
+                try self.emitNoResult(.void, .{ .store_local = .{ .name = catch_expr.err_name, .value = err_value } });
+                _ = catch_expr.handler;
+                _ = try self.emit(.void, .{ .builtin = .{
+                    .name = "catch_handler",
+                    .args = try self.allocator.dupe(Value, &.{err_value}),
+                } });
+                break :blk try self.emit(self.exprType(expr), .{ .try_ok = value });
             },
             .call => |call| blk: {
                 // Detect zone method calls: sema marks the field-callee expr with zone_handle.
@@ -1145,11 +1223,13 @@ const FunctionLowerer = struct {
         };
     }
 
-    fn emitDefersDown(self: *FunctionLowerer, floor: usize) LowerError!void {
+    fn emitDefersDown(self: *FunctionLowerer, floor: usize, path: DeferPath) LowerError!void {
         var i = self.defers.items.len;
         while (i > floor) {
             i -= 1;
-            for (self.defers.items[i].statements) |ds| try self.lowerStmt(ds);
+            const deferred = self.defers.items[i];
+            if (!deferRunsOn(deferred.mode, path)) continue;
+            for (deferred.body.statements) |ds| try self.lowerStmt(ds);
         }
     }
 
@@ -1160,7 +1240,7 @@ const FunctionLowerer = struct {
         const floor = self.defers.items.len;
         for (stmts) |s| try self.lowerStmt(s);
         if (!self.current_terminated) {
-            try self.emitDefersDown(floor);
+            try self.emitDefersDown(floor, .ok);
             if (on_fallthrough) |term| try self.terminate(term);
         }
         self.defers.items.len = floor;
@@ -1169,15 +1249,24 @@ const FunctionLowerer = struct {
     fn lowerZoneMethod(self: *FunctionLowerer, zone_name: []const u8, method: []const u8, args: []const ast.CallArg, expr: ast.Expr) LowerError!Value {
         if (std.mem.eql(u8, method, "new")) {
             if (args.len == 0) return .{ .imm = .null };
-            const ty_expr = switch (args[0]) { .positional => |e| e, .named => |n| n.value };
+            const ty_expr = switch (args[0]) {
+                .positional => |e| e,
+                .named => |n| n.value,
+            };
             const alloc_ty = try self.lowerTypeArg(ty_expr);
             const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, alloc_ty) };
             return try self.emit(ptr_ty, .{ .alloc = .{ .ty = alloc_ty, .zone = zone_name } });
         }
         if (std.mem.eql(u8, method, "new_slice")) {
             if (args.len < 2) return .{ .imm = .null };
-            const ty_expr = switch (args[0]) { .positional => |e| e, .named => |n| n.value };
-            const cnt_expr = switch (args[1]) { .positional => |e| e, .named => |n| n.value };
+            const ty_expr = switch (args[0]) {
+                .positional => |e| e,
+                .named => |n| n.value,
+            };
+            const cnt_expr = switch (args[1]) {
+                .positional => |e| e,
+                .named => |n| n.value,
+            };
             const elem_ty = try self.lowerTypeArg(ty_expr);
             const count = try self.lowerExpr(cnt_expr);
             const slice_ty: IrType = .{ .slice = try boxType(self.allocator, elem_ty) };
@@ -1185,7 +1274,10 @@ const FunctionLowerer = struct {
         }
         if (std.mem.eql(u8, method, "free")) {
             if (args.len > 0) {
-                const ptr_expr = switch (args[0]) { .positional => |e| e, .named => |n| n.value };
+                const ptr_expr = switch (args[0]) {
+                    .positional => |e| e,
+                    .named => |n| n.value,
+                };
                 const ptr = try self.lowerExpr(ptr_expr);
                 try self.emitNoResult(.void, .{ .zone_free = .{ .zone = zone_name, .ptr = ptr } });
             }
@@ -1198,8 +1290,8 @@ const FunctionLowerer = struct {
     fn lowerTypeArg(self: *FunctionLowerer, expr: ast.Expr) LowerError!IrType {
         return switch (expr.kind) {
             .type_ref => |ty| lowerType(self.allocator, ty),
-            .ident    => |name| lowerNamedType(name),
-            else      => .unknown,
+            .ident => |name| lowerNamedType(name),
+            else => .unknown,
         };
     }
 
@@ -1263,13 +1355,33 @@ fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
             var params = std.ArrayList(IrType).empty;
             errdefer params.deinit(allocator);
             for (func.params) |param| try params.append(allocator, try lowerType(allocator, param));
+            const ret_ty = try lowerType(allocator, func.ret.*);
+            const final_ret: IrType = if (func.error_ty) |err| .{ .fallible = .{
+                .ok = try boxType(allocator, ret_ty),
+                .err = try boxType(allocator, try lowerErrorSpec(allocator, err)),
+            } } else ret_ty;
             break :blk .{ .fn_ptr = .{
                 .params = try params.toOwnedSlice(allocator),
-                .ret = try boxType(allocator, try lowerType(allocator, func.ret.*)),
+                .ret = try boxType(allocator, final_ret),
             } };
         },
+        .inline_error_set => |set| try lowerInlineErrorSet(allocator, set),
         .opaque_type => .{ .opaque_type = "opaque" },
     };
+}
+
+fn lowerErrorSpec(allocator: std.mem.Allocator, spec: ast.ErrorSpec) !IrType {
+    return switch (spec) {
+        .inferred => .{ .variant_type = "<error>" },
+        .named => |named| .{ .variant_type = named.name },
+        .inline_set => |set| try lowerInlineErrorSet(allocator, set),
+    };
+}
+
+fn lowerInlineErrorSet(allocator: std.mem.Allocator, set: ast.InlineErrorSet) !IrType {
+    _ = allocator;
+    _ = set;
+    return .{ .variant_type = "<anonymous-error-set>" };
 }
 
 fn lowerNamedType(name: []const u8) IrType {
@@ -1310,6 +1422,11 @@ fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.Symbol
             .len = array.len,
         } },
         .named => |id| .{ .struct_type = symbols.symbol(id).name },
+        .error_set => .{ .variant_type = "<anonymous-error-set>" },
+        .fallible => |fallible| .{ .fallible = .{
+            .ok = try boxType(allocator, try lowerSemaType(allocator, fallible.ok.*, symbols)),
+            .err = try boxType(allocator, try lowerSemaType(allocator, fallible.err.*, symbols)),
+        } },
         .int_lit => .{ .i = 32 },
         .float_lit => .f64,
         .null_ptr => .{ .ptr = try boxType(allocator, .void) },
@@ -1326,32 +1443,32 @@ fn boxType(allocator: std.mem.Allocator, ty: IrType) !*const IrType {
 
 fn assignBinOp(op: ast.AssignOp) ?BinOp {
     return switch (op) {
-        .assign  => null,
-        .add     => .add,
-        .sub     => .sub,
-        .mul     => .mul,
-        .div     => .div,
-        .rem     => .rem,
+        .assign => null,
+        .add => .add,
+        .sub => .sub,
+        .mul => .mul,
+        .div => .div,
+        .rem => .rem,
         .bit_and => .bit_and,
-        .bit_or  => .bit_or,
+        .bit_or => .bit_or,
         .bit_xor => .bit_xor,
-        .shl     => .shl,
-        .shr     => .shr,
+        .shl => .shl,
+        .shr => .shr,
     };
 }
 
 fn lowerBinOp(op: ast.BinaryOp) BinOp {
     return switch (op) {
-        .or_or   => .or_op,
+        .or_or => .or_op,
         .and_and => .and_op,
-        .equal   => .eq,
+        .equal => .eq,
         .not_equal => .ne,
         .less => .lt,
-        .le   => .le,
-        .gt   => .gt,
-        .ge   => .ge,
+        .le => .le,
+        .gt => .gt,
+        .ge => .ge,
         .bit_and => .bit_and,
-        .bit_or  => .bit_or,
+        .bit_or => .bit_or,
         .bit_xor => .bit_xor,
         .shl => .shl,
         .shr => .shr,

@@ -65,10 +65,21 @@ pub const TypeDeclKind = union(enum) {
     distinct: TypeRef,
     opaque_type,
     struct_type: StructDecl,
+    errors: ErrorDecl,
 };
 
 pub const StructDecl = struct {
     fields: []const FieldDecl,
+};
+
+pub const ErrorDecl = struct {
+    variants: []const ErrorVariantDecl,
+};
+
+pub const ErrorVariantDecl = struct {
+    name: []const u8,
+    payload: ?TypeRef,
+    span: Span,
 };
 
 pub const FieldDecl = struct {
@@ -82,6 +93,7 @@ pub const FunctionDecl = struct {
     name: []const u8,
     params: []const Param,
     return_ty: TypeRef,
+    error_ty: ?ErrorSpec,
     body: ?Block,
     span: Span,
 };
@@ -102,6 +114,7 @@ pub const Stmt = union(enum) {
     local_typed: LocalTyped,
     assign: AssignStmt,
     return_stmt: ReturnStmt,
+    fail_stmt: FailStmt,
     if_stmt: IfStmt,
     while_stmt: WhileStmt,
     unsafe_block: Block,
@@ -113,8 +126,15 @@ pub const Stmt = union(enum) {
 };
 
 pub const DeferStmt = struct {
+    mode: DeferMode,
     body: Block,
     span: Span,
+};
+
+pub const DeferMode = enum {
+    always,
+    ok,
+    err,
 };
 
 pub const ZoneBlock = struct {
@@ -163,8 +183,15 @@ pub const ReturnStmt = struct {
     span: Span,
 };
 
+pub const FailStmt = struct {
+    variant: []const u8,
+    payload: []const Expr,
+    span: Span,
+};
+
 pub const IfStmt = struct {
     binding: ?IfBinding,
+    payload_binding: ?[]const u8,
     condition: Expr,
     then_block: Block,
     else_block: ?Block,
@@ -191,6 +218,7 @@ pub const TypeRef = union(enum) {
     array: ArrayType,
     atomic: AtomicType,
     fn_type: FnType,
+    inline_error_set: InlineErrorSet,
     opaque_type,
 
     pub fn span(self: TypeRef) Span {
@@ -203,9 +231,29 @@ pub const TypeRef = union(enum) {
             .array => |ty| ty.span,
             .atomic => |ty| ty.span,
             .fn_type => |ty| ty.span,
+            .inline_error_set => |ty| ty.span,
             .opaque_type => Span.new(0, 0),
         };
     }
+};
+
+pub const ErrorSpec = union(enum) {
+    inferred: Span,
+    named: NamedType,
+    inline_set: InlineErrorSet,
+
+    pub fn span(self: ErrorSpec) Span {
+        return switch (self) {
+            .inferred => |span_value| span_value,
+            .named => |ty| ty.span,
+            .inline_set => |ty| ty.span,
+        };
+    }
+};
+
+pub const InlineErrorSet = struct {
+    variants: []const ErrorVariantDecl,
+    span: Span,
 };
 
 pub const NamedType = struct {
@@ -245,6 +293,7 @@ pub const AtomicType = struct {
 pub const FnType = struct {
     params: []const TypeRef,
     ret: *const TypeRef,
+    error_ty: ?ErrorSpec,
     span: Span,
 };
 
@@ -264,6 +313,8 @@ pub const ExprKind = union(enum) {
     compound_literal: []const Expr,
     unary: UnaryExpr,
     binary: BinaryExpr,
+    try_expr: TryExpr,
+    catch_expr: CatchExpr,
     call: CallExpr,
     field: FieldExpr,
     index: IndexExpr,
@@ -287,6 +338,16 @@ pub const BinaryExpr = struct {
     op: BinaryOp,
     left: *const Expr,
     right: *const Expr,
+};
+
+pub const TryExpr = struct {
+    value: *const Expr,
+};
+
+pub const CatchExpr = struct {
+    value: *const Expr,
+    err_name: []const u8,
+    handler: Block,
 };
 
 pub const BinaryOp = enum {

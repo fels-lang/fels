@@ -101,6 +101,9 @@ pub const Parser = struct {
         if (self.match(.keyword_struct)) {
             return .{ .type_decl = try self.finishStruct(attrs, name) };
         }
+        if (self.match(.keyword_errors)) {
+            return .{ .type_decl = try self.finishErrors(attrs, name) };
+        }
         if (self.match(.keyword_distinct)) {
             const ty = try self.parseType();
             const semi = try self.expect(.semicolon, "expected ; after distinct type");
@@ -157,6 +160,52 @@ pub const Parser = struct {
         };
     }
 
+    fn finishErrors(self: *Parser, attrs: []const ast.Attribute, name: Token) ParseError!ast.TypeDecl {
+        _ = try self.expect(.l_brace, "expected { after errors");
+        const variants = try self.parseErrorVariants(.r_brace);
+        const close = try self.expect(.r_brace, "expected } after errors");
+        return .{
+            .attrs = attrs,
+            .name = name.text(self.source),
+            .kind = .{ .errors = .{ .variants = variants } },
+            .span = spanFrom(name, close),
+        };
+    }
+
+    fn parseErrorVariants(self: *Parser, end_kind: TokenKind) ParseError![]const ast.ErrorVariantDecl {
+        var variants: std.ArrayList(ast.ErrorVariantDecl) = .empty;
+        errdefer variants.deinit(self.allocator);
+
+        while (!self.check(end_kind) and !self.check(.eof)) {
+            const start = self.peek();
+            _ = self.match(.dot);
+            const variant_name = try self.expect(.ident, "expected error variant name");
+            const payload = if (self.match(.colon)) try self.parseType() else null;
+            const end = if (self.match(.comma)) self.previous() else variant_name;
+            try variants.append(self.allocator, .{
+                .name = variant_name.text(self.source),
+                .payload = payload,
+                .span = spanFrom(start, end),
+            });
+        }
+
+        return variants.toOwnedSlice(self.allocator);
+    }
+
+    fn parseErrorSpec(self: *Parser, bang: Token) ParseError!ast.ErrorSpec {
+        if (self.check(.l_brace) and self.peekKind(1) == .dot) {
+            _ = self.advance();
+            const variants = try self.parseErrorVariants(.r_brace);
+            const close = try self.expect(.r_brace, "expected } after inline error set");
+            return .{ .inline_set = .{ .variants = variants, .span = spanFrom(bang, close) } };
+        }
+        if (isTypeName(self.peek().kind)) {
+            const name = self.advance();
+            return .{ .named = .{ .name = name.text(self.source), .span = spanFrom(name, name) } };
+        }
+        return .{ .inferred = spanFrom(bang, bang) };
+    }
+
     fn finishFunction(self: *Parser, attrs: []const ast.Attribute, name: Token, top_level: bool) ParseError!ast.FunctionDecl {
         _ = top_level;
         _ = try self.expect(.l_paren, "expected ( after fn");
@@ -180,6 +229,7 @@ pub const Parser = struct {
 
         _ = try self.expect(.r_paren, "expected ) after parameters");
         const return_ty = if (self.match(.arrow)) try self.parseType() else namedType("void", Span.new(@intCast(name.start), @intCast(name.start + name.len)));
+        const error_ty = if (self.match(.bang)) try self.parseErrorSpec(self.previous()) else null;
         const body = if (self.check(.l_brace)) try self.parseBlock() else null;
         const end = if (body) |b| b.span else blk: {
             const semi = try self.expect(.semicolon, "expected ; after external function declaration");
@@ -191,6 +241,7 @@ pub const Parser = struct {
             .name = name.text(self.source),
             .params = try params.toOwnedSlice(self.allocator),
             .return_ty = return_ty,
+            .error_ty = error_ty,
             .body = body,
             .span = Span.new(name.start, end.end),
         };
@@ -219,6 +270,7 @@ pub const Parser = struct {
             const semi = try self.expect(.semicolon, "expected ; after return");
             return .{ .return_stmt = .{ .value = value, .span = spanFrom(start, semi) } };
         }
+        if (self.match(.keyword_fail)) return .{ .fail_stmt = try self.parseFail(self.previous()) };
         if (self.match(.keyword_break)) {
             const tok = self.previous();
             const semi = try self.expect(.semicolon, "expected ; after break");
@@ -281,6 +333,7 @@ pub const Parser = struct {
 
     fn parseIf(self: *Parser, start: Token) ParseError!ast.IfStmt {
         var binding: ?ast.IfBinding = null;
+        var payload_binding: ?[]const u8 = null;
         var condition: ast.Expr = undefined;
 
         if (self.check(.ident) and self.peekKind(1) == .colon_eq) {
@@ -293,17 +346,36 @@ pub const Parser = struct {
             condition = try self.parseExpr(0);
         }
 
+        if (self.match(.pipe)) {
+            const name = try self.expect(.ident, "expected error payload binding");
+            _ = try self.expect(.pipe, "expected | after error payload binding");
+            payload_binding = name.text(self.source);
+        }
+
         const then_block = try self.parseBlock();
         const else_block = if (self.match(.keyword_else)) try self.parseBlock() else null;
         const end = if (else_block) |b| b.span else then_block.span;
-        return .{ .binding = binding, .condition = condition, .then_block = then_block, .else_block = else_block, .span = Span.new(start.start, end.end) };
+        return .{ .binding = binding, .payload_binding = payload_binding, .condition = condition, .then_block = then_block, .else_block = else_block, .span = Span.new(start.start, end.end) };
     }
 
     fn parseDefer(self: *Parser, start: Token) ParseError!ast.DeferStmt {
+        var mode: ast.DeferMode = .always;
+        if (self.match(.dot)) {
+            const mode_name = try self.expect(.ident, "expected defer mode");
+            const text = mode_name.text(self.source);
+            if (std.mem.eql(u8, text, "ok")) {
+                mode = .ok;
+            } else if (std.mem.eql(u8, text, "err")) {
+                mode = .err;
+            } else {
+                try self.errorAt(mode_name, "expected ok or err after defer.");
+                return error.ParseFailed;
+            }
+        }
         // defer { ... }  or  defer expr;
         if (self.check(.l_brace)) {
             const body = try self.parseBlock();
-            return .{ .body = body, .span = spanFrom(start, body.span) };
+            return .{ .mode = mode, .body = body, .span = spanFrom(start, body.span) };
         }
         // Single expression statement — wrap in a one-stmt block
         const deferred_expr = try self.parseExpr(0);
@@ -316,7 +388,28 @@ pub const Parser = struct {
             .statements = try stmts.toOwnedSlice(self.allocator),
             .span = stmt_span,
         };
-        return .{ .body = body, .span = spanFrom(start, semi) };
+        return .{ .mode = mode, .body = body, .span = spanFrom(start, semi) };
+    }
+
+    fn parseFail(self: *Parser, start: Token) ParseError!ast.FailStmt {
+        _ = try self.expect(.dot, "expected .variant after fail");
+        const variant = try self.expect(.ident, "expected error variant after fail .");
+        var payload: []const ast.Expr = &.{};
+        if (self.match(.l_brace)) {
+            var values: std.ArrayList(ast.Expr) = .empty;
+            errdefer values.deinit(self.allocator);
+            if (!self.check(.r_brace)) {
+                while (true) {
+                    try values.append(self.allocator, try self.parseExpr(0));
+                    if (!self.match(.comma)) break;
+                    if (self.check(.r_brace)) break;
+                }
+            }
+            _ = try self.expect(.r_brace, "expected } after error payload");
+            payload = try values.toOwnedSlice(self.allocator);
+        }
+        const semi = try self.expect(.semicolon, "expected ; after fail");
+        return .{ .variant = variant.text(self.source), .payload = payload, .span = spanFrom(start, semi) };
     }
 
     fn parseZoneBlock(self: *Parser, start: Token) ParseError!ast.ZoneBlock {
@@ -425,7 +518,9 @@ pub const Parser = struct {
             _ = try self.expect(.r_paren, "expected ) after fn type params");
             _ = try self.expect(.arrow, "expected -> in fn type");
             const ret = try self.allocType(try self.parseType());
-            return .{ .fn_type = .{ .params = try params.toOwnedSlice(self.allocator), .ret = ret, .span = Span.new(start.start, ret.span().end) } };
+            const error_ty = if (self.match(.bang)) try self.parseErrorSpec(self.previous()) else null;
+            const end = if (error_ty) |err| err.span().end else ret.span().end;
+            return .{ .fn_type = .{ .params = try params.toOwnedSlice(self.allocator), .ret = ret, .error_ty = error_ty, .span = Span.new(start.start, end) } };
         }
         if (self.match(.keyword_opaque)) return .opaque_type;
 
@@ -466,7 +561,19 @@ pub const Parser = struct {
                 left = try self.expr(.{ .slice = .{ .base = try self.allocExpr(left) } }, Span.new(left.span.start, close.start + close.len));
                 continue;
             }
+            if (self.match(.question)) {
+                const end = self.previous();
+                left = try self.expr(.{ .try_expr = .{ .value = try self.allocExpr(left) } }, Span.new(left.span.start, end.start + end.len));
+                continue;
+            }
+            if (self.match(.keyword_catch)) {
+                const err_name = try self.expect(.ident, "expected error binding after catch");
+                const handler = try self.parseBlock();
+                left = try self.expr(.{ .catch_expr = .{ .value = try self.allocExpr(left), .err_name = err_name.text(self.source), .handler = handler } }, Span.new(left.span.start, handler.span.end));
+                continue;
+            }
 
+            if (self.check(.pipe) and self.peekKind(1) == .ident and self.peekKind(2) == .pipe) break;
             const info = infixInfo(self.peek().kind) orelse break;
             if (info.left_bp < min_bp) break;
             _ = self.advance();
@@ -664,29 +771,29 @@ const Infix = struct {
 fn infixInfo(kind: TokenKind) ?Infix {
     return switch (kind) {
         // Logical
-        .pipe_pipe  => .{ .left_bp = 1,  .right_bp = 2,  .op = .or_or },
-        .amp_amp    => .{ .left_bp = 3,  .right_bp = 4,  .op = .and_and },
+        .pipe_pipe => .{ .left_bp = 1, .right_bp = 2, .op = .or_or },
+        .amp_amp => .{ .left_bp = 3, .right_bp = 4, .op = .and_and },
         // Comparison
-        .eq_eq      => .{ .left_bp = 5,  .right_bp = 6,  .op = .equal },
-        .bang_eq    => .{ .left_bp = 5,  .right_bp = 6,  .op = .not_equal },
-        .lt         => .{ .left_bp = 5,  .right_bp = 6,  .op = .less },
-        .lt_eq      => .{ .left_bp = 5,  .right_bp = 6,  .op = .le },
-        .gt         => .{ .left_bp = 5,  .right_bp = 6,  .op = .gt },
-        .gt_eq      => .{ .left_bp = 5,  .right_bp = 6,  .op = .ge },
+        .eq_eq => .{ .left_bp = 5, .right_bp = 6, .op = .equal },
+        .bang_eq => .{ .left_bp = 5, .right_bp = 6, .op = .not_equal },
+        .lt => .{ .left_bp = 5, .right_bp = 6, .op = .less },
+        .lt_eq => .{ .left_bp = 5, .right_bp = 6, .op = .le },
+        .gt => .{ .left_bp = 5, .right_bp = 6, .op = .gt },
+        .gt_eq => .{ .left_bp = 5, .right_bp = 6, .op = .ge },
         // Bitwise
-        .pipe       => .{ .left_bp = 7,  .right_bp = 8,  .op = .bit_or },
-        .caret      => .{ .left_bp = 9,  .right_bp = 10, .op = .bit_xor },
-        .amp        => .{ .left_bp = 11, .right_bp = 12, .op = .bit_and },
+        .pipe => .{ .left_bp = 7, .right_bp = 8, .op = .bit_or },
+        .caret => .{ .left_bp = 9, .right_bp = 10, .op = .bit_xor },
+        .amp => .{ .left_bp = 11, .right_bp = 12, .op = .bit_and },
         // Shift
-        .lt_lt      => .{ .left_bp = 13, .right_bp = 14, .op = .shl },
-        .gt_gt      => .{ .left_bp = 13, .right_bp = 14, .op = .shr },
+        .lt_lt => .{ .left_bp = 13, .right_bp = 14, .op = .shl },
+        .gt_gt => .{ .left_bp = 13, .right_bp = 14, .op = .shr },
         // Additive
-        .plus       => .{ .left_bp = 15, .right_bp = 16, .op = .add },
-        .minus      => .{ .left_bp = 15, .right_bp = 16, .op = .sub },
+        .plus => .{ .left_bp = 15, .right_bp = 16, .op = .add },
+        .minus => .{ .left_bp = 15, .right_bp = 16, .op = .sub },
         // Multiplicative
-        .star       => .{ .left_bp = 17, .right_bp = 18, .op = .mul },
-        .slash      => .{ .left_bp = 17, .right_bp = 18, .op = .div },
-        .percent    => .{ .left_bp = 17, .right_bp = 18, .op = .rem },
+        .star => .{ .left_bp = 17, .right_bp = 18, .op = .mul },
+        .slash => .{ .left_bp = 17, .right_bp = 18, .op = .div },
+        .percent => .{ .left_bp = 17, .right_bp = 18, .op = .rem },
         else => null,
     };
 }
@@ -713,26 +820,25 @@ fn isTypeName(kind: TokenKind) bool {
 
 fn isAssignOp(kind: TokenKind) bool {
     return switch (kind) {
-        .eq, .plus_eq, .minus_eq, .star_eq, .slash_eq, .percent_eq,
-        .amp_eq, .pipe_eq, .caret_eq, .lt_lt_eq, .gt_gt_eq => true,
+        .eq, .plus_eq, .minus_eq, .star_eq, .slash_eq, .percent_eq, .amp_eq, .pipe_eq, .caret_eq, .lt_lt_eq, .gt_gt_eq => true,
         else => false,
     };
 }
 
 fn assignOpFromToken(kind: TokenKind) ast.AssignOp {
     return switch (kind) {
-        .eq         => .assign,
-        .plus_eq    => .add,
-        .minus_eq   => .sub,
-        .star_eq    => .mul,
-        .slash_eq   => .div,
+        .eq => .assign,
+        .plus_eq => .add,
+        .minus_eq => .sub,
+        .star_eq => .mul,
+        .slash_eq => .div,
         .percent_eq => .rem,
-        .amp_eq     => .bit_and,
-        .pipe_eq    => .bit_or,
-        .caret_eq   => .bit_xor,
-        .lt_lt_eq   => .shl,
-        .gt_gt_eq   => .shr,
-        else        => unreachable,
+        .amp_eq => .bit_and,
+        .pipe_eq => .bit_or,
+        .caret_eq => .bit_xor,
+        .lt_lt_eq => .shl,
+        .gt_gt_eq => .shr,
+        else => unreachable,
     };
 }
 

@@ -87,6 +87,9 @@ pub const TokenKind = enum {
     keyword_continue,
     keyword_zone,
     keyword_defer,
+    keyword_errors,
+    keyword_fail,
+    keyword_catch,
 
     // Primitive type keywords
     keyword_bool,

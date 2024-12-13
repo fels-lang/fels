@@ -201,6 +201,7 @@ pub const Ty = union(enum) {
     null_ptr,
     zone_handle,
     type_param: []const u8,
+    error_set: []const ErrorVariantInfo,
     fallible: FallibleTy,
     fn_ptr: FnPtrTy,
     int_lit,
@@ -254,6 +255,7 @@ pub const TypeLayout = struct {
 pub const TypeKind = union(enum) {
     struct_type: []const FieldInfo,
     variant_type: []const VariantInfo,
+    error_set: []const ErrorVariantInfo,
 };
 
 pub const FieldInfo = struct {
@@ -262,6 +264,11 @@ pub const FieldInfo = struct {
 };
 
 pub const VariantInfo = struct {
+    name: []const u8,
+    payload: ?Ty,
+};
+
+pub const ErrorVariantInfo = struct {
     name: []const u8,
     payload: ?Ty,
 };
@@ -435,6 +442,7 @@ const Checker = struct {
     env: TypeEnv,
     scope_stack: std.ArrayList(std.StringHashMap(Ty)),
     current_return_ty: Ty = .void,
+    current_error_ty: ?Ty = null,
     loop_depth: usize = 0,
 
     fn init(allocator: std.mem.Allocator, symbols: SymbolTable) Checker {
@@ -516,6 +524,12 @@ const Checker = struct {
                                 .is_packed = hasAttr(decl.attrs, "packed"),
                             });
                         },
+                        .errors => |errors_decl| {
+                            try self.env.layouts.put(id, .{
+                                .kind = .{ .error_set = try self.errorVariantsFromDecl(errors_decl.variants) },
+                                .is_packed = false,
+                            });
+                        },
                         else => {},
                     }
                 },
@@ -529,10 +543,11 @@ const Checker = struct {
                         });
                     }
                     const ret = try self.typeFromRef(decl.return_ty);
+                    const err_ty = if (decl.error_ty) |err| try self.typeFromErrorSpec(err) else null;
                     try self.env.fn_sigs.put(id, .{
                         .params = try params.toOwnedSlice(self.allocator),
                         .return_ty = ret,
-                        .error_ty = null,
+                        .error_ty = err_ty,
                         .extern_name = externName(decl.attrs),
                         .inline_hint = hasAttr(decl.attrs, "inline"),
                         .entry = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
@@ -542,7 +557,7 @@ const Checker = struct {
                     });
                     try self.env.set(id, .{ .fn_ptr = .{
                         .params = &.{},
-                        .ret = try self.boxTy(ret),
+                        .ret = try self.boxTy(if (err_ty) |err| .{ .fallible = .{ .ok = try self.boxTy(ret), .err = try self.boxTy(err) } } else ret),
                     } });
                 },
                 .import => {},
@@ -557,11 +572,17 @@ const Checker = struct {
             .struct_type => |strukt| {
                 for (strukt.fields) |field| try self.checkType(field.ty);
             },
+            .errors => |errors_decl| {
+                for (errors_decl.variants) |variant| {
+                    if (variant.payload) |payload| try self.checkType(payload);
+                }
+            },
         }
     }
 
     fn checkFunction(self: *Checker, decl: ast.FunctionDecl) SemanticError!void {
         self.current_return_ty = try self.typeFromRef(decl.return_ty);
+        self.current_error_ty = if (decl.error_ty) |err| try self.typeFromErrorSpec(err) else null;
         try self.pushScope();
         defer self.popScope();
 
@@ -572,7 +593,7 @@ const Checker = struct {
 
         if (decl.body) |body| {
             try self.checkBlock(body);
-            if (self.current_return_ty != .void and !blockDefinitelyReturns(body)) {
+            if ((self.current_return_ty != .void or self.current_error_ty != null) and !blockDefinitelyReturns(body)) {
                 return error.SemanticFailed;
             }
         }
@@ -605,6 +626,7 @@ const Checker = struct {
                 const actual_ty: Ty = if (ret.value) |value| try self.inferExpr(value) else .void;
                 if (!try self.compatible(actual_ty, self.current_return_ty)) return error.SemanticFailed;
             },
+            .fail_stmt => |fail| try self.checkFail(fail),
             .if_stmt => |iff| {
                 if (iff.binding) |binding| {
                     const bound_ty = try self.inferExpr(binding.value);
@@ -613,10 +635,14 @@ const Checker = struct {
                     try self.pushScope();
                     defer self.popScope();
                     try self.declareLocal(binding.name, inner_ty);
+                    if (iff.payload_binding) |payload_name| try self.declareLocal(payload_name, .unknown);
                     try self.checkBlock(iff.then_block);
                 } else {
                     const cond_ty = try self.inferExpr(iff.condition);
                     if (!cond_ty.isBool()) return error.SemanticFailed;
+                    try self.pushScope();
+                    defer self.popScope();
+                    if (iff.payload_binding) |payload_name| try self.declareLocal(payload_name, .unknown);
                     try self.checkBlock(iff.then_block);
                 }
                 if (iff.else_block) |else_block| try self.checkBlock(else_block);
@@ -650,6 +676,7 @@ const Checker = struct {
         const ty: Ty = switch (expr.kind) {
             .ident => |name| {
                 if (isBuiltinValue(name)) return .void;
+                if (std.mem.startsWith(u8, name, ".")) return .error_ty;
                 if (self.lookupLocal(name)) |local_ty| return local_ty;
                 if (self.symbols.resolve(self.symbols.root_scope, name)) |id| {
                     try self.env.expr_symbols.put(expr.id, id);
@@ -693,7 +720,7 @@ const Checker = struct {
                 const left = try self.inferExpr(binary.left.*);
                 const right = try self.inferExpr(binary.right.*);
                 break :blk switch (binary.op) {
-                    .equal, .not_equal => if ((left.isNumeric() and right.isNumeric()) or try self.compatible(left, right)) .bool else return error.SemanticFailed,
+                    .equal, .not_equal => if ((left.isNumeric() and right.isNumeric()) or left == .error_ty or right == .error_ty or try self.compatible(left, right)) .bool else return error.SemanticFailed,
                     .less, .le, .gt, .ge => if (left.isNumeric() and right.isNumeric()) .bool else return error.SemanticFailed,
                     .and_and, .or_or => if (left.isBool() and right.isBool()) .bool else return error.SemanticFailed,
                     .bit_and, .bit_or, .bit_xor => if (left.isInteger() and right.isInteger()) left else return error.SemanticFailed,
@@ -701,6 +728,29 @@ const Checker = struct {
                     .add, .sub => if (left.isNumeric() and right.isNumeric()) left else return error.SemanticFailed,
                     .mul, .div, .rem => if (left.isNumeric() and right.isNumeric()) left else return error.SemanticFailed,
                 };
+            },
+            .try_expr => |try_expr| blk: {
+                const value_ty = try self.inferExpr(try_expr.value.*);
+                if (self.current_error_ty == null) return error.SemanticFailed;
+                break :blk switch (value_ty) {
+                    .fallible => |fallible| blk2: {
+                        if (!try self.compatible(fallible.err.*, self.current_error_ty.?)) return error.SemanticFailed;
+                        break :blk2 fallible.ok.*;
+                    },
+                    else => return error.SemanticFailed,
+                };
+            },
+            .catch_expr => |catch_expr| blk: {
+                const value_ty = try self.inferExpr(catch_expr.value.*);
+                const fallible = switch (value_ty) {
+                    .fallible => |f| f,
+                    else => return error.SemanticFailed,
+                };
+                try self.pushScope();
+                defer self.popScope();
+                try self.declareLocal(catch_expr.err_name, fallible.err.*);
+                try self.checkBlock(catch_expr.handler);
+                break :blk fallible.ok.*;
             },
             .call => |call| blk: {
                 const call_ty = try self.inferCall(call);
@@ -780,6 +830,9 @@ const Checker = struct {
                 .named => |named| try self.inferExpr(named.value),
             };
             if (!try self.compatible(arg_ty, param.ty)) return error.SemanticFailed;
+        }
+        if (sig.error_ty) |err_ty| {
+            return .{ .fallible = .{ .ok = try self.boxTy(sig.return_ty), .err = try self.boxTy(err_ty) } };
         }
         return sig.return_ty;
     }
@@ -875,9 +928,80 @@ const Checker = struct {
                 var params = std.ArrayList(Ty).empty;
                 errdefer params.deinit(self.allocator);
                 for (func.params) |param| try params.append(self.allocator, try self.typeFromRef(param));
-                return .{ .fn_ptr = .{ .params = try params.toOwnedSlice(self.allocator), .ret = try self.boxTy(try self.typeFromRef(func.ret.*)) } };
+                const ret = try self.typeFromRef(func.ret.*);
+                const err = if (func.error_ty) |error_spec| try self.typeFromErrorSpec(error_spec) else null;
+                return .{ .fn_ptr = .{
+                    .params = try params.toOwnedSlice(self.allocator),
+                    .ret = try self.boxTy(if (err) |error_ty_value| .{ .fallible = .{ .ok = try self.boxTy(ret), .err = try self.boxTy(error_ty_value) } } else ret),
+                } };
             },
+            .inline_error_set => |set| return .{ .error_set = try self.errorVariantsFromDecl(set.variants) },
             .opaque_type => return .void,
+        }
+    }
+
+    fn typeFromErrorSpec(self: *Checker, spec: ast.ErrorSpec) SemanticError!Ty {
+        return switch (spec) {
+            .inferred => .error_ty,
+            .named => |named| blk: {
+                const id = self.symbols.resolve(self.symbols.root_scope, named.name) orelse return error.SemanticFailed;
+                if (self.symbols.symbol(id).kind != .type) return error.SemanticFailed;
+                const layout = self.env.layouts.get(id) orelse return error.SemanticFailed;
+                if (layout.kind != .error_set) return error.SemanticFailed;
+                break :blk .{ .named = id };
+            },
+            .inline_set => |set| .{ .error_set = try self.errorVariantsFromDecl(set.variants) },
+        };
+    }
+
+    fn errorVariantsFromDecl(self: *Checker, variants: []const ast.ErrorVariantDecl) SemanticError![]const ErrorVariantInfo {
+        var infos = std.ArrayList(ErrorVariantInfo).empty;
+        errdefer infos.deinit(self.allocator);
+
+        for (variants) |variant| {
+            try infos.append(self.allocator, .{
+                .name = variant.name,
+                .payload = if (variant.payload) |payload| try self.typeFromRef(payload) else null,
+            });
+        }
+
+        return infos.toOwnedSlice(self.allocator);
+    }
+
+    fn checkFail(self: *Checker, fail: ast.FailStmt) SemanticError!void {
+        const err_ty = self.current_error_ty orelse return error.SemanticFailed;
+        const variant = try self.findErrorVariant(err_ty, fail.variant);
+        if (variant.payload) |payload_ty| {
+            if (fail.payload.len != 1) return error.SemanticFailed;
+            const actual = try self.inferExpr(fail.payload[0]);
+            if (!try self.compatible(actual, payload_ty)) return error.SemanticFailed;
+        } else if (fail.payload.len != 0) {
+            return error.SemanticFailed;
+        }
+    }
+
+    fn findErrorVariant(self: *Checker, ty: Ty, name: []const u8) SemanticError!ErrorVariantInfo {
+        switch (ty) {
+            .error_ty => return .{ .name = name, .payload = null },
+            .error_set => |variants| {
+                for (variants) |variant| {
+                    if (std.mem.eql(u8, variant.name, name)) return variant;
+                }
+                return error.SemanticFailed;
+            },
+            .named => |id| {
+                const layout = self.env.layouts.get(id) orelse return error.SemanticFailed;
+                return switch (layout.kind) {
+                    .error_set => |variants| blk: {
+                        for (variants) |variant| {
+                            if (std.mem.eql(u8, variant.name, name)) break :blk variant;
+                        }
+                        return error.SemanticFailed;
+                    },
+                    else => error.SemanticFailed,
+                };
+            },
+            else => return error.SemanticFailed,
         }
     }
 
@@ -948,6 +1072,8 @@ const Checker = struct {
             .pointer, .slice, .named, .optional => true,
             else => false,
         };
+        if (actual == .error_ty and isErrorTy(expected)) return true;
+        if (expected == .error_ty and isErrorTy(actual)) return true;
         if (expected == .unknown or actual == .unknown) return true;
         return false;
     }
@@ -962,7 +1088,7 @@ fn blockDefinitelyReturns(block: ast.Block) bool {
 
 fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
     return switch (stmt) {
-        .return_stmt => true,
+        .return_stmt, .fail_stmt => true,
         .break_stmt, .continue_stmt => true,
         .if_stmt => |iff| iff.else_block != null and
             blockDefinitelyReturns(iff.then_block) and
@@ -982,7 +1108,27 @@ fn sameTy(a: Ty, b: Ty) bool {
         .slice => |sa| sameTy(sa.*, b.slice.*),
         .array => |aa| sameTy(aa.elem.*, b.array.elem.*) and aa.len == b.array.len,
         .named => |id| id == b.named,
+        .error_set => |variants| sameErrorVariants(variants, b.error_set),
+        .fallible => |fa| sameTy(fa.ok.*, b.fallible.ok.*) and sameTy(fa.err.*, b.fallible.err.*),
         else => true,
+    };
+}
+
+fn sameErrorVariants(a: []const ErrorVariantInfo, b: []const ErrorVariantInfo) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (!std.mem.eql(u8, left.name, right.name)) return false;
+        if (left.payload == null and right.payload == null) continue;
+        if (left.payload == null or right.payload == null) return false;
+        if (!sameTy(left.payload.?, right.payload.?)) return false;
+    }
+    return true;
+}
+
+fn isErrorTy(ty: Ty) bool {
+    return switch (ty) {
+        .error_ty, .error_set, .named => true,
+        else => false,
     };
 }
 
