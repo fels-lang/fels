@@ -116,6 +116,7 @@ pub const StructDef = struct {
     name: []const u8,
     fields: []const FieldDef,
     is_packed: bool,
+    alignment: u32 = 0,  // 0 = default; set by #align(N)
 };
 
 pub const FieldDef = struct {
@@ -157,7 +158,7 @@ pub const InstrKind = union(enum) {
     call: CallInstr,
     call_indirect: CallIndirectInstr,
     builtin: BuiltinInstr,
-    inline_asm: []const u8,
+    inline_asm: InlineAsmInstr,
     struct_lit: StructLitInstr,
     variant_lit: VariantLitInstr,
     field: FieldInstr,
@@ -244,6 +245,16 @@ pub const IndexInstr = struct {
 pub const VariantCheckInstr = struct {
     value: Value,
     variant: []const u8,
+};
+
+/// Inline assembly instruction with full operand constraint support.
+/// Constraint string follows LLVM/GCC format: outputs first, then inputs, then clobbers.
+/// Example for `syscall`:  "=a,{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"
+pub const InlineAsmInstr = struct {
+    template:    []const u8,   // the assembly template, e.g. "syscall" or "pause"
+    constraints: []const u8,   // combined constraint string
+    args:        []const Value, // input operand values (in constraint order)
+    volatile_:   bool,
 };
 
 pub const AllocInstr = struct {
@@ -490,7 +501,8 @@ fn validateFunction(function: IrFunction) ValidationError!void {
 
 fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
     switch (instr.kind) {
-        .const_value, .inline_asm, .alloc, .alloc_slice, .zone_push, .zone_pop, .global_load => {},
+        .const_value, .alloc, .alloc_slice, .zone_push, .zone_pop, .global_load => {},
+        .inline_asm => |ai| for (ai.args) |v| try validateValue(function, v),
         .zone_free => |zf| try validateValue(function, zf.ptr),
         .unary => |unary| try validateValue(function, unary.value),
         .binary => |binary| {
@@ -833,7 +845,8 @@ fn regIsUsed(function: IrFunction, id: RegId) bool {
 
 fn instrUsesReg(instr: Instr, id: RegId) bool {
     return switch (instr.kind) {
-        .const_value, .inline_asm, .alloc, .alloc_slice, .zone_push, .zone_pop, .global_load => false,
+        .const_value, .alloc, .alloc_slice, .zone_push, .zone_pop, .global_load => false,
+        .inline_asm => |ai| valuesUseReg(ai.args, id),
         .zone_free => |zf| valueUsesReg(zf.ptr, id),
         .unary => |unary| valueUsesReg(unary.value, id),
         .binary => |binary| valueUsesReg(binary.lhs, id) or valueUsesReg(binary.rhs, id),
@@ -895,6 +908,7 @@ fn lowerStruct(allocator: std.mem.Allocator, decl: ast.TypeDecl, strukt: ast.Str
         .name = decl.name,
         .fields = try fields.toOwnedSlice(allocator),
         .is_packed = hasAttr(decl.attrs, "packed"),
+        .alignment = alignAttr(decl.attrs),
     };
 }
 
@@ -1227,7 +1241,8 @@ const FunctionLowerer = struct {
                 }
                 break :blk Value{ .local = name };
             },
-            .type_ref => .{ .imm = .null },
+            .type_ref   => .{ .imm = .null },
+            .unsafe_expr => |inner| try self.lowerExpr(inner.*),
             .int => |text| .{ .imm = .{ .int = parseIntLiteral(text) } },
             .string => |text| .{ .imm = .{ .text = trimQuotes(text) } },
             .bool => |value| .{ .imm = .{ .bool = value } },
@@ -1291,6 +1306,10 @@ const FunctionLowerer = struct {
                     .ident => |name| name,
                     else => "<expr>",
                 };
+                // asm(...) needs structural constraint parsing — handle before generic builtin path.
+                if (std.mem.eql(u8, callee_name, "asm")) {
+                    break :blk try self.lowerAsmCall(call, expr);
+                }
                 var args = std.ArrayList(Value).empty;
                 errdefer args.deinit(self.allocator);
                 for (call.args) |arg| switch (arg) {
@@ -1340,6 +1359,84 @@ const FunctionLowerer = struct {
             if (on_fallthrough) |term| try self.terminate(term);
         }
         self.defers.items.len = floor;
+    }
+
+    /// Parse asm(volatile, "template", inputs: { "D"(v), ... }, outputs: { "=a"(T) }, clobbers: { "rcx" })
+    /// and lower it to an InlineAsmInstr with a proper LLVM constraint string.
+    fn lowerAsmCall(self: *FunctionLowerer, call: ast.CallExpr, expr: ast.Expr) LowerError!Value {
+        var is_volatile = false;
+        var template: []const u8 = "";
+        var constraints = std.ArrayList(u8).empty;
+        errdefer constraints.deinit(self.allocator);
+        var input_args = std.ArrayList(Value).empty;
+        errdefer input_args.deinit(self.allocator);
+
+        // Positional args: [volatile_kw, template_str]
+        var pos: usize = 0;
+        for (call.args) |arg| {
+            const e = switch (arg) { .positional => |e| e, else => continue };
+            if (pos == 0) is_volatile = e.kind == .ident and std.mem.eql(u8, e.kind.ident, "volatile");
+            if (pos == 1) template = switch (e.kind) {
+                .string => |s| trimQuotes(s),
+                else => "",
+            };
+            pos += 1;
+        }
+
+        // LLVM constraint order: outputs, inputs, clobbers.
+        for (call.args) |arg| {
+            const n = switch (arg) { .named => |n| n, else => continue };
+            const items = switch (n.value.kind) {
+                .compound_literal => |c| c, else => continue,
+            };
+
+            if (std.mem.eql(u8, n.name, "outputs")) {
+                for (items) |item| {
+                    const c = extractAsmConstraint(item) orelse continue;
+                    try constraints.appendSlice(self.allocator, c);
+                    try constraints.append(self.allocator, ',');
+                    // outputs don't add args — they're return slots
+                }
+            } else if (std.mem.eql(u8, n.name, "inputs")) {
+                for (items) |item| {
+                    const c = extractAsmConstraint(item) orelse continue;
+                    try constraints.appendSlice(self.allocator, c);
+                    try constraints.append(self.allocator, ',');
+                    // Lower the input value
+                    if (item.kind == .call) {
+                        const c_args = item.kind.call.args;
+                        if (c_args.len > 0) {
+                            const val_expr = switch (c_args[0]) {
+                                .positional => |e| e, .named => |nn| nn.value,
+                            };
+                            try input_args.append(self.allocator, try self.lowerExpr(val_expr));
+                        }
+                    }
+                }
+            } else if (std.mem.eql(u8, n.name, "clobbers")) {
+                for (items) |item| {
+                    const s = switch (item.kind) {
+                        .string => |s| trimQuotes(s), else => continue,
+                    };
+                    try constraints.appendSlice(self.allocator, "~{");
+                    try constraints.appendSlice(self.allocator, s);
+                    try constraints.append(self.allocator, '}');
+                    try constraints.append(self.allocator, ',');
+                }
+            }
+        }
+
+        // Remove trailing comma.
+        if (constraints.items.len > 0 and constraints.items[constraints.items.len - 1] == ',')
+            constraints.items.len -= 1;
+
+        const ty = self.exprType(expr);
+        return try self.emit(ty, .{ .inline_asm = .{
+            .template    = template,
+            .constraints = try constraints.toOwnedSlice(self.allocator),
+            .args        = try input_args.toOwnedSlice(self.allocator),
+            .volatile_   = is_volatile,
+        } });
     }
 
     fn lowerZoneMethod(self: *FunctionLowerer, zone_name: []const u8, method: []const u8, args: []const ast.CallArg, expr: ast.Expr) LowerError!Value {
@@ -1590,6 +1687,18 @@ fn lowerBinOp(op: ast.BinaryOp) BinOp {
     };
 }
 
+/// Extract the constraint string from an asm operand expression.
+/// `"D"(fd)` → "D",  `"=a"(T)` → "=a"
+fn extractAsmConstraint(expr: ast.Expr) ?[]const u8 {
+    if (expr.kind == .call) {
+        return switch (expr.kind.call.callee.kind) {
+            .string => |s| trimQuotes(s),
+            else    => null,
+        };
+    }
+    return null;
+}
+
 fn isBuiltinName(name: []const u8) bool {
     inline for (.{
         "truncate_to",
@@ -1681,6 +1790,18 @@ fn hasAttr(attrs: []const ast.Attribute, name: []const u8) bool {
         if (std.mem.eql(u8, attr.name, name)) return true;
     }
     return false;
+}
+
+fn alignAttr(attrs: []const ast.Attribute) u32 {
+    for (attrs) |attr| {
+        if (!std.mem.eql(u8, attr.name, "align")) continue;
+        if (attr.args.len == 0) continue;
+        return switch (attr.args[0].kind) {
+            .int => |text| @intCast(@max(parseIntLiteral(text), 0)),
+            else => 0,
+        };
+    }
+    return 0;
 }
 
 fn externName(attrs: []const ast.Attribute) ?[]const u8 {

@@ -483,6 +483,7 @@ const Checker = struct {
     loop_depth: usize = 0,
     current_type_params: []const []const u8 = &.{},
     current_type_binding: []const TypeArg = &.{},
+    unsafe_depth: usize = 0,
     // Diagnostics — collected instead of failing immediately where possible.
     diagnostics: std.ArrayList(Diagnostic) = .empty,
     source: []const u8 = "",
@@ -753,7 +754,11 @@ const Checker = struct {
                 defer self.loop_depth -= 1;
                 try self.checkBlock(while_stmt.body);
             },
-            .unsafe_block => |unsafe_block| try self.checkBlock(unsafe_block),
+            .unsafe_block => |unsafe_block| {
+                self.unsafe_depth += 1;
+                defer self.unsafe_depth -= 1;
+                try self.checkBlock(unsafe_block);
+            },
             .break_stmt => |span| if (self.loop_depth == 0) {
                 self.emitError(span, "`break` outside of a loop", .{});
                 return error.SemanticFailed;
@@ -790,6 +795,11 @@ const Checker = struct {
                 if (fromBuiltinName(name)) |builtin_ty| return builtin_ty;
                 self.emitError(expr.span, "unknown name `{s}`", .{name});
                 return error.SemanticFailed;
+            },
+            .unsafe_expr => |inner| blk: {
+                self.unsafe_depth += 1;
+                defer self.unsafe_depth -= 1;
+                break :blk try self.inferExpr(inner.*);
             },
             .type_ref => |type_ref| try self.typeFromRef(type_ref),
             .int => |text| intLiteralType(text),
@@ -917,13 +927,40 @@ const Checker = struct {
             else => return .unknown,
         };
 
-        if (std.mem.eql(u8, name, "truncate_to")) return self.firstTypeArg(call) orelse error.SemanticFailed;
-        if (std.mem.eql(u8, name, "ptr_from_int")) return self.firstTypeArg(call) orelse error.SemanticFailed;
-        if (std.mem.eql(u8, name, "volatile_store")) return .void;
-        if (std.mem.eql(u8, name, "sizeof")) return .usize;
-        if (std.mem.eql(u8, name, "unaligned_read")) return self.firstTypeArg(call) orelse error.SemanticFailed;
-        if (std.mem.eql(u8, name, "asm")) return .void;
-        if (std.mem.eql(u8, name, "atomic_load")) return .u32;
+        // ── Builtins ────────────────────────────────────────────────────
+        if (std.mem.eql(u8, name, "truncate_to"))   return self.firstTypeArg(call) orelse error.SemanticFailed;
+        if (std.mem.eql(u8, name, "sizeof"))         return .usize;
+        if (std.mem.eql(u8, name, "atomic_load"))    return .u32;
+        // Unsafe builtins — must be called from within an `unsafe` block.
+        if (std.mem.eql(u8, name, "ptr_from_int")) {
+            try self.requireUnsafe(call.callee.span, name);
+            return self.firstTypeArg(call) orelse error.SemanticFailed;
+        }
+        if (std.mem.eql(u8, name, "volatile_store")) {
+            try self.requireUnsafe(call.callee.span, name);
+            return .void;
+        }
+        if (std.mem.eql(u8, name, "unaligned_read")) {
+            try self.requireUnsafe(call.callee.span, name);
+            return self.firstTypeArg(call) orelse error.SemanticFailed;
+        }
+        if (std.mem.eql(u8, name, "asm")) {
+            try self.requireUnsafe(call.callee.span, name);
+            // Infer return type from first output constraint, e.g. outputs: { "=a"(isize) }
+            for (call.args) |arg| {
+                const n = switch (arg) { .named => |n| n, else => continue };
+                if (!std.mem.eql(u8, n.name, "outputs")) continue;
+                const items = switch (n.value.kind) { .compound_literal => |c| c, else => continue };
+                if (items.len == 0) break;
+                const first = items[0];
+                if (first.kind != .call) break;
+                const c_args = first.kind.call.args;
+                if (c_args.len == 0) break;
+                const ty_expr = switch (c_args[0]) { .positional => |e| e, .named => |nn| nn.value };
+                return try self.inferTypeArg(ty_expr);
+            }
+            return .void;
+        }
 
         const id = self.symbols.resolve(self.symbols.root_scope, name) orelse {
             self.emitError(call.callee.span, "unknown function `{s}`", .{name});
@@ -970,6 +1007,15 @@ const Checker = struct {
             return .{ .fallible = .{ .ok = try self.boxTy(sig.return_ty), .err = try self.boxTy(err_ty) } };
         }
         return sig.return_ty;
+    }
+
+    fn requireUnsafe(self: *Checker, span: Span, builtin_name: []const u8) SemanticError!void {
+        if (self.unsafe_depth == 0) {
+            self.emitError(span,
+                "`{s}` is an unsafe operation and must be called inside an `unsafe` block",
+                .{builtin_name});
+            return error.SemanticFailed;
+        }
     }
 
     fn inferZoneMethod(self: *Checker, method: []const u8, args: []const ast.CallArg) SemanticError!Ty {

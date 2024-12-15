@@ -47,6 +47,27 @@ pub const lowerFrontend = ir.lowerFrontend;
 pub const Backend = backend.Backend;
 pub const BasaltBackend = basalt.BasaltBackend;
 
+const build_options = @import("build_options");
+/// LLVM backend — only available when compiled with `-Dllvm-path=<path>`.
+pub const LlvmBackend = if (build_options.enable_llvm)
+    @import("backend/llvm.zig").LlvmBackend
+else
+    LlvmBackendStub;
+
+const LlvmBackendStub = struct {
+    pub const Error = error{LlvmNotEnabled};
+    pub fn init(_: std.mem.Allocator, _: [*:0]const u8) LlvmBackendStub {
+        return .{};
+    }
+    pub fn deinit(_: *LlvmBackendStub) void {}
+    pub fn lower(_: *LlvmBackendStub, _: ir.IrModule) Error!void {
+        return error.LlvmNotEnabled;
+    }
+    pub fn emitIr(_: *LlvmBackendStub, _: std.mem.Allocator) Error![]u8 {
+        return error.LlvmNotEnabled;
+    }
+};
+
 test {
     refAllDeclsRecursive(@This());
 }

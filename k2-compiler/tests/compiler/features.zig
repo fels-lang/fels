@@ -310,6 +310,74 @@ test "defer inside zone block" {
     try k2.ir_mod.validateModule(m);
 }
 
+test "asm: zero-input volatile instruction (pause)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\cpu_pause :: fn() {
+        \\    unsafe {
+        \\        asm(volatile, "pause", inputs: {}, outputs: {}, clobbers: {});
+        \\    }
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "asm_pause.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+}
+
+test "asm: input operands and typed output (syscall pattern)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Models Linux write syscall: syscall nr in rax, fd in rdi, ptr in rsi, len in rdx.
+    const src =
+        \\sys_write :: fn(fd: i32, buf: usize, len: usize) -> isize {
+        \\    return unsafe asm(
+        \\        volatile,
+        \\        "syscall",
+        \\        inputs:  { "a"(1), "D"(fd), "S"(buf), "d"(len) },
+        \\        outputs: { "=a"(isize) },
+        \\        clobbers: { "rcx", "r11", "memory" },
+        \\    );
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "asm_syscall.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    // Verify the asm produces an inline_asm instruction with correct structure.
+    const fn_ = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "sys_write")) break f;
+    } else return error.FunctionNotFound;
+
+    var found_asm = false;
+    for (fn_.blocks) |block| {
+        for (block.instrs) |instr| switch (instr.kind) {
+            .inline_asm => |ai| {
+                found_asm = true;
+                try std.testing.expectEqualStrings("syscall", ai.template);
+                try std.testing.expect(ai.volatile_);
+                try std.testing.expectEqual(@as(usize, 4), ai.args.len); // 4 inputs
+                try std.testing.expect(std.mem.indexOf(u8, ai.constraints, "=a") != null);
+                try std.testing.expect(std.mem.indexOf(u8, ai.constraints, "~{rcx}") != null);
+            },
+            else => {},
+        };
+    }
+    try std.testing.expect(found_asm);
+}
+
+test "asm: unsafe required — bare asm fails outside unsafe" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const bad =
+        \\bad :: fn() { asm(volatile, "pause", inputs: {}, outputs: {}, clobbers: {}); }
+    ;
+    try std.testing.expectError(error.SemanticFailed,
+        k2.compile(arena.allocator(), "bad_asm.k2", bad));
+}
+
 test "if-else with both branches returning" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

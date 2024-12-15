@@ -652,7 +652,13 @@ pub const Parser = struct {
             .keyword_false => return self.expr(.{ .bool = false }, spanFrom(tok, tok)),
             .keyword_null => return self.expr(.null, spanFrom(tok, tok)),
             .keyword_volatile => return self.expr(.{ .ident = tok.text(self.source) }, spanFrom(tok, tok)),
-            .keyword_unsafe => return self.parseExpr(8),
+            .keyword_unsafe => {
+                const inner = try self.parseExpr(8);
+                return self.expr(
+                    .{ .unsafe_expr = try self.allocExpr(inner) },
+                    Span.new(tok.start, inner.span.end),
+                );
+            },
             .dot => {
                 const name = try self.expect(.ident, "expected name after .");
                 return self.expr(.{ .ident = self.source[tok.start .. name.start + name.len] }, spanFrom(tok, name));
@@ -718,11 +724,9 @@ pub const Parser = struct {
                 if (self.check(.ident) and self.peekKind(1) == .colon) {
                     const name = self.advance();
                     _ = self.advance();
-                    const value = if (self.check(.l_brace)) blk: {
-                        const open = self.advance();
-                        _ = try self.expect(.r_brace, "expected } in named arg");
-                        break :blk try self.expr(.{ .compound_literal = &.{} }, spanFrom(open, self.previous()));
-                    } else try self.parseExpr(0);
+                    // Named arg value: parse a full compound literal `{ ... }` or a regular expression.
+                    const value = if (self.check(.l_brace)) try self.finishCompound(self.advance())
+                    else try self.parseExpr(0);
                     try args.append(self.allocator, .{ .named = .{ .name = name.text(self.source), .value = value } });
                 } else {
                     try args.append(self.allocator, .{ .positional = try self.parseExpr(0) });

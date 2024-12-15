@@ -319,6 +319,7 @@ pub const ExprKind = union(enum) {
     compound_literal: []const Expr,
     unary: UnaryExpr,
     binary: BinaryExpr,
+    unsafe_expr: *const Expr,
     try_expr: TryExpr,
     catch_expr: CatchExpr,
     call: CallExpr,
