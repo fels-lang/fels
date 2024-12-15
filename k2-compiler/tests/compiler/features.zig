@@ -310,6 +310,20 @@ test "defer inside zone block" {
     try k2.ir_mod.validateModule(m);
 }
 
+test "unsafe_expr: unsafe prefix on expression is transparent" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\read_byte :: fn(ptr: usize) -> u8 {
+        \\    return unsafe unaligned_read(u8, ptr);
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "unsafe_expr.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+}
+
 test "asm: zero-input volatile instruction (pause)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

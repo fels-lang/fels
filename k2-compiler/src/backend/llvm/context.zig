@@ -25,6 +25,8 @@ pub const ModuleCg = struct {
     global_decls:  std.StringHashMap(llvm.LLVMValueRef),
     /// Cached { ptr, usize } slice struct type — created once on first use.
     slice_type:    ?llvm.LLVMTypeRef = null,
+    /// Counter for unique string-literal global names.
+    string_counter: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, module_name: [*:0]const u8) ModuleCg {
         const ctx     = llvm.LLVMContextCreate();

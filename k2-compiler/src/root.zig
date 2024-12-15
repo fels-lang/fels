@@ -54,6 +54,9 @@ pub const LlvmBackend = if (build_options.enable_llvm)
 else
     LlvmBackendStub;
 
+pub const compileWithLlvm    = driver_mod.compileWithLlvm;
+pub const LlvmCompileOptions = driver_mod.LlvmCompileOptions;
+
 const LlvmBackendStub = struct {
     pub const Error = error{LlvmNotEnabled};
     pub fn init(_: std.mem.Allocator, _: [*:0]const u8) LlvmBackendStub {

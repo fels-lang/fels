@@ -75,9 +75,9 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         },
 
         .cast => |cs| blk: {
-            const val = resolveVal(cg, fncg, cs.value, instr.ty);
+            const val  = resolveVal(cg, fncg, cs.value, .unknown);
             const dest = types.lower(cg, instr.ty);
-            break :blk llvm.LLVMBuildBitCast(cg.builder, val, dest, "");
+            break :blk values.coerce(cg.builder, cg.ctx, val, dest);
         },
 
         .struct_lit => |sl| lowerStructLit(cg, fncg, sl, instr.ty),
@@ -258,11 +258,12 @@ fn lowerCall(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrType
     llvm.LLVMGetParamTypes(fn_ty, param_tys.ptr);
 
     for (call.args, 0..) |arg, i| {
-        args[i] = resolveVal(cg, fncg, arg, if (i < n_param) .unknown else .unknown);
+        var v = resolveVal(cg, fncg, arg, .unknown);
+        if (i < n_param) v = values.coerce(cg.builder, cg.ctx, v, param_tys[i]);
+        args[i] = v;
     }
 
     const result = llvm.LLVMBuildCall2(cg.builder, fn_ty, lv, args.ptr, @intCast(args.len), "");
-    // Void calls must not be bound to a register.
     return if (ret_ty == .void) null else result;
 }
 
