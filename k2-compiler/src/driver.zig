@@ -92,6 +92,7 @@ pub const LlvmDriverError = error{
 /// Full pipeline: source → IR → LLVM IR → .o → (optional) .exe
 pub fn compileWithLlvm(
     allocator: std.mem.Allocator,
+    io: std.Io,
     opts: LlvmCompileOptions,
 ) LlvmDriverError!void {
     if (!build_options.enable_llvm) return error.LlvmNotEnabled;
@@ -128,7 +129,7 @@ pub fn compileWithLlvm(
 
     // Link (optional)
     if (opts.exe_path) |exe| {
-        be.linkWindows(allocator, .{
+        be.linkWindows(allocator, io, .{
             .llvm_bin = opts.llvm_bin,
             .obj_files = &.{opts.obj_path},
             .output = exe,

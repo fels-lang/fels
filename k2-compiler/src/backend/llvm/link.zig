@@ -1,23 +1,24 @@
 /// Windows link step.
 ///
-/// Zig 0.16 requires std.Io for all process spawning, which isn't available
-/// in library context.  For now this module builds the lld-link command and
-/// either writes a `link.bat` helper or can be extended later to spawn
-/// the process directly from a tool that has access to std.Io.
-///
 /// To link manually after emitObject("output.o"):
 ///   lld-link output.o /OUT:output.exe /SUBSYSTEM:CONSOLE /ENTRY:mainCRTStartup /NODEFAULTLIB kernel32.lib
 const std = @import("std");
 
-pub const LinkError = error{ OutOfMemory, WriteFailed };
+pub const LinkError = error{
+    OutOfMemory,
+    SpawnFailed,
+    WaitFailed,
+    ProcessTerminated,
+    ExitCodeFailure,
+};
 
 pub const WindowsLinkOptions = struct {
     /// Directory containing lld-link.exe (e.g. <llvm>/bin).
-    llvm_bin:  []const u8,
+    llvm_bin: []const u8,
     /// Object files to link.
     obj_files: []const []const u8,
     /// Output executable path.
-    output:    []const u8,
+    output: []const u8,
     /// Extra /LIBPATH: directories for kernel32.lib etc.
     lib_paths: []const []const u8 = &.{},
 };
@@ -52,10 +53,26 @@ pub fn printCommand(allocator: std.mem.Allocator, opts: WindowsLinkOptions) void
     std.debug.print("\n", .{});
 }
 
-/// Print the link command and return.
-/// In Zig 0.16, process spawning requires std.Io which is not available in
-/// library context.  Run the printed command to link manually, or invoke
-/// lld-link directly from a tool that has access to std.Io.
-pub fn windows(allocator: std.mem.Allocator, opts: WindowsLinkOptions) LinkError!void {
+/// Spawn lld-link and fail if it does not exit cleanly.
+pub fn windows(allocator: std.mem.Allocator, io: std.Io, opts: WindowsLinkOptions) LinkError!void {
     printCommand(allocator, opts);
+
+    const args = buildArgs(allocator, opts) catch return error.OutOfMemory;
+    defer {
+        for (args) |a| allocator.free(@constCast(a));
+        allocator.free(args);
+    }
+
+    var child = std.process.spawn(io, .{
+        .argv = args,
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch return error.SpawnFailed;
+
+    const term = child.wait(io) catch return error.WaitFailed;
+    switch (term) {
+        .exited => |code| if (code != 0) return error.ExitCodeFailure,
+        .signal, .stopped, .unknown => return error.ProcessTerminated,
+    }
 }
