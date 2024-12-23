@@ -36,7 +36,14 @@ pub fn main(init: std.process.Init) u8 {
 
     // Parse remaining options.
     var out_path: ?[]const u8 = null;
-    var llvm_bin: []const u8 = "";
+    var out_path_owned = false;
+    var llvm_bin: []const u8 = if (k2.llvm_path.len != 0) std.fmt.allocPrint(allocator, "{s}/bin", .{k2.llvm_path}) catch return 1 else "";
+    var llvm_bin_owned = k2.llvm_path.len != 0;
+    var lib_paths: std.ArrayList([]const u8) = .empty;
+    defer lib_paths.deinit(allocator);
+    if (k2.windows_sdk_lib_path.len != 0) {
+        lib_paths.append(allocator, k2.windows_sdk_lib_path) catch return 1;
+    }
     var opt_level: u2 = 0;
     var i: usize = 3;
     while (i < args.len) : (i += 1) {
@@ -46,7 +53,12 @@ pub fn main(init: std.process.Init) u8 {
             out_path = args[i];
         } else if (std.mem.eql(u8, a, "--llvm-path") and i + 1 < args.len) {
             i += 1;
+            if (llvm_bin_owned) allocator.free(llvm_bin);
             llvm_bin = std.fmt.allocPrint(allocator, "{s}/bin", .{args[i]}) catch return 1;
+            llvm_bin_owned = true;
+        } else if (std.mem.eql(u8, a, "--lib-path") and i + 1 < args.len) {
+            i += 1;
+            lib_paths.append(allocator, args[i]) catch return 1;
         } else if (std.mem.eql(u8, a, "--opt") and i + 1 < args.len) {
             i += 1;
             opt_level = std.fmt.parseInt(u2, args[i], 10) catch 0;
@@ -54,6 +66,7 @@ pub fn main(init: std.process.Init) u8 {
             opt_level = 2;
         }
     }
+    defer if (llvm_bin_owned) allocator.free(llvm_bin);
 
     // Read source file.
     const cwd = std.Io.Dir.cwd();
@@ -64,17 +77,26 @@ pub fn main(init: std.process.Init) u8 {
     defer allocator.free(source);
 
     // Dispatch command.
-    if (std.mem.eql(u8, cmd, "check")) return cmdCheck(allocator, src_path, source);
+    if (std.mem.eql(u8, cmd, "check")) return cmdCheck(allocator, io, src_path, source);
     if (std.mem.eql(u8, cmd, "ir")) return cmdIr(allocator, io, src_path, source);
     if (std.mem.eql(u8, cmd, "object")) {
-        const obj = out_path orelse deriveOut(allocator, src_path, ".o");
-        return cmdObject(allocator, io, src_path, source, obj, opt_level);
+        if (out_path == null) {
+            out_path = deriveOut(allocator, src_path, ".o");
+            out_path_owned = true;
+        }
+        defer if (out_path_owned) allocator.free(out_path.?);
+        return cmdObject(allocator, io, src_path, source, out_path.?, opt_level, lib_paths.items);
     }
     if (std.mem.eql(u8, cmd, "build")) {
-        const exe = out_path orelse deriveOut(allocator, src_path, ".exe");
+        if (out_path == null) {
+            out_path = deriveOut(allocator, src_path, ".exe");
+            out_path_owned = true;
+        }
+        defer if (out_path_owned) allocator.free(out_path.?);
+        const exe = out_path.?;
         const obj = std.fmt.allocPrint(allocator, "{s}.o", .{exe}) catch return 1;
         defer allocator.free(obj);
-        return cmdBuild(allocator, io, src_path, source, obj, exe, opt_level, llvm_bin);
+        return cmdBuild(allocator, io, src_path, source, obj, exe, opt_level, llvm_bin, lib_paths.items);
     }
 
     std.debug.print("k2: unknown command '{s}'\n", .{cmd});
@@ -84,13 +106,14 @@ pub fn main(init: std.process.Init) u8 {
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
-fn cmdCheck(allocator: std.mem.Allocator, path: []const u8, source: []const u8) u8 {
-    var fe = k2.compile(allocator, path, source) catch |err| {
+fn cmdCheck(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8) u8 {
+    var fe = k2.compileFile(allocator, io, path) catch |err| {
         std.debug.print("k2: {s}\n", .{@errorName(err)});
         return 1;
     };
     defer fe.deinit(allocator);
     printDiags(allocator, fe.diagnostics(), path, source);
+    if (fe.diagnostics().len != 0) return 1;
     std.debug.print("ok\n", .{});
     return 0;
 }
@@ -121,13 +144,15 @@ fn cmdObject(
     source: []const u8,
     obj_path: []const u8,
     opt_level: u2,
+    lib_paths: []const []const u8,
 ) u8 {
     if (!k2.llvm_enabled) return noLlvm();
-    k2.compileWithLlvm(allocator, io, .{
+    k2.compileFileWithLlvm(allocator, io, .{
         .file_name = path,
         .source = source,
         .obj_path = obj_path,
         .opt_level = opt_level,
+        .lib_paths = lib_paths,
     }) catch |err| {
         std.debug.print("k2: {s}\n", .{@errorName(err)});
         return 1;
@@ -145,15 +170,17 @@ fn cmdBuild(
     exe_path: []const u8,
     opt_level: u2,
     llvm_bin: []const u8,
+    lib_paths: []const []const u8,
 ) u8 {
     if (!k2.llvm_enabled) return noLlvm();
-    k2.compileWithLlvm(allocator, io, .{
+    k2.compileFileWithLlvm(allocator, io, .{
         .file_name = path,
         .source = source,
         .obj_path = obj_path,
         .exe_path = exe_path,
         .opt_level = opt_level,
         .llvm_bin = llvm_bin,
+        .lib_paths = lib_paths,
     }) catch |err| {
         std.debug.print("k2: {s}\n", .{@errorName(err)});
         return 1;
@@ -200,6 +227,7 @@ fn printUsage() void {
         \\Options:
         \\  -o <path>           output file
         \\  --llvm-path <dir>   LLVM root (use forward slashes)
+        \\  --lib-path <dir>    linker library directory
         \\  --opt <0-3>         optimisation level (default 0)
         \\  --release           alias for --opt 2
         \\

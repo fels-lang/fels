@@ -60,7 +60,7 @@ pub const Parser = struct {
     }
 
     pub fn deinit(self: *Parser) void {
-        self.tokens.len = self.tokens.len;
+        self.allocator.free(self.tokens);
         self.diagnostics.deinit(self.allocator);
     }
 
@@ -725,8 +725,7 @@ pub const Parser = struct {
                     const name = self.advance();
                     _ = self.advance();
                     // Named arg value: parse a full compound literal `{ ... }` or a regular expression.
-                    const value = if (self.check(.l_brace)) try self.finishCompound(self.advance())
-                    else try self.parseExpr(0);
+                    const value = if (self.check(.l_brace)) try self.finishCompound(self.advance()) else try self.parseExpr(0);
                     try args.append(self.allocator, .{ .named = .{ .name = name.text(self.source), .value = value } });
                 } else {
                     try args.append(self.allocator, .{ .positional = try self.parseExpr(0) });

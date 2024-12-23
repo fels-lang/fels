@@ -6,13 +6,17 @@ const parser = @import("parser.zig");
 const sema = @import("sema.zig");
 
 pub const FrontEnd = struct {
-    module:  ast.Module,
+    module: ast.Module,
     symbols: sema.SymbolTable,
-    types:   sema.TypeEnv,
+    types: sema.TypeEnv,
+    arena: *std.heap.ArenaAllocator,
 
     pub fn deinit(self: *FrontEnd, allocator: std.mem.Allocator) void {
-        self.symbols.deinit(allocator);
-        self.types.deinit(allocator);
+        const arena_allocator = self.arena.allocator();
+        self.symbols.deinit(arena_allocator);
+        self.types.deinit(arena_allocator);
+        self.arena.deinit();
+        allocator.destroy(self.arena);
     }
 
     /// Any sema diagnostics collected during compilation.
@@ -23,7 +27,7 @@ pub const FrontEnd = struct {
 
 pub const SourceFile = struct {
     file_name: []const u8,
-    source:    []const u8,
+    source: []const u8,
 };
 
 pub const CompileError = error{
@@ -39,76 +43,88 @@ pub const CompileError = error{
 pub fn compile(
     allocator: std.mem.Allocator,
     file_name: []const u8,
-    source:    []const u8,
+    source: []const u8,
 ) CompileError!FrontEnd {
-    const module = parser.parseSource(allocator, file_name, source) catch |err| switch (err) {
-        error.ParseFailed  => return error.ParseFailed,
-        error.OutOfMemory  => return error.OutOfMemory,
+    const arena = try createFrontendArena(allocator);
+    errdefer destroyFrontendArena(allocator, arena);
+    const fe_allocator = arena.allocator();
+
+    const module = parser.parseSource(fe_allocator, file_name, source) catch |err| switch (err) {
+        error.ParseFailed => return error.ParseFailed,
+        error.OutOfMemory => return error.OutOfMemory,
     };
-    return runPipelineWithSource(allocator, module, source, file_name);
+    return runPipelineWithSource(fe_allocator, module, source, file_name, arena);
 }
 
 /// Compile multiple source texts at once (no file I/O, imports ignored).
 pub fn compileMulti(allocator: std.mem.Allocator, files: []const SourceFile) CompileError!FrontEnd {
-    if (files.len == 0) return runPipelineWithSource(allocator, ast.Module.empty(""), "", "");
+    const arena = try createFrontendArena(allocator);
+    errdefer destroyFrontendArena(allocator, arena);
+    const fe_allocator = arena.allocator();
+
+    if (files.len == 0) return runPipelineWithSource(fe_allocator, ast.Module.empty(""), "", "", arena);
 
     var all_items: std.ArrayList(ast.Item) = .empty;
-    errdefer all_items.deinit(allocator);
+    errdefer all_items.deinit(fe_allocator);
 
     var next_id: ast.NodeId = 1;
     for (files) |file| {
-        const parsed = parser.parseSourceFrom(allocator, file.file_name, file.source, next_id) catch |err| switch (err) {
+        const parsed = parser.parseSourceFrom(fe_allocator, file.file_name, file.source, next_id) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,
         };
         next_id = parsed.next_id;
         for (parsed.module.items) |item| switch (item) {
             .import => {},
-            else    => try all_items.append(allocator, item),
+            else => try all_items.append(fe_allocator, item),
         };
     }
 
-    const items = try all_items.toOwnedSlice(allocator);
-    return runPipelineWithSource(allocator, .{ .file_name = files[0].file_name, .items = items }, files[0].source, files[0].file_name);
+    const items = try all_items.toOwnedSlice(fe_allocator);
+    return runPipelineWithSource(fe_allocator, .{ .file_name = files[0].file_name, .items = items }, files[0].source, files[0].file_name, arena);
 }
 
 /// Compile a .k2 file from disk, resolving `#import` declarations recursively.
 /// Requires an `std.Io` instance (Zig 0.16 explicit I/O).
 pub fn compileFile(
     allocator: std.mem.Allocator,
-    io:        std.Io,
-    path:      []const u8,
+    io: std.Io,
+    path: []const u8,
 ) CompileError!FrontEnd {
-    var loaded = std.StringHashMap(void).init(allocator);
+    const arena = try createFrontendArena(allocator);
+    errdefer destroyFrontendArena(allocator, arena);
+    const fe_allocator = arena.allocator();
+
+    var loaded = std.StringHashMap(void).init(fe_allocator);
     defer loaded.deinit();
 
     var all_items: std.ArrayList(ast.Item) = .empty;
-    errdefer all_items.deinit(allocator);
+    errdefer all_items.deinit(fe_allocator);
 
     var root_source: []const u8 = "";
     var next_id: ast.NodeId = 1;
 
-    loadFile(allocator, io, path, &loaded, &all_items, &next_id, &root_source, true) catch |err| switch (err) {
-        error.ParseFailed  => return error.ParseFailed,
-        error.OutOfMemory  => return error.OutOfMemory,
-        else               => return error.IoError,
+    loadFile(fe_allocator, io, path, &loaded, &all_items, &next_id, &root_source, true) catch |err| switch (err) {
+        error.ParseFailed => return error.ParseFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.IoError,
     };
 
-    const items = try all_items.toOwnedSlice(allocator);
-    return runPipelineWithSource(allocator, .{ .file_name = path, .items = items }, root_source, path);
+    const items = try all_items.toOwnedSlice(fe_allocator);
+    return runPipelineWithSource(fe_allocator, .{ .file_name = path, .items = items }, root_source, path, arena);
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn loadFile(
-    allocator:   std.mem.Allocator,
-    io:          std.Io,
-    path:        []const u8,
-    loaded:      *std.StringHashMap(void),
-    all_items:   *std.ArrayList(ast.Item),
-    next_id:     *ast.NodeId,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    loaded: *std.StringHashMap(void),
+    all_items: *std.ArrayList(ast.Item),
+    next_id: *ast.NodeId,
     root_source: *[]const u8,
-    is_root:     bool,
+    is_root: bool,
 ) !void {
     if (loaded.contains(path)) return;
     try loaded.put(path, {});
@@ -136,8 +152,8 @@ fn loadFile(
 /// relative to `base_dir`.
 fn resolveImportPath(
     allocator: std.mem.Allocator,
-    base_dir:  []const u8,
-    parts:     []const []const u8,
+    base_dir: []const u8,
+    parts: []const []const u8,
 ) ![]const u8 {
     // Skip well-known non-local prefixes until we have a stdlib
     if (parts.len > 0 and std.mem.eql(u8, parts[0], "std")) return error.NotFound;
@@ -157,36 +173,44 @@ fn resolveImportPath(
     return buf.toOwnedSlice(allocator);
 }
 
-fn runPipeline(allocator: std.mem.Allocator, module: ast.Module) CompileError!FrontEnd {
-    return runPipelineWithSource(allocator, module, "", "");
-}
-
 fn runPipelineWithSource(
     allocator: std.mem.Allocator,
-    module:    ast.Module,
-    source:    []const u8,
-    file:      []const u8,
+    module: ast.Module,
+    source: []const u8,
+    file: []const u8,
+    arena: *std.heap.ArenaAllocator,
 ) CompileError!FrontEnd {
     var symbols = sema.collectSymbols(allocator, module) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
-        error.OutOfMemory    => return error.OutOfMemory,
+        error.OutOfMemory => return error.OutOfMemory,
     };
     errdefer symbols.deinit(allocator);
 
     sema.resolveNames(allocator, module, symbols) catch |err| switch (err) {
         error.SemanticFailed => {},
-        error.OutOfMemory    => return error.OutOfMemory,
+        error.OutOfMemory => return error.OutOfMemory,
     };
     sema.checkZones(allocator, module, symbols) catch |err| switch (err) {
         error.SemanticFailed => {},
-        error.OutOfMemory    => return error.OutOfMemory,
+        error.OutOfMemory => return error.OutOfMemory,
     };
 
     var types = sema.checkTypesWithContext(allocator, module, symbols, source, file) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
-        error.OutOfMemory    => return error.OutOfMemory,
+        error.OutOfMemory => return error.OutOfMemory,
     };
     errdefer types.deinit(allocator);
 
-    return .{ .module = module, .symbols = symbols, .types = types };
+    return .{ .module = module, .symbols = symbols, .types = types, .arena = arena };
+}
+
+fn createFrontendArena(allocator: std.mem.Allocator) CompileError!*std.heap.ArenaAllocator {
+    const arena = allocator.create(std.heap.ArenaAllocator) catch return error.OutOfMemory;
+    arena.* = std.heap.ArenaAllocator.init(allocator);
+    return arena;
+}
+
+fn destroyFrontendArena(allocator: std.mem.Allocator, arena: *std.heap.ArenaAllocator) void {
+    arena.deinit();
+    allocator.destroy(arena);
 }

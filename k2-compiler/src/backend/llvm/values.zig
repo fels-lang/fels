@@ -1,29 +1,32 @@
 /// Imm / Value → LLVMValueRef.
-const std      = @import("std");
-const ir       = @import("../../ir.zig");
-const llvm     = @import("c_api.zig").llvm;
-const types    = @import("types.zig");
+const std = @import("std");
+const ir = @import("../../ir.zig");
+const llvm = @import("c_api.zig").llvm;
+const types = @import("types.zig");
 const ModuleCg = @import("context.zig").ModuleCg;
 
 pub fn lowerImm(cg: *ModuleCg, imm: ir.Imm, hint_ty: ir.IrType) llvm.LLVMValueRef {
     const lty = types.lower(cg, hint_ty);
+    return lowerImmAs(cg, imm, lty);
+}
+
+pub fn lowerImmAs(cg: *ModuleCg, imm: ir.Imm, lty: llvm.LLVMTypeRef) llvm.LLVMValueRef {
     return switch (imm) {
-        .int   => |v| llvm.LLVMConstInt(lty, @bitCast(@as(i64, @intCast(v))), 1),
-        .uint  => |v| llvm.LLVMConstInt(lty, @as(c_ulonglong, @truncate(v)), 0),
+        .int => |v| llvm.LLVMConstInt(lty, @bitCast(@as(i64, @intCast(v))), 1),
+        .uint => |v| llvm.LLVMConstInt(lty, @as(c_ulonglong, @truncate(v)), 0),
         .float => |v| llvm.LLVMConstReal(lty, v),
-        .bool  => |v| llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(cg.ctx), if (v) 1 else 0, 0),
-        .null  => llvm.LLVMConstNull(lty),
-        .rune  => |r| llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), r, 0),
+        .bool => |v| llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(cg.ctx), if (v) 1 else 0, 0),
+        .null => llvm.LLVMConstNull(lty),
+        .rune => |r| llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), r, 0),
 
         // String literals → private global constant + { ptr, len } slice struct.
         // With LLVM opaque pointers (15+), the global value itself is already a ptr.
         .text => |s| blk: {
             var name_buf: [32]u8 = undefined;
-            const name_z = std.fmt.bufPrintZ(&name_buf, ".str.{d}", .{cg.string_counter})
-                catch break :blk llvm.LLVMGetUndef(cg.getSliceType());
+            const name_z = std.fmt.bufPrintZ(&name_buf, ".str.{d}", .{cg.string_counter}) catch break :blk llvm.LLVMGetUndef(cg.getSliceType());
             cg.string_counter += 1;
 
-            const i8_ty  = llvm.LLVMInt8TypeInContext(cg.ctx);
+            const i8_ty = llvm.LLVMInt8TypeInContext(cg.ctx);
             const arr_ty = llvm.LLVMArrayType2(i8_ty, s.len);
 
             const gv = llvm.LLVMAddGlobal(cg.mod, arr_ty, name_z);
@@ -47,15 +50,15 @@ pub fn lowerImm(cg: *ModuleCg, imm: ir.Imm, hint_ty: ir.IrType) llvm.LLVMValueRe
 /// Resolve a K2 Value to an LLVMValueRef.
 /// `fncg` is *FnCg from functions.zig — passed as anytype to avoid circular imports.
 pub fn resolveValue(
-    cg:   *ModuleCg,
+    cg: *ModuleCg,
     fncg: anytype,
-    val:  ir.Value,
-    ty:   ir.IrType,
+    val: ir.Value,
+    ty: ir.IrType,
 ) llvm.LLVMValueRef {
     const undef = llvm.LLVMGetUndef(types.lower(cg, ty));
     return switch (val) {
-        .imm   => |imm|  lowerImm(cg, imm, ty),
-        .reg   => |id|   fncg.regs.get(id)    orelse undef,
+        .imm => |imm| lowerImm(cg, imm, ty),
+        .reg => |id| fncg.regs.get(id) orelse undef,
         .param => |name| fncg.params.get(name) orelse undef,
 
         .local => |name| blk: {
@@ -74,12 +77,12 @@ pub fn resolveValue(
 /// Emit a type-coercion from `v` to `dest_lty` if needed.
 /// Handles integer widening (sext/zext), narrowing (trunc), and ptr↔int casts.
 pub fn coerce(
-    builder:  llvm.LLVMBuilderRef,
-    ctx:      llvm.LLVMContextRef,
-    v:        llvm.LLVMValueRef,
+    builder: llvm.LLVMBuilderRef,
+    ctx: llvm.LLVMContextRef,
+    v: llvm.LLVMValueRef,
     dest_lty: llvm.LLVMTypeRef,
 ) llvm.LLVMValueRef {
-    const src_lty  = llvm.LLVMTypeOf(v);
+    const src_lty = llvm.LLVMTypeOf(v);
     if (src_lty == dest_lty) return v;
 
     const src_kind = llvm.LLVMGetTypeKind(src_lty);

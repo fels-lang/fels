@@ -38,6 +38,7 @@ pub fn compileSource(
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer fe.deinit(allocator);
+    if (fe.diagnostics().len != 0) return error.CompileFailed;
 
     var module = ir.lowerFrontend(allocator, fe) catch |err| switch (err) {
         error.LoweringFailed => return error.LoweringFailed,
@@ -97,19 +98,50 @@ pub fn compileWithLlvm(
 ) LlvmDriverError!void {
     if (!build_options.enable_llvm) return error.LlvmNotEnabled;
 
-    // Frontend
     var fe = pipeline.compile(allocator, opts.file_name, opts.source) catch |err| switch (err) {
         error.ParseFailed, error.SemanticFailed, error.IoError => return error.CompileFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer fe.deinit(allocator);
+    if (fe.diagnostics().len != 0) return error.CompileFailed;
+
+    try emitLlvmFromFrontend(allocator, io, fe, opts);
+}
+
+/// Full file pipeline: .k2 path + imports -> IR -> LLVM IR -> .o -> (optional) .exe
+pub fn compileFileWithLlvm(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    opts: LlvmCompileOptions,
+) LlvmDriverError!void {
+    if (!build_options.enable_llvm) return error.LlvmNotEnabled;
+
+    var fe = pipeline.compileFile(allocator, io, opts.file_name) catch |err| switch (err) {
+        error.ParseFailed, error.SemanticFailed, error.IoError => return error.CompileFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer fe.deinit(allocator);
+    if (fe.diagnostics().len != 0) return error.CompileFailed;
+
+    try emitLlvmFromFrontend(allocator, io, fe, opts);
+}
+
+fn emitLlvmFromFrontend(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    fe: pipeline.FrontEnd,
+    opts: LlvmCompileOptions,
+) LlvmDriverError!void {
+    var ir_arena = std.heap.ArenaAllocator.init(allocator);
+    defer ir_arena.deinit();
+    const ir_allocator = ir_arena.allocator();
 
     // Middle-end
-    var module = ir.lowerFrontend(allocator, fe) catch |err| switch (err) {
+    var module = ir.lowerFrontend(ir_allocator, fe) catch |err| switch (err) {
         error.LoweringFailed => return error.LoweringFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
-    ir.runDefaultPasses(allocator, &module) catch return error.LoweringFailed;
+    ir.runDefaultPasses(ir_allocator, &module) catch return error.LoweringFailed;
     ir.validateModule(module) catch return error.LoweringFailed;
 
     // LLVM backend

@@ -29,12 +29,12 @@ pub fn buildArgs(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ![]cons
     errdefer args.deinit(allocator);
 
     try args.append(allocator, try std.fmt.allocPrint(allocator, "{s}/lld-link.exe", .{opts.llvm_bin}));
-    for (opts.obj_files) |obj| try args.append(allocator, obj);
+    for (opts.obj_files) |obj| try args.append(allocator, try allocator.dupe(u8, obj));
     try args.append(allocator, try std.fmt.allocPrint(allocator, "/OUT:{s}", .{opts.output}));
-    try args.append(allocator, "/SUBSYSTEM:CONSOLE");
-    try args.append(allocator, "/ENTRY:mainCRTStartup");
-    try args.append(allocator, "/NODEFAULTLIB");
-    try args.append(allocator, "kernel32.lib");
+    try args.append(allocator, try allocator.dupe(u8, "/SUBSYSTEM:CONSOLE"));
+    try args.append(allocator, try allocator.dupe(u8, "/ENTRY:mainCRTStartup"));
+    try args.append(allocator, try allocator.dupe(u8, "/NODEFAULTLIB"));
+    try args.append(allocator, try allocator.dupe(u8, "kernel32.lib"));
     for (opts.lib_paths) |lp|
         try args.append(allocator, try std.fmt.allocPrint(allocator, "/LIBPATH:{s}", .{lp}));
 

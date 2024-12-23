@@ -75,7 +75,7 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         },
 
         .cast => |cs| blk: {
-            const val  = resolveVal(cg, fncg, cs.value, .unknown);
+            const val = resolveVal(cg, fncg, cs.value, .unknown);
             const dest = types.lower(cg, instr.ty);
             break :blk values.coerce(cg.builder, cg.ctx, val, dest);
         },
@@ -258,8 +258,10 @@ fn lowerCall(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrType
     llvm.LLVMGetParamTypes(fn_ty, param_tys.ptr);
 
     for (call.args, 0..) |arg, i| {
-        var v = resolveVal(cg, fncg, arg, .unknown);
-        if (i < n_param) v = values.coerce(cg.builder, cg.ctx, v, param_tys[i]);
+        const v = if (i < n_param) switch (arg) {
+            .imm => |imm| values.lowerImmAs(cg, imm, param_tys[i]),
+            else => values.coerce(cg.builder, cg.ctx, resolveVal(cg, fncg, arg, .unknown), param_tys[i]),
+        } else resolveVal(cg, fncg, arg, .unknown);
         args[i] = v;
     }
 

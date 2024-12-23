@@ -50,13 +50,16 @@ pub const BasaltBackend = basalt.BasaltBackend;
 const build_options = @import("build_options");
 /// Whether LLVM codegen is available (requires `-Dllvm-path=...` at build time).
 pub const llvm_enabled = build_options.enable_llvm;
+pub const llvm_path = build_options.llvm_path;
+pub const windows_sdk_lib_path = build_options.windows_sdk_lib_path;
 /// LLVM backend — only available when compiled with `-Dllvm-path=<path>`.
 pub const LlvmBackend = if (build_options.enable_llvm)
     @import("backend/llvm.zig").LlvmBackend
 else
     LlvmBackendStub;
 
-pub const compileWithLlvm    = driver_mod.compileWithLlvm;
+pub const compileWithLlvm = driver_mod.compileWithLlvm;
+pub const compileFileWithLlvm = driver_mod.compileFileWithLlvm;
 pub const LlvmCompileOptions = driver_mod.LlvmCompileOptions;
 
 const LlvmBackendStub = struct {

@@ -450,14 +450,26 @@ pub fn checkTypesWithContext(
     checker.file = file;
     defer checker.deinit();
 
-    try checker.checkModule(module);
+    checker.checkModule(module) catch |err| switch (err) {
+        error.SemanticFailed => {
+            if (checker.diagnostics.items.len != 0) return checker.finish();
+            return error.SemanticFailed;
+        },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
 
     // Check each generic instantiation discovered during the main pass.
     // New instantiations may be discovered while checking (e.g. generic calls inside
     // generic bodies), so iterate until stable.
     var checked: usize = 0;
     while (checked < checker.env.generic_instantiations.items.len) {
-        try checker.checkGenericInstantiation(module, checked);
+        checker.checkGenericInstantiation(module, checked) catch |err| switch (err) {
+            error.SemanticFailed => {
+                if (checker.diagnostics.items.len != 0) return checker.finish();
+                return error.SemanticFailed;
+            },
+            error.OutOfMemory => return error.OutOfMemory,
+        };
         checked += 1;
     }
 
@@ -487,7 +499,7 @@ const Checker = struct {
     // Diagnostics — collected instead of failing immediately where possible.
     diagnostics: std.ArrayList(Diagnostic) = .empty,
     source: []const u8 = "",
-    file:   []const u8 = "",
+    file: []const u8 = "",
 
     fn init(allocator: std.mem.Allocator, symbols: SymbolTable) Checker {
         return .{
@@ -514,10 +526,20 @@ const Checker = struct {
     /// Format a Ty as a human-readable string (caller owns result).
     fn formatTy(self: *Checker, ty: Ty) []const u8 {
         return switch (ty) {
-            .i8 => "i8", .i16 => "i16", .i32 => "i32", .i64 => "i64",
-            .u8  => "u8",  .u16 => "u16", .u32 => "u32", .u64 => "u64",
-            .bool => "bool", .void => "void", .usize => "usize", .isize => "isize",
-            .f32 => "f32", .f64 => "f64",
+            .i8 => "i8",
+            .i16 => "i16",
+            .i32 => "i32",
+            .i64 => "i64",
+            .u8 => "u8",
+            .u16 => "u16",
+            .u32 => "u32",
+            .u64 => "u64",
+            .bool => "bool",
+            .void => "void",
+            .usize => "usize",
+            .isize => "isize",
+            .f32 => "f32",
+            .f64 => "f64",
             .int_lit => "integer literal",
             .float_lit => "float literal",
             .null_ptr => "null",
@@ -715,9 +737,7 @@ const Checker = struct {
             .return_stmt => |ret| {
                 const actual_ty: Ty = if (ret.value) |value| try self.inferExpr(value) else .void;
                 if (!try self.compatible(actual_ty, self.current_return_ty)) {
-                    self.emitError(ret.span,
-                        "return type mismatch: expected `{s}`, found `{s}`",
-                        .{ self.formatTy(self.current_return_ty), self.formatTy(actual_ty) });
+                    self.emitError(ret.span, "return type mismatch: expected `{s}`, found `{s}`", .{ self.formatTy(self.current_return_ty), self.formatTy(actual_ty) });
                     return error.SemanticFailed;
                 }
             },
@@ -726,23 +746,25 @@ const Checker = struct {
                 if (iff.binding) |binding| {
                     const bound_ty = try self.inferExpr(binding.value);
                     if (bound_ty != .optional) {
-                        self.emitError(binding.value.span,
-                            "`if {s} :=` requires an optional type, found `{s}`",
-                            .{ binding.name, self.formatTy(bound_ty) });
+                        self.emitError(binding.value.span, "`if {s} :=` requires an optional type, found `{s}`", .{ binding.name, self.formatTy(bound_ty) });
                         return error.SemanticFailed;
                     }
                     const inner_ty = bound_ty.optional.*;
                     try self.pushScope();
                     defer self.popScope();
                     try self.declareLocal(binding.name, inner_ty);
-                    if (iff.payload_binding) |payload_name| try self.declareLocal(payload_name, .unknown);
+                    if (iff.payload_binding) |payload_name| try self.declareLocal(payload_name, inner_ty);
                     try self.checkBlock(iff.then_block);
                 } else {
                     const cond_ty = try self.inferExpr(iff.condition);
-                    if (!cond_ty.isBool()) return error.SemanticFailed;
+                    const payload_ty: ?Ty = switch (cond_ty) {
+                        .optional => |inner| inner.*,
+                        else => null,
+                    };
+                    if (!cond_ty.isBool() and payload_ty == null) return error.SemanticFailed;
                     try self.pushScope();
                     defer self.popScope();
-                    if (iff.payload_binding) |payload_name| try self.declareLocal(payload_name, .unknown);
+                    if (iff.payload_binding) |payload_name| try self.declareLocal(payload_name, payload_ty orelse .unknown);
                     try self.checkBlock(iff.then_block);
                 }
                 if (iff.else_block) |else_block| try self.checkBlock(else_block);
@@ -928,9 +950,9 @@ const Checker = struct {
         };
 
         // ── Builtins ────────────────────────────────────────────────────
-        if (std.mem.eql(u8, name, "truncate_to"))   return self.firstTypeArg(call) orelse error.SemanticFailed;
-        if (std.mem.eql(u8, name, "sizeof"))         return .usize;
-        if (std.mem.eql(u8, name, "atomic_load"))    return .u32;
+        if (std.mem.eql(u8, name, "truncate_to")) return self.firstTypeArg(call) orelse error.SemanticFailed;
+        if (std.mem.eql(u8, name, "sizeof")) return .usize;
+        if (std.mem.eql(u8, name, "atomic_load")) return .u32;
         // Unsafe builtins — must be called from within an `unsafe` block.
         if (std.mem.eql(u8, name, "ptr_from_int")) {
             try self.requireUnsafe(call.callee.span, name);
@@ -948,15 +970,24 @@ const Checker = struct {
             try self.requireUnsafe(call.callee.span, name);
             // Infer return type from first output constraint, e.g. outputs: { "=a"(isize) }
             for (call.args) |arg| {
-                const n = switch (arg) { .named => |n| n, else => continue };
+                const n = switch (arg) {
+                    .named => |n| n,
+                    else => continue,
+                };
                 if (!std.mem.eql(u8, n.name, "outputs")) continue;
-                const items = switch (n.value.kind) { .compound_literal => |c| c, else => continue };
+                const items = switch (n.value.kind) {
+                    .compound_literal => |c| c,
+                    else => continue,
+                };
                 if (items.len == 0) break;
                 const first = items[0];
                 if (first.kind != .call) break;
                 const c_args = first.kind.call.args;
                 if (c_args.len == 0) break;
-                const ty_expr = switch (c_args[0]) { .positional => |e| e, .named => |nn| nn.value };
+                const ty_expr = switch (c_args[0]) {
+                    .positional => |e| e,
+                    .named => |nn| nn.value,
+                };
                 return try self.inferTypeArg(ty_expr);
             }
             return .void;
@@ -979,11 +1010,11 @@ const Checker = struct {
 
         // Count only value params for arg matching
         var value_param_count: usize = 0;
-        for (sig.params) |p| { if (!p.is_type_param) value_param_count += 1; }
+        for (sig.params) |p| {
+            if (!p.is_type_param) value_param_count += 1;
+        }
         if (call.args.len != value_param_count) {
-            self.emitError(call.callee.span,
-                "`{s}` expects {d} argument(s), but {d} were provided",
-                .{ name, value_param_count, call.args.len });
+            self.emitError(call.callee.span, "`{s}` expects {d} argument(s), but {d} were provided", .{ name, value_param_count, call.args.len });
             return error.SemanticFailed;
         }
 
@@ -996,9 +1027,7 @@ const Checker = struct {
             };
             const arg_ty = try self.inferExpr(arg_expr);
             if (!try self.compatible(arg_ty, param.ty)) {
-                self.emitError(arg_expr.span,
-                    "argument {d} of `{s}`: expected `{s}`, found `{s}`",
-                    .{ arg_i + 1, name, self.formatTy(param.ty), self.formatTy(arg_ty) });
+                self.emitError(arg_expr.span, "argument {d} of `{s}`: expected `{s}`, found `{s}`", .{ arg_i + 1, name, self.formatTy(param.ty), self.formatTy(arg_ty) });
                 return error.SemanticFailed;
             }
             arg_i += 1;
@@ -1011,9 +1040,7 @@ const Checker = struct {
 
     fn requireUnsafe(self: *Checker, span: Span, builtin_name: []const u8) SemanticError!void {
         if (self.unsafe_depth == 0) {
-            self.emitError(span,
-                "`{s}` is an unsafe operation and must be called inside an `unsafe` block",
-                .{builtin_name});
+            self.emitError(span, "`{s}` is an unsafe operation and must be called inside an `unsafe` block", .{builtin_name});
             return error.SemanticFailed;
         }
     }
@@ -1090,9 +1117,9 @@ const Checker = struct {
                 if (!binding.contains(tp)) {
                     // Coerce unresolved literal types to concrete defaults
                     const concrete = switch (arg_ty) {
-                        .int_lit   => Ty.i32,
+                        .int_lit => Ty.i32,
                         .float_lit => Ty.f64,
-                        else       => arg_ty,
+                        else => arg_ty,
                     };
                     try binding.put(tp, concrete);
                 }
@@ -1119,7 +1146,10 @@ const Checker = struct {
         // Record if not already seen
         var already = false;
         for (self.env.generic_instantiations.items) |*gi| {
-            if (std.mem.eql(u8, gi.mangled_name, mangled)) { already = true; break; }
+            if (std.mem.eql(u8, gi.mangled_name, mangled)) {
+                already = true;
+                break;
+            }
         }
         if (!already) {
             try self.env.generic_instantiations.append(self.allocator, .{
@@ -1448,12 +1478,24 @@ fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
 
 fn tyMangle(ty: Ty) []const u8 {
     return switch (ty) {
-        .i8 => "i8", .i16 => "i16", .i32 => "i32", .i64 => "i64",
-        .u8  => "u8",  .u16 => "u16", .u32 => "u32", .u64 => "u64",
-        .bool => "bool", .void => "void", .usize => "usize", .isize => "isize",
-        .pointer  => "ptr",  .optional => "opt", .slice => "slice",
-        .named    => "named", .type_param => |n| n,
-        else      => "unknown",
+        .i8 => "i8",
+        .i16 => "i16",
+        .i32 => "i32",
+        .i64 => "i64",
+        .u8 => "u8",
+        .u16 => "u16",
+        .u32 => "u32",
+        .u64 => "u64",
+        .bool => "bool",
+        .void => "void",
+        .usize => "usize",
+        .isize => "isize",
+        .pointer => "ptr",
+        .optional => "opt",
+        .slice => "slice",
+        .named => "named",
+        .type_param => |n| n,
+        else => "unknown",
     };
 }
 
@@ -1481,7 +1523,6 @@ fn sameErrorVariants(a: []const ErrorVariantInfo, b: []const ErrorVariantInfo) b
     }
     return true;
 }
-
 
 fn intLiteralType(text: []const u8) Ty {
     if (std.mem.endsWith(u8, text, "u32")) return .u32;

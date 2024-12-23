@@ -1,15 +1,15 @@
 /// Alloca management: scan all store_local instructions upfront,
 /// then emit one alloca per unique local name in the entry block.
-const std      = @import("std");
-const ir       = @import("../../ir.zig");
-const llvm     = @import("c_api.zig").llvm;
-const types    = @import("types.zig");
+const std = @import("std");
+const ir = @import("../../ir.zig");
+const llvm = @import("c_api.zig").llvm;
+const types = @import("types.zig");
 const ModuleCg = @import("context.zig").ModuleCg;
 
 pub fn allocateLocals(
-    cg:          *ModuleCg,
-    func:         ir.IrFunction,
-    entry_block:  llvm.LLVMBasicBlockRef,
+    cg: *ModuleCg,
+    func: ir.IrFunction,
+    entry_block: llvm.LLVMBasicBlockRef,
 ) !std.StringHashMap(llvm.LLVMValueRef) {
     var map = std.StringHashMap(llvm.LLVMValueRef).init(cg.allocator);
     errdefer map.deinit();
@@ -35,7 +35,7 @@ pub fn allocateLocals(
         const name_z = try cg.allocator.dupeZ(u8, entry.key_ptr.*);
         defer cg.allocator.free(name_z);
         // types.lower handles slice → fat-pointer struct.
-        const lty    = types.lower(cg, entry.value_ptr.*);
+        const lty = types.lower(cg, entry.value_ptr.*);
         const alloca = llvm.LLVMBuildAlloca(cg.builder, lty, name_z);
         try map.put(entry.key_ptr.*, alloca);
     }
