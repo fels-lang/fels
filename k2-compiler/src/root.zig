@@ -48,6 +48,8 @@ pub const Backend = backend.Backend;
 pub const BasaltBackend = basalt.BasaltBackend;
 
 const build_options = @import("build_options");
+/// Whether LLVM codegen is available (requires `-Dllvm-path=...` at build time).
+pub const llvm_enabled = build_options.enable_llvm;
 /// LLVM backend — only available when compiled with `-Dllvm-path=<path>`.
 pub const LlvmBackend = if (build_options.enable_llvm)
     @import("backend/llvm.zig").LlvmBackend
