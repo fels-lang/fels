@@ -81,6 +81,7 @@ pub const IrType = union(enum) {
     zone,
     opaque_type: []const u8,
     ptr: *const IrType,
+    optional: *const IrType,
     slice: *const IrType,
     array: ArrayType,
     range: *const IrType,
@@ -116,7 +117,7 @@ pub const StructDef = struct {
     name: []const u8,
     fields: []const FieldDef,
     is_packed: bool,
-    alignment: u32 = 0,  // 0 = default; set by #align(N)
+    alignment: u32 = 0, // 0 = default; set by #align(N)
 };
 
 pub const FieldDef = struct {
@@ -164,8 +165,12 @@ pub const InstrKind = union(enum) {
     field: FieldInstr,
     field_addr: FieldInstr,
     index: IndexInstr,
+    index_addr: IndexInstr,
+    slice_expr: SliceInstr,
     variant_is: VariantCheckInstr,
     variant_payload: VariantCheckInstr,
+    optional_is_some: Value,
+    optional_payload: Value,
     try_is_ok: Value,
     try_ok: Value,
     try_err: Value,
@@ -242,6 +247,11 @@ pub const IndexInstr = struct {
     index: Value,
 };
 
+pub const SliceInstr = struct {
+    ptr: Value,
+    len: Value,
+};
+
 pub const VariantCheckInstr = struct {
     value: Value,
     variant: []const u8,
@@ -251,10 +261,10 @@ pub const VariantCheckInstr = struct {
 /// Constraint string follows LLVM/GCC format: outputs first, then inputs, then clobbers.
 /// Example for `syscall`:  "=a,{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"
 pub const InlineAsmInstr = struct {
-    template:    []const u8,   // the assembly template, e.g. "syscall" or "pause"
-    constraints: []const u8,   // combined constraint string
-    args:        []const Value, // input operand values (in constraint order)
-    volatile_:   bool,
+    template: []const u8, // the assembly template, e.g. "syscall" or "pause"
+    constraints: []const u8, // combined constraint string
+    args: []const Value, // input operand values (in constraint order)
+    volatile_: bool,
 };
 
 pub const AllocInstr = struct {
@@ -433,7 +443,12 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
                     var inst_types = front_end.types;
                     inst_types.expr_types = inst.expr_types;
                     try functions.append(allocator, try lowerFunctionInstantiation(
-                        allocator, inst_types, front_end.symbols, decl, inst.mangled_name, inst.type_args,
+                        allocator,
+                        inst_types,
+                        front_end.symbols,
+                        decl,
+                        inst.mangled_name,
+                        inst.type_args,
                     ));
                 },
                 else => {},
@@ -519,12 +534,16 @@ fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
         .struct_lit => |strukt| for (strukt.fields) |field| try validateValue(function, field.value),
         .variant_lit => |variant| if (variant.payload) |payload| try validateValue(function, payload),
         .field, .field_addr => |field| try validateValue(function, field.base),
-        .index => |index| {
+        .index, .index_addr => |index| {
             try validateValue(function, index.base);
             try validateValue(function, index.index);
         },
+        .slice_expr => |slice| {
+            try validateValue(function, slice.ptr);
+            try validateValue(function, slice.len);
+        },
         .variant_is, .variant_payload => |variant| try validateValue(function, variant.value),
-        .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| try validateValue(function, value),
+        .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| try validateValue(function, value),
         .at => |at| try validateValue(function, at.value),
         .raw_pointer => |ptr| try validateValue(function, ptr.address),
         .store_local => |store| try validateValue(function, store.value),
@@ -859,9 +878,10 @@ fn instrUsesReg(instr: Instr, id: RegId) bool {
         } else false,
         .variant_lit => |variant| variant.payload != null and valueUsesReg(variant.payload.?, id),
         .field, .field_addr => |field| valueUsesReg(field.base, id),
-        .index => |index| valueUsesReg(index.base, id) or valueUsesReg(index.index, id),
+        .index, .index_addr => |index| valueUsesReg(index.base, id) or valueUsesReg(index.index, id),
+        .slice_expr => |slice| valueUsesReg(slice.ptr, id) or valueUsesReg(slice.len, id),
         .variant_is, .variant_payload => |variant| valueUsesReg(variant.value, id),
-        .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| valueUsesReg(value, id),
+        .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| valueUsesReg(value, id),
         .at => |at| valueUsesReg(at.value, id),
         .raw_pointer => |ptr| valueUsesReg(ptr.address, id),
         .store_local => |store| valueUsesReg(store.value, id),
@@ -989,7 +1009,7 @@ fn lowerTypeWithBinding(allocator: std.mem.Allocator, ty: ast.TypeRef, binding: 
         },
         .pointer => |ptr| return .{ .ptr = try boxType(allocator, try lowerTypeWithBinding(allocator, ptr.inner.*, binding)) },
         .many_pointer => |ptr| return .{ .ptr = try boxType(allocator, try lowerTypeWithBinding(allocator, ptr.inner.*, binding)) },
-        .optional => |opt| return .{ .ptr = try boxType(allocator, try lowerTypeWithBinding(allocator, opt.inner.*, binding)) },
+        .optional => |opt| return .{ .optional = try boxType(allocator, try lowerTypeWithBinding(allocator, opt.inner.*, binding)) },
         .slice => |sl| return .{ .slice = try boxType(allocator, try lowerTypeWithBinding(allocator, sl.inner.*, binding)) },
         .array => |arr| return .{ .array = .{
             .elem = try boxType(allocator, try lowerTypeWithBinding(allocator, arr.inner.*, binding)),
@@ -1082,8 +1102,9 @@ const FunctionLowerer = struct {
                 try self.emitNoResult(self.exprType(local.value), .{ .store_local = .{ .name = local.name, .value = value } });
             },
             .local_typed => |local| {
-                const value = try self.lowerExpr(local.value);
-                try self.emitNoResult(try lowerType(self.allocator, local.ty), .{ .store_local = .{ .name = local.name, .value = value } });
+                const local_ty = try lowerType(self.allocator, local.ty);
+                const value = try self.lowerExprAs(local.value, local_ty);
+                try self.emitNoResult(local_ty, .{ .store_local = .{ .name = local.name, .value = value } });
             },
             .assign => |assign| {
                 const value = try self.lowerExpr(assign.value);
@@ -1099,13 +1120,13 @@ const FunctionLowerer = struct {
                         }
                     },
                     else => {
-                        const target = try self.lowerExpr(assign.target);
+                        const target = try self.lowerLValueAddress(assign.target);
                         if (bin_op) |op| {
                             const current = try self.emit(self.exprType(assign.target), .{ .unary = .{ .op = .deref, .value = target } });
                             const result = try self.emit(self.exprType(assign.target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } });
-                            try self.emitNoResult(.void, .{ .store = .{ .target = target, .value = result } });
+                            try self.emitNoResult(self.exprType(assign.target), .{ .store = .{ .target = target, .value = result } });
                         } else {
-                            try self.emitNoResult(.void, .{ .store = .{ .target = target, .value = value } });
+                            try self.emitNoResult(self.exprType(assign.target), .{ .store = .{ .target = target, .value = value } });
                         }
                     },
                 }
@@ -1174,11 +1195,39 @@ const FunctionLowerer = struct {
     }
 
     fn lowerIf(self: *FunctionLowerer, iff: ast.IfStmt) LowerError!void {
+        var optional_binding_name: ?[]const u8 = null;
+        var optional_binding_value: ?Value = null;
+        var optional_payload_ty: ?IrType = null;
+
         const cond = if (iff.binding) |binding| blk: {
             const value = try self.lowerExpr(binding.value);
-            try self.emitNoResult(.void, .{ .store_local = .{ .name = binding.name, .value = value } });
+            const value_ty = self.exprType(binding.value);
+            switch (value_ty) {
+                .optional => |inner| {
+                    optional_binding_name = binding.name;
+                    optional_binding_value = value;
+                    optional_payload_ty = inner.*;
+                    break :blk try self.emit(.bool, .{ .optional_is_some = value });
+                },
+                else => {
+                    try self.emitNoResult(value_ty, .{ .store_local = .{ .name = binding.name, .value = value } });
+                    break :blk value;
+                },
+            }
+        } else blk: {
+            const value = try self.lowerExpr(iff.condition);
+            const value_ty = self.exprType(iff.condition);
+            if (iff.payload_binding) |payload_name| switch (value_ty) {
+                .optional => |inner| {
+                    optional_binding_name = payload_name;
+                    optional_binding_value = value;
+                    optional_payload_ty = inner.*;
+                    break :blk try self.emit(.bool, .{ .optional_is_some = value });
+                },
+                else => {},
+            };
             break :blk value;
-        } else try self.lowerExpr(iff.condition);
+        };
 
         const then_id = self.allocBlockId();
         const else_id = if (iff.else_block != null) self.allocBlockId() else null;
@@ -1190,6 +1239,12 @@ const FunctionLowerer = struct {
         } });
 
         self.startBlock(then_id, "if.then");
+        if (optional_binding_name) |name| {
+            const opt_value = optional_binding_value.?;
+            const payload_ty = optional_payload_ty.?;
+            const payload = try self.emit(payload_ty, .{ .optional_payload = opt_value });
+            try self.emitNoResult(payload_ty, .{ .store_local = .{ .name = name, .value = payload } });
+        }
         try self.lowerBlock(iff.then_block.statements, .{ .branch = after_id });
 
         if (iff.else_block) |else_block| {
@@ -1241,7 +1296,7 @@ const FunctionLowerer = struct {
                 }
                 break :blk Value{ .local = name };
             },
-            .type_ref   => .{ .imm = .null },
+            .type_ref => .{ .imm = .null },
             .unsafe_expr => |inner| try self.lowerExpr(inner.*),
             .int => |text| .{ .imm = .{ .int = parseIntLiteral(text) } },
             .string => |text| .{ .imm = .{ .text = trimQuotes(text) } },
@@ -1332,9 +1387,60 @@ const FunctionLowerer = struct {
                 break :blk try self.emit(self.exprType(expr), .{ .index = .{ .base = base, .index = idx } });
             },
             .slice => |slice| blk: {
-                const base = try self.lowerExpr(slice.base.*);
-                break :blk try self.emit(self.exprType(expr), .{ .builtin = .{ .name = "slice", .args = try self.allocator.dupe(Value, &.{base}) } });
+                const base_ty = self.exprType(slice.base.*);
+                switch (base_ty) {
+                    .array => |array| {
+                        const ptr = try self.lowerLValueAddress(slice.base.*);
+                        const len: Value = .{ .imm = .{ .uint = array.len } };
+                        break :blk try self.emit(self.exprType(expr), .{ .slice_expr = .{ .ptr = ptr, .len = len } });
+                    },
+                    .slice => break :blk try self.lowerExpr(slice.base.*),
+                    else => {
+                        const base = try self.lowerExpr(slice.base.*);
+                        break :blk try self.emit(self.exprType(expr), .{ .builtin = .{ .name = "slice", .args = try self.allocator.dupe(Value, &.{base}) } });
+                    },
+                }
             },
+        };
+    }
+
+    fn lowerExprAs(self: *FunctionLowerer, expr: ast.Expr, expected_ty: IrType) LowerError!Value {
+        return switch (expr.kind) {
+            .compound_literal => |values| blk: {
+                var args = std.ArrayList(Value).empty;
+                errdefer args.deinit(self.allocator);
+                for (values) |value| try args.append(self.allocator, try self.lowerExpr(value));
+                break :blk try self.emit(expected_ty, .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
+            },
+            else => try self.lowerExpr(expr),
+        };
+    }
+
+    fn lowerLValueAddress(self: *FunctionLowerer, expr: ast.Expr) LowerError!Value {
+        const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, self.exprType(expr)) };
+        return switch (expr.kind) {
+            .ident => |name| blk: {
+                const local: Value = .{ .local = name };
+                break :blk try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = local } });
+            },
+            .field => |field| blk: {
+                const base = try self.lowerExpr(field.base.*);
+                break :blk try self.emit(ptr_ty, .{ .field_addr = .{ .base = base, .name = field.name } });
+            },
+            .index => |index| blk: {
+                const base_ty = self.exprType(index.base.*);
+                const base = switch (base_ty) {
+                    .array => try self.lowerLValueAddress(index.base.*),
+                    else => try self.lowerExpr(index.base.*),
+                };
+                const idx = try self.lowerExpr(index.index.*);
+                break :blk try self.emit(ptr_ty, .{ .index_addr = .{ .base = base, .index = idx } });
+            },
+            .unary => |unary| switch (unary.op) {
+                .deref => try self.lowerExpr(unary.expr.*),
+                else => try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = try self.lowerExpr(expr) } }),
+            },
+            else => try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = try self.lowerExpr(expr) } }),
         };
     }
 
@@ -1374,7 +1480,10 @@ const FunctionLowerer = struct {
         // Positional args: [volatile_kw, template_str]
         var pos: usize = 0;
         for (call.args) |arg| {
-            const e = switch (arg) { .positional => |e| e, else => continue };
+            const e = switch (arg) {
+                .positional => |e| e,
+                else => continue,
+            };
             if (pos == 0) is_volatile = e.kind == .ident and std.mem.eql(u8, e.kind.ident, "volatile");
             if (pos == 1) template = switch (e.kind) {
                 .string => |s| trimQuotes(s),
@@ -1385,9 +1494,13 @@ const FunctionLowerer = struct {
 
         // LLVM constraint order: outputs, inputs, clobbers.
         for (call.args) |arg| {
-            const n = switch (arg) { .named => |n| n, else => continue };
+            const n = switch (arg) {
+                .named => |n| n,
+                else => continue,
+            };
             const items = switch (n.value.kind) {
-                .compound_literal => |c| c, else => continue,
+                .compound_literal => |c| c,
+                else => continue,
             };
 
             if (std.mem.eql(u8, n.name, "outputs")) {
@@ -1407,7 +1520,8 @@ const FunctionLowerer = struct {
                         const c_args = item.kind.call.args;
                         if (c_args.len > 0) {
                             const val_expr = switch (c_args[0]) {
-                                .positional => |e| e, .named => |nn| nn.value,
+                                .positional => |e| e,
+                                .named => |nn| nn.value,
                             };
                             try input_args.append(self.allocator, try self.lowerExpr(val_expr));
                         }
@@ -1416,7 +1530,8 @@ const FunctionLowerer = struct {
             } else if (std.mem.eql(u8, n.name, "clobbers")) {
                 for (items) |item| {
                     const s = switch (item.kind) {
-                        .string => |s| trimQuotes(s), else => continue,
+                        .string => |s| trimQuotes(s),
+                        else => continue,
                     };
                     try constraints.appendSlice(self.allocator, "~{");
                     try constraints.appendSlice(self.allocator, s);
@@ -1432,10 +1547,10 @@ const FunctionLowerer = struct {
 
         const ty = self.exprType(expr);
         return try self.emit(ty, .{ .inline_asm = .{
-            .template    = template,
+            .template = template,
             .constraints = try constraints.toOwnedSlice(self.allocator),
-            .args        = try input_args.toOwnedSlice(self.allocator),
-            .volatile_   = is_volatile,
+            .args = try input_args.toOwnedSlice(self.allocator),
+            .volatile_ = is_volatile,
         } });
     }
 
@@ -1535,11 +1650,11 @@ const FunctionLowerer = struct {
 
 fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
     return switch (ty) {
-        .type_param => .unknown,  // resolved per-instantiation
+        .type_param => .unknown, // resolved per-instantiation
         .named => |named| lowerNamedType(named.name),
         .pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },
         .many_pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },
-        .optional => |optional| .{ .ptr = try boxType(allocator, try lowerType(allocator, optional.inner.*)) },
+        .optional => |optional| .{ .optional = try boxType(allocator, try lowerType(allocator, optional.inner.*)) },
         .slice => |slice| .{ .slice = try boxType(allocator, try lowerType(allocator, slice.inner.*)) },
         .array => |array| .{ .array = .{
             .elem = try boxType(allocator, try lowerType(allocator, array.inner.*)),
@@ -1622,7 +1737,7 @@ fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.Symbol
         .usize => .usize,
         .isize => .isize,
         .pointer => |inner| .{ .ptr = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
-        .optional => |inner| .{ .ptr = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
+        .optional => |inner| .{ .optional = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
         .slice => |inner| .{ .slice = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
         .array => |array| .{ .array = .{
             .elem = try boxType(allocator, try lowerSemaType(allocator, array.elem.*, symbols)),
@@ -1693,7 +1808,7 @@ fn extractAsmConstraint(expr: ast.Expr) ?[]const u8 {
     if (expr.kind == .call) {
         return switch (expr.kind.call.callee.kind) {
             .string => |s| trimQuotes(s),
-            else    => null,
+            else => null,
         };
     }
     return null;
@@ -1752,24 +1867,20 @@ fn parseArrayLen(expr: ast.Expr) u64 {
 }
 
 fn parseIntLiteral(text: []const u8) i128 {
-    var end = text.len;
-    while (end > 0 and std.ascii.isAlphabetic(text[end - 1])) end -= 1;
-    const number_text = text[0..end];
-
     var value: i128 = 0;
     var negative = false;
     var start: usize = 0;
-    if (number_text.len > 0 and number_text[0] == '-') {
+    if (text.len > 0 and text[0] == '-') {
         negative = true;
         start = 1;
     }
 
-    const radix: i128 = if (number_text.len >= start + 2 and number_text[start] == '0' and (number_text[start + 1] == 'x' or number_text[start + 1] == 'X')) blk: {
+    const radix: i128 = if (text.len >= start + 2 and text[start] == '0' and (text[start + 1] == 'x' or text[start + 1] == 'X')) blk: {
         start += 2;
         break :blk 16;
     } else 10;
 
-    for (number_text[start..]) |ch| {
+    for (text[start..]) |ch| {
         if (ch == '_') continue;
         const digit: i128 = if (ch >= '0' and ch <= '9')
             ch - '0'

@@ -6,6 +6,9 @@ const types = @import("types.zig");
 const ModuleCg = @import("context.zig").ModuleCg;
 
 pub fn lowerImm(cg: *ModuleCg, imm: ir.Imm, hint_ty: ir.IrType) llvm.LLVMValueRef {
+    if (imm == .null) {
+        if (hint_ty == .optional) return optionalNone(cg, hint_ty.optional.*);
+    }
     const lty = types.lower(cg, hint_ty);
     return lowerImmAs(cg, imm, lty);
 }
@@ -45,6 +48,23 @@ pub fn lowerImmAs(cg: *ModuleCg, imm: ir.Imm, lty: llvm.LLVMTypeRef) llvm.LLVMVa
             break :blk llvm.LLVMConstStructInContext(cg.ctx, &fields, 2, 0);
         },
     };
+}
+
+pub fn optionalNone(cg: *ModuleCg, payload_ty: ir.IrType) llvm.LLVMValueRef {
+    const opt_ty = types.optionalType(cg, payload_ty);
+    var fields = [_]llvm.LLVMValueRef{
+        llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(cg.ctx), 0, 0),
+        llvm.LLVMGetUndef(types.optionalPayloadType(cg, payload_ty)),
+    };
+    _ = opt_ty;
+    return llvm.LLVMConstStructInContext(cg.ctx, &fields, 2, 0);
+}
+
+pub fn optionalSome(cg: *ModuleCg, payload: llvm.LLVMValueRef, payload_ty: ir.IrType) llvm.LLVMValueRef {
+    var opt = llvm.LLVMGetUndef(types.optionalType(cg, payload_ty));
+    opt = llvm.LLVMBuildInsertValue(cg.builder, opt, llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(cg.ctx), 1, 0), 0, "");
+    const stored_payload = if (payload_ty == .void) llvm.LLVMConstInt(llvm.LLVMInt8TypeInContext(cg.ctx), 0, 0) else payload;
+    return llvm.LLVMBuildInsertValue(cg.builder, opt, stored_payload, 1, "");
 }
 
 /// Resolve a K2 Value to an LLVMValueRef.

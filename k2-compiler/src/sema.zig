@@ -1538,14 +1538,11 @@ fn parseArrayLen(expr: ast.Expr) u64 {
 }
 
 fn parseIntLiteral(text: []const u8) i128 {
-    var end = text.len;
-    while (end > 0 and std.ascii.isAlphabetic(text[end - 1])) end -= 1;
-    const number_text = text[0..end];
     var value: i128 = 0;
     var start: usize = 0;
-    if (number_text.len >= 2 and number_text[0] == '0' and (number_text[1] == 'x' or number_text[1] == 'X')) start = 2;
+    if (text.len >= 2 and text[0] == '0' and (text[1] == 'x' or text[1] == 'X')) start = 2;
     const radix: i128 = if (start == 2) 16 else 10;
-    for (number_text[start..]) |ch| {
+    for (text[start..]) |ch| {
         if (ch == '_') continue;
         const digit: i128 = if (ch >= '0' and ch <= '9')
             ch - '0'

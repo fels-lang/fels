@@ -66,12 +66,29 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         .field_addr => |f| lowerField(cg, fncg, f, instr.ty, true),
 
         .index => |ix| blk: {
-            const base = resolveVal(cg, fncg, ix.base, .{ .ptr = undefined });
-            const idx = resolveVal(cg, fncg, ix.index, .usize);
             const elem_ty = types.lower(cg, instr.ty);
-            var indices = [_]llvm.LLVMValueRef{idx};
-            const gep = llvm.LLVMBuildGEP2(cg.builder, elem_ty, base, &indices, 1, "");
+            const gep = lowerIndexAddress(cg, fncg, ix, instr.ty) orelse break :blk null;
             break :blk llvm.LLVMBuildLoad2(cg.builder, elem_ty, gep, "");
+        },
+        .index_addr => |ix| lowerIndexAddress(cg, fncg, ix, pointerChild(instr.ty) orelse .unknown),
+
+        .slice_expr => |slice| lowerSliceExpr(cg, fncg, slice),
+
+        .optional_is_some => |value| blk: {
+            const opt_ty = fncg.irTypeOf(value) orelse instr.ty;
+            const opt = resolveVal(cg, fncg, value, opt_ty);
+            break :blk llvm.LLVMBuildExtractValue(cg.builder, opt, 0, "");
+        },
+
+        .optional_payload => |value| blk: {
+            const opt_ty = fncg.irTypeOf(value) orelse break :blk null;
+            const payload_ty = switch (opt_ty) {
+                .optional => |inner| inner.*,
+                else => break :blk null,
+            };
+            _ = payload_ty;
+            const opt = resolveVal(cg, fncg, value, opt_ty);
+            break :blk llvm.LLVMBuildExtractValue(cg.builder, opt, 1, "");
         },
 
         .cast => |cs| blk: {
@@ -98,6 +115,71 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
 
 fn resolveVal(cg: *ModuleCg, fncg: anytype, val: ir.Value, ty: ir.IrType) llvm.LLVMValueRef {
     return values.resolveValue(cg, fncg, val, ty);
+}
+
+fn pointerChild(ty: ir.IrType) ?ir.IrType {
+    return switch (ty) {
+        .ptr => |inner| inner.*,
+        else => null,
+    };
+}
+
+fn lowerIndexAddress(
+    cg: *ModuleCg,
+    fncg: anytype,
+    ix: ir.IndexInstr,
+    elem_ir_ty: ir.IrType,
+) ?llvm.LLVMValueRef {
+    const idx = resolveVal(cg, fncg, ix.index, .usize);
+    const elem_lty = types.lower(cg, elem_ir_ty);
+
+    const base_ir_ty = fncg.irTypeOf(ix.base);
+    if (base_ir_ty) |base_ty| switch (base_ty) {
+        .slice => {
+            const base_val = resolveVal(cg, fncg, ix.base, base_ty);
+            const ptr = llvm.LLVMBuildExtractValue(cg.builder, base_val, 0, "");
+            var indices = [_]llvm.LLVMValueRef{idx};
+            return llvm.LLVMBuildGEP2(cg.builder, elem_lty, ptr, &indices, 1, "");
+        },
+        .ptr => |inner| switch (inner.*) {
+            .array => |arr| {
+                const base_ptr = resolveVal(cg, fncg, ix.base, base_ty);
+                const zero = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), 0, 0);
+                var indices = [_]llvm.LLVMValueRef{ zero, idx };
+                return llvm.LLVMBuildGEP2(cg.builder, types.lower(cg, .{ .array = arr }), base_ptr, &indices, 2, "");
+            },
+            else => {
+                const base_ptr = resolveVal(cg, fncg, ix.base, base_ty);
+                var indices = [_]llvm.LLVMValueRef{idx};
+                return llvm.LLVMBuildGEP2(cg.builder, elem_lty, base_ptr, &indices, 1, "");
+            },
+        },
+        else => {},
+    };
+
+    const base = resolveVal(cg, fncg, ix.base, .{ .ptr = undefined });
+    var indices = [_]llvm.LLVMValueRef{idx};
+    return llvm.LLVMBuildGEP2(cg.builder, elem_lty, base, &indices, 1, "");
+}
+
+fn lowerSliceExpr(cg: *ModuleCg, fncg: anytype, slice: ir.SliceInstr) ?llvm.LLVMValueRef {
+    var ptr = resolveVal(cg, fncg, slice.ptr, .{ .ptr = undefined });
+    if (fncg.irTypeOf(slice.ptr)) |ptr_ty| switch (ptr_ty) {
+        .ptr => |inner| switch (inner.*) {
+            .array => |arr| {
+                const zero = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), 0, 0);
+                var indices = [_]llvm.LLVMValueRef{ zero, zero };
+                ptr = llvm.LLVMBuildGEP2(cg.builder, types.lower(cg, .{ .array = arr }), ptr, &indices, 2, "");
+            },
+            else => {},
+        },
+        else => {},
+    };
+    const len = values.coerce(cg.builder, cg.ctx, resolveVal(cg, fncg, slice.len, .usize), llvm.LLVMInt64TypeInContext(cg.ctx));
+    var result = llvm.LLVMGetUndef(cg.getSliceType());
+    result = llvm.LLVMBuildInsertValue(cg.builder, result, ptr, 0, "");
+    result = llvm.LLVMBuildInsertValue(cg.builder, result, len, 1, "");
+    return result;
 }
 
 // ── Unary ─────────────────────────────────────────────────────────────────
@@ -140,8 +222,11 @@ fn lowerRef(cg: *ModuleCg, fncg: anytype, val: ir.Value) ?llvm.LLVMValueRef {
 // ── Binary ─────────────────────────────────────────────────────────────────
 
 fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType) ?llvm.LLVMValueRef {
-    const lhs = resolveVal(cg, fncg, b.lhs, ty);
-    const rhs = resolveVal(cg, fncg, b.rhs, ty);
+    const lhs_hint = fncg.irTypeOf(b.lhs) orelse ty;
+    const rhs_hint = fncg.irTypeOf(b.rhs) orelse lhs_hint;
+    const lhs = resolveVal(cg, fncg, b.lhs, lhs_hint);
+    var rhs = resolveVal(cg, fncg, b.rhs, rhs_hint);
+    rhs = values.coerce(cg.builder, cg.ctx, rhs, llvm.LLVMTypeOf(lhs));
     const bl = cg.builder;
     return switch (b.op) {
         .add => blk: {
@@ -429,12 +514,38 @@ fn lowerBuiltin(
     // slice([base]) — take the base ptr and zero len; used for [:] expressions.
     if (std.mem.eql(u8, b.name, "slice")) {
         if (b.args.len < 1) return null;
-        const base_ptr = resolveVal(cg, fncg, b.args[0], .{ .ptr = undefined });
-        var vals = [_]llvm.LLVMValueRef{
-            base_ptr,
-            llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), 0, 0),
+        const zero = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), 0, 0);
+        var len = zero;
+        var base_ptr = switch (b.args[0]) {
+            .local => |name| blk: {
+                const alloca = fncg.locals.get(name) orelse break :blk resolveVal(cg, fncg, b.args[0], .{ .ptr = undefined });
+                if (fncg.local_ir_types.get(name)) |local_ty| switch (local_ty) {
+                    .array => |arr| {
+                        len = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), arr.len, 0);
+                        var indices = [_]llvm.LLVMValueRef{ zero, zero };
+                        break :blk llvm.LLVMBuildGEP2(cg.builder, types.lower(cg, local_ty), alloca, &indices, 2, "");
+                    },
+                    else => {},
+                };
+                break :blk alloca;
+            },
+            else => resolveVal(cg, fncg, b.args[0], .{ .ptr = undefined }),
         };
-        return llvm.LLVMConstStructInContext(cg.ctx, &vals, 2, 0);
+        if (fncg.irTypeOf(b.args[0])) |arg_ty| switch (arg_ty) {
+            .ptr => |inner| switch (inner.*) {
+                .array => |arr| {
+                    len = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), arr.len, 0);
+                    var indices = [_]llvm.LLVMValueRef{ zero, zero };
+                    base_ptr = llvm.LLVMBuildGEP2(cg.builder, types.lower(cg, inner.*), base_ptr, &indices, 2, "");
+                },
+                else => {},
+            },
+            else => {},
+        };
+        var result = llvm.LLVMGetUndef(cg.getSliceType());
+        result = llvm.LLVMBuildInsertValue(cg.builder, result, base_ptr, 0, "");
+        result = llvm.LLVMBuildInsertValue(cg.builder, result, len, 1, "");
+        return result;
     }
 
     return null; // unknown builtin
