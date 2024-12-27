@@ -104,6 +104,9 @@ pub const Parser = struct {
         if (self.match(.keyword_errors)) {
             return .{ .type_decl = try self.finishErrors(attrs, name) };
         }
+        if (self.match(.keyword_enum)) {
+            return .{ .type_decl = try self.finishEnum(attrs, name) };
+        }
         if (self.match(.keyword_distinct)) {
             const ty = try self.parseType();
             const semi = try self.expect(.semicolon, "expected ; after distinct type");
@@ -157,6 +160,96 @@ pub const Parser = struct {
             .name = name.text(self.source),
             .kind = .{ .struct_type = .{ .fields = try fields.toOwnedSlice(self.allocator) } },
             .span = spanFrom(name, close),
+        };
+    }
+
+    fn finishEnum(self: *Parser, attrs: []const ast.Attribute, name: Token) ParseError!ast.TypeDecl {
+        _ = try self.expect(.l_brace, "expected { after enum");
+        var variants: std.ArrayList(ast.EnumVariantDecl) = .empty;
+        errdefer variants.deinit(self.allocator);
+
+        while (!self.check(.r_brace) and !self.check(.eof)) {
+            const start = self.peek();
+            _ = self.match(.dot); // optional leading dot
+            const variant_name = try self.expect(.ident, "expected variant name");
+            const payload = if (self.match(.colon)) try self.parseType() else null;
+            const end = if (self.match(.comma)) self.previous() else variant_name;
+            try variants.append(self.allocator, .{
+                .name    = variant_name.text(self.source),
+                .payload = payload,
+                .span    = spanFrom(start, end),
+            });
+        }
+
+        const close = try self.expect(.r_brace, "expected } after enum variants");
+        return .{
+            .attrs = attrs,
+            .name  = name.text(self.source),
+            .kind  = .{ .enum_type = .{ .variants = try variants.toOwnedSlice(self.allocator) } },
+            .span  = spanFrom(name, close),
+        };
+    }
+
+    fn parseMatch(self: *Parser, start: Token) ParseError!ast.MatchStmt {
+        const subject = try self.parseExpr(0);
+        _ = try self.expect(.l_brace, "expected { after match subject");
+
+        var arms: std.ArrayList(ast.MatchArm) = .empty;
+        errdefer arms.deinit(self.allocator);
+
+        while (!self.check(.r_brace) and !self.check(.eof)) {
+            const arm_start = self.peek();
+            const is_else = self.match(.keyword_else);
+            var variant: []const u8 = "";
+            var binding: ?[]const u8 = null;
+
+            if (!is_else) {
+                _ = try self.expect(.dot, "expected . before variant name in match arm");
+                const vname = try self.expect(.ident, "expected variant name");
+                variant = vname.text(self.source);
+            }
+
+            // Optional payload binding: |x|
+            if (self.match(.pipe)) {
+                const bname = try self.expect(.ident, "expected binding name");
+                _ = try self.expect(.pipe, "expected closing | after binding");
+                binding = bname.text(self.source);
+            }
+
+            _ = try self.expect(.fat_arrow, "expected => after match pattern");
+
+            // Body: either a block { ... } or a single statement.
+            const body = if (self.check(.l_brace)) blk: {
+                const b = try self.parseBlock();
+                _ = self.match(.comma);
+                break :blk b;
+            } else blk: {
+                const arm_start_tok = self.peek();
+                const arm_stmt = try self.parseStmt();
+                _ = self.match(.comma);
+                var stmts: std.ArrayList(ast.Stmt) = .empty;
+                errdefer stmts.deinit(self.allocator);
+                try stmts.append(self.allocator, arm_stmt);
+                break :blk ast.Block{
+                    .statements = try stmts.toOwnedSlice(self.allocator),
+                    .span = spanFrom(arm_start_tok, self.previous()),
+                };
+            };
+
+            try arms.append(self.allocator, .{
+                .variant = variant,
+                .binding = binding,
+                .body    = body,
+                .is_else = is_else,
+                .span    = spanFrom(arm_start, body.span),
+            });
+        }
+
+        const close = try self.expect(.r_brace, "expected } after match arms");
+        return .{
+            .subject = subject,
+            .arms    = try arms.toOwnedSlice(self.allocator),
+            .span    = spanFrom(start, close),
         };
     }
 
@@ -313,7 +406,8 @@ pub const Parser = struct {
             return .{ .continue_stmt = spanFrom(tok, semi) };
         }
         if (self.match(.keyword_defer)) return .{ .defer_stmt = try self.parseDefer(self.previous()) };
-        if (self.match(.keyword_zone)) return .{ .zone_block = try self.parseZoneBlock(self.previous()) };
+        if (self.match(.keyword_match)) return .{ .match_stmt = try self.parseMatch(self.previous()) };
+        if (self.match(.keyword_zone))  return .{ .zone_block = try self.parseZoneBlock(self.previous()) };
         if (self.match(.keyword_unsafe)) return .{ .unsafe_block = try self.parseBlock() };
         if (self.match(.keyword_if)) return .{ .if_stmt = try self.parseIf(self.previous()) };
         if (self.match(.keyword_while)) return .{ .while_stmt = try self.parseWhile(self.previous()) };

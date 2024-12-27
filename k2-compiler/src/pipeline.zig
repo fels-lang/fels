@@ -197,11 +197,17 @@ fn runPipelineWithSource(
 
     var types = sema.checkTypesWithContext(allocator, module, symbols, source, file) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
-        error.OutOfMemory => return error.OutOfMemory,
+        error.OutOfMemory    => return error.OutOfMemory,
     };
     errdefer types.deinit(allocator);
 
-    return .{ .module = module, .symbols = symbols, .types = types, .arena = arena };
+    // Surface any warnings that accumulated even on a successful compile.
+    return .{
+        .module  = module,
+        .symbols = symbols,
+        .types   = types,
+        .arena   = arena,
+    };
 }
 
 fn createFrontendArena(allocator: std.mem.Allocator) CompileError!*std.heap.ArenaAllocator {

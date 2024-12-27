@@ -66,6 +66,18 @@ pub const TypeDeclKind = union(enum) {
     opaque_type,
     struct_type: StructDecl,
     errors: ErrorDecl,
+    enum_type: EnumDecl,
+};
+
+/// An enum declaration: `Name :: enum { variant, variant: T, ... }`
+pub const EnumDecl = struct {
+    variants: []const EnumVariantDecl,
+};
+
+pub const EnumVariantDecl = struct {
+    name:    []const u8,
+    payload: ?TypeRef,   // null → no payload
+    span:    Span,
 };
 
 pub const StructDecl = struct {
@@ -125,7 +137,22 @@ pub const Stmt = union(enum) {
     continue_stmt: Span,
     zone_block: ZoneBlock,
     defer_stmt: DeferStmt,
+    match_stmt: MatchStmt,
     expr: Expr,
+};
+
+pub const MatchStmt = struct {
+    subject: Expr,
+    arms:    []const MatchArm,
+    span:    Span,
+};
+
+pub const MatchArm = struct {
+    variant:  []const u8,  // "" when is_else = true
+    binding:  ?[]const u8, // |x| capture, null if none
+    body:     Block,
+    is_else:  bool,
+    span:     Span,
 };
 
 pub const DeferStmt = struct {

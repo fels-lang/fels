@@ -267,8 +267,9 @@ pub const FieldInfo = struct {
 };
 
 pub const VariantInfo = struct {
-    name: []const u8,
+    name:    []const u8,
     payload: ?Ty,
+    index:   u32,   // discriminant value
 };
 
 pub const ErrorVariantInfo = struct {
@@ -451,10 +452,7 @@ pub fn checkTypesWithContext(
     defer checker.deinit();
 
     checker.checkModule(module) catch |err| switch (err) {
-        error.SemanticFailed => {
-            if (checker.diagnostics.items.len != 0) return checker.finish();
-            return error.SemanticFailed;
-        },
+        error.SemanticFailed => return error.SemanticFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
 
@@ -464,10 +462,7 @@ pub fn checkTypesWithContext(
     var checked: usize = 0;
     while (checked < checker.env.generic_instantiations.items.len) {
         checker.checkGenericInstantiation(module, checked) catch |err| switch (err) {
-            error.SemanticFailed => {
-                if (checker.diagnostics.items.len != 0) return checker.finish();
-                return error.SemanticFailed;
-            },
+            error.SemanticFailed => return error.SemanticFailed,
             error.OutOfMemory => return error.OutOfMemory,
         };
         checked += 1;
@@ -630,6 +625,21 @@ const Checker = struct {
                                 .is_packed = false,
                             });
                         },
+                        .enum_type => |enum_decl| {
+                            var variants = std.ArrayList(VariantInfo).empty;
+                            errdefer variants.deinit(self.allocator);
+                            for (enum_decl.variants, 0..) |v, idx| {
+                                try variants.append(self.allocator, .{
+                                    .name    = v.name,
+                                    .payload = if (v.payload) |p| try self.typeFromRef(p) else null,
+                                    .index   = @intCast(idx),
+                                });
+                            }
+                            try self.env.layouts.put(id, .{
+                                .kind = .{ .variant_type = try variants.toOwnedSlice(self.allocator) },
+                                .is_packed = false,
+                            });
+                        },
                         else => {},
                     }
                 },
@@ -679,6 +689,11 @@ const Checker = struct {
             },
             .errors => |errors_decl| {
                 for (errors_decl.variants) |variant| {
+                    if (variant.payload) |payload| try self.checkType(payload);
+                }
+            },
+            .enum_type => |enum_decl| {
+                for (enum_decl.variants) |variant| {
                     if (variant.payload) |payload| try self.checkType(payload);
                 }
             },
@@ -796,6 +811,7 @@ const Checker = struct {
                 try self.checkBlock(zb.body);
             },
             .defer_stmt => |ds| try self.checkBlock(ds.body),
+            .match_stmt => |m| try self.checkMatch(m),
             .expr => |expr| try self.checkExpr(expr),
         }
     }
@@ -994,6 +1010,21 @@ const Checker = struct {
         }
 
         const id = self.symbols.resolve(self.symbols.root_scope, name) orelse {
+            // Maybe it's a local function-pointer variable.
+            if (self.lookupLocal(name)) |local_ty| switch (local_ty) {
+                .fn_ptr => |fp| {
+                    for (call.args, 0..) |arg, i| {
+                        const arg_ty = switch (arg) {
+                            .positional => |e| try self.inferExpr(e),
+                            .named      => |n| try self.inferExpr(n.value),
+                        };
+                        if (i < fp.params.len and !try self.compatible(arg_ty, fp.params[i]))
+                            return error.SemanticFailed;
+                    }
+                    return fp.ret.*;
+                },
+                else => {},
+            };
             self.emitError(call.callee.span, "unknown function `{s}`", .{name});
             return error.SemanticFailed;
         };
@@ -1036,6 +1067,54 @@ const Checker = struct {
             return .{ .fallible = .{ .ok = try self.boxTy(sig.return_ty), .err = try self.boxTy(err_ty) } };
         }
         return sig.return_ty;
+    }
+
+    fn checkMatch(self: *Checker, m: ast.MatchStmt) SemanticError!void {
+        const subject_ty = try self.inferExpr(m.subject);
+
+        // Resolve the enum type (must be a named type with variant_type layout).
+        const enum_id: SymbolId = switch (subject_ty) {
+            .named => |id| id,
+            else => {
+                self.emitError(m.subject.span, "match subject must be an enum type", .{});
+                return error.SemanticFailed;
+            },
+        };
+        const layout = self.env.layouts.get(enum_id) orelse return error.SemanticFailed;
+        const variants = switch (layout.kind) {
+            .variant_type => |v| v,
+            else => {
+                self.emitError(m.subject.span, "match subject must be an enum type", .{});
+                return error.SemanticFailed;
+            },
+        };
+
+        for (m.arms) |arm| {
+            if (arm.is_else) {
+                try self.checkBlock(arm.body);
+                continue;
+            }
+            // Find variant in the enum layout.
+            var found: ?VariantInfo = null;
+            for (variants) |v| {
+                if (std.mem.eql(u8, v.name, arm.variant)) { found = v; break; }
+            }
+            const variant = found orelse {
+                self.emitError(arm.span, "unknown variant `.{s}` in match", .{arm.variant});
+                return error.SemanticFailed;
+            };
+
+            // Push scope with optional payload binding.
+            if (arm.binding) |bname| {
+                const payload_ty = variant.payload orelse .void;
+                try self.pushScope();
+                defer self.popScope();
+                try self.declareLocal(bname, payload_ty);
+                try self.checkBlock(arm.body);
+            } else {
+                try self.checkBlock(arm.body);
+            }
+        }
     }
 
     fn requireUnsafe(self: *Checker, span: Span, builtin_name: []const u8) SemanticError!void {
@@ -1387,6 +1466,14 @@ const Checker = struct {
                 }
                 return error.SemanticFailed;
             },
+            // `Direction.north` — enum variant access returns the enum type itself.
+            .variant_type => |variants| blk: {
+                for (variants) |v| {
+                    if (std.mem.eql(u8, v.name, name)) break :blk .{ .named = type_id };
+                }
+                self.emitError(Span.new(0, 0), "unknown variant `{s}`", .{name});
+                return error.SemanticFailed;
+            },
             else => error.SemanticFailed,
         };
     }
@@ -1472,6 +1559,15 @@ fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
         .unsafe_block => |block| blockDefinitelyReturns(block),
         .zone_block => |zb| blockDefinitelyReturns(zb.body),
         .defer_stmt => false,
+        // match returns if it has an else arm and ALL arms return.
+        .match_stmt => |m| blk: {
+            var has_else = false;
+            for (m.arms) |arm| {
+                if (!blockDefinitelyReturns(arm.body)) break :blk false;
+                if (arm.is_else) has_else = true;
+            }
+            break :blk has_else;
+        },
         else => false,
     };
 }

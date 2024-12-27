@@ -18,12 +18,13 @@
 const std = @import("std");
 const ir = @import("../ir.zig");
 const ctx_mod = @import("llvm/context.zig");
-const structs = @import("llvm/structs.zig");
-const globals = @import("llvm/globals.zig");
-const fns = @import("llvm/functions.zig");
-const emit = @import("llvm/emit.zig");
-const link = @import("llvm/link.zig");
-const llvm_c = @import("llvm/c_api.zig").llvm;
+const structs  = @import("llvm/structs.zig");
+const globals  = @import("llvm/globals.zig");
+const fns      = @import("llvm/functions.zig");
+const emit     = @import("llvm/emit.zig");
+const link     = @import("llvm/link.zig");
+const vars_mod = @import("llvm/variants.zig");
+const llvm_c   = @import("llvm/c_api.zig").llvm;
 
 pub const LlvmBackend = struct {
     cg: ctx_mod.ModuleCg,
@@ -38,6 +39,7 @@ pub const LlvmBackend = struct {
 
     /// Lower a complete IrModule to LLVM IR in memory.
     pub fn lower(self: *LlvmBackend, module: ir.IrModule) !void {
+        try vars_mod.lowerAll(&self.cg, module.variants);   // enums first (referenced by fns)
         try structs.lowerAll(&self.cg, module.structs);
         try globals.lowerAll(&self.cg, module.globals);
         try fns.declareAll(&self.cg, module.functions);

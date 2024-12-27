@@ -1,7 +1,8 @@
 /// ModuleCg — owns the LLVM context, module, and builder for one compilation unit.
-const std   = @import("std");
-const ir    = @import("../../ir.zig");
-const llvm  = @import("c_api.zig").llvm;
+const std      = @import("std");
+const ir       = @import("../../ir.zig");
+const llvm     = @import("c_api.zig").llvm;
+const variants = @import("variants.zig");
 
 /// One entry in a struct's field table.
 pub const StructField = struct {
@@ -25,6 +26,8 @@ pub const ModuleCg = struct {
     global_decls:  std.StringHashMap(llvm.LLVMValueRef),
     /// Cached { ptr, usize } slice struct type — created once on first use.
     slice_type:    ?llvm.LLVMTypeRef = null,
+    /// Per-enum metadata (discriminants, LLVM type).
+    enum_meta: std.StringHashMap(*variants.EnumMeta),
     /// Counter for unique string-literal global names.
     string_counter: u32 = 0,
 
@@ -41,6 +44,7 @@ pub const ModuleCg = struct {
             .struct_fields = std.StringHashMap([]StructField).init(allocator),
             .fn_decls      = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
             .global_decls  = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
+            .enum_meta     = std.StringHashMap(*variants.EnumMeta).init(allocator),
         };
     }
 
@@ -53,6 +57,12 @@ pub const ModuleCg = struct {
         self.struct_types.deinit();
         self.fn_decls.deinit();
         self.global_decls.deinit();
+        var em_it = self.enum_meta.valueIterator();
+        while (em_it.next()) |v| {
+            v.*.discriminants.deinit();
+            self.allocator.destroy(v.*);
+        }
+        self.enum_meta.deinit();
         llvm.LLVMDisposeBuilder(self.builder);
         llvm.LLVMDisposeModule(self.mod);
         llvm.LLVMContextDispose(self.ctx);

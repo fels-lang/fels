@@ -253,8 +253,9 @@ pub const SliceInstr = struct {
 };
 
 pub const VariantCheckInstr = struct {
-    value: Value,
-    variant: []const u8,
+    value:     Value,
+    type_name: []const u8,  // enum type name for discriminant lookup
+    variant:   []const u8,
 };
 
 /// Inline assembly instruction with full operand constraint support.
@@ -400,12 +401,14 @@ pub fn lowerFrontend(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd)
 }
 
 pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) LowerError!IrModule {
-    var structs: std.ArrayList(StructDef) = .empty;
-    var errors: std.ArrayList(ErrorDef) = .empty;
-    var functions: std.ArrayList(IrFunction) = .empty;
-    var globals: std.ArrayList(IrGlobal) = .empty;
+    var structs:   std.ArrayList(StructDef)   = .empty;
+    var errors:    std.ArrayList(ErrorDef)    = .empty;
+    var variants:  std.ArrayList(VariantDef)  = .empty;
+    var functions: std.ArrayList(IrFunction)  = .empty;
+    var globals:   std.ArrayList(IrGlobal)    = .empty;
     errdefer structs.deinit(allocator);
     errdefer errors.deinit(allocator);
+    errdefer variants.deinit(allocator);
     errdefer functions.deinit(allocator);
     errdefer globals.deinit(allocator);
 
@@ -415,6 +418,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
             .type_decl => |decl| switch (decl.kind) {
                 .struct_type => |strukt| try structs.append(allocator, try lowerStruct(allocator, decl, strukt)),
                 .errors => |error_decl| try errors.append(allocator, try lowerErrorDef(allocator, decl, error_decl)),
+                .enum_type => |enum_decl| try variants.append(allocator, try lowerEnumDef(allocator, decl, enum_decl)),
                 .distinct, .opaque_type => {},
             },
             .const_decl => |decl| try globals.append(allocator, .{
@@ -460,7 +464,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
         .file_name = front_end.module.file_name,
         .structs = try structs.toOwnedSlice(allocator),
         .errors = try errors.toOwnedSlice(allocator),
-        .variants = &.{},
+        .variants = try variants.toOwnedSlice(allocator),
         .functions = try functions.toOwnedSlice(allocator),
         .globals = try globals.toOwnedSlice(allocator),
     };
@@ -932,6 +936,18 @@ fn lowerStruct(allocator: std.mem.Allocator, decl: ast.TypeDecl, strukt: ast.Str
     };
 }
 
+fn lowerEnumDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, enum_decl: ast.EnumDecl) !VariantDef {
+    var cases: std.ArrayList(VariantCase) = .empty;
+    errdefer cases.deinit(allocator);
+    for (enum_decl.variants) |v| {
+        try cases.append(allocator, .{
+            .name    = v.name,
+            .payload = if (v.payload) |p| try lowerType(allocator, p) else null,
+        });
+    }
+    return .{ .name = decl.name, .variants = try cases.toOwnedSlice(allocator) };
+}
+
 fn lowerErrorDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, error_decl: ast.ErrorDecl) !ErrorDef {
     var variants: std.ArrayList(ErrorCase) = .empty;
     errdefer variants.deinit(allocator);
@@ -1159,6 +1175,7 @@ const FunctionLowerer = struct {
             },
             .if_stmt => |iff| try self.lowerIf(iff),
             .while_stmt => |while_stmt| try self.lowerWhile(while_stmt),
+            .match_stmt => |m| try self.lowerMatch(m),
             .zone_block => |zb| {
                 try self.emitNoResult(.void, .{ .zone_push = .{ .name = zb.name, .kind = zb.kind } });
                 try self.active_zones.append(self.allocator, zb.name);
@@ -1375,9 +1392,46 @@ const FunctionLowerer = struct {
                 if (isBuiltinName(callee_name)) {
                     break :blk try self.emit(self.exprType(expr), .{ .builtin = .{ .name = callee_name, .args = arg_slice } });
                 }
+
+                // Determine if this is a direct (top-level function) or indirect (fn-ptr variable) call.
+                const is_direct = blk2: {
+                    if (self.symbols.resolve(self.symbols.root_scope, callee_name)) |id| {
+                        break :blk2 self.symbols.symbol(id).kind == .function;
+                    }
+                    break :blk2 false;
+                };
+
+                if (!is_direct and callee_name.len > 0 and callee_name[0] != '<') {
+                    // Function-pointer call: resolve the callee as a Value (param or local).
+                    const callee_val: Value = cv: {
+                        for (self.params) |p| {
+                            if (std.mem.eql(u8, p.name, callee_name)) break :cv .{ .param = callee_name };
+                        }
+                        break :cv .{ .local = callee_name };
+                    };
+                    break :blk try self.emit(self.exprType(expr), .{ .call_indirect = .{
+                        .callee = callee_val,
+                        .args   = arg_slice,
+                    } });
+                }
+
                 break :blk try self.emit(self.exprType(expr), .{ .call = .{ .callee = callee_name, .args = arg_slice } });
             },
             .field => |field| blk: {
+                // Detect enum variant access: `Direction.north`
+                // The base is an ident that resolves to a TYPE symbol (not a value).
+                if (field.base.kind == .ident) {
+                    const base_ident = field.base.kind.ident;
+                    if (self.symbols.resolve(self.symbols.root_scope, base_ident)) |sym_id| {
+                        if (self.symbols.symbol(sym_id).kind == .type) {
+                            break :blk try self.emit(self.exprType(expr), .{ .variant_lit = .{
+                                .type_name = base_ident,
+                                .variant   = field.name,
+                                .payload   = null,
+                            } });
+                        }
+                    }
+                }
                 const base = try self.lowerExpr(field.base.*);
                 break :blk try self.emit(self.exprType(expr), .{ .field = .{ .base = base, .name = field.name } });
             },
@@ -1442,6 +1496,79 @@ const FunctionLowerer = struct {
             },
             else => try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = try self.lowerExpr(expr) } }),
         };
+    }
+
+    fn lowerMatch(self: *FunctionLowerer, m: ast.MatchStmt) LowerError!void {
+        // Evaluate the subject once.
+        const subject = try self.lowerExpr(m.subject);
+
+        // Get enum type name for variant_is instructions.
+        // Try three sources in order:
+        //   1. sema expr_types (most accurate)
+        //   2. param type annotation (when subject is a param ident)
+        //   3. empty string (fall-through, match will still work structurally)
+        const enum_name: []const u8 = blk: {
+            // 1. sema expr_types
+            if (self.types.expr_types.get(m.subject.id)) |sema_ty| switch (sema_ty) {
+                .named => |id| break :blk self.symbols.symbol(id).name,
+                else   => {},
+            };
+            // 2. param type annotation
+            if (m.subject.kind == .ident) {
+                const ident_name = m.subject.kind.ident;
+                for (self.params) |p| {
+                    if (std.mem.eql(u8, p.name, ident_name)) {
+                        switch (p.ty) {
+                            .named => |named| break :blk named.name,
+                            else   => {},
+                        }
+                    }
+                }
+            }
+            break :blk "";
+        };
+
+        const after_id = self.allocBlockId();
+
+        for (m.arms) |arm| {
+            const arm_id = self.allocBlockId();
+            const next_id = self.allocBlockId();
+
+            if (arm.is_else) {
+                // else arm — fall through from failed checks
+                try self.terminate(.{ .branch = arm_id });
+                self.startBlock(arm_id, "match.else");
+                if (arm.binding) |bname| {
+                    try self.emitNoResult(.void, .{ .store_local = .{ .name = bname, .value = subject } });
+                }
+                try self.lowerBlock(arm.body.statements, .{ .branch = after_id });
+                break; // else must be last
+            }
+
+            // Non-else arm: emit variant_is check.
+            const check = try self.emit(.bool, .{ .variant_is = .{
+                .value     = subject,
+                .type_name = enum_name,
+                .variant   = arm.variant,
+            } });
+            try self.terminate(.{ .cond_branch = .{ .cond = check, .then_block = arm_id, .else_block = next_id } });
+
+            // Arm body.
+            self.startBlock(arm_id, "match.arm");
+            if (arm.binding) |bname| {
+                const payload = try self.emit(.unknown, .{ .variant_payload = .{
+                    .value = subject, .type_name = enum_name, .variant = arm.variant,
+                } });
+                try self.emitNoResult(.void, .{ .store_local = .{ .name = bname, .value = payload } });
+            }
+            try self.lowerBlock(arm.body.statements, .{ .branch = after_id });
+
+            self.startBlock(next_id, "match.next");
+        }
+
+        // If no else arm, fall through to after.
+        if (!self.current_terminated) try self.terminate(.{ .branch = after_id });
+        self.startBlock(after_id, "match.after");
     }
 
     fn emitDefersDown(self: *FunctionLowerer, floor: usize, path: DeferPath) LowerError!void {
