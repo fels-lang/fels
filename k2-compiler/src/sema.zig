@@ -310,6 +310,10 @@ pub const TypeEnv = struct {
     expr_symbols: std.AutoHashMap(ast.NodeId, SymbolId),
     expr_scopes: std.AutoHashMap(ast.NodeId, ScopeId),
     generic_instantiations: std.ArrayList(GenericInstantiation) = .empty,
+    /// Generic struct templates: struct name → TypeDecl (with type_params).
+    generic_struct_templates: std.StringHashMap(ast.TypeDecl) = undefined,
+    /// Mangled name → SymbolId for already-instantiated generic structs.
+    generic_struct_instances: std.StringHashMap(SymbolId) = undefined,
     diagnostics: std.ArrayList(Diagnostic) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) TypeEnv {
@@ -321,6 +325,8 @@ pub const TypeEnv = struct {
             .expr_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .expr_symbols = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .expr_scopes = std.AutoHashMap(ast.NodeId, ScopeId).init(allocator),
+            .generic_struct_templates = std.StringHashMap(ast.TypeDecl).init(allocator),
+            .generic_struct_instances = std.StringHashMap(SymbolId).init(allocator),
         };
     }
 
@@ -334,6 +340,8 @@ pub const TypeEnv = struct {
         self.expr_scopes.deinit();
         for (self.generic_instantiations.items) |*gi| gi.expr_types.deinit();
         self.generic_instantiations.deinit(allocator);
+        self.generic_struct_templates.deinit();
+        self.generic_struct_instances.deinit();
         self.diagnostics.deinit(allocator);
     }
 
@@ -607,18 +615,24 @@ const Checker = struct {
                     try self.env.set(id, .{ .named = id });
                     switch (decl.kind) {
                         .struct_type => |strukt| {
-                            var fields = std.ArrayList(FieldInfo).empty;
-                            errdefer fields.deinit(self.allocator);
-                            for (strukt.fields) |field| {
-                                try fields.append(self.allocator, .{
-                                    .name = field.name,
-                                    .ty = try self.typeFromRef(field.ty),
+                            if (strukt.type_params.len > 0) {
+                                // Generic struct — store as template, don't process fields yet.
+                                try self.env.generic_struct_templates.put(decl.name, decl);
+                                // Register the type name but leave layout empty for now.
+                            } else {
+                                var fields = std.ArrayList(FieldInfo).empty;
+                                errdefer fields.deinit(self.allocator);
+                                for (strukt.fields) |field| {
+                                    try fields.append(self.allocator, .{
+                                        .name = field.name,
+                                        .ty = try self.typeFromRef(field.ty),
+                                    });
+                                }
+                                try self.env.layouts.put(id, .{
+                                    .kind = .{ .struct_type = try fields.toOwnedSlice(self.allocator) },
+                                    .is_packed = hasAttr(decl.attrs, "packed"),
                                 });
                             }
-                            try self.env.layouts.put(id, .{
-                                .kind = .{ .struct_type = try fields.toOwnedSlice(self.allocator) },
-                                .is_packed = hasAttr(decl.attrs, "packed"),
-                            });
                         },
                         .errors => |errors_decl| {
                             try self.env.layouts.put(id, .{
@@ -686,6 +700,7 @@ const Checker = struct {
             .distinct => |ty| try self.checkType(ty),
             .opaque_type => {},
             .struct_type => |strukt| {
+                if (strukt.type_params.len > 0) return; // generic — checked on instantiation
                 for (strukt.fields) |field| try self.checkType(field.ty);
             },
             .errors => |errors_decl| {
@@ -1353,6 +1368,94 @@ const Checker = struct {
         _ = try self.typeFromRef(ty);
     }
 
+    fn instantiateGenericStruct(self: *Checker, gi: ast.GenericInstType) SemanticError!Ty {
+        // Look up the template.
+        const tmpl = self.env.generic_struct_templates.get(gi.name) orelse {
+            self.emitError(gi.span, "unknown generic type `{s}`", .{gi.name});
+            return error.SemanticFailed;
+        };
+        const strukt = switch (tmpl.kind) {
+            .struct_type => |s| s,
+            else => return error.SemanticFailed,
+        };
+        if (gi.args.len != strukt.type_params.len) {
+            self.emitError(gi.span,
+                "`{s}` expects {d} type argument(s), got {d}",
+                .{ gi.name, strukt.type_params.len, gi.args.len });
+            return error.SemanticFailed;
+        }
+
+        // Build type binding: T → resolved arg type.
+        const saved_binding = self.current_type_binding;
+        const saved_params  = self.current_type_params;
+        defer {
+            self.current_type_binding = saved_binding;
+            self.current_type_params  = saved_params;
+        }
+        var binding = std.ArrayList(TypeArg).empty;
+        defer binding.deinit(self.allocator);
+        for (strukt.type_params, gi.args) |tp_name, arg_ref| {
+            const arg_ty = try self.typeFromRef(arg_ref);
+            // If the arg is still an unbound type param, we're inside a generic function —
+            // return the template's own symbol rather than instantiating yet.
+            if (arg_ty == .type_param) {
+                const tmpl_id = self.symbols.resolve(self.symbols.root_scope, gi.name) orelse return .unknown;
+                return .{ .named = tmpl_id };
+            }
+            try binding.append(self.allocator, .{ .name = tp_name, .ty = arg_ty });
+        }
+        self.current_type_binding = binding.items;
+        self.current_type_params  = strukt.type_params;
+
+        // Build a mangled name.
+        var mangled_buf: std.ArrayList(u8) = .empty;
+        defer mangled_buf.deinit(self.allocator);
+        try mangled_buf.appendSlice(self.allocator, gi.name);
+        for (binding.items) |arg| {
+            try mangled_buf.appendSlice(self.allocator, "__");
+            try mangled_buf.appendSlice(self.allocator, arg.name);
+            try mangled_buf.append(self.allocator, '_');
+            try mangled_buf.appendSlice(self.allocator, tyMangle(arg.ty));
+        }
+        const mangled = try mangled_buf.toOwnedSlice(self.allocator);
+
+        // Return existing instantiation if already done.
+        if (self.env.generic_struct_instances.get(mangled)) |inst_id|
+            return .{ .named = inst_id };
+
+        // Register a new symbol for the instantiated struct.
+        const inst_id = self.symbols.symbols.items.len;
+        try self.symbols.symbols.append(self.allocator, .{
+            .id       = inst_id,
+            .name     = mangled,
+            .kind     = .type,
+            .span     = gi.span,
+            .scope_id = self.symbols.root_scope,
+            .owner    = null,
+        });
+        try self.symbols.scopes.items[self.symbols.root_scope].names.put(mangled, inst_id);
+        try self.symbols.scopes.items[self.symbols.root_scope].symbols.append(self.allocator, inst_id);
+
+        try self.env.symbol_types.put(inst_id, .{ .named = inst_id });
+        try self.env.generic_struct_instances.put(mangled, inst_id);
+
+        // Build the instantiated struct layout (substitute type params in fields).
+        var fields = std.ArrayList(FieldInfo).empty;
+        errdefer fields.deinit(self.allocator);
+        for (strukt.fields) |field| {
+            try fields.append(self.allocator, .{
+                .name = field.name,
+                .ty   = try self.typeFromRef(field.ty),  // uses current_type_binding
+            });
+        }
+        try self.env.layouts.put(inst_id, .{
+            .kind      = .{ .struct_type = try fields.toOwnedSlice(self.allocator) },
+            .is_packed = hasAttr(tmpl.attrs, "packed"),
+        });
+
+        return .{ .named = inst_id };
+    }
+
     fn resolveTypeParam(self: *Checker, name: []const u8) ?Ty {
         // Check concrete binding first (during instantiation)
         for (self.current_type_binding) |arg| {
@@ -1401,6 +1504,7 @@ const Checker = struct {
                 } };
             },
             .inline_error_set => |set| return .{ .error_set = try self.errorVariantsFromDecl(set.variants) },
+            .generic_inst => |gi| return try self.instantiateGenericStruct(gi),
             .opaque_type => return .void,
         }
     }

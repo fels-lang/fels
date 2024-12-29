@@ -441,7 +441,34 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
         }
     }
 
-    // Lower each generic instantiation with its concrete type binding
+    // Emit generic struct instantiations as concrete StructDef entries.
+    var inst_it = front_end.types.generic_struct_instances.iterator();
+    while (inst_it.next()) |kv| {
+        const inst_id   = kv.value_ptr.*;
+        const layout    = front_end.types.layouts.get(inst_id) orelse continue;
+        const mangled   = kv.key_ptr.*;
+        switch (layout.kind) {
+            .struct_type => |fields| {
+                var ir_fields: std.ArrayList(FieldDef) = .empty;
+                errdefer ir_fields.deinit(allocator);
+                for (fields) |f| {
+                    try ir_fields.append(allocator, .{
+                        .name = f.name,
+                        .ty   = try lowerSemaType(allocator, f.ty, front_end.symbols),
+                    });
+                }
+                try structs.append(allocator, .{
+                    .name      = mangled,
+                    .fields    = try ir_fields.toOwnedSlice(allocator),
+                    .is_packed = layout.is_packed,
+                    .alignment = 0,
+                });
+            },
+            else => {},
+        }
+    }
+
+    // Lower each generic function instantiation with its concrete type binding
     for (front_end.types.generic_instantiations.items) |*inst| {
         for (front_end.module.items) |item| {
             switch (item) {
@@ -1816,7 +1843,8 @@ const FunctionLowerer = struct {
 
 fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
     return switch (ty) {
-        .type_param => .unknown, // resolved per-instantiation
+        .type_param   => .unknown,
+        .generic_inst => |gi| .{ .struct_type = gi.name },
         .named => |named| lowerNamedType(named.name),
         .pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },
         .many_pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },

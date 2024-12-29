@@ -81,7 +81,8 @@ pub const EnumVariantDecl = struct {
 };
 
 pub const StructDecl = struct {
-    fields: []const FieldDecl,
+    type_params: []const []const u8,  // e.g. ["T"] for struct($T: type) { ... }
+    fields:      []const FieldDecl,
 };
 
 pub const ErrorDecl = struct {
@@ -259,6 +260,8 @@ pub const TypeRef = union(enum) {
     fn_type: FnType,
     inline_error_set: InlineErrorSet,
     type_param: NamedType,
+    /// Generic type instantiation: `ArrayList(i32)`, `HashMap([]const u8, u32)`, etc.
+    generic_inst: GenericInstType,
     opaque_type,
 
     pub fn span(self: TypeRef) Span {
@@ -272,8 +275,9 @@ pub const TypeRef = union(enum) {
             .atomic => |ty| ty.span,
             .fn_type => |ty| ty.span,
             .inline_error_set => |ty| ty.span,
-            .type_param => |ty| ty.span,
-            .opaque_type => Span.new(0, 0),
+            .type_param      => |ty| ty.span,
+            .generic_inst    => |ty| ty.span,
+            .opaque_type     => Span.new(0, 0),
         };
     }
 };
@@ -328,6 +332,12 @@ pub const ArrayType = struct {
 
 pub const AtomicType = struct {
     inner: *const TypeRef,
+    span: Span,
+};
+
+pub const GenericInstType = struct {
+    name: []const u8,
+    args: []const TypeRef,
     span: Span,
 };
 

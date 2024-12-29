@@ -138,6 +138,21 @@ pub const Parser = struct {
     }
 
     fn finishStruct(self: *Parser, attrs: []const ast.Attribute, name: Token) ParseError!ast.TypeDecl {
+        // Optional type params: struct($T: type, $U: type) { ... }
+        var type_params: std.ArrayList([]const u8) = .empty;
+        errdefer type_params.deinit(self.allocator);
+        if (self.match(.l_paren)) {
+            while (!self.check(.r_paren) and !self.check(.eof)) {
+                _ = try self.expect(.dollar, "expected $ before struct type param");
+                const tp = try self.expect(.ident, "expected type param name");
+                _ = try self.expect(.colon, "expected : after type param");
+                _ = try self.expect(.keyword_type, "expected 'type' after $T:");
+                try type_params.append(self.allocator, tp.text(self.source));
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.expect(.r_paren, "expected ) after struct type params");
+        }
+
         _ = try self.expect(.l_brace, "expected { after struct");
         var fields: std.ArrayList(ast.FieldDecl) = .empty;
         errdefer fields.deinit(self.allocator);
@@ -158,7 +173,10 @@ pub const Parser = struct {
         return .{
             .attrs = attrs,
             .name = name.text(self.source),
-            .kind = .{ .struct_type = .{ .fields = try fields.toOwnedSlice(self.allocator) } },
+            .kind = .{ .struct_type = .{
+                .type_params = try type_params.toOwnedSlice(self.allocator),
+                .fields      = try fields.toOwnedSlice(self.allocator),
+            } },
             .span = spanFrom(name, close),
         };
     }
@@ -690,6 +708,21 @@ pub const Parser = struct {
         if (!isTypeName(name.kind)) {
             try self.errorAt(name, "expected type");
             return error.ParseFailed;
+        }
+        // Generic instantiation: Name(TypeArg1, TypeArg2, ...)
+        if (self.match(.l_paren)) {
+            var args: std.ArrayList(ast.TypeRef) = .empty;
+            errdefer args.deinit(self.allocator);
+            while (!self.check(.r_paren) and !self.check(.eof)) {
+                try args.append(self.allocator, try self.parseType());
+                if (!self.match(.comma)) break;
+            }
+            const close = try self.expect(.r_paren, "expected ) after type arguments");
+            return .{ .generic_inst = .{
+                .name = name.text(self.source),
+                .args = try args.toOwnedSlice(self.allocator),
+                .span = spanFrom(name, close),
+            } };
         }
         return namedType(name.text(self.source), spanFrom(name, name));
     }
