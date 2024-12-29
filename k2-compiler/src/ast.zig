@@ -365,8 +365,10 @@ pub const ExprKind = union(enum) {
     compound_literal: []const Expr,
     unary: UnaryExpr,
     binary: BinaryExpr,
-    unsafe_expr: *const Expr,
-    run_expr:    *const Expr,  // #run expr — evaluated at compile time
+    unsafe_expr:   *const Expr,
+    run_expr:      *const Expr,
+    force_unwrap:  *const Expr,          // expr!!  — unwrap or panic
+    nil_coalesce:  NilCoalesceExpr,      // expr ?? default
     try_expr: TryExpr,
     catch_expr: CatchExpr,
     call: CallExpr,
@@ -396,6 +398,11 @@ pub const BinaryExpr = struct {
 
 pub const TryExpr = struct {
     value: *const Expr,
+};
+
+pub const NilCoalesceExpr = struct {
+    value:   *const Expr,  // lhs — optional or fallible
+    default: *const Expr,  // rhs — used when lhs is null/error
 };
 
 pub const CatchExpr = struct {

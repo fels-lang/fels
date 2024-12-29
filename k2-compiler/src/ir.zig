@@ -1366,7 +1366,9 @@ const FunctionLowerer = struct {
             },
             .type_ref => .{ .imm = .null },
             .unsafe_expr => |inner| try self.lowerExpr(inner.*),
-            .run_expr    => |inner| try self.lowerExpr(inner.*),  // comptime → same as regular at codegen
+            .run_expr    => |inner| try self.lowerExpr(inner.*),
+            .force_unwrap => |inner| try self.lowerForceUnwrap(inner.*, expr),
+            .nil_coalesce => |nc|   try self.lowerNilCoalesce(nc, expr),
             .int => |text| .{ .imm = .{ .int = parseIntLiteral(text) } },
             .string => |text| .{ .imm = .{ .text = trimQuotes(text) } },
             .bool => |value| .{ .imm = .{ .bool = value } },
@@ -1552,6 +1554,61 @@ const FunctionLowerer = struct {
 
     /// Try to evaluate a #if condition at compile time.
     /// Returns the block to emit (then or else), or null if condition is dynamic.
+    /// `expr!!` — unwrap or unreachable (TODO: call @panic when available).
+    fn lowerForceUnwrap(self: *FunctionLowerer, inner: ast.Expr, outer: ast.Expr) LowerError!Value {
+        const lhs = try self.lowerExpr(inner);
+        const is_some = try self.emit(.bool, .{ .optional_is_some = lhs });
+
+        const value_id = self.allocBlockId();
+        const panic_id = self.allocBlockId();
+        try self.terminate(.{ .cond_branch = .{
+            .cond        = is_some,
+            .then_block  = value_id,
+            .else_block  = panic_id,
+        } });
+
+        // Panic path — unreachable for now (becomes @panic call later).
+        self.startBlock(panic_id, "force_unwrap.panic");
+        try self.terminate(.unreachable_term);
+
+        // Happy path — extract the payload.
+        self.startBlock(value_id, "force_unwrap.ok");
+        return try self.emit(self.exprType(outer), .{ .optional_payload = lhs });
+    }
+
+    /// `expr ?? default` — use default value when expr is null/error.
+    fn lowerNilCoalesce(self: *FunctionLowerer, nc: ast.NilCoalesceExpr, outer: ast.Expr) LowerError!Value {
+        const lhs      = try self.lowerExpr(nc.value.*);
+        const result_ty = self.exprType(outer);
+
+        const is_some    = try self.emit(.bool, .{ .optional_is_some = lhs });
+        const value_id   = self.allocBlockId();
+        const default_id = self.allocBlockId();
+        const after_id   = self.allocBlockId();
+
+        try self.terminate(.{ .cond_branch = .{
+            .cond       = is_some,
+            .then_block = value_id,
+            .else_block = default_id,
+        } });
+
+        // Value path — extract payload.
+        self.startBlock(value_id, "coalesce.value");
+        const payload = try self.emit(result_ty, .{ .optional_payload = lhs });
+        try self.emitNoResult(result_ty, .{ .store_local = .{ .name = "__coalesce", .value = payload } });
+        try self.terminate(.{ .branch = after_id });
+
+        // Default path — evaluate the default expression.
+        self.startBlock(default_id, "coalesce.default");
+        const def_val = try self.lowerExpr(nc.default.*);
+        try self.emitNoResult(result_ty, .{ .store_local = .{ .name = "__coalesce", .value = def_val } });
+        try self.terminate(.{ .branch = after_id });
+
+        // After — load the result.
+        self.startBlock(after_id, "coalesce.after");
+        return .{ .local = "__coalesce" };
+    }
+
     fn evalComptimeIf(self: *FunctionLowerer, ci: ast.ComptimeIfStmt) ?ast.Block {
         var ctx = comptime_mod.ComptimeCtx.init(
             self.allocator, self.module, self.symbols, &self.types,

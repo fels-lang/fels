@@ -756,9 +756,25 @@ pub const Parser = struct {
                 left = try self.expr(.{ .slice = .{ .base = try self.allocExpr(left) } }, Span.new(left.span.start, close.start + close.len));
                 continue;
             }
+            // expr?  — propagate error
             if (self.match(.question)) {
                 const end = self.previous();
                 left = try self.expr(.{ .try_expr = .{ .value = try self.allocExpr(left) } }, Span.new(left.span.start, end.start + end.len));
+                continue;
+            }
+            // expr!! — force unwrap (panic if null/error)
+            if (self.match(.bang_bang)) {
+                const end = self.previous();
+                left = try self.expr(.{ .force_unwrap = try self.allocExpr(left) }, Span.new(left.span.start, end.start + end.len));
+                continue;
+            }
+            // expr ?? default — nil coalesce
+            if (self.match(.question_question)) {
+                const default = try self.parseExpr(1); // right-associative, same precedence as ??
+                left = try self.expr(.{ .nil_coalesce = .{
+                    .value   = try self.allocExpr(left),
+                    .default = try self.allocExpr(default),
+                } }, Span.new(left.span.start, default.span.end));
                 continue;
             }
             if (self.match(.keyword_catch)) {

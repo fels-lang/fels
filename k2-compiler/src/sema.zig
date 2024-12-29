@@ -862,7 +862,37 @@ const Checker = struct {
                 defer self.unsafe_depth -= 1;
                 break :blk try self.inferExpr(inner.*);
             },
-            .run_expr => |inner| try self.inferRunExpr(inner.*),
+            .run_expr    => |inner| try self.inferRunExpr(inner.*),
+            .force_unwrap => |inner| blk: {
+                const ty = try self.inferExpr(inner.*);
+                break :blk switch (ty) {
+                    .optional => |p| p.*,
+                    .fallible  => |f| f.ok.*,
+                    else => {
+                        self.emitError(expr.span, "`!!` requires an optional or fallible type, found `{s}`", .{self.formatTy(ty)});
+                        return error.SemanticFailed;
+                    },
+                };
+            },
+            .nil_coalesce => |nc| blk: {
+                const lhs_ty = try self.inferExpr(nc.value.*);
+                const inner_ty: Ty = switch (lhs_ty) {
+                    .optional => |p| p.*,
+                    .fallible  => |f| f.ok.*,
+                    else => {
+                        self.emitError(nc.value.span, "`??` requires an optional or fallible left-hand side, found `{s}`", .{self.formatTy(lhs_ty)});
+                        return error.SemanticFailed;
+                    },
+                };
+                const default_ty = try self.inferExpr(nc.default.*);
+                if (!try self.compatible(default_ty, inner_ty)) {
+                    self.emitError(nc.default.span,
+                        "`??` default type `{s}` incompatible with `{s}`",
+                        .{ self.formatTy(default_ty), self.formatTy(inner_ty) });
+                    return error.SemanticFailed;
+                }
+                break :blk inner_ty;
+            },
             .type_ref => |type_ref| try self.typeFromRef(type_ref),
             .int => |text| intLiteralType(text),
             .string => try self.sliceOf(.u8),
@@ -1683,6 +1713,8 @@ fn blockDefinitelyReturns(block: ast.Block) bool {
 fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
     return switch (stmt) {
         .return_stmt, .fail_stmt => true,
+        // An expression statement that is just `expr!!` panics if null — counts as exit
+        .expr => |e| e.kind == .force_unwrap,
         .break_stmt, .continue_stmt => true,
         .if_stmt => |iff| iff.else_block != null and
             blockDefinitelyReturns(iff.then_block) and

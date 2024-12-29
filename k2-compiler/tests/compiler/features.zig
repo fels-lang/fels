@@ -392,6 +392,91 @@ test "asm: unsafe required — bare asm fails outside unsafe" {
         k2.compile(arena.allocator(), "bad_asm.k2", bad));
 }
 
+test "?? nil-coalesce: unwrap or default" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\find :: fn(ok: bool) -> ?i32 {
+        \\    if ok { return 42; }
+        \\    return null;
+        \\}
+        \\
+        \\with_default :: fn(ok: bool) -> i32 {
+        \\    return find(ok) ?? -1;
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "nil_coalesce.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    // with_default should have a conditional branch (for the ?? check)
+    const fn_ = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "with_default")) break f;
+    } else return error.FunctionNotFound;
+    var has_cond_branch = false;
+    for (fn_.blocks) |block| {
+        if (block.terminator) |t| switch (t) {
+            .cond_branch => has_cond_branch = true,
+            else => {},
+        };
+    }
+    try std.testing.expect(has_cond_branch);
+}
+
+test "!! force-unwrap: unwrap or unreachable" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\find :: fn() -> ?i32 { return 42; }
+        \\
+        \\unwrap :: fn() -> i32 {
+        \\    return find()!!;
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "force_unwrap.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    // unwrap should have a cond_branch (the null check) + an unreachable block
+    const fn_ = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "unwrap")) break f;
+    } else return error.FunctionNotFound;
+    var has_unreachable = false;
+    for (fn_.blocks) |block| {
+        if (block.terminator) |t| switch (t) {
+            .unreachable_term => has_unreachable = true,
+            else => {},
+        };
+    }
+    try std.testing.expect(has_unreachable);
+}
+
+test "?? type mismatch fails sema" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const bad =
+        \\bad :: fn(v: ?i32) -> i32 { return v ?? "wrong"; }
+    ;
+    try std.testing.expectError(error.SemanticFailed,
+        k2.compile(arena.allocator(), "bad.k2", bad));
+}
+
+test "!! on non-optional fails sema" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const bad =
+        \\bad :: fn(v: i32) -> i32 { return v!!; }
+    ;
+    try std.testing.expectError(error.SemanticFailed,
+        k2.compile(arena.allocator(), "bad.k2", bad));
+}
+
 test "if-else with both branches returning" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

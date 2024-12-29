@@ -91,7 +91,9 @@ pub const TokenKind = enum {
     keyword_enum,
     keyword_match,
     dollar,    // $
-    fat_arrow, // =>
+    fat_arrow,        // =>
+    question_question, // ??
+    bang_bang,         // !!
     keyword_errors,
     keyword_fail,
     keyword_catch,
@@ -177,7 +179,10 @@ pub const Lexer = struct {
                 return token(.dot, start, self.index);
             },
             '#' => return token(.hash, start, self.index),
-            '?' => return token(.question, start, self.index),
+            '?' => {
+                if (self.match('?')) return token(.question_question, start, self.index);
+                return token(.question, start, self.index);
+            },
             '+' => {
                 if (self.match('=')) return token(.plus_eq, start, self.index);
                 return token(.plus, start, self.index);
@@ -221,7 +226,8 @@ pub const Lexer = struct {
                 return token(.eq, start, self.index);
             },
             '!' => {
-                if (self.match('=')) return token(.bang_eq, start, self.index);
+                if (self.match('!')) return token(.bang_bang,  start, self.index);
+                if (self.match('=')) return token(.bang_eq,   start, self.index);
                 return token(.bang, start, self.index);
             },
             '<' => {
