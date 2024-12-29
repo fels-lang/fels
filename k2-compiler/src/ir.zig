@@ -1175,7 +1175,18 @@ const FunctionLowerer = struct {
             },
             .if_stmt => |iff| try self.lowerIf(iff),
             .while_stmt => |while_stmt| try self.lowerWhile(while_stmt),
-            .match_stmt => |m| try self.lowerMatch(m),
+            .match_stmt   => |m| try self.lowerMatch(m),
+            // Comptime directives: during codegen these lower like normal code.
+            // The comptime evaluator has already decided what to include.
+            .comptime_if  => |ci| try self.lowerIf(.{
+                .binding      = null,
+                .payload_binding = null,
+                .condition    = ci.condition,
+                .then_block   = ci.then_block,
+                .else_block   = ci.else_block,
+                .span         = ci.span,
+            }),
+            .comptime_run => |block| try self.lowerBlock(block.statements, null),
             .zone_block => |zb| {
                 try self.emitNoResult(.void, .{ .zone_push = .{ .name = zb.name, .kind = zb.kind } });
                 try self.active_zones.append(self.allocator, zb.name);
@@ -1315,6 +1326,7 @@ const FunctionLowerer = struct {
             },
             .type_ref => .{ .imm = .null },
             .unsafe_expr => |inner| try self.lowerExpr(inner.*),
+            .run_expr    => |inner| try self.lowerExpr(inner.*),  // comptime → same as regular at codegen
             .int => |text| .{ .imm = .{ .int = parseIntLiteral(text) } },
             .string => |text| .{ .imm = .{ .text = trimQuotes(text) } },
             .bool => |value| .{ .imm = .{ .bool = value } },

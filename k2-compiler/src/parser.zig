@@ -163,6 +163,41 @@ pub const Parser = struct {
         };
     }
 
+    fn parseComptimeDirective(self: *Parser, hash: Token) ParseError!ast.Stmt {
+        // #if cond { ... } else { ... }
+        if (self.match(.keyword_if)) {
+            const start = self.previous();
+            const cond       = try self.parseExpr(0);
+            const then_block = try self.parseBlock();
+            const else_block = if (self.match(.keyword_else)) try self.parseBlock() else null;
+            const end        = if (else_block) |b| b.span else then_block.span;
+            return .{ .comptime_if = .{
+                .condition  = cond,
+                .then_block = then_block,
+                .else_block = else_block,
+                .span       = spanFrom(start, end),
+            } };
+        }
+        // #run { ... }  or  #run expr;
+        if (self.matchIdent("run")) {
+            if (self.check(.l_brace)) {
+                return .{ .comptime_run = try self.parseBlock() };
+            }
+            // Single-statement #run expr;
+            const stmt = try self.parseStmt();
+            var stmts: std.ArrayList(ast.Stmt) = .empty;
+            errdefer stmts.deinit(self.allocator);
+            try stmts.append(self.allocator, stmt);
+            const body = ast.Block{
+                .statements = try stmts.toOwnedSlice(self.allocator),
+                .span = Span.new(hash.start, hash.start + hash.len),
+            };
+            return .{ .comptime_run = body };
+        }
+        try self.errorAt(hash, "unknown compile-time directive; expected #if or #run");
+        return error.ParseFailed;
+    }
+
     fn finishEnum(self: *Parser, attrs: []const ast.Attribute, name: Token) ParseError!ast.TypeDecl {
         _ = try self.expect(.l_brace, "expected { after enum");
         var variants: std.ArrayList(ast.EnumVariantDecl) = .empty;
@@ -407,6 +442,8 @@ pub const Parser = struct {
         }
         if (self.match(.keyword_defer)) return .{ .defer_stmt = try self.parseDefer(self.previous()) };
         if (self.match(.keyword_match)) return .{ .match_stmt = try self.parseMatch(self.previous()) };
+        // Compile-time directives: #if, #run
+        if (self.match(.hash)) return try self.parseComptimeDirective(self.previous());
         if (self.match(.keyword_zone))  return .{ .zone_block = try self.parseZoneBlock(self.previous()) };
         if (self.match(.keyword_unsafe)) return .{ .unsafe_block = try self.parseBlock() };
         if (self.match(.keyword_if)) return .{ .if_stmt = try self.parseIf(self.previous()) };
@@ -752,6 +789,18 @@ pub const Parser = struct {
                     .{ .unsafe_expr = try self.allocExpr(inner) },
                     Span.new(tok.start, inner.span.end),
                 );
+            },
+            // #run expr — compile-time expression in value position
+            .hash => {
+                if (self.matchIdent("run")) {
+                    const inner = try self.parseExpr(18);
+                    return self.expr(
+                        .{ .run_expr = try self.allocExpr(inner) },
+                        Span.new(tok.start, inner.span.end),
+                    );
+                }
+                try self.errorAt(tok, "expected 'run' after # in expression position");
+                return error.ParseFailed;
             },
             .dot => {
                 const name = try self.expect(.ident, "expected name after .");

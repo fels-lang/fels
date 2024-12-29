@@ -17,4 +17,5 @@ comptime {
     _ = diagnostics_tests;
     _ = modules_tests;
     _ = enums_tests;
+    _ = @import("compiler/comptime.zig");
 }

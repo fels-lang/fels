@@ -138,7 +138,16 @@ pub const Stmt = union(enum) {
     zone_block: ZoneBlock,
     defer_stmt: DeferStmt,
     match_stmt: MatchStmt,
+    comptime_if:  ComptimeIfStmt,
+    comptime_run: Block,
     expr: Expr,
+};
+
+pub const ComptimeIfStmt = struct {
+    condition:  Expr,
+    then_block: Block,
+    else_block: ?Block,
+    span:       Span,
 };
 
 pub const MatchStmt = struct {
@@ -347,6 +356,7 @@ pub const ExprKind = union(enum) {
     unary: UnaryExpr,
     binary: BinaryExpr,
     unsafe_expr: *const Expr,
+    run_expr:    *const Expr,  // #run expr — evaluated at compile time
     try_expr: TryExpr,
     catch_expr: CatchExpr,
     call: CallExpr,

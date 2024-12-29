@@ -1,6 +1,7 @@
-const std = @import("std");
-const ast = @import("ast.zig");
-const NodeId = ast.NodeId;
+const std          = @import("std");
+const ast          = @import("ast.zig");
+const comptime_mod = @import("comptime.zig");
+const NodeId       = ast.NodeId;
 const diag_mod = @import("diagnostic.zig");
 const Diagnostic = diag_mod.Diagnostic;
 const DiagKind = diag_mod.DiagKind;
@@ -811,7 +812,12 @@ const Checker = struct {
                 try self.checkBlock(zb.body);
             },
             .defer_stmt => |ds| try self.checkBlock(ds.body),
-            .match_stmt => |m| try self.checkMatch(m),
+            .match_stmt   => |m| try self.checkMatch(m),
+            .comptime_if  => |ci| try self.checkComptimeIf(ci),
+            .comptime_run => |block| {
+                // Type-check the block for correctness even if we don't execute it yet.
+                try self.checkBlock(block);
+            },
             .expr => |expr| try self.checkExpr(expr),
         }
     }
@@ -823,6 +829,8 @@ const Checker = struct {
     fn inferExpr(self: *Checker, expr: ast.Expr) SemanticError!Ty {
         const ty: Ty = switch (expr.kind) {
             .ident => |name| {
+                // Compile-time pseudo-modules return unknown so field access works.
+                if (std.mem.eql(u8, name, "TARGET")) return .unknown;
                 if (isBuiltinValue(name)) return .void;
                 if (std.mem.startsWith(u8, name, ".")) return .error_ty;
                 if (self.lookupLocal(name)) |local_ty| return local_ty;
@@ -839,6 +847,7 @@ const Checker = struct {
                 defer self.unsafe_depth -= 1;
                 break :blk try self.inferExpr(inner.*);
             },
+            .run_expr => |inner| try self.inferRunExpr(inner.*),
             .type_ref => |type_ref| try self.typeFromRef(type_ref),
             .int => |text| intLiteralType(text),
             .string => try self.sliceOf(.u8),
@@ -1067,6 +1076,21 @@ const Checker = struct {
             return .{ .fallible = .{ .ok = try self.boxTy(sig.return_ty), .err = try self.boxTy(err_ty) } };
         }
         return sig.return_ty;
+    }
+
+    fn checkComptimeIf(self: *Checker, ci: ast.ComptimeIfStmt) SemanticError!void {
+        // Evaluate the condition at compile time.
+        // Type-check both branches regardless of condition — eliminates the need
+        // for a fully working comptime evaluator just to check #if blocks.
+        // The evaluator will be used to select the live branch at IR lowering time.
+        _ = try self.inferExpr(ci.condition);
+        try self.checkBlock(ci.then_block);
+        if (ci.else_block) |eb| try self.checkBlock(eb);
+    }
+
+    fn inferRunExpr(self: *Checker, inner: ast.Expr) SemanticError!Ty {
+        // Type-check the inner expression normally — the type IS the comptime result type.
+        return try self.inferExpr(inner);
     }
 
     fn checkMatch(self: *Checker, m: ast.MatchStmt) SemanticError!void {
@@ -1450,6 +1474,8 @@ const Checker = struct {
     }
 
     fn fieldType(self: *Checker, base_ty: Ty, name: []const u8) SemanticError!Ty {
+        // Unknown base (e.g., TARGET pseudo-module) — field access returns unknown.
+        if (base_ty == .unknown) return .unknown;
         const type_id = switch (base_ty) {
             .named => |id| id,
             .pointer => |inner| switch (inner.*) {
@@ -1530,7 +1556,8 @@ const Checker = struct {
             if (actual == .null_ptr) return true;
             return try self.compatible(actual, expected.optional.*);
         }
-        if (actual == .int_lit and expected.isInteger()) return true;
+        if (actual == .int_lit   and expected.isInteger()) return true;
+        if (expected == .int_lit and actual.isInteger())  return true;
         if (actual == .null_ptr) return switch (expected) {
             .pointer, .slice, .named, .optional => true,
             else => false,
@@ -1557,8 +1584,12 @@ fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
             blockDefinitelyReturns(iff.then_block) and
             blockDefinitelyReturns(iff.else_block.?),
         .unsafe_block => |block| blockDefinitelyReturns(block),
-        .zone_block => |zb| blockDefinitelyReturns(zb.body),
-        .defer_stmt => false,
+        .zone_block    => |zb| blockDefinitelyReturns(zb.body),
+        .defer_stmt    => false,
+        .comptime_run  => |b| blockDefinitelyReturns(b),
+        .comptime_if   => |ci| ci.else_block != null and
+            blockDefinitelyReturns(ci.then_block) and
+            blockDefinitelyReturns(ci.else_block.?),
         // match returns if it has an else arm and ALL arms return.
         .match_stmt => |m| blk: {
             var has_else = false;
@@ -1572,7 +1603,7 @@ fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
     };
 }
 
-fn tyMangle(ty: Ty) []const u8 {
+pub fn tyMangle(ty: Ty) []const u8 {
     return switch (ty) {
         .i8 => "i8",
         .i16 => "i16",
@@ -1676,15 +1707,11 @@ fn trimQuotes(text: []const u8) []const u8 {
 
 fn isBuiltinValue(name: []const u8) bool {
     inline for (.{
-        "truncate_to",
-        "ptr_from_int",
-        "volatile_store",
-        "sizeof",
-        "unaligned_read",
-        "asm",
-        "atomic_load",
-        "volatile",
-        ".acquire",
+        "truncate_to", "ptr_from_int", "volatile_store",
+        "sizeof", "unaligned_read", "asm", "atomic_load",
+        "volatile", ".acquire",
+        // Compile-time pseudo-modules
+        "TARGET",
     }) |builtin| {
         if (std.mem.eql(u8, name, builtin)) return true;
     }
