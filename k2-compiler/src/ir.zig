@@ -1,7 +1,8 @@
-const std = @import("std");
-const ast = @import("ast.zig");
-const pipeline = @import("pipeline.zig");
-const sema = @import("sema.zig");
+const std          = @import("std");
+const ast          = @import("ast.zig");
+const pipeline     = @import("pipeline.zig");
+const sema         = @import("sema.zig");
+const comptime_mod = @import("comptime.zig");
 
 pub const RegId = u32;
 pub const BlockId = u32;
@@ -421,16 +422,20 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
                 .enum_type => |enum_decl| try variants.append(allocator, try lowerEnumDef(allocator, decl, enum_decl)),
                 .distinct, .opaque_type => {},
             },
-            .const_decl => |decl| try globals.append(allocator, .{
-                .name = decl.name,
-                .ty = inferConstType(decl.value),
-                .init = .{ .imm = lowerImm(decl.value) },
-                .mutable = false,
-            }),
+            .const_decl => |decl| {
+                // #run expr on the right-hand side → evaluate at compile time.
+                const effective_imm = effectiveConstImm(allocator, front_end, decl.value);
+                try globals.append(allocator, .{
+                    .name = decl.name,
+                    .ty   = inferConstType(decl.value),
+                    .init = .{ .imm = effective_imm },
+                    .mutable = false,
+                });
+            },
             .function => |decl| {
                 // Generic templates are lowered per-instantiation below; skip the template itself.
                 if (decl.type_params.len == 0) {
-                    try functions.append(allocator, try lowerFunction(allocator, front_end.types, front_end.symbols, decl));
+                    try functions.append(allocator, try lowerFunction(allocator, front_end.types, front_end.symbols, front_end.module, decl));
                 }
             },
         }
@@ -1035,7 +1040,7 @@ fn lowerTypeWithBinding(allocator: std.mem.Allocator, ty: ast.TypeRef, binding: 
     }
 }
 
-fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, decl: ast.FunctionDecl) !IrFunction {
+fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, module: ast.Module, decl: ast.FunctionDecl) !IrFunction {
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
 
@@ -1049,6 +1054,7 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
 
     const blocks = if (decl.body) |body| blk: {
         var lowerer = FunctionLowerer.init(allocator, types, symbols, decl.params);
+        lowerer.module = module;
         break :blk try lowerer.lowerBody(body);
     } else &.{};
 
@@ -1101,6 +1107,7 @@ const FunctionLowerer = struct {
     active_zones: std.ArrayList([]const u8) = .empty,
     defers: std.ArrayList(ast.DeferStmt) = .empty,
     type_binding: []const sema.TypeArg = &.{},
+    module:       ast.Module = .empty(""),
 
     fn init(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, params: []const ast.Param) FunctionLowerer {
         return .{ .allocator = allocator, .types = types, .symbols = symbols, .params = params };
@@ -1176,16 +1183,22 @@ const FunctionLowerer = struct {
             .if_stmt => |iff| try self.lowerIf(iff),
             .while_stmt => |while_stmt| try self.lowerWhile(while_stmt),
             .match_stmt   => |m| try self.lowerMatch(m),
-            // Comptime directives: during codegen these lower like normal code.
-            // The comptime evaluator has already decided what to include.
-            .comptime_if  => |ci| try self.lowerIf(.{
-                .binding      = null,
-                .payload_binding = null,
-                .condition    = ci.condition,
-                .then_block   = ci.then_block,
-                .else_block   = ci.else_block,
-                .span         = ci.span,
-            }),
+            // Compile-time if: evaluate condition NOW; only emit the live branch.
+            .comptime_if => |ci| blk: {
+                const live_block = self.evalComptimeIf(ci) orelse {
+                    // Could not evaluate at compile time — emit as runtime if.
+                    try self.lowerIf(.{
+                        .binding = null, .payload_binding = null,
+                        .condition = ci.condition,
+                        .then_block = ci.then_block,
+                        .else_block = ci.else_block,
+                        .span = ci.span,
+                    });
+                    break :blk;
+                };
+                try self.lowerBlock(live_block.statements, null);
+                break :blk;
+            },
             .comptime_run => |block| try self.lowerBlock(block.statements, null),
             .zone_block => |zb| {
                 try self.emitNoResult(.void, .{ .zone_push = .{ .name = zb.name, .kind = zb.kind } });
@@ -1507,6 +1520,20 @@ const FunctionLowerer = struct {
                 else => try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = try self.lowerExpr(expr) } }),
             },
             else => try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = try self.lowerExpr(expr) } }),
+        };
+    }
+
+    /// Try to evaluate a #if condition at compile time.
+    /// Returns the block to emit (then or else), or null if condition is dynamic.
+    fn evalComptimeIf(self: *FunctionLowerer, ci: ast.ComptimeIfStmt) ?ast.Block {
+        var ctx = comptime_mod.ComptimeCtx.init(
+            self.allocator, self.module, self.symbols, &self.types,
+        );
+        defer ctx.deinit();
+        const cv = comptime_mod.evalExpr(&ctx, ci.condition) catch return null;
+        return switch (cv) {
+            .bool => |b| if (b) ci.then_block else ci.else_block orelse ast.Block{ .statements = &.{}, .span = ci.span },
+            else  => null,
         };
     }
 
@@ -1968,6 +1995,37 @@ fn isBuiltinName(name: []const u8) bool {
         if (std.mem.eql(u8, name, builtin)) return true;
     }
     return false;
+}
+
+/// If `expr` is a `#run inner`, evaluate it via the comptime interpreter and
+/// return the resulting Imm.  Falls back to lowerImm for non-#run expressions
+/// or when compile-time evaluation fails.
+fn effectiveConstImm(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, expr: ast.Expr) Imm {
+    const inner = switch (expr.kind) {
+        .run_expr => |e| e.*,
+        else      => return lowerImm(expr),
+    };
+
+    var ctx = comptime_mod.ComptimeCtx.init(
+        allocator, front_end.module, front_end.symbols, &front_end.types,
+    );
+    defer ctx.deinit();
+
+    const cv = comptime_mod.evalExpr(&ctx, inner) catch return lowerImm(inner);
+    return comptimeToImm(cv) orelse lowerImm(inner);
+}
+
+/// Convert a ComptimeValue to an IR Imm if possible.
+fn comptimeToImm(v: comptime_mod.ComptimeValue) ?Imm {
+    return switch (v) {
+        .int    => |i| .{ .int   = i },
+        .uint   => |u| .{ .uint  = u },
+        .float  => |f| .{ .float = f },
+        .bool   => |b| .{ .bool  = b },
+        .string => |s| .{ .text  = s },
+        .null_ptr => .null,
+        else => null,
+    };
 }
 
 fn inferConstType(expr: ast.Expr) IrType {
