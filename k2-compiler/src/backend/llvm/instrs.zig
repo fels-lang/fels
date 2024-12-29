@@ -1,9 +1,9 @@
 /// Instruction lowering.
-const std      = @import("std");
-const ir       = @import("../../ir.zig");
-const llvm     = @import("c_api.zig").llvm;
-const types    = @import("types.zig");
-const values   = @import("values.zig");
+const std = @import("std");
+const ir = @import("../../ir.zig");
+const llvm = @import("c_api.zig").llvm;
+const types = @import("types.zig");
+const values = @import("values.zig");
 const vars_mod = @import("variants.zig");
 const ModuleCg = @import("context.zig").ModuleCg;
 
@@ -103,24 +103,29 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         .inline_asm => |ai| lowerInlineAsm(cg, fncg, ai, instr.ty),
 
         .variant_lit => |vl| vars_mod.buildVariantLit(
-            cg, vl.type_name, vl.variant,
+            cg,
+            vl.type_name,
+            vl.variant,
             if (vl.payload) |pv| resolveVal(cg, fncg, pv, .unknown) else null,
         ),
         .variant_is => |vi| vars_mod.buildVariantIs(
-            cg, resolveVal(cg, fncg, vi.value, .unknown), vi.type_name, vi.variant,
+            cg,
+            resolveVal(cg, fncg, vi.value, .unknown),
+            vi.type_name,
+            vi.variant,
         ),
         .variant_payload => |vp| vars_mod.buildVariantPayload(
-            cg, resolveVal(cg, fncg, vp.value, .unknown),
-            vp.type_name, vp.variant, types.lower(cg, instr.ty),
+            cg,
+            resolveVal(cg, fncg, vp.value, .unknown),
+            vp.type_name,
+            vp.variant,
+            types.lower(cg, instr.ty),
         ),
 
         .call_indirect => |ci| lowerCallIndirect(cg, fncg, ci, instr.ty),
 
         // Zone/error — runtime-library concerns.
-        .zone_push, .zone_pop, .zone_free,
-        .try_is_ok, .try_ok, .try_err,
-        .iter_init, .iter_has_next, .iter_next,
-        .at, .raw_pointer => null,
+        .zone_push, .zone_pop, .zone_free, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next, .at, .raw_pointer => null,
     };
 
     if (instr.id) |id| if (result) |v| {
@@ -351,9 +356,9 @@ fn lowerInlineAsm(
 /// With opaque pointers we must reconstruct the LLVM function type from
 /// the return type (instr.ty) and the actual argument types at the call site.
 fn lowerCallIndirect(
-    cg:   *ModuleCg,
+    cg: *ModuleCg,
     fncg: anytype,
-    ci:   ir.CallIndirectInstr,
+    ci: ir.CallIndirectInstr,
     ret_ty: ir.IrType,
 ) ?llvm.LLVMValueRef {
     // Resolve the callee — a `ptr` to the function.
@@ -374,11 +379,15 @@ fn lowerCallIndirect(
 
     // Reconstruct the function type from args + return type.
     const ret_lty = types.lower(cg, ret_ty);
-    const fn_ty   = llvm.LLVMFunctionType(ret_lty, param_tys.ptr, @intCast(ci.args.len), 0);
+    const fn_ty = llvm.LLVMFunctionType(ret_lty, param_tys.ptr, @intCast(ci.args.len), 0);
 
     const result = llvm.LLVMBuildCall2(
-        cg.builder, fn_ty, callee_ptr,
-        resolved_args.ptr, @intCast(ci.args.len), "",
+        cg.builder,
+        fn_ty,
+        callee_ptr,
+        resolved_args.ptr,
+        @intCast(ci.args.len),
+        "",
     );
     return if (ret_ty == .void) null else result;
 }
