@@ -19,4 +19,5 @@ comptime {
     _ = enums_tests;
     _ = @import("compiler/comptime.zig");
     _ = @import("compiler/generic_structs.zig");
+    _ = @import("compiler/new_types_attrs.zig");
 }

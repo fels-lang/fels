@@ -43,15 +43,18 @@ pub const ConstFieldInit = struct {
 };
 
 pub const IrFunction = struct {
-    name: []const u8,
-    params: []const IrParam,
-    return_ty: IrType,
-    error_ty: ?IrType,
-    blocks: []const IrBlock,
+    name:        []const u8,
+    params:      []const IrParam,
+    return_ty:   IrType,
+    error_ty:    ?IrType,
+    blocks:      []const IrBlock,
     extern_name: ?[]const u8,
     inline_hint: bool,
-    entry: bool,
-    naked: bool,
+    no_inline:   bool,
+    no_return:   bool,
+    entry:       bool,
+    naked:       bool,
+    export_sym:  ?[]const u8,
 };
 
 pub const IrParam = struct {
@@ -684,8 +687,11 @@ fn foldFunctionConstants(allocator: std.mem.Allocator, function: IrFunction) !Ir
         .blocks = try blocks.toOwnedSlice(allocator),
         .extern_name = function.extern_name,
         .inline_hint = function.inline_hint,
-        .entry = function.entry,
-        .naked = function.naked,
+        .no_inline   = function.no_inline,
+        .no_return   = function.no_return,
+        .entry       = function.entry,
+        .naked       = function.naked,
+        .export_sym  = function.export_sym,
     };
 }
 
@@ -816,8 +822,11 @@ fn simplifyBranches(allocator: std.mem.Allocator, module: *IrModule) !void {
             .blocks = try blocks.toOwnedSlice(allocator),
             .extern_name = function.extern_name,
             .inline_hint = function.inline_hint,
-            .entry = function.entry,
-            .naked = function.naked,
+            .no_inline   = function.no_inline,
+            .no_return   = function.no_return,
+            .entry       = function.entry,
+            .naked       = function.naked,
+            .export_sym  = function.export_sym,
         });
     }
 
@@ -874,8 +883,11 @@ fn eliminateFunctionDeadCode(allocator: std.mem.Allocator, function: IrFunction)
         .blocks = try blocks.toOwnedSlice(allocator),
         .extern_name = function.extern_name,
         .inline_hint = function.inline_hint,
-        .entry = function.entry,
-        .naked = function.naked,
+        .no_inline   = function.no_inline,
+        .no_return   = function.no_return,
+        .entry       = function.entry,
+        .naked       = function.naked,
+        .export_sym  = function.export_sym,
     };
 }
 
@@ -1032,8 +1044,11 @@ fn lowerFunctionInstantiation(
         .blocks = blocks,
         .extern_name = null,
         .inline_hint = hasAttr(decl.attrs, "inline"),
-        .entry = false,
-        .naked = false,
+        .no_inline   = hasAttr(decl.attrs, "noinline"),
+        .no_return   = hasAttr(decl.attrs, "noreturn"),
+        .entry       = false,
+        .naked       = false,
+        .export_sym  = sema.exportSym(decl.attrs),
     };
 }
 
@@ -1093,8 +1108,11 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
         .blocks = blocks,
         .extern_name = externName(decl.attrs),
         .inline_hint = hasAttr(decl.attrs, "inline"),
-        .entry = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
-        .naked = hasAttr(decl.attrs, "naked"),
+        .no_inline   = hasAttr(decl.attrs, "noinline"),
+        .no_return   = hasAttr(decl.attrs, "noreturn"),
+        .entry       = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
+        .naked       = hasAttr(decl.attrs, "naked"),
+        .export_sym  = sema.exportSym(decl.attrs),
     };
 }
 
@@ -1946,16 +1964,31 @@ fn lowerInlineErrorSet(allocator: std.mem.Allocator, set: ast.InlineErrorSet) !I
 }
 
 fn lowerNamedType(name: []const u8) IrType {
-    if (std.mem.eql(u8, name, "i8")) return .{ .i = 8 };
+    // Sub-byte integers — LLVM supports arbitrary-width integers
+    if (std.mem.eql(u8, name, "u1")) return .{ .u = 1 };
+    if (std.mem.eql(u8, name, "u2")) return .{ .u = 2 };
+    if (std.mem.eql(u8, name, "u3")) return .{ .u = 3 };
+    if (std.mem.eql(u8, name, "u4")) return .{ .u = 4 };
+    if (std.mem.eql(u8, name, "u5")) return .{ .u = 5 };
+    if (std.mem.eql(u8, name, "u6")) return .{ .u = 6 };
+    if (std.mem.eql(u8, name, "u7")) return .{ .u = 7 };
+    if (std.mem.eql(u8, name, "i1")) return .{ .i = 1 };
+    if (std.mem.eql(u8, name, "i2")) return .{ .i = 2 };
+    if (std.mem.eql(u8, name, "i3")) return .{ .i = 3 };
+    if (std.mem.eql(u8, name, "i4")) return .{ .i = 4 };
+    if (std.mem.eql(u8, name, "i5")) return .{ .i = 5 };
+    if (std.mem.eql(u8, name, "i6")) return .{ .i = 6 };
+    if (std.mem.eql(u8, name, "i7")) return .{ .i = 7 };
+    if (std.mem.eql(u8, name, "i8"))  return .{ .i = 8 };
     if (std.mem.eql(u8, name, "i16")) return .{ .i = 16 };
     if (std.mem.eql(u8, name, "i32")) return .{ .i = 32 };
     if (std.mem.eql(u8, name, "i64")) return .{ .i = 64 };
-    if (std.mem.eql(u8, name, "u8")) return .{ .u = 8 };
+    if (std.mem.eql(u8, name, "u8"))  return .{ .u = 8 };
     if (std.mem.eql(u8, name, "u16")) return .{ .u = 16 };
     if (std.mem.eql(u8, name, "u32")) return .{ .u = 32 };
     if (std.mem.eql(u8, name, "u64")) return .{ .u = 64 };
-    if (std.mem.eql(u8, name, "bool")) return .bool;
-    if (std.mem.eql(u8, name, "void")) return .void;
+    if (std.mem.eql(u8, name, "bool"))  return .bool;
+    if (std.mem.eql(u8, name, "void"))  return .void;
     if (std.mem.eql(u8, name, "usize")) return .usize;
     if (std.mem.eql(u8, name, "isize")) return .isize;
     return .{ .struct_type = name };

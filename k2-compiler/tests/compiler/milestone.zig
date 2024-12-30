@@ -193,8 +193,11 @@ test "ir validation rejects missing branch targets" {
                 },
                 .extern_name = null,
                 .inline_hint = false,
-                .entry = false,
-                .naked = false,
+                .no_inline   = false,
+                .no_return   = false,
+                .entry       = false,
+                .naked       = false,
+                .export_sym  = null,
             },
         },
     };

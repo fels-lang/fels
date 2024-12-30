@@ -284,13 +284,17 @@ pub const VariantValueInfo = struct {
 };
 
 pub const FnSig = struct {
-    params: []const ParamSig,
-    return_ty: Ty,
-    error_ty: ?Ty,
+    params:      []const ParamSig,
+    return_ty:   Ty,
+    error_ty:    ?Ty,
     extern_name: ?[]const u8,
     inline_hint: bool,
-    entry: bool,
-    naked: bool,
+    no_inline:   bool,
+    no_return:   bool,
+    entry:       bool,
+    naked:       bool,
+    export_sym:  ?[]const u8,   // #export / #export("name")
+    deprecated:  ?[]const u8,   // #deprecated / #deprecated("msg")
     type_params: []const []const u8,
     type_binding: ?[]const u8,
 };
@@ -369,6 +373,21 @@ pub const GenericInstantiation = struct {
 };
 
 pub fn fromBuiltinName(name: []const u8) ?Ty {
+    // Sub-byte integers — stored as u8/i8 in sema; IR uses correct bit width
+    if (std.mem.eql(u8, name, "u1")) return .u8;
+    if (std.mem.eql(u8, name, "u2")) return .u8;
+    if (std.mem.eql(u8, name, "u3")) return .u8;
+    if (std.mem.eql(u8, name, "u4")) return .u8;
+    if (std.mem.eql(u8, name, "u5")) return .u8;
+    if (std.mem.eql(u8, name, "u6")) return .u8;
+    if (std.mem.eql(u8, name, "u7")) return .u8;
+    if (std.mem.eql(u8, name, "i1")) return .i8;
+    if (std.mem.eql(u8, name, "i2")) return .i8;
+    if (std.mem.eql(u8, name, "i3")) return .i8;
+    if (std.mem.eql(u8, name, "i4")) return .i8;
+    if (std.mem.eql(u8, name, "i5")) return .i8;
+    if (std.mem.eql(u8, name, "i6")) return .i8;
+    if (std.mem.eql(u8, name, "i7")) return .i8;
     if (std.mem.eql(u8, name, "i8")) return .i8;
     if (std.mem.eql(u8, name, "i16")) return .i16;
     if (std.mem.eql(u8, name, "i32")) return .i32;
@@ -521,6 +540,16 @@ const Checker = struct {
     }
 
     // ── Diagnostics ──────────────────────────────────────────────────────────
+
+    fn emitWarning(self: *Checker, span: Span, comptime fmt: []const u8, args: anytype) void {
+        const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
+        self.diagnostics.append(self.allocator, .{
+            .kind    = .warning,
+            .message = msg,
+            .span    = span,
+            .file    = self.file,
+        }) catch {};
+    }
 
     fn emitError(self: *Checker, span: Span, comptime fmt: []const u8, args: anytype) void {
         const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
@@ -675,13 +704,17 @@ const Checker = struct {
                     const ret = try self.typeFromRef(decl.return_ty);
                     const err_ty = if (decl.error_ty) |err| try self.typeFromErrorSpec(err) else null;
                     try self.env.fn_sigs.put(id, .{
-                        .params = try params.toOwnedSlice(self.allocator),
-                        .return_ty = ret,
-                        .error_ty = err_ty,
+                        .params      = try params.toOwnedSlice(self.allocator),
+                        .return_ty   = ret,
+                        .error_ty    = err_ty,
                         .extern_name = externName(decl.attrs),
                         .inline_hint = hasAttr(decl.attrs, "inline"),
-                        .entry = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
-                        .naked = hasAttr(decl.attrs, "naked"),
+                        .no_inline   = hasAttr(decl.attrs, "noinline"),
+                        .no_return   = hasAttr(decl.attrs, "noreturn"),
+                        .entry       = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
+                        .naked       = hasAttr(decl.attrs, "naked"),
+                        .export_sym  = exportSym(decl.attrs),
+                        .deprecated  = deprecatedMsg(decl.attrs),
                         .type_params = decl.type_params,
                         .type_binding = null,
                     });
@@ -736,7 +769,12 @@ const Checker = struct {
 
         if (decl.body) |body| {
             try self.checkBlock(body);
-            if ((self.current_return_ty != .void or self.current_error_ty != null) and !blockDefinitelyReturns(body)) {
+            // #noreturn functions are allowed to not have explicit returns.
+            const is_noreturn = hasAttr(decl.attrs, "noreturn");
+            if (!is_noreturn and
+                (self.current_return_ty != .void or self.current_error_ty != null) and
+                !blockDefinitelyReturns(body))
+            {
                 return error.SemanticFailed;
             }
         }
@@ -1117,6 +1155,17 @@ const Checker = struct {
             }
             arg_i += 1;
         }
+        // Emit a warning when calling a deprecated function.
+        if (sig.deprecated) |msg| {
+            if (msg.len > 0) {
+                self.emitWarning(call.callee.span,
+                    "`{s}` is deprecated: {s}", .{ name, msg });
+            } else {
+                self.emitWarning(call.callee.span,
+                    "`{s}` is deprecated", .{name});
+            }
+        }
+
         if (sig.error_ty) |err_ty| {
             return .{ .fallible = .{ .ok = try self.boxTy(sig.return_ty), .err = try self.boxTy(err_ty) } };
         }
@@ -1823,6 +1872,38 @@ fn parseIntLiteral(text: []const u8) i128 {
 fn hasAttr(attrs: []const ast.Attribute, name: []const u8) bool {
     for (attrs) |attr| if (std.mem.eql(u8, attr.name, name)) return true;
     return false;
+}
+
+/// Returns the export symbol name from `#export` or `#export("name")`.
+/// `#export` with no args → null (keep function's own name, just set external linkage).
+/// `#export("sym")` → "sym".
+pub fn exportSym(attrs: []const ast.Attribute) ?[]const u8 {
+    for (attrs) |attr| {
+        if (!std.mem.eql(u8, attr.name, "export")) continue;
+        if (attr.args.len > 0) {
+            return switch (attr.args[0].kind) {
+                .string => |s| trimQuotes(s),
+                else    => "",
+            };
+        }
+        return "";  // #export with no args — empty string signals "use own name"
+    }
+    return null;
+}
+
+/// Returns the deprecation message from `#deprecated` or `#deprecated("msg")`.
+fn deprecatedMsg(attrs: []const ast.Attribute) ?[]const u8 {
+    for (attrs) |attr| {
+        if (!std.mem.eql(u8, attr.name, "deprecated")) continue;
+        if (attr.args.len > 0) {
+            return switch (attr.args[0].kind) {
+                .string => |s| trimQuotes(s),
+                else    => "",
+            };
+        }
+        return "";
+    }
+    return null;
 }
 
 fn externName(attrs: []const ast.Attribute) ?[]const u8 {

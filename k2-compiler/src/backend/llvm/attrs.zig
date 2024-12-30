@@ -12,12 +12,26 @@ pub fn applyFunctionAttrs(cg: *ModuleCg, func: ir.IrFunction, lv: llvm.LLVMValue
     if (func.inline_hint)
         addStrAttr(cg, lv, fn_idx, "alwaysinline", "");
 
+    if (func.no_inline)
+        addStrAttr(cg, lv, fn_idx, "noinline", "");
+
+    if (func.no_return)
+        addStrAttr(cg, lv, fn_idx, "noreturn", "");
+
     if (func.naked)
         addStrAttr(cg, lv, fn_idx, "naked", "");
 
     if (func.entry) {
-        // Mark as the module entry point (noinline so it survives optimisation).
         addStrAttr(cg, lv, fn_idx, "noinline", "");
+    }
+
+    if (func.export_sym) |sym| {
+        // Ensure external linkage so the symbol survives the linker.
+        llvm.LLVMSetLinkage(lv, llvm.LLVMExternalLinkage);
+        // If an explicit export name was given, rename the LLVM value.
+        if (sym.len > 0 and !std.mem.eql(u8, sym, func.name)) {
+            llvm.LLVMSetValueName2(lv, sym.ptr, sym.len);
+        }
     }
 }
 
