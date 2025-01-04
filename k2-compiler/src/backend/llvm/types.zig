@@ -19,6 +19,7 @@ pub fn lower(cg: *ModuleCg, ty: ir.IrType) llvm.LLVMTypeRef {
 
         // Slices are fat pointers: { ptr, i64 }
         .slice => cg.getSliceType(),
+        .interface_value => cg.getInterfaceType(),
         .optional => |inner| optionalType(cg, inner.*),
 
         // All other pointer-like types are opaque `ptr` (LLVM 15+).

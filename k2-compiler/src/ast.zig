@@ -16,6 +16,7 @@ pub const Item = union(enum) {
     const_decl: ConstDecl,
     type_decl: TypeDecl,
     function: FunctionDecl,
+    interface_impl: InterfaceImpl,
 
     pub fn name(self: Item) ?[]const u8 {
         return switch (self) {
@@ -23,6 +24,7 @@ pub const Item = union(enum) {
             .const_decl => |decl| decl.name,
             .type_decl => |decl| decl.name,
             .function => |decl| decl.name,
+            .interface_impl => null,
         };
     }
 
@@ -32,6 +34,7 @@ pub const Item = union(enum) {
             .const_decl => |decl| decl.span,
             .type_decl => |decl| decl.span,
             .function => |decl| decl.span,
+            .interface_impl => |decl| decl.span,
         };
     }
 };
@@ -67,6 +70,18 @@ pub const TypeDeclKind = union(enum) {
     struct_type: StructDecl,
     errors: ErrorDecl,
     enum_type: EnumDecl,
+    interface_type: InterfaceDecl,
+};
+
+pub const InterfaceDecl = struct {
+    methods: []const FunctionDecl,
+};
+
+pub const InterfaceImpl = struct {
+    type_name: []const u8,
+    interface_name: []const u8,
+    methods: []const FunctionDecl,
+    span: Span,
 };
 
 /// An enum declaration: `Name :: enum { variant, variant: T, ... }`

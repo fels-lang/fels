@@ -1,343 +1,294 @@
-todo:
+# K2 Compiler
 
-align()
+K2 is an experimental systems programming language and compiler written in Zig.
+It aims to keep low-level behavior explicit while providing generics, compile-time
+evaluation, lexical allocation zones, and explicit dynamic interfaces.
 
-attrivutes,
-etc...
+The compiler and language are still evolving. K2 is not ready for production use,
+and some accepted language constructs do not yet have complete backend semantics.
 
+## Design Direction
 
-zones,
-meta programming, generic
+- No hidden allocations.
+- Dynamic dispatch is explicit through `*Interface` values.
+- Static polymorphism uses monomorphized generics.
+- Allocation zones provide lexical ownership without requiring a tracing garbage
+  collector.
+- Unsafe operations remain available, but debug builds should catch common
+  undefined behavior close to its source.
+- Features should have complete semantics before more syntax is added.
 
-generic structs?
+## Building
 
-@panic / assert
+The frontend can be built and tested without LLVM:
 
-build driver, installer / comptime exectution,
-etc...
-synatx is very sexy :D .dD :D:D:D:D
-
-
-Let me go through each systematically with a clear K2 design decision for each.
-
----
-
-## Bitstructs — K2 alternative: sub-byte integers
-
-C3's `bitstruct` is specialized syntax for bit-packed hardware registers:
-```c3
-bitstruct ControlReg : char @bigendian {
-    bool enable   : 0;
-    int  mode     : 1..3;
-    bool flag     : 7;
-}
+```powershell
+zig build
+zig build test
 ```
 
-**K2's answer: `u1`, `u2`, `u3`, `u4`, `u5`, `u6`, `u7` in `#packed` structs**
+LLVM code generation requires an LLVM installation:
 
-No special syntax needed — sub-byte integers in packed structs give you the same thing, more composably:
+```powershell
+zig build -Dllvm-path=Y:/path/to/llvm
+zig build test -Dllvm-path=Y:/path/to/llvm
+```
+
+The compiler currently exposes these commands:
+
+```text
+k2 check <file>     Parse and type-check a source file
+k2 ir <file>        Print K2 IR
+k2 object <file>    Emit an object file
+k2 build <file>     Build an executable
+```
+
+Native executable linking is currently Windows-focused.
+
+## Example
 
 ```k2
-#packed
-ControlReg :: struct {
-    enable:   u1,
-    mode:     u3,
-    reserved: u3,
-    flag:     u1,
-}   // = exactly 1 byte
-
-// Usage identical to normal struct:
-reg.enable = 1;
-reg.mode = 5;
-
-// And you can still do it manually if you need endian control:
-raw := unsafe unaligned_read(u8, mmio_ptr);
-enable := (raw >> 0) & 0x01;
-mode   := (raw >> 1) & 0x07;
-```
-
-**Decision: add `u1`–`u7` and `i1`–`i7` as sub-byte integers. Skip `bitstruct`.**
-
-`#bigendian` / `#littleendian` can be added as struct attributes for protocol headers when needed.
-
----
-
-## Vectors (SIMD) — planned, deferred
-
-C3: `int[<4>]`, `float[<8>]` — hardware SIMD types with arithmetic ops
-
-**K2 plan:** Same syntax `[<N>]T` (consistent with array `[N]T`). Deferred until codegen is solid.
-
-```k2
-// Future K2 SIMD:
-v1: [<4>]f32 = .{ 1.0, 2.0, 3.0, 4.0 };
-v2: [<4>]f32 = .{ 5.0, 6.0, 7.0, 8.0 };
-v3 := v1 + v2;   // parallel add → .{ 6, 8, 10, 12 }
-
-// Swizzle (future)
-xy := v1.xy;     // [<2>]f32 = .{ 1.0, 2.0 }
-```
-
-Currently: use inline asm for SIMD. Not a blocker.
-
----
-
-## Contracts — lighter K2 version
-
-C3 contracts (`@require`/`@ensure`) are Design by Contract from Eiffel — preconditions, postconditions, invariants. They're checked in debug mode, stripped in release.
-
-**Do we need them?** Yes — they're basically typed debug assertions. K2 already has the concept partially via `assert` (coming). Contracts are `assert` at function boundaries.
-
-**K2 design** — use `#require` and `#ensure`, consistent with K2's `#` syntax:
-
-```k2
-// #require: precondition — checked on entry in debug mode
-sqrt :: fn(x: f64) -> f64
-    #require(x >= 0.0, "sqrt of negative number")
-{
-    return raw_sqrt(x);
-}
-
-// #ensure: postcondition — checked on exit in debug mode
-sort :: fn(arr: []i32) -> []i32
-    #ensure(arr.len == return.len, "sort must not change length")
-{
-    // ...
-}
-
-// Both strip to nothing in release mode
-// Both emit @panic-style errors in debug mode
-```
-
-These compile to:
-- **Debug**: `assert(cond, msg)` call before/after body
-- **Release**: removed entirely
-
-Worth implementing once `@panic` exists. Small parser + sema change.
-
----
-
-## Attributes — K2 vs C3 full comparison
-
-C3 uses `@attr` on the right. K2 uses `#attr` on the left. Both work; K2's `#` is consistent with `#run`, `#if`, `#import`.
-
-### What K2 has today
-
-| K2 | C3 equivalent | Status |
-|----|--------------|--------|
-| `#extern("lib","sym")` | `@cname` + `@export` | ✅ |
-| `#packed` | `@packed` | ✅ |
-| `#align(N)` | `@align(N)` | ✅ stored, ⚠️ partially applied |
-| `#inline` | `@inline` | ✅ |
-| `#naked` | `@naked` | ✅ |
-| `#entry` | `@winmain` / `@init` | ✅ |
-
-### C3 attributes K2 should add (priority order)
-
-```k2
-// #noreturn — function never returns (needed for @panic)
-#noreturn
-panic :: fn(msg: []const u8) { sys_write(2, msg); sys_exit(1); }
-
-// #noinline — prevent inlining
-#noinline
-cold_path :: fn() { ... }
-
-// #export("sym") — expose symbol to linker under a name
-#export("k2_main")
-main :: fn() -> i32 { ... }
-
-// #deprecated("use X instead") — warn on use
-#deprecated("use write_stderr instead")
-log_error :: fn(msg: []const u8) { ... }
-
-// #test — mark as test function (for future test runner)
-#test
-test_addition :: fn() {
-    assert(1 + 1 == 2);
-}
-
-// #benchmark — mark as benchmark
-#benchmark
-bench_sort :: fn() { ... }
-
-// #section(".hot") — linker section placement
-#section(".text.hot")
-critical_loop :: fn() { ... }
-
-// #link("opengl32") — implicitly link a library when this is used
-#link("kernel32")
-Sleep :: fn(ms: u32);
-
-// #callconv("stdcall") — explicit calling convention
-#callconv("stdcall")
-OldWindowsApi :: fn(hwnd: usize) -> i32;
-
-// #noalias — pointer doesn't alias others (like C's restrict)
-memcpy :: fn(#noalias dst: *u8, #noalias src: *const u8, n: usize) { ... }
-
-// #init(priority) / #fini — run at startup/shutdown
-#init(256)
-setup_global_state :: fn() { ... }
-
-#fini
-cleanup_global_state :: fn() { ... }
-```
-
-### C3 attributes K2 intentionally skips
-
-| C3 attribute | K2 position |
-|---|---|
-| `@bigendian`/`@littleendian` | Not needed without bitstruct |
-| `@overlap` | Not needed without bitstruct |
-| `@compact` | `#packed` already recursive |
-| `@operator` | No operator overloading by design |
-| `@dynamic`/`@optional` | No interfaces yet |
-| `@wasm` | Add when targeting WASM |
-| `@obfuscate` | Niche, skip |
-| `@pure` | Comptime handles this better |
-| `@maydiscard` | K2's `_` discard is explicit |
-| `@nostrip` | Use `#export` instead |
-| `@nosanitize` | Add when sanitizers exist |
-
-### User-defined attributes (K2 design)
-
-C3 has `attrdef`. K2's equivalent should be composable:
-
-```k2
-// Bundle multiple attributes under one name
-#attrdef hot = #inline, #section(".text.hot");
-#attrdef cold = #noinline, #section(".text.cold");
-
-// Use:
-#hot
-frequently_called :: fn() { ... }
-
-#cold
-rarely_called :: fn() { ... }
-```
-
----
-
-## Memory management — K2 zones vs C3 allocators
-
-**C3 approach:** allocator-passing + temp pool
-
-```c3
-// You pass the allocator to everything
-List{int} list;
-list.init(mem);          // heap allocator
-list.init(tmem);         // temp allocator
-
-@pool() {
-    int* a = tmalloc(int::size);   // temp allocation
-};  // freed here
-```
-
-**K2 approach:** zones (lexical scopes)
-
-```k2
-// Zone is a named scope, not a parameter
-zone scratch: Arena {
-    data := scratch.new_slice(u8, 1024);
-    node := scratch.new(TreeNode);
-}  // freed here automatically
-
-// No need to pass allocator to everything
-// The zone is implicit — any allocation in scope uses it
-```
-
-**Comparison:**
-
-| | C3 | K2 |
-|--|-----|-----|
-| Heap allocation | `mem::new(T)` | `zone h: GPA { h.new(T) }` |
-| Temp allocation | `@pool { tmalloc(...) }` | `zone s: Arena { s.new(T) }` |
-| Pass allocator | `list.init(mem)` | Not needed — zone is in scope |
-| Cleanup | `list.free()` | Automatic at `}` |
-| Error cleanup | Manual `if (catch)` | `defer.err { }` |
-| Nested pools | `@pool { @pool { } }` | `zone a: Arena { zone b: Arena { } }` |
-
-**K2 advantages:**
-- No `list.free()` — cleanup is always automatic
-- `defer.err` handles error cleanup elegantly (C3 has no equivalent)
-- No need to thread allocator through every function call
-
-**K2 missing:**
-- Global heap allocator access (for non-zone code)
-- Clone helpers (`@clone`, `@clone_slice`)
-
----
-
-## Reflection, Any & Interfaces — roadmap
-
-| Feature | C3 | K2 today | K2 plan |
-|---------|-----|----------|---------|
-| `#type_info(T)` | Full runtime | Comptime only | Comptime → runtime |
-| `any` type | ✅ fat ptr + typeid | ❌ | Enum with payloads as workaround |
-| Interfaces | ✅ `@dynamic` vtable | ❌ | vtable-based, explicit |
-| Runtime typeid | ✅ | ❌ | When interfaces land |
-| Foreach over fields | ✅ | ❌ | Via `#type_info` iteration |
-
-**K2 interface design (planned):**
-```k2
-// Explicit vtable interface
 Writer :: interface {
-    write :: fn(self: *Self, data: []const u8) -> usize;
-    flush :: fn(self: *Self);
+    write :: fn(*Self, []const u8) -> usize;
 }
 
-// Implement for a type
-impl Writer for FileHandle {
-    write :: fn(self: *Self, data: []const u8) -> usize { ... }
-    flush :: fn(self: *Self) { ... }
+FileHandle :: struct {
+    fd: i32,
 }
 
-// Use as fat pointer
-w: *Writer = &my_file;
-w.write("hello\n");
+FileHandle as Writer {
+    write :: fn(self: *FileHandle, data: []const u8) -> usize {
+        return sys_write(self.fd, data);
+    }
+}
+
+main :: fn() {
+    file := FileHandle { fd = 1 };
+    writer: *Writer = &file;
+    writer.write("hello\n");
+}
 ```
 
----
+`*Writer` is a non-owning dynamic interface value containing a data pointer and a
+vtable pointer. Converting `*FileHandle` to `*Writer` checks interface conformance
+at compile time.
 
-## Undefined Behaviour — K2's model
+## Implementation Status
 
-K2's explicit UB contract (to document and implement):
+Status meanings:
 
-| Situation | Debug | Release |
-|-----------|-------|---------|
-| Integer overflow | trap + message | wrapping (or UB) |
-| Null dereference | trap | UB |
-| Out-of-bounds index | trap | UB |
-| Use-after-free (via zones) | detected when zone exits | UB |
-| Uninitialized use | variable must be init'd | UB |
-| Data race | (via atomic / unsafe) | UB |
+- **Implemented**: supported end to end and covered by tests.
+- **Partial**: syntax and meaningful behavior exist, but important cases or
+  backend semantics are incomplete.
+- **Planned**: direction is understood, but implementation has not started.
+- **TBD**: language semantics still need a decision.
 
-K2 operators (planned):
-```k2
-x +% y   // wrapping add — always wraps, never UB
-x +| y   // saturating add — clamps to max/min (future)
-x + y    // checked in debug, wrapping in release
+| Area | Status | Notes |
+| --- | --- | --- |
+| Lexer, parser, AST, diagnostics | Implemented | Includes source spans and diagnostic tests. |
+| Semantic analysis and typed IR | Implemented | Includes IR validation and basic optimization passes. |
+| LLVM object generation | Partial | Core lowering works; correctness gaps remain for some operations and types. |
+| Structs, packed structs, enums | Implemented | Enums support payloads and pattern matching. |
+| Integer types | Implemented | Includes sub-byte signed and unsigned integers. |
+| Pointers, arrays, slices, optionals | Implemented | Runtime safety checks are not yet inserted. |
+| Distinct, opaque, and atomic types | Partial | Core syntax exists; backend and operation coverage vary. |
+| Functions and generics | Implemented | Generic functions and structs are monomorphized. |
+| Control flow | Implemented | `if`, `while`, range/slice `for`, `break`, `continue`, and `defer`. |
+| Integer and enum `match` | Implemented | Integer matches support single and grouped cases. |
+| Compile-time execution | Partial | `#if` and `#run` exist; reflection and several operations are incomplete. |
+| Errors and fallible functions | Partial | Frontend support exists; failure and unwrap backend paths need completion. |
+| Zones | Partial | Lexical structure and cleanup behavior exist; allocation/backend semantics need completion. |
+| Interfaces | Partial | Dynamic `*Interface` dispatch works; static constraints and advanced cases are missing. |
+| Runtime | Partial | Panic, assertions, and basic output exist; integration and platform coverage need work. |
+| Modules and imports | Partial | Local multi-file compilation exists; package and standard-library systems do not. |
+| Tooling | Partial | Check, IR, object, and build commands exist; formatter, LSP, package manager, and test runner do not. |
+
+## Attributes
+
+Implemented attributes include:
+
+```text
+#extern #packed #inline #noinline #noreturn #naked #entry #export #deprecated
 ```
 
-This is the same model as Zig. Clear, explicit, systems-appropriate.
+`#align` is parsed and stored, but is not consistently applied by LLVM lowering.
 
----
+Still missing or undecided:
 
-## Summary — what K2 needs next
+```text
+#require #ensure #link #section #callconv #noalias
+#init #fini #test #benchmark #attrdef
+```
 
-**Add soon (small):**
-- `u1`–`u7` sub-byte integers (replaces bitstruct)
-- `#noreturn`, `#noinline`, `#export`, `#deprecated`
-- `#require`/`#ensure` contracts (once `assert` exists)
-- Wrapping arithmetic operators (`+%`, `-%`, `*%`)
+## Interfaces
 
-**Medium term:**
-- `#link("libname")`, `#section(...)`, `#callconv(...)`
-- User-defined attributes (`#attrdef`)
-- SIMD vectors `[<N>]T`
+The current interface implementation is the first useful dynamic-dispatch
+baseline:
 
-**Long term:**
-- Interfaces / vtables
-- Runtime `any` type
-- Full reflection
+- Interfaces declare required methods.
+- `Type as Interface { ... }` defines conformance.
+- Missing, extra, duplicate, or incorrectly typed methods are rejected.
+- `*Concrete` can coerce to `*Interface`.
+- Interface values use generated LLVM vtables and indirect calls.
+- Interface coercions work in assignments, arguments, and returns.
+
+Interfaces are still partial. The following remain:
+
+- Static generic constraints, such as a decided equivalent of `where T: Writer`.
+- Direct statically dispatched calls through a concrete implementation.
+- Const-correct dynamic interface values.
+- Fallible and generic interface methods.
+- Interface composition, inheritance, and upcasting.
+- Default or optional methods.
+- Coherence and cross-module implementation rules.
+- Ownership and lifetime validation for non-owning interface values.
+- Owned interface objects and downcasting, if K2 decides to support them.
+
+Dynamic interfaces are therefore not a long-term-only goal anymore. They exist
+today, but need completion and a firmer ownership model.
+
+## Safety And Undefined Behavior
+
+K2 does **not currently trap common undefined behavior in debug builds**. LLVM
+lowering generally emits unchecked native operations, and several failure paths
+currently lower to `unreachable`.
+
+| Operation | Current behavior |
+| --- | --- |
+| Integer overflow | No K2-inserted debug check. Plain arithmetic semantics still need a final decision. |
+| Division by zero | No K2-inserted guard. |
+| Out-of-bounds indexing | No K2-inserted guard. |
+| Null pointer dereference | No K2-inserted guard. |
+| Invalid optional unwrap with `!!` | Failure path currently becomes `unreachable`, not `@panic`. |
+| `fail` and fallible propagation | Frontend exists; LLVM failure lowering is incomplete. |
+| Use after zone cleanup | No runtime detector. |
+| Uninitialized values | Some cases are rejected, but there is no complete definite-initialization proof. |
+| Data races and unsafe pointer misuse | Caller responsibility. |
+
+The intended debug policy should be decided and implemented before adding more
+large language features. The recommended baseline is:
+
+- Trap integer overflow, division by zero, invalid shifts, null dereferences,
+  out-of-bounds indexing, and invalid unwraps in debug builds.
+- Route language-level failures through `@panic` or a shared trap mechanism with
+  useful source locations.
+- Keep explicitly unsafe operations available inside `unsafe`.
+- Define release behavior precisely rather than inheriting accidental LLVM
+  behavior.
+- Add explicit wrapping arithmetic operators such as `+%`, `-%`, and `*%`.
+
+## Priority Roadmap
+
+### P0: Compiler Correctness And Debug Safety
+
+This is the next milestone. It has higher value than additional syntax.
+
+- Add a shared debug trap and panic-lowering path with source locations.
+- Insert debug checks for overflow, division by zero, invalid shifts, bounds,
+  null dereferences, and invalid unwraps.
+- Make `!!` call the runtime panic path instead of lowering failure to
+  `unreachable`.
+- Complete the error and fallible-function ABI through LLVM lowering.
+- Audit signed, unsigned, floating-point, comparison, and cast lowering.
+- Complete pointer-to-struct field lowering and validate generated LLVM IR.
+- Add end-to-end executable tests for successful programs and runtime failures.
+
+**Acceptance criteria:** a debug-compiled K2 program reliably traps the common
+invalid operations above, reports the originating source location, and all
+failure/control-flow paths produce valid LLVM IR.
+
+### P1: Complete Existing Language Features
+
+- Finish zone allocation semantics, backend behavior, escaping rules, and
+  cleanup guarantees.
+- Complete interfaces: static constraints, const correctness, fallible methods,
+  coherence rules, and lifetime validation.
+- Complete compile-time evaluation and make `sizeof` and type reflection
+  accurate.
+- Apply `#align` correctly and add decided calling-convention, linking, and
+  section attributes.
+- Define and implement wrapping arithmetic.
+- Finish cross-platform runtime and native linking support.
+- Establish a real module, visibility, package, and standard-library foundation.
+
+### P2: Developer Usability
+
+- Add a package/build manifest and dependency management.
+- Add a first-class test runner and decide `#test` syntax.
+- Add a formatter and language-server support.
+- Improve diagnostics for generic instantiation, interface conformance, and
+  backend failures.
+- Build a small standard library around the stable core language.
+
+### P3: Later Language Expansion
+
+- Runtime type identity, reflection, and `Any`.
+- SIMD and vector operations.
+- Contracts with `#require` and `#ensure`.
+- Interface composition, owned dynamic objects, and downcasting.
+- User-defined attributes.
+
+These features should wait until the current language has reliable safety,
+lowering, and tooling foundations.
+
+## Decisions Still Needed
+
+The following choices should be written down before their implementations grow:
+
+| Decision | Questions to resolve |
+| --- | --- |
+| Plain arithmetic | Does overflow trap, wrap, or become UB in release builds? Which explicit operators provide alternatives? |
+| Debug safety | Which checks are mandatory, configurable, or disabled inside `unsafe`? |
+| Error ABI | How are fallible returns represented and propagated across modules and foreign calls? |
+| Zones | Can values escape a zone? How are destructors, nested zones, and failure paths handled? |
+| Interfaces | What is the static constraint syntax? Which module may implement an interface for a type? |
+| Mutability | How do `const`, receiver mutability, pointers, slices, and interface coercions interact? |
+| `Any` and reflection | Is `Any` borrowed or owned? What defines stable runtime type identity? |
+| Modules and packages | How do visibility, package names, dependencies, and standard-library imports work? |
+| Bit and endian handling | Are sub-byte integers plus packed structs sufficient, or are endian/bit-layout attributes needed? |
+
+## Retired "Add Soon" List
+
+The previous short-term list is no longer useful as a roadmap. Most of it is now
+implemented:
+
+- Sub-byte integers.
+- Core function and export attributes.
+- Runtime panic and assertion functions.
+- Casts.
+- Range and slice `for` loops.
+- Integer matching.
+- Dynamic interfaces.
+
+Contracts and wrapping arithmetic remain, but they are now placed according to
+dependency and impact: wrapping arithmetic belongs with safety semantics, while
+contracts should follow the shared debug trap infrastructure.
+
+## Current Non-Goals
+
+Until the P0 and P1 work is complete, these are intentionally not priorities:
+
+- Operator overloading.
+- A general owning `Any`.
+- Large reflection APIs.
+- User-defined attributes.
+- Broad SIMD support.
+- More surface syntax without complete semantics.
+
+## Testing
+
+Run frontend and compiler tests:
+
+```powershell
+zig build test
+```
+
+Run the full suite with LLVM lowering enabled:
+
+```powershell
+zig build test -Dllvm-path=Y:/path/to/llvm
+```
+
+New features should include parser, semantic, IR, and LLVM tests where
+applicable. Safety work should also include executable tests that verify the
+expected debug trap.

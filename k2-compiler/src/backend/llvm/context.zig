@@ -1,7 +1,7 @@
 /// ModuleCg — owns the LLVM context, module, and builder for one compilation unit.
-const std      = @import("std");
-const ir       = @import("../../ir.zig");
-const llvm     = @import("c_api.zig").llvm;
+const std = @import("std");
+const ir = @import("../../ir.zig");
+const llvm = @import("c_api.zig").llvm;
 const variants = @import("variants.zig");
 
 /// One entry in a struct's field table.
@@ -12,39 +12,40 @@ pub const StructField = struct {
 
 pub const ModuleCg = struct {
     allocator: std.mem.Allocator,
-    ctx:       llvm.LLVMContextRef,
-    mod:       llvm.LLVMModuleRef,
-    builder:   llvm.LLVMBuilderRef,
+    ctx: llvm.LLVMContextRef,
+    mod: llvm.LLVMModuleRef,
+    builder: llvm.LLVMBuilderRef,
 
     /// Named LLVM struct types keyed by K2 struct name.
-    struct_types:  std.StringHashMap(llvm.LLVMTypeRef),
+    struct_types: std.StringHashMap(llvm.LLVMTypeRef),
     /// Field name/type lists for each named struct.  Used for field-index lookup.
     struct_fields: std.StringHashMap([]StructField),
     /// Declared LLVM functions, keyed by mangled/extern name.
-    fn_decls:      std.StringHashMap(llvm.LLVMValueRef),
+    fn_decls: std.StringHashMap(llvm.LLVMValueRef),
     /// Declared globals, keyed by name.
-    global_decls:  std.StringHashMap(llvm.LLVMValueRef),
+    global_decls: std.StringHashMap(llvm.LLVMValueRef),
     /// Cached { ptr, usize } slice struct type — created once on first use.
-    slice_type:    ?llvm.LLVMTypeRef = null,
+    slice_type: ?llvm.LLVMTypeRef = null,
+    interface_type: ?llvm.LLVMTypeRef = null,
     /// Per-enum metadata (discriminants, LLVM type).
     enum_meta: std.StringHashMap(*variants.EnumMeta),
     /// Counter for unique string-literal global names.
     string_counter: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, module_name: [*:0]const u8) ModuleCg {
-        const ctx     = llvm.LLVMContextCreate();
-        const mod     = llvm.LLVMModuleCreateWithNameInContext(module_name, ctx);
+        const ctx = llvm.LLVMContextCreate();
+        const mod = llvm.LLVMModuleCreateWithNameInContext(module_name, ctx);
         const builder = llvm.LLVMCreateBuilderInContext(ctx);
         return .{
-            .allocator     = allocator,
-            .ctx           = ctx,
-            .mod           = mod,
-            .builder       = builder,
-            .struct_types  = std.StringHashMap(llvm.LLVMTypeRef).init(allocator),
+            .allocator = allocator,
+            .ctx = ctx,
+            .mod = mod,
+            .builder = builder,
+            .struct_types = std.StringHashMap(llvm.LLVMTypeRef).init(allocator),
             .struct_fields = std.StringHashMap([]StructField).init(allocator),
-            .fn_decls      = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
-            .global_decls  = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
-            .enum_meta     = std.StringHashMap(*variants.EnumMeta).init(allocator),
+            .fn_decls = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
+            .global_decls = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
+            .enum_meta = std.StringHashMap(*variants.EnumMeta).init(allocator),
         };
     }
 
@@ -73,10 +74,21 @@ pub const ModuleCg = struct {
         if (self.slice_type) |st| return st;
         var fields = [_]llvm.LLVMTypeRef{
             llvm.LLVMPointerTypeInContext(self.ctx, 0), // .ptr
-            llvm.LLVMInt64TypeInContext(self.ctx),       // .len
+            llvm.LLVMInt64TypeInContext(self.ctx), // .len
         };
         const st = llvm.LLVMStructTypeInContext(self.ctx, &fields, 2, 0);
         self.slice_type = st;
+        return st;
+    }
+
+    pub fn getInterfaceType(self: *ModuleCg) llvm.LLVMTypeRef {
+        if (self.interface_type) |st| return st;
+        var fields = [_]llvm.LLVMTypeRef{
+            llvm.LLVMPointerTypeInContext(self.ctx, 0),
+            llvm.LLVMPointerTypeInContext(self.ctx, 0),
+        };
+        const st = llvm.LLVMStructTypeInContext(self.ctx, &fields, 2, 0);
+        self.interface_type = st;
         return st;
     }
 

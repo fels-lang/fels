@@ -93,6 +93,13 @@ pub const Parser = struct {
 
     fn parseTopLevel(self: *Parser, attrs: []const ast.Attribute) ParseError!ast.Item {
         const name = try self.expect(.ident, "expected declaration name");
+        if (self.match(.keyword_as)) {
+            if (attrs.len != 0) {
+                try self.errorAt(name, "attributes are not supported on interface implementation blocks");
+                return error.ParseFailed;
+            }
+            return .{ .interface_impl = try self.finishInterfaceImpl(name) };
+        }
         _ = try self.expect(.colon_colon, "expected :: after declaration name");
 
         if (self.match(.keyword_fn)) {
@@ -100,6 +107,9 @@ pub const Parser = struct {
         }
         if (self.match(.keyword_struct)) {
             return .{ .type_decl = try self.finishStruct(attrs, name) };
+        }
+        if (self.match(.keyword_interface)) {
+            return .{ .type_decl = try self.finishInterface(attrs, name) };
         }
         if (self.match(.keyword_errors)) {
             return .{ .type_decl = try self.finishErrors(attrs, name) };
@@ -135,6 +145,52 @@ pub const Parser = struct {
             .value = value,
             .span = spanFrom(name, semi),
         } };
+    }
+
+    fn finishInterface(self: *Parser, attrs: []const ast.Attribute, name: Token) ParseError!ast.TypeDecl {
+        const methods = try self.parseMethodBlock(false);
+        return .{
+            .attrs = attrs,
+            .name = name.text(self.source),
+            .kind = .{ .interface_type = .{ .methods = methods.methods } },
+            .span = Span.new(name.start, methods.span.end),
+        };
+    }
+
+    fn finishInterfaceImpl(self: *Parser, type_name: Token) ParseError!ast.InterfaceImpl {
+        const interface_name = try self.expect(.ident, "expected interface name after `as`");
+        const methods = try self.parseMethodBlock(true);
+        return .{
+            .type_name = type_name.text(self.source),
+            .interface_name = interface_name.text(self.source),
+            .methods = methods.methods,
+            .span = Span.new(type_name.start, methods.span.end),
+        };
+    }
+
+    const ParsedMethods = struct {
+        methods: []const ast.FunctionDecl,
+        span: Span,
+    };
+
+    fn parseMethodBlock(self: *Parser, require_body: bool) ParseError!ParsedMethods {
+        const open = try self.expect(.l_brace, "expected { before methods");
+        var methods: std.ArrayList(ast.FunctionDecl) = .empty;
+        errdefer methods.deinit(self.allocator);
+        while (!self.check(.r_brace) and !self.check(.eof)) {
+            const attrs = try self.parseAttributes();
+            const method_name = try self.expect(.ident, "expected method name");
+            _ = try self.expect(.colon_colon, "expected :: after method name");
+            _ = try self.expect(.keyword_fn, "expected fn after method name");
+            const method = try self.finishFunction(attrs, method_name, false);
+            if (require_body and method.body == null) {
+                try self.errorAt(method_name, "interface implementation method requires a body");
+                return error.ParseFailed;
+            }
+            try methods.append(self.allocator, method);
+        }
+        const close = try self.expect(.r_brace, "expected } after methods");
+        return .{ .methods = try methods.toOwnedSlice(self.allocator), .span = spanFrom(open, close) };
     }
 
     fn finishStruct(self: *Parser, attrs: []const ast.Attribute, name: Token) ParseError!ast.TypeDecl {

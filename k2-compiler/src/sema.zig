@@ -260,6 +260,14 @@ pub const TypeKind = union(enum) {
     struct_type: []const FieldInfo,
     variant_type: []const VariantInfo,
     error_set: []const ErrorVariantInfo,
+    interface_type: []const InterfaceMethodInfo,
+};
+
+pub const InterfaceMethodInfo = struct {
+    name: []const u8,
+    params: []const ParamSig,
+    return_ty: Ty,
+    error_ty: ?Ty,
 };
 
 pub const FieldInfo = struct {
@@ -318,6 +326,7 @@ pub const TypeEnv = struct {
     generic_struct_templates: std.StringHashMap(ast.TypeDecl) = undefined,
     /// Mangled name → SymbolId for already-instantiated generic structs.
     generic_struct_instances: std.StringHashMap(SymbolId) = undefined,
+    interface_impls: std.StringHashMap(ast.InterfaceImpl) = undefined,
     diagnostics: std.ArrayList(Diagnostic) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) TypeEnv {
@@ -331,6 +340,7 @@ pub const TypeEnv = struct {
             .expr_scopes = std.AutoHashMap(ast.NodeId, ScopeId).init(allocator),
             .generic_struct_templates = std.StringHashMap(ast.TypeDecl).init(allocator),
             .generic_struct_instances = std.StringHashMap(SymbolId).init(allocator),
+            .interface_impls = std.StringHashMap(ast.InterfaceImpl).init(allocator),
         };
     }
 
@@ -346,6 +356,7 @@ pub const TypeEnv = struct {
         self.generic_instantiations.deinit(allocator);
         self.generic_struct_templates.deinit();
         self.generic_struct_instances.deinit();
+        self.interface_impls.deinit();
         self.diagnostics.deinit(allocator);
     }
 
@@ -432,6 +443,7 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
             .const_decl => .const_symbol,
             .type_decl => .type,
             .function => .function,
+            .interface_impl => unreachable,
         };
         _ = try table.insert(allocator, table.root_scope, name, kind, item.span());
     }
@@ -518,6 +530,7 @@ const Checker = struct {
     loop_depth: usize = 0,
     current_type_params: []const []const u8 = &.{},
     current_type_binding: []const TypeArg = &.{},
+    current_self_ty: ?Ty = null,
     unsafe_depth: usize = 0,
     // Diagnostics — collected instead of failing immediately where possible.
     diagnostics: std.ArrayList(Diagnostic) = .empty,
@@ -630,12 +643,23 @@ const Checker = struct {
                 .const_decl => |decl| _ = try self.inferExpr(decl.value),
                 .type_decl => |decl| try self.checkTypeDecl(decl),
                 .function => |decl| try self.checkFunction(decl),
+                .interface_impl => |impl| try self.checkInterfaceImpl(impl),
             }
         }
     }
 
     fn collectTopLevelTypes(self: *Checker, module: ast.Module) SemanticError!void {
         for (module.items) |item| {
+            if (item == .interface_impl) {
+                const impl = item.interface_impl;
+                const key = try interfaceImplKey(self.allocator, impl.type_name, impl.interface_name);
+                if (self.env.interface_impls.contains(key)) {
+                    self.emitError(impl.span, "duplicate `{s} as {s}` implementation", .{ impl.type_name, impl.interface_name });
+                    return error.SemanticFailed;
+                }
+                try self.env.interface_impls.put(key, impl);
+                continue;
+            }
             const name = item.name() orelse continue;
             const id = self.symbols.resolve(self.symbols.root_scope, name) orelse continue;
             switch (item) {
@@ -684,6 +708,37 @@ const Checker = struct {
                                 .is_packed = false,
                             });
                         },
+                        .interface_type => |interface_decl| {
+                            self.current_self_ty = .{ .named = id };
+                            defer self.current_self_ty = null;
+                            var methods = std.ArrayList(InterfaceMethodInfo).empty;
+                            errdefer methods.deinit(self.allocator);
+                            for (interface_decl.methods) |method| {
+                                var params = std.ArrayList(ParamSig).empty;
+                                errdefer params.deinit(self.allocator);
+                                for (method.params) |param| try params.append(self.allocator, .{
+                                    .name = param.name,
+                                    .ty = try self.typeFromRef(param.ty),
+                                });
+                                try methods.append(self.allocator, .{
+                                    .name = method.name,
+                                    .params = try params.toOwnedSlice(self.allocator),
+                                    .return_ty = try self.typeFromRef(method.return_ty),
+                                    .error_ty = if (method.error_ty) |err| try self.typeFromErrorSpec(err) else null,
+                                });
+                                const first = methods.items[methods.items.len - 1].params;
+                                if (first.len == 0 or first[0].ty != .pointer or
+                                    first[0].ty.pointer.* != .named or first[0].ty.pointer.named != id)
+                                {
+                                    self.emitError(method.span, "interface method `{s}` must begin with `self: *Self`", .{method.name});
+                                    return error.SemanticFailed;
+                                }
+                            }
+                            try self.env.layouts.put(id, .{
+                                .kind = .{ .interface_type = try methods.toOwnedSlice(self.allocator) },
+                                .is_packed = false,
+                            });
+                        },
                         else => {},
                     }
                 },
@@ -724,6 +779,7 @@ const Checker = struct {
                     } });
                 },
                 .import => {},
+                .interface_impl => unreachable,
             }
         }
     }
@@ -746,6 +802,63 @@ const Checker = struct {
                     if (variant.payload) |payload| try self.checkType(payload);
                 }
             },
+            .interface_type => |interface_decl| {
+                const id = self.symbols.resolve(self.symbols.root_scope, decl.name) orelse return error.SemanticFailed;
+                self.current_self_ty = .{ .named = id };
+                defer self.current_self_ty = null;
+                for (interface_decl.methods) |method| {
+                    for (method.params) |param| try self.checkType(param.ty);
+                    try self.checkType(method.return_ty);
+                }
+            },
+        }
+    }
+
+    fn checkInterfaceImpl(self: *Checker, impl: ast.InterfaceImpl) SemanticError!void {
+        const concrete_id = self.symbols.resolve(self.symbols.root_scope, impl.type_name) orelse return error.SemanticFailed;
+        const interface_id = self.symbols.resolve(self.symbols.root_scope, impl.interface_name) orelse return error.SemanticFailed;
+        const layout = self.env.layouts.get(interface_id) orelse return error.SemanticFailed;
+        const required = switch (layout.kind) {
+            .interface_type => |methods| methods,
+            else => {
+                self.emitError(impl.span, "`{s}` is not an interface", .{impl.interface_name});
+                return error.SemanticFailed;
+            },
+        };
+        self.current_self_ty = .{ .named = concrete_id };
+        defer self.current_self_ty = null;
+
+        for (required) |required_method| {
+            const method = for (impl.methods) |candidate| {
+                if (std.mem.eql(u8, candidate.name, required_method.name)) break candidate;
+            } else {
+                self.emitError(impl.span, "missing interface method `{s}`", .{required_method.name});
+                return error.SemanticFailed;
+            };
+            if (method.params.len != required_method.params.len) return error.SemanticFailed;
+            for (method.params, required_method.params) |actual, expected| {
+                const actual_ty = try self.typeFromRef(actual.ty);
+                const expected_ty = try substituteInterfaceSelf(self, expected.ty, interface_id, concrete_id);
+                if (!sameTy(actual_ty, expected_ty)) {
+                    self.emitError(actual.span, "signature mismatch for interface method `{s}`", .{method.name});
+                    return error.SemanticFailed;
+                }
+            }
+            const actual_ret = try self.typeFromRef(method.return_ty);
+            const expected_ret = try substituteInterfaceSelf(self, required_method.return_ty, interface_id, concrete_id);
+            if (!sameTy(actual_ret, expected_ret)) return error.SemanticFailed;
+            try self.checkFunction(method);
+        }
+        for (impl.methods) |method| {
+            var found = false;
+            for (required) |req| if (std.mem.eql(u8, method.name, req.name)) {
+                found = true;
+                break;
+            };
+            if (!found) {
+                self.emitError(method.span, "method `{s}` is not declared by interface `{s}`", .{ method.name, impl.interface_name });
+                return error.SemanticFailed;
+            }
         }
     }
 
@@ -966,6 +1079,7 @@ const Checker = struct {
             .as_cast => |cast| blk: {
                 const from_ty = try self.inferExpr(cast.value.*);
                 const to_ty = try self.typeFromRef(cast.to);
+                if (try self.interfaceCoercion(from_ty, to_ty)) break :blk to_ty;
                 const pointer_cast = isPointerTy(from_ty) or isPointerTy(to_ty);
                 const valid = (from_ty.isNumeric() and to_ty.isNumeric()) or
                     (from_ty.isInteger() and to_ty == .bool) or
@@ -1099,6 +1213,29 @@ const Checker = struct {
                 // by checking call.callee.id rather than chasing base pointer ids.
                 try self.env.expr_types.put(call.callee.id, .zone_handle);
                 return self.inferZoneMethod(fld.name, call.args);
+            }
+            if (self.interfaceFromPointer(base_ty)) |interface_id| {
+                const method = self.findInterfaceMethod(interface_id, fld.name) orelse {
+                    self.emitError(call.callee.span, "interface has no method `{s}`", .{fld.name});
+                    return error.SemanticFailed;
+                };
+                if (method.params.len == 0 or call.args.len != method.params.len - 1) {
+                    self.emitError(call.callee.span, "`{s}` expects {d} argument(s)", .{ fld.name, method.params.len - 1 });
+                    return error.SemanticFailed;
+                }
+                for (call.args, 0..) |arg, i| {
+                    const arg_expr = switch (arg) {
+                        .positional => |value| value,
+                        .named => |named| named.value,
+                    };
+                    if (!try self.compatible(try self.inferExpr(arg_expr), method.params[i + 1].ty))
+                        return error.SemanticFailed;
+                }
+                try self.env.expr_types.put(call.callee.id, .{ .fn_ptr = .{
+                    .params = &.{},
+                    .ret = try self.boxTy(method.return_ty),
+                } });
+                return method.return_ty;
             }
         }
 
@@ -1636,10 +1773,12 @@ const Checker = struct {
             },
             .named => |named| {
                 if (self.resolveTypeParam(named.name)) |tp_ty| return tp_ty;
-                if (fromBuiltinName(named.name)) |builtin_ty| return builtin_ty;
-                const id = self.symbols.resolve(self.symbols.root_scope, named.name) orelse return error.SemanticFailed;
-                if (self.symbols.symbol(id).kind != .type) return error.SemanticFailed;
-                return .{ .named = id };
+                if (std.mem.eql(u8, named.name, "Self")) return self.current_self_ty orelse error.SemanticFailed;
+                if (self.symbols.resolve(self.symbols.root_scope, named.name)) |id| {
+                    if (self.symbols.symbol(id).kind != .type) return error.SemanticFailed;
+                    return .{ .named = id };
+                }
+                return fromBuiltinName(named.name) orelse error.SemanticFailed;
             },
             .pointer => |ptr| return try self.ptrTo(try self.typeFromRef(ptr.inner.*)),
             .many_pointer => |ptr| return try self.ptrTo(try self.typeFromRef(ptr.inner.*)),
@@ -1765,6 +1904,15 @@ const Checker = struct {
                 self.emitError(Span.new(0, 0), "unknown variant `{s}`", .{name});
                 return error.SemanticFailed;
             },
+            .interface_type => |methods| blk: {
+                for (methods) |method| {
+                    if (std.mem.eql(u8, method.name, name)) break :blk .{ .fn_ptr = .{
+                        .params = &.{},
+                        .ret = try self.boxTy(method.return_ty),
+                    } };
+                }
+                return error.SemanticFailed;
+            },
             else => error.SemanticFailed,
         };
     }
@@ -1817,6 +1965,7 @@ const Checker = struct {
 
     fn compatible(self: *Checker, actual: Ty, expected: Ty) !bool {
         if (sameTy(actual, expected)) return true;
+        if (try self.interfaceCoercion(actual, expected)) return true;
         if (expected == .optional) {
             if (actual == .null_ptr) return true;
             return try self.compatible(actual, expected.optional.*);
@@ -1832,7 +1981,60 @@ const Checker = struct {
         if (expected == .unknown or actual == .unknown) return true;
         return false;
     }
+
+    fn interfaceFromPointer(self: *Checker, ty: Ty) ?SymbolId {
+        const id = switch (ty) {
+            .pointer => |inner| switch (inner.*) {
+                .named => |id| id,
+                else => return null,
+            },
+            else => return null,
+        };
+        const layout = self.env.layouts.get(id) orelse return null;
+        return if (layout.kind == .interface_type) id else null;
+    }
+
+    fn findInterfaceMethod(self: *Checker, interface_id: SymbolId, name: []const u8) ?InterfaceMethodInfo {
+        const layout = self.env.layouts.get(interface_id) orelse return null;
+        const methods = switch (layout.kind) {
+            .interface_type => |methods| methods,
+            else => return null,
+        };
+        for (methods) |method| if (std.mem.eql(u8, method.name, name)) return method;
+        return null;
+    }
+
+    fn interfaceCoercion(self: *Checker, actual: Ty, expected: Ty) !bool {
+        const interface_id = self.interfaceFromPointer(expected) orelse return false;
+        const concrete_id = switch (actual) {
+            .pointer => |inner| switch (inner.*) {
+                .named => |id| id,
+                else => return false,
+            },
+            else => return false,
+        };
+        const key = try interfaceImplKey(
+            self.allocator,
+            self.symbols.symbol(concrete_id).name,
+            self.symbols.symbol(interface_id).name,
+        );
+        return self.env.interface_impls.contains(key);
+    }
 };
+
+fn interfaceImplKey(allocator: std.mem.Allocator, type_name: []const u8, interface_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s} as {s}", .{ type_name, interface_name });
+}
+
+fn substituteInterfaceSelf(checker: *Checker, ty: Ty, interface_id: SymbolId, concrete_id: SymbolId) !Ty {
+    return switch (ty) {
+        .named => |id| if (id == interface_id) .{ .named = concrete_id } else ty,
+        .pointer => |inner| .{ .pointer = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        .optional => |inner| .{ .optional = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        .slice => |inner| .{ .slice = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        else => ty,
+    };
+}
 
 fn isPointerTy(ty: Ty) bool {
     return ty == .pointer;

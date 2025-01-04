@@ -71,6 +71,7 @@ pub const TokenKind = enum {
     // Keywords
     keyword_fn,
     keyword_struct,
+    keyword_interface,
     keyword_distinct,
     keyword_opaque,
     keyword_atomic,

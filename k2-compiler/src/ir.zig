@@ -14,10 +14,16 @@ pub const IrModule = struct {
     variants: []const VariantDef = &.{},
     functions: []const IrFunction = &.{},
     globals: []const IrGlobal = &.{},
+    vtables: []const InterfaceVTable = &.{},
 
     pub fn empty(file_name: []const u8) IrModule {
         return .{ .file_name = file_name };
     }
+};
+
+pub const InterfaceVTable = struct {
+    name: []const u8,
+    methods: []const []const u8,
 };
 
 pub const IrGlobal = struct {
@@ -93,6 +99,7 @@ pub const IrType = union(enum) {
     variant_type: []const u8,
     fallible: FallibleType,
     fn_ptr: FnPtrType,
+    interface_value: []const u8,
     list: *const IrType,
     map: *const IrType,
     unknown,
@@ -188,10 +195,23 @@ pub const InstrKind = union(enum) {
     zone_free: ZoneFreeInstr,
     at: AtInstr,
     raw_pointer: RawPointerInstr,
+    interface_make: InterfaceMakeInstr,
+    interface_data: Value,
+    interface_method: InterfaceMethodInstr,
     store_local: StoreLocalInstr,
     global_load: []const u8,
     global_store: GlobalStoreInstr,
     store: StoreInstr,
+};
+
+pub const InterfaceMakeInstr = struct {
+    data: Value,
+    vtable: []const u8,
+};
+
+pub const InterfaceMethodInstr = struct {
+    value: Value,
+    index: u32,
 };
 
 pub const UnaryInstr = struct {
@@ -410,11 +430,13 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
     var variants: std.ArrayList(VariantDef) = .empty;
     var functions: std.ArrayList(IrFunction) = .empty;
     var globals: std.ArrayList(IrGlobal) = .empty;
+    var vtables: std.ArrayList(InterfaceVTable) = .empty;
     errdefer structs.deinit(allocator);
     errdefer errors.deinit(allocator);
     errdefer variants.deinit(allocator);
     errdefer functions.deinit(allocator);
     errdefer globals.deinit(allocator);
+    errdefer vtables.deinit(allocator);
 
     for (front_end.module.items) |item| {
         switch (item) {
@@ -423,7 +445,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
                 .struct_type => |strukt| try structs.append(allocator, try lowerStruct(allocator, decl, strukt)),
                 .errors => |error_decl| try errors.append(allocator, try lowerErrorDef(allocator, decl, error_decl)),
                 .enum_type => |enum_decl| try variants.append(allocator, try lowerEnumDef(allocator, decl, enum_decl)),
-                .distinct, .opaque_type => {},
+                .distinct, .opaque_type, .interface_type => {},
             },
             .const_decl => |decl| {
                 // #run expr on the right-hand side → evaluate at compile time.
@@ -440,6 +462,40 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
                 if (decl.type_params.len == 0) {
                     try functions.append(allocator, try lowerFunction(allocator, front_end.types, front_end.symbols, front_end.module, decl));
                 }
+            },
+            .interface_impl => |impl| {
+                for (impl.methods) |method| {
+                    const mangled = try interfaceMethodName(allocator, impl.type_name, impl.interface_name, method.name);
+                    try functions.append(allocator, try lowerInterfaceMethod(
+                        allocator,
+                        front_end.types,
+                        front_end.symbols,
+                        front_end.module,
+                        impl,
+                        method,
+                        mangled,
+                    ));
+                }
+                var method_names = std.ArrayList([]const u8).empty;
+                errdefer method_names.deinit(allocator);
+                const interface_id = front_end.symbols.resolve(front_end.symbols.root_scope, impl.interface_name) orelse return error.LoweringFailed;
+                const layout = front_end.types.layouts.get(interface_id) orelse return error.LoweringFailed;
+                const interface_methods = switch (layout.kind) {
+                    .interface_type => |methods| methods,
+                    else => return error.LoweringFailed,
+                };
+                for (interface_methods) |method| {
+                    try method_names.append(allocator, try interfaceMethodName(
+                        allocator,
+                        impl.type_name,
+                        impl.interface_name,
+                        method.name,
+                    ));
+                }
+                try vtables.append(allocator, .{
+                    .name = try interfaceVTableName(allocator, impl.type_name, impl.interface_name),
+                    .methods = try method_names.toOwnedSlice(allocator),
+                });
             },
         }
     }
@@ -502,6 +558,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
         .variants = try variants.toOwnedSlice(allocator),
         .functions = try functions.toOwnedSlice(allocator),
         .globals = try globals.toOwnedSlice(allocator),
+        .vtables = try vtables.toOwnedSlice(allocator),
     };
 }
 
@@ -585,6 +642,9 @@ fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
         .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| try validateValue(function, value),
         .at => |at| try validateValue(function, at.value),
         .raw_pointer => |ptr| try validateValue(function, ptr.address),
+        .interface_make => |make| try validateValue(function, make.data),
+        .interface_data => |value| try validateValue(function, value),
+        .interface_method => |method| try validateValue(function, method.value),
         .store_local => |store| try validateValue(function, store.value),
         .global_store => |store| try validateValue(function, store.value),
         .store => |store| {
@@ -932,6 +992,9 @@ fn instrUsesReg(instr: Instr, id: RegId) bool {
         .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| valueUsesReg(value, id),
         .at => |at| valueUsesReg(at.value, id),
         .raw_pointer => |ptr| valueUsesReg(ptr.address, id),
+        .interface_make => |make| valueUsesReg(make.data, id),
+        .interface_data => |value| valueUsesReg(value, id),
+        .interface_method => |method| valueUsesReg(method.value, id),
         .store_local => |store| valueUsesReg(store.value, id),
         .global_store => |store| valueUsesReg(store.value, id),
         .store => |store| valueUsesReg(store.target, id) or valueUsesReg(store.value, id),
@@ -1090,20 +1153,22 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
         if (param.is_type_param) continue;
         try params.append(allocator, .{
             .name = param.name,
-            .ty = try lowerType(allocator, param.ty),
+            .ty = try lowerAstTypeWithEnv(allocator, param.ty, types, symbols),
         });
     }
 
+    const return_ty = try lowerAstTypeWithEnv(allocator, decl.return_ty, types, symbols);
     const blocks = if (decl.body) |body| blk: {
         var lowerer = FunctionLowerer.init(allocator, types, symbols, decl.params);
         lowerer.module = module;
+        lowerer.current_return_ty = return_ty;
         break :blk try lowerer.lowerBody(body);
     } else &.{};
 
     return .{
         .name = decl.name,
         .params = try params.toOwnedSlice(allocator),
-        .return_ty = try lowerType(allocator, decl.return_ty),
+        .return_ty = return_ty,
         .error_ty = if (decl.error_ty) |err| try lowerErrorSpec(allocator, err) else null,
         .blocks = blocks,
         .extern_name = externName(decl.attrs),
@@ -1114,6 +1179,63 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
         .naked = hasAttr(decl.attrs, "naked"),
         .export_sym = sema.exportSym(decl.attrs),
     };
+}
+
+fn lowerInterfaceMethod(
+    allocator: std.mem.Allocator,
+    types: sema.TypeEnv,
+    symbols: sema.SymbolTable,
+    module: ast.Module,
+    impl: ast.InterfaceImpl,
+    decl: ast.FunctionDecl,
+    mangled_name: []const u8,
+) !IrFunction {
+    var params: std.ArrayList(IrParam) = .empty;
+    errdefer params.deinit(allocator);
+    for (decl.params) |param| try params.append(allocator, .{
+        .name = param.name,
+        .ty = try lowerTypeReplacingSelf(allocator, param.ty, impl.type_name),
+    });
+    const return_ty = try lowerTypeReplacingSelf(allocator, decl.return_ty, impl.type_name);
+    const blocks = if (decl.body) |body| blk: {
+        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl.params);
+        lowerer.module = module;
+        lowerer.current_return_ty = return_ty;
+        break :blk try lowerer.lowerBody(body);
+    } else &.{};
+    return .{
+        .name = mangled_name,
+        .params = try params.toOwnedSlice(allocator),
+        .return_ty = return_ty,
+        .error_ty = if (decl.error_ty) |err| try lowerErrorSpec(allocator, err) else null,
+        .blocks = blocks,
+        .extern_name = null,
+        .inline_hint = false,
+        .no_inline = false,
+        .no_return = false,
+        .entry = false,
+        .naked = false,
+        .export_sym = null,
+    };
+}
+
+fn lowerTypeReplacingSelf(allocator: std.mem.Allocator, ty: ast.TypeRef, concrete_name: []const u8) !IrType {
+    return switch (ty) {
+        .named => |named| if (std.mem.eql(u8, named.name, "Self")) .{ .struct_type = concrete_name } else lowerNamedType(named.name),
+        .pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerTypeReplacingSelf(allocator, ptr.inner.*, concrete_name)) },
+        .many_pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerTypeReplacingSelf(allocator, ptr.inner.*, concrete_name)) },
+        .optional => |opt| .{ .optional = try boxType(allocator, try lowerTypeReplacingSelf(allocator, opt.inner.*, concrete_name)) },
+        .slice => |slice| .{ .slice = try boxType(allocator, try lowerTypeReplacingSelf(allocator, slice.inner.*, concrete_name)) },
+        else => lowerType(allocator, ty),
+    };
+}
+
+fn interfaceMethodName(allocator: std.mem.Allocator, type_name: []const u8, interface_name: []const u8, method_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}.{s}.{s}", .{ type_name, interface_name, method_name });
+}
+
+fn interfaceVTableName(allocator: std.mem.Allocator, type_name: []const u8, interface_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}.{s}.vtable", .{ type_name, interface_name });
 }
 
 const LoopContext = struct {
@@ -1150,13 +1272,21 @@ const FunctionLowerer = struct {
     next_reg: RegId = 1,
     next_block_id: BlockId = 1,
     loop_stack: std.ArrayList(LoopContext) = .empty,
+    local_types: std.StringHashMap(IrType),
+    current_return_ty: IrType = .void,
     active_zones: std.ArrayList([]const u8) = .empty,
     defers: std.ArrayList(ast.DeferStmt) = .empty,
     type_binding: []const sema.TypeArg = &.{},
     module: ast.Module = .empty(""),
 
     fn init(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, params: []const ast.Param) FunctionLowerer {
-        return .{ .allocator = allocator, .types = types, .symbols = symbols, .params = params };
+        return .{
+            .allocator = allocator,
+            .types = types,
+            .symbols = symbols,
+            .params = params,
+            .local_types = std.StringHashMap(IrType).init(allocator),
+        };
     }
 
     fn lowerBody(self: *FunctionLowerer, body: ast.Block) LowerError![]const IrBlock {
@@ -1168,15 +1298,18 @@ const FunctionLowerer = struct {
         switch (stmt) {
             .local_infer => |local| {
                 const value = try self.lowerExpr(local.value);
-                try self.emitNoResult(self.exprType(local.value), .{ .store_local = .{ .name = local.name, .value = value } });
+                const local_ty = self.exprType(local.value);
+                try self.local_types.put(local.name, local_ty);
+                try self.emitNoResult(local_ty, .{ .store_local = .{ .name = local.name, .value = value } });
             },
             .local_typed => |local| {
-                const local_ty = try lowerType(self.allocator, local.ty);
+                const local_ty = try lowerAstTypeWithEnv(self.allocator, local.ty, self.types, self.symbols);
                 const value = try self.lowerExprAs(local.value, local_ty);
+                try self.local_types.put(local.name, local_ty);
                 try self.emitNoResult(local_ty, .{ .store_local = .{ .name = local.name, .value = value } });
             },
             .assign => |assign| {
-                const value = try self.lowerExpr(assign.value);
+                const value = try self.lowerExprAs(assign.value, self.exprType(assign.target));
                 const bin_op = assignBinOp(assign.op);
                 switch (assign.target.kind) {
                     .ident => |name| {
@@ -1201,7 +1334,7 @@ const FunctionLowerer = struct {
                 }
             },
             .return_stmt => |ret| {
-                const ret_val: ?Value = if (ret.value) |value| try self.lowerExpr(value) else null;
+                const ret_val: ?Value = if (ret.value) |value| try self.lowerExprAs(value, self.current_return_ty) else null;
                 try self.emitDefersDown(0, .ok);
                 var i = self.active_zones.items.len;
                 while (i > 0) {
@@ -1530,10 +1663,13 @@ const FunctionLowerer = struct {
             .run_expr => |inner| try self.lowerExpr(inner.*),
             .force_unwrap => |inner| try self.lowerForceUnwrap(inner.*, expr),
             .nil_coalesce => |nc| try self.lowerNilCoalesce(nc, expr),
-            .as_cast => |cast| try self.emit(self.exprType(expr), .{ .cast = .{
-                .kind = .as,
-                .value = try self.lowerExpr(cast.value.*),
-            } }),
+            .as_cast => |cast| if (self.exprType(expr) == .interface_value)
+                try self.lowerInterfaceCoercion(cast.value.*, self.exprType(expr).interface_value)
+            else
+                try self.emit(self.exprType(expr), .{ .cast = .{
+                    .kind = .as,
+                    .value = try self.lowerExpr(cast.value.*),
+                } }),
             .int => |text| .{ .imm = .{ .int = parseIntLiteral(text) } },
             .string => |text| .{ .imm = .{ .text = trimQuotes(text) } },
             .bool => |value| .{ .imm = .{ .bool = value } },
@@ -1581,14 +1717,36 @@ const FunctionLowerer = struct {
             .call => |call| blk: {
                 // Detect zone method calls: sema marks the field-callee expr with zone_handle.
                 if (call.callee.kind == .field) {
+                    const fld = call.callee.kind.field;
+                    if (self.exprType(fld.base.*) == .interface_value) {
+                        const iface_name = self.exprType(fld.base.*).interface_value;
+                        const method_index = self.interfaceMethodIndex(iface_name, fld.name) orelse break :blk Value{ .imm = .null };
+                        const iface = try self.lowerExpr(fld.base.*);
+                        const data = try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .interface_data = iface });
+                        const callee = try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .interface_method = .{
+                            .value = iface,
+                            .index = method_index,
+                        } });
+                        var args = std.ArrayList(Value).empty;
+                        errdefer args.deinit(self.allocator);
+                        try args.append(self.allocator, data);
+                        for (call.args) |arg| switch (arg) {
+                            .positional => |value| try args.append(self.allocator, try self.lowerExpr(value)),
+                            .named => |named| try args.append(self.allocator, try self.lowerExpr(named.value)),
+                        };
+                        break :blk try self.emit(self.exprType(expr), .{ .call_indirect = .{
+                            .callee = callee,
+                            .args = try args.toOwnedSlice(self.allocator),
+                        } });
+                    }
                     if (self.types.expr_types.get(call.callee.id)) |callee_ty| {
                         if (callee_ty == .zone_handle) {
-                            const fld = call.callee.kind.field;
-                            const zone_name = switch (fld.base.kind) {
+                            const zone_field = call.callee.kind.field;
+                            const zone_name = switch (zone_field.base.kind) {
                                 .ident => |n| n,
                                 else => break :blk Value{ .imm = .null },
                             };
-                            break :blk try self.lowerZoneMethod(zone_name, fld.name, call.args, expr);
+                            break :blk try self.lowerZoneMethod(zone_name, zone_field.name, call.args, expr);
                         }
                     }
                 }
@@ -1603,10 +1761,27 @@ const FunctionLowerer = struct {
                 }
                 var args = std.ArrayList(Value).empty;
                 errdefer args.deinit(self.allocator);
-                for (call.args) |arg| switch (arg) {
-                    .positional => |value| try args.append(self.allocator, try self.lowerExpr(value)),
-                    .named => |named| try args.append(self.allocator, try self.lowerExpr(named.value)),
-                };
+                const direct_sig = if (self.symbols.resolve(self.symbols.root_scope, callee_name)) |id|
+                    self.types.fn_sigs.get(id)
+                else
+                    null;
+                var value_param_index: usize = 0;
+                for (call.args) |arg| {
+                    const value = switch (arg) {
+                        .positional => |value| value,
+                        .named => |named| named.value,
+                    };
+                    var expected: ?IrType = null;
+                    if (direct_sig) |sig| {
+                        while (value_param_index < sig.params.len and sig.params[value_param_index].is_type_param)
+                            value_param_index += 1;
+                        if (value_param_index < sig.params.len) {
+                            expected = lowerSemaTypeWithEnv(self.allocator, sig.params[value_param_index].ty, self.types, self.symbols) catch null;
+                            value_param_index += 1;
+                        }
+                    }
+                    try args.append(self.allocator, if (expected) |ty| try self.lowerExprAs(value, ty) else try self.lowerExpr(value));
+                }
                 const arg_slice = try args.toOwnedSlice(self.allocator);
                 if (isBuiltinName(callee_name)) {
                     break :blk try self.emit(self.exprType(expr), .{ .builtin = .{ .name = callee_name, .args = arg_slice } });
@@ -1678,6 +1853,9 @@ const FunctionLowerer = struct {
     }
 
     fn lowerExprAs(self: *FunctionLowerer, expr: ast.Expr, expected_ty: IrType) LowerError!Value {
+        if (expected_ty == .interface_value and self.exprType(expr) != .interface_value) {
+            return self.lowerInterfaceCoercion(expr, expected_ty.interface_value);
+        }
         return switch (expr.kind) {
             .compound_literal => |values| blk: {
                 var args = std.ArrayList(Value).empty;
@@ -2059,9 +2237,54 @@ const FunctionLowerer = struct {
     }
 
     fn exprType(self: FunctionLowerer, expr: ast.Expr) IrType {
-        const ty = self.types.expr_types.get(expr.id) orelse return .unknown;
+        const ty = self.types.expr_types.get(expr.id) orelse {
+            if (expr.kind == .ident) {
+                if (self.local_types.get(expr.kind.ident)) |local_ty| return local_ty;
+                for (self.params) |param| if (std.mem.eql(u8, param.name, expr.kind.ident))
+                    return lowerAstTypeWithEnv(self.allocator, param.ty, self.types, self.symbols) catch .unknown;
+            }
+            return .unknown;
+        };
         const resolved = resolveTypeParamInTy(ty, self.type_binding);
-        return lowerSemaType(self.allocator, resolved, self.symbols) catch .unknown;
+        return lowerSemaTypeWithEnv(self.allocator, resolved, self.types, self.symbols) catch .unknown;
+    }
+
+    fn lowerInterfaceCoercion(self: *FunctionLowerer, expr: ast.Expr, interface_name: []const u8) LowerError!Value {
+        const concrete_name = self.concretePointerExprName(expr) orelse return error.LoweringFailed;
+        return self.emit(.{ .interface_value = interface_name }, .{ .interface_make = .{
+            .data = try self.lowerExpr(expr),
+            .vtable = try interfaceVTableName(self.allocator, concrete_name, interface_name),
+        } });
+    }
+
+    fn concretePointerExprName(self: FunctionLowerer, expr: ast.Expr) ?[]const u8 {
+        if (self.types.expr_types.get(expr.id)) |ty| {
+            if (concretePointerName(ty, self.symbols)) |name| return name;
+        }
+        if (expr.kind == .ident) {
+            for (self.params) |param| {
+                if (!std.mem.eql(u8, param.name, expr.kind.ident)) continue;
+                return switch (param.ty) {
+                    .pointer => |ptr| switch (ptr.inner.*) {
+                        .named => |named| named.name,
+                        else => null,
+                    },
+                    else => null,
+                };
+            }
+        }
+        return null;
+    }
+
+    fn interfaceMethodIndex(self: FunctionLowerer, interface_name: []const u8, method_name: []const u8) ?u32 {
+        const id = self.symbols.resolve(self.symbols.root_scope, interface_name) orelse return null;
+        const layout = self.types.layouts.get(id) orelse return null;
+        const methods = switch (layout.kind) {
+            .interface_type => |methods| methods,
+            else => return null,
+        };
+        for (methods, 0..) |method, i| if (std.mem.eql(u8, method.name, method_name)) return @intCast(i);
+        return null;
     }
 
     fn allocBlockId(self: *FunctionLowerer) BlockId {
@@ -2121,6 +2344,17 @@ fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
         .inline_error_set => |set| try lowerInlineErrorSet(allocator, set),
         .opaque_type => .{ .opaque_type = "opaque" },
     };
+}
+
+fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable) !IrType {
+    if (ty == .pointer) switch (ty.pointer.inner.*) {
+        .named => |named| if (symbols.resolve(symbols.root_scope, named.name)) |id| {
+            if (types.layouts.get(id)) |layout| if (layout.kind == .interface_type)
+                return .{ .interface_value = named.name };
+        },
+        else => {},
+    };
+    return lowerType(allocator, ty);
 }
 
 fn lowerErrorSpec(allocator: std.mem.Allocator, spec: ast.ErrorSpec) !IrType {
@@ -2212,6 +2446,25 @@ fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.Symbol
         .null_ptr => .{ .ptr = try boxType(allocator, .void) },
         .unknown, .error_ty => .unknown,
         else => .unknown,
+    };
+}
+
+fn lowerSemaTypeWithEnv(allocator: std.mem.Allocator, ty: sema.Ty, types: sema.TypeEnv, symbols: sema.SymbolTable) !IrType {
+    if (ty == .pointer and ty.pointer.* == .named) {
+        const id = ty.pointer.named;
+        if (types.layouts.get(id)) |layout| if (layout.kind == .interface_type)
+            return .{ .interface_value = symbols.symbol(id).name };
+    }
+    return lowerSemaType(allocator, ty, symbols);
+}
+
+fn concretePointerName(ty: sema.Ty, symbols: sema.SymbolTable) ?[]const u8 {
+    return switch (ty) {
+        .pointer => |inner| switch (inner.*) {
+            .named => |id| symbols.symbol(id).name,
+            else => null,
+        },
+        else => null,
     };
 }
 

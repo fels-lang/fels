@@ -123,6 +123,9 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         ),
 
         .call_indirect => |ci| lowerCallIndirect(cg, fncg, ci, instr.ty),
+        .interface_make => |make| lowerInterfaceMake(cg, fncg, make),
+        .interface_data => |value| lowerInterfaceData(cg, fncg, value),
+        .interface_method => |method| lowerInterfaceMethod(cg, fncg, method),
 
         // Zone/error — runtime-library concerns.
         .zone_push, .zone_pop, .zone_free, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next, .at, .raw_pointer => null,
@@ -138,6 +141,31 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
 
 fn resolveVal(cg: *ModuleCg, fncg: anytype, val: ir.Value, ty: ir.IrType) llvm.LLVMValueRef {
     return values.resolveValue(cg, fncg, val, ty);
+}
+
+fn lowerInterfaceMake(cg: *ModuleCg, fncg: anytype, make: ir.InterfaceMakeInstr) ?llvm.LLVMValueRef {
+    const data = resolveVal(cg, fncg, make.data, .{ .ptr = undefined });
+    const vtable = cg.global_decls.get(make.vtable) orelse return null;
+    var result = llvm.LLVMGetUndef(cg.getInterfaceType());
+    result = llvm.LLVMBuildInsertValue(cg.builder, result, data, 0, "");
+    return llvm.LLVMBuildInsertValue(cg.builder, result, vtable, 1, "");
+}
+
+fn lowerInterfaceData(cg: *ModuleCg, fncg: anytype, value: ir.Value) ?llvm.LLVMValueRef {
+    const interface = resolveVal(cg, fncg, value, .{ .interface_value = "" });
+    return llvm.LLVMBuildExtractValue(cg.builder, interface, 0, "");
+}
+
+fn lowerInterfaceMethod(cg: *ModuleCg, fncg: anytype, method: ir.InterfaceMethodInstr) ?llvm.LLVMValueRef {
+    const interface = resolveVal(cg, fncg, method.value, .{ .interface_value = "" });
+    const vtable = llvm.LLVMBuildExtractValue(cg.builder, interface, 1, "");
+    const ptr_ty = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
+    const array_ty = llvm.LLVMArrayType2(ptr_ty, method.index + 1);
+    const zero = llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), 0, 0);
+    const index = llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), method.index, 0);
+    var indices = [_]llvm.LLVMValueRef{ zero, index };
+    const slot = llvm.LLVMBuildGEP2(cg.builder, array_ty, vtable, &indices, 2, "");
+    return llvm.LLVMBuildLoad2(cg.builder, ptr_ty, slot, "");
 }
 
 fn pointerChild(ty: ir.IrType) ?ir.IrType {
