@@ -1,5 +1,5 @@
 const std = @import("std");
-const k2  = @import("k2_compiler");
+const k2 = @import("k2_compiler");
 
 test "enum: simple declaration and value access" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -43,7 +43,7 @@ test "enum: simple declaration and value access" {
             .variant_lit => |vl| {
                 found_variant_lit = true;
                 try std.testing.expectEqualStrings("Direction", vl.type_name);
-                try std.testing.expectEqualStrings("north",     vl.variant);
+                try std.testing.expectEqualStrings("north", vl.variant);
             },
             else => {},
         };
@@ -187,8 +187,7 @@ test "enum: unknown variant in match fails sema" {
         \\    match d { .east => return 1; else => return 0; }
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed,
-        k2.compile(arena.allocator(), "bad.k2", bad));
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad.k2", bad));
 }
 
 test "enum: match subject must be enum type" {
@@ -200,6 +199,69 @@ test "enum: match subject must be enum type" {
         \\    match x { .foo => return 1; else => return 0; }
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed,
-        k2.compile(arena.allocator(), "bad.k2", bad));
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad.k2", bad));
+}
+
+test "integer match: single and grouped values lower to comparisons" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\classify :: fn(status: u32) -> i32 {
+        \\    match status {
+        \\        200      => return 1;
+        \\        301, 302 => return 2;
+        \\        500      => return 3;
+        \\        else     => return 0;
+        \\    }
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "int_match.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    const func = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "classify")) break f;
+    } else return error.FunctionNotFound;
+
+    var equality_count: usize = 0;
+    var or_count: usize = 0;
+    for (func.blocks) |block| {
+        for (block.instrs) |instr| switch (instr.kind) {
+            .binary => |binary| switch (binary.op) {
+                .eq => equality_count += 1,
+                .or_op => or_count += 1,
+                else => {},
+            },
+            else => {},
+        };
+    }
+    try std.testing.expectEqual(@as(usize, 4), equality_count);
+    try std.testing.expectEqual(@as(usize, 1), or_count);
+}
+
+test "integer match: enum pattern is rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const bad =
+        \\bad :: fn(value: i32) -> i32 {
+        \\    match value { .one => return 1; else => return 0; }
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad_int_match.k2", bad));
+}
+
+test "enum match: integer pattern is rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const bad =
+        \\Number :: enum { one, two }
+        \\bad :: fn(value: Number) -> i32 {
+        \\    match value { 1 => return 1; else => return 0; }
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad_enum_match.k2", bad));
 }

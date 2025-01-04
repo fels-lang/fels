@@ -252,15 +252,23 @@ pub const Parser = struct {
 
         while (!self.check(.r_brace) and !self.check(.eof)) {
             const arm_start = self.peek();
-            const is_else = self.match(.keyword_else);
-            var variant: []const u8 = "";
             var binding: ?[]const u8 = null;
-
-            if (!is_else) {
+            const pattern: ast.MatchPattern = if (self.match(.keyword_else))
+                .else_arm
+            else if (self.check(.int_lit)) blk: {
+                var values: std.ArrayList(ast.Expr) = .empty;
+                errdefer values.deinit(self.allocator);
+                try values.append(self.allocator, try self.parseExpr(0));
+                while (self.check(.comma) and self.peekKind(1) == .int_lit) {
+                    _ = self.advance();
+                    try values.append(self.allocator, try self.parseExpr(0));
+                }
+                break :blk .{ .int_values = try values.toOwnedSlice(self.allocator) };
+            } else blk: {
                 _ = try self.expect(.dot, "expected . before variant name in match arm");
                 const vname = try self.expect(.ident, "expected variant name");
-                variant = vname.text(self.source);
-            }
+                break :blk .{ .enum_variant = vname.text(self.source) };
+            };
 
             // Optional payload binding: |x|
             if (self.match(.pipe)) {
@@ -290,10 +298,9 @@ pub const Parser = struct {
             };
 
             try arms.append(self.allocator, .{
-                .variant = variant,
+                .pattern = pattern,
                 .binding = binding,
                 .body = body,
-                .is_else = is_else,
                 .span = spanFrom(arm_start, body.span),
             });
         }

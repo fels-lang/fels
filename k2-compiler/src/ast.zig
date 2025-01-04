@@ -160,11 +160,16 @@ pub const MatchStmt = struct {
 };
 
 pub const MatchArm = struct {
-    variant: []const u8, // "" when is_else = true
+    pattern: MatchPattern,
     binding: ?[]const u8, // |x| capture, null if none
     body: Block,
-    is_else: bool,
     span: Span,
+};
+
+pub const MatchPattern = union(enum) {
+    enum_variant: []const u8,
+    int_values: []const Expr,
+    else_arm,
 };
 
 pub const DeferStmt = struct {

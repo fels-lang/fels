@@ -1825,7 +1825,7 @@ const FunctionLowerer = struct {
             const arm_id = self.allocBlockId();
             const next_id = self.allocBlockId();
 
-            if (arm.is_else) {
+            if (arm.pattern == .else_arm) {
                 // else arm — fall through from failed checks
                 try self.terminate(.{ .branch = arm_id });
                 self.startBlock(arm_id, "match.else");
@@ -1836,21 +1836,43 @@ const FunctionLowerer = struct {
                 break; // else must be last
             }
 
-            // Non-else arm: emit variant_is check.
-            const check = try self.emit(.bool, .{ .variant_is = .{
-                .value = subject,
-                .type_name = enum_name,
-                .variant = arm.variant,
-            } });
+            const check = switch (arm.pattern) {
+                .enum_variant => |variant| try self.emit(.bool, .{ .variant_is = .{
+                    .value = subject,
+                    .type_name = enum_name,
+                    .variant = variant,
+                } }),
+                .int_values => |values| blk: {
+                    var combined: ?Value = null;
+                    for (values) |value| {
+                        const equal = try self.emit(.bool, .{ .binary = .{
+                            .op = .eq,
+                            .lhs = subject,
+                            .rhs = try self.lowerExpr(value),
+                        } });
+                        combined = if (combined) |previous|
+                            try self.emit(.bool, .{ .binary = .{
+                                .op = .or_op,
+                                .lhs = previous,
+                                .rhs = equal,
+                            } })
+                        else
+                            equal;
+                    }
+                    break :blk combined orelse Value{ .imm = .{ .bool = false } };
+                },
+                .else_arm => unreachable,
+            };
             try self.terminate(.{ .cond_branch = .{ .cond = check, .then_block = arm_id, .else_block = next_id } });
 
             // Arm body.
             self.startBlock(arm_id, "match.arm");
             if (arm.binding) |bname| {
+                const variant = arm.pattern.enum_variant;
                 const payload = try self.emit(.unknown, .{ .variant_payload = .{
                     .value = subject,
                     .type_name = enum_name,
-                    .variant = arm.variant,
+                    .variant = variant,
                 } });
                 try self.emitNoResult(.void, .{ .store_local = .{ .name = bname, .value = payload } });
             }

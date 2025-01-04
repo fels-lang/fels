@@ -1238,38 +1238,40 @@ const Checker = struct {
     fn checkMatch(self: *Checker, m: ast.MatchStmt) SemanticError!void {
         const subject_ty = try self.inferExpr(m.subject);
 
-        // Resolve the enum type (must be a named type with variant_type layout).
+        if (subject_ty.isInteger()) return self.checkIntMatch(m, subject_ty);
+
         const enum_id: SymbolId = switch (subject_ty) {
             .named => |id| id,
-            else => {
-                self.emitError(m.subject.span, "match subject must be an enum type", .{});
-                return error.SemanticFailed;
-            },
+            else => return self.invalidMatchSubject(m.subject.span),
         };
         const layout = self.env.layouts.get(enum_id) orelse return error.SemanticFailed;
         const variants = switch (layout.kind) {
             .variant_type => |v| v,
-            else => {
-                self.emitError(m.subject.span, "match subject must be an enum type", .{});
-                return error.SemanticFailed;
-            },
+            else => return self.invalidMatchSubject(m.subject.span),
         };
 
         for (m.arms) |arm| {
-            if (arm.is_else) {
-                try self.checkBlock(arm.body);
-                continue;
-            }
+            const variant_name = switch (arm.pattern) {
+                .else_arm => {
+                    try self.checkBlock(arm.body);
+                    continue;
+                },
+                .enum_variant => |name| name,
+                .int_values => {
+                    self.emitError(arm.span, "integer pattern cannot be used with an enum match subject", .{});
+                    return error.SemanticFailed;
+                },
+            };
             // Find variant in the enum layout.
             var found: ?VariantInfo = null;
             for (variants) |v| {
-                if (std.mem.eql(u8, v.name, arm.variant)) {
+                if (std.mem.eql(u8, v.name, variant_name)) {
                     found = v;
                     break;
                 }
             }
             const variant = found orelse {
-                self.emitError(arm.span, "unknown variant `.{s}` in match", .{arm.variant});
+                self.emitError(arm.span, "unknown variant `.{s}` in match", .{variant_name});
                 return error.SemanticFailed;
             };
 
@@ -1284,6 +1286,37 @@ const Checker = struct {
                 try self.checkBlock(arm.body);
             }
         }
+    }
+
+    fn checkIntMatch(self: *Checker, m: ast.MatchStmt, subject_ty: Ty) SemanticError!void {
+        for (m.arms) |arm| {
+            if (arm.binding != null) {
+                self.emitError(arm.span, "integer match patterns cannot bind a payload", .{});
+                return error.SemanticFailed;
+            }
+            switch (arm.pattern) {
+                .else_arm => try self.checkBlock(arm.body),
+                .enum_variant => {
+                    self.emitError(arm.span, "enum variant pattern cannot be used with an integer match subject", .{});
+                    return error.SemanticFailed;
+                },
+                .int_values => |values| {
+                    for (values) |value| {
+                        const value_ty = try self.inferExpr(value);
+                        if (!try self.compatible(value_ty, subject_ty)) {
+                            self.emitError(value.span, "integer match pattern is incompatible with subject type `{s}`", .{self.formatTy(subject_ty)});
+                            return error.SemanticFailed;
+                        }
+                    }
+                    try self.checkBlock(arm.body);
+                },
+            }
+        }
+    }
+
+    fn invalidMatchSubject(self: *Checker, span: Span) SemanticError {
+        self.emitError(span, "match subject must be an enum or integer type", .{});
+        return error.SemanticFailed;
     }
 
     fn requireUnsafe(self: *Checker, span: Span, builtin_name: []const u8) SemanticError!void {
@@ -1833,7 +1866,7 @@ fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
             var has_else = false;
             for (m.arms) |arm| {
                 if (!blockDefinitelyReturns(arm.body)) break :blk false;
-                if (arm.is_else) has_else = true;
+                if (arm.pattern == .else_arm) has_else = true;
             }
             break :blk has_else;
         },
