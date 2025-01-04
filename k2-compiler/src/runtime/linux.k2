@@ -1,0 +1,50 @@
+/// K2 Linux runtime — compiled automatically into every Linux K2 program.
+/// Provides: @panic, assert, write_stdout, write_stderr
+/// No libc. Uses direct Linux syscalls.
+
+// ── Linux syscalls via inline asm ─────────────────────────────────────────
+
+/// Write bytes to a file descriptor. Returns bytes written.
+sys_write :: fn(fd: i32, data: []const u8) -> isize {
+    return unsafe asm(volatile, "syscall",
+        inputs:  { "a"(1), "D"(fd), "S"(data.ptr), "d"(data.len) },
+        outputs: { "=a"(isize) },
+        clobbers: { "rcx", "r11", "memory" },
+    );
+}
+
+/// Exit the process with the given code. Never returns.
+#noreturn
+sys_exit :: fn(code: i32) {
+    unsafe asm(volatile, "syscall",
+        inputs:  { "a"(60), "D"(code) },
+        outputs: {},
+        clobbers: { "memory" },
+    );
+}
+
+// ── Low-level I/O ─────────────────────────────────────────────────────────
+
+write_stdout :: fn(data: []const u8) { sys_write(1, data); }
+write_stderr :: fn(data: []const u8) { sys_write(2, data); }
+
+// ── Core runtime functions ─────────────────────────────────────────────────
+
+/// Abort with a message. Never returns.
+#noreturn
+@panic :: fn(msg: []const u8) {
+    write_stderr("panic: ");
+    write_stderr(msg);
+    write_stderr("\n");
+    sys_exit(1);
+}
+
+/// Assert a condition is true; panic with a default message if not.
+assert :: fn(cond: bool) {
+    if !cond { @panic("assertion failed"); }
+}
+
+/// Assert with a custom message.
+assert_msg :: fn(cond: bool, msg: []const u8) {
+    if !cond { @panic(msg); }
+}

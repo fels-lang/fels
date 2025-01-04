@@ -1,9 +1,10 @@
-const std = @import("std");
-const ast = @import("ast.zig");
-const diag_mod = @import("diagnostic.zig");
+const std       = @import("std");
+const ast       = @import("ast.zig");
+const diag_mod  = @import("diagnostic.zig");
 const Diagnostic = diag_mod.Diagnostic;
-const parser = @import("parser.zig");
-const sema = @import("sema.zig");
+const parser    = @import("parser.zig");
+const sema      = @import("sema.zig");
+const runtime   = @import("runtime.zig");
 
 pub const FrontEnd = struct {
     module: ast.Module,
@@ -40,20 +41,36 @@ pub const CompileError = error{
 // ── Public entry points ───────────────────────────────────────────────────────
 
 /// Compile source text directly (no file I/O).
+/// Does NOT include the runtime — used by tests and library consumers.
+/// Use compileWithLlvm() in driver.zig for programs that need @panic/assert.
 pub fn compile(
     allocator: std.mem.Allocator,
     file_name: []const u8,
-    source: []const u8,
+    source:    []const u8,
 ) CompileError!FrontEnd {
     const arena = try createFrontendArena(allocator);
     errdefer destroyFrontendArena(allocator, arena);
     const fe_allocator = arena.allocator();
-
     const module = parser.parseSource(fe_allocator, file_name, source) catch |err| switch (err) {
         error.ParseFailed => return error.ParseFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
     return runPipelineWithSource(fe_allocator, module, source, file_name, arena);
+}
+
+/// Compile source with the embedded platform runtime prepended.
+/// This is what driver.compileWithLlvm() uses for real programs.
+pub fn compileWithRuntime(
+    allocator: std.mem.Allocator,
+    file_name: []const u8,
+    source:    []const u8,
+) CompileError!FrontEnd {
+    const rt_src = runtime.runtimeSource();
+    if (rt_src.len == 0) return compile(allocator, file_name, source);
+    return compileMulti(allocator, &.{
+        .{ .file_name = "<runtime>", .source = rt_src },
+        .{ .file_name = file_name,  .source = source  },
+    });
 }
 
 /// Compile multiple source texts at once (no file I/O, imports ignored).

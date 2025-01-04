@@ -111,9 +111,24 @@ pub fn coerce(
     if (src_kind == llvm.LLVMIntegerTypeKind and dst_kind == llvm.LLVMIntegerTypeKind) {
         const src_w = llvm.LLVMGetIntTypeWidth(src_lty);
         const dst_w = llvm.LLVMGetIntTypeWidth(dest_lty);
+
+        // int → bool: compare ≠ 0, not truncate.
+        //   Trunc(i32 2, i1) = i1 0 = false  ← WRONG
+        //   ICmpNE(i32 2, 0) = i1 1 = true   ← CORRECT
+        if (dst_w == 1 and src_w > 1) {
+            const zero = llvm.LLVMConstInt(src_lty, 0, 0);
+            return llvm.LLVMBuildICmp(builder, llvm.LLVMIntNE, v, zero, "");
+        }
+
+        // bool → int: zero-extend, not sign-extend.
+        //   SExt(i1 true=-1, i8) = i8 0xFF  ← WRONG  (sign bit of i1=1 is -1)
+        //   ZExt(i1 true=1,  i8) = i8 0x01  ← CORRECT
+        if (src_w == 1 and dst_w > 1)
+            return llvm.LLVMBuildZExt(builder, v, dest_lty, "");
+
         if (dst_w > src_w) return llvm.LLVMBuildSExt(builder, v, dest_lty, "");
         if (dst_w < src_w) return llvm.LLVMBuildTrunc(builder, v, dest_lty, "");
-        return v; // same width, different signedness — no op in LLVM
+        return v; // same width, different signedness — no-op in LLVM
     }
 
     if (src_kind == llvm.LLVMPointerTypeKind and dst_kind == llvm.LLVMIntegerTypeKind)

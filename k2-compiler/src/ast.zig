@@ -75,14 +75,14 @@ pub const EnumDecl = struct {
 };
 
 pub const EnumVariantDecl = struct {
-    name:    []const u8,
-    payload: ?TypeRef,   // null → no payload
-    span:    Span,
+    name: []const u8,
+    payload: ?TypeRef, // null → no payload
+    span: Span,
 };
 
 pub const StructDecl = struct {
-    type_params: []const []const u8,  // e.g. ["T"] for struct($T: type) { ... }
-    fields:      []const FieldDecl,
+    type_params: []const []const u8, // e.g. ["T"] for struct($T: type) { ... }
+    fields: []const FieldDecl,
 };
 
 pub const ErrorDecl = struct {
@@ -133,36 +133,38 @@ pub const Stmt = union(enum) {
     fail_stmt: FailStmt,
     if_stmt: IfStmt,
     while_stmt: WhileStmt,
+    for_range: ForRangeStmt,
+    for_slice: ForSliceStmt,
     unsafe_block: Block,
     break_stmt: Span,
     continue_stmt: Span,
     zone_block: ZoneBlock,
     defer_stmt: DeferStmt,
     match_stmt: MatchStmt,
-    comptime_if:  ComptimeIfStmt,
+    comptime_if: ComptimeIfStmt,
     comptime_run: Block,
     expr: Expr,
 };
 
 pub const ComptimeIfStmt = struct {
-    condition:  Expr,
+    condition: Expr,
     then_block: Block,
     else_block: ?Block,
-    span:       Span,
+    span: Span,
 };
 
 pub const MatchStmt = struct {
     subject: Expr,
-    arms:    []const MatchArm,
-    span:    Span,
+    arms: []const MatchArm,
+    span: Span,
 };
 
 pub const MatchArm = struct {
-    variant:  []const u8,  // "" when is_else = true
-    binding:  ?[]const u8, // |x| capture, null if none
-    body:     Block,
-    is_else:  bool,
-    span:     Span,
+    variant: []const u8, // "" when is_else = true
+    binding: ?[]const u8, // |x| capture, null if none
+    body: Block,
+    is_else: bool,
+    span: Span,
 };
 
 pub const DeferStmt = struct {
@@ -249,6 +251,24 @@ pub const WhileStmt = struct {
     span: Span,
 };
 
+pub const ForRangeStmt = struct {
+    binding: []const u8,
+    start: Expr,
+    end: Expr,
+    inclusive: bool,
+    body: Block,
+    span: Span,
+};
+
+pub const ForSliceStmt = struct {
+    binding: []const u8,
+    index_binding: ?[]const u8,
+    by_ref: bool,
+    iter: Expr,
+    body: Block,
+    span: Span,
+};
+
 pub const TypeRef = union(enum) {
     named: NamedType,
     pointer: PointerType,
@@ -275,9 +295,9 @@ pub const TypeRef = union(enum) {
             .atomic => |ty| ty.span,
             .fn_type => |ty| ty.span,
             .inline_error_set => |ty| ty.span,
-            .type_param      => |ty| ty.span,
-            .generic_inst    => |ty| ty.span,
-            .opaque_type     => Span.new(0, 0),
+            .type_param => |ty| ty.span,
+            .generic_inst => |ty| ty.span,
+            .opaque_type => Span.new(0, 0),
         };
     }
 };
@@ -365,16 +385,22 @@ pub const ExprKind = union(enum) {
     compound_literal: []const Expr,
     unary: UnaryExpr,
     binary: BinaryExpr,
-    unsafe_expr:   *const Expr,
-    run_expr:      *const Expr,
-    force_unwrap:  *const Expr,          // expr!!  — unwrap or panic
-    nil_coalesce:  NilCoalesceExpr,      // expr ?? default
+    unsafe_expr: *const Expr,
+    run_expr: *const Expr,
+    force_unwrap: *const Expr, // expr!!  — unwrap or panic
+    nil_coalesce: NilCoalesceExpr, // expr ?? default
+    as_cast: CastExpr,
     try_expr: TryExpr,
     catch_expr: CatchExpr,
     call: CallExpr,
     field: FieldExpr,
     index: IndexExpr,
     slice: SliceExpr,
+};
+
+pub const CastExpr = struct {
+    value: *const Expr,
+    to: TypeRef,
 };
 
 pub const UnaryExpr = struct {
@@ -401,8 +427,8 @@ pub const TryExpr = struct {
 };
 
 pub const NilCoalesceExpr = struct {
-    value:   *const Expr,  // lhs — optional or fallible
-    default: *const Expr,  // rhs — used when lhs is null/error
+    value: *const Expr, // lhs — optional or fallible
+    default: *const Expr, // rhs — used when lhs is null/error
 };
 
 pub const CatchExpr = struct {

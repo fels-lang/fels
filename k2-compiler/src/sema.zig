@@ -1,7 +1,7 @@
-const std          = @import("std");
-const ast          = @import("ast.zig");
+const std = @import("std");
+const ast = @import("ast.zig");
 const comptime_mod = @import("comptime.zig");
-const NodeId       = ast.NodeId;
+const NodeId = ast.NodeId;
 const diag_mod = @import("diagnostic.zig");
 const Diagnostic = diag_mod.Diagnostic;
 const DiagKind = diag_mod.DiagKind;
@@ -268,9 +268,9 @@ pub const FieldInfo = struct {
 };
 
 pub const VariantInfo = struct {
-    name:    []const u8,
+    name: []const u8,
     payload: ?Ty,
-    index:   u32,   // discriminant value
+    index: u32, // discriminant value
 };
 
 pub const ErrorVariantInfo = struct {
@@ -284,17 +284,17 @@ pub const VariantValueInfo = struct {
 };
 
 pub const FnSig = struct {
-    params:      []const ParamSig,
-    return_ty:   Ty,
-    error_ty:    ?Ty,
+    params: []const ParamSig,
+    return_ty: Ty,
+    error_ty: ?Ty,
     extern_name: ?[]const u8,
     inline_hint: bool,
-    no_inline:   bool,
-    no_return:   bool,
-    entry:       bool,
-    naked:       bool,
-    export_sym:  ?[]const u8,   // #export / #export("name")
-    deprecated:  ?[]const u8,   // #deprecated / #deprecated("msg")
+    no_inline: bool,
+    no_return: bool,
+    entry: bool,
+    naked: bool,
+    export_sym: ?[]const u8, // #export / #export("name")
+    deprecated: ?[]const u8, // #deprecated / #deprecated("msg")
     type_params: []const []const u8,
     type_binding: ?[]const u8,
 };
@@ -544,10 +544,10 @@ const Checker = struct {
     fn emitWarning(self: *Checker, span: Span, comptime fmt: []const u8, args: anytype) void {
         const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
         self.diagnostics.append(self.allocator, .{
-            .kind    = .warning,
+            .kind = .warning,
             .message = msg,
-            .span    = span,
-            .file    = self.file,
+            .span = span,
+            .file = self.file,
         }) catch {};
     }
 
@@ -674,9 +674,9 @@ const Checker = struct {
                             errdefer variants.deinit(self.allocator);
                             for (enum_decl.variants, 0..) |v, idx| {
                                 try variants.append(self.allocator, .{
-                                    .name    = v.name,
+                                    .name = v.name,
                                     .payload = if (v.payload) |p| try self.typeFromRef(p) else null,
-                                    .index   = @intCast(idx),
+                                    .index = @intCast(idx),
                                 });
                             }
                             try self.env.layouts.put(id, .{
@@ -704,17 +704,17 @@ const Checker = struct {
                     const ret = try self.typeFromRef(decl.return_ty);
                     const err_ty = if (decl.error_ty) |err| try self.typeFromErrorSpec(err) else null;
                     try self.env.fn_sigs.put(id, .{
-                        .params      = try params.toOwnedSlice(self.allocator),
-                        .return_ty   = ret,
-                        .error_ty    = err_ty,
+                        .params = try params.toOwnedSlice(self.allocator),
+                        .return_ty = ret,
+                        .error_ty = err_ty,
                         .extern_name = externName(decl.attrs),
                         .inline_hint = hasAttr(decl.attrs, "inline"),
-                        .no_inline   = hasAttr(decl.attrs, "noinline"),
-                        .no_return   = hasAttr(decl.attrs, "noreturn"),
-                        .entry       = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
-                        .naked       = hasAttr(decl.attrs, "naked"),
-                        .export_sym  = exportSym(decl.attrs),
-                        .deprecated  = deprecatedMsg(decl.attrs),
+                        .no_inline = hasAttr(decl.attrs, "noinline"),
+                        .no_return = hasAttr(decl.attrs, "noreturn"),
+                        .entry = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
+                        .naked = hasAttr(decl.attrs, "naked"),
+                        .export_sym = exportSym(decl.attrs),
+                        .deprecated = deprecatedMsg(decl.attrs),
                         .type_params = decl.type_params,
                         .type_binding = null,
                     });
@@ -845,6 +845,40 @@ const Checker = struct {
                 defer self.loop_depth -= 1;
                 try self.checkBlock(while_stmt.body);
             },
+            .for_range => |for_stmt| {
+                const start_ty = try self.inferExpr(for_stmt.start);
+                const end_ty = try self.inferExpr(for_stmt.end);
+                if (!start_ty.isInteger() or !end_ty.isInteger() or
+                    !try self.compatible(end_ty, start_ty))
+                {
+                    self.emitError(for_stmt.span, "range bounds must have compatible integer types", .{});
+                    return error.SemanticFailed;
+                }
+                try self.pushScope();
+                defer self.popScope();
+                try self.declareLocal(for_stmt.binding, start_ty);
+                self.loop_depth += 1;
+                defer self.loop_depth -= 1;
+                try self.checkBlock(for_stmt.body);
+            },
+            .for_slice => |for_stmt| {
+                const iter_ty = try self.inferExpr(for_stmt.iter);
+                const elem_ty = switch (iter_ty) {
+                    .slice => |elem| elem.*,
+                    .array => |array| array.elem.*,
+                    else => {
+                        self.emitError(for_stmt.iter.span, "for loop requires a slice or array", .{});
+                        return error.SemanticFailed;
+                    },
+                };
+                try self.pushScope();
+                defer self.popScope();
+                try self.declareLocal(for_stmt.binding, if (for_stmt.by_ref) try self.ptrTo(elem_ty) else elem_ty);
+                if (for_stmt.index_binding) |name| try self.declareLocal(name, .usize);
+                self.loop_depth += 1;
+                defer self.loop_depth -= 1;
+                try self.checkBlock(for_stmt.body);
+            },
             .unsafe_block => |unsafe_block| {
                 self.unsafe_depth += 1;
                 defer self.unsafe_depth -= 1;
@@ -865,8 +899,8 @@ const Checker = struct {
                 try self.checkBlock(zb.body);
             },
             .defer_stmt => |ds| try self.checkBlock(ds.body),
-            .match_stmt   => |m| try self.checkMatch(m),
-            .comptime_if  => |ci| try self.checkComptimeIf(ci),
+            .match_stmt => |m| try self.checkMatch(m),
+            .comptime_if => |ci| try self.checkComptimeIf(ci),
             .comptime_run => |block| {
                 // Type-check the block for correctness even if we don't execute it yet.
                 try self.checkBlock(block);
@@ -900,12 +934,12 @@ const Checker = struct {
                 defer self.unsafe_depth -= 1;
                 break :blk try self.inferExpr(inner.*);
             },
-            .run_expr    => |inner| try self.inferRunExpr(inner.*),
+            .run_expr => |inner| try self.inferRunExpr(inner.*),
             .force_unwrap => |inner| blk: {
                 const ty = try self.inferExpr(inner.*);
                 break :blk switch (ty) {
                     .optional => |p| p.*,
-                    .fallible  => |f| f.ok.*,
+                    .fallible => |f| f.ok.*,
                     else => {
                         self.emitError(expr.span, "`!!` requires an optional or fallible type, found `{s}`", .{self.formatTy(ty)});
                         return error.SemanticFailed;
@@ -916,7 +950,7 @@ const Checker = struct {
                 const lhs_ty = try self.inferExpr(nc.value.*);
                 const inner_ty: Ty = switch (lhs_ty) {
                     .optional => |p| p.*,
-                    .fallible  => |f| f.ok.*,
+                    .fallible => |f| f.ok.*,
                     else => {
                         self.emitError(nc.value.span, "`??` requires an optional or fallible left-hand side, found `{s}`", .{self.formatTy(lhs_ty)});
                         return error.SemanticFailed;
@@ -924,12 +958,28 @@ const Checker = struct {
                 };
                 const default_ty = try self.inferExpr(nc.default.*);
                 if (!try self.compatible(default_ty, inner_ty)) {
-                    self.emitError(nc.default.span,
-                        "`??` default type `{s}` incompatible with `{s}`",
-                        .{ self.formatTy(default_ty), self.formatTy(inner_ty) });
+                    self.emitError(nc.default.span, "`??` default type `{s}` incompatible with `{s}`", .{ self.formatTy(default_ty), self.formatTy(inner_ty) });
                     return error.SemanticFailed;
                 }
                 break :blk inner_ty;
+            },
+            .as_cast => |cast| blk: {
+                const from_ty = try self.inferExpr(cast.value.*);
+                const to_ty = try self.typeFromRef(cast.to);
+                const pointer_cast = isPointerTy(from_ty) or isPointerTy(to_ty);
+                const valid = (from_ty.isNumeric() and to_ty.isNumeric()) or
+                    (from_ty.isInteger() and to_ty == .bool) or
+                    (from_ty == .bool and to_ty.isInteger()) or
+                    (pointer_cast and (isPointerTy(from_ty) or from_ty.isInteger()) and
+                        (isPointerTy(to_ty) or to_ty.isInteger()));
+                if (!valid) {
+                    self.emitError(expr.span, "cannot cast `{s}` to `{s}`", .{
+                        self.formatTy(from_ty), self.formatTy(to_ty),
+                    });
+                    return error.SemanticFailed;
+                }
+                if (pointer_cast) try self.requireUnsafe(expr.span, "pointer cast");
+                break :blk to_ty;
             },
             .type_ref => |type_ref| try self.typeFromRef(type_ref),
             .int => |text| intLiteralType(text),
@@ -1108,7 +1158,7 @@ const Checker = struct {
                     for (call.args, 0..) |arg, i| {
                         const arg_ty = switch (arg) {
                             .positional => |e| try self.inferExpr(e),
-                            .named      => |n| try self.inferExpr(n.value),
+                            .named => |n| try self.inferExpr(n.value),
                         };
                         if (i < fp.params.len and !try self.compatible(arg_ty, fp.params[i]))
                             return error.SemanticFailed;
@@ -1158,11 +1208,9 @@ const Checker = struct {
         // Emit a warning when calling a deprecated function.
         if (sig.deprecated) |msg| {
             if (msg.len > 0) {
-                self.emitWarning(call.callee.span,
-                    "`{s}` is deprecated: {s}", .{ name, msg });
+                self.emitWarning(call.callee.span, "`{s}` is deprecated: {s}", .{ name, msg });
             } else {
-                self.emitWarning(call.callee.span,
-                    "`{s}` is deprecated", .{name});
+                self.emitWarning(call.callee.span, "`{s}` is deprecated", .{name});
             }
         }
 
@@ -1215,7 +1263,10 @@ const Checker = struct {
             // Find variant in the enum layout.
             var found: ?VariantInfo = null;
             for (variants) |v| {
-                if (std.mem.eql(u8, v.name, arm.variant)) { found = v; break; }
+                if (std.mem.eql(u8, v.name, arm.variant)) {
+                    found = v;
+                    break;
+                }
             }
             const variant = found orelse {
                 self.emitError(arm.span, "unknown variant `.{s}` in match", .{arm.variant});
@@ -1458,18 +1509,16 @@ const Checker = struct {
             else => return error.SemanticFailed,
         };
         if (gi.args.len != strukt.type_params.len) {
-            self.emitError(gi.span,
-                "`{s}` expects {d} type argument(s), got {d}",
-                .{ gi.name, strukt.type_params.len, gi.args.len });
+            self.emitError(gi.span, "`{s}` expects {d} type argument(s), got {d}", .{ gi.name, strukt.type_params.len, gi.args.len });
             return error.SemanticFailed;
         }
 
         // Build type binding: T → resolved arg type.
         const saved_binding = self.current_type_binding;
-        const saved_params  = self.current_type_params;
+        const saved_params = self.current_type_params;
         defer {
             self.current_type_binding = saved_binding;
-            self.current_type_params  = saved_params;
+            self.current_type_params = saved_params;
         }
         var binding = std.ArrayList(TypeArg).empty;
         defer binding.deinit(self.allocator);
@@ -1484,7 +1533,7 @@ const Checker = struct {
             try binding.append(self.allocator, .{ .name = tp_name, .ty = arg_ty });
         }
         self.current_type_binding = binding.items;
-        self.current_type_params  = strukt.type_params;
+        self.current_type_params = strukt.type_params;
 
         // Build a mangled name.
         var mangled_buf: std.ArrayList(u8) = .empty;
@@ -1505,12 +1554,12 @@ const Checker = struct {
         // Register a new symbol for the instantiated struct.
         const inst_id = self.symbols.symbols.items.len;
         try self.symbols.symbols.append(self.allocator, .{
-            .id       = inst_id,
-            .name     = mangled,
-            .kind     = .type,
-            .span     = gi.span,
+            .id = inst_id,
+            .name = mangled,
+            .kind = .type,
+            .span = gi.span,
             .scope_id = self.symbols.root_scope,
-            .owner    = null,
+            .owner = null,
         });
         try self.symbols.scopes.items[self.symbols.root_scope].names.put(mangled, inst_id);
         try self.symbols.scopes.items[self.symbols.root_scope].symbols.append(self.allocator, inst_id);
@@ -1524,11 +1573,11 @@ const Checker = struct {
         for (strukt.fields) |field| {
             try fields.append(self.allocator, .{
                 .name = field.name,
-                .ty   = try self.typeFromRef(field.ty),  // uses current_type_binding
+                .ty = try self.typeFromRef(field.ty), // uses current_type_binding
             });
         }
         try self.env.layouts.put(inst_id, .{
-            .kind      = .{ .struct_type = try fields.toOwnedSlice(self.allocator) },
+            .kind = .{ .struct_type = try fields.toOwnedSlice(self.allocator) },
             .is_packed = hasAttr(tmpl.attrs, "packed"),
         });
 
@@ -1739,8 +1788,8 @@ const Checker = struct {
             if (actual == .null_ptr) return true;
             return try self.compatible(actual, expected.optional.*);
         }
-        if (actual == .int_lit   and expected.isInteger()) return true;
-        if (expected == .int_lit and actual.isInteger())  return true;
+        if (actual == .int_lit and expected.isInteger()) return true;
+        if (expected == .int_lit and actual.isInteger()) return true;
         if (actual == .null_ptr) return switch (expected) {
             .pointer, .slice, .named, .optional => true,
             else => false,
@@ -1751,6 +1800,10 @@ const Checker = struct {
         return false;
     }
 };
+
+fn isPointerTy(ty: Ty) bool {
+    return ty == .pointer;
+}
 
 fn blockDefinitelyReturns(block: ast.Block) bool {
     for (block.statements) |stmt| {
@@ -1769,10 +1822,10 @@ fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
             blockDefinitelyReturns(iff.then_block) and
             blockDefinitelyReturns(iff.else_block.?),
         .unsafe_block => |block| blockDefinitelyReturns(block),
-        .zone_block    => |zb| blockDefinitelyReturns(zb.body),
-        .defer_stmt    => false,
-        .comptime_run  => |b| blockDefinitelyReturns(b),
-        .comptime_if   => |ci| ci.else_block != null and
+        .zone_block => |zb| blockDefinitelyReturns(zb.body),
+        .defer_stmt => false,
+        .comptime_run => |b| blockDefinitelyReturns(b),
+        .comptime_if => |ci| ci.else_block != null and
             blockDefinitelyReturns(ci.then_block) and
             blockDefinitelyReturns(ci.else_block.?),
         // match returns if it has an else arm and ALL arms return.
@@ -1883,10 +1936,10 @@ pub fn exportSym(attrs: []const ast.Attribute) ?[]const u8 {
         if (attr.args.len > 0) {
             return switch (attr.args[0].kind) {
                 .string => |s| trimQuotes(s),
-                else    => "",
+                else => "",
             };
         }
-        return "";  // #export with no args — empty string signals "use own name"
+        return ""; // #export with no args — empty string signals "use own name"
     }
     return null;
 }
@@ -1898,7 +1951,7 @@ fn deprecatedMsg(attrs: []const ast.Attribute) ?[]const u8 {
         if (attr.args.len > 0) {
             return switch (attr.args[0].kind) {
                 .string => |s| trimQuotes(s),
-                else    => "",
+                else => "",
             };
         }
         return "";
@@ -1924,9 +1977,9 @@ fn trimQuotes(text: []const u8) []const u8 {
 
 fn isBuiltinValue(name: []const u8) bool {
     inline for (.{
-        "truncate_to", "ptr_from_int", "volatile_store",
-        "sizeof", "unaligned_read", "asm", "atomic_load",
-        "volatile", ".acquire",
+        "truncate_to", "ptr_from_int",   "volatile_store",
+        "sizeof",      "unaligned_read", "asm",
+        "atomic_load", "volatile",       ".acquire",
         // Compile-time pseudo-modules
         "TARGET",
     }) |builtin| {

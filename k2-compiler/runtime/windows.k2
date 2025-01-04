@@ -1,0 +1,29 @@
+#extern("kernel32", "GetStdHandle")
+GetStdHandle :: fn(id: i32) -> usize;
+
+#extern("kernel32", "WriteFile")
+WriteFile :: fn(handle: usize, buf: *const u8, len: u32, written: *u32, overlapped: ?*void) -> bool;
+
+#extern("kernel32", "ExitProcess")
+#noreturn
+ExitProcess :: fn(code: u32);
+
+#noreturn
+@panic :: fn(msg: []const u8) {
+    handle := GetStdHandle(-12);
+    written := 0u32;
+    WriteFile(handle, msg.ptr, truncate_to(u32, msg.len), &written, null);
+    ExitProcess(0xDEAD_BEEF);
+}
+
+assert :: fn(cond: bool) {
+    if !cond {
+        @panic("assertion failed\n");
+    }
+}
+
+assert_msg :: fn(cond: bool, msg: []const u8) {
+    if !cond {
+        @panic(msg);
+    }
+}

@@ -175,7 +175,7 @@ pub const Parser = struct {
             .name = name.text(self.source),
             .kind = .{ .struct_type = .{
                 .type_params = try type_params.toOwnedSlice(self.allocator),
-                .fields      = try fields.toOwnedSlice(self.allocator),
+                .fields = try fields.toOwnedSlice(self.allocator),
             } },
             .span = spanFrom(name, close),
         };
@@ -185,15 +185,15 @@ pub const Parser = struct {
         // #if cond { ... } else { ... }
         if (self.match(.keyword_if)) {
             const start = self.previous();
-            const cond       = try self.parseExpr(0);
+            const cond = try self.parseExpr(0);
             const then_block = try self.parseBlock();
             const else_block = if (self.match(.keyword_else)) try self.parseBlock() else null;
-            const end        = if (else_block) |b| b.span else then_block.span;
+            const end = if (else_block) |b| b.span else then_block.span;
             return .{ .comptime_if = .{
-                .condition  = cond,
+                .condition = cond,
                 .then_block = then_block,
                 .else_block = else_block,
-                .span       = spanFrom(start, end),
+                .span = spanFrom(start, end),
             } };
         }
         // #run { ... }  or  #run expr;
@@ -228,18 +228,18 @@ pub const Parser = struct {
             const payload = if (self.match(.colon)) try self.parseType() else null;
             const end = if (self.match(.comma)) self.previous() else variant_name;
             try variants.append(self.allocator, .{
-                .name    = variant_name.text(self.source),
+                .name = variant_name.text(self.source),
                 .payload = payload,
-                .span    = spanFrom(start, end),
+                .span = spanFrom(start, end),
             });
         }
 
         const close = try self.expect(.r_brace, "expected } after enum variants");
         return .{
             .attrs = attrs,
-            .name  = name.text(self.source),
-            .kind  = .{ .enum_type = .{ .variants = try variants.toOwnedSlice(self.allocator) } },
-            .span  = spanFrom(name, close),
+            .name = name.text(self.source),
+            .kind = .{ .enum_type = .{ .variants = try variants.toOwnedSlice(self.allocator) } },
+            .span = spanFrom(name, close),
         };
     }
 
@@ -292,17 +292,17 @@ pub const Parser = struct {
             try arms.append(self.allocator, .{
                 .variant = variant,
                 .binding = binding,
-                .body    = body,
+                .body = body,
                 .is_else = is_else,
-                .span    = spanFrom(arm_start, body.span),
+                .span = spanFrom(arm_start, body.span),
             });
         }
 
         const close = try self.expect(.r_brace, "expected } after match arms");
         return .{
             .subject = subject,
-            .arms    = try arms.toOwnedSlice(self.allocator),
-            .span    = spanFrom(start, close),
+            .arms = try arms.toOwnedSlice(self.allocator),
+            .span = spanFrom(start, close),
         };
     }
 
@@ -462,10 +462,11 @@ pub const Parser = struct {
         if (self.match(.keyword_match)) return .{ .match_stmt = try self.parseMatch(self.previous()) };
         // Compile-time directives: #if, #run
         if (self.match(.hash)) return try self.parseComptimeDirective(self.previous());
-        if (self.match(.keyword_zone))  return .{ .zone_block = try self.parseZoneBlock(self.previous()) };
+        if (self.match(.keyword_zone)) return .{ .zone_block = try self.parseZoneBlock(self.previous()) };
         if (self.match(.keyword_unsafe)) return .{ .unsafe_block = try self.parseBlock() };
         if (self.match(.keyword_if)) return .{ .if_stmt = try self.parseIf(self.previous()) };
         if (self.match(.keyword_while)) return .{ .while_stmt = try self.parseWhile(self.previous()) };
+        if (self.match(.keyword_for)) return try self.parseFor(self.previous());
 
         if (self.check(.ident) and self.peekKind(1) == .colon_eq) {
             const name = self.advance();
@@ -609,6 +610,46 @@ pub const Parser = struct {
         const condition = try self.parseExpr(0);
         const body = try self.parseBlock();
         return .{ .condition = condition, .body = body, .span = Span.new(start.start, body.span.end) };
+    }
+
+    fn parseFor(self: *Parser, start: Token) ParseError!ast.Stmt {
+        const by_ref = self.match(.amp);
+        const binding = try self.expect(.ident, "expected loop binding");
+        var index_binding: ?[]const u8 = null;
+        if (self.match(.comma)) {
+            const index = try self.expect(.ident, "expected index binding");
+            index_binding = index.text(self.source);
+        }
+        _ = try self.expect(.keyword_in, "expected `in` after loop binding");
+
+        const first = try self.parseExpr(0);
+        if (self.match(.dot_dot) or self.match(.dot_dot_eq)) {
+            if (by_ref or index_binding != null) {
+                try self.errorAt(self.previous(), "range loops do not support reference or index bindings");
+                return error.ParseFailed;
+            }
+            const inclusive = self.previous().kind == .dot_dot_eq;
+            const end = try self.parseExpr(0);
+            const body = try self.parseBlock();
+            return .{ .for_range = .{
+                .binding = binding.text(self.source),
+                .start = first,
+                .end = end,
+                .inclusive = inclusive,
+                .body = body,
+                .span = Span.new(start.start, body.span.end),
+            } };
+        }
+
+        const body = try self.parseBlock();
+        return .{ .for_slice = .{
+            .binding = binding.text(self.source),
+            .index_binding = index_binding,
+            .by_ref = by_ref,
+            .iter = first,
+            .body = body,
+            .span = Span.new(start.start, body.span.end),
+        } };
     }
 
     fn parseAttributes(self: *Parser) ParseError![]const ast.Attribute {
@@ -768,11 +809,19 @@ pub const Parser = struct {
                 left = try self.expr(.{ .force_unwrap = try self.allocExpr(left) }, Span.new(left.span.start, end.start + end.len));
                 continue;
             }
+            if (self.match(.keyword_as)) {
+                const dest_ty = try self.parseType();
+                left = try self.expr(.{ .as_cast = .{
+                    .value = try self.allocExpr(left),
+                    .to = dest_ty,
+                } }, Span.new(left.span.start, dest_ty.span().end));
+                continue;
+            }
             // expr ?? default — nil coalesce
             if (self.match(.question_question)) {
                 const default = try self.parseExpr(1); // right-associative, same precedence as ??
                 left = try self.expr(.{ .nil_coalesce = .{
-                    .value   = try self.allocExpr(left),
+                    .value = try self.allocExpr(left),
                     .default = try self.allocExpr(default),
                 } }, Span.new(left.span.start, default.span.end));
                 continue;
@@ -868,7 +917,12 @@ pub const Parser = struct {
                 return self.expr(.{ .unary = .{ .op = .address_of, .expr = try self.allocExpr(operand) } }, Span.new(tok.start, operand.span.end));
             },
             .star => {
-                if (self.check(.keyword_const) or self.check(.keyword_volatile) or isTypeName(self.peek().kind)) {
+                if (self.check(.keyword_const) or self.check(.keyword_volatile) or
+                    (isTypeName(self.peek().kind) and switch (self.peekKind(1)) {
+                        .comma, .r_paren, .r_brace, .semicolon => true,
+                        else => false,
+                    }))
+                {
                     self.index -= 1;
                     const ty = try self.parseType();
                     return self.expr(.{ .type_ref = ty }, ty.span());

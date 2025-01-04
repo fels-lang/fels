@@ -30,6 +30,8 @@ pub const TokenKind = enum {
     colon_eq, // :=
     arrow, // ->
     dot_lbrace, // .{
+    dot_dot, // ..
+    dot_dot_eq, // ..=
     l_bracket_star, // [*
     l_bracket_colon, // [:
 
@@ -76,6 +78,9 @@ pub const TokenKind = enum {
     keyword_volatile,
     keyword_if,
     keyword_while,
+    keyword_for,
+    keyword_in,
+    keyword_as,
     keyword_return,
     keyword_unsafe,
     keyword_import,
@@ -90,10 +95,10 @@ pub const TokenKind = enum {
     keyword_type,
     keyword_enum,
     keyword_match,
-    dollar,    // $
-    fat_arrow,        // =>
+    dollar, // $
+    fat_arrow, // =>
     question_question, // ??
-    bang_bang,         // !!
+    bang_bang, // !!
     keyword_errors,
     keyword_fail,
     keyword_catch,
@@ -176,7 +181,18 @@ pub const Lexer = struct {
             },
             '.' => {
                 if (self.match('{')) return token(.dot_lbrace, start, self.index);
+                if (self.match('.')) {
+                    if (self.match('=')) return token(.dot_dot_eq, start, self.index);
+                    return token(.dot_dot, start, self.index);
+                }
                 return token(.dot, start, self.index);
+            },
+            '@' => {
+                if (self.index < self.source.len and isIdentStart(self.source[self.index])) {
+                    self.index += 1;
+                    return self.ident(start);
+                }
+                return token(.invalid, start, self.index);
             },
             '#' => return token(.hash, start, self.index),
             '?' => {
@@ -222,12 +238,12 @@ pub const Lexer = struct {
             '$' => return token(.dollar, start, self.index),
             '=' => {
                 if (self.match('>')) return token(.fat_arrow, start, self.index);
-                if (self.match('=')) return token(.eq_eq,    start, self.index);
+                if (self.match('=')) return token(.eq_eq, start, self.index);
                 return token(.eq, start, self.index);
             },
             '!' => {
-                if (self.match('!')) return token(.bang_bang,  start, self.index);
-                if (self.match('=')) return token(.bang_eq,   start, self.index);
+                if (self.match('!')) return token(.bang_bang, start, self.index);
+                if (self.match('=')) return token(.bang_eq, start, self.index);
                 return token(.bang, start, self.index);
             },
             '<' => {

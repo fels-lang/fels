@@ -1,7 +1,7 @@
-const std          = @import("std");
-const ast          = @import("ast.zig");
-const pipeline     = @import("pipeline.zig");
-const sema         = @import("sema.zig");
+const std = @import("std");
+const ast = @import("ast.zig");
+const pipeline = @import("pipeline.zig");
+const sema = @import("sema.zig");
 const comptime_mod = @import("comptime.zig");
 
 pub const RegId = u32;
@@ -43,18 +43,18 @@ pub const ConstFieldInit = struct {
 };
 
 pub const IrFunction = struct {
-    name:        []const u8,
-    params:      []const IrParam,
-    return_ty:   IrType,
-    error_ty:    ?IrType,
-    blocks:      []const IrBlock,
+    name: []const u8,
+    params: []const IrParam,
+    return_ty: IrType,
+    error_ty: ?IrType,
+    blocks: []const IrBlock,
     extern_name: ?[]const u8,
     inline_hint: bool,
-    no_inline:   bool,
-    no_return:   bool,
-    entry:       bool,
-    naked:       bool,
-    export_sym:  ?[]const u8,
+    no_inline: bool,
+    no_return: bool,
+    entry: bool,
+    naked: bool,
+    export_sym: ?[]const u8,
 };
 
 pub const IrParam = struct {
@@ -257,9 +257,9 @@ pub const SliceInstr = struct {
 };
 
 pub const VariantCheckInstr = struct {
-    value:     Value,
-    type_name: []const u8,  // enum type name for discriminant lookup
-    variant:   []const u8,
+    value: Value,
+    type_name: []const u8, // enum type name for discriminant lookup
+    variant: []const u8,
 };
 
 /// Inline assembly instruction with full operand constraint support.
@@ -405,11 +405,11 @@ pub fn lowerFrontend(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd)
 }
 
 pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) LowerError!IrModule {
-    var structs:   std.ArrayList(StructDef)   = .empty;
-    var errors:    std.ArrayList(ErrorDef)    = .empty;
-    var variants:  std.ArrayList(VariantDef)  = .empty;
-    var functions: std.ArrayList(IrFunction)  = .empty;
-    var globals:   std.ArrayList(IrGlobal)    = .empty;
+    var structs: std.ArrayList(StructDef) = .empty;
+    var errors: std.ArrayList(ErrorDef) = .empty;
+    var variants: std.ArrayList(VariantDef) = .empty;
+    var functions: std.ArrayList(IrFunction) = .empty;
+    var globals: std.ArrayList(IrGlobal) = .empty;
     errdefer structs.deinit(allocator);
     errdefer errors.deinit(allocator);
     errdefer variants.deinit(allocator);
@@ -430,7 +430,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
                 const effective_imm = effectiveConstImm(allocator, front_end, decl.value);
                 try globals.append(allocator, .{
                     .name = decl.name,
-                    .ty   = inferConstType(decl.value),
+                    .ty = inferConstType(decl.value),
                     .init = .{ .imm = effective_imm },
                     .mutable = false,
                 });
@@ -447,9 +447,9 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
     // Emit generic struct instantiations as concrete StructDef entries.
     var inst_it = front_end.types.generic_struct_instances.iterator();
     while (inst_it.next()) |kv| {
-        const inst_id   = kv.value_ptr.*;
-        const layout    = front_end.types.layouts.get(inst_id) orelse continue;
-        const mangled   = kv.key_ptr.*;
+        const inst_id = kv.value_ptr.*;
+        const layout = front_end.types.layouts.get(inst_id) orelse continue;
+        const mangled = kv.key_ptr.*;
         switch (layout.kind) {
             .struct_type => |fields| {
                 var ir_fields: std.ArrayList(FieldDef) = .empty;
@@ -457,12 +457,12 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
                 for (fields) |f| {
                     try ir_fields.append(allocator, .{
                         .name = f.name,
-                        .ty   = try lowerSemaType(allocator, f.ty, front_end.symbols),
+                        .ty = try lowerSemaType(allocator, f.ty, front_end.symbols),
                     });
                 }
                 try structs.append(allocator, .{
-                    .name      = mangled,
-                    .fields    = try ir_fields.toOwnedSlice(allocator),
+                    .name = mangled,
+                    .fields = try ir_fields.toOwnedSlice(allocator),
                     .is_packed = layout.is_packed,
                     .alignment = 0,
                 });
@@ -687,11 +687,11 @@ fn foldFunctionConstants(allocator: std.mem.Allocator, function: IrFunction) !Ir
         .blocks = try blocks.toOwnedSlice(allocator),
         .extern_name = function.extern_name,
         .inline_hint = function.inline_hint,
-        .no_inline   = function.no_inline,
-        .no_return   = function.no_return,
-        .entry       = function.entry,
-        .naked       = function.naked,
-        .export_sym  = function.export_sym,
+        .no_inline = function.no_inline,
+        .no_return = function.no_return,
+        .entry = function.entry,
+        .naked = function.naked,
+        .export_sym = function.export_sym,
     };
 }
 
@@ -822,11 +822,11 @@ fn simplifyBranches(allocator: std.mem.Allocator, module: *IrModule) !void {
             .blocks = try blocks.toOwnedSlice(allocator),
             .extern_name = function.extern_name,
             .inline_hint = function.inline_hint,
-            .no_inline   = function.no_inline,
-            .no_return   = function.no_return,
-            .entry       = function.entry,
-            .naked       = function.naked,
-            .export_sym  = function.export_sym,
+            .no_inline = function.no_inline,
+            .no_return = function.no_return,
+            .entry = function.entry,
+            .naked = function.naked,
+            .export_sym = function.export_sym,
         });
     }
 
@@ -883,11 +883,11 @@ fn eliminateFunctionDeadCode(allocator: std.mem.Allocator, function: IrFunction)
         .blocks = try blocks.toOwnedSlice(allocator),
         .extern_name = function.extern_name,
         .inline_hint = function.inline_hint,
-        .no_inline   = function.no_inline,
-        .no_return   = function.no_return,
-        .entry       = function.entry,
-        .naked       = function.naked,
-        .export_sym  = function.export_sym,
+        .no_inline = function.no_inline,
+        .no_return = function.no_return,
+        .entry = function.entry,
+        .naked = function.naked,
+        .export_sym = function.export_sym,
     };
 }
 
@@ -985,7 +985,7 @@ fn lowerEnumDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, enum_decl: ast
     errdefer cases.deinit(allocator);
     for (enum_decl.variants) |v| {
         try cases.append(allocator, .{
-            .name    = v.name,
+            .name = v.name,
             .payload = if (v.payload) |p| try lowerType(allocator, p) else null,
         });
     }
@@ -1044,11 +1044,11 @@ fn lowerFunctionInstantiation(
         .blocks = blocks,
         .extern_name = null,
         .inline_hint = hasAttr(decl.attrs, "inline"),
-        .no_inline   = hasAttr(decl.attrs, "noinline"),
-        .no_return   = hasAttr(decl.attrs, "noreturn"),
-        .entry       = false,
-        .naked       = false,
-        .export_sym  = sema.exportSym(decl.attrs),
+        .no_inline = hasAttr(decl.attrs, "noinline"),
+        .no_return = hasAttr(decl.attrs, "noreturn"),
+        .entry = false,
+        .naked = false,
+        .export_sym = sema.exportSym(decl.attrs),
     };
 }
 
@@ -1108,16 +1108,17 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
         .blocks = blocks,
         .extern_name = externName(decl.attrs),
         .inline_hint = hasAttr(decl.attrs, "inline"),
-        .no_inline   = hasAttr(decl.attrs, "noinline"),
-        .no_return   = hasAttr(decl.attrs, "noreturn"),
-        .entry       = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
-        .naked       = hasAttr(decl.attrs, "naked"),
-        .export_sym  = sema.exportSym(decl.attrs),
+        .no_inline = hasAttr(decl.attrs, "noinline"),
+        .no_return = hasAttr(decl.attrs, "noreturn"),
+        .entry = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
+        .naked = hasAttr(decl.attrs, "naked"),
+        .export_sym = sema.exportSym(decl.attrs),
     };
 }
 
 const LoopContext = struct {
     cond_id: BlockId,
+    continue_id: BlockId,
     after_id: BlockId,
     zone_depth: usize,
     defer_floor: usize,
@@ -1152,7 +1153,7 @@ const FunctionLowerer = struct {
     active_zones: std.ArrayList([]const u8) = .empty,
     defers: std.ArrayList(ast.DeferStmt) = .empty,
     type_binding: []const sema.TypeArg = &.{},
-    module:       ast.Module = .empty(""),
+    module: ast.Module = .empty(""),
 
     fn init(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, params: []const ast.Param) FunctionLowerer {
         return .{ .allocator = allocator, .types = types, .symbols = symbols, .params = params };
@@ -1227,13 +1228,16 @@ const FunctionLowerer = struct {
             },
             .if_stmt => |iff| try self.lowerIf(iff),
             .while_stmt => |while_stmt| try self.lowerWhile(while_stmt),
-            .match_stmt   => |m| try self.lowerMatch(m),
+            .for_range => |for_stmt| try self.lowerForRange(for_stmt),
+            .for_slice => |for_stmt| try self.lowerForSlice(for_stmt),
+            .match_stmt => |m| try self.lowerMatch(m),
             // Compile-time if: evaluate condition NOW; only emit the live branch.
             .comptime_if => |ci| blk: {
                 const live_block = self.evalComptimeIf(ci) orelse {
                     // Could not evaluate at compile time — emit as runtime if.
                     try self.lowerIf(.{
-                        .binding = null, .payload_binding = null,
+                        .binding = null,
+                        .payload_binding = null,
                         .condition = ci.condition,
                         .then_block = ci.then_block,
                         .else_block = ci.else_block,
@@ -1274,7 +1278,7 @@ const FunctionLowerer = struct {
                     i -= 1;
                     try self.emitNoResult(.void, .{ .zone_pop = self.active_zones.items[i] });
                 }
-                try self.terminate(.{ .branch = ctx.cond_id });
+                try self.terminate(.{ .branch = ctx.continue_id });
             },
             .expr => |expr| _ = try self.lowerExpr(expr),
         }
@@ -1348,6 +1352,7 @@ const FunctionLowerer = struct {
 
         try self.loop_stack.append(self.allocator, .{
             .cond_id = cond_id,
+            .continue_id = cond_id,
             .after_id = after_id,
             .zone_depth = self.active_zones.items.len,
             .defer_floor = self.defers.items.len,
@@ -1370,6 +1375,144 @@ const FunctionLowerer = struct {
         self.startBlock(after_id, "while.after");
     }
 
+    fn lowerForRange(self: *FunctionLowerer, for_stmt: ast.ForRangeStmt) LowerError!void {
+        const loop_ty = self.exprType(for_stmt.start);
+        const suffix = self.next_block_id;
+        const end_name = try std.fmt.allocPrint(self.allocator, "__for_end_{d}", .{suffix});
+
+        try self.emitNoResult(loop_ty, .{ .store_local = .{
+            .name = for_stmt.binding,
+            .value = try self.lowerExpr(for_stmt.start),
+        } });
+        try self.emitNoResult(loop_ty, .{ .store_local = .{
+            .name = end_name,
+            .value = try self.lowerExpr(for_stmt.end),
+        } });
+
+        const cond_id = self.allocBlockId();
+        const body_id = self.allocBlockId();
+        const increment_id = self.allocBlockId();
+        const after_id = self.allocBlockId();
+        try self.loop_stack.append(self.allocator, .{
+            .cond_id = cond_id,
+            .continue_id = increment_id,
+            .after_id = after_id,
+            .zone_depth = self.active_zones.items.len,
+            .defer_floor = self.defers.items.len,
+        });
+
+        try self.terminate(.{ .branch = cond_id });
+        self.startBlock(cond_id, "for.range.cond");
+        const cond = try self.emit(.bool, .{ .binary = .{
+            .op = if (for_stmt.inclusive) .le else .lt,
+            .lhs = .{ .local = for_stmt.binding },
+            .rhs = .{ .local = end_name },
+        } });
+        try self.terminate(.{ .cond_branch = .{
+            .cond = cond,
+            .then_block = body_id,
+            .else_block = after_id,
+        } });
+
+        self.startBlock(body_id, "for.range.body");
+        try self.lowerBlock(for_stmt.body.statements, .{ .branch = increment_id });
+
+        self.startBlock(increment_id, "for.range.increment");
+        const next = try self.emit(loop_ty, .{ .binary = .{
+            .op = .add,
+            .lhs = .{ .local = for_stmt.binding },
+            .rhs = .{ .imm = .{ .int = 1 } },
+        } });
+        try self.emitNoResult(loop_ty, .{ .store_local = .{ .name = for_stmt.binding, .value = next } });
+        try self.terminate(.{ .branch = cond_id });
+
+        _ = self.loop_stack.pop();
+        self.startBlock(after_id, "for.range.after");
+    }
+
+    fn lowerForSlice(self: *FunctionLowerer, for_stmt: ast.ForSliceStmt) LowerError!void {
+        const iter_ty = self.exprType(for_stmt.iter);
+        const elem_ty: IrType = switch (iter_ty) {
+            .slice => |elem| elem.*,
+            .array => |array| array.elem.*,
+            else => .unknown,
+        };
+        const binding_ty: IrType = if (for_stmt.by_ref)
+            .{ .ptr = try boxType(self.allocator, elem_ty) }
+        else
+            elem_ty;
+        const suffix = self.next_block_id;
+        const iter_name = try std.fmt.allocPrint(self.allocator, "__for_iter_{d}", .{suffix});
+        const index_name = try std.fmt.allocPrint(self.allocator, "__for_index_{d}", .{suffix});
+
+        try self.emitNoResult(iter_ty, .{ .store_local = .{
+            .name = iter_name,
+            .value = try self.lowerExpr(for_stmt.iter),
+        } });
+        try self.emitNoResult(.usize, .{ .store_local = .{
+            .name = index_name,
+            .value = .{ .imm = .{ .uint = 0 } },
+        } });
+
+        const cond_id = self.allocBlockId();
+        const body_id = self.allocBlockId();
+        const increment_id = self.allocBlockId();
+        const after_id = self.allocBlockId();
+        try self.loop_stack.append(self.allocator, .{
+            .cond_id = cond_id,
+            .continue_id = increment_id,
+            .after_id = after_id,
+            .zone_depth = self.active_zones.items.len,
+            .defer_floor = self.defers.items.len,
+        });
+
+        try self.terminate(.{ .branch = cond_id });
+        self.startBlock(cond_id, "for.slice.cond");
+        const len: Value = switch (iter_ty) {
+            .array => |array| .{ .imm = .{ .uint = array.len } },
+            else => try self.emit(.usize, .{ .field = .{ .base = .{ .local = iter_name }, .name = "len" } }),
+        };
+        const cond = try self.emit(.bool, .{ .binary = .{
+            .op = .lt,
+            .lhs = .{ .local = index_name },
+            .rhs = len,
+        } });
+        try self.terminate(.{ .cond_branch = .{
+            .cond = cond,
+            .then_block = body_id,
+            .else_block = after_id,
+        } });
+
+        self.startBlock(body_id, "for.slice.body");
+        const item = if (for_stmt.by_ref)
+            try self.emit(binding_ty, .{ .index_addr = .{
+                .base = .{ .local = iter_name },
+                .index = .{ .local = index_name },
+            } })
+        else
+            try self.emit(elem_ty, .{ .index = .{
+                .base = .{ .local = iter_name },
+                .index = .{ .local = index_name },
+            } });
+        try self.emitNoResult(binding_ty, .{ .store_local = .{ .name = for_stmt.binding, .value = item } });
+        if (for_stmt.index_binding) |name| {
+            try self.emitNoResult(.usize, .{ .store_local = .{ .name = name, .value = .{ .local = index_name } } });
+        }
+        try self.lowerBlock(for_stmt.body.statements, .{ .branch = increment_id });
+
+        self.startBlock(increment_id, "for.slice.increment");
+        const next = try self.emit(.usize, .{ .binary = .{
+            .op = .add,
+            .lhs = .{ .local = index_name },
+            .rhs = .{ .imm = .{ .uint = 1 } },
+        } });
+        try self.emitNoResult(.usize, .{ .store_local = .{ .name = index_name, .value = next } });
+        try self.terminate(.{ .branch = cond_id });
+
+        _ = self.loop_stack.pop();
+        self.startBlock(after_id, "for.slice.after");
+    }
+
     fn lowerExpr(self: *FunctionLowerer, expr: ast.Expr) LowerError!Value {
         return switch (expr.kind) {
             .ident => |name| blk: {
@@ -1384,9 +1527,13 @@ const FunctionLowerer = struct {
             },
             .type_ref => .{ .imm = .null },
             .unsafe_expr => |inner| try self.lowerExpr(inner.*),
-            .run_expr    => |inner| try self.lowerExpr(inner.*),
+            .run_expr => |inner| try self.lowerExpr(inner.*),
             .force_unwrap => |inner| try self.lowerForceUnwrap(inner.*, expr),
-            .nil_coalesce => |nc|   try self.lowerNilCoalesce(nc, expr),
+            .nil_coalesce => |nc| try self.lowerNilCoalesce(nc, expr),
+            .as_cast => |cast| try self.emit(self.exprType(expr), .{ .cast = .{
+                .kind = .as,
+                .value = try self.lowerExpr(cast.value.*),
+            } }),
             .int => |text| .{ .imm = .{ .int = parseIntLiteral(text) } },
             .string => |text| .{ .imm = .{ .text = trimQuotes(text) } },
             .bool => |value| .{ .imm = .{ .bool = value } },
@@ -1483,7 +1630,7 @@ const FunctionLowerer = struct {
                     };
                     break :blk try self.emit(self.exprType(expr), .{ .call_indirect = .{
                         .callee = callee_val,
-                        .args   = arg_slice,
+                        .args = arg_slice,
                     } });
                 }
 
@@ -1498,8 +1645,8 @@ const FunctionLowerer = struct {
                         if (self.symbols.symbol(sym_id).kind == .type) {
                             break :blk try self.emit(self.exprType(expr), .{ .variant_lit = .{
                                 .type_name = base_ident,
-                                .variant   = field.name,
-                                .payload   = null,
+                                .variant = field.name,
+                                .payload = null,
                             } });
                         }
                     }
@@ -1580,9 +1727,9 @@ const FunctionLowerer = struct {
         const value_id = self.allocBlockId();
         const panic_id = self.allocBlockId();
         try self.terminate(.{ .cond_branch = .{
-            .cond        = is_some,
-            .then_block  = value_id,
-            .else_block  = panic_id,
+            .cond = is_some,
+            .then_block = value_id,
+            .else_block = panic_id,
         } });
 
         // Panic path — unreachable for now (becomes @panic call later).
@@ -1596,16 +1743,16 @@ const FunctionLowerer = struct {
 
     /// `expr ?? default` — use default value when expr is null/error.
     fn lowerNilCoalesce(self: *FunctionLowerer, nc: ast.NilCoalesceExpr, outer: ast.Expr) LowerError!Value {
-        const lhs      = try self.lowerExpr(nc.value.*);
+        const lhs = try self.lowerExpr(nc.value.*);
         const result_ty = self.exprType(outer);
 
-        const is_some    = try self.emit(.bool, .{ .optional_is_some = lhs });
-        const value_id   = self.allocBlockId();
+        const is_some = try self.emit(.bool, .{ .optional_is_some = lhs });
+        const value_id = self.allocBlockId();
         const default_id = self.allocBlockId();
-        const after_id   = self.allocBlockId();
+        const after_id = self.allocBlockId();
 
         try self.terminate(.{ .cond_branch = .{
-            .cond       = is_some,
+            .cond = is_some,
             .then_block = value_id,
             .else_block = default_id,
         } });
@@ -1629,13 +1776,16 @@ const FunctionLowerer = struct {
 
     fn evalComptimeIf(self: *FunctionLowerer, ci: ast.ComptimeIfStmt) ?ast.Block {
         var ctx = comptime_mod.ComptimeCtx.init(
-            self.allocator, self.module, self.symbols, &self.types,
+            self.allocator,
+            self.module,
+            self.symbols,
+            &self.types,
         );
         defer ctx.deinit();
         const cv = comptime_mod.evalExpr(&ctx, ci.condition) catch return null;
         return switch (cv) {
             .bool => |b| if (b) ci.then_block else ci.else_block orelse ast.Block{ .statements = &.{}, .span = ci.span },
-            else  => null,
+            else => null,
         };
     }
 
@@ -1652,7 +1802,7 @@ const FunctionLowerer = struct {
             // 1. sema expr_types
             if (self.types.expr_types.get(m.subject.id)) |sema_ty| switch (sema_ty) {
                 .named => |id| break :blk self.symbols.symbol(id).name,
-                else   => {},
+                else => {},
             };
             // 2. param type annotation
             if (m.subject.kind == .ident) {
@@ -1661,7 +1811,7 @@ const FunctionLowerer = struct {
                     if (std.mem.eql(u8, p.name, ident_name)) {
                         switch (p.ty) {
                             .named => |named| break :blk named.name,
-                            else   => {},
+                            else => {},
                         }
                     }
                 }
@@ -1688,9 +1838,9 @@ const FunctionLowerer = struct {
 
             // Non-else arm: emit variant_is check.
             const check = try self.emit(.bool, .{ .variant_is = .{
-                .value     = subject,
+                .value = subject,
                 .type_name = enum_name,
-                .variant   = arm.variant,
+                .variant = arm.variant,
             } });
             try self.terminate(.{ .cond_branch = .{ .cond = check, .then_block = arm_id, .else_block = next_id } });
 
@@ -1698,7 +1848,9 @@ const FunctionLowerer = struct {
             self.startBlock(arm_id, "match.arm");
             if (arm.binding) |bname| {
                 const payload = try self.emit(.unknown, .{ .variant_payload = .{
-                    .value = subject, .type_name = enum_name, .variant = arm.variant,
+                    .value = subject,
+                    .type_name = enum_name,
+                    .variant = arm.variant,
                 } });
                 try self.emitNoResult(.void, .{ .store_local = .{ .name = bname, .value = payload } });
             }
@@ -1918,7 +2070,7 @@ const FunctionLowerer = struct {
 
 fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
     return switch (ty) {
-        .type_param   => .unknown,
+        .type_param => .unknown,
         .generic_inst => |gi| .{ .struct_type = gi.name },
         .named => |named| lowerNamedType(named.name),
         .pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },
@@ -1979,16 +2131,16 @@ fn lowerNamedType(name: []const u8) IrType {
     if (std.mem.eql(u8, name, "i5")) return .{ .i = 5 };
     if (std.mem.eql(u8, name, "i6")) return .{ .i = 6 };
     if (std.mem.eql(u8, name, "i7")) return .{ .i = 7 };
-    if (std.mem.eql(u8, name, "i8"))  return .{ .i = 8 };
+    if (std.mem.eql(u8, name, "i8")) return .{ .i = 8 };
     if (std.mem.eql(u8, name, "i16")) return .{ .i = 16 };
     if (std.mem.eql(u8, name, "i32")) return .{ .i = 32 };
     if (std.mem.eql(u8, name, "i64")) return .{ .i = 64 };
-    if (std.mem.eql(u8, name, "u8"))  return .{ .u = 8 };
+    if (std.mem.eql(u8, name, "u8")) return .{ .u = 8 };
     if (std.mem.eql(u8, name, "u16")) return .{ .u = 16 };
     if (std.mem.eql(u8, name, "u32")) return .{ .u = 32 };
     if (std.mem.eql(u8, name, "u64")) return .{ .u = 64 };
-    if (std.mem.eql(u8, name, "bool"))  return .bool;
-    if (std.mem.eql(u8, name, "void"))  return .void;
+    if (std.mem.eql(u8, name, "bool")) return .bool;
+    if (std.mem.eql(u8, name, "void")) return .void;
     if (std.mem.eql(u8, name, "usize")) return .usize;
     if (std.mem.eql(u8, name, "isize")) return .isize;
     return .{ .struct_type = name };
@@ -2121,11 +2273,14 @@ fn isBuiltinName(name: []const u8) bool {
 fn effectiveConstImm(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, expr: ast.Expr) Imm {
     const inner = switch (expr.kind) {
         .run_expr => |e| e.*,
-        else      => return lowerImm(expr),
+        else => return lowerImm(expr),
     };
 
     var ctx = comptime_mod.ComptimeCtx.init(
-        allocator, front_end.module, front_end.symbols, &front_end.types,
+        allocator,
+        front_end.module,
+        front_end.symbols,
+        &front_end.types,
     );
     defer ctx.deinit();
 
@@ -2136,11 +2291,11 @@ fn effectiveConstImm(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd,
 /// Convert a ComptimeValue to an IR Imm if possible.
 fn comptimeToImm(v: comptime_mod.ComptimeValue) ?Imm {
     return switch (v) {
-        .int    => |i| .{ .int   = i },
-        .uint   => |u| .{ .uint  = u },
-        .float  => |f| .{ .float = f },
-        .bool   => |b| .{ .bool  = b },
-        .string => |s| .{ .text  = s },
+        .int => |i| .{ .int = i },
+        .uint => |u| .{ .uint = u },
+        .float => |f| .{ .float = f },
+        .bool => |b| .{ .bool = b },
+        .string => |s| .{ .text = s },
         .null_ptr => .null,
         else => null,
     };

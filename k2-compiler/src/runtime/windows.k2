@@ -1,0 +1,60 @@
+/// K2 Windows runtime — compiled automatically into every Windows K2 program.
+/// Provides: @panic, assert, write_stdout, write_stderr
+/// No libc. Uses kernel32.dll only (always available on Windows).
+
+// ── kernel32 imports ──────────────────────────────────────────────────────
+
+#extern("kernel32", "GetStdHandle")
+GetStdHandle :: fn(id: i32) -> usize;
+
+#extern("kernel32", "WriteFile")
+WriteFile :: fn(
+    handle:     usize,
+    buf:        *const u8,
+    len:        u32,
+    written:    *u32,
+    overlapped: ?*void,
+) -> bool;
+
+#extern("kernel32", "ExitProcess")
+ExitProcess :: fn(code: u32);
+
+// ── Handle constants ──────────────────────────────────────────────────────
+
+STD_OUTPUT_HANDLE :: -11;
+STD_ERROR_HANDLE  :: -12;
+
+// ── Low-level I/O ─────────────────────────────────────────────────────────
+
+write_stdout :: fn(data: []const u8) {
+    handle  := GetStdHandle(STD_OUTPUT_HANDLE);
+    written := 0u32;
+    WriteFile(handle, data.ptr, truncate_to(u32, data.len), &written, null);
+}
+
+write_stderr :: fn(data: []const u8) {
+    handle  := GetStdHandle(STD_ERROR_HANDLE);
+    written := 0u32;
+    WriteFile(handle, data.ptr, truncate_to(u32, data.len), &written, null);
+}
+
+// ── Core runtime functions ─────────────────────────────────────────────────
+
+/// Abort with a message. Never returns.
+#noreturn
+@panic :: fn(msg: []const u8) {
+    write_stderr("panic: ");
+    write_stderr(msg);
+    write_stderr("\n");
+    ExitProcess(0xDEAD_BEEF);
+}
+
+/// Assert a condition is true; panic with a default message if not.
+assert :: fn(cond: bool) {
+    if !cond { @panic("assertion failed"); }
+}
+
+/// Assert with a custom message.
+assert_msg :: fn(cond: bool, msg: []const u8) {
+    if !cond { @panic(msg); }
+}

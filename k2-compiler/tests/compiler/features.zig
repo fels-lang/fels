@@ -167,7 +167,7 @@ test "zone block: new and new_slice" {
                 try std.testing.expectEqualStrings("Arena", zp.kind);
             },
             .zone_pop => found_zone_pop = true,
-            .alloc    => found_alloc = true,
+            .alloc => found_alloc = true,
             .alloc_slice => found_alloc_slice = true,
             else => {},
         };
@@ -388,8 +388,7 @@ test "asm: unsafe required — bare asm fails outside unsafe" {
     const bad =
         \\bad :: fn() { asm(volatile, "pause", inputs: {}, outputs: {}, clobbers: {}); }
     ;
-    try std.testing.expectError(error.SemanticFailed,
-        k2.compile(arena.allocator(), "bad_asm.k2", bad));
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad_asm.k2", bad));
 }
 
 test "?? nil-coalesce: unwrap or default" {
@@ -462,8 +461,7 @@ test "?? type mismatch fails sema" {
     const bad =
         \\bad :: fn(v: ?i32) -> i32 { return v ?? "wrong"; }
     ;
-    try std.testing.expectError(error.SemanticFailed,
-        k2.compile(arena.allocator(), "bad.k2", bad));
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad.k2", bad));
 }
 
 test "!! on non-optional fails sema" {
@@ -473,8 +471,7 @@ test "!! on non-optional fails sema" {
     const bad =
         \\bad :: fn(v: i32) -> i32 { return v!!; }
     ;
-    try std.testing.expectError(error.SemanticFailed,
-        k2.compile(arena.allocator(), "bad.k2", bad));
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad.k2", bad));
 }
 
 test "if-else with both branches returning" {
@@ -494,4 +491,124 @@ test "if-else with both branches returning" {
     defer fe.deinit(arena.allocator());
     const m = try k2.lowerFrontend(arena.allocator(), fe);
     try k2.ir_mod.validateModule(m);
+}
+
+test "@panic runtime parses, checks, and lowers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\#extern("kernel32", "ExitProcess")
+        \\#noreturn
+        \\ExitProcess :: fn(code: u32);
+        \\
+        \\#noreturn
+        \\@panic :: fn(msg: []const u8) {
+        \\    ExitProcess(0xDEAD_BEEF);
+        \\}
+        \\
+        \\assert :: fn(cond: bool) {
+        \\    if !cond { @panic("assertion failed\n"); }
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "runtime/windows.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    const panic_fn = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "@panic")) break f;
+    } else return error.FunctionNotFound;
+    try std.testing.expect(panic_fn.no_return);
+}
+
+test "postfix as casts lower to cast instructions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\casts :: fn(value: i32, addr: usize) -> i64 {
+        \\    widened := value as i64;
+        \\    flag := value as bool;
+        \\    back := flag as u8;
+        \\    ptr := unsafe addr as *u32;
+        \\    roundtrip := unsafe ptr as usize;
+        \\    return widened + (back as i64) + (roundtrip as i64);
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "casts.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    const func = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "casts")) break f;
+    } else return error.FunctionNotFound;
+    var cast_count: usize = 0;
+    for (func.blocks) |block| for (block.instrs) |instr| {
+        if (instr.kind == .cast) cast_count += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 7), cast_count);
+}
+
+test "pointer as cast requires unsafe" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const bad =
+        \\bad :: fn(addr: usize) -> *u32 { return addr as *u32; }
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad_cast.k2", bad));
+}
+
+test "for range and slice loops lower with continue-safe increment blocks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\sum_range :: fn(n: u32) -> u32 {
+        \\    total := 0u32;
+        \\    for i in 0u32..n {
+        \\        if i == 2u32 { continue; }
+        \\        total += i;
+        \\    }
+        \\    return total;
+        \\}
+        \\
+        \\sum_slice :: fn(values: []const u32) -> u32 {
+        \\    total := 0u32;
+        \\    for value, index in values {
+        \\        total += value + (index as u32);
+        \\    }
+        \\    return total;
+        \\}
+        \\
+        \\increment :: fn(values: []u32) {
+        \\    for &value in values {
+        \\        *value += 1u32;
+        \\    }
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "for.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    const range_fn = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "sum_range")) break f;
+    } else return error.FunctionNotFound;
+    var has_range_increment = false;
+    for (range_fn.blocks) |block| {
+        if (std.mem.eql(u8, block.name, "for.range.increment")) has_range_increment = true;
+    }
+    try std.testing.expect(has_range_increment);
+
+    const slice_fn = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "increment")) break f;
+    } else return error.FunctionNotFound;
+    var has_index_addr = false;
+    for (slice_fn.blocks) |block| for (block.instrs) |instr| {
+        if (instr.kind == .index_addr) has_index_addr = true;
+    };
+    try std.testing.expect(has_index_addr);
 }

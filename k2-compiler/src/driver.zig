@@ -98,7 +98,8 @@ pub fn compileWithLlvm(
 ) LlvmDriverError!void {
     if (!build_options.enable_llvm) return error.LlvmNotEnabled;
 
-    var fe = pipeline.compile(allocator, opts.file_name, opts.source) catch |err| switch (err) {
+    // compileWithRuntime auto-prepends the platform runtime (@panic, assert, etc.)
+    var fe = pipeline.compileWithRuntime(allocator, opts.file_name, opts.source) catch |err| switch (err) {
         error.ParseFailed, error.SemanticFailed, error.IoError => return error.CompileFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
