@@ -60,7 +60,7 @@ pub const TargetMachine = struct {
             cpu,
             features,
             llvm_opt,
-            llvm.LLVMRelocPIC, // position-independent code
+            llvm.LLVMRelocDefault, // executables use absolute addressing; PIC is for DLLs
             llvm.LLVMCodeModelDefault,
         );
 

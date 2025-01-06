@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("ast.zig");
-const Diagnostic = @import("diagnostic.zig").Diagnostic;
+const diag_mod = @import("diagnostic.zig");
+const Diagnostic = diag_mod.Diagnostic;
 const Span = @import("lexer/span.zig").Span;
 const lexer = @import("lexer/tokens.zig");
 const Token = lexer.Token;
@@ -34,8 +35,25 @@ pub fn parseSourceFrom(
     var p = try Parser.init(allocator, file_name, source, next_id);
     defer p.deinit();
 
-    const module = try p.parseModule();
-    if (p.diagnostics.items.len != 0) return error.ParseFailed;
+    const module = p.parseModule() catch |err| {
+        // Print diagnostics before p.deinit() frees them.
+        for (p.diagnostics.items) |d| {
+            const src = if (std.mem.eql(u8, d.file, file_name)) source else "";
+            const rendered = diag_mod.renderDiagnostic(allocator, d.file, src, d) catch continue;
+            defer allocator.free(rendered);
+            std.debug.print("{s}\n", .{rendered});
+        }
+        return err;
+    };
+    if (p.diagnostics.items.len != 0) {
+        for (p.diagnostics.items) |d| {
+            const src = if (std.mem.eql(u8, d.file, file_name)) source else "";
+            const rendered = diag_mod.renderDiagnostic(allocator, d.file, src, d) catch continue;
+            defer allocator.free(rendered);
+            std.debug.print("{s}\n", .{rendered});
+        }
+        return error.ParseFailed;
+    }
     return .{ .module = module, .next_id = p.next_id };
 }
 

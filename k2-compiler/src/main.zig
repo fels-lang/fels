@@ -120,7 +120,7 @@ fn cmdCheck(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
 
 fn cmdIr(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8) u8 {
     if (!k2.llvm_enabled) return noLlvm();
-    var fe = k2.compile(allocator, path, source) catch return 1;
+    var fe = k2.compileFileWithRuntime(allocator, io, path) catch return 1;
     defer fe.deinit(allocator);
     printDiags(allocator, fe.diagnostics(), path, source);
     var module = k2.lowerFrontend(allocator, fe) catch return 1;

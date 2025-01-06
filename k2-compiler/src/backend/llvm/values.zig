@@ -5,9 +5,60 @@ const llvm = @import("c_api.zig").llvm;
 const types = @import("types.zig");
 const ModuleCg = @import("context.zig").ModuleCg;
 
+/// Process K2 string escape sequences: \n \r \t \\ \" \0 \xHH
+/// The input is already quote-stripped (trimQuotes was applied in ir.zig).
+/// Returns heap-allocated buffer; caller must free.
+fn unescapeString(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.ensureTotalCapacity(allocator, s.len);
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        if (s[i] != '\\' or i + 1 >= s.len) {
+            try out.append(allocator, s[i]);
+            continue;
+        }
+        i += 1;
+        switch (s[i]) {
+            'n'  => try out.append(allocator, '\n'),
+            'r'  => try out.append(allocator, '\r'),
+            't'  => try out.append(allocator, '\t'),
+            '\\' => try out.append(allocator, '\\'),
+            '"'  => try out.append(allocator, '"'),
+            '0'  => try out.append(allocator, 0),
+            'x'  => {
+                if (i + 2 < s.len) {
+                    const hi = s[i + 1];
+                    const lo = s[i + 2];
+                    const nibble = [2]u8{ hi, lo };
+                    const byte = std.fmt.parseInt(u8, &nibble, 16) catch {
+                        try out.append(allocator, '\\');
+                        try out.append(allocator, 'x');
+                        continue;
+                    };
+                    try out.append(allocator, byte);
+                    i += 2;
+                } else {
+                    try out.append(allocator, '\\');
+                    try out.append(allocator, s[i]);
+                }
+            },
+            else => {
+                // Unknown escape — keep as-is
+                try out.append(allocator, '\\');
+                try out.append(allocator, s[i]);
+            },
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 pub fn lowerImm(cg: *ModuleCg, imm: ir.Imm, hint_ty: ir.IrType) llvm.LLVMValueRef {
     if (imm == .null) {
+        // null for optional pointer → raw null pointer (not a struct)
         if (hint_ty == .optional) return optionalNone(cg, hint_ty.optional.*);
+        // null for a raw pointer → raw null pointer
+        if (hint_ty == .ptr) return llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(cg.ctx, 0));
     }
     const lty = types.lower(cg, hint_ty);
     return lowerImmAs(cg, imm, lty);
@@ -29,21 +80,25 @@ pub fn lowerImmAs(cg: *ModuleCg, imm: ir.Imm, lty: llvm.LLVMTypeRef) llvm.LLVMVa
             const name_z = std.fmt.bufPrintZ(&name_buf, ".str.{d}", .{cg.string_counter}) catch break :blk llvm.LLVMGetUndef(cg.getSliceType());
             cg.string_counter += 1;
 
+            // Process escape sequences (\n, \t, \\, \", \0, \xHH) before emitting.
+            const bytes = unescapeString(cg.allocator, s) catch s;
+            defer if (bytes.ptr != s.ptr) cg.allocator.free(bytes);
+
             const i8_ty = llvm.LLVMInt8TypeInContext(cg.ctx);
-            const arr_ty = llvm.LLVMArrayType2(i8_ty, s.len);
+            const arr_ty = llvm.LLVMArrayType2(i8_ty, bytes.len);
 
             const gv = llvm.LLVMAddGlobal(cg.mod, arr_ty, name_z);
             // dont_null_terminate=1: we store the raw string, no NUL
-            llvm.LLVMSetInitializer(gv, llvm.LLVMConstStringInContext(cg.ctx, s.ptr, @intCast(s.len), 1));
+            llvm.LLVMSetInitializer(gv, llvm.LLVMConstStringInContext(cg.ctx, bytes.ptr, @intCast(bytes.len), 1));
             llvm.LLVMSetGlobalConstant(gv, 1);
             llvm.LLVMSetLinkage(gv, llvm.LLVMPrivateLinkage);
             llvm.LLVMSetUnnamedAddress(gv, llvm.LLVMGlobalUnnamedAddr);
 
-            // Build slice struct { ptr=gv, len=s.len }
+            // Build slice struct { ptr=gv, len=bytes.len }
             const i64_ty = llvm.LLVMInt64TypeInContext(cg.ctx);
             var fields = [_]llvm.LLVMValueRef{
                 gv,
-                llvm.LLVMConstInt(i64_ty, s.len, 0),
+                llvm.LLVMConstInt(i64_ty, bytes.len, 0),
             };
             break :blk llvm.LLVMConstStructInContext(cg.ctx, &fields, 2, 0);
         },
@@ -51,6 +106,10 @@ pub fn lowerImmAs(cg: *ModuleCg, imm: ir.Imm, lty: llvm.LLVMTypeRef) llvm.LLVMVa
 }
 
 pub fn optionalNone(cg: *ModuleCg, payload_ty: ir.IrType) llvm.LLVMValueRef {
+    // Nullable pointer optimisation: ?*T → null ptr instead of { false, undef }
+    if (payload_ty == .ptr)
+        return llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(cg.ctx, 0));
+
     const opt_ty = types.optionalType(cg, payload_ty);
     var fields = [_]llvm.LLVMValueRef{
         llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(cg.ctx), 0, 0),
@@ -61,6 +120,9 @@ pub fn optionalNone(cg: *ModuleCg, payload_ty: ir.IrType) llvm.LLVMValueRef {
 }
 
 pub fn optionalSome(cg: *ModuleCg, payload: llvm.LLVMValueRef, payload_ty: ir.IrType) llvm.LLVMValueRef {
+    // Nullable pointer optimisation: ?*T → the pointer itself (non-null = some)
+    if (payload_ty == .ptr) return payload;
+
     var opt = llvm.LLVMGetUndef(types.optionalType(cg, payload_ty));
     opt = llvm.LLVMBuildInsertValue(cg.builder, opt, llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(cg.ctx), 1, 0), 0, "");
     const stored_payload = if (payload_ty == .void) llvm.LLVMConstInt(llvm.LLVMInt8TypeInContext(cg.ctx), 0, 0) else payload;
@@ -89,7 +151,13 @@ pub fn resolveValue(
 
         .global => |name| blk: {
             const gv = cg.global_decls.get(name) orelse break :blk undef;
-            break :blk llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, ty), gv, "");
+            // When type hint is .unknown, use the LLVM global's own type instead of
+            // the fallback `ptr` — avoids mismatched loads for integer constants.
+            const load_lty = if (ty == .unknown)
+                llvm.LLVMGlobalGetValueType(gv)
+            else
+                types.lower(cg, ty);
+            break :blk llvm.LLVMBuildLoad2(cg.builder, load_lty, gv, "");
         },
     };
 }

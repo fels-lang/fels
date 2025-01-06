@@ -2,6 +2,8 @@ const std = @import("std");
 const backend = @import("backend.zig");
 const ir = @import("ir.zig");
 const pipeline = @import("pipeline.zig");
+const diag_mod = @import("diagnostic.zig");
+const runtime_mod = @import("runtime.zig");
 const build_options = @import("build_options");
 
 pub const BuildMode = enum { check, emit_ir, emit_object };
@@ -90,6 +92,26 @@ pub const LlvmDriverError = error{
     OutOfMemory,
 };
 
+/// Print diagnostics from a FrontEnd to stderr, using the correct source text
+/// for each file (user file or embedded runtime).
+fn printFeDiagnostics(
+    allocator: std.mem.Allocator,
+    diags: []const diag_mod.Diagnostic,
+    user_file: []const u8,
+    user_source: []const u8,
+) void {
+    const rt_src = runtime_mod.runtimeSource();
+    for (diags) |d| {
+        const src: []const u8 =
+            if (std.mem.eql(u8, d.file, user_file)) user_source
+            else if (std.mem.eql(u8, d.file, "<runtime>")) rt_src
+            else "";
+        const rendered = diag_mod.renderDiagnostic(allocator, d.file, src, d) catch continue;
+        defer allocator.free(rendered);
+        std.debug.print("{s}\n", .{rendered});
+    }
+}
+
 /// Full pipeline: source → IR → LLVM IR → .o → (optional) .exe
 pub fn compileWithLlvm(
     allocator: std.mem.Allocator,
@@ -104,7 +126,10 @@ pub fn compileWithLlvm(
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer fe.deinit(allocator);
-    if (fe.diagnostics().len != 0) return error.CompileFailed;
+    if (fe.diagnostics().len != 0) {
+        printFeDiagnostics(allocator, fe.diagnostics(), opts.file_name, opts.source);
+        return error.CompileFailed;
+    }
 
     try emitLlvmFromFrontend(allocator, io, fe, opts);
 }
@@ -122,7 +147,10 @@ pub fn compileFileWithLlvm(
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer fe.deinit(allocator);
-    if (fe.diagnostics().len != 0) return error.CompileFailed;
+    if (fe.diagnostics().len != 0) {
+        printFeDiagnostics(allocator, fe.diagnostics(), opts.file_name, opts.source);
+        return error.CompileFailed;
+    }
 
     try emitLlvmFromFrontend(allocator, io, fe, opts);
 }

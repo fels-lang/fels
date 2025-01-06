@@ -1,27 +1,27 @@
 /// Function declaration + definition.
-const std          = @import("std");
-const ir           = @import("../../ir.zig");
-const llvm         = @import("c_api.zig").llvm;
-const types_mod    = @import("types.zig");
-const local_vars   = @import("local_vars.zig");
-const instrs       = @import("instrs.zig");
-const terminators  = @import("terminators.zig");
-const attrs        = @import("attrs.zig");
-const ModuleCg     = @import("context.zig").ModuleCg;
+const std = @import("std");
+const ir = @import("../../ir.zig");
+const llvm = @import("c_api.zig").llvm;
+const types_mod = @import("types.zig");
+const local_vars = @import("local_vars.zig");
+const instrs = @import("instrs.zig");
+const terminators = @import("terminators.zig");
+const attrs = @import("attrs.zig");
+const ModuleCg = @import("context.zig").ModuleCg;
 
 /// Per-function codegen state.
 pub const FnCg = struct {
-    cg:      *ModuleCg,
-    func:     ir.IrFunction,
-    llvm_fn:  llvm.LLVMValueRef,
+    cg: *ModuleCg,
+    func: ir.IrFunction,
+    llvm_fn: llvm.LLVMValueRef,
 
-    blocks:   std.AutoHashMap(ir.BlockId,  llvm.LLVMBasicBlockRef),
-    regs:     std.AutoHashMap(ir.RegId,    llvm.LLVMValueRef),
-    locals:   std.StringHashMap(llvm.LLVMValueRef), // name → alloca
-    params:   std.StringHashMap(llvm.LLVMValueRef), // name → param value
+    blocks: std.AutoHashMap(ir.BlockId, llvm.LLVMBasicBlockRef),
+    regs: std.AutoHashMap(ir.RegId, llvm.LLVMValueRef),
+    locals: std.StringHashMap(llvm.LLVMValueRef), // name → alloca
+    params: std.StringHashMap(llvm.LLVMValueRef), // name → param value
 
     /// IrType of each register result — used by field-access to determine struct layout.
-    reg_ir_types:   std.AutoHashMap(ir.RegId,  ir.IrType),
+    reg_ir_types: std.AutoHashMap(ir.RegId, ir.IrType),
     /// IrType of each local variable.
     local_ir_types: std.StringHashMap(ir.IrType),
     /// IrType of each parameter.
@@ -40,10 +40,10 @@ pub const FnCg = struct {
     /// Return the IrType of a Value (used by field-access lowering).
     pub fn irTypeOf(self: *const FnCg, val: ir.Value) ?ir.IrType {
         return switch (val) {
-            .reg   => |id|   self.reg_ir_types.get(id),
+            .reg => |id| self.reg_ir_types.get(id),
             .param => |name| self.param_ir_types.get(name),
             .local => |name| self.local_ir_types.get(name),
-            else   => null,
+            else => null,
         };
     }
 };
@@ -55,7 +55,7 @@ pub fn declareAll(cg: *ModuleCg, funcs: []const ir.IrFunction) !void {
 fn declareOne(cg: *ModuleCg, func: ir.IrFunction) !void {
     if (cg.fn_decls.contains(func.name)) return;
 
-    const fn_ty  = try types_mod.fnType(cg, func);
+    const fn_ty = try types_mod.fnType(cg, func);
     const name_z = try cg.allocator.dupeZ(u8, func.name);
     defer cg.allocator.free(name_z);
 
@@ -91,9 +91,12 @@ fn defineOne(cg: *ModuleCg, func: ir.IrFunction) !void {
     errdefer locals.deinit();
 
     // Build param maps.
-    var params     = std.StringHashMap(llvm.LLVMValueRef).init(cg.allocator);
-    var param_tys  = std.StringHashMap(ir.IrType).init(cg.allocator);
-    errdefer { params.deinit(); param_tys.deinit(); }
+    var params = std.StringHashMap(llvm.LLVMValueRef).init(cg.allocator);
+    var param_tys = std.StringHashMap(ir.IrType).init(cg.allocator);
+    errdefer {
+        params.deinit();
+        param_tys.deinit();
+    }
     for (func.params, 0..) |p, i| {
         try params.put(p.name, llvm.LLVMGetParam(llvm_fn, @intCast(i)));
         try param_tys.put(p.name, p.ty);
@@ -111,14 +114,14 @@ fn defineOne(cg: *ModuleCg, func: ir.IrFunction) !void {
     }
 
     var fncg = FnCg{
-        .cg             = cg,
-        .func           = func,
-        .llvm_fn        = llvm_fn,
-        .blocks         = blocks,
-        .regs           = std.AutoHashMap(ir.RegId, llvm.LLVMValueRef).init(cg.allocator),
-        .locals         = locals,
-        .params         = params,
-        .reg_ir_types   = std.AutoHashMap(ir.RegId, ir.IrType).init(cg.allocator),
+        .cg = cg,
+        .func = func,
+        .llvm_fn = llvm_fn,
+        .blocks = blocks,
+        .regs = std.AutoHashMap(ir.RegId, llvm.LLVMValueRef).init(cg.allocator),
+        .locals = locals,
+        .params = params,
+        .reg_ir_types = std.AutoHashMap(ir.RegId, ir.IrType).init(cg.allocator),
         .local_ir_types = local_tys,
         .param_ir_types = param_tys,
     };

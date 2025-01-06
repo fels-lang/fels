@@ -78,6 +78,13 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         .optional_is_some => |value| blk: {
             const opt_ty = fncg.irTypeOf(value) orelse instr.ty;
             const opt = resolveVal(cg, fncg, value, opt_ty);
+            // Nullable pointer optimisation: ?*T is just a raw ptr; non-null = some.
+            if (opt_ty == .optional) {
+                if (opt_ty.optional.* == .ptr) {
+                    const null_ptr = llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(cg.ctx, 0));
+                    break :blk llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntNE, opt, null_ptr, "");
+                }
+            }
             break :blk llvm.LLVMBuildExtractValue(cg.builder, opt, 0, "");
         },
 
@@ -87,8 +94,9 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
                 .optional => |inner| inner.*,
                 else => break :blk null,
             };
-            _ = payload_ty;
             const opt = resolveVal(cg, fncg, value, opt_ty);
+            // Nullable pointer optimisation: the pointer IS the payload.
+            if (payload_ty == .ptr) break :blk opt;
             break :blk llvm.LLVMBuildExtractValue(cg.builder, opt, 1, "");
         },
 

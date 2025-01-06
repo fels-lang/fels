@@ -20,7 +20,15 @@ pub fn lower(cg: *ModuleCg, ty: ir.IrType) llvm.LLVMTypeRef {
         // Slices are fat pointers: { ptr, i64 }
         .slice => cg.getSliceType(),
         .interface_value => cg.getInterfaceType(),
-        .optional => |inner| optionalType(cg, inner.*),
+
+        // Optional pointer → nullable raw pointer (null = none, non-null = some).
+        // This avoids wrapping *T in { i1, ptr } which would pass a struct address
+        // where the C API expects a raw NULL pointer — causing WriteFile to treat
+        // synchronous writes as overlapped async I/O.
+        .optional => |inner| if (inner.* == .ptr)
+            llvm.LLVMPointerTypeInContext(ctx, 0)
+        else
+            optionalType(cg, inner.*),
 
         // All other pointer-like types are opaque `ptr` (LLVM 15+).
         .ptr => llvm.LLVMPointerTypeInContext(ctx, 0),

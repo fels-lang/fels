@@ -479,6 +479,22 @@ pub fn checkTypes(
     return checkTypesWithContext(allocator, module, symbols, "", "");
 }
 
+/// Print any diagnostics accumulated in `diags` to stderr, using `source` for
+/// the given `file` and the embedded runtime source for "<runtime>".
+fn flushDiagnostics(
+    allocator: std.mem.Allocator,
+    diags: []const Diagnostic,
+    source: []const u8,
+    file: []const u8,
+) void {
+    for (diags) |d| {
+        const src: []const u8 = if (std.mem.eql(u8, d.file, file)) source else "";
+        const rendered = diag_mod.renderDiagnostic(allocator, d.file, src, d) catch continue;
+        defer allocator.free(rendered);
+        std.debug.print("{s}\n", .{rendered});
+    }
+}
+
 pub fn checkTypesWithContext(
     allocator: std.mem.Allocator,
     module: ast.Module,
@@ -492,7 +508,13 @@ pub fn checkTypesWithContext(
     defer checker.deinit();
 
     checker.checkModule(module) catch |err| switch (err) {
-        error.SemanticFailed => return error.SemanticFailed,
+        error.SemanticFailed => {
+            // Diagnostics are still alive here (defer runs after return).
+            if (checker.diagnostics.items.len == 0)
+                std.debug.print("{s}: error: semantic error (no further details)\n", .{file});
+            flushDiagnostics(allocator, checker.diagnostics.items, source, file);
+            return error.SemanticFailed;
+        },
         error.OutOfMemory => return error.OutOfMemory,
     };
 
@@ -502,7 +524,12 @@ pub fn checkTypesWithContext(
     var checked: usize = 0;
     while (checked < checker.env.generic_instantiations.items.len) {
         checker.checkGenericInstantiation(module, checked) catch |err| switch (err) {
-            error.SemanticFailed => return error.SemanticFailed,
+            error.SemanticFailed => {
+                if (checker.diagnostics.items.len == 0)
+                    std.debug.print("{s}: error: semantic error (no further details)\n", .{file});
+                flushDiagnostics(allocator, checker.diagnostics.items, source, file);
+                return error.SemanticFailed;
+            },
             error.OutOfMemory => return error.OutOfMemory,
         };
         checked += 1;

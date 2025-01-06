@@ -1309,7 +1309,13 @@ const FunctionLowerer = struct {
     }
 
     fn lowerBody(self: *FunctionLowerer, body: ast.Block) LowerError![]const IrBlock {
-        try self.lowerBlock(body.statements, .unreachable_term);
+        // Void functions fall through to ret void; non-void to unreachable
+        // (sema already validated non-void functions have explicit returns).
+        const fallthrough: Terminator = if (self.current_return_ty == .void)
+            .{ .return_value = null }
+        else
+            .unreachable_term;
+        try self.lowerBlock(body.statements, fallthrough);
         return self.blocks.toOwnedSlice(self.allocator);
     }
 
