@@ -31,6 +31,10 @@ pub const ModuleCg = struct {
     enum_meta: std.StringHashMap(*variants.EnumMeta),
     /// Counter for unique string-literal global names.
     string_counter: u32 = 0,
+    /// Error type definitions from the IR module — used for discriminant lookup.
+    error_defs: []const ir.ErrorDef = &.{},
+    /// Optimisation level (0 = debug). Debug builds insert runtime safety checks.
+    opt_level: u2 = 0,
 
     pub fn init(allocator: std.mem.Allocator, module_name: [*:0]const u8) ModuleCg {
         const ctx = llvm.LLVMContextCreate();
@@ -100,5 +104,17 @@ pub const ModuleCg = struct {
             if (std.mem.eql(u8, f.name, field_name)) return @intCast(i);
         }
         return null;
+    }
+
+    /// Return the discriminant (1-based) for a named error variant.
+    /// Returns 1 as a safe fallback if the type or variant isn't found.
+    pub fn errorDiscriminant(self: *const ModuleCg, error_type_name: []const u8, variant_name: []const u8) u32 {
+        for (self.error_defs) |def| {
+            if (!std.mem.eql(u8, def.name, error_type_name)) continue;
+            for (def.variants, 0..) |v, i| {
+                if (std.mem.eql(u8, v.name, variant_name)) return @intCast(i + 1);
+            }
+        }
+        return 1; // safe fallback — any non-zero value signals an error
     }
 };

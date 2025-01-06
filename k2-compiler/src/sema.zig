@@ -2077,8 +2077,17 @@ fn blockDefinitelyReturns(block: ast.Block) bool {
 fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
     return switch (stmt) {
         .return_stmt, .fail_stmt => true,
-        // An expression statement that is just `expr!!` panics if null — counts as exit
-        .expr => |e| e.kind == .force_unwrap,
+        .expr => |e| switch (e.kind) {
+            // `expr!!` panics on null/error — counts as exit on that path.
+            .force_unwrap => true,
+            // A call to a named function whose name starts with `@panic` or is `@panic`
+            // always terminates — treat it as definitely returning so CFG accepts it.
+            .call => |call| switch (call.callee.kind) {
+                .ident => |name| std.mem.eql(u8, name, "@panic"),
+                else => false,
+            },
+            else => false,
+        },
         .break_stmt, .continue_stmt => true,
         .if_stmt => |iff| iff.else_block != null and
             blockDefinitelyReturns(iff.then_block) and

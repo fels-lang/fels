@@ -181,6 +181,7 @@ fn emitLlvmFromFrontend(
     var be = llvm_backend.LlvmBackend.init(allocator, module_name);
     defer be.deinit();
 
+    be.setOptLevel(opts.opt_level);
     be.lower(module) catch return error.LoweringFailed;
 
     // Emit object file

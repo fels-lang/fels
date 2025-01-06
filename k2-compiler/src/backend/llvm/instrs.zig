@@ -11,8 +11,8 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
     const result: ?llvm.LLVMValueRef = switch (instr.kind) {
         .const_value => |imm| values.lowerImm(cg, imm, instr.ty),
 
-        .unary => |u| lowerUnary(cg, fncg, u, instr.ty),
-        .binary => |b| lowerBinary(cg, fncg, b, instr.ty),
+        .unary => |u| lowerUnary(cg, fncg, u, instr.ty, instr.location),
+        .binary => |b| lowerBinary(cg, fncg, b, instr.ty, instr.location),
 
         .call => |call| lowerCall(cg, fncg, call, instr.ty),
 
@@ -63,15 +63,21 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
             break :blk llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, instr.ty), gv, "");
         },
 
-        .field => |f| lowerField(cg, fncg, f, instr.ty, false),
-        .field_addr => |f| lowerField(cg, fncg, f, instr.ty, true),
+        .field => |f| lowerField(cg, fncg, f, instr.ty, false, instr.location),
+        .field_addr => |f| lowerField(cg, fncg, f, instr.ty, true, instr.location),
 
         .index => |ix| blk: {
+            // Debug: bounds check before loading.
+            if (cg.opt_level == 0) emitBoundsCheck(cg, fncg, ix, instr.location);
             const elem_ty = types.lower(cg, instr.ty);
-            const gep = lowerIndexAddress(cg, fncg, ix, instr.ty) orelse break :blk null;
+            const gep = lowerIndexAddress(cg, fncg, ix, instr.ty, instr.location) orelse break :blk null;
             break :blk llvm.LLVMBuildLoad2(cg.builder, elem_ty, gep, "");
         },
-        .index_addr => |ix| lowerIndexAddress(cg, fncg, ix, pointerChild(instr.ty) orelse .unknown),
+        .index_addr => |ix| blk: {
+            // Debug: bounds check before taking address.
+            if (cg.opt_level == 0) emitBoundsCheck(cg, fncg, ix, instr.location);
+            break :blk lowerIndexAddress(cg, fncg, ix, pointerChild(instr.ty) orelse .unknown, instr.location);
+        },
 
         .slice_expr => |slice| lowerSliceExpr(cg, fncg, slice),
 
@@ -101,9 +107,10 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         },
 
         .cast => |cs| blk: {
-            const val = resolveVal(cg, fncg, cs.value, .unknown);
+            const src_ty = fncg.irTypeOf(cs.value) orelse .unknown;
+            const val = resolveVal(cg, fncg, cs.value, src_ty);
             const dest = types.lower(cg, instr.ty);
-            break :blk values.coerce(cg.builder, cg.ctx, val, dest);
+            break :blk values.coerceTyped(cg.builder, cg.ctx, val, src_ty, instr.ty, dest);
         },
 
         .struct_lit => |sl| lowerStructLit(cg, fncg, sl, instr.ty),
@@ -135,8 +142,30 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         .interface_data => |value| lowerInterfaceData(cg, fncg, value),
         .interface_method => |method| lowerInterfaceMethod(cg, fncg, method),
 
-        // Zone/error — runtime-library concerns.
-        .zone_push, .zone_pop, .zone_free, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next, .at, .raw_pointer => null,
+        // ── Error / fallible ─────────────────────────────────────────────────
+
+        // try_is_ok: extract discriminant field (1) and compare to zero.
+        .try_is_ok => |val| blk: {
+            const fallible = resolveVal(cg, fncg, val, .unknown);
+            const disc = llvm.LLVMBuildExtractValue(cg.builder, fallible, 1, "");
+            const zero = llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), 0, 0);
+            break :blk llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntEQ, disc, zero, "");
+        },
+
+        // try_ok: extract ok-value field (0).
+        .try_ok => |val| blk: {
+            const fallible = resolveVal(cg, fncg, val, .unknown);
+            break :blk llvm.LLVMBuildExtractValue(cg.builder, fallible, 0, "");
+        },
+
+        // try_err: extract discriminant field (1).
+        .try_err => |val| blk: {
+            const fallible = resolveVal(cg, fncg, val, .unknown);
+            break :blk llvm.LLVMBuildExtractValue(cg.builder, fallible, 1, "");
+        },
+
+        // Zone ops — not yet implemented.
+        .zone_push, .zone_pop, .zone_free, .iter_init, .iter_has_next, .iter_next, .at, .raw_pointer => null,
     };
 
     if (instr.id) |id| if (result) |v| {
@@ -188,6 +217,7 @@ fn lowerIndexAddress(
     fncg: anytype,
     ix: ir.IndexInstr,
     elem_ir_ty: ir.IrType,
+    location: ir.SourceLocation,
 ) ?llvm.LLVMValueRef {
     const idx = resolveVal(cg, fncg, ix.index, .usize);
     const elem_lty = types.lower(cg, elem_ir_ty);
@@ -203,15 +233,24 @@ fn lowerIndexAddress(
         .ptr => |inner| switch (inner.*) {
             .array => |arr| {
                 const base_ptr = resolveVal(cg, fncg, ix.base, base_ty);
+                if (cg.opt_level == 0) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
                 const zero = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), 0, 0);
                 var indices = [_]llvm.LLVMValueRef{ zero, idx };
                 return llvm.LLVMBuildGEP2(cg.builder, types.lower(cg, .{ .array = arr }), base_ptr, &indices, 2, "");
             },
             else => {
                 const base_ptr = resolveVal(cg, fncg, ix.base, base_ty);
+                if (cg.opt_level == 0) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
                 var indices = [_]llvm.LLVMValueRef{idx};
                 return llvm.LLVMBuildGEP2(cg.builder, elem_lty, base_ptr, &indices, 1, "");
             },
+        },
+        .array => |arr| {
+            const array_lty = types.lower(cg, .{ .array = arr });
+            const base_ptr = localOrAllocaPtr(cg, fncg, ix.base, array_lty) orelse return null;
+            const zero = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), 0, 0);
+            var indices = [_]llvm.LLVMValueRef{ zero, idx };
+            return llvm.LLVMBuildGEP2(cg.builder, array_lty, base_ptr, &indices, 2, "");
         },
         else => {},
     };
@@ -243,14 +282,21 @@ fn lowerSliceExpr(cg: *ModuleCg, fncg: anytype, slice: ir.SliceInstr) ?llvm.LLVM
 
 // ── Unary ─────────────────────────────────────────────────────────────────
 
-fn lowerUnary(cg: *ModuleCg, fncg: anytype, u: ir.UnaryInstr, ty: ir.IrType) ?llvm.LLVMValueRef {
+fn lowerUnary(cg: *ModuleCg, fncg: anytype, u: ir.UnaryInstr, ty: ir.IrType, location: ir.SourceLocation) ?llvm.LLVMValueRef {
     const v = resolveVal(cg, fncg, u.value, ty);
     const bl = cg.builder;
     return switch (u.op) {
-        .neg => llvm.LLVMBuildNeg(bl, v, ""),
+        .neg => if (cg.opt_level == 0 and !isFloat(ty))
+            lowerOverflowingBinary(cg, fncg.llvm_fn, llvm.LLVMConstNull(llvm.LLVMTypeOf(v)), v, "llvm.ssub.with.overflow", location)
+        else
+            llvm.LLVMBuildNeg(bl, v, ""),
         .not => llvm.LLVMBuildNot(bl, v, ""),
         .bit_not => llvm.LLVMBuildNot(bl, v, ""),
-        .deref => llvm.LLVMBuildLoad2(bl, types.lower(cg, ty), v, ""),
+        .deref => blk: {
+            // Debug: null-pointer dereference check.
+            if (cg.opt_level == 0) emitNullCheck(cg, fncg.llvm_fn, v, location);
+            break :blk llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, ty), v, "");
+        },
         .ref => lowerRef(cg, fncg, u.value),
     };
 }
@@ -280,7 +326,7 @@ fn lowerRef(cg: *ModuleCg, fncg: anytype, val: ir.Value) ?llvm.LLVMValueRef {
 
 // ── Binary ─────────────────────────────────────────────────────────────────
 
-fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType) ?llvm.LLVMValueRef {
+fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType, location: ir.SourceLocation) ?llvm.LLVMValueRef {
     const lhs_hint = fncg.irTypeOf(b.lhs) orelse fncg.irTypeOf(b.rhs) orelse ty;
     const rhs_hint = fncg.irTypeOf(b.rhs) orelse lhs_hint;
     const lhs = resolveVal(cg, fncg, b.lhs, lhs_hint);
@@ -304,24 +350,80 @@ fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType) ?
                     "",
                 );
             }
-            break :blk if (is_float) llvm.LLVMBuildFAdd(bl, lhs, rhs, "") else llvm.LLVMBuildAdd(bl, lhs, rhs, "");
+            break :blk if (is_float)
+                llvm.LLVMBuildFAdd(bl, lhs, rhs, "")
+            else if (cg.opt_level == 0)
+                lowerOverflowingBinary(cg, fncg.llvm_fn, lhs, rhs, if (is_unsigned) "llvm.uadd.with.overflow" else "llvm.sadd.with.overflow", location)
+            else
+                llvm.LLVMBuildAdd(bl, lhs, rhs, "");
         },
-        .sub => if (is_float) llvm.LLVMBuildFSub(bl, lhs, rhs, "") else llvm.LLVMBuildSub(bl, lhs, rhs, ""),
-        .mul => if (is_float) llvm.LLVMBuildFMul(bl, lhs, rhs, "") else llvm.LLVMBuildMul(bl, lhs, rhs, ""),
+        .sub => if (is_float)
+            llvm.LLVMBuildFSub(bl, lhs, rhs, "")
+        else if (cg.opt_level == 0)
+            lowerOverflowingBinary(cg, fncg.llvm_fn, lhs, rhs, if (is_unsigned) "llvm.usub.with.overflow" else "llvm.ssub.with.overflow", location)
+        else
+            llvm.LLVMBuildSub(bl, lhs, rhs, ""),
+        .mul => if (is_float)
+            llvm.LLVMBuildFMul(bl, lhs, rhs, "")
+        else if (cg.opt_level == 0)
+            lowerOverflowingBinary(cg, fncg.llvm_fn, lhs, rhs, if (is_unsigned) "llvm.umul.with.overflow" else "llvm.smul.with.overflow", location)
+        else
+            llvm.LLVMBuildMul(bl, lhs, rhs, ""),
         .div => if (is_float)
             llvm.LLVMBuildFDiv(bl, lhs, rhs, "")
-        else if (is_unsigned)
-            llvm.LLVMBuildUDiv(bl, lhs, rhs, "")
-        else
-            llvm.LLVMBuildSDiv(bl, lhs, rhs, ""),
+        else blk: {
+            // Debug: check for division by zero.
+            if (cg.opt_level == 0) {
+                const zero = llvm.LLVMConstInt(llvm.LLVMTypeOf(rhs), 0, 0);
+                const is_zero = llvm.LLVMBuildICmp(bl, llvm.LLVMIntEQ, rhs, zero, "");
+                emitRuntimeCheck(cg, fncg.llvm_fn, is_zero, "division by zero", location);
+                if (!is_unsigned) emitSignedDivisionOverflowCheck(cg, fncg.llvm_fn, lhs, rhs, location);
+            }
+            break :blk if (is_unsigned)
+                llvm.LLVMBuildUDiv(cg.builder, lhs, rhs, "")
+            else
+                llvm.LLVMBuildSDiv(cg.builder, lhs, rhs, "");
+        },
         .rem => if (is_float)
             llvm.LLVMBuildFRem(bl, lhs, rhs, "")
-        else if (is_unsigned)
-            llvm.LLVMBuildURem(bl, lhs, rhs, "")
-        else
-            llvm.LLVMBuildSRem(bl, lhs, rhs, ""),
-        .shl => llvm.LLVMBuildShl(bl, lhs, rhs, ""),
-        .shr => if (is_unsigned) llvm.LLVMBuildLShr(bl, lhs, rhs, "") else llvm.LLVMBuildAShr(bl, lhs, rhs, ""),
+        else blk: {
+            // Debug: check for division by zero (modulo).
+            if (cg.opt_level == 0) {
+                const zero = llvm.LLVMConstInt(llvm.LLVMTypeOf(rhs), 0, 0);
+                const is_zero = llvm.LLVMBuildICmp(bl, llvm.LLVMIntEQ, rhs, zero, "");
+                emitRuntimeCheck(cg, fncg.llvm_fn, is_zero, "remainder by zero", location);
+                if (!is_unsigned) emitSignedDivisionOverflowCheck(cg, fncg.llvm_fn, lhs, rhs, location);
+            }
+            break :blk if (is_unsigned)
+                llvm.LLVMBuildURem(cg.builder, lhs, rhs, "")
+            else
+                llvm.LLVMBuildSRem(cg.builder, lhs, rhs, "");
+        },
+        .shl => blk: {
+            // Debug: check shift amount < bit width.
+            if (cg.opt_level == 0) {
+                const rhs_ty = llvm.LLVMTypeOf(rhs);
+                const width = llvm.LLVMGetIntTypeWidth(llvm.LLVMTypeOf(lhs));
+                const limit = llvm.LLVMConstInt(rhs_ty, width, 0);
+                const over = llvm.LLVMBuildICmp(bl, llvm.LLVMIntUGE, rhs, limit, "");
+                emitRuntimeCheck(cg, fncg.llvm_fn, over, "shift amount exceeds bit width", location);
+            }
+            break :blk llvm.LLVMBuildShl(cg.builder, lhs, rhs, "");
+        },
+        .shr => blk: {
+            // Debug: check shift amount < bit width.
+            if (cg.opt_level == 0) {
+                const rhs_ty = llvm.LLVMTypeOf(rhs);
+                const width = llvm.LLVMGetIntTypeWidth(llvm.LLVMTypeOf(lhs));
+                const limit = llvm.LLVMConstInt(rhs_ty, width, 0);
+                const over = llvm.LLVMBuildICmp(bl, llvm.LLVMIntUGE, rhs, limit, "");
+                emitRuntimeCheck(cg, fncg.llvm_fn, over, "shift amount exceeds bit width", location);
+            }
+            break :blk if (is_unsigned)
+                llvm.LLVMBuildLShr(cg.builder, lhs, rhs, "")
+            else
+                llvm.LLVMBuildAShr(cg.builder, lhs, rhs, "");
+        },
         .bit_and => llvm.LLVMBuildAnd(bl, lhs, rhs, ""),
         .bit_or => llvm.LLVMBuildOr(bl, lhs, rhs, ""),
         .bit_xor => llvm.LLVMBuildXor(bl, lhs, rhs, ""),
@@ -503,6 +605,7 @@ fn lowerField(
     f: ir.FieldInstr,
     result_ty: ir.IrType,
     want_addr: bool,
+    location: ir.SourceLocation,
 ) ?llvm.LLVMValueRef {
     const base_ir_ty = fncg.irTypeOf(f.base) orelse return null;
 
@@ -541,6 +644,7 @@ fn lowerField(
             const idx = cg.fieldIndex(name, f.name) orelse return null;
             const struct_lty = cg.struct_types.get(name) orelse return null;
             const base_ptr = resolveVal(cg, fncg, f.base, base_ir_ty);
+            if (cg.opt_level == 0) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
             const field_ptr = llvm.LLVMBuildStructGEP2(cg.builder, struct_lty, base_ptr, idx, "");
             if (want_addr) return field_ptr;
             return llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, result_ty), field_ptr, "");
@@ -572,6 +676,13 @@ fn lowerBuiltin(
     ty: ir.IrType,
 ) ?llvm.LLVMValueRef {
     const bl = cg.builder;
+
+    if (std.mem.eql(u8, b.name, "optional_some")) {
+        if (b.args.len != 1 or ty != .optional) return null;
+        const payload_ty = ty.optional.*;
+        const payload = resolveVal(cg, fncg, b.args[0], payload_ty);
+        return values.optionalSome(cg, payload, payload_ty);
+    }
 
     // truncate_to(DestType, value) — integer truncation / extension.
     if (std.mem.eql(u8, b.name, "truncate_to")) {
@@ -689,7 +800,162 @@ fn lowerBuiltin(
         return result;
     }
 
+    // ── Error builtins ──────────────────────────────────────────────────────
+
+    // error.<VariantName> — emit the discriminant (i32) for an error variant.
+    // The variant name is resolved against the current function's error type.
+    if (std.mem.startsWith(u8, b.name, "error.")) {
+        const variant_name = b.name["error.".len..];
+        const error_type_name = errorTypeName(fncg.func.error_ty orelse .unknown);
+        const disc = cg.errorDiscriminant(error_type_name, variant_name);
+        return llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), disc, 0);
+    }
+
+    // try_context(fallible_value) — propagate error if discriminant != 0.
+    // Inserts: if (disc != 0) { return { undef, disc }; }
+    // On the success path the builder lands at a fresh continuation BB.
+    if (std.mem.eql(u8, b.name, "try_context")) {
+        if (b.args.len < 1) return null;
+        const fallible = resolveVal(cg, fncg, b.args[0], .unknown);
+        const disc = llvm.LLVMBuildExtractValue(cg.builder, fallible, 1, "");
+        const zero = llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), 0, 0);
+        const is_err = llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntNE, disc, zero, "");
+
+        const err_bb = llvm.LLVMAppendBasicBlockInContext(cg.ctx, fncg.llvm_fn, "propagate_err");
+        const ok_bb = llvm.LLVMAppendBasicBlockInContext(cg.ctx, fncg.llvm_fn, "try_ok");
+        _ = llvm.LLVMBuildCondBr(cg.builder, is_err, err_bb, ok_bb);
+
+        // Error path: re-wrap and return the error discriminant.
+        llvm.LLVMPositionBuilderAtEnd(cg.builder, err_bb);
+        if (fncg.func.error_ty != null) {
+            const ret_lty = types.fallibleReturnType(cg, fncg.func);
+            var err_ret = llvm.LLVMGetUndef(ret_lty);
+            err_ret = llvm.LLVMBuildInsertValue(cg.builder, err_ret, disc, 1, "");
+            _ = llvm.LLVMBuildRet(cg.builder, err_ret);
+        } else {
+            _ = llvm.LLVMBuildUnreachable(cg.builder);
+        }
+
+        // Continue on the ok path.
+        llvm.LLVMPositionBuilderAtEnd(cg.builder, ok_bb);
+        return fallible; // pass-through for try_ok to extract field 0
+    }
+
+    // catch_handler is an IR marker; the handler CFG is emitted by IR lowering.
+    if (std.mem.eql(u8, b.name, "catch_handler")) return null;
+
+    // try_context / deferred OK/ERR — ignore for now.
+    if (std.mem.eql(u8, b.name, "try_context_ok") or
+        std.mem.eql(u8, b.name, "try_context_err")) return null;
+
     return null; // unknown builtin
+}
+
+/// Extract the error type name string from an IrType (error_ty field of IrFunction).
+fn errorTypeName(err_ty: ir.IrType) []const u8 {
+    return switch (err_ty) {
+        .variant_type => |n| n,
+        else => "",
+    };
+}
+
+// ── Runtime safety checks ───────────────────────────────────────────────────
+
+/// Emit a conditional panic if `cond_fails` is true (i1).
+/// Splits the current BB into panic_bb and cont_bb; builder lands at cont_bb.
+fn emitRuntimeCheck(
+    cg: *ModuleCg,
+    llvm_fn: llvm.LLVMValueRef,
+    cond_fails: llvm.LLVMValueRef,
+    msg: []const u8,
+    location: ir.SourceLocation,
+) void {
+    const panic_bb = llvm.LLVMAppendBasicBlockInContext(cg.ctx, llvm_fn, "check_fail");
+    const cont_bb = llvm.LLVMAppendBasicBlockInContext(cg.ctx, llvm_fn, "check_ok");
+    _ = llvm.LLVMBuildCondBr(cg.builder, cond_fails, panic_bb, cont_bb);
+
+    llvm.LLVMPositionBuilderAtEnd(cg.builder, panic_bb);
+    @import("panic.zig").lower(cg, .{
+        .message = msg,
+        .location = location,
+    });
+
+    llvm.LLVMPositionBuilderAtEnd(cg.builder, cont_bb);
+}
+
+fn emitNullCheck(
+    cg: *ModuleCg,
+    llvm_fn: llvm.LLVMValueRef,
+    ptr: llvm.LLVMValueRef,
+    location: ir.SourceLocation,
+) void {
+    const null_ptr = llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(cg.ctx, 0));
+    const is_null = llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntEQ, ptr, null_ptr, "");
+    emitRuntimeCheck(cg, llvm_fn, is_null, "null pointer dereference", location);
+}
+
+fn lowerOverflowingBinary(
+    cg: *ModuleCg,
+    llvm_fn: llvm.LLVMValueRef,
+    lhs: llvm.LLVMValueRef,
+    rhs: llvm.LLVMValueRef,
+    intrinsic_name: []const u8,
+    location: ir.SourceLocation,
+) llvm.LLVMValueRef {
+    const operand_ty = llvm.LLVMTypeOf(lhs);
+    const intrinsic_id = llvm.LLVMLookupIntrinsicID(intrinsic_name.ptr, intrinsic_name.len);
+    var overloaded_tys = [_]llvm.LLVMTypeRef{operand_ty};
+    const intrinsic = llvm.LLVMGetIntrinsicDeclaration(cg.mod, intrinsic_id, &overloaded_tys, 1);
+    const intrinsic_ty = llvm.LLVMGlobalGetValueType(intrinsic);
+    var args = [_]llvm.LLVMValueRef{ lhs, rhs };
+    const pair = llvm.LLVMBuildCall2(cg.builder, intrinsic_ty, intrinsic, &args, 2, "overflow_pair");
+    const result = llvm.LLVMBuildExtractValue(cg.builder, pair, 0, "overflow_result");
+    const overflowed = llvm.LLVMBuildExtractValue(cg.builder, pair, 1, "overflowed");
+    emitRuntimeCheck(cg, llvm_fn, overflowed, "integer overflow", location);
+    return result;
+}
+
+fn emitSignedDivisionOverflowCheck(
+    cg: *ModuleCg,
+    llvm_fn: llvm.LLVMValueRef,
+    lhs: llvm.LLVMValueRef,
+    rhs: llvm.LLVMValueRef,
+    location: ir.SourceLocation,
+) void {
+    const int_ty = llvm.LLVMTypeOf(lhs);
+    const width = llvm.LLVMGetIntTypeWidth(int_ty);
+    if (width == 0 or width > 64) return;
+    const min_value = llvm.LLVMConstInt(int_ty, @as(u64, 1) << @intCast(width - 1), 0);
+    const negative_one = llvm.LLVMConstAllOnes(int_ty);
+    const lhs_is_min = llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntEQ, lhs, min_value, "");
+    const rhs_is_negative_one = llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntEQ, rhs, negative_one, "");
+    const overflowed = llvm.LLVMBuildAnd(cg.builder, lhs_is_min, rhs_is_negative_one, "");
+    emitRuntimeCheck(cg, llvm_fn, overflowed, "integer overflow", location);
+}
+
+/// Emit a slice/array bounds check before an index operation.
+fn emitBoundsCheck(cg: *ModuleCg, fncg: anytype, ix: ir.IndexInstr, location: ir.SourceLocation) void {
+    const base_ir_ty = fncg.irTypeOf(ix.base) orelse return;
+    const len = switch (base_ir_ty) {
+        .slice => blk: {
+            const slice = resolveVal(cg, fncg, ix.base, base_ir_ty);
+            break :blk llvm.LLVMBuildExtractValue(cg.builder, slice, 1, "");
+        },
+        .array => |array| llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), array.len, 0),
+        .ptr => |inner| switch (inner.*) {
+            .array => |array| llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), array.len, 0),
+            else => return,
+        },
+        else => return,
+    };
+    const idx = resolveVal(cg, fncg, ix.index, .usize);
+
+    // Coerce both to i64 for comparison.
+    const i64_ty = llvm.LLVMInt64TypeInContext(cg.ctx);
+    const idx64 = values.coerce(cg.builder, cg.ctx, idx, i64_ty);
+    const len64 = values.coerce(cg.builder, cg.ctx, len, i64_ty);
+    const out_of_bounds = llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntUGE, idx64, len64, "");
+    emitRuntimeCheck(cg, fncg.llvm_fn, out_of_bounds, "index out of bounds", location);
 }
 
 // ── Compound literals ───────────────────────────────────────────────────────

@@ -30,6 +30,20 @@ pub fn lower(cg: *ModuleCg, ty: ir.IrType) llvm.LLVMTypeRef {
         else
             optionalType(cg, inner.*),
 
+        // Fallible types: !T — represented as { T, i32 } where i32=0 means ok.
+        // Void ok-type uses i8 placeholder (can't have void in a struct).
+        .fallible => |f| blk: {
+            const ok_lty = if (f.ok.* == .void)
+                llvm.LLVMInt8TypeInContext(ctx)
+            else
+                lower(cg, f.ok.*);
+            var fields = [_]llvm.LLVMTypeRef{ ok_lty, llvm.LLVMInt32TypeInContext(ctx) };
+            break :blk llvm.LLVMStructTypeInContext(ctx, &fields, 2, 0);
+        },
+
+        // Error/variant discriminant types lower to i32.
+        .variant_type => llvm.LLVMInt32TypeInContext(ctx),
+
         // All other pointer-like types are opaque `ptr` (LLVM 15+).
         .ptr => llvm.LLVMPointerTypeInContext(ctx, 0),
 
@@ -66,14 +80,23 @@ pub fn lowerSlice(cg: *ModuleCg, tys: []const ir.IrType) ![]llvm.LLVMTypeRef {
 }
 
 /// Build an LLVM function type from an IrFunction.
+/// Fallible functions (!T) get return type { T, i32 } where i32 is the error discriminant.
 pub fn fnType(cg: *ModuleCg, func: ir.IrFunction) !llvm.LLVMTypeRef {
     const param_tys = try cg.allocator.alloc(llvm.LLVMTypeRef, func.params.len);
     defer cg.allocator.free(param_tys);
     for (func.params, 0..) |p, i| param_tys[i] = lower(cg, p.ty);
-    return llvm.LLVMFunctionType(
-        lower(cg, func.return_ty),
-        param_tys.ptr,
-        @intCast(param_tys.len),
-        0,
-    );
+    const ret_lty = fallibleReturnType(cg, func);
+    return llvm.LLVMFunctionType(ret_lty, param_tys.ptr, @intCast(param_tys.len), 0);
+}
+
+/// Return the LLVM return type for a function.
+/// Fallible: { ok_lty, i32 }.  Non-fallible: lower(return_ty).
+pub fn fallibleReturnType(cg: *ModuleCg, func: ir.IrFunction) llvm.LLVMTypeRef {
+    if (func.error_ty == null) return lower(cg, func.return_ty);
+    const ok_lty = if (func.return_ty == .void)
+        llvm.LLVMInt8TypeInContext(cg.ctx) // void ok → i8 placeholder
+    else
+        lower(cg, func.return_ty);
+    var fields = [_]llvm.LLVMTypeRef{ ok_lty, llvm.LLVMInt32TypeInContext(cg.ctx) };
+    return llvm.LLVMStructTypeInContext(cg.ctx, &fields, 2, 0);
 }

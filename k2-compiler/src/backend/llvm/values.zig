@@ -20,13 +20,13 @@ fn unescapeString(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
         }
         i += 1;
         switch (s[i]) {
-            'n'  => try out.append(allocator, '\n'),
-            'r'  => try out.append(allocator, '\r'),
-            't'  => try out.append(allocator, '\t'),
+            'n' => try out.append(allocator, '\n'),
+            'r' => try out.append(allocator, '\r'),
+            't' => try out.append(allocator, '\t'),
             '\\' => try out.append(allocator, '\\'),
-            '"'  => try out.append(allocator, '"'),
-            '0'  => try out.append(allocator, 0),
-            'x'  => {
+            '"' => try out.append(allocator, '"'),
+            '0' => try out.append(allocator, 0),
+            'x' => {
                 if (i + 2 < s.len) {
                     const hi = s[i + 1];
                     const lo = s[i + 2];
@@ -205,6 +205,31 @@ pub fn coerce(
     if (src_kind == llvm.LLVMIntegerTypeKind and dst_kind == llvm.LLVMPointerTypeKind)
         return llvm.LLVMBuildIntToPtr(builder, v, dest_lty, "");
 
+    // Float ↔ integer conversions.
+    const is_float_src = src_kind == llvm.LLVMFloatTypeKind or src_kind == llvm.LLVMDoubleTypeKind;
+    const is_float_dst = dst_kind == llvm.LLVMFloatTypeKind or dst_kind == llvm.LLVMDoubleTypeKind;
+
+    if (is_float_src and dst_kind == llvm.LLVMIntegerTypeKind)
+        return llvm.LLVMBuildFPToSI(builder, v, dest_lty, "");
+
+    if (src_kind == llvm.LLVMIntegerTypeKind and is_float_dst) {
+        // i1 (bool) → float: use unsigned path so true→1.0 not -1.0
+        const src_w = llvm.LLVMGetIntTypeWidth(src_lty);
+        return if (src_w == 1)
+            llvm.LLVMBuildUIToFP(builder, v, dest_lty, "")
+        else
+            llvm.LLVMBuildSIToFP(builder, v, dest_lty, "");
+    }
+
+    // Float ↔ float widening / narrowing.
+    if (is_float_src and is_float_dst) {
+        const src_is_double = src_kind == llvm.LLVMDoubleTypeKind;
+        const dst_is_double = dst_kind == llvm.LLVMDoubleTypeKind;
+        if (!src_is_double and dst_is_double) return llvm.LLVMBuildFPExt(builder, v, dest_lty, "");
+        if (src_is_double and !dst_is_double) return llvm.LLVMBuildFPTrunc(builder, v, dest_lty, "");
+        return v;
+    }
+
     if (src_kind == llvm.LLVMStructTypeKind and dst_kind == llvm.LLVMStructTypeKind) {
         // e.g. slice struct passed where another struct is expected — alloca + bitload trick
         const tmp = llvm.LLVMBuildAlloca(builder, src_lty, "");
@@ -215,4 +240,53 @@ pub fn coerce(
     // Fallback: bitcast
     _ = ctx;
     return llvm.LLVMBuildBitCast(builder, v, dest_lty, "");
+}
+
+/// Type-aware numeric coercion. LLVM integer types do not retain signedness,
+/// so explicit casts must use the K2 source/destination types to select the
+/// correct extension and float-conversion instructions.
+pub fn coerceTyped(
+    builder: llvm.LLVMBuilderRef,
+    ctx: llvm.LLVMContextRef,
+    v: llvm.LLVMValueRef,
+    src_ty: ir.IrType,
+    dest_ty: ir.IrType,
+    dest_lty: llvm.LLVMTypeRef,
+) llvm.LLVMValueRef {
+    const src_lty = llvm.LLVMTypeOf(v);
+    const src_kind = llvm.LLVMGetTypeKind(src_lty);
+    const dst_kind = llvm.LLVMGetTypeKind(dest_lty);
+    const src_float = src_kind == llvm.LLVMFloatTypeKind or src_kind == llvm.LLVMDoubleTypeKind;
+    const dst_float = dst_kind == llvm.LLVMFloatTypeKind or dst_kind == llvm.LLVMDoubleTypeKind;
+
+    if (src_float and dst_kind == llvm.LLVMIntegerTypeKind)
+        return if (isUnsigned(dest_ty))
+            llvm.LLVMBuildFPToUI(builder, v, dest_lty, "")
+        else
+            llvm.LLVMBuildFPToSI(builder, v, dest_lty, "");
+
+    if (src_kind == llvm.LLVMIntegerTypeKind and dst_float)
+        return if (isUnsigned(src_ty))
+            llvm.LLVMBuildUIToFP(builder, v, dest_lty, "")
+        else
+            llvm.LLVMBuildSIToFP(builder, v, dest_lty, "");
+
+    if (src_kind == llvm.LLVMIntegerTypeKind and dst_kind == llvm.LLVMIntegerTypeKind) {
+        const src_w = llvm.LLVMGetIntTypeWidth(src_lty);
+        const dst_w = llvm.LLVMGetIntTypeWidth(dest_lty);
+        if (dst_w > src_w)
+            return if (isUnsigned(src_ty))
+                llvm.LLVMBuildZExt(builder, v, dest_lty, "")
+            else
+                llvm.LLVMBuildSExt(builder, v, dest_lty, "");
+    }
+
+    return coerce(builder, ctx, v, dest_lty);
+}
+
+fn isUnsigned(ty: ir.IrType) bool {
+    return switch (ty) {
+        .u, .byte, .usize, .addr, .bool => true,
+        else => false,
+    };
 }

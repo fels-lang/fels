@@ -107,6 +107,224 @@ test "LLVM panic lowering synthesizes the runtime declaration when absent" {
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "standalone_unwrap.k2:2:12") != null);
 }
 
+test "LLVM error/fallible ABI: fail and return lower to { ok, i32 } struct" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\NetError :: errors { timeout, http: u16, }
+        \\
+        \\connect :: fn(host: []const u8) -> i32 ! NetError {
+        \\    if host.len == 0 {
+        \\        fail .timeout;
+        \\    }
+        \\    return 42;
+        \\}
+        \\
+        \\caller :: fn(host: []const u8) -> i32 ! NetError {
+        \\    v := connect(host)?;
+        \\    return v;
+        \\}
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "fallible.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "fallible");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    // Return type must be { i32, i32 } — ok-value + discriminant.
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "{ i32, i32 }") != null);
+    // Successful return wraps with insertvalue index 1 = 0.
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "insertvalue") != null);
+    // fail emits a non-zero discriminant and returns.
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "ret { i32, i32 }") != null);
+    // try_context emits a conditional branch on the discriminant.
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "propagate_err") != null);
+}
+
+test "LLVM debug: division by zero inserts a runtime check" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\divide :: fn(a: i32, b: i32) -> i32 { return a / b; }
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "div_check.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "div_check");
+    defer backend.deinit();
+    // opt_level=0 (debug) — checks should be present.
+    try backend.lower(module);
+    try backend.emitObject(".zig-cache/div_check_test.o", 0);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "check_fail") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "check_ok") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "division by zero") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "div_check.k2:1:") != null);
+}
+
+test "LLVM debug: integer overflow inserts a located runtime check" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\add :: fn(a: i32, b: i32) -> i32 { return a + b; }
+        \\multiply :: fn(a: u32, b: u32) -> u32 { return a * b; }
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "overflow.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "overflow");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "llvm.sadd.with.overflow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "llvm.umul.with.overflow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "integer overflow at overflow.k2:1:") != null);
+}
+
+test "LLVM release: division omits debug runtime check" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\divide :: fn(a: i32, b: i32) -> i32 { return a / b; }
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "div_release.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "div_release");
+    defer backend.deinit();
+    backend.setOptLevel(2);
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "check_fail") == null);
+}
+
+test "LLVM debug: shift overflow inserts a runtime check" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\shift_it :: fn(a: u32, b: u32) -> u32 { return a << b; }
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "shift_check.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "shift_check");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "check_fail") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "shift amount exceeds bit width") != null);
+}
+
+test "LLVM debug: slice bounds check inserts a runtime check" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\get :: fn(data: []const u8, i: usize) -> u8 { return data[i]; }
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "bounds.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "bounds");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "check_fail") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "index out of bounds") != null);
+}
+
+test "LLVM debug: array bounds check uses static array length" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\get :: fn(data: [4]u8, i: usize) -> u8 { return data[i]; }
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "array_bounds.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "array_bounds");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "index out of bounds at array_bounds.k2:1:") != null);
+}
+
+test "LLVM float casts emit correct instructions" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\f_to_i :: fn(x: f32) -> i32  { return x as i32; }
+        \\i_to_f :: fn(x: i32) -> f32  { return x as f32; }
+        \\f32_to_f64 :: fn(x: f32) -> f64 { return x as f64; }
+        \\f64_to_f32 :: fn(x: f64) -> f32 { return x as f32; }
+        \\u_to_f :: fn(x: u32) -> f32 { return x as f32; }
+        \\f_to_u :: fn(x: f32) -> u32 { return x as u32; }
+        \\widen_u :: fn(x: u8) -> u32 { return x as u32; }
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "float_casts.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "float_casts");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "fptosi") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "sitofp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "fpext") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "fptrunc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "uitofp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "fptoui") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "zext") != null);
+}
+
 test "LLVM lowering reads and writes fields through struct pointers" {
     if (comptime !k2.llvm_enabled) return;
 

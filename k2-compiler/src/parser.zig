@@ -1127,7 +1127,7 @@ pub const Parser = struct {
     }
 
     fn errorAt(self: *Parser, tok: Token, message: []const u8) !void {
-        try self.diagnostics.append(self.allocator, Diagnostic.init(message, spanFrom(tok, tok)));
+        try self.diagnostics.append(self.allocator, Diagnostic.err(message, spanFrom(tok, tok), self.file_name));
     }
 };
 

@@ -87,16 +87,16 @@ Status meanings:
 | --- | --- | --- |
 | Lexer, parser, AST, diagnostics | Implemented | Includes source spans and diagnostic tests. |
 | Semantic analysis and typed IR | Implemented | Includes IR validation and basic optimization passes. |
-| LLVM object generation | Partial | Core lowering works; correctness gaps remain for some operations and types. |
+| LLVM object generation | Implemented | Core lowering, module verification, debug safety checks, and Windows executable integration are covered. |
 | Structs, packed structs, enums | Implemented | Enums support payloads and pattern matching. |
 | Integer types | Implemented | Includes sub-byte signed and unsigned integers. |
-| Pointers, arrays, slices, optionals | Implemented | Runtime safety checks are not yet inserted. |
+| Pointers, arrays, slices, optionals | Implemented | Debug builds check null dereferences, bounds, and invalid unwraps. |
 | Distinct, opaque, and atomic types | Partial | Core syntax exists; backend and operation coverage vary. |
 | Functions and generics | Implemented | Generic functions and structs are monomorphized. |
 | Control flow | Implemented | `if`, `while`, range/slice `for`, `break`, `continue`, and `defer`. |
 | Integer and enum `match` | Implemented | Integer matches support single and grouped cases. |
 | Compile-time execution | Partial | `#if` and `#run` exist; reflection and several operations are incomplete. |
-| Errors and fallible functions | Partial | Frontend support exists; failure and unwrap backend paths need completion. |
+| Errors and fallible functions | Implemented | LLVM ABI, `fail`, `?` propagation, `catch`, and fallible entry points are lowered. |
 | Zones | Partial | Lexical structure and cleanup behavior exist; allocation/backend semantics need completion. |
 | Interfaces | Partial | Dynamic `*Interface` dispatch works; static constraints and advanced cases are missing. |
 | Runtime | Partial | Panic, assertions, and basic output exist; integration and platform coverage need work. |
@@ -149,24 +149,23 @@ today, but need completion and a firmer ownership model.
 
 ## Safety And Undefined Behavior
 
-K2 does **not currently trap common undefined behavior in debug builds**. LLVM
-lowering generally emits unchecked native operations, and several failure paths
-currently lower to `unreachable`.
+K2 debug builds trap common invalid operations through the shared runtime panic
+path. Compiler-generated traps include the originating `file:line:column`.
 
 | Operation | Current behavior |
 | --- | --- |
-| Integer overflow | No K2-inserted debug check. Plain arithmetic semantics still need a final decision. |
-| Division by zero | No K2-inserted guard. |
-| Out-of-bounds indexing | No K2-inserted guard. |
-| Null pointer dereference | No K2-inserted guard. |
+| Integer overflow | Debug builds trap signed/unsigned add, subtract, multiply, negate, and signed division overflow. |
+| Division by zero | Debug builds trap integer division and remainder by zero. |
+| Invalid shifts | Debug builds trap shift amounts greater than or equal to the operand width. |
+| Out-of-bounds indexing | Debug builds guard slice and array indexing. |
+| Null pointer dereference | Debug builds guard explicit dereference, pointer field access, and pointer indexing. |
 | Invalid optional unwrap with `!!` | Calls the runtime `@panic` path and then terminates as unreachable. |
-| `fail` and fallible propagation | Frontend exists; LLVM failure lowering is incomplete. |
+| `fail` and fallible propagation | Lowered through the `{ ok, error_discriminant }` LLVM ABI; `?`, `catch`, and fallible entry points are supported. |
 | Use after zone cleanup | No runtime detector. |
 | Uninitialized values | Some cases are rejected, but there is no complete definite-initialization proof. |
 | Data races and unsafe pointer misuse | Caller responsibility. |
 
-The intended debug policy should be decided and implemented before adding more
-large language features. The recommended baseline is:
+The implemented debug baseline is:
 
 - Trap integer overflow, division by zero, invalid shifts, null dereferences,
   and out-of-bounds indexing in debug builds.
@@ -174,27 +173,28 @@ large language features. The recommended baseline is:
 - Route language-level failures through `@panic` or a shared trap mechanism with
   useful source locations.
 - Keep explicitly unsafe operations available inside `unsafe`.
-- Define release behavior precisely rather than inheriting accidental LLVM
-  behavior.
-- Add explicit wrapping arithmetic operators such as `+%`, `-%`, and `*%`.
+- Omit compiler-generated debug checks in optimized builds.
+
+Release-mode behavior and explicit wrapping arithmetic operators such as `+%`,
+`-%`, and `*%` still need a final language-level decision.
 
 ## Priority Roadmap
 
 ### P0: Compiler Correctness And Debug Safety
 
-This is the next milestone. It has higher value than additional syntax.
-
-- Insert debug checks for overflow, division by zero, invalid shifts, bounds,
-  and null dereferences.
-- Complete the error and fallible-function ABI through LLVM lowering.
-- Complete the remaining numeric cast and mixed-type lowering audit.
-- Add end-to-end executable tests for successful programs and runtime failures.
-
-Completed small P0 fixes:
+Completed:
 
 - `!!` now emits a runtime `@panic` call on its failure path.
 - Compiler-generated traps use one structured IR panic path carrying
   `file:line:column`, lowered through the runtime `@panic` contract.
+- Debug builds check integer overflow, division by zero, invalid shifts, array
+  and slice bounds, and null pointer dereferences.
+- Errors and fallible functions use a verified LLVM ABI supporting `fail`, `?`,
+  `catch`, and fallible entry points.
+- Numeric casts select signed or unsigned LLVM conversion instructions from K2
+  source and destination types.
+- End-to-end tests compile, link, and execute successful, panic, assertion,
+  optional, catch, and fallible programs.
 - Source-file LLVM builds now include the embedded runtime needed by generated
   panic calls.
 - Signed, unsigned, and floating-point arithmetic, comparison, division,
@@ -202,9 +202,9 @@ Completed small P0 fixes:
 - Pointer-to-struct field reads and writes lower through the pointed-to layout.
 - LLVM modules are verified immediately after lowering.
 
-**Acceptance criteria:** a debug-compiled K2 program reliably traps the common
-invalid operations above, reports the originating source location, and all
-failure/control-flow paths produce valid LLVM IR.
+**Status:** complete. Debug-compiled K2 programs trap the common invalid
+operations above, report the originating source location, and the covered
+failure/control-flow paths produce verified LLVM IR.
 
 ### P1: Complete Existing Language Features
 

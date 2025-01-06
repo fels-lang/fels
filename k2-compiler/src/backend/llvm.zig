@@ -25,6 +25,7 @@ const emit = @import("llvm/emit.zig");
 const link = @import("llvm/link.zig");
 const vars_mod = @import("llvm/variants.zig");
 const vtables = @import("llvm/vtables.zig");
+const values = @import("llvm/values.zig");
 const llvm_c = @import("llvm/c_api.zig").llvm;
 
 pub const LlvmBackend = struct {
@@ -38,8 +39,17 @@ pub const LlvmBackend = struct {
         self.cg.deinit();
     }
 
+    /// Configure optimization/safety mode before lowering.
+    /// Level 0 inserts debug runtime checks; higher levels omit them.
+    pub fn setOptLevel(self: *LlvmBackend, opt_level: u2) void {
+        self.cg.opt_level = opt_level;
+    }
+
     /// Lower a complete IrModule to LLVM IR in memory.
     pub fn lower(self: *LlvmBackend, module: ir.IrModule) !void {
+        // Expose module metadata needed by instruction lowering.
+        self.cg.error_defs = module.errors;
+
         try vars_mod.lowerAll(&self.cg, module.variants); // enums first (referenced by fns)
         try structs.lowerAll(&self.cg, module.structs);
         try globals.lowerAll(&self.cg, module.globals);
@@ -50,7 +60,7 @@ pub const LlvmBackend = struct {
         // Auto-generate the platform entry point if needed.
         for (module.functions) |f| {
             if (f.entry) {
-                try emitWindowsEntryPoint(&self.cg, f.name);
+                try emitWindowsEntryPoint(&self.cg, f);
                 break;
             }
         }
@@ -61,6 +71,7 @@ pub const LlvmBackend = struct {
     /// Emit a native object file.
     /// `opt_level`: 0=none 1=less 2=default 3=aggressive.
     pub fn emitObject(self: *LlvmBackend, path: [*:0]const u8, opt_level: u2) !void {
+        self.setOptLevel(opt_level);
         const tm = try emit.TargetMachine.initNative(opt_level);
         defer tm.deinit();
         tm.applyToModule(&self.cg);
@@ -98,7 +109,7 @@ pub const linkWindows = link.windows;
 //
 // This replaces k2rt — no separate object file to compile or distribute.
 
-fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main_name: []const u8) !void {
+fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {
     // Declare ExitProcess(u32) if not already present.
     const ep_sym = "ExitProcess";
     if (!cg.fn_decls.contains(ep_sym)) {
@@ -118,13 +129,31 @@ fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main_name: []const u8) !void {
     llvm_c.LLVMPositionBuilderAtEnd(cg.builder, bb);
 
     // Call K2 main.
-    const main_fn = cg.fn_decls.get(main_name) orelse return;
+    const main_fn = cg.fn_decls.get(main.name) orelse return;
     const main_fn_ty = llvm_c.LLVMGlobalGetValueType(main_fn);
     const main_ret = llvm_c.LLVMBuildCall2(cg.builder, main_fn_ty, main_fn, null, 0, "ret");
 
     // Coerce i32 → u32 (bitcast — same bits, different signedness).
     const u32_ty = llvm_c.LLVMInt32TypeInContext(cg.ctx);
-    const exit_code = llvm_c.LLVMBuildBitCast(cg.builder, main_ret, u32_ty, "");
+    const exit_code = if (main.error_ty != null) blk: {
+        const err = llvm_c.LLVMBuildExtractValue(cg.builder, main_ret, 1, "main_err");
+        const ok = if (main.return_ty == .void)
+            llvm_c.LLVMConstInt(u32_ty, 0, 0)
+        else
+            values.coerce(cg.builder, cg.ctx, llvm_c.LLVMBuildExtractValue(cg.builder, main_ret, 0, "main_ok"), u32_ty);
+        const err_code = values.coerce(cg.builder, cg.ctx, err, u32_ty);
+        const is_err = llvm_c.LLVMBuildICmp(
+            cg.builder,
+            llvm_c.LLVMIntNE,
+            err_code,
+            llvm_c.LLVMConstInt(u32_ty, 0, 0),
+            "main_failed",
+        );
+        break :blk llvm_c.LLVMBuildSelect(cg.builder, is_err, err_code, ok, "exit_code");
+    } else if (main.return_ty == .void)
+        llvm_c.LLVMConstInt(u32_ty, 0, 0)
+    else
+        values.coerce(cg.builder, cg.ctx, main_ret, u32_ty);
 
     // Call ExitProcess.
     const ep_fn = cg.fn_decls.get(ep_sym).?;

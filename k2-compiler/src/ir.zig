@@ -161,6 +161,7 @@ pub const Instr = struct {
     id: ?RegId,
     ty: IrType,
     kind: InstrKind,
+    location: SourceLocation = .{ .file = "", .line = 0, .column = 0 },
 };
 
 pub const InstrKind = union(enum) {
@@ -784,19 +785,19 @@ fn tryFoldInstr(consts: *const ConstMap, instr: Instr) Instr {
             const rhs = resolveVal(consts, binary.rhs);
             if (lhs == .imm and rhs == .imm) {
                 if (foldBinaryImm(binary.op, lhs.imm, rhs.imm)) |result| {
-                    return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .const_value = result } };
+                    return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .const_value = result }, .location = instr.location };
                 }
             }
-            return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .binary = .{ .op = binary.op, .lhs = lhs, .rhs = rhs } } };
+            return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .binary = .{ .op = binary.op, .lhs = lhs, .rhs = rhs } }, .location = instr.location };
         },
         .unary => |unary| {
             const value = resolveVal(consts, unary.value);
             if (value == .imm) {
                 if (foldUnaryImm(unary.op, value.imm)) |result| {
-                    return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .const_value = result } };
+                    return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .const_value = result }, .location = instr.location };
                 }
             }
-            return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .unary = .{ .op = unary.op, .value = value } } };
+            return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .unary = .{ .op = unary.op, .value = value } }, .location = instr.location };
         },
         else => return instr,
     }
@@ -1340,7 +1341,7 @@ const FunctionLowerer = struct {
                     .ident => |name| {
                         if (bin_op) |op| {
                             const current: Value = .{ .local = name };
-                            const result = try self.emit(self.exprType(assign.target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } });
+                            const result = try self.emitAt(self.exprType(assign.target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } }, assign.span);
                             try self.emitNoResult(self.exprType(assign.target), .{ .store_local = .{ .name = name, .value = result } });
                         } else {
                             try self.emitNoResult(self.exprType(assign.target), .{ .store_local = .{ .name = name, .value = value } });
@@ -1349,8 +1350,8 @@ const FunctionLowerer = struct {
                     else => {
                         const target = try self.lowerLValueAddress(assign.target);
                         if (bin_op) |op| {
-                            const current = try self.emit(self.exprType(assign.target), .{ .unary = .{ .op = .deref, .value = target } });
-                            const result = try self.emit(self.exprType(assign.target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } });
+                            const current = try self.emitAt(self.exprType(assign.target), .{ .unary = .{ .op = .deref, .value = target } }, assign.span);
+                            const result = try self.emitAt(self.exprType(assign.target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } }, assign.span);
                             try self.emitNoResult(self.exprType(assign.target), .{ .store = .{ .target = target, .value = result } });
                         } else {
                             try self.emitNoResult(self.exprType(assign.target), .{ .store = .{ .target = target, .value = value } });
@@ -1708,17 +1709,17 @@ const FunctionLowerer = struct {
             .unary => |unary| blk: {
                 const value = try self.lowerExpr(unary.expr.*);
                 break :blk switch (unary.op) {
-                    .address_of => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .ref, .value = value } }),
-                    .deref => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .deref, .value = value } }),
-                    .neg => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .neg, .value = value } }),
-                    .not => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .not, .value = value } }),
-                    .bit_not => try self.emit(self.exprType(expr), .{ .unary = .{ .op = .bit_not, .value = value } }),
+                    .address_of => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .ref, .value = value } }, expr.span),
+                    .deref => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .deref, .value = value } }, expr.span),
+                    .neg => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .neg, .value = value } }, expr.span),
+                    .not => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .not, .value = value } }, expr.span),
+                    .bit_not => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .bit_not, .value = value } }, expr.span),
                 };
             },
             .binary => |binary| blk: {
                 const lhs = try self.lowerExpr(binary.left.*);
                 const rhs = try self.lowerExpr(binary.right.*);
-                break :blk try self.emit(self.exprType(expr), .{ .binary = .{ .op = lowerBinOp(binary.op), .lhs = lhs, .rhs = rhs } });
+                break :blk try self.emitAt(self.exprType(expr), .{ .binary = .{ .op = lowerBinOp(binary.op), .lhs = lhs, .rhs = rhs } }, expr.span);
             },
             .try_expr => |try_expr| blk: {
                 const value = try self.lowerExpr(try_expr.value.*);
@@ -1730,13 +1731,29 @@ const FunctionLowerer = struct {
             },
             .catch_expr => |catch_expr| blk: {
                 const value = try self.lowerExpr(catch_expr.value.*);
-                const err_value = try self.emit(.{ .variant_type = "<error>" }, .{ .try_err = value });
-                try self.emitNoResult(.void, .{ .store_local = .{ .name = catch_expr.err_name, .value = err_value } });
-                _ = catch_expr.handler;
+                const error_ty: IrType = switch (self.exprType(catch_expr.value.*)) {
+                    .fallible => |fallible| fallible.err.*,
+                    else => .unknown,
+                };
+                const is_ok = try self.emit(.bool, .{ .try_is_ok = value });
+                const ok_id = self.allocBlockId();
+                const err_id = self.allocBlockId();
+                try self.terminate(.{ .cond_branch = .{
+                    .cond = is_ok,
+                    .then_block = ok_id,
+                    .else_block = err_id,
+                } });
+
+                self.startBlock(err_id, "catch.err");
+                const err_value = try self.emit(error_ty, .{ .try_err = value });
+                try self.emitNoResult(error_ty, .{ .store_local = .{ .name = catch_expr.err_name, .value = err_value } });
                 _ = try self.emit(.void, .{ .builtin = .{
                     .name = "catch_handler",
                     .args = try self.allocator.dupe(Value, &.{err_value}),
                 } });
+                try self.lowerBlock(catch_expr.handler.statements, .unreachable_term);
+
+                self.startBlock(ok_id, "catch.ok");
                 break :blk try self.emit(self.exprType(expr), .{ .try_ok = value });
             },
             .call => |call| blk: {
@@ -1852,12 +1869,12 @@ const FunctionLowerer = struct {
                     }
                 }
                 const base = try self.lowerExpr(field.base.*);
-                break :blk try self.emit(self.exprType(expr), .{ .field = .{ .base = base, .name = field.name } });
+                break :blk try self.emitAt(self.exprType(expr), .{ .field = .{ .base = base, .name = field.name } }, expr.span);
             },
             .index => |index| blk: {
                 const base = try self.lowerExpr(index.base.*);
                 const idx = try self.lowerExpr(index.index.*);
-                break :blk try self.emit(self.exprType(expr), .{ .index = .{ .base = base, .index = idx } });
+                break :blk try self.emitAt(self.exprType(expr), .{ .index = .{ .base = base, .index = idx } }, expr.span);
             },
             .slice => |slice| blk: {
                 const base_ty = self.exprType(slice.base.*);
@@ -1881,6 +1898,13 @@ const FunctionLowerer = struct {
         if (expected_ty == .interface_value and self.exprType(expr) != .interface_value) {
             return self.lowerInterfaceCoercion(expr, expected_ty.interface_value);
         }
+        if (expected_ty == .optional and self.exprType(expr) != .optional and expr.kind != .null) {
+            const payload = try self.lowerExpr(expr);
+            return self.emit(expected_ty, .{ .builtin = .{
+                .name = "optional_some",
+                .args = try self.allocator.dupe(Value, &.{payload}),
+            } });
+        }
         return switch (expr.kind) {
             .compound_literal => |values| blk: {
                 var args = std.ArrayList(Value).empty;
@@ -1901,7 +1925,7 @@ const FunctionLowerer = struct {
             },
             .field => |field| blk: {
                 const base = try self.lowerExpr(field.base.*);
-                break :blk try self.emit(ptr_ty, .{ .field_addr = .{ .base = base, .name = field.name } });
+                break :blk try self.emitAt(ptr_ty, .{ .field_addr = .{ .base = base, .name = field.name } }, expr.span);
             },
             .index => |index| blk: {
                 const base_ty = self.exprType(index.base.*);
@@ -1910,7 +1934,7 @@ const FunctionLowerer = struct {
                     else => try self.lowerExpr(index.base.*),
                 };
                 const idx = try self.lowerExpr(index.index.*);
-                break :blk try self.emit(ptr_ty, .{ .index_addr = .{ .base = base, .index = idx } });
+                break :blk try self.emitAt(ptr_ty, .{ .index_addr = .{ .base = base, .index = idx } }, expr.span);
             },
             .unary => |unary| switch (unary.op) {
                 .deref => try self.lowerExpr(unary.expr.*),
@@ -2256,6 +2280,19 @@ const FunctionLowerer = struct {
         return .{ .reg = id };
     }
 
+    fn emitAt(self: *FunctionLowerer, ty: IrType, kind: InstrKind, span: Span) LowerError!Value {
+        if (self.current_terminated) return .{ .imm = .null };
+        const id = self.next_reg;
+        self.next_reg += 1;
+        try self.current_instrs.append(self.allocator, .{
+            .id = id,
+            .ty = ty,
+            .kind = kind,
+            .location = self.sourceLocation(span),
+        });
+        return .{ .reg = id };
+    }
+
     fn emitNoResult(self: *FunctionLowerer, ty: IrType, kind: InstrKind) LowerError!void {
         if (self.current_terminated) return;
         try self.current_instrs.append(self.allocator, .{ .id = null, .ty = ty, .kind = kind });
@@ -2338,15 +2375,19 @@ const FunctionLowerer = struct {
     }
 
     fn terminatePanic(self: *FunctionLowerer, message: []const u8, span: Span) LowerError!void {
-        const location = span.line_col(self.source);
         try self.terminate(.{ .panic = .{
             .message = message,
-            .location = .{
-                .file = self.file_name,
-                .line = location.line,
-                .column = location.col,
-            },
+            .location = self.sourceLocation(span),
         } });
+    }
+
+    fn sourceLocation(self: *const FunctionLowerer, span: Span) SourceLocation {
+        const location = span.line_col(self.source);
+        return .{
+            .file = self.file_name,
+            .line = location.line,
+            .column = location.col,
+        };
     }
 };
 
