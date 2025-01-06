@@ -184,7 +184,6 @@ large language features. The recommended baseline is:
 
 This is the next milestone. It has higher value than additional syntax.
 
-- Add a shared debug trap and panic-lowering path with source locations.
 - Insert debug checks for overflow, division by zero, invalid shifts, bounds,
   and null dereferences.
 - Complete the error and fallible-function ABI through LLVM lowering.
@@ -194,6 +193,8 @@ This is the next milestone. It has higher value than additional syntax.
 Completed small P0 fixes:
 
 - `!!` now emits a runtime `@panic` call on its failure path.
+- Compiler-generated traps use one structured IR panic path carrying
+  `file:line:column`, lowered through the runtime `@panic` contract.
 - Source-file LLVM builds now include the embedded runtime needed by generated
   panic calls.
 - Signed, unsigned, and floating-point arithmetic, comparison, division,

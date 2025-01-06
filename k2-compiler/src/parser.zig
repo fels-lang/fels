@@ -478,6 +478,8 @@ pub const Parser = struct {
         return .{
             .attrs = attrs,
             .name = name.text(self.source),
+            .file_name = self.file_name,
+            .source = self.source,
             .type_params = try type_params.toOwnedSlice(self.allocator),
             .params = try params.toOwnedSlice(self.allocator),
             .return_ty = return_ty,

@@ -119,6 +119,8 @@ pub const FieldDecl = struct {
 pub const FunctionDecl = struct {
     attrs: []const Attribute,
     name: []const u8,
+    file_name: []const u8,
+    source: []const u8,
     type_params: []const []const u8,
     params: []const Param,
     return_ty: TypeRef,

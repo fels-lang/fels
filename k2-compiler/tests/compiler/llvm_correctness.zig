@@ -78,6 +78,33 @@ test "LLVM force unwrap calls the embedded runtime panic" {
 
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@panic") != null);
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "attempted to unwrap an empty optional") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "force_unwrap.k2:2:12") != null);
+}
+
+test "LLVM panic lowering synthesizes the runtime declaration when absent" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\unwrap :: fn(value: ?i32) -> i32 {
+        \\    return value!!;
+        \\}
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "standalone_unwrap.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "standalone_unwrap");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "declare void") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@panic") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "standalone_unwrap.k2:2:12") != null);
 }
 
 test "LLVM lowering reads and writes fields through struct pointers" {

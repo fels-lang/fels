@@ -3,6 +3,7 @@ const ir = @import("../../ir.zig");
 const llvm = @import("c_api.zig").llvm;
 const types = @import("types.zig");
 const values = @import("values.zig");
+const panic_mod = @import("panic.zig");
 const ModuleCg = @import("context.zig").ModuleCg;
 
 pub fn lower(
@@ -54,6 +55,7 @@ pub fn lower(
             _ = llvm.LLVMBuildCondBr(cg.builder, cond, then_bb, else_bb);
         },
         .unreachable_term => _ = llvm.LLVMBuildUnreachable(cg.builder),
+        .panic => |panic| panic_mod.lower(cg, panic),
         .fail => _ = llvm.LLVMBuildUnreachable(cg.builder), // TODO: error paths
     }
 }

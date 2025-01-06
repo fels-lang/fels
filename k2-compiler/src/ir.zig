@@ -3,6 +3,7 @@ const ast = @import("ast.zig");
 const pipeline = @import("pipeline.zig");
 const sema = @import("sema.zig");
 const comptime_mod = @import("comptime.zig");
+const Span = @import("lexer/span.zig").Span;
 
 pub const RegId = u32;
 pub const BlockId = u32;
@@ -341,9 +342,21 @@ pub const StoreInstr = struct {
 pub const Terminator = union(enum) {
     return_value: ?Value,
     fail: Value,
+    panic: Panic,
     branch: BlockId,
     cond_branch: CondBranch,
     unreachable_term,
+};
+
+pub const Panic = struct {
+    message: []const u8,
+    location: SourceLocation,
+};
+
+pub const SourceLocation = struct {
+    file: []const u8,
+    line: usize,
+    column: usize,
 };
 
 pub const CondBranch = struct {
@@ -658,6 +671,7 @@ fn validateTerminator(function: IrFunction, terminator: Terminator) ValidationEr
     switch (terminator) {
         .return_value => |value| if (value) |ret| try validateValue(function, ret),
         .fail => |value| try validateValue(function, value),
+        .panic => {},
         .branch => |target| if (!hasBlock(function, target)) return error.InvalidIr,
         .cond_branch => |branch| {
             try validateValue(function, branch.cond);
@@ -801,6 +815,7 @@ fn foldTerminator(consts: *const ConstMap, terminator: ?Terminator) ?Terminator 
         },
         .return_value => |v| if (v) |val| .{ .return_value = resolveVal(consts, val) } else term,
         .fail => |v| .{ .fail = resolveVal(consts, v) },
+        .panic => |panic| .{ .panic = panic },
         else => term,
     };
 }
@@ -1005,7 +1020,7 @@ fn terminatorUsesReg(terminator: Terminator, id: RegId) bool {
     return switch (terminator) {
         .return_value => |value| value != null and valueUsesReg(value.?, id),
         .fail => |value| valueUsesReg(value, id),
-        .branch, .unreachable_term => false,
+        .panic, .branch, .unreachable_term => false,
         .cond_branch => |branch| valueUsesReg(branch.cond, id),
     };
 }
@@ -1094,7 +1109,7 @@ fn lowerFunctionInstantiation(
     const ret_ty = lowerTypeWithBinding(allocator, decl.return_ty, type_args) catch .unknown;
 
     const blocks = if (decl.body) |body| blk: {
-        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl.params);
+        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl);
         lowerer.type_binding = type_args;
         break :blk try lowerer.lowerBody(body);
     } else &.{};
@@ -1159,7 +1174,7 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
 
     const return_ty = try lowerAstTypeWithEnv(allocator, decl.return_ty, types, symbols);
     const blocks = if (decl.body) |body| blk: {
-        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl.params);
+        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl);
         lowerer.module = module;
         lowerer.current_return_ty = return_ty;
         break :blk try lowerer.lowerBody(body);
@@ -1198,7 +1213,7 @@ fn lowerInterfaceMethod(
     });
     const return_ty = try lowerTypeReplacingSelf(allocator, decl.return_ty, impl.type_name);
     const blocks = if (decl.body) |body| blk: {
-        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl.params);
+        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl);
         lowerer.module = module;
         lowerer.current_return_ty = return_ty;
         break :blk try lowerer.lowerBody(body);
@@ -1264,6 +1279,8 @@ const FunctionLowerer = struct {
     types: sema.TypeEnv,
     symbols: sema.SymbolTable,
     params: []const ast.Param,
+    file_name: []const u8,
+    source: []const u8,
     blocks: std.ArrayList(IrBlock) = .empty,
     current_instrs: std.ArrayList(Instr) = .empty,
     current_id: BlockId = 0,
@@ -1279,12 +1296,14 @@ const FunctionLowerer = struct {
     type_binding: []const sema.TypeArg = &.{},
     module: ast.Module = .empty(""),
 
-    fn init(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, params: []const ast.Param) FunctionLowerer {
+    fn init(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, decl: ast.FunctionDecl) FunctionLowerer {
         return .{
             .allocator = allocator,
             .types = types,
             .symbols = symbols,
-            .params = params,
+            .params = decl.params,
+            .file_name = decl.file_name,
+            .source = decl.source,
             .local_types = std.StringHashMap(IrType).init(allocator),
         };
     }
@@ -1910,15 +1929,9 @@ const FunctionLowerer = struct {
             .else_block = panic_id,
         } });
 
-        // Panic is noreturn; unreachable makes that control-flow fact explicit.
+        // All generated traps share the structured panic terminator.
         self.startBlock(panic_id, "force_unwrap.panic");
-        try self.emitNoResult(.void, .{ .call = .{
-            .callee = "@panic",
-            .args = try self.allocator.dupe(Value, &.{
-                .{ .imm = .{ .text = "attempted to unwrap an empty optional" } },
-            }),
-        } });
-        try self.terminate(.unreachable_term);
+        try self.terminatePanic("attempted to unwrap an empty optional", outer.span);
 
         // Happy path — extract the payload.
         self.startBlock(value_id, "force_unwrap.ok");
@@ -2316,6 +2329,18 @@ const FunctionLowerer = struct {
             .terminator = terminator,
         });
         self.current_terminated = true;
+    }
+
+    fn terminatePanic(self: *FunctionLowerer, message: []const u8, span: Span) LowerError!void {
+        const location = span.line_col(self.source);
+        try self.terminate(.{ .panic = .{
+            .message = message,
+            .location = .{
+                .file = self.file_name,
+                .line = location.line,
+                .column = location.col,
+            },
+        } });
     }
 };
 

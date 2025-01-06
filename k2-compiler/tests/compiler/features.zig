@@ -440,27 +440,61 @@ test "!! force-unwrap: unwrap or panic" {
     const m = try k2.lowerFrontend(arena.allocator(), fe);
     try k2.ir_mod.validateModule(m);
 
-    // unwrap should have a null check, a panic call, and an unreachable
-    // terminator after the noreturn panic.
+    // unwrap should have a null check and a structured panic terminator with
+    // the source location of the force-unwrap expression.
     const fn_ = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "unwrap")) break f;
     } else return error.FunctionNotFound;
-    var has_unreachable = false;
-    var has_panic_call = false;
+    var panic: ?k2.ir_mod.Panic = null;
     for (fn_.blocks) |block| {
-        for (block.instrs) |instr| switch (instr.kind) {
-            .call => |call| if (std.mem.eql(u8, call.callee, "@panic")) {
-                has_panic_call = true;
-            },
-            else => {},
-        };
         if (block.terminator) |t| switch (t) {
-            .unreachable_term => has_unreachable = true,
+            .panic => |p| panic = p,
             else => {},
         };
     }
-    try std.testing.expect(has_panic_call);
-    try std.testing.expect(has_unreachable);
+    try std.testing.expect(panic != null);
+    try std.testing.expectEqualStrings("attempted to unwrap an empty optional", panic.?.message);
+    try std.testing.expectEqualStrings("force_unwrap.k2", panic.?.location.file);
+    try std.testing.expectEqual(@as(usize, 4), panic.?.location.line);
+    try std.testing.expect(panic.?.location.column > 0);
+}
+
+test "generated panic locations retain their defining source file" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const helper_src =
+        \\unwrap_helper :: fn(value: ?i32) -> i32 {
+        \\    return value!!;
+        \\}
+    ;
+    const app_src =
+        \\#import helper;
+        \\main :: fn() -> i32 { return 0; }
+    ;
+
+    var fe = try k2.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "helper.k2", .source = helper_src },
+        .{ .file_name = "app.k2", .source = app_src },
+    });
+    defer fe.deinit(arena.allocator());
+    var module = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.runDefaultPasses(arena.allocator(), &module);
+
+    const helper = for (module.functions) |function| {
+        if (std.mem.eql(u8, function.name, "unwrap_helper")) break function;
+    } else return error.FunctionNotFound;
+    for (helper.blocks) |block| {
+        if (block.terminator) |terminator| switch (terminator) {
+            .panic => |panic| {
+                try std.testing.expectEqualStrings("helper.k2", panic.location.file);
+                try std.testing.expectEqual(@as(usize, 2), panic.location.line);
+                return;
+            },
+            else => {},
+        };
+    }
+    return error.PanicNotFound;
 }
 
 test "?? type mismatch fails sema" {
