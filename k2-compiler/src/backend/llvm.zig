@@ -54,6 +54,8 @@ pub const LlvmBackend = struct {
                 break;
             }
         }
+
+        try emit.verify(&self.cg);
     }
 
     /// Emit a native object file.

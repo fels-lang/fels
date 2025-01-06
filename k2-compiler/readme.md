@@ -159,7 +159,7 @@ currently lower to `unreachable`.
 | Division by zero | No K2-inserted guard. |
 | Out-of-bounds indexing | No K2-inserted guard. |
 | Null pointer dereference | No K2-inserted guard. |
-| Invalid optional unwrap with `!!` | Failure path currently becomes `unreachable`, not `@panic`. |
+| Invalid optional unwrap with `!!` | Calls the runtime `@panic` path and then terminates as unreachable. |
 | `fail` and fallible propagation | Frontend exists; LLVM failure lowering is incomplete. |
 | Use after zone cleanup | No runtime detector. |
 | Uninitialized values | Some cases are rejected, but there is no complete definite-initialization proof. |
@@ -169,7 +169,8 @@ The intended debug policy should be decided and implemented before adding more
 large language features. The recommended baseline is:
 
 - Trap integer overflow, division by zero, invalid shifts, null dereferences,
-  out-of-bounds indexing, and invalid unwraps in debug builds.
+  and out-of-bounds indexing in debug builds.
+- Keep explicit invalid unwraps on the always-panic runtime path.
 - Route language-level failures through `@panic` or a shared trap mechanism with
   useful source locations.
 - Keep explicitly unsafe operations available inside `unsafe`.
@@ -185,13 +186,20 @@ This is the next milestone. It has higher value than additional syntax.
 
 - Add a shared debug trap and panic-lowering path with source locations.
 - Insert debug checks for overflow, division by zero, invalid shifts, bounds,
-  null dereferences, and invalid unwraps.
-- Make `!!` call the runtime panic path instead of lowering failure to
-  `unreachable`.
+  and null dereferences.
 - Complete the error and fallible-function ABI through LLVM lowering.
-- Audit signed, unsigned, floating-point, comparison, and cast lowering.
-- Complete pointer-to-struct field lowering and validate generated LLVM IR.
+- Complete the remaining numeric cast and mixed-type lowering audit.
 - Add end-to-end executable tests for successful programs and runtime failures.
+
+Completed small P0 fixes:
+
+- `!!` now emits a runtime `@panic` call on its failure path.
+- Source-file LLVM builds now include the embedded runtime needed by generated
+  panic calls.
+- Signed, unsigned, and floating-point arithmetic, comparison, division,
+  remainder, and right-shift operations select the correct LLVM instructions.
+- Pointer-to-struct field reads and writes lower through the pointed-to layout.
+- LLVM modules are verified immediately after lowering.
 
 **Acceptance criteria:** a debug-compiled K2 program reliably traps the common
 invalid operations above, reports the originating source location, and all

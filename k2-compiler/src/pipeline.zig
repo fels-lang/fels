@@ -108,6 +108,24 @@ pub fn compileFile(
     io: std.Io,
     path: []const u8,
 ) CompileError!FrontEnd {
+    return compileFileInternal(allocator, io, path, false);
+}
+
+/// Compile a .k2 file and its imports with the embedded platform runtime.
+pub fn compileFileWithRuntime(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+) CompileError!FrontEnd {
+    return compileFileInternal(allocator, io, path, true);
+}
+
+fn compileFileInternal(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    include_runtime: bool,
+) CompileError!FrontEnd {
     const arena = try createFrontendArena(allocator);
     errdefer destroyFrontendArena(allocator, arena);
     const fe_allocator = arena.allocator();
@@ -120,6 +138,21 @@ pub fn compileFile(
 
     var root_source: []const u8 = "";
     var next_id: ast.NodeId = 1;
+
+    if (include_runtime) {
+        const rt_src = runtime.runtimeSource();
+        if (rt_src.len != 0) {
+            const parsed = parser.parseSourceFrom(fe_allocator, "<runtime>", rt_src, next_id) catch |err| switch (err) {
+                error.ParseFailed => return error.ParseFailed,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+            next_id = parsed.next_id;
+            for (parsed.module.items) |item| switch (item) {
+                .import => {},
+                else => try all_items.append(fe_allocator, item),
+            };
+        }
+    }
 
     loadFile(fe_allocator, io, path, &loaded, &all_items, &next_id, &root_source, true) catch |err| switch (err) {
         error.ParseFailed => return error.ParseFailed,
@@ -199,7 +232,7 @@ fn runPipelineWithSource(
 ) CompileError!FrontEnd {
     var symbols = sema.collectSymbols(allocator, module) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
-        error.OutOfMemory => return error.OutOfMemory,
+        error.OutOfMemory    => return error.OutOfMemory,
     };
     errdefer symbols.deinit(allocator);
 
@@ -214,7 +247,7 @@ fn runPipelineWithSource(
 
     var types = sema.checkTypesWithContext(allocator, module, symbols, source, file) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
-        error.OutOfMemory    => return error.OutOfMemory,
+        error.OutOfMemory => return error.OutOfMemory,
     };
     errdefer types.deinit(allocator);
 

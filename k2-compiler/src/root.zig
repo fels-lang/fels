@@ -38,6 +38,7 @@ pub const compile             = pipeline.compile;
 pub const compileWithRuntime  = pipeline.compileWithRuntime;
 pub const compileMulti        = pipeline.compileMulti;
 pub const compileFile         = pipeline.compileFile;
+pub const compileFileWithRuntime = pipeline.compileFileWithRuntime;
 pub const FrontEnd = pipeline.FrontEnd;
 pub const NodeId = ast.NodeId;
 pub const SymbolKind = sema.SymbolKind;

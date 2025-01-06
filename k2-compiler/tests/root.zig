@@ -23,4 +23,5 @@ comptime {
     _ = @import("compiler/generic_structs.zig");
     _ = @import("compiler/new_types_attrs.zig");
     _ = @import("compiler/runtime.zig");
+    _ = @import("compiler/llvm_correctness.zig");
 }

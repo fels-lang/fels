@@ -273,12 +273,14 @@ fn lowerRef(cg: *ModuleCg, fncg: anytype, val: ir.Value) ?llvm.LLVMValueRef {
 // ── Binary ─────────────────────────────────────────────────────────────────
 
 fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType) ?llvm.LLVMValueRef {
-    const lhs_hint = fncg.irTypeOf(b.lhs) orelse ty;
+    const lhs_hint = fncg.irTypeOf(b.lhs) orelse fncg.irTypeOf(b.rhs) orelse ty;
     const rhs_hint = fncg.irTypeOf(b.rhs) orelse lhs_hint;
     const lhs = resolveVal(cg, fncg, b.lhs, lhs_hint);
     var rhs = resolveVal(cg, fncg, b.rhs, rhs_hint);
     rhs = values.coerce(cg.builder, cg.ctx, rhs, llvm.LLVMTypeOf(lhs));
     const bl = cg.builder;
+    const is_float = isFloat(lhs_hint);
+    const is_unsigned = isUnsigned(lhs_hint);
     return switch (b.op) {
         .add => blk: {
             // Pointer + integer → GEP (byte offset).
@@ -294,26 +296,59 @@ fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType) ?
                     "",
                 );
             }
-            break :blk llvm.LLVMBuildAdd(bl, lhs, rhs, "");
+            break :blk if (is_float) llvm.LLVMBuildFAdd(bl, lhs, rhs, "") else llvm.LLVMBuildAdd(bl, lhs, rhs, "");
         },
-        .sub => llvm.LLVMBuildSub(bl, lhs, rhs, ""),
-        .mul => llvm.LLVMBuildMul(bl, lhs, rhs, ""),
-        .div => llvm.LLVMBuildSDiv(bl, lhs, rhs, ""),
-        .rem => llvm.LLVMBuildSRem(bl, lhs, rhs, ""),
+        .sub => if (is_float) llvm.LLVMBuildFSub(bl, lhs, rhs, "") else llvm.LLVMBuildSub(bl, lhs, rhs, ""),
+        .mul => if (is_float) llvm.LLVMBuildFMul(bl, lhs, rhs, "") else llvm.LLVMBuildMul(bl, lhs, rhs, ""),
+        .div => if (is_float)
+            llvm.LLVMBuildFDiv(bl, lhs, rhs, "")
+        else if (is_unsigned)
+            llvm.LLVMBuildUDiv(bl, lhs, rhs, "")
+        else
+            llvm.LLVMBuildSDiv(bl, lhs, rhs, ""),
+        .rem => if (is_float)
+            llvm.LLVMBuildFRem(bl, lhs, rhs, "")
+        else if (is_unsigned)
+            llvm.LLVMBuildURem(bl, lhs, rhs, "")
+        else
+            llvm.LLVMBuildSRem(bl, lhs, rhs, ""),
         .shl => llvm.LLVMBuildShl(bl, lhs, rhs, ""),
-        .shr => llvm.LLVMBuildAShr(bl, lhs, rhs, ""),
+        .shr => if (is_unsigned) llvm.LLVMBuildLShr(bl, lhs, rhs, "") else llvm.LLVMBuildAShr(bl, lhs, rhs, ""),
         .bit_and => llvm.LLVMBuildAnd(bl, lhs, rhs, ""),
         .bit_or => llvm.LLVMBuildOr(bl, lhs, rhs, ""),
         .bit_xor => llvm.LLVMBuildXor(bl, lhs, rhs, ""),
         .and_op => llvm.LLVMBuildAnd(bl, lhs, rhs, ""),
         .or_op => llvm.LLVMBuildOr(bl, lhs, rhs, ""),
-        .eq => llvm.LLVMBuildICmp(bl, llvm.LLVMIntEQ, lhs, rhs, ""),
-        .ne => llvm.LLVMBuildICmp(bl, llvm.LLVMIntNE, lhs, rhs, ""),
-        .lt => llvm.LLVMBuildICmp(bl, llvm.LLVMIntSLT, lhs, rhs, ""),
-        .le => llvm.LLVMBuildICmp(bl, llvm.LLVMIntSLE, lhs, rhs, ""),
-        .gt => llvm.LLVMBuildICmp(bl, llvm.LLVMIntSGT, lhs, rhs, ""),
-        .ge => llvm.LLVMBuildICmp(bl, llvm.LLVMIntSGE, lhs, rhs, ""),
+        .eq => if (is_float) llvm.LLVMBuildFCmp(bl, llvm.LLVMRealOEQ, lhs, rhs, "") else llvm.LLVMBuildICmp(bl, llvm.LLVMIntEQ, lhs, rhs, ""),
+        .ne => if (is_float) llvm.LLVMBuildFCmp(bl, llvm.LLVMRealUNE, lhs, rhs, "") else llvm.LLVMBuildICmp(bl, llvm.LLVMIntNE, lhs, rhs, ""),
+        .lt => if (is_float)
+            llvm.LLVMBuildFCmp(bl, llvm.LLVMRealOLT, lhs, rhs, "")
+        else
+            llvm.LLVMBuildICmp(bl, if (is_unsigned) llvm.LLVMIntULT else llvm.LLVMIntSLT, lhs, rhs, ""),
+        .le => if (is_float)
+            llvm.LLVMBuildFCmp(bl, llvm.LLVMRealOLE, lhs, rhs, "")
+        else
+            llvm.LLVMBuildICmp(bl, if (is_unsigned) llvm.LLVMIntULE else llvm.LLVMIntSLE, lhs, rhs, ""),
+        .gt => if (is_float)
+            llvm.LLVMBuildFCmp(bl, llvm.LLVMRealOGT, lhs, rhs, "")
+        else
+            llvm.LLVMBuildICmp(bl, if (is_unsigned) llvm.LLVMIntUGT else llvm.LLVMIntSGT, lhs, rhs, ""),
+        .ge => if (is_float)
+            llvm.LLVMBuildFCmp(bl, llvm.LLVMRealOGE, lhs, rhs, "")
+        else
+            llvm.LLVMBuildICmp(bl, if (is_unsigned) llvm.LLVMIntUGE else llvm.LLVMIntSGE, lhs, rhs, ""),
         else => null,
+    };
+}
+
+fn isFloat(ty: ir.IrType) bool {
+    return ty == .f32 or ty == .f64;
+}
+
+fn isUnsigned(ty: ir.IrType) bool {
+    return switch (ty) {
+        .u, .byte, .usize, .addr => true,
+        else => false,
     };
 }
 
@@ -490,10 +525,17 @@ fn lowerField(
             return llvm.LLVMBuildExtractValue(cg.builder, base_val, idx, "");
         },
 
-        .ptr => {
-            // Pointer to struct — GEP.  Requires pointed-to type tracking (TODO).
-            _ = result_ty;
-            return null;
+        .ptr => |inner| {
+            const name = switch (inner.*) {
+                .struct_type => |name| name,
+                else => return null,
+            };
+            const idx = cg.fieldIndex(name, f.name) orelse return null;
+            const struct_lty = cg.struct_types.get(name) orelse return null;
+            const base_ptr = resolveVal(cg, fncg, f.base, base_ir_ty);
+            const field_ptr = llvm.LLVMBuildStructGEP2(cg.builder, struct_lty, base_ptr, idx, "");
+            if (want_addr) return field_ptr;
+            return llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, result_ty), field_ptr, "");
         },
 
         else => return null,

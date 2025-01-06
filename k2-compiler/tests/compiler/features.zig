@@ -424,7 +424,7 @@ test "?? nil-coalesce: unwrap or default" {
     try std.testing.expect(has_cond_branch);
 }
 
-test "!! force-unwrap: unwrap or unreachable" {
+test "!! force-unwrap: unwrap or panic" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -440,17 +440,26 @@ test "!! force-unwrap: unwrap or unreachable" {
     const m = try k2.lowerFrontend(arena.allocator(), fe);
     try k2.ir_mod.validateModule(m);
 
-    // unwrap should have a cond_branch (the null check) + an unreachable block
+    // unwrap should have a null check, a panic call, and an unreachable
+    // terminator after the noreturn panic.
     const fn_ = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "unwrap")) break f;
     } else return error.FunctionNotFound;
     var has_unreachable = false;
+    var has_panic_call = false;
     for (fn_.blocks) |block| {
+        for (block.instrs) |instr| switch (instr.kind) {
+            .call => |call| if (std.mem.eql(u8, call.callee, "@panic")) {
+                has_panic_call = true;
+            },
+            else => {},
+        };
         if (block.terminator) |t| switch (t) {
             .unreachable_term => has_unreachable = true,
             else => {},
         };
     }
+    try std.testing.expect(has_panic_call);
     try std.testing.expect(has_unreachable);
 }
 

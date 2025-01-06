@@ -1897,7 +1897,7 @@ const FunctionLowerer = struct {
 
     /// Try to evaluate a #if condition at compile time.
     /// Returns the block to emit (then or else), or null if condition is dynamic.
-    /// `expr!!` — unwrap or unreachable (TODO: call @panic when available).
+    /// `expr!!` — unwrap or call the runtime panic path.
     fn lowerForceUnwrap(self: *FunctionLowerer, inner: ast.Expr, outer: ast.Expr) LowerError!Value {
         const lhs = try self.lowerExpr(inner);
         const is_some = try self.emit(.bool, .{ .optional_is_some = lhs });
@@ -1910,8 +1910,14 @@ const FunctionLowerer = struct {
             .else_block = panic_id,
         } });
 
-        // Panic path — unreachable for now (becomes @panic call later).
+        // Panic is noreturn; unreachable makes that control-flow fact explicit.
         self.startBlock(panic_id, "force_unwrap.panic");
+        try self.emitNoResult(.void, .{ .call = .{
+            .callee = "@panic",
+            .args = try self.allocator.dupe(Value, &.{
+                .{ .imm = .{ .text = "attempted to unwrap an empty optional" } },
+            }),
+        } });
         try self.terminate(.unreachable_term);
 
         // Happy path — extract the payload.
@@ -2395,6 +2401,8 @@ fn lowerNamedType(name: []const u8) IrType {
     if (std.mem.eql(u8, name, "u16")) return .{ .u = 16 };
     if (std.mem.eql(u8, name, "u32")) return .{ .u = 32 };
     if (std.mem.eql(u8, name, "u64")) return .{ .u = 64 };
+    if (std.mem.eql(u8, name, "f32")) return .f32;
+    if (std.mem.eql(u8, name, "f64")) return .f64;
     if (std.mem.eql(u8, name, "bool")) return .bool;
     if (std.mem.eql(u8, name, "void")) return .void;
     if (std.mem.eql(u8, name, "usize")) return .usize;
@@ -2424,6 +2432,8 @@ fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.Symbol
         .u16 => .{ .u = 16 },
         .u32 => .{ .u = 32 },
         .u64 => .{ .u = 64 },
+        .f32 => .f32,
+        .f64 => .f64,
         .bool => .bool,
         .void => .void,
         .usize => .usize,
