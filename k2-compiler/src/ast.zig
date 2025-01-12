@@ -299,6 +299,7 @@ pub const TypeRef = union(enum) {
     slice: SliceType,
     array: ArrayType,
     atomic: AtomicType,
+    borrow: BorrowType,
     fn_type: FnType,
     inline_error_set: InlineErrorSet,
     type_param: NamedType,
@@ -315,6 +316,7 @@ pub const TypeRef = union(enum) {
             .slice => |ty| ty.span,
             .array => |ty| ty.span,
             .atomic => |ty| ty.span,
+            .borrow => |ty| ty.span,
             .fn_type => |ty| ty.span,
             .inline_error_set => |ty| ty.span,
             .type_param => |ty| ty.span,
@@ -373,6 +375,11 @@ pub const ArrayType = struct {
 };
 
 pub const AtomicType = struct {
+    inner: *const TypeRef,
+    span: Span,
+};
+
+pub const BorrowType = struct {
     inner: *const TypeRef,
     span: Span,
 };

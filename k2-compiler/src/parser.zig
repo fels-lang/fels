@@ -809,6 +809,10 @@ pub const Parser = struct {
             const inner = try self.allocType(try self.parseType());
             return .{ .atomic = .{ .inner = inner, .span = Span.new(start.start, inner.span().end) } };
         }
+        if (self.match(.keyword_borrow)) {
+            const inner = try self.allocType(try self.parseType());
+            return .{ .borrow = .{ .inner = inner, .span = Span.new(start.start, inner.span().end) } };
+        }
         if (self.match(.keyword_fn)) {
             _ = try self.expect(.l_paren, "expected ( after fn type");
             var params: std.ArrayList(ast.TypeRef) = .empty;
@@ -950,6 +954,7 @@ pub const Parser = struct {
             .keyword_u64,
             .keyword_usize,
             .keyword_atomic,
+            .keyword_borrow,
             .question,
             .l_bracket,
             .l_bracket_star,

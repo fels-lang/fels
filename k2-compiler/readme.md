@@ -97,7 +97,7 @@ Status meanings:
 | Integer and enum `match` | Implemented | Integer matches support single and grouped cases. |
 | Compile-time execution | Partial | `#if` and `#run` exist; reflection and several operations are incomplete. |
 | Errors and fallible functions | Implemented | LLVM ABI, `fail`, `?` propagation, `catch`, and fallible entry points are lowered. |
-| Zones | Partial | Lexical structure and cleanup behavior exist; allocation/backend semantics need completion. |
+| Zones | Implemented | `Arena` provides zero-initialized lexical allocation, non-escape checking, and deterministic cleanup. |
 | Interfaces | Partial | Dynamic `*Interface` dispatch works; static constraints and advanced cases are missing. |
 | Runtime | Partial | Panic, assertions, and basic output exist; integration and platform coverage need work. |
 | Modules and imports | Partial | Local multi-file compilation exists; package and standard-library systems do not. |
@@ -147,6 +147,56 @@ Interfaces are still partial. The following remain:
 Dynamic interfaces are therefore not a long-term-only goal anymore. They exist
 today, but need completion and a firmer ownership model.
 
+## Zones
+
+`zone name: Arena { ... }` creates a lexical allocation arena. `name.new(T)`
+returns `*T`, and `name.new_slice(T, count)` returns `[]T`. Allocations are
+zero-initialized and reclaimed together when control leaves the zone.
+
+The current ownership contract is deliberately strict:
+
+- Zone-owned pointers and slices may be aliased and used inside their owning
+  zone.
+- `borrow *T` and `borrow []T` parameters may temporarily receive zone-owned
+  values. Borrowed values may be aliased locally and forwarded only to another
+  `borrow` parameter.
+- Scalar values read from zone-owned memory may escape normally.
+- Zone-owned values cannot be returned, assigned to an outer local, stored into
+  an aggregate or through a pointer, or passed to an ordinary parameter.
+- Borrowed values cannot be returned, stored into an aggregate or through a
+  pointer, or passed to an ordinary parameter.
+- Nested zones clean up in reverse order. Shadowing an active zone name is
+  rejected.
+- Deferred work runs before arena cleanup.
+- Normal fallthrough, `return`, `fail`, `break`, and `continue` all clean up
+  every zone they leave.
+- `Arena.free(value)` validates ownership but intentionally defers reclamation
+  until arena exit.
+- A process-terminating panic does not run cleanup.
+
+For example:
+
+```k2
+fill :: fn(data: borrow []u8) {
+    data[0] = 42u8;
+}
+
+work :: fn() {
+    zone scratch: Arena {
+        data := scratch.new_slice(u8, 4);
+        fill(data);
+    }
+}
+```
+
+`borrow` is currently a checked-body parameter qualifier only. It cannot appear
+on returns, fields, locals, scalar parameters, or external function
+declarations. It is erased before IR/backend ABI lowering. Unsafe pointer casts
+can still bypass lifetime checking, as expected inside `unsafe`.
+
+The current native backend implements arenas through the Windows process heap.
+Other platform runtimes must provide the equivalent backend contract.
+
 ## Safety And Undefined Behavior
 
 K2 debug builds trap common invalid operations through the shared runtime panic
@@ -161,7 +211,7 @@ path. Compiler-generated traps include the originating `file:line:column`.
 | Null pointer dereference | Debug builds guard explicit dereference, pointer field access, and pointer indexing. |
 | Invalid optional unwrap with `!!` | Calls the runtime `@panic` path and then terminates as unreachable. |
 | `fail` and fallible propagation | Lowered through the `{ ok, error_discriminant }` LLVM ABI; `?`, `catch`, and fallible entry points are supported. |
-| Use after zone cleanup | No runtime detector. |
+| Use after zone cleanup | Safe code rejects zone-owned values that could outlive their zone; unsafe pointer misuse remains caller responsibility. |
 | Uninitialized values | Some cases are rejected, but there is no complete definite-initialization proof. |
 | Data races and unsafe pointer misuse | Caller responsibility. |
 
@@ -208,8 +258,6 @@ failure/control-flow paths produce verified LLVM IR.
 
 ### P1: Complete Existing Language Features
 
-- Finish zone allocation semantics, backend behavior, escaping rules, and
-  cleanup guarantees.
 - Complete interfaces: static constraints, const correctness, fallible methods,
   coherence rules, and lifetime validation.
 - Complete compile-time evaluation and make `sizeof` and type reflection
@@ -249,7 +297,7 @@ The following choices should be written down before their implementations grow:
 | Plain arithmetic | Does overflow trap, wrap, or become UB in release builds? Which explicit operators provide alternatives? |
 | Debug safety | Which checks are mandatory, configurable, or disabled inside `unsafe`? |
 | Error ABI | How are fallible returns represented and propagated across modules and foreign calls? |
-| Zones | Can values escape a zone? How are destructors, nested zones, and failure paths handled? |
+| Borrow extensions | Should checked borrowing expand beyond pointer/slice parameters to extern contracts, fields, or returned lifetime relationships? |
 | Interfaces | What is the static constraint syntax? Which module may implement an interface for a type? |
 | Mutability | How do `const`, receiver mutability, pointers, slices, and interface coercions interact? |
 | `Any` and reflection | Is `Any` borrowed or owned? What defines stable runtime type identity? |

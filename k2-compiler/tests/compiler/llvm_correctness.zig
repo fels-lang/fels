@@ -357,3 +357,55 @@ test "LLVM lowering reads and writes fields through struct pointers" {
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "load i32") != null);
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "store i32") != null);
 }
+
+test "LLVM zones allocate from and drain the process heap" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\work :: fn(count: usize) -> i32 {
+        \\    zone scratch: Arena {
+        \\        data := scratch.new_slice(u8, count);
+        \\        data[0] = 7u8;
+        \\    }
+        \\    return 0;
+        \\}
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "zones.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "zones");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@HeapAlloc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@HeapFree") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "zone_pop_free") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "zone allocation failed at zones.k2:") != null);
+}
+
+test "LLVM borrow parameters erase to their underlying ABI type" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\touch :: fn(data: borrow []u8) { data[0] = 1u8; }
+    ;
+    var fe = try k2.compile(arena.allocator(), "borrow_abi.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "borrow_abi");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "define void @touch({ ptr, i64 }") != null);
+}

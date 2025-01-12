@@ -75,6 +75,7 @@ pub const TokenKind = enum {
     keyword_distinct,
     keyword_opaque,
     keyword_atomic,
+    keyword_borrow,
     keyword_const,
     keyword_volatile,
     keyword_if,

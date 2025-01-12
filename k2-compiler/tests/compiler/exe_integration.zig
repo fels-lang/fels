@@ -156,3 +156,43 @@ test "exe: plain value coerces to optional parameter" {
     , "exe_optional_coerce");
     try std.testing.expectEqual(@as(u32, 0), code);
 }
+
+test "exe: arena allocations are writable and cleaned on exit" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    zone scratch: Arena {
+        \\        data := scratch.new_slice(u8, 4);
+        \\        if data[0] != 0u8 { return 2; }
+        \\        data[0] = 42u8;
+        \\        if data[0] != 42u8 { return 1; }
+        \\    }
+        \\    return 0;
+        \\}
+    , "exe_zone");
+    try std.testing.expectEqual(@as(u32, 0), code);
+}
+
+test "exe: zone allocation can be used through a borrow parameter" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const code = try compileAndRun(arena.allocator(),
+        \\write :: fn(data: borrow []u8) { data[0] = 42u8; }
+        \\main :: fn() -> i32 {
+        \\    zone scratch: Arena {
+        \\        data := scratch.new_slice(u8, 4);
+        \\        write(data);
+        \\        if data[0] != 42u8 { return 1; }
+        \\    }
+        \\    return 0;
+        \\}
+    , "exe_zone_borrow");
+    try std.testing.expectEqual(@as(u32, 0), code);
+}

@@ -197,6 +197,7 @@ pub const Ty = union(enum) {
     pointer: *const Ty,
     optional: *const Ty,
     slice: *const Ty,
+    borrow: *const Ty,
     array: ArrayTy,
     range: *const Ty,
     named: SymbolId,
@@ -234,6 +235,17 @@ pub const Ty = union(enum) {
     pub fn isBool(self: Ty) bool {
         return self == .bool;
     }
+};
+
+const ZoneOwner = struct {
+    name: []const u8,
+    scope_depth: usize,
+    kind: enum { zone, borrow } = .zone,
+};
+
+const ActiveZone = struct {
+    name: []const u8,
+    scope_depth: usize,
 };
 
 pub const ArrayTy = struct {
@@ -552,6 +564,8 @@ const Checker = struct {
     symbols: SymbolTable,
     env: TypeEnv,
     scope_stack: std.ArrayList(std.StringHashMap(Ty)),
+    zone_owner_scopes: std.ArrayList(std.StringHashMap(ZoneOwner)) = .empty,
+    active_zones: std.ArrayList(ActiveZone) = .empty,
     current_return_ty: Ty = .void,
     current_error_ty: ?Ty = null,
     loop_depth: usize = 0,
@@ -576,6 +590,9 @@ const Checker = struct {
     fn deinit(self: *Checker) void {
         for (self.scope_stack.items) |*s| s.deinit();
         self.scope_stack.deinit(self.allocator);
+        for (self.zone_owner_scopes.items) |*s| s.deinit();
+        self.zone_owner_scopes.deinit(self.allocator);
+        self.active_zones.deinit(self.allocator);
         self.diagnostics.deinit(self.allocator);
     }
 
@@ -622,6 +639,7 @@ const Checker = struct {
             .optional => |inner| std.fmt.allocPrint(self.allocator, "?{s}", .{self.formatTy(inner.*)}) catch "?T",
             .pointer => |inner| std.fmt.allocPrint(self.allocator, "*{s}", .{self.formatTy(inner.*)}) catch "*T",
             .slice => |inner| std.fmt.allocPrint(self.allocator, "[]{s}", .{self.formatTy(inner.*)}) catch "[]T",
+            .borrow => |inner| std.fmt.allocPrint(self.allocator, "borrow {s}", .{self.formatTy(inner.*)}) catch "borrow T",
             .named => |id| self.symbols.symbol(id).name,
             .type_param => |n| n,
             .fallible => |f| std.fmt.allocPrint(self.allocator, "{s} ! error", .{self.formatTy(f.ok.*)}) catch "T!E",
@@ -640,11 +658,14 @@ const Checker = struct {
 
     fn pushScope(self: *Checker) !void {
         try self.scope_stack.append(self.allocator, std.StringHashMap(Ty).init(self.allocator));
+        try self.zone_owner_scopes.append(self.allocator, std.StringHashMap(ZoneOwner).init(self.allocator));
     }
 
     fn popScope(self: *Checker) void {
         var s = self.scope_stack.pop() orelse return;
         s.deinit();
+        var owners = self.zone_owner_scopes.pop().?;
+        owners.deinit();
     }
 
     fn declareLocal(self: *Checker, name: []const u8, ty: Ty) !void {
@@ -659,6 +680,73 @@ const Checker = struct {
             if (self.scope_stack.items[i].get(name)) |ty| return ty;
         }
         return null;
+    }
+
+    fn localScopeIndex(self: Checker, name: []const u8) ?usize {
+        var i = self.scope_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.scope_stack.items[i].contains(name)) return i;
+        }
+        return null;
+    }
+
+    fn setLocalZoneOwner(self: *Checker, name: []const u8, owner: ?ZoneOwner) !void {
+        const scope_index = self.localScopeIndex(name) orelse return;
+        if (owner) |value|
+            try self.zone_owner_scopes.items[scope_index].put(name, value)
+        else
+            _ = self.zone_owner_scopes.items[scope_index].remove(name);
+    }
+
+    fn lookupZoneOwner(self: Checker, name: []const u8) ?ZoneOwner {
+        var i = self.zone_owner_scopes.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.zone_owner_scopes.items[i].get(name)) |owner| return owner;
+        }
+        return null;
+    }
+
+    fn validateBorrowParam(self: *Checker, ty: Ty, span: Span) SemanticError!void {
+        if (ty != .borrow) {
+            if (containsBorrow(ty)) {
+                self.emitError(span, "`borrow` must be the outer qualifier of a function parameter", .{});
+                return error.SemanticFailed;
+            }
+            return;
+        }
+        if (containsBorrow(ty.borrow.*)) {
+            self.emitError(span, "nested `borrow` qualifiers are not allowed", .{});
+            return error.SemanticFailed;
+        }
+        switch (ty.borrow.*) {
+            .pointer, .slice => {},
+            else => {
+                self.emitError(span, "`borrow` parameters must be pointers or slices", .{});
+                return error.SemanticFailed;
+            },
+        }
+    }
+
+    fn rejectBorrowOutsideParam(self: *Checker, ty: Ty, span: Span) SemanticError!void {
+        if (!containsBorrow(ty)) return;
+        self.emitError(span, "`borrow` is only valid as the outer qualifier of a function parameter", .{});
+        return error.SemanticFailed;
+    }
+
+    fn rejectBorrowTypeRefOutsideParam(self: *Checker, ty: ast.TypeRef) SemanticError!void {
+        if (!typeRefContainsBorrow(ty)) return;
+        self.emitError(ty.span(), "`borrow` is only valid as the outer qualifier of a function parameter", .{});
+        return error.SemanticFailed;
+    }
+
+    fn checkNonEscapingArgument(self: *Checker, expr: ast.Expr, expected: ?Ty) SemanticError!void {
+        const owner = self.exprZoneOwner(expr) orelse return;
+        if (expected) |ty| if (ty == .borrow) return;
+        const source = if (owner.kind == .borrow) "borrowed value" else "zone-owned value";
+        self.emitError(expr.span, "{s} from `{s}` can only be passed to a `borrow` parameter", .{ source, owner.name });
+        return error.SemanticFailed;
     }
 
     fn checkModule(self: *Checker, module: ast.Module) SemanticError!void {
@@ -743,21 +831,28 @@ const Checker = struct {
                             for (interface_decl.methods) |method| {
                                 var params = std.ArrayList(ParamSig).empty;
                                 errdefer params.deinit(self.allocator);
-                                for (method.params) |param| try params.append(self.allocator, .{
-                                    .name = param.name,
-                                    .ty = try self.typeFromRef(param.ty),
-                                });
+                                for (method.params) |param| {
+                                    const param_ty = try self.typeFromRef(param.ty);
+                                    try self.validateBorrowParam(param_ty, param.span);
+                                    try params.append(self.allocator, .{
+                                        .name = param.name,
+                                        .ty = param_ty,
+                                    });
+                                }
+                                const return_ty = try self.typeFromRef(method.return_ty);
+                                try self.rejectBorrowOutsideParam(return_ty, method.return_ty.span());
                                 try methods.append(self.allocator, .{
                                     .name = method.name,
                                     .params = try params.toOwnedSlice(self.allocator),
-                                    .return_ty = try self.typeFromRef(method.return_ty),
+                                    .return_ty = return_ty,
                                     .error_ty = if (method.error_ty) |err| try self.typeFromErrorSpec(err) else null,
                                 });
                                 const first = methods.items[methods.items.len - 1].params;
-                                if (first.len == 0 or first[0].ty != .pointer or
-                                    first[0].ty.pointer.* != .named or first[0].ty.pointer.named != id)
+                                const self_ty = if (first.len > 0 and first[0].ty == .borrow) first[0].ty.borrow.* else if (first.len > 0) first[0].ty else .unknown;
+                                if (first.len == 0 or self_ty != .pointer or
+                                    self_ty.pointer.* != .named or self_ty.pointer.named != id)
                                 {
-                                    self.emitError(method.span, "interface method `{s}` must begin with `self: *Self`", .{method.name});
+                                    self.emitError(method.span, "interface method `{s}` must begin with `self: *Self` or `self: borrow *Self`", .{method.name});
                                     return error.SemanticFailed;
                                 }
                             }
@@ -777,13 +872,16 @@ const Checker = struct {
                     var params = std.ArrayList(ParamSig).empty;
                     errdefer params.deinit(self.allocator);
                     for (decl.params) |param| {
+                        const param_ty = try self.typeFromRef(param.ty);
+                        if (!param.is_type_param) try self.validateBorrowParam(param_ty, param.span);
                         try params.append(self.allocator, .{
                             .name = param.name,
-                            .ty = try self.typeFromRef(param.ty),
+                            .ty = param_ty,
                             .is_type_param = param.is_type_param,
                         });
                     }
                     const ret = try self.typeFromRef(decl.return_ty);
+                    try self.rejectBorrowOutsideParam(ret, decl.return_ty.span());
                     const err_ty = if (decl.error_ty) |err| try self.typeFromErrorSpec(err) else null;
                     try self.env.fn_sigs.put(id, .{
                         .params = try params.toOwnedSlice(self.allocator),
@@ -813,20 +911,33 @@ const Checker = struct {
 
     fn checkTypeDecl(self: *Checker, decl: ast.TypeDecl) SemanticError!void {
         switch (decl.kind) {
-            .distinct => |ty| try self.checkType(ty),
+            .distinct => |ty| {
+                try self.rejectBorrowTypeRefOutsideParam(ty);
+                try self.checkType(ty);
+            },
             .opaque_type => {},
             .struct_type => |strukt| {
+                for (strukt.fields) |field| try self.rejectBorrowTypeRefOutsideParam(field.ty);
                 if (strukt.type_params.len > 0) return; // generic — checked on instantiation
-                for (strukt.fields) |field| try self.checkType(field.ty);
+                for (strukt.fields) |field| {
+                    const field_ty = try self.typeFromRef(field.ty);
+                    try self.rejectBorrowOutsideParam(field_ty, field.span);
+                }
             },
             .errors => |errors_decl| {
                 for (errors_decl.variants) |variant| {
-                    if (variant.payload) |payload| try self.checkType(payload);
+                    if (variant.payload) |payload| {
+                        try self.rejectBorrowTypeRefOutsideParam(payload);
+                        try self.checkType(payload);
+                    }
                 }
             },
             .enum_type => |enum_decl| {
                 for (enum_decl.variants) |variant| {
-                    if (variant.payload) |payload| try self.checkType(payload);
+                    if (variant.payload) |payload| {
+                        try self.rejectBorrowTypeRefOutsideParam(payload);
+                        try self.checkType(payload);
+                    }
                 }
             },
             .interface_type => |interface_decl| {
@@ -897,6 +1008,7 @@ const Checker = struct {
         defer self.current_type_params = &.{};
 
         self.current_return_ty = try self.typeFromRef(decl.return_ty);
+        try self.rejectBorrowOutsideParam(self.current_return_ty, decl.return_ty.span());
         self.current_error_ty = if (decl.error_ty) |err| try self.typeFromErrorSpec(err) else null;
         try self.pushScope();
         defer self.popScope();
@@ -904,7 +1016,21 @@ const Checker = struct {
         for (decl.params) |param| {
             if (param.is_type_param) continue; // type-only params aren't values in scope
             const param_ty = try self.typeFromRef(param.ty);
-            try self.declareLocal(param.name, param_ty);
+            try self.validateBorrowParam(param_ty, param.span);
+            if (param_ty == .borrow) {
+                if (decl.body == null) {
+                    self.emitError(param.span, "`borrow` parameters require a checked function body", .{});
+                    return error.SemanticFailed;
+                }
+                try self.declareLocal(param.name, param_ty.borrow.*);
+                try self.setLocalZoneOwner(param.name, .{
+                    .name = param.name,
+                    .scope_depth = 0,
+                    .kind = .borrow,
+                });
+            } else {
+                try self.declareLocal(param.name, param_ty);
+            }
         }
 
         if (decl.body) |body| {
@@ -931,20 +1057,44 @@ const Checker = struct {
             .local_infer => |local| {
                 const local_ty = try self.inferExpr(local.value);
                 try self.declareLocal(local.name, local_ty);
+                try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
             },
             .local_typed => |local| {
                 const declared_ty = try self.typeFromRef(local.ty);
+                try self.rejectBorrowOutsideParam(declared_ty, local.ty.span());
                 const value_ty = try self.inferExpr(local.value);
                 if (!try self.compatible(value_ty, declared_ty)) return error.SemanticFailed;
                 try self.declareLocal(local.name, declared_ty);
+                try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
             },
             .assign => |assign| {
                 const target_ty = try self.inferExpr(assign.target);
                 const value_ty = try self.inferExpr(assign.value);
                 if (!try self.compatible(value_ty, target_ty)) return error.SemanticFailed;
+                if (self.exprZoneOwner(assign.value)) |owner| {
+                    if (assign.target.kind != .ident) {
+                        const source = if (owner.kind == .borrow) "borrowed value" else "zone-owned value";
+                        self.emitError(assign.span, "{s} from `{s}` cannot be stored into an aggregate or pointer", .{ source, owner.name });
+                        return error.SemanticFailed;
+                    }
+                    const target_name = assign.target.kind.ident;
+                    const target_scope = self.localScopeIndex(target_name) orelse 0;
+                    if (target_scope < owner.scope_depth) {
+                        self.emitError(assign.span, "zone-owned value from `{s}` cannot escape its zone", .{owner.name});
+                        return error.SemanticFailed;
+                    }
+                    try self.setLocalZoneOwner(target_name, owner);
+                } else if (assign.target.kind == .ident) {
+                    try self.setLocalZoneOwner(assign.target.kind.ident, null);
+                }
             },
             .return_stmt => |ret| {
                 const actual_ty: Ty = if (ret.value) |value| try self.inferExpr(value) else .void;
+                if (ret.value) |value| if (self.exprZoneOwner(value)) |owner| {
+                    const source = if (owner.kind == .borrow) "borrowed value" else "zone-owned value";
+                    self.emitError(ret.span, "{s} from `{s}` cannot be returned", .{ source, owner.name });
+                    return error.SemanticFailed;
+                };
                 if (!try self.compatible(actual_ty, self.current_return_ty)) {
                     self.emitError(ret.span, "return type mismatch: expected `{s}`, found `{s}`", .{ self.formatTy(self.current_return_ty), self.formatTy(actual_ty) });
                     return error.SemanticFailed;
@@ -962,7 +1112,12 @@ const Checker = struct {
                     try self.pushScope();
                     defer self.popScope();
                     try self.declareLocal(binding.name, inner_ty);
-                    if (iff.payload_binding) |payload_name| try self.declareLocal(payload_name, inner_ty);
+                    const owner = self.exprZoneOwner(binding.value);
+                    try self.setLocalZoneOwner(binding.name, owner);
+                    if (iff.payload_binding) |payload_name| {
+                        try self.declareLocal(payload_name, inner_ty);
+                        try self.setLocalZoneOwner(payload_name, owner);
+                    }
                     try self.checkBlock(iff.then_block);
                 } else {
                     const cond_ty = try self.inferExpr(iff.condition);
@@ -973,7 +1128,10 @@ const Checker = struct {
                     if (!cond_ty.isBool() and payload_ty == null) return error.SemanticFailed;
                     try self.pushScope();
                     defer self.popScope();
-                    if (iff.payload_binding) |payload_name| try self.declareLocal(payload_name, payload_ty orelse .unknown);
+                    if (iff.payload_binding) |payload_name| {
+                        try self.declareLocal(payload_name, payload_ty orelse .unknown);
+                        try self.setLocalZoneOwner(payload_name, self.exprZoneOwner(iff.condition));
+                    }
                     try self.checkBlock(iff.then_block);
                 }
                 if (iff.else_block) |else_block| try self.checkBlock(else_block);
@@ -1014,6 +1172,7 @@ const Checker = struct {
                 try self.pushScope();
                 defer self.popScope();
                 try self.declareLocal(for_stmt.binding, if (for_stmt.by_ref) try self.ptrTo(elem_ty) else elem_ty);
+                if (for_stmt.by_ref) try self.setLocalZoneOwner(for_stmt.binding, self.exprZoneOwner(for_stmt.iter));
                 if (for_stmt.index_binding) |name| try self.declareLocal(name, .usize);
                 self.loop_depth += 1;
                 defer self.loop_depth -= 1;
@@ -1033,9 +1192,24 @@ const Checker = struct {
                 return error.SemanticFailed;
             },
             .zone_block => |zb| {
+                if (!std.mem.eql(u8, zb.kind, "Arena")) {
+                    self.emitError(zb.span, "unsupported zone kind `{s}`; only `Arena` is currently defined", .{zb.kind});
+                    return error.SemanticFailed;
+                }
+                for (self.active_zones.items) |zone| {
+                    if (std.mem.eql(u8, zone.name, zb.name)) {
+                        self.emitError(zb.span, "nested zone name `{s}` shadows an active zone", .{zb.name});
+                        return error.SemanticFailed;
+                    }
+                }
                 try self.pushScope();
                 defer self.popScope();
                 try self.declareLocal(zb.name, .zone_handle);
+                try self.active_zones.append(self.allocator, .{
+                    .name = zb.name,
+                    .scope_depth = self.scope_stack.items.len - 1,
+                });
+                defer _ = self.active_zones.pop();
                 try self.checkBlock(zb.body);
             },
             .defer_stmt => |ds| try self.checkBlock(ds.body),
@@ -1239,6 +1413,28 @@ const Checker = struct {
                 // Mark the callee field-expr so the IR lowerer can detect zone calls
                 // by checking call.callee.id rather than chasing base pointer ids.
                 try self.env.expr_types.put(call.callee.id, .zone_handle);
+                if (std.mem.eql(u8, fld.name, "free") and call.args.len > 0) {
+                    const zone_name = switch (fld.base.kind) {
+                        .ident => |name| name,
+                        else => return error.SemanticFailed,
+                    };
+                    const ptr_expr = switch (call.args[0]) {
+                        .positional => |value| value,
+                        .named => |named| named.value,
+                    };
+                    const owner = self.exprZoneOwner(ptr_expr) orelse {
+                        self.emitError(ptr_expr.span, "`{s}.free` requires a value owned by that arena", .{zone_name});
+                        return error.SemanticFailed;
+                    };
+                    if (owner.kind == .borrow) {
+                        self.emitError(ptr_expr.span, "borrowed value from `{s}` cannot be explicitly freed", .{owner.name});
+                        return error.SemanticFailed;
+                    }
+                    if (!std.mem.eql(u8, owner.name, zone_name)) {
+                        self.emitError(ptr_expr.span, "value is owned by zone `{s}`, not `{s}`", .{ owner.name, zone_name });
+                        return error.SemanticFailed;
+                    }
+                }
                 return self.inferZoneMethod(fld.name, call.args);
             }
             if (self.interfaceFromPointer(base_ty)) |interface_id| {
@@ -1247,14 +1443,17 @@ const Checker = struct {
                     return error.SemanticFailed;
                 };
                 if (method.params.len == 0 or call.args.len != method.params.len - 1) {
-                    self.emitError(call.callee.span, "`{s}` expects {d} argument(s)", .{ fld.name, method.params.len - 1 });
+                    const expected_count = if (method.params.len > 0) method.params.len - 1 else 0;
+                    self.emitError(call.callee.span, "`{s}` expects {d} argument(s)", .{ fld.name, expected_count });
                     return error.SemanticFailed;
                 }
+                try self.checkNonEscapingArgument(fld.base.*, method.params[0].ty);
                 for (call.args, 0..) |arg, i| {
                     const arg_expr = switch (arg) {
                         .positional => |value| value,
                         .named => |named| named.value,
                     };
+                    try self.checkNonEscapingArgument(arg_expr, method.params[i + 1].ty);
                     if (!try self.compatible(try self.inferExpr(arg_expr), method.params[i + 1].ty))
                         return error.SemanticFailed;
                 }
@@ -1272,6 +1471,13 @@ const Checker = struct {
         };
 
         // ── Builtins ────────────────────────────────────────────────────
+        if (isBuiltinValue(name)) for (call.args) |arg| {
+            const value = switch (arg) {
+                .positional => |positional| positional,
+                .named => |named| named.value,
+            };
+            try self.checkNonEscapingArgument(value, null);
+        };
         if (std.mem.eql(u8, name, "truncate_to")) return self.firstTypeArg(call) orelse error.SemanticFailed;
         if (std.mem.eql(u8, name, "sizeof")) return .usize;
         if (std.mem.eql(u8, name, "atomic_load")) return .u32;
@@ -1320,10 +1526,13 @@ const Checker = struct {
             if (self.lookupLocal(name)) |local_ty| switch (local_ty) {
                 .fn_ptr => |fp| {
                     for (call.args, 0..) |arg, i| {
-                        const arg_ty = switch (arg) {
-                            .positional => |e| try self.inferExpr(e),
-                            .named => |n| try self.inferExpr(n.value),
+                        const arg_expr = switch (arg) {
+                            .positional => |e| e,
+                            .named => |n| n.value,
                         };
+                        const expected = if (i < fp.params.len) fp.params[i] else null;
+                        try self.checkNonEscapingArgument(arg_expr, expected);
+                        const arg_ty = try self.inferExpr(arg_expr);
                         if (i < fp.params.len and !try self.compatible(arg_ty, fp.params[i]))
                             return error.SemanticFailed;
                     }
@@ -1362,6 +1571,7 @@ const Checker = struct {
                 .positional => |e| e,
                 .named => |n| n.value,
             };
+            try self.checkNonEscapingArgument(arg_expr, param.ty);
             const arg_ty = try self.inferExpr(arg_expr);
             if (!try self.compatible(arg_ty, param.ty)) {
                 self.emitError(arg_expr.span, "argument {d} of `{s}`: expected `{s}`, found `{s}`", .{ arg_i + 1, name, self.formatTy(param.ty), self.formatTy(arg_ty) });
@@ -1528,6 +1738,47 @@ const Checker = struct {
         return error.SemanticFailed;
     }
 
+    fn exprZoneOwner(self: Checker, expr: ast.Expr) ?ZoneOwner {
+        if (self.env.expr_types.get(expr.id)) |ty| {
+            if (!tyCanCarryZoneOwner(ty)) return null;
+        }
+        return switch (expr.kind) {
+            .ident => |name| self.lookupZoneOwner(name),
+            .unsafe_expr, .run_expr, .force_unwrap => |inner| self.exprZoneOwner(inner.*),
+            .as_cast => |cast| self.exprZoneOwner(cast.value.*),
+            .nil_coalesce => |coalesce| self.exprZoneOwner(coalesce.value.*) orelse self.exprZoneOwner(coalesce.default.*),
+            .unary => |unary| self.exprZoneOwner(unary.expr.*),
+            .binary => |binary| self.exprZoneOwner(binary.left.*) orelse self.exprZoneOwner(binary.right.*),
+            .field => |field| if (std.mem.eql(u8, field.name, "len")) null else self.exprZoneOwner(field.base.*),
+            .index => |index| self.exprZoneOwner(index.base.*),
+            .slice => |slice| self.exprZoneOwner(slice.base.*),
+            .try_expr => |try_expr| self.exprZoneOwner(try_expr.value.*),
+            .catch_expr => |catch_expr| self.exprZoneOwner(catch_expr.value.*),
+            .compound_literal => |values| blk: {
+                for (values) |value| if (self.exprZoneOwner(value)) |owner| break :blk owner;
+                break :blk null;
+            },
+            .call => |call| blk: {
+                if (call.callee.kind == .field) {
+                    const field = call.callee.kind.field;
+                    if ((std.mem.eql(u8, field.name, "new") or std.mem.eql(u8, field.name, "new_slice")) and
+                        field.base.kind == .ident)
+                    {
+                        const zone_name = field.base.kind.ident;
+                        for (self.active_zones.items) |zone| {
+                            if (std.mem.eql(u8, zone.name, zone_name)) break :blk .{
+                                .name = zone.name,
+                                .scope_depth = zone.scope_depth,
+                            };
+                        }
+                    }
+                }
+                break :blk null;
+            },
+            else => null,
+        };
+    }
+
     fn inferTypeArg(self: *Checker, expr: ast.Expr) SemanticError!Ty {
         return switch (expr.kind) {
             .type_ref => |ty| try self.typeFromRef(ty),
@@ -1552,10 +1803,12 @@ const Checker = struct {
         defer arg_tys.deinit(self.allocator);
 
         for (call.args, sig.params) |arg, param| {
-            const arg_ty = switch (arg) {
-                .positional => |value| try self.inferExpr(value),
-                .named => |named| try self.inferExpr(named.value),
+            const arg_expr = switch (arg) {
+                .positional => |value| value,
+                .named => |named| named.value,
             };
+            try self.checkNonEscapingArgument(arg_expr, param.ty);
+            const arg_ty = try self.inferExpr(arg_expr);
             try arg_tys.append(self.allocator, arg_ty);
             if (param.ty == .type_param) {
                 const tp = param.ty.type_param;
@@ -1632,6 +1885,11 @@ const Checker = struct {
                 const sub = self.allocator.create(Ty) catch return ty;
                 sub.* = self.substituteTy(inner.*, binding);
                 break :blk .{ .slice = sub };
+            },
+            .borrow => |inner| blk: {
+                const sub = self.allocator.create(Ty) catch return ty;
+                sub.* = self.substituteTy(inner.*, binding);
+                break :blk .{ .borrow = sub };
             },
             else => ty,
         };
@@ -1819,6 +2077,7 @@ const Checker = struct {
                 } };
             },
             .atomic => |atomic| return try self.typeFromRef(atomic.inner.*),
+            .borrow => |borrow| return .{ .borrow = try self.boxTy(try self.typeFromRef(borrow.inner.*)) },
             .fn_type => |func| {
                 var params = std.ArrayList(Ty).empty;
                 errdefer params.deinit(self.allocator);
@@ -1991,6 +2250,8 @@ const Checker = struct {
     }
 
     fn compatible(self: *Checker, actual: Ty, expected: Ty) !bool {
+        if (expected == .borrow) return self.compatible(actual, expected.borrow.*);
+        if (actual == .borrow) return self.compatible(actual.borrow.*, expected);
         if (sameTy(actual, expected)) return true;
         if (try self.interfaceCoercion(actual, expected)) return true;
         if (expected == .optional) {
@@ -2059,6 +2320,7 @@ fn substituteInterfaceSelf(checker: *Checker, ty: Ty, interface_id: SymbolId, co
         .pointer => |inner| .{ .pointer = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
         .optional => |inner| .{ .optional = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
         .slice => |inner| .{ .slice = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        .borrow => |inner| .{ .borrow = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
         else => ty,
     };
 }
@@ -2129,6 +2391,7 @@ pub fn tyMangle(ty: Ty) []const u8 {
         .pointer => "ptr",
         .optional => "opt",
         .slice => "slice",
+        .borrow => "borrow",
         .named => "named",
         .type_param => |n| n,
         else => "unknown",
@@ -2141,11 +2404,50 @@ fn sameTy(a: Ty, b: Ty) bool {
         .pointer => |pa| sameTy(pa.*, b.pointer.*),
         .optional => |oa| sameTy(oa.*, b.optional.*),
         .slice => |sa| sameTy(sa.*, b.slice.*),
+        .borrow => |ba| sameTy(ba.*, b.borrow.*),
         .array => |aa| sameTy(aa.elem.*, b.array.elem.*) and aa.len == b.array.len,
         .named => |id| id == b.named,
         .error_set => |variants| sameErrorVariants(variants, b.error_set),
         .fallible => |fa| sameTy(fa.ok.*, b.fallible.ok.*) and sameTy(fa.err.*, b.fallible.err.*),
         else => true,
+    };
+}
+
+fn tyCanCarryZoneOwner(ty: Ty) bool {
+    return switch (ty) {
+        .pointer, .slice, .borrow, .optional, .fallible, .named, .unknown => true,
+        else => false,
+    };
+}
+
+fn containsBorrow(ty: Ty) bool {
+    return switch (ty) {
+        .borrow => true,
+        .pointer, .optional, .slice => |inner| containsBorrow(inner.*),
+        .array => |array| containsBorrow(array.elem.*),
+        .fallible => |fallible| containsBorrow(fallible.ok.*) or containsBorrow(fallible.err.*),
+        else => false,
+    };
+}
+
+fn typeRefContainsBorrow(ty: ast.TypeRef) bool {
+    return switch (ty) {
+        .borrow => true,
+        .pointer => |pointer| typeRefContainsBorrow(pointer.inner.*),
+        .many_pointer => |pointer| typeRefContainsBorrow(pointer.inner.*),
+        .optional => |optional| typeRefContainsBorrow(optional.inner.*),
+        .slice => |slice| typeRefContainsBorrow(slice.inner.*),
+        .array => |array| typeRefContainsBorrow(array.inner.*),
+        .atomic => |atomic| typeRefContainsBorrow(atomic.inner.*),
+        .fn_type => |function| blk: {
+            for (function.params) |param| if (typeRefContainsBorrow(param)) break :blk true;
+            break :blk typeRefContainsBorrow(function.ret.*);
+        },
+        .generic_inst => |generic| blk: {
+            for (generic.args) |arg| if (typeRefContainsBorrow(arg)) break :blk true;
+            break :blk false;
+        },
+        else => false,
     };
 }
 

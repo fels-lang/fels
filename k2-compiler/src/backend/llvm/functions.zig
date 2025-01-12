@@ -19,6 +19,7 @@ pub const FnCg = struct {
     regs: std.AutoHashMap(ir.RegId, llvm.LLVMValueRef),
     locals: std.StringHashMap(llvm.LLVMValueRef), // name → alloca
     params: std.StringHashMap(llvm.LLVMValueRef), // name → param value
+    zones: std.StringHashMap(llvm.LLVMValueRef), // name → allocation-list head alloca
 
     /// IrType of each register result — used by field-access to determine struct layout.
     reg_ir_types: std.AutoHashMap(ir.RegId, ir.IrType),
@@ -32,6 +33,7 @@ pub const FnCg = struct {
         self.regs.deinit();
         self.locals.deinit();
         self.params.deinit();
+        self.zones.deinit();
         self.reg_ir_types.deinit();
         self.local_ir_types.deinit();
         self.param_ir_types.deinit();
@@ -90,6 +92,20 @@ fn defineOne(cg: *ModuleCg, func: ir.IrFunction) !void {
     var locals = try local_vars.allocateLocals(cg, func, entry_bb);
     errdefer locals.deinit();
 
+    var zones = std.StringHashMap(llvm.LLVMValueRef).init(cg.allocator);
+    errdefer zones.deinit();
+    const ptr_ty = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
+    for (func.blocks) |block| {
+        for (block.instrs) |instr| switch (instr.kind) {
+            .zone_push => |zone| if (!zones.contains(zone.name)) {
+                const name_z = try cg.allocator.dupeZ(u8, zone.name);
+                defer cg.allocator.free(name_z);
+                try zones.put(zone.name, llvm.LLVMBuildAlloca(cg.builder, ptr_ty, name_z));
+            },
+            else => {},
+        };
+    }
+
     // Build param maps.
     var params = std.StringHashMap(llvm.LLVMValueRef).init(cg.allocator);
     var param_tys = std.StringHashMap(ir.IrType).init(cg.allocator);
@@ -121,6 +137,7 @@ fn defineOne(cg: *ModuleCg, func: ir.IrFunction) !void {
         .regs = std.AutoHashMap(ir.RegId, llvm.LLVMValueRef).init(cg.allocator),
         .locals = locals,
         .params = params,
+        .zones = zones,
         .reg_ir_types = std.AutoHashMap(ir.RegId, ir.IrType).init(cg.allocator),
         .local_ir_types = local_tys,
         .param_ir_types = param_tys,

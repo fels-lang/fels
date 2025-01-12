@@ -1153,6 +1153,7 @@ fn lowerTypeWithBinding(allocator: std.mem.Allocator, ty: ast.TypeRef, binding: 
         .many_pointer => |ptr| return .{ .ptr = try boxType(allocator, try lowerTypeWithBinding(allocator, ptr.inner.*, binding)) },
         .optional => |opt| return .{ .optional = try boxType(allocator, try lowerTypeWithBinding(allocator, opt.inner.*, binding)) },
         .slice => |sl| return .{ .slice = try boxType(allocator, try lowerTypeWithBinding(allocator, sl.inner.*, binding)) },
+        .borrow => |borrow| return lowerTypeWithBinding(allocator, borrow.inner.*, binding),
         .array => |arr| return .{ .array = .{
             .elem = try boxType(allocator, try lowerTypeWithBinding(allocator, arr.inner.*, binding)),
             .len = parseArrayLen(arr.len.*),
@@ -1242,6 +1243,7 @@ fn lowerTypeReplacingSelf(allocator: std.mem.Allocator, ty: ast.TypeRef, concret
         .many_pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerTypeReplacingSelf(allocator, ptr.inner.*, concrete_name)) },
         .optional => |opt| .{ .optional = try boxType(allocator, try lowerTypeReplacingSelf(allocator, opt.inner.*, concrete_name)) },
         .slice => |slice| .{ .slice = try boxType(allocator, try lowerTypeReplacingSelf(allocator, slice.inner.*, concrete_name)) },
+        .borrow => |borrow| try lowerTypeReplacingSelf(allocator, borrow.inner.*, concrete_name),
         else => lowerType(allocator, ty),
     };
 }
@@ -2232,7 +2234,7 @@ const FunctionLowerer = struct {
             };
             const alloc_ty = try self.lowerTypeArg(ty_expr);
             const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, alloc_ty) };
-            return try self.emit(ptr_ty, .{ .alloc = .{ .ty = alloc_ty, .zone = zone_name } });
+            return try self.emitAt(ptr_ty, .{ .alloc = .{ .ty = alloc_ty, .zone = zone_name } }, expr.span);
         }
         if (std.mem.eql(u8, method, "new_slice")) {
             if (args.len < 2) return .{ .imm = .null };
@@ -2247,7 +2249,7 @@ const FunctionLowerer = struct {
             const elem_ty = try self.lowerTypeArg(ty_expr);
             const count = try self.lowerExpr(cnt_expr);
             const slice_ty: IrType = .{ .slice = try boxType(self.allocator, elem_ty) };
-            return try self.emit(slice_ty, .{ .alloc_slice = .{ .elem_ty = elem_ty, .count = count, .zone = zone_name } });
+            return try self.emitAt(slice_ty, .{ .alloc_slice = .{ .elem_ty = elem_ty, .count = count, .zone = zone_name } }, expr.span);
         }
         if (std.mem.eql(u8, method, "free")) {
             if (args.len > 0) {
@@ -2260,7 +2262,6 @@ const FunctionLowerer = struct {
             }
             return .{ .imm = .null };
         }
-        _ = expr;
         return .{ .imm = .null };
     }
 
@@ -2400,6 +2401,7 @@ fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
         .many_pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },
         .optional => |optional| .{ .optional = try boxType(allocator, try lowerType(allocator, optional.inner.*)) },
         .slice => |slice| .{ .slice = try boxType(allocator, try lowerType(allocator, slice.inner.*)) },
+        .borrow => |borrow| try lowerType(allocator, borrow.inner.*),
         .array => |array| .{ .array = .{
             .elem = try boxType(allocator, try lowerType(allocator, array.inner.*)),
             .len = parseArrayLen(array.len.*),
@@ -2425,6 +2427,7 @@ fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
 }
 
 fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable) !IrType {
+    if (ty == .borrow) return lowerAstTypeWithEnv(allocator, ty.borrow.inner.*, types, symbols);
     if (ty == .pointer) switch (ty.pointer.inner.*) {
         .named => |named| if (symbols.resolve(symbols.root_scope, named.name)) |id| {
             if (types.layouts.get(id)) |layout| if (layout.kind == .interface_type)
@@ -2513,6 +2516,7 @@ fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.Symbol
         .pointer => |inner| .{ .ptr = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
         .optional => |inner| .{ .optional = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
         .slice => |inner| .{ .slice = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
+        .borrow => |inner| try lowerSemaType(allocator, inner.*, symbols),
         .array => |array| .{ .array = .{
             .elem = try boxType(allocator, try lowerSemaType(allocator, array.elem.*, symbols)),
             .len = array.len,

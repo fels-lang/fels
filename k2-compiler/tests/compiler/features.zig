@@ -214,6 +214,137 @@ test "zone RAII: return inside zone emits zone_pop before return" {
     }
 }
 
+test "zone ownership: allocations cannot escape" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const returned =
+        \\bad :: fn() -> *i32 {
+        \\    zone scratch: Arena {
+        \\        return scratch.new(i32);
+        \\    }
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "zone_return.k2", returned));
+
+    const outer_assignment =
+        \\bad :: fn() {
+        \\    escaped: ?*i32 = null;
+        \\    zone scratch: Arena {
+        \\        escaped = scratch.new(i32);
+        \\    }
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "zone_outer.k2", outer_assignment));
+
+    const passed_to_function =
+        \\consume :: fn(value: *i32) {}
+        \\bad :: fn() {
+        \\    zone scratch: Arena {
+        \\        consume(scratch.new(i32));
+        \\    }
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "zone_call.k2", passed_to_function));
+}
+
+test "zone borrowing: borrowed parameters may use and forward zone-owned values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\touch :: fn(data: borrow []u8) {
+        \\    data[0] = 42u8;
+        \\}
+        \\forward :: fn(data: borrow []u8) {
+        \\    alias := data;
+        \\    touch(alias);
+        \\}
+        \\work :: fn() {
+        \\    zone scratch: Arena {
+        \\        data := scratch.new_slice(u8, 4);
+        \\        forward(data);
+        \\    }
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "zone_borrow.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(module);
+}
+
+test "zone borrowing: borrowed values cannot be retained or returned" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const returned =
+        \\bad :: fn(data: borrow []u8) -> []u8 {
+        \\    return data;
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "borrow_return.k2", returned));
+
+    const ordinary_call =
+        \\retain :: fn(data: []u8) {}
+        \\bad :: fn(data: borrow []u8) { retain(data); }
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "borrow_call.k2", ordinary_call));
+
+    const stored =
+        \\bad :: fn(data: borrow []u8, out: *[]u8) {
+        \\    *out = data;
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "borrow_store.k2", stored));
+}
+
+test "zone borrowing: qualifier is restricted to checked pointer and slice parameters" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "borrow_scalar.k2",
+        \\bad :: fn(value: borrow i32) {}
+    ));
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "borrow_return_type.k2",
+        \\bad :: fn() -> borrow []u8;
+    ));
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "borrow_extern.k2",
+        \\bad :: fn(value: borrow []u8);
+    ));
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "borrow_field.k2",
+        \\Bad :: struct { value: borrow []u8, }
+    ));
+}
+
+test "zone ownership: only Arena is currently supported" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\bad :: fn() {
+        \\    zone scratch: Pool {}
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "zone_kind.k2", src));
+}
+
+test "zone ownership: scalar reads may be passed and returned" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\identity :: fn(value: usize) -> usize { return value; }
+        \\ok :: fn() -> usize {
+        \\    zone scratch: Arena {
+        \\        data := scratch.new_slice(u8, 8);
+        \\        return identity(data.len);
+        \\    }
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "zone_scalar.k2", src);
+    defer fe.deinit(arena.allocator());
+}
+
 test "defer: basic expression deferred to block end" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -308,6 +439,58 @@ test "defer inside zone block" {
     defer fe.deinit(arena.allocator());
     const m = try k2.lowerFrontend(arena.allocator(), fe);
     try k2.ir_mod.validateModule(m);
+
+    const work = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "work")) break f;
+    } else return error.FunctionNotFound;
+    var saw_cleanup_before_pop = false;
+    for (work.blocks) |block| {
+        var saw_cleanup = false;
+        for (block.instrs) |instr| switch (instr.kind) {
+            .call => |call| if (std.mem.eql(u8, call.callee, "close")) {
+                saw_cleanup = true;
+            },
+            .zone_pop => if (saw_cleanup) {
+                saw_cleanup_before_pop = true;
+            },
+            else => {},
+        };
+    }
+    try std.testing.expect(saw_cleanup_before_pop);
+}
+
+test "zone RAII: fail emits zone_pop before propagation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\Problem :: errors { bad, }
+        \\work :: fn() -> i32 ! Problem {
+        \\    zone scratch: Arena {
+        \\        value := scratch.new(i32);
+        \\        fail .bad;
+        \\    }
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "zone_fail.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    const work = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "work")) break f;
+    } else return error.FunctionNotFound;
+    for (work.blocks) |block| {
+        if (block.terminator) |term| switch (term) {
+            .fail => {
+                try std.testing.expect(block.instrs.len > 0);
+                try std.testing.expect(block.instrs[block.instrs.len - 1].kind == .zone_pop);
+                return;
+            },
+            else => {},
+        };
+    }
+    return error.ExpectedFailTerminator;
 }
 
 test "unsafe_expr: unsafe prefix on expression is transparent" {
