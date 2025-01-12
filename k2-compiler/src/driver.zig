@@ -36,7 +36,7 @@ pub fn compileSource(
     options: CompileOptions,
 ) DriverError!CompileOutput {
     var fe = pipeline.compile(allocator, file_name, source) catch |err| switch (err) {
-        error.ParseFailed, error.SemanticFailed, error.IoError => return error.CompileFailed,
+        error.ParseFailed, error.SemanticFailed, error.IoError, error.RuntimeUnavailable => return error.CompileFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer fe.deinit(allocator);
@@ -103,9 +103,7 @@ fn printFeDiagnostics(
     const rt_src = runtime_mod.runtimeSource();
     for (diags) |d| {
         const src: []const u8 =
-            if (std.mem.eql(u8, d.file, user_file)) user_source
-            else if (std.mem.eql(u8, d.file, "<runtime>")) rt_src
-            else "";
+            if (std.mem.eql(u8, d.file, user_file)) user_source else if (std.mem.eql(u8, d.file, "<runtime>")) rt_src else "";
         const rendered = diag_mod.renderDiagnostic(allocator, d.file, src, d) catch continue;
         defer allocator.free(rendered);
         std.debug.print("{s}\n", .{rendered});
@@ -122,7 +120,7 @@ pub fn compileWithLlvm(
 
     // compileWithRuntime auto-prepends the platform runtime (@panic, assert, etc.)
     var fe = pipeline.compileWithRuntime(allocator, opts.file_name, opts.source) catch |err| switch (err) {
-        error.ParseFailed, error.SemanticFailed, error.IoError => return error.CompileFailed,
+        error.ParseFailed, error.SemanticFailed, error.IoError, error.RuntimeUnavailable => return error.CompileFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer fe.deinit(allocator);
@@ -143,7 +141,7 @@ pub fn compileFileWithLlvm(
     if (!build_options.enable_llvm) return error.LlvmNotEnabled;
 
     var fe = pipeline.compileFileWithRuntime(allocator, io, opts.file_name) catch |err| switch (err) {
-        error.ParseFailed, error.SemanticFailed, error.IoError => return error.CompileFailed,
+        error.ParseFailed, error.SemanticFailed, error.IoError, error.RuntimeUnavailable => return error.CompileFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer fe.deinit(allocator);

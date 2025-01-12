@@ -99,7 +99,7 @@ Status meanings:
 | Errors and fallible functions | Implemented | LLVM ABI, `fail`, `?` propagation, `catch`, and fallible entry points are lowered. |
 | Zones | Implemented | `Arena` provides zero-initialized lexical allocation, non-escape checking, and deterministic cleanup. |
 | Interfaces | Partial | Dynamic `*Interface` dispatch works; static constraints and advanced cases are missing. |
-| Runtime | Partial | Panic, assertions, and basic output exist; integration and platform coverage need work. |
+| Runtime | Implemented on Windows; source-valid on Linux | Embedded runtime provides checked output counts, exit/abort, panic, and assertions. Native executable linking is currently Windows-only. |
 | Modules and imports | Partial | Local multi-file compilation exists; package and standard-library systems do not. |
 | Tooling | Partial | Check, IR, object, and build commands exist; formatter, LSP, package manager, and test runner do not. |
 
@@ -197,6 +197,30 @@ can still bypass lifetime checking, as expected inside `unsafe`.
 The current native backend implements arenas through the Windows process heap.
 Other platform runtimes must provide the equivalent backend contract.
 
+## Runtime
+
+Real program builds automatically prepend one authoritative embedded runtime.
+The core runtime contract is:
+
+- `write_stdout(data: []const u8) -> usize`
+- `write_stderr(data: []const u8) -> usize`
+- `exit(code: u32)`
+- `abort()`
+- `@panic(msg: []const u8)`
+- `assert(cond: bool)`
+- `assert_msg(cond: bool, msg: []const u8)`
+
+Output functions return the number of bytes reported by the operating system and
+return zero when the write fails. `@panic` writes a prefixed message to stderr
+and terminates through `abort`. Compiler-generated safety failures use the same
+panic path.
+
+Windows runtime compilation, linking, and execution are covered end to end.
+The Linux runtime source parses, checks, and lowers, but native Linux entry-point
+generation, object emission validation, and executable linking remain separate
+backend work. Unsupported hosts now report that no runtime is available instead
+of silently compiling without one. macOS has no runtime implementation yet.
+
 ## Safety And Undefined Behavior
 
 K2 debug builds trap common invalid operations through the shared runtime panic
@@ -265,7 +289,8 @@ failure/control-flow paths produce verified LLVM IR.
 - Apply `#align` correctly and add decided calling-convention, linking, and
   section attributes.
 - Define and implement wrapping arithmetic.
-- Finish cross-platform runtime and native linking support.
+- Finish Linux native entry-point generation and linking, then add a macOS
+  runtime and linker path.
 - Establish a real module, visibility, package, and standard-library foundation.
 
 ### P2: Developer Usability

@@ -16,7 +16,7 @@ sys_write :: fn(fd: i32, data: []const u8) -> isize {
 /// Exit the process with the given code. Never returns.
 #noreturn
 sys_exit :: fn(code: i32) {
-    unsafe asm(volatile, "syscall",
+    ignored := unsafe asm(volatile, "syscall",
         inputs:  { "a"(60), "D"(code) },
         outputs: {},
         clobbers: { "memory" },
@@ -25,10 +25,31 @@ sys_exit :: fn(code: i32) {
 
 // ── Low-level I/O ─────────────────────────────────────────────────────────
 
-write_stdout :: fn(data: []const u8) { sys_write(1, data); }
-write_stderr :: fn(data: []const u8) { sys_write(2, data); }
+write_stdout :: fn(data: []const u8) -> usize {
+    written := sys_write(1, data);
+    if written <= 0 { return 0; }
+    return written as usize;
+}
+
+write_stderr :: fn(data: []const u8) -> usize {
+    written := sys_write(2, data);
+    if written <= 0 { return 0; }
+    return written as usize;
+}
 
 // ── Core runtime functions ─────────────────────────────────────────────────
+
+/// Exit with an application-defined status.
+#noreturn
+exit :: fn(code: u32) {
+    sys_exit(code as i32);
+}
+
+/// Terminate after an unrecoverable runtime failure.
+#noreturn
+abort :: fn() {
+    sys_exit(1);
+}
 
 /// Abort with a message. Never returns.
 #noreturn
@@ -36,7 +57,7 @@ write_stderr :: fn(data: []const u8) { sys_write(2, data); }
     write_stderr("panic: ");
     write_stderr(msg);
     write_stderr("\n");
-    sys_exit(1);
+    abort();
 }
 
 /// Assert a condition is true; panic with a default message if not.

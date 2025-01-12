@@ -2345,7 +2345,7 @@ fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
             // A call to a named function whose name starts with `@panic` or is `@panic`
             // always terminates — treat it as definitely returning so CFG accepts it.
             .call => |call| switch (call.callee.kind) {
-                .ident => |name| std.mem.eql(u8, name, "@panic"),
+                .ident => |name| isRuntimeNoReturnName(name),
                 else => false,
             },
             else => false,
@@ -2372,6 +2372,12 @@ fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
         },
         else => false,
     };
+}
+
+fn isRuntimeNoReturnName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "@panic") or
+        std.mem.eql(u8, name, "exit") or
+        std.mem.eql(u8, name, "abort");
 }
 
 pub fn tyMangle(ty: Ty) []const u8 {

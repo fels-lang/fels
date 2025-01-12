@@ -23,22 +23,41 @@ ExitProcess :: fn(code: u32);
 
 STD_OUTPUT_HANDLE :: -11;
 STD_ERROR_HANDLE  :: -12;
+PANIC_EXIT_CODE   :: 0xDEAD_BEEF;
 
 // ── Low-level I/O ─────────────────────────────────────────────────────────
 
-write_stdout :: fn(data: []const u8) {
+write_stdout :: fn(data: []const u8) -> usize {
+    if data.len == 0 { return 0; }
     handle  := GetStdHandle(STD_OUTPUT_HANDLE);
     written := 0u32;
-    WriteFile(handle, data.ptr, truncate_to(u32, data.len), &written, null);
+    ok := WriteFile(handle, data.ptr, truncate_to(u32, data.len), &written, null);
+    if !ok { return 0; }
+    return written as usize;
 }
 
-write_stderr :: fn(data: []const u8) {
+write_stderr :: fn(data: []const u8) -> usize {
+    if data.len == 0 { return 0; }
     handle  := GetStdHandle(STD_ERROR_HANDLE);
     written := 0u32;
-    WriteFile(handle, data.ptr, truncate_to(u32, data.len), &written, null);
+    ok := WriteFile(handle, data.ptr, truncate_to(u32, data.len), &written, null);
+    if !ok { return 0; }
+    return written as usize;
 }
 
 // ── Core runtime functions ─────────────────────────────────────────────────
+
+/// Exit with an application-defined status.
+#noreturn
+exit :: fn(code: u32) {
+    ExitProcess(code);
+}
+
+/// Terminate after an unrecoverable runtime failure.
+#noreturn
+abort :: fn() {
+    ExitProcess(PANIC_EXIT_CODE);
+}
 
 /// Abort with a message. Never returns.
 #noreturn
@@ -46,7 +65,7 @@ write_stderr :: fn(data: []const u8) {
     write_stderr("panic: ");
     write_stderr(msg);
     write_stderr("\n");
-    ExitProcess(0xDEAD_BEEF);
+    abort();
 }
 
 /// Assert a condition is true; panic with a default message if not.

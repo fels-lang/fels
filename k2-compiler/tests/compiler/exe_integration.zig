@@ -104,6 +104,28 @@ test "exe: assert(true) does not panic" {
     try std.testing.expectEqual(@as(u32, 0), code);
 }
 
+test "exe: runtime write reports bytes written" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 { return write_stdout("K2") as i32; }
+    , "exe_runtime_write");
+    try std.testing.expectEqual(@as(u32, 2), code);
+}
+
+test "exe: runtime exit terminates with requested status" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 { exit(37u32); }
+    , "exe_runtime_exit");
+    try std.testing.expectEqual(@as(u32, 37), code);
+}
+
 test "exe: fallible ? propagates error to caller, fallback returns sentinel" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

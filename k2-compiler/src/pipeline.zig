@@ -1,10 +1,10 @@
-const std       = @import("std");
-const ast       = @import("ast.zig");
-const diag_mod  = @import("diagnostic.zig");
+const std = @import("std");
+const ast = @import("ast.zig");
+const diag_mod = @import("diagnostic.zig");
 const Diagnostic = diag_mod.Diagnostic;
-const parser    = @import("parser.zig");
-const sema      = @import("sema.zig");
-const runtime   = @import("runtime.zig");
+const parser = @import("parser.zig");
+const sema = @import("sema.zig");
+const runtime = @import("runtime.zig");
 
 pub const FrontEnd = struct {
     module: ast.Module,
@@ -35,6 +35,7 @@ pub const CompileError = error{
     ParseFailed,
     SemanticFailed,
     IoError,
+    RuntimeUnavailable,
     OutOfMemory,
 };
 
@@ -46,7 +47,7 @@ pub const CompileError = error{
 pub fn compile(
     allocator: std.mem.Allocator,
     file_name: []const u8,
-    source:    []const u8,
+    source: []const u8,
 ) CompileError!FrontEnd {
     const arena = try createFrontendArena(allocator);
     errdefer destroyFrontendArena(allocator, arena);
@@ -63,13 +64,12 @@ pub fn compile(
 pub fn compileWithRuntime(
     allocator: std.mem.Allocator,
     file_name: []const u8,
-    source:    []const u8,
+    source: []const u8,
 ) CompileError!FrontEnd {
-    const rt_src = runtime.runtimeSource();
-    if (rt_src.len == 0) return compile(allocator, file_name, source);
+    const rt_src = runtime.runtimeSourceFor(@import("builtin").os.tag) orelse return error.RuntimeUnavailable;
     return compileMulti(allocator, &.{
         .{ .file_name = "<runtime>", .source = rt_src },
-        .{ .file_name = file_name,  .source = source  },
+        .{ .file_name = file_name, .source = source },
     });
 }
 
@@ -140,18 +140,16 @@ fn compileFileInternal(
     var next_id: ast.NodeId = 1;
 
     if (include_runtime) {
-        const rt_src = runtime.runtimeSource();
-        if (rt_src.len != 0) {
-            const parsed = parser.parseSourceFrom(fe_allocator, "<runtime>", rt_src, next_id) catch |err| switch (err) {
-                error.ParseFailed => return error.ParseFailed,
-                error.OutOfMemory => return error.OutOfMemory,
-            };
-            next_id = parsed.next_id;
-            for (parsed.module.items) |item| switch (item) {
-                .import => {},
-                else => try all_items.append(fe_allocator, item),
-            };
-        }
+        const rt_src = runtime.runtimeSourceFor(@import("builtin").os.tag) orelse return error.RuntimeUnavailable;
+        const parsed = parser.parseSourceFrom(fe_allocator, "<runtime>", rt_src, next_id) catch |err| switch (err) {
+            error.ParseFailed => return error.ParseFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+        next_id = parsed.next_id;
+        for (parsed.module.items) |item| switch (item) {
+            .import => {},
+            else => try all_items.append(fe_allocator, item),
+        };
     }
 
     loadFile(fe_allocator, io, path, &loaded, &all_items, &next_id, &root_source, true) catch |err| switch (err) {
@@ -232,7 +230,7 @@ fn runPipelineWithSource(
 ) CompileError!FrontEnd {
     var symbols = sema.collectSymbols(allocator, module) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
-        error.OutOfMemory    => return error.OutOfMemory,
+        error.OutOfMemory => return error.OutOfMemory,
     };
     errdefer symbols.deinit(allocator);
 
@@ -253,10 +251,10 @@ fn runPipelineWithSource(
 
     // Surface any warnings that accumulated even on a successful compile.
     return .{
-        .module  = module,
+        .module = module,
         .symbols = symbols,
-        .types   = types,
-        .arena   = arena,
+        .types = types,
+        .arena = arena,
     };
 }
 
