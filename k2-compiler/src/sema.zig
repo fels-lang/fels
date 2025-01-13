@@ -334,6 +334,8 @@ pub const TypeEnv = struct {
     expr_symbols: std.AutoHashMap(ast.NodeId, SymbolId),
     expr_scopes: std.AutoHashMap(ast.NodeId, ScopeId),
     generic_instantiations: std.ArrayList(GenericInstantiation) = .empty,
+    /// Callee expression NodeId → mangled name for generic function calls.
+    generic_call_insts: std.AutoHashMap(ast.NodeId, []const u8) = undefined,
     /// Generic struct templates: struct name → TypeDecl (with type_params).
     generic_struct_templates: std.StringHashMap(ast.TypeDecl) = undefined,
     /// Mangled name → SymbolId for already-instantiated generic structs.
@@ -350,6 +352,7 @@ pub const TypeEnv = struct {
             .expr_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .expr_symbols = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .expr_scopes = std.AutoHashMap(ast.NodeId, ScopeId).init(allocator),
+            .generic_call_insts = std.AutoHashMap(ast.NodeId, []const u8).init(allocator),
             .generic_struct_templates = std.StringHashMap(ast.TypeDecl).init(allocator),
             .generic_struct_instances = std.StringHashMap(SymbolId).init(allocator),
             .interface_impls = std.StringHashMap(ast.InterfaceImpl).init(allocator),
@@ -364,6 +367,7 @@ pub const TypeEnv = struct {
         self.expr_types.deinit();
         self.expr_symbols.deinit();
         self.expr_scopes.deinit();
+        self.generic_call_insts.deinit();
         for (self.generic_instantiations.items) |*gi| gi.expr_types.deinit();
         self.generic_instantiations.deinit(allocator);
         self.generic_struct_templates.deinit();
@@ -1298,6 +1302,7 @@ const Checker = struct {
             },
             .type_ref => |type_ref| try self.typeFromRef(type_ref),
             .int => |text| intLiteralType(text),
+            .float => |text| floatLiteralType(text),
             .string => try self.sliceOf(.u8),
             .bool => .bool,
             .null => .null_ptr,
@@ -1859,6 +1864,9 @@ const Checker = struct {
             });
         } else type_args.deinit(self.allocator);
 
+        // Remember the mangled name so the IR lowerer can emit the right callee.
+        try self.env.generic_call_insts.put(call.callee.id, mangled);
+
         // Return substituted return type
         const ret = self.substituteTy(sig.return_ty, &binding);
         if (sig.error_ty) |err| {
@@ -2260,6 +2268,8 @@ const Checker = struct {
         }
         if (actual == .int_lit and expected.isInteger()) return true;
         if (expected == .int_lit and actual.isInteger()) return true;
+        if (actual == .float_lit and expected.isFloat()) return true;
+        if (expected == .float_lit and actual.isFloat()) return true;
         if (actual == .null_ptr) return switch (expected) {
             .pointer, .slice, .named, .optional => true,
             else => false,
@@ -2472,6 +2482,12 @@ fn intLiteralType(text: []const u8) Ty {
     if (std.mem.endsWith(u8, text, "u32")) return .u32;
     if (std.mem.endsWith(u8, text, "usize")) return .usize;
     return .int_lit;
+}
+
+fn floatLiteralType(text: []const u8) Ty {
+    if (std.mem.endsWith(u8, text, "f32")) return .f32;
+    if (std.mem.endsWith(u8, text, "f64")) return .f64;
+    return .float_lit;
 }
 
 fn parseArrayLen(expr: ast.Expr) u64 {

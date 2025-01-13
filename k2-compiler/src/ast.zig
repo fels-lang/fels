@@ -408,6 +408,7 @@ pub const ExprKind = union(enum) {
     ident: []const u8,
     type_ref: TypeRef,
     int: []const u8,
+    float: []const u8,
     string: []const u8,
     bool: bool,
     null,

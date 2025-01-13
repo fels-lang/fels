@@ -148,6 +148,7 @@ pub fn evalExpr(ctx: *ComptimeCtx, expr: ast.Expr) ComptimeError!ComptimeValue {
     return switch (expr.kind) {
         // ── Literals ────────────────────────────────────────────────────────
         .int    => |text| .{ .int  = parseIntLit(text) },
+        .float  => |text| .{ .float = parseFloatLit(text) },
         .bool   => |v|   .{ .bool = v },
         .null           => .null_ptr,
         .string => |s|   .{ .string = trimQuotes(s) },
@@ -565,6 +566,15 @@ fn tyToValue(ctx: *ComptimeCtx, ty: sema.Ty) ComptimeError!ComptimeValue {
         .usize    => .{ .type_val = .usize },
         else      => error.NotComptime,
     };
+}
+
+fn parseFloatLit(text: []const u8) f64 {
+    // Strip type suffix (f32, f64)
+    var end = text.len;
+    while (end > 0 and std.ascii.isAlphabetic(text[end - 1])) end -= 1;
+    const num = text[0..end];
+    if (num.len == 0) return 0.0;
+    return std.fmt.parseFloat(f64, num) catch 0.0;
 }
 
 fn parseIntLit(text: []const u8) i128 {

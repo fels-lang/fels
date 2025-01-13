@@ -964,6 +964,7 @@ pub const Parser = struct {
                 return self.expr(.{ .type_ref = ty }, ty.span());
             },
             .int_lit => return self.expr(.{ .int = tok.text(self.source) }, spanFrom(tok, tok)),
+            .float_lit => return self.expr(.{ .float = tok.text(self.source) }, spanFrom(tok, tok)),
             .string_lit => return self.expr(.{ .string = tok.text(self.source) }, spanFrom(tok, tok)),
             .keyword_true => return self.expr(.{ .bool = true }, spanFrom(tok, tok)),
             .keyword_false => return self.expr(.{ .bool = false }, spanFrom(tok, tok)),

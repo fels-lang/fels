@@ -57,6 +57,14 @@ pub const LlvmBackend = struct {
         try vtables.lowerAll(&self.cg, module.vtables);
         try fns.defineAll(&self.cg, module.functions);
 
+        // Windows floating-point support requires _fltused when /NODEFAULTLIB is used.
+        if (@import("builtin").os.tag == .windows) {
+            const i32_ty = llvm_c.LLVMInt32TypeInContext(self.cg.ctx);
+            const fltused = llvm_c.LLVMAddGlobal(self.cg.mod, i32_ty, "_fltused");
+            llvm_c.LLVMSetInitializer(fltused, llvm_c.LLVMConstInt(i32_ty, 1, 0));
+            llvm_c.LLVMSetLinkage(fltused, llvm_c.LLVMExternalLinkage);
+        }
+
         // Auto-generate the platform entry point if needed.
         for (module.functions) |f| {
             if (f.entry) {

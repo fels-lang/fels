@@ -1699,6 +1699,7 @@ const FunctionLowerer = struct {
                     .value = try self.lowerExpr(cast.value.*),
                 } }),
             .int => |text| .{ .imm = .{ .int = parseIntLiteral(text) } },
+            .float => |text| .{ .imm = .{ .float = parseFloatLiteral(text) } },
             .string => |text| .{ .imm = .{ .text = trimQuotes(text) } },
             .bool => |value| .{ .imm = .{ .bool = value } },
             .null => .{ .imm = .null },
@@ -1853,7 +1854,12 @@ const FunctionLowerer = struct {
                     } });
                 }
 
-                break :blk try self.emit(self.exprType(expr), .{ .call = .{ .callee = callee_name, .args = arg_slice } });
+                // Use the mangled instantiation name if sema recorded one.
+                const call_callee = if (call.callee.kind == .ident)
+                    self.types.generic_call_insts.get(call.callee.id) orelse callee_name
+                else
+                    callee_name;
+                break :blk try self.emit(self.exprType(expr), .{ .call = .{ .callee = call_callee, .args = arg_slice } });
             },
             .field => |field| blk: {
                 // Detect enum variant access: `Direction.north`
@@ -2665,6 +2671,7 @@ fn comptimeToImm(v: comptime_mod.ComptimeValue) ?Imm {
 fn inferConstType(expr: ast.Expr) IrType {
     return switch (expr.kind) {
         .int => .{ .i = 32 },
+        .float => .f64,
         .unary => |u| if (u.op == .neg) inferConstType(u.expr.*) else .unknown,
         .bool => .bool,
         .string => .text,
@@ -2676,6 +2683,7 @@ fn inferConstType(expr: ast.Expr) IrType {
 fn lowerImm(expr: ast.Expr) Imm {
     return switch (expr.kind) {
         .int => |text| .{ .int = parseIntLiteral(text) },
+        .float => |text| .{ .float = parseFloatLiteral(text) },
         .unary => |u| switch (u.op) {
             .neg => switch (u.expr.kind) {
                 .int => |text| .{ .int = -parseIntLiteral(text) },
@@ -2725,6 +2733,15 @@ fn parseIntLiteral(text: []const u8) i128 {
     }
 
     return if (negative) -value else value;
+}
+
+fn parseFloatLiteral(text: []const u8) f64 {
+    // Strip type suffix (f32, f64)
+    var end = text.len;
+    while (end > 0 and std.ascii.isAlphabetic(text[end - 1])) end -= 1;
+    const num = text[0..end];
+    if (num.len == 0) return 0.0;
+    return std.fmt.parseFloat(f64, num) catch 0.0;
 }
 
 fn hasAttr(attrs: []const ast.Attribute, name: []const u8) bool {

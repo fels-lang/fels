@@ -7,6 +7,7 @@ pub const TokenKind = enum {
     // Names + literals
     ident,
     int_lit,
+    float_lit,
     string_lit,
 
     // Delimiters
@@ -333,6 +334,23 @@ pub const Lexer = struct {
         } else {
             while (self.index < self.source.len and (std.ascii.isDigit(self.source[self.index]) or self.source[self.index] == '_')) {
                 self.index += 1;
+            }
+            // Check for float literal: digits.digits
+            if (self.index < self.source.len and self.source[self.index] == '.') {
+                const dot_pos = self.index;
+                self.index += 1;
+                if (self.index < self.source.len and std.ascii.isDigit(self.source[self.index])) {
+                    while (self.index < self.source.len and (std.ascii.isDigit(self.source[self.index]) or self.source[self.index] == '_')) {
+                        self.index += 1;
+                    }
+                    // Consume any trailing identifier characters (type suffixes)
+                    while (self.index < self.source.len and isIdentContinue(self.source[self.index])) {
+                        self.index += 1;
+                    }
+                    return token(.float_lit, start, self.index);
+                }
+                // Not a float literal (e.g. `4.` or `4.xyz`) — rewind to before the dot
+                self.index = dot_pos;
             }
         }
 
