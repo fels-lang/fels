@@ -215,6 +215,23 @@ pub fn evalExpr(ctx: *ComptimeCtx, expr: ast.Expr) ComptimeError!ComptimeValue {
         // Field access: enum variant or struct field.
         .field  => |f| try evalField(ctx, f),
 
+        // Indexing: array or slice
+        .index => |idx| blk: {
+            const base = try evalExpr(ctx, idx.base.*);
+            const index = try evalExpr(ctx, idx.index.*);
+            const i: usize = switch (index) {
+                .int => |v| @intCast(@max(v, 0)),
+                .uint => |v| @intCast(v),
+                else => return error.NotComptime,
+            };
+            break :blk switch (base) {
+                .array_val => |arr| if (i < arr.len) arr[i] else error.IndexOutOfBounds,
+                .slice_val => |sv| if (i < sv.len) sv.ptr[i] else error.IndexOutOfBounds,
+                .string => |s| if (i < s.len) .{ .int = s[i] } else error.IndexOutOfBounds,
+                else => error.NotComptime,
+            };
+        },
+
         else    => error.NotComptime,
     };
 }
@@ -287,7 +304,73 @@ fn evalStmt(ctx: *ComptimeCtx, stmt: ast.Stmt) ComptimeError!StmtResult {
             }
         },
         .expr => |e| _ = try evalExpr(ctx, e),
+        .for_slice => |fs| return try evalForSlice(ctx, fs),
+        .for_range => |fr| return try evalForRange(ctx, fr),
         else => return error.NotComptime,
+    }
+    return .next;
+}
+
+fn evalForSlice(ctx: *ComptimeCtx, fs: ast.ForSliceStmt) ComptimeError!StmtResult {
+    const iterable = try evalExpr(ctx, fs.iter);
+    switch (iterable) {
+        .array_val => |arr| {
+            var i: usize = 0;
+            while (i < arr.len) : (i += 1) {
+                var child = ctx.withLocals();
+                defer child.deinit();
+                try child.locals.put(fs.binding, arr[i]);
+                if (fs.index_binding) |idx_name| {
+                    try child.locals.put(idx_name, .{ .uint = i });
+                }
+                const r = try evalBlock(&child, fs.body);
+                if (r == .returned) return r;
+            }
+        },
+        .slice_val => |sv| {
+            var i: usize = 0;
+            while (i < sv.len) : (i += 1) {
+                var child = ctx.withLocals();
+                defer child.deinit();
+                try child.locals.put(fs.binding, sv.ptr[i]);
+                if (fs.index_binding) |idx_name| {
+                    try child.locals.put(idx_name, .{ .uint = i });
+                }
+                const r = try evalBlock(&child, fs.body);
+                if (r == .returned) return r;
+            }
+        },
+        .string => |s| {
+            var i: usize = 0;
+            while (i < s.len) : (i += 1) {
+                var child = ctx.withLocals();
+                defer child.deinit();
+                try child.locals.put(fs.binding, .{ .int = s[i] });
+                if (fs.index_binding) |idx_name| {
+                    try child.locals.put(idx_name, .{ .uint = i });
+                }
+                const r = try evalBlock(&child, fs.body);
+                if (r == .returned) return r;
+            }
+        },
+        else => return error.NotComptime,
+    }
+    return .next;
+}
+
+fn evalForRange(ctx: *ComptimeCtx, fr: ast.ForRangeStmt) ComptimeError!StmtResult {
+    const start_val = try evalExpr(ctx, fr.start);
+    const end_val = try evalExpr(ctx, fr.end);
+    const s: i128 = switch (start_val) { .int => |v| v, .uint => |v| @intCast(v), else => return error.NotComptime };
+    const e: i128 = switch (end_val)   { .int => |v| v, .uint => |v| @intCast(v), else => return error.NotComptime };
+    var i: i128 = s;
+    const limit: i128 = if (fr.inclusive) e + 1 else e;
+    while (i < limit) : (i += 1) {
+        var child = ctx.withLocals();
+        defer child.deinit();
+        try child.locals.put(fr.binding, .{ .int = i });
+        const r = try evalBlock(&child, fr.body);
+        if (r == .returned) return r;
     }
     return .next;
 }
@@ -313,6 +396,51 @@ fn evalBinary(ctx: *ComptimeCtx, b: ast.BinaryExpr) ComptimeError!ComptimeValue 
             .bit_and => .{ .int = l & r },
             .bit_or  => .{ .int = l | r },
             .bit_xor => .{ .int = l ^ r },
+            .equal    => .{ .bool = l == r },
+            .not_equal=> .{ .bool = l != r },
+            .less     => .{ .bool = l < r },
+            .le       => .{ .bool = l <= r },
+            .gt       => .{ .bool = l > r },
+            .ge       => .{ .bool = l >= r },
+            else => error.NotComptime,
+        };
+    }
+
+    // Unsigned integer operations
+    if (lhs == .uint and rhs == .uint) {
+        const l = lhs.uint;
+        const r = rhs.uint;
+        return switch (b.op) {
+            .add => .{ .uint = l +% r },
+            .sub => .{ .uint = l -% r },
+            .mul => .{ .uint = l *% r },
+            .div => if (r == 0) error.DivByZero else .{ .uint = l / r },
+            .rem => if (r == 0) error.DivByZero else .{ .uint = l % r },
+            .shl => .{ .uint = l << @as(u7, @intCast(r & 127)) },
+            .shr => .{ .uint = l >> @as(u7, @intCast(r & 127)) },
+            .bit_and => .{ .uint = l & r },
+            .bit_or  => .{ .uint = l | r },
+            .bit_xor => .{ .uint = l ^ r },
+            .equal    => .{ .bool = l == r },
+            .not_equal=> .{ .bool = l != r },
+            .less     => .{ .bool = l < r },
+            .le       => .{ .bool = l <= r },
+            .gt       => .{ .bool = l > r },
+            .ge       => .{ .bool = l >= r },
+            else => error.NotComptime,
+        };
+    }
+
+    // Float operations
+    if (lhs == .float and rhs == .float) {
+        const l = lhs.float;
+        const r = rhs.float;
+        return switch (b.op) {
+            .add => .{ .float = l + r },
+            .sub => .{ .float = l - r },
+            .mul => .{ .float = l * r },
+            .div => if (r == 0.0) error.DivByZero else .{ .float = l / r },
+            .rem => if (r == 0.0) error.DivByZero else .{ .float = @rem(l, r) },
             .equal    => .{ .bool = l == r },
             .not_equal=> .{ .bool = l != r },
             .less     => .{ .bool = l < r },
@@ -367,8 +495,12 @@ fn evalCall(ctx: *ComptimeCtx, call: ast.CallExpr) ComptimeError!ComptimeValue {
 
     // Built-in comptime functions
     if (std.mem.eql(u8, name, "sizeof")) {
-        // sizeof(T) at comptime → size in bytes (approximate)
-        return .{ .uint = 8 }; // TODO: real size from type info
+        if (call.args.len > 0) {
+            const arg = switch (call.args[0]) { .positional => |e| e, .named => |n| n.value };
+            const v = try evalExpr(ctx, arg);
+            if (v == .type_val) return .{ .uint = typeSize(ctx, v.type_val) };
+        }
+        return error.NotComptime;
     }
     if (std.mem.eql(u8, name, "type_name")) {
         if (call.args.len > 0) {
@@ -561,10 +693,61 @@ fn tyToValue(ctx: *ComptimeCtx, ty: sema.Ty) ComptimeError!ComptimeValue {
     _ = ctx;
     return switch (ty) {
         .bool     => .{ .type_val = .bool },
+        .i8       => .{ .type_val = .i8 },
+        .i16      => .{ .type_val = .i16 },
         .i32      => .{ .type_val = .i32 },
+        .i64      => .{ .type_val = .i64 },
         .u8       => .{ .type_val = .u8 },
+        .u16      => .{ .type_val = .u16 },
+        .u32      => .{ .type_val = .u32 },
+        .u64      => .{ .type_val = .u64 },
         .usize    => .{ .type_val = .usize },
+        .isize    => .{ .type_val = .isize },
+        .f32      => .{ .type_val = .f32 },
+        .f64      => .{ .type_val = .f64 },
+        .void     => .{ .type_val = .void },
+        .byte     => .{ .type_val = .byte },
         else      => error.NotComptime,
+    };
+}
+
+/// Compute the size of a type in bytes at compile time (x86_64 layout).
+fn typeSize(ctx: *ComptimeCtx, ty: sema.Ty) u64 {
+    return switch (ty) {
+        .void           => 0,
+        .bool, .i8, .u8, .byte => 1,
+        .i16, .u16      => 2,
+        .i32, .u32, .f32 => 4,
+        .i64, .u64, .f64, .isize, .usize, .addr => 8,
+        .pointer        => 8,
+        .optional       => |inner| if (inner.* == .pointer) 8 else 1 + typeSize(ctx, inner.*),
+        .slice          => 16, // ptr + len
+        .array          => |arr| arr.len * typeSize(ctx, arr.elem.*),
+        .named          => |id| blk: {
+            const layout = ctx.env.layouts.get(id) orelse break :blk 8;
+            switch (layout.kind) {
+                .struct_type => |fields| {
+                    var total: u64 = 0;
+                    for (fields) |f| total += typeSize(ctx, f.ty);
+                    break :blk total;
+                },
+                .variant_type => |variants| {
+                    var max_payload: u64 = 0;
+                    for (variants) |v| {
+                        if (v.payload) |p| {
+                            const ps = typeSize(ctx, p);
+                            if (ps > max_payload) max_payload = ps;
+                        }
+                    }
+                    break :blk 4 + max_payload; // u32 discriminant + max payload
+                },
+                .error_set => break :blk 4,
+                else => break :blk 8,
+            }
+        },
+        .int_lit, .float_lit => 8,
+        .type_param       => 8,
+        else             => 8,
     };
 }
 

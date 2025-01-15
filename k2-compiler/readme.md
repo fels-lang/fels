@@ -95,10 +95,10 @@ Status meanings:
 | Functions and generics | Implemented | Generic functions and structs are monomorphized. |
 | Control flow | Implemented | `if`, `while`, range/slice `for`, `break`, `continue`, and `defer`. |
 | Integer and enum `match` | Implemented | Integer matches support single and grouped cases. |
-| Compile-time execution | Partial | `#if` and `#run` exist; reflection and several operations are incomplete. |
+| Compile-time execution | Partial | `#if` and `#run` exist; `#run` now evaluates inside functions. `sizeof` returns accurate sizes. Float/uint ops, array indexing, and `for` loops work at comptime. Reflection and struct construction are still incomplete. |
 | Errors and fallible functions | Implemented | LLVM ABI, `fail`, `?` propagation, `catch`, and fallible entry points are lowered. |
 | Zones | Implemented | `Arena` provides zero-initialized lexical allocation, non-escape checking, and deterministic cleanup. |
-| Interfaces | Partial | Dynamic `*Interface` dispatch works; static constraints and advanced cases are missing. |
+| Interfaces | Partial | Dynamic `*Interface` dispatch works; fallible interface methods and `.ok`/`.err` field access work. Static constraints, const-correctness, generic methods, composition, and default methods are still missing or TBD. |
 | Runtime | Implemented on Windows; source-valid on Linux | Embedded runtime provides checked output counts, exit/abort, panic, and assertions. Native executable linking is currently Windows-only. |
 | Modules and imports | Partial | Local multi-file compilation exists; package and standard-library systems do not. |
 | Tooling | Partial | Check, IR, object, and build commands exist; formatter, LSP, package manager, and test runner do not. |
@@ -137,12 +137,17 @@ Interfaces are still partial. The following remain:
 - Static generic constraints, such as a decided equivalent of `where T: Writer`.
 - Direct statically dispatched calls through a concrete implementation.
 - Const-correct dynamic interface values.
-- Fallible and generic interface methods.
+- Generic interface methods.
 - Interface composition, inheritance, and upcasting.
 - Default or optional methods.
 - Coherence and cross-module implementation rules.
 - Ownership and lifetime validation for non-owning interface values.
 - Owned interface objects and downcasting, if K2 decides to support them.
+
+Completed since the last revision:
+
+- Fallible interface methods (`-> T!void`) now type-check and lower correctly.
+- `.ok` and `.err` field access on fallible values works end to end.
 
 Dynamic interfaces are therefore not a long-term-only goal anymore. They exist
 today, but need completion and a firmer ownership model.
@@ -282,10 +287,10 @@ failure/control-flow paths produce verified LLVM IR.
 
 ### P1: Complete Existing Language Features
 
-- Complete interfaces: static constraints, const correctness, fallible methods,
-  coherence rules, and lifetime validation.
+- Complete interfaces: static constraints, const correctness, generic methods,
+  coherence rules, and lifetime validation. (Fallible methods are now complete.)
 - Complete compile-time evaluation and make `sizeof` and type reflection
-  accurate.
+  accurate. (`sizeof` is now accurate; `#run` evaluates inside functions.)
 - Apply `#align` correctly and add decided calling-convention, linking, and
   section attributes.
 - Define and implement wrapping arithmetic.

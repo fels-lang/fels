@@ -194,7 +194,8 @@ pub const Ty = union(enum) {
     args,
     thread_pool,
     zone,
-    pointer: *const Ty,
+    pointer: *const Ty,       // *T  — mutable pointer
+    const_ptr: *const Ty,    // *const T — read-only pointer
     optional: *const Ty,
     slice: *const Ty,
     borrow: *const Ty,
@@ -316,6 +317,7 @@ pub const FnSig = struct {
     export_sym: ?[]const u8, // #export / #export("name")
     deprecated: ?[]const u8, // #deprecated / #deprecated("msg")
     type_params: []const []const u8,
+    type_constraints: []const ast.TypeConstraint = &.{},
     type_binding: ?[]const u8,
 };
 
@@ -641,7 +643,8 @@ const Checker = struct {
             .error_ty => "error",
             .unknown => "unknown",
             .optional => |inner| std.fmt.allocPrint(self.allocator, "?{s}", .{self.formatTy(inner.*)}) catch "?T",
-            .pointer => |inner| std.fmt.allocPrint(self.allocator, "*{s}", .{self.formatTy(inner.*)}) catch "*T",
+            .pointer   => |inner| std.fmt.allocPrint(self.allocator, "*{s}", .{self.formatTy(inner.*)}) catch "*T",
+            .const_ptr => |inner| std.fmt.allocPrint(self.allocator, "*const {s}", .{self.formatTy(inner.*)}) catch "*const T",
             .slice => |inner| std.fmt.allocPrint(self.allocator, "[]{s}", .{self.formatTy(inner.*)}) catch "[]T",
             .borrow => |inner| std.fmt.allocPrint(self.allocator, "borrow {s}", .{self.formatTy(inner.*)}) catch "borrow T",
             .named => |id| self.symbols.symbol(id).name,
@@ -725,7 +728,7 @@ const Checker = struct {
             return error.SemanticFailed;
         }
         switch (ty.borrow.*) {
-            .pointer, .slice => {},
+            .pointer, .const_ptr, .slice => {},
             else => {
                 self.emitError(span, "`borrow` parameters must be pointers or slices", .{});
                 return error.SemanticFailed;
@@ -853,8 +856,12 @@ const Checker = struct {
                                 });
                                 const first = methods.items[methods.items.len - 1].params;
                                 const self_ty = if (first.len > 0 and first[0].ty == .borrow) first[0].ty.borrow.* else if (first.len > 0) first[0].ty else .unknown;
-                                if (first.len == 0 or self_ty != .pointer or
-                                    self_ty.pointer.* != .named or self_ty.pointer.named != id)
+                                const self_inner = switch (self_ty) {
+                                    .pointer, .const_ptr => |inner| inner,
+                                    else => null,
+                                };
+                                if (first.len == 0 or self_inner == null or
+                                    self_inner.?.* != .named or self_inner.?.named != id)
                                 {
                                     self.emitError(method.span, "interface method `{s}` must begin with `self: *Self` or `self: borrow *Self`", .{method.name});
                                     return error.SemanticFailed;
@@ -900,6 +907,7 @@ const Checker = struct {
                         .export_sym = exportSym(decl.attrs),
                         .deprecated = deprecatedMsg(decl.attrs),
                         .type_params = decl.type_params,
+                        .type_constraints = decl.type_constraints,
                         .type_binding = null,
                     });
                     try self.env.set(id, .{ .fn_ptr = .{
@@ -1072,6 +1080,7 @@ const Checker = struct {
                 try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
             },
             .assign => |assign| {
+                try self.checkAssignTarget(assign.target);
                 const target_ty = try self.inferExpr(assign.target);
                 const value_ty = try self.inferExpr(assign.value);
                 if (!try self.compatible(value_ty, target_ty)) return error.SemanticFailed;
@@ -1315,7 +1324,7 @@ const Checker = struct {
                 .deref => blk: {
                     const inner = try self.inferExpr(unary.expr.*);
                     break :blk switch (inner) {
-                        .pointer => |p| p.*,
+                        .pointer, .const_ptr => |p| p.*,
                         .slice => |p| p.*,
                         else => return error.SemanticFailed,
                     };
@@ -1384,6 +1393,10 @@ const Checker = struct {
                     .array => |array| try self.ptrTo(array.elem.*),
                     else => return error.SemanticFailed,
                 };
+                if (base_ty == .fallible) {
+                    if (std.mem.eql(u8, field.name, "ok")) break :blk base_ty.fallible.ok.*;
+                    if (std.mem.eql(u8, field.name, "err")) break :blk base_ty.fallible.err.*;
+                }
                 break :blk try self.fieldType(base_ty, field.name);
             },
             .index => |index| blk: {
@@ -1392,7 +1405,7 @@ const Checker = struct {
                 break :blk switch (base_ty) {
                     .array => |array| array.elem.*,
                     .slice => |inner| inner.*,
-                    .pointer => |inner| inner.*,
+                    .pointer, .const_ptr => |inner| inner.*,
                     else => return error.SemanticFailed,
                 };
             },
@@ -1466,6 +1479,9 @@ const Checker = struct {
                     .params = &.{},
                     .ret = try self.boxTy(method.return_ty),
                 } });
+                if (method.error_ty) |err_ty| {
+                    return .{ .fallible = .{ .ok = try self.boxTy(method.return_ty), .err = try self.boxTy(err_ty) } };
+                }
                 return method.return_ty;
             }
         }
@@ -1798,27 +1814,51 @@ const Checker = struct {
     }
 
     fn inferGenericCall(self: *Checker, sym_id: SymbolId, fn_name: []const u8, sig: FnSig, call: ast.CallExpr) SemanticError!Ty {
-        if (call.args.len != sig.params.len) return error.SemanticFailed;
+        // Constrained type params ($T: Interface) are implicit — inferred from value args.
+        // Unconstrained type params ($T: type) are explicit — the caller passes the type.
+        // So we count: value params + unconstrained type params = expected arg count.
+        var expected_arg_count: usize = 0;
+        for (sig.params) |p| {
+            if (!p.is_type_param) { expected_arg_count += 1; continue; }
+            // Is this type param constrained?
+            const is_constrained = for (sig.type_constraints) |c| {
+                if (std.mem.eql(u8, c.param, p.name)) break true;
+            } else false;
+            if (!is_constrained) expected_arg_count += 1; // explicit $T: type
+        }
+        if (call.args.len != expected_arg_count) return error.SemanticFailed;
 
-        // Infer type args by matching call args to type_param-typed params
+        // Infer type args by matching call args to value params.
+        // Type-only params ($T: type / $T: Interface) are inferred from the value args.
         var binding = std.StringHashMap(Ty).init(self.allocator);
         defer binding.deinit();
 
         var arg_tys = std.ArrayList(Ty).empty;
         defer arg_tys.deinit(self.allocator);
 
-        for (call.args, sig.params) |arg, param| {
-            const arg_expr = switch (arg) {
+        var arg_i: usize = 0;
+        for (sig.params) |param| {
+            if (param.is_type_param) {
+                // Constrained ($T: Interface) → implicit, skip for arg matching.
+                // Unconstrained ($T: type) → explicit, falls through to arg handling below.
+                const constrained = for (sig.type_constraints) |c| {
+                    if (std.mem.eql(u8, c.param, param.name)) break true;
+                } else false;
+                if (constrained) continue;
+            }
+            if (arg_i >= call.args.len) break;
+            const arg_expr = switch (call.args[arg_i]) {
                 .positional => |value| value,
                 .named => |named| named.value,
             };
+            arg_i += 1;
             try self.checkNonEscapingArgument(arg_expr, param.ty);
             const arg_ty = try self.inferExpr(arg_expr);
             try arg_tys.append(self.allocator, arg_ty);
+            // Bind type variables: if param type is $T, bind T to the arg type.
             if (param.ty == .type_param) {
                 const tp = param.ty.type_param;
                 if (!binding.contains(tp)) {
-                    // Coerce unresolved literal types to concrete defaults
                     const concrete = switch (arg_ty) {
                         .int_lit => Ty.i32,
                         .float_lit => Ty.f64,
@@ -1827,12 +1867,66 @@ const Checker = struct {
                     try binding.put(tp, concrete);
                 }
             }
+            // If param type contains a type variable (e.g. *$T), extract the binding.
+            if (param.ty == .pointer or param.ty == .const_ptr) {
+                const inner = switch (param.ty) {
+                    .pointer, .const_ptr => |i| i,
+                    else => unreachable,
+                };
+                if (inner.* == .type_param) {
+                    const tp = inner.type_param;
+                    if (!binding.contains(tp)) {
+                        // arg_ty should be *SomeType — extract the inner
+                        const concrete: Ty = switch (arg_ty) {
+                            .pointer, .const_ptr => |inner_ty| inner_ty.*,
+                            else => arg_ty,
+                        };
+                        try binding.put(tp, concrete);
+                    }
+                }
+            }
         }
 
-        // Verify all args are compatible with substituted param types
-        for (sig.params, arg_tys.items) |param, arg_ty| {
+        // Verify all value args are compatible with substituted param types.
+        var check_i: usize = 0;
+        for (sig.params) |param| {
+            if (param.is_type_param) {
+                const constrained = for (sig.type_constraints) |c| {
+                    if (std.mem.eql(u8, c.param, param.name)) break true;
+                } else false;
+                if (constrained) continue;
+            }
+            if (check_i >= arg_tys.items.len) break;
+            const arg_ty = arg_tys.items[check_i];
+            check_i += 1;
             const expected = self.substituteTy(param.ty, &binding);
             if (!try self.compatible(arg_ty, expected)) return error.SemanticFailed;
+        }
+
+        // Check static interface constraints: $T: Interface
+        for (sig.type_constraints) |constraint| {
+            const bound_ty = binding.get(constraint.param) orelse continue;
+            // Unwrap pointer to get the concrete named type.
+            const concrete_id: SymbolId = switch (bound_ty) {
+                .named => |id| id,
+                .pointer, .const_ptr => |inner| switch (inner.*) {
+                    .named => |id| id,
+                    else => {
+                        self.emitError(constraint.span, "type parameter `{s}` must be a named struct, found `{s}`", .{ constraint.param, self.formatTy(bound_ty) });
+                        return error.SemanticFailed;
+                    },
+                },
+                else => {
+                    self.emitError(constraint.span, "type parameter `{s}` must be a named struct, found `{s}`", .{ constraint.param, self.formatTy(bound_ty) });
+                    return error.SemanticFailed;
+                },
+            };
+            const concrete_name = self.symbols.symbol(concrete_id).name;
+            const key = try interfaceImplKey(self.allocator, concrete_name, constraint.interface);
+            if (!self.env.interface_impls.contains(key)) {
+                self.emitError(constraint.span, "`{s}` does not implement `{s}`", .{ concrete_name, constraint.interface });
+                return error.SemanticFailed;
+            }
         }
 
         // Build ordered type_args list
@@ -1883,6 +1977,11 @@ const Checker = struct {
                 const sub = self.allocator.create(Ty) catch return ty;
                 sub.* = self.substituteTy(inner.*, binding);
                 break :blk .{ .pointer = sub };
+            },
+            .const_ptr => |inner| blk: {
+                const sub = self.allocator.create(Ty) catch return ty;
+                sub.* = self.substituteTy(inner.*, binding);
+                break :blk .{ .const_ptr = sub };
             },
             .optional => |inner| blk: {
                 const sub = self.allocator.create(Ty) catch return ty;
@@ -2073,8 +2172,14 @@ const Checker = struct {
                 }
                 return fromBuiltinName(named.name) orelse error.SemanticFailed;
             },
-            .pointer => |ptr| return try self.ptrTo(try self.typeFromRef(ptr.inner.*)),
-            .many_pointer => |ptr| return try self.ptrTo(try self.typeFromRef(ptr.inner.*)),
+            .pointer => |ptr| {
+                const inner = try self.typeFromRef(ptr.inner.*);
+                return if (ptr.is_const) try self.constPtrTo(inner) else try self.ptrTo(inner);
+            },
+            .many_pointer => |ptr| {
+                const inner = try self.typeFromRef(ptr.inner.*);
+                return if (ptr.is_const) try self.constPtrTo(inner) else try self.ptrTo(inner);
+            },
             .optional => |optional| return try self.optionalOf(try self.typeFromRef(optional.inner.*)),
             .slice => |slice| return try self.sliceOf(try self.typeFromRef(slice.inner.*)),
             .array => |array| {
@@ -2107,6 +2212,7 @@ const Checker = struct {
         return switch (spec) {
             .inferred => .error_ty,
             .named => |named| blk: {
+                if (std.mem.eql(u8, named.name, "void")) break :blk .error_ty;
                 const id = self.symbols.resolve(self.symbols.root_scope, named.name) orelse return error.SemanticFailed;
                 if (self.symbols.symbol(id).kind != .type) return error.SemanticFailed;
                 const layout = self.env.layouts.get(id) orelse return error.SemanticFailed;
@@ -2174,9 +2280,13 @@ const Checker = struct {
     fn fieldType(self: *Checker, base_ty: Ty, name: []const u8) SemanticError!Ty {
         // Unknown base (e.g., TARGET pseudo-module) — field access returns unknown.
         if (base_ty == .unknown) return .unknown;
+        if (base_ty == .fallible) {
+            if (std.mem.eql(u8, name, "ok")) return base_ty.fallible.ok.*;
+            if (std.mem.eql(u8, name, "err")) return base_ty.fallible.err.*;
+        }
         const type_id = switch (base_ty) {
             .named => |id| id,
-            .pointer => |inner| switch (inner.*) {
+            .pointer, .const_ptr => |inner| switch (inner.*) {
                 .named => |id| id,
                 else => return error.SemanticFailed,
             },
@@ -2232,6 +2342,33 @@ const Checker = struct {
         return .{ .pointer = try self.boxTy(ty) };
     }
 
+    fn constPtrTo(self: *Checker, ty: Ty) !Ty {
+        return .{ .const_ptr = try self.boxTy(ty) };
+    }
+
+    /// Reject assignments whose target is a dereference of a *const pointer.
+    fn checkAssignTarget(self: *Checker, target: ast.Expr) SemanticError!void {
+        switch (target.kind) {
+            .unary => |u| {
+                if (u.op != .deref) return;
+                const ptr_ty = try self.inferExpr(u.expr.*);
+                if (ptr_ty == .const_ptr) {
+                    self.emitError(target.span, "cannot assign through `*const` pointer", .{});
+                    return error.SemanticFailed;
+                }
+            },
+            .field => |f| {
+                // Writing through ptr.field — check the base pointer.
+                const base_ty = try self.inferExpr(f.base.*);
+                if (base_ty == .const_ptr) {
+                    self.emitError(target.span, "cannot assign to field through `*const` pointer", .{});
+                    return error.SemanticFailed;
+                }
+            },
+            else => {},
+        }
+    }
+
     fn sliceOf(self: *Checker, ty: Ty) !Ty {
         return .{ .slice = try self.boxTy(ty) };
     }
@@ -2270,8 +2407,11 @@ const Checker = struct {
         if (expected == .int_lit and actual.isInteger()) return true;
         if (actual == .float_lit and expected.isFloat()) return true;
         if (expected == .float_lit and actual.isFloat()) return true;
+        // *T is implicitly usable as *const T (const promotion).
+        if (actual == .pointer and expected == .const_ptr)
+            return sameTy(actual.pointer.*, expected.const_ptr.*);
         if (actual == .null_ptr) return switch (expected) {
-            .pointer, .slice, .named, .optional => true,
+            .pointer, .const_ptr, .slice, .named, .optional => true,
             else => false,
         };
         if (actual == .error_ty and self.isErrorType(expected)) return true;
@@ -2282,7 +2422,7 @@ const Checker = struct {
 
     fn interfaceFromPointer(self: *Checker, ty: Ty) ?SymbolId {
         const id = switch (ty) {
-            .pointer => |inner| switch (inner.*) {
+            .pointer, .const_ptr => |inner| switch (inner.*) {
                 .named => |id| id,
                 else => return null,
             },
@@ -2305,7 +2445,7 @@ const Checker = struct {
     fn interfaceCoercion(self: *Checker, actual: Ty, expected: Ty) !bool {
         const interface_id = self.interfaceFromPointer(expected) orelse return false;
         const concrete_id = switch (actual) {
-            .pointer => |inner| switch (inner.*) {
+            .pointer, .const_ptr => |inner| switch (inner.*) {
                 .named => |id| id,
                 else => return false,
             },
@@ -2327,16 +2467,17 @@ fn interfaceImplKey(allocator: std.mem.Allocator, type_name: []const u8, interfa
 fn substituteInterfaceSelf(checker: *Checker, ty: Ty, interface_id: SymbolId, concrete_id: SymbolId) !Ty {
     return switch (ty) {
         .named => |id| if (id == interface_id) .{ .named = concrete_id } else ty,
-        .pointer => |inner| .{ .pointer = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
-        .optional => |inner| .{ .optional = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
-        .slice => |inner| .{ .slice = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
-        .borrow => |inner| .{ .borrow = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        .pointer   => |inner| .{ .pointer   = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        .const_ptr => |inner| .{ .const_ptr = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        .optional  => |inner| .{ .optional  = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        .slice     => |inner| .{ .slice     = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        .borrow    => |inner| .{ .borrow    = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
         else => ty,
     };
 }
 
 fn isPointerTy(ty: Ty) bool {
-    return ty == .pointer;
+    return ty == .pointer or ty == .const_ptr;
 }
 
 fn blockDefinitelyReturns(block: ast.Block) bool {
@@ -2405,6 +2546,7 @@ pub fn tyMangle(ty: Ty) []const u8 {
         .usize => "usize",
         .isize => "isize",
         .pointer => "ptr",
+        .const_ptr => "cptr",
         .optional => "opt",
         .slice => "slice",
         .borrow => "borrow",
@@ -2417,7 +2559,8 @@ pub fn tyMangle(ty: Ty) []const u8 {
 fn sameTy(a: Ty, b: Ty) bool {
     if (@as(std.meta.Tag(Ty), a) != @as(std.meta.Tag(Ty), b)) return false;
     return switch (a) {
-        .pointer => |pa| sameTy(pa.*, b.pointer.*),
+        .pointer   => |pa| sameTy(pa.*, b.pointer.*),
+        .const_ptr => |pa| sameTy(pa.*, b.const_ptr.*),
         .optional => |oa| sameTy(oa.*, b.optional.*),
         .slice => |sa| sameTy(sa.*, b.slice.*),
         .borrow => |ba| sameTy(ba.*, b.borrow.*),
@@ -2431,7 +2574,7 @@ fn sameTy(a: Ty, b: Ty) bool {
 
 fn tyCanCarryZoneOwner(ty: Ty) bool {
     return switch (ty) {
-        .pointer, .slice, .borrow, .optional, .fallible, .named, .unknown => true,
+        .pointer, .const_ptr, .slice, .borrow, .optional, .fallible, .named, .unknown => true,
         else => false,
     };
 }
@@ -2439,7 +2582,7 @@ fn tyCanCarryZoneOwner(ty: Ty) bool {
 fn containsBorrow(ty: Ty) bool {
     return switch (ty) {
         .borrow => true,
-        .pointer, .optional, .slice => |inner| containsBorrow(inner.*),
+        .pointer, .const_ptr, .optional, .slice => |inner| containsBorrow(inner.*),
         .array => |array| containsBorrow(array.elem.*),
         .fallible => |fallible| containsBorrow(fallible.ok.*) or containsBorrow(fallible.err.*),
         else => false,

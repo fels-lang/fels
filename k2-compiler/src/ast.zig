@@ -116,12 +116,20 @@ pub const FieldDecl = struct {
     span: Span,
 };
 
+/// A constraint on a generic type parameter: `$T: InterfaceName`.
+pub const TypeConstraint = struct {
+    param: []const u8,      // type parameter name, e.g. "T"
+    interface: []const u8,  // required interface, e.g. "Writer"
+    span: Span,
+};
+
 pub const FunctionDecl = struct {
     attrs: []const Attribute,
     name: []const u8,
     file_name: []const u8,
     source: []const u8,
     type_params: []const []const u8,
+    type_constraints: []const TypeConstraint = &.{}, // $T: Interface constraints
     params: []const Param,
     return_ty: TypeRef,
     error_ty: ?ErrorSpec,

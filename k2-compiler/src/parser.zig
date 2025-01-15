@@ -440,15 +440,29 @@ pub const Parser = struct {
         errdefer params.deinit(self.allocator);
         var type_params: std.ArrayList([]const u8) = .empty;
         errdefer type_params.deinit(self.allocator);
+        var type_constraints: std.ArrayList(ast.TypeConstraint) = .empty;
+        errdefer type_constraints.deinit(self.allocator);
 
         if (!self.check(.r_paren)) {
             while (true) {
                 if (self.match(.dollar)) {
-                    // $T: type  — explicit type-only param; the param name IS the type variable.
-                    // Used as: zeroed($T: type) -> T
+                    // $T: type            — unconstrained type param
+                    // $T: InterfaceName   — constrained type param
                     const tp_name = try self.expect(.ident, "expected type parameter name after $");
                     _ = try self.expect(.colon, "expected : after $T");
-                    _ = try self.expect(.keyword_type, "expected 'type' after $T:");
+                    if (self.match(.keyword_type)) {
+                        // Unconstrained: $T: type
+                    } else if (self.check(.ident)) {
+                        // Constrained: $T: InterfaceName
+                        const iface_tok = self.advance();
+                        try type_constraints.append(self.allocator, .{
+                            .param = tp_name.text(self.source),
+                            .interface = iface_tok.text(self.source),
+                            .span = spanFrom(tp_name, iface_tok),
+                        });
+                    } else {
+                        return error.ParseFailed;
+                    }
                     try type_params.append(self.allocator, tp_name.text(self.source));
                     try params.append(self.allocator, .{
                         .name = tp_name.text(self.source),
@@ -499,6 +513,7 @@ pub const Parser = struct {
             .file_name = self.file_name,
             .source = self.source,
             .type_params = try type_params.toOwnedSlice(self.allocator),
+            .type_constraints = try type_constraints.toOwnedSlice(self.allocator),
             .params = try params.toOwnedSlice(self.allocator),
             .return_ty = return_ty,
             .error_ty = error_ty,

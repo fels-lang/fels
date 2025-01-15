@@ -635,6 +635,18 @@ fn lowerField(
             return llvm.LLVMBuildExtractValue(cg.builder, base_val, idx, "");
         },
 
+        .fallible => {
+            const idx: u32 = if (std.mem.eql(u8, f.name, "ok")) 0 else 1;
+            const lty = types.lower(cg, base_ir_ty);
+            const base_val = resolveVal(cg, fncg, f.base, base_ir_ty);
+            if (want_addr) {
+                const tmp = llvm.LLVMBuildAlloca(cg.builder, lty, "");
+                _ = llvm.LLVMBuildStore(cg.builder, base_val, tmp);
+                return llvm.LLVMBuildStructGEP2(cg.builder, lty, tmp, idx, "");
+            }
+            return llvm.LLVMBuildExtractValue(cg.builder, base_val, idx, "");
+        },
+
         .struct_type => |name| {
             // Struct value (e.g. a local of named type loaded from alloca).
             const idx = cg.fieldIndex(name, f.name) orelse return null;

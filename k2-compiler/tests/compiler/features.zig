@@ -838,3 +838,107 @@ test "for range and slice loops lower with continue-safe increment blocks" {
     };
     try std.testing.expect(has_index_addr);
 }
+
+// ── Const-correctness tests ────────────────────────────────────────────────
+
+test "const: *const T is accepted as a parameter type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // *const T can be declared and accepted by sema. Reads go through fine.
+    const src =
+        \\Pair :: struct { x: i32, y: i32, }
+        \\sum :: fn(p: *const Pair) -> i32 { return p.x; }
+        \\use :: fn(pair: Pair) {
+        \\    _ := sum(&pair);
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "const_ptr.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+}
+
+test "const: *T is implicitly promoted to *const T" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A mutable pointer must be accepted where *const T is expected.
+    const src =
+        \\Pair :: struct { x: i32, }
+        \\consume :: fn(p: *const Pair) -> i32 { return p.x; }
+        \\caller :: fn(pair: Pair) -> i32 {
+        \\    p := &pair;
+        \\    return consume(p);
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "const_promote.k2", src);
+    defer fe.deinit(arena.allocator());
+    try k2.ir_mod.validateModule(try k2.lowerFrontend(arena.allocator(), fe));
+}
+
+test "const: writing to field through *const T is rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // *const T means you cannot mutate the pointee at all.
+    const bad =
+        \\Wrap :: struct { v: i32, }
+        \\bad :: fn(p: *const Wrap) { p.v = 99; }
+    ;
+    try std.testing.expectError(
+        error.SemanticFailed,
+        k2.compile(arena.allocator(), "const_write.k2", bad),
+    );
+}
+
+test "const: field write through *const T is rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const bad =
+        \\Pair :: struct { x: i32, y: i32, }
+        \\bad :: fn(p: *const Pair) { p.x = 1; }
+    ;
+    try std.testing.expectError(
+        error.SemanticFailed,
+        k2.compile(arena.allocator(), "const_field_write.k2", bad),
+    );
+}
+
+// ── Static constraint tests ────────────────────────────────────────────────
+
+test "static constraints: $T: Interface accepts conforming type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The constraint is checked at call-site: Console implements Printer → accepted.
+    // Body method dispatch on $T (calling item.print()) is a separate feature;
+    // here we just verify the constraint gate works.
+    const src =
+        \\Printer :: interface {
+        \\    print :: fn(self: *Self);
+        \\}
+        \\Console :: struct { fd: i32, }
+        \\Console as Printer {
+        \\    print :: fn(self: *Console) {}
+        \\}
+        \\process :: fn($T: Printer, item: *T) {}
+        \\use :: fn(c: *Console) { process(c); }
+    ;
+    var fe = try k2.compile(arena.allocator(), "constraint_ok.k2", src);
+    defer fe.deinit(arena.allocator());
+    try k2.ir_mod.validateModule(try k2.lowerFrontend(arena.allocator(), fe));
+}
+
+test "static constraints: $T: Interface rejects non-conforming type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const bad =
+        \\Printer :: interface {
+        \\    print :: fn(self: *Self);
+        \\}
+        \\File :: struct { fd: i32, }
+        \\print_all :: fn($T: Printer, item: *T) { item.print(); }
+        \\bad :: fn(f: *File) { print_all(f); }
+    ;
+    try std.testing.expectError(
+        error.SemanticFailed,
+        k2.compile(arena.allocator(), "constraint_bad.k2", bad),
+    );
+}
