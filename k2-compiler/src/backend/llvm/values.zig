@@ -66,7 +66,14 @@ pub fn lowerImm(cg: *ModuleCg, imm: ir.Imm, hint_ty: ir.IrType) llvm.LLVMValueRe
 
 pub fn lowerImmAs(cg: *ModuleCg, imm: ir.Imm, lty: llvm.LLVMTypeRef) llvm.LLVMValueRef {
     return switch (imm) {
-        .int => |v| llvm.LLVMConstInt(lty, @bitCast(@as(i64, @intCast(v))), 1),
+        .int => |v| llvm.LLVMConstInt(
+            lty,
+            if (v < 0)
+                @bitCast(@as(i64, @intCast(v)))
+            else
+                @intCast(v),
+            1,
+        ),
         .uint => |v| llvm.LLVMConstInt(lty, @as(c_ulonglong, @truncate(v)), 0),
         .float => |v| llvm.LLVMConstReal(lty, v),
         .bool => |v| llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(cg.ctx), if (v) 1 else 0, 0),
@@ -125,7 +132,10 @@ pub fn optionalSome(cg: *ModuleCg, payload: llvm.LLVMValueRef, payload_ty: ir.Ir
 
     var opt = llvm.LLVMGetUndef(types.optionalType(cg, payload_ty));
     opt = llvm.LLVMBuildInsertValue(cg.builder, opt, llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(cg.ctx), 1, 0), 0, "");
-    const stored_payload = if (payload_ty == .void) llvm.LLVMConstInt(llvm.LLVMInt8TypeInContext(cg.ctx), 0, 0) else payload;
+    const stored_payload = if (payload_ty == .void)
+        llvm.LLVMConstInt(llvm.LLVMInt8TypeInContext(cg.ctx), 0, 0)
+    else
+        coerce(cg.builder, cg.ctx, payload, types.optionalPayloadType(cg, payload_ty));
     return llvm.LLVMBuildInsertValue(cg.builder, opt, stored_payload, 1, "");
 }
 

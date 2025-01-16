@@ -1,0 +1,240 @@
+String_Error :: errors {
+    buffer_full,
+    unexpected_end,
+    invalid_escape,
+    invalid_unicode,
+    control_character,
+}
+
+pub Byte_Writer :: struct {
+    data: []u8,
+    pos: usize,
+}
+
+pub String_Parse_Result :: struct {
+    consumed: usize,
+    written: usize,
+}
+
+pub Hex4_Result :: struct {
+    value: u32,
+    ok: bool,
+}
+
+pub byte_writer :: fn(data: []u8) -> Byte_Writer {
+    return .{ data, 0usize };
+}
+
+pub writer_remaining :: fn(self: *Byte_Writer) -> usize {
+    return self.data.len - self.pos;
+}
+
+pub writer_put :: fn(self: *Byte_Writer, value: u8) -> usize ! String_Error {
+    if self.pos >= self.data.len { fail .buffer_full; }
+    self.data[self.pos] = value;
+    self.pos += 1usize;
+    return 1usize;
+}
+
+pub writer_append :: fn(self: *Byte_Writer, values: []const u8) -> usize ! String_Error {
+    i := 0usize;
+    while i < values.len {
+        self.writer_put(values[i])?;
+        i += 1usize;
+    }
+    return values.len;
+}
+
+hex_value :: fn(value: u8) -> u8 {
+    if value >= 48u8 && value <= 57u8 { return value - 48u8; }
+    if value >= 97u8 && value <= 102u8 { return value - 97u8 + 10u8; }
+    if value >= 65u8 && value <= 70u8 { return value - 65u8 + 10u8; }
+    return 255u8;
+}
+
+pub parse_hex4_at :: fn(text: []const u8, start: usize) -> Hex4_Result {
+    if start + 4usize > text.len { return .{ 0u32, false }; }
+
+    value := 0u32;
+    i := 0usize;
+    while i < 4usize {
+        digit := hex_value(text[start + i]);
+        if digit == 255u8 { return .{ 0u32, false }; }
+        value = (value << 4u32) | (digit as u32);
+        i += 1usize;
+    }
+    return .{ value, true };
+}
+
+pub write_utf8 :: fn(self: *Byte_Writer, scalar: u32) -> usize ! String_Error {
+    if scalar > 0x10ffffu32 { fail .invalid_unicode; }
+    if scalar >= 0xd800u32 && scalar <= 0xdfffu32 { fail .invalid_unicode; }
+
+    if scalar <= 0x7fu32 {
+        self.writer_put(scalar as u8)?;
+        return 1usize;
+    }
+
+    if scalar <= 0x7ffu32 {
+        self.writer_put((0xc0u32 | (scalar >> 6u32)) as u8)?;
+        self.writer_put((0x80u32 | (scalar & 0x3fu32)) as u8)?;
+        return 2usize;
+    }
+
+    if scalar <= 0xffffu32 {
+        self.writer_put((0xe0u32 | (scalar >> 12u32)) as u8)?;
+        self.writer_put((0x80u32 | ((scalar >> 6u32) & 0x3fu32)) as u8)?;
+        self.writer_put((0x80u32 | (scalar & 0x3fu32)) as u8)?;
+        return 3usize;
+    }
+
+    self.writer_put((0xf0u32 | (scalar >> 18u32)) as u8)?;
+    self.writer_put((0x80u32 | ((scalar >> 12u32) & 0x3fu32)) as u8)?;
+    self.writer_put((0x80u32 | ((scalar >> 6u32) & 0x3fu32)) as u8)?;
+    self.writer_put((0x80u32 | (scalar & 0x3fu32)) as u8)?;
+    return 4usize;
+}
+
+pub write_unicode_escape :: fn(self: *Byte_Writer, text: []const u8, start: usize) -> usize ! String_Error {
+    first := parse_hex4_at(text, start);
+    if !first.ok { fail .invalid_unicode; }
+    high := first.value;
+    if high >= 0xd800u32 && high <= 0xdbffu32 {
+        next := start + 4usize;
+        if next + 6usize > text.len { fail .invalid_unicode; }
+        if text[next] != 92u8 || text[next + 1usize] != 117u8 { fail .invalid_unicode; }
+
+        second := parse_hex4_at(text, next + 2usize);
+        if !second.ok { fail .invalid_unicode; }
+        low := second.value;
+        if low < 0xdc00u32 || low > 0xdfffu32 { fail .invalid_unicode; }
+
+        scalar := 0x10000u32 + ((high - 0xd800u32) << 10u32) + (low - 0xdc00u32);
+        self.write_utf8(scalar)?;
+        return 10usize;
+    }
+
+    if high >= 0xdc00u32 && high <= 0xdfffu32 { fail .invalid_unicode; }
+    self.write_utf8(high)?;
+    return 4usize;
+}
+
+// Decode one complete JSON string, including its surrounding quotes.
+// Decoded bytes are written into the caller-provided output buffer.
+pub parse_json_string :: fn(input: []const u8, output: []u8) -> String_Parse_Result ! String_Error {
+    if input.len == 0usize || input[0] != 34u8 { fail .invalid_escape; }
+
+    writer := byte_writer(output);
+    i := 1usize;
+    while i < input.len {
+        current := input[i];
+        if current == 34u8 {
+            return .{ i + 1usize, writer.pos };
+        }
+        if current < 0x20u8 { fail .control_character; }
+
+        if current != 92u8 {
+            (&writer).writer_put(current)?;
+            i += 1usize;
+            continue;
+        }
+
+        i += 1usize;
+        if i >= input.len { fail .unexpected_end; }
+        escaped := input[i];
+
+        if escaped == 34u8 || escaped == 92u8 || escaped == 47u8 {
+            (&writer).writer_put(escaped)?;
+        } else {
+            if escaped == 98u8 {
+                (&writer).writer_put(8u8)?;
+            } else {
+                if escaped == 102u8 {
+                    (&writer).writer_put(12u8)?;
+                } else {
+                    if escaped == 110u8 {
+                        (&writer).writer_put(10u8)?;
+                    } else {
+                        if escaped == 114u8 {
+                            (&writer).writer_put(13u8)?;
+                        } else {
+                            if escaped == 116u8 {
+                                (&writer).writer_put(9u8)?;
+                            } else {
+                                if escaped == 117u8 {
+                                    consumed := (&writer).write_unicode_escape(input, i + 1usize)?;
+                                    i += consumed;
+                                } else {
+                                    fail .invalid_escape;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1usize;
+    }
+    fail .unexpected_end;
+}
+
+hex_digit :: fn(value: u8) -> u8 {
+    if value < 10u8 { return 48u8 + value; }
+    return 97u8 + value - 10u8;
+}
+
+write_control_escape :: fn(self: *Byte_Writer, value: u8) -> usize ! String_Error {
+    self.writer_append("\\u00")?;
+    self.writer_put(hex_digit(value >> 4u8))?;
+    self.writer_put(hex_digit(value & 0x0fu8))?;
+    return 6usize;
+}
+
+// Encode bytes as a complete JSON string, including surrounding quotes.
+// Non-ASCII UTF-8 bytes are preserved.
+pub escape_json_string :: fn(input: []const u8, output: []u8) -> usize ! String_Error {
+    writer := byte_writer(output);
+    (&writer).writer_put(34u8)?;
+
+    i := 0usize;
+    while i < input.len {
+        current := input[i];
+        if current == 34u8 {
+            (&writer).writer_append("\\\"")?;
+        } else {
+            if current == 92u8 {
+                (&writer).writer_append("\\\\")?;
+            } else {
+                if current == 8u8 {
+                    (&writer).writer_append("\\b")?;
+                } else {
+                    if current == 12u8 {
+                        (&writer).writer_append("\\f")?;
+                    } else {
+                        if current == 10u8 {
+                            (&writer).writer_append("\\n")?;
+                        } else {
+                            if current == 13u8 {
+                                (&writer).writer_append("\\r")?;
+                            } else {
+                                if current == 9u8 {
+                                    (&writer).writer_append("\\t")?;
+                                } else {
+                                    if current < 0x20u8 {
+                                        (&writer).write_control_escape(current)?;
+                                    } else {
+                                        (&writer).writer_put(current)?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1usize;
+    }
+
+    (&writer).writer_put(34u8)?;
+    return writer.pos;
+}

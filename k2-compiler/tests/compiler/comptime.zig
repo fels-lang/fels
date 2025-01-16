@@ -123,6 +123,137 @@ test "#if: only live branch emitted to IR" {
     try std.testing.expect(fn_.blocks.len > 0);
 }
 
+test "comptime: type_info reflects scalar types" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\INT_BITS   :: #run type_info(i32).bits;
+        \\INT_SIGNED :: #run type_info(i32).signed;
+        \\INT_NAME   :: #run type_info(u8).name;
+    ;
+    var fe = try k2.compile(arena.allocator(), "ti1.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    var found_bits = false;
+    var found_signed = false;
+    var found_name = false;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "INT_BITS")) {
+            found_bits = true;
+            try std.testing.expectEqual(ir.Imm{ .uint = 32 }, g.init.imm);
+        }
+        if (std.mem.eql(u8, g.name, "INT_SIGNED")) {
+            found_signed = true;
+            try std.testing.expectEqual(ir.Imm{ .bool = true }, g.init.imm);
+        }
+        if (std.mem.eql(u8, g.name, "INT_NAME")) {
+            found_name = true;
+            try std.testing.expectEqualStrings("u8", g.init.imm.text);
+        }
+    }
+    try std.testing.expect(found_bits);
+    try std.testing.expect(found_signed);
+    try std.testing.expect(found_name);
+}
+
+test "comptime: type_info reflects struct fields" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\Point :: struct { x: i32, y: i32, }
+        \\FIELD_COUNT :: #run type_info(Point).fields.len;
+        \\STRUCT_NAME :: #run type_info(Point).name;
+        \\FIRST_FIELD_NAME :: #run type_info(Point).fields[0].name;
+    ;
+    var fe = try k2.compile(arena.allocator(), "ti2.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    var found_count = false;
+    var found_name = false;
+    var found_first = false;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "FIELD_COUNT")) {
+            found_count = true;
+            try std.testing.expectEqual(ir.Imm{ .uint = 2 }, g.init.imm);
+        }
+        if (std.mem.eql(u8, g.name, "STRUCT_NAME")) {
+            found_name = true;
+            try std.testing.expectEqualStrings("Point", g.init.imm.text);
+        }
+        if (std.mem.eql(u8, g.name, "FIRST_FIELD_NAME")) {
+            found_first = true;
+            try std.testing.expectEqualStrings("x", g.init.imm.text);
+        }
+    }
+    try std.testing.expect(found_count);
+    try std.testing.expect(found_name);
+    try std.testing.expect(found_first);
+}
+
+test "comptime: type_info reflects pointer and slice types" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\PTR_KIND   :: #run type_info(*i32).kind;
+        \\SLICE_KIND :: #run type_info([]u8).kind;
+        \\SLICE_ELEM_NAME :: #run type_info([]u8).elem_info.name;
+    ;
+    var fe = try k2.compile(arena.allocator(), "ti3.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    var found_ptr = false;
+    var found_slice = false;
+    var found_elem = false;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "PTR_KIND")) {
+            found_ptr = true;
+            try std.testing.expectEqualStrings("pointer", g.init.imm.text);
+        }
+        if (std.mem.eql(u8, g.name, "SLICE_KIND")) {
+            found_slice = true;
+            try std.testing.expectEqualStrings("slice", g.init.imm.text);
+        }
+        if (std.mem.eql(u8, g.name, "SLICE_ELEM_NAME")) {
+            found_elem = true;
+            try std.testing.expectEqualStrings("u8", g.init.imm.text);
+        }
+    }
+    try std.testing.expect(found_ptr);
+    try std.testing.expect(found_slice);
+    try std.testing.expect(found_elem);
+}
+
+test "comptime: type_name returns mangled type name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\NAME :: #run type_name(i32);
+    ;
+    var fe = try k2.compile(arena.allocator(), "tn1.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    var found = false;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "NAME")) {
+            found = true;
+            try std.testing.expectEqualStrings("i32", g.init.imm.text);
+        }
+    }
+    try std.testing.expect(found);
+}
+
 test "comptime: ComptimeValue evaluates integer arithmetic" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

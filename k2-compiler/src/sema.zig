@@ -1507,6 +1507,7 @@ const Checker = struct {
                     .array => |array| array.elem.*,
                     .slice => |inner| inner.*,
                     .pointer, .const_ptr => |inner| inner.*,
+                    .unknown => .unknown,
                     else => return error.SemanticFailed,
                 };
             },
@@ -1613,6 +1614,11 @@ const Checker = struct {
         if (std.mem.eql(u8, name, "truncate_to")) return self.firstTypeArg(call) orelse error.SemanticFailed;
         if (std.mem.eql(u8, name, "sizeof")) return .usize;
         if (std.mem.eql(u8, name, "atomic_load")) return .u32;
+        // Reflection builtins: only meaningful inside compile-time contexts
+        // (#run / #if), where the comptime interpreter produces a concrete
+        // value. Their static type is deferred, like the TARGET pseudo-module.
+        if (std.mem.eql(u8, name, "type_name")) return try self.sliceOf(.u8);
+        if (std.mem.eql(u8, name, "type_info")) return .unknown;
         // Unsafe builtins — must be called from within an `unsafe` block.
         if (std.mem.eql(u8, name, "ptr_from_int")) {
             try self.requireUnsafe(call.callee.span, name);
@@ -2901,6 +2907,8 @@ fn isBuiltinValue(name: []const u8) bool {
         "truncate_to", "ptr_from_int",   "volatile_store",
         "sizeof",      "unaligned_read", "asm",
         "atomic_load", "volatile",       ".acquire",
+        // Compile-time reflection builtins
+        "type_info",   "type_name",
         // Compile-time pseudo-modules
         "TARGET",
     }) |builtin| {

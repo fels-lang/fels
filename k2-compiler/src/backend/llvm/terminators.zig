@@ -20,7 +20,16 @@ pub fn lower(
                 const ret_lty = types.fallibleReturnType(cg, func);
                 var ret = llvm.LLVMGetUndef(ret_lty);
                 if (maybe_val) |val| {
-                    const ok_lv = values.resolveValue(cg, fncg, val, func.return_ty);
+                    const val_ty = fncg.irTypeOf(val) orelse func.return_ty;
+                    const ok_raw = values.resolveValue(cg, fncg, val, val_ty);
+                    const ok_lv = values.coerceTyped(
+                        cg.builder,
+                        cg.ctx,
+                        ok_raw,
+                        val_ty,
+                        func.return_ty,
+                        types.lower(cg, func.return_ty),
+                    );
                     ret = llvm.LLVMBuildInsertValue(cg.builder, ret, ok_lv, 0, "");
                 }
                 const zero = llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), 0, 0);

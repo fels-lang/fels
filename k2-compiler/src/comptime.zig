@@ -157,8 +157,15 @@ pub fn evalExpr(ctx: *ComptimeCtx, expr: ast.Expr) ComptimeError!ComptimeValue {
         .ident  => |name| blk: {
             // Check local scope first.
             if (ctx.locals.get(name)) |v| break :blk v;
-            // Check top-level constants in the module.
+            // Built-in scalar type names used as values (e.g. `type_info(i32)`).
+            if (sema.fromBuiltinName(name)) |builtin_ty| {
+                if (tyToValue(ctx, builtin_ty)) |v| return v else |_| {}
+            }
+            // Check top-level constants and named types in the module.
             if (ctx.symbols.resolve(ctx.symbols.root_scope, name)) |id| {
+                if (ctx.symbols.symbol(id).kind == .type) {
+                    return .{ .type_val = .{ .named = id } };
+                }
                 if (ctx.env.symbol_types.get(id)) |ty| {
                     return try tyToValue(ctx, ty);
                 }
@@ -510,6 +517,14 @@ fn evalCall(ctx: *ComptimeCtx, call: ast.CallExpr) ComptimeError!ComptimeValue {
         }
         return error.NotComptime;
     }
+    if (std.mem.eql(u8, name, "type_info")) {
+        if (call.args.len > 0) {
+            const arg = switch (call.args[0]) { .positional => |e| e, .named => |n| n.value };
+            const v = try evalExpr(ctx, arg);
+            if (v == .type_val) return try typeInfo(ctx, v.type_val);
+        }
+        return error.NotComptime;
+    }
 
     // Look up the function in the module.
     const sym_id = ctx.symbols.resolve(ctx.symbols.root_scope, name) orelse return error.NotComptime;
@@ -579,6 +594,9 @@ fn evalField(ctx: *ComptimeCtx, f: ast.FieldExpr) ComptimeError!ComptimeValue {
         .slice_val => |sv| {
             if (std.mem.eql(u8, f.name, "len")) return .{ .uint = sv.len };
         },
+        .array_val => |arr| {
+            if (std.mem.eql(u8, f.name, "len")) return .{ .uint = arr.len };
+        },
         else => {},
     }
     return error.NotComptime;
@@ -624,67 +642,177 @@ fn evalTypeRef(ctx: *ComptimeCtx, tyref: ast.TypeRef) !sema.Ty {
                 return error.NotComptime;
             break :blk .{ .named = id };
         },
+        .pointer => |p| .{ .pointer = try boxTy(ctx, try evalTypeRef(ctx, p.inner.*)) },
+        .many_pointer => |p| .{ .pointer = try boxTy(ctx, try evalTypeRef(ctx, p.inner.*)) },
+        .optional => |o| .{ .optional = try boxTy(ctx, try evalTypeRef(ctx, o.inner.*)) },
+        .slice => |s| .{ .slice = try boxTy(ctx, try evalTypeRef(ctx, s.inner.*)) },
+        .borrow => |b| .{ .borrow = try boxTy(ctx, try evalTypeRef(ctx, b.inner.*)) },
+        .array => |a| blk: {
+            const elem = try evalTypeRef(ctx, a.inner.*);
+            const len_val = evalExpr(ctx, a.len.*) catch return error.NotComptime;
+            const len: u64 = switch (len_val) {
+                .int => |v| @intCast(@max(v, 0)),
+                .uint => |v| @intCast(v),
+                else => return error.NotComptime,
+            };
+            break :blk .{ .array = .{ .elem = try boxTy(ctx, elem), .len = len } };
+        },
         else => error.NotComptime,
     };
 }
 
+fn boxTy(ctx: *ComptimeCtx, inner: sema.Ty) !*const sema.Ty {
+    const p = try ctx.allocator.create(sema.Ty);
+    p.* = inner;
+    return p;
+}
+
 /// #type_info(T) — return a ComptimeValue describing the type T.
 pub fn typeInfo(ctx: *ComptimeCtx, ty: sema.Ty) ComptimeError!ComptimeValue {
-    switch (ty) {
-        .named => |id| {
-            const layout = ctx.env.layouts.get(id) orelse return error.NotComptime;
-            const sym    = ctx.symbols.symbol(id);
-            switch (layout.kind) {
-                .struct_type => |fields| {
-                    var field_vals: std.ArrayList(ComptimeValue) = .empty;
-                    errdefer field_vals.deinit(ctx.allocator);
-                    for (fields) |f| {
-                        var entries: std.ArrayList(ComptimeValue.StructVal.FieldEntry) = .empty;
-                        defer entries.deinit(ctx.allocator);
-                        try entries.append(ctx.allocator, .{ .name = "name",  .value = .{ .string = f.name } });
-                        try entries.append(ctx.allocator, .{ .name = "type",  .value = .{ .type_val = f.ty } });
-                        try field_vals.append(ctx.allocator, .{ .struct_val = .{
-                            .type_name = "FieldInfo",
-                            .fields    = try entries.toOwnedSlice(ctx.allocator),
-                        } });
-                    }
-                    const fields_arr = try field_vals.toOwnedSlice(ctx.allocator);
-                    var entries: std.ArrayList(ComptimeValue.StructVal.FieldEntry) = .empty;
-                    defer entries.deinit(ctx.allocator);
-                    try entries.append(ctx.allocator, .{ .name = "name",   .value = .{ .string = sym.name } });
-                    try entries.append(ctx.allocator, .{ .name = "fields", .value = .{ .array_val = fields_arr } });
-                    try entries.append(ctx.allocator, .{ .name = "size",   .value = .{ .uint = fields.len * 8 } });
-                    return .{ .struct_val = .{
-                        .type_name = "TypeInfo",
-                        .fields    = try entries.toOwnedSlice(ctx.allocator),
-                    } };
-                },
-                else => {},
-            }
+    return switch (ty) {
+        .i8  => intTypeInfo(ctx, "i8",  8,  true),
+        .i16 => intTypeInfo(ctx, "i16", 16, true),
+        .i32 => intTypeInfo(ctx, "i32", 32, true),
+        .i64 => intTypeInfo(ctx, "i64", 64, true),
+        .isize => intTypeInfo(ctx, "isize", 64, true),
+        .u8  => intTypeInfo(ctx, "u8",  8,  false),
+        .u16 => intTypeInfo(ctx, "u16", 16, false),
+        .u32 => intTypeInfo(ctx, "u32", 32, false),
+        .u64 => intTypeInfo(ctx, "u64", 64, false),
+        .usize => intTypeInfo(ctx, "usize", 64, false),
+        .byte  => intTypeInfo(ctx, "byte", 8, false),
+        .f32 => floatTypeInfo(ctx, "f32", 32),
+        .f64 => floatTypeInfo(ctx, "f64", 64),
+        .bool => makeTypeInfo(ctx, "bool", &.{
+            .{ .name = "name", .value = .{ .string = "bool" } },
+        }),
+        .void => makeTypeInfo(ctx, "void", &.{
+            .{ .name = "name", .value = .{ .string = "void" } },
+        }),
+        .pointer => |inner| wrappedTypeInfo(ctx, "pointer", inner.*, &.{
+            .{ .name = "is_const", .value = .{ .bool = false } },
+        }),
+        .const_ptr => |inner| wrappedTypeInfo(ctx, "pointer", inner.*, &.{
+            .{ .name = "is_const", .value = .{ .bool = true } },
+        }),
+        .slice => |inner| wrappedTypeInfo(ctx, "slice", inner.*, &.{}),
+        .optional => |inner| wrappedTypeInfo(ctx, "optional", inner.*, &.{}),
+        .borrow => |inner| wrappedTypeInfo(ctx, "borrow", inner.*, &.{}),
+        .array => |arr| blk: {
+            const elem_info = try typeInfo(ctx, arr.elem.*);
+            break :blk makeTypeInfo(ctx, "array", &.{
+                .{ .name = "name", .value = .{ .string = "array" } },
+                .{ .name = "len",  .value = .{ .uint = arr.len } },
+                .{ .name = "elem", .value = .{ .type_val = arr.elem.* } },
+                .{ .name = "elem_info", .value = elem_info },
+            });
         },
-        .i8  => return intTypeInfo(ctx, "i8",  8,  true),
-        .i16 => return intTypeInfo(ctx, "i16", 16, true),
-        .i32 => return intTypeInfo(ctx, "i32", 32, true),
-        .i64 => return intTypeInfo(ctx, "i64", 64, true),
-        .u8  => return intTypeInfo(ctx, "u8",  8,  false),
-        .u16 => return intTypeInfo(ctx, "u16", 16, false),
-        .u32 => return intTypeInfo(ctx, "u32", 32, false),
-        .u64 => return intTypeInfo(ctx, "u64", 64, false),
-        else => {},
+        .named => |id| try namedTypeInfo(ctx, id),
+        else => error.NotComptime,
+    };
+}
+
+fn namedTypeInfo(ctx: *ComptimeCtx, id: sema.SymbolId) ComptimeError!ComptimeValue {
+    const layout = ctx.env.layouts.get(id) orelse return error.NotComptime;
+    const sym    = ctx.symbols.symbol(id);
+    switch (layout.kind) {
+        .struct_type => |fields| {
+            var field_vals: std.ArrayList(ComptimeValue) = .empty;
+            errdefer field_vals.deinit(ctx.allocator);
+            var total_size: u64 = 0;
+            for (fields) |f| {
+                total_size += typeSize(ctx, f.ty);
+                try field_vals.append(ctx.allocator, try makeTypeInfo(ctx, "field", &.{
+                    .{ .name = "name", .value = .{ .string = f.name } },
+                    .{ .name = "type", .value = .{ .type_val = f.ty } },
+                    .{ .name = "offset", .value = .{ .uint = 0 } },
+                }));
+            }
+            return makeTypeInfo(ctx, "struct", &.{
+                .{ .name = "name",   .value = .{ .string = sym.name } },
+                .{ .name = "fields", .value = .{ .array_val = try field_vals.toOwnedSlice(ctx.allocator) } },
+                .{ .name = "size",   .value = .{ .uint = total_size } },
+                .{ .name = "is_packed", .value = .{ .bool = layout.is_packed } },
+            });
+        },
+        .variant_type => |variants| {
+            var variant_vals: std.ArrayList(ComptimeValue) = .empty;
+            errdefer variant_vals.deinit(ctx.allocator);
+            for (variants) |v| {
+                try variant_vals.append(ctx.allocator, try makeTypeInfo(ctx, "variant", &.{
+                    .{ .name = "name",  .value = .{ .string = v.name } },
+                    .{ .name = "index", .value = .{ .uint = v.index } },
+                    .{ .name = "has_payload", .value = .{ .bool = v.payload != null } },
+                    .{ .name = "payload", .value = if (v.payload) |p| .{ .type_val = p } else .void },
+                }));
+            }
+            return makeTypeInfo(ctx, "enum", &.{
+                .{ .name = "name",     .value = .{ .string = sym.name } },
+                .{ .name = "variants", .value = .{ .array_val = try variant_vals.toOwnedSlice(ctx.allocator) } },
+            });
+        },
+        .error_set => |variants| {
+            var variant_vals: std.ArrayList(ComptimeValue) = .empty;
+            errdefer variant_vals.deinit(ctx.allocator);
+            for (variants) |v| {
+                try variant_vals.append(ctx.allocator, try makeTypeInfo(ctx, "error_variant", &.{
+                    .{ .name = "name", .value = .{ .string = v.name } },
+                    .{ .name = "has_payload", .value = .{ .bool = v.payload != null } },
+                }));
+            }
+            return makeTypeInfo(ctx, "error_set", &.{
+                .{ .name = "name",     .value = .{ .string = sym.name } },
+                .{ .name = "variants", .value = .{ .array_val = try variant_vals.toOwnedSlice(ctx.allocator) } },
+            });
+        },
+        .interface_type => |methods| {
+            return makeTypeInfo(ctx, "interface", &.{
+                .{ .name = "name",         .value = .{ .string = sym.name } },
+                .{ .name = "method_count", .value = .{ .uint = methods.len } },
+            });
+        },
     }
-    return error.NotComptime;
+}
+
+fn makeTypeInfo(ctx: *ComptimeCtx, kind: []const u8, entries: []const ComptimeValue.StructVal.FieldEntry) !ComptimeValue {
+    var all: std.ArrayList(ComptimeValue.StructVal.FieldEntry) = .empty;
+    defer all.deinit(ctx.allocator);
+    try all.append(ctx.allocator, .{ .name = "kind", .value = .{ .string = kind } });
+    try all.appendSlice(ctx.allocator, entries);
+    return .{ .struct_val = .{
+        .type_name = "TypeInfo",
+        .fields    = try all.toOwnedSlice(ctx.allocator),
+    } };
 }
 
 fn intTypeInfo(ctx: *ComptimeCtx, name: []const u8, bits: u64, signed: bool) !ComptimeValue {
-    var entries: std.ArrayList(ComptimeValue.StructVal.FieldEntry) = .empty;
-    defer entries.deinit(ctx.allocator);
-    try entries.append(ctx.allocator, .{ .name = "name",   .value = .{ .string = name } });
-    try entries.append(ctx.allocator, .{ .name = "bits",   .value = .{ .uint = bits } });
-    try entries.append(ctx.allocator, .{ .name = "signed", .value = .{ .bool = signed } });
-    return .{ .struct_val = .{
-        .type_name = "TypeInfo",
-        .fields    = try entries.toOwnedSlice(ctx.allocator),
-    } };
+    return makeTypeInfo(ctx, "int", &.{
+        .{ .name = "name",   .value = .{ .string = name } },
+        .{ .name = "bits",   .value = .{ .uint = bits } },
+        .{ .name = "signed", .value = .{ .bool = signed } },
+    });
+}
+
+fn floatTypeInfo(ctx: *ComptimeCtx, name: []const u8, bits: u64) !ComptimeValue {
+    return makeTypeInfo(ctx, "float", &.{
+        .{ .name = "name", .value = .{ .string = name } },
+        .{ .name = "bits", .value = .{ .uint = bits } },
+    });
+}
+
+fn wrappedTypeInfo(
+    ctx: *ComptimeCtx,
+    kind: []const u8,
+    inner: sema.Ty,
+    extra: []const ComptimeValue.StructVal.FieldEntry,
+) ComptimeError!ComptimeValue {
+    const inner_info = try typeInfo(ctx, inner);
+    var all: std.ArrayList(ComptimeValue.StructVal.FieldEntry) = .empty;
+    defer all.deinit(ctx.allocator);
+    try all.append(ctx.allocator, .{ .name = "elem", .value = .{ .type_val = inner } });
+    try all.append(ctx.allocator, .{ .name = "elem_info", .value = inner_info });
+    try all.appendSlice(ctx.allocator, extra);
+    return makeTypeInfo(ctx, kind, all.items);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

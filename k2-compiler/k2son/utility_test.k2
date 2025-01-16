@@ -1,0 +1,101 @@
+#import string_utils;
+#import float_utils;
+
+check_escape :: fn() -> bool {
+    input: [4]u8 = .{ 34u8, 10u8, 92u8, 1u8 };
+    output: [32]u8 = .{};
+    written := escape_json_string(input[:], output[:]) catch err { return false; };
+
+    expected: [12]u8 = .{
+        34u8, 92u8, 34u8, 92u8, 110u8, 92u8,
+        92u8, 92u8, 117u8, 48u8, 48u8, 48u8,
+    };
+    if written != 14usize { return false; }
+
+    i := 0usize;
+    while i < expected.len {
+        if output[i] != expected[i] { return false; }
+        i += 1usize;
+    }
+    return output[12] == 49u8 && output[13] == 34u8;
+}
+
+check_decode :: fn() -> i32 {
+    complete: [21]u8 = .{
+        34u8,
+        65u8,
+        92u8, 117u8, 48u8, 48u8, 52u8, 50u8,
+        92u8, 117u8, 68u8, 56u8, 51u8, 68u8,
+        92u8, 117u8, 68u8, 69u8, 48u8, 48u8,
+        34u8,
+    };
+    if complete[4] != 48u8 || complete[5] != 48u8 || complete[6] != 52u8 || complete[7] != 50u8 { return 39; }
+
+    output: [16]u8 = .{};
+    first := parse_hex4_at(complete[:], 4usize);
+    if !first.ok || first.value != 0x0042u32 { return 40; }
+    high := parse_hex4_at(complete[:], 10usize);
+    if !high.ok || high.value != 0xd83du32 { return 41; }
+    low := parse_hex4_at(complete[:], 16usize);
+    if !low.ok || low.value != 0xde00u32 { return 42; }
+    direct_writer := byte_writer(output[:]);
+    direct_consumed := (&direct_writer).write_unicode_escape(complete[:], 10usize) catch err { return 43; };
+    if direct_consumed != 10usize || direct_writer.pos != 4usize { return 44; }
+    direct_writer.pos = 0usize;
+
+    result := parse_json_string(complete[:], output[:]) catch err {
+        if err == .buffer_full { return 30; }
+        if err == .unexpected_end { return 31; }
+        if err == .invalid_escape { return 32; }
+        if err == .invalid_unicode { return 33; }
+        if err == .control_character { return 34; }
+        return 35;
+    };
+    if result.consumed != 21usize { return 21; }
+    if result.written != 6usize { return 22; }
+    if output[0] != 65u8 { return 23; }
+    if output[1] != 66u8 { return 24; }
+    if output[2] != 0xf0u8 { return 25; }
+    if output[3] != 0x9fu8 { return 26; }
+    if output[4] != 0x98u8 { return 27; }
+    if output[5] != 0x80u8 { return 28; }
+    return 0;
+}
+
+check_buffer_full :: fn() -> bool {
+    output: [1]u8 = .{};
+    escape_json_string("hello", output[:]) catch err {
+        return err == .buffer_full;
+    };
+    return false;
+}
+
+check_float_bits :: fn() -> i32 {
+    positive_infinity := f64_from_bits(0x7ffu64 << 52u64);
+    negative_zero := f64_from_bits(0x8000000000000000u64);
+    nan := f64_from_bits((0x7ffu64 << 52u64) | 1u64);
+
+    infinity_info := inspect_f64(positive_infinity);
+    zero_info := inspect_f64(negative_zero);
+    nan_info := inspect_f64(nan);
+
+    if f64_bits(negative_zero) != 0x8000000000000000u64 { return 68; }
+    if !infinity_info.is_infinity { return 61; }
+    if infinity_info.is_nan { return 62; }
+    if infinity_info.is_negative { return 63; }
+    if !zero_info.is_negative { return 64; }
+    if zero_info.is_infinity { return 65; }
+    if !nan_info.is_nan { return 66; }
+    if nan_info.is_infinity { return 67; }
+    return 0;
+}
+
+main :: fn() -> i32 {
+    if !check_escape() { return 1; }
+    decode_result := check_decode();
+    if decode_result != 0 { return decode_result; }
+    if !check_buffer_full() { return 3; }
+    float_result := check_float_bits();
+    if float_result != 0 { return float_result; }
+    return 0;
+}

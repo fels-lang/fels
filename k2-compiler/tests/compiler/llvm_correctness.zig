@@ -55,6 +55,30 @@ test "LLVM lowering selects signed, unsigned, and floating-point operations" {
     }
 }
 
+test "LLVM lowering accepts full-width u64 constants" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\sign_bit :: fn() -> u64 {
+        \\    return 0x8000000000000000u64;
+        \\}
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "full_width_u64.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "full_width_u64");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "i64 -9223372036854775808") != null);
+}
+
 test "LLVM force unwrap calls the embedded runtime panic" {
     if (comptime !k2.llvm_enabled) return;
 
@@ -102,6 +126,33 @@ test "LLVM optional equality compares presence instead of aggregate values" {
     const llvm_ir = try backend.getIrText(arena.allocator());
 
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "extractvalue") != null);
+}
+
+test "LLVM optional payload is coerced to its declared integer width" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\parse :: fn() -> ?u16 {
+        \\    value := 0u16;
+        \\    value = (value << 4) | 1u16;
+        \\    return value;
+        \\}
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "optional_payload_width.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "optional_payload_width");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "trunc i32") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "insertvalue { i1, i16 }") != null);
 }
 
 test "LLVM panic lowering synthesizes the runtime declaration when absent" {
@@ -169,6 +220,32 @@ test "LLVM error/fallible ABI: fail and return lower to { ok, i32 } struct" {
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "ret { i32, i32 }") != null);
     // try_context emits a conditional branch on the discriminant.
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "propagate_err") != null);
+}
+
+test "LLVM fallible return coerces to its declared integer width" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\ParseError :: errors { invalid, }
+        \\parse :: fn(value: u16) -> u16 ! ParseError {
+        \\    result := (value << 4u16) | 1u16;
+        \\    return result;
+        \\}
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "fallible_width.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "fallible_width");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "insertvalue { i16, i32 }") != null);
 }
 
 test "LLVM debug: division by zero inserts a runtime check" {

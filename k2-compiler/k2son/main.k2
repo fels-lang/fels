@@ -1,0 +1,11 @@
+#import unicode_utils;
+
+main :: fn() -> i32 {
+
+    if is_utf_cont(0x80u8) {
+        return 1;
+    }
+
+
+    return 0;
+}
