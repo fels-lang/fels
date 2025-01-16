@@ -17,6 +17,11 @@ pub fn build(b: *std.Build) void {
         "windows-sdk-lib-path",
         "Path to Windows SDK um/x64 lib directory (for kernel32.lib)",
     ) orelse "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/um/x64";
+    const stdlib_root = b.option(
+        []const u8,
+        "stdlib-root",
+        "Path to the K2 modules directory containing std/",
+    ) orelse b.pathFromRoot("../k2-modules");
 
     // ── Compiler library module ───────────────────────────────────────────
     const compiler_mod = b.addModule("k2_compiler", .{
@@ -31,6 +36,7 @@ pub fn build(b: *std.Build) void {
     opts.addOption(bool, "enable_llvm", llvm_path != null);
     opts.addOption([]const u8, "llvm_path", llvm_path orelse "");
     opts.addOption([]const u8, "windows_sdk_lib_path", windows_sdk_lib_path);
+    opts.addOption([]const u8, "stdlib_root", stdlib_root);
     compiler_mod.addOptions("build_options", opts);
 
     // Wire LLVM into the compiler library when a path is provided.

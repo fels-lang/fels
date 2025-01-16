@@ -5,6 +5,7 @@ const Diagnostic = diag_mod.Diagnostic;
 const parser = @import("parser.zig");
 const sema = @import("sema.zig");
 const runtime = @import("runtime.zig");
+const build_options = @import("build_options");
 
 pub const FrontEnd = struct {
     module: ast.Module,
@@ -73,7 +74,7 @@ pub fn compileWithRuntime(
     });
 }
 
-/// Compile multiple source texts at once (no file I/O, imports ignored).
+/// Compile multiple source texts at once (no file I/O).
 pub fn compileMulti(allocator: std.mem.Allocator, files: []const SourceFile) CompileError!FrontEnd {
     const arena = try createFrontendArena(allocator);
     errdefer destroyFrontendArena(allocator, arena);
@@ -83,22 +84,46 @@ pub fn compileMulti(allocator: std.mem.Allocator, files: []const SourceFile) Com
 
     var all_items: std.ArrayList(ast.Item) = .empty;
     errdefer all_items.deinit(fe_allocator);
+    var modules: std.ArrayList(ast.Module) = .empty;
+    defer modules.deinit(fe_allocator);
+    var available = std.StringHashMap(void).init(fe_allocator);
+    defer available.deinit();
 
     var next_id: ast.NodeId = 1;
     for (files) |file| {
-        const parsed = parser.parseSourceFrom(fe_allocator, file.file_name, file.source, next_id) catch |err| switch (err) {
+        const normalized_name = normalizeLogicalPath(fe_allocator, file.file_name) catch return error.OutOfMemory;
+        if (available.contains(normalized_name)) {
+            std.debug.print("{s}: error: module was provided more than once\n", .{normalized_name});
+            return error.IoError;
+        }
+        const parsed = parser.parseSourceFrom(fe_allocator, normalized_name, file.source, next_id) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,
         };
         next_id = parsed.next_id;
-        for (parsed.module.items) |item| switch (item) {
-            .import => {},
+        try modules.append(fe_allocator, parsed.module);
+        try available.put(normalized_name, {});
+    }
+    for (modules.items) |parsed_module| {
+        const dir = std.fs.path.dirname(parsed_module.file_name) orelse ".";
+        for (parsed_module.items) |item| switch (item) {
+            .import => |imp| {
+                const resolved = resolveImportPath(fe_allocator, dir, imp.path, null) catch return error.IoError;
+                const normalized = normalizeLogicalPath(fe_allocator, resolved) catch return error.OutOfMemory;
+                if (!available.contains(normalized)) {
+                    std.debug.print("{s}: error: imported module `{s}` was not provided\n", .{ imp.file_name, normalized });
+                    return error.IoError;
+                }
+                var resolved_import = imp;
+                resolved_import.resolved_file = normalized;
+                try all_items.append(fe_allocator, .{ .import = resolved_import });
+            },
             else => try all_items.append(fe_allocator, item),
         };
     }
 
     const items = try all_items.toOwnedSlice(fe_allocator);
-    return runPipelineWithSource(fe_allocator, .{ .file_name = files[0].file_name, .items = items }, files[0].source, files[0].file_name, arena);
+    return runPipelineWithSource(fe_allocator, .{ .file_name = modules.items[0].file_name, .items = items }, files[0].source, modules.items[0].file_name, arena);
 }
 
 /// Compile a .k2 file from disk, resolving `#import` declarations recursively.
@@ -177,19 +202,25 @@ fn loadFile(
     if (loaded.contains(path)) return;
     try loaded.put(path, {});
 
-    const source = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
+    const source = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| {
+        std.debug.print("{s}: error: cannot read imported module: {s}\n", .{ path, @errorName(err) });
+        return err;
+    };
     if (is_root) root_source.* = source;
 
     const parsed = try parser.parseSourceFrom(allocator, path, source, next_id.*);
     next_id.* = parsed.next_id;
 
-    // Resolve imports BEFORE adding this file's items (so dependency order is right)
+    // Retain the import edge for visibility checking, then load the dependency.
     const dir = std.fs.path.dirname(path) orelse ".";
     for (parsed.module.items) |item| {
         switch (item) {
             .import => |imp| {
-                const resolved = resolveImportPath(allocator, dir, imp.path) catch continue;
-                loadFile(allocator, io, resolved, loaded, all_items, next_id, root_source, false) catch {};
+                const resolved = try resolveImportPath(allocator, dir, imp.path, build_options.stdlib_root);
+                var resolved_import = imp;
+                resolved_import.resolved_file = resolved;
+                try all_items.append(allocator, .{ .import = resolved_import });
+                try loadFile(allocator, io, resolved, loaded, all_items, next_id, root_source, false);
             },
             else => try all_items.append(allocator, item),
         }
@@ -202,14 +233,16 @@ fn resolveImportPath(
     allocator: std.mem.Allocator,
     base_dir: []const u8,
     parts: []const []const u8,
+    stdlib_root: ?[]const u8,
 ) ![]const u8 {
-    // Skip well-known non-local prefixes until we have a stdlib
-    if (parts.len > 0 and std.mem.eql(u8, parts[0], "std")) return error.NotFound;
-
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
-    if (base_dir.len > 0) {
+    const is_std = parts.len > 0 and std.mem.eql(u8, parts[0], "std");
+    if (is_std and stdlib_root != null) {
+        try buf.appendSlice(allocator, stdlib_root.?);
+        try buf.append(allocator, std.fs.path.sep);
+    } else if (!is_std and base_dir.len > 0) {
         try buf.appendSlice(allocator, base_dir);
         try buf.append(allocator, std.fs.path.sep);
     }
@@ -219,6 +252,19 @@ fn resolveImportPath(
     }
     try buf.appendSlice(allocator, ".k2");
     return buf.toOwnedSlice(allocator);
+}
+
+fn normalizeLogicalPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    var start: usize = 0;
+    while (std.mem.startsWith(u8, path[start..], "./") or std.mem.startsWith(u8, path[start..], ".\\")) {
+        start += 2;
+    }
+    const normalized = try allocator.dupe(u8, path[start..]);
+    for (normalized) |*ch| {
+        if (ch.* != '\\') continue;
+        ch.* = '/';
+    }
+    return normalized;
 }
 
 fn runPipelineWithSource(

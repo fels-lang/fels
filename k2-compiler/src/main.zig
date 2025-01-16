@@ -107,7 +107,7 @@ pub fn main(init: std.process.Init) u8 {
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 fn cmdCheck(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8) u8 {
-    var fe = k2.compileFile(allocator, io, path) catch |err| {
+    var fe = k2.compileFileWithRuntime(allocator, io, path) catch |err| {
         std.debug.print("k2: {s}\n", .{@errorName(err)});
         return 1;
     };

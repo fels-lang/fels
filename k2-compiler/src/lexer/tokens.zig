@@ -87,6 +87,7 @@ pub const TokenKind = enum {
     keyword_return,
     keyword_unsafe,
     keyword_import,
+    keyword_pub,
     keyword_null,
     keyword_true,
     keyword_false,

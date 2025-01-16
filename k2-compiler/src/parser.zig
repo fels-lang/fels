@@ -87,13 +87,23 @@ pub const Parser = struct {
         errdefer items.deinit(self.allocator);
 
         while (!self.check(.eof)) {
-            const attrs = try self.parseAttributes();
+            var attrs = try self.parseAttributes();
             if (self.match(.hash)) {
                 try items.append(self.allocator, .{ .import = try self.parseImport(self.previous()) });
                 continue;
             }
 
-            try items.append(self.allocator, try self.parseTopLevel(attrs));
+            const is_public = self.match(.keyword_pub);
+            if (is_public) {
+                const public_attrs = try self.parseAttributes();
+                if (public_attrs.len != 0) {
+                    var combined: std.ArrayList(ast.Attribute) = .empty;
+                    try combined.appendSlice(self.allocator, attrs);
+                    try combined.appendSlice(self.allocator, public_attrs);
+                    attrs = try combined.toOwnedSlice(self.allocator);
+                }
+            }
+            try items.append(self.allocator, try self.parseTopLevel(attrs, is_public));
         }
 
         return .{
@@ -105,15 +115,31 @@ pub const Parser = struct {
     fn parseImport(self: *Parser, hash: Token) ParseError!ast.ImportDecl {
         _ = try self.expect(.keyword_import, "expected import after #");
         const path = try self.parsePath();
+        var names: ?[]const []const u8 = null;
+        if (self.match(.dot_lbrace)) {
+            var selected: std.ArrayList([]const u8) = .empty;
+            errdefer selected.deinit(self.allocator);
+            while (!self.check(.r_brace) and !self.check(.eof)) {
+                const name = try self.expect(.ident, "expected imported declaration name");
+                try selected.append(self.allocator, name.text(self.source));
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.expect(.r_brace, "expected } after selective import");
+            names = try selected.toOwnedSlice(self.allocator);
+        }
         const semi = try self.expect(.semicolon, "expected ; after import");
-        return .{ .path = path, .span = spanFrom(hash, semi) };
+        return .{ .path = path, .names = names, .file_name = self.file_name, .span = spanFrom(hash, semi) };
     }
 
-    fn parseTopLevel(self: *Parser, attrs: []const ast.Attribute) ParseError!ast.Item {
+    fn parseTopLevel(self: *Parser, attrs: []const ast.Attribute, is_public: bool) ParseError!ast.Item {
         const name = try self.expect(.ident, "expected declaration name");
         if (self.match(.keyword_as)) {
             if (attrs.len != 0) {
                 try self.errorAt(name, "attributes are not supported on interface implementation blocks");
+                return error.ParseFailed;
+            }
+            if (is_public) {
+                try self.errorAt(name, "interface implementation blocks cannot be `pub`");
                 return error.ParseFailed;
             }
             return .{ .interface_impl = try self.finishInterfaceImpl(name) };
@@ -121,19 +147,29 @@ pub const Parser = struct {
         _ = try self.expect(.colon_colon, "expected :: after declaration name");
 
         if (self.match(.keyword_fn)) {
-            return .{ .function = try self.finishFunction(attrs, name, true) };
+            var decl = try self.finishFunction(attrs, name, true);
+            decl.is_public = is_public;
+            return .{ .function = decl };
         }
         if (self.match(.keyword_struct)) {
-            return .{ .type_decl = try self.finishStruct(attrs, name) };
+            var decl = try self.finishStruct(attrs, name);
+            decl.is_public = is_public;
+            return .{ .type_decl = decl };
         }
         if (self.match(.keyword_interface)) {
-            return .{ .type_decl = try self.finishInterface(attrs, name) };
+            var decl = try self.finishInterface(attrs, name);
+            decl.is_public = is_public;
+            return .{ .type_decl = decl };
         }
         if (self.match(.keyword_errors)) {
-            return .{ .type_decl = try self.finishErrors(attrs, name) };
+            var decl = try self.finishErrors(attrs, name);
+            decl.is_public = is_public;
+            return .{ .type_decl = decl };
         }
         if (self.match(.keyword_enum)) {
-            return .{ .type_decl = try self.finishEnum(attrs, name) };
+            var decl = try self.finishEnum(attrs, name);
+            decl.is_public = is_public;
+            return .{ .type_decl = decl };
         }
         if (self.match(.keyword_distinct)) {
             const ty = try self.parseType();
@@ -141,6 +177,8 @@ pub const Parser = struct {
             return .{ .type_decl = .{
                 .attrs = attrs,
                 .name = name.text(self.source),
+                .file_name = self.file_name,
+                .is_public = is_public,
                 .kind = .{ .distinct = ty },
                 .span = spanFrom(name, semi),
             } };
@@ -150,6 +188,8 @@ pub const Parser = struct {
             return .{ .type_decl = .{
                 .attrs = attrs,
                 .name = name.text(self.source),
+                .file_name = self.file_name,
+                .is_public = is_public,
                 .kind = .opaque_type,
                 .span = spanFrom(name, semi),
             } };
@@ -160,6 +200,8 @@ pub const Parser = struct {
         return .{ .const_decl = .{
             .attrs = attrs,
             .name = name.text(self.source),
+            .file_name = self.file_name,
+            .is_public = is_public,
             .value = value,
             .span = spanFrom(name, semi),
         } };
@@ -170,6 +212,7 @@ pub const Parser = struct {
         return .{
             .attrs = attrs,
             .name = name.text(self.source),
+            .file_name = self.file_name,
             .kind = .{ .interface_type = .{ .methods = methods.methods } },
             .span = Span.new(name.start, methods.span.end),
         };
@@ -181,6 +224,7 @@ pub const Parser = struct {
         return .{
             .type_name = type_name.text(self.source),
             .interface_name = interface_name.text(self.source),
+            .file_name = self.file_name,
             .methods = methods.methods,
             .span = Span.new(type_name.start, methods.span.end),
         };
@@ -247,6 +291,7 @@ pub const Parser = struct {
         return .{
             .attrs = attrs,
             .name = name.text(self.source),
+            .file_name = self.file_name,
             .kind = .{ .struct_type = .{
                 .type_params = try type_params.toOwnedSlice(self.allocator),
                 .fields = try fields.toOwnedSlice(self.allocator),
@@ -312,6 +357,7 @@ pub const Parser = struct {
         return .{
             .attrs = attrs,
             .name = name.text(self.source),
+            .file_name = self.file_name,
             .kind = .{ .enum_type = .{ .variants = try variants.toOwnedSlice(self.allocator) } },
             .span = spanFrom(name, close),
         };
@@ -394,6 +440,7 @@ pub const Parser = struct {
         return .{
             .attrs = attrs,
             .name = name.text(self.source),
+            .file_name = self.file_name,
             .kind = .{ .errors = .{ .variants = variants } },
             .span = spanFrom(name, close),
         };

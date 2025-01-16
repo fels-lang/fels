@@ -37,10 +37,32 @@ pub const Item = union(enum) {
             .interface_impl => |decl| decl.span,
         };
     }
+
+    pub fn fileName(self: Item) []const u8 {
+        return switch (self) {
+            .import => |decl| decl.file_name,
+            .const_decl => |decl| decl.file_name,
+            .type_decl => |decl| decl.file_name,
+            .function => |decl| decl.file_name,
+            .interface_impl => |decl| decl.file_name,
+        };
+    }
+
+    pub fn isPublic(self: Item) bool {
+        return switch (self) {
+            .const_decl => |decl| decl.is_public,
+            .type_decl => |decl| decl.is_public,
+            .function => |decl| decl.is_public,
+            else => false,
+        };
+    }
 };
 
 pub const ImportDecl = struct {
     path: []const []const u8,
+    names: ?[]const []const u8 = null,
+    file_name: []const u8,
+    resolved_file: ?[]const u8 = null,
     span: Span,
 };
 
@@ -53,6 +75,8 @@ pub const Attribute = struct {
 pub const ConstDecl = struct {
     attrs: []const Attribute,
     name: []const u8,
+    file_name: []const u8,
+    is_public: bool = false,
     value: Expr,
     span: Span,
 };
@@ -60,6 +84,8 @@ pub const ConstDecl = struct {
 pub const TypeDecl = struct {
     attrs: []const Attribute,
     name: []const u8,
+    file_name: []const u8,
+    is_public: bool = false,
     kind: TypeDeclKind,
     span: Span,
 };
@@ -80,6 +106,7 @@ pub const InterfaceDecl = struct {
 pub const InterfaceImpl = struct {
     type_name: []const u8,
     interface_name: []const u8,
+    file_name: []const u8,
     methods: []const FunctionDecl,
     span: Span,
 };
@@ -118,8 +145,8 @@ pub const FieldDecl = struct {
 
 /// A constraint on a generic type parameter: `$T: InterfaceName`.
 pub const TypeConstraint = struct {
-    param: []const u8,      // type parameter name, e.g. "T"
-    interface: []const u8,  // required interface, e.g. "Writer"
+    param: []const u8, // type parameter name, e.g. "T"
+    interface: []const u8, // required interface, e.g. "Writer"
     span: Span,
 };
 
@@ -128,6 +155,7 @@ pub const FunctionDecl = struct {
     name: []const u8,
     file_name: []const u8,
     source: []const u8,
+    is_public: bool = false,
     type_params: []const []const u8,
     type_constraints: []const TypeConstraint = &.{}, // $T: Interface constraints
     params: []const Param,

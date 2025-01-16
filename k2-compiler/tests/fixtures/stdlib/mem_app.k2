@@ -1,0 +1,33 @@
+#import std.mem.{
+    contains,
+    copy_bytes,
+    ends_with,
+    eql_bytes,
+    fill,
+    index_of,
+    starts_with,
+    zero,
+};
+
+exercise_mem :: fn() -> bool {
+    source: [4]u8 = .{ 1u8, 2u8, 3u8, 4u8 };
+    destination: [4]u8 = .{};
+
+    copied := destination[:].copy_bytes(source[:]);
+    if copied != source.len { return false; }
+    if !destination[:].eql_bytes(source[:]) { return false; }
+    if !destination[:].starts_with(u8, source[:]) { return false; }
+    if !destination[:].ends_with(u8, source[:]) { return false; }
+
+    values: [4]i32 = .{};
+    values[:].fill(i32, 7);
+    if !values[:].contains(i32, 7) { return false; }
+    if values[:].index_of(i32, 7) == null { return false; }
+    destination[:].zero();
+    return destination[0] == 0u8;
+}
+
+main :: fn() -> i32 {
+    if exercise_mem() { return 0; }
+    return 1;
+}

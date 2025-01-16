@@ -1,6 +1,6 @@
 const std = @import("std");
 const ast = @import("ast.zig");
-const basalt  = @import("basalt.zig");
+const basalt = @import("basalt.zig");
 pub const k2_runtime = @import("runtime.zig");
 const backend = @import("backend.zig");
 const diagnostic = @import("diagnostic.zig");
@@ -34,10 +34,10 @@ pub const renderDiagnostic = diagnostic.renderDiagnostic;
 pub const renderAll = diagnostic.renderAll;
 pub const parseSource = parser.parseSource;
 pub const parseSourceFrom = parser.parseSourceFrom;
-pub const compile             = pipeline.compile;
-pub const compileWithRuntime  = pipeline.compileWithRuntime;
-pub const compileMulti        = pipeline.compileMulti;
-pub const compileFile         = pipeline.compileFile;
+pub const compile = pipeline.compile;
+pub const compileWithRuntime = pipeline.compileWithRuntime;
+pub const compileMulti = pipeline.compileMulti;
+pub const compileFile = pipeline.compileFile;
 pub const compileFileWithRuntime = pipeline.compileFileWithRuntime;
 pub const FrontEnd = pipeline.FrontEnd;
 pub const NodeId = ast.NodeId;
@@ -55,13 +55,14 @@ const build_options = @import("build_options");
 pub const llvm_enabled = build_options.enable_llvm;
 pub const llvm_path = build_options.llvm_path;
 pub const windows_sdk_lib_path = build_options.windows_sdk_lib_path;
+pub const stdlib_root = build_options.stdlib_root;
 /// LLVM backend — only available when compiled with `-Dllvm-path=<path>`.
 pub const LlvmBackend = if (build_options.enable_llvm)
     @import("backend/llvm.zig").LlvmBackend
 else
     LlvmBackendStub;
 
-pub const comptime_mod    = @import("comptime.zig");
+pub const comptime_mod = @import("comptime.zig");
 pub const compileWithLlvm = driver_mod.compileWithLlvm;
 pub const compileFileWithLlvm = driver_mod.compileFileWithLlvm;
 pub const LlvmCompileOptions = driver_mod.LlvmCompileOptions;

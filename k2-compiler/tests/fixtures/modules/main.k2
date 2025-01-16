@@ -1,7 +1,5 @@
-#import math;
+#import math.{add, multiply};
 
 run :: fn() -> i32 {
-    x := add(3, 4);
-    y := multiply(x, 2);
-    return y;
+    return multiply(add(3, 4), 2);
 }

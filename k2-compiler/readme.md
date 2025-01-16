@@ -34,6 +34,13 @@ zig build -Dllvm-path=Y:/path/to/llvm
 zig build test -Dllvm-path=Y:/path/to/llvm
 ```
 
+The standard-library root defaults to the sibling `k2-modules` directory and
+can be overridden when building the compiler:
+
+```powershell
+zig build -Dstdlib-root=Y:/path/to/k2-modules
+```
+
 The compiler currently exposes these commands:
 
 ```text
@@ -100,7 +107,8 @@ Status meanings:
 | Zones | Implemented | `Arena` provides zero-initialized lexical allocation, non-escape checking, and deterministic cleanup. |
 | Interfaces | Partial | Dynamic `*Interface` dispatch works; fallible interface methods and `.ok`/`.err` field access work. Static constraints, const-correctness, generic methods, composition, and default methods are still missing or TBD. |
 | Runtime | Implemented on Windows; source-valid on Linux | Embedded runtime provides checked output counts, exit/abort, panic, and assertions. Native executable linking is currently Windows-only. |
-| Modules and imports | Partial | Local multi-file compilation exists; package and standard-library systems do not. |
+| Modules, imports, and visibility | Implemented | Imports are resolved reliably, declarations are private by default, `pub` exports APIs, selective imports are supported, and visible `self` functions provide import-scoped extension methods. |
+| Packages and standard library | Partial | `std.*` has a configured stable root and `std.mem` is implemented; package namespaces, manifests, dependencies, and most standard-library modules still need to be built. |
 | Tooling | Partial | Check, IR, object, and build commands exist; formatter, LSP, package manager, and test runner do not. |
 
 ## Attributes
@@ -151,6 +159,90 @@ Completed since the last revision:
 
 Dynamic interfaces are therefore not a long-term-only goal anymore. They exist
 today, but need completion and a firmer ownership model.
+
+## Modules And Visibility
+
+Every source file is currently a module. Top-level declarations are private to
+their defining module unless marked `pub`:
+
+```k2
+pub add :: fn(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+helper :: fn() {} // private
+```
+
+Imports expose only public declarations. Selective imports are preferred because
+they make dependencies explicit:
+
+```k2
+#import math.{add, multiply};
+#import std.io.{write_stdout};
+```
+
+Any visible top-level function whose first value parameter is named `self` is
+also available through dot-call syntax:
+
+```k2
+pub doubled :: fn(self: i32) -> i32 { return self * 2; }
+
+answer := 21.doubled(); // exactly the same call as doubled(21)
+```
+
+Extension methods remain ordinary functions, use normal argument coercions, and
+do not gain access to private fields. They are import-scoped: importing the
+function makes its dot-call form available, while an unimported function cannot
+affect method lookup. Generic extension methods currently retain explicit type
+arguments, for example `values.fill(i32, 7)`.
+
+`#import math;` remains available and exposes every public declaration from
+`math.k2`. Local imports resolve relative to the importing file. `std.*` imports
+resolve from the compiler's configured standard-library root, independent of the
+process working directory and the importing file's directory.
+
+Missing modules, missing selected declarations, private selected declarations,
+and ambiguous imports are errors. Imported modules may use their own private
+helpers internally. `compileMulti` and file/CLI compilation resolve imports;
+the single-buffer `compile()` API only parses retained import declarations
+because it has no module source provider.
+
+Current restriction: top-level declaration names must still be unique across one
+compilation. Package namespaces and internal symbol mangling must remove that
+restriction before third-party package management is added.
+
+## Standard Library
+
+The standard library lives in the sibling `k2-modules/std` tree by default.
+`std.mem` is the first implemented module and provides safe typed-slice helpers.
+Its public functions support both ordinary and extension-method call forms:
+
+```text
+eql(T, a, b) -> bool
+starts_with(T, values, prefix) -> bool
+ends_with(T, values, suffix) -> bool
+copy(T, destination, source) -> usize
+fill(T, destination, value)
+index_of(T, values, needle) -> ?usize
+contains(T, values, needle) -> bool
+
+eql_bytes(a, b) -> bool
+copy_bytes(destination, source) -> usize
+zero(destination)
+```
+
+`copy` copies the shorter of the source and destination lengths, returns the
+copied element count, and currently requires non-overlapping slices. Generic
+element types are explicit until K2 can infer type parameters nested inside
+slice types:
+
+```k2
+#import std.mem.{copy, fill, eql_bytes};
+
+copy(u8, destination, source);
+values.fill(i32, 0);
+same := destination.eql_bytes(source);
+```
 
 ## Zones
 
@@ -296,7 +388,10 @@ failure/control-flow paths produce verified LLVM IR.
 - Define and implement wrapping arithmetic.
 - Finish Linux native entry-point generation and linking, then add a macOS
   runtime and linker path.
-- Establish a real module, visibility, package, and standard-library foundation.
+- Remove compilation-wide top-level name uniqueness with package namespaces and
+  internal symbol mangling.
+- Continue bootstrapping the standard library after `std.mem`, beginning with
+  runtime-backed I/O and small platform-neutral modules.
 
 ### P2: Developer Usability
 
@@ -331,7 +426,7 @@ The following choices should be written down before their implementations grow:
 | Interfaces | What is the static constraint syntax? Which module may implement an interface for a type? |
 | Mutability | How do `const`, receiver mutability, pointers, slices, and interface coercions interact? |
 | `Any` and reflection | Is `Any` borrowed or owned? What defines stable runtime type identity? |
-| Modules and packages | How do visibility, package names, dependencies, and standard-library imports work? |
+| Packages | What names a package, how are versions/dependencies declared, and how are package namespaces represented in symbols? |
 | Bit and endian handling | Are sub-byte integers plus packed structs sufficient, or are endian/bit-layout attributes needed? |
 
 ## Retired "Add Soon" List

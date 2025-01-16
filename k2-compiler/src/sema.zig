@@ -18,10 +18,13 @@ pub const SemanticError = error{
 pub const SymbolTable = struct {
     scopes: std.ArrayList(Scope) = .empty,
     symbols: std.ArrayList(Symbol) = .empty,
+    visible_names: std.StringHashMap(std.StringHashMap(SymbolId)) = undefined,
     root_scope: ScopeId = 0,
 
     pub fn init(allocator: std.mem.Allocator) !SymbolTable {
-        var table: SymbolTable = .{};
+        var table: SymbolTable = .{
+            .visible_names = std.StringHashMap(std.StringHashMap(SymbolId)).init(allocator),
+        };
         errdefer table.deinit(allocator);
 
         try table.scopes.append(allocator, Scope.init(allocator, 0, null));
@@ -34,6 +37,9 @@ pub const SymbolTable = struct {
         }
         self.scopes.deinit(allocator);
         self.symbols.deinit(allocator);
+        var visible_it = self.visible_names.valueIterator();
+        while (visible_it.next()) |names| names.deinit();
+        self.visible_names.deinit();
     }
 
     pub fn addScope(self: *SymbolTable, allocator: std.mem.Allocator, parent: ?ScopeId) !ScopeId {
@@ -67,6 +73,14 @@ pub const SymbolTable = struct {
         }
     }
 
+    pub fn resolveVisible(self: SymbolTable, file_name: []const u8, name: []const u8) ?SymbolId {
+        const id = self.resolve(self.root_scope, name) orelse return null;
+        const symbol_value = self.symbol(id);
+        if (std.mem.eql(u8, symbol_value.file_name, "<runtime>")) return id;
+        const visible = self.visible_names.get(file_name) orelse return null;
+        return visible.get(name);
+    }
+
     pub fn insert(
         self: *SymbolTable,
         allocator: std.mem.Allocator,
@@ -74,6 +88,8 @@ pub const SymbolTable = struct {
         name: []const u8,
         kind: SymbolKind,
         span: Span,
+        file_name: []const u8,
+        is_public: bool,
     ) !SymbolId {
         if (self.scopes.items[scope_id].names.get(name)) |existing| {
             return existing;
@@ -87,6 +103,8 @@ pub const SymbolTable = struct {
             .span = span,
             .scope_id = scope_id,
             .owner = null,
+            .file_name = file_name,
+            .is_public = is_public,
         });
         try self.scopes.items[scope_id].names.put(name, id);
         try self.scopes.items[scope_id].symbols.append(allocator, id);
@@ -121,6 +139,8 @@ pub const Symbol = struct {
     span: Span,
     scope_id: ScopeId,
     owner: ?SymbolId,
+    file_name: []const u8,
+    is_public: bool,
 };
 
 pub const SymbolKind = enum {
@@ -194,8 +214,8 @@ pub const Ty = union(enum) {
     args,
     thread_pool,
     zone,
-    pointer: *const Ty,       // *T  — mutable pointer
-    const_ptr: *const Ty,    // *const T — read-only pointer
+    pointer: *const Ty, // *T  — mutable pointer
+    const_ptr: *const Ty, // *const T — read-only pointer
     optional: *const Ty,
     slice: *const Ty,
     borrow: *const Ty,
@@ -335,6 +355,8 @@ pub const TypeEnv = struct {
     expr_types: std.AutoHashMap(ast.NodeId, Ty),
     expr_symbols: std.AutoHashMap(ast.NodeId, SymbolId),
     expr_scopes: std.AutoHashMap(ast.NodeId, ScopeId),
+    /// Field-callee NodeId -> visible top-level function used as an extension method.
+    extension_calls: std.AutoHashMap(ast.NodeId, SymbolId),
     generic_instantiations: std.ArrayList(GenericInstantiation) = .empty,
     /// Callee expression NodeId → mangled name for generic function calls.
     generic_call_insts: std.AutoHashMap(ast.NodeId, []const u8) = undefined,
@@ -354,6 +376,7 @@ pub const TypeEnv = struct {
             .expr_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .expr_symbols = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .expr_scopes = std.AutoHashMap(ast.NodeId, ScopeId).init(allocator),
+            .extension_calls = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .generic_call_insts = std.AutoHashMap(ast.NodeId, []const u8).init(allocator),
             .generic_struct_templates = std.StringHashMap(ast.TypeDecl).init(allocator),
             .generic_struct_instances = std.StringHashMap(SymbolId).init(allocator),
@@ -369,6 +392,7 @@ pub const TypeEnv = struct {
         self.expr_types.deinit();
         self.expr_symbols.deinit();
         self.expr_scopes.deinit();
+        self.extension_calls.deinit();
         self.generic_call_insts.deinit();
         for (self.generic_instantiations.items) |*gi| gi.expr_types.deinit();
         self.generic_instantiations.deinit(allocator);
@@ -456,6 +480,10 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
 
     for (module.items) |item| {
         const name = item.name() orelse continue;
+        if (table.resolve(table.root_scope, name) != null) {
+            std.debug.print("{s}: error: duplicate top-level declaration `{s}`; module namespaces are not implemented yet\n", .{ item.fileName(), name });
+            return error.SemanticFailed;
+        }
         const kind: SymbolKind = switch (item) {
             .import => unreachable,
             .const_decl => .const_symbol,
@@ -463,10 +491,72 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
             .function => .function,
             .interface_impl => unreachable,
         };
-        _ = try table.insert(allocator, table.root_scope, name, kind, item.span());
+        const id = try table.insert(allocator, table.root_scope, name, kind, item.span(), item.fileName(), item.isPublic());
+        const visible = try visibleNamesFor(&table, allocator, item.fileName());
+        try visible.put(name, id);
+    }
+
+    for (module.items) |item| {
+        const imp = switch (item) {
+            .import => |value| value,
+            else => continue,
+        };
+        // `compile()` parses one in-memory source and intentionally does not
+        // resolve imports. Multi-file and filesystem compilation always set it.
+        const target_file = imp.resolved_file orelse continue;
+        const visible = try visibleNamesFor(&table, allocator, imp.file_name);
+
+        if (imp.names) |names| {
+            for (names) |name| {
+                const id = findSymbolInFile(table, target_file, name) orelse {
+                    std.debug.print("{s}: error: module `{s}` has no declaration named `{s}`\n", .{ imp.file_name, target_file, name });
+                    return error.SemanticFailed;
+                };
+                const imported = table.symbol(id);
+                if (!imported.is_public) {
+                    std.debug.print("{s}: error: `{s}` is private to module `{s}`\n", .{ imp.file_name, name, target_file });
+                    return error.SemanticFailed;
+                }
+                try addVisibleName(visible, imp.file_name, name, id);
+            }
+        } else {
+            for (table.symbols.items) |imported| {
+                if (!std.mem.eql(u8, imported.file_name, target_file) or !imported.is_public) continue;
+                try addVisibleName(visible, imp.file_name, imported.name, imported.id);
+            }
+        }
     }
 
     return table;
+}
+
+fn visibleNamesFor(
+    table: *SymbolTable,
+    allocator: std.mem.Allocator,
+    file_name: []const u8,
+) !*std.StringHashMap(SymbolId) {
+    const entry = try table.visible_names.getOrPut(file_name);
+    if (!entry.found_existing) entry.value_ptr.* = std.StringHashMap(SymbolId).init(allocator);
+    return entry.value_ptr;
+}
+
+fn findSymbolInFile(table: SymbolTable, file_name: []const u8, name: []const u8) ?SymbolId {
+    for (table.symbols.items) |symbol_value| {
+        if (std.mem.eql(u8, symbol_value.file_name, file_name) and std.mem.eql(u8, symbol_value.name, name))
+            return symbol_value.id;
+    }
+    return null;
+}
+
+fn addVisibleName(visible: *std.StringHashMap(SymbolId), file_name: []const u8, name: []const u8, id: SymbolId) SemanticError!void {
+    if (visible.get(name)) |existing| {
+        if (existing != id) {
+            std.debug.print("{s}: error: import makes `{s}` ambiguous\n", .{ file_name, name });
+            return error.SemanticFailed;
+        }
+        return;
+    }
+    try visible.put(name, id);
 }
 
 pub fn resolveNames(
@@ -643,7 +733,7 @@ const Checker = struct {
             .error_ty => "error",
             .unknown => "unknown",
             .optional => |inner| std.fmt.allocPrint(self.allocator, "?{s}", .{self.formatTy(inner.*)}) catch "?T",
-            .pointer   => |inner| std.fmt.allocPrint(self.allocator, "*{s}", .{self.formatTy(inner.*)}) catch "*T",
+            .pointer => |inner| std.fmt.allocPrint(self.allocator, "*{s}", .{self.formatTy(inner.*)}) catch "*T",
             .const_ptr => |inner| std.fmt.allocPrint(self.allocator, "*const {s}", .{self.formatTy(inner.*)}) catch "*const T",
             .slice => |inner| std.fmt.allocPrint(self.allocator, "[]{s}", .{self.formatTy(inner.*)}) catch "[]T",
             .borrow => |inner| std.fmt.allocPrint(self.allocator, "borrow {s}", .{self.formatTy(inner.*)}) catch "borrow T",
@@ -687,6 +777,10 @@ const Checker = struct {
             if (self.scope_stack.items[i].get(name)) |ty| return ty;
         }
         return null;
+    }
+
+    fn resolveSymbol(self: Checker, name: []const u8) ?SymbolId {
+        return self.symbols.resolveVisible(self.file, name);
     }
 
     fn localScopeIndex(self: Checker, name: []const u8) ?usize {
@@ -760,6 +854,7 @@ const Checker = struct {
         try self.collectTopLevelTypes(module);
 
         for (module.items) |item| {
+            self.file = item.fileName();
             switch (item) {
                 .import => {},
                 .const_decl => |decl| _ = try self.inferExpr(decl.value),
@@ -772,6 +867,7 @@ const Checker = struct {
 
     fn collectTopLevelTypes(self: *Checker, module: ast.Module) SemanticError!void {
         for (module.items) |item| {
+            self.file = item.fileName();
             if (item == .interface_impl) {
                 const impl = item.interface_impl;
                 const key = try interfaceImplKey(self.allocator, impl.type_name, impl.interface_name);
@@ -965,8 +1061,8 @@ const Checker = struct {
     }
 
     fn checkInterfaceImpl(self: *Checker, impl: ast.InterfaceImpl) SemanticError!void {
-        const concrete_id = self.symbols.resolve(self.symbols.root_scope, impl.type_name) orelse return error.SemanticFailed;
-        const interface_id = self.symbols.resolve(self.symbols.root_scope, impl.interface_name) orelse return error.SemanticFailed;
+        const concrete_id = self.resolveSymbol(impl.type_name) orelse return error.SemanticFailed;
+        const interface_id = self.resolveSymbol(impl.interface_name) orelse return error.SemanticFailed;
         const layout = self.env.layouts.get(interface_id) orelse return error.SemanticFailed;
         const required = switch (layout.kind) {
             .interface_type => |methods| methods,
@@ -1013,6 +1109,10 @@ const Checker = struct {
     }
 
     fn checkFunction(self: *Checker, decl: ast.FunctionDecl) SemanticError!void {
+        const previous_file = self.file;
+        self.file = decl.file_name;
+        defer self.file = previous_file;
+
         // Generic functions with unbound type params are checked per-instantiation, not here.
         if (decl.type_params.len > 0 and self.current_type_binding.len == 0) return;
 
@@ -1248,7 +1348,8 @@ const Checker = struct {
                 if (isBuiltinValue(name)) return .void;
                 if (std.mem.startsWith(u8, name, ".")) return .error_ty;
                 if (self.lookupLocal(name)) |local_ty| return local_ty;
-                if (self.symbols.resolve(self.symbols.root_scope, name)) |id| {
+                if (self.resolveTypeParam(name)) |type_param_ty| return type_param_ty;
+                if (self.resolveSymbol(name)) |id| {
                     try self.env.expr_symbols.put(expr.id, id);
                     return self.env.get(id) orelse .{ .named = id };
                 }
@@ -1345,7 +1446,7 @@ const Checker = struct {
                 const left = try self.inferExpr(binary.left.*);
                 const right = try self.inferExpr(binary.right.*);
                 break :blk switch (binary.op) {
-                    .equal, .not_equal => if ((left.isNumeric() and right.isNumeric()) or left == .error_ty or right == .error_ty or try self.compatible(left, right)) .bool else return error.SemanticFailed,
+                    .equal, .not_equal => if ((left.isNumeric() and right.isNumeric()) or left == .error_ty or right == .error_ty or try self.compatible(left, right) or try self.compatible(right, left)) .bool else return error.SemanticFailed,
                     .less, .le, .gt, .ge => if (left.isNumeric() and right.isNumeric()) .bool else return error.SemanticFailed,
                     .and_and, .or_or => if (left.isBool() and right.isBool()) .bool else return error.SemanticFailed,
                     .bit_and, .bit_or, .bit_xor => if (left.isInteger() and right.isInteger()) left else return error.SemanticFailed,
@@ -1456,33 +1557,43 @@ const Checker = struct {
                 return self.inferZoneMethod(fld.name, call.args);
             }
             if (self.interfaceFromPointer(base_ty)) |interface_id| {
-                const method = self.findInterfaceMethod(interface_id, fld.name) orelse {
-                    self.emitError(call.callee.span, "interface has no method `{s}`", .{fld.name});
-                    return error.SemanticFailed;
-                };
-                if (method.params.len == 0 or call.args.len != method.params.len - 1) {
-                    const expected_count = if (method.params.len > 0) method.params.len - 1 else 0;
-                    self.emitError(call.callee.span, "`{s}` expects {d} argument(s)", .{ fld.name, expected_count });
-                    return error.SemanticFailed;
-                }
-                try self.checkNonEscapingArgument(fld.base.*, method.params[0].ty);
-                for (call.args, 0..) |arg, i| {
-                    const arg_expr = switch (arg) {
-                        .positional => |value| value,
-                        .named => |named| named.value,
-                    };
-                    try self.checkNonEscapingArgument(arg_expr, method.params[i + 1].ty);
-                    if (!try self.compatible(try self.inferExpr(arg_expr), method.params[i + 1].ty))
+                if (self.findInterfaceMethod(interface_id, fld.name)) |method| {
+                    if (method.params.len == 0 or call.args.len != method.params.len - 1) {
+                        const expected_count = if (method.params.len > 0) method.params.len - 1 else 0;
+                        self.emitError(call.callee.span, "`{s}` expects {d} argument(s)", .{ fld.name, expected_count });
                         return error.SemanticFailed;
+                    }
+                    try self.checkNonEscapingArgument(fld.base.*, method.params[0].ty);
+                    for (call.args, 0..) |arg, i| {
+                        const arg_expr = switch (arg) {
+                            .positional => |value| value,
+                            .named => |named| named.value,
+                        };
+                        try self.checkNonEscapingArgument(arg_expr, method.params[i + 1].ty);
+                        if (!try self.compatible(try self.inferExpr(arg_expr), method.params[i + 1].ty))
+                            return error.SemanticFailed;
+                    }
+                    try self.env.expr_types.put(call.callee.id, .{ .fn_ptr = .{
+                        .params = &.{},
+                        .ret = try self.boxTy(method.return_ty),
+                    } });
+                    if (method.error_ty) |err_ty| {
+                        return .{ .fallible = .{ .ok = try self.boxTy(method.return_ty), .err = try self.boxTy(err_ty) } };
+                    }
+                    return method.return_ty;
                 }
-                try self.env.expr_types.put(call.callee.id, .{ .fn_ptr = .{
-                    .params = &.{},
-                    .ret = try self.boxTy(method.return_ty),
-                } });
-                if (method.error_ty) |err_ty| {
-                    return .{ .fallible = .{ .ok = try self.boxTy(method.return_ty), .err = try self.boxTy(err_ty) } };
+            }
+            if (self.resolveExtensionMethod(fld.name)) |extension| {
+                try self.env.extension_calls.put(call.callee.id, extension.id);
+                const extension_call = try self.extensionCall(call, fld.base.*, extension.sig);
+                if (extension.sig.type_params.len > 0) {
+                    return try self.inferGenericCall(extension.id, fld.name, extension.sig, extension_call);
                 }
-                return method.return_ty;
+                return try self.inferDirectCall(extension.id, fld.name, extension.sig, extension_call);
+            }
+            if (!extensionLookupDeferred(base_ty)) {
+                self.emitError(call.callee.span, "no visible method or extension function `{s}`", .{fld.name});
+                return error.SemanticFailed;
             }
         }
 
@@ -1542,7 +1653,7 @@ const Checker = struct {
             return .void;
         }
 
-        const id = self.symbols.resolve(self.symbols.root_scope, name) orelse {
+        const id = self.resolveSymbol(name) orelse {
             // Maybe it's a local function-pointer variable.
             if (self.lookupLocal(name)) |local_ty| switch (local_ty) {
                 .fn_ptr => |fp| {
@@ -1575,6 +1686,68 @@ const Checker = struct {
             return try self.inferGenericCall(id, name, sig, call);
         }
 
+        return try self.inferDirectCall(id, name, sig, call);
+    }
+
+    const ExtensionMethod = struct {
+        id: SymbolId,
+        sig: FnSig,
+    };
+
+    fn resolveExtensionMethod(self: *Checker, name: []const u8) ?ExtensionMethod {
+        const id = self.resolveSymbol(name) orelse return null;
+        if (self.symbols.symbol(id).kind != .function) return null;
+        const sig = self.env.fn_sigs.get(id) orelse return null;
+        for (sig.params) |param| {
+            if (param.is_type_param) continue;
+            if (!std.mem.eql(u8, param.name, "self")) return null;
+            return .{ .id = id, .sig = sig };
+        }
+        return null;
+    }
+
+    fn extensionLookupDeferred(ty: Ty) bool {
+        return switch (ty) {
+            .unknown, .type_param => true,
+            .pointer, .const_ptr, .borrow => |inner| extensionLookupDeferred(inner.*),
+            else => false,
+        };
+    }
+
+    fn extensionCall(self: *Checker, call: ast.CallExpr, receiver: ast.Expr, sig: FnSig) SemanticError!ast.CallExpr {
+        var args = std.ArrayList(ast.CallArg).empty;
+        errdefer args.deinit(self.allocator);
+
+        var source_index: usize = 0;
+        var inserted_receiver = false;
+        for (sig.params) |param| {
+            if (param.is_type_param) {
+                const constrained = for (sig.type_constraints) |constraint| {
+                    if (std.mem.eql(u8, constraint.param, param.name)) break true;
+                } else false;
+                if (constrained) continue;
+            } else if (!inserted_receiver) {
+                try args.append(self.allocator, .{ .positional = receiver });
+                inserted_receiver = true;
+                continue;
+            }
+
+            if (source_index >= call.args.len) break;
+            try args.append(self.allocator, call.args[source_index]);
+            source_index += 1;
+        }
+        while (source_index < call.args.len) : (source_index += 1) {
+            try args.append(self.allocator, call.args[source_index]);
+        }
+
+        return .{
+            .callee = call.callee,
+            .args = try args.toOwnedSlice(self.allocator),
+        };
+    }
+
+    fn inferDirectCall(self: *Checker, id: SymbolId, name: []const u8, sig: FnSig, call: ast.CallExpr) SemanticError!Ty {
+        _ = id;
         // Count only value params for arg matching
         var value_param_count: usize = 0;
         for (sig.params) |p| {
@@ -1804,8 +1977,9 @@ const Checker = struct {
         return switch (expr.kind) {
             .type_ref => |ty| try self.typeFromRef(ty),
             .ident => |name| {
+                if (self.resolveTypeParam(name)) |t| return t;
                 if (fromBuiltinName(name)) |t| return t;
-                const id = self.symbols.resolve(self.symbols.root_scope, name) orelse return error.SemanticFailed;
+                const id = self.resolveSymbol(name) orelse return error.SemanticFailed;
                 if (self.symbols.symbol(id).kind != .type) return error.SemanticFailed;
                 return .{ .named = id };
             },
@@ -1819,7 +1993,10 @@ const Checker = struct {
         // So we count: value params + unconstrained type params = expected arg count.
         var expected_arg_count: usize = 0;
         for (sig.params) |p| {
-            if (!p.is_type_param) { expected_arg_count += 1; continue; }
+            if (!p.is_type_param) {
+                expected_arg_count += 1;
+                continue;
+            }
             // Is this type param constrained?
             const is_constrained = for (sig.type_constraints) |c| {
                 if (std.mem.eql(u8, c.param, p.name)) break true;
@@ -2048,7 +2225,7 @@ const Checker = struct {
         switch (expr.kind) {
             .ident => |name| {
                 if (isBuiltinValue(name)) return;
-                const id = self.symbols.resolve(self.symbols.root_scope, name) orelse return error.SemanticFailed;
+                const id = self.resolveSymbol(name) orelse return error.SemanticFailed;
                 if (self.symbols.symbol(id).kind != .function) return error.SemanticFailed;
             },
             .field => try self.checkExpr(expr),
@@ -2061,6 +2238,10 @@ const Checker = struct {
     }
 
     fn instantiateGenericStruct(self: *Checker, gi: ast.GenericInstType) SemanticError!Ty {
+        _ = self.resolveSymbol(gi.name) orelse {
+            self.emitError(gi.span, "unknown generic type `{s}`", .{gi.name});
+            return error.SemanticFailed;
+        };
         // Look up the template.
         const tmpl = self.env.generic_struct_templates.get(gi.name) orelse {
             self.emitError(gi.span, "unknown generic type `{s}`", .{gi.name});
@@ -2089,7 +2270,7 @@ const Checker = struct {
             // If the arg is still an unbound type param, we're inside a generic function —
             // return the template's own symbol rather than instantiating yet.
             if (arg_ty == .type_param) {
-                const tmpl_id = self.symbols.resolve(self.symbols.root_scope, gi.name) orelse return .unknown;
+                const tmpl_id = self.resolveSymbol(gi.name) orelse return .unknown;
                 return .{ .named = tmpl_id };
             }
             try binding.append(self.allocator, .{ .name = tp_name, .ty = arg_ty });
@@ -2122,6 +2303,8 @@ const Checker = struct {
             .span = gi.span,
             .scope_id = self.symbols.root_scope,
             .owner = null,
+            .file_name = self.file,
+            .is_public = false,
         });
         try self.symbols.scopes.items[self.symbols.root_scope].names.put(mangled, inst_id);
         try self.symbols.scopes.items[self.symbols.root_scope].symbols.append(self.allocator, inst_id);
@@ -2166,7 +2349,7 @@ const Checker = struct {
             .named => |named| {
                 if (self.resolveTypeParam(named.name)) |tp_ty| return tp_ty;
                 if (std.mem.eql(u8, named.name, "Self")) return self.current_self_ty orelse error.SemanticFailed;
-                if (self.symbols.resolve(self.symbols.root_scope, named.name)) |id| {
+                if (self.resolveSymbol(named.name)) |id| {
                     if (self.symbols.symbol(id).kind != .type) return error.SemanticFailed;
                     return .{ .named = id };
                 }
@@ -2213,7 +2396,7 @@ const Checker = struct {
             .inferred => .error_ty,
             .named => |named| blk: {
                 if (std.mem.eql(u8, named.name, "void")) break :blk .error_ty;
-                const id = self.symbols.resolve(self.symbols.root_scope, named.name) orelse return error.SemanticFailed;
+                const id = self.resolveSymbol(named.name) orelse return error.SemanticFailed;
                 if (self.symbols.symbol(id).kind != .type) return error.SemanticFailed;
                 const layout = self.env.layouts.get(id) orelse return error.SemanticFailed;
                 if (layout.kind != .error_set) return error.SemanticFailed;
@@ -2328,7 +2511,7 @@ const Checker = struct {
                 .type_ref => |ty| self.typeFromRef(ty) catch null,
                 .ident => |name| blk: {
                     if (fromBuiltinName(name)) |builtin_ty| break :blk builtin_ty;
-                    const id = self.symbols.resolve(self.symbols.root_scope, name) orelse break :blk null;
+                    const id = self.resolveSymbol(name) orelse break :blk null;
                     if (self.symbols.symbol(id).kind != .type) break :blk null;
                     break :blk .{ .named = id };
                 },
@@ -2467,11 +2650,11 @@ fn interfaceImplKey(allocator: std.mem.Allocator, type_name: []const u8, interfa
 fn substituteInterfaceSelf(checker: *Checker, ty: Ty, interface_id: SymbolId, concrete_id: SymbolId) !Ty {
     return switch (ty) {
         .named => |id| if (id == interface_id) .{ .named = concrete_id } else ty,
-        .pointer   => |inner| .{ .pointer   = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        .pointer => |inner| .{ .pointer = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
         .const_ptr => |inner| .{ .const_ptr = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
-        .optional  => |inner| .{ .optional  = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
-        .slice     => |inner| .{ .slice     = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
-        .borrow    => |inner| .{ .borrow    = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        .optional => |inner| .{ .optional = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        .slice => |inner| .{ .slice = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        .borrow => |inner| .{ .borrow = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
         else => ty,
     };
 }
@@ -2559,7 +2742,7 @@ pub fn tyMangle(ty: Ty) []const u8 {
 fn sameTy(a: Ty, b: Ty) bool {
     if (@as(std.meta.Tag(Ty), a) != @as(std.meta.Tag(Ty), b)) return false;
     return switch (a) {
-        .pointer   => |pa| sameTy(pa.*, b.pointer.*),
+        .pointer => |pa| sameTy(pa.*, b.pointer.*),
         .const_ptr => |pa| sameTy(pa.*, b.const_ptr.*),
         .optional => |oa| sameTy(oa.*, b.optional.*),
         .slice => |sa| sameTy(sa.*, b.slice.*),

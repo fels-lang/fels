@@ -1,0 +1,91 @@
+// Safe typed-memory helpers.
+//
+// Generic functions currently take their element type explicitly:
+//     copy(u8, destination, source)
+//     destination.copy(u8, source)
+//     eql(i32, left, right)
+//     left.eql(i32, right)
+
+shorter_len :: fn(a: usize, b: usize) -> usize {
+    if a < b { return a; }
+    return b;
+}
+
+pub eql :: fn($T: type, self: []const T, b: []const T) -> bool {
+    if self.len != b.len { return false; }
+
+    i := 0usize;
+    while i < self.len {
+        if self[i] != b[i] { return false; }
+        i += 1usize;
+    }
+    return true;
+}
+
+pub starts_with :: fn($T: type, self: []const T, prefix: []const T) -> bool {
+    if prefix.len > self.len { return false; }
+
+    i := 0usize;
+    while i < prefix.len {
+        if self[i] != prefix[i] { return false; }
+        i += 1usize;
+    }
+    return true;
+}
+
+pub ends_with :: fn($T: type, self: []const T, suffix: []const T) -> bool {
+    if suffix.len > self.len { return false; }
+
+    offset := self.len - suffix.len;
+    i := 0usize;
+    while i < suffix.len {
+        if self[offset + i] != suffix[i] { return false; }
+        i += 1usize;
+    }
+    return true;
+}
+
+// Copies as many elements as fit in both slices and returns the copied count.
+// Source and destination must not overlap.
+pub copy :: fn($T: type, self: []T, source: []const T) -> usize {
+    count := shorter_len(self.len, source.len);
+    i := 0usize;
+    while i < count {
+        self[i] = source[i];
+        i += 1usize;
+    }
+    return count;
+}
+
+pub fill :: fn($T: type, self: []T, value: T) {
+    i := 0usize;
+    while i < self.len {
+        self[i] = value;
+        i += 1usize;
+    }
+}
+
+pub index_of :: fn($T: type, self: []const T, needle: T) -> ?usize {
+    i := 0usize;
+    while i < self.len {
+        if self[i] == needle { return i; }
+        i += 1usize;
+    }
+    return null;
+}
+
+pub contains :: fn($T: type, self: []const T, needle: T) -> bool {
+    return index_of(T, self, needle) != null;
+}
+
+pub eql_bytes :: fn(self: []const u8, b: []const u8) -> bool {
+    return eql(u8, self, b);
+}
+
+pub copy_bytes :: fn(self: []u8, source: []const u8) -> usize {
+    return copy(u8, self, source);
+}
+
+pub zero :: fn(self: []u8) {
+    fill(u8, self, 0u8);
+}

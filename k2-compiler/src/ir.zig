@@ -1147,12 +1147,12 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
             }
             return lowerNamedType(named.name);
         },
-        .pointer   => |ptr| return .{ .ptr = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, ptr.inner.*, binding, symbols)) },
+        .pointer => |ptr| return .{ .ptr = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, ptr.inner.*, binding, symbols)) },
         .many_pointer => |ptr| return .{ .ptr = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, ptr.inner.*, binding, symbols)) },
-        .optional  => |opt| return .{ .optional = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, opt.inner.*, binding, symbols)) },
-        .slice     => |sl|  return .{ .slice    = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, sl.inner.*, binding, symbols)) },
-        .borrow    => |b|   return lowerTypeWithBindingAndSymbols(allocator, b.inner.*, binding, symbols),
-        .array     => |arr| return .{ .array = .{
+        .optional => |opt| return .{ .optional = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, opt.inner.*, binding, symbols)) },
+        .slice => |sl| return .{ .slice = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, sl.inner.*, binding, symbols)) },
+        .borrow => |b| return lowerTypeWithBindingAndSymbols(allocator, b.inner.*, binding, symbols),
+        .array => |arr| return .{ .array = .{
             .elem = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, arr.inner.*, binding, symbols)),
             .len = parseArrayLen(arr.len.*),
         } },
@@ -1732,6 +1732,20 @@ const FunctionLowerer = struct {
                 };
             },
             .binary => |binary| blk: {
+                if (binary.op == .equal or binary.op == .not_equal) {
+                    const optional_expr: ?ast.Expr = if (self.exprType(binary.left.*) == .optional and binary.right.kind == .null)
+                        binary.left.*
+                    else if (self.exprType(binary.right.*) == .optional and binary.left.kind == .null)
+                        binary.right.*
+                    else
+                        null;
+                    if (optional_expr) |optional| {
+                        const value = try self.lowerExpr(optional);
+                        const is_some = try self.emitAt(.bool, .{ .optional_is_some = value }, expr.span);
+                        if (binary.op == .not_equal) break :blk is_some;
+                        break :blk try self.emitAt(.bool, .{ .unary = .{ .op = .not, .value = is_some } }, expr.span);
+                    }
+                }
                 const lhs = try self.lowerExpr(binary.left.*);
                 const rhs = try self.lowerExpr(binary.right.*);
                 break :blk try self.emitAt(self.exprType(expr), .{ .binary = .{ .op = lowerBinOp(binary.op), .lhs = lhs, .rhs = rhs } }, expr.span);
@@ -1777,24 +1791,25 @@ const FunctionLowerer = struct {
                     const fld = call.callee.kind.field;
                     if (self.exprType(fld.base.*) == .interface_value) {
                         const iface_name = self.exprType(fld.base.*).interface_value;
-                        const method_index = self.interfaceMethodIndex(iface_name, fld.name) orelse break :blk Value{ .imm = .null };
-                        const iface = try self.lowerExpr(fld.base.*);
-                        const data = try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .interface_data = iface });
-                        const callee = try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .interface_method = .{
-                            .value = iface,
-                            .index = method_index,
-                        } });
-                        var args = std.ArrayList(Value).empty;
-                        errdefer args.deinit(self.allocator);
-                        try args.append(self.allocator, data);
-                        for (call.args) |arg| switch (arg) {
-                            .positional => |value| try args.append(self.allocator, try self.lowerExpr(value)),
-                            .named => |named| try args.append(self.allocator, try self.lowerExpr(named.value)),
-                        };
-                        break :blk try self.emit(self.exprType(expr), .{ .call_indirect = .{
-                            .callee = callee,
-                            .args = try args.toOwnedSlice(self.allocator),
-                        } });
+                        if (self.interfaceMethodIndex(iface_name, fld.name)) |method_index| {
+                            const iface = try self.lowerExpr(fld.base.*);
+                            const data = try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .interface_data = iface });
+                            const callee = try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .interface_method = .{
+                                .value = iface,
+                                .index = method_index,
+                            } });
+                            var args = std.ArrayList(Value).empty;
+                            errdefer args.deinit(self.allocator);
+                            try args.append(self.allocator, data);
+                            for (call.args) |arg| switch (arg) {
+                                .positional => |value| try args.append(self.allocator, try self.lowerExpr(value)),
+                                .named => |named| try args.append(self.allocator, try self.lowerExpr(named.value)),
+                            };
+                            break :blk try self.emit(self.exprType(expr), .{ .call_indirect = .{
+                                .callee = callee,
+                                .args = try args.toOwnedSlice(self.allocator),
+                            } });
+                        }
                     }
                     if (self.types.expr_types.get(call.callee.id)) |callee_ty| {
                         if (callee_ty == .zone_handle) {
@@ -1805,6 +1820,46 @@ const FunctionLowerer = struct {
                             };
                             break :blk try self.lowerZoneMethod(zone_name, zone_field.name, call.args, expr);
                         }
+                    }
+                    if (self.types.extension_calls.get(call.callee.id)) |extension_id| {
+                        const sig = self.types.fn_sigs.get(extension_id) orelse return error.LoweringFailed;
+                        const symbol = self.symbols.symbol(extension_id);
+                        var args = std.ArrayList(Value).empty;
+                        errdefer args.deinit(self.allocator);
+
+                        var source_index: usize = 0;
+                        var inserted_receiver = false;
+                        for (sig.params) |param| {
+                            if (param.is_type_param) {
+                                const constrained = for (sig.type_constraints) |constraint| {
+                                    if (std.mem.eql(u8, constraint.param, param.name)) break true;
+                                } else false;
+                                if (constrained) continue;
+                                source_index += 1;
+                                continue;
+                            }
+
+                            const value = if (!inserted_receiver) receiver: {
+                                inserted_receiver = true;
+                                break :receiver fld.base.*;
+                            } else source: {
+                                if (source_index >= call.args.len) return error.LoweringFailed;
+                                const source_arg = call.args[source_index];
+                                source_index += 1;
+                                break :source switch (source_arg) {
+                                    .positional => |value| value,
+                                    .named => |named| named.value,
+                                };
+                            };
+                            const expected = try lowerSemaTypeWithEnv(self.allocator, param.ty, self.types, self.symbols);
+                            try args.append(self.allocator, try self.lowerExprAs(value, expected));
+                        }
+
+                        const callee_name = self.types.generic_call_insts.get(call.callee.id) orelse symbol.name;
+                        break :blk try self.emit(self.exprType(expr), .{ .call = .{
+                            .callee = callee_name,
+                            .args = try args.toOwnedSlice(self.allocator),
+                        } });
                     }
                 }
 
@@ -1829,9 +1884,20 @@ const FunctionLowerer = struct {
                         .named => |named| named.value,
                     };
                     var expected: ?IrType = null;
+                    var is_explicit_type_arg = false;
                     if (direct_sig) |sig| {
-                        while (value_param_index < sig.params.len and sig.params[value_param_index].is_type_param)
+                        while (value_param_index < sig.params.len and sig.params[value_param_index].is_type_param) {
+                            const type_param = sig.params[value_param_index];
                             value_param_index += 1;
+                            const is_constrained = for (sig.type_constraints) |constraint| {
+                                if (std.mem.eql(u8, constraint.param, type_param.name)) break true;
+                            } else false;
+                            if (!is_constrained) {
+                                is_explicit_type_arg = true;
+                                break;
+                            }
+                        }
+                        if (is_explicit_type_arg) continue;
                         if (value_param_index < sig.params.len) {
                             expected = lowerSemaTypeWithEnv(self.allocator, sig.params[value_param_index].ty, self.types, self.symbols) catch null;
                             value_param_index += 1;

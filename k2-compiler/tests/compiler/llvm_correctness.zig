@@ -81,6 +81,29 @@ test "LLVM force unwrap calls the embedded runtime panic" {
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "force_unwrap.k2:2:12") != null);
 }
 
+test "LLVM optional equality compares presence instead of aggregate values" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\has_value :: fn(value: ?i32) -> bool { return value != null; }
+        \\is_empty :: fn(value: ?i32) -> bool { return null == value; }
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "optional_equality.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "optional_equality");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "extractvalue") != null);
+}
+
 test "LLVM panic lowering synthesizes the runtime declaration when absent" {
     if (comptime !k2.llvm_enabled) return;
 
