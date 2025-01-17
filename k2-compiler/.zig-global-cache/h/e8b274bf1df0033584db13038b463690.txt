@@ -1,2 +1,0 @@
-0
-1836 1125899909832098 1776106213000000000 d3371a0ffd29d4f0bee337fe4044ac17 1 libc\mingw\lib-common\api-ms-win-crt-time-l1-1-0.def.in
