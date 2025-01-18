@@ -110,10 +110,10 @@ pub stderr :: fn() -> Stderr {
 //
 //   buf := fixed_buf();
 //   w: *Writer = &buf;
-//   w.write_i64(-42i64) catch {};
-//   w.write_all(", ") catch {};
-//   w.write_u64(100u64) catch {};
-//   buf.buf_flush_stdout() catch {};
+//   w.write_i64(-42i64) catch err {};
+//   w.write_all(", ") catch err {};
+//   w.write_u64(100u64) catch err {};
+//   buf.buf_flush_stdout() catch err {};
 //
 // Writes that exceed 256 bytes fail with IoError.buffer_full.
 
@@ -193,9 +193,9 @@ pub buf_flush :: fn(self: *FixedBuf, sink: *Writer) -> usize ! IoError {
 //
 //   sink := null_writer();
 //   w: *Writer = &sink;
-//   w.write_u64(some_value) catch {};
-//   w.write_all(", ") catch {};
-//   w.write_i64(other_value) catch {};
+//   w.write_u64(some_value) catch err {};
+//   w.write_all(", ") catch err {};
+//   w.write_i64(other_value) catch err {};
 //   size := sink.count;   // total bytes that would have been written
 
 pub NullWriter :: struct {

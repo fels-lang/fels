@@ -1,0 +1,15 @@
+#import std.io;
+#import std.mem;
+
+
+main :: fn() -> i32! {
+    buf := fixed_buf();
+    w: *Writer = &buf;
+    w.write_i64(-42i64) catch err { return 1; };
+    w.write_u64(100u64) catch err { return 1; };
+
+    (&buf).buf_flush_stdout() catch err { return 1; };
+
+
+    return 0;
+}

@@ -65,6 +65,24 @@ pub fill :: fn($T: type, self: []T, value: T) {
     }
 }
 
+pub swap :: fn($T: type, self: []T, i: usize, j: usize) {
+    tmp := self[i];
+    self[i] = self[j];
+    self[j] = tmp;
+}
+
+pub reverse :: fn($T: type, self: []T) {
+    if self.len < 2usize { return; }
+    i := 0usize;
+    j := self.len - 1usize;
+
+    while i < j {
+        swap(T, self, i, j);
+        i += 1usize;
+        j -= 1usize;
+    }
+}
+
 pub index_of :: fn($T: type, self: []const T, needle: T) -> ?usize {
     i := 0usize;
     while i < self.len {

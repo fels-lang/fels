@@ -1,0 +1,29 @@
+// std.atomic — atomic loads and spin-wait helpers.
+//
+// K2 currently exposes a single atomic primitive: `atomic_load(ptr, .acquire)`,
+// an acquire-ordered 32-bit load (the ordering argument is required syntax but
+// the backend always emits acquire semantics). There is no atomic store,
+// fetch-add, or compare-exchange yet — this module wraps the one primitive
+// that exists and builds the most common pattern, spinning on a flag, on top
+// of it. Expect it to grow once the compiler exposes more atomic operations.
+
+// Atomically load the current value of an `atomic u32`.
+pub load :: fn(flag: *atomic u32) -> u32 {
+    return atomic_load(flag, .acquire);
+}
+
+// True if the flag currently holds a non-zero value.
+pub is_set :: fn(flag: *atomic u32) -> bool {
+    return load(flag) != 0u32;
+}
+
+// Busy-wait until the flag becomes non-zero. The textbook ready/done signal
+// between two threads sharing a `*atomic u32`.
+pub wait_until_set :: fn(flag: *atomic u32) {
+    while load(flag) == 0u32 {}
+}
+
+// Busy-wait until the flag holds exactly `value`.
+pub wait_until_eq :: fn(flag: *atomic u32, value: u32) {
+    while load(flag) != value {}
+}
