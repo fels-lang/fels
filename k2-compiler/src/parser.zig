@@ -934,10 +934,26 @@ pub const Parser = struct {
                 if (self.match(.colon)) {
                     const close = try self.expect(.r_bracket, "expected ] after slice");
                     left = try self.expr(.{ .slice = .{ .base = try self.allocExpr(left) } }, Span.new(left.span.start, close.start + close.len));
+                } else if (self.match(.dot_dot)) {
+                    var end_expr: ?*const ast.Expr = null;
+                    if (!self.check(.r_bracket)) {
+                        end_expr = try self.allocExpr(try self.parseExpr(0));
+                    }
+                    const close = try self.expect(.r_bracket, "expected ] after slice");
+                    left = try self.expr(.{ .slice = .{ .base = try self.allocExpr(left), .start = null, .end = end_expr } }, Span.new(left.span.start, close.start + close.len));
                 } else {
-                    const index = try self.parseExpr(0);
-                    const close = try self.expect(.r_bracket, "expected ] after index");
-                    left = try self.expr(.{ .index = .{ .base = try self.allocExpr(left), .index = try self.allocExpr(index) } }, Span.new(left.span.start, close.start + close.len));
+                    const first = try self.parseExpr(0);
+                    if (self.match(.dot_dot)) {
+                        var end_expr: ?*const ast.Expr = null;
+                        if (!self.check(.r_bracket)) {
+                            end_expr = try self.allocExpr(try self.parseExpr(0));
+                        }
+                        const close = try self.expect(.r_bracket, "expected ] after slice");
+                        left = try self.expr(.{ .slice = .{ .base = try self.allocExpr(left), .start = try self.allocExpr(first), .end = end_expr } }, Span.new(left.span.start, close.start + close.len));
+                    } else {
+                        const close = try self.expect(.r_bracket, "expected ] after index");
+                        left = try self.expr(.{ .index = .{ .base = try self.allocExpr(left), .index = try self.allocExpr(first) } }, Span.new(left.span.start, close.start + close.len));
+                    }
                 }
                 continue;
             }

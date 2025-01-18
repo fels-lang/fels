@@ -551,4 +551,6 @@ pub const IndexExpr = struct {
 
 pub const SliceExpr = struct {
     base: *const Expr,
+    start: ?*const Expr = null,
+    end: ?*const Expr = null,
 };

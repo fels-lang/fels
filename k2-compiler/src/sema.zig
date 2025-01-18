@@ -1513,6 +1513,8 @@ const Checker = struct {
             },
             .slice => |slice| blk: {
                 const base_ty = try self.inferExpr(slice.base.*);
+                if (slice.start) |start| _ = try self.inferExpr(start.*);
+                if (slice.end) |end| _ = try self.inferExpr(end.*);
                 break :blk switch (base_ty) {
                     .array => |array| .{ .slice = array.elem },
                     .slice => base_ty,

@@ -4,7 +4,6 @@ const std = @import("std");
 const ir = @import("../../ir.zig");
 const llvm = @import("c_api.zig").llvm;
 const ModuleCg = @import("context.zig").ModuleCg;
-
 /// Apply all relevant K2 attributes to an LLVM function value.
 pub fn applyFunctionAttrs(cg: *ModuleCg, func: ir.IrFunction, lv: llvm.LLVMValueRef) void {
     const fn_idx: c_uint = 0xFFFF_FFFF; // LLVMAttributeFunctionIndex

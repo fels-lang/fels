@@ -1,0 +1,394 @@
+#import float_utils;
+
+Number_Error :: errors {
+    empty_input,
+    invalid_number,
+    buffer_full,
+}
+
+pub Number_Parse_Result :: struct {
+    consumed: usize,
+    value: f64,
+    is_integer: bool,
+}
+
+is_digit :: fn(c: u8) -> bool {
+    return c >= 48u8 && c <= 57u8;
+}
+
+digit_value :: fn(c: u8) -> u32 {
+    return (c - 48u8) as u32;
+}
+
+pow10 :: fn(exponent: i64) -> f64 {
+    result := 1.0;
+    n := exponent;
+    while n > 0i64 {
+        result = result * 10.0;
+        n -= 1i64;
+    }
+    while n < 0i64 {
+        result = result / 10.0;
+        n += 1i64;
+    }
+    return result;
+}
+
+// Scans one JSON number token per RFC 8259: -? int frac? exp?
+// Returns the number of input bytes consumed and the parsed value.
+// Uses straightforward decimal accumulation (mantissa * 10^scale); this is
+// correct for the vast majority of real-world JSON numbers but is not a
+// correctly-rounded strtod, so last-bit precision is not guaranteed.
+pub parse_json_number :: fn(text: []const u8) -> Number_Parse_Result ! Number_Error {
+    if text.len == 0usize { fail .empty_input; }
+
+    i := 0usize;
+    negative := false;
+    if text[0] == 45u8 {
+        negative = true;
+        i += 1usize;
+    }
+    if i >= text.len || !is_digit(text[i]) { fail .invalid_number; }
+
+    int_start := i;
+    if text[i] == 48u8 {
+        i += 1usize;
+    } else {
+        while i < text.len && is_digit(text[i]) {
+            i += 1usize;
+        }
+    }
+
+    mantissa := 0.0;
+    j := int_start;
+    while j < i {
+        mantissa = mantissa * 10.0 + (digit_value(text[j]) as f64);
+        j += 1usize;
+    }
+
+    is_integer := true;
+    frac_digits := 0i64;
+
+    if i < text.len && text[i] == 46u8 {
+        is_integer = false;
+        i += 1usize;
+        frac_start := i;
+        if i >= text.len || !is_digit(text[i]) { fail .invalid_number; }
+        while i < text.len && is_digit(text[i]) {
+            mantissa = mantissa * 10.0 + (digit_value(text[i]) as f64);
+            i += 1usize;
+        }
+        frac_digits = (i - frac_start) as i64;
+    }
+
+    exponent := 0i64;
+    if i < text.len && (text[i] == 101u8 || text[i] == 69u8) {
+        is_integer = false;
+        i += 1usize;
+        exp_negative := false;
+        if i < text.len && (text[i] == 43u8 || text[i] == 45u8) {
+            exp_negative = text[i] == 45u8;
+            i += 1usize;
+        }
+        if i >= text.len || !is_digit(text[i]) { fail .invalid_number; }
+        exp_value := 0i64;
+        while i < text.len && is_digit(text[i]) {
+            exp_value = exp_value * 10i64 + (digit_value(text[i]) as i64);
+            i += 1usize;
+        }
+        if exp_negative {
+            exponent = -exp_value;
+        } else {
+            exponent = exp_value;
+        }
+    }
+
+    value := mantissa * pow10(exponent - frac_digits);
+    if negative { value = -value; }
+
+    return .{ i, value, is_integer };
+}
+
+// Writes the decimal digits of `value` (no sign) at `output[start..]`.
+// Returns the number of bytes written.
+//
+// `[]u8` only supports indexing and full-slice (`[:]`), not sub-ranges, so
+// every formatting helper below threads an explicit `start` offset rather
+// than slicing the output buffer.
+write_digits_at :: fn(value: u64, output: []u8, start: usize) -> usize ! Number_Error {
+    digits: [20]u8 = .{};
+    count := 0usize;
+
+    if value == 0u64 {
+        digits[0] = 48u8;
+        count = 1usize;
+    } else {
+        v := value;
+        while v > 0u64 {
+            digits[count] = 48u8 + ((v % 10u64) as u8);
+            v = v / 10u64;
+            count += 1usize;
+        }
+    }
+
+    if start + count > output.len { fail .buffer_full; }
+
+    i := 0usize;
+    while i < count {
+        output[start + i] = digits[count - 1usize - i];
+        i += 1usize;
+    }
+    return count;
+}
+
+pub format_u64 :: fn(value: u64, output: []u8) -> usize ! Number_Error {
+    return write_digits_at(value, output, 0usize)?;
+}
+
+pub format_i64 :: fn(value: i64, output: []u8) -> usize ! Number_Error {
+    if value >= 0i64 {
+        return write_digits_at(value as u64, output, 0usize)?;
+    }
+
+    magnitude := 0u64;
+    if value == -9223372036854775808i64 {
+        magnitude = 9223372036854775808u64;
+    } else {
+        magnitude = (-value) as u64;
+    }
+
+    if output.len == 0usize { fail .buffer_full; }
+    output[0] = 45u8;
+    written := write_digits_at(magnitude, output, 1usize)?;
+    return 1usize + written;
+}
+
+write_literal_at :: fn(text: []const u8, output: []u8, start: usize) -> usize ! Number_Error {
+    if start + text.len > output.len { fail .buffer_full; }
+    i := 0usize;
+    while i < text.len {
+        output[start + i] = text[i];
+        i += 1usize;
+    }
+    return text.len;
+}
+
+truncate_f64 :: fn(value: f64) -> f64 {
+    return (value as i64) as f64;
+}
+
+SIGNIFICANT_DIGITS :: 17i64;
+
+// Formats `value` as a JSON number. NaN and Infinity are not valid JSON
+// numbers; callers should special-case `inspect_f64(value)` first (e.g. emit
+// `null` or a quoted string, matching whatever float-handling policy they
+// chose for the surrounding JSON_Value layer).
+//
+// Whole-number values that fit in i64 are written as plain integers (e.g.
+// `1` rather than `1.0`); both spellings parse back to the same f64. Other
+// values are written with up to 17 significant decimal digits, which is
+// always enough to round-trip an f64, though not necessarily the shortest
+// possible spelling (this is not a Grisu/Ryu-style shortest-form formatter).
+pub format_f64 :: fn(value: f64, output: []u8) -> usize ! Number_Error {
+    info := inspect_f64(value);
+    if info.is_nan { return write_literal_at("NaN", output, 0usize)?; }
+    if info.is_infinity {
+        if info.is_negative { return write_literal_at("-Infinity", output, 0usize)?; }
+        return write_literal_at("Infinity", output, 0usize)?;
+    }
+
+    pos := 0usize;
+    if info.is_negative {
+        if output.len == 0usize { fail .buffer_full; }
+        output[0] = 45u8;
+        pos = 1usize;
+    }
+
+    magnitude := value;
+    if info.is_negative { magnitude = -magnitude; }
+
+    if magnitude == 0.0 {
+        written := write_literal_at("0", output, pos)?;
+        return pos + written;
+    }
+
+    truncated := truncate_f64(magnitude);
+    if truncated == magnitude && magnitude < 9223372036854775808.0 {
+        written := write_digits_at(magnitude as u64, output, pos)?;
+        return pos + written;
+    }
+
+    written := format_shortest_at(magnitude, output, pos)?;
+    return pos + written;
+}
+
+Decimal_Scale :: struct {
+    exponent10: i64,
+    scaled: f64,
+}
+
+// Reduces `magnitude` (> 0) to `scaled * 10^exponent10` with `scaled` in [1, 10).
+decimal_scale_of :: fn(magnitude: f64) -> Decimal_Scale {
+    exponent10 := 0i64;
+    scaled := magnitude;
+    while scaled >= 10.0 {
+        scaled = scaled / 10.0;
+        exponent10 += 1i64;
+    }
+    while scaled < 1.0 {
+        scaled = scaled * 10.0;
+        exponent10 -= 1i64;
+    }
+    return .{ exponent10, scaled };
+}
+
+// Renders `magnitude` (finite, positive) with exactly `precision` significant
+// decimal digits (trailing zeros trimmed), choosing fixed-point notation for
+// "reasonable" magnitudes and scientific notation otherwise. Returns the
+// number of bytes written at output[start..].
+render_with_precision :: fn(magnitude: f64, precision: i64, output: []u8, start: usize) -> usize ! Number_Error {
+    scale := decimal_scale_of(magnitude);
+    exponent10 := scale.exponent10;
+
+    digits_value := (scale.scaled * pow10(precision - 1i64) + 0.5) as u64;
+    digits: [24]u8 = .{};
+    digit_count := format_u64(digits_value, digits[:])?;
+
+    // Rounding can carry out into an extra leading digit (9.99... -> 10.0...).
+    if digit_count > (precision as usize) {
+        exponent10 += 1i64;
+        digit_count = precision as usize;
+    }
+
+    trimmed := digit_count;
+    while trimmed > 1usize && digits[trimmed - 1usize] == 48u8 {
+        trimmed -= 1usize;
+    }
+
+    if exponent10 >= -4i64 && exponent10 < 17i64 {
+        return write_fixed_point_at(digits[:], trimmed, exponent10, output, start)?;
+    }
+    return write_scientific_at(digits[:], trimmed, exponent10, output, start)?;
+}
+
+// Finds the smallest number of significant digits (1..=SIGNIFICANT_DIGITS)
+// that round-trips back to exactly `magnitude` via `parse_json_number`, and
+// writes that rendering at output[start..]. This is a brute-force stand-in
+// for a proper shortest-round-trip (Grisu/Ryu-style) formatter: it costs up
+// to SIGNIFICANT_DIGITS render+parse cycles, but needs no bignum arithmetic
+// and always produces a value that parses back exactly.
+format_shortest_at :: fn(magnitude: f64, output: []u8, start: usize) -> usize ! Number_Error {
+    precision := 1i64;
+    while precision <= SIGNIFICANT_DIGITS {
+        scratch: [32]u8 = .{};
+        render_with_precision(magnitude, precision, scratch[:], 0usize)?;
+        parsed := parse_json_number(scratch[:])?;
+        if parsed.value == magnitude {
+            return render_with_precision(magnitude, precision, output, start)?;
+        }
+        precision += 1i64;
+    }
+    return render_with_precision(magnitude, SIGNIFICANT_DIGITS, output, start)?;
+}
+
+// Writes digits[0..digit_count] placed so the first digit has decimal
+// exponent `exponent10` (e.g. digits="125", exponent10=1 -> "12.5";
+// digits="125", exponent10=-2 -> "0.00125").
+write_fixed_point_at :: fn(digits: []const u8, digit_count: usize, exponent10: i64, output: []u8, start: usize) -> usize ! Number_Error {
+    pos := start;
+
+    if exponent10 < 0i64 {
+        if pos + 2usize > output.len { fail .buffer_full; }
+        output[pos] = 48u8;
+        pos += 1usize;
+        output[pos] = 46u8;
+        pos += 1usize;
+
+        zeros := (-exponent10 - 1i64) as usize;
+        z := 0usize;
+        while z < zeros {
+            if pos >= output.len { fail .buffer_full; }
+            output[pos] = 48u8;
+            pos += 1usize;
+            z += 1usize;
+        }
+
+        d := 0usize;
+        while d < digit_count {
+            if pos >= output.len { fail .buffer_full; }
+            output[pos] = digits[d];
+            pos += 1usize;
+            d += 1usize;
+        }
+        return pos - start;
+    }
+
+    int_digits := (exponent10 + 1i64) as usize;
+    d := 0usize;
+    while d < int_digits {
+        if pos >= output.len { fail .buffer_full; }
+        if d < digit_count {
+            output[pos] = digits[d];
+        } else {
+            output[pos] = 48u8;
+        }
+        pos += 1usize;
+        d += 1usize;
+    }
+
+    if int_digits < digit_count {
+        if pos >= output.len { fail .buffer_full; }
+        output[pos] = 46u8;
+        pos += 1usize;
+
+        while d < digit_count {
+            if pos >= output.len { fail .buffer_full; }
+            output[pos] = digits[d];
+            pos += 1usize;
+            d += 1usize;
+        }
+    }
+
+    return pos - start;
+}
+
+// Writes digits as `d.ddd...e[+-]NN` (one leading digit before the point).
+write_scientific_at :: fn(digits: []const u8, digit_count: usize, exponent10: i64, output: []u8, start: usize) -> usize ! Number_Error {
+    pos := start;
+    if pos >= output.len { fail .buffer_full; }
+    output[pos] = digits[0];
+    pos += 1usize;
+
+    if digit_count > 1usize {
+        if pos >= output.len { fail .buffer_full; }
+        output[pos] = 46u8;
+        pos += 1usize;
+
+        d := 1usize;
+        while d < digit_count {
+            if pos >= output.len { fail .buffer_full; }
+            output[pos] = digits[d];
+            pos += 1usize;
+            d += 1usize;
+        }
+    }
+
+    if pos >= output.len { fail .buffer_full; }
+    output[pos] = 101u8; // 'e'
+    pos += 1usize;
+
+    exp := exponent10;
+    if exp < 0i64 {
+        if pos >= output.len { fail .buffer_full; }
+        output[pos] = 45u8;
+        pos += 1usize;
+        exp = -exp;
+    } else {
+        if pos >= output.len { fail .buffer_full; }
+        output[pos] = 43u8;
+        pos += 1usize;
+    }
+
+    written := write_digits_at(exp as u64, output, pos)?;
+    return (pos - start) + written;
+}

@@ -1964,6 +1964,37 @@ const FunctionLowerer = struct {
             },
             .slice => |slice| blk: {
                 const base_ty = self.exprType(slice.base.*);
+                if (slice.start != null or slice.end != null) {
+                    const elem_ty: IrType = switch (base_ty) {
+                        .array => |array| array.elem.*,
+                        .slice => |inner| inner.*,
+                        else => return error.LoweringFailed,
+                    };
+
+                    const start_val: Value = if (slice.start) |start_expr|
+                        try self.lowerExpr(start_expr.*)
+                    else
+                        .{ .imm = .{ .uint = 0 } };
+
+                    const base_len: Value = switch (base_ty) {
+                        .array => |array| .{ .imm = .{ .uint = array.len } },
+                        .slice => try self.emit(.usize, .{ .field = .{ .base = try self.lowerExpr(slice.base.*), .name = "len" } }),
+                        else => unreachable,
+                    };
+                    const end_val: Value = if (slice.end) |end_expr|
+                        try self.lowerExpr(end_expr.*)
+                    else
+                        base_len;
+
+                    const base_addr = switch (base_ty) {
+                        .array => try self.lowerLValueAddress(slice.base.*),
+                        else => try self.lowerExpr(slice.base.*),
+                    };
+                    const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, elem_ty) };
+                    const offset_ptr = try self.emitAt(ptr_ty, .{ .index_addr = .{ .base = base_addr, .index = start_val } }, expr.span);
+                    const len = try self.emit(.usize, .{ .binary = .{ .op = .sub, .lhs = end_val, .rhs = start_val } });
+                    break :blk try self.emit(self.exprType(expr), .{ .slice_expr = .{ .ptr = offset_ptr, .len = len } });
+                }
                 switch (base_ty) {
                     .array => |array| {
                         const ptr = try self.lowerLValueAddress(slice.base.*);
