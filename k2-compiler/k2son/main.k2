@@ -3,7 +3,6 @@
 main :: fn() -> i32 {
 
     if is_utf_cont(0x80u8) {
-        assert(true);
         return 1;
     }
 

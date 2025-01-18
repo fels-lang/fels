@@ -161,49 +161,29 @@ pub buf_reset :: fn(self: *FixedBuf) {
     self.pos = 0usize;
 }
 
-// Flush the buffer contents to stdout, one byte at a time.
-// (Range-slice syntax would allow a single syscall; planned for a future K2 release.)
+// Flush the buffer contents to stdout in a single syscall.
 pub buf_flush_stdout :: fn(self: *FixedBuf) -> usize ! IoError {
-    written := 0usize;
-    i := 0usize;
-    while i < self.pos {
-        tmp: [1]u8 = .{};
-        tmp[0] = self.data[i];
-        n := write_stdout(tmp[:]);
-        if n == 0usize { fail .write_failed; }
-        written += n;
-        i += 1usize;
-    }
-    return written;
+    pending := self.data[0usize..self.pos];
+    if pending.len == 0usize { return 0usize; }
+    n := write_stdout(pending);
+    if n == 0usize { fail .write_failed; }
+    return n;
 }
 
-// Flush the buffer contents to stderr, one byte at a time.
+// Flush the buffer contents to stderr in a single syscall.
 pub buf_flush_stderr :: fn(self: *FixedBuf) -> usize ! IoError {
-    written := 0usize;
-    i := 0usize;
-    while i < self.pos {
-        tmp: [1]u8 = .{};
-        tmp[0] = self.data[i];
-        n := write_stderr(tmp[:]);
-        if n == 0usize { fail .write_failed; }
-        written += n;
-        i += 1usize;
-    }
-    return written;
+    pending := self.data[0usize..self.pos];
+    if pending.len == 0usize { return 0usize; }
+    n := write_stderr(pending);
+    if n == 0usize { fail .write_failed; }
+    return n;
 }
 
-// Flush the buffer contents to an arbitrary *Writer, one byte at a time.
+// Flush the buffer contents to an arbitrary *Writer in a single call.
 pub buf_flush :: fn(self: *FixedBuf, sink: *Writer) -> usize ! IoError {
-    written := 0usize;
-    i := 0usize;
-    while i < self.pos {
-        tmp: [1]u8 = .{};
-        tmp[0] = self.data[i];
-        n := sink.write_all(tmp[:])?;
-        written += n;
-        i += 1usize;
-    }
-    return written;
+    pending := self.data[0usize..self.pos];
+    if pending.len == 0usize { return 0usize; }
+    return sink.write_all(pending)?;
 }
 
 // ─── NullWriter ───────────────────────────────────────────────────────────────
