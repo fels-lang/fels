@@ -3,5 +3,6 @@
 *.obj
 *.lib
 **/.zig-cache/
+**/.zig-global-cache/
 **/zig-out/
 *.o
