@@ -1,0 +1,123 @@
+// std.fmt — formatting on top of std.io.Writer: padding/alignment,
+// width-justified numbers, and joining.
+//
+// K2 has no variadic functions or format-string placeholders, so "printf-style"
+// output is built the K2 way: compose `*Writer` calls directly, and reach for
+// these helpers for the parts that are fiddly to hand-roll — padding a value
+// out to a column width, right-justifying a number, or joining a list with a
+// separator.
+//
+// Width-aware number padding measures the rendered value first with a
+// NullWriter (see std.io), then pads and writes — allocation-free, and exactly
+// the pattern NullWriter exists for.
+//
+// NOTE: an earlier draft of this module also shipped a `Display` interface
+// (`display(self: *Self, w: *Writer)`) so user structs could render themselves
+// through any *Writer, plus `join_display`/`display_line` built on it. That
+// pattern is cut for now — it hits a real compiler defect: an interface method
+// reached through dynamic dispatch that itself takes another interface pointer
+// and calls a method on it (e.g. `*Display.display` calling `w.write_all`)
+// either fails LLVM verification ("Invalid bitcast ... to { ptr, ptr }") or
+// segfaults the compiler outright. Confirmed with a minimal repro using two
+// freshly-defined interfaces — nothing std.io-specific. Until that's fixed,
+// implement `Writer` directly on your type instead (it only receives `[]const
+// u8`, not another interface pointer) and write through it the ordinary way.
+
+#import std.io;
+
+// ─── Byte-slice padding ───────────────────────────────────────────────────────
+//
+// If `data` is already at least `width` bytes, it is written as-is — these
+// never truncate.
+
+pub write_padded_left :: fn(w: *Writer, data: []const u8, width: usize, fill: u8) -> usize ! IoError {
+    if data.len >= width {
+        return w.write_all(data)?;
+    }
+    a := w.write_repeat(fill, width - data.len)?;
+    b := w.write_all(data)?;
+    return a + b;
+}
+
+pub write_padded_right :: fn(w: *Writer, data: []const u8, width: usize, fill: u8) -> usize ! IoError {
+    if data.len >= width {
+        return w.write_all(data)?;
+    }
+    a := w.write_all(data)?;
+    b := w.write_repeat(fill, width - data.len)?;
+    return a + b;
+}
+
+// Centers `data`, putting any odd leftover padding on the right.
+pub write_padded_center :: fn(w: *Writer, data: []const u8, width: usize, fill: u8) -> usize ! IoError {
+    if data.len >= width {
+        return w.write_all(data)?;
+    }
+    total := width - data.len;
+    left := total / 2usize;
+    right := total - left;
+    a := w.write_repeat(fill, left)?;
+    b := w.write_all(data)?;
+    c := w.write_repeat(fill, right)?;
+    return a + b + c;
+}
+
+// ─── Width-justified numbers ──────────────────────────────────────────────────
+//
+// Right-justify a number within `width`, padding on the left with `fill`
+// (spaces for column alignment, '0' for fixed-width fields like "007").
+// The value is measured with a NullWriter first so the padding can precede it
+// without ever buffering or allocating the rendered text.
+
+pub write_u64_padded :: fn(w: *Writer, value: u64, width: usize, fill: u8) -> usize ! IoError {
+    measure := null_writer();
+    mw: *Writer = &measure;
+    n := mw.write_u64(value)?;
+
+    pad := 0usize;
+    if measure.count < width { pad = width - measure.count; }
+    a := w.write_repeat(fill, pad)?;
+    b := w.write_u64(value)?;
+    return a + b;
+}
+
+pub write_i64_padded :: fn(w: *Writer, value: i64, width: usize, fill: u8) -> usize ! IoError {
+    measure := null_writer();
+    mw: *Writer = &measure;
+    n := mw.write_i64(value)?;
+
+    pad := 0usize;
+    if measure.count < width { pad = width - measure.count; }
+    a := w.write_repeat(fill, pad)?;
+    b := w.write_i64(value)?;
+    return a + b;
+}
+
+pub write_hex_u64_padded :: fn(w: *Writer, value: u64, width: usize, fill: u8) -> usize ! IoError {
+    measure := null_writer();
+    mw: *Writer = &measure;
+    n := mw.write_hex_u64(value)?;
+
+    pad := 0usize;
+    if measure.count < width { pad = width - measure.count; }
+    a := w.write_repeat(fill, pad)?;
+    b := w.write_hex_u64(value)?;
+    return a + b;
+}
+
+// ─── Joining ──────────────────────────────────────────────────────────────────
+
+// Write each byte slice in `items`, separated by `sep`.
+//   join_bytes(w, .{"a", "b", "c"}[:], ", ")  ->  "a, b, c"
+pub join_bytes :: fn(w: *Writer, items: []const []const u8, sep: []const u8) -> usize ! IoError {
+    written := 0usize;
+    i := 0usize;
+    while i < items.len {
+        if i > 0usize {
+            written += w.write_all(sep)?;
+        }
+        written += w.write_all(items[i])?;
+        i += 1usize;
+    }
+    return written;
+}

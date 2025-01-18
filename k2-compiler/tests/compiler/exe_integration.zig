@@ -218,3 +218,131 @@ test "exe: zone allocation can be used through a borrow parameter" {
     , "exe_zone_borrow");
     try std.testing.expectEqual(@as(u32, 0), code);
 }
+
+test "exe: sizeof returns the actual size of its type argument" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // sizeof(u8) + sizeof(u16) + sizeof(u32) + sizeof(u64) == 1 + 2 + 4 + 8 == 15.
+    // A compiler that always reports sizeof(T) == 8 would instead yield 32.
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    total := sizeof(u8) + sizeof(u16) + sizeof(u32) + sizeof(u64);
+        \\    return truncate_to(i32, total);
+        \\}
+    , "exe_sizeof_widths");
+    try std.testing.expectEqual(@as(u32, 15), code);
+}
+
+test "exe: sizeof on pointer types returns pointer width" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    total := sizeof(*i32) + sizeof([*]u8);
+        \\    return truncate_to(i32, total);
+        \\}
+    , "exe_sizeof_pointers");
+    try std.testing.expectEqual(@as(u32, 16), code);
+}
+
+test "exe: 0b binary integer literals parse to their numeric value" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // 0b1011 == 11; a misparse (e.g. treating 'b' as a hex digit) would give 111011.
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    return 0b1011;
+        \\}
+    , "exe_binary_literal");
+    try std.testing.expectEqual(@as(u32, 11), code);
+}
+
+test "exe: dynamic dispatch through an interface method that takes another interface pointer" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Regression: an interface impl method whose own parameter is itself an
+    // interface pointer (`w: *Writer`) used to be lowered as a thin pointer
+    // instead of a fat `{ data, vtable }` pointer (lowerTypeReplacingSelf
+    // didn't recognize interface types). Calling a method on that nested
+    // interface pointer then bitcast a thin `ptr` to `{ ptr, ptr }`, which
+    // failed LLVM verification with "Invalid bitcast".
+    const code = try compileAndRun(arena.allocator(),
+        \\Writer :: interface {
+        \\    write_all :: fn(self: *Self, s: []const u8) -> usize;
+        \\}
+        \\Display :: interface {
+        \\    display :: fn(self: *Self, w: *Writer) -> usize;
+        \\}
+        \\Buf :: struct { total: usize }
+        \\Buf as Writer {
+        \\    write_all :: fn(self: *Self, s: []const u8) -> usize {
+        \\        self.total = self.total + s.len;
+        \\        return s.len;
+        \\    }
+        \\}
+        \\Point :: struct { x: i64, y: i64 }
+        \\Point as Display {
+        \\    display :: fn(self: *Self, w: *Writer) -> usize {
+        \\        return w.write_all("pt");
+        \\    }
+        \\}
+        \\call_display :: fn(w: *Writer, value: *Display) -> usize {
+        \\    return value.display(w);
+        \\}
+        \\main :: fn() -> i32 {
+        \\    p: Point = .{ 1i64, 2i64 };
+        \\    d: *Display = &p;
+        \\    buf: Buf = .{ 0 };
+        \\    w: *Writer = &buf;
+        \\    n: usize = call_display(w, d);
+        \\    return n as i32;
+        \\}
+    , "exe_iface_nested_dispatch_param");
+    try std.testing.expectEqual(@as(u32, 2), code);
+}
+
+test "exe: nested dynamic dispatch on a parameter of an interface method" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Regression: previously crashed the compiler process with a segfault in
+    // LLVM-C.dll while lowering `b.val()` inside `Foo.A.run`, because `b: *B`
+    // was lowered as a thin pointer and lowerInterfaceData attempted to
+    // extractvalue field 0 from a non-aggregate `ptr`. A malformed-but-valid
+    // program must never crash the compiler outright.
+    const code = try compileAndRun(arena.allocator(),
+        \\A :: interface { run :: fn(self: *Self, b: *B) -> i32; }
+        \\B :: interface { val :: fn(self: *Self) -> i32; }
+        \\Foo :: struct { x: i32 }
+        \\Bar :: struct { y: i32 }
+        \\Foo as A {
+        \\    run :: fn(self: *Self, b: *B) -> i32 { return b.val(); }
+        \\}
+        \\Bar as B {
+        \\    val :: fn(self: *Self) -> i32 { return self.y; }
+        \\}
+        \\call_it :: fn(a: *A, b: *B) -> i32 { return a.run(b); }
+        \\main :: fn() -> i32 {
+        \\    foo: Foo = .{ 1i32 };
+        \\    bar: Bar = .{ 99i32 };
+        \\    a: *A = &foo;
+        \\    b: *B = &bar;
+        \\    return call_it(a, b);
+        \\}
+    , "exe_iface_nested_dispatch_segfault");
+    try std.testing.expectEqual(@as(u32, 99), code);
+}

@@ -736,7 +736,7 @@ fn lowerBuiltin(
 
     // sizeof(Type) — compile-time size constant in bytes.
     if (std.mem.eql(u8, b.name, "sizeof")) {
-        const size_ty = types.lower(cg, ty); // the type we're sizing
+        const size_ty = types.lower(cg, b.type_arg orelse ty); // the actual type we're sizing
         return llvm.LLVMSizeOf(size_ty);
     }
 

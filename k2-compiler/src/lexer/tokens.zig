@@ -332,6 +332,11 @@ pub const Lexer = struct {
             while (self.index < self.source.len and (std.ascii.isHex(self.source[self.index]) or self.source[self.index] == '_')) {
                 self.index += 1;
             }
+        } else if (self.source[start] == '0' and self.index < self.source.len and (self.source[self.index] == 'b' or self.source[self.index] == 'B')) {
+            self.index += 1;
+            while (self.index < self.source.len and (self.source[self.index] == '0' or self.source[self.index] == '1' or self.source[self.index] == '_')) {
+                self.index += 1;
+            }
         } else {
             while (self.index < self.source.len and (std.ascii.isDigit(self.source[self.index]) or self.source[self.index] == '_')) {
                 self.index += 1;

@@ -898,7 +898,10 @@ fn parseIntLit(text: []const u8) i128 {
     var start: usize = 0;
     if (num[0] == '-') { negative = true; start = 1; }
     const radix: i128 = if (num.len > start + 1 and num[start] == '0' and
-        (num[start+1] == 'x' or num[start+1] == 'X')) blk: { start += 2; break :blk 16; } else 10;
+        (num[start+1] == 'x' or num[start+1] == 'X')) blk: { start += 2; break :blk 16; }
+        else if (num.len > start + 1 and num[start] == '0' and
+        (num[start+1] == 'b' or num[start+1] == 'B')) blk: { start += 2; break :blk 2; }
+        else 10;
     var value: i128 = 0;
     for (num[start..]) |c| {
         if (c == '_') continue;
@@ -906,6 +909,7 @@ fn parseIntLit(text: []const u8) i128 {
             else if (c >= 'a' and c <= 'f') 10 + c - 'a'
             else if (c >= 'A' and c <= 'F') 10 + c - 'A'
             else break;
+        if (d >= radix) break;
         value = value * radix + d;
     }
     return if (negative) -value else value;

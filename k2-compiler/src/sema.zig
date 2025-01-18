@@ -2834,8 +2834,14 @@ fn parseArrayLen(expr: ast.Expr) u64 {
 fn parseIntLiteral(text: []const u8) i128 {
     var value: i128 = 0;
     var start: usize = 0;
-    if (text.len >= 2 and text[0] == '0' and (text[1] == 'x' or text[1] == 'X')) start = 2;
-    const radix: i128 = if (start == 2) 16 else 10;
+    var radix: i128 = 10;
+    if (text.len >= 2 and text[0] == '0' and (text[1] == 'x' or text[1] == 'X')) {
+        start = 2;
+        radix = 16;
+    } else if (text.len >= 2 and text[0] == '0' and (text[1] == 'b' or text[1] == 'B')) {
+        start = 2;
+        radix = 2;
+    }
     for (text[start..]) |ch| {
         if (ch == '_') continue;
         const digit: i128 = if (ch >= '0' and ch <= '9')
@@ -2846,6 +2852,7 @@ fn parseIntLiteral(text: []const u8) i128 {
             10 + ch - 'A'
         else
             break;
+        if (digit >= radix) break;
         value = value * radix + digit;
     }
     return value;

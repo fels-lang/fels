@@ -245,6 +245,10 @@ pub const CallIndirectInstr = struct {
 pub const BuiltinInstr = struct {
     name: []const u8,
     args: []const Value,
+    /// For builtins whose first argument is a type (e.g. `sizeof(T)`), the
+    /// actual lowered type `T` — independent of the call's inferred result
+    /// type, which sema may set to something else (e.g. `sizeof` → `.usize`).
+    type_arg: ?IrType = null,
 };
 
 pub const StructFieldValue = struct {
@@ -1213,9 +1217,9 @@ fn lowerInterfaceMethod(
     errdefer params.deinit(allocator);
     for (decl.params) |param| try params.append(allocator, .{
         .name = param.name,
-        .ty = try lowerTypeReplacingSelf(allocator, param.ty, impl.type_name),
+        .ty = try lowerTypeReplacingSelf(allocator, param.ty, impl.type_name, types, symbols),
     });
-    const return_ty = try lowerTypeReplacingSelf(allocator, decl.return_ty, impl.type_name);
+    const return_ty = try lowerTypeReplacingSelf(allocator, decl.return_ty, impl.type_name, types, symbols);
     const blocks = if (decl.body) |body| blk: {
         var lowerer = FunctionLowerer.init(allocator, types, symbols, decl);
         lowerer.module = module;
@@ -1238,14 +1242,32 @@ fn lowerInterfaceMethod(
     };
 }
 
-fn lowerTypeReplacingSelf(allocator: std.mem.Allocator, ty: ast.TypeRef, concrete_name: []const u8) !IrType {
+fn lowerTypeReplacingSelf(allocator: std.mem.Allocator, ty: ast.TypeRef, concrete_name: []const u8, types: sema.TypeEnv, symbols: sema.SymbolTable) !IrType {
+    if (ty == .borrow) return lowerTypeReplacingSelf(allocator, ty.borrow.inner.*, concrete_name, types, symbols);
+    // A pointer to a named interface type lowers to a fat interface pointer
+    // ({ data: ptr, vtable: ptr }), not a thin pointer to the interface's
+    // (nonexistent) struct layout — mirrors lowerAstTypeWithEnv.
+    const ptr_inner_ast: ?ast.TypeRef = switch (ty) {
+        .pointer => |p| p.inner.*,
+        .many_pointer => |p| p.inner.*,
+        else => null,
+    };
+    if (ptr_inner_ast) |inner_ty| switch (inner_ty) {
+        .named => |named| if (!std.mem.eql(u8, named.name, "Self")) {
+            if (symbols.resolve(symbols.root_scope, named.name)) |id| {
+                if (types.layouts.get(id)) |layout| if (layout.kind == .interface_type)
+                    return .{ .interface_value = named.name };
+            }
+        },
+        else => {},
+    };
     return switch (ty) {
         .named => |named| if (std.mem.eql(u8, named.name, "Self")) .{ .struct_type = concrete_name } else lowerNamedType(named.name),
-        .pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerTypeReplacingSelf(allocator, ptr.inner.*, concrete_name)) },
-        .many_pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerTypeReplacingSelf(allocator, ptr.inner.*, concrete_name)) },
-        .optional => |opt| .{ .optional = try boxType(allocator, try lowerTypeReplacingSelf(allocator, opt.inner.*, concrete_name)) },
-        .slice => |slice| .{ .slice = try boxType(allocator, try lowerTypeReplacingSelf(allocator, slice.inner.*, concrete_name)) },
-        .borrow => |borrow| try lowerTypeReplacingSelf(allocator, borrow.inner.*, concrete_name),
+        .pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerTypeReplacingSelf(allocator, ptr.inner.*, concrete_name, types, symbols)) },
+        .many_pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerTypeReplacingSelf(allocator, ptr.inner.*, concrete_name, types, symbols)) },
+        .optional => |opt| .{ .optional = try boxType(allocator, try lowerTypeReplacingSelf(allocator, opt.inner.*, concrete_name, types, symbols)) },
+        .slice => |slice| .{ .slice = try boxType(allocator, try lowerTypeReplacingSelf(allocator, slice.inner.*, concrete_name, types, symbols)) },
+        .borrow => |borrow| try lowerTypeReplacingSelf(allocator, borrow.inner.*, concrete_name, types, symbols),
         else => lowerType(allocator, ty),
     };
 }
@@ -1907,7 +1929,15 @@ const FunctionLowerer = struct {
                 }
                 const arg_slice = try args.toOwnedSlice(self.allocator);
                 if (isBuiltinName(callee_name)) {
-                    break :blk try self.emit(self.exprType(expr), .{ .builtin = .{ .name = callee_name, .args = arg_slice } });
+                    var type_arg: ?IrType = null;
+                    if (std.mem.eql(u8, callee_name, "sizeof") and call.args.len > 0) {
+                        const first = switch (call.args[0]) {
+                            .positional => |e| e,
+                            .named => |n| n.value,
+                        };
+                        type_arg = try self.lowerTypeArg(first);
+                    }
+                    break :blk try self.emit(self.exprType(expr), .{ .builtin = .{ .name = callee_name, .args = arg_slice, .type_arg = type_arg } });
                 }
 
                 // Determine if this is a direct (top-level function) or indirect (fn-ptr variable) call.
@@ -2850,6 +2880,9 @@ fn parseIntLiteral(text: []const u8) i128 {
     const radix: i128 = if (text.len >= start + 2 and text[start] == '0' and (text[start + 1] == 'x' or text[start + 1] == 'X')) blk: {
         start += 2;
         break :blk 16;
+    } else if (text.len >= start + 2 and text[start] == '0' and (text[start + 1] == 'b' or text[start + 1] == 'B')) blk: {
+        start += 2;
+        break :blk 2;
     } else 10;
 
     for (text[start..]) |ch| {
@@ -2862,6 +2895,7 @@ fn parseIntLiteral(text: []const u8) i128 {
             10 + ch - 'A'
         else
             break;
+        if (digit >= radix) break;
         value = value * radix + digit;
     }
 
