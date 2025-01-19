@@ -73,6 +73,13 @@ pub const LlvmBackend = struct {
             }
         }
 
+        // If any instruction lowering detected an internal shape/invariant
+        // mismatch (recorded via `cg.recordLoweringError`), fail the build
+        // cleanly here rather than handing a malformed module to LLVM's
+        // verifier/codegen — those paths assert/crash on bad input instead
+        // of returning errors.
+        if (self.cg.lowering_failed) return error.LoweringFailed;
+
         try emit.verify(&self.cg);
     }
 

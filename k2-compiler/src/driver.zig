@@ -81,6 +81,10 @@ pub const LlvmCompileOptions = struct {
     llvm_bin: []const u8 = "",
     /// Extra library search paths for the linker.
     lib_paths: []const []const u8 = &.{},
+    /// Extra import libraries to link (without the `.lib` extension), in
+    /// addition to those inferred from `#extern("lib", "symbol")` decls —
+    /// e.g. transitive system libs a C library depends on (gdi32, user32, ...).
+    extra_libs: []const []const u8 = &.{},
 };
 
 pub const LlvmDriverError = error{
@@ -189,11 +193,19 @@ fn emitLlvmFromFrontend(
 
     // Link (optional)
     if (opts.exe_path) |exe| {
+        // Combine libs inferred from `#extern("lib", "symbol")` decls with any
+        // user-supplied `--lib` libraries (e.g. transitive system deps).
+        var libs: std.ArrayList([]const u8) = .empty;
+        defer libs.deinit(allocator);
+        try libs.appendSlice(allocator, module.extern_libs);
+        try libs.appendSlice(allocator, opts.extra_libs);
+
         be.linkWindows(allocator, io, .{
             .llvm_bin = opts.llvm_bin,
             .obj_files = &.{opts.obj_path},
             .output = exe,
             .lib_paths = opts.lib_paths,
+            .libs = libs.items,
         }) catch return error.LinkFailed;
     }
 }

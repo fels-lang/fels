@@ -41,6 +41,8 @@ pub fn main(init: std.process.Init) u8 {
     var llvm_bin_owned = k2.llvm_path.len != 0;
     var lib_paths: std.ArrayList([]const u8) = .empty;
     defer lib_paths.deinit(allocator);
+    var extra_libs: std.ArrayList([]const u8) = .empty;
+    defer extra_libs.deinit(allocator);
     if (k2.windows_sdk_lib_path.len != 0) {
         lib_paths.append(allocator, k2.windows_sdk_lib_path) catch return 1;
     }
@@ -59,6 +61,9 @@ pub fn main(init: std.process.Init) u8 {
         } else if (std.mem.eql(u8, a, "--lib-path") and i + 1 < args.len) {
             i += 1;
             lib_paths.append(allocator, args[i]) catch return 1;
+        } else if (std.mem.eql(u8, a, "--lib") and i + 1 < args.len) {
+            i += 1;
+            extra_libs.append(allocator, args[i]) catch return 1;
         } else if (std.mem.eql(u8, a, "--opt") and i + 1 < args.len) {
             i += 1;
             opt_level = std.fmt.parseInt(u2, args[i], 10) catch 0;
@@ -85,7 +90,7 @@ pub fn main(init: std.process.Init) u8 {
             out_path_owned = true;
         }
         defer if (out_path_owned) allocator.free(out_path.?);
-        return cmdObject(allocator, io, src_path, source, out_path.?, opt_level, lib_paths.items);
+        return cmdObject(allocator, io, src_path, source, out_path.?, opt_level, lib_paths.items, extra_libs.items);
     }
     if (std.mem.eql(u8, cmd, "build")) {
         if (out_path == null) {
@@ -96,7 +101,7 @@ pub fn main(init: std.process.Init) u8 {
         const exe = out_path.?;
         const obj = std.fmt.allocPrint(allocator, "{s}.o", .{exe}) catch return 1;
         defer allocator.free(obj);
-        return cmdBuild(allocator, io, src_path, source, obj, exe, opt_level, llvm_bin, lib_paths.items);
+        return cmdBuild(allocator, io, src_path, source, obj, exe, opt_level, llvm_bin, lib_paths.items, extra_libs.items);
     }
 
     std.debug.print("k2: unknown command '{s}'\n", .{cmd});
@@ -145,6 +150,7 @@ fn cmdObject(
     obj_path: []const u8,
     opt_level: u2,
     lib_paths: []const []const u8,
+    extra_libs: []const []const u8,
 ) u8 {
     if (!k2.llvm_enabled) return noLlvm();
     k2.compileFileWithLlvm(allocator, io, .{
@@ -153,6 +159,7 @@ fn cmdObject(
         .obj_path = obj_path,
         .opt_level = opt_level,
         .lib_paths = lib_paths,
+        .extra_libs = extra_libs,
     }) catch |err| {
         std.debug.print("k2: {s}\n", .{@errorName(err)});
         return 1;
@@ -171,6 +178,7 @@ fn cmdBuild(
     opt_level: u2,
     llvm_bin: []const u8,
     lib_paths: []const []const u8,
+    extra_libs: []const []const u8,
 ) u8 {
     if (!k2.llvm_enabled) return noLlvm();
     k2.compileFileWithLlvm(allocator, io, .{
@@ -181,6 +189,7 @@ fn cmdBuild(
         .opt_level = opt_level,
         .llvm_bin = llvm_bin,
         .lib_paths = lib_paths,
+        .extra_libs = extra_libs,
     }) catch |err| {
         std.debug.print("k2: {s}\n", .{@errorName(err)});
         return 1;
@@ -227,7 +236,8 @@ fn printUsage() void {
         \\Options:
         \\  -o <path>           output file
         \\  --llvm-path <dir>   LLVM root (use forward slashes)
-        \\  --lib-path <dir>    linker library directory
+        \\  --lib-path <dir>    linker library search directory
+        \\  --lib <name>        extra import library to link (e.g. user32, no .lib suffix)
         \\  --opt <0-3>         optimisation level (default 0)
         \\  --release           alias for --opt 2
         \\

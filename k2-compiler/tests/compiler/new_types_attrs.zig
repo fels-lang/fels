@@ -174,3 +174,64 @@ test "#deprecated: calling deprecated function emits warning" {
     try std.testing.expectEqual(k2.DiagKind.warning, fe.diagnostics()[0].kind);
     try std.testing.expect(std.mem.indexOf(u8, fe.diagnostics()[0].message, "deprecated") != null);
 }
+
+// ── Jai-style #system_library / #foreign ─────────────────────────────────────
+
+test "#system_library: standalone declaration is collected into IrModule.extern_libs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\#system_library("raylib");
+        \\#system_library("kernel32"); // always linked; should be skipped/deduped
+        \\
+        \\#extern("raylib", "InitWindow")
+        \\InitWindow :: fn(width: i32, height: i32, title: *const u8);
+        \\
+        \\use_it :: fn() {
+        \\    InitWindow(800, 450, "hi".ptr);
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "syslib.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    // "raylib" should appear exactly once (deduped between #system_library and #extern),
+    // and "kernel32" should be skipped entirely (always linked by the backend).
+    var raylib_count: usize = 0;
+    for (m.extern_libs) |lib| {
+        try std.testing.expect(!std.mem.eql(u8, lib, "kernel32"));
+        if (std.mem.eql(u8, lib, "raylib")) raylib_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), raylib_count);
+}
+
+test "#foreign: alias for #extern binds external functions and contributes to extern_libs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\#foreign("raylib", "WindowShouldClose")
+        \\WindowShouldClose :: fn() -> bool;
+        \\
+        \\use_it :: fn() -> bool {
+        \\    return WindowShouldClose();
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "foreign.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    const fn_ = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "WindowShouldClose")) break f;
+    } else return error.FunctionNotFound;
+    try std.testing.expectEqualStrings("WindowShouldClose", fn_.extern_name.?);
+
+    var found_raylib = false;
+    for (m.extern_libs) |lib| {
+        if (std.mem.eql(u8, lib, "raylib")) found_raylib = true;
+    }
+    try std.testing.expect(found_raylib);
+}

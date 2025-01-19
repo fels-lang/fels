@@ -21,6 +21,10 @@ pub const WindowsLinkOptions = struct {
     output: []const u8,
     /// Extra /LIBPATH: directories for kernel32.lib etc.
     lib_paths: []const []const u8 = &.{},
+    /// Import library names (without the `.lib` extension) to link against,
+    /// e.g. `&.{"raylib"}` becomes `raylib.lib` on the link command line.
+    /// Resolved via `lib_paths` and the linker's default search paths.
+    libs: []const []const u8 = &.{},
 };
 
 /// Build the lld-link command line as a slice of argument strings (caller frees).
@@ -37,6 +41,8 @@ pub fn buildArgs(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ![]cons
     try args.append(allocator, try allocator.dupe(u8, "kernel32.lib"));
     for (opts.lib_paths) |lp|
         try args.append(allocator, try std.fmt.allocPrint(allocator, "/LIBPATH:{s}", .{lp}));
+    for (opts.libs) |lib|
+        try args.append(allocator, try std.fmt.allocPrint(allocator, "{s}.lib", .{lib}));
 
     return args.toOwnedSlice(allocator);
 }

@@ -36,6 +36,30 @@ pub const ModuleCg = struct {
     /// Optimisation level (0 = debug). Debug builds insert runtime safety checks.
     opt_level: u2 = 0,
 
+    /// Set when an internal lowering invariant is violated (e.g. a value's
+    /// actual LLVM shape doesn't match what an instruction lowering assumed —
+    /// the exact class of bug that previously caused segfaults inside
+    /// `LLVMBuildExtractValue`/`InsertValue` on malformed-but-typeable IR).
+    ///
+    /// Lowering helpers that detect such a mismatch should call
+    /// `recordLoweringError` and return a placeholder (e.g. `null`/`undef`)
+    /// rather than handing LLVM a value whose shape it doesn't expect — LLVM's
+    /// C API does not gracefully reject shape mismatches, it asserts/crashes.
+    /// `LlvmBackend.lower` checks this flag once lowering completes and turns
+    /// it into a normal `error.LoweringFailed` instead of a process crash.
+    lowering_failed: bool = false,
+
+    /// Records an internal codegen-invariant violation. Prints a diagnostic
+    /// (prefixed so it's recognisable as an internal compiler error, not a
+    /// user-facing diagnostic) and marks the module as unlowerable. Safe to
+    /// call multiple times — only the first few are printed to avoid spam.
+    pub fn recordLoweringError(self: *ModuleCg, comptime fmt: []const u8, args: anytype) void {
+        if (!self.lowering_failed) {
+            std.debug.print("k2: internal codegen error: " ++ fmt ++ "\n", args);
+        }
+        self.lowering_failed = true;
+    }
+
     pub fn init(allocator: std.mem.Allocator, module_name: [*:0]const u8) ModuleCg {
         const ctx = llvm.LLVMContextCreate();
         const mod = llvm.LLVMModuleCreateWithNameInContext(module_name, ctx);

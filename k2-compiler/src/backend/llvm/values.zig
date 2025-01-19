@@ -172,6 +172,50 @@ pub fn resolveValue(
     };
 }
 
+/// Extracts field `index` from an aggregate (struct/array) value, but first
+/// verifies that `agg` actually *is* an aggregate of the expected shape.
+///
+/// This exists because `LLVMBuildExtractValue` does not gracefully reject
+/// shape mismatches — passing it a bare `ptr` (or any non-struct/array value)
+/// asserts/crashes inside LLVM rather than returning an error. That is
+/// precisely the failure mode behind a previous compiler segfault: a value
+/// that the IR classified as an interface fat-pointer (`{ ptr, ptr }`) was
+/// actually lowered as a thin `ptr`, and `LLVMBuildExtractValue` crashed the
+/// whole process on the resulting shape mismatch.
+///
+/// On mismatch, records an internal lowering error (turned into a clean
+/// `error.LoweringFailed` by `LlvmBackend.lower`) and returns `null` instead
+/// of calling into LLVM with bad input — "malformed-but-typeable K2 source
+/// must never crash the compiler process" is the invariant this protects.
+pub fn extractAggregateField(
+    cg: *ModuleCg,
+    agg: llvm.LLVMValueRef,
+    index: c_uint,
+    what: []const u8,
+) ?llvm.LLVMValueRef {
+    const lty = llvm.LLVMTypeOf(agg);
+    const kind = llvm.LLVMGetTypeKind(lty);
+    if (kind != llvm.LLVMStructTypeKind and kind != llvm.LLVMArrayTypeKind) {
+        cg.recordLoweringError(
+            "expected an aggregate value while lowering {s}, but found a value of a different shape (LLVM type kind {d}) — this points to an IR type-shape mismatch upstream",
+            .{ what, @as(c_uint, kind) },
+        );
+        return null;
+    }
+    const elems: u64 = if (kind == llvm.LLVMStructTypeKind)
+        llvm.LLVMCountStructElementTypes(lty)
+    else
+        llvm.LLVMGetArrayLength2(lty);
+    if (@as(u64, index) >= elems) {
+        cg.recordLoweringError(
+            "field index {d} out of bounds while lowering {s} (aggregate has {d} element(s)) — this points to an IR type-shape mismatch upstream",
+            .{ index, what, elems },
+        );
+        return null;
+    }
+    return llvm.LLVMBuildExtractValue(cg.builder, agg, index, "");
+}
+
 /// Emit a type-coercion from `v` to `dest_lty` if needed.
 /// Handles integer widening (sext/zext), narrowing (trunc), and ptr↔int casts.
 pub fn coerce(

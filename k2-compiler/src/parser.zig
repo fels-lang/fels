@@ -87,6 +87,16 @@ pub const Parser = struct {
         errdefer items.deinit(self.allocator);
 
         while (!self.check(.eof)) {
+            // Jai-style `#system_library("name");` — a standalone linking
+            // directive, parsed before generic attributes so it isn't
+            // mistaken for an attribute attached to the next declaration.
+            if (self.check(.hash) and self.checkIdentAt(1, "system_library")) {
+                const hash = self.advance();
+                _ = self.advance(); // consume "system_library"
+                try items.append(self.allocator, .{ .system_library = try self.finishSystemLibrary(hash) });
+                continue;
+            }
+
             var attrs = try self.parseAttributes();
             if (self.match(.hash)) {
                 try items.append(self.allocator, .{ .import = try self.parseImport(self.previous()) });
@@ -129,6 +139,20 @@ pub const Parser = struct {
         }
         const semi = try self.expect(.semicolon, "expected ; after import");
         return .{ .path = path, .names = names, .file_name = self.file_name, .span = spanFrom(hash, semi) };
+    }
+
+    /// Parses the remainder of `#system_library("name");` after `#` and the
+    /// `system_library` identifier have already been consumed.
+    fn finishSystemLibrary(self: *Parser, hash: Token) ParseError!ast.SystemLibraryDecl {
+        _ = try self.expect(.l_paren, "expected ( after system_library");
+        const lit = try self.expect(.string_lit, "expected library name string literal");
+        _ = try self.expect(.r_paren, "expected ) after system_library name");
+        const semi = try self.expect(.semicolon, "expected ; after system_library declaration");
+        return .{
+            .name = trimQuotes(lit.text(self.source)),
+            .file_name = self.file_name,
+            .span = spanFrom(hash, semi),
+        };
     }
 
     fn parseTopLevel(self: *Parser, attrs: []const ast.Attribute, is_public: bool) ParseError!ast.Item {
@@ -1176,6 +1200,14 @@ pub const Parser = struct {
         return true;
     }
 
+    /// True if the token `offset` positions ahead is an identifier with the
+    /// given text, without consuming anything.
+    fn checkIdentAt(self: Parser, offset: usize, text: []const u8) bool {
+        if (self.peekKind(offset) != .ident) return false;
+        const tok = self.tokens[@min(self.index + offset, self.tokens.len - 1)];
+        return std.mem.eql(u8, tok.text(self.source), text);
+    }
+
     fn match(self: *Parser, kind: TokenKind) bool {
         if (!self.check(kind)) return false;
         _ = self.advance();
@@ -1214,6 +1246,12 @@ pub const Parser = struct {
         try self.diagnostics.append(self.allocator, Diagnostic.err(message, spanFrom(tok, tok), self.file_name));
     }
 };
+
+/// Strips surrounding double-quotes from a string-literal token's raw text.
+fn trimQuotes(text: []const u8) []const u8 {
+    if (text.len >= 2 and text[0] == '"' and text[text.len - 1] == '"') return text[1 .. text.len - 1];
+    return text;
+}
 
 const Infix = struct {
     left_bp: u8,

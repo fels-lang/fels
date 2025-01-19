@@ -17,6 +17,7 @@ pub const Item = union(enum) {
     type_decl: TypeDecl,
     function: FunctionDecl,
     interface_impl: InterfaceImpl,
+    system_library: SystemLibraryDecl,
 
     pub fn name(self: Item) ?[]const u8 {
         return switch (self) {
@@ -25,6 +26,7 @@ pub const Item = union(enum) {
             .type_decl => |decl| decl.name,
             .function => |decl| decl.name,
             .interface_impl => null,
+            .system_library => null,
         };
     }
 
@@ -35,6 +37,7 @@ pub const Item = union(enum) {
             .type_decl => |decl| decl.span,
             .function => |decl| decl.span,
             .interface_impl => |decl| decl.span,
+            .system_library => |decl| decl.span,
         };
     }
 
@@ -45,6 +48,7 @@ pub const Item = union(enum) {
             .type_decl => |decl| decl.file_name,
             .function => |decl| decl.file_name,
             .interface_impl => |decl| decl.file_name,
+            .system_library => |decl| decl.file_name,
         };
     }
 
@@ -63,6 +67,17 @@ pub const ImportDecl = struct {
     names: ?[]const []const u8 = null,
     file_name: []const u8,
     resolved_file: ?[]const u8 = null,
+    span: Span,
+};
+
+/// Jai-style `#system_library("name");` top-level declaration — declares a
+/// dependency on a native/system library that the linker should pull in
+/// (e.g. `#system_library("raylib");` becomes `raylib.lib` on Windows).
+/// This is purely a linking directive; it introduces no symbols into scope.
+pub const SystemLibraryDecl = struct {
+    /// Library name without extension, e.g. "raylib".
+    name: []const u8,
+    file_name: []const u8,
     span: Span,
 };
 

@@ -1,15 +1,29 @@
 #import std.io;
-#import std.mem;
+
+#extern("raylib", "InitWindow")
+InitWindow :: fn(width: i32, height: i32, title: *const u8);
+
+#extern("raylib", "WindowShouldClose")
+WindowShouldClose :: fn() -> bool;
+
+#extern("raylib", "BeginDrawing")
+BeginDrawing :: fn();
+
+#extern("raylib", "EndDrawing")
+EndDrawing :: fn();
+
+#extern("raylib", "CloseWindow")
+CloseWindow :: fn();
+
+main :: fn() -> i16 {
+    InitWindow(800, 450, "Hello World".ptr);
 
 
-main :: fn() -> i32! {
-    buf := fixed_buf();
-    w: *Writer = &buf;
-    w.write_i64(-42i64) catch err { return 1; };
-    w.write_u64(100u64) catch err { return 1; };
+    while !WindowShouldClose() {
+        BeginDrawing();
+        EndDrawing();
+    }
 
-    (&buf).buf_flush_stdout() catch err { return 1; };
-
-
+    CloseWindow();
     return 0;
 }

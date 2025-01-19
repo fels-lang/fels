@@ -6,6 +6,7 @@ const std      = @import("std");
 const ir       = @import("../../ir.zig");
 const llvm     = @import("c_api.zig").llvm;
 const types    = @import("types.zig");
+const values   = @import("values.zig");
 const ModuleCg = @import("context.zig").ModuleCg;
 
 /// Per-enum metadata stored in ModuleCg.
@@ -110,7 +111,8 @@ pub fn buildVariantIs(
     const disc = meta.discriminants.get(variant) orelse 0;
     const disc_val  = llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), disc, 0);
     const actual_disc = if (meta.is_simple) value
-    else llvm.LLVMBuildExtractValue(cg.builder, value, 0, "disc");
+    else values.extractAggregateField(cg, value, 0, "variant discriminant") orelse
+        return llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(cg.ctx), 0, 0);
     return llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntEQ, actual_disc, disc_val, "");
 }
 
@@ -127,7 +129,8 @@ pub fn buildVariantPayload(
     _ = variant;
     if (meta.is_simple) return llvm.LLVMGetUndef(dest_ty);
 
-    const data_bytes = llvm.LLVMBuildExtractValue(cg.builder, value, 1, "data");
+    const data_bytes = values.extractAggregateField(cg, value, 1, "variant payload bytes") orelse
+        return llvm.LLVMGetUndef(dest_ty);
     // Bitcast the data bytes to the target type via alloca.
     const data_ty = llvm.LLVMStructGetTypeAtIndex(meta.llvm_ty, 1);
     const tmp = llvm.LLVMBuildAlloca(cg.builder, data_ty, "");

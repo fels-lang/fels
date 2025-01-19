@@ -16,6 +16,10 @@ pub const IrModule = struct {
     functions: []const IrFunction = &.{},
     globals: []const IrGlobal = &.{},
     vtables: []const InterfaceVTable = &.{},
+    /// Distinct library names referenced by `#extern("lib", "symbol")` decls
+    /// (excluding "kernel32", which the linker always includes). The Windows
+    /// linker step appends "<name>.lib" for each of these.
+    extern_libs: []const []const u8 = &.{},
 
     pub fn empty(file_name: []const u8) IrModule {
         return .{ .file_name = file_name };
@@ -449,12 +453,14 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
     var functions: std.ArrayList(IrFunction) = .empty;
     var globals: std.ArrayList(IrGlobal) = .empty;
     var vtables: std.ArrayList(InterfaceVTable) = .empty;
+    var extern_libs: std.ArrayList([]const u8) = .empty;
     errdefer structs.deinit(allocator);
     errdefer errors.deinit(allocator);
     errdefer variants.deinit(allocator);
     errdefer functions.deinit(allocator);
     errdefer globals.deinit(allocator);
     errdefer vtables.deinit(allocator);
+    errdefer extern_libs.deinit(allocator);
 
     for (front_end.module.items) |item| {
         switch (item) {
@@ -480,6 +486,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
                 if (decl.type_params.len == 0) {
                     try functions.append(allocator, try lowerFunction(allocator, front_end.types, front_end.symbols, front_end.module, decl));
                 }
+                if (externLibName(decl.attrs)) |lib| try addExternLib(allocator, &extern_libs, lib);
             },
             .interface_impl => |impl| {
                 for (impl.methods) |method| {
@@ -515,6 +522,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
                     .methods = try method_names.toOwnedSlice(allocator),
                 });
             },
+            .system_library => |decl| try addExternLib(allocator, &extern_libs, decl.name),
         }
     }
 
@@ -577,6 +585,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
         .functions = try functions.toOwnedSlice(allocator),
         .globals = try globals.toOwnedSlice(allocator),
         .vtables = try vtables.toOwnedSlice(allocator),
+        .extern_libs = try extern_libs.toOwnedSlice(allocator),
     };
 }
 
@@ -2932,13 +2941,40 @@ fn alignAttr(attrs: []const ast.Attribute) u32 {
 
 fn externName(attrs: []const ast.Attribute) ?[]const u8 {
     for (attrs) |attr| {
-        if (!std.mem.eql(u8, attr.name, "extern") or attr.args.len < 2) continue;
+        if ((!std.mem.eql(u8, attr.name, "extern") and !std.mem.eql(u8, attr.name, "foreign")) or attr.args.len < 2) continue;
         return switch (attr.args[1].kind) {
             .string => |value| trimQuotes(value),
             else => null,
         };
     }
     return null;
+}
+
+/// The library name from `#extern("lib", "symbol")` (or its `#foreign` alias)
+/// — the first argument. This tells the linker which import library to pull
+/// the symbol from (e.g. `#extern("raylib", "InitWindow")` / `#foreign("raylib",
+/// "InitWindow")` requires linking `raylib.lib`).
+fn externLibName(attrs: []const ast.Attribute) ?[]const u8 {
+    for (attrs) |attr| {
+        if ((!std.mem.eql(u8, attr.name, "extern") and !std.mem.eql(u8, attr.name, "foreign")) or attr.args.len < 2) continue;
+        return switch (attr.args[0].kind) {
+            .string => |value| trimQuotes(value),
+            else => null,
+        };
+    }
+    return null;
+}
+
+/// Adds `lib` to `extern_libs` if not already present, skipping `kernel32`
+/// (always linked by the Windows backend regardless). Used to collect import
+/// library dependencies from both `#extern`/`#foreign` decls and standalone
+/// `#system_library("name");` declarations.
+fn addExternLib(allocator: std.mem.Allocator, extern_libs: *std.ArrayList([]const u8), lib: []const u8) !void {
+    if (std.mem.eql(u8, lib, "kernel32")) return;
+    for (extern_libs.items) |existing| {
+        if (std.mem.eql(u8, existing, lib)) return;
+    }
+    try extern_libs.append(allocator, lib);
 }
 
 fn trimQuotes(text: []const u8) []const u8 {

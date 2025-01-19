@@ -490,6 +490,7 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
             .type_decl => .type,
             .function => .function,
             .interface_impl => unreachable,
+            .system_library => unreachable,
         };
         const id = try table.insert(allocator, table.root_scope, name, kind, item.span(), item.fileName(), item.isPublic());
         const visible = try visibleNamesFor(&table, allocator, item.fileName());
@@ -861,6 +862,7 @@ const Checker = struct {
                 .type_decl => |decl| try self.checkTypeDecl(decl),
                 .function => |decl| try self.checkFunction(decl),
                 .interface_impl => |impl| try self.checkInterfaceImpl(impl),
+                .system_library => {},
             }
         }
     }
@@ -1013,6 +1015,7 @@ const Checker = struct {
                 },
                 .import => {},
                 .interface_impl => unreachable,
+                .system_library => {},
             }
         }
     }
@@ -2897,7 +2900,7 @@ fn deprecatedMsg(attrs: []const ast.Attribute) ?[]const u8 {
 
 fn externName(attrs: []const ast.Attribute) ?[]const u8 {
     for (attrs) |attr| {
-        if (!std.mem.eql(u8, attr.name, "extern") or attr.args.len < 2) continue;
+        if ((!std.mem.eql(u8, attr.name, "extern") and !std.mem.eql(u8, attr.name, "foreign")) or attr.args.len < 2) continue;
         return switch (attr.args[1].kind) {
             .string => |value| trimQuotes(value),
             else => null,
