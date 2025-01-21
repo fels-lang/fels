@@ -352,6 +352,8 @@ pub const TypeEnv = struct {
     layouts: std.AutoHashMap(SymbolId, TypeLayout),
     fn_sigs: std.AutoHashMap(SymbolId, FnSig),
     variant_values: std.AutoHashMap(SymbolId, VariantValueInfo),
+    // Keeps a list of distinct types and their underlying type for later referencing, e.g. when casting
+    distinct_types: std.AutoHashMap(SymbolId, Ty),
     expr_types: std.AutoHashMap(ast.NodeId, Ty),
     expr_symbols: std.AutoHashMap(ast.NodeId, SymbolId),
     expr_scopes: std.AutoHashMap(ast.NodeId, ScopeId),
@@ -373,6 +375,7 @@ pub const TypeEnv = struct {
             .layouts = std.AutoHashMap(SymbolId, TypeLayout).init(allocator),
             .fn_sigs = std.AutoHashMap(SymbolId, FnSig).init(allocator),
             .variant_values = std.AutoHashMap(SymbolId, VariantValueInfo).init(allocator),
+            .distinct_types = std.AutoHashMap(SymbolId, Ty).init(allocator),
             .expr_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .expr_symbols = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .expr_scopes = std.AutoHashMap(ast.NodeId, ScopeId).init(allocator),
@@ -389,6 +392,7 @@ pub const TypeEnv = struct {
         self.layouts.deinit();
         self.fn_sigs.deinit();
         self.variant_values.deinit();
+        self.distinct_types.deinit();
         self.expr_types.deinit();
         self.expr_symbols.deinit();
         self.expr_scopes.deinit();
@@ -1024,7 +1028,10 @@ const Checker = struct {
         switch (decl.kind) {
             .distinct => |ty| {
                 try self.rejectBorrowTypeRefOutsideParam(ty);
-                try self.checkType(ty);
+                const underlying = try self.typeFromRef(ty);
+                if (self.resolveSymbol(decl.name)) |id| {
+                    try self.env.distinct_types.put(id, underlying);
+                }
             },
             .opaque_type => {},
             .struct_type => |strukt| {
@@ -1399,7 +1406,29 @@ const Checker = struct {
                 const to_ty = try self.typeFromRef(cast.to);
                 if (try self.interfaceCoercion(from_ty, to_ty)) break :blk to_ty;
                 const pointer_cast = isPointerTy(from_ty) or isPointerTy(to_ty);
-                const valid = (from_ty.isNumeric() and to_ty.isNumeric()) or
+                // Allow casting between a `distinct` type and its recorded underlying type,
+                // in either direction (e.g. `UserId :: distinct i32;` <-> `i32`).
+                var distinct_cast = false;
+                switch (from_ty) {
+                    .named => |sym| {
+                        if (self.env.distinct_types.get(sym)) |underlying| {
+                            if (sameTy(underlying, to_ty)) distinct_cast = true;
+                        }
+                    },
+                    else => {},
+                }
+                if (!distinct_cast) {
+                    switch (to_ty) {
+                        .named => |sym| {
+                            if (self.env.distinct_types.get(sym)) |underlying| {
+                                if (sameTy(underlying, from_ty)) distinct_cast = true;
+                            }
+                        },
+                        else => {},
+                    }
+                }
+                const valid = distinct_cast or
+                    (from_ty.isNumeric() and to_ty.isNumeric()) or
                     (from_ty.isInteger() and to_ty == .bool) or
                     (from_ty == .bool and to_ty.isInteger()) or
                     (pointer_cast and (isPointerTy(from_ty) or from_ty.isInteger()) and
@@ -2922,7 +2951,7 @@ fn isBuiltinValue(name: []const u8) bool {
         // Compile-time reflection builtins
         "type_info",   "type_name",
         // Compile-time pseudo-modules
-        "TARGET",
+             "TARGET",
     }) |builtin| {
         if (std.mem.eql(u8, name, builtin)) return true;
     }
