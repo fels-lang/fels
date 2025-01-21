@@ -79,6 +79,39 @@ test "LLVM lowering accepts full-width u64 constants" {
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "i64 -9223372036854775808") != null);
 }
 
+test "LLVM lowering applies #align to struct allocas" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\#align(64)
+        \\Aligned :: struct {
+        \\    x: i32,
+        \\    y: i32,
+        \\}
+        \\
+        \\use_aligned :: fn() -> i32 {
+        \\    local: Aligned = .{ 3i32, 4i32 };
+        \\    return local.x;
+        \\}
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "align_struct.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "align_struct");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    // The alloca backing the #align(64) struct local must carry the alignment
+    // from the attribute, not the type's natural ABI alignment.
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "alloca %Aligned, align 64") != null);
+}
+
 test "LLVM force unwrap calls the embedded runtime panic" {
     if (comptime !k2.llvm_enabled) return;
 

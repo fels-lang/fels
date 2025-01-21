@@ -1,10 +1,10 @@
 /// StructDef → named LLVM struct type.
 /// Records field names so instrs.zig can resolve field indices.
-const std      = @import("std");
-const ir       = @import("../../ir.zig");
-const llvm     = @import("c_api.zig").llvm;
-const types    = @import("types.zig");
-const ctx_mod  = @import("context.zig");
+const std = @import("std");
+const ir = @import("../../ir.zig");
+const llvm = @import("c_api.zig").llvm;
+const types = @import("types.zig");
+const ctx_mod = @import("context.zig");
 const ModuleCg = ctx_mod.ModuleCg;
 
 pub fn lowerAll(cg: *ModuleCg, structs: []const ir.StructDef) !void {
@@ -25,7 +25,7 @@ pub fn lowerAll(cg: *ModuleCg, structs: []const ir.StructDef) !void {
 
         const field_entries = try cg.allocator.alloc(ctx_mod.StructField, s.fields.len);
         for (s.fields, 0..) |f, i| {
-            field_tys[i]     = types.lower(cg, f.ty);
+            field_tys[i] = types.lower(cg, f.ty);
             field_entries[i] = .{ .name = f.name, .ir_ty = f.ty };
         }
 
@@ -33,7 +33,7 @@ pub fn lowerAll(cg: *ModuleCg, structs: []const ir.StructDef) !void {
         try cg.struct_fields.put(s.name, field_entries);
         // Store alignment in module metadata for use when allocating instances.
         if (s.alignment > 0) {
-            _ = s.alignment; // used when creating allocas/globals (see globals.zig)
+            try cg.struct_alignments.put(s.name, s.alignment);
         }
     }
 }

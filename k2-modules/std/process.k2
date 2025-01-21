@@ -1,0 +1,287 @@
+// std.process — process info, environment variables, and child-process
+// spawning for K2 (Windows backend, kernel32).
+//
+// Provides:
+//   current_pid                — the calling process's PID
+//   command_line               — the raw OS command line as a byte slice
+//   get_env / set_env / unset_env — environment-variable access
+//   Child / spawn / wait / try_wait / kill / release — child-process management
+//   ProcessError               — error set shared by all std.process operations
+//
+// `exit`, `abort`, and `@panic` live in the always-available K2 runtime (see
+// src/runtime/windows.k2 / linux.k2) — you don't need to import this module
+// to use them.
+//
+// NOTE: command-line *argument splitting* (argv-style, with Windows quoting
+// rules) isn't implemented yet — `command_line` hands back the raw, unsplit
+// string exactly as the OS reports it.
+
+#import std.io.{ IoError };
+
+// ── Win32 structures ──────────────────────────────────────────────────────
+//
+// Field layouts must match `winbase.h` exactly byte-for-byte (K2 lays out
+// non-#packed structs in declaration order with natural target alignment,
+// same as a C compiler would) — these are passed by pointer straight into
+// kernel32, which will read/write every field at its expected offset.
+
+// STARTUPINFOA. `spawn` only ever sets `cb` (every other field stays zeroed),
+// which tells Win32 "inherit the parent's console and standard handles."
+StartupInfoA :: struct {
+    cb:              u32,
+    reserved1:       usize,  // LPSTR  lpReserved
+    desktop:         usize,  // LPSTR  lpDesktop
+    title:           usize,  // LPSTR  lpTitle
+    x:               u32,
+    y:               u32,
+    x_size:          u32,
+    y_size:          u32,
+    x_count_chars:   u32,
+    y_count_chars:   u32,
+    fill_attribute:  u32,
+    flags:           u32,
+    show_window:     u16,
+    reserved2_count: u16,
+    reserved2:       usize,  // LPBYTE lpReserved2
+    std_input:       usize,
+    std_output:      usize,
+    std_error:       usize,
+}
+
+// PROCESS_INFORMATION — handles/IDs Win32 fills in for the new process.
+ProcessInformation :: struct {
+    process:    usize,
+    thread:     usize,
+    process_id: u32,
+    thread_id:  u32,
+}
+
+// ── kernel32 imports ──────────────────────────────────────────────────────
+
+#extern("kernel32", "GetCurrentProcessId")
+GetCurrentProcessId :: fn() -> u32;
+
+#extern("kernel32", "GetCommandLineA")
+GetCommandLineA :: fn() -> [*]const u8;
+
+#extern("kernel32", "GetEnvironmentVariableA")
+GetEnvironmentVariableA :: fn(name: *const u8, buffer: *u8, size: u32) -> u32;
+
+#extern("kernel32", "SetEnvironmentVariableA")
+SetEnvironmentVariableA :: fn(name: *const u8, value: ?*const u8) -> bool;
+
+#extern("kernel32", "CreateProcessA")
+CreateProcessA :: fn(
+    application_name:    ?*const u8,
+    command_line:        ?*u8,
+    process_attributes:  ?*void,
+    thread_attributes:   ?*void,
+    inherit_handles:     u32,
+    creation_flags:      u32,
+    environment:         ?*void,
+    current_directory:   ?*const u8,
+    startup_info:        *StartupInfoA,
+    process_information: *ProcessInformation,
+) -> bool;
+
+#extern("kernel32", "WaitForSingleObject")
+WaitForSingleObject :: fn(handle: usize, milliseconds: u32) -> u32;
+
+#extern("kernel32", "GetExitCodeProcess")
+GetExitCodeProcess :: fn(handle: usize, exit_code: *u32) -> bool;
+
+#extern("kernel32", "TerminateProcess")
+TerminateProcess :: fn(handle: usize, exit_code: u32) -> bool;
+
+// ── Win32 constants ───────────────────────────────────────────────────────
+
+PROC_INVALID_HANDLE :: 18446744073709551615usize;  // (HANDLE)-1
+INFINITE       :: 4294967295u32;
+WAIT_OBJECT_0  :: 0u32;
+WAIT_TIMEOUT   :: 258u32;
+
+MAX_CMD_BYTES  :: 1024usize;
+MAX_NAME_BYTES :: 128usize;
+
+// ── Errors ────────────────────────────────────────────────────────────────
+
+pub ProcessError :: errors {
+    spawn_failed,       // CreateProcessA failed (bad path, access denied, ...)
+    wait_failed,        // WaitForSingleObject reported WAIT_FAILED
+    exit_code_failed,   // GetExitCodeProcess failed
+    command_too_long,   // command line doesn't fit in the internal buffer
+    name_too_long,      // env-var name/value doesn't fit in the internal buffer
+}
+
+// ── Internal helpers ──────────────────────────────────────────────────────
+
+// Copy `s` into `buf`, NUL-terminate, and return a pointer to the start —
+// the shape every ANSI Win32 string parameter wants.
+proc_to_cstr :: fn(s: []const u8, buf: []u8) -> *const u8 ! ProcessError {
+    if s.len + 1usize > buf.len { fail .name_too_long; }
+    i := 0usize;
+    while i < s.len {
+        buf[i] = s[i];
+        i += 1usize;
+    }
+    buf[s.len] = 0u8;
+    return buf.ptr;
+}
+
+// Length of a NUL-terminated C string, capped at `max` (in case it's somehow
+// not terminated within the range we're willing to scan).
+proc_cstr_len :: fn(s: [*]const u8, max: usize) -> usize {
+    i := 0usize;
+    while i < max {
+        if s[i] == 0u8 { return i; }
+        i += 1usize;
+    }
+    return max;
+}
+
+// ── Process info ──────────────────────────────────────────────────────────
+
+// The PID of the calling process.
+pub current_pid :: fn() -> u32 {
+    return GetCurrentProcessId();
+}
+
+// The raw OS command line, copied into `out` (truncated if it doesn't fit).
+// This is the unsplit string exactly as Windows reports it — e.g. for
+// `myprog.exe --flag "two words"` you get back that whole line, quotes and
+// all; splitting it into argv-style arguments isn't implemented yet.
+pub command_line :: fn(out: []u8) -> []const u8 {
+    raw := GetCommandLineA();
+    n := proc_cstr_len(raw, out.len);
+    i := 0usize;
+    while i < n {
+        out[i] = raw[i];
+        i += 1usize;
+    }
+    return out[0usize..n];
+}
+
+// ── Environment variables ─────────────────────────────────────────────────
+
+// Look up an environment variable, copying its value into `out`.
+// Returns `null` if the variable isn't set, or if its value doesn't fit
+// in `out`.
+pub get_env :: fn(name: []const u8, out: []u8) -> ?[]const u8 {
+    name_buf: [128]u8 = .{};
+    cname := proc_to_cstr(name, name_buf[:]) catch err { return null; };
+    n := GetEnvironmentVariableA(cname, out.ptr, truncate_to(u32, out.len));
+    if n == 0u32 { return null; }
+    if n as usize > out.len { return null; }
+    return out[0usize..(n as usize)];
+}
+
+// Set (or overwrite) an environment variable for the current process —
+// and for any processes it spawns afterwards.
+pub set_env :: fn(name: []const u8, value: []const u8) -> bool {
+    name_buf:  [128]u8 = .{};
+    value_buf: [512]u8 = .{};
+    cname  := proc_to_cstr(name, name_buf[:])   catch err { return false; };
+    cvalue := proc_to_cstr(value, value_buf[:]) catch err { return false; };
+    return SetEnvironmentVariableA(cname, cvalue);
+}
+
+// Remove an environment variable.
+pub unset_env :: fn(name: []const u8) -> bool {
+    name_buf: [128]u8 = .{};
+    cname := proc_to_cstr(name, name_buf[:]) catch err { return false; };
+    return SetEnvironmentVariableA(cname, null);
+}
+
+// ── Child processes ───────────────────────────────────────────────────────
+
+// A spawned child process. Owns two OS handles (`process`, `thread`) that
+// must be released with `release` once you're done with it (named `release`
+// rather than `close` to avoid colliding with `std.fs.File`'s `close` in
+// k2's flat global symbol table). Methods are called as `(&child).wait()`,
+// `(&child).release()`, etc.
+pub Child :: struct {
+    process: usize,
+    thread:  usize,
+    pid:     u32,
+}
+
+// Launch `command` (program name plus arguments, exactly as you'd type it at
+// a shell prompt — e.g. `"k2.exe build --release"`) as a new process. The
+// child inherits the parent's console and standard handles, so its output
+// appears alongside the parent's by default.
+pub spawn :: fn(command: []const u8) -> Child ! ProcessError {
+    cmd_buf: [1024]u8 = .{};
+    if command.len + 1usize > cmd_buf.len { fail .command_too_long; }
+    i := 0usize;
+    while i < command.len {
+        cmd_buf[i] = command[i];
+        i += 1usize;
+    }
+    cmd_buf[command.len] = 0u8;
+
+    // Zeroed except `cb` — this tells Win32 "inherit the parent's console
+    // and standard handles" rather than configuring a new window.
+    startup: StartupInfoA = .{
+        sizeof(StartupInfoA) as u32,
+        0usize, 0usize, 0usize,
+        0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32,
+        0u16, 0u16,
+        0usize, 0usize, 0usize, 0usize,
+    };
+    info: ProcessInformation = .{ 0usize, 0usize, 0u32, 0u32 };
+
+    ok := CreateProcessA(
+        null,
+        cmd_buf[:].ptr,
+        null,
+        null,
+        0u32,    // bInheritHandles = FALSE
+        0u32,    // dwCreationFlags = 0
+        null,
+        null,
+        &startup,
+        &info,
+    );
+    if !ok { fail .spawn_failed; }
+    return .{ info.process, info.thread, info.process_id };
+}
+
+// Block until the child exits, then return its exit code.
+pub wait :: fn(self: *Child) -> u32 ! ProcessError {
+    result := WaitForSingleObject(self.process, INFINITE);
+    if result != WAIT_OBJECT_0 { fail .wait_failed; }
+    code := 0u32;
+    ok := GetExitCodeProcess(self.process, &code);
+    if !ok { fail .exit_code_failed; }
+    return code;
+}
+
+// Check whether the child has exited yet, without blocking. Returns its
+// exit code if it has, or `null` if it's still running.
+pub try_wait :: fn(self: *Child) -> ?u32 ! ProcessError {
+    result := WaitForSingleObject(self.process, 0u32);
+    if result == WAIT_TIMEOUT { return null; }
+    if result != WAIT_OBJECT_0 { fail .wait_failed; }
+    code := 0u32;
+    ok := GetExitCodeProcess(self.process, &code);
+    if !ok { fail .exit_code_failed; }
+    return code;
+}
+
+// Forcibly terminate the child process with the given exit code.
+pub kill :: fn(self: *Child, exit_code: u32) -> bool {
+    return TerminateProcess(self.process, exit_code);
+}
+
+// Release the OS handles owned by this child. Safe to call more than once;
+// call it once you're done waiting on the child (or have given up on it).
+pub release :: fn(self: *Child) {
+    if self.process != PROC_INVALID_HANDLE {
+        ignored1 := CloseHandle(self.process);
+        self.process = PROC_INVALID_HANDLE;
+    }
+    if self.thread != PROC_INVALID_HANDLE {
+        ignored2 := CloseHandle(self.thread);
+        self.thread = PROC_INVALID_HANDLE;
+    }
+}

@@ -20,6 +20,7 @@ pub const ModuleCg = struct {
     struct_types: std.StringHashMap(llvm.LLVMTypeRef),
     /// Field name/type lists for each named struct.  Used for field-index lookup.
     struct_fields: std.StringHashMap([]StructField),
+    struct_alignments: std.StringHashMap(u32),
     /// Declared LLVM functions, keyed by mangled/extern name.
     fn_decls: std.StringHashMap(llvm.LLVMValueRef),
     /// Declared globals, keyed by name.
@@ -71,6 +72,7 @@ pub const ModuleCg = struct {
             .builder = builder,
             .struct_types = std.StringHashMap(llvm.LLVMTypeRef).init(allocator),
             .struct_fields = std.StringHashMap([]StructField).init(allocator),
+            .struct_alignments = std.StringHashMap(u32).init(allocator),
             .fn_decls = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
             .global_decls = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
             .enum_meta = std.StringHashMap(*variants.EnumMeta).init(allocator),
@@ -84,6 +86,7 @@ pub const ModuleCg = struct {
         self.struct_fields.deinit();
 
         self.struct_types.deinit();
+        self.struct_alignments.deinit();
         self.fn_decls.deinit();
         self.global_decls.deinit();
         var em_it = self.enum_meta.valueIterator();

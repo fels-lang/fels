@@ -34,15 +34,6 @@ pub fn applyFunctionAttrs(cg: *ModuleCg, func: ir.IrFunction, lv: llvm.LLVMValue
     }
 }
 
-/// Apply struct alignment when creating a global or alloca.
-/// Returns the alignment (0 = default) parsed from the `#align(N)` attribute.
-pub fn structAlignment(attrs: []const ir.IrType) u32 {
-    // Currently alignment is not stored in IrType; it's a future extension.
-    // Placeholder: return 0 (LLVM default alignment).
-    _ = attrs;
-    return 0;
-}
-
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 fn addStrAttr(

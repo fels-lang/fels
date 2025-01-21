@@ -119,7 +119,10 @@ Implemented attributes include:
 #extern #packed #inline #noinline #noreturn #naked #entry #export #deprecated
 ```
 
-`#align` is parsed and stored, but is not consistently applied by LLVM lowering.
+`#align(N)` is parsed, stored on struct definitions, and now applied by LLVM
+lowering: both stack allocations (`alloca`) and global variables of an aligned
+struct type carry the requested alignment (verified end to end by an LLVM IR
+test).
 
 Still missing or undecided:
 

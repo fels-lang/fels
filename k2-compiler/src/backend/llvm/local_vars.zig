@@ -37,6 +37,16 @@ pub fn allocateLocals(
         // types.lower handles slice → fat-pointer struct.
         const lty = types.lower(cg, entry.value_ptr.*);
         const alloca = llvm.LLVMBuildAlloca(cg.builder, lty, name_z);
+
+        switch (entry.value_ptr.*) {
+            .struct_type => |struct_name| {
+                if (cg.struct_alignments.get(struct_name)) |a| {
+                    llvm.LLVMSetAlignment(alloca, a);
+                }
+            },
+            else => {},
+        }
+
         try map.put(entry.key_ptr.*, alloca);
     }
 
