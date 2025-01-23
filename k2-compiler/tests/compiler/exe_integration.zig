@@ -346,3 +346,38 @@ test "exe: nested dynamic dispatch on a parameter of an interface method" {
     , "exe_iface_nested_dispatch_segfault");
     try std.testing.expectEqual(@as(u32, 99), code);
 }
+
+test "exe: generic List(T) backed by Arena, with generic methods" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Exercises three fixes together: arena-allocating a generic struct instance
+    // (correct allocation size, not a bare pointer), storing zone-owned memory
+    // into a struct field (escape-ownership propagation), and dispatching a
+    // generic method whose receiver is `*List(T)` (concrete-instance matching).
+    const code = try compileAndRun(arena.allocator(),
+        \\List :: struct($T: type) {
+        \\    data: [*]T,
+        \\    len:  usize,
+        \\    cap:  usize,
+        \\}
+        \\set :: fn($T: type, self: borrow *List(T), i: usize, v: T) { self.data[i] = v; }
+        \\get :: fn($T: type, self: borrow *List(T), i: usize) -> T { return self.data[i]; }
+        \\main :: fn() -> i32 {
+        \\    zone scope: Arena {
+        \\        buf := scope.new_slice(i32, 8);
+        \\        l := scope.new(List(i32));
+        \\        l.data = buf.ptr;
+        \\        l.cap  = 8usize;
+        \\        l.len  = 3usize;
+        \\        l.set(i32, 0usize, 10);
+        \\        l.set(i32, 1usize, 20);
+        \\        l.set(i32, 2usize, 12);
+        \\        return l.get(i32, 0usize) + l.get(i32, 1usize) + l.get(i32, 2usize);
+        \\    }
+        \\    return 0;
+        \\}
+    , "exe_generic_list_arena");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}

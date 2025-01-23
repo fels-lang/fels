@@ -2453,7 +2453,10 @@ const FunctionLowerer = struct {
         return switch (expr.kind) {
             .type_ref => |ty| lowerType(self.allocator, ty),
             .ident => |name| lowerNamedType(name),
-            else => .unknown,
+            // Generic instantiation (e.g. `List(i32)`) parses as a call. Sema
+            // records its resolved type in `expr_types`; reuse that so the
+            // allocation gets the concrete struct size, not a bare pointer.
+            else => self.exprType(expr),
         };
     }
 

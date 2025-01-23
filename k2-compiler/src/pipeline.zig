@@ -289,7 +289,7 @@ fn runPipelineWithSource(
         error.OutOfMemory => return error.OutOfMemory,
     };
 
-    var types = sema.checkTypesWithContext(allocator, module, symbols, source, file) catch |err| switch (err) {
+    var types = sema.checkTypesWithContext(allocator, module, &symbols, source, file) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
