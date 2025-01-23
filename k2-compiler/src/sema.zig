@@ -1059,7 +1059,10 @@ const Checker = struct {
                 }
             },
             .interface_type => |interface_decl| {
-                const id = self.symbols.resolve(self.symbols.root_scope, decl.name) orelse return error.SemanticFailed;
+                const id = self.symbols.resolve(self.symbols.root_scope, decl.name) orelse {
+                    diag_mod.printIce("interface symbol missing from table after registration", @src());
+                    return error.SemanticFailed;
+                };
                 self.current_self_ty = .{ .named = id };
                 defer self.current_self_ty = null;
                 for (interface_decl.methods) |method| {
@@ -1071,9 +1074,18 @@ const Checker = struct {
     }
 
     fn checkInterfaceImpl(self: *Checker, impl: ast.InterfaceImpl) SemanticError!void {
-        const concrete_id = self.resolveSymbol(impl.type_name) orelse return error.SemanticFailed;
-        const interface_id = self.resolveSymbol(impl.interface_name) orelse return error.SemanticFailed;
-        const layout = self.env.layouts.get(interface_id) orelse return error.SemanticFailed;
+        const concrete_id = self.resolveSymbol(impl.type_name) orelse {
+            self.emitError(impl.span, "unknown type `{s}` in interface implementation", .{impl.type_name});
+            return error.SemanticFailed;
+        };
+        const interface_id = self.resolveSymbol(impl.interface_name) orelse {
+            self.emitError(impl.span, "unknown interface `{s}` in interface implementation", .{impl.interface_name});
+            return error.SemanticFailed;
+        };
+        const layout = self.env.layouts.get(interface_id) orelse {
+            self.emitError(impl.span, "`{s}` has no defined type layout", .{impl.interface_name});
+            return error.SemanticFailed;
+        };
         const required = switch (layout.kind) {
             .interface_type => |methods| methods,
             else => {
@@ -1091,7 +1103,12 @@ const Checker = struct {
                 self.emitError(impl.span, "missing interface method `{s}`", .{required_method.name});
                 return error.SemanticFailed;
             };
-            if (method.params.len != required_method.params.len) return error.SemanticFailed;
+            if (method.params.len != required_method.params.len) {
+                self.emitError(method.span, "interface method `{s}`: expected {d} parameter(s), found {d}", .{
+                    method.name, required_method.params.len, method.params.len,
+                });
+                return error.SemanticFailed;
+            }
             for (method.params, required_method.params) |actual, expected| {
                 const actual_ty = try self.typeFromRef(actual.ty);
                 const expected_ty = try substituteInterfaceSelf(self, expected.ty, interface_id, concrete_id);
@@ -1102,7 +1119,12 @@ const Checker = struct {
             }
             const actual_ret = try self.typeFromRef(method.return_ty);
             const expected_ret = try substituteInterfaceSelf(self, required_method.return_ty, interface_id, concrete_id);
-            if (!sameTy(actual_ret, expected_ret)) return error.SemanticFailed;
+            if (!sameTy(actual_ret, expected_ret)) {
+                self.emitError(method.span, "interface method `{s}`: return type mismatch: expected `{s}`, found `{s}`", .{
+                    method.name, self.formatTy(expected_ret), self.formatTy(actual_ret),
+                });
+                return error.SemanticFailed;
+            }
             try self.checkFunction(method);
         }
         for (impl.methods) |method| {
@@ -1163,6 +1185,7 @@ const Checker = struct {
                 (self.current_return_ty != .void or self.current_error_ty != null) and
                 !blockDefinitelyReturns(body))
             {
+                self.emitError(decl.span, "function `{s}` may not return a value on all code paths", .{decl.name});
                 return error.SemanticFailed;
             }
         }
@@ -1185,7 +1208,12 @@ const Checker = struct {
                 const declared_ty = try self.typeFromRef(local.ty);
                 try self.rejectBorrowOutsideParam(declared_ty, local.ty.span());
                 const value_ty = try self.inferExpr(local.value);
-                if (!try self.compatible(value_ty, declared_ty)) return error.SemanticFailed;
+                if (!try self.compatible(value_ty, declared_ty)) {
+                    self.emitError(local.value.span, "type mismatch: expected `{s}`, found `{s}`", .{
+                        self.formatTy(declared_ty), self.formatTy(value_ty),
+                    });
+                    return error.SemanticFailed;
+                }
                 try self.declareLocal(local.name, declared_ty);
                 try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
             },
@@ -1193,7 +1221,12 @@ const Checker = struct {
                 try self.checkAssignTarget(assign.target);
                 const target_ty = try self.inferExpr(assign.target);
                 const value_ty = try self.inferExpr(assign.value);
-                if (!try self.compatible(value_ty, target_ty)) return error.SemanticFailed;
+                if (!try self.compatible(value_ty, target_ty)) {
+                    self.emitError(assign.value.span, "type mismatch in assignment: expected `{s}`, found `{s}`", .{
+                        self.formatTy(target_ty), self.formatTy(value_ty),
+                    });
+                    return error.SemanticFailed;
+                }
                 if (self.exprZoneOwner(assign.value)) |owner| {
                     if (assign.target.kind != .ident) {
                         const source = if (owner.kind == .borrow) "borrowed value" else "zone-owned value";
@@ -1248,7 +1281,10 @@ const Checker = struct {
                         .optional => |inner| inner.*,
                         else => null,
                     };
-                    if (!cond_ty.isBool() and payload_ty == null) return error.SemanticFailed;
+                    if (!cond_ty.isBool() and payload_ty == null) {
+                        self.emitError(iff.condition.span, "`if` condition must be `bool` or optional, found `{s}`", .{self.formatTy(cond_ty)});
+                        return error.SemanticFailed;
+                    }
                     try self.pushScope();
                     defer self.popScope();
                     if (iff.payload_binding) |payload_name| {
@@ -1261,7 +1297,10 @@ const Checker = struct {
             },
             .while_stmt => |while_stmt| {
                 const cond_ty = try self.inferExpr(while_stmt.condition);
-                if (!cond_ty.isBool()) return error.SemanticFailed;
+                if (!cond_ty.isBool()) {
+                    self.emitError(while_stmt.condition.span, "`while` condition must be `bool`, found `{s}`", .{self.formatTy(cond_ty)});
+                    return error.SemanticFailed;
+                }
                 self.loop_depth += 1;
                 defer self.loop_depth -= 1;
                 try self.checkBlock(while_stmt.body);
@@ -1459,50 +1498,96 @@ const Checker = struct {
                     break :blk switch (inner) {
                         .pointer, .const_ptr => |p| p.*,
                         .slice => |p| p.*,
-                        else => return error.SemanticFailed,
+                        else => {
+                            self.emitError(expr.span, "cannot dereference value of type `{s}`", .{self.formatTy(inner)});
+                            return error.SemanticFailed;
+                        },
                     };
                 },
                 .neg => try self.inferExpr(unary.expr.*),
                 .not => blk: {
                     const inner = try self.inferExpr(unary.expr.*);
-                    if (!inner.isBool()) return error.SemanticFailed;
+                    if (!inner.isBool()) {
+                        self.emitError(expr.span, "`!` requires a `bool` operand, found `{s}`", .{self.formatTy(inner)});
+                        return error.SemanticFailed;
+                    }
                     break :blk .bool;
                 },
                 .bit_not => blk: {
                     const inner = try self.inferExpr(unary.expr.*);
-                    if (!inner.isInteger()) return error.SemanticFailed;
+                    if (!inner.isInteger()) {
+                        self.emitError(expr.span, "`~` requires an integer operand, found `{s}`", .{self.formatTy(inner)});
+                        return error.SemanticFailed;
+                    }
                     break :blk inner;
                 },
             },
             .binary => |binary| blk: {
                 const left = try self.inferExpr(binary.left.*);
                 const right = try self.inferExpr(binary.right.*);
-                break :blk switch (binary.op) {
-                    .equal, .not_equal => if ((left.isNumeric() and right.isNumeric()) or left == .error_ty or right == .error_ty or try self.compatible(left, right) or try self.compatible(right, left)) .bool else return error.SemanticFailed,
-                    .less, .le, .gt, .ge => if (left.isNumeric() and right.isNumeric()) .bool else return error.SemanticFailed,
-                    .and_and, .or_or => if (left.isBool() and right.isBool()) .bool else return error.SemanticFailed,
-                    .bit_and, .bit_or, .bit_xor => if (left.isInteger() and right.isInteger()) left else return error.SemanticFailed,
-                    .shl, .shr => if (left.isInteger() and right.isInteger()) left else return error.SemanticFailed,
-                    .add, .sub => if (left.isNumeric() and right.isNumeric()) left else return error.SemanticFailed,
-                    .mul, .div, .rem => if (left.isNumeric() and right.isNumeric()) left else return error.SemanticFailed,
+                const op_sym: []const u8 = switch (binary.op) {
+                    .equal => "==", .not_equal => "!=",
+                    .less => "<", .le => "<=", .gt => ">", .ge => ">=",
+                    .and_and => "&&", .or_or => "||",
+                    .bit_and => "&", .bit_or => "|", .bit_xor => "^",
+                    .shl => "<<", .shr => ">>",
+                    .add => "+", .sub => "-",
+                    .mul => "*", .div => "/", .rem => "%",
                 };
+                const result: Ty = switch (binary.op) {
+                    .equal, .not_equal => if ((left.isNumeric() and right.isNumeric()) or left == .error_ty or right == .error_ty or try self.compatible(left, right) or try self.compatible(right, left)) .bool else {
+                        self.emitError(expr.span, "operator `{s}` cannot be applied to types `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
+                        return error.SemanticFailed;
+                    },
+                    .less, .le, .gt, .ge => if (left.isNumeric() and right.isNumeric()) .bool else {
+                        self.emitError(expr.span, "operator `{s}` requires numeric operands, found `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
+                        return error.SemanticFailed;
+                    },
+                    .and_and, .or_or => if (left.isBool() and right.isBool()) .bool else {
+                        self.emitError(expr.span, "operator `{s}` requires `bool` operands, found `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
+                        return error.SemanticFailed;
+                    },
+                    .bit_and, .bit_or, .bit_xor, .shl, .shr => if (left.isInteger() and right.isInteger()) left else {
+                        self.emitError(expr.span, "operator `{s}` requires integer operands, found `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
+                        return error.SemanticFailed;
+                    },
+                    .add, .sub, .mul, .div, .rem => if (left.isNumeric() and right.isNumeric()) left else {
+                        self.emitError(expr.span, "operator `{s}` requires numeric operands, found `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
+                        return error.SemanticFailed;
+                    },
+                };
+                break :blk result;
             },
             .try_expr => |try_expr| blk: {
                 const value_ty = try self.inferExpr(try_expr.value.*);
-                if (self.current_error_ty == null) return error.SemanticFailed;
+                if (self.current_error_ty == null) {
+                    self.emitError(expr.span, "`?` used in a function without a `!` error return type", .{});
+                    return error.SemanticFailed;
+                }
                 break :blk switch (value_ty) {
                     .fallible => |fallible| blk2: {
-                        if (!try self.compatible(fallible.err.*, self.current_error_ty.?)) return error.SemanticFailed;
+                        if (!try self.compatible(fallible.err.*, self.current_error_ty.?)) {
+                            self.emitError(expr.span, "`?` error type `{s}` is not compatible with function error type `{s}`", .{
+                                self.formatTy(fallible.err.*), self.formatTy(self.current_error_ty.?),
+                            });
+                            return error.SemanticFailed;
+                        }
                         break :blk2 fallible.ok.*;
                     },
-                    else => return error.SemanticFailed,
+                    else => {
+                        self.emitError(try_expr.value.span, "`?` requires a fallible expression, found `{s}`", .{self.formatTy(value_ty)});
+                        return error.SemanticFailed;
+                    },
                 };
             },
             .catch_expr => |catch_expr| blk: {
                 const value_ty = try self.inferExpr(catch_expr.value.*);
                 const fallible = switch (value_ty) {
                     .fallible => |f| f,
-                    else => return error.SemanticFailed,
+                    else => {
+                        self.emitError(catch_expr.value.span, "`catch` requires a fallible expression, found `{s}`", .{self.formatTy(value_ty)});
+                        return error.SemanticFailed;
+                    },
                 };
                 try self.pushScope();
                 defer self.popScope();
@@ -1524,13 +1609,16 @@ const Checker = struct {
                 if (std.mem.eql(u8, field.name, "ptr")) break :blk switch (base_ty) {
                     .slice => |inner| try self.ptrTo(inner.*),
                     .array => |array| try self.ptrTo(array.elem.*),
-                    else => return error.SemanticFailed,
+                    else => {
+                        self.emitError(expr.span, "`.ptr` is only valid on slices and arrays, found `{s}`", .{self.formatTy(base_ty)});
+                        return error.SemanticFailed;
+                    },
                 };
                 if (base_ty == .fallible) {
                     if (std.mem.eql(u8, field.name, "ok")) break :blk base_ty.fallible.ok.*;
                     if (std.mem.eql(u8, field.name, "err")) break :blk base_ty.fallible.err.*;
                 }
-                break :blk try self.fieldType(base_ty, field.name);
+                break :blk try self.fieldType(base_ty, field.name, expr.span);
             },
             .index => |index| blk: {
                 const base_ty = try self.inferExpr(index.base.*);
@@ -1540,7 +1628,10 @@ const Checker = struct {
                     .slice => |inner| inner.*,
                     .pointer, .const_ptr => |inner| inner.*,
                     .unknown => .unknown,
-                    else => return error.SemanticFailed,
+                    else => {
+                        self.emitError(index.base.span, "cannot index into value of type `{s}`", .{self.formatTy(base_ty)});
+                        return error.SemanticFailed;
+                    },
                 };
             },
             .slice => |slice| blk: {
@@ -1550,7 +1641,10 @@ const Checker = struct {
                 break :blk switch (base_ty) {
                     .array => |array| .{ .slice = array.elem },
                     .slice => base_ty,
-                    else => return error.SemanticFailed,
+                    else => {
+                        self.emitError(slice.base.span, "cannot slice value of type `{s}`", .{self.formatTy(base_ty)});
+                        return error.SemanticFailed;
+                    },
                 };
             },
         };
@@ -1605,8 +1699,15 @@ const Checker = struct {
                             .named => |named| named.value,
                         };
                         try self.checkNonEscapingArgument(arg_expr, method.params[i + 1].ty);
-                        if (!try self.compatible(try self.inferExpr(arg_expr), method.params[i + 1].ty))
+                        const arg_ty = try self.inferExpr(arg_expr);
+                        if (!try self.compatible(arg_ty, method.params[i + 1].ty)) {
+                            self.emitError(arg_expr.span, "argument {d} of `{s}`: expected `{s}`, found `{s}`", .{
+                                i + 1, fld.name,
+                                self.formatTy(method.params[i + 1].ty),
+                                self.formatTy(arg_ty),
+                            });
                             return error.SemanticFailed;
+                        }
                     }
                     try self.env.expr_types.put(call.callee.id, .{ .fn_ptr = .{
                         .params = &.{},
@@ -1706,8 +1807,12 @@ const Checker = struct {
                         const expected = if (i < fp.params.len) fp.params[i] else null;
                         try self.checkNonEscapingArgument(arg_expr, expected);
                         const arg_ty = try self.inferExpr(arg_expr);
-                        if (i < fp.params.len and !try self.compatible(arg_ty, fp.params[i]))
+                        if (i < fp.params.len and !try self.compatible(arg_ty, fp.params[i])) {
+                            self.emitError(arg_expr.span, "argument {d}: expected `{s}`, found `{s}`", .{
+                                i + 1, self.formatTy(fp.params[i]), self.formatTy(arg_ty),
+                            });
                             return error.SemanticFailed;
+                        }
                     }
                     return fp.ret.*;
                 },
@@ -1720,7 +1825,10 @@ const Checker = struct {
             self.emitError(call.callee.span, "`{s}` is not a function", .{name});
             return error.SemanticFailed;
         }
-        const sig = self.env.fn_sigs.get(id) orelse return error.SemanticFailed;
+        const sig = self.env.fn_sigs.get(id) orelse {
+            diag_mod.printIce("function symbol has no signature record", @src());
+            return error.SemanticFailed;
+        };
 
         // Generic call: infer type binding and record instantiation
         if (sig.type_params.len > 0) {
@@ -1853,7 +1961,7 @@ const Checker = struct {
             .named => |id| id,
             else => return self.invalidMatchSubject(m.subject.span),
         };
-        const layout = self.env.layouts.get(enum_id) orelse return error.SemanticFailed;
+        const layout = self.env.layouts.get(enum_id) orelse return self.invalidMatchSubject(m.subject.span);
         const variants = switch (layout.kind) {
             .variant_type => |v| v,
             else => return self.invalidMatchSubject(m.subject.span),
@@ -2044,7 +2152,12 @@ const Checker = struct {
             } else false;
             if (!is_constrained) expected_arg_count += 1; // explicit $T: type
         }
-        if (call.args.len != expected_arg_count) return error.SemanticFailed;
+        if (call.args.len != expected_arg_count) {
+            self.emitError(call.callee.span, "`{s}` expects {d} argument(s), but {d} were provided", .{
+                fn_name, expected_arg_count, call.args.len,
+            });
+            return error.SemanticFailed;
+        }
 
         // Infer type args by matching call args to value params.
         // Type-only params ($T: type / $T: Interface) are inferred from the value args.
@@ -2118,7 +2231,16 @@ const Checker = struct {
             const arg_ty = arg_tys.items[check_i];
             check_i += 1;
             const expected = self.substituteTy(param.ty, &binding);
-            if (!try self.compatible(arg_ty, expected)) return error.SemanticFailed;
+            if (!try self.compatible(arg_ty, expected)) {
+                const arg_expr = switch (call.args[check_i - 1]) {
+                    .positional => |e| e,
+                    .named => |n| n.value,
+                };
+                self.emitError(arg_expr.span, "argument {d} of `{s}`: expected `{s}`, found `{s}`", .{
+                    check_i, fn_name, self.formatTy(expected), self.formatTy(arg_ty),
+                });
+                return error.SemanticFailed;
+            }
         }
 
         // Check static interface constraints: $T: Interface
@@ -2466,12 +2588,24 @@ const Checker = struct {
             self.emitError(fail.span, "`fail` used in a function without a `!` error return type", .{});
             return error.SemanticFailed;
         };
-        const variant = try self.findErrorVariant(err_ty, fail.variant);
+        const variant = self.findErrorVariant(err_ty, fail.variant) catch {
+            self.emitError(fail.span, "unknown error variant `.{s}`", .{fail.variant});
+            return error.SemanticFailed;
+        };
         if (variant.payload) |payload_ty| {
-            if (fail.payload.len != 1) return error.SemanticFailed;
+            if (fail.payload.len != 1) {
+                self.emitError(fail.span, "error variant `.{s}` has a payload; provide exactly one value", .{fail.variant});
+                return error.SemanticFailed;
+            }
             const actual = try self.inferExpr(fail.payload[0]);
-            if (!try self.compatible(actual, payload_ty)) return error.SemanticFailed;
+            if (!try self.compatible(actual, payload_ty)) {
+                self.emitError(fail.payload[0].span, "error payload type mismatch: expected `{s}`, found `{s}`", .{
+                    self.formatTy(payload_ty), self.formatTy(actual),
+                });
+                return error.SemanticFailed;
+            }
         } else if (fail.payload.len != 0) {
+            self.emitError(fail.span, "error variant `.{s}` does not have a payload", .{fail.variant});
             return error.SemanticFailed;
         }
     }
@@ -2501,7 +2635,7 @@ const Checker = struct {
         }
     }
 
-    fn fieldType(self: *Checker, base_ty: Ty, name: []const u8) SemanticError!Ty {
+    fn fieldType(self: *Checker, base_ty: Ty, name: []const u8, span: Span) SemanticError!Ty {
         // Unknown base (e.g., TARGET pseudo-module) — field access returns unknown.
         if (base_ty == .unknown) return .unknown;
         if (base_ty == .fallible) {
@@ -2512,16 +2646,26 @@ const Checker = struct {
             .named => |id| id,
             .pointer, .const_ptr => |inner| switch (inner.*) {
                 .named => |id| id,
-                else => return error.SemanticFailed,
+                else => {
+                    self.emitError(span, "field access on `{s}` is not supported", .{self.formatTy(base_ty)});
+                    return error.SemanticFailed;
+                },
             },
-            else => return error.SemanticFailed,
+            else => {
+                self.emitError(span, "field access on `{s}` is not supported", .{self.formatTy(base_ty)});
+                return error.SemanticFailed;
+            },
         };
-        const layout = self.env.layouts.get(type_id) orelse return error.SemanticFailed;
+        const layout = self.env.layouts.get(type_id) orelse {
+            self.emitError(span, "type has no accessible fields", .{});
+            return error.SemanticFailed;
+        };
         return switch (layout.kind) {
             .struct_type => |fields| blk: {
                 for (fields) |field| {
                     if (std.mem.eql(u8, field.name, name)) break :blk field.ty;
                 }
+                self.emitError(span, "no field `{s}` on this type", .{name});
                 return error.SemanticFailed;
             },
             // `Direction.north` — enum variant access returns the enum type itself.
@@ -2529,7 +2673,7 @@ const Checker = struct {
                 for (variants) |v| {
                     if (std.mem.eql(u8, v.name, name)) break :blk .{ .named = type_id };
                 }
-                self.emitError(Span.new(0, 0), "unknown variant `{s}`", .{name});
+                self.emitError(span, "unknown variant `.{s}`", .{name});
                 return error.SemanticFailed;
             },
             .interface_type => |methods| blk: {
@@ -2539,9 +2683,13 @@ const Checker = struct {
                         .ret = try self.boxTy(method.return_ty),
                     } };
                 }
+                self.emitError(span, "no method `{s}` on this interface", .{name});
                 return error.SemanticFailed;
             },
-            else => error.SemanticFailed,
+            else => {
+                self.emitError(span, "field access on `{s}` is not supported", .{self.formatTy(base_ty)});
+                return error.SemanticFailed;
+            },
         };
     }
 

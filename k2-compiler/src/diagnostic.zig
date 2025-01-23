@@ -5,21 +5,32 @@ pub const DiagKind = enum {
     err,
     warning,
     note,
+    /// Internal compiler error — represents a compiler bug, not a user error.
+    ice,
 
     pub fn label(self: DiagKind) []const u8 {
         return switch (self) {
-            .err     => "error",
+            .err => "error",
             .warning => "warning",
-            .note    => "note",
+            .note => "note",
+            .ice => "internal compiler error",
         };
     }
 };
 
+/// Zig source location captured at the ICE site via @src().
+pub const CompilerSrc = struct {
+    file: []const u8,
+    line: u32,
+    fn_name: []const u8,
+};
+
 pub const Diagnostic = struct {
-    kind:    DiagKind,
+    kind: DiagKind,
     message: []const u8,
-    span:    Span,
-    file:    []const u8,
+    span: Span,
+    file: []const u8,
+    compiler_src: ?CompilerSrc = null,
 
     pub fn err(message: []const u8, span: Span, file: []const u8) Diagnostic {
         return .{ .kind = .err, .message = message, .span = span, .file = file };
@@ -39,29 +50,62 @@ pub const Diagnostic = struct {
     }
 };
 
+/// Print an internal compiler error (ICE) to stderr.
+/// Call as: printIce("what failed", @src())
+pub fn printIce(message: []const u8, comptime src: std.builtin.SourceLocation) void {
+    std.debug.print(
+        "k2: internal compiler error: {s}\n    [at {s}:{d} in {s}]\n",
+        .{ message, src.file, src.line, src.fn_name },
+    );
+}
+
+/// Print an ICE with an associated K2 source location.
+pub fn printIceAt(
+    message: []const u8,
+    k2_file: []const u8,
+    k2_source: []const u8,
+    span: Span,
+    comptime src: std.builtin.SourceLocation,
+) void {
+    const location = span.line_col(k2_source);
+    std.debug.print(
+        "{s}:{d}:{d}: internal compiler error: {s}\n    [at {s}:{d} in {s}]\n",
+        .{ k2_file, location.line, location.col, message, src.file, src.line, src.fn_name },
+    );
+}
+
 pub fn renderDiagnostic(
     allocator: std.mem.Allocator,
-    path:       []const u8,
-    source:     []const u8,
+    path: []const u8,
+    source: []const u8,
     diagnostic: Diagnostic,
 ) ![]u8 {
-    const location   = diagnostic.span.line_col(source);
-    const source_line = getLine(source, location.line) orelse "";
-    const caret_col   = location.col -| 1;
-    const raw_width   = diagnostic.span.end -| diagnostic.span.start;
-    const span_width  = @max(raw_width, 1);
-    const remaining   = if (caret_col < source_line.len) source_line.len - caret_col else 0;
-    const caret_width = @min(span_width, @max(remaining, 1));
-
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
+    if (diagnostic.kind == .ice) {
+        // ICEs may or may not have a K2 source location.
+        if (diagnostic.file.len > 0 and (diagnostic.span.start != 0 or diagnostic.span.end != 0)) {
+            const location = diagnostic.span.line_col(source);
+            try out.print(allocator, "{s}:{d}:{d}: ", .{ path, location.line, location.col });
+        }
+        try out.print(allocator, "internal compiler error: {s}\n", .{diagnostic.message});
+        if (diagnostic.compiler_src) |cs| {
+            try out.print(allocator, "    [at {s}:{d} in {s}]\n", .{ cs.file, cs.line, cs.fn_name });
+        }
+        return out.toOwnedSlice(allocator);
+    }
+
+    const location = diagnostic.span.line_col(source);
+    const source_line = getLine(source, location.line) orelse "";
+    const caret_col = location.col -| 1;
+    const raw_width = diagnostic.span.end -| diagnostic.span.start;
+    const span_width = @max(raw_width, 1);
+    const remaining = if (caret_col < source_line.len) source_line.len - caret_col else 0;
+    const caret_width = @min(span_width, @max(remaining, 1));
+
     // file:line:col: kind: message
-    try out.print(allocator,
-        "{s}:{d}:{d}: {s}: {s}\n    {s}\n    ",
-        .{ path, location.line, location.col,
-           diagnostic.kind.label(), diagnostic.message,
-           source_line });
+    try out.print(allocator, "{s}:{d}:{d}: {s}: {s}\n    {s}\n    ", .{ path, location.line, location.col, diagnostic.kind.label(), diagnostic.message, source_line });
     try out.appendNTimes(allocator, ' ', caret_col);
     try out.appendNTimes(allocator, '^', caret_width);
 
@@ -69,10 +113,10 @@ pub fn renderDiagnostic(
 }
 
 pub fn renderAll(
-    allocator:   std.mem.Allocator,
+    allocator: std.mem.Allocator,
     diagnostics: []const Diagnostic,
-    source_map:  *const std.StringHashMap([]const u8),
-    writer:      anytype,
+    source_map: *const std.StringHashMap([]const u8),
+    writer: anytype,
 ) !void {
     for (diagnostics) |d| {
         const src = source_map.get(d.file) orelse "";
@@ -85,7 +129,7 @@ pub fn renderAll(
 fn getLine(source: []const u8, line_number: usize) ?[]const u8 {
     if (line_number == 0) return null;
     var current: usize = 1;
-    var start:   usize = 0;
+    var start: usize = 0;
     for (source, 0..) |ch, index| {
         if (ch == '\n') {
             if (current == line_number) return trimCR(source[start..index]);

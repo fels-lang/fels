@@ -40,7 +40,14 @@ pub fn compileSource(
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer fe.deinit(allocator);
-    if (fe.diagnostics().len != 0) return error.CompileFailed;
+    if (fe.diagnostics().len != 0) {
+        for (fe.diagnostics()) |d| {
+            const rendered = diag_mod.renderDiagnostic(allocator, d.file, source, d) catch continue;
+            defer allocator.free(rendered);
+            std.debug.print("{s}\n", .{rendered});
+        }
+        return error.CompileFailed;
+    }
 
     var module = ir.lowerFrontend(allocator, fe) catch |err| switch (err) {
         error.LoweringFailed => return error.LoweringFailed,
@@ -169,11 +176,20 @@ fn emitLlvmFromFrontend(
 
     // Middle-end
     var module = ir.lowerFrontend(ir_allocator, fe) catch |err| switch (err) {
-        error.LoweringFailed => return error.LoweringFailed,
+        error.LoweringFailed => {
+            std.debug.print("{s}: compilation failed due to internal compiler error (see above)\n", .{opts.file_name});
+            return error.LoweringFailed;
+        },
         error.OutOfMemory => return error.OutOfMemory,
     };
-    ir.runDefaultPasses(ir_allocator, &module) catch return error.LoweringFailed;
-    ir.validateModule(module) catch return error.LoweringFailed;
+    ir.runDefaultPasses(ir_allocator, &module) catch {
+        std.debug.print("{s}: internal compiler error during IR optimisation passes\n", .{opts.file_name});
+        return error.LoweringFailed;
+    };
+    ir.validateModule(module) catch {
+        std.debug.print("{s}: internal compiler error: IR validation failed (malformed IR produced)\n", .{opts.file_name});
+        return error.LoweringFailed;
+    };
 
     // LLVM backend
     const llvm_backend = @import("backend/llvm.zig");
@@ -184,7 +200,10 @@ fn emitLlvmFromFrontend(
     defer be.deinit();
 
     be.setOptLevel(opts.opt_level);
-    be.lower(module) catch return error.LoweringFailed;
+    be.lower(module) catch {
+        std.debug.print("{s}: compilation failed due to internal compiler error during code generation (see above)\n", .{opts.file_name});
+        return error.LoweringFailed;
+    };
 
     // Emit object file
     const obj_z = try allocator.dupeZ(u8, opts.obj_path);

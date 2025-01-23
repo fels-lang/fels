@@ -4,6 +4,7 @@ const pipeline = @import("pipeline.zig");
 const sema = @import("sema.zig");
 const comptime_mod = @import("comptime.zig");
 const Span = @import("lexer/span.zig").Span;
+const diag_mod = @import("diagnostic.zig");
 
 pub const RegId = u32;
 pub const BlockId = u32;
@@ -503,11 +504,20 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
                 }
                 var method_names = std.ArrayList([]const u8).empty;
                 errdefer method_names.deinit(allocator);
-                const interface_id = front_end.symbols.resolve(front_end.symbols.root_scope, impl.interface_name) orelse return error.LoweringFailed;
-                const layout = front_end.types.layouts.get(interface_id) orelse return error.LoweringFailed;
+                const interface_id = front_end.symbols.resolve(front_end.symbols.root_scope, impl.interface_name) orelse {
+                    diag_mod.printIce("interface symbol not found during vtable generation", @src());
+                    return error.LoweringFailed;
+                };
+                const layout = front_end.types.layouts.get(interface_id) orelse {
+                    diag_mod.printIce("interface layout not found during vtable generation", @src());
+                    return error.LoweringFailed;
+                };
                 const interface_methods = switch (layout.kind) {
                     .interface_type => |methods| methods,
-                    else => return error.LoweringFailed,
+                    else => {
+                        diag_mod.printIce("expected interface layout but found something else", @src());
+                        return error.LoweringFailed;
+                    },
                 };
                 for (interface_methods) |method| {
                     try method_names.append(allocator, try interfaceMethodName(
@@ -1864,7 +1874,10 @@ const FunctionLowerer = struct {
                         }
                     }
                     if (self.types.extension_calls.get(call.callee.id)) |extension_id| {
-                        const sig = self.types.fn_sigs.get(extension_id) orelse return error.LoweringFailed;
+                        const sig = self.types.fn_sigs.get(extension_id) orelse {
+                            diag_mod.printIce("extension call target has no signature record", @src());
+                            return error.LoweringFailed;
+                        };
                         const symbol = self.symbols.symbol(extension_id);
                         var args = std.ArrayList(Value).empty;
                         errdefer args.deinit(self.allocator);
@@ -1885,7 +1898,10 @@ const FunctionLowerer = struct {
                                 inserted_receiver = true;
                                 break :receiver fld.base.*;
                             } else source: {
-                                if (source_index >= call.args.len) return error.LoweringFailed;
+                                if (source_index >= call.args.len) {
+                                    diag_mod.printIce("extension call: argument index out of range", @src());
+                                    return error.LoweringFailed;
+                                }
                                 const source_arg = call.args[source_index];
                                 source_index += 1;
                                 break :source switch (source_arg) {
@@ -2018,7 +2034,10 @@ const FunctionLowerer = struct {
                     const elem_ty: IrType = switch (base_ty) {
                         .array => |array| array.elem.*,
                         .slice => |inner| inner.*,
-                        else => return error.LoweringFailed,
+                        else => {
+                            diag_mod.printIce("slice expr: base is neither array nor slice", @src());
+                            return error.LoweringFailed;
+                        },
                     };
 
                     const start_val: Value = if (slice.start) |start_expr|
@@ -2478,7 +2497,13 @@ const FunctionLowerer = struct {
     }
 
     fn lowerInterfaceCoercion(self: *FunctionLowerer, expr: ast.Expr, interface_name: []const u8) LowerError!Value {
-        const concrete_name = self.concretePointerExprName(expr) orelse return error.LoweringFailed;
+        const concrete_name = self.concretePointerExprName(expr) orelse {
+            diag_mod.printIceAt(
+                "cannot resolve concrete type for interface coercion",
+                self.file_name, self.source, expr.span, @src(),
+            );
+            return error.LoweringFailed;
+        };
         return self.emit(.{ .interface_value = interface_name }, .{ .interface_make = .{
             .data = try self.lowerExpr(expr),
             .vtable = try interfaceVTableName(self.allocator, concrete_name, interface_name),

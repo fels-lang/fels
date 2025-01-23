@@ -199,6 +199,7 @@ pub fn extractAggregateField(
         cg.recordLoweringError(
             "expected an aggregate value while lowering {s}, but found a value of a different shape (LLVM type kind {d}) — this points to an IR type-shape mismatch upstream",
             .{ what, @as(c_uint, kind) },
+            @src(),
         );
         return null;
     }
@@ -210,6 +211,7 @@ pub fn extractAggregateField(
         cg.recordLoweringError(
             "field index {d} out of bounds while lowering {s} (aggregate has {d} element(s)) — this points to an IR type-shape mismatch upstream",
             .{ index, what, elems },
+            @src(),
         );
         return null;
     }
