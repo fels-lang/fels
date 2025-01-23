@@ -235,3 +235,161 @@ test "#foreign: alias for #extern binds external functions and contributes to ex
     }
     try std.testing.expect(found_raylib);
 }
+
+// ── Distinct types ────────────────────────────────────────────────────────────
+
+test "distinct integer type: lowers to underlying integer type in IR" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\UserId :: distinct i32;
+        \\
+        \\make_user :: fn(raw: i32) -> UserId {
+        \\    return raw as UserId;
+        \\}
+        \\
+        \\unwrap :: fn(id: UserId) -> i32 {
+        \\    return id as i32;
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "distinct_int.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    // `make_user` return type and `unwrap` param must be i32, not a struct_type.
+    const make_fn = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "make_user")) break f;
+    } else return error.FunctionNotFound;
+    try std.testing.expectEqual(k2.ir_mod.IrType{ .i = 32 }, make_fn.return_ty);
+
+    const unwrap_fn = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "unwrap")) break f;
+    } else return error.FunctionNotFound;
+    try std.testing.expectEqual(k2.ir_mod.IrType{ .i = 32 }, unwrap_fn.params[0].ty);
+}
+
+test "distinct pointer type: *opaque-based handle lowers to ptr" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\RawHandle :: distinct *opaque;
+        \\
+        \\#extern("kernel32", "GetStdHandle")
+        \\GetStdHandle :: fn(id: i32) -> RawHandle;
+        \\
+        \\stdout :: fn() -> RawHandle {
+        \\    return GetStdHandle(-11);
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "distinct_ptr.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    const fn_ = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "stdout")) break f;
+    } else return error.FunctionNotFound;
+    // RawHandle is distinct *opaque — underlying is a pointer, should lower to ptr.
+    try std.testing.expect(fn_.return_ty == .ptr);
+}
+
+test "distinct type in struct field lowers to underlying type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\EntityId :: distinct u32;
+        \\
+        \\Entity :: struct {
+        \\    id:    EntityId,
+        \\    alive: bool,
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "distinct_field.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    const s = for (m.structs) |s| {
+        if (std.mem.eql(u8, s.name, "Entity")) break s;
+    } else return error.StructNotFound;
+    // EntityId is distinct u32 — the field must lower to u32, not struct_type.
+    try std.testing.expectEqual(k2.ir_mod.IrType{ .u = 32 }, s.fields[0].ty);
+    try std.testing.expectEqual(k2.ir_mod.IrType.bool, s.fields[1].ty);
+}
+
+// ── Opaque types ──────────────────────────────────────────────────────────────
+
+test "opaque type: *Opaque parameter lowers to ptr" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\Context :: opaque;
+        \\
+        \\process :: fn(ctx: *Context) -> i32 {
+        \\    return 0;
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "opaque_ptr.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    const fn_ = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "process")) break f;
+    } else return error.FunctionNotFound;
+    // *Context should lower to ptr (opaque pointer in LLVM 15+).
+    try std.testing.expect(fn_.params[0].ty == .ptr);
+}
+
+// ── Atomic types ──────────────────────────────────────────────────────────────
+
+test "atomic field: struct with atomic u32 fields lowers to regular u32" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\Counter :: struct {
+        \\    value: atomic u32,
+        \\    padding: u32,
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "atomic_field.k2", src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    const s = for (m.structs) |s| {
+        if (std.mem.eql(u8, s.name, "Counter")) break s;
+    } else return error.StructNotFound;
+    // `atomic u32` strips the qualifier in the IR; field type must be u32.
+    try std.testing.expectEqual(k2.ir_mod.IrType{ .u = 32 }, s.fields[0].ty);
+    try std.testing.expectEqual(k2.ir_mod.IrType{ .u = 32 }, s.fields[1].ty);
+}
+
+test "atomic_load and atomic_store: parse, type-check, and lower to IR" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\Flag :: struct { ready: atomic u32 }
+        \\
+        \\set_ready :: fn(f: *Flag) {
+        \\    atomic_store(&f.ready, 1u32, .release);
+        \\}
+        \\
+        \\spin :: fn(f: *Flag) -> u32 {
+        \\    while atomic_load(&f.ready, .acquire) == 0u32 {}
+        \\    return atomic_load(&f.ready, .acquire);
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "atomic_ops.k2", src);
+    defer fe.deinit(arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), fe.diagnostics().len);
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+}

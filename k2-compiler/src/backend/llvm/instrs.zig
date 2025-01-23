@@ -761,6 +761,17 @@ fn lowerBuiltin(
         return ld;
     }
 
+    // atomic_store(ptr, value, ordering) — atomic store with release ordering.
+    if (std.mem.eql(u8, b.name, "atomic_store")) {
+        if (b.args.len < 2) return null;
+        const ptr = resolveVal(cg, fncg, b.args[0], .{ .ptr = undefined });
+        const val = resolveVal(cg, fncg, b.args[1], .unknown);
+        const st = llvm.LLVMBuildStore(bl, val, ptr);
+        llvm.LLVMSetOrdering(st, llvm.LLVMAtomicOrderingRelease);
+        llvm.LLVMSetAlignment(st, 4);
+        return null;
+    }
+
     // asm(volatile, "instruction", ...) — inline assembly.
     if (std.mem.eql(u8, b.name, "asm")) {
         if (b.args.len < 2) return null;

@@ -1648,6 +1648,7 @@ const Checker = struct {
         if (std.mem.eql(u8, name, "truncate_to")) return self.firstTypeArg(call) orelse error.SemanticFailed;
         if (std.mem.eql(u8, name, "sizeof")) return .usize;
         if (std.mem.eql(u8, name, "atomic_load")) return .u32;
+        if (std.mem.eql(u8, name, "atomic_store")) return .void;
         // Reflection builtins: only meaningful inside compile-time contexts
         // (#run / #if), where the comptime interpreter produces a concrete
         // value. Their static type is deferred, like the TARGET pseudo-module.
@@ -2947,7 +2948,7 @@ fn isBuiltinValue(name: []const u8) bool {
     inline for (.{
         "truncate_to", "ptr_from_int",   "volatile_store",
         "sizeof",      "unaligned_read", "asm",
-        "atomic_load", "volatile",       ".acquire",
+        "atomic_load", "atomic_store",   "volatile",       ".acquire",
         // Compile-time reflection builtins
         "type_info",   "type_name",
         // Compile-time pseudo-modules

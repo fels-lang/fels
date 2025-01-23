@@ -466,7 +466,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
         switch (item) {
             .import => {},
             .type_decl => |decl| switch (decl.kind) {
-                .struct_type => |strukt| try structs.append(allocator, try lowerStruct(allocator, decl, strukt)),
+                .struct_type => |strukt| try structs.append(allocator, try lowerStruct(allocator, decl, strukt, front_end.types, front_end.symbols)),
                 .errors => |error_decl| try errors.append(allocator, try lowerErrorDef(allocator, decl, error_decl)),
                 .enum_type => |enum_decl| try variants.append(allocator, try lowerEnumDef(allocator, decl, enum_decl)),
                 .distinct, .opaque_type, .interface_type => {},
@@ -539,7 +539,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
                 for (fields) |f| {
                     try ir_fields.append(allocator, .{
                         .name = f.name,
-                        .ty = try lowerSemaType(allocator, f.ty, front_end.symbols),
+                        .ty = try lowerSemaTypeWithEnv(allocator, f.ty, front_end.types, front_end.symbols),
                     });
                 }
                 try structs.append(allocator, .{
@@ -1053,14 +1053,14 @@ fn valueUsesReg(value: Value, id: RegId) bool {
     };
 }
 
-fn lowerStruct(allocator: std.mem.Allocator, decl: ast.TypeDecl, strukt: ast.StructDecl) !StructDef {
+fn lowerStruct(allocator: std.mem.Allocator, decl: ast.TypeDecl, strukt: ast.StructDecl, types: sema.TypeEnv, symbols: sema.SymbolTable) !StructDef {
     var fields: std.ArrayList(FieldDef) = .empty;
     errdefer fields.deinit(allocator);
 
     for (strukt.fields) |field| {
         try fields.append(allocator, .{
             .name = field.name,
-            .ty = try lowerType(allocator, field.ty),
+            .ty = try lowerAstTypeWithEnv(allocator, field.ty, types, symbols),
         });
     }
 
@@ -1116,11 +1116,11 @@ fn lowerFunctionInstantiation(
         if (param.is_type_param) continue;
         try params.append(allocator, .{
             .name = param.name,
-            .ty = lowerTypeWithBindingAndSymbols(allocator, param.ty, type_args, symbols) catch .unknown,
+            .ty = lowerTypeWithBindingAndSymbols(allocator, param.ty, type_args, types, symbols) catch .unknown,
         });
     }
 
-    const ret_ty = lowerTypeWithBindingAndSymbols(allocator, decl.return_ty, type_args, symbols) catch .unknown;
+    const ret_ty = lowerTypeWithBindingAndSymbols(allocator, decl.return_ty, type_args, types, symbols) catch .unknown;
 
     const blocks = if (decl.body) |body| blk: {
         var lowerer = FunctionLowerer.init(allocator, types, symbols, decl);
@@ -1144,38 +1144,41 @@ fn lowerFunctionInstantiation(
     };
 }
 
-fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef, binding: []const sema.TypeArg, symbols: sema.SymbolTable) !IrType {
+fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef, binding: []const sema.TypeArg, types: sema.TypeEnv, symbols: sema.SymbolTable) !IrType {
     switch (ty) {
         .type_param => |tp| {
             for (binding) |arg| {
                 if (std.mem.eql(u8, arg.name, tp.name))
-                    return lowerSemaType(allocator, arg.ty, symbols) catch .unknown;
+                    return lowerSemaTypeWithEnv(allocator, arg.ty, types, symbols) catch .unknown;
             }
             return .unknown;
         },
         .named => |named| {
             for (binding) |arg| {
                 if (std.mem.eql(u8, arg.name, named.name))
-                    return lowerSemaType(allocator, arg.ty, symbols) catch .unknown;
+                    return lowerSemaTypeWithEnv(allocator, arg.ty, types, symbols) catch .unknown;
+            }
+            // Distinct type: substitute underlying type.
+            if (symbols.resolve(symbols.root_scope, named.name)) |id| {
+                if (types.distinct_types.get(id)) |underlying| {
+                    return lowerSemaTypeWithEnv(allocator, underlying, types, symbols) catch .unknown;
+                }
             }
             return lowerNamedType(named.name);
         },
-        .pointer => |ptr| return .{ .ptr = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, ptr.inner.*, binding, symbols)) },
-        .many_pointer => |ptr| return .{ .ptr = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, ptr.inner.*, binding, symbols)) },
-        .optional => |opt| return .{ .optional = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, opt.inner.*, binding, symbols)) },
-        .slice => |sl| return .{ .slice = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, sl.inner.*, binding, symbols)) },
-        .borrow => |b| return lowerTypeWithBindingAndSymbols(allocator, b.inner.*, binding, symbols),
+        .pointer => |ptr| return .{ .ptr = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, ptr.inner.*, binding, types, symbols)) },
+        .many_pointer => |ptr| return .{ .ptr = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, ptr.inner.*, binding, types, symbols)) },
+        .optional => |opt| return .{ .optional = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, opt.inner.*, binding, types, symbols)) },
+        .slice => |sl| return .{ .slice = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, sl.inner.*, binding, types, symbols)) },
+        .borrow => |b| return lowerTypeWithBindingAndSymbols(allocator, b.inner.*, binding, types, symbols),
         .array => |arr| return .{ .array = .{
-            .elem = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, arr.inner.*, binding, symbols)),
+            .elem = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, arr.inner.*, binding, types, symbols)),
             .len = parseArrayLen(arr.len.*),
         } },
         else => return lowerType(allocator, ty),
     }
 }
 
-fn lowerTypeWithBinding(allocator: std.mem.Allocator, ty: ast.TypeRef, binding: []const sema.TypeArg) !IrType {
-    return lowerTypeWithBindingAndSymbols(allocator, ty, binding, sema.SymbolTable{ .scopes = .empty, .symbols = .empty });
-}
 
 fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, module: ast.Module, decl: ast.FunctionDecl) !IrFunction {
     var params: std.ArrayList(IrParam) = .empty;
@@ -1271,7 +1274,15 @@ fn lowerTypeReplacingSelf(allocator: std.mem.Allocator, ty: ast.TypeRef, concret
         else => {},
     };
     return switch (ty) {
-        .named => |named| if (std.mem.eql(u8, named.name, "Self")) .{ .struct_type = concrete_name } else lowerNamedType(named.name),
+        .named => |named| blk: {
+            if (std.mem.eql(u8, named.name, "Self")) break :blk .{ .struct_type = concrete_name };
+            if (symbols.resolve(symbols.root_scope, named.name)) |id| {
+                if (types.distinct_types.get(id)) |underlying| {
+                    break :blk lowerSemaTypeWithEnv(allocator, underlying, types, symbols) catch .unknown;
+                }
+            }
+            break :blk lowerNamedType(named.name);
+        },
         .pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerTypeReplacingSelf(allocator, ptr.inner.*, concrete_name, types, symbols)) },
         .many_pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerTypeReplacingSelf(allocator, ptr.inner.*, concrete_name, types, symbols)) },
         .optional => |opt| .{ .optional = try boxType(allocator, try lowerTypeReplacingSelf(allocator, opt.inner.*, concrete_name, types, symbols)) },
@@ -2594,6 +2605,14 @@ fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sem
         },
         else => {},
     };
+    // Distinct type: lower directly to the underlying type.
+    if (ty == .named) {
+        if (symbols.resolve(symbols.root_scope, ty.named.name)) |id| {
+            if (types.distinct_types.get(id)) |underlying| {
+                return lowerSemaTypeWithEnv(allocator, underlying, types, symbols);
+            }
+        }
+    }
     return lowerType(allocator, ty);
 }
 
@@ -2706,6 +2725,13 @@ fn lowerSemaTypeWithEnv(allocator: std.mem.Allocator, ty: sema.Ty, types: sema.T
                 return .{ .interface_value = symbols.symbol(id).name };
         }
     }
+    // Distinct type: substitute the underlying type so the IR uses the real representation.
+    if (ty == .named) {
+        const id = ty.named;
+        if (types.distinct_types.get(id)) |underlying| {
+            return lowerSemaTypeWithEnv(allocator, underlying, types, symbols);
+        }
+    }
     return lowerSemaType(allocator, ty, symbols);
 }
 
@@ -2785,6 +2811,7 @@ fn isBuiltinName(name: []const u8) bool {
         "unaligned_read",
         "asm",
         "atomic_load",
+        "atomic_store",
         "compound_literal",
         "slice",
     }) |builtin| {
