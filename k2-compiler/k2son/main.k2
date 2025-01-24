@@ -8,6 +8,10 @@ Foo :: struct {
 
 main :: fn() -> i32 {
 
+    x: = 5;
+
+    x \|= bits
+
     if is_utf_cont(0x80u8) {
         return 1;
     }

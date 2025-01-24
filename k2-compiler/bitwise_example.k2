@@ -1,0 +1,22 @@
+#import std.io.{ println, print_u64, print };
+
+main :: fn() -> i32 {
+    // Declare a mutable variable with an initial value of 5 (binary 0101)
+    x: u32 = 5;
+    
+    // The bits we want to combine with x (binary 0010)
+    bits: u32 = 2;
+
+    // Bitwise OR assignment: x = x | bits
+    // 0101 (5)
+    // 0010 (2)
+    // ---- OR
+    // 0111 (7)
+    x |= bits;
+
+    print("x is now: ") catch err { return 1; };
+    print_u64(x as u64) catch err { return 1; };
+    println("") catch err { return 1; };
+
+    return 0;
+}
