@@ -25,4 +25,5 @@ comptime {
     _ = @import("compiler/runtime.zig");
     _ = @import("compiler/llvm_correctness.zig");
     _ = @import("compiler/exe_integration.zig");
+    _ = @import("compiler/vm.zig");
 }
