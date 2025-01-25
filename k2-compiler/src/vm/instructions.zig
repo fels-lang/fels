@@ -45,10 +45,13 @@ pub const Opcode = enum(u8) {
     ret, // a = value reg
     ret_void,
 
-    // ── Zones ────────────────────────────────────────────────────────────
+    // ── Zones & aggregates ───────────────────────────────────────────────
     zone_push, // imm = const-pool index of the zone name string
     zone_pop,
-    zone_alloc, // a = dst; imm = size in bytes (allocated in the top zone)
+    zone_alloc, // a = dst; imm = number of cells (allocated in the top zone)
+    field_addr, // a = dst; b = base ptr/ref; imm = field/element cell offset
+    load_cell, // a = dst; b = base ptr; imm = cell offset to read
+    store_cell, // a = base ptr; b = src value; imm = cell offset to write
 
     // ── System / diagnostics ─────────────────────────────────────────────
     sys_print, // a = reg to print

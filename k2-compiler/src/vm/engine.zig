@@ -66,14 +66,24 @@ pub const Vm = struct {
     /// Execute a standalone function with no arguments. Kept for the simple
     /// hand-assembled smoke tests.
     pub fn execute(self: *Vm, function: BytecodeFunction) VmError!Value {
-        return self.run(&function, &.{});
+        return self.runTop(&function, &.{});
     }
 
     /// Look up a function by name in the bound module and run it with `args`.
     pub fn call(self: *Vm, name: []const u8, args: []const Value) VmError!Value {
         const mod = self.module orelse return error.NoModule;
         const f = mod.find(name) orelse return error.InvalidInstruction;
-        return self.run(f, args);
+        return self.runTop(f, args);
+    }
+
+    /// Outermost entry: guarantee an active "root" zone so aggregate/`new`
+    /// allocations always have somewhere to live, then unwind it on the way out.
+    /// (Nested `call` opcodes reuse the existing zone stack and do not add one.)
+    fn runTop(self: *Vm, func: *const BytecodeFunction, args: []const Value) VmError!Value {
+        const root_mark = self.zone_stack.depth();
+        if (root_mark == 0) _ = try self.zone_stack.push("__root");
+        defer self.zone_stack.popTo(root_mark);
+        return self.run(func, args);
     }
 
     /// Run `func`, binding `args` to its parameter slots.
@@ -270,7 +280,22 @@ pub const Vm = struct {
                 },
                 .zone_pop => try self.zone_stack.pop(),
                 .zone_alloc => {
-                    frame.regs[inst.a] = try self.zone_stack.alloc(@intCast(inst.imm), 8);
+                    frame.regs[inst.a] = try self.zone_stack.alloc(@intCast(inst.imm));
+                },
+                .field_addr => {
+                    const base = try asPtr(frame.regs[inst.b]);
+                    frame.regs[inst.a] = .{ .ptr = .{
+                        .zone = base.zone,
+                        .offset = base.offset + @as(u32, @intCast(inst.imm)),
+                    } };
+                },
+                .load_cell => {
+                    const base = try asPtr(frame.regs[inst.b]);
+                    frame.regs[inst.a] = try self.zone_stack.getCell(base.zone, base.offset + @as(u32, @intCast(inst.imm)));
+                },
+                .store_cell => {
+                    const base = try asPtr(frame.regs[inst.a]);
+                    try self.zone_stack.setCell(base.zone, base.offset + @as(u32, @intCast(inst.imm)), frame.regs[inst.b]);
                 },
 
                 // ── System ───────────────────────────────────────────────
@@ -284,6 +309,15 @@ pub const Vm = struct {
         return .void;
     }
 };
+
+fn asPtr(v: Value) VmError!Value.Ptr {
+    return switch (v) {
+        .ptr => |p| p,
+        .struct_ref => |r| .{ .zone = r.zone, .offset = r.offset },
+        .slice => |s| .{ .zone = s.zone, .offset = s.offset },
+        else => error.TypeMismatch,
+    };
+}
 
 fn constName(consts: []const Value, imm: i64) []const u8 {
     if (imm < 0 or imm >= consts.len) return "<zone>";

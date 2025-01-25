@@ -11,9 +11,9 @@ const BytecodeFunction = instructions.BytecodeFunction;
 const BytecodeModule = instructions.BytecodeModule;
 
 pub const CompileError = error{
-    /// An IR construct this Tier-A compiler does not lower yet (aggregates,
-    /// interfaces, globals, ranges, …). Honest failure rather than silent wrong
-    /// code — the migration ports these incrementally.
+    /// An IR construct this compiler does not lower yet (slices, interfaces,
+    /// globals, ranges, …). Honest failure rather than silent wrong code — the
+    /// migration ports these incrementally.
     Unsupported,
     OutOfMemory,
 };
@@ -34,20 +34,22 @@ pub fn compileModule(allocator: std.mem.Allocator, module: ir.IrModule) CompileE
         allocator.free(funcs);
     }
     for (module.functions) |f| {
-        funcs[built] = try compileFunction(allocator, f, &func_map);
+        funcs[built] = try compileFunction(allocator, f, &func_map, module.structs);
         built += 1;
     }
     return .{ .functions = funcs };
 }
 
-/// Lower a single IR function. `func_map` resolves `call` targets; pass null for
-/// a standalone function with no calls.
+/// Lower a single IR function. `func_map` resolves `call` targets and `structs`
+/// resolves field names to cell offsets; pass null/empty for a standalone
+/// function with no calls or aggregates.
 pub fn compileFunction(
     allocator: std.mem.Allocator,
     func: ir.IrFunction,
     func_map: ?*const std.StringHashMap(u32),
+    structs: []const ir.StructDef,
 ) CompileError!BytecodeFunction {
-    var c = FnCompiler.init(allocator, func, func_map);
+    var c = FnCompiler.init(allocator, func, func_map, structs);
     defer c.deinit();
     return c.compile();
 }
@@ -56,6 +58,7 @@ const FnCompiler = struct {
     allocator: std.mem.Allocator,
     func: ir.IrFunction,
     func_map: ?*const std.StringHashMap(u32),
+    structs: []const ir.StructDef,
 
     out: std.ArrayList(Instr) = .empty,
     constants: std.ArrayList(Value) = .empty,
@@ -63,19 +66,27 @@ const FnCompiler = struct {
     local_slots: std.StringHashMap(u32),
     /// IR block id → first instruction offset (filled as blocks are emitted).
     block_offsets: std.AutoHashMap(ir.BlockId, u32),
+    /// Static type of each result register, for resolving field names.
+    reg_types: std.AutoHashMap(ir.RegId, ir.IrType),
+    /// Static type of each parameter/local, ditto.
+    name_types: std.StringHashMap(ir.IrType),
     next_reg: Reg = 0,
 
     fn init(
         allocator: std.mem.Allocator,
         func: ir.IrFunction,
         func_map: ?*const std.StringHashMap(u32),
+        structs: []const ir.StructDef,
     ) FnCompiler {
         return .{
             .allocator = allocator,
             .func = func,
             .func_map = func_map,
+            .structs = structs,
             .local_slots = std.StringHashMap(u32).init(allocator),
             .block_offsets = std.AutoHashMap(ir.BlockId, u32).init(allocator),
+            .reg_types = std.AutoHashMap(ir.RegId, ir.IrType).init(allocator),
+            .name_types = std.StringHashMap(ir.IrType).init(allocator),
         };
     }
 
@@ -84,10 +95,13 @@ const FnCompiler = struct {
         self.constants.deinit(self.allocator);
         self.local_slots.deinit();
         self.block_offsets.deinit();
+        self.reg_types.deinit();
+        self.name_types.deinit();
     }
 
     fn compile(self: *FnCompiler) CompileError!BytecodeFunction {
         try self.collectLocals();
+        try self.collectTypes();
         self.seedScratchBase();
 
         for (self.func.blocks) |block| {
@@ -121,6 +135,24 @@ const FnCompiler = struct {
         }
     }
 
+    /// Record the static type of every register and named local, so field
+    /// accesses can map a field name to its cell offset within its struct.
+    fn collectTypes(self: *FnCompiler) CompileError!void {
+        for (self.func.params) |p| try self.name_types.put(p.name, p.ty);
+        for (self.func.blocks) |block| {
+            for (block.instrs) |inst| {
+                if (inst.id) |id| try self.reg_types.put(id, inst.ty);
+            }
+        }
+        // Second pass: local types depend on register types resolved above.
+        for (self.func.blocks) |block| {
+            for (block.instrs) |inst| switch (inst.kind) {
+                .store_local => |sl| try self.name_types.put(sl.name, self.typeOf(sl.value)),
+                else => {},
+            };
+        }
+    }
+
     fn ensureSlot(self: *FnCompiler, name: []const u8) CompileError!u32 {
         if (self.local_slots.get(name)) |s| return s;
         const slot: u32 = self.local_slots.count();
@@ -147,6 +179,14 @@ const FnCompiler = struct {
         return r;
     }
 
+    fn typeOf(self: *FnCompiler, v: ir.Value) ir.IrType {
+        return switch (v) {
+            .reg => |r| self.reg_types.get(r) orelse .unknown,
+            .param, .local => |n| self.name_types.get(n) orelse .unknown,
+            .imm, .global => .unknown,
+        };
+    }
+
     // ── Operand resolution ───────────────────────────────────────────────
 
     /// Resolve an IR value to a register, emitting loads for immediates and
@@ -159,12 +199,7 @@ const FnCompiler = struct {
                 try self.materializeImm(dst, imm);
                 return dst;
             },
-            .param, .local => {
-                const name = switch (v) {
-                    .param => |n| n,
-                    .local => |n| n,
-                    else => unreachable,
-                };
+            .param, .local => |name| {
                 const slot = self.local_slots.get(name) orelse return error.Unsupported;
                 const dst = self.newReg();
                 try self.emit(Instr.r_imm(.load_local, dst, slot));
@@ -210,6 +245,11 @@ const FnCompiler = struct {
             .const_value => |imm| try self.materializeImm(target, imm),
 
             .unary => |un| {
+                if (un.op == .deref) {
+                    const ptr = try self.resolveReg(un.value);
+                    try self.emit(Instr.r_r_imm(.load_cell, target, ptr, 0));
+                    return;
+                }
                 const vr = try self.resolveReg(un.value);
                 const op: Opcode = switch (un.op) {
                     .neg => if (isFloat(inst.ty)) .neg_f else .neg_i,
@@ -247,12 +287,38 @@ const FnCompiler = struct {
                     try self.emit(Instr.r_imm(.sys_print, ar, 0));
                 } else if (std.mem.eql(u8, b.name, "panic")) {
                     try self.emit(Instr.with_imm(.trap, -1));
+                } else if (std.mem.eql(u8, b.name, "compound_literal")) {
+                    // Positional `.{ a, b, ... }` aggregate initializer.
+                    try self.lowerCompoundLiteral(target, inst.ty, b.args);
                 } else return error.Unsupported;
             },
 
+            // ── Aggregates (Tier C: structs) ─────────────────────────────
+            .struct_lit => |sl| try self.lowerStructLit(target, sl),
+
+            .field => |f| {
+                const base = try self.resolveReg(f.base);
+                const idx = try self.fieldOffset(self.typeOf(f.base), f.name);
+                try self.emit(Instr.r_r_imm(.load_cell, target, base, idx));
+            },
+            .field_addr => |f| {
+                const base = try self.resolveReg(f.base);
+                const idx = try self.fieldOffset(self.typeOf(f.base), f.name);
+                try self.emit(Instr.r_r_imm(.field_addr, target, base, idx));
+            },
+            .store => |s| {
+                const ptr = try self.resolveReg(s.target);
+                const vr = try self.resolveReg(s.value);
+                try self.emit(Instr.r_r_imm(.store_cell, ptr, vr, 0));
+            },
+            .at => |a| {
+                const ptr = try self.resolveReg(a.value);
+                try self.emit(Instr.r_r_imm(.load_cell, target, ptr, 0));
+            },
+
             .alloc => |a| {
-                const size = sizeOfScalar(a.ty) orelse return error.Unsupported;
-                try self.emit(Instr.r_imm(.zone_alloc, target, @intCast(size)));
+                const cells = self.cellCount(a.ty);
+                try self.emit(Instr.r_imm(.zone_alloc, target, @intCast(cells)));
             },
 
             .zone_push => |zp| {
@@ -262,8 +328,32 @@ const FnCompiler = struct {
             .zone_pop => try self.emit(Instr.with_imm(.zone_pop, 0)),
             .zone_free => {}, // freed wholesale on zone_pop; explicit free is a no-op here
 
-            // Tier C and beyond: not lowered yet.
+            // Tier C+ (arrays/slices/variants/interfaces/globals) and beyond:
+            // not lowered yet.
             else => return error.Unsupported,
+        }
+    }
+
+    fn lowerStructLit(self: *FnCompiler, target: Reg, sl: ir.StructLitInstr) CompileError!void {
+        const def = self.structDef(sl.ty_name) orelse return error.Unsupported;
+        try self.emit(Instr.r_imm(.zone_alloc, target, @intCast(def.fields.len)));
+        for (sl.fields) |field| {
+            const idx = fieldIndex(def, field.name) orelse return error.Unsupported;
+            const vr = try self.resolveReg(field.value);
+            try self.emit(Instr.r_r_imm(.store_cell, target, vr, idx));
+        }
+    }
+
+    /// Positional aggregate initializer `.{ v0, v1, ... }` for a struct: cells
+    /// are filled in field-declaration order.
+    fn lowerCompoundLiteral(self: *FnCompiler, target: Reg, ty: ir.IrType, args: []const ir.Value) CompileError!void {
+        const sname = structName(ty) orelse return error.Unsupported;
+        const def = self.structDef(sname) orelse return error.Unsupported;
+        if (args.len > def.fields.len) return error.Unsupported;
+        try self.emit(Instr.r_imm(.zone_alloc, target, @intCast(def.fields.len)));
+        for (args, 0..) |arg, i| {
+            const vr = try self.resolveReg(arg);
+            try self.emit(Instr.r_r_imm(.store_cell, target, vr, @intCast(i)));
         }
     }
 
@@ -318,10 +408,50 @@ const FnCompiler = struct {
             }
         }
     }
+
+    // ── Struct layout helpers ────────────────────────────────────────────
+
+    fn structDef(self: *FnCompiler, name: []const u8) ?ir.StructDef {
+        for (self.structs) |s| {
+            if (std.mem.eql(u8, s.name, name)) return s;
+        }
+        return null;
+    }
+
+    /// Cell offset of `field_name` within the struct named by `base_ty`.
+    fn fieldOffset(self: *FnCompiler, base_ty: ir.IrType, field_name: []const u8) CompileError!i64 {
+        const sname = structName(base_ty) orelse return error.Unsupported;
+        const def = self.structDef(sname) orelse return error.Unsupported;
+        return fieldIndex(def, field_name) orelse error.Unsupported;
+    }
+
+    /// Number of cells a value of `ty` occupies when allocated by `new`.
+    fn cellCount(self: *FnCompiler, ty: ir.IrType) usize {
+        if (structName(ty)) |sname| {
+            if (self.structDef(sname)) |def| return def.fields.len;
+        }
+        return 1;
+    }
 };
 
 fn isFloat(ty: ir.IrType) bool {
     return ty == .f32 or ty == .f64;
+}
+
+/// Unwrap pointers/optionals to find the underlying struct type name, if any.
+fn structName(ty: ir.IrType) ?[]const u8 {
+    return switch (ty) {
+        .struct_type => |n| n,
+        .ptr, .optional => |inner| structName(inner.*),
+        else => null,
+    };
+}
+
+fn fieldIndex(def: ir.StructDef, name: []const u8) ?i64 {
+    for (def.fields, 0..) |f, i| {
+        if (std.mem.eql(u8, f.name, name)) return @intCast(i);
+    }
+    return null;
 }
 
 fn mapBinOp(op: ir.BinOp, ty: ir.IrType) CompileError!Opcode {
@@ -340,7 +470,7 @@ fn mapBinOp(op: ir.BinOp, ty: ir.IrType) CompileError!Opcode {
         .and_op => .bit_and, // booleans are 0/1
         .or_op => .bit_or,
         // Comparisons: operand type isn't carried on the IR binary instr, so
-        // Tier A assumes integer operands. Float comparisons are a follow-up.
+        // this assumes integer operands. Float comparisons are a follow-up.
         .eq => .eq_i,
         .ne => .ne_i,
         .lt => .lt_i,
@@ -348,20 +478,5 @@ fn mapBinOp(op: ir.BinOp, ty: ir.IrType) CompileError!Opcode {
         .gt => .gt_i,
         .ge => .ge_i,
         .range, .range_exclusive => error.Unsupported,
-    };
-}
-
-/// Byte size of a scalar IR type, or null for aggregates/unsupported types.
-fn sizeOfScalar(ty: ir.IrType) ?usize {
-    return switch (ty) {
-        .i => |bits| (bits + 7) / 8,
-        .u => |bits| (bits + 7) / 8,
-        .f32 => 4,
-        .f64 => 8,
-        .bool, .byte => 1,
-        .rune => 4,
-        .usize, .isize, .addr => 8,
-        .ptr => 8,
-        else => null,
     };
 }

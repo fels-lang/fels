@@ -2,24 +2,26 @@ const std = @import("std");
 const value = @import("value.zig");
 
 const ZoneId = value.ZoneId;
+const Value = value.Value;
 
 pub const ZoneError = error{
     NoActiveZone,
     ZoneUnderflow,
+    OutOfBounds,
     OutOfMemory,
 };
 
-/// A single arena: a growable, host-backed bump-allocation buffer.
-///
-/// Allocations are addressed by byte offset into `data`, never by host pointer,
-/// so growing `data` (which may relocate it) does not invalidate any
-/// previously-handed-out `Value.ptr`.
+/// A single arena. Storage is an array of `Value` *cells* rather than raw
+/// bytes — a comptime VM manipulates values, not machine representations, so
+/// aggregates are blocks of cells (one per field / element) and pointers are
+/// `(zone, cell-offset)`. Cells are addressed by index, never by host pointer,
+/// so growing the backing array never invalidates an outstanding `Value.ptr`.
 const Arena = struct {
     name: []const u8,
-    data: std.ArrayList(u8) = .empty,
+    cells: std.ArrayList(Value) = .empty,
 
     fn deinit(self: *Arena, allocator: std.mem.Allocator) void {
-        self.data.deinit(allocator);
+        self.cells.deinit(allocator);
     }
 };
 
@@ -66,38 +68,46 @@ pub const ZoneStack = struct {
         }
     }
 
-    /// Bump-allocate `size` zeroed bytes (aligned to `alignment`) in the top
-    /// zone, returning a pointer value into it.
-    pub fn alloc(self: *ZoneStack, size: usize, alignment: usize) ZoneError!value.Value {
+    /// Reserve `count` zeroed (`.void`) cells in the top zone, returning a
+    /// pointer to the first one.
+    pub fn alloc(self: *ZoneStack, count: usize) ZoneError!Value {
         if (self.arenas.items.len == 0) return error.NoActiveZone;
         const zone_id: ZoneId = @intCast(self.arenas.items.len - 1);
         const top = &self.arenas.items[zone_id];
-        const start = std.mem.alignForward(usize, top.data.items.len, @max(alignment, 1));
-        try top.data.resize(self.allocator, start + size);
-        @memset(top.data.items[start .. start + size], 0);
+        const start = top.cells.items.len;
+        try top.cells.appendNTimes(self.allocator, .void, @max(count, 1));
         return .{ .ptr = .{ .zone = zone_id, .offset = @intCast(start) } };
     }
 
-    /// Raw byte view of a region — for aggregate load/store (Tier C).
-    pub fn bytes(self: *ZoneStack, zone: ZoneId, offset: u32, len: usize) []u8 {
-        return self.arenas.items[zone].data.items[offset .. offset + len];
+    pub fn getCell(self: *const ZoneStack, zone: ZoneId, offset: u32) ZoneError!Value {
+        if (zone >= self.arenas.items.len) return error.OutOfBounds;
+        const cells = self.arenas.items[zone].cells.items;
+        if (offset >= cells.len) return error.OutOfBounds;
+        return cells[offset];
+    }
+
+    pub fn setCell(self: *ZoneStack, zone: ZoneId, offset: u32, val: Value) ZoneError!void {
+        if (zone >= self.arenas.items.len) return error.OutOfBounds;
+        const cells = self.arenas.items[zone].cells.items;
+        if (offset >= cells.len) return error.OutOfBounds;
+        cells[offset] = val;
     }
 };
 
-test "zone push/alloc/pop frees all memory" {
+test "zone alloc returns cell offsets and pop frees memory" {
     var zs = ZoneStack.init(std.testing.allocator);
     defer zs.deinit();
 
     const z = try zs.push("scratch");
     try std.testing.expectEqual(@as(ZoneId, 0), z);
-    try std.testing.expectEqual(@as(usize, 1), zs.depth());
 
-    const p1 = try zs.alloc(4, 4);
-    const p2 = try zs.alloc(8, 8);
-    try std.testing.expectEqual(@as(value.ZoneId, 0), p1.ptr.zone);
+    const p1 = try zs.alloc(2); // 2 cells at offset 0
+    const p2 = try zs.alloc(3); // 3 cells at offset 2
     try std.testing.expectEqual(@as(u32, 0), p1.ptr.offset);
-    // second alloc is aligned past the first
-    try std.testing.expectEqual(@as(u32, 8), p2.ptr.offset);
+    try std.testing.expectEqual(@as(u32, 2), p2.ptr.offset);
+
+    try zs.setCell(0, 0, .{ .int = 42 });
+    try std.testing.expectEqual(@as(i128, 42), (try zs.getCell(0, 0)).int);
 
     try zs.pop();
     try std.testing.expectEqual(@as(usize, 0), zs.depth());
@@ -110,9 +120,9 @@ test "nested zones unwind via popTo" {
 
     const watermark = zs.depth();
     _ = try zs.push("a");
-    _ = try zs.alloc(16, 8);
+    _ = try zs.alloc(4);
     _ = try zs.push("b");
-    _ = try zs.alloc(32, 8);
+    _ = try zs.alloc(8);
     try std.testing.expectEqual(@as(usize, 2), zs.depth());
 
     zs.popTo(watermark);

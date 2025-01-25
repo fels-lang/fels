@@ -157,6 +157,33 @@ test "e2e: recursion (factorial)" {
     try std.testing.expectEqual(@as(i128, 120), result.int);
 }
 
+test "e2e: struct construct and field read" {
+    const src =
+        \\Point :: struct { x: i32, y: i32 }
+        \\
+        \\sum :: fn(a: i32, b: i32) -> i32 {
+        \\    p: Point = .{ a, b };
+        \\    return p.x + p.y;
+        \\}
+    ;
+    const result = try runSource(src, "sum", &.{ .{ .int = 17 }, .{ .int = 25 } });
+    try std.testing.expectEqual(@as(i128, 42), result.int);
+}
+
+test "e2e: struct field mutation" {
+    const src =
+        \\Point :: struct { x: i32, y: i32 }
+        \\
+        \\bump :: fn() -> i32 {
+        \\    p: Point = .{ 1, 2 };
+        \\    p.x = 10;
+        \\    return p.x + p.y;
+        \\}
+    ;
+    const result = try runSource(src, "bump", &.{});
+    try std.testing.expectEqual(@as(i128, 12), result.int);
+}
+
 test "e2e: while loop with locals" {
     const src =
         \\sumto :: fn(n: i32) -> i32 {
