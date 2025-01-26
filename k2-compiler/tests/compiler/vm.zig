@@ -157,6 +157,31 @@ test "e2e: recursion (factorial)" {
     try std.testing.expectEqual(@as(i128, 120), result.int);
 }
 
+test "e2e: float arithmetic" {
+    const src =
+        \\favg :: fn(a: f64, b: f64) -> f64 {
+        \\    return (a + b) / 2.0;
+        \\}
+    ;
+    const result = try runSource(src, "favg", &.{ .{ .float = 3.0 }, .{ .float = 5.0 } });
+    try std.testing.expectEqual(@as(f64, 4.0), result.float);
+}
+
+test "e2e: float comparison" {
+    const src =
+        \\fmax :: fn(a: f64, b: f64) -> f64 {
+        \\    if a > b {
+        \\        return a;
+        \\    }
+        \\    return b;
+        \\}
+    ;
+    const hi = try runSource(src, "fmax", &.{ .{ .float = 3.5 }, .{ .float = 2.25 } });
+    try std.testing.expectEqual(@as(f64, 3.5), hi.float);
+    const lo = try runSource(src, "fmax", &.{ .{ .float = 1.0 }, .{ .float = 9.0 } });
+    try std.testing.expectEqual(@as(f64, 9.0), lo.float);
+}
+
 test "e2e: struct construct and field read" {
     const src =
         \\Point :: struct { x: i32, y: i32 }
@@ -198,4 +223,45 @@ test "e2e: while loop with locals" {
     ;
     const result = try runSource(src, "sumto", &.{.{ .int = 10 }});
     try std.testing.expectEqual(@as(i128, 55), result.int);
+}
+
+test "e2e: array indexing in a loop" {
+    const src =
+        \\asum :: fn() -> i32 {
+        \\    arr: [3]i32 = .{ 5, 7, 9 };
+        \\    total := 0;
+        \\    i := 0;
+        \\    while i < 3 {
+        \\        total = total + arr[i];
+        \\        i = i + 1;
+        \\    }
+        \\    return total;
+        \\}
+    ;
+    const result = try runSource(src, "asum", &.{});
+    try std.testing.expectEqual(@as(i128, 21), result.int);
+}
+
+test "e2e: array length" {
+    const src =
+        \\alen :: fn() -> i32 {
+        \\    arr: [5]i32 = .{ 1, 2, 3, 4, 5 };
+        \\    return arr.len as i32;
+        \\}
+    ;
+    const result = try runSource(src, "alen", &.{});
+    try std.testing.expectEqual(@as(i128, 5), result.int);
+}
+
+test "e2e: slice of an array (index + len)" {
+    const src =
+        \\ssum :: fn() -> i32 {
+        \\    arr: [4]i32 = .{ 1, 2, 3, 4 };
+        \\    s: []i32 = arr[1..3];
+        \\    return s[0] + s[1] + (s.len as i32);
+        \\}
+    ;
+    // s = {2, 3}; 2 + 3 + len(2) = 7
+    const result = try runSource(src, "ssum", &.{});
+    try std.testing.expectEqual(@as(i128, 7), result.int);
 }

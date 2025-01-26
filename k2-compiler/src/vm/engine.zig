@@ -297,6 +297,30 @@ pub const Vm = struct {
                     const base = try asPtr(frame.regs[inst.a]);
                     try self.zone_stack.setCell(base.zone, base.offset + @as(u32, @intCast(inst.imm)), frame.regs[inst.b]);
                 },
+                .index_addr => {
+                    const base = try asPtr(frame.regs[inst.b]);
+                    const index = frame.regs[inst.c].asI128() orelse return error.TypeMismatch;
+                    const stride: i128 = @intCast(inst.imm);
+                    frame.regs[inst.a] = .{ .ptr = .{
+                        .zone = base.zone,
+                        .offset = base.offset + @as(u32, @intCast(index * stride)),
+                    } };
+                },
+                .slice_make => {
+                    const base = try asPtr(frame.regs[inst.b]);
+                    const len = frame.regs[inst.c].asI128() orelse return error.TypeMismatch;
+                    frame.regs[inst.a] = .{ .slice = .{
+                        .zone = base.zone,
+                        .offset = base.offset,
+                        .len = @intCast(len),
+                    } };
+                },
+                .slice_len => {
+                    frame.regs[inst.a] = switch (frame.regs[inst.b]) {
+                        .slice => |s| .{ .uint = s.len },
+                        else => return error.TypeMismatch,
+                    };
+                },
 
                 // ── System ───────────────────────────────────────────────
                 .sys_print => printValue(frame.regs[inst.a]),

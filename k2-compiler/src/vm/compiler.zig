@@ -250,6 +250,15 @@ const FnCompiler = struct {
                     try self.emit(Instr.r_r_imm(.load_cell, target, ptr, 0));
                     return;
                 }
+                if (un.op == .ref) {
+                    // An aggregate local already holds a pointer to its cell
+                    // block, so `&arr` / `&s` is that pointer. Taking the address
+                    // of a scalar local needs local addressing (a later cut).
+                    if (!isAggregate(self.typeOf(un.value))) return error.Unsupported;
+                    const vr = try self.resolveReg(un.value);
+                    try self.emit(Instr.r_r_imm(.copy, target, vr, 0));
+                    return;
+                }
                 const vr = try self.resolveReg(un.value);
                 const op: Opcode = switch (un.op) {
                     .neg => if (isFloat(inst.ty)) .neg_f else .neg_i,
@@ -263,7 +272,12 @@ const FnCompiler = struct {
             .binary => |bin| {
                 const lr = try self.resolveReg(bin.lhs);
                 const rr = try self.resolveReg(bin.rhs);
-                const op = try mapBinOp(bin.op, inst.ty);
+                // For arithmetic the result type tells us int vs float; for
+                // comparisons (result `bool`) we must look at the operands,
+                // whose types we tracked in the type pre-pass.
+                const op_float = isFloat(inst.ty) or
+                    isFloat(self.typeOf(bin.lhs)) or isFloat(self.typeOf(bin.rhs));
+                const op = try mapBinOp(bin.op, op_float);
                 try self.emit(Instr.r_r_r(op, target, lr, rr));
             },
 
@@ -297,14 +311,46 @@ const FnCompiler = struct {
             .struct_lit => |sl| try self.lowerStructLit(target, sl),
 
             .field => |f| {
+                const base_ty = self.typeOf(f.base);
+                // `.len` on arrays (static) and slices (runtime) is not a cell.
+                if (std.mem.eql(u8, f.name, "len")) {
+                    switch (base_ty) {
+                        .array => |arr| try self.emit(Instr.r_imm(.load_imm, target, @intCast(arr.len))),
+                        .slice => {
+                            const base = try self.resolveReg(f.base);
+                            try self.emit(Instr.r_r_imm(.slice_len, target, base, 0));
+                        },
+                        else => return error.Unsupported,
+                    }
+                    return;
+                }
                 const base = try self.resolveReg(f.base);
-                const idx = try self.fieldOffset(self.typeOf(f.base), f.name);
+                const idx = try self.fieldOffset(base_ty, f.name);
                 try self.emit(Instr.r_r_imm(.load_cell, target, base, idx));
             },
             .field_addr => |f| {
                 const base = try self.resolveReg(f.base);
                 const idx = try self.fieldOffset(self.typeOf(f.base), f.name);
                 try self.emit(Instr.r_r_imm(.field_addr, target, base, idx));
+            },
+
+            // ── Arrays & slices ──────────────────────────────────────────
+            .index => |ix| {
+                const addr = try self.lowerIndexAddr(ix.base, ix.index, self.cellCount(inst.ty));
+                try self.emit(Instr.r_r_imm(.load_cell, target, addr, 0));
+            },
+            .index_addr => |ix| {
+                const elem_ty: ir.IrType = switch (inst.ty) {
+                    .ptr => |e| e.*,
+                    else => inst.ty,
+                };
+                const addr = try self.lowerIndexAddr(ix.base, ix.index, self.cellCount(elem_ty));
+                try self.emit(Instr.r_r_imm(.copy, target, addr, 0));
+            },
+            .slice_expr => |se| {
+                const ptr = try self.resolveReg(se.ptr);
+                const len = try self.resolveReg(se.len);
+                try self.emit(Instr.r_r_r(.slice_make, target, ptr, len));
             },
             .store => |s| {
                 const ptr = try self.resolveReg(s.target);
@@ -344,17 +390,36 @@ const FnCompiler = struct {
         }
     }
 
-    /// Positional aggregate initializer `.{ v0, v1, ... }` for a struct: cells
-    /// are filled in field-declaration order.
+    /// Positional aggregate initializer `.{ v0, v1, ... }` for a struct or
+    /// array: cells are filled in declaration / element order.
     fn lowerCompoundLiteral(self: *FnCompiler, target: Reg, ty: ir.IrType, args: []const ir.Value) CompileError!void {
-        const sname = structName(ty) orelse return error.Unsupported;
-        const def = self.structDef(sname) orelse return error.Unsupported;
-        if (args.len > def.fields.len) return error.Unsupported;
-        try self.emit(Instr.r_imm(.zone_alloc, target, @intCast(def.fields.len)));
+        const slots: usize = switch (ty) {
+            .array => |arr| @intCast(arr.len),
+            else => blk: {
+                const sname = structName(ty) orelse return error.Unsupported;
+                const def = self.structDef(sname) orelse return error.Unsupported;
+                break :blk def.fields.len;
+            },
+        };
+        const stride: usize = switch (ty) {
+            .array => |arr| self.cellCount(arr.elem.*),
+            else => 1,
+        };
+        if (args.len > slots) return error.Unsupported;
+        try self.emit(Instr.r_imm(.zone_alloc, target, @intCast(slots * stride)));
         for (args, 0..) |arg, i| {
             const vr = try self.resolveReg(arg);
-            try self.emit(Instr.r_r_imm(.store_cell, target, vr, @intCast(i)));
+            try self.emit(Instr.r_r_imm(.store_cell, target, vr, @intCast(i * stride)));
         }
+    }
+
+    /// Emit an `index_addr`, returning the register holding the element pointer.
+    fn lowerIndexAddr(self: *FnCompiler, base_val: ir.Value, index_val: ir.Value, elem_cells: usize) CompileError!Reg {
+        const base = try self.resolveReg(base_val);
+        const idxr = try self.resolveReg(index_val);
+        const dst = self.newReg();
+        try self.emit(.{ .op = .index_addr, .a = dst, .b = base, .c = idxr, .imm = @intCast(elem_cells) });
+        return dst;
     }
 
     fn lowerCall(self: *FnCompiler, target: Reg, ci: ir.CallInstr) CompileError!void {
@@ -425,17 +490,26 @@ const FnCompiler = struct {
         return fieldIndex(def, field_name) orelse error.Unsupported;
     }
 
-    /// Number of cells a value of `ty` occupies when allocated by `new`.
+    /// Number of cells a value of `ty` occupies in zone memory.
     fn cellCount(self: *FnCompiler, ty: ir.IrType) usize {
-        if (structName(ty)) |sname| {
-            if (self.structDef(sname)) |def| return def.fields.len;
-        }
-        return 1;
+        return switch (ty) {
+            .array => |arr| @as(usize, @intCast(arr.len)) * self.cellCount(arr.elem.*),
+            else => blk: {
+                if (structName(ty)) |sname| {
+                    if (self.structDef(sname)) |def| break :blk def.fields.len;
+                }
+                break :blk 1;
+            },
+        };
     }
 };
 
 fn isFloat(ty: ir.IrType) bool {
     return ty == .f32 or ty == .f64;
+}
+
+fn isAggregate(ty: ir.IrType) bool {
+    return ty == .array or structName(ty) != null;
 }
 
 /// Unwrap pointers/optionals to find the underlying struct type name, if any.
@@ -454,8 +528,7 @@ fn fieldIndex(def: ir.StructDef, name: []const u8) ?i64 {
     return null;
 }
 
-fn mapBinOp(op: ir.BinOp, ty: ir.IrType) CompileError!Opcode {
-    const f = isFloat(ty);
+fn mapBinOp(op: ir.BinOp, f: bool) CompileError!Opcode {
     return switch (op) {
         .add => if (f) .add_f else .add_i,
         .sub => if (f) .sub_f else .sub_i,
@@ -469,14 +542,12 @@ fn mapBinOp(op: ir.BinOp, ty: ir.IrType) CompileError!Opcode {
         .bit_xor => .bit_xor,
         .and_op => .bit_and, // booleans are 0/1
         .or_op => .bit_or,
-        // Comparisons: operand type isn't carried on the IR binary instr, so
-        // this assumes integer operands. Float comparisons are a follow-up.
-        .eq => .eq_i,
-        .ne => .ne_i,
-        .lt => .lt_i,
-        .le => .le_i,
-        .gt => .gt_i,
-        .ge => .ge_i,
+        .eq => if (f) .eq_f else .eq_i,
+        .ne => if (f) .ne_f else .ne_i,
+        .lt => if (f) .lt_f else .lt_i,
+        .le => if (f) .le_f else .le_i,
+        .gt => if (f) .gt_f else .gt_i,
+        .ge => if (f) .ge_f else .ge_i,
         .range, .range_exclusive => error.Unsupported,
     };
 }

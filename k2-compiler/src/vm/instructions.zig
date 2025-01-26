@@ -52,6 +52,9 @@ pub const Opcode = enum(u8) {
     field_addr, // a = dst; b = base ptr/ref; imm = field/element cell offset
     load_cell, // a = dst; b = base ptr; imm = cell offset to read
     store_cell, // a = base ptr; b = src value; imm = cell offset to write
+    index_addr, // a = dst; b = base ptr; c = index reg; imm = cells per element
+    slice_make, // a = dst; b = ptr reg; c = len reg → slice value
+    slice_len, // a = dst; b = slice reg → its length as a uint
 
     // ── System / diagnostics ─────────────────────────────────────────────
     sys_print, // a = reg to print
