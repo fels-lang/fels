@@ -5,6 +5,10 @@ const sema = @import("sema.zig");
 const comptime_mod = @import("comptime.zig");
 const Span = @import("lexer/span.zig").Span;
 const diag_mod = @import("diagnostic.zig");
+const vm_compiler = @import("vm/compiler.zig");
+const vm_engine = @import("vm/engine.zig");
+const vm_instructions = @import("vm/instructions.zig");
+const vm_value = @import("vm/value.zig");
 
 pub const RegId = u32;
 pub const BlockId = u32;
@@ -448,6 +452,15 @@ pub fn lowerFrontend(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd)
 }
 
 pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) LowerError!IrModule {
+    var cvm = ComptimeVm.init(allocator, front_end);
+    defer cvm.deinit();
+    return lowerModuleInner(allocator, front_end, &cvm);
+}
+
+/// `cvm` is the VM-backed comptime evaluator threaded down to `#run` sites. It
+/// is null while *building* the evaluator's own bytecode cache, so nested `#run`
+/// there fall back to the tree-walker — which is exactly the recursion guard.
+fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, cvm: ?*ComptimeVm) LowerError!IrModule {
     var structs: std.ArrayList(StructDef) = .empty;
     var errors: std.ArrayList(ErrorDef) = .empty;
     var variants: std.ArrayList(VariantDef) = .empty;
@@ -474,7 +487,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
             },
             .const_decl => |decl| {
                 // #run expr on the right-hand side → evaluate at compile time.
-                const effective_imm = effectiveConstImm(allocator, front_end, decl.value);
+                const effective_imm = effectiveConstImm(allocator, front_end, decl.value, cvm);
                 try globals.append(allocator, .{
                     .name = decl.name,
                     .ty = inferConstType(decl.value),
@@ -485,7 +498,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
             .function => |decl| {
                 // Generic templates are lowered per-instantiation below; skip the template itself.
                 if (decl.type_params.len == 0) {
-                    try functions.append(allocator, try lowerFunction(allocator, front_end.types, front_end.symbols, front_end.module, decl));
+                    try functions.append(allocator, try lowerFunction(allocator, front_end.types, front_end.symbols, front_end.module, decl, cvm));
                 }
                 if (externLibName(decl.attrs)) |lib| try addExternLib(allocator, &extern_libs, lib);
             },
@@ -500,6 +513,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
                         impl,
                         method,
                         mangled,
+                        cvm,
                     ));
                 }
                 var method_names = std.ArrayList([]const u8).empty;
@@ -580,6 +594,7 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
                         decl,
                         inst.mangled_name,
                         inst.type_args,
+                        cvm,
                     ));
                 },
                 else => {},
@@ -1118,6 +1133,7 @@ fn lowerFunctionInstantiation(
     decl: ast.FunctionDecl,
     mangled_name: []const u8,
     type_args: []const sema.TypeArg,
+    cvm: ?*ComptimeVm,
 ) !IrFunction {
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
@@ -1134,6 +1150,7 @@ fn lowerFunctionInstantiation(
 
     const blocks = if (decl.body) |body| blk: {
         var lowerer = FunctionLowerer.init(allocator, types, symbols, decl);
+        lowerer.cvm = cvm;
         lowerer.type_binding = type_args;
         break :blk try lowerer.lowerBody(body);
     } else &.{};
@@ -1190,7 +1207,7 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
 }
 
 
-fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, module: ast.Module, decl: ast.FunctionDecl) !IrFunction {
+fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, module: ast.Module, decl: ast.FunctionDecl, cvm: ?*ComptimeVm) !IrFunction {
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
 
@@ -1206,6 +1223,7 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
     const blocks = if (decl.body) |body| blk: {
         var lowerer = FunctionLowerer.init(allocator, types, symbols, decl);
         lowerer.module = module;
+        lowerer.cvm = cvm;
         lowerer.current_return_ty = return_ty;
         break :blk try lowerer.lowerBody(body);
     } else &.{};
@@ -1234,6 +1252,7 @@ fn lowerInterfaceMethod(
     impl: ast.InterfaceImpl,
     decl: ast.FunctionDecl,
     mangled_name: []const u8,
+    cvm: ?*ComptimeVm,
 ) !IrFunction {
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
@@ -1245,6 +1264,7 @@ fn lowerInterfaceMethod(
     const blocks = if (decl.body) |body| blk: {
         var lowerer = FunctionLowerer.init(allocator, types, symbols, decl);
         lowerer.module = module;
+        lowerer.cvm = cvm;
         lowerer.current_return_ty = return_ty;
         break :blk try lowerer.lowerBody(body);
     } else &.{};
@@ -1352,6 +1372,8 @@ const FunctionLowerer = struct {
     defers: std.ArrayList(ast.DeferStmt) = .empty,
     type_binding: []const sema.TypeArg = &.{},
     module: ast.Module = .empty(""),
+    /// VM-backed comptime evaluator for `#run`, or null to use the tree-walker.
+    cvm: ?*ComptimeVm = null,
 
     fn init(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, decl: ast.FunctionDecl) FunctionLowerer {
         return .{
@@ -1743,6 +1765,11 @@ const FunctionLowerer = struct {
             .type_ref => .{ .imm = .null },
             .unsafe_expr => |inner| try self.lowerExpr(inner.*),
             .run_expr => |inner| blk: {
+                // Try the VM-backed evaluator first; on any failure fall back to
+                // the AST tree-walker, then to lowering the expression directly.
+                if (self.cvm) |c| {
+                    if (c.evalToValue(inner.*)) |v| break :blk v;
+                }
                 var ctx = comptime_mod.ComptimeCtx.init(
                     self.allocator,
                     self.module,
@@ -2851,11 +2878,125 @@ fn isBuiltinName(name: []const u8) bool {
 /// If `expr` is a `#run inner`, evaluate it via the comptime interpreter and
 /// return the resulting Imm.  Falls back to lowerImm for non-#run expressions
 /// or when compile-time evaluation fails.
-fn effectiveConstImm(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, expr: ast.Expr) Imm {
+/// VM-backed comptime evaluator. Lazily lowers the whole module to bytecode
+/// (memoized) and runs `#run` expressions on the VM. Every entry point is
+/// best-effort: it returns null on any failure so the caller can fall back to
+/// the AST tree-walker, guaranteeing no behavioural regression.
+const ComptimeVm = struct {
+    /// General-purpose allocator for the VM's transient per-call frames.
+    gpa: std.mem.Allocator,
+    /// Owns every cache/eval allocation (IR, bytecode, synthetic functions);
+    /// freed wholesale on `deinit`, so nothing leaks regardless of the caller.
+    arena: std.heap.ArenaAllocator,
+    front_end: pipeline.FrontEnd,
+    cache: ?Cache = null,
+    cache_failed: bool = false,
+
+    const Cache = struct {
+        ir_module: IrModule,
+        bc: vm_instructions.BytecodeModule,
+        func_map: std.StringHashMap(u32),
+    };
+
+    fn init(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) ComptimeVm {
+        return .{
+            .gpa = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
+            .front_end = front_end,
+        };
+    }
+
+    fn deinit(self: *ComptimeVm) void {
+        self.arena.deinit();
+    }
+
+    fn ensureCache(self: *ComptimeVm) ?*Cache {
+        if (self.cache != null) return &self.cache.?;
+        if (self.cache_failed) return null;
+        self.cache = self.buildCache() catch {
+            self.cache_failed = true;
+            return null;
+        };
+        return &self.cache.?;
+    }
+
+    fn buildCache(self: *ComptimeVm) !Cache {
+        const a = self.arena.allocator();
+        // Lower the module with NO evaluator so nested `#run` here resolve via
+        // the tree-walker — this is the recursion guard.
+        const irm = try lowerModuleInner(a, self.front_end, null);
+        const bc = try vm_compiler.compileModule(a, irm);
+        var fm = std.StringHashMap(u32).init(a);
+        for (irm.functions, 0..) |f, i| try fm.put(f.name, @intCast(i));
+        return .{ .ir_module = irm, .bc = bc, .func_map = fm };
+    }
+
+    fn evalRaw(self: *ComptimeVm, expr: ast.Expr) ?vm_value.Value {
+        const c = self.ensureCache() orelse return null;
+        const a = self.arena.allocator();
+        const irfn = lowerExprToFunction(a, self.front_end, expr) catch return null;
+        const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module.structs) catch return null;
+        var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
+        defer vm.deinit();
+        return vm.run(&bc_fn, &.{}) catch null;
+    }
+
+    fn evalToValue(self: *ComptimeVm, expr: ast.Expr) ?Value {
+        const imm = (self.evalRaw(expr) orelse return null).toImm() orelse return null;
+        return Value{ .imm = imm };
+    }
+
+    fn evalToImm(self: *ComptimeVm, expr: ast.Expr) ?Imm {
+        return (self.evalRaw(expr) orelse return null).toImm();
+    }
+};
+
+/// Lower a standalone `#run` expression into a one-block IR function that
+/// returns it, reusing the normal lowering machinery.
+fn lowerExprToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, expr: ast.Expr) !IrFunction {
+    const dummy = ast.FunctionDecl{
+        .attrs = &.{},
+        .name = "__run",
+        .file_name = "",
+        .source = "",
+        .type_params = &.{},
+        .params = &.{},
+        .return_ty = .opaque_type,
+        .error_ty = null,
+        .body = null,
+        .span = expr.span,
+    };
+    var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, dummy);
+    lowerer.module = front_end.module;
+    lowerer.current_return_ty = lowerer.exprType(expr);
+    var stmts = [_]ast.Stmt{.{ .return_stmt = .{ .value = expr, .span = expr.span } }};
+    const blocks = try lowerer.lowerBody(.{ .statements = &stmts, .span = expr.span });
+    return .{
+        .name = "__run",
+        .params = &.{},
+        .return_ty = lowerer.current_return_ty,
+        .error_ty = null,
+        .blocks = blocks,
+        .extern_name = null,
+        .inline_hint = false,
+        .no_inline = false,
+        .no_return = false,
+        .entry = false,
+        .naked = false,
+        .export_sym = null,
+    };
+}
+
+fn effectiveConstImm(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, expr: ast.Expr, cvm: ?*ComptimeVm) Imm {
     const inner = switch (expr.kind) {
         .run_expr => |e| e.*,
         else => return lowerImm(expr),
     };
+
+    // Try the VM first; fall back to the tree-walker on any failure.
+    if (cvm) |c| {
+        if (c.evalToImm(inner)) |imm| return imm;
+    }
 
     var ctx = comptime_mod.ComptimeCtx.init(
         allocator,

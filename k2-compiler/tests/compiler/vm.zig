@@ -157,6 +157,25 @@ test "e2e: recursion (factorial)" {
     try std.testing.expectEqual(@as(i128, 120), result.int);
 }
 
+test "e2e: #run calls a function, folded to a constant" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\square :: fn(x: i32) -> i32 { return x * x; }
+        \\ANSWER :: #run square(7);
+    ;
+    var fe = try k2.compile(a, "run.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+
+    const g = for (m.globals) |gg| {
+        if (std.mem.eql(u8, gg.name, "ANSWER")) break gg;
+    } else return error.GlobalNotFound;
+    try std.testing.expectEqual(@as(i128, 49), g.init.imm.int);
+}
+
 test "e2e: float arithmetic" {
     const src =
         \\favg :: fn(a: f64, b: f64) -> f64 {

@@ -34,10 +34,21 @@ pub fn compileModule(allocator: std.mem.Allocator, module: ir.IrModule) CompileE
         allocator.free(funcs);
     }
     for (module.functions) |f| {
-        funcs[built] = try compileFunction(allocator, f, &func_map, module.structs);
+        // A function using constructs we can't lower yet becomes a trap stub so
+        // the rest of the module still runs; calling it just triggers fallback.
+        funcs[built] = compileFunction(allocator, f, &func_map, module.structs) catch |e| switch (e) {
+            error.Unsupported => try stubFunction(allocator, f.name),
+            else => return e,
+        };
         built += 1;
     }
     return .{ .functions = funcs };
+}
+
+fn stubFunction(allocator: std.mem.Allocator, name: []const u8) CompileError!BytecodeFunction {
+    const instrs = try allocator.alloc(Instr, 1);
+    instrs[0] = Instr.with_imm(.trap, -1);
+    return .{ .name = name, .instrs = instrs, .num_regs = 1, .num_locals = 0 };
 }
 
 /// Lower a single IR function. `func_map` resolves `call` targets and `structs`
