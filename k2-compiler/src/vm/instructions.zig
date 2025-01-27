@@ -55,6 +55,9 @@ pub const Opcode = enum(u8) {
     index_addr, // a = dst; b = base ptr; c = index reg; imm = cells per element
     slice_make, // a = dst; b = ptr reg; c = len reg → slice value
     slice_len, // a = dst; b = slice reg → its length as a uint
+    opt_is_some, // a = dst; b = optional value → bool (non-null)
+    interface_method, // a = dst; b = interface value; imm = method slot → fn_ref
+    call_indirect, // a = dst; b = callee fn_ref reg; c = arg base reg; imm = arg count
 
     // ── System / diagnostics ─────────────────────────────────────────────
     sys_print, // a = reg to print
@@ -104,13 +107,18 @@ pub const BytecodeFunction = struct {
     }
 };
 
-/// A compiled module: the function table the VM resolves `call` against.
+/// A compiled module: the function table the VM resolves `call` against, plus
+/// the interface vtables (`vtable index → method slot → function index`) that
+/// `interface_method` dispatches through.
 pub const BytecodeModule = struct {
     functions: []BytecodeFunction,
+    vtables: []const []const u32 = &.{},
 
     pub fn deinit(self: *BytecodeModule, allocator: std.mem.Allocator) void {
         for (self.functions) |*f| f.deinit(allocator);
         allocator.free(self.functions);
+        for (self.vtables) |vt| allocator.free(vt);
+        if (self.vtables.len != 0) allocator.free(self.vtables);
     }
 
     pub fn find(self: *const BytecodeModule, name: []const u8) ?*const BytecodeFunction {

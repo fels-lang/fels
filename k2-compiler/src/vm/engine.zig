@@ -262,6 +262,22 @@ pub const Vm = struct {
                     for (0..argc) |i| arg_slice[i] = frame.regs[base + i];
                     frame.regs[inst.a] = try self.run(callee, arg_slice);
                 },
+                .call_indirect => {
+                    const mod = self.module orelse return error.NoModule;
+                    const idx: usize = switch (frame.regs[inst.b]) {
+                        .fn_ref => |fr| fr,
+                        else => return error.TypeMismatch,
+                    };
+                    if (idx >= mod.functions.len) return error.InvalidInstruction;
+                    const callee = &mod.functions[idx];
+                    const argc: usize = @intCast(inst.imm);
+                    const base: usize = inst.c;
+                    var buf: [16]Value = undefined;
+                    const arg_slice = if (argc <= buf.len) buf[0..argc] else try self.allocator.alloc(Value, argc);
+                    defer if (argc > buf.len) self.allocator.free(arg_slice);
+                    for (0..argc) |i| arg_slice[i] = frame.regs[base + i];
+                    frame.regs[inst.a] = try self.run(callee, arg_slice);
+                },
 
                 .ret => {
                     const result = frame.regs[inst.a];
@@ -320,6 +336,25 @@ pub const Vm = struct {
                         .slice => |s| .{ .uint = s.len },
                         else => return error.TypeMismatch,
                     };
+                },
+                .opt_is_some => frame.regs[inst.a] = .{ .bool = switch (frame.regs[inst.b]) {
+                    .null_ptr => false,
+                    else => true,
+                } },
+                .interface_method => {
+                    const mod = self.module orelse return error.NoModule;
+                    const iface = try asPtr(frame.regs[inst.b]);
+                    const vt_cell = try self.zone_stack.getCell(iface.zone, iface.offset + 1);
+                    const vt_idx: usize = switch (vt_cell) {
+                        .uint => |u| @intCast(u),
+                        .int => |i| @intCast(i),
+                        else => return error.TypeMismatch,
+                    };
+                    const method_idx: usize = @intCast(inst.imm);
+                    if (vt_idx >= mod.vtables.len) return error.InvalidInstruction;
+                    const vt = mod.vtables[vt_idx];
+                    if (method_idx >= vt.len) return error.InvalidInstruction;
+                    frame.regs[inst.a] = .{ .fn_ref = vt[method_idx] };
                 },
 
                 // ── System ───────────────────────────────────────────────

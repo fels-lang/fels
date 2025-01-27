@@ -207,6 +207,114 @@ test "e2e: #run sizeof folds scalar, struct, and array sizes" {
     try std.testing.expectEqual(@as(i128, 16), try globalInt(m, "SA"));
 }
 
+test "e2e: #run enum match folds to a constant" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\Dir :: enum { north, south, east, west }
+        \\rank :: fn(d: Dir) -> i32 {
+        \\    match d {
+        \\        .north => return 1;
+        \\        .south => return 2;
+        \\        .east  => return 3;
+        \\        .west  => return 4;
+        \\        else   => return 0;
+        \\    }
+        \\}
+        \\R :: #run rank(Dir.east);
+    ;
+    var fe = try k2.compile(a, "enum.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try std.testing.expectEqual(@as(i128, 3), try globalInt(m, "R"));
+}
+
+test "e2e: #run optionals (?? coalesce and !! unwrap)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\some_or :: fn() -> i32 {
+        \\    x: ?i32 = 5;
+        \\    return x ?? 99;
+        \\}
+        \\none_or :: fn() -> i32 {
+        \\    x: ?i32 = null;
+        \\    return x ?? 99;
+        \\}
+        \\unwrapped :: fn() -> i32 {
+        \\    x: ?i32 = 7;
+        \\    return x!!;
+        \\}
+        \\SOME :: #run some_or();
+        \\NONE :: #run none_or();
+        \\UNW  :: #run unwrapped();
+    ;
+    var fe = try k2.compile(a, "opt.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try std.testing.expectEqual(@as(i128, 5), try globalInt(m, "SOME"));
+    try std.testing.expectEqual(@as(i128, 99), try globalInt(m, "NONE"));
+    try std.testing.expectEqual(@as(i128, 7), try globalInt(m, "UNW"));
+}
+
+test "e2e: #run interface dynamic dispatch" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\Shape :: interface { area :: fn(self: *Self) -> i32; }
+        \\Square :: struct { side: i32 }
+        \\Square as Shape {
+        \\    area :: fn(self: *Self) -> i32 { return self.side * self.side; }
+        \\}
+        \\compute :: fn(s: *Shape) -> i32 { return s.area(); }
+        \\go :: fn() -> i32 {
+        \\    sq: Square = .{ 5 };
+        \\    s: *Shape = &sq;
+        \\    return compute(s);
+        \\}
+        \\AREA :: #run go();
+    ;
+    var fe = try k2.compile(a, "iface.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try std.testing.expectEqual(@as(i128, 25), try globalInt(m, "AREA"));
+}
+
+test "e2e: #run fallible with catch" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\NetError :: errors { boom }
+        \\risky :: fn(x: i32) -> i32 ! NetError {
+        \\    if x < 0 {
+        \\        fail .boom;
+        \\    }
+        \\    return x * 2;
+        \\}
+        \\safe :: fn(x: i32) -> i32 {
+        \\    data := risky(x) catch e {
+        \\        return -1;
+        \\    };
+        \\    return data;
+        \\}
+        \\OKV :: #run safe(5);
+        \\BADV :: #run safe(-3);
+    ;
+    var fe = try k2.compile(a, "fallible.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try std.testing.expectEqual(@as(i128, 10), try globalInt(m, "OKV"));
+    try std.testing.expectEqual(@as(i128, -1), try globalInt(m, "BADV"));
+}
+
 test "e2e: float arithmetic" {
     const src =
         \\favg :: fn(a: f64, b: f64) -> f64 {

@@ -36,13 +36,25 @@ pub fn compileModule(allocator: std.mem.Allocator, module: ir.IrModule) CompileE
     for (module.functions) |f| {
         // A function using constructs we can't lower yet becomes a trap stub so
         // the rest of the module still runs; calling it just triggers fallback.
-        funcs[built] = compileFunction(allocator, f, &func_map, module.structs) catch |e| switch (e) {
+        funcs[built] = compileFunction(allocator, f, &func_map, module) catch |e| switch (e) {
             error.Unsupported => try stubFunction(allocator, f.name),
             else => return e,
         };
         built += 1;
     }
-    return .{ .functions = funcs };
+
+    // Resolve each vtable's method names to function indices for dispatch.
+    const vtables = try allocator.alloc([]const u32, module.vtables.len);
+    errdefer allocator.free(vtables);
+    for (module.vtables, 0..) |vt, i| {
+        const slots = try allocator.alloc(u32, vt.methods.len);
+        for (vt.methods, 0..) |method_name, j| {
+            slots[j] = func_map.get(method_name) orelse 0; // 0 = trap stub if missing
+        }
+        vtables[i] = slots;
+    }
+
+    return .{ .functions = funcs, .vtables = vtables };
 }
 
 fn stubFunction(allocator: std.mem.Allocator, name: []const u8) CompileError!BytecodeFunction {
@@ -51,16 +63,16 @@ fn stubFunction(allocator: std.mem.Allocator, name: []const u8) CompileError!Byt
     return .{ .name = name, .instrs = instrs, .num_regs = 1, .num_locals = 0 };
 }
 
-/// Lower a single IR function. `func_map` resolves `call` targets and `structs`
-/// resolves field names to cell offsets; pass null/empty for a standalone
-/// function with no calls or aggregates.
+/// Lower a single IR function. `func_map` resolves `call` targets; `module`
+/// provides struct/variant/vtable layout. Pass null `func_map` and an empty
+/// module for a standalone function with no calls or aggregates.
 pub fn compileFunction(
     allocator: std.mem.Allocator,
     func: ir.IrFunction,
     func_map: ?*const std.StringHashMap(u32),
-    structs: []const ir.StructDef,
+    module: ir.IrModule,
 ) CompileError!BytecodeFunction {
-    var c = FnCompiler.init(allocator, func, func_map, structs);
+    var c = FnCompiler.init(allocator, func, func_map, module);
     defer c.deinit();
     return c.compile();
 }
@@ -69,7 +81,7 @@ const FnCompiler = struct {
     allocator: std.mem.Allocator,
     func: ir.IrFunction,
     func_map: ?*const std.StringHashMap(u32),
-    structs: []const ir.StructDef,
+    module: ir.IrModule,
 
     out: std.ArrayList(Instr) = .empty,
     constants: std.ArrayList(Value) = .empty,
@@ -87,13 +99,13 @@ const FnCompiler = struct {
         allocator: std.mem.Allocator,
         func: ir.IrFunction,
         func_map: ?*const std.StringHashMap(u32),
-        structs: []const ir.StructDef,
+        module: ir.IrModule,
     ) FnCompiler {
         return .{
             .allocator = allocator,
             .func = func,
             .func_map = func_map,
-            .structs = structs,
+            .module = module,
             .local_slots = std.StringHashMap(u32).init(allocator),
             .block_offsets = std.AutoHashMap(ir.BlockId, u32).init(allocator),
             .reg_types = std.AutoHashMap(ir.RegId, ir.IrType).init(allocator),
@@ -306,6 +318,18 @@ const FnCompiler = struct {
 
             .call => |ci| try self.lowerCall(target, ci),
 
+            .call_indirect => |ci| {
+                const callee = try self.resolveReg(ci.callee);
+                const argc: u32 = @intCast(ci.args.len);
+                const base = self.next_reg;
+                self.next_reg += argc;
+                for (ci.args, 0..) |arg, i| {
+                    const ar = try self.resolveReg(arg);
+                    try self.emit(Instr.r_r_imm(.copy, base + @as(Reg, @intCast(i)), ar, 0));
+                }
+                try self.emit(.{ .op = .call_indirect, .a = target, .b = callee, .c = base, .imm = argc });
+            },
+
             .builtin => |b| {
                 if (std.mem.eql(u8, b.name, "print") and b.args.len >= 1) {
                     const ar = try self.resolveReg(b.args[0]);
@@ -315,6 +339,19 @@ const FnCompiler = struct {
                 } else if (std.mem.eql(u8, b.name, "compound_literal")) {
                     // Positional `.{ a, b, ... }` aggregate initializer.
                     try self.lowerCompoundLiteral(target, inst.ty, b.args);
+                } else if (std.mem.startsWith(u8, b.name, "error.")) {
+                    // `fail .v` builds the error value as a `error.<variant>`
+                    // builtin; represent it by its discriminant (payloads TODO).
+                    const vname = b.name["error.".len..];
+                    const idx = self.errorVariantIndex(vname) orelse 0;
+                    try self.emit(Instr.r_imm(.load_imm, target, idx));
+                } else if (std.mem.eql(u8, b.name, "catch_handler")) {
+                    // Marker emitted by `catch` lowering; nothing to execute.
+                } else if (std.mem.eql(u8, b.name, "optional_some") and b.args.len >= 1) {
+                    // `some(x)`: a 1-cell block holding the payload.
+                    const pr = try self.resolveReg(b.args[0]);
+                    try self.emit(Instr.r_imm(.zone_alloc, target, 1));
+                    try self.emit(Instr.r_r_imm(.store_cell, target, pr, 0));
                 } else if (std.mem.eql(u8, b.name, "sizeof")) {
                     // `sizeof(T)` folds to a compile-time byte size constant.
                     const ta = b.type_arg orelse return error.Unsupported;
@@ -376,6 +413,75 @@ const FnCompiler = struct {
             .at => |a| {
                 const ptr = try self.resolveReg(a.value);
                 try self.emit(Instr.r_r_imm(.load_cell, target, ptr, 0));
+            },
+
+            // ── Variants / enums ─────────────────────────────────────────
+            // A variant value is a 2-cell block: [tag, payload].
+            .variant_lit => |vl| {
+                const idx = self.variantIndex(vl.type_name, vl.variant) orelse return error.Unsupported;
+                try self.emit(Instr.r_imm(.zone_alloc, target, 2));
+                const tagr = self.newReg();
+                try self.emit(Instr.r_imm(.load_imm, tagr, idx));
+                try self.emit(Instr.r_r_imm(.store_cell, target, tagr, 0));
+                if (vl.payload) |p| {
+                    const pr = try self.resolveReg(p);
+                    try self.emit(Instr.r_r_imm(.store_cell, target, pr, 1));
+                }
+            },
+            .variant_is => |vi| {
+                const idx = self.variantIndex(vi.type_name, vi.variant) orelse return error.Unsupported;
+                const subj = try self.resolveReg(vi.value);
+                const tagr = self.newReg();
+                try self.emit(Instr.r_r_imm(.load_cell, tagr, subj, 0));
+                const idxr = self.newReg();
+                try self.emit(Instr.r_imm(.load_imm, idxr, idx));
+                try self.emit(Instr.r_r_r(.eq_i, target, tagr, idxr));
+            },
+            .variant_payload => |vp| {
+                const subj = try self.resolveReg(vp.value);
+                try self.emit(Instr.r_r_imm(.load_cell, target, subj, 1));
+            },
+
+            // ── Optionals ────────────────────────────────────────────────
+            // `some(x)` is a 1-cell block [x]; `none` is the bare null value.
+            .optional_is_some => |v| {
+                const r = try self.resolveReg(v);
+                try self.emit(Instr.r_r_imm(.opt_is_some, target, r, 0));
+            },
+            .optional_payload => |v| {
+                const r = try self.resolveReg(v);
+                try self.emit(Instr.r_r_imm(.load_cell, target, r, 0));
+            },
+
+            // ── Fallible (T ! E) ─────────────────────────────────────────
+            // A fallible value is a 2-cell block: [is_ok, value-or-error].
+            .try_is_ok => |v| {
+                const r = try self.resolveReg(v);
+                try self.emit(Instr.r_r_imm(.load_cell, target, r, 0));
+            },
+            .try_ok, .try_err => |v| {
+                const r = try self.resolveReg(v);
+                try self.emit(Instr.r_r_imm(.load_cell, target, r, 1));
+            },
+
+            // ── Interfaces ───────────────────────────────────────────────
+            // A fat interface value is a 2-cell block: [data ptr, vtable index].
+            .interface_make => |im| {
+                const data = try self.resolveReg(im.data);
+                const vt = self.vtableIndex(im.vtable) orelse return error.Unsupported;
+                try self.emit(Instr.r_imm(.zone_alloc, target, 2));
+                try self.emit(Instr.r_r_imm(.store_cell, target, data, 0));
+                const vr = self.newReg();
+                try self.emit(Instr.r_imm(.load_imm, vr, vt));
+                try self.emit(Instr.r_r_imm(.store_cell, target, vr, 1));
+            },
+            .interface_data => |v| {
+                const r = try self.resolveReg(v);
+                try self.emit(Instr.r_r_imm(.load_cell, target, r, 0));
+            },
+            .interface_method => |im| {
+                const r = try self.resolveReg(im.value);
+                try self.emit(.{ .op = .interface_method, .a = target, .b = r, .imm = @intCast(im.index) });
             },
 
             .alloc => |a| {
@@ -454,12 +560,24 @@ const FnCompiler = struct {
     }
 
     fn lowerTerminator(self: *FnCompiler, term: ir.Terminator) CompileError!void {
+        const fallible = self.func.error_ty != null;
         switch (term) {
             .return_value => |opt| {
-                if (opt) |v| {
+                if (fallible) {
+                    // Wrap the (possibly void) value as ok and return the block.
+                    const vr = if (opt) |v| try self.resolveReg(v) else try self.constReg(0);
+                    const wrapped = try self.emitResultWrap(true, vr);
+                    try self.emit(Instr.r_imm(.ret, wrapped, 0));
+                } else if (opt) |v| {
                     const r = try self.resolveReg(v);
                     try self.emit(Instr.r_imm(.ret, r, 0));
                 } else try self.emit(Instr.with_imm(.ret_void, 0));
+            },
+            .fail => |v| {
+                // Only valid inside a fallible fn: wrap the error as err, return.
+                const r = try self.resolveReg(v);
+                const wrapped = try self.emitResultWrap(false, r);
+                try self.emit(Instr.r_imm(.ret, wrapped, 0));
             },
             .branch => |bid| try self.emit(Instr.with_imm(.jmp, @intCast(bid))),
             .cond_branch => |cb| {
@@ -467,9 +585,25 @@ const FnCompiler = struct {
                 try self.emit(Instr.r_imm(.br_if, cr, @intCast(cb.then_block)));
                 try self.emit(Instr.with_imm(.jmp, @intCast(cb.else_block)));
             },
-            .fail, .panic => try self.emit(Instr.with_imm(.trap, -1)),
+            .panic => try self.emit(Instr.with_imm(.trap, -1)),
             .unreachable_term => try self.emit(Instr.with_imm(.trap, -1)),
         }
+    }
+
+    fn constReg(self: *FnCompiler, imm: i64) CompileError!Reg {
+        const r = self.newReg();
+        try self.emit(Instr.r_imm(.load_imm, r, imm));
+        return r;
+    }
+
+    /// Build a fallible result block `[is_ok, value]` and return its register.
+    fn emitResultWrap(self: *FnCompiler, is_ok: bool, value_reg: Reg) CompileError!Reg {
+        const blk = self.newReg();
+        try self.emit(Instr.r_imm(.zone_alloc, blk, 2));
+        const flag = try self.constReg(if (is_ok) 1 else 0);
+        try self.emit(Instr.r_r_imm(.store_cell, blk, flag, 0));
+        try self.emit(Instr.r_r_imm(.store_cell, blk, value_reg, 1));
+        return blk;
     }
 
     fn emit(self: *FnCompiler, instr: Instr) CompileError!void {
@@ -493,8 +627,37 @@ const FnCompiler = struct {
     // ── Struct layout helpers ────────────────────────────────────────────
 
     fn structDef(self: *FnCompiler, name: []const u8) ?ir.StructDef {
-        for (self.structs) |s| {
+        for (self.module.structs) |s| {
             if (std.mem.eql(u8, s.name, name)) return s;
+        }
+        return null;
+    }
+
+    /// Discriminant of an error variant by name, across all error sets.
+    fn errorVariantIndex(self: *FnCompiler, variant: []const u8) ?i64 {
+        for (self.module.errors) |e| {
+            for (e.variants, 0..) |case, i| {
+                if (std.mem.eql(u8, case.name, variant)) return @intCast(i);
+            }
+        }
+        return null;
+    }
+
+    /// Index of the vtable named `name` within the module's vtable table.
+    fn vtableIndex(self: *FnCompiler, name: []const u8) ?u32 {
+        for (self.module.vtables, 0..) |vt, i| {
+            if (std.mem.eql(u8, vt.name, name)) return @intCast(i);
+        }
+        return null;
+    }
+
+    /// Discriminant (position) of `variant` within enum `type_name`.
+    fn variantIndex(self: *FnCompiler, type_name: []const u8, variant: []const u8) ?u32 {
+        for (self.module.variants) |v| {
+            if (!std.mem.eql(u8, v.name, type_name)) continue;
+            for (v.variants, 0..) |case, i| {
+                if (std.mem.eql(u8, case.name, variant)) return @intCast(i);
+            }
         }
         return null;
     }

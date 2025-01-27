@@ -2935,10 +2935,12 @@ const ComptimeVm = struct {
         const c = self.ensureCache() orelse return null;
         const a = self.arena.allocator();
         const irfn = lowerExprToFunction(a, self.front_end, expr) catch return null;
-        const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module.structs) catch return null;
+        const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
         defer vm.deinit();
-        return vm.run(&bc_fn, &.{}) catch null;
+        // `execute` enters the implicit root zone so aggregate `#run` exprs
+        // (struct/enum/optional construction) have an arena to allocate in.
+        return vm.execute(bc_fn) catch null;
     }
 
     fn evalToValue(self: *ComptimeVm, expr: ast.Expr) ?Value {
