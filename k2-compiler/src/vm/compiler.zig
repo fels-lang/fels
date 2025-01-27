@@ -315,6 +315,11 @@ const FnCompiler = struct {
                 } else if (std.mem.eql(u8, b.name, "compound_literal")) {
                     // Positional `.{ a, b, ... }` aggregate initializer.
                     try self.lowerCompoundLiteral(target, inst.ty, b.args);
+                } else if (std.mem.eql(u8, b.name, "sizeof")) {
+                    // `sizeof(T)` folds to a compile-time byte size constant.
+                    const ta = b.type_arg orelse return error.Unsupported;
+                    const size = self.byteSize(ta) orelse return error.Unsupported;
+                    try self.emit(Instr.r_imm(.load_imm, target, @intCast(size)));
                 } else return error.Unsupported;
             },
 
@@ -499,6 +504,38 @@ const FnCompiler = struct {
         const sname = structName(base_ty) orelse return error.Unsupported;
         const def = self.structDef(sname) orelse return error.Unsupported;
         return fieldIndex(def, field_name) orelse error.Unsupported;
+    }
+
+    /// Byte size of `ty` for `sizeof`, mirroring the tree-walker's `typeSize`
+    /// exactly. Returns null for types whose size this compiler can't yet
+    /// compute (enums, interfaces, …), so the caller falls back.
+    fn byteSize(self: *FnCompiler, ty: ir.IrType) ?u64 {
+        return switch (ty) {
+            .void => 0,
+            .bool, .byte => 1,
+            .i => |bits| (bits + 7) / 8,
+            .u => |bits| (bits + 7) / 8,
+            .f32 => 4,
+            .f64 => 8,
+            .usize, .isize, .addr => 8,
+            .ptr => 8,
+            .slice => 16, // ptr + len
+            .optional => |inner| if (inner.* == .ptr) 8 else blk: {
+                const s = self.byteSize(inner.*) orelse return null;
+                break :blk 1 + s;
+            },
+            .array => |arr| blk: {
+                const es = self.byteSize(arr.elem.*) orelse return null;
+                break :blk arr.len * es;
+            },
+            .struct_type => |name| blk: {
+                const def = self.structDef(name) orelse return null;
+                var total: u64 = 0;
+                for (def.fields) |f| total += self.byteSize(f.ty) orelse return null;
+                break :blk total;
+            },
+            else => null,
+        };
     }
 
     /// Number of cells a value of `ty` occupies in zone memory.

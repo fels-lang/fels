@@ -176,6 +176,37 @@ test "e2e: #run calls a function, folded to a constant" {
     try std.testing.expectEqual(@as(i128, 49), g.init.imm.int);
 }
 
+fn globalInt(m: anytype, name: []const u8) !i128 {
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, name)) return switch (g.init.imm) {
+            .int => |v| v,
+            .uint => |v| @intCast(v),
+            else => error.NotAnInt,
+        };
+    }
+    return error.GlobalNotFound;
+}
+
+test "e2e: #run sizeof folds scalar, struct, and array sizes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\Point :: struct { x: i32, y: i32 }
+        \\SI :: #run sizeof(i32);
+        \\SP :: #run sizeof(Point);
+        \\SA :: #run sizeof([4]i32);
+    ;
+    var fe = try k2.compile(a, "sz.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+
+    try std.testing.expectEqual(@as(i128, 4), try globalInt(m, "SI"));
+    try std.testing.expectEqual(@as(i128, 8), try globalInt(m, "SP"));
+    try std.testing.expectEqual(@as(i128, 16), try globalInt(m, "SA"));
+}
+
 test "e2e: float arithmetic" {
     const src =
         \\favg :: fn(a: f64, b: f64) -> f64 {
