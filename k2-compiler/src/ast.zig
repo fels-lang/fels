@@ -171,6 +171,9 @@ pub const FunctionDecl = struct {
     file_name: []const u8,
     source: []const u8,
     is_public: bool = false,
+    /// `name :: macro(...) { ... }` — a compile-time AST template, expanded at
+    /// its `#insert` call sites by the macroexpand pass and never lowered.
+    is_macro: bool = false,
     type_params: []const []const u8,
     type_constraints: []const TypeConstraint = &.{}, // $T: Interface constraints
     params: []const Param,
@@ -211,7 +214,16 @@ pub const Stmt = union(enum) {
     match_stmt: MatchStmt,
     comptime_if: ComptimeIfStmt,
     comptime_run: Block,
+    insert_stmt: InsertStmt,
     expr: Expr,
+};
+
+/// `#insert <expr>;` — splice compile-time-generated code at this point.
+/// In slice 1 the operand must be a literal `#quote { ... }`; the quoted
+/// block's statements are spliced into the enclosing scope and re-checked.
+pub const InsertStmt = struct {
+    operand: Expr,
+    span: Span,
 };
 
 pub const ComptimeIfStmt = struct {
@@ -463,6 +475,15 @@ pub const ExprKind = union(enum) {
     string: []const u8,
     bool: bool,
     null,
+    /// `#quote { ... }` — a typed AST block value. In slice 1 it only appears
+    /// as the operand of `#insert`; later it materializes an `ast.Block` value.
+    quote: Block,
+    /// `#quote(expr)` — the expression form of a quotation.
+    quote_expr: *const Expr,
+    /// `$name` / `$(expr)` — a splice hole inside a `#quote`. Only meaningful
+    /// while expanding a macro template; the macroexpand pass replaces it with
+    /// the bound argument's AST. A stray splice outside a macro is an error.
+    splice: *const Expr,
     compound_literal: []const Expr,
     unary: UnaryExpr,
     binary: BinaryExpr,

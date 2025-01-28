@@ -254,35 +254,3 @@ test "comptime: type_name returns mangled type name" {
     try std.testing.expect(found);
 }
 
-test "comptime: ComptimeValue evaluates integer arithmetic" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    // Use the comptime evaluator directly
-    const ct = @import("k2_compiler").comptime_mod;
-
-    const src =
-        \\add :: fn(a: i32, b: i32) -> i32 { return a + b; }
-    ;
-    var fe = try k2.compile(arena.allocator(), "eval.k2", src);
-    defer fe.deinit(arena.allocator());
-
-    // Evaluate 6 * 7 at comptime using the evaluator
-    var ctx = ct.ComptimeCtx.init(
-        arena.allocator(),
-        fe.module,
-        fe.symbols,
-        &fe.types,
-    );
-    defer ctx.deinit();
-
-    // Build and evaluate a binary expression
-    const six = ct.ComptimeValue{ .int = 6 };
-    const seven = ct.ComptimeValue{ .int = 7 };
-    _ = six;
-    _ = seven;
-
-    // Direct constant: 2 + 3
-    const result = ct.ComptimeValue{ .int = 2 + 3 };
-    try std.testing.expectEqual(@as(i128, 5), result.int);
-}

@@ -59,6 +59,92 @@ test "exe: main returning 0 exits cleanly" {
     try std.testing.expectEqual(@as(u32, 0), code);
 }
 
+test "exe: error payload recovered via catch binding" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\EP :: errors { code: i32 }
+        \\risky :: fn(x: i32) -> i32 ! EP { if x < 0 { fail .code { 77 }; } return x; }
+        \\main :: fn() -> i32 {
+        \\    return risky(-1) catch e {
+        \\        if e == .code |c| { return c; }
+        \\        return -1;
+        \\    };
+        \\}
+    , "exe_errpayload");
+    try std.testing.expectEqual(@as(u32, 77), code);
+}
+
+test "exe: #insert literal #quote splices and runs" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The spliced statements run in the enclosing scope: they read and mutate
+    // `x` (5), so the program must exit 105.
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    x := 5;
+        \\    #insert #quote {
+        \\        x = x + 100;
+        \\    };
+        \\    return x;
+        \\}
+    , "exe_insert_quote");
+    try std.testing.expectEqual(@as(u32, 105), code);
+}
+
+test "exe: block macro splices an argument body twice" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `twice` splices its `$body` argument block twice; the caller's body
+    // increments n, so n goes 0 → 2.
+    const code = try compileAndRun(arena.allocator(),
+        \\twice :: macro(body: Code) -> Code {
+        \\    return #quote {
+        \\        $body;
+        \\        $body;
+        \\    };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    n := 0;
+        \\    #insert twice(#quote { n = n + 1; });
+        \\    return n;
+        \\}
+    , "exe_macro_twice");
+    try std.testing.expectEqual(@as(u32, 2), code);
+}
+
+test "exe: macro local is hygienic (no capture of caller's name)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The macro introduces its own `tmp`; the caller also has a `tmp`. Hygiene
+    // must keep them distinct, so the caller's tmp (=9) is returned unchanged
+    // while the macro computes with its own tmp.
+    const code = try compileAndRun(arena.allocator(),
+        \\stash :: macro(e: Code) -> Code {
+        \\    return #quote {
+        \\        tmp := $(e) + 1;
+        \\        marker = tmp;
+        \\    };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    tmp := 9;
+        \\    marker := 0;
+        \\    #insert stash(#quote(40));
+        \\    return tmp + marker;
+        \\}
+    , "exe_macro_hygiene");
+    // caller tmp (9) untouched + marker (41) = 50
+    try std.testing.expectEqual(@as(u32, 50), code);
+}
+
 test "exe: main returning 42 propagates exit code" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

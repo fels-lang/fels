@@ -1,6 +1,5 @@
 const std = @import("std");
 const ast = @import("ast.zig");
-const comptime_mod = @import("comptime.zig");
 const NodeId = ast.NodeId;
 const diag_mod = @import("diagnostic.zig");
 const Diagnostic = diag_mod.Diagnostic;
@@ -1417,7 +1416,23 @@ const Checker = struct {
                 // Type-check the block for correctness even if we don't execute it yet.
                 try self.checkBlock(block);
             },
+            .insert_stmt => |ins| try self.checkInsert(ins),
             .expr => |expr| try self.checkExpr(expr),
+        }
+    }
+
+    /// `#insert <operand>;` — slice 1: the operand must be a literal `#quote`
+    /// block, whose statements are spliced into the CURRENT scope (so their
+    /// locals are visible to following statements) and re-checked here.
+    fn checkInsert(self: *Checker, ins: ast.InsertStmt) SemanticError!void {
+        switch (ins.operand.kind) {
+            .quote => |block| {
+                for (block.statements) |stmt| try self.checkStmt(stmt);
+            },
+            else => {
+                self.emitError(ins.span, "#insert operand must be a `#quote {{ ... }}` block", .{});
+                return error.SemanticFailed;
+            },
         }
     }
 
@@ -1448,6 +1463,16 @@ const Checker = struct {
                 break :blk try self.inferExpr(inner.*);
             },
             .run_expr => |inner| try self.inferRunExpr(inner.*),
+            // A `#quote` block as a value — its statements are checked at the
+            // `#insert` site, not here. Slice 1 has no first-class ast.Block type.
+            .quote => .unknown,
+            // `#quote(expr)` and `$`-splices are macro-template internals; the
+            // macroexpand pass consumes them. Seeing one here means it escaped a
+            // macro, which is a misuse.
+            .quote_expr, .splice => {
+                self.emitError(expr.span, "`#quote(...)` and `$` splices are only valid inside a macro template", .{});
+                return error.SemanticFailed;
+            },
             .force_unwrap => |inner| blk: {
                 const ty = try self.inferExpr(inner.*);
                 break :blk switch (ty) {

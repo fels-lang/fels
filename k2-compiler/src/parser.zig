@@ -175,6 +175,14 @@ pub const Parser = struct {
             decl.is_public = is_public;
             return .{ .function = decl };
         }
+        // `name :: macro(...) -> T { ... }` — structurally a function, tagged so
+        // the macroexpand pass can collect it and never lower it.
+        if (self.matchIdent("macro")) {
+            var decl = try self.finishFunction(attrs, name, true);
+            decl.is_public = is_public;
+            decl.is_macro = true;
+            return .{ .function = decl };
+        }
         if (self.match(.keyword_struct)) {
             var decl = try self.finishStruct(attrs, name);
             decl.is_public = is_public;
@@ -355,7 +363,16 @@ pub const Parser = struct {
             };
             return .{ .comptime_run = body };
         }
-        try self.errorAt(hash, "unknown compile-time directive; expected #if or #run");
+        // #insert <expr>;  — splice compile-time-generated code here.
+        if (self.matchIdent("insert")) {
+            const operand = try self.parseExpr(0);
+            const semi = try self.expect(.semicolon, "expected ; after #insert operand");
+            return .{ .insert_stmt = .{
+                .operand = operand,
+                .span = spanFrom(hash, semi),
+            } };
+        }
+        try self.errorAt(hash, "unknown compile-time directive; expected #if, #run, or #insert");
         return error.ParseFailed;
     }
 
@@ -1088,8 +1105,30 @@ pub const Parser = struct {
                         Span.new(tok.start, inner.span.end),
                     );
                 }
-                try self.errorAt(tok, "expected 'run' after # in expression position");
+                // #quote { ... } — block quotation;  #quote(expr) — expr form.
+                if (self.matchIdent("quote")) {
+                    if (self.check(.l_paren)) {
+                        _ = self.advance(); // consume (
+                        const inner = try self.parseExpr(0);
+                        const close = try self.expect(.r_paren, "expected ) after #quote expression");
+                        return self.expr(.{ .quote_expr = try self.allocExpr(inner) }, Span.new(tok.start, close.start + close.len));
+                    }
+                    const block = try self.parseBlock();
+                    return self.expr(.{ .quote = block }, Span.new(tok.start, block.span.end));
+                }
+                try self.errorAt(tok, "expected 'run' or 'quote' after # in expression position");
                 return error.ParseFailed;
+            },
+            // $name / $(expr) — a splice hole inside a #quote (macro template).
+            .dollar => {
+                if (self.match(.l_paren)) {
+                    const inner = try self.parseExpr(0);
+                    const close = try self.expect(.r_paren, "expected ) after $( splice");
+                    return self.expr(.{ .splice = try self.allocExpr(inner) }, Span.new(tok.start, close.start + close.len));
+                }
+                const name = try self.expect(.ident, "expected name or ( after $");
+                const inner = try self.expr(.{ .ident = name.text(self.source) }, spanFrom(name, name));
+                return self.expr(.{ .splice = try self.allocExpr(inner) }, spanFrom(tok, name));
             },
             .dot => {
                 const name = try self.expect(.ident, "expected name after .");

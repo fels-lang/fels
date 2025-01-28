@@ -62,7 +62,6 @@ pub const LlvmBackend = if (build_options.enable_llvm)
 else
     LlvmBackendStub;
 
-pub const comptime_mod = @import("comptime.zig");
 pub const compileWithLlvm = driver_mod.compileWithLlvm;
 pub const compileFileWithLlvm = driver_mod.compileFileWithLlvm;
 pub const LlvmCompileOptions = driver_mod.LlvmCompileOptions;

@@ -1,0 +1,144 @@
+test
++- run test w
+bad_return.k2:2:5: error: return type mismatch: expected `i32`, found `[]u8`
+        return "not an integer";
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+bad.k2:1:1: error: function `bad` may not return a value on all code paths
+    bad :: fn() -> i32 { }
+    ^^^^^^^^^^^^^^^^^^^^^^
+bad_break.k2:1:15: error: `break` outside of a loop
+    bad :: fn() { break; }
+                  ^^^^^^
+zone_return.k2:3:9: error: zone-owned value from `scratch` cannot be returned
+            return scratch.new(i32);
+            ^^^^^^^^^^^^^^^^^^^^^^^^
+zone_outer.k2:4:9: error: zone-owned value from `scratch` cannot escape its zone
+            escaped = scratch.new(i32);
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+zone_call.k2:4:17: error: zone-owned value from `scratch` can only be passed to a `borrow` parameter
+            consume(scratch.new(i32));
+                    ^^^^^^^^^^^^^^^^
+borrow_return.k2:2:5: error: borrowed value from `data` cannot be returned
+        return data;
+        ^^^^^^^^^^^^
+borrow_call.k2:2:39: error: borrowed value from `data` can only be passed to a `borrow` parameter
+    bad :: fn(data: borrow []u8) { retain(data); }
+                                          ^^^^
+borrow_store.k2:2:5: error: borrowed value from `data` cannot be stored into an aggregate or pointer
+        *out = data;
+        ^^^^^^^^^^^^
+borrow_scalar.k2:1:18: error: `borrow` parameters must be pointers or slices
+    bad :: fn(value: borrow i32) {}
+                     ^^^^^^^^^^
+borrow_return_type.k2:1:16: error: `borrow` is only valid as the outer qualifier of a function parameter
+    bad :: fn() -> borrow []u8;
+                   ^^^^^^^^^^^
+borrow_extern.k2:1:18: error: `borrow` parameters require a checked function body
+    bad :: fn(value: borrow []u8);
+                     ^^^^^^^^^^^
+borrow_field.k2:1:24: error: `borrow` is only valid as the outer qualifier of a function parameter
+    Bad :: struct { value: borrow []u8, }
+                           ^^^^^^^^^^^
+zone_kind.k2:2:5: error: unsupported zone kind `Pool`; only `Arena` is currently defined
+        zone scratch: Pool {}
+        ^^^^^^^^^^^^^^^^^^^^^
+bad_asm.k2:1:15: error: `asm` is an unsafe operation and must be called inside an `unsafe` block
+    bad :: fn() { asm(volatile, "pause", inputs: {}, outputs: {}, clobbers: {}); }
+                  ^^^
+bad.k2:1:41: error: `??` default type `[]u8` incompatible with `i32`
+    bad :: fn(v: ?i32) -> i32 { return v ?? "wrong"; }
+                                            ^^^^^^^
+bad.k2:1:35: error: `!!` requires an optional or fallible type, found `i32`
+    bad :: fn(v: i32) -> i32 { return v!!; }
+                                      ^^^
+bad_cast.k2:1:41: error: `pointer cast` is an unsafe operation and must be called inside an `unsafe` block
+    bad :: fn(addr: usize) -> *u32 { return addr as *u32; }
+                                            ^^^^^^^^^^^^
+const_write.k2:2:29: error: cannot assign to field through `*const` pointer
+    bad :: fn(p: *const Wrap) { p.v = 99; }
+                                ^^^
+const_field_write.k2:2:29: error: cannot assign to field through `*const` pointer
+    bad :: fn(p: *const Pair) { p.x = 1; }
+                                ^^^
+constraint_bad.k2:5:18: error: `File` does not implement `Printer`
+    print_all :: fn($T: Printer, item: *T) { item.print(); }
+                     ^^^^^^^^^^
+bad_error_payload.k2:3:18: error: error payload type mismatch: expected `u16`, found `[]u8`
+        fail .http { "nope" };
+                     ^^^^^^
+bad_error_variant.k2:2:5: error: unknown error variant `.missing`
+        fail .missing;
+        ^^^^^^^^^^^^^^
+bad_try.k2:3:12: error: `?` used in a function without a `!` error return type
+        return may_fail()?;
+               ^^^^^^^^^^^
+bad_generic.k2:2:39: error: argument 2 of `same`: expected `i32`, found `bool`
+    bad  :: fn() -> bool { return same(1, true); }
+                                          ^^^^
+bad.k2:1:22: error: return type mismatch: expected `i32`, found `bool`
+    bad :: fn() -> i32 { return true; }
+                         ^^^^^^^^^^^^
+bad.k2:1:29: error: unknown name `foo`
+    bad :: fn() -> i32 { return foo; }
+                                ^^^
+bad.k2:2:29: error: `add` expects 2 argument(s), but 1 were provided
+    bad :: fn() -> i32 { return add(1); }
+                                ^^^
+bad.k2:2:36: error: argument 2 of `add`: expected `i32`, found `bool`
+    bad :: fn() -> i32 { return add(1, true); }
+                                       ^^^^
+bad.k2:2:22: error: `fail` used in a function without a `!` error return type
+    bad :: fn() -> i32 { fail .timeout; return 0; }
+                         ^^^^^^^^^^^^^^
+test.k2:1:22: error: return type mismatch: expected `i32`, found `bool`
+    bad :: fn() -> i32 { return true; }
+                         ^^^^^^^^^^^^
+private_use.k2:1:1: error: unknown function `private_value`
+    
+    ^
+unselected_use.k2:1:1: error: unknown function `other_value`
+    
+    ^
+private.k2: error: `hidden` is private to module `dependency.k2`
+missing.k2: error: module `dependency.k2` has no declaration named `missing`
+app.k2: error: imported module `missing.k2` was not provided
+app.k2:1:1: error: no visible method or extension function `doubled`
+    
+    ^
+bad.k2:3:15: error: unknown variant `.east` in match
+        match d { .east => return 1; else => return 0; }
+                  ^^^^^^^^^^^^^^^^^^
+bad.k2:2:15: error: enum variant pattern cannot be used with an integer match subject
+        match x { .foo => return 1; else => return 0; }
+                  ^^^^^^^^^^^^^^^^^
+bad_int_match.k2:2:19: error: enum variant pattern cannot be used with an integer match subject
+        match value { .one => return 1; else => return 0; }
+                      ^^^^^^^^^^^^^^^^^
+bad_enum_match.k2:3:19: error: integer pattern cannot be used with an enum match subject
+        match value { 1 => return 1; else => return 0; }
+                      ^^^^^^^^^^^^^^
+missing_method.k2:6:1: error: missing interface method `write`
+    FileHandle as Writer {
+    ^^^^^^^^^^^^^^^^^^^^^^
+missing_impl.k2:6:23: error: type mismatch: expected `*Writer`, found `*FileHandle`
+        writer: *Writer = file;
+                          ^^^^
+bare.k2:1:15: error: unknown function `assert`
+    use :: fn() { assert(true); }
+                  ^^^^^^
+
+[differential] total=71 agree=47 vm_only=24 tree_only=0 disagree=0 both_failed=0 vm_coverage=100%
+failed command: ".\\.zig-cache\\o\\3d2108670fb1a955a937b2fb2f2a1acf\\test.exe" "--cache-dir=.\\.zig-cache" --seed=0xceaddf96 --listen=-
+
+Build Summary: 8/8 steps succeeded; 167/186 tests passed (19 skipped)
+test success
++- run test 3 pass (3 total) 134ms MaxRSS:5M
+|  +- compile test Debug native success 4s MaxRSS:430M
+|     +- options cached
++- run test success 139ms MaxRSS:5M
+|  +- compile test Debug native success 4s MaxRSS:265M
+|     +- options (reused)
++- run test 164 pass, 19 skip (183 total) 119ms MaxRSS:9M
+   +- compile test Debug native success 4s MaxRSS:474M
+      +- options (reused)
+

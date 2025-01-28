@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ir = @import("../ir.zig");
 const instructions = @import("instructions.zig");
 const value = @import("value.zig");
@@ -93,6 +94,9 @@ const FnCompiler = struct {
     reg_types: std.AutoHashMap(ir.RegId, ir.IrType),
     /// Static type of each parameter/local, ditto.
     name_types: std.StringHashMap(ir.IrType),
+    /// Register → its position in a `type_info(...)` reflection tree, so a chain
+    /// like `type_info(T).fields[0].name` folds step by step.
+    type_info_nodes: std.AutoHashMap(ir.RegId, TypeInfoNode),
     next_reg: Reg = 0,
 
     fn init(
@@ -110,6 +114,7 @@ const FnCompiler = struct {
             .block_offsets = std.AutoHashMap(ir.BlockId, u32).init(allocator),
             .reg_types = std.AutoHashMap(ir.RegId, ir.IrType).init(allocator),
             .name_types = std.StringHashMap(ir.IrType).init(allocator),
+            .type_info_nodes = std.AutoHashMap(ir.RegId, TypeInfoNode).init(allocator),
         };
     }
 
@@ -120,6 +125,7 @@ const FnCompiler = struct {
         self.block_offsets.deinit();
         self.reg_types.deinit();
         self.name_types.deinit();
+        self.type_info_nodes.deinit();
     }
 
     fn compile(self: *FnCompiler) CompileError!BytecodeFunction {
@@ -164,7 +170,15 @@ const FnCompiler = struct {
         for (self.func.params) |p| try self.name_types.put(p.name, p.ty);
         for (self.func.blocks) |block| {
             for (block.instrs) |inst| {
-                if (inst.id) |id| try self.reg_types.put(id, inst.ty);
+                if (inst.id) |id| {
+                    try self.reg_types.put(id, inst.ty);
+                    if (inst.kind == .builtin) {
+                        const b = inst.kind.builtin;
+                        if (std.mem.eql(u8, b.name, "type_info")) {
+                            if (b.type_arg) |ta| try self.type_info_nodes.put(id, .{ .type = ta });
+                        }
+                    }
+                }
             }
         }
         // Second pass: local types depend on register types resolved above.
@@ -223,24 +237,44 @@ const FnCompiler = struct {
                 return dst;
             },
             .param, .local => |name| {
+                // A bare error variant `.code` (as in `e == .code`) lowers to a
+                // dotted pseudo-local; resolve it to its error discriminant.
+                if (name.len > 1 and name[0] == '.') {
+                    if (self.errorVariantIndex(name[1..])) |idx| {
+                        const dst = self.newReg();
+                        try self.emit(Instr.r_imm(.load_imm, dst, idx));
+                        return dst;
+                    }
+                }
                 const slot = self.local_slots.get(name) orelse return error.Unsupported;
                 const dst = self.newReg();
                 try self.emit(Instr.r_imm(.load_local, dst, slot));
                 return dst;
             },
-            .global => return error.Unsupported,
+            .global => |name| {
+                // A top-level const's folded value is already in the module.
+                for (self.module.globals) |g| {
+                    if (!std.mem.eql(u8, g.name, name)) continue;
+                    switch (g.init) {
+                        .imm => |imm| {
+                            const dst = self.newReg();
+                            try self.materializeImm(dst, imm);
+                            return dst;
+                        },
+                        .struct_init => return error.Unsupported, // aggregate global TODO
+                    }
+                }
+                return error.Unsupported;
+            },
         }
     }
 
     fn materializeImm(self: *FnCompiler, dst: Reg, imm: ir.Imm) CompileError!void {
         switch (imm) {
-            .bool => |b| try self.emit(Instr.r_imm(.load_imm, dst, if (b) 1 else 0)),
+            // `load_imm` always yields a `.int`; bool/uint go through the
+            // constant pool so their value tag is preserved (comptime callers
+            // distinguish `.uint`/`.bool` from `.int`).
             .int => |v| {
-                if (std.math.cast(i64, v)) |small| {
-                    try self.emit(Instr.r_imm(.load_imm, dst, small));
-                } else try self.loadConst(dst, Value.fromImm(imm));
-            },
-            .uint => |v| {
                 if (std.math.cast(i64, v)) |small| {
                     try self.emit(Instr.r_imm(.load_imm, dst, small));
                 } else try self.loadConst(dst, Value.fromImm(imm));
@@ -343,7 +377,7 @@ const FnCompiler = struct {
                     // `fail .v` builds the error value as a `error.<variant>`
                     // builtin; represent it by its discriminant (payloads TODO).
                     const vname = b.name["error.".len..];
-                    const idx = self.errorVariantIndex(vname) orelse 0;
+                    const idx = self.errorVariantIndex(vname) orelse 1; // non-zero = error
                     try self.emit(Instr.r_imm(.load_imm, target, idx));
                 } else if (std.mem.eql(u8, b.name, "catch_handler")) {
                     // Marker emitted by `catch` lowering; nothing to execute.
@@ -353,10 +387,18 @@ const FnCompiler = struct {
                     try self.emit(Instr.r_imm(.zone_alloc, target, 1));
                     try self.emit(Instr.r_r_imm(.store_cell, target, pr, 0));
                 } else if (std.mem.eql(u8, b.name, "sizeof")) {
-                    // `sizeof(T)` folds to a compile-time byte size constant.
+                    // `sizeof(T)` folds to a compile-time byte size (a `usize`).
                     const ta = b.type_arg orelse return error.Unsupported;
                     const size = self.byteSize(ta) orelse return error.Unsupported;
-                    try self.emit(Instr.r_imm(.load_imm, target, @intCast(size)));
+                    try self.materializeImm(target, .{ .uint = size });
+                } else if (std.mem.eql(u8, b.name, "type_info")) {
+                    // The TypeInfo value itself is only consumed via field access
+                    // (folded in `.field`); leave a harmless placeholder here.
+                    try self.emit(Instr.r_imm(.load_imm, target, 0));
+                } else if (std.mem.eql(u8, b.name, "type_name")) {
+                    // `type_name(T)` folds to the mangled type-name string.
+                    const ta = b.type_arg orelse return error.Unsupported;
+                    try self.loadConst(target, .{ .string = typeNameMangle(ta) });
                 } else return error.Unsupported;
             },
 
@@ -364,6 +406,26 @@ const FnCompiler = struct {
             .struct_lit => |sl| try self.lowerStructLit(target, sl),
 
             .field => |f| {
+                // TARGET pseudo-module: TARGET.os / TARGET.arch / TARGET.debug,
+                // resolved to host constants at compile time.
+                if (targetFieldImm(f.base, f.name)) |imm| {
+                    try self.materializeImm(target, imm);
+                    return;
+                }
+                // `type_info(T)...` reflection chains fold step by step.
+                if (f.base == .reg) {
+                    if (self.type_info_nodes.get(f.base.reg)) |node| {
+                        const res = self.foldTypeInfoField(node, f.name) orelse return error.Unsupported;
+                        switch (res) {
+                            .scalar => |imm| try self.materializeImm(target, imm),
+                            .node => |n| {
+                                try self.type_info_nodes.put(target, n);
+                                try self.emit(Instr.r_imm(.load_imm, target, 0)); // placeholder
+                            },
+                        }
+                        return;
+                    }
+                }
                 const base_ty = self.typeOf(f.base);
                 // `.len` on arrays (static) and slices (runtime) is not a cell.
                 if (std.mem.eql(u8, f.name, "len")) {
@@ -389,6 +451,16 @@ const FnCompiler = struct {
 
             // ── Arrays & slices ──────────────────────────────────────────
             .index => |ix| {
+                // `type_info(T).fields[i]` advances into a field descriptor.
+                if (ix.base == .reg) {
+                    if (self.type_info_nodes.get(ix.base.reg)) |node| {
+                        const idx = constIndexOf(ix.index) orelse return error.Unsupported;
+                        const n = foldTypeInfoIndex(node, idx) orelse return error.Unsupported;
+                        try self.type_info_nodes.put(target, n);
+                        try self.emit(Instr.r_imm(.load_imm, target, 0)); // placeholder
+                        return;
+                    }
+                }
                 const addr = try self.lowerIndexAddr(ix.base, ix.index, self.cellCount(inst.ty));
                 try self.emit(Instr.r_r_imm(.load_cell, target, addr, 0));
             },
@@ -454,14 +526,23 @@ const FnCompiler = struct {
             },
 
             // ── Fallible (T ! E) ─────────────────────────────────────────
-            // A fallible value is a 2-cell block: [is_ok, value-or-error].
+            // A fallible value matches the LLVM layout: a 2-cell block
+            // [value(0), discriminant(1)] where disc 0 means ok. The error
+            // payload shares the value slot (field 0), like the LLVM backend.
             .try_is_ok => |v| {
                 const r = try self.resolveReg(v);
-                try self.emit(Instr.r_r_imm(.load_cell, target, r, 0));
+                const disc = self.newReg();
+                try self.emit(Instr.r_r_imm(.load_cell, disc, r, 1));
+                const zero = try self.constReg(0);
+                try self.emit(Instr.r_r_r(.eq_i, target, disc, zero));
             },
-            .try_ok, .try_err => |v| {
+            .try_err => |v| {
                 const r = try self.resolveReg(v);
-                try self.emit(Instr.r_r_imm(.load_cell, target, r, 1));
+                try self.emit(Instr.r_r_imm(.load_cell, target, r, 1)); // discriminant
+            },
+            .try_ok, .try_payload => |v| {
+                const r = try self.resolveReg(v);
+                try self.emit(Instr.r_r_imm(.load_cell, target, r, 0)); // value / payload
             },
 
             // ── Interfaces ───────────────────────────────────────────────
@@ -564,19 +645,20 @@ const FnCompiler = struct {
         switch (term) {
             .return_value => |opt| {
                 if (fallible) {
-                    // Wrap the (possibly void) value as ok and return the block.
+                    // ok: [value, disc=0].
                     const vr = if (opt) |v| try self.resolveReg(v) else try self.constReg(0);
-                    const wrapped = try self.emitResultWrap(true, vr);
+                    const wrapped = try self.emitFallible(vr, try self.constReg(0));
                     try self.emit(Instr.r_imm(.ret, wrapped, 0));
                 } else if (opt) |v| {
                     const r = try self.resolveReg(v);
                     try self.emit(Instr.r_imm(.ret, r, 0));
                 } else try self.emit(Instr.with_imm(.ret_void, 0));
             },
-            .fail => |v| {
-                // Only valid inside a fallible fn: wrap the error as err, return.
-                const r = try self.resolveReg(v);
-                const wrapped = try self.emitResultWrap(false, r);
+            .fail => |ft| {
+                // err: [payload, disc]; the payload shares the value slot.
+                const disc = try self.resolveReg(ft.disc);
+                const payload = if (ft.payload) |p| try self.resolveReg(p) else try self.constReg(0);
+                const wrapped = try self.emitFallible(payload, disc);
                 try self.emit(Instr.r_imm(.ret, wrapped, 0));
             },
             .branch => |bid| try self.emit(Instr.with_imm(.jmp, @intCast(bid))),
@@ -596,13 +678,13 @@ const FnCompiler = struct {
         return r;
     }
 
-    /// Build a fallible result block `[is_ok, value]` and return its register.
-    fn emitResultWrap(self: *FnCompiler, is_ok: bool, value_reg: Reg) CompileError!Reg {
+    /// Build a fallible result block `[value(0), discriminant(1)]` (disc 0 = ok),
+    /// matching the LLVM fallible layout, and return its register.
+    fn emitFallible(self: *FnCompiler, value_reg: Reg, disc_reg: Reg) CompileError!Reg {
         const blk = self.newReg();
         try self.emit(Instr.r_imm(.zone_alloc, blk, 2));
-        const flag = try self.constReg(if (is_ok) 1 else 0);
-        try self.emit(Instr.r_r_imm(.store_cell, blk, flag, 0));
-        try self.emit(Instr.r_r_imm(.store_cell, blk, value_reg, 1));
+        try self.emit(Instr.r_r_imm(.store_cell, blk, value_reg, 0));
+        try self.emit(Instr.r_r_imm(.store_cell, blk, disc_reg, 1));
         return blk;
     }
 
@@ -633,11 +715,12 @@ const FnCompiler = struct {
         return null;
     }
 
-    /// Discriminant of an error variant by name, across all error sets.
+    /// Discriminant of an error variant by name, across all error sets. 1-based
+    /// (matching the LLVM backend) so discriminant 0 is reserved for "ok".
     fn errorVariantIndex(self: *FnCompiler, variant: []const u8) ?i64 {
         for (self.module.errors) |e| {
             for (e.variants, 0..) |case, i| {
-                if (std.mem.eql(u8, case.name, variant)) return @intCast(i);
+                if (std.mem.eql(u8, case.name, variant)) return @intCast(i + 1);
             }
         }
         return null;
@@ -667,6 +750,78 @@ const FnCompiler = struct {
         const sname = structName(base_ty) orelse return error.Unsupported;
         const def = self.structDef(sname) orelse return error.Unsupported;
         return fieldIndex(def, field_name) orelse error.Unsupported;
+    }
+
+    /// Fold a scalar field of `type_info(ty)`. Conservative: only fields whose
+    /// value provably matches the tree-walker's `typeInfo` (so the differential
+    /// harness stays at disagree=0). `.size` reuses `byteSize` (== `typeSize`);
+    /// `.name`/`.kind` only for named aggregates, where they are unambiguous.
+    /// `type_info(T).kind` — disambiguates named types via the module tables,
+    /// since `lowerNamedType` tags every named type as `.struct_type`.
+    fn typeInfoKind(self: *FnCompiler, ty: ir.IrType) ?[]const u8 {
+        return switch (ty) {
+            .i, .u, .byte, .usize, .isize => "int",
+            .f32, .f64 => "float",
+            .bool => "bool",
+            .void => "void",
+            .ptr => "pointer",
+            .slice => "slice",
+            .optional => "optional",
+            .array => "array",
+            .struct_type, .variant_type => |n| blk: {
+                if (self.structDef(n) != null) break :blk "struct";
+                for (self.module.variants) |v| {
+                    if (std.mem.eql(u8, v.name, n)) break :blk "enum";
+                }
+                break :blk null;
+            },
+            else => null,
+        };
+    }
+
+    /// Fold one field access within a `type_info(...)` chain. Returns a scalar
+    /// (the chain ends) or another node (it continues), or null to fall back.
+    fn foldTypeInfoField(self: *FnCompiler, node: TypeInfoNode, field: []const u8) ?FoldResult {
+        const eq = std.mem.eql;
+        switch (node) {
+            .type => |t| {
+                if (eq(u8, field, "size")) return .{ .scalar = .{ .uint = self.byteSize(t) orelse return null } };
+                if (eq(u8, field, "name")) return .{ .scalar = .{ .text = typeInfoName(t) } };
+                if (eq(u8, field, "kind")) return .{ .scalar = .{ .text = self.typeInfoKind(t) orelse return null } };
+                if (eq(u8, field, "bits")) return .{ .scalar = .{ .uint = typeInfoBits(t) orelse return null } };
+                if (eq(u8, field, "signed")) return .{ .scalar = .{ .bool = typeInfoSigned(t) orelse return null } };
+                if (eq(u8, field, "is_const")) return if (t == .ptr) .{ .scalar = .{ .bool = false } } else null;
+                if (eq(u8, field, "len")) return switch (t) {
+                    .array => |arr| .{ .scalar = .{ .uint = arr.len } },
+                    else => null,
+                };
+                if (eq(u8, field, "elem") or eq(u8, field, "elem_info"))
+                    return .{ .node = .{ .type = innerType(t) orelse return null } };
+                if (eq(u8, field, "fields")) {
+                    const n = switch (t) {
+                        .struct_type, .variant_type => |nm| nm,
+                        else => return null,
+                    };
+                    if (self.structDef(n) == null) return null; // only real structs have .fields
+                    return .{ .node = .{ .fields_of = t } };
+                }
+                return null;
+            },
+            .fields_of => |t| {
+                if (eq(u8, field, "len")) {
+                    const def = self.structDef(structName(t) orelse return null) orelse return null;
+                    return .{ .scalar = .{ .uint = def.fields.len } };
+                }
+                return null;
+            },
+            .field_at => |fa| {
+                const def = self.structDef(structName(fa.ty) orelse return null) orelse return null;
+                if (fa.index >= def.fields.len) return null;
+                if (eq(u8, field, "name")) return .{ .scalar = .{ .text = def.fields[fa.index].name } };
+                if (eq(u8, field, "offset")) return .{ .scalar = .{ .uint = 0 } };
+                return null; // `.type` is a type_val — can't cross to a scalar
+            },
+        }
     }
 
     /// Byte size of `ty` for `sizeof`, mirroring the tree-walker's `typeSize`
@@ -717,6 +872,155 @@ const FnCompiler = struct {
 
 fn isFloat(ty: ir.IrType) bool {
     return ty == .f32 or ty == .f64;
+}
+
+/// A position within a `type_info(T)` reflection tree. Reflection is fully
+/// compile-time constant, so rather than building runtime `TypeInfo` structs we
+/// track which node each register denotes and fold field/index access directly.
+const TypeInfoNode = union(enum) {
+    /// `type_info(T)` — the TypeInfo of `T`.
+    type: ir.IrType,
+    /// `type_info(StructT).fields` — the array of field descriptors.
+    fields_of: ir.IrType,
+    /// `type_info(StructT).fields[i]` — one field descriptor.
+    field_at: struct { ty: ir.IrType, index: usize },
+};
+
+const FoldResult = union(enum) {
+    scalar: ir.Imm,
+    node: TypeInfoNode,
+};
+
+/// Advance into `type_info(StructT).fields[index]`.
+fn foldTypeInfoIndex(node: TypeInfoNode, index: usize) ?TypeInfoNode {
+    return switch (node) {
+        .fields_of => |t| .{ .field_at = .{ .ty = t, .index = index } },
+        else => null,
+    };
+}
+
+/// Compile-time-constant index value, or null for a dynamic index.
+fn constIndexOf(v: ir.Value) ?usize {
+    return switch (v) {
+        .imm => |imm| switch (imm) {
+            .int => |x| if (x >= 0) @intCast(x) else null,
+            .uint => |x| @intCast(x),
+            else => null,
+        },
+        else => null,
+    };
+}
+
+/// Element/pointee type for pointer/slice/optional/array.
+fn innerType(ty: ir.IrType) ?ir.IrType {
+    return switch (ty) {
+        .ptr => |p| p.*,
+        .slice => |s| s.*,
+        .optional => |o| o.*,
+        .array => |arr| arr.elem.*,
+        else => null,
+    };
+}
+
+/// Bit width for `type_info(T).bits`.
+fn typeInfoBits(ty: ir.IrType) ?u64 {
+    return switch (ty) {
+        .i => |b| b,
+        .u => |b| b,
+        .byte => 8,
+        .usize, .isize => 64,
+        .f32 => 32,
+        .f64 => 64,
+        else => null,
+    };
+}
+
+/// Signedness for `type_info(T).signed`.
+fn typeInfoSigned(ty: ir.IrType) ?bool {
+    return switch (ty) {
+        .i, .isize => true,
+        .u, .byte, .usize => false,
+        else => null,
+    };
+}
+
+/// `type_info(T).name` — the reflective type name (NOT the mangled `tyMangle`).
+fn typeInfoName(ty: ir.IrType) []const u8 {
+    return switch (ty) {
+        .i => |b| switch (b) {
+            8 => "i8",
+            16 => "i16",
+            32 => "i32",
+            64 => "i64",
+            else => "int",
+        },
+        .u => |b| switch (b) {
+            8 => "u8",
+            16 => "u16",
+            32 => "u32",
+            64 => "u64",
+            else => "uint",
+        },
+        .byte => "byte",
+        .usize => "usize",
+        .isize => "isize",
+        .f32 => "f32",
+        .f64 => "f64",
+        .bool => "bool",
+        .void => "void",
+        .ptr => "pointer",
+        .slice => "slice",
+        .optional => "optional",
+        .array => "array",
+        .struct_type, .variant_type => |n| n,
+        else => "unknown",
+    };
+}
+
+/// Mangled type name for `type_name(T)`, replicating `sema.tyMangle` so the
+/// result matches what the (now-retired) tree-walker produced. Note the quirks
+/// it inherits: all named types mangle to "named", and types tyMangle doesn't
+/// enumerate (floats, byte, …) mangle to "unknown".
+fn typeNameMangle(ty: ir.IrType) []const u8 {
+    return switch (ty) {
+        .i => |bits| switch (bits) {
+            8 => "i8",
+            16 => "i16",
+            32 => "i32",
+            64 => "i64",
+            else => "unknown",
+        },
+        .u => |bits| switch (bits) {
+            8 => "u8",
+            16 => "u16",
+            32 => "u32",
+            64 => "u64",
+            else => "unknown",
+        },
+        .bool => "bool",
+        .void => "void",
+        .usize => "usize",
+        .isize => "isize",
+        .ptr => "ptr",
+        .optional => "opt",
+        .slice => "slice",
+        .struct_type, .variant_type => "named",
+        else => "unknown",
+    };
+}
+
+/// Value of a `TARGET.<field>` access, resolved against the host build.
+/// Only `debug` (a bool) folds end-to-end today; `TARGET.os`/`.arch`
+/// *comparisons* are blocked by how the bare `.windows`/`.x86_64` operand
+/// lowers, and aren't a parity gap (the tree-walker can't fold them either).
+fn targetFieldImm(base: ir.Value, field: []const u8) ?ir.Imm {
+    const name = switch (base) {
+        .local, .global => |n| n,
+        else => return null,
+    };
+    if (!std.mem.eql(u8, name, "TARGET")) return null;
+    if (std.mem.eql(u8, field, "debug")) return .{ .bool = builtin.mode == .Debug };
+    return null;
 }
 
 fn isAggregate(ty: ir.IrType) bool {

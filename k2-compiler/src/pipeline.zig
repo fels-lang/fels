@@ -4,6 +4,7 @@ const diag_mod = @import("diagnostic.zig");
 const Diagnostic = diag_mod.Diagnostic;
 const parser = @import("parser.zig");
 const sema = @import("sema.zig");
+const macroexpand = @import("macroexpand.zig");
 const runtime = @import("runtime.zig");
 const build_options = @import("build_options");
 
@@ -269,11 +270,18 @@ fn normalizeLogicalPath(allocator: std.mem.Allocator, path: []const u8) ![]const
 
 fn runPipelineWithSource(
     allocator: std.mem.Allocator,
-    module: ast.Module,
+    raw_module: ast.Module,
     source: []const u8,
     file: []const u8,
     arena: *std.heap.ArenaAllocator,
 ) CompileError!FrontEnd {
+    // Expand macros before any sema sees the tree: `#insert macrocall(...)`
+    // becomes a literal `#insert #quote { ... }`, and macro decls are dropped.
+    const module = macroexpand.expand(allocator, raw_module) catch |err| switch (err) {
+        error.SemanticFailed => return error.SemanticFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
     var symbols = sema.collectSymbols(allocator, module) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
         error.OutOfMemory => return error.OutOfMemory,

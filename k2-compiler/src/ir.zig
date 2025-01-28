@@ -2,7 +2,6 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const pipeline = @import("pipeline.zig");
 const sema = @import("sema.zig");
-const comptime_mod = @import("comptime.zig");
 const Span = @import("lexer/span.zig").Span;
 const diag_mod = @import("diagnostic.zig");
 const vm_compiler = @import("vm/compiler.zig");
@@ -196,6 +195,7 @@ pub const InstrKind = union(enum) {
     try_is_ok: Value,
     try_ok: Value,
     try_err: Value,
+    try_payload: Value,
     iter_init: Value,
     iter_has_next: Value,
     iter_next: Value,
@@ -355,11 +355,19 @@ pub const StoreInstr = struct {
 
 pub const Terminator = union(enum) {
     return_value: ?Value,
-    fail: Value,
+    fail: FailTerm,
     panic: Panic,
     branch: BlockId,
     cond_branch: CondBranch,
     unreachable_term,
+};
+
+pub const FailTerm = struct {
+    /// The error discriminant (the `error.<variant>` value).
+    disc: Value,
+    /// The error variant's payload, stored into the fallible's value slot
+    /// (field 0) so a `catch e { ... |c| ... }` can recover it. Null = no payload.
+    payload: ?Value = null,
 };
 
 pub const Panic = struct {
@@ -487,7 +495,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
             },
             .const_decl => |decl| {
                 // #run expr on the right-hand side → evaluate at compile time.
-                const effective_imm = effectiveConstImm(allocator, front_end, decl.value, cvm);
+                const effective_imm = effectiveConstImm(decl.value, cvm);
                 try globals.append(allocator, .{
                     .name = decl.name,
                     .ty = inferConstType(decl.value),
@@ -691,7 +699,7 @@ fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
             try validateValue(function, slice.len);
         },
         .variant_is, .variant_payload => |variant| try validateValue(function, variant.value),
-        .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| try validateValue(function, value),
+        .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .try_payload, .iter_init, .iter_has_next, .iter_next => |value| try validateValue(function, value),
         .at => |at| try validateValue(function, at.value),
         .raw_pointer => |ptr| try validateValue(function, ptr.address),
         .interface_make => |make| try validateValue(function, make.data),
@@ -709,7 +717,10 @@ fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
 fn validateTerminator(function: IrFunction, terminator: Terminator) ValidationError!void {
     switch (terminator) {
         .return_value => |value| if (value) |ret| try validateValue(function, ret),
-        .fail => |value| try validateValue(function, value),
+        .fail => |ft| {
+            try validateValue(function, ft.disc);
+            if (ft.payload) |p| try validateValue(function, p);
+        },
         .panic => {},
         .branch => |target| if (!hasBlock(function, target)) return error.InvalidIr,
         .cond_branch => |branch| {
@@ -853,7 +864,7 @@ fn foldTerminator(consts: *const ConstMap, terminator: ?Terminator) ?Terminator 
             return .{ .cond_branch = .{ .cond = cond, .then_block = branch.then_block, .else_block = branch.else_block } };
         },
         .return_value => |v| if (v) |val| .{ .return_value = resolveVal(consts, val) } else term,
-        .fail => |v| .{ .fail = resolveVal(consts, v) },
+        .fail => |ft| .{ .fail = .{ .disc = resolveVal(consts, ft.disc), .payload = if (ft.payload) |p| resolveVal(consts, p) else null } },
         .panic => |panic| .{ .panic = panic },
         else => term,
     };
@@ -1043,7 +1054,7 @@ fn instrUsesReg(instr: Instr, id: RegId) bool {
         .index, .index_addr => |index| valueUsesReg(index.base, id) or valueUsesReg(index.index, id),
         .slice_expr => |slice| valueUsesReg(slice.ptr, id) or valueUsesReg(slice.len, id),
         .variant_is, .variant_payload => |variant| valueUsesReg(variant.value, id),
-        .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| valueUsesReg(value, id),
+        .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .try_payload, .iter_init, .iter_has_next, .iter_next => |value| valueUsesReg(value, id),
         .at => |at| valueUsesReg(at.value, id),
         .raw_pointer => |ptr| valueUsesReg(ptr.address, id),
         .interface_make => |make| valueUsesReg(make.data, id),
@@ -1058,7 +1069,7 @@ fn instrUsesReg(instr: Instr, id: RegId) bool {
 fn terminatorUsesReg(terminator: Terminator, id: RegId) bool {
     return switch (terminator) {
         .return_value => |value| value != null and valueUsesReg(value.?, id),
-        .fail => |value| valueUsesReg(value, id),
+        .fail => |ft| valueUsesReg(ft.disc, id) or (ft.payload != null and valueUsesReg(ft.payload.?, id)),
         .panic, .branch, .unreachable_term => false,
         .cond_branch => |branch| valueUsesReg(branch.cond, id),
     };
@@ -1451,9 +1462,10 @@ const FunctionLowerer = struct {
                 var payload_values = std.ArrayList(Value).empty;
                 errdefer payload_values.deinit(self.allocator);
                 for (fail.payload) |payload| try payload_values.append(self.allocator, try self.lowerExpr(payload));
+                const payloads = try payload_values.toOwnedSlice(self.allocator);
                 const error_value = try self.emit(.{ .variant_type = "<error>" }, .{ .builtin = .{
                     .name = try std.fmt.allocPrint(self.allocator, "error.{s}", .{fail.variant}),
-                    .args = try payload_values.toOwnedSlice(self.allocator),
+                    .args = payloads,
                 } });
                 try self.emitDefersDown(0, .err);
                 var i = self.active_zones.items.len;
@@ -1461,7 +1473,8 @@ const FunctionLowerer = struct {
                     i -= 1;
                     try self.emitNoResult(.void, .{ .zone_pop = self.active_zones.items[i] });
                 }
-                try self.terminate(.{ .fail = error_value });
+                // Carry the first payload (if any) so a `catch` can recover it.
+                try self.terminate(.{ .fail = .{ .disc = error_value, .payload = if (payloads.len > 0) payloads[0] else null } });
             },
             .if_stmt => |iff| try self.lowerIf(iff),
             .while_stmt => |while_stmt| try self.lowerWhile(while_stmt),
@@ -1486,6 +1499,12 @@ const FunctionLowerer = struct {
                 break :blk;
             },
             .comptime_run => |block| try self.lowerBlock(block.statements, null),
+            // `#insert <literal #quote { ... }>` — splice the quoted block's
+            // statements inline (sema already re-checked them in this scope).
+            .insert_stmt => |ins| switch (ins.operand.kind) {
+                .quote => |block| try self.lowerBlock(block.statements, null),
+                else => return error.LoweringFailed,
+            },
             .zone_block => |zb| {
                 try self.emitNoResult(.void, .{ .zone_push = .{ .name = zb.name, .kind = zb.kind } });
                 try self.active_zones.append(self.allocator, zb.name);
@@ -1525,6 +1544,8 @@ const FunctionLowerer = struct {
         var optional_binding_name: ?[]const u8 = null;
         var optional_binding_value: ?Value = null;
         var optional_payload_ty: ?IrType = null;
+        // `if e == .variant |c|` inside a catch: bind c to the stashed payload.
+        var error_payload_binding: ?[]const u8 = null;
 
         const cond = if (iff.binding) |binding| blk: {
             const value = try self.lowerExpr(binding.value);
@@ -1551,7 +1572,11 @@ const FunctionLowerer = struct {
                     optional_payload_ty = inner.*;
                     break :blk try self.emit(.bool, .{ .optional_is_some = value });
                 },
-                else => {},
+                // `if e == .variant |c|`: the condition is the discriminant
+                // comparison (bool); bind c to the payload stashed by `catch`.
+                else => if (iff.condition.kind == .binary and iff.condition.kind.binary.op == .equal) {
+                    error_payload_binding = payload_name;
+                },
             };
             break :blk value;
         };
@@ -1571,6 +1596,11 @@ const FunctionLowerer = struct {
             const payload_ty = optional_payload_ty.?;
             const payload = try self.emit(payload_ty, .{ .optional_payload = opt_value });
             try self.emitNoResult(payload_ty, .{ .store_local = .{ .name = name, .value = payload } });
+        }
+        if (error_payload_binding) |name| {
+            const pty = self.local_types.get("__errpayload") orelse .unknown;
+            try self.emitNoResult(pty, .{ .store_local = .{ .name = name, .value = .{ .local = "__errpayload" } } });
+            try self.local_types.put(name, pty);
         }
         try self.lowerBlock(iff.then_block.statements, .{ .branch = after_id });
 
@@ -1752,6 +1782,11 @@ const FunctionLowerer = struct {
 
     fn lowerExpr(self: *FunctionLowerer, expr: ast.Expr) LowerError!Value {
         return switch (expr.kind) {
+            // A `#quote` block has no value-position lowering in slice 1; it is
+            // only valid as the operand of `#insert` (handled in lowerStmt).
+            // `#quote(expr)`/`$`-splices are macro internals removed by the
+            // macroexpand pass; reaching here means misuse.
+            .quote, .quote_expr, .splice => return error.LoweringFailed,
             .ident => |name| blk: {
                 for (self.params) |p| {
                     if (std.mem.eql(u8, p.name, name)) break :blk Value{ .param = name };
@@ -1765,20 +1800,13 @@ const FunctionLowerer = struct {
             .type_ref => .{ .imm = .null },
             .unsafe_expr => |inner| try self.lowerExpr(inner.*),
             .run_expr => |inner| blk: {
-                // Try the VM-backed evaluator first; on any failure fall back to
-                // the AST tree-walker, then to lowering the expression directly.
+                // The VM is the sole comptime engine. If it can't fold the
+                // expression to a constant, lower the operand directly so it is
+                // computed at runtime instead — there is no tree-walker fallback.
                 if (self.cvm) |c| {
                     if (c.evalToValue(inner.*)) |v| break :blk v;
                 }
-                var ctx = comptime_mod.ComptimeCtx.init(
-                    self.allocator,
-                    self.module,
-                    self.symbols,
-                    &self.types,
-                );
-                defer ctx.deinit();
-                const cv = comptime_mod.evalExpr(&ctx, inner.*) catch break :blk try self.lowerExpr(inner.*);
-                break :blk comptimeToValue(cv) orelse try self.lowerExpr(inner.*);
+                break :blk try self.lowerExpr(inner.*);
             },
             .force_unwrap => |inner| try self.lowerForceUnwrap(inner.*, expr),
             .nil_coalesce => |nc| try self.lowerNilCoalesce(nc, expr),
@@ -1797,8 +1825,16 @@ const FunctionLowerer = struct {
             .compound_literal => |values| blk: {
                 var args = std.ArrayList(Value).empty;
                 errdefer args.deinit(self.allocator);
-                for (values) |value| try args.append(self.allocator, try self.lowerExpr(value));
-                break :blk try self.emit(self.exprType(expr), .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
+                // Lower each element with its field/element type so nested
+                // compound literals (`.{ .{1,2}, 3 }`) build their aggregate.
+                const ct = self.exprType(expr);
+                for (values, 0..) |value, i| {
+                    if (self.compoundFieldType(ct, i)) |fty|
+                        try args.append(self.allocator, try self.lowerExprAs(value, fty))
+                    else
+                        try args.append(self.allocator, try self.lowerExpr(value));
+                }
+                break :blk try self.emit(ct, .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
             },
             .unary => |unary| blk: {
                 const value = try self.lowerExpr(unary.expr.*);
@@ -1855,6 +1891,16 @@ const FunctionLowerer = struct {
                 self.startBlock(err_id, "catch.err");
                 const err_value = try self.emit(error_ty, .{ .try_err = value });
                 try self.emitNoResult(error_ty, .{ .store_local = .{ .name = catch_expr.err_name, .value = err_value } });
+                // Stash the error payload so `if e == .v |c|` in the handler can
+                // recover it (the binding loads `__errpayload`). The payload
+                // shares the fallible's value slot, so its type is the ok type.
+                const ok_ty: IrType = switch (self.exprType(catch_expr.value.*)) {
+                    .fallible => |fallible| fallible.ok.*,
+                    else => .unknown,
+                };
+                const payload_value = try self.emit(ok_ty, .{ .try_payload = value });
+                try self.emitNoResult(ok_ty, .{ .store_local = .{ .name = "__errpayload", .value = payload_value } });
+                try self.local_types.put("__errpayload", ok_ty);
                 _ = try self.emit(.void, .{ .builtin = .{
                     .name = "catch_handler",
                     .args = try self.allocator.dupe(Value, &.{err_value}),
@@ -1993,7 +2039,10 @@ const FunctionLowerer = struct {
                 const arg_slice = try args.toOwnedSlice(self.allocator);
                 if (isBuiltinName(callee_name)) {
                     var type_arg: ?IrType = null;
-                    if (std.mem.eql(u8, callee_name, "sizeof") and call.args.len > 0) {
+                    if ((std.mem.eql(u8, callee_name, "sizeof") or
+                        std.mem.eql(u8, callee_name, "type_info") or
+                        std.mem.eql(u8, callee_name, "type_name")) and call.args.len > 0)
+                    {
                         const first = switch (call.args[0]) {
                             .positional => |e| e,
                             .named => |n| n.value,
@@ -2122,11 +2171,36 @@ const FunctionLowerer = struct {
             .compound_literal => |values| blk: {
                 var args = std.ArrayList(Value).empty;
                 errdefer args.deinit(self.allocator);
-                for (values) |value| try args.append(self.allocator, try self.lowerExpr(value));
+                for (values, 0..) |value, i| {
+                    if (self.compoundFieldType(expected_ty, i)) |fty|
+                        try args.append(self.allocator, try self.lowerExprAs(value, fty))
+                    else
+                        try args.append(self.allocator, try self.lowerExpr(value));
+                }
                 break :blk try self.emit(expected_ty, .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
             },
             else => try self.lowerExpr(expr),
         };
+    }
+
+    /// Type of the i-th element of a compound literal of aggregate type `ty`
+    /// (array element or struct field), or null if it can't be determined.
+    fn compoundFieldType(self: *FunctionLowerer, ty: IrType, index: usize) ?IrType {
+        switch (ty) {
+            .array => |arr| return arr.elem.*,
+            .struct_type => |name| {
+                const id = self.symbols.resolve(self.symbols.root_scope, name) orelse return null;
+                const layout = self.types.layouts.get(id) orelse return null;
+                switch (layout.kind) {
+                    .struct_type => |fields| {
+                        if (index >= fields.len) return null;
+                        return lowerSemaTypeWithEnv(self.allocator, fields[index].ty, self.types, self.symbols) catch null;
+                    },
+                    else => return null,
+                }
+            },
+            else => return null,
+        }
     }
 
     fn lowerLValueAddress(self: *FunctionLowerer, expr: ast.Expr) LowerError!Value {
@@ -2215,18 +2289,16 @@ const FunctionLowerer = struct {
     }
 
     fn evalComptimeIf(self: *FunctionLowerer, ci: ast.ComptimeIfStmt) ?ast.Block {
-        var ctx = comptime_mod.ComptimeCtx.init(
-            self.allocator,
-            self.module,
-            self.symbols,
-            &self.types,
-        );
-        defer ctx.deinit();
-        const cv = comptime_mod.evalExpr(&ctx, ci.condition) catch return null;
-        return switch (cv) {
-            .bool => |b| if (b) ci.then_block else ci.else_block orelse ast.Block{ .statements = &.{}, .span = ci.span },
-            else => null,
-        };
+        const empty_block = ast.Block{ .statements = &.{}, .span = ci.span };
+        // The VM is the sole comptime engine; a non-bool or unevaluable
+        // condition yields null so the caller can report it.
+        if (self.cvm) |c| {
+            if (c.evalToImm(ci.condition)) |imm| switch (imm) {
+                .bool => |b| return if (b) ci.then_block else ci.else_block orelse empty_block,
+                else => {},
+            };
+        }
+        return null;
     }
 
     fn lowerMatch(self: *FunctionLowerer, m: ast.MatchStmt) LowerError!void {
@@ -2863,6 +2935,8 @@ fn isBuiltinName(name: []const u8) bool {
         "ptr_from_int",
         "volatile_store",
         "sizeof",
+        "type_info",
+        "type_name",
         "unaligned_read",
         "asm",
         "atomic_load",
@@ -2875,13 +2949,11 @@ fn isBuiltinName(name: []const u8) bool {
     return false;
 }
 
-/// If `expr` is a `#run inner`, evaluate it via the comptime interpreter and
-/// return the resulting Imm.  Falls back to lowerImm for non-#run expressions
-/// or when compile-time evaluation fails.
-/// VM-backed comptime evaluator. Lazily lowers the whole module to bytecode
-/// (memoized) and runs `#run` expressions on the VM. Every entry point is
-/// best-effort: it returns null on any failure so the caller can fall back to
-/// the AST tree-walker, guaranteeing no behavioural regression.
+/// VM-backed comptime evaluator — the sole comptime engine. Lazily lowers the
+/// whole module to bytecode (memoized) and runs `#run` expressions on the VM.
+/// Every entry point is best-effort: it returns null when an expression cannot
+/// be folded to a constant, letting the caller lower the operand for runtime
+/// instead (there is no AST tree-walker fallback).
 const ComptimeVm = struct {
     /// General-purpose allocator for the VM's transient per-call frames.
     gpa: std.mem.Allocator,
@@ -2922,8 +2994,9 @@ const ComptimeVm = struct {
 
     fn buildCache(self: *ComptimeVm) !Cache {
         const a = self.arena.allocator();
-        // Lower the module with NO evaluator so nested `#run` here resolve via
-        // the tree-walker — this is the recursion guard.
+        // Lower the module with NO evaluator (cvm = null) so that any nested
+        // `#run` encountered while building this cache lowers its operand
+        // directly instead of recursing back into the VM — the recursion guard.
         const irm = try lowerModuleInner(a, self.front_end, null);
         const bc = try vm_compiler.compileModule(a, irm);
         var fm = std.StringHashMap(u32).init(a);
@@ -2952,6 +3025,45 @@ const ComptimeVm = struct {
         return (self.evalRaw(expr) orelse return null).toImm();
     }
 };
+
+// ── VM comptime corpus ──────────────────────────────────────────────────────
+// Evaluates every top-level `X :: #run <expr>` in a module with the VM. This
+// began life as a differential gate against the old AST tree-walker; now that
+// the VM is the sole engine it is a pure regression test — every case in the
+// corpus must fold to a constant (`failed` must stay 0).
+
+pub const CorpusStats = struct {
+    total: usize = 0,
+    evaluated: usize = 0,
+    failed: usize = 0,
+};
+
+/// Evaluate every top-level `X :: #run <expr>` in the module on the VM.
+pub fn evalCorpus(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) CorpusStats {
+    var cvm = ComptimeVm.init(allocator, front_end);
+    defer cvm.deinit();
+
+    var stats = CorpusStats{};
+    for (front_end.module.items) |item| {
+        const decl = switch (item) {
+            .const_decl => |d| d,
+            else => continue,
+        };
+        const inner = switch (decl.value.kind) {
+            .run_expr => |e| e.*,
+            else => continue,
+        };
+        stats.total += 1;
+
+        if (cvm.evalToImm(inner) != null) {
+            stats.evaluated += 1;
+        } else {
+            stats.failed += 1;
+            std.debug.print("[VM-FAIL] {s}\n", .{decl.name});
+        }
+    }
+    return stats;
+}
 
 /// Lower a standalone `#run` expression into a one-block IR function that
 /// returns it, reusing the normal lowering machinery.
@@ -2989,53 +3101,18 @@ fn lowerExprToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEn
     };
 }
 
-fn effectiveConstImm(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, expr: ast.Expr, cvm: ?*ComptimeVm) Imm {
+fn effectiveConstImm(expr: ast.Expr, cvm: ?*ComptimeVm) Imm {
     const inner = switch (expr.kind) {
         .run_expr => |e| e.*,
         else => return lowerImm(expr),
     };
 
-    // Try the VM first; fall back to the tree-walker on any failure.
+    // The VM is the sole comptime engine; if it can't fold the expression,
+    // lower it as a best-effort immediate.
     if (cvm) |c| {
         if (c.evalToImm(inner)) |imm| return imm;
     }
-
-    var ctx = comptime_mod.ComptimeCtx.init(
-        allocator,
-        front_end.module,
-        front_end.symbols,
-        &front_end.types,
-    );
-    defer ctx.deinit();
-
-    const cv = comptime_mod.evalExpr(&ctx, inner) catch return lowerImm(inner);
-    return comptimeToImm(cv) orelse lowerImm(inner);
-}
-
-/// Convert a ComptimeValue to an IR Imm if possible.
-fn comptimeToImm(v: comptime_mod.ComptimeValue) ?Imm {
-    return switch (v) {
-        .int => |i| .{ .int = i },
-        .uint => |u| .{ .uint = u },
-        .float => |f| .{ .float = f },
-        .bool => |b| .{ .bool = b },
-        .string => |s| .{ .text = s },
-        .null_ptr => .null,
-        else => null,
-    };
-}
-
-/// Convert a ComptimeValue to an IR Value if possible.
-fn comptimeToValue(v: comptime_mod.ComptimeValue) ?Value {
-    return switch (v) {
-        .int => |i| .{ .imm = .{ .int = i } },
-        .uint => |u| .{ .imm = .{ .uint = u } },
-        .float => |f| .{ .imm = .{ .float = f } },
-        .bool => |b| .{ .imm = .{ .bool = b } },
-        .string => |s| .{ .imm = .{ .text = s } },
-        .null_ptr => .{ .imm = .null },
-        else => null,
-    };
+    return lowerImm(inner);
 }
 
 fn inferConstType(expr: ast.Expr) IrType {

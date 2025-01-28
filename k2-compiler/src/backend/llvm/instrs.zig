@@ -165,6 +165,12 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
             break :blk values.extractAggregateField(cg, fallible, 1, "fallible error discriminant");
         },
 
+        // try_payload: the error payload shares the value slot (field 0).
+        .try_payload => |val| blk: {
+            const fallible = resolveVal(cg, fncg, val, .unknown);
+            break :blk values.extractAggregateField(cg, fallible, 0, "fallible error payload");
+        },
+
         // Zone ops — not yet implemented.
         .zone_push => |zone| blk: {
             const head = fncg.zones.get(zone.name) orelse break :blk null;

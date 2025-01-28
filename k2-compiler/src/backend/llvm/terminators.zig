@@ -81,16 +81,30 @@ pub fn lower(
         .unreachable_term => _ = llvm.LLVMBuildUnreachable(cg.builder),
         .panic => |panic| panic_mod.lower(cg, panic),
 
-        // fail: build { undef_ok, discriminant } and return it.
-        .fail => |err_val| {
+        // fail: build { payload-or-undef, discriminant } and return it.
+        .fail => |ft| {
             if (func.error_ty == null) {
                 _ = llvm.LLVMBuildUnreachable(cg.builder);
                 return;
             }
             const ret_lty = types.fallibleReturnType(cg, func);
             var ret = llvm.LLVMGetUndef(ret_lty);
-            // Resolve the error value (discriminant i32).
-            const disc_raw = values.resolveValue(cg, fncg, err_val, .unknown);
+            // The payload shares the value slot (field 0, the ok type); the
+            // discriminant is field 1.
+            if (ft.payload) |payload| {
+                const pval_ty = fncg.irTypeOf(payload) orelse func.return_ty;
+                const payload_raw = values.resolveValue(cg, fncg, payload, pval_ty);
+                const payload_lv = values.coerceTyped(
+                    cg.builder,
+                    cg.ctx,
+                    payload_raw,
+                    pval_ty,
+                    func.return_ty,
+                    types.lower(cg, func.return_ty),
+                );
+                ret = llvm.LLVMBuildInsertValue(cg.builder, ret, payload_lv, 0, "");
+            }
+            const disc_raw = values.resolveValue(cg, fncg, ft.disc, .unknown);
             const i32_ty = llvm.LLVMInt32TypeInContext(cg.ctx);
             const disc = values.coerce(cg.builder, cg.ctx, disc_raw, i32_ty);
             ret = llvm.LLVMBuildInsertValue(cg.builder, ret, disc, 1, "");
