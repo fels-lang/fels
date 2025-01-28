@@ -1505,6 +1505,8 @@ const FunctionLowerer = struct {
                 .quote => |block| try self.lowerBlock(block.statements, null),
                 else => return error.LoweringFailed,
             },
+            // Expanded away by the macroexpand pass before lowering.
+            .comptime_for => return error.LoweringFailed,
             .zone_block => |zb| {
                 try self.emitNoResult(.void, .{ .zone_push = .{ .name = zb.name, .kind = zb.kind } });
                 try self.active_zones.append(self.allocator, zb.name);

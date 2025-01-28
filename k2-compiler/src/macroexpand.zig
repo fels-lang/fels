@@ -152,6 +152,15 @@ const Expander = struct {
             },
             .unsafe_block => |b| try out.append(self.arena, .{ .unsafe_block = try self.expandBlock(b) }),
             .comptime_run => |b| try out.append(self.arena, .{ .comptime_run = try self.expandBlock(b) }),
+            // `#for i in a..b { ... }` in ordinary code: unroll with literal
+            // bounds, then re-expand each emitted statement (nested #insert/#for).
+            .comptime_for => |cf| {
+                var env = Env.init(self.arena);
+                var hyg = Hyg.init(self.arena);
+                var tmp: std.ArrayList(ast.Stmt) = .empty;
+                try self.unrollFor(cf, &env, &hyg, &tmp);
+                for (tmp.items) |s| try self.expandStmt(s, out);
+            },
             .comptime_if => |s| {
                 var n = s;
                 n.then_block = try self.expandBlock(s.then_block);
@@ -286,9 +295,52 @@ const Expander = struct {
                 .span = s.span,
             } }),
             .expr => |e| try out.append(self.arena, .{ .expr = try self.substExpr(e, env, hyg) }),
+            // `#for` inside a macro template: unroll using the current env (so
+            // bounds may reference macro params) plus the loop binding.
+            .comptime_for => |cf| try self.unrollFor(cf, env, hyg, out),
             // Constructs not yet supported inside a template pass through as-is.
             else => try out.append(self.arena, stmt),
         }
+    }
+
+    // ── #for unrolling ────────────────────────────────────────────────────────
+
+    /// Emit `cf.body` once per index in `[start, end)` (or `..=`), binding the
+    /// loop variable to that index's literal so `$(i)` splices it.
+    fn unrollFor(self: *Expander, cf: ast.ComptimeForStmt, env: *Env, base_hyg: *Hyg, out: *std.ArrayList(ast.Stmt)) ExpandError!void {
+        const start = try self.evalIntBound(cf.start, env, base_hyg);
+        const last = try self.evalIntBound(cf.end, env, base_hyg);
+        const end = if (cf.inclusive) last + 1 else last;
+
+        var i = start;
+        while (i < end) : (i += 1) {
+            const lit = try self.intLit(i, cf.start.id, cf.span);
+            try env.put(cf.binding, lit);
+            // Fresh hygiene per iteration so the body's own locals don't collide
+            // across unrolled copies (start from the macro's renames, if any).
+            var hyg = try self.cloneHyg(base_hyg);
+            try self.collectIntroduced(cf.body, &hyg);
+            const expanded = try self.substBlock(cf.body, env, &hyg);
+            for (expanded.statements) |s| try out.append(self.arena, s);
+        }
+        _ = env.remove(cf.binding);
+    }
+
+    fn evalIntBound(self: *Expander, expr: ast.Expr, env: *Env, hyg: *Hyg) ExpandError!i64 {
+        const e = try self.substExpr(expr, env, hyg);
+        return intValue(e) orelse fail("#for bounds must be integer literals (or comptime parameters bound to literals)", .{});
+    }
+
+    fn intLit(self: *Expander, value: i64, id: ast.NodeId, span: Span) ExpandError!ast.Expr {
+        const text = try std.fmt.allocPrint(self.arena, "{d}", .{value});
+        return .{ .id = id, .kind = .{ .int = text }, .span = span };
+    }
+
+    fn cloneHyg(self: *Expander, base: *Hyg) ExpandError!Hyg {
+        var h = Hyg.init(self.arena);
+        var it = base.iterator();
+        while (it.next()) |entry| try h.put(entry.key_ptr.*, entry.value_ptr.*);
+        return h;
     }
 
     fn substExpr(self: *Expander, expr: ast.Expr, env: *Env, hyg: *Hyg) ExpandError!ast.Expr {
@@ -367,6 +419,18 @@ const Expander = struct {
         return hyg.get(name) orelse name;
     }
 };
+
+/// Integer value of a literal expression (`5`, `-3`), or null if not a literal.
+fn intValue(e: ast.Expr) ?i64 {
+    return switch (e.kind) {
+        .int => |t| std.fmt.parseInt(i64, t, 0) catch null,
+        .unary => |u| if (u.op == .neg) blk: {
+            const v = intValue(u.expr.*) orelse break :blk null;
+            break :blk -v;
+        } else null,
+        else => null,
+    };
+}
 
 /// Expand all macros in `module`, returning a macro-free module.
 pub fn expand(arena: std.mem.Allocator, module: ast.Module) ExpandError!ast.Module {

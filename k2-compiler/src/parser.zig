@@ -372,7 +372,28 @@ pub const Parser = struct {
                 .span = spanFrom(hash, semi),
             } };
         }
-        try self.errorAt(hash, "unknown compile-time directive; expected #if, #run, or #insert");
+        // #for i in a..b { ... } — a compile-time unrolled loop.
+        if (self.match(.keyword_for)) {
+            const binding = try self.expect(.ident, "expected loop binding after #for");
+            _ = try self.expect(.keyword_in, "expected `in` after #for binding");
+            const start_expr = try self.parseExpr(0);
+            if (!(self.match(.dot_dot) or self.match(.dot_dot_eq))) {
+                try self.errorAt(self.peek(), "#for requires a range `a..b` or `a..=b`");
+                return error.ParseFailed;
+            }
+            const inclusive = self.previous().kind == .dot_dot_eq;
+            const end_expr = try self.parseExpr(0);
+            const body = try self.parseBlock();
+            return .{ .comptime_for = .{
+                .binding = binding.text(self.source),
+                .start = start_expr,
+                .end = end_expr,
+                .inclusive = inclusive,
+                .body = body,
+                .span = Span.new(hash.start, body.span.end),
+            } };
+        }
+        try self.errorAt(hash, "unknown compile-time directive; expected #if, #run, #insert, or #for");
         return error.ParseFailed;
     }
 

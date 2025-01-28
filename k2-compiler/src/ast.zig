@@ -215,6 +215,7 @@ pub const Stmt = union(enum) {
     comptime_if: ComptimeIfStmt,
     comptime_run: Block,
     insert_stmt: InsertStmt,
+    comptime_for: ComptimeForStmt,
     expr: Expr,
 };
 
@@ -223,6 +224,19 @@ pub const Stmt = union(enum) {
 /// block's statements are spliced into the enclosing scope and re-checked.
 pub const InsertStmt = struct {
     operand: Expr,
+    span: Span,
+};
+
+/// `#for i in a..b { ... }` — a compile-time *unrolled* loop. The macroexpand
+/// pass evaluates the (literal/comptime) bounds and emits the body once per
+/// iteration, with `$(i)` splices replaced by that iteration's index literal.
+/// Generative codegen (e.g. an identity matrix) without a runtime loop.
+pub const ComptimeForStmt = struct {
+    binding: []const u8,
+    start: Expr,
+    end: Expr,
+    inclusive: bool,
+    body: Block,
     span: Span,
 };
 

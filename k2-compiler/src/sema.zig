@@ -1417,6 +1417,12 @@ const Checker = struct {
                 try self.checkBlock(block);
             },
             .insert_stmt => |ins| try self.checkInsert(ins),
+            // Expanded away by the macroexpand pass; reaching sema means the
+            // bounds were not compile-time evaluable.
+            .comptime_for => |cf| {
+                self.emitError(cf.span, "`#for` bounds must be compile-time integer constants", .{});
+                return error.SemanticFailed;
+            },
             .expr => |expr| try self.checkExpr(expr),
         }
     }

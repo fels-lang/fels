@@ -145,6 +145,65 @@ test "exe: macro local is hygienic (no capture of caller's name)" {
     try std.testing.expectEqual(@as(u32, 50), code);
 }
 
+test "exe: #for unrolls a comptime loop, baking the index" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Unrolls to total = 0 + 1 + 2 + 3 = 6.
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    total := 0;
+        \\    #for i in 0..4 {
+        \\        total = total + $(i);
+        \\    }
+        \\    return total;
+        \\}
+    , "exe_comptime_for");
+    try std.testing.expectEqual(@as(u32, 6), code);
+}
+
+test "exe: #for generatively initializes an array" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Emits arr[0]=0; arr[1]=1; arr[2]=4; arr[3]=9 → sum 14.
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    arr: [4]i32 = .{ 0, 0, 0, 0 };
+        \\    #for i in 0..4 {
+        \\        arr[$(i)] = $(i) * $(i);
+        \\    }
+        \\    return arr[0] + arr[1] + arr[2] + arr[3];
+        \\}
+    , "exe_comptime_for_array");
+    try std.testing.expectEqual(@as(u32, 14), code);
+}
+
+test "exe: generative macro unrolls a parameterized #for" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The macro's #for bound is its own argument (5) → 0+1+2+3+4 = 10.
+    const code = try compileAndRun(arena.allocator(),
+        \\sumup :: macro(n: Code) -> Code {
+        \\    return #quote {
+        \\        #for i in 0..$(n) {
+        \\            acc = acc + $(i);
+        \\        }
+        \\    };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    acc := 0;
+        \\    #insert sumup(#quote(5));
+        \\    return acc;
+        \\}
+    , "exe_macro_for");
+    try std.testing.expectEqual(@as(u32, 10), code);
+}
+
 test "exe: main returning 42 propagates exit code" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

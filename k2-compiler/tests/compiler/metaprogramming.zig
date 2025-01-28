@@ -80,6 +80,43 @@ test "metaprogram: block macro expands and lowers to valid IR" {
     }
 }
 
+test "metaprogram: #for unrolls and lowers to valid IR" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\run :: fn() -> i32 {
+        \\    total := 0;
+        \\    #for i in 0..=3 {
+        \\        total = total + $(i);
+        \\    }
+        \\    return total;
+        \\}
+    ;
+    var fe = try k2.compile(a, "for1.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+}
+
+test "metaprogram: #for with non-constant bounds is rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\run :: fn(n: i32) -> i32 {
+        \\    total := 0;
+        \\    #for i in 0..n {
+        \\        total = total + $(i);
+        \\    }
+        \\    return total;
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(a, "for2.k2", src));
+}
+
 test "metaprogram: macro with wrong argument count is rejected" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
