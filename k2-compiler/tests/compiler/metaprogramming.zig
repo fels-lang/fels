@@ -144,6 +144,206 @@ test "metaprogram: stray $ splice outside a macro is rejected" {
     try std.testing.expectError(error.SemanticFailed, k2.compile(a, "mac3.k2", src));
 }
 
+test "metaprogram: ast.* types resolve and match in a metaprogramming module" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The `#insert` triggers injection of the compiler-provided ast.* types;
+    // `describe` then resolves AstExpr and matches on its variants.
+    const src =
+        \\describe :: fn(e: AstExpr) -> i64 {
+        \\    match e {
+        \\        .int |v| => return v;
+        \\        .ident |n| => return 0;
+        \\        .binary |b| => return 1;
+        \\        else => return -1;
+        \\    }
+        \\}
+        \\trigger :: fn() -> i32 {
+        \\    #insert #quote { };
+        \\    return 0;
+        \\}
+    ;
+    var fe = try k2.compile(a, "astuse.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+}
+
+test "metaprogram: #quote(expr) materializes an AstExpr value at comptime" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `#quote(7)` materializes AstExpr.int(7); the match extracts 7.
+    // `#quote(a + b)` materializes AstExpr.binary(...); the match sees `.binary`.
+    // Both run on the comptime VM via #run and must fold to constants.
+    const src =
+        \\peek_int :: fn() -> i64 {
+        \\    e := #quote(7);
+        \\    match e {
+        \\        .int |v| => return v;
+        \\        else => return -1;
+        \\    }
+        \\}
+        \\peek_kind :: fn() -> i64 {
+        \\    e := #quote(a + b);
+        \\    match e {
+        \\        .binary |bb| => return 2;
+        \\        .int |v| => return 0;
+        \\        else => return -1;
+        \\    }
+        \\}
+        \\SEVEN :: #run peek_int();
+        \\KIND  :: #run peek_kind();
+    ;
+    var fe = try k2.compile(a, "mat.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+
+    var seven: bool = false;
+    var kind: bool = false;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "SEVEN")) {
+            seven = true;
+            try std.testing.expectEqual(k2.ir_mod.Imm{ .int = 7 }, g.init.imm);
+        }
+        if (std.mem.eql(u8, g.name, "KIND")) {
+            kind = true;
+            try std.testing.expectEqual(k2.ir_mod.Imm{ .int = 2 }, g.init.imm);
+        }
+    }
+    try std.testing.expect(seven and kind);
+}
+
+test "metaprogram: #quote block materializes an AstBlock with its statements" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `#quote { ... }` materializes an AstBlock; .stmts.len counts its
+    // statements (here: an assign and a local → 2). Runs on the comptime VM.
+    const src =
+        \\blocklen :: fn() -> i64 {
+        \\    b := #quote {
+        \\        x = x + 1;
+        \\        y := 2;
+        \\    };
+        \\    return b.stmts.len as i64;
+        \\}
+        \\LEN :: #run blocklen();
+    ;
+    var fe = try k2.compile(a, "blk.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+
+    var found = false;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "LEN")) {
+            found = true;
+            try std.testing.expectEqual(k2.ir_mod.Imm{ .int = 2 }, g.init.imm);
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "metaprogram: #insert #run gen() splices VM-computed code (two-pass)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The full generative round trip: `gen` runs on the VM at compile time and
+    // returns an AstBlock; the pipeline reifies it, splices it into `run`, and
+    // re-checks. `ANSWER` then evaluates the SPLICED `run` at comptime → 42.
+    const src =
+        \\gen :: fn() -> AstBlock {
+        \\    return #quote {
+        \\        x = x + 40;
+        \\        x = x + 2;
+        \\    };
+        \\}
+        \\run :: fn() -> i32 {
+        \\    x := 0;
+        \\    #insert #run gen();
+        \\    return x;
+        \\}
+        \\ANSWER :: #run run();
+    ;
+    var fe = try k2.compile(a, "gen.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+
+    var answer = false;
+    var has_run = false;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "ANSWER")) {
+            answer = true;
+            try std.testing.expectEqual(k2.ir_mod.Imm{ .int = 42 }, g.init.imm);
+        }
+    }
+    for (m.functions) |f| {
+        // `gen` is comptime-only (returns AstBlock) — excluded from the final module.
+        try std.testing.expect(!std.mem.eql(u8, f.name, "gen"));
+        if (std.mem.eql(u8, f.name, "run")) has_run = true;
+    }
+    try std.testing.expect(answer);
+    try std.testing.expect(has_run);
+}
+
+test "metaprogram: generative control flow picks different blocks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `pick` chooses which AST to return at comptime — generation driven by
+    // ordinary control flow, not templates. true→+10, false→+99 ⇒ 109.
+    const src =
+        \\pick :: fn(flag: bool) -> AstBlock {
+        \\    if flag {
+        \\        return #quote { y = y + 10; };
+        \\    }
+        \\    return #quote { y = y + 99; };
+        \\}
+        \\run :: fn() -> i32 {
+        \\    y := 0;
+        \\    #insert #run pick(true);
+        \\    #insert #run pick(false);
+        \\    return y;
+        \\}
+        \\ANSWER :: #run run();
+    ;
+    var fe = try k2.compile(a, "pick.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+
+    var found = false;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "ANSWER")) {
+            found = true;
+            try std.testing.expectEqual(k2.ir_mod.Imm{ .int = 109 }, g.init.imm);
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "metaprogram: ast.* types are absent without metaprogramming" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // No #quote/#insert/#for/macro → the ast.* prelude is NOT injected, so
+    // AstExpr is an unknown type.
+    const src =
+        \\describe :: fn(e: AstExpr) -> i64 { return 0; }
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(a, "nometa.k2", src));
+}
+
 test "metaprogram: non-quote #insert operand is rejected" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

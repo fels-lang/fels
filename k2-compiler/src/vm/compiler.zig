@@ -1024,7 +1024,12 @@ fn targetFieldImm(base: ir.Value, field: []const u8) ?ir.Imm {
 }
 
 fn isAggregate(ty: ir.IrType) bool {
-    return ty == .array or structName(ty) != null;
+    return switch (ty) {
+        // Arrays, slices, and variants are all zone-allocated cell blocks, so a
+        // value of these types already holds a pointer to its block.
+        .array, .slice, .variant_type => true,
+        else => structName(ty) != null,
+    };
 }
 
 /// Unwrap pointers/optionals to find the underlying struct type name, if any.

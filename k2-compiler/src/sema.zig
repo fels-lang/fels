@@ -1427,17 +1427,27 @@ const Checker = struct {
         }
     }
 
-    /// `#insert <operand>;` — slice 1: the operand must be a literal `#quote`
-    /// block, whose statements are spliced into the CURRENT scope (so their
-    /// locals are visible to following statements) and re-checked here.
+    /// `#insert <operand>;` — a literal `#quote` block has its statements
+    /// spliced into the CURRENT scope (so their locals are visible to following
+    /// statements) and re-checked here. A computed operand must evaluate to an
+    /// `AstBlock`: the two-pass pipeline runs it on the VM, reifies the result,
+    /// and re-checks the spliced code in pass 2.
     fn checkInsert(self: *Checker, ins: ast.InsertStmt) SemanticError!void {
         switch (ins.operand.kind) {
             .quote => |block| {
                 for (block.statements) |stmt| try self.checkStmt(stmt);
             },
             else => {
-                self.emitError(ins.span, "#insert operand must be a `#quote {{ ... }}` block", .{});
-                return error.SemanticFailed;
+                const ty = try self.inferExpr(ins.operand);
+                const ok = switch (ty) {
+                    .named => |id| std.mem.eql(u8, self.symbols.symbol(id).name, "AstBlock"),
+                    .unknown => true,
+                    else => false,
+                };
+                if (!ok) {
+                    self.emitError(ins.span, "#insert operand must be a `#quote {{ ... }}` block or evaluate to an `AstBlock`", .{});
+                    return error.SemanticFailed;
+                }
             },
         }
     }
@@ -1469,14 +1479,30 @@ const Checker = struct {
                 break :blk try self.inferExpr(inner.*);
             },
             .run_expr => |inner| try self.inferRunExpr(inner.*),
-            // A `#quote` block as a value — its statements are checked at the
-            // `#insert` site, not here. Slice 1 has no first-class ast.Block type.
-            .quote => .unknown,
-            // `#quote(expr)` and `$`-splices are macro-template internals; the
-            // macroexpand pass consumes them. Seeing one here means it escaped a
-            // macro, which is a misuse.
-            .quote_expr, .splice => {
-                self.emitError(expr.span, "`#quote(...)` and `$` splices are only valid inside a macro template", .{});
+            // A `#quote { ... }` block in value position materializes to an
+            // `AstBlock` value. (As an `#insert` operand it takes a different
+            // path — checkInsert — and its statements are checked there.)
+            .quote => blk: {
+                const id = self.resolveSymbol("AstBlock") orelse {
+                    self.emitError(expr.span, "`#quote {{ ... }}` requires the ast.* metaprogramming types", .{});
+                    return error.SemanticFailed;
+                };
+                try self.env.expr_symbols.put(expr.id, id);
+                break :blk self.env.get(id) orelse .{ .named = id };
+            },
+            // `#quote(expr)` in value position materializes to an `AstExpr`
+            // value (its inner expression is quoted DATA, not type-checked).
+            .quote_expr => blk: {
+                const id = self.resolveSymbol("AstExpr") orelse {
+                    self.emitError(expr.span, "`#quote(...)` requires the ast.* metaprogramming types", .{});
+                    return error.SemanticFailed;
+                };
+                try self.env.expr_symbols.put(expr.id, id);
+                break :blk self.env.get(id) orelse .{ .named = id };
+            },
+            // A `$`-splice that survives macro expansion is a misuse.
+            .splice => {
+                self.emitError(expr.span, "`$` splice is only valid inside a macro template", .{});
                 return error.SemanticFailed;
             },
             .force_unwrap => |inner| blk: {

@@ -69,6 +69,15 @@ pub const Vm = struct {
         return self.runTop(&function, &.{});
     }
 
+    /// Like `execute`, but does NOT unwind the root zone on the way out, so the
+    /// caller can still read the result's zone cells — used by the reifier to
+    /// turn a comptime-built `AstBlock` back into front-end AST. All zone
+    /// memory is freed by `deinit`.
+    pub fn executeKeepZones(self: *Vm, function: BytecodeFunction) VmError!Value {
+        if (self.zone_stack.depth() == 0) _ = try self.zone_stack.push("__root");
+        return self.run(&function, &.{});
+    }
+
     /// Look up a function by name in the bound module and run it with `args`.
     pub fn call(self: *Vm, name: []const u8, args: []const Value) VmError!Value {
         const mod = self.module orelse return error.NoModule;

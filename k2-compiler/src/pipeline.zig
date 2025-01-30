@@ -5,6 +5,12 @@ const Diagnostic = diag_mod.Diagnostic;
 const parser = @import("parser.zig");
 const sema = @import("sema.zig");
 const macroexpand = @import("macroexpand.zig");
+const ast_prelude = @import("ast_prelude.zig");
+const ir_mod = @import("ir.zig");
+
+/// Node-id base for prelude nodes — high enough to never collide with a real
+/// program's ids (which start at 1 and increment per parsed node).
+const prelude_id_base: ast.NodeId = 900_000;
 const runtime = @import("runtime.zig");
 const build_options = @import("build_options");
 
@@ -275,13 +281,66 @@ fn runPipelineWithSource(
     file: []const u8,
     arena: *std.heap.ArenaAllocator,
 ) CompileError!FrontEnd {
+    // Inject the compiler-provided `ast.*` metaprogramming types ONLY when the
+    // module actually does metaprogramming (uses #quote/#insert/#for/macro), so
+    // ordinary programs stay free of these types. Parsed with a high id base so
+    // its node ids never collide with the program's; diagnostics keep the
+    // user's source/file.
+    const with_prelude = if (usesMetaprogramming(raw_module))
+        prependAstPrelude(allocator, raw_module) catch |err| switch (err) {
+            error.ParseFailed => return error.ParseFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+        }
+    else
+        raw_module;
+
     // Expand macros before any sema sees the tree: `#insert macrocall(...)`
     // becomes a literal `#insert #quote { ... }`, and macro decls are dropped.
-    const module = macroexpand.expand(allocator, raw_module) catch |err| switch (err) {
+    const module = macroexpand.expand(allocator, with_prelude) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
 
+    const pass1 = try runSema(allocator, module, source, file);
+
+    // Two-pass `#insert`: a computed operand (`#insert #run gen()`) is run on
+    // the VM using pass-1 results, reified into AST, and rewritten to a literal
+    // `#quote { ... }`. The spliced module is then fully re-checked (pass 2) so
+    // the generated code is type-checked exactly like hand-written code.
+    const fe1 = FrontEnd{ .module = module, .symbols = pass1.symbols, .types = pass1.types, .arena = arena };
+    const spliced = ir_mod.expandComputedInserts(allocator, fe1) catch |err| switch (err) {
+        error.SemanticFailed => return error.SemanticFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    if (spliced) |module2| {
+        const pass2 = try runSema(allocator, module2, source, file);
+        return .{
+            .module = module2,
+            .symbols = pass2.symbols,
+            .types = pass2.types,
+            .arena = arena,
+        };
+    }
+
+    return .{
+        .module = module,
+        .symbols = pass1.symbols,
+        .types = pass1.types,
+        .arena = arena,
+    };
+}
+
+const SemaResult = struct {
+    symbols: sema.SymbolTable,
+    types: sema.TypeEnv,
+};
+
+fn runSema(
+    allocator: std.mem.Allocator,
+    module: ast.Module,
+    source: []const u8,
+    file: []const u8,
+) CompileError!SemaResult {
     var symbols = sema.collectSymbols(allocator, module) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
         error.OutOfMemory => return error.OutOfMemory,
@@ -297,19 +356,95 @@ fn runPipelineWithSource(
         error.OutOfMemory => return error.OutOfMemory,
     };
 
-    var types = sema.checkTypesWithContext(allocator, module, &symbols, source, file) catch |err| switch (err) {
+    const types = sema.checkTypesWithContext(allocator, module, &symbols, source, file) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
-    errdefer types.deinit(allocator);
 
-    // Surface any warnings that accumulated even on a successful compile.
-    return .{
-        .module = module,
-        .symbols = symbols,
-        .types = types,
-        .arena = arena,
+    return .{ .symbols = symbols, .types = types };
+}
+
+/// True if the module uses any metaprogramming construct that needs the `ast.*`
+/// types in scope (`#quote`/`#insert`/`#for`/`macro`). Plain `#run`/`#if`
+/// programs do NOT trigger injection, so they stay free of the ast.* types.
+fn usesMetaprogramming(module: ast.Module) bool {
+    for (module.items) |item| switch (item) {
+        .function => |f| {
+            if (f.is_macro) return true;
+            if (f.body) |b| if (blockUsesMeta(b)) return true;
+        },
+        .interface_impl => |impl| for (impl.methods) |m| {
+            if (m.body) |b| if (blockUsesMeta(b)) return true;
+        },
+        else => {},
     };
+    return false;
+}
+
+fn blockUsesMeta(block: ast.Block) bool {
+    for (block.statements) |stmt| if (stmtUsesMeta(stmt)) return true;
+    return false;
+}
+
+fn stmtUsesMeta(stmt: ast.Stmt) bool {
+    return switch (stmt) {
+        .insert_stmt, .comptime_for => true,
+        .comptime_run, .unsafe_block => |b| blockUsesMeta(b),
+        .if_stmt => |s| blockUsesMeta(s.then_block) or
+            (if (s.else_block) |e| blockUsesMeta(e) else false) or exprUsesMeta(s.condition),
+        .while_stmt => |s| blockUsesMeta(s.body) or exprUsesMeta(s.condition),
+        .for_range => |s| blockUsesMeta(s.body) or exprUsesMeta(s.start) or exprUsesMeta(s.end),
+        .for_slice => |s| blockUsesMeta(s.body) or exprUsesMeta(s.iter),
+        .zone_block => |s| blockUsesMeta(s.body),
+        .defer_stmt => |s| blockUsesMeta(s.body),
+        .comptime_if => |s| blockUsesMeta(s.then_block) or
+            (if (s.else_block) |e| blockUsesMeta(e) else false),
+        .match_stmt => |s| blk: {
+            for (s.arms) |a| if (blockUsesMeta(a.body)) break :blk true;
+            break :blk exprUsesMeta(s.subject);
+        },
+        .local_infer => |s| exprUsesMeta(s.value),
+        .local_typed => |s| exprUsesMeta(s.value),
+        .assign => |s| exprUsesMeta(s.target) or exprUsesMeta(s.value),
+        .return_stmt => |s| if (s.value) |v| exprUsesMeta(v) else false,
+        .expr => |e| exprUsesMeta(e),
+        else => false,
+    };
+}
+
+fn exprUsesMeta(expr: ast.Expr) bool {
+    return switch (expr.kind) {
+        .quote, .quote_expr, .splice => true,
+        .binary => |b| exprUsesMeta(b.left.*) or exprUsesMeta(b.right.*),
+        .unary => |u| exprUsesMeta(u.expr.*),
+        .call => |c| blk: {
+            if (exprUsesMeta(c.callee.*)) break :blk true;
+            for (c.args) |a| switch (a) {
+                .positional => |x| if (exprUsesMeta(x)) break :blk true,
+                .named => |n| if (exprUsesMeta(n.value)) break :blk true,
+            };
+            break :blk false;
+        },
+        .field => |f| exprUsesMeta(f.base.*),
+        .index => |i| exprUsesMeta(i.base.*) or exprUsesMeta(i.index.*),
+        .force_unwrap, .unsafe_expr, .run_expr => |inner| exprUsesMeta(inner.*),
+        .as_cast => |c| exprUsesMeta(c.value.*),
+        .nil_coalesce => |nc| exprUsesMeta(nc.value.*) or exprUsesMeta(nc.default.*),
+        else => false,
+    };
+}
+
+/// Parse the `ast.*` prelude and return a module with its items prepended to
+/// the user's. The prelude is pure type declarations, so it carries no imports.
+fn prependAstPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
+    // Parse under the USER's file name so the prelude types share the user's
+    // module — K2 symbols are file-private, so a separate file name would make
+    // the ast.* types invisible to user code.
+    const parsed = try parser.parseSourceFrom(allocator, user.file_name, ast_prelude.source, prelude_id_base);
+    var items: std.ArrayList(ast.Item) = .empty;
+    try items.appendSlice(allocator, parsed.module.items);
+    try items.appendSlice(allocator, user.items);
+    return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
 }
 
 fn createFrontendArena(allocator: std.mem.Allocator) CompileError!*std.heap.ArenaAllocator {

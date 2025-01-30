@@ -1,0 +1,357 @@
+# K2
+
+**A systems language where metaprogramming is a first-class, typed, and sandboxable layer — not a string-pasting afterthought.**
+
+K2 is an experimental, explicit systems programming language with manual memory
+management, no hidden allocations, and no garbage collector. Its distinguishing
+feature is a compile-time **bytecode VM that executes the compiler's own IR**:
+your compile-time code runs with exactly the same semantics as your runtime code,
+can build and inspect the program's own syntax tree as ordinary typed data, and
+generate new code that is type-checked like anything you wrote by hand.
+
+> **Status: experimental.** K2 is not production-ready. The frontend, type system,
+> LLVM backend, and the comptime/metaprogramming engine all work and are covered
+> by a 200+ test suite, but the language is still moving and some accepted
+> constructs have incomplete backend semantics. See [Project status](#project-status).
+
+```k2
+// Compute a lookup table at compile time and bake it into the binary.
+fib :: fn(n: i32) -> i32 { if n < 2 { return n; } return fib(n-1) + fib(n-2); }
+FIB_10 :: #run fib(10);          // = 55, computed by the comptime VM
+
+// Generate code at compile time and splice it in — type-checked like hand-written code.
+unroll_sum :: fn() -> AstBlock {
+    return #quote {
+        total = total + 1;
+        total = total + 2;
+        total = total + 3;
+    };
+}
+
+main :: fn() -> i32 {
+    total := 0;
+    #insert #run unroll_sum();   // the three statements are generated, then compiled
+    return total;                // → 6
+}
+```
+
+---
+
+## Why K2
+
+- **Compile-time ≡ runtime.** One IR, one VM. Code you run at compile time behaves
+  exactly like code you ship — no separate, subtly-different comptime dialect.
+- **The AST is just data.** `ast.Expr` / `ast.Stmt` / `ast.Block` are ordinary K2
+  tagged unions. You build them with `#quote`, take them apart with `match`, and
+  splice them with `#insert`. No string concatenation, no separate macro language.
+- **Hygienic by default.** Names introduced inside a quotation are fresh; the only
+  bridge to the surrounding scope is an explicit `$` splice. Macros don't
+  accidentally capture your variables.
+- **No hidden costs.** No hidden allocations, no implicit copies, dynamic dispatch
+  only through explicit `*Interface` values, monomorphized generics.
+- **Zones instead of a GC.** Lexical `Arena` zones give deterministic, leak-free
+  allocation with compiler-enforced non-escape — and the same model runs at
+  compile time, so heavy code generation has a bounded, microscopic memory
+  footprint.
+- **Errors are values.** Fallible functions (`-> T ! E`) with `fail`, `?`
+  propagation, and `catch` — a real error ABI, not exceptions.
+- **Open source.** The whole compiler is here, in Zig, readable and hackable.
+
+---
+
+## Metaprogramming
+
+This is K2's reason to exist. Everything below runs on the comptime VM today.
+
+### Run anything at compile time — `#run`, `#if`
+
+```k2
+PI       :: #run compute_pi();           // expensive constant, computed once at build time
+TABLE    :: #run generate_srgb_table();  // bake data into the binary
+#if TARGET.debug { log("debug build"); } // conditional compilation
+```
+
+`#run` evaluates any expression — recursion, loops, structs, slices, enums,
+optionals, errors, interface dispatch — and folds it to a constant. `#if` compiles
+only the live branch.
+
+### Quote and splice — `#quote`, `#insert`
+
+`#quote { … }` captures code as a typed AST value; `#insert` splices it back in and
+re-runs the type checker on the result:
+
+```k2
+#insert #quote {
+    logged := now();
+    work();
+    log(now() - logged);
+};
+```
+
+### Hygienic macros — `macro` + `$`
+
+A `macro` is a compile-time template over typed AST. Arguments are spliced with
+`$`; the macro's own locals are renamed so they can never clash with yours:
+
+```k2
+twice :: macro(body: Code) -> Code {
+    return #quote { $body; $body; };
+}
+
+main :: fn() -> i32 {
+    n := 0;
+    #insert twice(#quote { n = n + 1; });   // expands to n=n+1; n=n+1;
+    return n;                                // → 2
+}
+```
+
+### Compile-time loops — `#for`
+
+`#for` unrolls at compile time, baking the index into the generated code — the
+classic "generate N statements" pattern, with no runtime loop:
+
+```k2
+init :: fn() -> [4]i32 {
+    arr: [4]i32 = .{ 0, 0, 0, 0 };
+    #for i in 0..4 {
+        arr[$(i)] = $(i) * $(i);   // emits arr[0]=0; arr[1]=1; arr[2]=4; arr[3]=9
+    }
+    return arr;
+}
+```
+
+### Generative code — build AST with real logic, then splice it
+
+The AST is first-class data, so a normal compile-time function can *construct* code
+using arbitrary control flow and return it. `#insert #run` runs it on the VM,
+reifies the result back into the syntax tree, and type-checks the spliced code:
+
+```k2
+// Choose what to generate based on a compile-time condition.
+codegen :: fn(fast: bool) -> AstBlock {
+    if fast {
+        return #quote { result = result * 2; };
+    }
+    return #quote { result = slow_compute(result); };
+}
+
+main :: fn() -> i32 {
+    result := 21;
+    #insert #run codegen(true);   // generated at build time, compiled into the binary
+    return result;                // → 42
+}
+```
+
+And because the AST is a tagged union, metaprograms can *inspect* code too:
+
+```k2
+describe :: fn(e: AstExpr) -> i64 {
+    match e {
+        .int |v|    => return v;
+        .ident |n|  => return 0;
+        .binary |b| => return 1;
+        else        => return -1;
+    }
+}
+```
+
+> Code-generating helpers (anything that builds `ast.*` values) run **only** at
+> compile time and are excluded from the final binary — so metaprogramming never
+> bloats your shipped code.
+
+---
+
+## How K2 compares
+
+K2's niche is **typed, hygienic, sandboxable comptime metaprogramming inside an
+explicit, GC-free systems language.** Here's where it sits relative to its
+neighbors. (These are deliberately fair: Jai, Zig, and Rust all have more mature
+ecosystems and more complete feature sets today.)
+
+| | **K2** | **Jai** | **Odin** | **Zig** | **Rust** |
+| --- | --- | --- | --- | --- | --- |
+| Arbitrary compile-time execution | yes (IR VM) | yes (bytecode) | no | yes (interpreter) | limited (`const fn`) |
+| Comptime ≡ runtime semantics | yes (shared IR) | yes | — | mostly | partial |
+| Code generation model | **typed AST** (`#quote`) | strings (`#insert`) | — | comptime types/values | token streams (proc macros) |
+| Inspect program AST as data | yes (`match` on `ast.*`) | yes (AST API) | no | no | yes (token/`syn`) |
+| Macro hygiene | yes, by default | no (textual) | n/a | n/a | yes (declarative) |
+| Memory model | lexical zones, no GC | manual + temp allocator | manual + context allocator | manual + allocators | ownership/borrow |
+| Zero-leak comptime memory | yes (zones free on exit) | partial | — | grows during build | grows during build |
+| Metaprogramming runs as… | **sandboxable VM** (designed) | host bytecode | — | host interpreter | **host code** (proc macro / `build.rs`) |
+| Open source | yes | no | yes | yes | yes |
+
+**Versus Jai** — the closest in spirit. K2's quotations are *typed AST*, not
+strings, and *hygienic* by default. Jai's metaprogramming is more complete today
+(message loop, full AST mutation), but it's closed-source and string-based, and
+its `#insert` can silently capture surrounding names.
+
+**Versus Zig** — Zig's comptime is excellent for types-as-values and generic
+programming, but it has no notion of the *syntax tree as data*: you can't quote,
+inspect, or splice statements. K2 adds that AST-quotation/injection layer on top
+of a comparable comptime engine, and frees comptime memory as zones exit.
+
+**Versus Odin** — Odin deliberately keeps metaprogramming minimal (`when`,
+`#load`, parametric polymorphism) with no arbitrary compile-time execution. K2
+goes the other direction: a full comptime VM and AST metaprogramming.
+
+**Versus Rust** — Rust's proc macros are powerful but run as *opaque host code* at
+build time over token streams (the same trust surface as `build.rs`). K2's
+metaprogramming runs in a VM that is designed to be **capability-sandboxed**, so a
+dependency's compile-time code can be denied access to your filesystem and OS — a
+structural answer to the supply-chain problem. (The sandbox is on the roadmap; the
+VM it builds on is here today.)
+
+---
+
+## The rest of the language
+
+### Memory: zones, not a garbage collector
+
+```k2
+work :: fn() {
+    zone scratch: Arena {
+        buf := scratch.new_slice(u8, 64);   // zero-initialized
+        fill(buf);
+        // the whole arena is freed here — deterministically
+    }
+}
+```
+
+Zone-owned values cannot outlive their zone (the compiler enforces it). `borrow`
+parameters may temporarily receive zone-owned values but cannot store, return, or
+forward them. `defer`, `return`, `fail`, `break`, and `continue` all trigger
+cleanup. The same zone model runs at compile time, which is what makes
+code-generation memory bounded.
+
+### Errors as fallible functions
+
+```k2
+read_config :: fn(path: []const u8) -> Config ! IoError {
+    file := open(path)?;            // ? propagates the error to the caller
+    if file.empty() { fail .empty; }
+    return parse(file);
+}
+
+cfg := read_config("k2.toml") catch e {
+    return default_config();        // recover from any error
+};
+```
+
+### Interfaces — explicit dynamic dispatch
+
+```k2
+Writer :: interface {
+    write :: fn(*Self, []const u8) -> usize ! IoError;
+}
+
+FileHandle :: struct { fd: i32 }
+FileHandle as Writer {
+    write :: fn(self: *FileHandle, data: []const u8) -> usize ! IoError {
+        return sys_write(self.fd, data);
+    }
+}
+
+w: *Writer = &file;   // conformance checked at compile time; dispatch via vtable
+```
+
+Plus monomorphized generics, distinct/newtype and opaque types, packed structs
+with sub-byte fields, integer types `i8`–`i128` / `u1`–`u128`, `f32`/`f64`, and
+debug-mode traps for overflow, division by zero, bad shifts, out-of-bounds
+indexing, null dereference, and invalid optional unwraps.
+
+---
+
+## Building
+
+The frontend builds and tests **without** LLVM:
+
+```powershell
+zig build
+zig build test
+```
+
+LLVM code generation (object files and Windows executables) needs an LLVM
+installation:
+
+```powershell
+zig build -Dllvm-path=/path/to/llvm
+zig build test -Dllvm-path=/path/to/llvm
+```
+
+The standard-library root defaults to the sibling `k2-modules` directory; override
+with `-Dstdlib-root=/path/to/k2-modules`.
+
+Compiler commands:
+
+```text
+k2 check  <file>    Parse and type-check
+k2 ir     <file>    Print K2 IR
+k2 object <file>    Emit an object file
+k2 build  <file>    Build an executable (Windows)
+```
+
+A larger real-world example lives in [`k2son/`](k2son/) — a JSON serializer written
+in K2 itself, using interfaces, fallible functions, zones, and several stdlib
+modules.
+
+---
+
+## Standard library
+
+The stdlib lives in the sibling `k2-modules/std` directory.
+
+| Module | Provides |
+| --- | --- |
+| `std.io` | `Writer`/`Reader` interfaces; `Stdout`, `Stderr`, `FixedBuf`; numeric formatters; `print`/`println`. |
+| `std.fmt` | Width-justified output, padding, integer columns, joined slices. |
+| `std.mem` | Typed-slice helpers: `eql`, `copy`, `fill`, `index_of`, `contains`. |
+| `std.fs` | `File` implementing `Reader` + `Writer`; `open`, `create`, `append`, `delete`, `exists` (Windows). |
+| `std.process` | PID, command line, env vars, child spawn/wait/kill (Windows). |
+| `std.ptr` | Pointer/address conversions and alignment arithmetic. |
+| `std.bits` | Bit-twiddling for u32/u64: popcount, clz/ctz, rotate, power-of-two test. |
+
+---
+
+## Project status
+
+K2 works end-to-end on Windows (parse → check → IR → LLVM → executable) and the
+frontend is platform-independent. What's solid, partial, and missing:
+
+| Area | Status |
+| --- | --- |
+| Lexer, parser, AST, diagnostics | Implemented |
+| Semantic analysis + typed IR (const-fold, branch, DCE) | Implemented |
+| LLVM object/executable generation | Implemented (Windows end-to-end; Linux/macOS incomplete) |
+| Structs, packed structs, enums (with payloads + `match`) | Implemented |
+| Integers `i8`–`i128`/`u1`–`u128`, floats `f32`/`f64` | Implemented |
+| Pointers, arrays, slices, optionals (with debug checks) | Implemented |
+| Casts, distinct/newtype, opaque types | Implemented |
+| Functions, monomorphized generics, control flow, `match` | Implemented |
+| Errors / fallible functions (`T!E`, `fail`, `?`, `catch`) | Implemented |
+| Zones (`Arena`, non-escape checking, deterministic cleanup) | Implemented |
+| **Comptime VM** (`#run`, `#if`, reflection, full data types) | Implemented |
+| **Metaprogramming** (`#quote`, `#insert`, `macro`, `#for`, generative `#insert #run`) | Implemented (node-kind coverage still growing) |
+| Modules, imports, visibility, extension methods | Implemented (globally-unique names; no packages yet) |
+| Interfaces | Partial — dynamic dispatch works; static constraints, composition, and nested-interface dispatch do not |
+| Standard library | Partial — `io`, `fmt`, `mem`, `fs`, `process`, `ptr`, `bits` |
+| Atomics | Partial — load/store work; CAS and fetch-ops do not |
+| Tooling | Partial — check/IR/object/build; no formatter, LSP, package manager, or test runner |
+
+See [ROADMAP.md](ROADMAP.md) for what's planned and the known blocking bugs, and
+[`docs/`](docs/) for the language reference (syntax, types, memory zones,
+interfaces, the metaprogramming design).
+
+---
+
+## Contributing
+
+K2 is early and the design is still open — issues, experiments, and discussion are
+all welcome. New features should come with parser, semantic, IR, and (where
+applicable) LLVM tests; safety work should include executable tests that verify the
+expected debug trap fires. The compiler is written in Zig; start with
+[`docs/00_overview.md`](docs/00_overview.md) and the `src/` tree.
+
+## License
+
+Not yet chosen. Until a `LICENSE` file is added, all rights are reserved by the
+authors; open an issue if you want to use K2 and need clarity.

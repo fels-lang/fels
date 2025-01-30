@@ -496,16 +496,35 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
             .const_decl => |decl| {
                 // #run expr on the right-hand side → evaluate at compile time.
                 const effective_imm = effectiveConstImm(decl.value, cvm);
+                // `X :: #run f()` has no literal to infer from; derive the
+                // global's type from the folded constant so the LLVM global's
+                // type matches its initializer.
+                var ty = inferConstType(decl.value);
+                if (ty == .unknown) ty = switch (effective_imm) {
+                    .int => .{ .i = 32 },
+                    .uint => .{ .u = 64 },
+                    .float => .f64,
+                    .bool => .bool,
+                    .text => .text,
+                    .rune => .rune,
+                    .null => .unknown,
+                };
                 try globals.append(allocator, .{
                     .name = decl.name,
-                    .ty = inferConstType(decl.value),
+                    .ty = ty,
                     .init = .{ .imm = effective_imm },
                     .mutable = false,
                 });
             },
             .function => |decl| {
                 // Generic templates are lowered per-instantiation below; skip the template itself.
-                if (decl.type_params.len == 0) {
+                // Comptime-only metaprogramming helpers (signatures or bodies that
+                // build ast.* values) exist only for the VM: the cache build
+                // (cvm == null) keeps them so `#insert #run gen()` can call them,
+                // but the final module — and LLVM, which cannot lower the
+                // recursive ast.* types — never sees them.
+                const comptime_only = cvm != null and fnIsComptimeOnly(decl);
+                if (decl.type_params.len == 0 and !comptime_only) {
                     try functions.append(allocator, try lowerFunction(allocator, front_end.types, front_end.symbols, front_end.module, decl, cvm));
                 }
                 if (externLibName(decl.attrs)) |lib| try addExternLib(allocator, &extern_libs, lib);
@@ -1503,7 +1522,12 @@ const FunctionLowerer = struct {
             // statements inline (sema already re-checked them in this scope).
             .insert_stmt => |ins| switch (ins.operand.kind) {
                 .quote => |block| try self.lowerBlock(block.statements, null),
-                else => return error.LoweringFailed,
+                // A computed operand (`#insert #run gen()`) is resolved by the
+                // two-pass pipeline BEFORE final lowering. During the ComptimeVm
+                // cache build (cvm == null) it may still be present — skip it so
+                // the rest of the module reaches the cache; the cached copy of
+                // this function is never the one that gets compiled.
+                else => if (self.cvm != null) return error.LoweringFailed,
             },
             // Expanded away by the macroexpand pass before lowering.
             .comptime_for => return error.LoweringFailed,
@@ -1782,13 +1806,136 @@ const FunctionLowerer = struct {
         self.startBlock(after_id, "for.slice.after");
     }
 
+    /// Materialize a quoted expression into a faithful `AstExpr` value by
+    /// emitting construction IR (variant_lit / struct_lit / ref). This is the
+    /// generative Flavor-A path: `#quote(expr)` becomes a real value the VM can
+    /// build, `match` on, and a reifier can turn back into AST.
+    fn materializeExpr(self: *FunctionLowerer, expr: ast.Expr) LowerError!Value {
+        const ast_expr: IrType = .{ .variant_type = "AstExpr" };
+        switch (expr.kind) {
+            .int => |text| return try self.emit(ast_expr, .{ .variant_lit = .{
+                .type_name = "AstExpr",
+                .variant = "int",
+                .payload = .{ .imm = .{ .int = parseIntLiteral(text) } },
+            } }),
+            .ident => |name| return try self.emit(ast_expr, .{ .variant_lit = .{
+                .type_name = "AstExpr",
+                .variant = "ident",
+                .payload = .{ .imm = .{ .text = name } },
+            } }),
+            .binary => |b| {
+                const op_name = astBinOpName(b.op) orelse return error.LoweringFailed;
+                const op_val = try self.emit(.{ .variant_type = "AstBinOp" }, .{ .variant_lit = .{
+                    .type_name = "AstBinOp",
+                    .variant = op_name,
+                    .payload = null,
+                } });
+                const left = try self.materializeExpr(b.left.*);
+                const right = try self.materializeExpr(b.right.*);
+                const expr_ptr = blk: {
+                    const inner = try self.allocator.create(IrType);
+                    inner.* = ast_expr;
+                    break :blk IrType{ .ptr = inner };
+                };
+                const left_ptr = try self.emit(expr_ptr, .{ .unary = .{ .op = .ref, .value = left } });
+                const right_ptr = try self.emit(expr_ptr, .{ .unary = .{ .op = .ref, .value = right } });
+                const fields = try self.allocator.dupe(StructFieldValue, &.{
+                    .{ .name = "op", .value = op_val },
+                    .{ .name = "left", .value = left_ptr },
+                    .{ .name = "right", .value = right_ptr },
+                });
+                const bin = try self.emit(.{ .struct_type = "AstBinary" }, .{ .struct_lit = .{
+                    .ty_name = "AstBinary",
+                    .fields = fields,
+                } });
+                return try self.emit(ast_expr, .{ .variant_lit = .{
+                    .type_name = "AstExpr",
+                    .variant = "binary",
+                    .payload = bin,
+                } });
+            },
+            // Splices and unsupported node kinds are not materializable yet.
+            else => return error.LoweringFailed,
+        }
+    }
+
+    /// Materialize a quoted block into an `AstBlock` value: build each statement
+    /// as an `AstStmt`, collect them into a `[]AstStmt` slice, wrap in AstBlock.
+    fn materializeBlock(self: *FunctionLowerer, block: ast.Block) LowerError!Value {
+        const stmt_elem = blk: {
+            const inner = try self.allocator.create(IrType);
+            inner.* = .{ .variant_type = "AstStmt" };
+            break :blk inner;
+        };
+
+        var elems = std.ArrayList(Value).empty;
+        errdefer elems.deinit(self.allocator);
+        for (block.statements) |s| try elems.append(self.allocator, try self.materializeStmt(s));
+        const n = elems.items.len;
+
+        const arr_ty: IrType = .{ .array = .{ .elem = stmt_elem, .len = n } };
+        const arr = try self.emit(arr_ty, .{ .builtin = .{
+            .name = "compound_literal",
+            .args = try elems.toOwnedSlice(self.allocator),
+        } });
+        const slice = try self.emit(.{ .slice = stmt_elem }, .{ .slice_expr = .{
+            .ptr = arr,
+            .len = .{ .imm = .{ .uint = n } },
+        } });
+        const fields = try self.allocator.dupe(StructFieldValue, &.{
+            .{ .name = "stmts", .value = slice },
+        });
+        return try self.emit(.{ .struct_type = "AstBlock" }, .{ .struct_lit = .{
+            .ty_name = "AstBlock",
+            .fields = fields,
+        } });
+    }
+
+    /// Materialize one statement into an `AstStmt` value.
+    fn materializeStmt(self: *FunctionLowerer, stmt: ast.Stmt) LowerError!Value {
+        const stmt_ty: IrType = .{ .variant_type = "AstStmt" };
+        switch (stmt) {
+            .assign => |a| {
+                const target = try self.materializeExpr(a.target);
+                const value = try self.materializeExpr(a.value);
+                const fields = try self.allocator.dupe(StructFieldValue, &.{
+                    .{ .name = "target", .value = target },
+                    .{ .name = "value", .value = value },
+                });
+                const payload = try self.emit(.{ .struct_type = "AstAssign" }, .{ .struct_lit = .{
+                    .ty_name = "AstAssign",
+                    .fields = fields,
+                } });
+                return try self.emit(stmt_ty, .{ .variant_lit = .{ .type_name = "AstStmt", .variant = "assign", .payload = payload } });
+            },
+            .local_infer => |l| {
+                const value = try self.materializeExpr(l.value);
+                const fields = try self.allocator.dupe(StructFieldValue, &.{
+                    .{ .name = "name", .value = .{ .imm = .{ .text = l.name } } },
+                    .{ .name = "value", .value = value },
+                });
+                const payload = try self.emit(.{ .struct_type = "AstLocal" }, .{ .struct_lit = .{
+                    .ty_name = "AstLocal",
+                    .fields = fields,
+                } });
+                return try self.emit(stmt_ty, .{ .variant_lit = .{ .type_name = "AstStmt", .variant = "local", .payload = payload } });
+            },
+            .expr => |e| {
+                const value = try self.materializeExpr(e);
+                return try self.emit(stmt_ty, .{ .variant_lit = .{ .type_name = "AstStmt", .variant = "expr", .payload = value } });
+            },
+            else => return error.LoweringFailed,
+        }
+    }
+
     fn lowerExpr(self: *FunctionLowerer, expr: ast.Expr) LowerError!Value {
         return switch (expr.kind) {
-            // A `#quote` block has no value-position lowering in slice 1; it is
-            // only valid as the operand of `#insert` (handled in lowerStmt).
-            // `#quote(expr)`/`$`-splices are macro internals removed by the
-            // macroexpand pass; reaching here means misuse.
-            .quote, .quote_expr, .splice => return error.LoweringFailed,
+            // `#quote(expr)` materializes its quoted expression into an AstExpr
+            // value (the faithful ast.* surface). The block form `#quote { }`
+            // (slices) and stray `$`-splices are not value-lowered here.
+            .quote_expr => |inner| try self.materializeExpr(inner.*),
+            .quote => |block| try self.materializeBlock(block),
+            .splice => return error.LoweringFailed,
             .ident => |name| blk: {
                 for (self.params) |p| {
                     if (std.mem.eql(u8, p.name, name)) break :blk Value{ .param = name };
@@ -2329,6 +2476,11 @@ const FunctionLowerer = struct {
                         }
                     }
                 }
+                // 3. lowerer-tracked local type (subject is a local of enum type)
+                if (self.local_types.get(ident_name)) |lty| switch (lty) {
+                    .variant_type, .struct_type => |n| break :blk n,
+                    else => {},
+                };
             }
             break :blk "";
         };
@@ -3026,6 +3178,329 @@ const ComptimeVm = struct {
     fn evalToImm(self: *ComptimeVm, expr: ast.Expr) ?Imm {
         return (self.evalRaw(expr) orelse return null).toImm();
     }
+
+    /// Evaluate `expr` on the VM and reify the resulting `AstBlock` value into
+    /// front-end AST (allocated on `out_alloc`). The VM's zones are kept alive
+    /// across reification (`executeKeepZones`) so the cells can be read.
+    fn evalToAstBlock(
+        self: *ComptimeVm,
+        expr: ast.Expr,
+        out_alloc: std.mem.Allocator,
+        span: Span,
+        next_id: *ast.NodeId,
+    ) ?ast.Block {
+        const c = self.ensureCache() orelse return null;
+        const a = self.arena.allocator();
+        const irfn = lowerExprToFunction(a, self.front_end, expr) catch return null;
+        const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
+        var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
+        defer vm.deinit();
+        const result = vm.executeKeepZones(bc_fn) catch return null;
+        var r = Reifier{ .allocator = out_alloc, .vm = &vm, .next_id = next_id, .span = span };
+        return r.reifyBlock(result) catch null;
+    }
+};
+
+// ── Reifier: VM value → front-end AST ────────────────────────────────────────
+// The inverse of `materializeBlock`/`materializeExpr`: walks the zone-cell
+// representation of an `AstBlock` value the VM built and reconstructs real
+// `ast.*` nodes. Variant tags index the declaration order in `ast_prelude.zig`;
+// struct field offsets match the prelude's field order. The compiler stamps
+// fresh NodeIds (from a reserved range) and the `#insert` site's span.
+
+/// Reified nodes get ids from this base — distinct from user nodes (small ids)
+/// and the prelude (900_000+).
+const reified_id_base: ast.NodeId = 800_000;
+
+const Reifier = struct {
+    allocator: std.mem.Allocator,
+    vm: *vm_engine.Vm,
+    next_id: *ast.NodeId,
+    span: Span,
+
+    const Error = error{ ReifyFailed, OutOfMemory };
+
+    fn ptrOf(v: vm_value.Value) Error!vm_value.Value.Ptr {
+        return switch (v) {
+            .ptr => |p| p,
+            .struct_ref => |r| .{ .zone = r.zone, .offset = r.offset },
+            else => error.ReifyFailed,
+        };
+    }
+
+    fn cellAt(self: *Reifier, p: vm_value.Value.Ptr, off: u32) Error!vm_value.Value {
+        return self.vm.zone_stack.getCell(p.zone, p.offset + off) catch error.ReifyFailed;
+    }
+
+    fn tagAt(self: *Reifier, p: vm_value.Value.Ptr) Error!i128 {
+        return (try self.cellAt(p, 0)).asI128() orelse error.ReifyFailed;
+    }
+
+    fn freshId(self: *Reifier) ast.NodeId {
+        const id = self.next_id.*;
+        self.next_id.* += 1;
+        return id;
+    }
+
+    fn dupeString(self: *Reifier, v: vm_value.Value) Error![]const u8 {
+        return switch (v) {
+            .string => |s| try self.allocator.dupe(u8, s),
+            else => error.ReifyFailed,
+        };
+    }
+
+    fn reifyBlock(self: *Reifier, v: vm_value.Value) Error!ast.Block {
+        // AstBlock = struct { stmts: []AstStmt } — one cell holding the slice.
+        const p = try ptrOf(v);
+        const sl = switch (try self.cellAt(p, 0)) {
+            .slice => |s| s,
+            else => return error.ReifyFailed,
+        };
+        const stmts = try self.allocator.alloc(ast.Stmt, sl.len);
+        for (stmts, 0..) |*out, i| {
+            const elem = self.vm.zone_stack.getCell(sl.zone, sl.offset + @as(u32, @intCast(i))) catch return error.ReifyFailed;
+            out.* = try self.reifyStmt(elem);
+        }
+        return .{ .statements = stmts, .span = self.span };
+    }
+
+    fn reifyStmt(self: *Reifier, v: vm_value.Value) Error!ast.Stmt {
+        const p = try ptrOf(v);
+        const payload = try self.cellAt(p, 1);
+        // Prelude declaration order: AstStmt { local, assign, expr }.
+        switch (try self.tagAt(p)) {
+            0 => { // local: AstLocal { name, value }
+                const pl = try ptrOf(payload);
+                return .{ .local_infer = .{
+                    .name = try self.dupeString(try self.cellAt(pl, 0)),
+                    .value = try self.reifyExpr(try self.cellAt(pl, 1)),
+                    .span = self.span,
+                } };
+            },
+            1 => { // assign: AstAssign { target, value }
+                const pl = try ptrOf(payload);
+                return .{ .assign = .{
+                    .target = try self.reifyExpr(try self.cellAt(pl, 0)),
+                    .op = .assign,
+                    .value = try self.reifyExpr(try self.cellAt(pl, 1)),
+                    .span = self.span,
+                } };
+            },
+            2 => return .{ .expr = try self.reifyExpr(payload) },
+            else => return error.ReifyFailed,
+        }
+    }
+
+    fn reifyExpr(self: *Reifier, v: vm_value.Value) Error!ast.Expr {
+        const p = try ptrOf(v);
+        const payload = try self.cellAt(p, 1);
+        // Prelude declaration order: AstExpr { int, ident, binary }.
+        const kind: ast.ExprKind = switch (try self.tagAt(p)) {
+            0 => blk: {
+                const n = payload.asI128() orelse return error.ReifyFailed;
+                // Negative constants become `-(literal)` since literal text is unsigned.
+                if (n < 0) {
+                    const inner = try self.allocator.create(ast.Expr);
+                    inner.* = .{
+                        .id = self.freshId(),
+                        .kind = .{ .int = try std.fmt.allocPrint(self.allocator, "{d}", .{-n}) },
+                        .span = self.span,
+                    };
+                    break :blk .{ .unary = .{ .op = .neg, .expr = inner } };
+                }
+                break :blk .{ .int = try std.fmt.allocPrint(self.allocator, "{d}", .{n}) };
+            },
+            1 => .{ .ident = try self.dupeString(payload) },
+            2 => blk: { // binary: AstBinary { op, left, right }
+                const pb = try ptrOf(payload);
+                const op_block = try ptrOf(try self.cellAt(pb, 0));
+                // Prelude declaration order: AstBinOp { add, sub, mul, div }.
+                const op: ast.BinaryOp = switch (try self.tagAt(op_block)) {
+                    0 => .add,
+                    1 => .sub,
+                    2 => .mul,
+                    3 => .div,
+                    else => return error.ReifyFailed,
+                };
+                const left = try self.allocator.create(ast.Expr);
+                left.* = try self.reifyExpr(try self.cellAt(pb, 1));
+                const right = try self.allocator.create(ast.Expr);
+                right.* = try self.reifyExpr(try self.cellAt(pb, 2));
+                break :blk .{ .binary = .{ .op = op, .left = left, .right = right } };
+            },
+            else => return error.ReifyFailed,
+        };
+        return .{ .id = self.freshId(), .kind = kind, .span = self.span };
+    }
+};
+
+// ── Two-pass `#insert`: evaluate computed operands, splice, re-check ─────────
+// `#insert <computed>` (e.g. `#insert #run gen()`) needs the VM (post-sema) to
+// produce the code, but the code must be spliced pre-sema to be type-checked.
+// Pass 1: sema the module, run each computed operand on the VM, reify the
+// resulting AstBlock into front-end AST, and rewrite the operand to a literal
+// `#quote { ... }`. Pass 2 (in pipeline.zig): re-run sema on the result, where
+// the existing literal-quote path splices and checks it like hand-written code.
+
+pub const InsertExpandError = error{ SemanticFailed, OutOfMemory };
+
+/// Returns the rewritten module if it contained computed inserts, else null.
+pub fn expandComputedInserts(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) InsertExpandError!?ast.Module {
+    var any = false;
+    for (front_end.module.items) |item| switch (item) {
+        .function => |f| {
+            if (f.body) |b| if (blockHasComputedInsert(b)) {
+                any = true;
+            };
+        },
+        .interface_impl => |impl| for (impl.methods) |m| {
+            if (m.body) |b| if (blockHasComputedInsert(b)) {
+                any = true;
+            };
+        },
+        else => {},
+    };
+    if (!any) return null;
+
+    var cvm = ComptimeVm.init(allocator, front_end);
+    defer cvm.deinit();
+    var ctx = InsertExpander{ .allocator = allocator, .cvm = &cvm, .next_id = reified_id_base };
+
+    var items = std.ArrayList(ast.Item).empty;
+    errdefer items.deinit(allocator);
+    for (front_end.module.items) |item| switch (item) {
+        .function => |f| {
+            var nf = f;
+            if (f.body) |b| nf.body = try ctx.rewriteBlock(b);
+            try items.append(allocator, .{ .function = nf });
+        },
+        .interface_impl => |impl| {
+            var methods = std.ArrayList(ast.FunctionDecl).empty;
+            errdefer methods.deinit(allocator);
+            for (impl.methods) |m| {
+                var nm = m;
+                if (m.body) |b| nm.body = try ctx.rewriteBlock(b);
+                try methods.append(allocator, nm);
+            }
+            var ni = impl;
+            ni.methods = try methods.toOwnedSlice(allocator);
+            try items.append(allocator, .{ .interface_impl = ni });
+        },
+        else => try items.append(allocator, item),
+    };
+    return ast.Module{
+        .file_name = front_end.module.file_name,
+        .items = try items.toOwnedSlice(allocator),
+    };
+}
+
+fn blockHasComputedInsert(block: ast.Block) bool {
+    for (block.statements) |s| if (stmtHasComputedInsert(s)) return true;
+    return false;
+}
+
+fn stmtHasComputedInsert(stmt: ast.Stmt) bool {
+    return switch (stmt) {
+        .insert_stmt => |ins| ins.operand.kind != .quote,
+        .if_stmt => |s| blockHasComputedInsert(s.then_block) or
+            (if (s.else_block) |e| blockHasComputedInsert(e) else false),
+        .while_stmt => |s| blockHasComputedInsert(s.body),
+        .for_range => |s| blockHasComputedInsert(s.body),
+        .for_slice => |s| blockHasComputedInsert(s.body),
+        .match_stmt => |s| blk: {
+            for (s.arms) |a| if (blockHasComputedInsert(a.body)) break :blk true;
+            break :blk false;
+        },
+        .zone_block => |s| blockHasComputedInsert(s.body),
+        .defer_stmt => |s| blockHasComputedInsert(s.body),
+        .unsafe_block, .comptime_run => |b| blockHasComputedInsert(b),
+        .comptime_if => |s| blockHasComputedInsert(s.then_block) or
+            (if (s.else_block) |e| blockHasComputedInsert(e) else false),
+        else => false,
+    };
+}
+
+const InsertExpander = struct {
+    allocator: std.mem.Allocator,
+    cvm: *ComptimeVm,
+    next_id: ast.NodeId,
+
+    fn rewriteBlock(self: *InsertExpander, block: ast.Block) InsertExpandError!ast.Block {
+        var out = std.ArrayList(ast.Stmt).empty;
+        errdefer out.deinit(self.allocator);
+        for (block.statements) |stmt| try out.append(self.allocator, try self.rewriteStmt(stmt));
+        return .{ .statements = try out.toOwnedSlice(self.allocator), .span = block.span };
+    }
+
+    fn rewriteStmt(self: *InsertExpander, stmt: ast.Stmt) InsertExpandError!ast.Stmt {
+        switch (stmt) {
+            .insert_stmt => |ins| {
+                if (ins.operand.kind == .quote) return stmt;
+                // Evaluate the (unwrapped) operand on the VM and reify.
+                const inner = if (ins.operand.kind == .run_expr) ins.operand.kind.run_expr.* else ins.operand;
+                const block = self.cvm.evalToAstBlock(inner, self.allocator, ins.span, &self.next_id) orelse {
+                    std.debug.print("error: `#insert` operand did not evaluate to an `AstBlock` at compile time\n", .{});
+                    return error.SemanticFailed;
+                };
+                return .{ .insert_stmt = .{
+                    .operand = .{ .id = ins.operand.id, .kind = .{ .quote = block }, .span = ins.operand.span },
+                    .span = ins.span,
+                } };
+            },
+            .if_stmt => |s| {
+                var n = s;
+                n.then_block = try self.rewriteBlock(s.then_block);
+                if (s.else_block) |e| n.else_block = try self.rewriteBlock(e);
+                return .{ .if_stmt = n };
+            },
+            .while_stmt => |s| {
+                var n = s;
+                n.body = try self.rewriteBlock(s.body);
+                return .{ .while_stmt = n };
+            },
+            .for_range => |s| {
+                var n = s;
+                n.body = try self.rewriteBlock(s.body);
+                return .{ .for_range = n };
+            },
+            .for_slice => |s| {
+                var n = s;
+                n.body = try self.rewriteBlock(s.body);
+                return .{ .for_slice = n };
+            },
+            .match_stmt => |s| {
+                var arms = std.ArrayList(ast.MatchArm).empty;
+                errdefer arms.deinit(self.allocator);
+                for (s.arms) |arm| {
+                    var na = arm;
+                    na.body = try self.rewriteBlock(arm.body);
+                    try arms.append(self.allocator, na);
+                }
+                var n = s;
+                n.arms = try arms.toOwnedSlice(self.allocator);
+                return .{ .match_stmt = n };
+            },
+            .zone_block => |s| {
+                var n = s;
+                n.body = try self.rewriteBlock(s.body);
+                return .{ .zone_block = n };
+            },
+            .defer_stmt => |s| {
+                var n = s;
+                n.body = try self.rewriteBlock(s.body);
+                return .{ .defer_stmt = n };
+            },
+            .unsafe_block => |b| return .{ .unsafe_block = try self.rewriteBlock(b) },
+            .comptime_run => |b| return .{ .comptime_run = try self.rewriteBlock(b) },
+            .comptime_if => |s| {
+                var n = s;
+                n.then_block = try self.rewriteBlock(s.then_block);
+                if (s.else_block) |e| n.else_block = try self.rewriteBlock(e);
+                return .{ .comptime_if = n };
+            },
+            else => return stmt,
+        }
+    }
 };
 
 // ── VM comptime corpus ──────────────────────────────────────────────────────
@@ -3115,6 +3590,131 @@ fn effectiveConstImm(expr: ast.Expr, cvm: ?*ComptimeVm) Imm {
         if (c.evalToImm(inner)) |imm| return imm;
     }
     return lowerImm(inner);
+}
+
+/// Map an AST binary operator to its `AstBinOp` variant name, for materializing
+/// `#quote(a + b)`. Only the operators the ast.* surface models are supported.
+fn astBinOpName(op: ast.BinaryOp) ?[]const u8 {
+    return switch (op) {
+        .add => "add",
+        .sub => "sub",
+        .mul => "mul",
+        .div => "div",
+        else => null,
+    };
+}
+
+// ── Comptime-only function detection ─────────────────────────────────────────
+// A function whose signature mentions the ast.* prelude types, or whose body
+// builds quote values, is a metaprogramming helper: it runs only on the VM and
+// is excluded from the final (runtime) module.
+
+const ast_prelude_type_names = [_][]const u8{
+    "AstBlock", "AstStmt", "AstExpr", "AstBinary", "AstBinOp", "AstLocal", "AstAssign",
+};
+
+fn isAstPreludeTypeName(name: []const u8) bool {
+    for (ast_prelude_type_names) |n| {
+        if (std.mem.eql(u8, n, name)) return true;
+    }
+    return false;
+}
+
+fn typeRefUsesAstTypes(ty: ast.TypeRef) bool {
+    return switch (ty) {
+        .named, .type_param => |n| isAstPreludeTypeName(n.name),
+        .pointer, .many_pointer => |p| typeRefUsesAstTypes(p.inner.*),
+        .optional => |o| typeRefUsesAstTypes(o.inner.*),
+        .slice => |s| typeRefUsesAstTypes(s.inner.*),
+        .array => |a| typeRefUsesAstTypes(a.inner.*),
+        .atomic => |a| typeRefUsesAstTypes(a.inner.*),
+        .borrow => |b| typeRefUsesAstTypes(b.inner.*),
+        .fn_type => |f| blk: {
+            for (f.params) |pt| if (typeRefUsesAstTypes(pt)) break :blk true;
+            break :blk typeRefUsesAstTypes(f.ret.*);
+        },
+        .generic_inst => |g| blk: {
+            for (g.args) |at| if (typeRefUsesAstTypes(at)) break :blk true;
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+fn fnIsComptimeOnly(decl: ast.FunctionDecl) bool {
+    if (typeRefUsesAstTypes(decl.return_ty)) return true;
+    for (decl.params) |p| if (typeRefUsesAstTypes(p.ty)) return true;
+    if (decl.body) |b| if (blockHasQuoteValue(b)) return true;
+    return false;
+}
+
+fn blockHasQuoteValue(block: ast.Block) bool {
+    for (block.statements) |s| if (stmtHasQuoteValue(s)) return true;
+    return false;
+}
+
+fn stmtHasQuoteValue(stmt: ast.Stmt) bool {
+    return switch (stmt) {
+        // An `#insert` operand is spliced, never a runtime value.
+        .insert_stmt => false,
+        .local_infer => |l| exprHasQuote(l.value),
+        .local_typed => |l| exprHasQuote(l.value),
+        .assign => |a| exprHasQuote(a.target) or exprHasQuote(a.value),
+        .return_stmt => |r| if (r.value) |v| exprHasQuote(v) else false,
+        .fail_stmt => |f| blk: {
+            for (f.payload) |p| if (exprHasQuote(p)) break :blk true;
+            break :blk false;
+        },
+        .if_stmt => |s| exprHasQuote(s.condition) or blockHasQuoteValue(s.then_block) or
+            (if (s.else_block) |e| blockHasQuoteValue(e) else false),
+        .while_stmt => |s| exprHasQuote(s.condition) or blockHasQuoteValue(s.body),
+        .for_range => |s| exprHasQuote(s.start) or exprHasQuote(s.end) or blockHasQuoteValue(s.body),
+        .for_slice => |s| exprHasQuote(s.iter) or blockHasQuoteValue(s.body),
+        .match_stmt => |s| blk: {
+            if (exprHasQuote(s.subject)) break :blk true;
+            for (s.arms) |a| if (blockHasQuoteValue(a.body)) break :blk true;
+            break :blk false;
+        },
+        .zone_block => |s| blockHasQuoteValue(s.body),
+        .defer_stmt => |s| blockHasQuoteValue(s.body),
+        .unsafe_block, .comptime_run => |b| blockHasQuoteValue(b),
+        .comptime_if => |s| blockHasQuoteValue(s.then_block) or
+            (if (s.else_block) |e| blockHasQuoteValue(e) else false),
+        .comptime_for => |s| blockHasQuoteValue(s.body),
+        .expr => |e| exprHasQuote(e),
+        else => false,
+    };
+}
+
+fn exprHasQuote(e: ast.Expr) bool {
+    return switch (e.kind) {
+        .quote, .quote_expr => true,
+        .binary => |b| exprHasQuote(b.left.*) or exprHasQuote(b.right.*),
+        .unary => |u| exprHasQuote(u.expr.*),
+        .call => |c| blk: {
+            if (exprHasQuote(c.callee.*)) break :blk true;
+            for (c.args) |a| switch (a) {
+                .positional => |x| if (exprHasQuote(x)) break :blk true,
+                .named => |n| if (exprHasQuote(n.value)) break :blk true,
+            };
+            break :blk false;
+        },
+        .field => |f| exprHasQuote(f.base.*),
+        .index => |i| exprHasQuote(i.base.*) or exprHasQuote(i.index.*),
+        .slice => |s| exprHasQuote(s.base.*) or
+            (if (s.start) |x| exprHasQuote(x.*) else false) or
+            (if (s.end) |x| exprHasQuote(x.*) else false),
+        .force_unwrap, .unsafe_expr, .run_expr, .splice => |inner| exprHasQuote(inner.*),
+        .as_cast => |c| exprHasQuote(c.value.*),
+        .nil_coalesce => |nc| exprHasQuote(nc.value.*) or exprHasQuote(nc.default.*),
+        .try_expr => |t| exprHasQuote(t.value.*),
+        .catch_expr => |c| exprHasQuote(c.value.*) or blockHasQuoteValue(c.handler),
+        .compound_literal => |vals| blk: {
+            for (vals) |v| if (exprHasQuote(v)) break :blk true;
+            break :blk false;
+        },
+        else => false,
+    };
 }
 
 fn inferConstType(expr: ast.Expr) IrType {

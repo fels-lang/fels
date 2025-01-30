@@ -204,6 +204,30 @@ test "exe: generative macro unrolls a parameterized #for" {
     try std.testing.expectEqual(@as(u32, 10), code);
 }
 
+test "exe: #insert #run gen() — VM-generated code compiled into the binary" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // gen() runs on the comptime VM, its AstBlock is reified and spliced into
+    // main, then LLVM compiles the spliced code. gen itself (comptime-only,
+    // returns AstBlock) is excluded from the binary.
+    const code = try compileAndRun(arena.allocator(),
+        \\gen :: fn() -> AstBlock {
+        \\    return #quote {
+        \\        x = x + 40;
+        \\        x = x + 2;
+        \\    };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    x := 0;
+        \\    #insert #run gen();
+        \\    return x;
+        \\}
+    , "exe_gen_insert");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: main returning 42 propagates exit code" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
