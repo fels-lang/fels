@@ -11,69 +11,136 @@
 const std = @import("std");
 const k2 = @import("k2_compiler");
 
-// Zig 0.16 main signature — receives allocator, Io, and args from the startup system.
+const version = "0.1.0-dev";
+
+// ── Live status line ───────────────────────────────────────────────────────────
+// A "changing command line" — the current phase, with a spinner that advances at
+// each phase boundary. Uses a bare carriage return + padding (no ANSI), so it is
+// harmless when output is redirected.
+
+const Progress = struct {
+    quiet: bool,
+    frame: usize = 0,
+    const frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+
+    fn step(self: *Progress, phase: k2.Phase) void {
+        if (self.quiet) return;
+        const f = frames[self.frame % frames.len];
+        self.frame += 1;
+        std.debug.print("\r  {s} {s: <26}", .{ f, phase.label() });
+    }
+
+    fn clear(self: *Progress) void {
+        if (self.quiet) return;
+        std.debug.print("\r{s: <40}\r", .{""});
+    }
+};
+
+fn progressStep(ctx: ?*anyopaque, phase: k2.Phase) void {
+    const p: *Progress = @ptrCast(@alignCast(ctx.?));
+    p.step(phase);
+}
+
+// ── Entry ───────────────────────────────────────────────────────────────────────
+
+const Options = struct {
+    out_path: ?[]const u8 = null,
+    llvm_bin: []const u8 = "",
+    llvm_bin_owned: bool = false,
+    lib_paths: std.ArrayList([]const u8) = .empty,
+    extra_libs: std.ArrayList([]const u8) = .empty,
+    opt_level: u2 = 0,
+    quiet: bool = false,
+    show_time: bool = false,
+};
+
 pub fn main(init: std.process.Init) u8 {
     const allocator = init.gpa;
     const io = init.io;
 
-    // Collect args into a slice of strings.
     var args_iter = std.process.Args.Iterator.initAllocator(init.minimal.args, allocator) catch return 1;
     defer args_iter.deinit();
     var args_list: std.ArrayList([]const u8) = .empty;
     defer args_list.deinit(allocator);
-    while (args_iter.next()) |arg| {
-        args_list.append(allocator, arg) catch return 1;
-    }
+    while (args_iter.next()) |arg| args_list.append(allocator, arg) catch return 1;
     const args = args_list.items;
 
-    if (args.len < 3) {
+    if (args.len < 2) {
         printUsage();
         return 1;
     }
 
     const cmd = args[1];
+
+    // Commands that take no source file.
+    if (eqAny(cmd, &.{ "help", "--help", "-h" })) {
+        printUsage();
+        return 0;
+    }
+    if (eqAny(cmd, &.{ "version", "--version", "-v" })) {
+        std.debug.print("k2 {s}\n", .{version});
+        return 0;
+    }
+
+    if (args.len < 3) {
+        std.debug.print("k2: '{s}' needs a source file\n\n", .{cmd});
+        printUsage();
+        return 1;
+    }
     const src_path = args[2];
 
-    // Parse remaining options.
-    var out_path: ?[]const u8 = null;
-    var out_path_owned = false;
-    var llvm_bin: []const u8 = if (k2.llvm_path.len != 0) std.fmt.allocPrint(allocator, "{s}/bin", .{k2.llvm_path}) catch return 1 else "";
-    var llvm_bin_owned = k2.llvm_path.len != 0;
-    var lib_paths: std.ArrayList([]const u8) = .empty;
-    defer lib_paths.deinit(allocator);
-    var extra_libs: std.ArrayList([]const u8) = .empty;
-    defer extra_libs.deinit(allocator);
-    if (k2.windows_sdk_lib_path.len != 0) {
-        lib_paths.append(allocator, k2.windows_sdk_lib_path) catch return 1;
+    // Parse options.
+    var opts = Options{};
+    defer opts.lib_paths.deinit(allocator);
+    defer opts.extra_libs.deinit(allocator);
+    defer if (opts.llvm_bin_owned) allocator.free(opts.llvm_bin);
+    if (k2.llvm_path.len != 0) {
+        opts.llvm_bin = std.fmt.allocPrint(allocator, "{s}/bin", .{k2.llvm_path}) catch return 1;
+        opts.llvm_bin_owned = true;
+        opts.opt_level = if (@import("builtin").mode == .Debug) 0 else 2;
     }
-    var opt_level: u2 = 0;
+    if (k2.windows_sdk_lib_path.len != 0) {
+        opts.lib_paths.append(allocator, k2.windows_sdk_lib_path) catch return 1;
+    }
+
     var i: usize = 3;
     while (i < args.len) : (i += 1) {
         const a = args[i];
         if (std.mem.eql(u8, a, "-o") and i + 1 < args.len) {
             i += 1;
-            out_path = args[i];
+            opts.out_path = args[i];
         } else if (std.mem.eql(u8, a, "--llvm-path") and i + 1 < args.len) {
             i += 1;
-            if (llvm_bin_owned) allocator.free(llvm_bin);
-            llvm_bin = std.fmt.allocPrint(allocator, "{s}/bin", .{args[i]}) catch return 1;
-            llvm_bin_owned = true;
+            if (opts.llvm_bin_owned) allocator.free(opts.llvm_bin);
+            opts.llvm_bin = std.fmt.allocPrint(allocator, "{s}/bin", .{args[i]}) catch return 1;
+            opts.llvm_bin_owned = true;
         } else if (std.mem.eql(u8, a, "--lib-path") and i + 1 < args.len) {
             i += 1;
-            lib_paths.append(allocator, args[i]) catch return 1;
+            opts.lib_paths.append(allocator, args[i]) catch return 1;
         } else if (std.mem.eql(u8, a, "--lib") and i + 1 < args.len) {
             i += 1;
-            extra_libs.append(allocator, args[i]) catch return 1;
+            opts.extra_libs.append(allocator, args[i]) catch return 1;
         } else if (std.mem.eql(u8, a, "--opt") and i + 1 < args.len) {
             i += 1;
-            opt_level = std.fmt.parseInt(u2, args[i], 10) catch 0;
-        } else if (std.mem.eql(u8, a, "--release")) {
-            opt_level = 2;
+            opts.opt_level = std.fmt.parseInt(u2, args[i], 10) catch 0;
+        } else if (std.mem.eql(u8, a, "-O0")) {
+            opts.opt_level = 0;
+        } else if (std.mem.eql(u8, a, "-O1")) {
+            opts.opt_level = 1;
+        } else if (eqAny(a, &.{ "-O2", "--release" })) {
+            opts.opt_level = 2;
+        } else if (std.mem.eql(u8, a, "-O3")) {
+            opts.opt_level = 3;
+        } else if (eqAny(a, &.{ "-q", "--quiet" })) {
+            opts.quiet = true;
+        } else if (eqAny(a, &.{ "-t", "--time" })) {
+            opts.show_time = true;
+        } else {
+            std.debug.print("k2: unknown option '{s}'\n", .{a});
+            return 1;
         }
     }
-    defer if (llvm_bin_owned) allocator.free(llvm_bin);
 
-    // Read source file.
     const cwd = std.Io.Dir.cwd();
     const source = cwd.readFileAlloc(io, src_path, allocator, .unlimited) catch |err| {
         std.debug.print("k2: cannot read '{s}': {s}\n", .{ src_path, @errorName(err) });
@@ -81,30 +148,22 @@ pub fn main(init: std.process.Init) u8 {
     };
     defer allocator.free(source);
 
-    // Dispatch command.
     if (std.mem.eql(u8, cmd, "check")) return cmdCheck(allocator, io, src_path, source);
     if (std.mem.eql(u8, cmd, "ir")) return cmdIr(allocator, io, src_path, source);
     if (std.mem.eql(u8, cmd, "object")) {
-        if (out_path == null) {
-            out_path = deriveOut(allocator, src_path, ".o");
-            out_path_owned = true;
-        }
-        defer if (out_path_owned) allocator.free(out_path.?);
-        return cmdObject(allocator, io, src_path, source, out_path.?, opt_level, lib_paths.items, extra_libs.items);
+        const out = opts.out_path orelse deriveOut(allocator, src_path, ".o");
+        defer if (opts.out_path == null) allocator.free(out);
+        return cmdObject(allocator, io, src_path, source, out, &opts);
     }
     if (std.mem.eql(u8, cmd, "build")) {
-        if (out_path == null) {
-            out_path = deriveOut(allocator, src_path, ".exe");
-            out_path_owned = true;
-        }
-        defer if (out_path_owned) allocator.free(out_path.?);
-        const exe = out_path.?;
+        const exe = opts.out_path orelse deriveOut(allocator, src_path, ".exe");
+        defer if (opts.out_path == null) allocator.free(exe);
         const obj = std.fmt.allocPrint(allocator, "{s}.o", .{exe}) catch return 1;
         defer allocator.free(obj);
-        return cmdBuild(allocator, io, src_path, source, obj, exe, opt_level, llvm_bin, lib_paths.items, extra_libs.items);
+        return cmdBuild(allocator, io, src_path, source, obj, exe, &opts);
     }
 
-    std.debug.print("k2: unknown command '{s}'\n", .{cmd});
+    std.debug.print("k2: unknown command '{s}'\n\n", .{cmd});
     printUsage();
     return 1;
 }
@@ -119,7 +178,7 @@ fn cmdCheck(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
     defer fe.deinit(allocator);
     printDiags(allocator, fe.diagnostics(), path, source);
     if (fe.diagnostics().len != 0) return 1;
-    std.debug.print("ok\n", .{});
+    std.debug.print("ok — no errors\n", .{});
     return 0;
 }
 
@@ -142,63 +201,90 @@ fn cmdIr(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []c
     return 0;
 }
 
-fn cmdObject(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    path: []const u8,
-    source: []const u8,
-    obj_path: []const u8,
-    opt_level: u2,
-    lib_paths: []const []const u8,
-    extra_libs: []const []const u8,
-) u8 {
+fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8, obj_path: []const u8, opts: *Options) u8 {
     if (!k2.llvm_enabled) return noLlvm();
+    var progress = Progress{ .quiet = opts.quiet };
+    var timings: k2.Timings = .{};
     k2.compileFileWithLlvm(allocator, io, .{
         .file_name = path,
         .source = source,
         .obj_path = obj_path,
-        .opt_level = opt_level,
-        .lib_paths = lib_paths,
-        .extra_libs = extra_libs,
+        .opt_level = opts.opt_level,
+        .lib_paths = opts.lib_paths.items,
+        .extra_libs = opts.extra_libs.items,
+        .progress = progressStep,
+        .progress_ctx = &progress,
+        .timings = &timings,
     }) catch |err| {
+        progress.clear();
         std.debug.print("k2: {s}\n", .{@errorName(err)});
         return 1;
     };
-    std.debug.print("{s}\n", .{obj_path});
+    progress.clear();
+    std.debug.print("  wrote {s}\n", .{obj_path});
+    if (opts.show_time) printTimings(timings, obj_path);
     return 0;
 }
 
-fn cmdBuild(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    path: []const u8,
-    source: []const u8,
-    obj_path: []const u8,
-    exe_path: []const u8,
-    opt_level: u2,
-    llvm_bin: []const u8,
-    lib_paths: []const []const u8,
-    extra_libs: []const []const u8,
-) u8 {
+fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8, obj_path: []const u8, exe_path: []const u8, opts: *Options) u8 {
     if (!k2.llvm_enabled) return noLlvm();
+    var progress = Progress{ .quiet = opts.quiet };
+    var timings: k2.Timings = .{};
     k2.compileFileWithLlvm(allocator, io, .{
         .file_name = path,
         .source = source,
         .obj_path = obj_path,
         .exe_path = exe_path,
-        .opt_level = opt_level,
-        .llvm_bin = llvm_bin,
-        .lib_paths = lib_paths,
-        .extra_libs = extra_libs,
+        .opt_level = opts.opt_level,
+        .llvm_bin = opts.llvm_bin,
+        .lib_paths = opts.lib_paths.items,
+        .extra_libs = opts.extra_libs.items,
+        .progress = progressStep,
+        .progress_ctx = &progress,
+        .timings = &timings,
     }) catch |err| {
+        progress.clear();
         std.debug.print("k2: {s}\n", .{@errorName(err)});
         return 1;
     };
-    std.debug.print("{s}\n", .{exe_path});
+    progress.clear();
+    std.debug.print("  \u{2713} {s}\n", .{exe_path});
+    if (!opts.quiet) printTimings(timings, exe_path);
     return 0;
 }
 
+// ── Stats ───────────────────────────────────────────────────────────────────────
+
+fn ms(ns: u64) f64 {
+    return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
+}
+
+fn printTimings(t: k2.Timings, _: []const u8) void {
+    std.debug.print("\n", .{});
+    printRow("front-end", t.frontend_ns);
+    printRow("lowering", t.lower_ns);
+    printRow("optimise", t.passes_ns);
+    printRow("codegen", t.codegen_ns);
+    printRow("emit object", t.emit_ns);
+    printRow("link", t.link_ns);
+    std.debug.print("  ───────────────────────\n", .{});
+    printRow("total", t.total_ns);
+    // Comptime time is a slice of front-end + lowering — K2's signature cost.
+    if (t.comptime_ns != 0) {
+        std.debug.print("  (of which comptime: {d: >7.2} ms)\n", .{ms(t.comptime_ns)});
+    }
+}
+
+fn printRow(name: []const u8, ns: u64) void {
+    std.debug.print("  {s: <14}{d: >8.2} ms\n", .{ name, ms(ns) });
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn eqAny(s: []const u8, options: []const []const u8) bool {
+    for (options) |o| if (std.mem.eql(u8, s, o)) return true;
+    return false;
+}
 
 fn noLlvm() u8 {
     std.debug.print("k2: LLVM backend not enabled.\n" ++
@@ -211,12 +297,7 @@ fn deriveOut(allocator: std.mem.Allocator, src: []const u8, ext: []const u8) []c
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, ext }) catch src;
 }
 
-fn printDiags(
-    allocator: std.mem.Allocator,
-    diags: []const k2.Diagnostic,
-    path: []const u8,
-    source: []const u8,
-) void {
+fn printDiags(allocator: std.mem.Allocator, diags: []const k2.Diagnostic, path: []const u8, source: []const u8) void {
     for (diags) |d| {
         const rendered = k2.renderDiagnostic(allocator, path, source, d) catch continue;
         defer allocator.free(rendered);
@@ -226,20 +307,26 @@ fn printDiags(
 
 fn printUsage() void {
     std.debug.print(
-        \\k2 compiler
+        \\k2 {s} — a systems language with compile-time metaprogramming
         \\
-        \\  k2 check  <file.k2>             type-check only
-        \\  k2 build  <file.k2> [opts]      compile to .exe
-        \\  k2 object <file.k2> [opts]      compile to .o
-        \\  k2 ir     <file.k2>             dump LLVM IR
+        \\usage:  k2 <command> <file.k2> [options]
         \\
-        \\Options:
-        \\  -o <path>           output file
-        \\  --llvm-path <dir>   LLVM root (use forward slashes)
-        \\  --lib-path <dir>    linker library search directory
-        \\  --lib <name>        extra import library to link (e.g. user32, no .lib suffix)
-        \\  --opt <0-3>         optimisation level (default 0)
-        \\  --release           alias for --opt 2
+        \\commands:
+        \\  check    <file.k2>     parse and type-check only
+        \\  build    <file.k2>     compile and link a native executable (Windows)
+        \\  object   <file.k2>     compile to an object file (.o)
+        \\  ir       <file.k2>     print LLVM IR to stdout
+        \\  version                print the compiler version
+        \\  help                   show this message
         \\
-    , .{});
+        \\options:
+        \\  -o <path>              output file (default: derived from the source name)
+        \\  -O0 / -O1 / -O2 / -O3  optimisation level   (--release = -O2)
+        \\  -t, --time             print phase timings (build/object)
+        \\  -q, --quiet            no status line or timings
+        \\  --llvm-path <dir>      LLVM root (forward slashes)
+        \\  --lib-path <dir>       add a linker library search directory
+        \\  --lib <name>           link an extra import library (e.g. user32)
+        \\
+    , .{version});
 }

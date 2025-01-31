@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const pipeline = @import("pipeline.zig");
+const parser = @import("parser.zig");
 const sema = @import("sema.zig");
 const Span = @import("lexer/span.zig").Span;
 const diag_mod = @import("diagnostic.zig");
@@ -11,6 +12,21 @@ const vm_value = @import("vm/value.zig");
 
 pub const RegId = u32;
 pub const BlockId = u32;
+
+/// Wall-clock nanoseconds spent in compile-time evaluation on the VM (the
+/// `#run`/`#insert`/`#parse` engine, including FFI). Accumulated globally; the
+/// driver snapshots it around a build to report "Comptime" time. Single-threaded.
+pub var comptime_ns: u64 = 0;
+
+const clock = @import("clock.zig");
+
+fn ctNow() u64 {
+    return clock.monoNs();
+}
+
+fn ctAdd(start: u64) void {
+    comptime_ns += clock.sinceNs(start);
+}
 
 pub const IrModule = struct {
     file_name: []const u8,
@@ -64,6 +80,9 @@ pub const IrFunction = struct {
     error_ty: ?IrType,
     blocks: []const IrBlock,
     extern_name: ?[]const u8,
+    /// Library for an `#extern("lib", "symbol")` function — used by the comptime
+    /// FFI bridge to know which DLL to load. Null for non-extern functions.
+    extern_lib: ?[]const u8 = null,
     inline_hint: bool,
     no_inline: bool,
     no_return: bool,
@@ -1265,6 +1284,7 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
         .error_ty = if (decl.error_ty) |err| try lowerErrorSpec(allocator, err) else null,
         .blocks = blocks,
         .extern_name = externName(decl.attrs),
+        .extern_lib = externLibName(decl.attrs),
         .inline_hint = hasAttr(decl.attrs, "inline"),
         .no_inline = hasAttr(decl.attrs, "noinline"),
         .no_return = hasAttr(decl.attrs, "noreturn"),
@@ -1806,126 +1826,342 @@ const FunctionLowerer = struct {
         self.startBlock(after_id, "for.slice.after");
     }
 
-    /// Materialize a quoted expression into a faithful `AstExpr` value by
-    /// emitting construction IR (variant_lit / struct_lit / ref). This is the
-    /// generative Flavor-A path: `#quote(expr)` becomes a real value the VM can
-    /// build, `match` on, and a reifier can turn back into AST.
-    fn materializeExpr(self: *FunctionLowerer, expr: ast.Expr) LowerError!Value {
-        const ast_expr: IrType = .{ .variant_type = "AstExpr" };
-        switch (expr.kind) {
-            .int => |text| return try self.emit(ast_expr, .{ .variant_lit = .{
-                .type_name = "AstExpr",
-                .variant = "int",
-                .payload = .{ .imm = .{ .int = parseIntLiteral(text) } },
-            } }),
-            .ident => |name| return try self.emit(ast_expr, .{ .variant_lit = .{
-                .type_name = "AstExpr",
-                .variant = "ident",
-                .payload = .{ .imm = .{ .text = name } },
-            } }),
-            .binary => |b| {
-                const op_name = astBinOpName(b.op) orelse return error.LoweringFailed;
-                const op_val = try self.emit(.{ .variant_type = "AstBinOp" }, .{ .variant_lit = .{
-                    .type_name = "AstBinOp",
-                    .variant = op_name,
-                    .payload = null,
-                } });
-                const left = try self.materializeExpr(b.left.*);
-                const right = try self.materializeExpr(b.right.*);
-                const expr_ptr = blk: {
-                    const inner = try self.allocator.create(IrType);
-                    inner.* = ast_expr;
-                    break :blk IrType{ .ptr = inner };
-                };
-                const left_ptr = try self.emit(expr_ptr, .{ .unary = .{ .op = .ref, .value = left } });
-                const right_ptr = try self.emit(expr_ptr, .{ .unary = .{ .op = .ref, .value = right } });
-                const fields = try self.allocator.dupe(StructFieldValue, &.{
-                    .{ .name = "op", .value = op_val },
-                    .{ .name = "left", .value = left_ptr },
-                    .{ .name = "right", .value = right_ptr },
-                });
-                const bin = try self.emit(.{ .struct_type = "AstBinary" }, .{ .struct_lit = .{
-                    .ty_name = "AstBinary",
-                    .fields = fields,
-                } });
-                return try self.emit(ast_expr, .{ .variant_lit = .{
-                    .type_name = "AstExpr",
-                    .variant = "binary",
-                    .payload = bin,
-                } });
-            },
-            // Splices and unsupported node kinds are not materializable yet.
-            else => return error.LoweringFailed,
-        }
+    // ── Materialization: quoted AST → ast.* construction IR ──────────────────
+    // `#quote(expr)` / `#quote { ... }` become real `AstExpr`/`AstBlock` values
+    // the VM can build, `match` on, and the reifier can turn back into AST.
+
+    fn mkVariant(self: *FunctionLowerer, type_name: []const u8, variant: []const u8, payload: ?Value) LowerError!Value {
+        return self.emit(.{ .variant_type = type_name }, .{ .variant_lit = .{
+            .type_name = type_name,
+            .variant = variant,
+            .payload = payload,
+        } });
     }
 
-    /// Materialize a quoted block into an `AstBlock` value: build each statement
-    /// as an `AstStmt`, collect them into a `[]AstStmt` slice, wrap in AstBlock.
-    fn materializeBlock(self: *FunctionLowerer, block: ast.Block) LowerError!Value {
-        const stmt_elem = blk: {
-            const inner = try self.allocator.create(IrType);
-            inner.* = .{ .variant_type = "AstStmt" };
-            break :blk inner;
-        };
+    fn mkStruct(self: *FunctionLowerer, ty_name: []const u8, fields: []const StructFieldValue) LowerError!Value {
+        return self.emit(.{ .struct_type = ty_name }, .{ .struct_lit = .{
+            .ty_name = ty_name,
+            .fields = try self.allocator.dupe(StructFieldValue, fields),
+        } });
+    }
 
-        var elems = std.ArrayList(Value).empty;
-        errdefer elems.deinit(self.allocator);
-        for (block.statements) |s| try elems.append(self.allocator, try self.materializeStmt(s));
-        const n = elems.items.len;
+    fn astStr(text: []const u8) Value {
+        return .{ .imm = .{ .text = text } };
+    }
 
-        const arr_ty: IrType = .{ .array = .{ .elem = stmt_elem, .len = n } };
-        const arr = try self.emit(arr_ty, .{ .builtin = .{
+    /// `*AstExpr` field value: materialize the expr, then take its address.
+    fn materializeExprPtr(self: *FunctionLowerer, e: ast.Expr) LowerError!Value {
+        const inner = try self.allocator.create(IrType);
+        inner.* = .{ .variant_type = "AstExpr" };
+        const v = try self.materializeExpr(e);
+        return self.emit(.{ .ptr = inner }, .{ .unary = .{ .op = .ref, .value = v } });
+    }
+
+    /// Build a `[]<elem>` slice from already-materialized element values.
+    fn materializeSlice(self: *FunctionLowerer, elem_ir: IrType, elems: []const Value) LowerError!Value {
+        const inner = try self.allocator.create(IrType);
+        inner.* = elem_ir;
+        const arr = try self.emit(.{ .array = .{ .elem = inner, .len = elems.len } }, .{ .builtin = .{
             .name = "compound_literal",
-            .args = try elems.toOwnedSlice(self.allocator),
+            .args = try self.allocator.dupe(Value, elems),
         } });
-        const slice = try self.emit(.{ .slice = stmt_elem }, .{ .slice_expr = .{
+        return self.emit(.{ .slice = inner }, .{ .slice_expr = .{
             .ptr = arr,
-            .len = .{ .imm = .{ .uint = n } },
-        } });
-        const fields = try self.allocator.dupe(StructFieldValue, &.{
-            .{ .name = "stmts", .value = slice },
-        });
-        return try self.emit(.{ .struct_type = "AstBlock" }, .{ .struct_lit = .{
-            .ty_name = "AstBlock",
-            .fields = fields,
+            .len = .{ .imm = .{ .uint = elems.len } },
         } });
     }
 
-    /// Materialize one statement into an `AstStmt` value.
-    fn materializeStmt(self: *FunctionLowerer, stmt: ast.Stmt) LowerError!Value {
-        const stmt_ty: IrType = .{ .variant_type = "AstStmt" };
-        switch (stmt) {
-            .assign => |a| {
-                const target = try self.materializeExpr(a.target);
-                const value = try self.materializeExpr(a.value);
-                const fields = try self.allocator.dupe(StructFieldValue, &.{
-                    .{ .name = "target", .value = target },
-                    .{ .name = "value", .value = value },
+    fn materializeVariantSlice(self: *FunctionLowerer, elem_variant: []const u8, elems: []const Value) LowerError!Value {
+        return self.materializeSlice(.{ .variant_type = elem_variant }, elems);
+    }
+
+    /// `*AstExpr` for an optional sub-expression (slice bounds), using the
+    /// `nothing` AstExpr as the "absent" sentinel.
+    fn materializeOptExprPtr(self: *FunctionLowerer, opt: ?*const ast.Expr) LowerError!Value {
+        if (opt) |e| return self.materializeExprPtr(e.*);
+        const inner = try self.allocator.create(IrType);
+        inner.* = .{ .variant_type = "AstExpr" };
+        const nothing = try self.mkVariant("AstExpr", "nothing", null);
+        return self.emit(.{ .ptr = inner }, .{ .unary = .{ .op = .ref, .value = nothing } });
+    }
+
+    /// `*AstType` field value.
+    fn materializeTypePtr(self: *FunctionLowerer, ty: ast.TypeRef) LowerError!Value {
+        const inner = try self.allocator.create(IrType);
+        inner.* = .{ .variant_type = "AstType" };
+        const v = try self.materializeType(ty);
+        return self.emit(.{ .ptr = inner }, .{ .unary = .{ .op = .ref, .value = v } });
+    }
+
+    /// Materialize a type reference into an `AstType` value.
+    fn materializeType(self: *FunctionLowerer, ty: ast.TypeRef) LowerError!Value {
+        switch (ty) {
+            .named, .type_param => |n| return self.mkVariant("AstType", "named", astStr(n.name)),
+            .pointer, .many_pointer => |p| return self.mkVariant("AstType", "ptr", try self.materializeTypePtr(p.inner.*)),
+            .slice => |s| return self.mkVariant("AstType", "slice_of", try self.materializeTypePtr(s.inner.*)),
+            .optional => |o| return self.mkVariant("AstType", "optional_of", try self.materializeTypePtr(o.inner.*)),
+            .array => |arr| {
+                const payload = try self.mkStruct("AstArrayTy", &.{
+                    .{ .name = "len", .value = try self.materializeExprPtr(arr.len.*) },
+                    .{ .name = "elem", .value = try self.materializeTypePtr(arr.inner.*) },
                 });
-                const payload = try self.emit(.{ .struct_type = "AstAssign" }, .{ .struct_lit = .{
-                    .ty_name = "AstAssign",
-                    .fields = fields,
-                } });
-                return try self.emit(stmt_ty, .{ .variant_lit = .{ .type_name = "AstStmt", .variant = "assign", .payload = payload } });
-            },
-            .local_infer => |l| {
-                const value = try self.materializeExpr(l.value);
-                const fields = try self.allocator.dupe(StructFieldValue, &.{
-                    .{ .name = "name", .value = .{ .imm = .{ .text = l.name } } },
-                    .{ .name = "value", .value = value },
-                });
-                const payload = try self.emit(.{ .struct_type = "AstLocal" }, .{ .struct_lit = .{
-                    .ty_name = "AstLocal",
-                    .fields = fields,
-                } });
-                return try self.emit(stmt_ty, .{ .variant_lit = .{ .type_name = "AstStmt", .variant = "local", .payload = payload } });
-            },
-            .expr => |e| {
-                const value = try self.materializeExpr(e);
-                return try self.emit(stmt_ty, .{ .variant_lit = .{ .type_name = "AstStmt", .variant = "expr", .payload = value } });
+                return self.mkVariant("AstType", "array_of", payload);
             },
             else => return error.LoweringFailed,
         }
+    }
+
+    fn materializeExpr(self: *FunctionLowerer, expr: ast.Expr) LowerError!Value {
+        switch (expr.kind) {
+            .int => |text| return self.mkVariant("AstExpr", "int", .{ .imm = .{ .int = parseIntLiteral(text) } }),
+            .float => |text| return self.mkVariant("AstExpr", "float", .{ .imm = .{ .float = parseFloatLiteral(text) } }),
+            // Raw (still-quoted) source text; the reifier hands it back verbatim
+            // and the next sema pass trims the quotes.
+            .string => |text| return self.mkVariant("AstExpr", "str", astStr(text)),
+            .bool => |b| return self.mkVariant("AstExpr", "boolean", .{ .imm = .{ .bool = b } }),
+            .null => return self.mkVariant("AstExpr", "nothing", null),
+            .ident => |name| return self.mkVariant("AstExpr", "ident", astStr(name)),
+            .unary => |u| {
+                const op = astUnOpName(u.op) orelse return error.LoweringFailed;
+                const payload = try self.mkStruct("AstUnary", &.{
+                    .{ .name = "op", .value = try self.mkVariant("AstUnOp", op, null) },
+                    .{ .name = "operand", .value = try self.materializeExprPtr(u.expr.*) },
+                });
+                return self.mkVariant("AstExpr", "unary", payload);
+            },
+            .binary => |b| {
+                const op = astBinOpName(b.op) orelse return error.LoweringFailed;
+                const payload = try self.mkStruct("AstBinary", &.{
+                    .{ .name = "op", .value = try self.mkVariant("AstBinOp", op, null) },
+                    .{ .name = "left", .value = try self.materializeExprPtr(b.left.*) },
+                    .{ .name = "right", .value = try self.materializeExprPtr(b.right.*) },
+                });
+                return self.mkVariant("AstExpr", "binary", payload);
+            },
+            .call => |c| {
+                var arg_vals = std.ArrayList(Value).empty;
+                defer arg_vals.deinit(self.allocator);
+                for (c.args) |arg| {
+                    const pair: struct { name: []const u8, value: ast.Expr } = switch (arg) {
+                        .positional => |e| .{ .name = "", .value = e },
+                        .named => |n| .{ .name = n.name, .value = n.value },
+                    };
+                    try arg_vals.append(self.allocator, try self.mkStruct("AstArg", &.{
+                        .{ .name = "name", .value = astStr(pair.name) },
+                        .{ .name = "value", .value = try self.materializeExpr(pair.value) },
+                    }));
+                }
+                const payload = try self.mkStruct("AstCall", &.{
+                    .{ .name = "callee", .value = try self.materializeExprPtr(c.callee.*) },
+                    .{ .name = "args", .value = try self.materializeSlice(.{ .struct_type = "AstArg" }, arg_vals.items) },
+                });
+                return self.mkVariant("AstExpr", "call", payload);
+            },
+            .field => |f| {
+                const payload = try self.mkStruct("AstField", &.{
+                    .{ .name = "base", .value = try self.materializeExprPtr(f.base.*) },
+                    .{ .name = "name", .value = astStr(f.name) },
+                });
+                return self.mkVariant("AstExpr", "field", payload);
+            },
+            .index => |ix| {
+                const payload = try self.mkStruct("AstIndex", &.{
+                    .{ .name = "base", .value = try self.materializeExprPtr(ix.base.*) },
+                    .{ .name = "idx", .value = try self.materializeExprPtr(ix.index.*) },
+                });
+                return self.mkVariant("AstExpr", "index", payload);
+            },
+            .slice => |s| {
+                const payload = try self.mkStruct("AstSliceE", &.{
+                    .{ .name = "base", .value = try self.materializeExprPtr(s.base.*) },
+                    .{ .name = "start", .value = try self.materializeOptExprPtr(s.start) },
+                    .{ .name = "end", .value = try self.materializeOptExprPtr(s.end) },
+                });
+                return self.mkVariant("AstExpr", "slice", payload);
+            },
+            .as_cast => |c| {
+                const payload = try self.mkStruct("AstCastE", &.{
+                    .{ .name = "value", .value = try self.materializeExprPtr(c.value.*) },
+                    .{ .name = "to", .value = try self.materializeType(c.to) },
+                });
+                return self.mkVariant("AstExpr", "cast", payload);
+            },
+            .force_unwrap => |inner| return self.mkVariant("AstExpr", "unwrap", try self.materializeExprPtr(inner.*)),
+            .nil_coalesce => |nc| {
+                const payload = try self.mkStruct("AstCoalesce", &.{
+                    .{ .name = "value", .value = try self.materializeExprPtr(nc.value.*) },
+                    .{ .name = "default", .value = try self.materializeExprPtr(nc.default.*) },
+                });
+                return self.mkVariant("AstExpr", "coalesce", payload);
+            },
+            .try_expr => |t| return self.mkVariant("AstExpr", "try_q", try self.materializeExprPtr(t.value.*)),
+            .catch_expr => |c| {
+                const payload = try self.mkStruct("AstCatchE", &.{
+                    .{ .name = "value", .value = try self.materializeExprPtr(c.value.*) },
+                    .{ .name = "err_name", .value = astStr(c.err_name) },
+                    .{ .name = "handler", .value = try self.materializeBlock(c.handler) },
+                });
+                return self.mkVariant("AstExpr", "catch_b", payload);
+            },
+            .compound_literal => |vals| {
+                var elems = std.ArrayList(Value).empty;
+                defer elems.deinit(self.allocator);
+                for (vals) |v| try elems.append(self.allocator, try self.materializeExpr(v));
+                return self.mkVariant("AstExpr", "compound", try self.materializeVariantSlice("AstExpr", elems.items));
+            },
+            .unsafe_expr => |inner| return self.mkVariant("AstExpr", "unsafe_e", try self.materializeExprPtr(inner.*)),
+            else => return error.LoweringFailed,
+        }
+    }
+
+    /// Materialize a quoted block into an `AstBlock` value.
+    fn materializeBlock(self: *FunctionLowerer, block: ast.Block) LowerError!Value {
+        var elems = std.ArrayList(Value).empty;
+        defer elems.deinit(self.allocator);
+        for (block.statements) |s| try elems.append(self.allocator, try self.materializeStmt(s));
+        const slice = try self.materializeVariantSlice("AstStmt", elems.items);
+        return self.mkStruct("AstBlock", &.{.{ .name = "stmts", .value = slice }});
+    }
+
+    fn materializeStmt(self: *FunctionLowerer, stmt: ast.Stmt) LowerError!Value {
+        switch (stmt) {
+            .local_infer => |l| {
+                const payload = try self.mkStruct("AstLocal", &.{
+                    .{ .name = "name", .value = astStr(l.name) },
+                    .{ .name = "value", .value = try self.materializeExpr(l.value) },
+                });
+                return self.mkVariant("AstStmt", "local", payload);
+            },
+            .assign => |a| {
+                // Desugar compound assignment (`x += y` → `x = x + y`) so the
+                // ast.* surface needs no assignment-operator field.
+                const value = if (assignOpToBinOpName(a.op)) |op| blk: {
+                    const bin = try self.mkStruct("AstBinary", &.{
+                        .{ .name = "op", .value = try self.mkVariant("AstBinOp", op, null) },
+                        .{ .name = "left", .value = try self.materializeExprPtr(a.target) },
+                        .{ .name = "right", .value = try self.materializeExprPtr(a.value) },
+                    });
+                    break :blk try self.mkVariant("AstExpr", "binary", bin);
+                } else try self.materializeExpr(a.value);
+                const payload = try self.mkStruct("AstAssign", &.{
+                    .{ .name = "target", .value = try self.materializeExpr(a.target) },
+                    .{ .name = "value", .value = value },
+                });
+                return self.mkVariant("AstStmt", "assign", payload);
+            },
+            .return_stmt => |r| {
+                if (r.value) |v| return self.mkVariant("AstStmt", "ret_expr", try self.materializeExpr(v));
+                return self.mkVariant("AstStmt", "ret", null);
+            },
+            .if_stmt => |iff| {
+                if (iff.binding != null or iff.payload_binding != null) return error.LoweringFailed;
+                const empty = ast.Block{ .statements = &.{}, .span = iff.span };
+                const payload = try self.mkStruct("AstIf", &.{
+                    .{ .name = "cond", .value = try self.materializeExpr(iff.condition) },
+                    .{ .name = "then_block", .value = try self.materializeBlock(iff.then_block) },
+                    .{ .name = "else_block", .value = try self.materializeBlock(iff.else_block orelse empty) },
+                });
+                return self.mkVariant("AstStmt", "cond", payload);
+            },
+            .while_stmt => |w| {
+                const payload = try self.mkStruct("AstWhile", &.{
+                    .{ .name = "cond", .value = try self.materializeExpr(w.condition) },
+                    .{ .name = "body", .value = try self.materializeBlock(w.body) },
+                });
+                return self.mkVariant("AstStmt", "loop", payload);
+            },
+            .local_typed => |l| {
+                const payload = try self.mkStruct("AstLocalTyped", &.{
+                    .{ .name = "name", .value = astStr(l.name) },
+                    .{ .name = "ty", .value = try self.materializeType(l.ty) },
+                    .{ .name = "value", .value = try self.materializeExpr(l.value) },
+                });
+                return self.mkVariant("AstStmt", "local_typed", payload);
+            },
+            .for_range => |f| {
+                const payload = try self.mkStruct("AstForRange", &.{
+                    .{ .name = "binding", .value = astStr(f.binding) },
+                    .{ .name = "start", .value = try self.materializeExpr(f.start) },
+                    .{ .name = "end", .value = try self.materializeExpr(f.end) },
+                    .{ .name = "inclusive", .value = .{ .imm = .{ .bool = f.inclusive } } },
+                    .{ .name = "body", .value = try self.materializeBlock(f.body) },
+                });
+                return self.mkVariant("AstStmt", "for_range", payload);
+            },
+            .for_slice => |f| {
+                const payload = try self.mkStruct("AstForSlice", &.{
+                    .{ .name = "binding", .value = astStr(f.binding) },
+                    .{ .name = "index_binding", .value = astStr(f.index_binding orelse "") },
+                    .{ .name = "by_ref", .value = .{ .imm = .{ .bool = f.by_ref } } },
+                    .{ .name = "iter", .value = try self.materializeExpr(f.iter) },
+                    .{ .name = "body", .value = try self.materializeBlock(f.body) },
+                });
+                return self.mkVariant("AstStmt", "for_slice", payload);
+            },
+            .match_stmt => |m| {
+                var arm_vals = std.ArrayList(Value).empty;
+                defer arm_vals.deinit(self.allocator);
+                for (m.arms) |arm| try arm_vals.append(self.allocator, try self.materializeMatchArm(arm));
+                const payload = try self.mkStruct("AstMatch", &.{
+                    .{ .name = "subject", .value = try self.materializeExpr(m.subject) },
+                    .{ .name = "arms", .value = try self.materializeSlice(.{ .struct_type = "AstMatchArm" }, arm_vals.items) },
+                });
+                return self.mkVariant("AstStmt", "match_s", payload);
+            },
+            .zone_block => |z| {
+                const payload = try self.mkStruct("AstZone", &.{
+                    .{ .name = "name", .value = astStr(z.name) },
+                    .{ .name = "kind", .value = astStr(z.kind) },
+                    .{ .name = "body", .value = try self.materializeBlock(z.body) },
+                });
+                return self.mkVariant("AstStmt", "zone_s", payload);
+            },
+            .defer_stmt => |d| {
+                const mode = switch (d.mode) {
+                    .always => "always",
+                    .ok => "ok_only",
+                    .err => "err_only",
+                };
+                const payload = try self.mkStruct("AstDefer", &.{
+                    .{ .name = "mode", .value = try self.mkVariant("AstDeferMode", mode, null) },
+                    .{ .name = "body", .value = try self.materializeBlock(d.body) },
+                });
+                return self.mkVariant("AstStmt", "defer_s", payload);
+            },
+            .fail_stmt => |f| {
+                var pvals = std.ArrayList(Value).empty;
+                defer pvals.deinit(self.allocator);
+                for (f.payload) |p| try pvals.append(self.allocator, try self.materializeExpr(p));
+                const payload = try self.mkStruct("AstFail", &.{
+                    .{ .name = "variant", .value = astStr(f.variant) },
+                    .{ .name = "payload", .value = try self.materializeVariantSlice("AstExpr", pvals.items) },
+                });
+                return self.mkVariant("AstStmt", "fail_s", payload);
+            },
+            .unsafe_block => |b| return self.mkVariant("AstStmt", "unsafe_blk", try self.materializeBlock(b)),
+            .break_stmt => return self.mkVariant("AstStmt", "brk", null),
+            .continue_stmt => return self.mkVariant("AstStmt", "cont", null),
+            .expr => |e| return self.mkVariant("AstStmt", "expr", try self.materializeExpr(e)),
+            else => return error.LoweringFailed,
+        }
+    }
+
+    fn materializeMatchArm(self: *FunctionLowerer, arm: ast.MatchArm) LowerError!Value {
+        const pattern = switch (arm.pattern) {
+            .enum_variant => |name| try self.mkVariant("AstPattern", "variant", astStr(name)),
+            .int_values => |vals| blk: {
+                var pvals = std.ArrayList(Value).empty;
+                defer pvals.deinit(self.allocator);
+                for (vals) |v| try pvals.append(self.allocator, try self.materializeExpr(v));
+                break :blk try self.mkVariant("AstPattern", "ints", try self.materializeVariantSlice("AstExpr", pvals.items));
+            },
+            .else_arm => try self.mkVariant("AstPattern", "anything", null),
+        };
+        return self.mkStruct("AstMatchArm", &.{
+            .{ .name = "pattern", .value = pattern },
+            .{ .name = "binding", .value = astStr(arm.binding orelse "") },
+            .{ .name = "body", .value = try self.materializeBlock(arm.body) },
+        });
     }
 
     fn lowerExpr(self: *FunctionLowerer, expr: ast.Expr) LowerError!Value {
@@ -1935,7 +2171,9 @@ const FunctionLowerer = struct {
             // (slices) and stray `$`-splices are not value-lowered here.
             .quote_expr => |inner| try self.materializeExpr(inner.*),
             .quote => |block| try self.materializeBlock(block),
-            .splice => return error.LoweringFailed,
+            // `#parse` is resolved by the two-pass pipeline (string → AST), never
+            // value-lowered; `$`-splices are macro internals.
+            .splice, .parse_expr => return error.LoweringFailed,
             .ident => |name| blk: {
                 for (self.params) |p| {
                     if (std.mem.eql(u8, p.name, name)) break :blk Value{ .param = name };
@@ -3159,6 +3397,8 @@ const ComptimeVm = struct {
     }
 
     fn evalRaw(self: *ComptimeVm, expr: ast.Expr) ?vm_value.Value {
+        const _ct = ctNow();
+        defer ctAdd(_ct);
         const c = self.ensureCache() orelse return null;
         const a = self.arena.allocator();
         const irfn = lowerExprToFunction(a, self.front_end, expr) catch return null;
@@ -3189,6 +3429,8 @@ const ComptimeVm = struct {
         span: Span,
         next_id: *ast.NodeId,
     ) ?ast.Block {
+        const _ct = ctNow();
+        defer ctAdd(_ct);
         const c = self.ensureCache() orelse return null;
         const a = self.arena.allocator();
         const irfn = lowerExprToFunction(a, self.front_end, expr) catch return null;
@@ -3196,8 +3438,26 @@ const ComptimeVm = struct {
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
         defer vm.deinit();
         const result = vm.executeKeepZones(bc_fn) catch return null;
-        var r = Reifier{ .allocator = out_alloc, .vm = &vm, .next_id = next_id, .span = span };
+        var r = Reifier{ .allocator = out_alloc, .vm = &vm, .module = c.ir_module, .next_id = next_id, .span = span };
         return r.reifyBlock(result) catch null;
+    }
+
+    /// Evaluate `expr` on the VM and return its string result, duped onto
+    /// `out_alloc` (the value may live in a zone freed at `deinit`). For `#parse`.
+    fn evalToString(self: *ComptimeVm, expr: ast.Expr, out_alloc: std.mem.Allocator) ?[]const u8 {
+        const _ct = ctNow();
+        defer ctAdd(_ct);
+        const c = self.ensureCache() orelse return null;
+        const a = self.arena.allocator();
+        const irfn = lowerExprToFunction(a, self.front_end, expr) catch return null;
+        const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
+        var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
+        defer vm.deinit();
+        const result = vm.executeKeepZones(bc_fn) catch return null;
+        return switch (result) {
+            .string => |s| out_alloc.dupe(u8, s) catch null,
+            else => null,
+        };
     }
 };
 
@@ -3215,6 +3475,7 @@ const reified_id_base: ast.NodeId = 800_000;
 const Reifier = struct {
     allocator: std.mem.Allocator,
     vm: *vm_engine.Vm,
+    module: IrModule,
     next_id: *ast.NodeId,
     span: Span,
 
@@ -3232,8 +3493,17 @@ const Reifier = struct {
         return self.vm.zone_stack.getCell(p.zone, p.offset + off) catch error.ReifyFailed;
     }
 
-    fn tagAt(self: *Reifier, p: vm_value.Value.Ptr) Error!i128 {
-        return (try self.cellAt(p, 0)).asI128() orelse error.ReifyFailed;
+    /// The variant NAME for `type_name`'s tag, looked up from the lowered module
+    /// — so the reifier is robust to prelude variant reordering/growth.
+    fn variantName(self: *Reifier, type_name: []const u8, p: vm_value.Value.Ptr) Error![]const u8 {
+        const tag = (try self.cellAt(p, 0)).asI128() orelse return error.ReifyFailed;
+        const t: usize = std.math.cast(usize, tag) orelse return error.ReifyFailed;
+        for (self.module.variants) |vd| {
+            if (!std.mem.eql(u8, vd.name, type_name)) continue;
+            if (t >= vd.variants.len) return error.ReifyFailed;
+            return vd.variants[t].name;
+        }
+        return error.ReifyFailed;
     }
 
     fn freshId(self: *Reifier) ast.NodeId {
@@ -3247,6 +3517,13 @@ const Reifier = struct {
             .string => |s| try self.allocator.dupe(u8, s),
             else => error.ReifyFailed,
         };
+    }
+
+    /// Reify a cell that holds an `AstExpr` value into a heap `*ast.Expr`.
+    fn reifyExprPtr(self: *Reifier, cell: vm_value.Value) Error!*const ast.Expr {
+        const e = try self.allocator.create(ast.Expr);
+        e.* = try self.reifyExpr(cell);
+        return e;
     }
 
     fn reifyBlock(self: *Reifier, v: vm_value.Value) Error!ast.Block {
@@ -3266,71 +3543,353 @@ const Reifier = struct {
 
     fn reifyStmt(self: *Reifier, v: vm_value.Value) Error!ast.Stmt {
         const p = try ptrOf(v);
-        const payload = try self.cellAt(p, 1);
-        // Prelude declaration order: AstStmt { local, assign, expr }.
-        switch (try self.tagAt(p)) {
-            0 => { // local: AstLocal { name, value }
-                const pl = try ptrOf(payload);
-                return .{ .local_infer = .{
-                    .name = try self.dupeString(try self.cellAt(pl, 0)),
-                    .value = try self.reifyExpr(try self.cellAt(pl, 1)),
-                    .span = self.span,
-                } };
-            },
-            1 => { // assign: AstAssign { target, value }
-                const pl = try ptrOf(payload);
-                return .{ .assign = .{
-                    .target = try self.reifyExpr(try self.cellAt(pl, 0)),
-                    .op = .assign,
-                    .value = try self.reifyExpr(try self.cellAt(pl, 1)),
-                    .span = self.span,
-                } };
-            },
-            2 => return .{ .expr = try self.reifyExpr(payload) },
-            else => return error.ReifyFailed,
+        const name = try self.variantName("AstStmt", p);
+        const payload = try self.cellAt(p, 1); // .void for payload-less variants
+        const eq = std.mem.eql;
+
+        if (eq(u8, name, "local")) {
+            const pl = try ptrOf(payload); // AstLocal { name, value }
+            return .{ .local_infer = .{
+                .name = try self.dupeString(try self.cellAt(pl, 0)),
+                .value = try self.reifyExpr(try self.cellAt(pl, 1)),
+                .span = self.span,
+            } };
+        } else if (eq(u8, name, "assign")) {
+            const pl = try ptrOf(payload); // AstAssign { target, value }
+            return .{ .assign = .{
+                .target = try self.reifyExpr(try self.cellAt(pl, 0)),
+                .op = .assign, // compound ops were desugared at materialize time
+                .value = try self.reifyExpr(try self.cellAt(pl, 1)),
+                .span = self.span,
+            } };
+        } else if (eq(u8, name, "ret")) {
+            return .{ .return_stmt = .{ .value = null, .span = self.span } };
+        } else if (eq(u8, name, "ret_expr")) {
+            return .{ .return_stmt = .{ .value = try self.reifyExpr(payload), .span = self.span } };
+        } else if (eq(u8, name, "cond")) {
+            const pl = try ptrOf(payload); // AstIf { cond, then_block, else_block }
+            const else_block = try self.reifyBlock(try self.cellAt(pl, 2));
+            return .{ .if_stmt = .{
+                .binding = null,
+                .payload_binding = null,
+                .condition = try self.reifyExpr(try self.cellAt(pl, 0)),
+                .then_block = try self.reifyBlock(try self.cellAt(pl, 1)),
+                // An empty else-block means there was no `else`.
+                .else_block = if (else_block.statements.len == 0) null else else_block,
+                .span = self.span,
+            } };
+        } else if (eq(u8, name, "loop")) {
+            const pl = try ptrOf(payload); // AstWhile { cond, body }
+            return .{ .while_stmt = .{
+                .condition = try self.reifyExpr(try self.cellAt(pl, 0)),
+                .body = try self.reifyBlock(try self.cellAt(pl, 1)),
+                .span = self.span,
+            } };
+        } else if (eq(u8, name, "local_typed")) {
+            const pl = try ptrOf(payload); // AstLocalTyped { name, ty, value }
+            return .{ .local_typed = .{
+                .name = try self.dupeString(try self.cellAt(pl, 0)),
+                .ty = try self.reifyType(try self.cellAt(pl, 1)),
+                .value = try self.reifyExpr(try self.cellAt(pl, 2)),
+                .span = self.span,
+            } };
+        } else if (eq(u8, name, "for_range")) {
+            const pl = try ptrOf(payload); // AstForRange { binding, start, end, inclusive, body }
+            return .{ .for_range = .{
+                .binding = try self.dupeString(try self.cellAt(pl, 0)),
+                .start = try self.reifyExpr(try self.cellAt(pl, 1)),
+                .end = try self.reifyExpr(try self.cellAt(pl, 2)),
+                .inclusive = try self.boolAt(pl, 3),
+                .body = try self.reifyBlock(try self.cellAt(pl, 4)),
+                .span = self.span,
+            } };
+        } else if (eq(u8, name, "for_slice")) {
+            const pl = try ptrOf(payload); // AstForSlice { binding, index_binding, by_ref, iter, body }
+            return .{ .for_slice = .{
+                .binding = try self.dupeString(try self.cellAt(pl, 0)),
+                .index_binding = try self.optStr(try self.cellAt(pl, 1)),
+                .by_ref = try self.boolAt(pl, 2),
+                .iter = try self.reifyExpr(try self.cellAt(pl, 3)),
+                .body = try self.reifyBlock(try self.cellAt(pl, 4)),
+                .span = self.span,
+            } };
+        } else if (eq(u8, name, "match_s")) {
+            const pl = try ptrOf(payload); // AstMatch { subject, arms }
+            const subject = try self.reifyExpr(try self.cellAt(pl, 0));
+            const sl = switch (try self.cellAt(pl, 1)) {
+                .slice => |s| s,
+                else => return error.ReifyFailed,
+            };
+            const stride: u32 = @intCast(self.structStride("AstMatchArm"));
+            const arms = try self.allocator.alloc(ast.MatchArm, sl.len);
+            for (arms, 0..) |*out, i| {
+                const cell = self.vm.zone_stack.getCell(sl.zone, sl.offset + @as(u32, @intCast(i)) * stride) catch return error.ReifyFailed;
+                out.* = try self.reifyMatchArm(cell);
+            }
+            return .{ .match_stmt = .{ .subject = subject, .arms = arms, .span = self.span } };
+        } else if (eq(u8, name, "zone_s")) {
+            const pl = try ptrOf(payload); // AstZone { name, kind, body }
+            return .{ .zone_block = .{
+                .name = try self.dupeString(try self.cellAt(pl, 0)),
+                .kind = try self.dupeString(try self.cellAt(pl, 1)),
+                .body = try self.reifyBlock(try self.cellAt(pl, 2)),
+                .span = self.span,
+            } };
+        } else if (eq(u8, name, "defer_s")) {
+            const pl = try ptrOf(payload); // AstDefer { mode, body }
+            const mode_name = try self.variantName("AstDeferMode", try ptrOf(try self.cellAt(pl, 0)));
+            const mode: ast.DeferMode = if (eq(u8, mode_name, "ok_only"))
+                .ok
+            else if (eq(u8, mode_name, "err_only"))
+                .err
+            else
+                .always;
+            return .{ .defer_stmt = .{
+                .mode = mode,
+                .body = try self.reifyBlock(try self.cellAt(pl, 1)),
+                .span = self.span,
+            } };
+        } else if (eq(u8, name, "fail_s")) {
+            const pl = try ptrOf(payload); // AstFail { variant, payload }
+            const variant = try self.dupeString(try self.cellAt(pl, 0));
+            const sl = switch (try self.cellAt(pl, 1)) {
+                .slice => |s| s,
+                else => return error.ReifyFailed,
+            };
+            const payloads = try self.allocator.alloc(ast.Expr, sl.len);
+            for (payloads, 0..) |*out, i| {
+                const cell = self.vm.zone_stack.getCell(sl.zone, sl.offset + @as(u32, @intCast(i))) catch return error.ReifyFailed;
+                out.* = try self.reifyExpr(cell);
+            }
+            return .{ .fail_stmt = .{ .variant = variant, .payload = payloads, .span = self.span } };
+        } else if (eq(u8, name, "unsafe_blk")) {
+            return .{ .unsafe_block = try self.reifyBlock(payload) };
+        } else if (eq(u8, name, "brk")) {
+            return .{ .break_stmt = self.span };
+        } else if (eq(u8, name, "cont")) {
+            return .{ .continue_stmt = self.span };
+        } else if (eq(u8, name, "expr")) {
+            return .{ .expr = try self.reifyExpr(payload) };
         }
+        return error.ReifyFailed;
     }
 
     fn reifyExpr(self: *Reifier, v: vm_value.Value) Error!ast.Expr {
         const p = try ptrOf(v);
+        const name = try self.variantName("AstExpr", p);
         const payload = try self.cellAt(p, 1);
-        // Prelude declaration order: AstExpr { int, ident, binary }.
-        const kind: ast.ExprKind = switch (try self.tagAt(p)) {
-            0 => blk: {
-                const n = payload.asI128() orelse return error.ReifyFailed;
-                // Negative constants become `-(literal)` since literal text is unsigned.
-                if (n < 0) {
-                    const inner = try self.allocator.create(ast.Expr);
-                    inner.* = .{
-                        .id = self.freshId(),
-                        .kind = .{ .int = try std.fmt.allocPrint(self.allocator, "{d}", .{-n}) },
-                        .span = self.span,
-                    };
-                    break :blk .{ .unary = .{ .op = .neg, .expr = inner } };
-                }
-                break :blk .{ .int = try std.fmt.allocPrint(self.allocator, "{d}", .{n}) };
-            },
-            1 => .{ .ident = try self.dupeString(payload) },
-            2 => blk: { // binary: AstBinary { op, left, right }
-                const pb = try ptrOf(payload);
-                const op_block = try ptrOf(try self.cellAt(pb, 0));
-                // Prelude declaration order: AstBinOp { add, sub, mul, div }.
-                const op: ast.BinaryOp = switch (try self.tagAt(op_block)) {
-                    0 => .add,
-                    1 => .sub,
-                    2 => .mul,
-                    3 => .div,
-                    else => return error.ReifyFailed,
-                };
-                const left = try self.allocator.create(ast.Expr);
-                left.* = try self.reifyExpr(try self.cellAt(pb, 1));
-                const right = try self.allocator.create(ast.Expr);
-                right.* = try self.reifyExpr(try self.cellAt(pb, 2));
-                break :blk .{ .binary = .{ .op = op, .left = left, .right = right } };
-            },
-            else => return error.ReifyFailed,
-        };
+        const eq = std.mem.eql;
+
+        const kind: ast.ExprKind = if (eq(u8, name, "int")) blk: {
+            const n = payload.asI128() orelse return error.ReifyFailed;
+            if (n < 0) {
+                // Defensive: literal text is unsigned, so emit -(literal).
+                const inner = try self.allocator.create(ast.Expr);
+                inner.* = .{ .id = self.freshId(), .kind = .{ .int = try std.fmt.allocPrint(self.allocator, "{d}", .{-n}) }, .span = self.span };
+                break :blk .{ .unary = .{ .op = .neg, .expr = inner } };
+            }
+            break :blk .{ .int = try std.fmt.allocPrint(self.allocator, "{d}", .{n}) };
+        } else if (eq(u8, name, "float")) blk: {
+            const f = switch (payload) {
+                .float => |x| x,
+                else => return error.ReifyFailed,
+            };
+            break :blk .{ .float = try std.fmt.allocPrint(self.allocator, "{d}", .{f}) };
+        } else if (eq(u8, name, "str")) blk: {
+            break :blk .{ .string = try self.dupeString(payload) }; // raw, still-quoted text
+        } else if (eq(u8, name, "boolean")) blk: {
+            break :blk .{ .bool = switch (payload) {
+                .bool => |b| b,
+                else => return error.ReifyFailed,
+            } };
+        } else if (eq(u8, name, "nothing")) blk: {
+            break :blk .null;
+        } else if (eq(u8, name, "ident")) blk: {
+            break :blk .{ .ident = try self.dupeString(payload) };
+        } else if (eq(u8, name, "unary")) blk: {
+            const pu = try ptrOf(payload); // AstUnary { op, operand }
+            const op = astUnOpFromName(try self.variantName("AstUnOp", try ptrOf(try self.cellAt(pu, 0)))) orelse return error.ReifyFailed;
+            break :blk .{ .unary = .{ .op = op, .expr = try self.reifyExprPtr(try self.cellAt(pu, 1)) } };
+        } else if (eq(u8, name, "binary")) blk: {
+            const pb = try ptrOf(payload); // AstBinary { op, left, right }
+            const op = astBinOpFromName(try self.variantName("AstBinOp", try ptrOf(try self.cellAt(pb, 0)))) orelse return error.ReifyFailed;
+            break :blk .{ .binary = .{
+                .op = op,
+                .left = try self.reifyExprPtr(try self.cellAt(pb, 1)),
+                .right = try self.reifyExprPtr(try self.cellAt(pb, 2)),
+            } };
+        } else if (eq(u8, name, "call")) blk: {
+            const pc = try ptrOf(payload); // AstCall { callee, args:[]AstArg }
+            const callee = try self.reifyExprPtr(try self.cellAt(pc, 0));
+            const sl = switch (try self.cellAt(pc, 1)) {
+                .slice => |s| s,
+                else => return error.ReifyFailed,
+            };
+            const stride: u32 = @intCast(self.structStride("AstArg"));
+            const args = try self.allocator.alloc(ast.CallArg, sl.len);
+            for (args, 0..) |*out, i| {
+                const arg_cell = self.vm.zone_stack.getCell(sl.zone, sl.offset + @as(u32, @intCast(i)) * stride) catch return error.ReifyFailed;
+                const pa = try ptrOf(arg_cell); // AstArg { name, value }
+                const arg_name = try self.optStr(try self.cellAt(pa, 0));
+                const value = try self.reifyExpr(try self.cellAt(pa, 1));
+                out.* = if (arg_name) |nm|
+                    .{ .named = .{ .name = nm, .value = value } }
+                else
+                    .{ .positional = value };
+            }
+            break :blk .{ .call = .{ .callee = callee, .args = args } };
+        } else if (eq(u8, name, "field")) blk: {
+            const pf = try ptrOf(payload); // AstField { base, name }
+            break :blk .{ .field = .{
+                .base = try self.reifyExprPtr(try self.cellAt(pf, 0)),
+                .name = try self.dupeString(try self.cellAt(pf, 1)),
+            } };
+        } else if (eq(u8, name, "index")) blk: {
+            const pi = try ptrOf(payload); // AstIndex { base, idx }
+            break :blk .{ .index = .{
+                .base = try self.reifyExprPtr(try self.cellAt(pi, 0)),
+                .index = try self.reifyExprPtr(try self.cellAt(pi, 1)),
+            } };
+        } else if (eq(u8, name, "slice")) blk: {
+            const ps = try ptrOf(payload); // AstSliceE { base, start, end }
+            break :blk .{ .slice = .{
+                .base = try self.reifyExprPtr(try self.cellAt(ps, 0)),
+                .start = try self.reifyOptExprPtr(try self.cellAt(ps, 1)),
+                .end = try self.reifyOptExprPtr(try self.cellAt(ps, 2)),
+            } };
+        } else if (eq(u8, name, "cast")) blk: {
+            const pc = try ptrOf(payload); // AstCastE { value, to }
+            break :blk .{ .as_cast = .{
+                .value = try self.reifyExprPtr(try self.cellAt(pc, 0)),
+                .to = try self.reifyType(try self.cellAt(pc, 1)),
+            } };
+        } else if (eq(u8, name, "unwrap")) blk: {
+            break :blk .{ .force_unwrap = try self.reifyExprPtr(payload) };
+        } else if (eq(u8, name, "coalesce")) blk: {
+            const pc = try ptrOf(payload); // AstCoalesce { value, default }
+            break :blk .{ .nil_coalesce = .{
+                .value = try self.reifyExprPtr(try self.cellAt(pc, 0)),
+                .default = try self.reifyExprPtr(try self.cellAt(pc, 1)),
+            } };
+        } else if (eq(u8, name, "try_q")) blk: {
+            break :blk .{ .try_expr = .{ .value = try self.reifyExprPtr(payload) } };
+        } else if (eq(u8, name, "catch_b")) blk: {
+            const pc = try ptrOf(payload); // AstCatchE { value, err_name, handler }
+            break :blk .{ .catch_expr = .{
+                .value = try self.reifyExprPtr(try self.cellAt(pc, 0)),
+                .err_name = try self.dupeString(try self.cellAt(pc, 1)),
+                .handler = try self.reifyBlock(try self.cellAt(pc, 2)),
+            } };
+        } else if (eq(u8, name, "compound")) blk: {
+            const sl = switch (payload) {
+                .slice => |s| s,
+                else => return error.ReifyFailed,
+            };
+            const elems = try self.allocator.alloc(ast.Expr, sl.len);
+            for (elems, 0..) |*out, i| {
+                const cell = self.vm.zone_stack.getCell(sl.zone, sl.offset + @as(u32, @intCast(i))) catch return error.ReifyFailed;
+                out.* = try self.reifyExpr(cell);
+            }
+            break :blk .{ .compound_literal = elems };
+        } else if (eq(u8, name, "unsafe_e")) blk: {
+            break :blk .{ .unsafe_expr = try self.reifyExprPtr(payload) };
+        } else return error.ReifyFailed;
+
         return .{ .id = self.freshId(), .kind = kind, .span = self.span };
+    }
+
+    // ── Type references, optionals, match arms ───────────────────────────────
+
+    fn boolAt(self: *Reifier, p: vm_value.Value.Ptr, off: u32) Error!bool {
+        return switch (try self.cellAt(p, off)) {
+            .bool => |b| b,
+            else => error.ReifyFailed,
+        };
+    }
+
+    /// Empty string → null (the "absent optional string" convention).
+    fn optStr(self: *Reifier, v: vm_value.Value) Error!?[]const u8 {
+        const s = try self.dupeString(v);
+        return if (s.len == 0) null else s;
+    }
+
+    /// A `*AstExpr` that may be the `nothing` sentinel → `?*const ast.Expr`.
+    fn reifyOptExprPtr(self: *Reifier, cell: vm_value.Value) Error!?*const ast.Expr {
+        const e = try self.reifyExpr(cell);
+        if (e.kind == .null) return null;
+        const p = try self.allocator.create(ast.Expr);
+        p.* = e;
+        return p;
+    }
+
+    /// Cell count (stride) of a struct element in a materialized slice.
+    fn structStride(self: *Reifier, name: []const u8) usize {
+        for (self.module.structs) |sd| {
+            if (std.mem.eql(u8, sd.name, name)) return sd.fields.len;
+        }
+        return 1;
+    }
+
+    fn reifyTypePtr(self: *Reifier, cell: vm_value.Value) Error!*const ast.TypeRef {
+        const t = try self.allocator.create(ast.TypeRef);
+        t.* = try self.reifyType(cell);
+        return t;
+    }
+
+    fn reifyType(self: *Reifier, v: vm_value.Value) Error!ast.TypeRef {
+        const p = try ptrOf(v);
+        const name = try self.variantName("AstType", p);
+        const payload = try self.cellAt(p, 1);
+        const eq = std.mem.eql;
+        if (eq(u8, name, "named")) {
+            return .{ .named = .{ .name = try self.dupeString(payload), .span = self.span } };
+        } else if (eq(u8, name, "ptr")) {
+            return .{ .pointer = .{ .is_const = false, .is_volatile = false, .inner = try self.reifyTypePtr(payload), .span = self.span } };
+        } else if (eq(u8, name, "slice_of")) {
+            return .{ .slice = .{ .is_const = false, .inner = try self.reifyTypePtr(payload), .span = self.span } };
+        } else if (eq(u8, name, "optional_of")) {
+            return .{ .optional = .{ .inner = try self.reifyTypePtr(payload), .span = self.span } };
+        } else if (eq(u8, name, "array_of")) {
+            const pa = try ptrOf(payload); // AstArrayTy { len, elem }
+            const len = try self.allocator.create(ast.Expr);
+            len.* = try self.reifyExpr(try self.cellAt(pa, 0));
+            return .{ .array = .{ .len = len, .inner = try self.reifyTypePtr(try self.cellAt(pa, 1)), .span = self.span } };
+        }
+        return error.ReifyFailed;
+    }
+
+    fn reifyPattern(self: *Reifier, v: vm_value.Value) Error!ast.MatchPattern {
+        const p = try ptrOf(v);
+        const name = try self.variantName("AstPattern", p);
+        const payload = try self.cellAt(p, 1);
+        const eq = std.mem.eql;
+        if (eq(u8, name, "variant")) {
+            return .{ .enum_variant = try self.dupeString(payload) };
+        } else if (eq(u8, name, "ints")) {
+            const sl = switch (payload) {
+                .slice => |s| s,
+                else => return error.ReifyFailed,
+            };
+            const vals = try self.allocator.alloc(ast.Expr, sl.len);
+            for (vals, 0..) |*out, i| {
+                const cell = self.vm.zone_stack.getCell(sl.zone, sl.offset + @as(u32, @intCast(i))) catch return error.ReifyFailed;
+                out.* = try self.reifyExpr(cell);
+            }
+            return .{ .int_values = vals };
+        } else if (eq(u8, name, "anything")) {
+            return .else_arm;
+        }
+        return error.ReifyFailed;
+    }
+
+    fn reifyMatchArm(self: *Reifier, v: vm_value.Value) Error!ast.MatchArm {
+        const p = try ptrOf(v); // AstMatchArm { pattern, binding, body }
+        return .{
+            .pattern = try self.reifyPattern(try self.cellAt(p, 0)),
+            .binding = try self.optStr(try self.cellAt(p, 1)),
+            .body = try self.reifyBlock(try self.cellAt(p, 2)),
+            .span = self.span,
+        };
     }
 };
 
@@ -3364,7 +3923,7 @@ pub fn expandComputedInserts(allocator: std.mem.Allocator, front_end: pipeline.F
 
     var cvm = ComptimeVm.init(allocator, front_end);
     defer cvm.deinit();
-    var ctx = InsertExpander{ .allocator = allocator, .cvm = &cvm, .next_id = reified_id_base };
+    var ctx = InsertExpander{ .allocator = allocator, .cvm = &cvm, .next_id = reified_id_base, .file_name = front_end.module.file_name };
 
     var items = std.ArrayList(ast.Item).empty;
     errdefer items.deinit(allocator);
@@ -3392,6 +3951,21 @@ pub fn expandComputedInserts(allocator: std.mem.Allocator, front_end: pipeline.F
         .file_name = front_end.module.file_name,
         .items = try items.toOwnedSlice(allocator),
     };
+}
+
+/// True if any function/impl body contains a computed `#insert` (operand is not
+/// a literal `#quote`), so the pipeline knows to run the tolerant two-pass path.
+pub fn hasComputedInsert(module: ast.Module) bool {
+    for (module.items) |item| switch (item) {
+        .function => |f| if (f.body) |b| {
+            if (blockHasComputedInsert(b)) return true;
+        },
+        .interface_impl => |impl| for (impl.methods) |m| if (m.body) |b| {
+            if (blockHasComputedInsert(b)) return true;
+        },
+        else => {},
+    };
+    return false;
 }
 
 fn blockHasComputedInsert(block: ast.Block) bool {
@@ -3424,6 +3998,7 @@ const InsertExpander = struct {
     allocator: std.mem.Allocator,
     cvm: *ComptimeVm,
     next_id: ast.NodeId,
+    file_name: []const u8,
 
     fn rewriteBlock(self: *InsertExpander, block: ast.Block) InsertExpandError!ast.Block {
         var out = std.ArrayList(ast.Stmt).empty;
@@ -3436,7 +4011,23 @@ const InsertExpander = struct {
         switch (stmt) {
             .insert_stmt => |ins| {
                 if (ins.operand.kind == .quote) return stmt;
-                // Evaluate the (unwrapped) operand on the VM and reify.
+                // `#parse(expr)`: evaluate the string and parse it into a block.
+                if (ins.operand.kind == .parse_expr) {
+                    const str = self.cvm.evalToString(ins.operand.kind.parse_expr.*, self.allocator) orelse {
+                        std.debug.print("error: `#parse` operand did not evaluate to a string at compile time\n", .{});
+                        return error.SemanticFailed;
+                    };
+                    const result = parser.parseBlockSource(self.allocator, self.file_name, str, self.next_id) catch {
+                        std.debug.print("error: `#parse` could not parse the generated source\n", .{});
+                        return error.SemanticFailed;
+                    };
+                    self.next_id = result.next_id;
+                    return .{ .insert_stmt = .{
+                        .operand = .{ .id = ins.operand.id, .kind = .{ .quote = result.block }, .span = ins.operand.span },
+                        .span = ins.span,
+                    } };
+                }
+                // `#run gen()` (or any other computed operand): evaluate and reify.
                 const inner = if (ins.operand.kind == .run_expr) ins.operand.kind.run_expr.* else ins.operand;
                 const block = self.cvm.evalToAstBlock(inner, self.allocator, ins.span, &self.next_id) orelse {
                     std.debug.print("error: `#insert` operand did not evaluate to an `AstBlock` at compile time\n", .{});
@@ -3592,15 +4183,86 @@ fn effectiveConstImm(expr: ast.Expr, cvm: ?*ComptimeVm) Imm {
     return lowerImm(inner);
 }
 
-/// Map an AST binary operator to its `AstBinOp` variant name, for materializing
-/// `#quote(a + b)`. Only the operators the ast.* surface models are supported.
+/// Map an AST binary operator to its `AstBinOp` variant name, and back. These
+/// two tables MUST stay in sync (materialize ↔ reify).
 fn astBinOpName(op: ast.BinaryOp) ?[]const u8 {
     return switch (op) {
         .add => "add",
         .sub => "sub",
         .mul => "mul",
         .div => "div",
-        else => null,
+        .rem => "rem",
+        .equal => "eq",
+        .not_equal => "ne",
+        .less => "lt",
+        .le => "le",
+        .gt => "gt",
+        .ge => "ge",
+        .and_and => "logic_and",
+        .or_or => "logic_or",
+        .bit_and => "bit_and",
+        .bit_or => "bit_or",
+        .bit_xor => "bit_xor",
+        .shl => "shl",
+        .shr => "shr",
+    };
+}
+
+fn astBinOpFromName(name: []const u8) ?ast.BinaryOp {
+    const map = .{
+        .{ "add", ast.BinaryOp.add },     .{ "sub", ast.BinaryOp.sub },
+        .{ "mul", ast.BinaryOp.mul },     .{ "div", ast.BinaryOp.div },
+        .{ "rem", ast.BinaryOp.rem },     .{ "eq", ast.BinaryOp.equal },
+        .{ "ne", ast.BinaryOp.not_equal },.{ "lt", ast.BinaryOp.less },
+        .{ "le", ast.BinaryOp.le },       .{ "gt", ast.BinaryOp.gt },
+        .{ "ge", ast.BinaryOp.ge },       .{ "logic_and", ast.BinaryOp.and_and },
+        .{ "logic_or", ast.BinaryOp.or_or }, .{ "bit_and", ast.BinaryOp.bit_and },
+        .{ "bit_or", ast.BinaryOp.bit_or }, .{ "bit_xor", ast.BinaryOp.bit_xor },
+        .{ "shl", ast.BinaryOp.shl },     .{ "shr", ast.BinaryOp.shr },
+    };
+    inline for (map) |entry| {
+        if (std.mem.eql(u8, name, entry[0])) return entry[1];
+    }
+    return null;
+}
+
+fn astUnOpName(op: ast.UnaryOp) ?[]const u8 {
+    return switch (op) {
+        .neg => "neg",
+        .not => "logic_not",
+        .bit_not => "bit_not",
+        .deref => "deref",
+        .address_of => "addr",
+    };
+}
+
+fn astUnOpFromName(name: []const u8) ?ast.UnaryOp {
+    const map = .{
+        .{ "neg", ast.UnaryOp.neg },       .{ "logic_not", ast.UnaryOp.not },
+        .{ "bit_not", ast.UnaryOp.bit_not }, .{ "deref", ast.UnaryOp.deref },
+        .{ "addr", ast.UnaryOp.address_of },
+    };
+    inline for (map) |entry| {
+        if (std.mem.eql(u8, name, entry[0])) return entry[1];
+    }
+    return null;
+}
+
+/// A compound assignment operator (`+=`, `*=`, …) → its `AstBinOp` name, so it
+/// can be desugared to `x = x <op> y`. Plain `=` returns null.
+fn assignOpToBinOpName(op: ast.AssignOp) ?[]const u8 {
+    return switch (op) {
+        .assign => null,
+        .add => "add",
+        .sub => "sub",
+        .mul => "mul",
+        .div => "div",
+        .rem => "rem",
+        .bit_and => "bit_and",
+        .bit_or => "bit_or",
+        .bit_xor => "bit_xor",
+        .shl => "shl",
+        .shr => "shr",
     };
 }
 
@@ -3610,7 +4272,12 @@ fn astBinOpName(op: ast.BinaryOp) ?[]const u8 {
 // is excluded from the final (runtime) module.
 
 const ast_prelude_type_names = [_][]const u8{
-    "AstBlock", "AstStmt", "AstExpr", "AstBinary", "AstBinOp", "AstLocal", "AstAssign",
+    "AstBlock",  "AstStmt",       "AstExpr",     "AstBinary",  "AstBinOp",   "AstUnary",
+    "AstUnOp",   "AstCall",       "AstField",    "AstIndex",   "AstLocal",   "AstAssign",
+    "AstIf",     "AstWhile",      "AstDeferMode", "AstArrayTy", "AstType",   "AstSliceE",
+    "AstCastE",  "AstCoalesce",   "AstCatchE",   "AstLocalTyped", "AstForRange", "AstForSlice",
+    "AstZone",   "AstDefer",      "AstFail",     "AstPattern", "AstMatchArm", "AstMatch",
+    "AstArg",
 };
 
 fn isAstPreludeTypeName(name: []const u8) bool {

@@ -184,6 +184,7 @@ const Expander = struct {
                 .positional => |e| e,
                 .named => |n| n.value,
             };
+            try checkMacroArgType(macro.name, param, arg_expr);
             try env.put(param.name, arg_expr);
         }
 
@@ -194,6 +195,24 @@ const Expander = struct {
         try self.collectIntroduced(template, &hyg);
 
         return self.substBlock(template, &env, &hyg);
+    }
+
+    /// Enforce typed macro parameters. `AstBlock`/`Block` require a block quote
+    /// (`#quote { ... }`); `AstExpr`/`Expr` require an expression (not a block);
+    /// `Code` (or any other type) accepts any argument.
+    fn checkMacroArgType(macro_name: []const u8, param: ast.Param, arg: ast.Expr) ExpandError!void {
+        const ty_name = switch (param.ty) {
+            .named, .type_param => |n| n.name,
+            else => return,
+        };
+        const wants_block = std.mem.eql(u8, ty_name, "AstBlock") or std.mem.eql(u8, ty_name, "Block");
+        const wants_expr = std.mem.eql(u8, ty_name, "AstExpr") or std.mem.eql(u8, ty_name, "Expr");
+        if (wants_block and arg.kind != .quote) {
+            return fail("macro `{s}` parameter `{s}` expects a `#quote {{ ... }}` block", .{ macro_name, param.name });
+        }
+        if (wants_expr and arg.kind == .quote) {
+            return fail("macro `{s}` parameter `{s}` expects an expression, not a `#quote {{ ... }}` block", .{ macro_name, param.name });
+        }
     }
 
     /// A template macro's body must be a single `return #quote { ... };`.

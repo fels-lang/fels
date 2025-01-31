@@ -301,33 +301,28 @@ fn runPipelineWithSource(
         error.OutOfMemory => return error.OutOfMemory,
     };
 
-    const pass1 = try runSema(allocator, module, source, file);
-
     // Two-pass `#insert`: a computed operand (`#insert #run gen()`) is run on
     // the VM using pass-1 results, reified into AST, and rewritten to a literal
     // `#quote { ... }`. The spliced module is then fully re-checked (pass 2) so
     // the generated code is type-checked exactly like hand-written code.
-    const fe1 = FrontEnd{ .module = module, .symbols = pass1.symbols, .types = pass1.types, .arena = arena };
-    const spliced = ir_mod.expandComputedInserts(allocator, fe1) catch |err| switch (err) {
-        error.SemanticFailed => return error.SemanticFailed,
-        error.OutOfMemory => return error.OutOfMemory,
-    };
-    if (spliced) |module2| {
-        const pass2 = try runSema(allocator, module2, source, file);
-        return .{
-            .module = module2,
-            .symbols = pass2.symbols,
-            .types = pass2.types,
-            .arena = arena,
+    //
+    // Pass 1 must be TOLERANT: code after a computed insert may reference names
+    // the generator declares, which pass 1 can't see yet. Pass 2 is strict.
+    if (ir_mod.hasComputedInsert(module)) {
+        const pass1 = try runSema(allocator, module, source, file, .tolerant);
+        const fe1 = FrontEnd{ .module = module, .symbols = pass1.symbols, .types = pass1.types, .arena = arena };
+        const spliced = ir_mod.expandComputedInserts(allocator, fe1) catch |err| switch (err) {
+            error.SemanticFailed => return error.SemanticFailed,
+            error.OutOfMemory => return error.OutOfMemory,
         };
+        if (spliced) |module2| {
+            const pass2 = try runSema(allocator, module2, source, file, .strict);
+            return .{ .module = module2, .symbols = pass2.symbols, .types = pass2.types, .arena = arena };
+        }
     }
 
-    return .{
-        .module = module,
-        .symbols = pass1.symbols,
-        .types = pass1.types,
-        .arena = arena,
-    };
+    const pass1 = try runSema(allocator, module, source, file, .strict);
+    return .{ .module = module, .symbols = pass1.symbols, .types = pass1.types, .arena = arena };
 }
 
 const SemaResult = struct {
@@ -335,11 +330,14 @@ const SemaResult = struct {
     types: sema.TypeEnv,
 };
 
+const SemaMode = enum { strict, tolerant };
+
 fn runSema(
     allocator: std.mem.Allocator,
     module: ast.Module,
     source: []const u8,
     file: []const u8,
+    mode: SemaMode,
 ) CompileError!SemaResult {
     var symbols = sema.collectSymbols(allocator, module) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
@@ -356,9 +354,14 @@ fn runSema(
         error.OutOfMemory => return error.OutOfMemory,
     };
 
-    const types = sema.checkTypesWithContext(allocator, module, &symbols, source, file) catch |err| switch (err) {
-        error.SemanticFailed => return error.SemanticFailed,
-        error.OutOfMemory => return error.OutOfMemory,
+    const types = switch (mode) {
+        .tolerant => sema.checkTypesTolerant(allocator, module, &symbols, source, file) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+        },
+        .strict => sema.checkTypesWithContext(allocator, module, &symbols, source, file) catch |err| switch (err) {
+            error.SemanticFailed => return error.SemanticFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+        },
     };
 
     return .{ .symbols = symbols, .types = types };
@@ -376,6 +379,8 @@ fn usesMetaprogramming(module: ast.Module) bool {
         .interface_impl => |impl| for (impl.methods) |m| {
             if (m.body) |b| if (blockUsesMeta(b)) return true;
         },
+        // Top-level `X :: #run ... #quote ...` constants also need the types.
+        .const_decl => |d| if (exprUsesMeta(d.value)) return true,
         else => {},
     };
     return false;

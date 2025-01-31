@@ -498,6 +498,10 @@ pub const ExprKind = union(enum) {
     /// while expanding a macro template; the macroexpand pass replaces it with
     /// the bound argument's AST. A stray splice outside a macro is an error.
     splice: *const Expr,
+    /// `#parse(expr)` — evaluate `expr` to a string at compile time, parse that
+    /// string as code, and (as an `#insert` operand) splice it. The string
+    /// escape hatch out of typed quotations.
+    parse_expr: *const Expr,
     compound_literal: []const Expr,
     unary: UnaryExpr,
     binary: BinaryExpr,

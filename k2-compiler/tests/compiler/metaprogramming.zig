@@ -331,6 +331,283 @@ test "metaprogram: generative control flow picks different blocks" {
     try std.testing.expect(found);
 }
 
+test "metaprogram: generated control flow (while + if) round-trips" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // gen() builds a while-loop + conditional; the spliced code runs on the
+    // comptime VM via #run. sum = 0+1+2+3+4 = 10; the `if` does not fire.
+    const src =
+        \\gen :: fn() -> AstBlock {
+        \\    return #quote {
+        \\        i := 0;
+        \\        while i < 5 {
+        \\            sum = sum + i;
+        \\            i = i + 1;
+        \\        }
+        \\        if sum > 100 {
+        \\            sum = 0;
+        \\        }
+        \\    };
+        \\}
+        \\run :: fn() -> i32 {
+        \\    sum := 0;
+        \\    #insert #run gen();
+        \\    return sum;
+        \\}
+        \\ANSWER :: #run run();
+    ;
+    var fe = try k2.compile(a, "wide.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+
+    var found = false;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "ANSWER")) {
+            found = true;
+            try std.testing.expectEqual(k2.ir_mod.Imm{ .int = 10 }, g.init.imm);
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "metaprogram: generated calls, unary, and negatives round-trip" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Generated code calls a real function with a negative literal argument.
+    const src =
+        \\helper :: fn(x: i32, y: i32) -> i32 { return x + y; }
+        \\gen :: fn() -> AstBlock {
+        \\    return #quote {
+        \\        r = helper(10, -5);
+        \\    };
+        \\}
+        \\run :: fn() -> i32 {
+        \\    r := 0;
+        \\    #insert #run gen();
+        \\    return r;
+        \\}
+        \\ANSWER :: #run run();
+    ;
+    var fe = try k2.compile(a, "calls.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+
+    var found = false;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "ANSWER")) {
+            found = true;
+            try std.testing.expectEqual(k2.ir_mod.Imm{ .int = 5 }, g.init.imm);
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "metaprogram: ast.* exposes the widened node kinds for inspection" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The widened AstExpr variants are matchable: a quoted call expression is a
+    // `.call`, a quoted index is an `.index`, a string literal is a `.str`.
+    const src =
+        \\classify :: fn(e: AstExpr) -> i64 {
+        \\    match e {
+        \\        .call |c|  => return 1;
+        \\        .index |i| => return 2;
+        \\        .field |f| => return 3;
+        \\        .unary |u| => return 4;
+        \\        .str |s|   => return 5;
+        \\        .float |f| => return 6;
+        \\        .boolean |b| => return 7;
+        \\        else       => return 0;
+        \\    }
+        \\}
+        \\K_CALL  :: #run classify(#quote(f(1, 2)));
+        \\K_INDEX :: #run classify(#quote(arr[0]));
+        \\K_STR   :: #run classify(#quote("hi"));
+    ;
+    var fe = try k2.compile(a, "classify.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+
+    var seen: usize = 0;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "K_CALL")) {
+            seen += 1;
+            try std.testing.expectEqual(k2.ir_mod.Imm{ .int = 1 }, g.init.imm);
+        }
+        if (std.mem.eql(u8, g.name, "K_INDEX")) {
+            seen += 1;
+            try std.testing.expectEqual(k2.ir_mod.Imm{ .int = 2 }, g.init.imm);
+        }
+        if (std.mem.eql(u8, g.name, "K_STR")) {
+            seen += 1;
+            try std.testing.expectEqual(k2.ir_mod.Imm{ .int = 5 }, g.init.imm);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 3), seen);
+}
+
+test "metaprogram: generated declared locals are visible after #insert" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The generated block DECLARES `a` and `b`; code after the #insert uses
+    // them — only possible because pass 1 is tolerant and pass 2 re-checks.
+    const src =
+        \\gen :: fn() -> AstBlock { return #quote { a := 17; b := 25; }; }
+        \\run :: fn() -> i32 {
+        \\    #insert #run gen();
+        \\    return a + b;
+        \\}
+        \\ANSWER :: #run run();
+    ;
+    var fe = try k2.compile(a, "decl.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+
+    var found = false;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "ANSWER")) {
+            found = true;
+            try std.testing.expectEqual(k2.ir_mod.Imm{ .int = 42 }, g.init.imm);
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "metaprogram: wide inspection covers types, slices, optionals, control flow" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The widened surface is matchable for casts, slices, coalesce, and unwrap.
+    const src =
+        \\classify :: fn(e: AstExpr) -> i64 {
+        \\    match e {
+        \\        .cast |c|     => return 1;
+        \\        .slice |s|    => return 2;
+        \\        .coalesce |c| => return 3;
+        \\        .unwrap |u|   => return 4;
+        \\        else          => return 0;
+        \\    }
+        \\}
+        \\K_CAST  :: #run classify(#quote(x as i64));
+        \\K_SLICE :: #run classify(#quote(arr[1..3]));
+        \\K_COAL  :: #run classify(#quote(opt ?? 9));
+        \\K_UNWRAP :: #run classify(#quote(opt!!));
+    ;
+    var fe = try k2.compile(a, "wideinspect.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+
+    const expected = [_]struct { name: []const u8, val: i128 }{
+        .{ .name = "K_CAST", .val = 1 },
+        .{ .name = "K_SLICE", .val = 2 },
+        .{ .name = "K_COAL", .val = 3 },
+        .{ .name = "K_UNWRAP", .val = 4 },
+    };
+    var seen: usize = 0;
+    for (m.globals) |g| {
+        for (expected) |e| {
+            if (std.mem.eql(u8, g.name, e.name)) {
+                seen += 1;
+                try std.testing.expectEqual(k2.ir_mod.Imm{ .int = e.val }, g.init.imm);
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 4), seen);
+}
+
+test "metaprogram: generated compound literal + call round-trips" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Generated code builds an array literal and calls a function with elements.
+    const src =
+        \\sum3 :: fn(x: i32, y: i32, z: i32) -> i32 { return x + y + z; }
+        \\gen :: fn() -> AstBlock {
+        \\    return #quote {
+        \\        arr: [3]i32 = .{ 10, 20, 12 };
+        \\        r = sum3(arr[0], arr[1], arr[2]);
+        \\    };
+        \\}
+        \\run :: fn() -> i32 {
+        \\    r := 0;
+        \\    #insert #run gen();
+        \\    return r;
+        \\}
+        \\ANSWER :: #run run();
+    ;
+    var fe = try k2.compile(a, "compound.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+
+    var found = false;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "ANSWER")) {
+            found = true;
+            try std.testing.expectEqual(k2.ir_mod.Imm{ .int = 42 }, g.init.imm);
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "metaprogram: #parse turns a comptime string into spliced code" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The string escape hatch: a comptime-produced string is parsed and spliced.
+    const src =
+        \\gen_code :: fn() -> []const u8 { return "total = total + 42;"; }
+        \\run :: fn() -> i32 {
+        \\    total := 0;
+        \\    #insert #parse(gen_code());
+        \\    return total;
+        \\}
+        \\ANSWER :: #run run();
+    ;
+    var fe = try k2.compile(a, "parse.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+
+    var found = false;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "ANSWER")) {
+            found = true;
+            try std.testing.expectEqual(k2.ir_mod.Imm{ .int = 42 }, g.init.imm);
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "metaprogram: typed macro param rejects a mismatched argument" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // An `AstBlock` parameter requires a `#quote { }` block, not an expression.
+    const src =
+        \\wrap :: macro(body: AstBlock) -> AstBlock { return #quote { $body; }; }
+        \\main :: fn() { #insert wrap(#quote(1 + 2)); }
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(a, "tmacro.k2", src));
+}
+
 test "metaprogram: ast.* types are absent without metaprogramming" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

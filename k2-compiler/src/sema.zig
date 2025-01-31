@@ -622,6 +622,30 @@ fn flushDiagnostics(
     }
 }
 
+/// Best-effort type check that returns the (partial) TypeEnv even when checking
+/// reports errors, and suppresses those diagnostics. Used by pass 1 of the
+/// two-pass `#insert` pipeline: code after a computed `#insert #run gen()` may
+/// reference names the generator will declare, so pass 1 cannot fully succeed.
+/// Pass 2 re-runs the strict `checkTypesWithContext` and is authoritative.
+pub fn checkTypesTolerant(
+    allocator: std.mem.Allocator,
+    module: ast.Module,
+    symbols: *SymbolTable,
+    source: []const u8,
+    file: []const u8,
+) error{OutOfMemory}!TypeEnv {
+    var checker = Checker.init(allocator, symbols.*);
+    checker.source = source;
+    checker.file = file;
+    defer checker.deinit();
+    defer symbols.* = checker.symbols;
+    checker.checkModule(module) catch |err| switch (err) {
+        error.SemanticFailed => {}, // tolerated — pass 2 is authoritative
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    return checker.finish();
+}
+
 pub fn checkTypesWithContext(
     allocator: std.mem.Allocator,
     module: ast.Module,
@@ -1504,6 +1528,17 @@ const Checker = struct {
             .splice => {
                 self.emitError(expr.span, "`$` splice is only valid inside a macro template", .{});
                 return error.SemanticFailed;
+            },
+            // `#parse(expr)` yields code (an `AstBlock`); only useful as an
+            // `#insert` operand. The inner expression must produce a string,
+            // which is evaluated and parsed by the two-pass pipeline.
+            .parse_expr => |inner| blk: {
+                _ = try self.inferExpr(inner.*);
+                const id = self.resolveSymbol("AstBlock") orelse {
+                    self.emitError(expr.span, "`#parse` requires the ast.* metaprogramming types", .{});
+                    return error.SemanticFailed;
+                };
+                break :blk self.env.get(id) orelse .{ .named = id };
             },
             .force_unwrap => |inner| blk: {
                 const ty = try self.inferExpr(inner.*);

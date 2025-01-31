@@ -2,6 +2,7 @@ const std = @import("std");
 const instructions = @import("instructions.zig");
 const value = @import("value.zig");
 const zones = @import("zones.zig");
+const ffi = @import("ffi.zig");
 
 const Instr = instructions.Instr;
 const Opcode = instructions.Opcode;
@@ -269,7 +270,10 @@ pub const Vm = struct {
                     const arg_slice = if (argc <= buf.len) buf[0..argc] else try self.allocator.alloc(Value, argc);
                     defer if (argc > buf.len) self.allocator.free(arg_slice);
                     for (0..argc) |i| arg_slice[i] = frame.regs[base + i];
-                    frame.regs[inst.a] = try self.run(callee, arg_slice);
+                    frame.regs[inst.a] = if (callee.extern_call) |ec|
+                        ffi.call(self.allocator, ec, arg_slice) catch return error.Trap
+                    else
+                        try self.run(callee, arg_slice);
                 },
                 .call_indirect => {
                     const mod = self.module orelse return error.NoModule;
@@ -285,7 +289,10 @@ pub const Vm = struct {
                     const arg_slice = if (argc <= buf.len) buf[0..argc] else try self.allocator.alloc(Value, argc);
                     defer if (argc > buf.len) self.allocator.free(arg_slice);
                     for (0..argc) |i| arg_slice[i] = frame.regs[base + i];
-                    frame.regs[inst.a] = try self.run(callee, arg_slice);
+                    frame.regs[inst.a] = if (callee.extern_call) |ec|
+                        ffi.call(self.allocator, ec, arg_slice) catch return error.Trap
+                    else
+                        try self.run(callee, arg_slice);
                 },
 
                 .ret => {

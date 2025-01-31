@@ -57,6 +57,49 @@ pub fn parseSourceFrom(
     return .{ .module = module, .next_id = p.next_id };
 }
 
+pub const BlockResult = struct {
+    block: ast.Block,
+    next_id: ast.NodeId,
+};
+
+/// Parse `source` as a sequence of statements (a brace-less block body). Used
+/// by `#parse("...")`: the comptime-produced string is parsed into a block and
+/// spliced. Node ids continue from `next_id`.
+pub fn parseBlockSource(
+    allocator: std.mem.Allocator,
+    file_name: []const u8,
+    source: []const u8,
+    next_id: ast.NodeId,
+) ParseError!BlockResult {
+    var p = try Parser.init(allocator, file_name, source, next_id);
+    defer p.deinit();
+
+    var statements: std.ArrayList(ast.Stmt) = .empty;
+    errdefer statements.deinit(allocator);
+    while (!p.check(.eof)) {
+        try statements.append(allocator, p.parseStmt() catch |err| {
+            for (p.diagnostics.items) |d| {
+                const rendered = diag_mod.renderDiagnostic(allocator, d.file, source, d) catch continue;
+                defer allocator.free(rendered);
+                std.debug.print("{s}\n", .{rendered});
+            }
+            return err;
+        });
+    }
+    if (p.diagnostics.items.len != 0) {
+        for (p.diagnostics.items) |d| {
+            const rendered = diag_mod.renderDiagnostic(allocator, d.file, source, d) catch continue;
+            defer allocator.free(rendered);
+            std.debug.print("{s}\n", .{rendered});
+        }
+        return error.ParseFailed;
+    }
+    return .{
+        .block = .{ .statements = try statements.toOwnedSlice(allocator), .span = Span.new(0, @intCast(source.len)) },
+        .next_id = p.next_id,
+    };
+}
+
 pub const Parser = struct {
     allocator: std.mem.Allocator,
     file_name: []const u8,
@@ -1125,6 +1168,13 @@ pub const Parser = struct {
                         .{ .run_expr = try self.allocExpr(inner) },
                         Span.new(tok.start, inner.span.end),
                     );
+                }
+                // #parse(expr) — parse a comptime string as code.
+                if (self.matchIdent("parse")) {
+                    _ = try self.expect(.l_paren, "expected ( after #parse");
+                    const inner = try self.parseExpr(0);
+                    const close = try self.expect(.r_paren, "expected ) after #parse expression");
+                    return self.expr(.{ .parse_expr = try self.allocExpr(inner) }, Span.new(tok.start, close.start + close.len));
                 }
                 // #quote { ... } — block quotation;  #quote(expr) — expr form.
                 if (self.matchIdent("quote")) {

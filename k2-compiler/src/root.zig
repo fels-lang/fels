@@ -65,6 +65,9 @@ else
 pub const compileWithLlvm = driver_mod.compileWithLlvm;
 pub const compileFileWithLlvm = driver_mod.compileFileWithLlvm;
 pub const LlvmCompileOptions = driver_mod.LlvmCompileOptions;
+pub const Phase = driver_mod.Phase;
+pub const Timings = driver_mod.Timings;
+pub const comptime_ns = &ir.comptime_ns;
 
 const LlvmBackendStub = struct {
     pub const Error = error{LlvmNotEnabled};

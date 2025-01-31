@@ -228,6 +228,112 @@ test "exe: #insert #run gen() — VM-generated code compiled into the binary" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: generated while-loop with conditional compiles and runs" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A generator emits a while-loop + if; the spliced code is compiled by LLVM.
+    const code = try compileAndRun(arena.allocator(),
+        \\gen :: fn() -> AstBlock {
+        \\    return #quote {
+        \\        i := 0;
+        \\        while i < 9 {
+        \\            sum = sum + i;
+        \\            i = i + 1;
+        \\        }
+        \\        if sum > 100 { sum = 0; }
+        \\    };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    sum := 0;
+        \\    #insert #run gen();
+        \\    return sum;
+        \\}
+    , "exe_gen_loop");
+    // 0+1+...+8 = 36
+    try std.testing.expectEqual(@as(u32, 36), code);
+}
+
+test "exe: generated for-range loop + typed local compiles and runs" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The generator declares a typed local and a `for`-range loop; `total` is
+    // declared inside the generated code and used after the splice (tolerant
+    // pass 1). 0+1+2+3+4 = 10.
+    const code = try compileAndRun(arena.allocator(),
+        \\gen :: fn() -> AstBlock {
+        \\    return #quote {
+        \\        total: i32 = 0;
+        \\        for i in 0..=4 { total = total + i; }
+        \\    };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    #insert #run gen();
+        \\    return total;
+        \\}
+    , "exe_gen_for");
+    try std.testing.expectEqual(@as(u32, 10), code);
+}
+
+test "exe: generated match + cast compiles and runs" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\gen :: fn() -> AstBlock {
+        \\    return #quote {
+        \\        match k {
+        \\            0 => r = 30;
+        \\            else => r = 0;
+        \\        }
+        \\        big: i64 = r as i64;
+        \\        r = big as i32;
+        \\    };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    k := 0;
+        \\    r := 0;
+        \\    #insert #run gen();
+        \\    return r;
+        \\}
+    , "exe_gen_match");
+    try std.testing.expectEqual(@as(u32, 30), code);
+}
+
+test "exe: comptime FFI calls kernel32 at build time" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `mul_div` resolves to kernel32!MulDiv and is CALLED on the comptime VM:
+    // MulDiv(10, 6, 1) = 60 is computed during compilation and baked in.
+    const code = try compileAndRun(arena.allocator(),
+        \\#extern("kernel32", "MulDiv")
+        \\mul_div :: fn(a: i32, b: i32, c: i32) -> i32;
+        \\RESULT :: #run mul_div(10, 6, 1);
+        \\main :: fn() -> i32 { return RESULT; }
+    , "exe_ffi_muldiv");
+    try std.testing.expectEqual(@as(u32, 60), code);
+}
+
+test "exe: comptime FFI marshals a string argument" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\#extern("kernel32", "lstrlenA")
+        \\str_len :: fn(s: []const u8) -> i32;
+        \\LEN :: #run str_len("hello, world");
+        \\main :: fn() -> i32 { return LEN; }
+    , "exe_ffi_strlen");
+    try std.testing.expectEqual(@as(u32, 12), code);
+}
+
 test "exe: main returning 42 propagates exit code" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

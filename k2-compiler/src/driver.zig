@@ -73,6 +73,43 @@ pub fn compileSource(
 
 // ── LLVM backend path ─────────────────────────────────────────────────────────
 
+/// A compile phase, reported to a progress hook as it begins.
+pub const Phase = enum {
+    frontend, // parse + macro expand + type check (+ comptime two-pass)
+    lower, // typed AST → IR (+ comptime `#run`)
+    passes, // IR optimisation passes
+    codegen, // IR → LLVM IR
+    emit, // LLVM IR → object file
+    link, // object → executable
+
+    pub fn label(self: Phase) []const u8 {
+        return switch (self) {
+            .frontend => "checking",
+            .lower => "lowering",
+            .passes => "optimising",
+            .codegen => "generating code",
+            .emit => "emitting object",
+            .link => "linking",
+        };
+    }
+};
+
+/// Called with each phase just before it runs, for a live status line.
+pub const ProgressFn = *const fn (ctx: ?*anyopaque, phase: Phase) void;
+
+/// Per-phase wall-clock timings (nanoseconds) filled in during a build.
+pub const Timings = struct {
+    frontend_ns: u64 = 0,
+    lower_ns: u64 = 0,
+    passes_ns: u64 = 0,
+    codegen_ns: u64 = 0,
+    emit_ns: u64 = 0,
+    link_ns: u64 = 0,
+    /// Of the above, time spent in compile-time evaluation (`#run`/FFI/macros).
+    comptime_ns: u64 = 0,
+    total_ns: u64 = 0,
+};
+
 pub const LlvmCompileOptions = struct {
     /// Source file path (for diagnostics).
     file_name: []const u8,
@@ -92,7 +129,22 @@ pub const LlvmCompileOptions = struct {
     /// addition to those inferred from `#extern("lib", "symbol")` decls —
     /// e.g. transitive system libs a C library depends on (gdi32, user32, ...).
     extra_libs: []const []const u8 = &.{},
+    /// Optional progress hook, called at each phase boundary.
+    progress: ?ProgressFn = null,
+    progress_ctx: ?*anyopaque = null,
+    /// If set, per-phase timings are written here.
+    timings: ?*Timings = null,
 };
+
+const clock = @import("clock.zig");
+
+fn nowNs() u64 {
+    return clock.monoNs();
+}
+
+fn sinceNs(start: u64) u64 {
+    return clock.sinceNs(start);
+}
 
 pub const LlvmDriverError = error{
     CompileFailed,
@@ -151,17 +203,27 @@ pub fn compileFileWithLlvm(
 ) LlvmDriverError!void {
     if (!build_options.enable_llvm) return error.LlvmNotEnabled;
 
+    const ct0 = ir.comptime_ns;
+    const t_total = nowNs();
+    if (opts.progress) |p| p(opts.progress_ctx, .frontend);
+    const t_fe = nowNs();
     var fe = pipeline.compileFileWithRuntime(allocator, io, opts.file_name) catch |err| switch (err) {
         error.ParseFailed, error.SemanticFailed, error.IoError, error.RuntimeUnavailable => return error.CompileFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer fe.deinit(allocator);
+    if (opts.timings) |tm| tm.frontend_ns = sinceNs(t_fe);
     if (fe.diagnostics().len != 0) {
         printFeDiagnostics(allocator, fe.diagnostics(), opts.file_name, opts.source);
         return error.CompileFailed;
     }
 
     try emitLlvmFromFrontend(allocator, io, fe, opts);
+
+    if (opts.timings) |tm| {
+        tm.comptime_ns = ir.comptime_ns - ct0;
+        tm.total_ns = sinceNs(t_total);
+    }
 }
 
 fn emitLlvmFromFrontend(
@@ -175,6 +237,8 @@ fn emitLlvmFromFrontend(
     const ir_allocator = ir_arena.allocator();
 
     // Middle-end
+    if (opts.progress) |p| p(opts.progress_ctx, .lower);
+    const t_lower = nowNs();
     var module = ir.lowerFrontend(ir_allocator, fe) catch |err| switch (err) {
         error.LoweringFailed => {
             std.debug.print("{s}: compilation failed due to internal compiler error (see above)\n", .{opts.file_name});
@@ -182,6 +246,10 @@ fn emitLlvmFromFrontend(
         },
         error.OutOfMemory => return error.OutOfMemory,
     };
+    if (opts.timings) |tm| tm.lower_ns = sinceNs(t_lower);
+
+    if (opts.progress) |p| p(opts.progress_ctx, .passes);
+    const t_passes = nowNs();
     ir.runDefaultPasses(ir_allocator, &module) catch {
         std.debug.print("{s}: internal compiler error during IR optimisation passes\n", .{opts.file_name});
         return error.LoweringFailed;
@@ -190,6 +258,7 @@ fn emitLlvmFromFrontend(
         std.debug.print("{s}: internal compiler error: IR validation failed (malformed IR produced)\n", .{opts.file_name});
         return error.LoweringFailed;
     };
+    if (opts.timings) |tm| tm.passes_ns = sinceNs(t_passes);
 
     // LLVM backend
     const llvm_backend = @import("backend/llvm.zig");
@@ -200,18 +269,26 @@ fn emitLlvmFromFrontend(
     defer be.deinit();
 
     be.setOptLevel(opts.opt_level);
+    if (opts.progress) |p| p(opts.progress_ctx, .codegen);
+    const t_codegen = nowNs();
     be.lower(module) catch {
         std.debug.print("{s}: compilation failed due to internal compiler error during code generation (see above)\n", .{opts.file_name});
         return error.LoweringFailed;
     };
+    if (opts.timings) |tm| tm.codegen_ns = sinceNs(t_codegen);
 
     // Emit object file
     const obj_z = try allocator.dupeZ(u8, opts.obj_path);
     defer allocator.free(obj_z);
+    if (opts.progress) |p| p(opts.progress_ctx, .emit);
+    const t_emit = nowNs();
     be.emitObject(obj_z, opts.opt_level) catch return error.EmitFailed;
+    if (opts.timings) |tm| tm.emit_ns = sinceNs(t_emit);
 
     // Link (optional)
     if (opts.exe_path) |exe| {
+        if (opts.progress) |p| p(opts.progress_ctx, .link);
+        const t_link = nowNs();
         // Combine libs inferred from `#extern("lib", "symbol")` decls with any
         // user-supplied `--lib` libraries (e.g. transitive system deps).
         var libs: std.ArrayList([]const u8) = .empty;
@@ -226,5 +303,6 @@ fn emitLlvmFromFrontend(
             .lib_paths = opts.lib_paths,
             .libs = libs.items,
         }) catch return error.LinkFailed;
+        if (opts.timings) |tm| tm.link_ns = sinceNs(t_link);
     }
 }

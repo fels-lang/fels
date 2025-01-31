@@ -90,6 +90,14 @@ pub const Instr = struct {
 /// A compiled function: a flat instruction stream plus a constant pool for
 /// values that don't fit in an inline immediate (wide ints, floats, strings,
 /// type values, zone names).
+/// A call into an external (DLL/C) function, resolved and invoked by the VM's
+/// FFI bridge at compile time instead of running bytecode.
+pub const ExternCall = struct {
+    lib: []const u8,
+    symbol: []const u8,
+    returns_value: bool,
+};
+
 pub const BytecodeFunction = struct {
     name: []const u8,
     instrs: []const Instr,
@@ -100,6 +108,9 @@ pub const BytecodeFunction = struct {
     /// How many of `num_locals` are parameters, bound from call arguments.
     num_params: u32 = 0,
     constants: []const value.Value = &.{},
+    /// When set, calling this function invokes a native function via FFI rather
+    /// than executing `instrs` (which is empty for extern functions).
+    extern_call: ?ExternCall = null,
 
     pub fn deinit(self: *const BytecodeFunction, allocator: std.mem.Allocator) void {
         allocator.free(self.instrs);

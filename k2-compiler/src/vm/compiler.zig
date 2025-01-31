@@ -35,6 +35,26 @@ pub fn compileModule(allocator: std.mem.Allocator, module: ir.IrModule) CompileE
         allocator.free(funcs);
     }
     for (module.functions) |f| {
+        // `#extern("lib","sym")` functions have no body — compile them to an FFI
+        // thunk the VM dispatches natively at call time.
+        if (f.extern_name) |sym| {
+            if (f.blocks.len == 0) {
+                funcs[built] = .{
+                    .name = f.name,
+                    .instrs = &.{},
+                    .num_regs = 0,
+                    .num_locals = 0,
+                    .num_params = @intCast(f.params.len),
+                    .extern_call = .{
+                        .lib = f.extern_lib orelse "",
+                        .symbol = sym,
+                        .returns_value = !f.return_ty.isVoid(),
+                    },
+                };
+                built += 1;
+                continue;
+            }
+        }
         // A function using constructs we can't lower yet becomes a trap stub so
         // the rest of the module still runs; calling it just triggers fallback.
         funcs[built] = compileFunction(allocator, f, &func_map, module) catch |e| switch (e) {
