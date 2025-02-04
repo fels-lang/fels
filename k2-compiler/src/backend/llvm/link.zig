@@ -61,8 +61,6 @@ pub fn printCommand(allocator: std.mem.Allocator, opts: WindowsLinkOptions) void
 
 /// Spawn lld-link and fail if it does not exit cleanly.
 pub fn windows(allocator: std.mem.Allocator, io: std.Io, opts: WindowsLinkOptions) LinkError!void {
-    printCommand(allocator, opts);
-
     const args = buildArgs(allocator, opts) catch return error.OutOfMemory;
     defer {
         for (args) |a| allocator.free(@constCast(a));

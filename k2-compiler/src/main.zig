@@ -9,9 +9,20 @@
 //! Build with LLVM:  zig build -Dllvm-path=Y:/SDK/clang+llvm-22.1.6-x86_64-pc-windows-msvc
 
 const std = @import("std");
+const builtin = @import("builtin");
 const k2 = @import("k2_compiler");
 
 const version = "0.1.0-dev";
+
+// The Windows console defaults to a legacy OEM code page, which mangles the
+// UTF-8 bytes we print (✓, box-drawing). Switch it to UTF-8 (65001) at startup.
+const win = if (builtin.os.tag == .windows) struct {
+    extern "kernel32" fn SetConsoleOutputCP(wCodePageID: u32) callconv(.winapi) i32;
+} else struct {};
+
+fn enableUtf8Console() void {
+    if (builtin.os.tag == .windows) _ = win.SetConsoleOutputCP(65001);
+}
 
 // ── Live status line ───────────────────────────────────────────────────────────
 // A "changing command line" — the current phase, with a spinner that advances at
@@ -21,7 +32,8 @@ const version = "0.1.0-dev";
 const Progress = struct {
     quiet: bool,
     frame: usize = 0,
-    const frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+    // ASCII spinner — braille glyphs aren't in most console fonts.
+    const frames = [_][]const u8{ "|", "/", "-", "\\" };
 
     fn step(self: *Progress, phase: k2.Phase) void {
         if (self.quiet) return;
@@ -55,6 +67,7 @@ const Options = struct {
 };
 
 pub fn main(init: std.process.Init) u8 {
+    enableUtf8Console();
     const allocator = init.gpa;
     const io = init.io;
 
