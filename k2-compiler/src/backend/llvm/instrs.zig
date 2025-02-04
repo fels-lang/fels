@@ -730,6 +730,20 @@ fn lowerBuiltin(
         return llvm.LLVMBuildIntToPtr(bl, addr, llvm.LLVMPointerTypeInContext(cg.ctx, 0), "");
     }
 
+    // slice_from_raw_parts(Elem, ptr, len) -> []Elem — assemble a slice value
+    // {ptr, len} from a raw pointer and length. Slices are type-erased to a
+    // single {ptr, i64} struct in this backend, so no element type is needed
+    // here — `ptr` and `len` are inserted directly. (See `.alloc_slice`.)
+    if (std.mem.eql(u8, b.name, "slice_from_raw_parts")) {
+        if (b.args.len < 3) return null;
+        const i64_ty = llvm.LLVMInt64TypeInContext(cg.ctx);
+        const ptr = resolveVal(cg, fncg, b.args[1], .{ .ptr = undefined });
+        const len = values.coerce(bl, cg.ctx, resolveVal(cg, fncg, b.args[2], .usize), i64_ty);
+        var slice = llvm.LLVMGetUndef(cg.getSliceType());
+        slice = llvm.LLVMBuildInsertValue(bl, slice, ptr, 0, "");
+        return llvm.LLVMBuildInsertValue(bl, slice, len, 1, "");
+    }
+
     // volatile_store(ptr, value) — store with volatile flag.
     if (std.mem.eql(u8, b.name, "volatile_store")) {
         if (b.args.len < 2) return null;

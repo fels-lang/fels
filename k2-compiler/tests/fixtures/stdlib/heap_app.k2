@@ -1,0 +1,35 @@
+// Exercises std.heap so the module (and a typical user of it) stays compilable
+// and lowerable. Covers make / alloc_bytes / try_alloc_bytes / reset / deinit
+// and the fixed-buffer backing.
+
+#import std.heap.{ Arena, make, fixed, alloc, try_alloc, alloc_bytes, try_alloc_bytes, reset, deinit };
+
+run :: fn() -> i32 {
+    a := make();
+
+    // typed allocation — instantiates the generic alloc(T)
+    xs := (&a).alloc(i32, 4usize);
+    xs[0] = 7;
+
+    b := (&a).alloc_bytes(128usize);
+    b[0] = 1u8;
+    sum := (b[0] as i32) + xs[0];
+
+    // reset rewinds but keeps chunks; the next alloc reuses them.
+    (&a).reset();
+    // fallible typed allocation — instantiates the generic try_alloc(T)
+    ys := (&a).try_alloc(i32, 2usize) catch e {
+        (&a).deinit();
+        return sum;
+    };
+    ys[0] = 2;
+    sum = sum + ys[0];
+    (&a).deinit();
+
+    // Fixed backing over a stack buffer — no syscalls, cannot grow.
+    buf: [256]u8 = .{};
+    f := fixed(buf[:]);
+    fb := (&f).alloc_bytes(32usize);
+    fb[0] = 3u8;
+    return sum + (fb[0] as i32);
+}

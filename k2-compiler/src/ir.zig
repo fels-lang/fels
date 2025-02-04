@@ -1201,6 +1201,9 @@ fn lowerFunctionInstantiation(
         var lowerer = FunctionLowerer.init(allocator, types, symbols, decl);
         lowerer.cvm = cvm;
         lowerer.type_binding = type_args;
+        // Without this the body lowers returns against `.void` and never wraps a
+        // fallible return — generic `fn(...) -> T ! Err` then miscompiles.
+        lowerer.current_return_ty = ret_ty;
         break :blk try lowerer.lowerBody(body);
     } else &.{};
 
@@ -1208,7 +1211,10 @@ fn lowerFunctionInstantiation(
         .name = mangled_name,
         .params = try params.toOwnedSlice(allocator),
         .return_ty = ret_ty,
-        .error_ty = null,
+        // Propagate the error type so the backend lowers this instantiation as a
+        // fallible `{ ok, err }` (was hardcoded null — broke `?`/`fail`/`catch`
+        // and crashed callers that `?`-propagate a generic fallible result).
+        .error_ty = if (decl.error_ty) |err| try lowerErrorSpec(allocator, err) else null,
         .blocks = blocks,
         .extern_name = null,
         .inline_hint = hasAttr(decl.attrs, "inline"),
@@ -2389,6 +2395,23 @@ const FunctionLowerer = struct {
                 if (std.mem.eql(u8, callee_name, "asm")) {
                     break :blk try self.lowerAsmCall(call, expr);
                 }
+                // sizeof/type_info/type_name take a TYPE as their sole argument,
+                // not a value — it goes into `type_arg`, never lowered as a value
+                // (lowering a type parameter `T` as a value produces a bad reg
+                // and crashes a later pass).
+                const is_type_arg_builtin = std.mem.eql(u8, callee_name, "sizeof") or
+                    std.mem.eql(u8, callee_name, "type_info") or
+                    std.mem.eql(u8, callee_name, "type_name");
+                // These take a TYPE as their first argument (the rest are
+                // values). The type is not lowered as a value — it would crash
+                // on a type parameter `T` — but a placeholder keeps the value
+                // args at their expected indices (the LLVM lowerings read
+                // args[1]+ and ignore args[0]).
+                const type_first_builtin = std.mem.eql(u8, callee_name, "truncate_to") or
+                    std.mem.eql(u8, callee_name, "ptr_from_int") or
+                    std.mem.eql(u8, callee_name, "unaligned_read") or
+                    std.mem.eql(u8, callee_name, "slice_from_raw_parts");
+
                 var args = std.ArrayList(Value).empty;
                 errdefer args.deinit(self.allocator);
                 const direct_sig = if (self.symbols.resolve(self.symbols.root_scope, callee_name)) |id|
@@ -2396,7 +2419,11 @@ const FunctionLowerer = struct {
                 else
                     null;
                 var value_param_index: usize = 0;
-                for (call.args) |arg| {
+                if (!is_type_arg_builtin) for (call.args, 0..) |arg, arg_idx| {
+                    if (type_first_builtin and arg_idx == 0) {
+                        try args.append(self.allocator, .{ .imm = .null });
+                        continue;
+                    }
                     const value = switch (arg) {
                         .positional => |value| value,
                         .named => |named| named.value,
@@ -2422,14 +2449,11 @@ const FunctionLowerer = struct {
                         }
                     }
                     try args.append(self.allocator, if (expected) |ty| try self.lowerExprAs(value, ty) else try self.lowerExpr(value));
-                }
+                };
                 const arg_slice = try args.toOwnedSlice(self.allocator);
                 if (isBuiltinName(callee_name)) {
                     var type_arg: ?IrType = null;
-                    if ((std.mem.eql(u8, callee_name, "sizeof") or
-                        std.mem.eql(u8, callee_name, "type_info") or
-                        std.mem.eql(u8, callee_name, "type_name")) and call.args.len > 0)
-                    {
+                    if (is_type_arg_builtin and call.args.len > 0) {
                         const first = switch (call.args[0]) {
                             .positional => |e| e,
                             .named => |n| n.value,
@@ -2943,7 +2967,16 @@ const FunctionLowerer = struct {
     fn lowerTypeArg(self: *FunctionLowerer, expr: ast.Expr) LowerError!IrType {
         return switch (expr.kind) {
             .type_ref => |ty| lowerType(self.allocator, ty),
-            .ident => |name| lowerNamedType(name),
+            // A bare ident may be a generic type parameter — resolve it to the
+            // concrete type bound for this instantiation, so `sizeof(T)` etc.
+            // get the real type instead of an unknown one.
+            .ident => |name| blk: {
+                for (self.type_binding) |arg| {
+                    if (std.mem.eql(u8, arg.name, name))
+                        break :blk lowerSemaTypeWithEnv(self.allocator, arg.ty, self.types, self.symbols) catch .unknown;
+                }
+                break :blk lowerNamedType(name);
+            },
             // Generic instantiation (e.g. `List(i32)`) parses as a call. Sema
             // records its resolved type in `expr_types`; reuse that so the
             // allocation gets the concrete struct size, not a bare pointer.
@@ -3325,6 +3358,7 @@ fn isBuiltinName(name: []const u8) bool {
     inline for (.{
         "truncate_to",
         "ptr_from_int",
+        "slice_from_raw_parts",
         "volatile_store",
         "sizeof",
         "type_info",
@@ -4386,14 +4420,34 @@ fn exprHasQuote(e: ast.Expr) bool {
 
 fn inferConstType(expr: ast.Expr) IrType {
     return switch (expr.kind) {
-        .int => .{ .i = 32 },
-        .float => .f64,
+        .int => |text| intLiteralIrType(text),
+        .float => |text| if (std.mem.endsWith(u8, text, "f32")) .f32 else .f64,
         .unary => |u| if (u.op == .neg) inferConstType(u.expr.*) else .unknown,
         .bool => .bool,
         .string => .text,
         .null => .unknown,
         else => .unknown,
     };
+}
+
+/// Map an integer literal's type suffix to its IrType so a `const` global is
+/// sized to match its declared width — e.g. `X :: 32usize` must be an i64
+/// global, not i32. Without this, a load wider than the global reads adjacent
+/// memory into the high bits (corrupting addresses through `ptr_from_int` /
+/// `slice_from_raw_parts`). An unsuffixed literal keeps the i32 default.
+fn intLiteralIrType(text: []const u8) IrType {
+    if (std.mem.endsWith(u8, text, "usize")) return .usize;
+    if (std.mem.endsWith(u8, text, "isize")) return .isize;
+    if (std.mem.endsWith(u8, text, "u64")) return .{ .u = 64 };
+    if (std.mem.endsWith(u8, text, "u32")) return .{ .u = 32 };
+    if (std.mem.endsWith(u8, text, "u16")) return .{ .u = 16 };
+    if (std.mem.endsWith(u8, text, "u8")) return .{ .u = 8 };
+    if (std.mem.endsWith(u8, text, "i64")) return .{ .i = 64 };
+    if (std.mem.endsWith(u8, text, "i32")) return .{ .i = 32 };
+    if (std.mem.endsWith(u8, text, "i16")) return .{ .i = 16 };
+    if (std.mem.endsWith(u8, text, "i8")) return .{ .i = 8 };
+    if (std.mem.endsWith(u8, text, "byte")) return .byte;
+    return .{ .i = 32 };
 }
 
 fn lowerImm(expr: ast.Expr) Imm {

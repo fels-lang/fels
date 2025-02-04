@@ -3,6 +3,41 @@
 /// To link manually after emitObject("output.o"):
 ///   lld-link output.o /OUT:output.exe /SUBSYSTEM:CONSOLE /ENTRY:mainCRTStartup /NODEFAULTLIB kernel32.lib
 const std = @import("std");
+const builtin = @import("builtin");
+
+// In-process LLD via k2lld.dll (built with `-Din-process-lld`). Loaded
+// dynamically, so when the DLL is absent we transparently fall back to spawning
+// lld-link.exe. The DLL exports a single C entry point; loading it lazily avoids
+// any build-time dependency.
+const win = struct {
+    extern "kernel32" fn LoadLibraryA(lpLibFileName: [*:0]const u8) callconv(.winapi) ?*anyopaque;
+    extern "kernel32" fn GetProcAddress(hModule: *anyopaque, lpProcName: [*:0]const u8) callconv(.winapi) ?*anyopaque;
+};
+
+const LldLinkFn = *const fn (argc: c_int, argv: [*]const [*:0]const u8) callconv(.c) c_int;
+
+/// Try the in-process linker. Returns null if k2lld.dll is unavailable (caller
+/// should fall back to spawning), true on a successful link, false on failure.
+fn tryInProcess(allocator: std.mem.Allocator, args: []const []const u8) ?bool {
+    if (builtin.os.tag != .windows) return null;
+    const module = win.LoadLibraryA("k2lld.dll") orelse return null;
+    const proc = win.GetProcAddress(module, "k2_lld_link_coff") orelse return null;
+    const link_fn: LldLinkFn = @ptrCast(proc);
+
+    var argv: std.ArrayList([*:0]const u8) = .empty;
+    defer {
+        for (argv.items[1..]) |a| allocator.free(std.mem.span(a));
+        argv.deinit(allocator);
+    }
+    // argv[0] is the linker name (diagnostics only); the rest are the real args,
+    // skipping `args[0]` which is the lld-link.exe path used for spawning.
+    argv.append(allocator, "lld-link") catch return null;
+    for (args[1..]) |a| {
+        const z = allocator.dupeZ(u8, a) catch return false;
+        argv.append(allocator, z.ptr) catch return false;
+    }
+    return link_fn(@intCast(argv.items.len), argv.items.ptr) == 0;
+}
 
 pub const LinkError = error{
     OutOfMemory,
@@ -59,12 +94,18 @@ pub fn printCommand(allocator: std.mem.Allocator, opts: WindowsLinkOptions) void
     std.debug.print("\n", .{});
 }
 
-/// Spawn lld-link and fail if it does not exit cleanly.
+/// Link the executable. Prefers in-process LLD (k2lld.dll) and falls back to
+/// spawning lld-link.exe when the DLL is not present.
 pub fn windows(allocator: std.mem.Allocator, io: std.Io, opts: WindowsLinkOptions) LinkError!void {
     const args = buildArgs(allocator, opts) catch return error.OutOfMemory;
     defer {
         for (args) |a| allocator.free(@constCast(a));
         allocator.free(args);
+    }
+
+    // In-process first; null means the DLL is unavailable → spawn instead.
+    if (tryInProcess(allocator, args)) |ok| {
+        return if (ok) {} else error.ExitCodeFailure;
     }
 
     var child = std.process.spawn(io, .{

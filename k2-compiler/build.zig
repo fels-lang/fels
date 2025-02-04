@@ -50,6 +50,113 @@ pub fn build(b: *std.Build) void {
         compiler_mod.linkSystemLibrary("LLVM-C", .{});
     }
 
+    // ── Optional in-process LLD (k2lld.dll) ───────────────────────────────
+    // `-Din-process-lld` bundles the LLD COFF driver + its LLVM static deps
+    // into a DLL exposing `k2_lld_link_coff`, so `k2 build` links in-process
+    // instead of spawning a 69 MB lld-link.exe. Off by default; the spawn path
+    // is the fallback. Requires the LLVM/LLD static libs in <llvm-path>/lib.
+    const in_process_lld = b.option(bool, "in-process-lld", "Build k2lld.dll for in-process linking") orelse false;
+    opts.addOption(bool, "in_process_lld", in_process_lld and llvm_path != null);
+    if (in_process_lld) {
+        if (llvm_path) |lp| {
+            // The SDK's LLVM static libs are MSVC-ABI (/MT). Build the shim DLL
+            // against the MSVC toolchain so the CRT/STL match.
+            const msvc_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .msvc });
+            // Always ReleaseFast + stripped: the DLL is loaded on every `k2
+            // build`, so its size drives link latency. Debug info would bloat it
+            // to ~77 MB and dominate the load.
+            const k2lld = b.addLibrary(.{
+                .name = "k2lld",
+                .linkage = .dynamic,
+                .root_module = b.createModule(.{ .target = msvc_target, .optimize = .ReleaseFast, .strip = true, .link_libc = true }),
+            });
+            k2lld.root_module.addCSourceFile(.{
+                .file = b.path("src/backend/llvm/lld_shim.cpp"),
+                .flags = &.{ "-std=c++17", "-fno-rtti" },
+            });
+            k2lld.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{lp}) });
+            k2lld.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{lp}) });
+            // LLD + the FULL LLVM static set (all targets — LLD's LTO path
+            // references every target initializer), in `llvm-config --libnames
+            // all` order, then the Windows system libs LLVM needs.
+            const lld_llvm_libs = [_][]const u8{
+                "lldCOFF",                  "lldCommon",
+                "LLVMWindowsManifest",      "LLVMXRay",
+                "LLVMLibDriver",            "LLVMDlltoolDriver",
+                "LLVMTelemetry",            "LLVMTextAPIBinaryReader",
+                "LLVMCoverage",             "LLVMLineEditor",
+                "LLVMNVPTXCodeGen",         "LLVMNVPTXDesc",
+                "LLVMNVPTXInfo",            "LLVMRISCVTargetMCA",
+                "LLVMRISCVDisassembler",    "LLVMRISCVAsmParser",
+                "LLVMRISCVCodeGen",         "LLVMRISCVDesc",
+                "LLVMRISCVInfo",            "LLVMWebAssemblyDisassembler",
+                "LLVMWebAssemblyAsmParser", "LLVMWebAssemblyCodeGen",
+                "LLVMWebAssemblyUtils",     "LLVMWebAssemblyDesc",
+                "LLVMWebAssemblyInfo",      "LLVMBPFDisassembler",
+                "LLVMBPFAsmParser",         "LLVMBPFCodeGen",
+                "LLVMBPFDesc",              "LLVMBPFInfo",
+                "LLVMX86TargetMCA",         "LLVMX86Disassembler",
+                "LLVMX86AsmParser",         "LLVMX86CodeGen",
+                "LLVMX86Desc",              "LLVMX86Info",
+                "LLVMARMDisassembler",      "LLVMARMAsmParser",
+                "LLVMARMCodeGen",           "LLVMARMDesc",
+                "LLVMARMUtils",             "LLVMARMInfo",
+                "LLVMAArch64Disassembler",  "LLVMAArch64AsmParser",
+                "LLVMAArch64CodeGen",       "LLVMAArch64Desc",
+                "LLVMAArch64Utils",         "LLVMAArch64Info",
+                "LLVMOrcDebugging",         "LLVMOrcJIT",
+                "LLVMWindowsDriver",        "LLVMMCJIT",
+                "LLVMJITLink",              "LLVMInterpreter",
+                "LLVMExecutionEngine",      "LLVMRuntimeDyld",
+                "LLVMOrcTargetProcess",     "LLVMOrcShared",
+                "LLVMDWP",                  "LLVMDWARFCFIChecker",
+                "LLVMDebugInfoLogicalView", "LLVMOption",
+                "LLVMObjCopy",              "LLVMMCA",
+                "LLVMMCDisassembler",       "LLVMDTLTO",
+                "LLVMLTO",                  "LLVMPlugins",
+                "LLVMPasses",               "LLVMHipStdPar",
+                "LLVMCFGuard",              "LLVMCoroutines",
+                "LLVMipo",                  "LLVMVectorize",
+                "LLVMSandboxIR",            "LLVMLinker",
+                "LLVMFrontendOpenMP",       "LLVMFrontendOffloading",
+                "LLVMObjectYAML",           "LLVMFrontendOpenACC",
+                "LLVMFrontendDriver",       "LLVMInstrumentation",
+                "LLVMFrontendDirective",    "LLVMFrontendAtomic",
+                "LLVMExtensions",           "LLVMDWARFLinkerParallel",
+                "LLVMDWARFLinkerClassic",   "LLVMDWARFLinker",
+                "LLVMGlobalISel",           "LLVMMIRParser",
+                "LLVMAsmPrinter",           "LLVMSelectionDAG",
+                "LLVMCodeGen",              "LLVMTarget",
+                "LLVMObjCARCOpts",          "LLVMCodeGenTypes",
+                "LLVMCGData",               "LLVMCAS",
+                "LLVMIRPrinter",            "LLVMInterfaceStub",
+                "LLVMFileCheck",            "LLVMFuzzMutate",
+                "LLVMScalarOpts",           "LLVMInstCombine",
+                "LLVMAggressiveInstCombine", "LLVMTransformUtils",
+                "LLVMBitWriter",            "LLVMAnalysis",
+                "LLVMProfileData",          "LLVMSymbolize",
+                "LLVMDebugInfoBTF",         "LLVMDebugInfoPDB",
+                "LLVMDebugInfoMSF",         "LLVMDebugInfoCodeView",
+                "LLVMDebugInfoGSYM",        "LLVMDebugInfoDWARF",
+                "LLVMObject",               "LLVMTextAPI",
+                "LLVMMCParser",             "LLVMIRReader",
+                "LLVMAsmParser",            "LLVMMC",
+                "LLVMDebugInfoDWARFLowLevel", "LLVMBitReader",
+                "LLVMFrontendHLSL",         "LLVMFuzzerCLI",
+                "LLVMABI",                  "LLVMCore",
+                "LLVMRemarks",              "LLVMBitstreamReader",
+                "LLVMBinaryFormat",         "LLVMTargetParser",
+                "LLVMTableGen",             "LLVMSupportLSP",
+                "LLVMSupport",              "LLVMDemangle",
+                // Windows system libs (`llvm-config --system-libs`).
+                "xml2s",  "psapi",  "shell32", "ole32",
+                "uuid",   "advapi32", "ws2_32", "ntdll",
+            };
+            for (lld_llvm_libs) |name| k2lld.root_module.linkSystemLibrary(name, .{});
+            b.installArtifact(k2lld);
+        }
+    }
+
     // ── Basalt stub (kept for historical reasons, can be removed) ─────────
     const basalt_lib_dir = b.option(
         []const u8,

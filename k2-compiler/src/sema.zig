@@ -1910,6 +1910,15 @@ const Checker = struct {
             try self.requireUnsafe(call.callee.span, name);
             return self.firstTypeArg(call) orelse error.SemanticFailed;
         }
+        // slice_from_raw_parts(T, ptr: *T, len: usize) -> []T — build a slice
+        // value from a raw pointer and length. The fundamental allocator
+        // primitive (std.heap.Arena). Unsafe: the caller guarantees `ptr`
+        // addresses at least `len` valid, correctly-aligned `T` elements.
+        if (std.mem.eql(u8, name, "slice_from_raw_parts")) {
+            try self.requireUnsafe(call.callee.span, name);
+            const elem = self.firstTypeArg(call) orelse return error.SemanticFailed;
+            return try self.sliceOf(elem);
+        }
         if (std.mem.eql(u8, name, "volatile_store")) {
             try self.requireUnsafe(call.callee.span, name);
             return .void;
@@ -2993,6 +3002,10 @@ const Checker = struct {
                 .type_ref => |ty| self.typeFromRef(ty) catch null,
                 .ident => |name| blk: {
                     if (fromBuiltinName(name)) |builtin_ty| break :blk builtin_ty;
+                    // A generic type parameter (e.g. `slice_from_raw_parts(T,…)`
+                    // inside a generic) — resolve it before the symbol table,
+                    // which has no entry for type params.
+                    if (self.resolveTypeParam(name)) |tp_ty| break :blk tp_ty;
                     const id = self.resolveSymbol(name) orelse break :blk null;
                     if (self.symbols.symbol(id).kind != .type) break :blk null;
                     break :blk .{ .named = id };
@@ -3418,6 +3431,7 @@ fn trimQuotes(text: []const u8) []const u8 {
 fn isBuiltinValue(name: []const u8) bool {
     inline for (.{
         "truncate_to", "ptr_from_int",   "volatile_store",
+        "slice_from_raw_parts",
         "sizeof",      "unaligned_read", "asm",
         "atomic_load", "atomic_store",   "volatile",
         ".acquire",

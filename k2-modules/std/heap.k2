@@ -1,0 +1,228 @@
+// std.heap — runtime dynamic memory for K2.
+//
+// A chunked **bump arena**. Allocation is a pointer bump inside the current
+// chunk; when a chunk fills, the next one is reserved (lazily) and chained.
+// `reset` rewinds the bump pointer but KEEPS the chunks, so a repeatedly-reset
+// arena (e.g. per-frame scratch) stops calling the OS entirely after warm-up.
+// `deinit` releases everything in one pass.
+//
+// Why this is fast: VirtualAlloc is a syscall (~µs), but it runs at most once
+// per *chunk* (64 KiB) — never per allocation. A 16-byte alloc is a few
+// instructions and zero syscalls. `reset` reuses chunks, so steady-state
+// allocation is syscall-free.
+//
+// Backings:
+//   make()        growable — reserves chunks from the OS on demand (default)
+//   fixed(buf)    over a caller-provided []u8 (stack/static) — zero syscalls,
+//                 cannot grow (allocation past the buffer fails)
+//
+// Recovery (two modes over one bump core):
+//   alloc / alloc_bytes          infallible call site; OOM aborts
+//   try_alloc / try_alloc_bytes  return `! MemError` for callers that recover
+//
+// Region passing: hand an `*Arena` to a callee so it allocates into *your*
+// region; the data may then outlive the callee and be returned to you.
+//
+//   build :: fn(into: *Arena, n: usize) -> []u8 {
+//       buf := into.alloc_bytes(n);     // belongs to the caller's region
+//       return buf;                     // safe — `into` outlives us
+//   }
+//   main :: fn() -> i32 {
+//       a := heap.make();
+//       data := build(&a, 1024usize);
+//       (&a).deinit();
+//       return 0;
+//   }
+
+#import std.ptr.{ align_up };
+
+// ── Win32 ─────────────────────────────────────────────────────────────────
+
+#extern("kernel32", "VirtualAlloc")
+VirtualAlloc :: fn(addr: usize, size: usize, alloc_type: u32, protect: u32) -> usize;
+
+#extern("kernel32", "VirtualFree")
+VirtualFree :: fn(addr: usize, size: usize, free_type: u32) -> bool;
+
+MEM_COMMIT     :: 0x00001000u32;
+MEM_RESERVE    :: 0x00002000u32;
+MEM_RELEASE    :: 0x00008000u32;
+PAGE_READWRITE :: 0x00000004u32;
+
+// ── Tunables ──────────────────────────────────────────────────────────────
+
+// Default chunk payload (64 KiB). Allocations larger than this get their own
+// exactly-sized chunk.
+DEFAULT_CHUNK :: 65536usize;
+
+// Bytes reserved at the base of every chunk for its `Chunk` header. sizeof
+// (Chunk) is 24; rounded up to the 16-byte max alignment so the data area that
+// follows is aligned.
+CHUNK_HEADER :: 32usize;
+
+// Every allocation is aligned to 16 bytes — the strictest alignment any K2
+// scalar/pointer needs, so it's always sufficient.
+ALIGN :: 16usize;
+
+// ── Types ─────────────────────────────────────────────────────────────────
+
+pub MemError :: errors {
+    out_of_memory,      // backing exhausted (VirtualAlloc failed, or a fixed buffer is full)
+}
+
+// Chunk header, stored in-place at the base of each chunk's region. The `cap`
+// bytes of usable storage follow `CHUNK_HEADER` bytes later. `next` chains
+// chunks in allocation order — used for reset-reuse and for bulk free.
+Chunk :: struct {
+    next: usize,        // address of the next chunk (0 = none)
+    cap:  usize,        // usable payload bytes in this chunk
+    used: usize,        // payload bytes consumed so far (bump offset from data start)
+}
+
+// A bump arena.
+//   first    oldest chunk — where `reset` rewinds and `deinit` starts (0 = empty)
+//   head     current bump chunk (0 = empty)
+//   growable 1 = may reserve more chunks from the OS; 0 = fixed buffer
+pub Arena :: struct {
+    first:    usize,
+    head:     usize,
+    growable: u8,
+}
+
+// A fresh growable arena. No memory is reserved until the first allocation.
+pub make :: fn() -> Arena {
+    return .{ 0usize, 0usize, 1u8 };
+}
+
+// An arena over a caller-provided buffer (stack or static). No syscalls; it
+// cannot grow, so allocation past the buffer fails (aborts via `alloc*`, or
+// returns `MemError` via `try_alloc*`). The buffer must outlive the arena.
+pub fixed :: fn(buf: []u8) -> Arena {
+    if buf.len < CHUNK_HEADER { return .{ 0usize, 0usize, 0u8 }; }
+    base := unsafe (buf.ptr as usize);
+    c := unsafe ptr_from_int(*Chunk, base);
+    c.next = 0usize;
+    c.cap = buf.len - CHUNK_HEADER;
+    c.used = 0usize;
+    return .{ base, base, 0u8 };
+}
+
+// ── Core bump ─────────────────────────────────────────────────────────────
+
+// Reserve `need` aligned bytes and return their address, or null when exhausted.
+// Bumps the current chunk; reuses an already-allocated next chunk (after a
+// reset) before asking the OS for a new one.
+reserve :: fn(self: *Arena, need: usize) -> ?usize {
+    if self.head != 0usize {
+        c := unsafe ptr_from_int(*Chunk, self.head);
+        fp_data := self.head + CHUNK_HEADER;
+        fp_aligned := align_up(fp_data + c.used, ALIGN);
+        if fp_aligned + need <= fp_data + c.cap {
+            c.used = (fp_aligned + need) - fp_data;
+            return fp_aligned;
+        }
+        // Current chunk full. After a `reset`, the next chunk is empty and
+        // reusable — bump into it instead of hitting the OS again.
+        if c.next != 0usize {
+            nx := unsafe ptr_from_int(*Chunk, c.next);
+            nx_data := c.next + CHUNK_HEADER;
+            nx_aligned := align_up(nx_data, ALIGN);
+            if nx_aligned + need <= nx_data + nx.cap {
+                nx.used = (nx_aligned + need) - nx_data;
+                self.head = c.next;
+                return nx_aligned;
+            }
+        }
+    }
+
+    // Need a brand-new chunk. A fixed arena cannot grow.
+    if self.growable == 0u8 { return null; }
+    cap := DEFAULT_CHUNK;
+    if need + ALIGN > cap { cap = need + ALIGN; }
+    raw := VirtualAlloc(0usize, CHUNK_HEADER + cap, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if raw == 0usize { return null; }
+
+    nc := unsafe ptr_from_int(*Chunk, raw);
+    nc.cap = cap;
+    data_start := raw + CHUNK_HEADER;
+    aligned := align_up(data_start, ALIGN);
+    nc.used = (aligned + need) - data_start;
+
+    // Splice into the chain right after head, preserving any reusable tail.
+    if self.head != 0usize {
+        hc := unsafe ptr_from_int(*Chunk, self.head);
+        nc.next = hc.next;
+        hc.next = raw;
+    } else {
+        nc.next = 0usize;
+        self.first = raw;
+    }
+    self.head = raw;
+    return aligned;
+}
+
+// ── Byte allocation ───────────────────────────────────────────────────────
+
+// Allocate `n` bytes. Aborts on exhaustion.
+pub alloc_bytes :: fn(self: *Arena, n: usize) -> []u8 {
+    addr := reserve(self, n);
+    if addr == null { @panic("std.heap: out of memory"); }
+    p := unsafe ptr_from_int(*u8, addr!!);
+    return unsafe slice_from_raw_parts(u8, p, n);
+}
+
+// Allocate `n` bytes, returning `MemError.out_of_memory` instead of aborting.
+pub try_alloc_bytes :: fn(self: *Arena, n: usize) -> []u8 ! MemError {
+    addr := reserve(self, n);
+    if addr == null { fail .out_of_memory; }
+    p := unsafe ptr_from_int(*u8, addr!!);
+    return unsafe slice_from_raw_parts(u8, p, n);
+}
+
+// ── Typed allocation ──────────────────────────────────────────────────────
+
+// Allocate a `[]T` of `n` elements (16-byte aligned, which covers any T).
+// Aborts on exhaustion. Call as `(&a).alloc(T, n)` or `alloc(T, &a, n)`.
+pub alloc :: fn($T: type, self: *Arena, n: usize) -> []T {
+    bytes := alloc_bytes(self, n * sizeof(T));
+    tp := unsafe (bytes.ptr as *T);
+    return unsafe slice_from_raw_parts(T, tp, n);
+}
+
+// Fallible `alloc`. Call as `(&a).try_alloc(T, n)` or `try_alloc(T, &a, n)`.
+pub try_alloc :: fn($T: type, self: *Arena, n: usize) -> []T ! MemError {
+    bytes := try_alloc_bytes(self, n * sizeof(T))?;
+    tp := unsafe (bytes.ptr as *T);
+    return unsafe slice_from_raw_parts(T, tp, n);
+}
+
+// ── Lifetime ──────────────────────────────────────────────────────────────
+
+// Rewind the arena to empty, KEEPING its chunks for reuse. Everything allocated
+// before the reset is invalidated; no memory is returned to the OS, so the next
+// round of allocations is syscall-free until it exceeds the retained capacity.
+pub reset :: fn(self: *Arena) {
+    cur := self.first;
+    while cur != 0usize {
+        c := unsafe ptr_from_int(*Chunk, cur);
+        c.used = 0usize;
+        cur = c.next;
+    }
+    self.head = self.first;
+}
+
+// Release the arena. Growable arenas return every chunk to the OS; fixed arenas
+// (which don't own their buffer) are simply cleared. Reusable afterward.
+pub deinit :: fn(self: *Arena) {
+    if self.growable != 0u8 {
+        cur := self.first;
+        while cur != 0usize {
+            c := unsafe ptr_from_int(*Chunk, cur);
+            nx := c.next;
+            ignored := VirtualFree(cur, 0usize, MEM_RELEASE);
+            cur = nx;
+        }
+    }
+    self.first = 0usize;
+    self.head = 0usize;
+}

@@ -541,6 +541,82 @@ test "exe: 0b binary integer literals parse to their numeric value" {
     try std.testing.expectEqual(@as(u32, 11), code);
 }
 
+test "exe: fallible return type works inside generics" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Regression: a generic `fn(...) -> T ! Err` miscompiled — the instantiation
+    // hardcoded error_ty=null and never set current_return_ty, so `fail`/`?`/`catch`
+    // were lowered against a non-fallible signature (LLVM icmp i64/i32 mismatch, or
+    // an extractAggregateField ICE in a `?`-propagating caller). `caller(i32,30)`
+    // returns 30 via `?`; `checked(i32,5,true)` fails and the catch returns 30+7=37.
+    const code = try compileAndRun(arena.allocator(),
+        \\GErr :: errors { bad, }
+        \\checked :: fn($T: type, x: T, fail_it: bool) -> T ! GErr {
+        \\    if fail_it { fail .bad; }
+        \\    return x;
+        \\}
+        \\caller :: fn($T: type, x: T) -> T ! GErr {
+        \\    v := checked(T, x, false)?;
+        \\    return v;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    a := caller(i32, 30) catch e { return 1; };
+        \\    b := checked(i32, 5, true) catch e { return a + 7; };
+        \\    return a + b;
+        \\}
+    , "exe_generic_fallible");
+    try std.testing.expectEqual(@as(u32, 37), code);
+}
+
+test "exe: sizeof(T) and slice_from_raw_parts(T) work inside generics" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Regression: a type parameter `T` used in `sizeof(T)` / `slice_from_raw_parts(T)`
+    // inside a generic body used to ICE (the builtin's type arg was lowered as a
+    // value and `firstTypeArg` couldn't resolve a type param). Now both resolve to
+    // the concrete instantiation. elem_bytes(i32)=4; the slice sums to 15 → 19.
+    const code = try compileAndRun(arena.allocator(),
+        \\elem_bytes :: fn($T: type) -> usize { return sizeof(T); }
+        \\mkslice :: fn($T: type, p: *T, n: usize) -> []T {
+        \\    return unsafe slice_from_raw_parts(T, p, n);
+        \\}
+        \\main :: fn() -> i32 {
+        \\    arr: [3]i32 = .{ 5, 9, 1 };
+        \\    full := arr[:];
+        \\    s := mkslice(i32, full.ptr, 3usize);
+        \\    es := elem_bytes(i32);
+        \\    return s[0] + s[1] + s[2] + (es as i32);
+        \\}
+    , "exe_generic_sizeof_slice");
+    try std.testing.expectEqual(@as(u32, 19), code);
+}
+
+test "exe: usize const wider than 32 bits keeps its full width" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Regression: `inferConstType` emitted EVERY integer `const` as an i32 global
+    // regardless of its type suffix, so a `usize`/`u64` const was an undersized
+    // i32 global. A later i64 load then read 4 bytes of the value plus 4 bytes of
+    // adjacent memory into the high word — corrupting any address built through
+    // ptr_from_int / slice_from_raw_parts (segfaults in std.heap). With the fix
+    // the high 32 bits survive: (0x5_0000_0000 >> 32) == 5; an i32 global would
+    // truncate the low word to 0 and yield 0/garbage.
+    const code = try compileAndRun(arena.allocator(),
+        \\VAL :: 0x500000000usize;
+        \\main :: fn() -> i32 { return (VAL >> 32usize) as i32; }
+    , "exe_usize_const_width");
+    try std.testing.expectEqual(@as(u32, 5), code);
+}
+
 test "exe: dynamic dispatch through an interface method that takes another interface pointer" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
