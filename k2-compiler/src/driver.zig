@@ -117,8 +117,10 @@ pub const LlvmCompileOptions = struct {
     source: []const u8,
     /// Where to write the object file.
     obj_path: []const u8,
-    /// Where to write the executable (null = stop at .o).
+    /// Where to write the executable/DLL (null = stop at .o).
     exe_path: ?[]const u8 = null,
+    /// Link a DLL (shared library) instead of an executable.
+    dll: bool = false,
     /// LLVM opt level (0–3).
     opt_level: u2 = if (@import("builtin").mode == .Debug) 0 else 2,
     /// Path to the LLVM bin directory (for lld-link).
@@ -302,6 +304,7 @@ fn emitLlvmFromFrontend(
             .output = exe,
             .lib_paths = opts.lib_paths,
             .libs = libs.items,
+            .dll = opts.dll,
         }) catch return error.LinkFailed;
         if (opts.timings) |tm| tm.link_ns = sinceNs(t_link);
     }

@@ -64,6 +64,7 @@ const Options = struct {
     opt_level: u2 = 0,
     quiet: bool = false,
     show_time: bool = false,
+    dll: bool = false,
 };
 
 pub fn main(init: std.process.Init) u8 {
@@ -148,6 +149,8 @@ pub fn main(init: std.process.Init) u8 {
             opts.quiet = true;
         } else if (eqAny(a, &.{ "-t", "--time" })) {
             opts.show_time = true;
+        } else if (eqAny(a, &.{ "--shared", "--dll" })) {
+            opts.dll = true;
         } else {
             std.debug.print("k2: unknown option '{s}'\n", .{a});
             return 1;
@@ -169,7 +172,7 @@ pub fn main(init: std.process.Init) u8 {
         return cmdObject(allocator, io, src_path, source, out, &opts);
     }
     if (std.mem.eql(u8, cmd, "build")) {
-        const exe = opts.out_path orelse deriveOut(allocator, src_path, ".exe");
+        const exe = opts.out_path orelse deriveOut(allocator, src_path, if (opts.dll) ".dll" else ".exe");
         defer if (opts.out_path == null) allocator.free(exe);
         const obj = std.fmt.allocPrint(allocator, "{s}.o", .{exe}) catch return 1;
         defer allocator.free(obj);
@@ -248,6 +251,7 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
         .source = source,
         .obj_path = obj_path,
         .exe_path = exe_path,
+        .dll = opts.dll,
         .opt_level = opts.opt_level,
         .llvm_bin = opts.llvm_bin,
         .lib_paths = opts.lib_paths.items,

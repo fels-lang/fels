@@ -60,6 +60,10 @@ pub const WindowsLinkOptions = struct {
     /// e.g. `&.{"raylib"}` becomes `raylib.lib` on the link command line.
     /// Resolved via `lib_paths` and the linker's default search paths.
     libs: []const []const u8 = &.{},
+    /// Produce a DLL (shared library) instead of an executable. Uses `/DLL`
+    /// with `/NOENTRY` (no CRT entry); `#export`ed functions are exported via
+    /// their dllexport directives. This is how `k2lnk.dll` is built.
+    dll: bool = false,
 };
 
 /// Build the lld-link command line as a slice of argument strings (caller frees).
@@ -70,8 +74,15 @@ pub fn buildArgs(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ![]cons
     try args.append(allocator, try std.fmt.allocPrint(allocator, "{s}/lld-link.exe", .{opts.llvm_bin}));
     for (opts.obj_files) |obj| try args.append(allocator, try allocator.dupe(u8, obj));
     try args.append(allocator, try std.fmt.allocPrint(allocator, "/OUT:{s}", .{opts.output}));
-    try args.append(allocator, try allocator.dupe(u8, "/SUBSYSTEM:CONSOLE"));
-    try args.append(allocator, try allocator.dupe(u8, "/ENTRY:mainCRTStartup"));
+    if (opts.dll) {
+        // Shared library: no CRT entry point — `/NOENTRY` makes it a pure
+        // code+exports container; exports come from dllexport directives.
+        try args.append(allocator, try allocator.dupe(u8, "/DLL"));
+        try args.append(allocator, try allocator.dupe(u8, "/NOENTRY"));
+    } else {
+        try args.append(allocator, try allocator.dupe(u8, "/SUBSYSTEM:CONSOLE"));
+        try args.append(allocator, try allocator.dupe(u8, "/ENTRY:mainCRTStartup"));
+    }
     try args.append(allocator, try allocator.dupe(u8, "/NODEFAULTLIB"));
     try args.append(allocator, try allocator.dupe(u8, "kernel32.lib"));
     for (opts.lib_paths) |lp|

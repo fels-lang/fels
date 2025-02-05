@@ -27,6 +27,10 @@ pub fn applyFunctionAttrs(cg: *ModuleCg, func: ir.IrFunction, lv: llvm.LLVMValue
     if (func.export_sym) |sym| {
         // Ensure external linkage so the symbol survives the linker.
         llvm.LLVMSetLinkage(lv, llvm.LLVMExternalLinkage);
+        // dllexport storage class: emits an `/EXPORT:name` directive into the
+        // object so a `/DLL` link exports it automatically (and it's harmless in
+        // an exe). This is what makes `#export` usable for building DLLs.
+        llvm.LLVMSetDLLStorageClass(lv, llvm.LLVMDLLExportStorageClass);
         // If an explicit export name was given, rename the LLVM value.
         if (sym.len > 0 and !std.mem.eql(u8, sym, func.name)) {
             llvm.LLVMSetValueName2(lv, sym.ptr, sym.len);
