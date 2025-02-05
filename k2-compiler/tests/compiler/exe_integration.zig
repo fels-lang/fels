@@ -541,6 +541,29 @@ test "exe: 0b binary integer literals parse to their numeric value" {
     try std.testing.expectEqual(@as(u32, 11), code);
 }
 
+test "exe: dereference-load reads through a pointer" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Regression: `*p` as a value expression was broken — it bound looser than
+    // binary operators (`*p + 1` parsed as `*(p + 1)`) and `*ident;` was parsed
+    // as a pointer *type* (`x := *p;` became "declare x of type *p"). Now `*p`
+    // dereferences for reading. `bump` does `*p = *p + 1` (load+store), main
+    // returns `*p`. 41 -> 42.
+    const code = try compileAndRun(arena.allocator(),
+        \\bump :: fn(p: *i32) { *p = *p + 1; }
+        \\main :: fn() -> i32 {
+        \\    x: i32 = 41;
+        \\    p := &x;
+        \\    bump(p);
+        \\    return *p;
+        \\}
+    , "exe_deref_load");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: fallible return type works inside generics" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

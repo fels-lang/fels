@@ -1,24 +1,31 @@
 // std.heap — runtime dynamic memory for K2.
 //
-// A chunked **bump arena**. Allocation is a pointer bump inside the current
-// chunk; when a chunk fills, the next one is reserved (lazily) and chained.
-// `reset` rewinds the bump pointer but KEEPS the chunks, so a repeatedly-reset
-// arena (e.g. per-frame scratch) stops calling the OS entirely after warm-up.
-// `deinit` releases everything in one pass.
+// A bump arena: allocation is a pointer bump inside the current region.
 //
 // Why this is fast: VirtualAlloc is a syscall (~µs), but it runs at most once
-// per *chunk* (64 KiB) — never per allocation. A 16-byte alloc is a few
-// instructions and zero syscalls. `reset` reuses chunks, so steady-state
-// allocation is syscall-free.
+// per *chunk* (or page, for a reserved arena) — never per allocation. A 16-byte
+// alloc is a few instructions and zero syscalls. `reset`/`restore` reuse the
+// memory, so steady-state allocation is entirely syscall-free.
 //
 // Backings:
-//   make()        growable — reserves chunks from the OS on demand (default)
-//   fixed(buf)    over a caller-provided []u8 (stack/static) — zero syscalls,
-//                 cannot grow (allocation past the buffer fails)
+//   make()        growable — reserves 64 KiB chunks from the OS on demand
+//   reserve(max)  reserves `max` bytes of address space up front (cheap — no
+//                 physical memory) and commits pages lazily as the bump pointer
+//                 advances. One contiguous region; allocations never fail until
+//                 `max` is exhausted. Ideal for building one large output.
+//   fixed(buf)    over a caller []u8 (stack/static) — zero syscalls, cannot grow
 //
-// Recovery (two modes over one bump core):
-//   alloc / alloc_bytes          infallible call site; OOM aborts
-//   try_alloc / try_alloc_bytes  return `! MemError` for callers that recover
+// Allocation:
+//   alloc_bytes / try_alloc_bytes   raw `[]u8`
+//   alloc / try_alloc               typed `[]T`
+//   alloc_one(T)                    a single `*T`
+//   dupe(T, src)                    a copy of `src` owned by the arena
+// (`try_*` return `! MemError`; the others abort on exhaustion.)
+//
+// Reuse:
+//   reset()              rewind to empty, keep memory for reuse
+//   mark() / restore(m)  save a watermark and rewind to it (nested scratch)
+//   deinit()             return everything to the OS
 //
 // Region passing: hand an `*Arena` to a callee so it allocates into *your*
 // region; the data may then outlive the callee and be returned to you.
@@ -26,12 +33,6 @@
 //   build :: fn(into: *Arena, n: usize) -> []u8 {
 //       buf := into.alloc_bytes(n);     // belongs to the caller's region
 //       return buf;                     // safe — `into` outlives us
-//   }
-//   main :: fn() -> i32 {
-//       a := heap.make();
-//       data := build(&a, 1024usize);
-//       (&a).deinit();
-//       return 0;
 //   }
 
 #import std.ptr.{ align_up };
@@ -51,92 +52,147 @@ PAGE_READWRITE :: 0x00000004u32;
 
 // ── Tunables ──────────────────────────────────────────────────────────────
 
-// Default chunk payload (64 KiB). Allocations larger than this get their own
-// exactly-sized chunk.
+// Default chunk payload (64 KiB) for a growable arena. Allocations larger than
+// this get their own exact-fit chunk.
 DEFAULT_CHUNK :: 65536usize;
 
 // Bytes reserved at the base of every chunk for its `Chunk` header. sizeof
-// (Chunk) is 24; rounded up to the 16-byte max alignment so the data area that
-// follows is aligned.
+// (Chunk) is 32; already a multiple of the 16-byte max alignment, so the data
+// area that follows is aligned.
 CHUNK_HEADER :: 32usize;
 
 // Every allocation is aligned to 16 bytes — the strictest alignment any K2
-// scalar/pointer needs, so it's always sufficient.
+// scalar/pointer needs.
 ALIGN :: 16usize;
+
+// OS page size (x64). Reserved arenas commit memory a page at a time.
+PAGE :: 4096usize;
+
+// Backing modes (Arena.mode).
+ARENA_FIXED    :: 0u8;       // over a caller buffer; never touches the OS
+ARENA_CHUNKED  :: 1u8;       // grows by reserving fresh 64 KiB chunks
+ARENA_RESERVED :: 2u8;       // one up-front reservation, pages committed lazily
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
 pub MemError :: errors {
-    out_of_memory,      // backing exhausted (VirtualAlloc failed, or a fixed buffer is full)
+    out_of_memory,      // backing exhausted (VirtualAlloc failed, or a fixed/reserved cap is full)
 }
 
-// Chunk header, stored in-place at the base of each chunk's region. The `cap`
-// bytes of usable storage follow `CHUNK_HEADER` bytes later. `next` chains
-// chunks in allocation order — used for reset-reuse and for bulk free.
+// Chunk header, stored in-place at the base of each chunk's region. `cap` bytes
+// of usable storage follow `CHUNK_HEADER` bytes later. `committed` tracks how
+// much of that payload is physically backed (== cap for chunked/fixed chunks;
+// grows on demand for a reserved arena). `next` chains chunks in allocation
+// order — for reset-reuse and bulk free.
 Chunk :: struct {
-    next: usize,        // address of the next chunk (0 = none)
-    cap:  usize,        // usable payload bytes in this chunk
-    used: usize,        // payload bytes consumed so far (bump offset from data start)
+    next:      usize,
+    cap:       usize,
+    committed: usize,
+    used:      usize,
 }
 
-// A bump arena.
-//   first    oldest chunk — where `reset` rewinds and `deinit` starts (0 = empty)
-//   head     current bump chunk (0 = empty)
-//   growable 1 = may reserve more chunks from the OS; 0 = fixed buffer
+// A bump arena. `first` is the oldest chunk (reset/deinit start there), `head`
+// the current bump chunk, `mode` the backing (see ARENA_* above).
 pub Arena :: struct {
-    first:    usize,
-    head:     usize,
-    growable: u8,
+    first: usize,
+    head:  usize,
+    mode:  u8,
 }
+
+// A saved bump position for `restore` — nested scratch scopes within an arena.
+pub Mark :: struct {
+    chunk: usize,
+    used:  usize,
+}
+
+// ── Constructors ──────────────────────────────────────────────────────────
 
 // A fresh growable arena. No memory is reserved until the first allocation.
 pub make :: fn() -> Arena {
-    return .{ 0usize, 0usize, 1u8 };
+    return .{ 0usize, 0usize, ARENA_CHUNKED };
 }
 
-// An arena over a caller-provided buffer (stack or static). No syscalls; it
-// cannot grow, so allocation past the buffer fails (aborts via `alloc*`, or
-// returns `MemError` via `try_alloc*`). The buffer must outlive the arena.
+// Reserve `max` bytes of address space up front (no physical memory yet) and
+// commit pages on demand. One contiguous region; pointers never move.
+pub reserve :: fn(max: usize) -> Arena {
+    base := VirtualAlloc(0usize, CHUNK_HEADER + max, MEM_RESERVE, PAGE_READWRITE);
+    if base == 0usize { return .{ 0usize, 0usize, ARENA_RESERVED }; }
+    // Commit the first page so the header (and a little payload) is writable.
+    if VirtualAlloc(base, PAGE, MEM_COMMIT, PAGE_READWRITE) == 0usize {
+        ignored := VirtualFree(base, 0usize, MEM_RELEASE);
+        return .{ 0usize, 0usize, ARENA_RESERVED };
+    }
+    c := unsafe ptr_from_int(*Chunk, base);
+    c.next = 0usize;
+    c.cap = max;
+    init := PAGE - CHUNK_HEADER;
+    if init > max { init = max; }
+    c.committed = init;
+    c.used = 0usize;
+    return .{ base, base, ARENA_RESERVED };
+}
+
+// An arena over a caller-provided buffer (stack or static). No syscalls; cannot
+// grow. The buffer must outlive the arena.
 pub fixed :: fn(buf: []u8) -> Arena {
-    if buf.len < CHUNK_HEADER { return .{ 0usize, 0usize, 0u8 }; }
+    if buf.len < CHUNK_HEADER { return .{ 0usize, 0usize, ARENA_FIXED }; }
     base := unsafe (buf.ptr as usize);
     c := unsafe ptr_from_int(*Chunk, base);
     c.next = 0usize;
-    c.cap = buf.len - CHUNK_HEADER;
+    cap := buf.len - CHUNK_HEADER;
+    c.cap = cap;
+    c.committed = cap;
     c.used = 0usize;
-    return .{ base, base, 0u8 };
+    return .{ base, base, ARENA_FIXED };
 }
 
 // ── Core bump ─────────────────────────────────────────────────────────────
 
+// Commit enough pages so `need_payload` bytes of `c`'s payload are backed.
+// Only ever extends a reserved arena (chunked/fixed chunks are fully committed).
+commit_more :: fn(chunk_addr: usize, c: *Chunk, need_payload: usize) -> bool {
+    want := align_up(need_payload, PAGE);
+    if want > c.cap { want = c.cap; }
+    if VirtualAlloc(chunk_addr, CHUNK_HEADER + want, MEM_COMMIT, PAGE_READWRITE) == 0usize {
+        return false;
+    }
+    c.committed = want;
+    return true;
+}
+
 // Reserve `need` aligned bytes and return their address, or null when exhausted.
-// Bumps the current chunk; reuses an already-allocated next chunk (after a
-// reset) before asking the OS for a new one.
-reserve :: fn(self: *Arena, need: usize) -> ?usize {
+carve :: fn(self: *Arena, need: usize) -> ?usize {
     if self.head != 0usize {
         c := unsafe ptr_from_int(*Chunk, self.head);
-        fp_data := self.head + CHUNK_HEADER;
-        fp_aligned := align_up(fp_data + c.used, ALIGN);
-        if fp_aligned + need <= fp_data + c.cap {
-            c.used = (fp_aligned + need) - fp_data;
-            return fp_aligned;
+        data := self.head + CHUNK_HEADER;
+        aligned := align_up(data + c.used, ALIGN);
+        if aligned + need <= data + c.cap {
+            np := (aligned + need) - data;
+            if np > c.committed {
+                if !commit_more(self.head, c, np) { return null; }
+            }
+            c.used = np;
+            return aligned;
         }
-        // Current chunk full. After a `reset`, the next chunk is empty and
-        // reusable — bump into it instead of hitting the OS again.
+        // Current chunk full. After reset/restore, the next chunk is reusable.
         if c.next != 0usize {
             nx := unsafe ptr_from_int(*Chunk, c.next);
-            nx_data := c.next + CHUNK_HEADER;
-            nx_aligned := align_up(nx_data, ALIGN);
-            if nx_aligned + need <= nx_data + nx.cap {
-                nx.used = (nx_aligned + need) - nx_data;
+            nd := c.next + CHUNK_HEADER;
+            na := align_up(nd, ALIGN);
+            if na + need <= nd + nx.cap {
+                np2 := (na + need) - nd;
+                if np2 > nx.committed {
+                    if !commit_more(c.next, nx, np2) { return null; }
+                }
+                nx.used = np2;
                 self.head = c.next;
-                return nx_aligned;
+                return na;
             }
         }
     }
 
-    // Need a brand-new chunk. A fixed arena cannot grow.
-    if self.growable == 0u8 { return null; }
+    // A new chunk is only possible for a growable arena.
+    if self.mode != ARENA_CHUNKED { return null; }
     cap := DEFAULT_CHUNK;
     if need + ALIGN > cap { cap = need + ALIGN; }
     raw := VirtualAlloc(0usize, CHUNK_HEADER + cap, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -144,11 +200,11 @@ reserve :: fn(self: *Arena, need: usize) -> ?usize {
 
     nc := unsafe ptr_from_int(*Chunk, raw);
     nc.cap = cap;
-    data_start := raw + CHUNK_HEADER;
-    aligned := align_up(data_start, ALIGN);
-    nc.used = (aligned + need) - data_start;
+    nc.committed = cap;
+    data2 := raw + CHUNK_HEADER;
+    aligned2 := align_up(data2, ALIGN);
+    nc.used = (aligned2 + need) - data2;
 
-    // Splice into the chain right after head, preserving any reusable tail.
     if self.head != 0usize {
         hc := unsafe ptr_from_int(*Chunk, self.head);
         nc.next = hc.next;
@@ -158,14 +214,14 @@ reserve :: fn(self: *Arena, need: usize) -> ?usize {
         self.first = raw;
     }
     self.head = raw;
-    return aligned;
+    return aligned2;
 }
 
 // ── Byte allocation ───────────────────────────────────────────────────────
 
 // Allocate `n` bytes. Aborts on exhaustion.
 pub alloc_bytes :: fn(self: *Arena, n: usize) -> []u8 {
-    addr := reserve(self, n);
+    addr := carve(self, n);
     if addr == null { @panic("std.heap: out of memory"); }
     p := unsafe ptr_from_int(*u8, addr!!);
     return unsafe slice_from_raw_parts(u8, p, n);
@@ -173,7 +229,7 @@ pub alloc_bytes :: fn(self: *Arena, n: usize) -> []u8 {
 
 // Allocate `n` bytes, returning `MemError.out_of_memory` instead of aborting.
 pub try_alloc_bytes :: fn(self: *Arena, n: usize) -> []u8 ! MemError {
-    addr := reserve(self, n);
+    addr := carve(self, n);
     if addr == null { fail .out_of_memory; }
     p := unsafe ptr_from_int(*u8, addr!!);
     return unsafe slice_from_raw_parts(u8, p, n);
@@ -196,11 +252,30 @@ pub try_alloc :: fn($T: type, self: *Arena, n: usize) -> []T ! MemError {
     return unsafe slice_from_raw_parts(T, tp, n);
 }
 
-// ── Lifetime ──────────────────────────────────────────────────────────────
+// Allocate a single `T` and return a pointer to it. Aborts on exhaustion.
+// Call as `(&a).alloc_one(T)`.
+pub alloc_one :: fn($T: type, self: *Arena) -> *T {
+    bytes := alloc_bytes(self, sizeof(T));
+    return unsafe (bytes.ptr as *T);
+}
+
+// Copy `src` into a fresh `[]T` owned by the arena. Aborts on exhaustion.
+// Call as `(&a).dupe(T, src)`.
+pub dupe :: fn($T: type, self: *Arena, src: []const T) -> []T {
+    out := alloc(T, self, src.len);
+    i := 0usize;
+    while i < src.len {
+        out[i] = src[i];
+        i += 1usize;
+    }
+    return out;
+}
+
+// ── Reuse & lifetime ──────────────────────────────────────────────────────
 
 // Rewind the arena to empty, KEEPING its chunks for reuse. Everything allocated
-// before the reset is invalidated; no memory is returned to the OS, so the next
-// round of allocations is syscall-free until it exceeds the retained capacity.
+// before is invalidated; no memory is returned to the OS, so the next round of
+// allocations is syscall-free until it exceeds the retained capacity.
 pub reset :: fn(self: *Arena) {
     cur := self.first;
     while cur != 0usize {
@@ -211,10 +286,37 @@ pub reset :: fn(self: *Arena) {
     self.head = self.first;
 }
 
-// Release the arena. Growable arenas return every chunk to the OS; fixed arenas
-// (which don't own their buffer) are simply cleared. Reusable afterward.
+// Save the current bump position. Pair with `restore` for a nested scratch
+// scope: allocate freely, then `restore(m)` frees it all at once (keeping the
+// memory). Marks are only valid until the next `reset`/`deinit`.
+pub mark :: fn(self: *Arena) -> Mark {
+    if self.head == 0usize { return .{ 0usize, 0usize }; }
+    c := unsafe ptr_from_int(*Chunk, self.head);
+    return .{ self.head, c.used };
+}
+
+// Rewind to a previously saved `mark`. Everything allocated since is freed for
+// reuse; chunks are kept.
+pub restore :: fn(self: *Arena, m: Mark) {
+    if m.chunk == 0usize {
+        reset(self);
+        return;
+    }
+    mc := unsafe ptr_from_int(*Chunk, m.chunk);
+    cur := mc.next;
+    while cur != 0usize {
+        c := unsafe ptr_from_int(*Chunk, cur);
+        c.used = 0usize;
+        cur = c.next;
+    }
+    mc.used = m.used;
+    self.head = m.chunk;
+}
+
+// Release the arena. Chunked and reserved arenas return their memory to the OS;
+// a fixed arena (which doesn't own its buffer) is simply cleared. Reusable after.
 pub deinit :: fn(self: *Arena) {
-    if self.growable != 0u8 {
+    if self.mode != ARENA_FIXED {
         cur := self.first;
         while cur != 0usize {
             c := unsafe ptr_from_int(*Chunk, cur);

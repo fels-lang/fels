@@ -1,23 +1,37 @@
 // Exercises std.heap so the module (and a typical user of it) stays compilable
-// and lowerable. Covers make / alloc_bytes / try_alloc_bytes / reset / deinit
-// and the fixed-buffer backing.
+// and lowerable. Covers all three backings (make / reserve / fixed), the byte
+// and typed allocators (incl. alloc_one and dupe), and reuse (reset, mark/restore).
 
-#import std.heap.{ Arena, make, fixed, alloc, try_alloc, alloc_bytes, try_alloc_bytes, reset, deinit };
+#import std.heap.{
+    Arena, make, reserve, fixed,
+    alloc, try_alloc, alloc_one, dupe, alloc_bytes, try_alloc_bytes,
+    mark, restore, reset, deinit,
+};
 
+#entry
 run :: fn() -> i32 {
     a := make();
 
-    // typed allocation — instantiates the generic alloc(T)
+    // typed allocation (generic alloc(T)) + a single value (alloc_one)
     xs := (&a).alloc(i32, 4usize);
     xs[0] = 7;
+    one := (&a).alloc_one(i32);
+    *one = 3;
+    sum := xs[0] + *one;
 
-    b := (&a).alloc_bytes(128usize);
-    b[0] = 1u8;
-    sum := (b[0] as i32) + xs[0];
+    // dupe a slice into the arena
+    src: [2]i32 = .{ 5, 6 };
+    cp := (&a).dupe(i32, src[:]);
+    sum = sum + cp[0] + cp[1];
 
-    // reset rewinds but keeps chunks; the next alloc reuses them.
+    // a nested scratch scope via mark/restore, then a full reset
+    m := (&a).mark();
+    tmp := (&a).alloc_bytes(64usize);
+    tmp[0] = 1u8;
+    (&a).restore(m);
     (&a).reset();
-    // fallible typed allocation — instantiates the generic try_alloc(T)
+
+    // fallible typed allocation (generic try_alloc(T))
     ys := (&a).try_alloc(i32, 2usize) catch e {
         (&a).deinit();
         return sum;
@@ -26,10 +40,17 @@ run :: fn() -> i32 {
     sum = sum + ys[0];
     (&a).deinit();
 
-    // Fixed backing over a stack buffer — no syscalls, cannot grow.
-    buf: [256]u8 = .{};
+    // reserve backing — lazy page commit
+    r := reserve(65536usize);
+    rb := (&r).alloc_bytes(100usize);
+    rb[0] = 4u8;
+    sum = sum + (rb[0] as i32);
+    (&r).deinit();
+
+    // fixed backing — over a stack buffer, no syscalls
+    buf: [128]u8 = .{};
     f := fixed(buf[:]);
-    fb := (&f).alloc_bytes(32usize);
-    fb[0] = 3u8;
+    fb := (&f).try_alloc_bytes(32usize) catch e { return sum; };
+    fb[0] = 9u8;
     return sum + (fb[0] as i32);
 }

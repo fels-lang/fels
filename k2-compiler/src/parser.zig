@@ -1218,9 +1218,14 @@ pub const Parser = struct {
                 return self.expr(.{ .unary = .{ .op = .address_of, .expr = try self.allocExpr(operand) } }, Span.new(tok.start, operand.span.end));
             },
             .star => {
+                // Disambiguate a pointer *type* in value position (e.g.
+                // `ptr_from_int(*Chunk, p)`, `sizeof(*u8)`) from a *dereference*
+                // (`*p`). A type only ever appears as a call argument, so it is
+                // followed by `,` or `)`; `;`, `}`, and operators all mean a
+                // dereference (so `x := *p;` and `*p + 1` parse correctly).
                 if (self.check(.keyword_const) or self.check(.keyword_volatile) or
                     (isTypeName(self.peek().kind) and switch (self.peekKind(1)) {
-                        .comma, .r_paren, .r_brace, .semicolon => true,
+                        .comma, .r_paren => true,
                         else => false,
                     }))
                 {
@@ -1228,7 +1233,9 @@ pub const Parser = struct {
                     const ty = try self.parseType();
                     return self.expr(.{ .type_ref = ty }, ty.span());
                 }
-                const operand = try self.parseExpr(8);
+                // Bind as tightly as the other prefix operators (`&`, `-`, `!`),
+                // so `*p + 1` is `(*p) + 1`, not `*(p + 1)`.
+                const operand = try self.parseExpr(18);
                 return self.expr(.{ .unary = .{ .op = .deref, .expr = try self.allocExpr(operand) } }, Span.new(tok.start, operand.span.end));
             },
             .minus => {
