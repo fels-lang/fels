@@ -279,16 +279,16 @@ fn emitLlvmFromFrontend(
     };
     if (opts.timings) |tm| tm.codegen_ns = sinceNs(t_codegen);
 
-    // Emit object file
-    const obj_z = try allocator.dupeZ(u8, opts.obj_path);
-    defer allocator.free(obj_z);
-    if (opts.progress) |p| p(opts.progress_ctx, .emit);
-    const t_emit = nowNs();
-    be.emitObject(obj_z, opts.opt_level) catch return error.EmitFailed;
-    if (opts.timings) |tm| tm.emit_ns = sinceNs(t_emit);
-
-    // Link (optional)
     if (opts.exe_path) |exe| {
+        // Linking: emit the object to MEMORY (no .obj round-trip) and hand the
+        // bytes straight to the linker. The .obj is only written to disk if we
+        // fall back to LLD.
+        if (opts.progress) |p| p(opts.progress_ctx, .emit);
+        const t_emit = nowNs();
+        const obj_bytes = be.emitObjectToMemory(allocator, opts.opt_level) catch return error.EmitFailed;
+        defer allocator.free(obj_bytes);
+        if (opts.timings) |tm| tm.emit_ns = sinceNs(t_emit);
+
         if (opts.progress) |p| p(opts.progress_ctx, .link);
         const t_link = nowNs();
         // Combine libs inferred from `#extern("lib", "symbol")` decls with any
@@ -298,14 +298,22 @@ fn emitLlvmFromFrontend(
         try libs.appendSlice(allocator, module.extern_libs);
         try libs.appendSlice(allocator, opts.extra_libs);
 
-        be.linkWindows(allocator, io, .{
+        be.linkWindowsMem(allocator, io, obj_bytes, .{
             .llvm_bin = opts.llvm_bin,
-            .obj_files = &.{opts.obj_path},
+            .obj_files = &.{opts.obj_path}, // path used only if we spill for LLD
             .output = exe,
             .lib_paths = opts.lib_paths,
             .libs = libs.items,
             .dll = opts.dll,
         }) catch return error.LinkFailed;
         if (opts.timings) |tm| tm.link_ns = sinceNs(t_link);
+    } else {
+        // Object-only output (`k2 object`): write the .obj file.
+        const obj_z = try allocator.dupeZ(u8, opts.obj_path);
+        defer allocator.free(obj_z);
+        if (opts.progress) |p| p(opts.progress_ctx, .emit);
+        const t_emit = nowNs();
+        be.emitObject(obj_z, opts.opt_level) catch return error.EmitFailed;
+        if (opts.timings) |tm| tm.emit_ns = sinceNs(t_emit);
     }
 }

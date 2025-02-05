@@ -94,10 +94,27 @@ pub const LlvmBackend = struct {
         try emit.emitObject(&self.cg, tm, path);
     }
 
+    /// Emit the object into an in-memory byte buffer (caller frees).
+    pub fn emitObjectToMemory(self: *LlvmBackend, allocator: std.mem.Allocator, opt_level: u2) ![]u8 {
+        self.setOptLevel(opt_level);
+        const tm = try emit.TargetMachine.initNative(opt_level);
+        defer tm.deinit();
+        tm.applyToModule(&self.cg);
+        try emit.verify(&self.cg);
+        return emit.emitObjectToMemory(&self.cg, tm, allocator);
+    }
+
     /// Link object files into a Windows executable via lld-link.
     pub fn linkWindows(self: *LlvmBackend, allocator: std.mem.Allocator, io: std.Io, opts: link.WindowsLinkOptions) !void {
         _ = self;
         return link.windows(allocator, io, opts);
+    }
+
+    /// Link straight from in-memory object bytes (no .obj on disk) — k2lnk fast
+    /// path; spills to disk only for the LLD fallback.
+    pub fn linkWindowsMem(self: *LlvmBackend, allocator: std.mem.Allocator, io: std.Io, obj_bytes: []const u8, opts: link.WindowsLinkOptions) !void {
+        _ = self;
+        return link.windowsMem(allocator, io, obj_bytes, opts);
     }
 
     /// Dump the LLVM IR to stderr (debugging).

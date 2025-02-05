@@ -16,6 +16,51 @@ const win = struct {
 
 const LldLinkFn = *const fn (argc: c_int, argv: [*]const [*:0]const u8) callconv(.c) c_int;
 
+// The K2-written linker (k2lnk.dll), exporting `k2_link(in_obj, out_exe) -> int`.
+const K2LinkFn = *const fn (in_path: [*:0]const u8, out_path: [*:0]const u8) callconv(.c) c_int;
+
+/// k2lnk currently links a single COFF object whose only imports are kernel32,
+/// into an executable. Anything else (DLL output, multiple objects, non-kernel32
+/// import libs) falls back to LLD.
+fn k2lnkEligible(opts: WindowsLinkOptions) bool {
+    if (opts.dll) return false;
+    if (opts.obj_files.len != 1) return false;
+    for (opts.libs) |lib| {
+        if (!std.mem.eql(u8, lib, "kernel32")) return false;
+    }
+    return true;
+}
+
+/// Try the K2-written linker (k2lnk.dll) — the self-hosted fast path. Returns
+/// null when unavailable/ineligible (use LLD), true on success, false on a
+/// reported link failure (also falls back to LLD).
+fn tryK2lnk(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ?bool {
+    if (builtin.os.tag != .windows) return null;
+    if (!k2lnkEligible(opts)) return null;
+    const module = win.LoadLibraryA("k2lnk.dll") orelse return null;
+    const proc = win.GetProcAddress(module, "k2_link") orelse return null;
+    const link_fn: K2LinkFn = @ptrCast(proc);
+    const obj_z = allocator.dupeZ(u8, opts.obj_files[0]) catch return false;
+    defer allocator.free(obj_z);
+    const out_z = allocator.dupeZ(u8, opts.output) catch return false;
+    defer allocator.free(out_z);
+    return link_fn(obj_z.ptr, out_z.ptr) == 0;
+}
+
+// In-memory variant: k2lnk reads the object bytes directly — no .obj on disk.
+const K2LinkMemFn = *const fn (obj_ptr: [*]const u8, obj_len: usize, out_path: [*:0]const u8) callconv(.c) c_int;
+
+fn tryK2lnkMem(allocator: std.mem.Allocator, obj_bytes: []const u8, opts: WindowsLinkOptions) ?bool {
+    if (builtin.os.tag != .windows) return null;
+    if (!k2lnkEligible(opts)) return null;
+    const module = win.LoadLibraryA("k2lnk.dll") orelse return null;
+    const proc = win.GetProcAddress(module, "k2_link_mem") orelse return null;
+    const link_fn: K2LinkMemFn = @ptrCast(proc);
+    const out_z = allocator.dupeZ(u8, opts.output) catch return false;
+    defer allocator.free(out_z);
+    return link_fn(obj_bytes.ptr, obj_bytes.len, out_z.ptr) == 0;
+}
+
 /// Try the in-process linker. Returns null if k2lld.dll is unavailable (caller
 /// should fall back to spawning), true on a successful link, false on failure.
 fn tryInProcess(allocator: std.mem.Allocator, args: []const []const u8) ?bool {
@@ -105,16 +150,15 @@ pub fn printCommand(allocator: std.mem.Allocator, opts: WindowsLinkOptions) void
     std.debug.print("\n", .{});
 }
 
-/// Link the executable. Prefers in-process LLD (k2lld.dll) and falls back to
-/// spawning lld-link.exe when the DLL is not present.
-pub fn windows(allocator: std.mem.Allocator, io: std.Io, opts: WindowsLinkOptions) LinkError!void {
+/// The LLD path: in-process (k2lld.dll) if available, else spawn lld-link.exe.
+/// Reads the object(s) from disk (lld needs files).
+fn linkWithLld(allocator: std.mem.Allocator, io: std.Io, opts: WindowsLinkOptions) LinkError!void {
     const args = buildArgs(allocator, opts) catch return error.OutOfMemory;
     defer {
         for (args) |a| allocator.free(@constCast(a));
         allocator.free(args);
     }
 
-    // In-process first; null means the DLL is unavailable → spawn instead.
     if (tryInProcess(allocator, args)) |ok| {
         return if (ok) {} else error.ExitCodeFailure;
     }
@@ -131,4 +175,25 @@ pub fn windows(allocator: std.mem.Allocator, io: std.Io, opts: WindowsLinkOption
         .exited => |code| if (code != 0) return error.ExitCodeFailure,
         .signal, .stopped, .unknown => return error.ProcessTerminated,
     }
+}
+
+/// Link from object files on disk. Prefers the self-hosted K2 linker (k2lnk.dll),
+/// then LLD.
+pub fn windows(allocator: std.mem.Allocator, io: std.Io, opts: WindowsLinkOptions) LinkError!void {
+    if (tryK2lnk(allocator, opts)) |ok| {
+        if (ok) return;
+    }
+    return linkWithLld(allocator, io, opts);
+}
+
+/// Link straight from in-memory object bytes — no `.obj` on disk. Hands the
+/// bytes to k2lnk; only when k2lnk can't handle it (absent/ineligible/failed)
+/// does it spill the object to `opts.obj_files[0]` and fall back to LLD.
+pub fn windowsMem(allocator: std.mem.Allocator, io: std.Io, obj_bytes: []const u8, opts: WindowsLinkOptions) LinkError!void {
+    if (tryK2lnkMem(allocator, obj_bytes, opts)) |ok| {
+        if (ok) return;
+    }
+    // Spill the object so LLD can read it, then take the LLD path.
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = opts.obj_files[0], .data = obj_bytes }) catch return error.OutOfMemory;
+    return linkWithLld(allocator, io, opts);
 }

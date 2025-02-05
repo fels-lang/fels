@@ -112,6 +112,32 @@ pub fn verify(cg: *ModuleCg) EmitError!void {
 ///   tm.applyToModule(&cg);
 ///   try verify(&cg);
 ///   try emitObject(&cg, tm, "output.o");
+/// Emit the object into an allocator-owned byte buffer (caller frees) instead of
+/// a file — so the linker can consume it in memory with no disk round-trip.
+pub fn emitObjectToMemory(cg: *ModuleCg, tm: TargetMachine, allocator: std.mem.Allocator) EmitError![]u8 {
+    var err: [*c]u8 = null;
+    var membuf: llvm.LLVMMemoryBufferRef = null;
+    if (llvm.LLVMTargetMachineEmitToMemoryBuffer(
+        tm.tm,
+        cg.mod,
+        llvm.LLVMObjectFile,
+        &err,
+        &membuf,
+    ) != 0) {
+        if (err) |msg| {
+            std.debug.print("LLVM emit error: {s}\n", .{msg});
+            llvm.LLVMDisposeMessage(msg);
+        }
+        return error.EmitFailed;
+    }
+    defer llvm.LLVMDisposeMemoryBuffer(membuf);
+    const start = llvm.LLVMGetBufferStart(membuf);
+    const size = llvm.LLVMGetBufferSize(membuf);
+    const bytes = allocator.alloc(u8, size) catch return error.EmitFailed;
+    @memcpy(bytes, start[0..size]);
+    return bytes;
+}
+
 pub fn emitObject(cg: *ModuleCg, tm: TargetMachine, path: [*:0]const u8) EmitError!void {
     var err: [*c]u8 = null;
     if (llvm.LLVMTargetMachineEmitToFile(

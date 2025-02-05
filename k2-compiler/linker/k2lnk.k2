@@ -408,12 +408,17 @@ imp_of :: fn(imp_sym: []u32, n: u32, sym_index: u32) -> i64 {
     return -1i64;
 }
 
-// Link a single COFF object into a PE32+ executable.
+// Link a single COFF object FILE into a PE32+ executable.
 link :: fn(a: *Arena, obj_path: []const u8, out_path: []const u8) -> i32 {
     data := read_file(a, obj_path);
-    if data.len == 0usize { p("k2lnk: cannot read object\n"); return 1; }
+    if data.len == 0usize { return 1; }
+    return link_bytes(a, data, out_path);
+}
+
+// Link a single COFF object held in `data` into a PE32+ executable at `out_path`.
+link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
     obj := coff_open(data);
-    if !obj.ok { p("k2lnk: not a COFF object\n"); return 1; }
+    if !obj.ok { return 1; }
 
     ti := find_section(&obj, ".text");
     ri := find_section(&obj, ".rdata");
@@ -651,9 +656,7 @@ link :: fn(a: *Arena, obj_path: []const u8, out_path: []const u8) -> i32 {
         si += 1u32;
     }
 
-    if !write_file(a, out_path, img) { p("k2lnk: write failed\n"); return 1; }
-    p("k2lnk: wrote "); p(out_path); p("  ("); pn(file_size as u64); p(" bytes, ");
-    pn(nimp as u64); p(" imports)\n");
+    if !write_file(a, out_path, img) { return 1; }
     return 0;
 }
 
@@ -718,6 +721,37 @@ main :: fn() -> i32 {
         return 2;
     }
     r := link(&a, in_path, out_path);
+    if r == 0i32 { p("k2lnk: wrote "); p(out_path); p("\n"); }
+    (&a).deinit();
+    return r;
+}
+
+// A NUL-terminated C string at `p` as a length-counted slice.
+from_cstr :: fn(cp: *const u8) -> []const u8 {
+    base := unsafe (cp as usize);
+    return unsafe slice_from_raw_parts(u8, unsafe ptr_from_int(*u8, base), cstr_len(base));
+}
+
+// In-process entry point exported by k2lnk.dll. The compiler loads this DLL and
+// calls it to link `in_cstr` (one COFF object file) into `out_cstr` (a PE32+
+// exe), in-process — no spawn, no shell. Returns 0 on success.
+#export("k2_link")
+k2_link :: fn(in_cstr: *const u8, out_cstr: *const u8) -> i32 {
+    a := make();
+    r := link(&a, from_cstr(in_cstr), from_cstr(out_cstr));
+    (&a).deinit();
+    return r;
+}
+
+// In-memory entry point: the compiler hands over the object BYTES directly
+// (`obj_ptr`/`obj_len`) — no .obj file is ever written or read. This is the
+// fast path that deletes the disk round-trip.
+#export("k2_link_mem")
+k2_link_mem :: fn(obj_ptr: *const u8, obj_len: usize, out_cstr: *const u8) -> i32 {
+    a := make();
+    base := unsafe (obj_ptr as usize);
+    data := unsafe slice_from_raw_parts(u8, unsafe ptr_from_int(*u8, base), obj_len);
+    r := link_bytes(&a, data, from_cstr(out_cstr));
     (&a).deinit();
     return r;
 }
