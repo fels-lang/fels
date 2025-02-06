@@ -53,6 +53,7 @@ pub const Opcode = enum(u8) {
     load_cell, // a = dst; b = base ptr; imm = cell offset to read
     store_cell, // a = base ptr; b = src value; imm = cell offset to write
     index_addr, // a = dst; b = base ptr; c = index reg; imm = cells per element
+    index_load, // a = dst; b = base (zone slice/ptr OR host string); c = index reg; imm = cells per element → loaded element
     slice_make, // a = dst; b = ptr reg; c = len reg → slice value
     slice_len, // a = dst; b = slice reg → its length as a uint
     opt_is_some, // a = dst; b = optional value → bool (non-null)

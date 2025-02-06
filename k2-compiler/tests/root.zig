@@ -28,4 +28,5 @@ comptime {
     _ = @import("compiler/vm.zig");
     _ = @import("compiler/vm_corpus.zig");
     _ = @import("compiler/metaprogramming.zig");
+    _ = @import("compiler/compiler_hook.zig");
 }

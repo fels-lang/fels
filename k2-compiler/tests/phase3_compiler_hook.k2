@@ -1,0 +1,11 @@
+// Phase 3 message loop: a #compiler hook generates a TOP-LEVEL declaration
+// (`doubled`) at compile time. `main` then calls the generated function.
+// Expected: exit code 42.
+
+#compiler generate :: fn() -> []const u8 {
+    return "doubled :: fn(x: i32) -> i32 { return x * 2; }";
+}
+
+main :: fn() -> i32 {
+    return doubled(21);
+}

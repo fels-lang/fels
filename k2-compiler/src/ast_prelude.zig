@@ -105,3 +105,12 @@ pub const source =
     \\
     \\AstBlock :: struct { stmts: []AstStmt }
 ;
+
+/// Minimal `std.compiler` surface for `#compiler` hooks (Phase 3 message loop).
+/// Injected whenever a module declares a `#compiler` hook, so the hook can call
+/// the `compiler_decls()` introspection builtin and `for`-iterate the program's
+/// top-level declarations. `Decl.kind` is one of: "fn", "struct", "enum",
+/// "errors", "interface", "distinct", "opaque", "const".
+pub const compiler_source =
+    \\Decl :: struct { name: []const u8, kind: []const u8 }
+;

@@ -481,8 +481,12 @@ const FnCompiler = struct {
                         return;
                     }
                 }
-                const addr = try self.lowerIndexAddr(ix.base, ix.index, self.cellCount(inst.ty));
-                try self.emit(Instr.r_r_imm(.load_cell, target, addr, 0));
+                // Combined index+load: handles host strings (`[]const u8`) as
+                // well as zone-backed slices/arrays (a string has no zone addr,
+                // so the separate index_addr→load_cell pair can't serve it).
+                const base = try self.resolveReg(ix.base);
+                const idxr = try self.resolveReg(ix.index);
+                try self.emit(.{ .op = .index_load, .a = target, .b = base, .c = idxr, .imm = @intCast(self.cellCount(inst.ty)) });
             },
             .index_addr => |ix| {
                 const elem_ty: ir.IrType = switch (inst.ty) {

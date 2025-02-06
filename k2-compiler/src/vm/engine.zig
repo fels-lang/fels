@@ -338,6 +338,25 @@ pub const Vm = struct {
                         .offset = base.offset + @as(u32, @intCast(index * stride)),
                     } };
                 },
+                .index_load => {
+                    // Element read that works for BOTH zone-backed aggregates
+                    // and host strings (`[]const u8` literals/fields are stored
+                    // as `.string`, which has no zone address).
+                    const index = frame.regs[inst.c].asI128() orelse return error.TypeMismatch;
+                    switch (frame.regs[inst.b]) {
+                        .string => |s| {
+                            const i: usize = std.math.cast(usize, index) orelse return error.TypeMismatch;
+                            if (i >= s.len) return error.OutOfBounds;
+                            frame.regs[inst.a] = .{ .uint = s[i] };
+                        },
+                        else => {
+                            const base = try asPtr(frame.regs[inst.b]);
+                            const stride: i128 = @intCast(inst.imm);
+                            const off = base.offset + @as(u32, @intCast(index * stride));
+                            frame.regs[inst.a] = try self.zone_stack.getCell(base.zone, off);
+                        },
+                    }
+                },
                 .slice_make => {
                     const base = try asPtr(frame.regs[inst.b]);
                     const len = frame.regs[inst.c].asI128() orelse return error.TypeMismatch;
@@ -350,6 +369,8 @@ pub const Vm = struct {
                 .slice_len => {
                     frame.regs[inst.a] = switch (frame.regs[inst.b]) {
                         .slice => |s| .{ .uint = s.len },
+                        // `[]const u8` string values carry their own length.
+                        .string => |s| .{ .uint = s.len },
                         else => return error.TypeMismatch,
                     };
                 },

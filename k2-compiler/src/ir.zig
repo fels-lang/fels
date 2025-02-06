@@ -1855,6 +1855,25 @@ const FunctionLowerer = struct {
         return .{ .imm = .{ .text = text } };
     }
 
+    /// Phase 3: materialize the module's top-level declarations into a `[]Decl`
+    /// slice the comptime VM can iterate (`Decl{ name, kind }`). Backs the
+    /// `compiler_decls()` introspection builtin. Skips anonymous items (imports,
+    /// impls) and the injected prelude types (`Decl`, `Ast*`).
+    fn lowerCompilerDecls(self: *FunctionLowerer) LowerError!Value {
+        var elems: std.ArrayList(Value) = .empty;
+        defer elems.deinit(self.allocator);
+        for (self.module.items) |item| {
+            const nm = item.name() orelse continue;
+            if (isPreludeDeclName(nm)) continue;
+            const v = try self.mkStruct("Decl", &.{
+                .{ .name = "name", .value = astStr(nm) },
+                .{ .name = "kind", .value = astStr(declKindName(item)) },
+            });
+            try elems.append(self.allocator, v);
+        }
+        return self.materializeSlice(.{ .struct_type = "Decl" }, elems.items);
+    }
+
     /// `*AstExpr` field value: materialize the expr, then take its address.
     fn materializeExprPtr(self: *FunctionLowerer, e: ast.Expr) LowerError!Value {
         const inner = try self.allocator.create(IrType);
@@ -2391,6 +2410,13 @@ const FunctionLowerer = struct {
                     .ident => |name| name,
                     else => "<expr>",
                 };
+                // compiler_decls() (Phase 3 introspection): materialize the
+                // program's top-level declarations as a `[]Decl` the hook can
+                // `for`-iterate. Handled before the generic builtin path because
+                // it reads the live module rather than lowering value args.
+                if (std.mem.eql(u8, callee_name, "compiler_decls")) {
+                    break :blk try self.lowerCompilerDecls();
+                }
                 // asm(...) needs structural constraint parsing — handle before generic builtin path.
                 if (std.mem.eql(u8, callee_name, "asm")) {
                     break :blk try self.lowerAsmCall(call, expr);
@@ -3354,6 +3380,29 @@ fn extractAsmConstraint(expr: ast.Expr) ?[]const u8 {
     return null;
 }
 
+/// Names injected by the metaprogramming/compiler preludes — hidden from the
+/// `compiler_decls()` view so a hook sees only the user's (and generated) decls.
+fn isPreludeDeclName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Decl") or std.mem.startsWith(u8, name, "Ast");
+}
+
+/// The `Decl.kind` string for a top-level item (see ast_prelude `compiler_source`).
+fn declKindName(item: ast.Item) []const u8 {
+    return switch (item) {
+        .function => "fn",
+        .const_decl => "const",
+        .type_decl => |t| switch (t.kind) {
+            .struct_type => "struct",
+            .enum_type => "enum",
+            .errors => "errors",
+            .interface_type => "interface",
+            .distinct => "distinct",
+            .opaque_type => "opaque",
+        },
+        else => "other",
+    };
+}
+
 fn isBuiltinName(name: []const u8) bool {
     inline for (.{
         "truncate_to",
@@ -3936,6 +3985,56 @@ const Reifier = struct {
 // the existing literal-quote path splices and checks it like hand-written code.
 
 pub const InsertExpandError = error{ SemanticFailed, OutOfMemory };
+
+/// True if the module has any `#compiler` hook — a function the compiler runs at
+/// compile time to generate/inspect the program (the Phase-3 message loop).
+pub fn hasCompilerHook(module: ast.Module) bool {
+    for (module.items) |item| switch (item) {
+        .function => |f| if (hasAttr(f.attrs, "compiler")) return true,
+        else => {},
+    };
+    return false;
+}
+
+/// Synthetic-expr id base for `#compiler` hook calls (distinct from user ids,
+/// the reifier's 800_000, and the prelude's 900_000).
+const compiler_hook_id_base: ast.NodeId = 500_000;
+
+/// Run every `#compiler` hook on the VM. Each hook is a `fn() -> []const u8`
+/// returning K2 source for top-level declarations; the concatenation of all
+/// their outputs is returned (or null if there are no hooks). The pipeline then
+/// parses that source and adds the declarations to the module — this is how
+/// compile-time code GENERATES new top-level declarations (which `#insert`, a
+/// statement splice, cannot).
+pub fn runCompilerHooks(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) InsertExpandError!?[]const u8 {
+    if (!hasCompilerHook(front_end.module)) return null;
+
+    var cvm = ComptimeVm.init(allocator, front_end);
+    defer cvm.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var produced = false;
+    var id: ast.NodeId = compiler_hook_id_base;
+
+    for (front_end.module.items) |item| switch (item) {
+        .function => |f| {
+            if (!hasAttr(f.attrs, "compiler")) continue;
+            // Build a synthetic `f()` call and evaluate it to a string.
+            const callee = allocator.create(ast.Expr) catch return error.OutOfMemory;
+            callee.* = .{ .id = id, .kind = .{ .ident = f.name }, .span = f.span };
+            const call_expr = ast.Expr{ .id = id + 1, .kind = .{ .call = .{ .callee = callee, .args = &.{} } }, .span = f.span };
+            id += 2;
+            const src = cvm.evalToString(call_expr, allocator) orelse return error.SemanticFailed;
+            try out.appendSlice(allocator, src);
+            try out.append(allocator, '\n');
+            produced = true;
+        },
+        else => {},
+    };
+    if (!produced) return null;
+    return try out.toOwnedSlice(allocator);
+}
 
 /// Returns the rewritten module if it contained computed inserts, else null.
 pub fn expandComputedInserts(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) InsertExpandError!?ast.Module {

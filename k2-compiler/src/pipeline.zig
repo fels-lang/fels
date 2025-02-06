@@ -281,18 +281,26 @@ fn runPipelineWithSource(
     file: []const u8,
     arena: *std.heap.ArenaAllocator,
 ) CompileError!FrontEnd {
+    // Phase 3 message loop: run `#compiler` hooks (compile-time functions that
+    // return K2 source for top-level declarations) and add the generated
+    // declarations to the module before the rest of the pipeline sees it.
+    const base_module = if (ir_mod.hasCompilerHook(raw_module))
+        try runCompilerHookPass(allocator, raw_module, source, file, arena)
+    else
+        raw_module;
+
     // Inject the compiler-provided `ast.*` metaprogramming types ONLY when the
     // module actually does metaprogramming (uses #quote/#insert/#for/macro), so
     // ordinary programs stay free of these types. Parsed with a high id base so
     // its node ids never collide with the program's; diagnostics keep the
     // user's source/file.
-    const with_prelude = if (usesMetaprogramming(raw_module))
-        prependAstPrelude(allocator, raw_module) catch |err| switch (err) {
+    const with_prelude = if (usesMetaprogramming(base_module))
+        prependAstPrelude(allocator, base_module) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,
         }
     else
-        raw_module;
+        base_module;
 
     // Expand macros before any sema sees the tree: `#insert macrocall(...)`
     // becomes a literal `#insert #quote { ... }`, and macro decls are dropped.
@@ -323,6 +331,67 @@ fn runPipelineWithSource(
 
     const pass1 = try runSema(allocator, module, source, file, .strict);
     return .{ .module = module, .symbols = pass1.symbols, .types = pass1.types, .arena = arena };
+}
+
+/// Run the module's `#compiler` hooks and return the module augmented with the
+/// declarations they generated. The hooks need a runnable program, so this does
+/// a throwaway prelude+macroexpand+tolerant-sema to build a FrontEnd, runs the
+/// hooks on the VM, parses their output as top-level declarations, and appends
+/// them to the RAW module (so the real pipeline re-applies prelude/macroexpand
+/// to the whole thing).
+fn runCompilerHookPass(
+    allocator: std.mem.Allocator,
+    raw_module: ast.Module,
+    source: []const u8,
+    file: []const u8,
+    arena: *std.heap.ArenaAllocator,
+) CompileError!ast.Module {
+    // The `Decl` type backing `compiler_decls()` must be visible both to the
+    // throwaway run below AND to the real compile, so prepend it up front; the
+    // returned module carries it forward.
+    const with_cprelude = prependCompilerPrelude(allocator, raw_module) catch |err| switch (err) {
+        error.ParseFailed => return error.ParseFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    const pre = if (usesMetaprogramming(with_cprelude))
+        prependAstPrelude(allocator, with_cprelude) catch |err| switch (err) {
+            error.ParseFailed => return error.ParseFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+        }
+    else
+        with_cprelude;
+    const expanded = macroexpand.expand(allocator, pre) catch |err| switch (err) {
+        error.SemanticFailed => return error.SemanticFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    const pass0 = try runSema(allocator, expanded, source, file, .tolerant);
+    const fe0 = FrontEnd{ .module = expanded, .symbols = pass0.symbols, .types = pass0.types, .arena = arena };
+    const gen_src = ir_mod.runCompilerHooks(allocator, fe0) catch |err| switch (err) {
+        error.SemanticFailed => return error.SemanticFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    if (gen_src) |gsrc| {
+        // Generated decls share the user's file_name so they live in the same
+        // module scope; ids start high to avoid colliding with user nodes.
+        const parsed = parser.parseSourceFrom(allocator, file, gsrc, 600_000) catch return error.ParseFailed;
+        var items: std.ArrayList(ast.Item) = .empty;
+        try items.appendSlice(allocator, with_cprelude.items);
+        try items.appendSlice(allocator, parsed.module.items);
+        return ast.Module{ .file_name = raw_module.file_name, .items = try items.toOwnedSlice(allocator) };
+    }
+    return with_cprelude;
+}
+
+/// Inject the `std.compiler` `Decl` type so `#compiler` hooks can call
+/// `compiler_decls()`. Parsed under the user's file name (K2 symbols are
+/// file-private — a separate name would hide `Decl` from the hook), with a
+/// distinct high id base so its nodes never collide with the user's.
+fn prependCompilerPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
+    const parsed = try parser.parseSourceFrom(allocator, user.file_name, ast_prelude.compiler_source, 700_000);
+    var items: std.ArrayList(ast.Item) = .empty;
+    try items.appendSlice(allocator, parsed.module.items);
+    try items.appendSlice(allocator, user.items);
+    return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
 }
 
 const SemaResult = struct {

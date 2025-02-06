@@ -1905,6 +1905,12 @@ const Checker = struct {
         // value. Their static type is deferred, like the TARGET pseudo-module.
         if (std.mem.eql(u8, name, "type_name")) return try self.sliceOf(.u8);
         if (std.mem.eql(u8, name, "type_info")) return .unknown;
+        // `compiler_decls()` → `[]Decl`, the program's top-level declarations
+        // (Phase 3). `Decl` comes from the injected compiler prelude.
+        if (std.mem.eql(u8, name, "compiler_decls")) {
+            const id = self.resolveSymbol("Decl") orelse return error.SemanticFailed;
+            return try self.sliceOf(.{ .named = id });
+        }
         // Unsafe builtins — must be called from within an `unsafe` block.
         if (std.mem.eql(u8, name, "ptr_from_int")) {
             try self.requireUnsafe(call.callee.span, name);
@@ -3437,6 +3443,8 @@ fn isBuiltinValue(name: []const u8) bool {
         ".acquire",
         // Compile-time reflection builtins
            "type_info",      "type_name",
+        // Compile-time program introspection (Phase 3 message loop)
+        "compiler_decls",
         // Compile-time pseudo-modules
         "TARGET",
     }) |builtin| {

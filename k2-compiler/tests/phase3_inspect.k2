@@ -1,0 +1,27 @@
+// Phase 3 std.compiler: a #compiler hook INSPECTS the program via
+// compiler_decls(), then generates code conditionally. Here it only emits the
+// real `answer` (return 42) because a struct declaration exists; otherwise it
+// would emit a stub returning 0. Expected exit code: 42.
+
+Point :: struct { x: i32, y: i32 }
+
+streq :: fn(a: []const u8, b: []const u8) -> bool {
+    if a.len != b.len { return false; }
+    for i in 0..a.len {
+        if a[i] != b[i] { return false; }
+    }
+    return true;
+}
+
+#compiler gen :: fn() -> []const u8 {
+    for d in compiler_decls() {
+        if streq(d.kind, "struct") {
+            return "answer :: fn() -> i32 { return 42; }";
+        }
+    }
+    return "answer :: fn() -> i32 { return 0; }";
+}
+
+main :: fn() -> i32 {
+    return answer();
+}
