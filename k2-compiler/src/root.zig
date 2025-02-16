@@ -112,3 +112,5 @@ pub const vm_instructions = @import("vm/instructions.zig");
 pub const vm_compiler = @import("vm/compiler.zig");
 pub const vm_value = @import("vm/value.zig");
 pub const vm_zones = @import("vm/zones.zig");
+
+pub const build_driver = @import("build.zig");

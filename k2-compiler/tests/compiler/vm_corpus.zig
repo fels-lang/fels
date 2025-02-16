@@ -188,6 +188,36 @@ test "vm corpus: wide #run coverage" {
         \\
         \\// ── TARGET ──
         \\T_debug :: #run TARGET.debug;
+        \\
+        \\// ── UFCS auto-ref receiver (value receiver → *Self method) ──
+        \\Acc :: struct { n: i32 }
+        \\acc_bump :: fn(self: *Acc, by: i32) { self.n = self.n + by; }
+        \\acc_get :: fn(self: *const Acc) -> i32 { return self.n; }
+        \\ufcs_autoref :: fn() -> i32 { aa: Acc = .{ 40 }; aa.acc_bump(2); return aa.acc_get(); }
+        \\C_ufcs :: #run ufcs_autoref();
+        \\
+        \\// ── bare enum-literal inference (arg / typed-local / assignment) ──
+        \\elit_arg :: fn() -> i32 { return colrank(.green); }
+        \\elit_local :: fn() -> i32 { c: Color = .blue; return colrank(c); }
+        \\elit_assign :: fn() -> i32 { c: Color = .red; c = .green; return colrank(c); }
+        \\C_elit_a :: #run elit_arg();
+        \\C_elit_l :: #run elit_local();
+        \\C_elit_s :: #run elit_assign();
+        \\
+        \\// ── transparent type aliases ──
+        \\MyI :: i32;
+        \\TriA :: [3]i32;
+        \\alias_use :: fn() -> i32 { t: TriA = .{ 10, 20, 12 }; s: MyI = t[0] + t[1] + t[2]; return s; }
+        \\C_alias :: #run alias_use();
+        \\
+        \\// ── struct fields named `len`/`ptr` (must not hit the slice builtin) ──
+        \\Hdr :: struct { ptr: usize, len: usize }
+        \\hdr_sum :: fn() -> i32 { h: Hdr = .{ 7usize, 35usize }; return (h.ptr + h.len) as i32; }
+        \\C_hdr :: #run hdr_sum();
+        \\
+        \\// ── unary float negation ──
+        \\fneg :: fn(v: f64) -> i32 { return (-v) as i32; }
+        \\C_fneg :: #run fneg(-42.0);
     ;
 
     var fe = try k2.compile(a, "corpus.k2", src);

@@ -169,7 +169,10 @@ pub const Parser = struct {
         _ = try self.expect(.keyword_import, "expected import after #");
         const path = try self.parsePath();
         var names: ?[]const []const u8 = null;
+        var glob = false;
+        var alias: ?[]const u8 = null;
         if (self.match(.dot_lbrace)) {
+            // Selective: `#import a.b.{ x, y };`
             var selected: std.ArrayList([]const u8) = .empty;
             errdefer selected.deinit(self.allocator);
             while (!self.check(.r_brace) and !self.check(.eof)) {
@@ -179,9 +182,17 @@ pub const Parser = struct {
             }
             _ = try self.expect(.r_brace, "expected } after selective import");
             names = try selected.toOwnedSlice(self.allocator);
+        } else if (self.peekKind(0) == .dot and self.peekKind(1) == .star) {
+            // Glob: `#import a.b.*;` — everything unqualified.
+            _ = self.advance(); // dot
+            _ = self.advance(); // star
+            glob = true;
+        } else if (self.match(.keyword_as)) {
+            // Aliased namespace: `#import a.b as c;`
+            alias = (try self.expect(.ident, "expected namespace alias after `as`")).text(self.source);
         }
         const semi = try self.expect(.semicolon, "expected ; after import");
-        return .{ .path = path, .names = names, .file_name = self.file_name, .span = spanFrom(hash, semi) };
+        return .{ .path = path, .names = names, .glob = glob, .alias = alias, .file_name = self.file_name, .span = spanFrom(hash, semi) };
     }
 
     /// Parses the remainder of `#system_library("name");` after `#` and the
@@ -270,6 +281,23 @@ pub const Parser = struct {
             } };
         }
 
+        // `Name :: <type>;` — a transparent type alias. Recognised when the RHS
+        // begins with an unambiguous type token (a primitive type keyword or a
+        // type constructor `[ * [* ? borrow atomic`); a bare-ident RHS stays a
+        // value constant.
+        if (self.peekStartsType()) {
+            const ty = try self.parseType();
+            const semi = try self.expect(.semicolon, "expected ; after type alias");
+            return .{ .type_decl = .{
+                .attrs = attrs,
+                .name = name.text(self.source),
+                .file_name = self.file_name,
+                .is_public = is_public,
+                .kind = .{ .alias = ty },
+                .span = spanFrom(name, semi),
+            } };
+        }
+
         const value = try self.parseExpr(0);
         const semi = try self.expect(.semicolon, "expected ; after constant declaration");
         return .{ .const_decl = .{
@@ -280,6 +308,17 @@ pub const Parser = struct {
             .value = value,
             .span = spanFrom(name, semi),
         } };
+    }
+
+    /// Whether the current token begins a type (used to recognise `Name :: <type>`
+    /// type aliases vs. value constants). Conservative: a bare ident RHS is NOT a
+    /// type here, so `Foo :: Bar` remains a value constant.
+    fn peekStartsType(self: *Parser) bool {
+        return switch (self.peekKind(0)) {
+            .keyword_i8, .keyword_i16, .keyword_i32, .keyword_i64, .keyword_isize, .keyword_u8, .keyword_u16, .keyword_u32, .keyword_u64, .keyword_usize, .keyword_bool, .keyword_void => true,
+            .l_bracket, .star, .l_bracket_star, .question, .keyword_borrow, .keyword_atomic => true,
+            else => false,
+        };
     }
 
     fn finishInterface(self: *Parser, attrs: []const ast.Attribute, name: Token) ParseError!ast.TypeDecl {
@@ -933,7 +972,10 @@ pub const Parser = struct {
         errdefer parts.deinit(self.allocator);
 
         try parts.append(self.allocator, (try self.expect(.ident, "expected path segment")).text(self.source));
-        while (self.match(.dot)) {
+        // Only consume `.ident` segments; leave a trailing `.{` (selective) or
+        // `.*` (glob) for the import parser.
+        while (self.peekKind(0) == .dot and self.peekKind(1) == .ident) {
+            _ = self.advance(); // dot
             try parts.append(self.allocator, (try self.expect(.ident, "expected path segment")).text(self.source));
         }
         return parts.toOwnedSlice(self.allocator);
@@ -1033,6 +1075,11 @@ pub const Parser = struct {
             if (self.match(.dot)) {
                 const field = try self.expect(.ident, "expected field name");
                 left = try self.expr(.{ .field = .{ .base = try self.allocExpr(left), .name = field.text(self.source) } }, Span.new(left.span.start, field.start + field.len));
+                continue;
+            }
+            if (self.match(.colon_colon)) {
+                const member = try self.expect(.ident, "expected name after `::`");
+                left = try self.expr(.{ .scope_access = .{ .base = try self.allocExpr(left), .member = member.text(self.source) } }, Span.new(left.span.start, member.start + member.len));
                 continue;
             }
             if (self.match(.l_bracket)) {

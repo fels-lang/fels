@@ -1,0 +1,6 @@
+#import std.io;
+
+main :: fn() -> i32 {
+    io::println("hello from k2 build!");
+    return 7;
+}

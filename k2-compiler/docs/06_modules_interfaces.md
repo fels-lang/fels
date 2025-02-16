@@ -6,19 +6,42 @@ In K2, a module corresponds exactly to a file.
 
 ### Imports
 
-Use the `#import` directive to bring symbols from another module into scope.
-Paths are dot-separated relative to the current file, or start with `std.` for the standard library.
+Use the `#import` directive to bring another module's public symbols into scope.
+Paths are dot-separated relative to the current file, or start with `std.` for the
+standard library. There are four forms:
 
 ```k2
-// Selective import (recommended)
+// 1. Namespace import — bind the module under its last path segment.
+//    Members are reached with `::`; the module's names are NOT pulled into scope.
+#import std.io;
+... io::println("hi");   io::Writer ...
+
+// 2. Aliased namespace — choose the namespace name yourself.
+#import std.io as term;
+... term::println("hi");
+
+// 3. Selective — bring just the listed names in unqualified.
 #import std.io.{ Writer, println };
+... println("hi");
 
-// Wildcard import (imports all public symbols)
-#import std.fs;
+// 4. Glob — bring every public name in unqualified.
+#import std.io.*;
+... println("hi");
 
-// Local import (from sibling file math.k2)
-#import math.{ add, multiply };
+// Local modules work the same (sibling file math.k2):
+#import math;            math::add(1, 2);
+#import math.{ add };    add(1, 2);
 ```
+
+**`::` vs `.`** — `::` accesses a *module namespace* member (`io::println`), while
+`.` accesses a *value's* field or method (`point.x`, `writer.flush()`). Keeping
+them distinct means a local variable named `io` never shadows the `io` namespace.
+
+> **Collisions are fine.** Two different modules may each declare the same name
+> (e.g. both define a `greet` or a `parse`); the compiler mangles colliding names
+> per module under the hood, so they link cleanly. You reach each through its
+> namespace (`a::greet`, `b::greet`) or a selective/glob import. A name is only
+> mangled when it actually collides — unique names keep their bare linkage.
 
 ### Visibility
 

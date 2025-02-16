@@ -64,10 +64,26 @@ pub const Item = union(enum) {
 
 pub const ImportDecl = struct {
     path: []const []const u8,
+    /// Selective import `#import a.b.{ x, y };` — brings `x`, `y` in unqualified.
     names: ?[]const []const u8 = null,
+    /// Glob `#import a.b.*;` — brings every public name in unqualified.
+    glob: bool = false,
+    /// Namespace alias for `#import a.b as c;` (accessed `c::member`). When null
+    /// and the import is neither selective nor glob, the namespace is the last
+    /// path segment (`#import a.b;` → `b::member`).
+    alias: ?[]const u8 = null,
     file_name: []const u8,
     resolved_file: ?[]const u8 = null,
     span: Span,
+
+    /// The namespace name a bare/aliased import binds, or null for
+    /// selective/glob imports (which introduce no namespace).
+    pub fn namespace(self: ImportDecl) ?[]const u8 {
+        if (self.names != null or self.glob) return null;
+        if (self.alias) |a| return a;
+        if (self.path.len == 0) return null;
+        return self.path[self.path.len - 1];
+    }
 };
 
 /// Jai-style `#system_library("name");` top-level declaration — declares a
@@ -107,6 +123,9 @@ pub const TypeDecl = struct {
 
 pub const TypeDeclKind = union(enum) {
     distinct: TypeRef,
+    /// `Name :: <type>;` — a transparent alias (interchangeable with the
+    /// underlying type), unlike `distinct` which is a new nominal type.
+    alias: TypeRef,
     opaque_type,
     struct_type: StructDecl,
     errors: ErrorDecl,
@@ -514,8 +533,15 @@ pub const ExprKind = union(enum) {
     catch_expr: CatchExpr,
     call: CallExpr,
     field: FieldExpr,
+    /// `namespace::member` — access a member of an imported module namespace.
+    scope_access: ScopeAccess,
     index: IndexExpr,
     slice: SliceExpr,
+};
+
+pub const ScopeAccess = struct {
+    base: *const Expr,
+    member: []const u8,
 };
 
 pub const CastExpr = struct {

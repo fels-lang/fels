@@ -63,6 +63,30 @@ pub const Opcode = enum(u8) {
     // ── System / diagnostics ─────────────────────────────────────────────
     sys_print, // a = reg to print
     trap, // imm = const-pool index of message string, or -1 for none
+
+    // ── Host call ────────────────────────────────────────────────────────
+    // A side-effecting call into the embedding host (e.g. the build driver).
+    // imm = host-op id (see BuildOp); b = arg base reg; c = arg count;
+    // a = dst reg for the returned value (e.g. a fresh artifact id).
+    host_call,
+};
+
+/// Host operations dispatched by the `host_call` opcode. The VM is agnostic to
+/// what these do — the embedding `Vm.host` callback interprets the id. Used by
+/// the build system: `std.build`'s `__build_*` intrinsics lower to a `host_call`
+/// carrying one of these, and the build driver records them into a BuildPlan.
+pub const BuildOp = enum(u32) {
+    artifact,   // (name, root, kind:i32) -> id     kind: 0 exe,1 shared,2 static,3 object
+    opt,        // (id, level:i32)
+    link,       // (id, libname)
+    lib_path,   // (id, dir)
+    output,     // (id, path)
+    define,     // (id, key, val)
+    set_default,// (id)
+    run_step,   // (name, id)
+    test_dir,   // (name, dir)
+    require,    // (name, location, kind:i32) -> dep_id   kind: 0 path, 1 git
+    depend,     // (id, dep_id)
 };
 
 pub const Instr = struct {

@@ -18,11 +18,15 @@ pub const SymbolTable = struct {
     scopes: std.ArrayList(Scope) = .empty,
     symbols: std.ArrayList(Symbol) = .empty,
     visible_names: std.StringHashMap(std.StringHashMap(SymbolId)) = undefined,
+    /// Per-file namespace aliases: file → (alias → target module file). Populated
+    /// for `#import a.b;` / `#import a.b as c;`. Drives `alias::member` resolution.
+    namespaces: std.StringHashMap(std.StringHashMap([]const u8)) = undefined,
     root_scope: ScopeId = 0,
 
     pub fn init(allocator: std.mem.Allocator) !SymbolTable {
         var table: SymbolTable = .{
             .visible_names = std.StringHashMap(std.StringHashMap(SymbolId)).init(allocator),
+            .namespaces = std.StringHashMap(std.StringHashMap([]const u8)).init(allocator),
         };
         errdefer table.deinit(allocator);
 
@@ -39,6 +43,9 @@ pub const SymbolTable = struct {
         var visible_it = self.visible_names.valueIterator();
         while (visible_it.next()) |names| names.deinit();
         self.visible_names.deinit();
+        var ns_it = self.namespaces.valueIterator();
+        while (ns_it.next()) |aliases| aliases.deinit();
+        self.namespaces.deinit();
     }
 
     pub fn addScope(self: *SymbolTable, allocator: std.mem.Allocator, parent: ?ScopeId) !ScopeId {
@@ -73,11 +80,29 @@ pub const SymbolTable = struct {
     }
 
     pub fn resolveVisible(self: SymbolTable, file_name: []const u8, name: []const u8) ?SymbolId {
-        const id = self.resolve(self.root_scope, name) orelse return null;
-        const symbol_value = self.symbol(id);
-        if (std.mem.eql(u8, symbol_value.file_name, "<runtime>")) return id;
+        if (self.resolve(self.root_scope, name)) |id| {
+            // Found by its bare name in the root scope (i.e. not collision-mangled).
+            const symbol_value = self.symbol(id);
+            if (std.mem.eql(u8, symbol_value.file_name, "<runtime>")) return id;
+            const visible = self.visible_names.get(file_name) orelse return null;
+            return visible.get(name);
+        }
+        // Not in the root scope under its bare name → a collision-mangled symbol;
+        // resolve it through this file's visibility map (own decls + imports).
         const visible = self.visible_names.get(file_name) orelse return null;
         return visible.get(name);
+    }
+
+    /// Resolve `alias::member` from `file_name`: look up the namespace alias to
+    /// find its target module file, then a public `member` declared there.
+    pub fn resolveScoped(self: SymbolTable, file_name: []const u8, alias: []const u8, member: []const u8) ?SymbolId {
+        const aliases = self.namespaces.get(file_name) orelse return null;
+        const target_file = aliases.get(alias) orelse return null;
+        for (self.symbols.items) |sym| {
+            if (sym.is_public and std.mem.eql(u8, sym.file_name, target_file) and std.mem.eql(u8, sym.name, member))
+                return sym.id;
+        }
+        return null;
     }
 
     pub fn insert(
@@ -90,7 +115,24 @@ pub const SymbolTable = struct {
         file_name: []const u8,
         is_public: bool,
     ) !SymbolId {
-        if (self.scopes.items[scope_id].names.get(name)) |existing| {
+        return self.insertLinked(allocator, scope_id, name, name, kind, span, file_name, is_public);
+    }
+
+    /// Like `insert`, but the scope is keyed by `link_name` (the globally-unique
+    /// linkage name) while the symbol keeps its bare `name`. Top-level symbols use
+    /// this so collision-mangled names stay distinct in the root scope.
+    pub fn insertLinked(
+        self: *SymbolTable,
+        allocator: std.mem.Allocator,
+        scope_id: ScopeId,
+        name: []const u8,
+        link_name: []const u8,
+        kind: SymbolKind,
+        span: Span,
+        file_name: []const u8,
+        is_public: bool,
+    ) !SymbolId {
+        if (self.scopes.items[scope_id].names.get(link_name)) |existing| {
             return existing;
         }
 
@@ -98,6 +140,7 @@ pub const SymbolTable = struct {
         try self.symbols.append(allocator, .{
             .id = id,
             .name = name,
+            .link_name = link_name,
             .kind = kind,
             .span = span,
             .scope_id = scope_id,
@@ -105,7 +148,7 @@ pub const SymbolTable = struct {
             .file_name = file_name,
             .is_public = is_public,
         });
-        try self.scopes.items[scope_id].names.put(name, id);
+        try self.scopes.items[scope_id].names.put(link_name, id);
         try self.scopes.items[scope_id].symbols.append(allocator, id);
         return id;
     }
@@ -134,6 +177,10 @@ pub const Scope = struct {
 pub const Symbol = struct {
     id: SymbolId,
     name: []const u8,
+    /// Globally-unique linkage name used by IR/LLVM/VM. Equals `name` for the
+    /// common case; module-qualified (`<module>$name`) only when the same bare
+    /// name is declared as a normal decl in more than one module (collision).
+    link_name: []const u8,
     kind: SymbolKind,
     span: Span,
     scope_id: ScopeId,
@@ -337,6 +384,13 @@ pub const VariantValueInfo = struct {
     payload: ?Ty,
 };
 
+/// A bare enum-literal argument (`.variant`) resolved against an expected enum
+/// type, recorded by NodeId so IR can lower it as the right `variant_lit`.
+pub const EnumLit = struct {
+    type_name: []const u8,
+    variant: []const u8,
+};
+
 pub const FnSig = struct {
     params: []const ParamSig,
     return_ty: Ty,
@@ -367,11 +421,21 @@ pub const TypeEnv = struct {
     variant_values: std.AutoHashMap(SymbolId, VariantValueInfo),
     // Keeps a list of distinct types and their underlying type for later referencing, e.g. when casting
     distinct_types: std.AutoHashMap(SymbolId, Ty),
+    /// Transparent type aliases: alias SymbolId → the aliased TypeRef. Resolved
+    /// on demand in `typeFromRef` so the alias name is fully interchangeable.
+    alias_refs: std.AutoHashMap(SymbolId, ast.TypeRef),
     expr_types: std.AutoHashMap(ast.NodeId, Ty),
     expr_symbols: std.AutoHashMap(ast.NodeId, SymbolId),
     expr_scopes: std.AutoHashMap(ast.NodeId, ScopeId),
     /// Field-callee NodeId -> visible top-level function used as an extension method.
     extension_calls: std.AutoHashMap(ast.NodeId, SymbolId),
+    /// Method-call (field-callee) NodeIds whose value receiver must be implicitly
+    /// address-of'd because the method takes a `*Self`/`*const Self` (UFCS auto-ref).
+    /// IR lowers these receivers via `lowerLValueAddress`.
+    receiver_auto_addr: std.AutoHashMap(ast.NodeId, void),
+    /// Bare enum-literal (`.variant`) NodeIds resolved against an expected enum
+    /// type (in argument/assignment/typed-local position). IR lowers as variant_lit.
+    enum_lits: std.AutoHashMap(ast.NodeId, EnumLit),
     generic_instantiations: std.ArrayList(GenericInstantiation) = .empty,
     /// Callee expression NodeId → mangled name for generic function calls.
     generic_call_insts: std.AutoHashMap(ast.NodeId, []const u8) = undefined,
@@ -389,10 +453,13 @@ pub const TypeEnv = struct {
             .fn_sigs = std.AutoHashMap(SymbolId, FnSig).init(allocator),
             .variant_values = std.AutoHashMap(SymbolId, VariantValueInfo).init(allocator),
             .distinct_types = std.AutoHashMap(SymbolId, Ty).init(allocator),
+            .alias_refs = std.AutoHashMap(SymbolId, ast.TypeRef).init(allocator),
             .expr_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .expr_symbols = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .expr_scopes = std.AutoHashMap(ast.NodeId, ScopeId).init(allocator),
             .extension_calls = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
+            .receiver_auto_addr = std.AutoHashMap(ast.NodeId, void).init(allocator),
+            .enum_lits = std.AutoHashMap(ast.NodeId, EnumLit).init(allocator),
             .generic_call_insts = std.AutoHashMap(ast.NodeId, []const u8).init(allocator),
             .generic_struct_templates = std.StringHashMap(ast.TypeDecl).init(allocator),
             .generic_struct_instances = std.StringHashMap(SymbolId).init(allocator),
@@ -406,10 +473,13 @@ pub const TypeEnv = struct {
         self.fn_sigs.deinit();
         self.variant_values.deinit();
         self.distinct_types.deinit();
+        self.alias_refs.deinit();
         self.expr_types.deinit();
         self.expr_symbols.deinit();
         self.expr_scopes.deinit();
         self.extension_calls.deinit();
+        self.receiver_auto_addr.deinit();
+        self.enum_lits.deinit();
         self.generic_call_insts.deinit();
         for (self.generic_instantiations.items) |*gi| gi.expr_types.deinit();
         self.generic_instantiations.deinit(allocator);
@@ -495,10 +565,33 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
     var table = try SymbolTable.init(allocator);
     errdefer table.deinit(allocator);
 
+    // Pre-pass: find bare names declared as a *mangleable* decl (a plain
+    // function/const, not extern/export/entry/runtime) in more than one module.
+    // Those collide, so each gets a module-qualified linkage name; everything
+    // else keeps its bare name (so non-colliding output is unchanged).
+    var first_file = std.StringHashMap([]const u8).init(allocator);
+    defer first_file.deinit();
+    var colliding = std.StringHashMap(void).init(allocator);
+    defer colliding.deinit();
+    for (module.items) |item| {
+        if (!isMangleable(item)) continue;
+        const nm = item.name() orelse continue;
+        const gop = try first_file.getOrPut(nm);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = item.fileName();
+        } else if (!std.mem.eql(u8, gop.value_ptr.*, item.fileName())) {
+            try colliding.put(nm, {});
+        }
+    }
+
     for (module.items) |item| {
         const name = item.name() orelse continue;
-        if (table.resolve(table.root_scope, name) != null) {
-            std.debug.print("{s}: error: duplicate top-level declaration `{s}`; module namespaces are not implemented yet\n", .{ item.fileName(), name });
+        const link = if (isMangleable(item) and colliding.contains(name))
+            try std.fmt.allocPrint(allocator, "{s}${s}", .{ moduleSlug(allocator, item.fileName()) catch name, name })
+        else
+            name;
+        if (table.scopes.items[table.root_scope].names.get(link) != null) {
+            std.debug.print("{s}: error: duplicate top-level declaration `{s}`\n", .{ item.fileName(), name });
             return error.SemanticFailed;
         }
         const kind: SymbolKind = switch (item) {
@@ -509,7 +602,7 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
             .interface_impl => unreachable,
             .system_library => unreachable,
         };
-        const id = try table.insert(allocator, table.root_scope, name, kind, item.span(), item.fileName(), item.isPublic());
+        const id = try table.insertLinked(allocator, table.root_scope, name, link, kind, item.span(), item.fileName(), item.isPublic());
         const visible = try visibleNamesFor(&table, allocator, item.fileName());
         try visible.put(name, id);
     }
@@ -524,7 +617,13 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
         const target_file = imp.resolved_file orelse continue;
         const visible = try visibleNamesFor(&table, allocator, imp.file_name);
 
-        if (imp.names) |names| {
+        if (imp.namespace()) |ns| {
+            // `#import a.b;` / `#import a.b as c;` — bind a namespace alias; the
+            // module's names are reached via `ns::member`, not brought in scope.
+            const aliases = try namespacesFor(&table, allocator, imp.file_name);
+            try aliases.put(ns, target_file);
+        } else if (imp.names) |names| {
+            // Selective: bring just the listed names in unqualified.
             for (names) |name| {
                 const id = findSymbolInFile(table, target_file, name) orelse {
                     std.debug.print("{s}: error: module `{s}` has no declaration named `{s}`\n", .{ imp.file_name, target_file, name });
@@ -538,6 +637,7 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
                 try addVisibleName(visible, imp.file_name, name, id);
             }
         } else {
+            // Glob (`#import a.b.*;`): bring every public name in unqualified.
             for (table.symbols.items) |imported| {
                 if (!std.mem.eql(u8, imported.file_name, target_file) or !imported.is_public) continue;
                 try addVisibleName(visible, imp.file_name, imported.name, imported.id);
@@ -555,6 +655,38 @@ fn visibleNamesFor(
 ) !*std.StringHashMap(SymbolId) {
     const entry = try table.visible_names.getOrPut(file_name);
     if (!entry.found_existing) entry.value_ptr.* = std.StringHashMap(SymbolId).init(allocator);
+    return entry.value_ptr;
+}
+
+/// Whether a top-level item may be collision-mangled: a plain function or const
+/// that is not extern/export, not the entry point, and not a runtime symbol.
+/// (Types, externs, exports, and `main` keep their bare names — their names are
+/// ABI- or tooling-significant, or referenced by the materializer.)
+fn isMangleable(item: ast.Item) bool {
+    if (std.mem.eql(u8, item.fileName(), "<runtime>")) return false;
+    return switch (item) {
+        .function => |f| !hasAttr(f.attrs, "extern") and !hasAttr(f.attrs, "foreign") and
+            !hasAttr(f.attrs, "export") and !hasAttr(f.attrs, "entry") and
+            !std.mem.eql(u8, f.name, "main"),
+        .const_decl => true,
+        else => false,
+    };
+}
+
+/// A linkage-safe slug for a module's file name (non-alphanumerics → `_`).
+fn moduleSlug(allocator: std.mem.Allocator, file_name: []const u8) ![]const u8 {
+    const buf = try allocator.alloc(u8, file_name.len);
+    for (file_name, 0..) |c, i| buf[i] = if (std.ascii.isAlphanumeric(c)) c else '_';
+    return buf;
+}
+
+fn namespacesFor(
+    table: *SymbolTable,
+    allocator: std.mem.Allocator,
+    file_name: []const u8,
+) !*std.StringHashMap([]const u8) {
+    const entry = try table.namespaces.getOrPut(file_name);
+    if (!entry.found_existing) entry.value_ptr.* = std.StringHashMap([]const u8).init(allocator);
     return entry.value_ptr;
 }
 
@@ -717,6 +849,8 @@ const Checker = struct {
     current_type_binding: []const TypeArg = &.{},
     current_self_ty: ?Ty = null,
     unsafe_depth: usize = 0,
+    /// Recursion guard for resolving (possibly cyclic) type aliases.
+    alias_depth: u32 = 0,
     // Diagnostics — collected instead of failing immediately where possible.
     diagnostics: std.ArrayList(Diagnostic) = .empty,
     source: []const u8 = "",
@@ -831,6 +965,16 @@ const Checker = struct {
         return self.symbols.resolveVisible(self.file, name);
     }
 
+    /// Resolve `alias::member` (single-level namespace access). The base must be a
+    /// namespace alias bound by `#import a.b;` / `#import a.b as alias;`.
+    fn resolveScopeAccessSymbol(self: Checker, sa: ast.ScopeAccess) ?SymbolId {
+        const alias = switch (sa.base.kind) {
+            .ident => |n| n,
+            else => return null,
+        };
+        return self.symbols.resolveScoped(self.file, alias, sa.member);
+    }
+
     fn localScopeIndex(self: Checker, name: []const u8) ?usize {
         var i = self.scope_stack.items.len;
         while (i > 0) {
@@ -915,6 +1059,21 @@ const Checker = struct {
     }
 
     fn collectTopLevelTypes(self: *Checker, module: ast.Module) SemanticError!void {
+        // Pre-pass: register every type alias first, so the layout/fn-sig pass
+        // below can resolve aliases regardless of declaration order.
+        for (module.items) |item| {
+            const decl = switch (item) {
+                .type_decl => |d| d,
+                else => continue,
+            };
+            const aliased = switch (decl.kind) {
+                .alias => |ty| ty,
+                else => continue,
+            };
+            const id = self.symbols.resolveVisible(decl.file_name, decl.name) orelse continue;
+            try self.env.alias_refs.put(id, aliased);
+        }
+
         for (module.items) |item| {
             self.file = item.fileName();
             if (item == .interface_impl) {
@@ -928,12 +1087,17 @@ const Checker = struct {
                 continue;
             }
             const name = item.name() orelse continue;
-            const id = self.symbols.resolve(self.symbols.root_scope, name) orelse continue;
+            // File-aware so collision-mangled top-level names resolve to their own
+            // symbol (a bare root-scope lookup would miss them).
+            const id = self.symbols.resolveVisible(item.fileName(), name) orelse continue;
             switch (item) {
                 .const_decl => |decl| try self.env.set(id, try self.inferExpr(decl.value)),
                 .type_decl => |decl| {
                     try self.env.set(id, .{ .named = id });
                     switch (decl.kind) {
+                        // Aliases are registered in the pre-pass and resolved on
+                        // demand by typeFromRef — no layout of their own.
+                        .alias => {},
                         .struct_type => |strukt| {
                             if (strukt.type_params.len > 0) {
                                 // Generic struct — store as template, don't process fields yet.
@@ -1069,6 +1233,11 @@ const Checker = struct {
 
     fn checkTypeDecl(self: *Checker, decl: ast.TypeDecl) SemanticError!void {
         switch (decl.kind) {
+            // Validate the alias resolves (catches unknown/cyclic underlying types).
+            .alias => |ty| {
+                try self.rejectBorrowTypeRefOutsideParam(ty);
+                _ = try self.typeFromRef(ty);
+            },
             .distinct => |ty| {
                 try self.rejectBorrowTypeRefOutsideParam(ty);
                 const underlying = try self.typeFromRef(ty);
@@ -1250,6 +1419,10 @@ const Checker = struct {
             .local_typed => |local| {
                 const declared_ty = try self.typeFromRef(local.ty);
                 try self.rejectBorrowOutsideParam(declared_ty, local.ty.span());
+                if (try self.coerceEnumLiteral(local.value, declared_ty)) {
+                    try self.declareLocal(local.name, declared_ty);
+                    return;
+                }
                 const value_ty = try self.inferExpr(local.value);
                 if (!try self.compatible(value_ty, declared_ty)) {
                     self.emitError(local.value.span, "type mismatch: expected `{s}`, found `{s}`", .{
@@ -1263,6 +1436,7 @@ const Checker = struct {
             .assign => |assign| {
                 try self.checkAssignTarget(assign.target);
                 const target_ty = try self.inferExpr(assign.target);
+                if (try self.coerceEnumLiteral(assign.value, target_ty)) return;
                 const value_ty = try self.inferExpr(assign.value);
                 if (!try self.compatible(value_ty, target_ty)) {
                     self.emitError(assign.value.span, "type mismatch in assignment: expected `{s}`, found `{s}`", .{
@@ -1753,8 +1927,10 @@ const Checker = struct {
             },
             .field => |field| blk: {
                 const base_ty = try self.inferExpr(field.base.*);
-                if (std.mem.eql(u8, field.name, "len")) break :blk .usize;
-                if (std.mem.eql(u8, field.name, "ptr")) break :blk switch (base_ty) {
+                // `.len`/`.ptr` are slice/array builtins — but a real struct field
+                // of that name takes precedence (so a struct CAN have `len`/`ptr`).
+                if (std.mem.eql(u8, field.name, "len") and !self.structHasField(base_ty, "len")) break :blk .usize;
+                if (std.mem.eql(u8, field.name, "ptr") and !self.structHasField(base_ty, "ptr")) break :blk switch (base_ty) {
                     .slice => |inner| try self.ptrTo(inner.*),
                     .array => |array| try self.ptrTo(array.elem.*),
                     else => {
@@ -1767,6 +1943,14 @@ const Checker = struct {
                     if (std.mem.eql(u8, field.name, "err")) break :blk base_ty.fallible.err.*;
                 }
                 break :blk try self.fieldType(base_ty, field.name, expr.span);
+            },
+            .scope_access => |sa| blk: {
+                const id = self.resolveScopeAccessSymbol(sa) orelse {
+                    self.emitError(expr.span, "no namespace member `{s}` is visible here", .{sa.member});
+                    return error.SemanticFailed;
+                };
+                try self.env.expr_symbols.put(expr.id, id);
+                break :blk self.env.get(id) orelse .{ .named = id };
             },
             .index => |index| blk: {
                 const base_ty = try self.inferExpr(index.base.*);
@@ -1801,6 +1985,23 @@ const Checker = struct {
     }
 
     fn inferCall(self: *Checker, call: ast.CallExpr) SemanticError!Ty {
+        // Namespace function call: `io::print(...)`.
+        if (call.callee.kind == .scope_access) {
+            const sa = call.callee.kind.scope_access;
+            const id = self.resolveScopeAccessSymbol(sa) orelse {
+                self.emitError(call.callee.span, "no namespace member `{s}` is visible here", .{sa.member});
+                return error.SemanticFailed;
+            };
+            if (self.symbols.symbol(id).kind != .function) {
+                self.emitError(call.callee.span, "`{s}` is not callable", .{sa.member});
+                return error.SemanticFailed;
+            }
+            const sig = self.env.fn_sigs.get(id) orelse return error.SemanticFailed;
+            try self.env.expr_symbols.put(call.callee.id, id);
+            if (sig.type_params.len > 0) return try self.inferGenericCall(id, sa.member, sig, call);
+            return try self.inferDirectCall(id, sa.member, sig, call);
+        }
+
         // Detect zone method calls: zone_var.new(T), zone_var.new_slice(T, n), zone_var.free(ptr)
         if (call.callee.kind == .field) {
             const fld = call.callee.kind.field;
@@ -1869,13 +2070,13 @@ const Checker = struct {
                     return method.return_ty;
                 }
             }
-            if (self.resolveExtensionMethod(fld.name)) |extension| {
+            if (self.resolveExtensionMethod(fld.name, base_ty)) |extension| {
                 try self.env.extension_calls.put(call.callee.id, extension.id);
                 const extension_call = try self.extensionCall(call, fld.base.*, extension.sig);
                 if (extension.sig.type_params.len > 0) {
                     return try self.inferGenericCall(extension.id, fld.name, extension.sig, extension_call);
                 }
-                return try self.inferDirectCall(extension.id, fld.name, extension.sig, extension_call);
+                return try self.inferDirectCallImpl(extension.id, fld.name, extension.sig, extension_call, true);
             }
             if (!extensionLookupDeferred(base_ty)) {
                 self.emitError(call.callee.span, "no visible method or extension function `{s}`", .{fld.name});
@@ -1910,6 +2111,14 @@ const Checker = struct {
         if (std.mem.eql(u8, name, "compiler_decls")) {
             const id = self.resolveSymbol("Decl") orelse return error.SemanticFailed;
             return try self.sliceOf(.{ .named = id });
+        }
+        // std.build intrinsics: artifact/require return a handle id (i32); the
+        // rest are side-effecting and return void.
+        if (std.mem.eql(u8, name, "__build_artifact") or std.mem.eql(u8, name, "__build_require")) {
+            return .i32;
+        }
+        if (std.mem.startsWith(u8, name, "__build_")) {
+            return .void;
         }
         // Unsafe builtins — must be called from within an `unsafe` block.
         if (std.mem.eql(u8, name, "ptr_from_int")) {
@@ -2008,14 +2217,32 @@ const Checker = struct {
         sig: FnSig,
     };
 
-    fn resolveExtensionMethod(self: *Checker, name: []const u8) ?ExtensionMethod {
-        const id = self.resolveSymbol(name) orelse return null;
+    fn resolveExtensionMethod(self: *Checker, name: []const u8, base_ty: Ty) ?ExtensionMethod {
+        // First a visible (own/imported-unqualified) function; then a `self`-first
+        // method defined in the receiver type's own module — so `value.method()`
+        // works when that module is imported as a namespace, without importing
+        // each method by hand.
+        const id = self.resolveSymbol(name) orelse self.methodFromTypeModule(name, base_ty) orelse return null;
         if (self.symbols.symbol(id).kind != .function) return null;
         const sig = self.env.fn_sigs.get(id) orelse return null;
         for (sig.params) |param| {
             if (param.is_type_param) continue;
             if (!std.mem.eql(u8, param.name, "self")) return null;
             return .{ .id = id, .sig = sig };
+        }
+        return null;
+    }
+
+    /// A public `self`-first function named `name` defined in the same module as
+    /// the receiver's type, or null. Enables cross-module UFCS (methods follow
+    /// their type's module).
+    fn methodFromTypeModule(self: *Checker, name: []const u8, base_ty: Ty) ?SymbolId {
+        const type_id = typeSymbolOf(base_ty) orelse return null;
+        const file = self.symbols.symbol(type_id).file_name;
+        for (self.symbols.symbols.items) |sym| {
+            if (sym.kind == .function and sym.is_public and
+                std.mem.eql(u8, sym.file_name, file) and std.mem.eql(u8, sym.name, name))
+                return sym.id;
         }
         return null;
     }
@@ -2061,6 +2288,14 @@ const Checker = struct {
     }
 
     fn inferDirectCall(self: *Checker, id: SymbolId, name: []const u8, sig: FnSig, call: ast.CallExpr) SemanticError!Ty {
+        return self.inferDirectCallImpl(id, name, sig, call, false);
+    }
+
+    /// `is_method` is true when `call` came from UFCS (`recv.method(args)`), where
+    /// `call.args[0]` is the receiver. Such a receiver is implicitly address-of'd
+    /// when the method takes a `*Self`/`*const Self` and the receiver is a value
+    /// lvalue (recorded in `receiver_auto_addr` for IR to lower as `&recv`).
+    fn inferDirectCallImpl(self: *Checker, id: SymbolId, name: []const u8, sig: FnSig, call: ast.CallExpr, is_method: bool) SemanticError!Ty {
         _ = id;
         // Count only value params for arg matching
         var value_param_count: usize = 0;
@@ -2080,7 +2315,18 @@ const Checker = struct {
                 .named => |n| n.value,
             };
             try self.checkNonEscapingArgument(arg_expr, param.ty);
+            // Bare enum literal `.variant` inferred against the expected enum param.
+            if (try self.coerceEnumLiteral(arg_expr, param.ty)) {
+                arg_i += 1;
+                continue;
+            }
             const arg_ty = try self.inferExpr(arg_expr);
+            // UFCS auto-ref: a value receiver passed to a `*Self` method.
+            if (is_method and arg_i == 0 and self.receiverNeedsAddress(arg_ty, param.ty, arg_expr)) {
+                try self.env.receiver_auto_addr.put(call.callee.id, {});
+                arg_i += 1;
+                continue;
+            }
             if (!try self.compatible(arg_ty, param.ty)) {
                 self.emitError(arg_expr.span, "argument {d} of `{s}`: expected `{s}`, found `{s}`", .{ arg_i + 1, name, self.formatTy(param.ty), self.formatTy(arg_ty) });
                 return error.SemanticFailed;
@@ -2100,6 +2346,55 @@ const Checker = struct {
             return .{ .fallible = .{ .ok = try self.boxTy(sig.return_ty), .err = try self.boxTy(err_ty) } };
         }
         return sig.return_ty;
+    }
+
+    /// If `expr` is a bare enum literal `.variant` and `expected` is an enum type
+    /// that has that variant, type the expr as the enum and record it for IR
+    /// (returns true). Otherwise returns false and leaves checking to the caller.
+    fn coerceEnumLiteral(self: *Checker, expr: ast.Expr, expected: Ty) SemanticError!bool {
+        const lit = switch (expr.kind) {
+            .ident => |n| n,
+            else => return false,
+        };
+        if (lit.len < 2 or lit[0] != '.') return false;
+        const type_id = switch (expected) {
+            .named => |id| id,
+            else => return false,
+        };
+        const layout = self.env.layouts.get(type_id) orelse return false;
+        const variants = switch (layout.kind) {
+            .variant_type => |v| v,
+            else => return false,
+        };
+        const variant_name = lit[1..];
+        for (variants) |v| {
+            if (!std.mem.eql(u8, v.name, variant_name)) continue;
+            try self.env.expr_types.put(expr.id, .{ .named = type_id });
+            try self.env.enum_lits.put(expr.id, .{
+                .type_name = self.symbols.symbol(type_id).name,
+                .variant = variant_name,
+            });
+            return true;
+        }
+        return false;
+    }
+
+    /// True when a value receiver should be implicitly address-of'd to satisfy a
+    /// `*Self`/`*const Self` method param: the param is a pointer, the receiver is
+    /// not already a pointer, it is an addressable lvalue, and its type matches the
+    /// pointee.
+    fn receiverNeedsAddress(self: *Checker, recv_ty: Ty, param_ty: Ty, recv_expr: ast.Expr) bool {
+        const pointee = switch (param_ty) {
+            .pointer => |p| p.*,
+            .const_ptr => |p| p.*,
+            else => return false,
+        };
+        switch (recv_ty) {
+            .pointer, .const_ptr => return false,
+            else => {},
+        }
+        if (!isAddressable(recv_expr)) return false;
+        return self.compatible(recv_ty, pointee) catch false;
     }
 
     fn checkComptimeIf(self: *Checker, ci: ast.ComptimeIfStmt) SemanticError!void {
@@ -2635,7 +2930,7 @@ const Checker = struct {
             switch (item) {
                 .function => |decl| {
                     if (decl.type_params.len == 0) continue;
-                    const sym_id = self.symbols.resolve(self.symbols.root_scope, decl.name) orelse continue;
+                    const sym_id = self.symbols.resolveVisible(decl.file_name, decl.name) orelse continue;
                     if (sym_id != inst.sym_id) continue;
 
                     // Swap in a fresh expr_types for this instantiation
@@ -2770,6 +3065,7 @@ const Checker = struct {
         try self.symbols.symbols.append(self.allocator, .{
             .id = inst_id,
             .name = mangled,
+            .link_name = mangled,
             .kind = .type,
             .span = self.symbols.symbol(template_id).span,
             .scope_id = self.symbols.root_scope,
@@ -2822,6 +3118,16 @@ const Checker = struct {
                 if (std.mem.eql(u8, named.name, "Self")) return self.current_self_ty orelse error.SemanticFailed;
                 if (self.resolveSymbol(named.name)) |id| {
                     if (self.symbols.symbol(id).kind != .type) return error.SemanticFailed;
+                    // Transparent alias: resolve to the underlying type (transitively).
+                    if (self.env.alias_refs.get(id)) |aliased| {
+                        if (self.alias_depth > 32) {
+                            self.emitError(named.span, "type alias `{s}` is cyclic", .{named.name});
+                            return error.SemanticFailed;
+                        }
+                        self.alias_depth += 1;
+                        defer self.alias_depth -= 1;
+                        return try self.typeFromRef(aliased);
+                    }
                     return .{ .named = id };
                 }
                 return fromBuiltinName(named.name) orelse error.SemanticFailed;
@@ -2941,6 +3247,19 @@ const Checker = struct {
             },
             else => return error.SemanticFailed,
         }
+    }
+
+    /// True when `ty` (or `*ty`) is a struct that declares a field named `name`.
+    fn structHasField(self: *Checker, ty: Ty, name: []const u8) bool {
+        const id = typeSymbolOf(ty) orelse return false;
+        const layout = self.env.layouts.get(id) orelse return false;
+        return switch (layout.kind) {
+            .struct_type => |fields| {
+                for (fields) |f| if (std.mem.eql(u8, f.name, name)) return true;
+                return false;
+            },
+            else => false,
+        };
     }
 
     fn fieldType(self: *Checker, base_ty: Ty, name: []const u8, span: Span) SemanticError!Ty {
@@ -3434,6 +3753,34 @@ fn trimQuotes(text: []const u8) []const u8 {
     return text;
 }
 
+/// The defining type symbol of `ty` (unwrapping a single pointer level), or null.
+fn typeSymbolOf(ty: Ty) ?SymbolId {
+    return switch (ty) {
+        .named => |id| id,
+        .pointer => |inner| switch (inner.*) {
+            .named => |id| id,
+            else => null,
+        },
+        .const_ptr => |inner| switch (inner.*) {
+            .named => |id| id,
+            else => null,
+        },
+        else => null,
+    };
+}
+
+/// Whether an expression denotes an addressable lvalue (so `&expr` is meaningful):
+/// a name, a field/element of one, or a dereference.
+fn isAddressable(expr: ast.Expr) bool {
+    return switch (expr.kind) {
+        .ident => true,
+        .field => |f| isAddressable(f.base.*),
+        .index => |ix| isAddressable(ix.base.*),
+        .unary => |u| u.op == .deref,
+        else => false,
+    };
+}
+
 fn isBuiltinValue(name: []const u8) bool {
     inline for (.{
         "truncate_to", "ptr_from_int",   "volatile_store",
@@ -3445,6 +3792,11 @@ fn isBuiltinValue(name: []const u8) bool {
            "type_info",      "type_name",
         // Compile-time program introspection (Phase 3 message loop)
         "compiler_decls",
+        // std.build host intrinsics (the build system, comptime-only)
+        "__build_artifact", "__build_opt",     "__build_link",
+        "__build_libpath",  "__build_output",  "__build_define",
+        "__build_default",  "__build_run",     "__build_test",
+        "__build_require",  "__build_depend",
         // Compile-time pseudo-modules
         "TARGET",
     }) |builtin| {

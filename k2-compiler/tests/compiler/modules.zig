@@ -15,8 +15,8 @@ test "modules: compileMulti with two source files" {
     const main_src =
         \\#import math;
         \\run :: fn() -> i32 {
-        \\    x := add(3, 4);
-        \\    y := multiply(x, 2);
+        \\    x := math::add(3, 4);
+        \\    y := math::multiply(x, 2);
         \\    return y;
         \\}
     ;
@@ -44,7 +44,7 @@ test "modules: public symbols from imported file are visible" {
     ;
     const app =
         \\#import utils;
-        \\check :: fn(v: i32) -> bool { return clamp(v); }
+        \\check :: fn(v: i32) -> bool { return utils::clamp(v); }
     ;
 
     var fe = try k2.compileMulti(arena.allocator(), &.{
@@ -55,6 +55,139 @@ test "modules: public symbols from imported file are visible" {
 
     const m = try k2.lowerFrontend(arena.allocator(), fe);
     try k2.ir_mod.validateModule(m);
+}
+
+test "modules: namespace import forms — as alias and .* glob" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const lib =
+        \\pub twice :: fn(x: i32) -> i32 { return x * 2; }
+    ;
+    // `as` binds a custom namespace; `.*` glob brings names in unqualified.
+    const aliased =
+        \\#import lib as l;
+        \\run :: fn() -> i32 { return l::twice(21); }
+    ;
+    const globbed =
+        \\#import lib.*;
+        \\go :: fn() -> i32 { return twice(21); }
+    ;
+
+    var fe1 = try k2.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "lib.k2", .source = lib },
+        .{ .file_name = "aliased.k2", .source = aliased },
+    });
+    defer fe1.deinit(arena.allocator());
+    try k2.ir_mod.validateModule(try k2.lowerFrontend(arena.allocator(), fe1));
+
+    var fe2 = try k2.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "lib.k2", .source = lib },
+        .{ .file_name = "globbed.k2", .source = globbed },
+    });
+    defer fe2.deinit(arena.allocator());
+    try k2.ir_mod.validateModule(try k2.lowerFrontend(arena.allocator(), fe2));
+}
+
+test "modules: two modules may define the same name (collision mangling)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Both `a` and `b` declare `greet`; `main` uses both via their namespaces.
+    // Per-module mangling gives each a distinct linkage name so this links.
+    const a = "pub greet :: fn() -> i32 { return 1; }";
+    const b = "pub greet :: fn() -> i32 { return 2; }";
+    const main =
+        \\#import a;
+        \\#import b;
+        \\main :: fn() -> i32 { return a::greet() + b::greet() * 10; }
+    ;
+    var fe = try k2.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "a.k2", .source = a },
+        .{ .file_name = "b.k2", .source = b },
+        .{ .file_name = "main.k2", .source = main },
+    });
+    defer fe.deinit(arena.allocator());
+
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    // Two distinct `greet` functions must exist (mangled apart), plus `main`.
+    var greets: usize = 0;
+    for (m.functions) |f| {
+        if (std.mem.endsWith(u8, f.name, "greet")) greets += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), greets);
+}
+
+test "modules: cross-module UFCS finds a method in the type's module" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // `get` is NOT imported into `app` — only the type `Box` is. `b.get()` must
+    // still resolve, because a method follows its type's module (UFCS).
+    const lib =
+        \\pub Box :: struct { v: i32 }
+        \\pub get :: fn(self: *Box) -> i32 { return self.v; }
+    ;
+    const app =
+        \\#import lib.{ Box };
+        \\run :: fn(b: Box) -> i32 { return b.get(); }
+    ;
+    var fe = try k2.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "lib.k2", .source = lib },
+        .{ .file_name = "app.k2", .source = app },
+    });
+    defer fe.deinit(arena.allocator());
+    try k2.ir_mod.validateModule(try k2.lowerFrontend(arena.allocator(), fe));
+}
+
+test "modules: #run of a namespace call folds at comptime" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const lib = "pub twice :: fn(x: i32) -> i32 { return x * 2; }";
+    const app =
+        \\#import lib;
+        \\main :: fn() -> i32 { return #run lib::twice(21); }
+    ;
+    var fe = try k2.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "lib.k2", .source = lib },
+        .{ .file_name = "app.k2", .source = app },
+    });
+    defer fe.deinit(arena.allocator());
+
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(m);
+
+    // `#run lib::twice(21)` must fold to a constant — `main` should contain no
+    // runtime call instruction.
+    const main_fn = for (m.functions) |f| {
+        if (std.mem.eql(u8, f.name, "main")) break f;
+    } else return error.FunctionNotFound;
+    for (main_fn.blocks) |b| for (b.instrs) |ins| {
+        try std.testing.expect(ins.kind != .call);
+    };
+}
+
+test "modules: bare import is namespace-only (no unqualified access)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const lib =
+        \\pub helper :: fn() -> i32 { return 1; }
+    ;
+    // `#import lib;` binds the `lib` namespace but must NOT expose `helper`
+    // unqualified — calling it bare is an error.
+    const app =
+        \\#import lib;
+        \\run :: fn() -> i32 { return helper(); }
+    ;
+    const result = k2.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "lib.k2", .source = lib },
+        .{ .file_name = "app.k2", .source = app },
+    });
+    try std.testing.expectError(error.SemanticFailed, result);
 }
 
 test "modules: compile parses imports without resolving them" {

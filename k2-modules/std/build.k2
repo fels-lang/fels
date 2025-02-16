@@ -1,0 +1,132 @@
+// std.build — K2's integrated build system.
+//
+// A project's `build.k2` defines `build :: fn(b: Build)`. `k2 build` runs it
+// inside the comptime VM; each builder call invokes a `__build_*` compiler
+// intrinsic that records into the driver's build plan. After `build` returns,
+// the driver compiles + links each declared artifact (via the driver and the
+// k2lnk linker).
+//
+//   #import std.build.{ Build, Artifact, executable, release, link, run_step, default };
+//
+//   build :: fn(b: Build) {
+//       app := b.executable("app", "src/main.k2");
+//       app.release();
+//       app.link("user32");
+//       b.run_step("run", app);
+//       b.default(app);
+//   }
+//
+// Handles (`Build`, `Artifact`) are tiny value structs carrying an id; all build
+// state lives in the compiler. See docs/10_build_system.md for the full design.
+
+// ── Handles ─────────────────────────────────────────────────────────────────
+
+pub Build    :: struct { id: i32 }
+pub Artifact :: struct { id: i32 }
+
+// ── Enums (public API) ──────────────────────────────────────────────────────
+
+pub Optimize :: enum { debug, release_safe, release_fast, release_small }
+
+// Artifact-kind codes passed to __build_artifact:
+//   0 executable · 1 shared_library (.dll) · 2 static_library (.lib) · 3 object
+
+// ── Artifact declarations ─────────────────────────────────────────────────────
+
+// Declare an executable with entry source `root`.
+pub executable :: fn(self: Build, name: []const u8, root: []const u8) -> Artifact {
+    return .{ __build_artifact(name, root, 0) };
+}
+
+// Declare a shared library (.dll).
+pub shared :: fn(self: Build, name: []const u8, root: []const u8) -> Artifact {
+    return .{ __build_artifact(name, root, 1) };
+}
+
+// Declare a static library (.lib).
+pub static :: fn(self: Build, name: []const u8, root: []const u8) -> Artifact {
+    return .{ __build_artifact(name, root, 2) };
+}
+
+// Declare an object file (.o), no link step.
+pub object :: fn(self: Build, name: []const u8, root: []const u8) -> Artifact {
+    return .{ __build_artifact(name, root, 3) };
+}
+
+// ── Artifact configuration ────────────────────────────────────────────────────
+
+pub optimize :: fn(self: Artifact, level: Optimize) {
+    match level {
+        .debug         => { __build_opt(self.id, 0); }
+        .release_safe  => { __build_opt(self.id, 1); }
+        .release_fast  => { __build_opt(self.id, 2); }
+        .release_small => { __build_opt(self.id, 3); }
+    }
+}
+
+// Optimization shorthands — `game.release()` reads a touch nicer than
+// `game.optimize(.release_fast)` (both work; bare enum literals now infer
+// against the parameter type).
+pub debug :: fn(self: Artifact) {
+    __build_opt(self.id, 0);
+}
+pub release :: fn(self: Artifact) {
+    __build_opt(self.id, 2);
+}
+pub release_small :: fn(self: Artifact) {
+    __build_opt(self.id, 3);
+}
+
+// Link a system / import library by name (no extension): "raylib", "user32".
+pub link :: fn(self: Artifact, lib: []const u8) {
+    __build_link(self.id, lib);
+}
+
+// Add a library search directory.
+pub lib_path :: fn(self: Artifact, dir: []const u8) {
+    __build_libpath(self.id, dir);
+}
+
+// Set the output path explicitly (default: derived from the name).
+pub output :: fn(self: Artifact, path: []const u8) {
+    __build_output(self.id, path);
+}
+
+// Inject a comptime constant into this build (a `#provided`-style override).
+pub define :: fn(self: Artifact, key: []const u8, val: []const u8) {
+    __build_define(self.id, key, val);
+}
+
+// ── Dependencies ──────────────────────────────────────────────────────────────
+
+// A dependency resolved from a local directory (its own build.k2 runs sandboxed).
+pub require_path :: fn(self: Build, name: []const u8, dir: []const u8) -> i32 {
+    return __build_require(name, dir, 0);
+}
+
+// A dependency fetched from git (revision pinning lands with the fetcher).
+pub require_git :: fn(self: Build, name: []const u8, url: []const u8) -> i32 {
+    return __build_require(name, url, 1);
+}
+
+// Record that `self` depends on dependency `dep` (the id from require_*).
+pub depend :: fn(self: Artifact, dep: i32) {
+    __build_depend(self.id, dep);
+}
+
+// ── Steps & default ───────────────────────────────────────────────────────────
+
+// A run step: `k2 build <name>` builds `target`, then runs it.
+pub run_step :: fn(self: Build, name: []const u8, target: Artifact) {
+    __build_run(name, target.id);
+}
+
+// A test step: build + run every test under `dir`.
+pub test_dir :: fn(self: Build, name: []const u8, dir: []const u8) {
+    __build_test(name, dir);
+}
+
+// Set which artifact bare `k2 build` produces.
+pub default :: fn(self: Build, target: Artifact) {
+    __build_default(target.id);
+}

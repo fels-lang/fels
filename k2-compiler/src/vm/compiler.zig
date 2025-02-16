@@ -419,6 +419,18 @@ const FnCompiler = struct {
                     // `type_name(T)` folds to the mangled type-name string.
                     const ta = b.type_arg orelse return error.Unsupported;
                     try self.loadConst(target, .{ .string = typeNameMangle(ta) });
+                } else if (buildOpFor(b.name)) |op| {
+                    // std.build `__build_*` intrinsic → a side-effecting host_call
+                    // that the build driver records into a BuildPlan. Args go in a
+                    // contiguous register window, like a normal call.
+                    const argc: u32 = @intCast(b.args.len);
+                    const base = self.next_reg;
+                    self.next_reg += argc;
+                    for (b.args, 0..) |arg, i| {
+                        const ar = try self.resolveReg(arg);
+                        try self.emit(Instr.r_r_imm(.copy, base + @as(Reg, @intCast(i)), ar, 0));
+                    }
+                    try self.emit(.{ .op = .host_call, .a = target, .b = base, .c = argc, .imm = @intCast(@intFromEnum(op)) });
                 } else return error.Unsupported;
             },
 
@@ -447,17 +459,21 @@ const FnCompiler = struct {
                     }
                 }
                 const base_ty = self.typeOf(f.base);
-                // `.len` on arrays (static) and slices (runtime) is not a cell.
+                // `.len` on arrays (static) and slices (runtime) is the builtin
+                // length — but on a struct it is an ordinary field (handled below).
                 if (std.mem.eql(u8, f.name, "len")) {
                     switch (base_ty) {
-                        .array => |arr| try self.emit(Instr.r_imm(.load_imm, target, @intCast(arr.len))),
+                        .array => |arr| {
+                            try self.emit(Instr.r_imm(.load_imm, target, @intCast(arr.len)));
+                            return;
+                        },
                         .slice => {
                             const base = try self.resolveReg(f.base);
                             try self.emit(Instr.r_r_imm(.slice_len, target, base, 0));
+                            return;
                         },
-                        else => return error.Unsupported,
+                        else => {},
                     }
-                    return;
                 }
                 const base = try self.resolveReg(f.base);
                 const idx = try self.fieldOffset(base_ty, f.name);
@@ -1005,6 +1021,28 @@ fn typeInfoName(ty: ir.IrType) []const u8 {
 /// result matches what the (now-retired) tree-walker produced. Note the quirks
 /// it inherits: all named types mangle to "named", and types tyMangle doesn't
 /// enumerate (floats, byte, …) mangle to "unknown".
+/// Map a `std.build` intrinsic name to its host operation, or null if it isn't
+/// one. Drives the `host_call` lowering in the `.builtin` case.
+fn buildOpFor(name: []const u8) ?instructions.BuildOp {
+    const table = .{
+        .{ "__build_artifact", instructions.BuildOp.artifact },
+        .{ "__build_opt", instructions.BuildOp.opt },
+        .{ "__build_link", instructions.BuildOp.link },
+        .{ "__build_libpath", instructions.BuildOp.lib_path },
+        .{ "__build_output", instructions.BuildOp.output },
+        .{ "__build_define", instructions.BuildOp.define },
+        .{ "__build_default", instructions.BuildOp.set_default },
+        .{ "__build_run", instructions.BuildOp.run_step },
+        .{ "__build_test", instructions.BuildOp.test_dir },
+        .{ "__build_require", instructions.BuildOp.require },
+        .{ "__build_depend", instructions.BuildOp.depend },
+    };
+    inline for (table) |entry| {
+        if (std.mem.eql(u8, name, entry[0])) return entry[1];
+    }
+    return null;
+}
+
 fn typeNameMangle(ty: ir.IrType) []const u8 {
     return switch (ty) {
         .i => |bits| switch (bits) {

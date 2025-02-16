@@ -96,6 +96,17 @@ pub fn main(init: std.process.Init) u8 {
         return 0;
     }
 
+    // `k2 build` with no source file (or a step/target name, or flags) runs the
+    // project's build.k2 in the build system. Only `k2 build <file>.k2` for an
+    // existing file is a direct single-file build (handled below).
+    if (std.mem.eql(u8, cmd, "build")) {
+        const arg2: ?[]const u8 = if (args.len >= 3) args[2] else null;
+        const is_direct = arg2 != null and
+            std.mem.endsWith(u8, arg2.?, ".k2") and
+            fileExists(io, arg2.?);
+        if (!is_direct) return cmdBuildDir(allocator, io, args[2..]);
+    }
+
     if (args.len < 3) {
         std.debug.print("k2: '{s}' needs a source file\n\n", .{cmd});
         printUsage();
@@ -270,6 +281,80 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
     return 0;
 }
 
+// ── Build system (`k2 build` with a build.k2) ──────────────────────────────────
+
+fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, rest: []const []const u8) u8 {
+    if (!k2.llvm_enabled) return noLlvm();
+
+    var opts = k2.build_driver.RunOptions{};
+
+    var llvm_bin: []const u8 = "";
+    var llvm_bin_owned = false;
+    defer if (llvm_bin_owned) allocator.free(llvm_bin);
+    if (k2.llvm_path.len != 0) {
+        llvm_bin = std.fmt.allocPrint(allocator, "{s}/bin", .{k2.llvm_path}) catch return 1;
+        llvm_bin_owned = true;
+    }
+
+    var lib_paths: std.ArrayList([]const u8) = .empty;
+    defer lib_paths.deinit(allocator);
+    if (k2.windows_sdk_lib_path.len != 0) lib_paths.append(allocator, k2.windows_sdk_lib_path) catch return 1;
+
+    var run_args: std.ArrayList([]const u8) = .empty;
+    defer run_args.deinit(allocator);
+
+    var after_ddash = false;
+    var i: usize = 0;
+    while (i < rest.len) : (i += 1) {
+        const arg = rest[i];
+        if (after_ddash) {
+            run_args.append(allocator, arg) catch return 1;
+        } else if (std.mem.eql(u8, arg, "--")) {
+            after_ddash = true;
+        } else if (eqAny(arg, &.{ "-O2", "--release" })) {
+            opts.release = true;
+        } else if (std.mem.eql(u8, arg, "--list")) {
+            opts.list = true;
+        } else if (eqAny(arg, &.{ "-q", "--quiet" })) {
+            opts.quiet = true;
+        } else if (std.mem.eql(u8, arg, "--llvm-path") and i + 1 < rest.len) {
+            i += 1;
+            if (llvm_bin_owned) allocator.free(llvm_bin);
+            llvm_bin = std.fmt.allocPrint(allocator, "{s}/bin", .{rest[i]}) catch return 1;
+            llvm_bin_owned = true;
+        } else if (std.mem.eql(u8, arg, "--lib-path") and i + 1 < rest.len) {
+            i += 1;
+            lib_paths.append(allocator, rest[i]) catch return 1;
+        } else if (arg.len > 0 and arg[0] == '-') {
+            std.debug.print("k2 build: unknown option '{s}'\n", .{arg});
+            return 1;
+        } else if (opts.target == null) {
+            opts.target = arg;
+        }
+    }
+    opts.llvm_bin = llvm_bin;
+    opts.lib_paths = lib_paths.items;
+    opts.run_args = run_args.items;
+
+    const build_path = "build.k2";
+    if (!fileExists(io, build_path)) {
+        std.debug.print("k2 build: no build.k2 in the current directory\n", .{});
+        return 1;
+    }
+
+    k2.build_driver.run(allocator, io, build_path, opts) catch |err| {
+        std.debug.print("k2 build: {s}\n", .{@errorName(err)});
+        return 1;
+    };
+    return 0;
+}
+
+fn fileExists(io: std.Io, path: []const u8) bool {
+    const data = std.Io.Dir.cwd().readFileAlloc(io, path, std.heap.page_allocator, .unlimited) catch return false;
+    std.heap.page_allocator.free(data);
+    return true;
+}
+
 // ── Stats ───────────────────────────────────────────────────────────────────────
 
 fn ms(ns: u64) f64 {
@@ -329,12 +414,21 @@ fn printUsage() void {
         \\usage:  k2 <command> <file.k2> [options]
         \\
         \\commands:
+        \\  build                  run ./build.k2 (the build system) — see below
+        \\  build    <name>        build a named artifact, or `run`/a step
+        \\  build    <file.k2>     compile and link a single file directly
         \\  check    <file.k2>     parse and type-check only
-        \\  build    <file.k2>     compile and link a native executable (Windows)
         \\  object   <file.k2>     compile to an object file (.o)
         \\  ir       <file.k2>     print LLVM IR to stdout
         \\  version                print the compiler version
         \\  help                   show this message
+        \\
+        \\build system (k2 build, with a build.k2 in the current directory):
+        \\  k2 build               build the default artifact (or all of them)
+        \\  k2 build run [-- args] build the default exe, then run it
+        \\  k2 build <name>        build a named artifact or run a named step
+        \\  k2 build --list        list the project's artifacts and steps
+        \\  k2 build --release     build at release optimization
         \\
         \\options:
         \\  -o <path>              output file (default: derived from the source name)

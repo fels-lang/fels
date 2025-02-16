@@ -304,7 +304,11 @@ fn lowerUnary(cg: *ModuleCg, fncg: anytype, u: ir.UnaryInstr, ty: ir.IrType, loc
     const v = resolveVal(cg, fncg, u.value, ty);
     const bl = cg.builder;
     return switch (u.op) {
-        .neg => if (cg.opt_level == 0 and !isFloat(ty))
+        .neg => if (isFloat(ty))
+            // Float negation: `0.0 - v` (LLVMBuildNeg is integer-only and would
+            // emit an invalid `sub double`).
+            llvm.LLVMBuildFSub(bl, llvm.LLVMConstNull(llvm.LLVMTypeOf(v)), v, "")
+        else if (cg.opt_level == 0)
             lowerOverflowingBinary(cg, fncg.llvm_fn, llvm.LLVMConstNull(llvm.LLVMTypeOf(v)), v, "llvm.ssub.with.overflow", location)
         else
             llvm.LLVMBuildNeg(bl, v, ""),

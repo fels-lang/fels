@@ -466,6 +466,36 @@ raw := id as u64;              // back to plain u64
 
 ---
 
+## Type Aliases
+
+A type alias gives an existing type a second name. Unlike `distinct`, an alias is
+**transparent** — the alias and its underlying type are fully interchangeable:
+
+```k2
+MyInt :: i32;
+Bytes :: []u8;
+Trio  :: [3]i32;
+CStr  :: [*]const u8;
+
+add :: fn(a: MyInt, b: MyInt) -> i32 { return a + b; }  // MyInt == i32
+```
+
+An alias is recognized when the right-hand side **begins with a type** — a
+primitive type keyword (`i32`, `bool`, …) or a type constructor (`[`, `*`, `[*`,
+`?`, `borrow`, `atomic`). A bare-identifier right-hand side stays a value
+constant, so `Foo :: Bar` is a constant, not an alias (alias-to-named-type is not
+supported yet).
+
+The standard library uses aliases for C ABI types — see [`std.c`](07_stdlib.md):
+
+```k2
+#import std.c.{ c_int, c_size_t };
+#extern("msvcrt", "strlen")
+strlen :: fn(s: [*]const c_char) -> c_size_t;
+```
+
+---
+
 ## Opaque Types
 
 Opaque types declare a type with no visible definition. They can only be used behind a pointer:

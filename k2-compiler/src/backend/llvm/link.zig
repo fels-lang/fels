@@ -47,12 +47,42 @@ fn tryK2lnk(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ?bool {
     return link_fn(obj_z.ptr, out_z.ptr) == 0;
 }
 
+/// k2lnk's output layout assumes a single `.text`/`.rdata`/`.data` section each.
+/// An object with a duplicate-named section — e.g. a separate float-constant-pool
+/// `.rdata` that x64 codegen emits — would be mislinked, so treat it as ineligible
+/// and fall back to LLD. Parses the COFF section table (object files have no
+/// optional header) and rejects any of those names appearing more than once.
+fn coffSafeForK2lnk(obj_bytes: []const u8) bool {
+    if (obj_bytes.len < 20) return false;
+    const num_sections = std.mem.readInt(u16, obj_bytes[2..4], .little);
+    const opt_hdr = std.mem.readInt(u16, obj_bytes[16..18], .little);
+    const sec_start: usize = 20 + @as(usize, opt_hdr);
+    var n_text: u32 = 0;
+    var n_rdata: u32 = 0;
+    var n_data: u32 = 0;
+    var i: usize = 0;
+    while (i < num_sections) : (i += 1) {
+        const off = sec_start + i * 40;
+        if (off + 8 > obj_bytes.len) return false;
+        const name = obj_bytes[off..][0..8];
+        if (std.mem.startsWith(u8, name, ".rdata")) {
+            n_rdata += 1;
+        } else if (std.mem.startsWith(u8, name, ".text")) {
+            n_text += 1;
+        } else if (std.mem.startsWith(u8, name, ".data")) {
+            n_data += 1;
+        }
+    }
+    return n_text <= 1 and n_rdata <= 1 and n_data <= 1;
+}
+
 // In-memory variant: k2lnk reads the object bytes directly — no .obj on disk.
 const K2LinkMemFn = *const fn (obj_ptr: [*]const u8, obj_len: usize, out_path: [*:0]const u8) callconv(.c) c_int;
 
 fn tryK2lnkMem(allocator: std.mem.Allocator, obj_bytes: []const u8, opts: WindowsLinkOptions) ?bool {
     if (builtin.os.tag != .windows) return null;
     if (!k2lnkEligible(opts)) return null;
+    if (!coffSafeForK2lnk(obj_bytes)) return null;
     const module = win.LoadLibraryA("k2lnk.dll") orelse return null;
     const proc = win.GetProcAddress(module, "k2_link_mem") orelse return null;
     const link_fn: K2LinkMemFn = @ptrCast(proc);

@@ -1,0 +1,445 @@
+// std.strings — a growable StringBuilder and a library of byte-string utilities.
+//
+// `StringBuilder` is a dynamic byte buffer backed by an `std.heap.Arena`: it
+// grows by doubling (allocating a fresh, larger block from the arena and copying)
+// so appends are amortised O(1). Because the storage lives in the arena, the
+// built string outlives the builder and is freed when the arena is reset/deinit.
+//
+//   a := heap::make();
+//   sb := strings::builder(&a);
+//   sb.append("x = ");
+//   sb.append_i64(-42i64);
+//   sb.append_byte('\n');
+//   io::print(sb.str());
+//
+// `StringBuilder` also implements `std.io.Writer`, so every `std.io` formatting
+// helper (write_u64, write_hex_u64, …) can target a builder through `*Writer`.
+
+#import std.heap.{ Arena, alloc_bytes };
+#import std.io.{ Writer, IoError };
+
+// ── The builder ────────────────────────────────────────────────────────────
+
+pub StringBuilder :: struct {
+    arena:        *Arena,
+    buf:          []u8,     // backing storage; cap == buf.len
+    n:            usize,    // bytes written so far (named `n`, not `len`, to keep the `len()` method)
+    indent_level: usize,    // current indentation depth (see indent/dedent)
+}
+
+MIN_CAP :: 16usize;
+
+// A new empty builder allocating from `a`.
+pub builder :: fn(a: *Arena) -> StringBuilder {
+    b: []u8 = alloc_bytes(a, MIN_CAP);
+    return .{ a, b, 0usize, 0usize };
+}
+
+// A new builder with at least `cap` bytes reserved up front.
+pub builder_cap :: fn(a: *Arena, cap: usize) -> StringBuilder {
+    want: usize = cap;
+    if want < MIN_CAP { want = MIN_CAP; }
+    b: []u8 = alloc_bytes(a, want);
+    return .{ a, b, 0usize, 0usize };
+}
+
+// A new builder initialised with a copy of `s`.
+pub from :: fn(a: *Arena, s: []const u8) -> StringBuilder {
+    sb: StringBuilder = builder_cap(a, s.len);
+    append(&sb, s);
+    return sb;
+}
+
+// ── Growth ─────────────────────────────────────────────────────────────────
+
+// Ensure room for `extra` more bytes, growing (×2, min `extra`) if needed.
+pub sb_grow :: fn(self: *StringBuilder, extra: usize) {
+    need: usize = self.n + extra;
+    if need <= self.buf.len { return; }
+    new_cap: usize = self.buf.len * 2usize;
+    if new_cap < MIN_CAP { new_cap = MIN_CAP; }
+    if new_cap < need { new_cap = need; }
+    nbuf: []u8 = alloc_bytes(self.arena, new_cap);
+    i: usize = 0usize;
+    while i < self.n {
+        nbuf[i] = self.buf[i];
+        i += 1usize;
+    }
+    self.buf = nbuf;
+}
+
+// ── Core appends ───────────────────────────────────────────────────────────
+
+pub append :: fn(self: *StringBuilder, s: []const u8) {
+    sb_grow(self, s.len);
+    i: usize = 0usize;
+    while i < s.len {
+        self.buf[self.n] = s[i];
+        self.n += 1usize;
+        i += 1usize;
+    }
+}
+
+pub append_byte :: fn(self: *StringBuilder, c: u8) {
+    sb_grow(self, 1usize);
+    self.buf[self.n] = c;
+    self.n += 1usize;
+}
+
+// Append `n` copies of byte `c` (padding, rules).
+pub append_repeat :: fn(self: *StringBuilder, c: u8, n: usize) {
+    sb_grow(self, n);
+    i: usize = 0usize;
+    while i < n {
+        self.buf[self.n] = c;
+        self.n += 1usize;
+        i += 1usize;
+    }
+}
+
+// Append a Unicode code point, UTF-8 encoded (1–4 bytes).
+pub append_rune :: fn(self: *StringBuilder, cp: u32) {
+    if cp < 0x80u32 {
+        append_byte(self, cp as u8);
+        return;
+    }
+    if cp < 0x800u32 {
+        append_byte(self, 0xC0u8 | ((cp >> 6u32) as u8));
+        append_byte(self, 0x80u8 | ((cp & 0x3Fu32) as u8));
+        return;
+    }
+    if cp < 0x10000u32 {
+        append_byte(self, 0xE0u8 | ((cp >> 12u32) as u8));
+        append_byte(self, 0x80u8 | (((cp >> 6u32) & 0x3Fu32) as u8));
+        append_byte(self, 0x80u8 | ((cp & 0x3Fu32) as u8));
+        return;
+    }
+    append_byte(self, 0xF0u8 | ((cp >> 18u32) as u8));
+    append_byte(self, 0x80u8 | (((cp >> 12u32) & 0x3Fu32) as u8));
+    append_byte(self, 0x80u8 | (((cp >> 6u32) & 0x3Fu32) as u8));
+    append_byte(self, 0x80u8 | ((cp & 0x3Fu32) as u8));
+}
+
+// ── Numeric formatting ─────────────────────────────────────────────────────
+
+digit_char :: fn(d: u8) -> u8 {
+    if d < 10u8 { return 48u8 + d; }        // '0'..'9'
+    return 97u8 + (d - 10u8);               // 'a'..'f' (and beyond for bases >16)
+}
+
+pub append_u64 :: fn(self: *StringBuilder, v: u64) {
+    if v == 0u64 { append_byte(self, 48u8); return; }
+    tmp: [20]u8 = .{};
+    n: u64 = v;
+    i: usize = 0usize;
+    while n > 0u64 {
+        tmp[i] = 48u8 + ((n % 10u64) as u8);
+        n = n / 10u64;
+        i += 1usize;
+    }
+    while i > 0usize {
+        i -= 1usize;
+        append_byte(self, tmp[i]);
+    }
+}
+
+pub append_i64 :: fn(self: *StringBuilder, v: i64) {
+    if v >= 0i64 { append_u64(self, v as u64); return; }
+    append_byte(self, 45u8);                          // '-'
+    abs: u64 = (-(v + 1i64)) as u64 + 1u64;           // negate without i64-min overflow
+    append_u64(self, abs);
+}
+
+// Unsigned in an arbitrary base 2..36.
+pub append_base :: fn(self: *StringBuilder, v: u64, base: u8) {
+    if v == 0u64 { append_byte(self, 48u8); return; }
+    tmp: [64]u8 = .{};
+    n: u64 = v;
+    b: u64 = base as u64;
+    i: usize = 0usize;
+    while n > 0u64 {
+        tmp[i] = digit_char((n % b) as u8);
+        n = n / b;
+        i += 1usize;
+    }
+    while i > 0usize {
+        i -= 1usize;
+        append_byte(self, tmp[i]);
+    }
+}
+
+pub append_hex :: fn(self: *StringBuilder, v: u64) {
+    append_base(self, v, 16u8);
+}
+
+pub append_bin :: fn(self: *StringBuilder, v: u64) {
+    append_base(self, v, 2u8);
+}
+
+// A single byte as exactly two lowercase hex digits.
+pub append_hex_byte :: fn(self: *StringBuilder, v: u8) {
+    append_byte(self, digit_char(v >> 4u8));
+    append_byte(self, digit_char(v & 15u8));
+}
+
+// `v` in decimal, left-padded with `pad` to at least `width` characters.
+pub append_u64_pad :: fn(self: *StringBuilder, v: u64, width: usize, pad: u8) {
+    n: u64 = v;
+    digits: usize = 1usize;
+    while n >= 10u64 {
+        n = n / 10u64;
+        digits += 1usize;
+    }
+    if width > digits {
+        append_repeat(self, pad, width - digits);
+    }
+    append_u64(self, v);
+}
+
+pub append_bool :: fn(self: *StringBuilder, b: bool) {
+    if b { append(self, "true"); } else { append(self, "false"); }
+}
+
+// ── Queries ────────────────────────────────────────────────────────────────
+
+// The built bytes (a view into the arena storage; valid until the next grow).
+pub str :: fn(self: *StringBuilder) -> []const u8 {
+    return unsafe slice_from_raw_parts(u8, self.buf.ptr, self.n);
+}
+
+pub len :: fn(self: *StringBuilder) -> usize {
+    return self.n;
+}
+
+pub cap :: fn(self: *StringBuilder) -> usize {
+    return self.buf.len;
+}
+
+pub is_empty :: fn(self: *StringBuilder) -> bool {
+    return self.n == 0usize;
+}
+
+pub byte_at :: fn(self: *StringBuilder, i: usize) -> u8 {
+    return self.buf[i];
+}
+
+// ── Mutation ───────────────────────────────────────────────────────────────
+
+// Reset length to zero, keeping the allocated capacity for reuse.
+pub clear :: fn(self: *StringBuilder) {
+    self.n = 0usize;
+    self.indent_level = 0usize;
+}
+
+// Drop everything after the first `n` bytes.
+pub truncate :: fn(self: *StringBuilder, n: usize) {
+    if n < self.n { self.n = n; }
+}
+
+// Remove and return the last byte, or null if empty.
+pub pop :: fn(self: *StringBuilder) -> ?u8 {
+    if self.n == 0usize { return null; }
+    self.n -= 1usize;
+    return self.buf[self.n];
+}
+
+pub set_byte :: fn(self: *StringBuilder, i: usize, c: u8) {
+    self.buf[i] = c;
+}
+
+// ── Writer integration ─────────────────────────────────────────────────────
+// Implementing Writer lets every std.io helper format into the builder:
+//   w: *Writer = &sb;  w.write_hex_u64(0xDEADu64) catch e {};
+
+StringBuilder as Writer {
+    write :: fn(self: *Self, data: []const u8) -> usize ! IoError {
+        append(self, data);
+        return data.len;
+    }
+    flush :: fn(self: *Self) -> void ! IoError {
+        return;
+    }
+}
+
+// Fixed-precision decimal float (truncating). Good for logs/codegen/output;
+// not a shortest-round-trip formatter.
+pub append_f64 :: fn(self: *StringBuilder, v: f64) {
+    append_f64_prec(self, v, 6usize);
+}
+
+pub append_f64_prec :: fn(self: *StringBuilder, v: f64, prec: usize) {
+    x: f64 = v;
+    if x < 0.0 {
+        append_byte(self, 45u8);          // '-'
+        x = -x;
+    }
+    ip: u64 = x as u64;
+    append_u64(self, ip);
+    if prec == 0usize { return; }
+    append_byte(self, 46u8);              // '.'
+    frac: f64 = x - (ip as f64);
+    scale: f64 = 1.0;
+    i: usize = 0usize;
+    while i < prec {
+        scale = scale * 10.0;
+        i += 1usize;
+    }
+    fd: u64 = (frac * scale) as u64;
+    append_u64_pad(self, fd, prec, 48u8);  // zero-padded fractional digits
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Byte-string utilities (free functions over []const u8)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// A subslice s[start..end] (bounds assumed valid).
+substr :: fn(s: []const u8, start: usize, end: usize) -> []const u8 {
+    p: *u8 = unsafe ptr_from_int(*u8, (s.ptr as usize) + start);
+    return unsafe slice_from_raw_parts(u8, p, end - start);
+}
+
+pub str_eq :: fn(a: []const u8, b: []const u8) -> bool {
+    if a.len != b.len { return false; }
+    i: usize = 0usize;
+    while i < a.len {
+        if a[i] != b[i] { return false; }
+        i += 1usize;
+    }
+    return true;
+}
+
+pub str_starts_with :: fn(s: []const u8, prefix: []const u8) -> bool {
+    if prefix.len > s.len { return false; }
+    i: usize = 0usize;
+    while i < prefix.len {
+        if s[i] != prefix[i] { return false; }
+        i += 1usize;
+    }
+    return true;
+}
+
+pub str_ends_with :: fn(s: []const u8, suffix: []const u8) -> bool {
+    if suffix.len > s.len { return false; }
+    off: usize = s.len - suffix.len;
+    i: usize = 0usize;
+    while i < suffix.len {
+        if s[off + i] != suffix[i] { return false; }
+        i += 1usize;
+    }
+    return true;
+}
+
+// Index of the first occurrence of `needle` in `s`, or null.
+pub str_index_of :: fn(s: []const u8, needle: []const u8) -> ?usize {
+    if needle.len == 0usize { return 0usize; }
+    if needle.len > s.len { return null; }
+    last: usize = s.len - needle.len;
+    i: usize = 0usize;
+    while i <= last {
+        j: usize = 0usize;
+        hit: bool = true;
+        while j < needle.len {
+            if s[i + j] != needle[j] { hit = false; j = needle.len; }
+            j += 1usize;
+        }
+        if hit { return i; }
+        i += 1usize;
+    }
+    return null;
+}
+
+pub str_contains :: fn(s: []const u8, needle: []const u8) -> bool {
+    return str_index_of(s, needle) != null;
+}
+
+// Count occurrences of byte `c`.
+pub str_count_byte :: fn(s: []const u8, c: u8) -> usize {
+    total: usize = 0usize;
+    i: usize = 0usize;
+    while i < s.len {
+        if s[i] == c { total += 1usize; }
+        i += 1usize;
+    }
+    return total;
+}
+
+// ── ASCII character classification (on a byte) ──────────────────────────────
+
+pub is_digit :: fn(c: u8) -> bool { return c >= 48u8 && c <= 57u8; }
+pub is_upper :: fn(c: u8) -> bool { return c >= 65u8 && c <= 90u8; }
+pub is_lower :: fn(c: u8) -> bool { return c >= 97u8 && c <= 122u8; }
+pub is_alpha :: fn(c: u8) -> bool { return is_upper(c) || is_lower(c); }
+pub is_alnum :: fn(c: u8) -> bool { return is_alpha(c) || is_digit(c); }
+pub is_space :: fn(c: u8) -> bool { return c == 32u8 || c == 9u8 || c == 10u8 || c == 13u8; }
+
+pub to_upper_byte :: fn(c: u8) -> u8 { if is_lower(c) { return c - 32u8; } return c; }
+pub to_lower_byte :: fn(c: u8) -> u8 { if is_upper(c) { return c + 32u8; } return c; }
+
+// ── Trimming (returns subslices; no allocation) ─────────────────────────────
+
+pub str_trim_left :: fn(s: []const u8) -> []const u8 {
+    i: usize = 0usize;
+    while i < s.len {
+        if !is_space(s[i]) { return substr(s, i, s.len); }
+        i += 1usize;
+    }
+    return substr(s, s.len, s.len);
+}
+
+pub str_trim_right :: fn(s: []const u8) -> []const u8 {
+    end: usize = s.len;
+    while end > 0usize {
+        if !is_space(s[end - 1usize]) { return substr(s, 0usize, end); }
+        end -= 1usize;
+    }
+    return substr(s, 0usize, 0usize);
+}
+
+pub str_trim :: fn(s: []const u8) -> []const u8 {
+    return str_trim_right(str_trim_left(s));
+}
+
+pub str_eq_ignore_case :: fn(a: []const u8, b: []const u8) -> bool {
+    if a.len != b.len { return false; }
+    i: usize = 0usize;
+    while i < a.len {
+        if to_lower_byte(a[i]) != to_lower_byte(b[i]) { return false; }
+        i += 1usize;
+    }
+    return true;
+}
+
+// ── Allocating transforms (into an arena) ───────────────────────────────────
+
+pub str_dup :: fn(a: *Arena, s: []const u8) -> []const u8 {
+    sb: StringBuilder = from(a, s);
+    return str(&sb);
+}
+
+pub str_concat :: fn(a: *Arena, x: []const u8, y: []const u8) -> []const u8 {
+    sb: StringBuilder = builder_cap(a, x.len + y.len);
+    append(&sb, x);
+    append(&sb, y);
+    return str(&sb);
+}
+
+pub str_repeat :: fn(a: *Arena, s: []const u8, count: usize) -> []const u8 {
+    sb: StringBuilder = builder_cap(a, s.len * count);
+    i: usize = 0usize;
+    while i < count { append(&sb, s); i += 1usize; }
+    return str(&sb);
+}
+
+pub str_upper :: fn(a: *Arena, s: []const u8) -> []const u8 {
+    sb: StringBuilder = builder_cap(a, s.len);
+    i: usize = 0usize;
+    while i < s.len { append_byte(&sb, to_upper_byte(s[i])); i += 1usize; }
+    return str(&sb);
+}
+
+pub str_lower :: fn(a: *Arena, s: []const u8) -> []const u8 {
+    sb: StringBuilder = builder_cap(a, s.len);
+    i: usize = 0usize;
+    while i < s.len { append_byte(&sb, to_lower_byte(s[i])); i += 1usize; }
+    return str(&sb);
+}

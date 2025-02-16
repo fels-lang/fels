@@ -510,7 +510,9 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                 .struct_type => |strukt| try structs.append(allocator, try lowerStruct(allocator, decl, strukt, front_end.types, front_end.symbols)),
                 .errors => |error_decl| try errors.append(allocator, try lowerErrorDef(allocator, decl, error_decl)),
                 .enum_type => |enum_decl| try variants.append(allocator, try lowerEnumDef(allocator, decl, enum_decl)),
-                .distinct, .opaque_type, .interface_type => {},
+                // Aliases are resolved away by sema (typeFromRef), so they have
+                // no lowered type definition of their own.
+                .distinct, .opaque_type, .interface_type, .alias => {},
             },
             .const_decl => |decl| {
                 // #run expr on the right-hand side → evaluate at compile time.
@@ -528,8 +530,9 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                     .rune => .rune,
                     .null => .unknown,
                 };
+                const clink = linkNameFor(front_end.symbols, decl.file_name, decl.name);
                 try globals.append(allocator, .{
-                    .name = decl.name,
+                    .name = clink,
                     .ty = ty,
                     .init = .{ .imm = effective_imm },
                     .mutable = false,
@@ -1283,8 +1286,12 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
         break :blk try lowerer.lowerBody(body);
     } else &.{};
 
+    // The IR/LLVM/VM name is the symbol's linkage name (module-qualified only on
+    // a cross-module collision; bare otherwise).
+    const link = linkNameFor(symbols, decl.file_name, decl.name);
+
     return .{
-        .name = decl.name,
+        .name = link,
         .params = try params.toOwnedSlice(allocator),
         .return_ty = return_ty,
         .error_ty = if (decl.error_ty) |err| try lowerErrorSpec(allocator, err) else null,
@@ -2189,6 +2196,22 @@ const FunctionLowerer = struct {
         });
     }
 
+    /// The linkage name a bare top-level name resolves to from this function's
+    /// file (module-qualified only on a cross-module collision). Falls back to the
+    /// bare name when unresolved (locals, params, builtins).
+    fn linkName(self: *FunctionLowerer, bare: []const u8) []const u8 {
+        return linkNameFor(self.symbols, self.file_name, bare);
+    }
+
+    /// Resolve a `ns::member` scope-access to its symbol (file-aware).
+    fn resolveScope(self: *FunctionLowerer, sa: ast.ScopeAccess) ?sema.SymbolId {
+        const alias = switch (sa.base.kind) {
+            .ident => |n| n,
+            else => return null,
+        };
+        return self.symbols.resolveScoped(self.file_name, alias, sa.member);
+    }
+
     fn lowerExpr(self: *FunctionLowerer, expr: ast.Expr) LowerError!Value {
         return switch (expr.kind) {
             // `#quote(expr)` materializes its quoted expression into an AstExpr
@@ -2200,14 +2223,28 @@ const FunctionLowerer = struct {
             // value-lowered; `$`-splices are macro internals.
             .splice, .parse_expr => return error.LoweringFailed,
             .ident => |name| blk: {
+                // Bare enum literal `.variant` resolved by sema against an
+                // expected enum type → the corresponding variant value.
+                if (self.types.enum_lits.get(expr.id)) |lit| {
+                    break :blk try self.emit(self.exprType(expr), .{ .variant_lit = .{
+                        .type_name = lit.type_name,
+                        .variant = lit.variant,
+                        .payload = null,
+                    } });
+                }
                 for (self.params) |p| {
                     if (std.mem.eql(u8, p.name, name)) break :blk Value{ .param = name };
                 }
-                if (self.symbols.resolve(self.symbols.root_scope, name)) |id| {
+                if (resolveTopLevel(self.symbols, self.file_name, name)) |id| {
                     const kind = self.symbols.symbol(id).kind;
-                    if (kind == .function or kind == .const_symbol) break :blk Value{ .global = name };
+                    if (kind == .function or kind == .const_symbol) break :blk Value{ .global = self.symbols.symbol(id).link_name };
                 }
                 break :blk Value{ .local = name };
+            },
+            .scope_access => |sa| blk: {
+                // `ns::member` as a value (function/const reference).
+                const id = self.resolveScope(sa) orelse break :blk Value{ .imm = .null };
+                break :blk Value{ .global = self.symbols.symbol(id).link_name };
             },
             .type_ref => .{ .imm = .null },
             .unsafe_expr => |inner| try self.lowerExpr(inner.*),
@@ -2216,6 +2253,7 @@ const FunctionLowerer = struct {
                 // expression to a constant, lower the operand directly so it is
                 // computed at runtime instead — there is no tree-walker fallback.
                 if (self.cvm) |c| {
+                    c.current_file = self.file_name;
                     if (c.evalToValue(inner.*)) |v| break :blk v;
                 }
                 break :blk try self.lowerExpr(inner.*);
@@ -2379,6 +2417,7 @@ const FunctionLowerer = struct {
                                 continue;
                             }
 
+                            const is_receiver = !inserted_receiver;
                             const value = if (!inserted_receiver) receiver: {
                                 inserted_receiver = true;
                                 break :receiver fld.base.*;
@@ -2394,8 +2433,14 @@ const FunctionLowerer = struct {
                                     .named => |named| named.value,
                                 };
                             };
-                            const expected = try lowerSemaTypeWithEnv(self.allocator, param.ty, self.types, self.symbols);
-                            try args.append(self.allocator, try self.lowerExprAs(value, expected));
+                            // UFCS auto-ref: a value receiver for a `*Self` method
+                            // is lowered as `&receiver` (sema flagged it).
+                            if (is_receiver and self.types.receiver_auto_addr.contains(call.callee.id)) {
+                                try args.append(self.allocator, try self.lowerLValueAddress(value));
+                            } else {
+                                const expected = try lowerSemaTypeWithEnv(self.allocator, param.ty, self.types, self.symbols);
+                                try args.append(self.allocator, try self.lowerExprAs(value, expected));
+                            }
                         }
 
                         const callee_name = self.types.generic_call_insts.get(call.callee.id) orelse symbol.name;
@@ -2408,7 +2453,15 @@ const FunctionLowerer = struct {
 
                 const callee_name = switch (call.callee.kind) {
                     .ident => |name| name,
+                    .scope_access => |sa| sa.member,
                     else => "<expr>",
+                };
+                // The callee's top-level symbol, resolved file-aware (so a
+                // collision-mangled function links by its module-qualified name).
+                const callee_sym: ?sema.SymbolId = switch (call.callee.kind) {
+                    .ident => resolveTopLevel(self.symbols, self.file_name, callee_name),
+                    .scope_access => |sa| self.resolveScope(sa),
+                    else => null,
                 };
                 // compiler_decls() (Phase 3 introspection): materialize the
                 // program's top-level declarations as a `[]Decl` the hook can
@@ -2440,10 +2493,7 @@ const FunctionLowerer = struct {
 
                 var args = std.ArrayList(Value).empty;
                 errdefer args.deinit(self.allocator);
-                const direct_sig = if (self.symbols.resolve(self.symbols.root_scope, callee_name)) |id|
-                    self.types.fn_sigs.get(id)
-                else
-                    null;
+                const direct_sig = if (callee_sym) |id| self.types.fn_sigs.get(id) else null;
                 var value_param_index: usize = 0;
                 if (!is_type_arg_builtin) for (call.args, 0..) |arg, arg_idx| {
                     if (type_first_builtin and arg_idx == 0) {
@@ -2490,12 +2540,7 @@ const FunctionLowerer = struct {
                 }
 
                 // Determine if this is a direct (top-level function) or indirect (fn-ptr variable) call.
-                const is_direct = blk2: {
-                    if (self.symbols.resolve(self.symbols.root_scope, callee_name)) |id| {
-                        break :blk2 self.symbols.symbol(id).kind == .function;
-                    }
-                    break :blk2 false;
-                };
+                const is_direct = if (callee_sym) |id| self.symbols.symbol(id).kind == .function else false;
 
                 if (!is_direct and callee_name.len > 0 and callee_name[0] != '<') {
                     // Function-pointer call: resolve the callee as a Value (param or local).
@@ -2511,11 +2556,11 @@ const FunctionLowerer = struct {
                     } });
                 }
 
-                // Use the mangled instantiation name if sema recorded one.
-                const call_callee = if (call.callee.kind == .ident)
-                    self.types.generic_call_insts.get(call.callee.id) orelse callee_name
-                else
-                    callee_name;
+                // Emit the callee's linkage name: a generic instantiation's
+                // mangled name if sema recorded one, else the symbol's link_name
+                // (module-qualified on a collision), else the bare name.
+                const call_callee = self.types.generic_call_insts.get(call.callee.id) orelse
+                    (if (callee_sym) |id| self.symbols.symbol(id).link_name else callee_name);
                 break :blk try self.emit(self.exprType(expr), .{ .call = .{ .callee = call_callee, .args = arg_slice } });
             },
             .field => |field| blk: {
@@ -2730,6 +2775,7 @@ const FunctionLowerer = struct {
         // The VM is the sole comptime engine; a non-bool or unevaluable
         // condition yields null so the caller can report it.
         if (self.cvm) |c| {
+            c.current_file = self.file_name;
             if (c.evalToImm(ci.condition)) |imm| switch (imm) {
                 .bool => |b| return if (b) ci.then_block else ci.else_block orelse empty_block,
                 else => {},
@@ -3135,6 +3181,19 @@ const FunctionLowerer = struct {
     }
 };
 
+/// Resolve a top-level name to its symbol for IR purposes: file-aware first (so a
+/// collision-mangled name picks the right module), then global (names are already
+/// sema-validated, and synthetic comptime functions may lack a file context).
+fn resolveTopLevel(symbols: sema.SymbolTable, file: []const u8, name: []const u8) ?sema.SymbolId {
+    return symbols.resolveVisible(file, name) orelse symbols.resolve(symbols.root_scope, name);
+}
+
+/// The linkage name for a top-level reference (bare unless collision-mangled).
+fn linkNameFor(symbols: sema.SymbolTable, file: []const u8, name: []const u8) []const u8 {
+    if (resolveTopLevel(symbols, file, name)) |id| return symbols.symbol(id).link_name;
+    return name;
+}
+
 fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
     return switch (ty) {
         .type_param => .unknown,
@@ -3188,6 +3247,10 @@ fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sem
         if (symbols.resolve(symbols.root_scope, ty.named.name)) |id| {
             if (types.distinct_types.get(id)) |underlying| {
                 return lowerSemaTypeWithEnv(allocator, underlying, types, symbols);
+            }
+            // Transparent alias: lower the underlying type (transitively).
+            if (types.alias_refs.get(id)) |aliased| {
+                return lowerAstTypeWithEnv(allocator, aliased, types, symbols);
             }
         }
     }
@@ -3397,6 +3460,7 @@ fn declKindName(item: ast.Item) []const u8 {
             .errors => "errors",
             .interface_type => "interface",
             .distinct => "distinct",
+            .alias => "alias",
             .opaque_type => "opaque",
         },
         else => "other",
@@ -3418,6 +3482,18 @@ fn isBuiltinName(name: []const u8) bool {
         "atomic_store",
         "compound_literal",
         "slice",
+        // std.build host intrinsics (comptime-only; lowered to host_call in the VM).
+        "__build_artifact",
+        "__build_opt",
+        "__build_link",
+        "__build_libpath",
+        "__build_output",
+        "__build_define",
+        "__build_default",
+        "__build_run",
+        "__build_test",
+        "__build_require",
+        "__build_depend",
     }) |builtin| {
         if (std.mem.eql(u8, name, builtin)) return true;
     }
@@ -3438,6 +3514,9 @@ const ComptimeVm = struct {
     front_end: pipeline.FrontEnd,
     cache: ?Cache = null,
     cache_failed: bool = false,
+    /// The file a `#run`/`#insert` expression lives in, so synthetic eval
+    /// functions resolve namespace (`ns::member`) access in the right module.
+    current_file: []const u8 = "",
 
     const Cache = struct {
         ir_module: IrModule,
@@ -3484,7 +3563,7 @@ const ComptimeVm = struct {
         defer ctAdd(_ct);
         const c = self.ensureCache() orelse return null;
         const a = self.arena.allocator();
-        const irfn = lowerExprToFunction(a, self.front_end, expr) catch return null;
+        const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
         defer vm.deinit();
@@ -3516,7 +3595,7 @@ const ComptimeVm = struct {
         defer ctAdd(_ct);
         const c = self.ensureCache() orelse return null;
         const a = self.arena.allocator();
-        const irfn = lowerExprToFunction(a, self.front_end, expr) catch return null;
+        const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
         defer vm.deinit();
@@ -3532,7 +3611,7 @@ const ComptimeVm = struct {
         defer ctAdd(_ct);
         const c = self.ensureCache() orelse return null;
         const a = self.arena.allocator();
-        const irfn = lowerExprToFunction(a, self.front_end, expr) catch return null;
+        const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
         defer vm.deinit();
@@ -4025,6 +4104,7 @@ pub fn runCompilerHooks(allocator: std.mem.Allocator, front_end: pipeline.FrontE
             callee.* = .{ .id = id, .kind = .{ .ident = f.name }, .span = f.span };
             const call_expr = ast.Expr{ .id = id + 1, .kind = .{ .call = .{ .callee = callee, .args = &.{} } }, .span = f.span };
             id += 2;
+            cvm.current_file = f.file_name;
             const src = cvm.evalToString(call_expr, allocator) orelse return error.SemanticFailed;
             try out.appendSlice(allocator, src);
             try out.append(allocator, '\n');
@@ -4034,6 +4114,29 @@ pub fn runCompilerHooks(allocator: std.mem.Allocator, front_end: pipeline.FrontE
     };
     if (!produced) return null;
     return try out.toOwnedSlice(allocator);
+}
+
+/// Run a `build.k2`'s `build :: fn(b: Build)` entry on the comptime VM, with
+/// `host` installed so its `std.build` `__build_*` intrinsics record into the
+/// driver's BuildPlan. Constructs the `Build` handle (a 1-cell `{ id: i32 } = {0}`)
+/// and passes it in. The build system's entry point (the Phase-3 message loop in
+/// imperative form).
+pub fn runBuildHook(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, host: vm_engine.BuildHost) InsertExpandError!void {
+    var cvm = ComptimeVm.init(allocator, front_end);
+    defer cvm.deinit();
+    const c = cvm.ensureCache() orelse return error.SemanticFailed;
+    var vm = vm_engine.Vm.initModule(cvm.gpa, &c.bc);
+    vm.host = host;
+    defer vm.deinit();
+
+    // The `Build` argument: a single zone cell holding `id = 0`, addressed as a
+    // struct_ref. (`build` ignores it; only artifact handles carry real ids.)
+    _ = vm.zone_stack.push("__build") catch return error.OutOfMemory;
+    const cell = vm.zone_stack.alloc(1) catch return error.OutOfMemory;
+    vm.zone_stack.setCell(cell.ptr.zone, cell.ptr.offset, .{ .int = 0 }) catch return error.SemanticFailed;
+    const build_arg = vm_value.Value{ .struct_ref = .{ .zone = cell.ptr.zone, .offset = cell.ptr.offset } };
+
+    _ = vm.call("build", &.{build_arg}) catch return error.SemanticFailed;
 }
 
 /// Returns the rewritten module if it contained computed inserts, else null.
@@ -4268,11 +4371,11 @@ pub fn evalCorpus(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) Co
 
 /// Lower a standalone `#run` expression into a one-block IR function that
 /// returns it, reusing the normal lowering machinery.
-fn lowerExprToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, expr: ast.Expr) !IrFunction {
+fn lowerExprToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, expr: ast.Expr, file: []const u8) !IrFunction {
     const dummy = ast.FunctionDecl{
         .attrs = &.{},
         .name = "__run",
-        .file_name = "",
+        .file_name = file,
         .source = "",
         .type_params = &.{},
         .params = &.{},

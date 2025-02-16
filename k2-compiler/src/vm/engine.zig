@@ -36,12 +36,23 @@ const Frame = struct {
 };
 
 /// The K2 compile-time virtual machine.
+/// A side-effecting bridge to the embedding host, invoked by the `host_call`
+/// opcode. The build driver installs one so `std.build`'s `__build_*` intrinsics
+/// record into a BuildPlan. `op` is a `BuildOp`; `args` are the call arguments
+/// (strings/ints); the return is bound to the call's dst register.
+pub const BuildHost = struct {
+    ctx: *anyopaque,
+    call: *const fn (ctx: *anyopaque, op: u32, args: []const Value) Value,
+};
+
 pub const Vm = struct {
     allocator: std.mem.Allocator,
     /// Function table for resolving `call`. Optional: a standalone function with
     /// no calls can run without one.
     module: ?*const BytecodeModule = null,
     zone_stack: zones.ZoneStack,
+    /// Optional host bridge for `host_call` (the build driver). Null → trap.
+    host: ?BuildHost = null,
     call_depth: usize = 0,
     max_call_depth: usize = 512,
     /// Guard against runaway comptime loops (mirrors the tree-walker's cap).
@@ -397,6 +408,13 @@ pub const Vm = struct {
                 // ── System ───────────────────────────────────────────────
                 .sys_print => printValue(frame.regs[inst.a]),
                 .trap => return error.Trap,
+                .host_call => {
+                    const h = self.host orelse return error.InvalidInstruction;
+                    const base: usize = inst.b;
+                    const argc: usize = inst.c;
+                    const args = frame.regs[base .. base + argc];
+                    frame.regs[inst.a] = h.call(h.ctx, @intCast(inst.imm), args);
+                },
             }
         }
 
