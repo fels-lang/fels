@@ -1,3 +1,0 @@
-is_utf_cont :: fn(b: u8) -> bool {
-    return (b & 0xc0) == 0x80;
-}
