@@ -540,5 +540,7 @@ test "LLVM borrow parameters erase to their underlying ABI type" {
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
 
-    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "define void @touch({ ptr, i64 }") != null);
+    // `touch` is module-private, so it gets `internal` linkage — match on the
+    // signature rather than the linkage keyword.
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@touch({ ptr, i64 }") != null);
 }

@@ -91,6 +91,13 @@ fn declareOne(cg: *ModuleCg, func: ir.IrFunction) !void {
     if (func.extern_name) |_| llvm.LLVMSetLinkage(lv, llvm.LLVMExternalLinkage);
     attrs.applyFunctionAttrs(cg, func, lv);
 
+    // A defined K2 function that isn't the entry point, `#export`ed, or external
+    // gets INTERNAL linkage. K2 emits the whole program as one object, so these
+    // are module-private — and a global symbol like `exit`/`abort` would clash
+    // with the C runtime once `link_libc` is used. (Also lets LLVM drop dead ones.)
+    if (func.blocks.len > 0 and func.extern_name == null and func.export_sym == null and !func.entry)
+        llvm.LLVMSetLinkage(lv, llvm.LLVMInternalLinkage);
+
     if (abi_sig) |sig| {
         abi.applyAbiAttrs(cg, lv, sig);
         try cg.fn_abi.put(func.name, sig);

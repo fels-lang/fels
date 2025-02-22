@@ -107,6 +107,18 @@ pub link_flag :: fn(self: Artifact, flag: []const u8) {
     __build_linkflag(self.id, flag);
 }
 
+// Link the C runtime. Needed when linking a C library that was built against
+// the CRT (e.g. a static raylib.lib calls malloc/free and the compiler's
+// security/stack-check helpers, which K2's CRT-less link doesn't provide).
+// Pulls in the UCRT (ucrt.lib: malloc/free/…) and VC runtime (vcruntime.lib:
+// __chkstk, __report_rangecheckfailure, …). The compiler adds the matching
+// search paths automatically (configured via --windows-sdk-lib-path /
+// --msvc-lib-path at k2's own build time).
+pub link_libc :: fn(self: Artifact) {
+    __build_link(self.id, "ucrt");
+    __build_link(self.id, "vcruntime");
+}
+
 // ── Executable settings ─────────────────────────────────────────────────────────
 
 // Choose the PE subsystem (console window or not).

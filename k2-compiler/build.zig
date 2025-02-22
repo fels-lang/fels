@@ -17,6 +17,11 @@ pub fn build(b: *std.Build) void {
         "windows-sdk-lib-path",
         "Path to Windows SDK um/x64 lib directory (for kernel32.lib)",
     ) orelse "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/um/x64";
+    const msvc_lib_path = b.option(
+        []const u8,
+        "msvc-lib-path",
+        "Path to the MSVC lib/x64 directory (for `link_libc`: vcruntime.lib, libcmt.lib)",
+    ) orelse "";
     const stdlib_root = b.option(
         []const u8,
         "stdlib-root",
@@ -36,6 +41,7 @@ pub fn build(b: *std.Build) void {
     opts.addOption(bool, "enable_llvm", llvm_path != null);
     opts.addOption([]const u8, "llvm_path", llvm_path orelse "");
     opts.addOption([]const u8, "windows_sdk_lib_path", windows_sdk_lib_path);
+    opts.addOption([]const u8, "msvc_lib_path", msvc_lib_path);
     opts.addOption([]const u8, "stdlib_root", stdlib_root);
     compiler_mod.addOptions("build_options", opts);
 

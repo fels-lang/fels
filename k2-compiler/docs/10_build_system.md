@@ -449,7 +449,9 @@ or the shorthands `a.debug()`, `a.release_safe()`, `a.release_fast()`, `a.releas
 (= release_fast), `a.release_small()`.
 
 **Linking**: `a.link(lib)` (once per library), `a.system_library(name)` (alias),
-`a.lib_path(dir)`, `a.link_flag(raw)` — a raw flag passed straight to the linker.
+`a.lib_path(dir)`, `a.link_flag(raw)` — a raw flag passed straight to the linker,
+`a.link_libc()` — link the C runtime (for C libraries built against it; see
+[docs/11 → Linking the C runtime](11_c_interop.md)).
 
 **Executable settings**: `a.subsystem(.console|.windows)`, `a.console()`,
 `a.windowed()` (GUI — no console window), `a.entry(symbol)`, `a.stack_size(bytes)`.

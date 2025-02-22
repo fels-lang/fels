@@ -55,6 +55,18 @@ const build_options = @import("build_options");
 pub const llvm_enabled = build_options.enable_llvm;
 pub const llvm_path = build_options.llvm_path;
 pub const windows_sdk_lib_path = build_options.windows_sdk_lib_path;
+/// MSVC lib/x64 dir (for `link_libc`: vcruntime/libcmt). Empty if not configured.
+pub const msvc_lib_path = build_options.msvc_lib_path;
+/// The Windows SDK UCRT lib dir (ucrt.lib: malloc/free/…), derived from
+/// `windows_sdk_lib_path` by swapping the trailing `um` component for `ucrt`.
+pub const ucrt_lib_path = blk: {
+    const um = build_options.windows_sdk_lib_path;
+    const needle = "/um/";
+    if (std.mem.lastIndexOf(u8, um, needle)) |i| {
+        break :blk um[0..i] ++ "/ucrt/" ++ um[i + needle.len ..];
+    }
+    break :blk "";
+};
 pub const stdlib_root = build_options.stdlib_root;
 /// LLVM backend — only available when compiled with `-Dllvm-path=<path>`.
 pub const LlvmBackend = if (build_options.enable_llvm)

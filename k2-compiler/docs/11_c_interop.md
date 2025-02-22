@@ -61,6 +61,42 @@ the linker at it:
 Linking a non-system import library currently routes through LLD (the self-hosted
 `k2lnk` doesn't read `.lib` archives yet); `k2` configures `lld-link` for you.
 
+### Linking the C runtime (`link_libc`)
+
+K2 links with `/NODEFAULTLIB` and its own tiny runtime — it does **not** pull in
+the C runtime. That's fine for pure K2, but a C library brings its *code* and not
+the CRT it depends on. A **static** library (e.g. a `raylib.lib` built against the
+CRT) calls `malloc`/`free`/`calloc`/`realloc` and the compiler's stack/security
+helpers (`__chkstk`, `__report_rangecheckfailure`), so linking it without the CRT
+fails with `undefined symbol: malloc` and friends.
+
+Link the C runtime to fix it:
+
+- **CLI:** `k2 build app.k2 --libc` (or `-lc`)
+- **build.k2:** `app.link_libc();`
+
+`link_libc` pulls in the UCRT (`ucrt.lib` — malloc/free/…) and the VC runtime
+(`vcruntime.lib` — `__chkstk`, security checks). `k2` adds the UCRT search path
+automatically (derived from the configured Windows SDK path). For `vcruntime.lib`
+you need your MSVC `lib/x64` directory on the search path — either build `k2` with
+`-Dmsvc-lib-path=<…/VC/Tools/MSVC/<ver>/lib/x64>`, or pass `--lib-path <that dir>`.
+
+K2's own functions are **module-private** (internal linkage — the whole program is
+one object), so they never clash with the CRT's `exit`/`abort`/etc. when you link
+libc. A complete static-raylib build is just:
+
+```sh
+k2 build game.k2 --libc --lib-path <raylib-lib-dir> --lib-path <msvc-lib-dir>
+```
+
+(or `app.link_libc()` in a build.k2 once `k2` is built with `-Dmsvc-lib-path`).
+
+> A static library also needs *its own* system dependencies. Static raylib, for
+> example, also wants `gdi32`, `user32`, `winmm`, `shell32`, and `opengl32` —
+> add them with `app.link("gdi32")` etc. The **DLL** distribution of a library
+> avoids all of this (the `.dll` already contains its CRT and dependencies), so
+> prefer it when available.
+
 ## Generating bindings from a C header
 
 `k2 bindgen` parses an arbitrary C header with libclang and emits a K2 module:

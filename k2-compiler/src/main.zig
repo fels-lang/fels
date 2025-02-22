@@ -65,6 +65,7 @@ const Options = struct {
     quiet: bool = false,
     show_time: bool = false,
     dll: bool = false,
+    libc: bool = false,
 };
 
 pub fn main(init: std.process.Init) u8 {
@@ -130,6 +131,10 @@ pub fn main(init: std.process.Init) u8 {
     if (k2.windows_sdk_lib_path.len != 0) {
         opts.lib_paths.append(allocator, k2.windows_sdk_lib_path) catch return 1;
     }
+    // CRT search paths (harmless if no CRT lib is linked) — make `--libc` /
+    // `link_libc()` resolvable: ucrt.lib (SDK) + vcruntime.lib (MSVC).
+    if (k2.ucrt_lib_path.len != 0) opts.lib_paths.append(allocator, k2.ucrt_lib_path) catch return 1;
+    if (k2.msvc_lib_path.len != 0) opts.lib_paths.append(allocator, k2.msvc_lib_path) catch return 1;
 
     var i: usize = 3;
     while (i < args.len) : (i += 1) {
@@ -165,10 +170,17 @@ pub fn main(init: std.process.Init) u8 {
             opts.show_time = true;
         } else if (eqAny(a, &.{ "--shared", "--dll" })) {
             opts.dll = true;
+        } else if (eqAny(a, &.{ "--libc", "-lc" })) {
+            opts.libc = true;
         } else {
             std.debug.print("k2: unknown option '{s}'\n", .{a});
             return 1;
         }
+    }
+    if (opts.libc) {
+        // Link the C runtime (UCRT + VC runtime) for C libs built against it.
+        opts.extra_libs.append(allocator, "ucrt") catch return 1;
+        opts.extra_libs.append(allocator, "vcruntime") catch return 1;
     }
 
     const cwd = std.Io.Dir.cwd();
@@ -351,6 +363,9 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, rest: []const []const u
     var lib_paths: std.ArrayList([]const u8) = .empty;
     defer lib_paths.deinit(allocator);
     if (k2.windows_sdk_lib_path.len != 0) lib_paths.append(allocator, k2.windows_sdk_lib_path) catch return 1;
+    // CRT search paths so a build.k2 `app.link_libc()` resolves (harmless otherwise).
+    if (k2.ucrt_lib_path.len != 0) lib_paths.append(allocator, k2.ucrt_lib_path) catch return 1;
+    if (k2.msvc_lib_path.len != 0) lib_paths.append(allocator, k2.msvc_lib_path) catch return 1;
 
     var run_args: std.ArrayList([]const u8) = .empty;
     defer run_args.deinit(allocator);
