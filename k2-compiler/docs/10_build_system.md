@@ -435,3 +435,81 @@ $ k2 build            # → bin/app.exe via k2lnk
 $ k2 build run        # → builds, then runs app.exe
 $ k2 build --release  # → release_fast override
 ```
+
+## API reference (expanded)
+
+The full `std.build` surface. `b` is the `Build` handle; `a` an `Artifact`.
+
+**Declare artifacts** (on `Build`):
+`b.executable(name, root)`, `b.shared(name, root)` (.dll),
+`b.static(name, root)` (.lib), `b.object(name, root)` (.o) — all return an `Artifact`.
+
+**Optimization** (on `Artifact`): `a.optimize(.debug|.release_safe|.release_fast|.release_small)`,
+or the shorthands `a.debug()`, `a.release_safe()`, `a.release_fast()`, `a.release()`
+(= release_fast), `a.release_small()`.
+
+**Linking**: `a.link(lib)` (once per library), `a.system_library(name)` (alias),
+`a.lib_path(dir)`, `a.link_flag(raw)` — a raw flag passed straight to the linker.
+
+**Executable settings**: `a.subsystem(.console|.windows)`, `a.console()`,
+`a.windowed()` (GUI — no console window), `a.entry(symbol)`, `a.stack_size(bytes)`.
+These force the LLD path (the fast k2lnk linker can't apply them).
+
+**Output**: `a.output(path)` (explicit), `a.out_dir(dir)` (a directory, name derived),
+and the workspace-wide `b.out_root(dir)` (a per-artifact `out_dir` wins).
+
+**Metadata**: `a.version(semver)`, `a.description(text)`, `a.install()`,
+`a.define(key, val)` (a `#provided`-style comptime override — recorded).
+
+**Dependencies**: `b.require_path(name, dir)` / `b.require_git(name, url)` → a dep id;
+`a.depend(dep_id)`.
+
+**Workspace & options**: `b.workspace(name)`, `b.summary()` (print a post-build
+summary). Build options come from the command line: `b.option(name) -> bool`
+(`k2 build -Dname`) and `b.option_str(name, default) -> []const u8`
+(`k2 build -Dname=value`).
+
+**Steps & default**: `b.run_step(name, artifact)`, `b.test_dir(name, dir)`,
+`b.default(artifact)`.
+
+See `examples/build_showcase/` for a build.k2 exercising most of these.
+
+## Test steps
+
+`b.test_dir(name, dir)` declares a test step. Running it compiles and runs every
+`*.k2` file directly under `dir` as a standalone program — each one **passes when
+it exits 0**:
+
+```sh
+k2 build test          # the step named "test"
+```
+
+```text
+running tests in tests/
+  ✓ parser_test.k2
+  ✓ lexer_test.k2
+  ✗ sema_test.k2
+
+2 passed, 1 failed
+```
+
+A test is just a `.k2` with a `main :: fn() -> i32` that returns `0` on success
+and non-zero on failure. The step itself fails (non-zero `k2 build` exit) if any
+test fails, so it drops cleanly into CI. Tests are compiled at `-O0` for speed.
+
+## Inspecting the plan
+
+`k2 build --list` prints the resolved plan without building anything — every
+artifact with its kind, optimization level, version, install flag, and linked
+libraries, plus the declared steps and their targets:
+
+```text
+workspace: my-app
+artifacts:
+  game             executable     release-fast (default) v2.1.0 [install]  links: raylib user32
+    the main game binary
+  util             static_library debug
+steps:
+  run              run        game
+  test             test_dir   tests
+```

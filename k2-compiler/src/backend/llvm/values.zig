@@ -160,14 +160,22 @@ pub fn resolveValue(
         },
 
         .global => |name| blk: {
-            const gv = cg.global_decls.get(name) orelse break :blk undef;
-            // When type hint is .unknown, use the LLVM global's own type instead of
-            // the fallback `ptr` — avoids mismatched loads for integer constants.
-            const load_lty = if (ty == .unknown)
-                llvm.LLVMGlobalGetValueType(gv)
-            else
-                types.lower(cg, ty);
-            break :blk llvm.LLVMBuildLoad2(cg.builder, load_lty, gv, "");
+            if (cg.global_decls.get(name)) |gv| {
+                // Global variable: load its current value. When the type hint is
+                // .unknown, use the global's own type instead of the fallback
+                // `ptr` — avoids mismatched loads for integer constants.
+                const load_lty = if (ty == .unknown)
+                    llvm.LLVMGlobalGetValueType(gv)
+                else
+                    types.lower(cg, ty);
+                break :blk llvm.LLVMBuildLoad2(cg.builder, load_lty, gv, "");
+            }
+            // A reference to a top-level function used as a value (a function
+            // pointer / callback): the LLVM function is already a `ptr`, so hand
+            // it back directly — no load. Previously this fell through to `undef`,
+            // which crashed when the pointer was later called.
+            if (cg.fn_decls.get(name)) |fv| break :blk fv;
+            break :blk undef;
         },
     };
 }

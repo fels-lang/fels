@@ -48,6 +48,8 @@ pub fn build(b: *std.Build) void {
         //   Windows prebuilt (llvm.org): LLVM-C
         //   Linux/macOS:                 LLVM-17 / LLVM
         compiler_mod.linkSystemLibrary("LLVM-C", .{});
+        // libclang (same SDK) powers the C binding generator (`k2 bindgen`).
+        compiler_mod.linkSystemLibrary("libclang", .{});
     }
 
     // ── Optional in-process LLD (k2lld.dll) ───────────────────────────────

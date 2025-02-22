@@ -17,8 +17,10 @@ pub fn lower(cg: *ModuleCg, ty: ir.IrType) llvm.LLVMTypeRef {
         .usize, .isize, .addr => llvm.LLVMInt64TypeInContext(ctx),
         .void => llvm.LLVMVoidTypeInContext(ctx),
 
-        // Slices are fat pointers: { ptr, i64 }
-        .slice => cg.getSliceType(),
+        // Slices are fat pointers: { ptr, i64 }. A string literal type (`.text`)
+        // is the same `[]const u8` fat pointer — a `NAME :: "..."` const global
+        // must be typed as the slice struct so it matches its initializer.
+        .slice, .text => cg.getSliceType(),
         .interface_value => cg.getInterfaceType(),
 
         // Optional pointer → nullable raw pointer (null = none, non-null = some).

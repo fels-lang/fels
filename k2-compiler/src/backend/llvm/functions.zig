@@ -7,6 +7,7 @@ const local_vars = @import("local_vars.zig");
 const instrs = @import("instrs.zig");
 const terminators = @import("terminators.zig");
 const attrs = @import("attrs.zig");
+const abi = @import("abi.zig");
 const ModuleCg = @import("context.zig").ModuleCg;
 
 /// Per-function codegen state.
@@ -45,6 +46,7 @@ pub const FnCg = struct {
             .reg => |id| self.reg_ir_types.get(id),
             .param => |name| self.param_ir_types.get(name),
             .local => |name| self.local_ir_types.get(name),
+            .global => |name| self.cg.global_ir_types.get(name),
             else => null,
         };
     }
@@ -57,17 +59,42 @@ pub fn declareAll(cg: *ModuleCg, funcs: []const ir.IrFunction) !void {
 fn declareOne(cg: *ModuleCg, func: ir.IrFunction) !void {
     if (cg.fn_decls.contains(func.name)) return;
 
-    const fn_ty = try types_mod.fnType(cg, func);
+    // External C functions get Win64 C-ABI lowering for by-value aggregate
+    // params/returns; everything else keeps its natural LLVM signature.
+    var abi_sig: ?abi.FnAbi = null;
+    const fn_ty = blk: {
+        if (func.extern_name != null) {
+            var sig = try abi.computeFnAbi(cg, func);
+            if (sig.nontrivial) {
+                abi_sig = sig;
+                break :blk try abi.externFnType(cg, func, sig);
+            }
+            sig.deinit(cg.allocator);
+        }
+        break :blk try types_mod.fnType(cg, func);
+    };
+
     const name_z = try cg.allocator.dupeZ(u8, func.name);
     defer cg.allocator.free(name_z);
 
     const lv = llvm.LLVMAddFunction(cg.mod, name_z, fn_ty);
-    for (func.params, 0..) |p, i| {
-        const pv = llvm.LLVMGetParam(lv, @intCast(i));
-        llvm.LLVMSetValueName2(pv, p.name.ptr, p.name.len);
+
+    // Parameter names are cosmetic; skip them for ABI-lowered externs whose
+    // LLVM parameters no longer correspond 1:1 to source parameters.
+    if (abi_sig == null) {
+        for (func.params, 0..) |p, i| {
+            const pv = llvm.LLVMGetParam(lv, @intCast(i));
+            llvm.LLVMSetValueName2(pv, p.name.ptr, p.name.len);
+        }
     }
+
     if (func.extern_name) |_| llvm.LLVMSetLinkage(lv, llvm.LLVMExternalLinkage);
     attrs.applyFunctionAttrs(cg, func, lv);
+
+    if (abi_sig) |sig| {
+        abi.applyAbiAttrs(cg, lv, sig);
+        try cg.fn_abi.put(func.name, sig);
+    }
     try cg.fn_decls.put(func.name, lv);
 }
 

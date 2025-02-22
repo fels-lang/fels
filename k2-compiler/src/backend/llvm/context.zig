@@ -3,6 +3,7 @@ const std = @import("std");
 const ir = @import("../../ir.zig");
 const llvm = @import("c_api.zig").llvm;
 const variants = @import("variants.zig");
+const abi = @import("abi.zig");
 
 /// One entry in a struct's field table.
 pub const StructField = struct {
@@ -23,8 +24,17 @@ pub const ModuleCg = struct {
     struct_alignments: std.StringHashMap(u32),
     /// Declared LLVM functions, keyed by mangled/extern name.
     fn_decls: std.StringHashMap(llvm.LLVMValueRef),
+    /// C-ABI lowering for `#extern` functions whose by-value aggregate params or
+    /// return need Win64 coercion. Keyed by function name; consulted at call
+    /// sites. Only non-trivial signatures are recorded (scalar externs stay on
+    /// the fast path). See `abi.zig`.
+    fn_abi: std.StringHashMap(abi.FnAbi),
     /// Declared globals, keyed by name.
     global_decls: std.StringHashMap(llvm.LLVMValueRef),
+    /// IrType of each global — so field/index access on a `.global` base (e.g.
+    /// `STRING_CONST.len`) can find the base's shape. Without it `irTypeOf`
+    /// returns null for globals and the access lowers to `undef`.
+    global_ir_types: std.StringHashMap(ir.IrType),
     /// Cached { ptr, usize } slice struct type — created once on first use.
     slice_type: ?llvm.LLVMTypeRef = null,
     interface_type: ?llvm.LLVMTypeRef = null,
@@ -32,6 +42,10 @@ pub const ModuleCg = struct {
     enum_meta: std.StringHashMap(*variants.EnumMeta),
     /// Counter for unique string-literal global names.
     string_counter: u32 = 0,
+    /// Cached target data for size/alignment queries during lowering (the
+    /// module's real data layout isn't stamped on until just before emit).
+    /// The empty-layout default matches x86_64 struct sizes. Lazily created.
+    target_data: ?llvm.LLVMTargetDataRef = null,
     /// Error type definitions from the IR module — used for discriminant lookup.
     error_defs: []const ir.ErrorDef = &.{},
     /// Optimisation level (0 = debug). Debug builds insert runtime safety checks.
@@ -79,9 +93,21 @@ pub const ModuleCg = struct {
             .struct_fields = std.StringHashMap([]StructField).init(allocator),
             .struct_alignments = std.StringHashMap(u32).init(allocator),
             .fn_decls = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
+            .fn_abi = std.StringHashMap(abi.FnAbi).init(allocator),
             .global_decls = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
+            .global_ir_types = std.StringHashMap(ir.IrType).init(allocator),
             .enum_meta = std.StringHashMap(*variants.EnumMeta).init(allocator),
         };
+    }
+
+    /// Target data for size/alignment queries, created lazily and cached. The
+    /// empty layout string yields the default ABI sizes, which match x86_64 for
+    /// the struct sizes the C-ABI classifier needs. Mirrors `variants.zig`.
+    pub fn targetData(self: *ModuleCg) llvm.LLVMTargetDataRef {
+        if (self.target_data) |td| return td;
+        const td = llvm.LLVMCreateTargetData("");
+        self.target_data = td;
+        return td;
     }
 
     pub fn deinit(self: *ModuleCg) void {
@@ -93,7 +119,12 @@ pub const ModuleCg = struct {
         self.struct_types.deinit();
         self.struct_alignments.deinit();
         self.fn_decls.deinit();
+        var abi_it = self.fn_abi.valueIterator();
+        while (abi_it.next()) |v| v.deinit(self.allocator);
+        self.fn_abi.deinit();
+        if (self.target_data) |td| llvm.LLVMDisposeTargetData(td);
         self.global_decls.deinit();
+        self.global_ir_types.deinit();
         var em_it = self.enum_meta.valueIterator();
         while (em_it.next()) |v| {
             v.*.discriminants.deinit();

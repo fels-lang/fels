@@ -1,0 +1,4 @@
+#export("plugin_answer")
+plugin_answer :: fn() -> i32 {
+    return 42;
+}

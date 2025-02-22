@@ -59,6 +59,117 @@ test "exe: main returning 0 exits cleanly" {
     try std.testing.expectEqual(@as(u32, 0), code);
 }
 
+test "exe: a function passed as a function-pointer value is called" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: a bare function name used as a value used to lower to `ptr
+    // undef` (crash). It must lower to the function's address so the callee can
+    // call through it — this is what makes C callbacks work too.
+    const code = try compileAndRun(arena.allocator(),
+        \\apply :: fn(f: fn(i32) -> i32, a: i32) -> i32 { return f(a); }
+        \\dbl :: fn(x: i32) -> i32 { return x * 2; }
+        \\main :: fn() -> i32 { return apply(dbl, 21); }
+    , "exe_fnptr");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: a top-level string constant and field access on a global work" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: a `NAME :: "..."` string constant used to crash codegen (global
+    // type/init mismatch), and reading a field of any `.global` (here `.len`)
+    // used to lower to `undef`. Both are fixed.
+    const code = try compileAndRun(arena.allocator(),
+        \\VERSION  :: "5.5";
+        \\GREETING :: "hello world";
+        \\main :: fn() -> i32 { return (VERSION.len + GREETING.len) as i32; }
+    , "exe_strconst");
+    try std.testing.expectEqual(@as(u32, 14), code);
+}
+
+test "build: the expanded std.build API runs through the build hook" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const io = std.testing.io;
+
+    const dir = ".zig-cache/bt_api";
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    // Exercises every new builder call; `--list` runs the hook (all `__build_*`
+    // intrinsics on the comptime VM) then returns without compiling/linking.
+    const build_src =
+        \\#import std.build.{ Build, Artifact };
+        \\build :: fn(b: Build) {
+        \\    b.workspace("t");
+        \\    b.out_root("bin");
+        \\    app := b.executable("app", "src/main.k2");
+        \\    app.optimize(.release_fast);
+        \\    app.windowed();
+        \\    app.entry("mainCRTStartup");
+        \\    app.stack_size(1048576);
+        \\    app.link("user32");
+        \\    app.link("gdi32");
+        \\    app.lib_path("vendor/lib");
+        \\    app.link_flag("/DEBUG:NONE");
+        \\    app.out_dir("out");
+        \\    app.version("1.0.0");
+        \\    app.description(b.option_str("desc", "a test app"));
+        \\    app.install();
+        \\    app.define("TRACE", "1");
+        \\    if b.option("fast") { app.release_small(); }
+        \\    b.run_step("run", app);
+        \\    b.test_dir("test", "tests");
+        \\    b.default(app);
+        \\    b.summary();
+        \\}
+    ;
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.k2", .data = build_src });
+
+    try k2.build_driver.run(arena.allocator(), io, dir ++ "/build.k2", .{
+        .list = true,
+        .quiet = true,
+        .options = &.{ "fast", "name=cool" },
+    });
+}
+
+test "build: a test_dir step compiles+runs tests and fails on a failing one" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const io = std.testing.io;
+
+    const dir = ".zig-cache/bt_test";
+    std.Io.Dir.cwd().createDirPath(io, dir ++ "/tests") catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/tests/p1.k2", .data = "main :: fn() -> i32 { return 0; }\n" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/tests/p2.k2", .data = "main :: fn() -> i32 { return 0; }\n" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/tests/f1.k2", .data = "main :: fn() -> i32 { return 3; }\n" });
+    const build_src =
+        \\#import std.build.{ Build, Artifact };
+        \\build :: fn(b: Build) {
+        \\    app := b.executable("app", "tests/p1.k2");
+        \\    b.test_dir("test", "tests");
+        \\    b.default(app);
+        \\}
+    ;
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.k2", .data = build_src });
+
+    const lp = k2.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
+    // One test exits non-zero, so the test step must fail.
+    try std.testing.expectError(error.RunFailed, k2.build_driver.run(arena.allocator(), io, dir ++ "/build.k2", .{
+        .target = "test",
+        .quiet = true,
+        .llvm_bin = k2.llvm_path ++ "/bin",
+        .lib_paths = lib_paths,
+    }));
+}
+
 test "exe: error payload recovered via catch binding" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

@@ -5,6 +5,7 @@ const llvm = @import("c_api.zig").llvm;
 const types = @import("types.zig");
 const values = @import("values.zig");
 const vars_mod = @import("variants.zig");
+const abi = @import("abi.zig");
 const ModuleCg = @import("context.zig").ModuleCg;
 
 pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
@@ -588,6 +589,10 @@ fn lowerCallIndirect(
 }
 
 fn lowerCall(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrType) ?llvm.LLVMValueRef {
+    // Calls to `#extern` C functions with by-value aggregate params/return take
+    // the Win64 C-ABI path (coerce structs to integers / pass them indirectly).
+    if (cg.fn_abi.get(call.callee)) |sig| return lowerCallAbi(cg, fncg, call, ret_ty, sig);
+
     const lv = cg.fn_decls.get(call.callee) orelse return null;
     const fn_ty = llvm.LLVMGlobalGetValueType(lv);
     const n_param = llvm.LLVMCountParamTypes(fn_ty);
@@ -610,6 +615,50 @@ fn lowerCall(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrType
 
     const result = llvm.LLVMBuildCall2(cg.builder, fn_ty, lv, args.ptr, @intCast(args.len), "");
     return if (ret_ty == .void) null else result;
+}
+
+/// Win64 C-ABI call to an `#extern` function: small by-value structs are
+/// coerced to integers, large ones passed by pointer, and an aggregate return
+/// is materialized from a coerced integer or an `sret` slot. See `abi.zig`.
+fn lowerCallAbi(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrType, sig: abi.FnAbi) ?llvm.LLVMValueRef {
+    const lv = cg.fn_decls.get(call.callee) orelse return null;
+    const fn_ty = llvm.LLVMGlobalGetValueType(lv);
+
+    const total = call.args.len + @as(usize, if (sig.sret) 1 else 0);
+    const args = cg.allocator.alloc(llvm.LLVMValueRef, total) catch return null;
+    defer cg.allocator.free(args);
+
+    var ai: usize = 0;
+    var sret_slot: llvm.LLVMValueRef = null;
+    if (sig.sret) {
+        sret_slot = abi.entryAlloca(cg, fncg.llvm_fn, sig.ret_struct);
+        args[0] = sret_slot;
+        ai = 1;
+    }
+
+    for (call.args, 0..) |arg, i| {
+        const p: abi.ParamAbi = if (i < sig.params.len)
+            sig.params[i]
+        else
+            .{ .class = .direct, .ir_ty = .unknown };
+        args[ai] = switch (p.class) {
+            .direct => switch (arg) {
+                .imm => |imm| values.lowerImmAs(cg, imm, types.lower(cg, p.ir_ty)),
+                else => values.coerce(cg.builder, cg.ctx, resolveVal(cg, fncg, arg, .unknown), types.lower(cg, p.ir_ty)),
+            },
+            .coerce => |bits| abi.structToInt(cg, fncg.llvm_fn, resolveVal(cg, fncg, arg, p.ir_ty), p.llvm_struct, bits),
+            .indirect => abi.structToPtr(cg, fncg.llvm_fn, resolveVal(cg, fncg, arg, p.ir_ty), p.llvm_struct),
+        };
+        ai += 1;
+    }
+
+    const result = llvm.LLVMBuildCall2(cg.builder, fn_ty, lv, args.ptr, @intCast(total), "");
+
+    if (sig.sret) return llvm.LLVMBuildLoad2(cg.builder, sig.ret_struct, sret_slot, "");
+    return switch (sig.ret) {
+        .coerce => abi.intToStruct(cg, fncg.llvm_fn, result, sig.ret_struct),
+        else => if (ret_ty == .void) null else result,
+    };
 }
 
 // ── Field access ────────────────────────────────────────────────────────────

@@ -3494,6 +3494,19 @@ fn isBuiltinName(name: []const u8) bool {
         "__build_test",
         "__build_require",
         "__build_depend",
+        "__build_subsystem",
+        "__build_entry",
+        "__build_stack",
+        "__build_linkflag",
+        "__build_outdir",
+        "__build_version",
+        "__build_desc",
+        "__build_workspace",
+        "__build_outroot",
+        "__build_install",
+        "__build_optionflag",
+        "__build_optionstr",
+        "__build_summary",
     }) |builtin| {
         if (std.mem.eql(u8, name, builtin)) return true;
     }
@@ -4620,13 +4633,20 @@ fn exprHasQuote(e: ast.Expr) bool {
     };
 }
 
+/// `[]const u8` — the type of a `NAME :: "..."` string constant. A string is a
+/// fat-pointer slice, so the global must be typed as one (not the bare `.text`
+/// placeholder, which lowers to a plain `ptr` and both mismatches its slice
+/// initializer and hides the slice from `.len`/index lowering).
+const string_elem_ty: IrType = .byte;
+const string_slice_ty: IrType = .{ .slice = &string_elem_ty };
+
 fn inferConstType(expr: ast.Expr) IrType {
     return switch (expr.kind) {
         .int => |text| intLiteralIrType(text),
         .float => |text| if (std.mem.endsWith(u8, text, "f32")) .f32 else .f64,
         .unary => |u| if (u.op == .neg) inferConstType(u.expr.*) else .unknown,
         .bool => .bool,
-        .string => .text,
+        .string => string_slice_ty,
         .null => .unknown,
         else => .unknown,
     };

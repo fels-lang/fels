@@ -1036,6 +1036,19 @@ fn buildOpFor(name: []const u8) ?instructions.BuildOp {
         .{ "__build_test", instructions.BuildOp.test_dir },
         .{ "__build_require", instructions.BuildOp.require },
         .{ "__build_depend", instructions.BuildOp.depend },
+        .{ "__build_subsystem", instructions.BuildOp.subsystem },
+        .{ "__build_entry", instructions.BuildOp.entry },
+        .{ "__build_stack", instructions.BuildOp.stack },
+        .{ "__build_linkflag", instructions.BuildOp.link_flag },
+        .{ "__build_outdir", instructions.BuildOp.out_dir },
+        .{ "__build_version", instructions.BuildOp.version },
+        .{ "__build_desc", instructions.BuildOp.description },
+        .{ "__build_workspace", instructions.BuildOp.workspace },
+        .{ "__build_outroot", instructions.BuildOp.out_root },
+        .{ "__build_install", instructions.BuildOp.install },
+        .{ "__build_optionflag", instructions.BuildOp.option_flag },
+        .{ "__build_optionstr", instructions.BuildOp.option_str },
+        .{ "__build_summary", instructions.BuildOp.summary },
     };
     inline for (table) |entry| {
         if (std.mem.eql(u8, name, entry[0])) return entry[1];

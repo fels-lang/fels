@@ -393,3 +393,154 @@ test "atomic_load and atomic_store: parse, type-check, and lower to IR" {
     const m = try k2.lowerFrontend(arena.allocator(), fe);
     try k2.ir_mod.validateModule(m);
 }
+
+// ── Win64 C ABI for by-value aggregates (#extern) ─────────────────────────────
+// raylib-style structs cross the C boundary by value. On Win64 a small struct
+// (size 1/2/4/8) is coerced to an integer register; a larger one is passed by
+// pointer (byval arg / sret return). Without this lowering every struct-passing
+// C call is silently mis-ABI'd. See src/backend/llvm/abi.zig.
+
+const raylib_abi_src =
+    \\Color     :: struct { r: u8, g: u8, b: u8, a: u8 }
+    \\Vector2   :: struct { x: f32, y: f32 }
+    \\Rectangle :: struct { x: f32, y: f32, width: f32, height: f32 }
+    \\
+    \\#extern("raylib", "ClearBackground")
+    \\clear_background :: fn(c: Color);
+    \\
+    \\#extern("raylib", "DrawCircleV")
+    \\draw_circle_v :: fn(center: Vector2, radius: f32, color: Color);
+    \\
+    \\#extern("raylib", "DrawRectangleRec")
+    \\draw_rect :: fn(rec: Rectangle);
+    \\
+    \\#extern("raylib", "GetCollisionRec")
+    \\get_rect :: fn(a: Rectangle, b: Rectangle) -> Rectangle;
+    \\
+    \\forward :: fn(c: Color, v: Vector2, r: Rectangle, radius: f32) {
+    \\    clear_background(c);
+    \\    draw_circle_v(v, radius, c);
+    \\    draw_rect(r);
+    \\    r2 := get_rect(r, r);
+    \\    draw_rect(r2);
+    \\}
+;
+
+test "C ABI: #extern declarations lower by-value aggregates per Win64" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var fe = try k2.compile(arena.allocator(), "raylib_abi.k2", raylib_abi_src);
+    defer fe.deinit(arena.allocator());
+    try std.testing.expectEqual(@as(usize, 0), fe.diagnostics().len);
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "raylib_abi");
+    defer backend.deinit();
+    try backend.lower(m);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    inline for (.{
+        "@clear_background(i32", // Color (4 bytes) → i32
+        "@draw_circle_v(i64, float, i32", // Vector2 (8) → i64; radius f32; Color → i32
+        "byval(%Rectangle)", // Rectangle (16) argument passed indirectly
+        "sret(%Rectangle)", // Rectangle (16) returned via hidden sret pointer
+    }) |needle| {
+        std.testing.expect(std.mem.indexOf(u8, llvm_ir, needle) != null) catch |err| {
+            std.debug.print("missing expected ABI fragment: {s}\n", .{needle});
+            return err;
+        };
+    }
+}
+
+test "C ABI: call sites coerce by-value struct arguments and sret returns" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var fe = try k2.compile(arena.allocator(), "raylib_abi.k2", raylib_abi_src);
+    defer fe.deinit(arena.allocator());
+    const m = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "raylib_abi_calls");
+    defer backend.deinit();
+    try backend.lower(m);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    inline for (.{
+        "call void @clear_background(i32", // a %Color value coerced to i32 at the call
+        "call void @get_rect(ptr", // sret slot + byval pointers passed to the call
+    }) |needle| {
+        std.testing.expect(std.mem.indexOf(u8, llvm_ir, needle) != null) catch |err| {
+            std.debug.print("missing expected ABI call fragment: {s}\n", .{needle});
+            return err;
+        };
+    }
+}
+
+// ── C binding generator (`k2 bindgen`, libclang) ──────────────────────────────
+
+test "bindgen: C header lowers to K2 structs, enum consts, and #extern fns" {
+    if (comptime !k2.llvm_enabled) return; // libclang ships with the LLVM build
+
+    const csrc =
+        \\typedef struct { float x; float y; } Vector2;
+        \\typedef struct { unsigned char r, g, b, a; } Color;
+        \\typedef struct { int type; int match; } Event;
+        \\typedef enum { A = 0, B = 7 } E;
+        \\void clear(Color c);
+        \\Vector2 origin(void);
+        \\int sum(int a, const char *s);
+        \\void emit(int in);
+        \\#define CLITERAL(type) (type)
+        \\#define WHITE CLITERAL(Color){ 255, 255, 255, 255 }
+        \\#define MAX_N 42
+        \\#define SCALE 1.5f
+        \\typedef union { int i; double d; } U;
+        \\struct Opaque;
+        \\void use_opaque(struct Opaque *o);
+        \\typedef int (*BinOp)(int, int);
+        \\int reduce(BinOp op, int a);
+        \\int variadic(int n, ...);
+    ;
+    const out = try k2.bindgen.generateString(std.testing.allocator, "t.h", csrc, "demo", &.{});
+    defer std.testing.allocator.free(out);
+
+    inline for (.{
+        "#system_library(\"demo\");",
+        "pub Vector2 :: struct {",
+        "pub Color :: struct {",
+        "pub A :: 0;",
+        "pub B :: 7;",
+        "#extern(\"demo\", \"clear\")",
+        "pub clear :: fn(c: Color);",
+        "pub origin :: fn() -> Vector2;",
+        "pub sum :: fn(a: i32, s: [*]const u8) -> i32;",
+        // K2 keywords used as C identifiers get a trailing `_`, while the
+        // `#extern` symbol keeps the original C name.
+        "    type_: i32,",
+        "    match_: i32,",
+        "#extern(\"demo\", \"emit\")",
+        "pub emit :: fn(in_: i32);",
+        // #define constants: plain numeric/float, and a raylib-style color macro
+        // (compound literal) materialized as a #run-folded typed constant.
+        "pub MAX_N :: 42;",
+        "pub SCALE :: 1.5;",
+        "pub WHITE :: #run __lit_WHITE();",
+        "__lit_WHITE :: fn() -> Color { return .{ 255 , 255 , 255 , 255 }; }",
+        // hard constructs: union → sized blob, opaque type, fn-pointer param, variadic
+        "pub U :: struct { _bytes: [8]u8 }",
+        "pub Opaque :: opaque;",
+        "pub use_opaque :: fn(o: *Opaque);",
+        "pub reduce :: fn(op: fn(i32, i32) -> i32, a: i32) -> i32;",
+        "// note: C variadic function",
+    }) |needle| {
+        std.testing.expect(std.mem.indexOf(u8, out, needle) != null) catch |err| {
+            std.debug.print("bindgen output missing '{s}'\n--- full output ---\n{s}\n", .{ needle, out });
+            return err;
+        };
+    }
+}

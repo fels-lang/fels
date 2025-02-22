@@ -28,6 +28,12 @@ fn k2lnkEligible(opts: WindowsLinkOptions) bool {
     for (opts.libs) |lib| {
         if (!std.mem.eql(u8, lib, "kernel32")) return false;
     }
+    // k2lnk writes a fixed PE (console subsystem, `mainCRTStartup` entry, default
+    // stack, no extra flags). Anything that overrides those must use LLD.
+    if (opts.subsystem != .console) return false;
+    if (opts.entry != null) return false;
+    if (opts.stack_reserve != 0) return false;
+    if (opts.extra_flags.len != 0) return false;
     return true;
 }
 
@@ -122,6 +128,10 @@ pub const LinkError = error{
     ExitCodeFailure,
 };
 
+/// PE subsystem: a console app gets a terminal window, a `windows` (GUI) app
+/// doesn't — what you want for a game/windowed program (raylib, etc.).
+pub const Subsystem = enum { console, windows };
+
 pub const WindowsLinkOptions = struct {
     /// Directory containing lld-link.exe (e.g. <llvm>/bin).
     llvm_bin: []const u8,
@@ -139,6 +149,15 @@ pub const WindowsLinkOptions = struct {
     /// with `/NOENTRY` (no CRT entry); `#export`ed functions are exported via
     /// their dllexport directives. This is how `k2lnk.dll` is built.
     dll: bool = false,
+    /// PE subsystem for executables (console window or not).
+    subsystem: Subsystem = .console,
+    /// Override the entry symbol (default: `mainCRTStartup`).
+    entry: ?[]const u8 = null,
+    /// Reserve this many bytes of stack (`/STACK:`); 0 = the default.
+    stack_reserve: u64 = 0,
+    /// Raw flags passed verbatim to the linker — an escape hatch for anything
+    /// the structured options don't cover.
+    extra_flags: []const []const u8 = &.{},
 };
 
 /// Build the lld-link command line as a slice of argument strings (caller frees).
@@ -155,8 +174,14 @@ pub fn buildArgs(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ![]cons
         try args.append(allocator, try allocator.dupe(u8, "/DLL"));
         try args.append(allocator, try allocator.dupe(u8, "/NOENTRY"));
     } else {
-        try args.append(allocator, try allocator.dupe(u8, "/SUBSYSTEM:CONSOLE"));
-        try args.append(allocator, try allocator.dupe(u8, "/ENTRY:mainCRTStartup"));
+        const sub = switch (opts.subsystem) {
+            .console => "CONSOLE",
+            .windows => "WINDOWS",
+        };
+        try args.append(allocator, try std.fmt.allocPrint(allocator, "/SUBSYSTEM:{s}", .{sub}));
+        try args.append(allocator, try std.fmt.allocPrint(allocator, "/ENTRY:{s}", .{opts.entry orelse "mainCRTStartup"}));
+        if (opts.stack_reserve != 0)
+            try args.append(allocator, try std.fmt.allocPrint(allocator, "/STACK:{d}", .{opts.stack_reserve}));
     }
     try args.append(allocator, try allocator.dupe(u8, "/NODEFAULTLIB"));
     try args.append(allocator, try allocator.dupe(u8, "kernel32.lib"));
@@ -164,6 +189,8 @@ pub fn buildArgs(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ![]cons
         try args.append(allocator, try std.fmt.allocPrint(allocator, "/LIBPATH:{s}", .{lp}));
     for (opts.libs) |lib|
         try args.append(allocator, try std.fmt.allocPrint(allocator, "{s}.lib", .{lib}));
+    for (opts.extra_flags) |f|
+        try args.append(allocator, try allocator.dupe(u8, f));
 
     return args.toOwnedSlice(allocator);
 }
@@ -207,12 +234,37 @@ fn linkWithLld(allocator: std.mem.Allocator, io: std.Io, opts: WindowsLinkOption
     }
 }
 
+/// A concrete reason the fast k2lnk path can't be used (null = it *would* have
+/// been eligible, so the only explanation is k2lnk.dll being absent/failing —
+/// not worth warning about, e.g. in the test runner). Used to explain the
+/// slower LLD fallback to the user. These are exactly k2lnk's current gaps.
+fn lldFallbackReason(opts: WindowsLinkOptions, obj_bytes: ?[]const u8) ?[]const u8 {
+    if (opts.dll) return "output is a shared library";
+    if (opts.obj_files.len != 1) return "multiple object files (k2lnk links one object)";
+    for (opts.libs) |lib| {
+        if (!std.mem.eql(u8, lib, "kernel32"))
+            return "links a non-kernel32 import library (k2lnk can't read .lib archives yet)";
+    }
+    if (opts.subsystem != .console or opts.entry != null or opts.stack_reserve != 0 or opts.extra_flags.len != 0)
+        return "custom linker settings (subsystem/entry/stack/flags) k2lnk can't apply";
+    if (obj_bytes) |b| {
+        if (!coffSafeForK2lnk(b)) return "object has duplicate-named sections (e.g. a float constant pool)";
+    }
+    return null;
+}
+
+fn noteLldFallback(opts: WindowsLinkOptions, obj_bytes: ?[]const u8) void {
+    const reason = lldFallbackReason(opts, obj_bytes) orelse return;
+    std.debug.print("note: linked with LLD — the k2lnk fast path was skipped ({s})\n", .{reason});
+}
+
 /// Link from object files on disk. Prefers the self-hosted K2 linker (k2lnk.dll),
 /// then LLD.
 pub fn windows(allocator: std.mem.Allocator, io: std.Io, opts: WindowsLinkOptions) LinkError!void {
     if (tryK2lnk(allocator, opts)) |ok| {
         if (ok) return;
     }
+    noteLldFallback(opts, null);
     return linkWithLld(allocator, io, opts);
 }
 
@@ -223,6 +275,7 @@ pub fn windowsMem(allocator: std.mem.Allocator, io: std.Io, obj_bytes: []const u
     if (tryK2lnkMem(allocator, obj_bytes, opts)) |ok| {
         if (ok) return;
     }
+    noteLldFallback(opts, obj_bytes);
     // Spill the object so LLD can read it, then take the LLD path.
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = opts.obj_files[0], .data = obj_bytes }) catch return error.OutOfMemory;
     return linkWithLld(allocator, io, opts);

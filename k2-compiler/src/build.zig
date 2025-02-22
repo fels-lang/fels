@@ -39,8 +39,16 @@ pub const Artifact = struct {
     kind: ArtifactKind,
     opt: u2 = 0,
     out_path: ?[]const u8 = null,
+    out_dir: ?[]const u8 = null,
     libs: std.ArrayList([]const u8) = .empty,
     lib_paths: std.ArrayList([]const u8) = .empty,
+    link_flags: std.ArrayList([]const u8) = .empty,
+    subsystem: u8 = 0, // 0 console, 1 windows (GUI)
+    entry: ?[]const u8 = null,
+    stack: u64 = 0,
+    version: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    install: bool = false,
 };
 
 pub const StepKind = enum(u8) { run, test_dir };
@@ -66,6 +74,12 @@ pub const BuildPlan = struct {
     steps: std.ArrayList(Step) = .empty,
     deps: std.ArrayList(Dep) = .empty,
     default_idx: ?usize = null,
+    /// Workspace-level metadata + default output directory for all artifacts.
+    workspace_name: ?[]const u8 = null,
+    out_root: ?[]const u8 = null,
+    want_summary: bool = false,
+    /// `-Dname` / `-Dname=value` build options forwarded from the CLI.
+    options: []const []const u8 = &.{},
     oom: bool = false,
 
     fn init(gpa: std.mem.Allocator) BuildPlan {
@@ -198,7 +212,87 @@ fn hostCall(ctx: *anyopaque, op_raw: u32, args: []const Value) Value {
             // Dependency edges are recorded; the build-graph executor lands next.
             return .void;
         },
+        .subsystem => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len)
+                plan.artifacts.items[id].subsystem = @intCast(@as(u8, @intCast(argInt(args, 1))) & 1);
+            return .void;
+        },
+        .entry => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len) plan.artifacts.items[id].entry = plan.dupe(argStr(args, 1));
+            return .void;
+        },
+        .stack => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len) plan.artifacts.items[id].stack = @intCast(@max(argInt(args, 1), 0));
+            return .void;
+        },
+        .link_flag => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len)
+                plan.artifacts.items[id].link_flags.append(plan.a(), plan.dupe(argStr(args, 1))) catch {
+                    plan.oom = true;
+                };
+            return .void;
+        },
+        .out_dir => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len) plan.artifacts.items[id].out_dir = plan.dupe(argStr(args, 1));
+            return .void;
+        },
+        .version => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len) plan.artifacts.items[id].version = plan.dupe(argStr(args, 1));
+            return .void;
+        },
+        .description => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len) plan.artifacts.items[id].description = plan.dupe(argStr(args, 1));
+            return .void;
+        },
+        .install => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len) plan.artifacts.items[id].install = true;
+            return .void;
+        },
+        .workspace => {
+            plan.workspace_name = plan.dupe(argStr(args, 0));
+            return .void;
+        },
+        .out_root => {
+            plan.out_root = plan.dupe(argStr(args, 0));
+            return .void;
+        },
+        .option_flag => return .{ .int = if (hasFlag(plan.options, argStr(args, 0))) 1 else 0 },
+        .option_str => {
+            if (findOption(plan.options, argStr(args, 0))) |v| return .{ .string = plan.dupe(v) };
+            return .{ .string = argStr(args, 1) };
+        },
+        .summary => {
+            plan.want_summary = argInt(args, 0) != 0;
+            return .void;
+        },
     }
+}
+
+/// The value of a `-Dname=value` build option, or null if not set.
+fn findOption(options: []const []const u8, name: []const u8) ?[]const u8 {
+    for (options) |o| {
+        const eq = std.mem.indexOfScalar(u8, o, '=') orelse continue;
+        if (std.mem.eql(u8, o[0..eq], name)) return o[eq + 1 ..];
+    }
+    return null;
+}
+
+/// Whether a `-Dname` flag (bare or `name=...`) was passed.
+fn hasFlag(options: []const []const u8, name: []const u8) bool {
+    for (options) |o| {
+        if (std.mem.eql(u8, o, name)) return true;
+        const eq = std.mem.indexOfScalar(u8, o, '=') orelse continue;
+        if (std.mem.eql(u8, o[0..eq], name)) return true;
+    }
+    return false;
 }
 
 // ── Options + entry ──────────────────────────────────────────────────────────
@@ -216,12 +310,15 @@ pub const RunOptions = struct {
     lib_paths: []const []const u8 = &.{},
     /// Extra args passed through to a `run` step's executable.
     run_args: []const []const u8 = &.{},
+    /// `-Dname` / `-Dname=value` build options, exposed to `b.option*` in build.k2.
+    options: []const []const u8 = &.{},
 };
 
 /// Run `build_path` (a build.k2) and execute the resulting plan.
 pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: RunOptions) BuildError!void {
     var plan = BuildPlan.init(gpa);
     defer plan.deinit();
+    plan.options = opts.options; // visible to `b.option*` during the build hook
 
     // 1. Front-end the build script (resolves std.build + the runtime prelude).
     var fe = pipeline.compileFileWithRuntime(gpa, io, build_path) catch |err| switch (err) {
@@ -270,10 +367,7 @@ fn executePlan(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: [
                     target_idx = st.target;
                     run_after = st.target;
                 },
-                .test_dir => {
-                    std.debug.print("k2 build: test steps are not wired yet ('{s}')\n", .{name});
-                    return;
-                },
+                .test_dir => return runTestDir(gpa, io, plan, base_dir, st.dir, opts),
             }
         }
         // An artifact name?
@@ -298,6 +392,23 @@ fn executePlan(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: [
     }
 
     if (run_after) |idx| try runArtifact(gpa, io, plan, base_dir, idx, opts);
+
+    if (plan.want_summary and !opts.quiet) printSummary(plan, base_dir);
+}
+
+/// A post-build summary of every artifact (kind, output path, opt level).
+fn printSummary(plan: *BuildPlan, base_dir: []const u8) void {
+    std.debug.print("\n── build summary", .{});
+    if (plan.workspace_name) |w| std.debug.print(" · {s}", .{w});
+    std.debug.print(" ──\n", .{});
+    for (plan.artifacts.items) |art| {
+        const out = resolveOutput(plan, base_dir, art) catch art.name;
+        const opt = optName(art.opt);
+        const inst: []const u8 = if (art.install) " [install]" else "";
+        std.debug.print("  {s: <16} {s: <14} {s} ({s}){s}", .{ art.name, @tagName(art.kind), out, opt, inst });
+        if (art.version) |v| std.debug.print(" v{s}", .{v});
+        std.debug.print("\n", .{});
+    }
 }
 
 fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, idx: usize, opts: RunOptions) BuildError!void {
@@ -340,6 +451,10 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
         .llvm_bin = opts.llvm_bin,
         .lib_paths = lib_paths.items,
         .extra_libs = art.libs.items,
+        .subsystem = if (art.subsystem == 1) .windows else .console,
+        .entry = art.entry,
+        .stack_reserve = art.stack,
+        .link_flags = art.link_flags.items,
     }) catch |err| {
         std.debug.print("k2 build: failed to build '{s}': {s}\n", .{ art.name, @errorName(err) });
         return error.CompileFailed;
@@ -373,6 +488,69 @@ fn runArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: [
     }
 }
 
+/// Run a `test_dir` step: compile + run every `*.k2` file directly under `dir`
+/// as a standalone program. A test passes when it exits 0. Reports each result
+/// and a pass/fail tally; fails the step if any test fails.
+fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, dir_rel: []const u8, opts: RunOptions) BuildError!void {
+    const a = plan.a();
+    const dir_abs = joinPath(a, base_dir, dir_rel) catch return error.OutOfMemory;
+
+    var dir = std.Io.Dir.cwd().openDir(io, dir_abs, .{ .iterate = true }) catch {
+        std.debug.print("k2 build: cannot open test directory '{s}'\n", .{dir_abs});
+        return error.RunFailed;
+    };
+    defer dir.close(io);
+    std.Io.Dir.cwd().createDirPath(io, ".zig-cache/k2test") catch {};
+
+    if (!opts.quiet) std.debug.print("running tests in {s}/\n", .{dir_abs});
+    var passed: u32 = 0;
+    var failed: u32 = 0;
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".k2")) continue;
+        // `entry.name` is only valid until the next iteration — copy it.
+        const name = a.dupe(u8, entry.name) catch continue;
+        const src_path = joinPath(a, dir_abs, name) catch continue;
+        const exe = std.fmt.allocPrint(a, ".zig-cache/k2test/{s}.exe", .{name}) catch continue;
+        const obj = std.fmt.allocPrint(a, "{s}.o", .{exe}) catch continue;
+        const src = readSource(gpa, io, src_path) orelse continue;
+        defer gpa.free(src);
+
+        const ok = blk: {
+            driver.compileFileWithLlvm(gpa, io, .{
+                .file_name = src_path,
+                .source = src,
+                .obj_path = obj,
+                .exe_path = exe,
+                .opt_level = 0,
+                .llvm_bin = opts.llvm_bin,
+                .lib_paths = opts.lib_paths,
+            }) catch break :blk false;
+            var child = std.process.spawn(io, .{
+                .argv = &.{exe},
+                .stdin = .ignore,
+                .stdout = .ignore,
+                .stderr = .ignore,
+            }) catch break :blk false;
+            break :blk switch (child.wait(io) catch break :blk false) {
+                .exited => |code| code == 0,
+                else => false,
+            };
+        };
+        if (ok) {
+            passed += 1;
+            if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{name});
+        } else {
+            failed += 1;
+            std.debug.print("  \u{2717} {s}\n", .{name});
+        }
+    }
+
+    std.debug.print("\n{d} passed, {d} failed\n", .{ passed, failed });
+    if (failed != 0) return error.RunFailed;
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 fn resolveOutput(plan: *BuildPlan, base_dir: []const u8, art: Artifact) BuildError![]const u8 {
@@ -385,6 +563,12 @@ fn resolveOutput(plan: *BuildPlan, base_dir: []const u8, art: Artifact) BuildErr
         .object => ".o",
     };
     const name = std.fmt.allocPrint(a, "{s}{s}", .{ art.name, ext }) catch return error.OutOfMemory;
+    // Output directory precedence: per-artifact out_dir, then the workspace
+    // out_root, then alongside the build script.
+    if (art.out_dir orelse plan.out_root) |dir| {
+        const out_dir_abs = joinPath(a, base_dir, dir) catch return error.OutOfMemory;
+        return joinPath(a, out_dir_abs, name) catch return error.OutOfMemory;
+    }
     return joinPath(a, base_dir, name) catch return error.OutOfMemory;
 }
 
@@ -397,14 +581,38 @@ fn readSource(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?[]const u8 
     return std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch null;
 }
 
+fn optName(opt: u2) []const u8 {
+    return switch (opt) {
+        0 => "debug",
+        1 => "release-safe",
+        2 => "release-fast",
+        3 => "release-small",
+    };
+}
+
 fn printList(plan: *BuildPlan) void {
+    if (plan.workspace_name) |w| std.debug.print("workspace: {s}\n", .{w});
     std.debug.print("artifacts:\n", .{});
     for (plan.artifacts.items, 0..) |art, i| {
         const star: []const u8 = if (plan.default_idx == i) " (default)" else "";
-        std.debug.print("  {s: <16} {s}{s}\n", .{ art.name, @tagName(art.kind), star });
+        std.debug.print("  {s: <16} {s: <14} {s}{s}", .{ art.name, @tagName(art.kind), optName(art.opt), star });
+        if (art.version) |v| std.debug.print(" v{s}", .{v});
+        if (art.install) std.debug.print(" [install]", .{});
+        if (art.libs.items.len != 0) {
+            std.debug.print("  links:", .{});
+            for (art.libs.items) |l| std.debug.print(" {s}", .{l});
+        }
+        std.debug.print("\n", .{});
+        if (art.description) |d| std.debug.print("    {s}\n", .{d});
     }
     if (plan.steps.items.len != 0) {
         std.debug.print("steps:\n", .{});
-        for (plan.steps.items) |st| std.debug.print("  {s: <16} {s}\n", .{ st.name, @tagName(st.kind) });
+        for (plan.steps.items) |st| {
+            const detail: []const u8 = switch (st.kind) {
+                .run => if (st.target < plan.artifacts.items.len) plan.artifacts.items[st.target].name else "",
+                .test_dir => st.dir,
+            };
+            std.debug.print("  {s: <16} {s: <10} {s}\n", .{ st.name, @tagName(st.kind), detail });
+        }
     }
 }

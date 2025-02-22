@@ -2112,10 +2112,16 @@ const Checker = struct {
             const id = self.resolveSymbol("Decl") orelse return error.SemanticFailed;
             return try self.sliceOf(.{ .named = id });
         }
-        // std.build intrinsics: artifact/require return a handle id (i32); the
-        // rest are side-effecting and return void.
-        if (std.mem.eql(u8, name, "__build_artifact") or std.mem.eql(u8, name, "__build_require")) {
+        // std.build intrinsics: artifact/require/option_flag return an id/flag
+        // (i32), option_str returns `[]const u8`, the rest are side-effecting void.
+        if (std.mem.eql(u8, name, "__build_artifact") or
+            std.mem.eql(u8, name, "__build_require") or
+            std.mem.eql(u8, name, "__build_optionflag"))
+        {
             return .i32;
+        }
+        if (std.mem.eql(u8, name, "__build_optionstr")) {
+            return try self.sliceOf(.u8);
         }
         if (std.mem.startsWith(u8, name, "__build_")) {
             return .void;
@@ -3796,7 +3802,11 @@ fn isBuiltinValue(name: []const u8) bool {
         "__build_artifact", "__build_opt",     "__build_link",
         "__build_libpath",  "__build_output",  "__build_define",
         "__build_default",  "__build_run",     "__build_test",
-        "__build_require",  "__build_depend",
+        "__build_require",  "__build_depend",  "__build_subsystem",
+        "__build_entry",    "__build_stack",   "__build_linkflag",
+        "__build_outdir",   "__build_version", "__build_desc",
+        "__build_workspace", "__build_outroot", "__build_install",
+        "__build_optionflag", "__build_optionstr", "__build_summary",
         // Compile-time pseudo-modules
         "TARGET",
     }) |builtin| {

@@ -8,6 +8,9 @@ const build_options = @import("build_options");
 
 pub const BuildMode = enum { check, emit_ir, emit_object };
 
+/// PE subsystem for an executable (mirrors the linker's `Subsystem`).
+pub const Subsystem = enum { console, windows };
+
 pub const CompileOptions = struct {
     mode: BuildMode = .check,
     output_path: ?[]const u8 = null,
@@ -131,6 +134,15 @@ pub const LlvmCompileOptions = struct {
     /// addition to those inferred from `#extern("lib", "symbol")` decls —
     /// e.g. transitive system libs a C library depends on (gdi32, user32, ...).
     extra_libs: []const []const u8 = &.{},
+    /// PE subsystem for an executable (`.console` shows a terminal window,
+    /// `.windows` is a GUI app with no console).
+    subsystem: Subsystem = .console,
+    /// Override the linker entry symbol (default `mainCRTStartup`).
+    entry: ?[]const u8 = null,
+    /// Reserve this many bytes of stack (0 = linker default).
+    stack_reserve: u64 = 0,
+    /// Raw linker flags passed verbatim (escape hatch).
+    link_flags: []const []const u8 = &.{},
     /// Optional progress hook, called at each phase boundary.
     progress: ?ProgressFn = null,
     progress_ctx: ?*anyopaque = null,
@@ -305,6 +317,13 @@ fn emitLlvmFromFrontend(
             .lib_paths = opts.lib_paths,
             .libs = libs.items,
             .dll = opts.dll,
+            .subsystem = switch (opts.subsystem) {
+                .console => .console,
+                .windows => .windows,
+            },
+            .entry = opts.entry,
+            .stack_reserve = opts.stack_reserve,
+            .extra_flags = opts.link_flags,
         }) catch return error.LinkFailed;
         if (opts.timings) |tm| tm.link_ns = sinceNs(t_link);
     } else {

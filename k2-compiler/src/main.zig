@@ -107,6 +107,9 @@ pub fn main(init: std.process.Init) u8 {
         if (!is_direct) return cmdBuildDir(allocator, io, args[2..]);
     }
 
+    // `k2 bindgen <header.h>` generates K2 FFI bindings from a C header.
+    if (std.mem.eql(u8, cmd, "bindgen")) return cmdBindgen(allocator, io, args[2..]);
+
     if (args.len < 3) {
         std.debug.print("k2: '{s}' needs a source file\n\n", .{cmd});
         printUsage();
@@ -196,6 +199,55 @@ pub fn main(init: std.process.Init) u8 {
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
+
+/// `k2 bindgen <header.h> [--lib <name>] [-o <out.k2>] [-I... -D...] [-- <clang args>]`
+fn cmdBindgen(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8) u8 {
+    if (!k2.llvm_enabled) {
+        std.debug.print("k2 bindgen: requires an LLVM-enabled build (libclang).\n    Rebuild: zig build -Dllvm-path=<path>\n", .{});
+        return 1;
+    }
+    if (args.len == 0) {
+        std.debug.print("k2 bindgen: needs a header file\n    usage: k2 bindgen <header.h> [--lib <name>] [-o <out.k2>] [-- <clang args>]\n", .{});
+        return 1;
+    }
+    const header = args[0];
+
+    var lib: ?[]const u8 = null;
+    var out: ?[]const u8 = null;
+    var clang_args: std.ArrayList([]const u8) = .empty;
+    defer clang_args.deinit(allocator);
+
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (std.mem.eql(u8, a, "--")) {
+            // Everything after `--` is forwarded verbatim to clang.
+            i += 1;
+            while (i < args.len) : (i += 1) clang_args.append(allocator, args[i]) catch return 1;
+            break;
+        } else if (std.mem.eql(u8, a, "--lib") and i + 1 < args.len) {
+            i += 1;
+            lib = args[i];
+        } else if (std.mem.eql(u8, a, "-o") and i + 1 < args.len) {
+            i += 1;
+            out = args[i];
+        } else if (std.mem.startsWith(u8, a, "-I") or std.mem.startsWith(u8, a, "-D")) {
+            clang_args.append(allocator, a) catch return 1;
+        } else {
+            std.debug.print("k2 bindgen: unknown option '{s}'\n", .{a});
+            return 1;
+        }
+    }
+
+    const out_path = out orelse deriveOut(allocator, header, ".k2");
+    defer if (out == null) allocator.free(out_path);
+
+    k2.bindgen.generate(allocator, io, header, lib, out_path, clang_args.items) catch |err| {
+        std.debug.print("k2 bindgen: failed: {s}\n", .{@errorName(err)});
+        return 1;
+    };
+    return 0;
+}
 
 fn cmdCheck(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8) u8 {
     var fe = k2.compileFileWithRuntime(allocator, io, path) catch |err| {
@@ -303,6 +355,9 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, rest: []const []const u
     var run_args: std.ArrayList([]const u8) = .empty;
     defer run_args.deinit(allocator);
 
+    var options: std.ArrayList([]const u8) = .empty;
+    defer options.deinit(allocator);
+
     var after_ddash = false;
     var i: usize = 0;
     while (i < rest.len) : (i += 1) {
@@ -325,6 +380,9 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, rest: []const []const u
         } else if (std.mem.eql(u8, arg, "--lib-path") and i + 1 < rest.len) {
             i += 1;
             lib_paths.append(allocator, rest[i]) catch return 1;
+        } else if (arg.len > 2 and std.mem.startsWith(u8, arg, "-D")) {
+            // A build option: `-Dname` (flag) or `-Dname=value`, read by `b.option*`.
+            options.append(allocator, arg[2..]) catch return 1;
         } else if (arg.len > 0 and arg[0] == '-') {
             std.debug.print("k2 build: unknown option '{s}'\n", .{arg});
             return 1;
@@ -335,6 +393,7 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, rest: []const []const u
     opts.llvm_bin = llvm_bin;
     opts.lib_paths = lib_paths.items;
     opts.run_args = run_args.items;
+    opts.options = options.items;
 
     const build_path = "build.k2";
     if (!fileExists(io, build_path)) {
@@ -420,8 +479,14 @@ fn printUsage() void {
         \\  check    <file.k2>     parse and type-check only
         \\  object   <file.k2>     compile to an object file (.o)
         \\  ir       <file.k2>     print LLVM IR to stdout
+        \\  bindgen  <header.h>    generate K2 FFI bindings from a C header
         \\  version                print the compiler version
         \\  help                   show this message
+        \\
+        \\C bindings (k2 bindgen, requires an LLVM-enabled build):
+        \\  k2 bindgen <h> --lib <name> -o <out.k2>   generate bindings for a C library
+        \\  k2 bindgen <h> -I<dir> -D<sym>            pass include dirs / defines to clang
+        \\  k2 bindgen <h> -- <clang args...>         forward arbitrary args to clang
         \\
         \\build system (k2 build, with a build.k2 in the current directory):
         \\  k2 build               build the default artifact (or all of them)

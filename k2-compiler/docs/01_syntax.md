@@ -339,6 +339,10 @@ PI :: 3.14159;
 GREETING :: "hello";
 ```
 
+A string constant is a real `[]const u8` slice, so slice operations work on it
+directly — `GREETING.len` is `5`, `GREETING[0]` is the first byte. (More generally,
+field and index access work on any top-level constant, not just locals.)
+
 Constants can also bind functions, types, and other compile-time constructs:
 
 ```k2

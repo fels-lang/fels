@@ -87,6 +87,19 @@ pub const BuildOp = enum(u32) {
     test_dir,   // (name, dir)
     require,    // (name, location, kind:i32) -> dep_id   kind: 0 path, 1 git
     depend,     // (id, dep_id)
+    subsystem,  // (id, kind:i32)                   kind: 0 console, 1 windows (GUI)
+    entry,      // (id, symbol)
+    stack,      // (id, reserve:i64)
+    link_flag,  // (id, raw-linker-flag)
+    out_dir,    // (id, dir)
+    version,    // (id, semver-string)
+    description,// (id, text)
+    workspace,  // (name)                           workspace-level metadata / default out dir
+    out_root,   // (dir)                             workspace output directory for all artifacts
+    install,    // (id)                              mark an artifact as installed (copied to out_root)
+    option_flag,// (name) -> i32                     a `-Dname` build flag (1 if set)
+    option_str, // (name, default) -> string         a `-Dname=value` build option
+    summary,    // (on:i32)                          print a build summary when done
 };
 
 pub const Instr = struct {

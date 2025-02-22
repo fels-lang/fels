@@ -62,6 +62,35 @@ pub const LlvmBackend = if (build_options.enable_llvm)
 else
     LlvmBackendStub;
 
+/// C binding generator (`k2 bindgen`) — powered by libclang, only available
+/// when compiled with `-Dllvm-path=<path>` (libclang ships in the same SDK).
+pub const bindgen = if (build_options.enable_llvm)
+    @import("bindgen.zig")
+else
+    BindgenStub;
+
+const BindgenStub = struct {
+    pub fn generate(
+        _: std.mem.Allocator,
+        _: std.Io,
+        _: []const u8,
+        _: ?[]const u8,
+        _: []const u8,
+        _: []const []const u8,
+    ) anyerror!void {
+        return error.ClangNotEnabled;
+    }
+    pub fn generateString(
+        _: std.mem.Allocator,
+        _: []const u8,
+        _: []const u8,
+        _: ?[]const u8,
+        _: []const []const u8,
+    ) anyerror![]u8 {
+        return error.ClangNotEnabled;
+    }
+};
+
 pub const compileWithLlvm = driver_mod.compileWithLlvm;
 pub const compileFileWithLlvm = driver_mod.compileFileWithLlvm;
 pub const LlvmCompileOptions = driver_mod.LlvmCompileOptions;

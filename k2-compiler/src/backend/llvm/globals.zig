@@ -33,6 +33,7 @@ fn lowerOne(cg: *ModuleCg, g: ir.IrGlobal) !void {
     }
 
     try cg.global_decls.put(g.name, gval);
+    try cg.global_ir_types.put(g.name, g.ty);
 }
 
 fn lowerConstInit(cg: *ModuleCg, init: ir.ConstInit, ty: ir.IrType) llvm.LLVMValueRef {
