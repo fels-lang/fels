@@ -2235,6 +2235,10 @@ const FunctionLowerer = struct {
                 for (self.params) |p| {
                     if (std.mem.eql(u8, p.name, name)) break :blk Value{ .param = name };
                 }
+                // A declared local shadows a top-level function/const of the same
+                // name (matching sema's `lookupLocal`-first resolution). Without
+                // this, `foo := 10` next to a `foo :: fn()` lowered to `@foo`.
+                if (self.local_types.contains(name)) break :blk Value{ .local = name };
                 if (resolveTopLevel(self.symbols, self.file_name, name)) |id| {
                     const kind = self.symbols.symbol(id).kind;
                     if (kind == .function or kind == .const_symbol) break :blk Value{ .global = self.symbols.symbol(id).link_name };

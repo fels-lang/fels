@@ -869,3 +869,38 @@ test "exe: generic List(T) backed by Arena, with generic methods" {
     , "exe_generic_list_arena");
     try std.testing.expectEqual(@as(u32, 42), code);
 }
+
+test "exe: a local shadows a top-level function of the same name" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: `foo := 42` next to `foo :: fn()` previously resolved the
+    // reference to the FUNCTION (`ret ptr @foo`) → LLVM verification error.
+    const code = try compileAndRun(arena.allocator(),
+        \\foo :: fn() -> i32 { return 5; }
+        \\main :: fn() -> i32 {
+        \\    foo := 42;
+        \\    return foo;
+        \\}
+    , "exe_local_shadows_fn");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: a local inferred from a usize const stays integer-typed" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: `to := SA` for a `usize` module const mistyped `to` as a
+    // pointer → `add ptr` LLVM verification error. The const reference now
+    // records its type, so the inferred local is `usize`.
+    const code = try compileAndRun(arena.allocator(),
+        \\SA :: 37usize;
+        \\main :: fn() -> i32 {
+        \\    to := SA;
+        \\    return (to + 5usize) as i32;
+        \\}
+    , "exe_local_from_usize_const");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}

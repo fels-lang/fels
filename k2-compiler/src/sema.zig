@@ -1665,7 +1665,15 @@ const Checker = struct {
                 if (self.resolveTypeParam(name)) |type_param_ty| return type_param_ty;
                 if (self.resolveSymbol(name)) |id| {
                     try self.env.expr_symbols.put(expr.id, id);
-                    return self.env.get(id) orelse .{ .named = id };
+                    // Record the resolved type for this reference. The `.ident`
+                    // arm returns early (bypassing the central `expr_types.put`
+                    // below), so without this a reference to a top-level const
+                    // carries no recorded type — IR lowering then falls back to
+                    // `.unknown`, which becomes a pointer (e.g. `to := SA` for a
+                    // `usize` const mistyped `to` as a pointer → `add ptr` ICE).
+                    const sym_ty = self.env.get(id) orelse Ty{ .named = id };
+                    try self.env.expr_types.put(expr.id, sym_ty);
+                    return sym_ty;
                 }
                 if (fromBuiltinName(name)) |builtin_ty| return builtin_ty;
                 self.emitError(expr.span, "unknown name `{s}`", .{name});
