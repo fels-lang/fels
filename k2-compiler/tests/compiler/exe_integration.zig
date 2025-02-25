@@ -119,6 +119,7 @@ test "build: the expanded std.build API runs through the build hook" {
         \\    app.out_dir("out");
         \\    app.link_mode(.dynamic);
         \\    app.runtime_file("vendor/some.dll");
+        \\    app.no_default_libs();
         \\    app.version("1.0.0");
         \\    app.description(b.option_str("desc", "a test app"));
         \\    app.install();

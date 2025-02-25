@@ -123,6 +123,8 @@ pub fn main(init: std.process.Init) u8 {
     defer opts.lib_paths.deinit(allocator);
     defer opts.extra_libs.deinit(allocator);
     defer if (opts.llvm_bin_owned) allocator.free(opts.llvm_bin);
+    var discovered_msvc: ?[]const u8 = null;
+    defer if (discovered_msvc) |p| allocator.free(p);
     if (k2.llvm_path.len != 0) {
         opts.llvm_bin = std.fmt.allocPrint(allocator, "{s}/bin", .{k2.llvm_path}) catch return 1;
         opts.llvm_bin_owned = true;
@@ -134,7 +136,12 @@ pub fn main(init: std.process.Init) u8 {
     // CRT search paths (harmless if no CRT lib is linked) — make `--libc` /
     // `link_libc()` resolvable: ucrt.lib (SDK) + vcruntime.lib (MSVC).
     if (k2.ucrt_lib_path.len != 0) opts.lib_paths.append(allocator, k2.ucrt_lib_path) catch return 1;
-    if (k2.msvc_lib_path.len != 0) opts.lib_paths.append(allocator, k2.msvc_lib_path) catch return 1;
+    if (k2.msvc_lib_path.len != 0) {
+        opts.lib_paths.append(allocator, k2.msvc_lib_path) catch return 1;
+    } else if (k2.msvc.discoverLibX64(allocator, io)) |p| {
+        discovered_msvc = p;
+        opts.lib_paths.append(allocator, p) catch return 1;
+    }
 
     var i: usize = 3;
     while (i < args.len) : (i += 1) {
@@ -362,10 +369,17 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, rest: []const []const u
 
     var lib_paths: std.ArrayList([]const u8) = .empty;
     defer lib_paths.deinit(allocator);
+    var discovered_msvc: ?[]const u8 = null;
+    defer if (discovered_msvc) |p| allocator.free(p);
     if (k2.windows_sdk_lib_path.len != 0) lib_paths.append(allocator, k2.windows_sdk_lib_path) catch return 1;
     // CRT search paths so a build.k2 `app.link_libc()` resolves (harmless otherwise).
     if (k2.ucrt_lib_path.len != 0) lib_paths.append(allocator, k2.ucrt_lib_path) catch return 1;
-    if (k2.msvc_lib_path.len != 0) lib_paths.append(allocator, k2.msvc_lib_path) catch return 1;
+    if (k2.msvc_lib_path.len != 0) {
+        lib_paths.append(allocator, k2.msvc_lib_path) catch return 1;
+    } else if (k2.msvc.discoverLibX64(allocator, io)) |p| {
+        discovered_msvc = p;
+        lib_paths.append(allocator, p) catch return 1;
+    }
 
     var run_args: std.ArrayList([]const u8) = .empty;
     defer run_args.deinit(allocator);
@@ -387,6 +401,8 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, rest: []const []const u
             opts.list = true;
         } else if (eqAny(arg, &.{ "-q", "--quiet" })) {
             opts.quiet = true;
+        } else if (eqAny(arg, &.{ "--libc", "-lc" })) {
+            opts.link_libc = true;
         } else if (std.mem.eql(u8, arg, "--llvm-path") and i + 1 < rest.len) {
             i += 1;
             if (llvm_bin_owned) allocator.free(llvm_bin);

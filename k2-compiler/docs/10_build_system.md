@@ -454,8 +454,12 @@ or the shorthands `a.debug()`, `a.release_safe()`, `a.release_fast()`, `a.releas
 `a.link_mode(.dynamic|.static)` / `a.dynamic()` / `a.static_link()` — choose how C
 libraries link (`.static` also links the C runtime), and
 `a.runtime_file(path)` — copy a runtime dependency (e.g. a `.dll`) next to the
-output. See [docs/11 → Linking](11_c_interop.md) for the static-vs-dynamic workflow
-and the cross-platform roadmap.
+output, and `a.no_default_libs()` — keep strict `/NODEFAULTLIB` instead of honoring
+a static C library's own `/DEFAULTLIB` directives. **Usually you need none of
+these:** the build inspects each linked `.lib` and auto-copies an import library's
+DLL or auto-links the C runtime (and pulls in its system deps via its `/DEFAULTLIB`
+directives) for a static archive. See [docs/11 → Linking](11_c_interop.md) for the
+static-vs-dynamic workflow and the cross-platform roadmap.
 
 **Executable settings**: `a.subsystem(.console|.windows)`, `a.console()`,
 `a.windowed()` (GUI — no console window), `a.entry(symbol)`, `a.stack_size(bytes)`.

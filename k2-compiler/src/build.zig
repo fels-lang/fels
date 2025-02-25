@@ -53,6 +53,9 @@ pub const Artifact = struct {
     link_mode: u8 = 0,
     /// Files (e.g. a `.dll`) copied next to the output after building.
     runtime_files: std.ArrayList([]const u8) = .empty,
+    /// Opt out of honoring a static C library's own `/DEFAULTLIB` directives
+    /// (keep the strict `/NODEFAULTLIB` and list system deps yourself).
+    no_default_libs: bool = false,
 };
 
 pub const StepKind = enum(u8) { run, test_dir };
@@ -291,6 +294,11 @@ fn hostCall(ctx: *anyopaque, op_raw: u32, args: []const Value) Value {
                 };
             return .void;
         },
+        .no_default_libs => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len) plan.artifacts.items[id].no_default_libs = true;
+            return .void;
+        },
     }
 }
 
@@ -323,6 +331,9 @@ pub const RunOptions = struct {
     /// Just print the artifacts and steps, build nothing.
     list: bool = false,
     quiet: bool = false,
+    /// Force-link the C runtime for every artifact (`k2 build --libc`), even if
+    /// auto-detection didn't flag a static C lib. An escape hatch.
+    link_libc: bool = false,
     /// LLVM bin dir + default library search paths, forwarded from the CLI.
     llvm_bin: []const u8 = "",
     lib_paths: []const []const u8 = &.{},
@@ -442,33 +453,47 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
         if (dir.len != 0) std.Io.Dir.cwd().createDirPath(io, dir) catch {};
     }
 
-    // Library search paths: the CLI defaults + the artifact's own.
+    // Library search paths: the CLI defaults + the artifact's own + the project
+    // dir itself, so a `raylib.lib` sitting next to `build.k2` links regardless of
+    // the working directory `k2 build` was invoked from.
     var lib_paths: std.ArrayList([]const u8) = .empty;
     lib_paths.appendSlice(a, opts.lib_paths) catch return error.OutOfMemory;
     for (art.lib_paths.items) |lp| {
         const abs = joinPath(a, base_dir, lp) catch return error.OutOfMemory;
         lib_paths.append(a, abs) catch return error.OutOfMemory;
     }
+    lib_paths.append(a, base_dir) catch return error.OutOfMemory;
 
     const opt_level: u2 = if (opts.release and art.opt == 0) 2 else art.opt;
     const is_lib = art.kind == .shared_library or art.kind == .static_library;
     const stop_at_obj = art.kind == .object;
 
-    // Auto-detect each linked library found in the artifact's OWN lib paths
-    // (i.e. the user's bundled C libs, not system libs): a static archive needs
-    // the C runtime; an import library's sibling DLL is copied next to the output.
-    // Explicit static_link()/runtime_file() still apply on top of this.
-    var need_libc = art.link_mode == 1;
+    // Auto-detect each linked library by peeking inside the `.lib`: a static
+    // archive needs the C runtime; an import library's sibling DLL is copied next
+    // to the output. We search the artifact's own lib paths PLUS the project dir
+    // itself — the linker also looks in the working directory, so running
+    // `k2 build` from a vendor lib folder (where `raylib.lib` sits next to
+    // `build.k2`) still triggers detection. Explicit static_link()/runtime_file()
+    // still apply on top of this.
+    var search_dirs: std.ArrayList([]const u8) = .empty;
+    for (art.lib_paths.items) |lp|
+        search_dirs.append(a, joinPath(a, base_dir, lp) catch continue) catch {};
+    search_dirs.append(a, base_dir) catch {};
+
+    var need_libc = art.link_mode == 1 or opts.link_libc;
     var auto_dlls: std.ArrayList([]const u8) = .empty;
     for (art.libs.items) |lib_name| {
-        for (art.lib_paths.items) |lp| {
-            const dir = joinPath(a, base_dir, lp) catch continue;
+        for (search_dirs.items) |dir| {
             const lib_file = std.fmt.allocPrint(a, "{s}/{s}.lib", .{ dir, lib_name }) catch continue;
             const data = readSource(gpa, io, lib_file) orelse continue;
             defer gpa.free(data);
             switch (inspectLib(a, data)) {
                 .static => need_libc = true,
                 .import_lib => |dll| if (dll.len != 0) {
+                    // `static_link()` asserts intent: warn if the resolved lib is
+                    // actually an import library (you'll get a dynamic link).
+                    if (art.link_mode == 1)
+                        std.debug.print("k2 build: warning: '{s}' requested static linking, but '{s}/{s}.lib' is an import library — the link will be DYNAMIC. Point lib_path at the static archive.\n", .{ lib_name, dir, lib_name });
                     auto_dlls.append(a, joinPath(a, dir, dll) catch continue) catch {};
                     if (!opts.quiet) std.debug.print("  {s} → dynamic ({s})\n", .{ lib_name, dll });
                 },
@@ -486,6 +511,11 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
         libs.append(a, "ucrt") catch return error.OutOfMemory;
         libs.append(a, "vcruntime") catch return error.OutOfMemory;
     }
+
+    // When a static C library is involved, honor ITS own `/DEFAULTLIB` directives
+    // by default — so its system deps (opengl32, gdi32, …) flow in automatically,
+    // C3-style — unless the artifact opted out with `no_default_libs()`.
+    const honor_defaultlibs = need_libc and !art.no_default_libs;
 
     const src = readSource(gpa, io, root_path);
     defer if (src) |s| gpa.free(s);
@@ -506,6 +536,7 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
         .entry = art.entry,
         .stack_reserve = art.stack,
         .link_flags = art.link_flags.items,
+        .honor_defaultlibs = honor_defaultlibs,
     }) catch |err| {
         std.debug.print("k2 build: failed to build '{s}': {s}\n", .{ art.name, @errorName(err) });
         return error.CompileFailed;

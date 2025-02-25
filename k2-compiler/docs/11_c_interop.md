@@ -76,20 +76,24 @@ Link the C runtime to fix it:
 - **build.k2:** `app.link_libc();`
 
 `link_libc` pulls in the UCRT (`ucrt.lib` — malloc/free/…) and the VC runtime
-(`vcruntime.lib` — `__chkstk`, security checks). `k2` adds the UCRT search path
-automatically (derived from the configured Windows SDK path). For `vcruntime.lib`
-you need your MSVC `lib/x64` directory on the search path — either build `k2` with
-`-Dmsvc-lib-path=<…/VC/Tools/MSVC/<ver>/lib/x64>`, or pass `--lib-path <that dir>`.
+(`vcruntime.lib` — `__chkstk`, security checks). Both search paths are found for
+you: the UCRT path is derived from the configured Windows SDK path, and the MSVC
+`lib/x64` directory (where `vcruntime.lib` lives) is **auto-discovered** — `k2`
+scans the standard `…/Microsoft Visual Studio/<year>/<edition>/VC/Tools/MSVC/<ver>/lib/x64`
+locations and uses the newest toolset it finds. So you normally don't configure
+anything. If your toolchain is on a non-default drive, override the discovery by
+building `k2` with `-Dmsvc-lib-path=<…/VC/Tools/MSVC/<ver>/lib/x64>`, or pass
+`--lib-path <that dir>` on the command line.
 
 K2's own functions are **module-private** (internal linkage — the whole program is
 one object), so they never clash with the CRT's `exit`/`abort`/etc. when you link
 libc. A complete static-raylib build is just:
 
 ```sh
-k2 build game.k2 --libc --lib-path <raylib-lib-dir> --lib-path <msvc-lib-dir>
+k2 build game.k2 --libc --lib-path <raylib-lib-dir>
 ```
 
-(or `app.link_libc()` in a build.k2 once `k2` is built with `-Dmsvc-lib-path`).
+(or `app.link_libc()` in a build.k2 — the MSVC path is discovered automatically).
 
 > A static library also needs *its own* system dependencies. Static raylib, for
 > example, also wants `gdi32`, `user32`, `winmm`, `shell32`, and `opengl32` —
@@ -101,7 +105,9 @@ k2 build game.k2 --libc --lib-path <raylib-lib-dir> --lib-path <msvc-lib-dir>
 
 You don't rename or swap library files to switch link mode, and in the common case
 you don't even say which mode you want. **The build peeks inside each `.lib` you
-link** (from the artifact's own `lib_path`s) and reacts to what it finds:
+link** (in the artifact's own `lib_path`s *and* the directory containing
+`build.k2`, so a `raylib.lib` sitting next to your build script is detected even
+with no `lib_path` call) and reacts to what it finds:
 
 - an **import library** (it carries an `__IMPORT_DESCRIPTOR_<dll>` symbol) → the
   build copies the matching `.dll` next to the output exe automatically, and
@@ -134,18 +140,85 @@ can always be explicit:
 - **`game.runtime_file("…/extra.dll")`** — copy an extra DLL the detector can't infer.
 - **`game.link_libc()`** — the low-level "link the C runtime" used by `static_link`.
 
+#### System dependencies — pulled in automatically
+
 A static C library also needs *its own* system deps (static raylib wants
-`opengl32`/`gdi32`/…) — add those with `game.link("opengl32")` etc. A toggle:
+`opengl32`/`gdi32`/…). You normally **don't list them** — when a static C library
+is linked, K2 honors that library's own embedded `/DEFAULTLIB` directives, exactly
+like a C compiler does, so its system dependencies flow in automatically:
+
+```k2
+build :: fn(b: Build) {
+    game := b.executable("game", "src/main.k2");
+    game.link("raylib");
+    game.lib_path("vendor/raylib/lib-static");   // raylib.lib (static archive)
+    b.default(game);                              // opengl32/gdi32/winmm pulled in for you
+}
+```
+
+K2 stays minimal-runtime by default: it links `/NODEFAULTLIB` and provides its own
+tiny runtime, so a plain K2 program pulls in nothing. The honoring kicks in **only**
+when a static C library is involved — and even then K2 suppresses just the CRT-startup
+*umbrella* libs (`libcmt`/`msvcrt`/…), whose `mainCRTStartup` would clash with K2's
+entry, while letting the real system deps (`opengl32`, `gdi32`, …) through. The C
+runtime itself (`malloc`, `__chkstk`, …) comes from `ucrt`+`vcruntime`, which the
+static auto-detection already links.
+
+> **Caveat — libraries that don't self-declare their deps.** Honoring only pulls
+> in what the `.lib` *records*. A library that uses Win32 APIs without
+> `#pragma comment(lib, …)` won't list them, so you still link those yourself. The
+> prebuilt **static raylib** is the classic case: it embeds `winmm` but not the
+> GUI/GL libraries glfw uses, so a complete static-raylib build is:
+>
+> ```k2
+> app := b.executable("app", "main.k2");
+> app.link("raylib");                 // raylib.lib detected → CRT auto-linked
+> app.link("opengl32"); app.link("gdi32"); app.link("user32");
+> app.link("shell32"); app.link("winmm");   // raylib's GUI deps it doesn't declare
+> b.default(app);
+> ```
+>
+> Run it from the folder that holds `raylib.lib` (or add `app.lib_path("…")`). The
+> **DLL** distribution avoids the whole list — its `.dll` already carries the CRT
+> and these dependencies, so prefer it when you can.
+
+**Opting out — `game.no_default_libs()`.** If you'd rather keep the strict, minimal
+linking and control every dependency yourself, call `no_default_libs()`; then the
+library's `/DEFAULTLIB` directives are ignored and you list system deps explicitly:
+
+```k2
+game.lib_path("vendor/raylib/lib-static");
+game.no_default_libs();
+game.link("opengl32"); game.link("gdi32"); game.link("user32");
+game.link("winmm"); game.link("shell32");
+```
+
+A static/dynamic toggle then needs nothing extra in the default path:
 
 ```k2
 if b.option("static") {
-    game.lib_path("vendor/raylib/lib-static");
-    game.link("opengl32"); game.link("gdi32"); game.link("user32");
-    game.link("winmm"); game.link("shell32");
+    game.lib_path("vendor/raylib/lib-static");   // static archive → CRT + its deps auto
 } else {
-    game.lib_path("vendor/raylib/lib-dynamic");
+    game.lib_path("vendor/raylib/lib-dynamic");  // import lib → DLL auto-copied
 }
 ```
+
+#### Forcing static when both libraries exist
+
+You can't make an import library link statically — it has no code in it, only a
+pointer to the DLL. So "forcing static" means **making the linker pick the static
+archive**, which you control by what's on the search path:
+
+- If the static and import `raylib.lib` live in **different folders**, only add the
+  static folder to `lib_path` (or list it first — the first `raylib.lib` found
+  wins). The build sees a static archive → static link.
+- If the two have **different names** (`raylib.lib` static, `raylibdll.lib`
+  import), just `link("raylib")` vs `link("raylibdll")` — the name picks the file.
+
+To make the intent safe, call **`game.static_link()`**: if the `raylib.lib` actually
+resolved on your path turns out to be an *import* library, you get a clear warning
+(`requested static linking, but '…/raylib.lib' is an import library — the link will
+be DYNAMIC`) instead of silently shipping a dynamic build.
 
 ### Cross-platform (roadmap)
 

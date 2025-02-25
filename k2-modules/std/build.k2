@@ -144,6 +144,15 @@ pub runtime_file :: fn(self: Artifact, path: []const u8) {
     __build_runtimefile(self.id, path);
 }
 
+// When a static C library is linked, K2 honors that library's OWN `/DEFAULTLIB`
+// directives by default, so its system dependencies (opengl32, gdi32, winmm, …)
+// are pulled in automatically — you don't list them. Call `no_default_libs()` to
+// opt out: keep the strict, minimal-runtime linking and specify every system
+// dependency yourself with `link(...)`.
+pub no_default_libs :: fn(self: Artifact) {
+    __build_nodefaultlibs(self.id);
+}
+
 // ── Executable settings ─────────────────────────────────────────────────────────
 
 // Choose the PE subsystem (console window or not).

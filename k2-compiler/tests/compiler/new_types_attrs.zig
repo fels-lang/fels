@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const k2  = @import("k2_compiler");
 
 // ── Sub-byte integers ─────────────────────────────────────────────────────────
@@ -542,5 +543,52 @@ test "bindgen: C header lowers to K2 structs, enum consts, and #extern fns" {
             std.debug.print("bindgen output missing '{s}'\n--- full output ---\n{s}\n", .{ needle, out });
             return err;
         };
+    }
+}
+
+// ── Linker: honoring a C library's /DEFAULTLIB directives ───────────────────────
+
+fn argsContain(args: []const []const u8, needle: []const u8) bool {
+    for (args) |a| if (std.mem.eql(u8, a, needle)) return true;
+    return false;
+}
+
+test "link: honor_defaultlibs suppresses CRT umbrellas instead of blanket /NODEFAULTLIB" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    const a = std.testing.allocator;
+
+    // Default (strict): blanket /NODEFAULTLIB, no per-umbrella suppression.
+    {
+        const args = try k2.llvm_link.buildArgs(a, .{ .llvm_bin = "x", .output = "o.exe", .obj_files = &.{} });
+        defer {
+            for (args) |s| a.free(@constCast(s));
+            a.free(args);
+        }
+        try std.testing.expect(argsContain(args, "/NODEFAULTLIB"));
+        try std.testing.expect(!argsContain(args, "/NODEFAULTLIB:msvcrt"));
+    }
+
+    // Honoring: no blanket suppression; only the CRT-startup umbrellas are excluded,
+    // so a C library's own /DEFAULTLIB:opengl32 etc. flow in.
+    {
+        const args = try k2.llvm_link.buildArgs(a, .{ .llvm_bin = "x", .output = "o.exe", .obj_files = &.{}, .honor_defaultlibs = true });
+        defer {
+            for (args) |s| a.free(@constCast(s));
+            a.free(args);
+        }
+        try std.testing.expect(!argsContain(args, "/NODEFAULTLIB"));
+        try std.testing.expect(argsContain(args, "/NODEFAULTLIB:msvcrt"));
+        try std.testing.expect(argsContain(args, "/NODEFAULTLIB:libcmt"));
+    }
+}
+
+test "msvc: discoverLibX64 finds a vcruntime-bearing lib dir (or cleanly returns null)" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const a = std.testing.allocator; // also asserts the discovery routine doesn't leak
+    if (k2.msvc.discoverLibX64(a, std.testing.io)) |path| {
+        defer a.free(path);
+        // Whatever it finds must be a real x64 lib dir.
+        try std.testing.expect(std.mem.endsWith(u8, path, "lib/x64"));
+        try std.testing.expect(std.mem.indexOf(u8, path, "MSVC") != null);
     }
 }

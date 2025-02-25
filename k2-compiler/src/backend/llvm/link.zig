@@ -34,6 +34,7 @@ fn k2lnkEligible(opts: WindowsLinkOptions) bool {
     if (opts.entry != null) return false;
     if (opts.stack_reserve != 0) return false;
     if (opts.extra_flags.len != 0) return false;
+    if (opts.honor_defaultlibs) return false; // k2lnk can't parse /DEFAULTLIB directives
     return true;
 }
 
@@ -158,6 +159,11 @@ pub const WindowsLinkOptions = struct {
     /// Raw flags passed verbatim to the linker — an escape hatch for anything
     /// the structured options don't cover.
     extra_flags: []const []const u8 = &.{},
+    /// Honor the `/DEFAULTLIB` directives embedded in the linked objects/archives
+    /// (a C library's own system deps — opengl32, gdi32, …), instead of blanket
+    /// `/NODEFAULTLIB`. Only the CRT-startup umbrella libs are suppressed (they'd
+    /// clash with K2's own entry); the C runtime is provided via `ucrt`/`vcruntime`.
+    honor_defaultlibs: bool = false,
 };
 
 /// Build the lld-link command line as a slice of argument strings (caller frees).
@@ -183,7 +189,20 @@ pub fn buildArgs(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ![]cons
         if (opts.stack_reserve != 0)
             try args.append(allocator, try std.fmt.allocPrint(allocator, "/STACK:{d}", .{opts.stack_reserve}));
     }
-    try args.append(allocator, try allocator.dupe(u8, "/NODEFAULTLIB"));
+    if (opts.honor_defaultlibs) {
+        // Honor the linked C library's own `/DEFAULTLIB` directives (so its system
+        // deps — opengl32, gdi32, winmm, … — flow in automatically, C3-style), but
+        // suppress only the CRT-startup *umbrella* libs: they provide their own
+        // `mainCRTStartup`/`_DllMainCRTStartup` which would clash with K2's entry.
+        // The actual C runtime (malloc/__chkstk/…) comes from ucrt+vcruntime, which
+        // the build links explicitly and which carry no startup.
+        const crt_umbrellas = [_][]const u8{ "libcmt", "libcmtd", "msvcrt", "msvcrtd", "libc", "libcd" };
+        for (crt_umbrellas) |u|
+            try args.append(allocator, try std.fmt.allocPrint(allocator, "/NODEFAULTLIB:{s}", .{u}));
+    } else {
+        // Strict: ignore every embedded `/DEFAULTLIB` directive (K2's minimal-runtime default).
+        try args.append(allocator, try allocator.dupe(u8, "/NODEFAULTLIB"));
+    }
     try args.append(allocator, try allocator.dupe(u8, "kernel32.lib"));
     for (opts.lib_paths) |lp|
         try args.append(allocator, try std.fmt.allocPrint(allocator, "/LIBPATH:{s}", .{lp}));
@@ -247,6 +266,8 @@ fn lldFallbackReason(opts: WindowsLinkOptions, obj_bytes: ?[]const u8) ?[]const 
     }
     if (opts.subsystem != .console or opts.entry != null or opts.stack_reserve != 0 or opts.extra_flags.len != 0)
         return "custom linker settings (subsystem/entry/stack/flags) k2lnk can't apply";
+    if (opts.honor_defaultlibs)
+        return "honoring a C library's /DEFAULTLIB directives (k2lnk can't parse them)";
     if (obj_bytes) |b| {
         if (!coffSafeForK2lnk(b)) return "object has duplicate-named sections (e.g. a float constant pool)";
     }

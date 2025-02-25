@@ -143,6 +143,9 @@ pub const LlvmCompileOptions = struct {
     stack_reserve: u64 = 0,
     /// Raw linker flags passed verbatim (escape hatch).
     link_flags: []const []const u8 = &.{},
+    /// Honor the linked C library's own `/DEFAULTLIB` directives (its system deps)
+    /// instead of blanket `/NODEFAULTLIB`. The build sets this for static C libs.
+    honor_defaultlibs: bool = false,
     /// Optional progress hook, called at each phase boundary.
     progress: ?ProgressFn = null,
     progress_ctx: ?*anyopaque = null,
@@ -324,6 +327,7 @@ fn emitLlvmFromFrontend(
             .entry = opts.entry,
             .stack_reserve = opts.stack_reserve,
             .extra_flags = opts.link_flags,
+            .honor_defaultlibs = opts.honor_defaultlibs,
         }) catch return error.LinkFailed;
         if (opts.timings) |tm| tm.link_ns = sinceNs(t_link);
     } else {

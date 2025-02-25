@@ -74,6 +74,16 @@ pub const LlvmBackend = if (build_options.enable_llvm)
 else
     LlvmBackendStub;
 
+/// The Windows link step (lld-link arg construction) — exposed for tests.
+pub const llvm_link = if (build_options.enable_llvm)
+    @import("backend/llvm/link.zig")
+else
+    struct {};
+
+/// MSVC toolchain discovery (finds `vcruntime.lib` so C-runtime linking works
+/// without `-Dmsvc-lib-path` / `--lib-path`).
+pub const msvc = @import("msvc.zig");
+
 /// C binding generator (`k2 bindgen`) — powered by libclang, only available
 /// when compiled with `-Dllvm-path=<path>` (libclang ships in the same SDK).
 pub const bindgen = if (build_options.enable_llvm)
