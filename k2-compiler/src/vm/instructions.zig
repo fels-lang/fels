@@ -100,6 +100,8 @@ pub const BuildOp = enum(u32) {
     option_flag,// (name) -> i32                     a `-Dname` build flag (1 if set)
     option_str, // (name, default) -> string         a `-Dname=value` build option
     summary,    // (on:i32)                          print a build summary when done
+    link_mode,  // (id, mode:i32)                    0 dynamic, 1 static (static auto-links libc)
+    runtime_file,// (id, path)                        copy a runtime dep (e.g. a .dll) next to the output
 };
 
 pub const Instr = struct {

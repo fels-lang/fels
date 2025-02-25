@@ -49,6 +49,10 @@ pub const Artifact = struct {
     version: ?[]const u8 = null,
     description: ?[]const u8 = null,
     install: bool = false,
+    /// 0 = dynamic (default), 1 = static. Static auto-links the C runtime.
+    link_mode: u8 = 0,
+    /// Files (e.g. a `.dll`) copied next to the output after building.
+    runtime_files: std.ArrayList([]const u8) = .empty,
 };
 
 pub const StepKind = enum(u8) { run, test_dir };
@@ -273,6 +277,20 @@ fn hostCall(ctx: *anyopaque, op_raw: u32, args: []const Value) Value {
             plan.want_summary = argInt(args, 0) != 0;
             return .void;
         },
+        .link_mode => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len)
+                plan.artifacts.items[id].link_mode = @intCast(@as(u8, @intCast(argInt(args, 1))) & 1);
+            return .void;
+        },
+        .runtime_file => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len)
+                plan.artifacts.items[id].runtime_files.append(plan.a(), plan.dupe(argStr(args, 1))) catch {
+                    plan.oom = true;
+                };
+            return .void;
+        },
     }
 }
 
@@ -436,6 +454,39 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
     const is_lib = art.kind == .shared_library or art.kind == .static_library;
     const stop_at_obj = art.kind == .object;
 
+    // Auto-detect each linked library found in the artifact's OWN lib paths
+    // (i.e. the user's bundled C libs, not system libs): a static archive needs
+    // the C runtime; an import library's sibling DLL is copied next to the output.
+    // Explicit static_link()/runtime_file() still apply on top of this.
+    var need_libc = art.link_mode == 1;
+    var auto_dlls: std.ArrayList([]const u8) = .empty;
+    for (art.libs.items) |lib_name| {
+        for (art.lib_paths.items) |lp| {
+            const dir = joinPath(a, base_dir, lp) catch continue;
+            const lib_file = std.fmt.allocPrint(a, "{s}/{s}.lib", .{ dir, lib_name }) catch continue;
+            const data = readSource(gpa, io, lib_file) orelse continue;
+            defer gpa.free(data);
+            switch (inspectLib(a, data)) {
+                .static => need_libc = true,
+                .import_lib => |dll| if (dll.len != 0) {
+                    auto_dlls.append(a, joinPath(a, dir, dll) catch continue) catch {};
+                    if (!opts.quiet) std.debug.print("  {s} → dynamic ({s})\n", .{ lib_name, dll });
+                },
+                .unknown => {},
+            }
+            break; // found the lib on this path; stop searching
+        }
+    }
+
+    // Libraries to link: the artifact's own, plus the C runtime when a static C
+    // library is involved (it brings code but not the CRT it depends on).
+    var libs: std.ArrayList([]const u8) = .empty;
+    libs.appendSlice(a, art.libs.items) catch return error.OutOfMemory;
+    if (need_libc) {
+        libs.append(a, "ucrt") catch return error.OutOfMemory;
+        libs.append(a, "vcruntime") catch return error.OutOfMemory;
+    }
+
     const src = readSource(gpa, io, root_path);
     defer if (src) |s| gpa.free(s);
 
@@ -450,7 +501,7 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
         .opt_level = opt_level,
         .llvm_bin = opts.llvm_bin,
         .lib_paths = lib_paths.items,
-        .extra_libs = art.libs.items,
+        .extra_libs = libs.items,
         .subsystem = if (art.subsystem == 1) .windows else .console,
         .entry = art.entry,
         .stack_reserve = art.stack,
@@ -461,6 +512,25 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
     };
 
     if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{out_path});
+
+    // Copy runtime dependencies next to the output — both the explicit
+    // `runtime_file`s and the DLLs auto-detected from import libraries — so a
+    // dynamically-linked program runs without manually shipping its DLLs.
+    const out_dir = std.fs.path.dirname(out_path) orelse ".";
+    var copy_srcs: std.ArrayList([]const u8) = .empty;
+    for (art.runtime_files.items) |rf| copy_srcs.append(a, joinPath(a, base_dir, rf) catch continue) catch {};
+    copy_srcs.appendSlice(a, auto_dlls.items) catch {};
+    for (copy_srcs.items) |csrc| {
+        const dst = joinPath(a, out_dir, std.fs.path.basename(csrc)) catch continue;
+        if (std.mem.eql(u8, csrc, dst)) continue; // already in place
+        const data = readSource(gpa, io, csrc) orelse {
+            std.debug.print("k2 build: runtime file not found: {s}\n", .{csrc});
+            continue;
+        };
+        defer gpa.free(data);
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dst, .data = data }) catch continue;
+        if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{dst});
+    }
 }
 
 fn runArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, idx: usize, opts: RunOptions) BuildError!void {
@@ -549,6 +619,33 @@ fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
 
     std.debug.print("\n{d} passed, {d} failed\n", .{ passed, failed });
     if (failed != 0) return error.RunFailed;
+}
+
+// ── Library inspection (import lib vs static archive) ───────────────────────────
+
+const LibKind = union(enum) {
+    /// A static archive (regular COFF object members) — needs the C runtime.
+    static,
+    /// An import library — the value is the DLL its symbols come from.
+    import_lib: []const u8,
+    /// Not a recognizable COFF `.lib` archive.
+    unknown,
+};
+
+/// Classify a Windows COFF `.lib`: an import library carries an
+/// `__IMPORT_DESCRIPTOR_<dll>` symbol (true for both the short- and long-import
+/// forms); a static archive doesn't. Returns the DLL name for an import lib.
+fn inspectLib(arena: std.mem.Allocator, bytes: []const u8) LibKind {
+    const magic = "!<arch>\n";
+    if (bytes.len < magic.len or !std.mem.eql(u8, bytes[0..magic.len], magic)) return .unknown;
+    const needle = "__IMPORT_DESCRIPTOR_";
+    const at = std.mem.indexOf(u8, bytes, needle) orelse return .static;
+    var p = at + needle.len;
+    const start = p;
+    while (p < bytes.len and (std.ascii.isAlphanumeric(bytes[p]) or bytes[p] == '_')) p += 1;
+    if (p == start) return .static;
+    const dll = std.fmt.allocPrint(arena, "{s}.dll", .{bytes[start..p]}) catch return .static;
+    return .{ .import_lib = dll };
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

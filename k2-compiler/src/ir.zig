@@ -3507,6 +3507,8 @@ fn isBuiltinName(name: []const u8) bool {
         "__build_optionflag",
         "__build_optionstr",
         "__build_summary",
+        "__build_linkmode",
+        "__build_runtimefile",
     }) |builtin| {
         if (std.mem.eql(u8, name, builtin)) return true;
     }

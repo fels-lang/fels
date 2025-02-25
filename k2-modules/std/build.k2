@@ -119,6 +119,31 @@ pub link_libc :: fn(self: Artifact) {
     __build_link(self.id, "vcruntime");
 }
 
+// How C libraries are linked. `.dynamic` (the default) links the platform's
+// import/shared library and you ship the runtime library (see `runtime_file`).
+// `.static` links the archive and auto-links the C runtime (a static C lib
+// brings its code but not the CRT it depends on). The library NAME you pass to
+// `link()` stays the same either way — only the search path + this mode differ,
+// which keeps a build.k2 portable across static/dynamic and (later) platforms.
+pub LinkMode :: enum { dynamic, static }
+
+pub link_mode :: fn(self: Artifact, mode: LinkMode) {
+    match mode {
+        .dynamic => { __build_linkmode(self.id, 0); }
+        .static  => { __build_linkmode(self.id, 1); }
+    }
+}
+
+// Shorthands: `app.dynamic()` / `app.static_link()`.
+pub dynamic :: fn(self: Artifact) { __build_linkmode(self.id, 0); }
+pub static_link :: fn(self: Artifact) { __build_linkmode(self.id, 1); }
+
+// Copy a runtime dependency (e.g. a `.dll`) next to the output after building,
+// so a dynamically-linked program runs without manually shipping its DLLs.
+pub runtime_file :: fn(self: Artifact, path: []const u8) {
+    __build_runtimefile(self.id, path);
+}
+
 // ── Executable settings ─────────────────────────────────────────────────────────
 
 // Choose the PE subsystem (console window or not).

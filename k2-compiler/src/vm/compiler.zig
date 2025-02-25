@@ -1049,6 +1049,8 @@ fn buildOpFor(name: []const u8) ?instructions.BuildOp {
         .{ "__build_optionflag", instructions.BuildOp.option_flag },
         .{ "__build_optionstr", instructions.BuildOp.option_str },
         .{ "__build_summary", instructions.BuildOp.summary },
+        .{ "__build_linkmode", instructions.BuildOp.link_mode },
+        .{ "__build_runtimefile", instructions.BuildOp.runtime_file },
     };
     inline for (table) |entry| {
         if (std.mem.eql(u8, name, entry[0])) return entry[1];

@@ -97,6 +97,83 @@ k2 build game.k2 --libc --lib-path <raylib-lib-dir> --lib-path <msvc-lib-dir>
 > avoids all of this (the `.dll` already contains its CRT and dependencies), so
 > prefer it when available.
 
+### Static vs dynamic — automatic
+
+You don't rename or swap library files to switch link mode, and in the common case
+you don't even say which mode you want. **The build peeks inside each `.lib` you
+link** (from the artifact's own `lib_path`s) and reacts to what it finds:
+
+- an **import library** (it carries an `__IMPORT_DESCRIPTOR_<dll>` symbol) → the
+  build copies the matching `.dll` next to the output exe automatically, and
+- a **static archive** → the build links the C runtime automatically.
+
+So this is usually all you write:
+
+```k2
+build :: fn(b: Build) {
+    game := b.executable("game", "src/main.k2");
+    game.link("raylib");
+    game.lib_path("vendor/raylib/lib");   // whichever raylib.lib is here decides the mode
+    b.default(game);
+}
+```
+
+If `vendor/raylib/lib/raylib.lib` is the import library, you'll see
+`raylib → dynamic (raylib.dll)` and the DLL lands next to the exe; if it's the
+static archive, the C runtime is linked for you. The bindings (`#extern("raylib", …)`)
+never change — only which `raylib.lib` is on the path.
+
+#### Explicit overrides
+
+The detection only covers the artifact's own libraries (not system libs), and you
+can always be explicit:
+
+- **`game.static_link()`** / **`game.link_mode(.static)`** — force linking the C
+  runtime (e.g. if you also list the library's system deps yourself).
+- **`game.dynamic()`** — force dynamic mode.
+- **`game.runtime_file("…/extra.dll")`** — copy an extra DLL the detector can't infer.
+- **`game.link_libc()`** — the low-level "link the C runtime" used by `static_link`.
+
+A static C library also needs *its own* system deps (static raylib wants
+`opengl32`/`gdi32`/…) — add those with `game.link("opengl32")` etc. A toggle:
+
+```k2
+if b.option("static") {
+    game.lib_path("vendor/raylib/lib-static");
+    game.link("opengl32"); game.link("gdi32"); game.link("user32");
+    game.link("winmm"); game.link("shell32");
+} else {
+    game.lib_path("vendor/raylib/lib-dynamic");
+}
+```
+
+### Cross-platform (roadmap)
+
+That API is deliberately platform-agnostic, so the same `build.k2` will work
+unchanged once K2 grows other targets. The intended mapping:
+
+| build.k2 | Windows (today) | Linux (planned) | macOS (planned) |
+|---|---|---|---|
+| `link("raylib")` | `raylib.lib` | `-lraylib` → `libraylib.so`/`.a` | `-lraylib` → `libraylib.dylib`/`.a` |
+| `link_mode(.dynamic)` | import lib + ship `.dll` | `.so` + rpath | `.dylib` + rpath |
+| `link_mode(.static)` | archive + CRT | `.a` + libc | `.a` + libSystem |
+| `runtime_file(x)` | copy next to exe | (rpath usually suffices) | (rpath) |
+| `link_libc()` | ucrt + vcruntime | the system libc/crt | libSystem |
+
+**K2 only emits and links Windows today** (COFF objects, `lld-link`, a Win64-only
+ABI in `backend/llvm/abi.zig`, PE output). Reaching Linux/macOS needs, in order:
+
+1. **Target selection** (`-target x86_64-linux-gnu`, …) — LLVM emits ELF/Mach-O
+   for free once the triple is chosen.
+2. **ELF / Mach-O linking** via `ld.lld` / `ld64.lld` (lld already ships both).
+3. **The SysV / AArch64 aggregate ABI** — the largest piece; SysV's by-value
+   struct classification (eightbyte SSE/INTEGER) is more involved than Win64's
+   size-based rule, so it's a second ABI backend alongside `abi.zig`.
+4. Per-platform runtime + entry conventions (`runtime/linux.k2` exists already).
+
+None of that requires changing a `build.k2` — the link-mode/`runtime_file`/named-
+library design above absorbs it.
+
 ## Generating bindings from a C header
 
 `k2 bindgen` parses an arbitrary C header with libclang and emits a K2 module:
