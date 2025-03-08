@@ -278,8 +278,8 @@ zig build -Dllvm-path=/path/to/llvm
 zig build test -Dllvm-path=/path/to/llvm
 ```
 
-The standard-library root defaults to the sibling `k2-modules` directory; override
-with `-Dstdlib-root=/path/to/k2-modules`.
+The standard-library root defaults to the in-tree `lib/` directory (which contains
+`std/`); override with `-Dstdlib-root=/path/to/dir-containing-std`.
 
 Compiler commands:
 
@@ -298,7 +298,7 @@ modules.
 
 ## Standard library
 
-The stdlib lives in the sibling `k2-modules/std` directory.
+The stdlib lives in the in-tree [`lib/std/`](lib/std/) directory.
 
 | Module | Provides |
 | --- | --- |

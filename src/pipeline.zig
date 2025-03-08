@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const Span = @import("lexer/span.zig").Span;
 const diag_mod = @import("diagnostic.zig");
 const Diagnostic = diag_mod.Diagnostic;
 const parser = @import("parser.zig");
@@ -12,7 +13,13 @@ const ir_mod = @import("ir.zig");
 /// program's ids (which start at 1 and increment per parsed node).
 const prelude_id_base: ast.NodeId = 900_000;
 const runtime = @import("runtime.zig");
+const std_prelude = @import("std_prelude.zig");
 const build_options = @import("build_options");
+
+/// Node-id bases for the embedded std.heap/std.ptr prelude. High enough not to
+/// collide with a real program's ids (which start at 1), and below the ast.*
+/// prelude base (900_000); ptr is parsed first and heap chains off its next id.
+const heap_prelude_id_base: ast.NodeId = 600_000;
 
 pub const FrontEnd = struct {
     module: ast.Module,
@@ -234,6 +241,18 @@ fn loadFile(
     }
 }
 
+/// True when `items` already contains an `#import std.heap…` (any form), so the
+/// auto-injection for zone blocks doesn't add a duplicate edge.
+fn moduleImportsStdHeap(items: []const ast.Item) bool {
+    for (items) |item| switch (item) {
+        .import => |imp| if (imp.path.len == 2 and
+            std.mem.eql(u8, imp.path[0], "std") and
+            std.mem.eql(u8, imp.path[1], "heap")) return true,
+        else => {},
+    };
+    return false;
+}
+
 /// Turn an import path like ["utils", "math"] into "utils/math.k2"
 /// relative to `base_dir`.
 fn resolveImportPath(
@@ -302,9 +321,22 @@ fn runPipelineWithSource(
     else
         base_module;
 
+    // A `zone X: Arena {}` handle is an ordinary `std.heap.Arena`, so any module
+    // with a zone block depends on std.heap. Prepend the embedded bump-allocator
+    // (and std.ptr, which it uses) so zones work in every compile path — even the
+    // inline `compile(source)` path that never reads disk. Skipped when the
+    // module already provides `Arena` (explicit `#import std.heap`).
+    const with_heap = if (moduleUsesZone(with_prelude) and !moduleProvidesArena(with_prelude))
+        prependHeapPrelude(allocator, with_prelude) catch |err| switch (err) {
+            error.ParseFailed => return error.ParseFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+        }
+    else
+        with_prelude;
+
     // Expand macros before any sema sees the tree: `#insert macrocall(...)`
     // becomes a literal `#insert #quote { ... }`, and macro decls are dropped.
-    const module = macroexpand.expand(allocator, with_prelude) catch |err| switch (err) {
+    const module = macroexpand.expand(allocator, with_heap) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
@@ -392,6 +424,79 @@ fn prependCompilerPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
     try items.appendSlice(allocator, parsed.module.items);
     try items.appendSlice(allocator, user.items);
     return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
+/// Prepend the embedded std.heap bump arena (and std.ptr, which it uses) to the
+/// user's module so a `zone` block's `Arena` handle and allocator are in scope.
+/// Parsed under the USER's file name (K2 symbols are file-private) with a high
+/// id base; `ptr` is parsed first and `heap` chains off its next id. The
+/// embedded `heap` imports `std.ptr` — stripped here, since ptr is inlined.
+fn prependHeapPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
+    const ptr_parsed = try parser.parseSourceFrom(allocator, user.file_name, std_prelude.ptr_src, heap_prelude_id_base);
+    const heap_parsed = try parser.parseSourceFrom(allocator, user.file_name, std_prelude.heap_src, ptr_parsed.next_id);
+
+    var items: std.ArrayList(ast.Item) = .empty;
+    for (ptr_parsed.module.items) |item| switch (item) {
+        .import => {},
+        else => try items.append(allocator, item),
+    };
+    for (heap_parsed.module.items) |item| switch (item) {
+        .import => {},
+        else => try items.append(allocator, item),
+    };
+    try items.appendSlice(allocator, user.items);
+    return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
+/// True when the module already supplies `std.heap.Arena` — either an explicit
+/// `#import std.heap` or a top-level `Arena` type declaration — so the heap
+/// prelude isn't injected twice (which would duplicate every heap symbol).
+fn moduleProvidesArena(module: ast.Module) bool {
+    if (moduleImportsStdHeap(module.items)) return true;
+    for (module.items) |item| switch (item) {
+        .type_decl => |d| if (std.mem.eql(u8, d.name, "Arena")) return true,
+        else => {},
+    };
+    return false;
+}
+
+/// True when any function/impl body in the module contains a `zone` block.
+fn moduleUsesZone(module: ast.Module) bool {
+    for (module.items) |item| switch (item) {
+        .function => |f| if (f.body) |b| {
+            if (blockUsesZone(b)) return true;
+        },
+        .interface_impl => |impl| for (impl.methods) |m| {
+            if (m.body) |b| if (blockUsesZone(b)) return true;
+        },
+        else => {},
+    };
+    return false;
+}
+
+fn blockUsesZone(block: ast.Block) bool {
+    for (block.statements) |stmt| if (stmtUsesZone(stmt)) return true;
+    return false;
+}
+
+fn stmtUsesZone(stmt: ast.Stmt) bool {
+    return switch (stmt) {
+        .zone_block => true,
+        .comptime_run, .unsafe_block => |b| blockUsesZone(b),
+        .if_stmt => |s| blockUsesZone(s.then_block) or
+            (if (s.else_block) |e| blockUsesZone(e) else false),
+        .while_stmt => |s| blockUsesZone(s.body),
+        .for_range => |s| blockUsesZone(s.body),
+        .for_slice => |s| blockUsesZone(s.body),
+        .defer_stmt => |s| blockUsesZone(s.body),
+        .comptime_if => |s| blockUsesZone(s.then_block) or
+            (if (s.else_block) |e| blockUsesZone(e) else false),
+        .match_stmt => |s| blk: {
+            for (s.arms) |a| if (blockUsesZone(a.body)) break :blk true;
+            break :blk false;
+        },
+        else => false,
+    };
 }
 
 const SemaResult = struct {

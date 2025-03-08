@@ -1461,6 +1461,26 @@ const FunctionLowerer = struct {
         return self.blocks.toOwnedSlice(self.allocator);
     }
 
+    // ── `zone X: Arena {}` desugar ─────────────────────────────────────────
+    // A zone handle is a real `std.heap.Arena`. Entering a zone is `X := make()`;
+    // every exit path runs `deinit(&X)`. The body's `X.method(...)` calls already
+    // lowered as ordinary UFCS/extension calls (sema resolved them against the
+    // Arena type), so the handle just needs to be a real Arena local here.
+    fn lowerZoneEnter(self: *FunctionLowerer, name: []const u8) LowerError!void {
+        const arena_ty: IrType = .{ .struct_type = "Arena" };
+        const made = try self.emit(arena_ty, .{ .call = .{ .callee = "make", .args = &.{} } });
+        try self.local_types.put(name, arena_ty);
+        try self.emitNoResult(arena_ty, .{ .store_local = .{ .name = name, .value = made } });
+    }
+
+    fn lowerZoneExit(self: *FunctionLowerer, name: []const u8) LowerError!void {
+        const arena_ty: IrType = .{ .struct_type = "Arena" };
+        const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, arena_ty) };
+        const addr = try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = .{ .local = name } } });
+        const args = try self.allocator.dupe(Value, &[_]Value{addr});
+        try self.emitNoResult(.void, .{ .call = .{ .callee = "deinit", .args = args } });
+    }
+
     fn lowerStmt(self: *FunctionLowerer, stmt: ast.Stmt) LowerError!void {
         switch (stmt) {
             .local_infer => |local| {
@@ -1506,7 +1526,7 @@ const FunctionLowerer = struct {
                 var i = self.active_zones.items.len;
                 while (i > 0) {
                     i -= 1;
-                    try self.emitNoResult(.void, .{ .zone_pop = self.active_zones.items[i] });
+                    try self.lowerZoneExit(self.active_zones.items[i]);
                 }
                 try self.terminate(.{ .return_value = ret_val });
             },
@@ -1523,7 +1543,7 @@ const FunctionLowerer = struct {
                 var i = self.active_zones.items.len;
                 while (i > 0) {
                     i -= 1;
-                    try self.emitNoResult(.void, .{ .zone_pop = self.active_zones.items[i] });
+                    try self.lowerZoneExit(self.active_zones.items[i]);
                 }
                 // Carry the first payload (if any) so a `catch` can recover it.
                 try self.terminate(.{ .fail = .{ .disc = error_value, .payload = if (payloads.len > 0) payloads[0] else null } });
@@ -1565,12 +1585,12 @@ const FunctionLowerer = struct {
             // Expanded away by the macroexpand pass before lowering.
             .comptime_for => return error.LoweringFailed,
             .zone_block => |zb| {
-                try self.emitNoResult(.void, .{ .zone_push = .{ .name = zb.name, .kind = zb.kind } });
+                try self.lowerZoneEnter(zb.name);
                 try self.active_zones.append(self.allocator, zb.name);
                 try self.lowerBlock(zb.body.statements, null);
                 _ = self.active_zones.pop();
                 if (!self.current_terminated) {
-                    try self.emitNoResult(.void, .{ .zone_pop = zb.name });
+                    try self.lowerZoneExit(zb.name);
                 }
             },
             .defer_stmt => |ds| try self.defers.append(self.allocator, ds),
@@ -1581,7 +1601,7 @@ const FunctionLowerer = struct {
                 var i = self.active_zones.items.len;
                 while (i > ctx.zone_depth) {
                     i -= 1;
-                    try self.emitNoResult(.void, .{ .zone_pop = self.active_zones.items[i] });
+                    try self.lowerZoneExit(self.active_zones.items[i]);
                 }
                 try self.terminate(.{ .branch = ctx.after_id });
             },
@@ -1591,7 +1611,7 @@ const FunctionLowerer = struct {
                 var i = self.active_zones.items.len;
                 while (i > ctx.zone_depth) {
                     i -= 1;
-                    try self.emitNoResult(.void, .{ .zone_pop = self.active_zones.items[i] });
+                    try self.lowerZoneExit(self.active_zones.items[i]);
                 }
                 try self.terminate(.{ .branch = ctx.continue_id });
             },
@@ -3000,42 +3020,20 @@ const FunctionLowerer = struct {
         } });
     }
 
+    /// `zone_handle.free(ptr)` — the only zone method still lowered specially.
+    /// `new`/`new_slice`/`alloc`/… are ordinary `std.heap.Arena` calls (resolved
+    /// by sema via UFCS). A bump arena frees in bulk on `deinit`, so per-pointer
+    /// `free` is a runtime no-op (sema already verified the ownership); it emits
+    /// `zone_free`, which the backend drops.
     fn lowerZoneMethod(self: *FunctionLowerer, zone_name: []const u8, method: []const u8, args: []const ast.CallArg, expr: ast.Expr) LowerError!Value {
-        if (std.mem.eql(u8, method, "new")) {
-            if (args.len == 0) return .{ .imm = .null };
-            const ty_expr = switch (args[0]) {
+        _ = expr;
+        if (std.mem.eql(u8, method, "free") and args.len > 0) {
+            const ptr_expr = switch (args[0]) {
                 .positional => |e| e,
                 .named => |n| n.value,
             };
-            const alloc_ty = try self.lowerTypeArg(ty_expr);
-            const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, alloc_ty) };
-            return try self.emitAt(ptr_ty, .{ .alloc = .{ .ty = alloc_ty, .zone = zone_name } }, expr.span);
-        }
-        if (std.mem.eql(u8, method, "new_slice")) {
-            if (args.len < 2) return .{ .imm = .null };
-            const ty_expr = switch (args[0]) {
-                .positional => |e| e,
-                .named => |n| n.value,
-            };
-            const cnt_expr = switch (args[1]) {
-                .positional => |e| e,
-                .named => |n| n.value,
-            };
-            const elem_ty = try self.lowerTypeArg(ty_expr);
-            const count = try self.lowerExpr(cnt_expr);
-            const slice_ty: IrType = .{ .slice = try boxType(self.allocator, elem_ty) };
-            return try self.emitAt(slice_ty, .{ .alloc_slice = .{ .elem_ty = elem_ty, .count = count, .zone = zone_name } }, expr.span);
-        }
-        if (std.mem.eql(u8, method, "free")) {
-            if (args.len > 0) {
-                const ptr_expr = switch (args[0]) {
-                    .positional => |e| e,
-                    .named => |n| n.value,
-                };
-                const ptr = try self.lowerExpr(ptr_expr);
-                try self.emitNoResult(.void, .{ .zone_free = .{ .zone = zone_name, .ptr = ptr } });
-            }
-            return .{ .imm = .null };
+            const ptr = try self.lowerExpr(ptr_expr);
+            try self.emitNoResult(.void, .{ .zone_free = .{ .zone = zone_name, .ptr = ptr } });
         }
         return .{ .imm = .null };
     }

@@ -129,7 +129,7 @@ test "constant folding folds binary ops in function body" {
     try std.testing.expectEqual(@as(usize, 1), m.functions.len);
 }
 
-test "zone block: new and new_slice" {
+test "zone block desugars to std.heap.Arena make/new/deinit" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -150,35 +150,37 @@ test "zone block: new and new_slice" {
     const m = try k2.lowerFrontend(arena.allocator(), fe);
     try k2.ir_mod.validateModule(m);
 
-    // find zone_push instruction
+    // The handle is a real std.heap.Arena: entering the zone calls `make`, the
+    // body's `new`/`new_slice` lower as ordinary calls, and the zone exit calls
+    // `deinit` — no special zone IR ops.
     const func = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "process")) break f;
     } else return error.FunctionNotFound;
 
-    var found_zone_push = false;
-    var found_zone_pop = false;
-    var found_alloc = false;
-    var found_alloc_slice = false;
+    var found_make = false;
+    var found_deinit = false;
+    var found_new = false;
+    var found_new_slice = false;
     for (func.blocks) |block| {
         for (block.instrs) |instr| switch (instr.kind) {
-            .zone_push => |zp| {
-                found_zone_push = true;
-                try std.testing.expectEqualStrings("scratch", zp.name);
-                try std.testing.expectEqualStrings("Arena", zp.kind);
+            .call => |c| {
+                // `new`/`new_slice` are generic, so they carry a mangled
+                // instantiation suffix (e.g. `new__T_named`); match the prefix.
+                if (std.mem.eql(u8, c.callee, "make")) found_make = true;
+                if (std.mem.eql(u8, c.callee, "deinit")) found_deinit = true;
+                if (std.mem.startsWith(u8, c.callee, "new_slice")) found_new_slice = true;
+                if (std.mem.startsWith(u8, c.callee, "new__")) found_new = true;
             },
-            .zone_pop => found_zone_pop = true,
-            .alloc => found_alloc = true,
-            .alloc_slice => found_alloc_slice = true,
             else => {},
         };
     }
-    try std.testing.expect(found_zone_push);
-    try std.testing.expect(found_zone_pop);
-    try std.testing.expect(found_alloc);
-    try std.testing.expect(found_alloc_slice);
+    try std.testing.expect(found_make);
+    try std.testing.expect(found_deinit);
+    try std.testing.expect(found_new);
+    try std.testing.expect(found_new_slice);
 }
 
-test "zone RAII: return inside zone emits zone_pop before return" {
+test "zone RAII: return inside zone deinits the arena first" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -197,21 +199,25 @@ test "zone RAII: return inside zone emits zone_pop before return" {
     const m = try k2.lowerFrontend(arena.allocator(), fe);
     try k2.ir_mod.validateModule(m);
 
-    // The IR must have zone_pop before every return_value terminator
+    // A `return` inside the zone must tear the arena down first: the instruction
+    // right before that `return` terminator is the `deinit` call.
     const func = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "early_exit")) break f;
     } else return error.FunctionNotFound;
 
+    var found_deinit_before_return = false;
     for (func.blocks) |block| {
         if (block.terminator) |term| switch (term) {
             .return_value => {
-                // last instruction before return must be zone_pop
+                if (block.instrs.len == 0) continue;
                 const last = block.instrs[block.instrs.len - 1];
-                try std.testing.expect(last.kind == .zone_pop);
+                if (last.kind == .call and std.mem.eql(u8, last.kind.call.callee, "deinit"))
+                    found_deinit_before_return = true;
             },
             else => {},
         };
     }
+    try std.testing.expect(found_deinit_before_return);
 }
 
 test "zone ownership: allocations cannot escape" {
@@ -443,15 +449,14 @@ test "defer inside zone block" {
     const work = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "work")) break f;
     } else return error.FunctionNotFound;
+    // The zone's `defer close()` must run before the arena `deinit` on exit.
     var saw_cleanup_before_pop = false;
     for (work.blocks) |block| {
         var saw_cleanup = false;
         for (block.instrs) |instr| switch (instr.kind) {
-            .call => |call| if (std.mem.eql(u8, call.callee, "close")) {
-                saw_cleanup = true;
-            },
-            .zone_pop => if (saw_cleanup) {
-                saw_cleanup_before_pop = true;
+            .call => |call| {
+                if (std.mem.eql(u8, call.callee, "close")) saw_cleanup = true;
+                if (std.mem.eql(u8, call.callee, "deinit") and saw_cleanup) saw_cleanup_before_pop = true;
             },
             else => {},
         };
@@ -459,7 +464,7 @@ test "defer inside zone block" {
     try std.testing.expect(saw_cleanup_before_pop);
 }
 
-test "zone RAII: fail emits zone_pop before propagation" {
+test "zone RAII: fail deinits the arena before propagation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -484,7 +489,8 @@ test "zone RAII: fail emits zone_pop before propagation" {
         if (block.terminator) |term| switch (term) {
             .fail => {
                 try std.testing.expect(block.instrs.len > 0);
-                try std.testing.expect(block.instrs[block.instrs.len - 1].kind == .zone_pop);
+                const last = block.instrs[block.instrs.len - 1];
+                try std.testing.expect(last.kind == .call and std.mem.eql(u8, last.kind.call.callee, "deinit"));
                 return;
             },
             else => {},

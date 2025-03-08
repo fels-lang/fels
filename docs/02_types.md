@@ -33,6 +33,8 @@ d := 0usize;       // usize
 
 Without a suffix, an integer literal's type is inferred from context. If no context constrains it, the literal defaults to `i32`.
 
+A suffix is authoritative: it fixes the literal's width even through inference. `x := 0i64` gives `x` a 64-bit slot — the `i64` is not narrowed back to the `i32` default. This matters for values that exceed 32 bits (e.g. addresses built with `usize`/`i64`), where a narrowed slot would silently truncate the value.
+
 #### Sub-Byte Integer Types
 
 Within packed structs, K2 supports sub-byte integer types from `u1` through `u7`. These types cannot be used outside of packed struct fields:

@@ -19,27 +19,11 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
 
         .builtin => |b| lowerBuiltin(cg, fncg, b, instr.ty),
 
-        .alloc => |al| blk: {
-            break :blk lowerZoneAlloc(cg, fncg, al.zone, llvm.LLVMSizeOf(types.lower(cg, al.ty)), instr.location);
-        },
-
-        .alloc_slice => |al| blk: {
-            // Allocate a slice struct on the stack, then fill ptr+len.
-            const count = resolveVal(cg, fncg, al.count, .usize);
-            // Heap-allocate the element array via alloca(elem*count) — simplified.
-            const elem_ty = types.lower(cg, al.elem_ty);
-            const i64_ty = llvm.LLVMInt64TypeInContext(cg.ctx);
-            const elem_size = values.coerce(cg.builder, cg.ctx, llvm.LLVMSizeOf(elem_ty), i64_ty);
-            const count64 = values.coerce(cg.builder, cg.ctx, count, i64_ty);
-            const size = if (cg.opt_level == 0)
-                lowerOverflowingBinary(cg, fncg.llvm_fn, elem_size, count64, "llvm.umul.with.overflow", instr.location)
-            else
-                llvm.LLVMBuildMul(cg.builder, elem_size, count64, "");
-            const data_ptr = lowerZoneAlloc(cg, fncg, al.zone, size, instr.location) orelse break :blk null;
-            var slice = llvm.LLVMGetUndef(cg.getSliceType());
-            slice = llvm.LLVMBuildInsertValue(cg.builder, slice, data_ptr, 0, "");
-            break :blk llvm.LLVMBuildInsertValue(cg.builder, slice, count64, 1, "");
-        },
+        // `.alloc`/`.alloc_slice` are vestigial: a `zone` handle is now a real
+        // `std.heap.Arena`, so `new`/`new_slice` lower as ordinary calls and these
+        // ops are never emitted for the LLVM backend. (The comptime VM still has
+        // its own cell-based zone ops.) Kept as no-ops to keep the switch total.
+        .alloc, .alloc_slice => null,
 
         .store_local => |sl| blk: {
             const alloca = fncg.locals.get(sl.name) orelse break :blk null;
@@ -172,18 +156,10 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
             break :blk values.extractAggregateField(cg, fallible, 0, "fallible error payload");
         },
 
-        // Zone ops — not yet implemented.
-        .zone_push => |zone| blk: {
-            const head = fncg.zones.get(zone.name) orelse break :blk null;
-            _ = llvm.LLVMBuildStore(cg.builder, llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(cg.ctx, 0)), head);
-            break :blk null;
-        },
-        .zone_pop => |zone| blk: {
-            lowerZonePop(cg, fncg, zone);
-            break :blk null;
-        },
-        // Arena.free is intentionally deferred until the arena is popped.
-        .zone_free => null,
+        // Zone enter/exit lower to `make()`/`deinit()` calls in the IR, so these
+        // ops are no longer emitted for the LLVM backend (they remain only for the
+        // comptime VM). `free` is a no-op on a bump arena (drained at `deinit`).
+        .zone_push, .zone_pop, .zone_free => null,
         .iter_init, .iter_has_next, .iter_next, .at, .raw_pointer => null,
     };
 
@@ -968,97 +944,6 @@ fn errorTypeName(err_ty: ir.IrType) []const u8 {
 }
 
 // ── Runtime safety checks ───────────────────────────────────────────────────
-
-fn lowerZoneAlloc(
-    cg: *ModuleCg,
-    fncg: anytype,
-    zone_name: []const u8,
-    requested_size: llvm.LLVMValueRef,
-    location: ir.SourceLocation,
-) ?llvm.LLVMValueRef {
-    const head = fncg.zones.get(zone_name) orelse return null;
-    const i32_ty = llvm.LLVMInt32TypeInContext(cg.ctx);
-    const i64_ty = llvm.LLVMInt64TypeInContext(cg.ctx);
-    const ptr_ty = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
-    const size = values.coerce(cg.builder, cg.ctx, requested_size, i64_ty);
-    const header_size = llvm.LLVMConstInt(i64_ty, 16, 0);
-    const total = if (cg.opt_level == 0)
-        lowerOverflowingBinary(cg, fncg.llvm_fn, size, header_size, "llvm.uadd.with.overflow", location)
-    else
-        llvm.LLVMBuildAdd(cg.builder, size, header_size, "");
-
-    const process_heap = buildHeapCall(cg, .get_process_heap, &.{}, "zone_heap");
-    const flags = llvm.LLVMConstInt(i32_ty, 8, 0);
-    const raw = buildHeapCall(cg, .alloc, &.{ process_heap, flags, total }, "zone_raw");
-    const is_null = llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntEQ, raw, llvm.LLVMConstNull(ptr_ty), "");
-    emitRuntimeCheck(cg, fncg.llvm_fn, is_null, "zone allocation failed", location);
-
-    const old_head = llvm.LLVMBuildLoad2(cg.builder, ptr_ty, head, "");
-    _ = llvm.LLVMBuildStore(cg.builder, old_head, raw);
-    _ = llvm.LLVMBuildStore(cg.builder, raw, head);
-    var indices = [_]llvm.LLVMValueRef{header_size};
-    return llvm.LLVMBuildGEP2(cg.builder, llvm.LLVMInt8TypeInContext(cg.ctx), raw, &indices, 1, "zone_data");
-}
-
-fn lowerZonePop(cg: *ModuleCg, fncg: anytype, zone_name: []const u8) void {
-    const head = fncg.zones.get(zone_name) orelse return;
-    const ptr_ty = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
-    const i32_ty = llvm.LLVMInt32TypeInContext(cg.ctx);
-    const cond_bb = llvm.LLVMAppendBasicBlockInContext(cg.ctx, fncg.llvm_fn, "zone_pop_cond");
-    const free_bb = llvm.LLVMAppendBasicBlockInContext(cg.ctx, fncg.llvm_fn, "zone_pop_free");
-    const done_bb = llvm.LLVMAppendBasicBlockInContext(cg.ctx, fncg.llvm_fn, "zone_pop_done");
-    _ = llvm.LLVMBuildBr(cg.builder, cond_bb);
-
-    llvm.LLVMPositionBuilderAtEnd(cg.builder, cond_bb);
-    const current = llvm.LLVMBuildLoad2(cg.builder, ptr_ty, head, "zone_current");
-    const is_null = llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntEQ, current, llvm.LLVMConstNull(ptr_ty), "");
-    _ = llvm.LLVMBuildCondBr(cg.builder, is_null, done_bb, free_bb);
-
-    llvm.LLVMPositionBuilderAtEnd(cg.builder, free_bb);
-    const next = llvm.LLVMBuildLoad2(cg.builder, ptr_ty, current, "zone_next");
-    const process_heap = buildHeapCall(cg, .get_process_heap, &.{}, "zone_heap");
-    _ = buildHeapCall(cg, .free, &.{ process_heap, llvm.LLVMConstInt(i32_ty, 0, 0), current }, "");
-    _ = llvm.LLVMBuildStore(cg.builder, next, head);
-    _ = llvm.LLVMBuildBr(cg.builder, cond_bb);
-
-    llvm.LLVMPositionBuilderAtEnd(cg.builder, done_bb);
-}
-
-const HeapCall = enum { get_process_heap, alloc, free };
-
-fn buildHeapCall(cg: *ModuleCg, call: HeapCall, args: []const llvm.LLVMValueRef, name: [*:0]const u8) llvm.LLVMValueRef {
-    const function = getOrDeclareHeapFunction(cg, call);
-    const fn_ty = llvm.LLVMGlobalGetValueType(function);
-    return llvm.LLVMBuildCall2(cg.builder, fn_ty, function, if (args.len == 0) null else @constCast(args.ptr), @intCast(args.len), name);
-}
-
-fn getOrDeclareHeapFunction(cg: *ModuleCg, call: HeapCall) llvm.LLVMValueRef {
-    const name = switch (call) {
-        .get_process_heap => "GetProcessHeap",
-        .alloc => "HeapAlloc",
-        .free => "HeapFree",
-    };
-    if (cg.fn_decls.get(name)) |function| return function;
-
-    const ptr_ty = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
-    const i32_ty = llvm.LLVMInt32TypeInContext(cg.ctx);
-    const i64_ty = llvm.LLVMInt64TypeInContext(cg.ctx);
-    const fn_ty = switch (call) {
-        .get_process_heap => llvm.LLVMFunctionType(ptr_ty, null, 0, 0),
-        .alloc => blk: {
-            var params = [_]llvm.LLVMTypeRef{ ptr_ty, i32_ty, i64_ty };
-            break :blk llvm.LLVMFunctionType(ptr_ty, &params, params.len, 0);
-        },
-        .free => blk: {
-            var params = [_]llvm.LLVMTypeRef{ ptr_ty, i32_ty, ptr_ty };
-            break :blk llvm.LLVMFunctionType(i32_ty, &params, params.len, 0);
-        },
-    };
-    const function = llvm.LLVMAddFunction(cg.mod, name, fn_ty);
-    llvm.LLVMSetLinkage(function, llvm.LLVMExternalLinkage);
-    cg.fn_decls.put(name, function) catch {};
-    return function;
-}
 
 /// Emit a conditional panic if `cond_fails` is true (i1).
 /// Splits the current BB into panic_bb and cont_bb; builder lands at cont_bb.

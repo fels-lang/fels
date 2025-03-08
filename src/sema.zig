@@ -1001,6 +1001,25 @@ const Checker = struct {
         return null;
     }
 
+    /// The `std.heap.Arena` struct type — the type of a `zone X: Arena {}` handle.
+    /// The pipeline guarantees `Arena` is in scope wherever a zone block appears
+    /// (the embedded heap prelude is injected, or std.heap is imported). Falls
+    /// back to the opaque `zone_handle` if it somehow isn't resolvable.
+    fn arenaTy(self: *Checker) Ty {
+        const id = self.resolveSymbol("Arena") orelse return .zone_handle;
+        if (self.symbols.symbol(id).kind != .type) return .zone_handle;
+        return .{ .named = id };
+    }
+
+    /// True when `name` is a live `zone X: Arena {}` handle (vs. a manually
+    /// managed `Arena` local, which has no escape restrictions).
+    fn isActiveZone(self: Checker, name: []const u8) bool {
+        for (self.active_zones.items) |zone| {
+            if (std.mem.eql(u8, zone.name, name)) return true;
+        }
+        return false;
+    }
+
     fn validateBorrowParam(self: *Checker, ty: Ty, span: Span) SemanticError!void {
         if (ty != .borrow) {
             if (containsBorrow(ty)) {
@@ -1599,7 +1618,10 @@ const Checker = struct {
                 }
                 try self.pushScope();
                 defer self.popScope();
-                try self.declareLocal(zb.name, .zone_handle);
+                // The handle is a real `std.heap.Arena`, so every Arena method
+                // (alloc/alloc_bytes/dupe/new/…) resolves by ordinary UFCS; the
+                // escape checker still keys ownership off the zone name.
+                try self.declareLocal(zb.name, self.arenaTy());
                 try self.active_zones.append(self.allocator, .{
                     .name = zb.name,
                     .scope_depth = self.scope_stack.items.len - 1,
@@ -2010,22 +2032,20 @@ const Checker = struct {
             return try self.inferDirectCall(id, sa.member, sig, call);
         }
 
-        // Detect zone method calls: zone_var.new(T), zone_var.new_slice(T, n), zone_var.free(ptr)
         if (call.callee.kind == .field) {
             const fld = call.callee.kind.field;
             const base_ty = try self.inferExpr(fld.base.*);
-            if (base_ty == .zone_handle) {
-                // Mark the callee field-expr so the IR lowerer can detect zone calls
-                // by checking call.callee.id rather than chasing base pointer ids.
-                try self.env.expr_types.put(call.callee.id, .zone_handle);
-                if (std.mem.eql(u8, fld.name, "free") and call.args.len > 0) {
-                    const zone_name = switch (fld.base.kind) {
-                        .ident => |name| name,
-                        else => {
-                            self.emitError(fld.base.span, "`Arena.free` must be called on a named arena variable", .{});
-                            return error.SemanticFailed;
-                        },
-                    };
+
+            // `zone_handle.free(ptr)` — a bump arena frees in bulk on zone exit,
+            // so this is a validated no-op: it only checks `ptr` is owned by this
+            // zone (and not a borrow). Every *other* Arena method falls through to
+            // ordinary UFCS resolution below. (A manually managed Arena local has
+            // no `free` and no escape restrictions; it isn't an active zone.)
+            if (std.mem.eql(u8, fld.name, "free") and
+                fld.base.kind == .ident and self.isActiveZone(fld.base.kind.ident))
+            {
+                const zone_name = fld.base.kind.ident;
+                if (call.args.len > 0) {
                     const ptr_expr = switch (call.args[0]) {
                         .positional => |value| value,
                         .named => |named| named.value,
@@ -2043,7 +2063,8 @@ const Checker = struct {
                         return error.SemanticFailed;
                     }
                 }
-                return self.inferZoneMethod(call.callee.span, fld.name, call.args);
+                try self.env.expr_types.put(call.callee.id, .zone_handle);
+                return .void;
             }
             if (self.interfaceFromPointer(base_ty)) |interface_id| {
                 if (self.findInterfaceMethod(interface_id, fld.name)) |method| {
@@ -2082,7 +2103,7 @@ const Checker = struct {
                 try self.env.extension_calls.put(call.callee.id, extension.id);
                 const extension_call = try self.extensionCall(call, fld.base.*, extension.sig);
                 if (extension.sig.type_params.len > 0) {
-                    return try self.inferGenericCall(extension.id, fld.name, extension.sig, extension_call);
+                    return try self.inferGenericCallImpl(extension.id, fld.name, extension.sig, extension_call, true);
                 }
                 return try self.inferDirectCallImpl(extension.id, fld.name, extension.sig, extension_call, true);
             }
@@ -2206,6 +2227,21 @@ const Checker = struct {
                 },
                 else => {},
             };
+            // `@`-prefixed names are compiler/runtime builtins (`@panic`, …). The
+            // runtime supplies the real declaration; when it isn't linked into
+            // this compile (e.g. type-checking std.heap in isolation, or the
+            // inline `compile(source)` path), accept the call as `void` so the
+            // dependent code still checks. Args are still type-checked.
+            if (name.len > 0 and name[0] == '@') {
+                for (call.args) |arg| {
+                    const arg_expr = switch (arg) {
+                        .positional => |e| e,
+                        .named => |n| n.value,
+                    };
+                    _ = try self.inferExpr(arg_expr);
+                }
+                return .void;
+            }
             self.emitError(call.callee.span, "unknown function `{s}`", .{name});
             return error.SemanticFailed;
         };
@@ -2588,9 +2624,7 @@ const Checker = struct {
             .call => |call| blk: {
                 if (call.callee.kind == .field) {
                     const field = call.callee.kind.field;
-                    if ((std.mem.eql(u8, field.name, "new") or std.mem.eql(u8, field.name, "new_slice")) and
-                        field.base.kind == .ident)
-                    {
+                    if (field.base.kind == .ident and isArenaAllocMethod(field.name)) {
                         const zone_name = field.base.kind.ident;
                         for (self.active_zones.items) |zone| {
                             if (std.mem.eql(u8, zone.name, zone_name)) break :blk .{
@@ -2703,6 +2737,14 @@ const Checker = struct {
     }
 
     fn inferGenericCall(self: *Checker, sym_id: SymbolId, fn_name: []const u8, sig: FnSig, call: ast.CallExpr) SemanticError!Ty {
+        return self.inferGenericCallImpl(sym_id, fn_name, sig, call, false);
+    }
+
+    /// `is_method`: the call came from UFCS (`recv.method(...)`), so the first
+    /// *value* param is the receiver and may be auto-`&`d when the method takes a
+    /// `*Self` (mirrors `inferDirectCallImpl`, but for generic methods like the
+    /// Arena allocators whose receiver follows a leading `$T: type`).
+    fn inferGenericCallImpl(self: *Checker, sym_id: SymbolId, fn_name: []const u8, sig: FnSig, call: ast.CallExpr, is_method: bool) SemanticError!Ty {
         // Constrained type params ($T: Interface) are implicit — inferred from value args.
         // Unconstrained type params ($T: type) are explicit — the caller passes the type.
         // So we count: value params + unconstrained type params = expected arg count.
@@ -2750,7 +2792,15 @@ const Checker = struct {
             };
             arg_i += 1;
             try self.checkNonEscapingArgument(arg_expr, param.ty);
-            const arg_ty = try self.inferExpr(arg_expr);
+            // An explicit `$T: type` argument is a TYPE expression (`i32`,
+            // `List(i32)`), not a value — resolve it as a type so generic-struct
+            // instantiations (which parse as a call) bind correctly. Constrained
+            // `$T: Interface` params were already `continue`d above, so every type
+            // param reaching here is explicit.
+            const arg_ty = if (param.is_type_param)
+                try self.inferTypeArg(arg_expr)
+            else
+                try self.inferExpr(arg_expr);
             try arg_tys.append(self.allocator, arg_ty);
             // Bind type variables: if param type is $T, bind T to the arg type.
             if (param.ty == .type_param) {
@@ -2786,6 +2836,7 @@ const Checker = struct {
 
         // Verify all value args are compatible with substituted param types.
         var check_i: usize = 0;
+        var receiver_seen = false;
         for (sig.params) |param| {
             if (param.is_type_param) {
                 const constrained = for (sig.type_constraints) |c| {
@@ -2797,11 +2848,20 @@ const Checker = struct {
             const arg_ty = arg_tys.items[check_i];
             check_i += 1;
             const expected = self.substituteTy(param.ty, &binding);
+            const arg_expr = switch (call.args[check_i - 1]) {
+                .positional => |e| e,
+                .named => |n| n.value,
+            };
+            // UFCS auto-ref: the receiver (first value param) passed by value to a
+            // `*Self` method is lowered as `&recv`.
+            if (is_method and !param.is_type_param and !receiver_seen) {
+                receiver_seen = true;
+                if (self.receiverNeedsAddress(arg_ty, expected, arg_expr)) {
+                    try self.env.receiver_auto_addr.put(call.callee.id, {});
+                    continue;
+                }
+            }
             if (!try self.compatible(arg_ty, expected)) {
-                const arg_expr = switch (call.args[check_i - 1]) {
-                    .positional => |e| e,
-                    .named => |n| n.value,
-                };
                 self.emitError(arg_expr.span, "argument {d} of `{s}`: expected `{s}`, found `{s}`", .{
                     check_i, fn_name, self.formatTy(expected), self.formatTy(arg_ty),
                 });
@@ -3556,6 +3616,18 @@ fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
     };
 }
 
+/// Arena methods that hand back memory owned by the arena — their result, when
+/// the receiver is a `zone` handle, is zone-owned and subject to escape checks.
+/// (`mark`/`restore`/`reset`/`deinit` don't yield arena-interior pointers.)
+fn isArenaAllocMethod(name: []const u8) bool {
+    const allocs = [_][]const u8{
+        "new", "new_slice", "alloc", "alloc_one", "alloc_bytes", "dupe",
+        "try_alloc", "try_alloc_bytes",
+    };
+    for (allocs) |a| if (std.mem.eql(u8, name, a)) return true;
+    return false;
+}
+
 fn isRuntimeNoReturnName(name: []const u8) bool {
     return std.mem.eql(u8, name, "@panic") or
         std.mem.eql(u8, name, "exit") or
@@ -3669,8 +3741,21 @@ fn sameErrorVariants(a: []const ErrorVariantInfo, b: []const ErrorVariantInfo) b
 }
 
 fn intLiteralType(text: []const u8) Ty {
-    if (std.mem.endsWith(u8, text, "u32")) return .u32;
+    // An explicit suffix fixes the literal's type; without one it stays a
+    // polymorphic `int_lit` that coerces to its context (defaulting to i32).
+    // Every width must be covered here — a missed suffix (e.g. `0i64`) silently
+    // collapses to i32, undersizing the value's storage and truncating it.
     if (std.mem.endsWith(u8, text, "usize")) return .usize;
+    if (std.mem.endsWith(u8, text, "isize")) return .isize;
+    if (std.mem.endsWith(u8, text, "u64")) return .u64;
+    if (std.mem.endsWith(u8, text, "u32")) return .u32;
+    if (std.mem.endsWith(u8, text, "u16")) return .u16;
+    if (std.mem.endsWith(u8, text, "u8")) return .u8;
+    if (std.mem.endsWith(u8, text, "i64")) return .i64;
+    if (std.mem.endsWith(u8, text, "i32")) return .i32;
+    if (std.mem.endsWith(u8, text, "i16")) return .i16;
+    if (std.mem.endsWith(u8, text, "i8")) return .i8;
+    if (std.mem.endsWith(u8, text, "byte")) return .byte;
     return .int_lit;
 }
 

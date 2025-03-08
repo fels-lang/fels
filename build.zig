@@ -26,7 +26,7 @@ pub fn build(b: *std.Build) void {
         []const u8,
         "stdlib-root",
         "Path to the K2 modules directory containing std/",
-    ) orelse b.pathFromRoot("../k2-modules");
+    ) orelse b.pathFromRoot("lib");
 
     // ── Compiler library module ───────────────────────────────────────────
     const compiler_mod = b.addModule("k2_compiler", .{
@@ -44,6 +44,13 @@ pub fn build(b: *std.Build) void {
     opts.addOption([]const u8, "msvc_lib_path", msvc_lib_path);
     opts.addOption([]const u8, "stdlib_root", stdlib_root);
     compiler_mod.addOptions("build_options", opts);
+
+    // Embed the bump-allocator stdlib so a `zone` block (whose handle is a real
+    // `std.heap.Arena`) works in every compile path — including the inline
+    // `compile(source)` path that never touches disk. `@embedFile` resolves
+    // these import names; the files remain the single source of truth in lib/.
+    compiler_mod.addAnonymousImport("std_heap_k2", .{ .root_source_file = b.path("lib/std/heap.k2") });
+    compiler_mod.addAnonymousImport("std_ptr_k2", .{ .root_source_file = b.path("lib/std/ptr.k2") });
 
     // Wire LLVM into the compiler library when a path is provided.
     if (llvm_path) |lp| {

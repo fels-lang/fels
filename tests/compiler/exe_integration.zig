@@ -870,6 +870,35 @@ test "exe: generic List(T) backed by Arena, with generic methods" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: a zone handle is a real std.heap.Arena (full library API)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The unified arena: a `zone` handle exposes both the `new`/`new_slice`
+    // aliases AND the library API (dupe, mark/restore, alloc_bytes) — one
+    // bump allocator, drained on zone exit. std.heap is auto-injected; the
+    // module never imports it.
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    total := 0;
+        \\    zone z: Arena {
+        \\        a := z.new_slice(i32, 2usize);
+        \\        a[0usize] = 3; a[1usize] = 4;
+        \\        src: [3]u8 = .{ 1u8, 2u8, 3u8 };
+        \\        d := z.dupe(u8, src[:]);
+        \\        m := z.mark();
+        \\        tmp := z.alloc_bytes(8usize);
+        \\        tmp[0usize] = 100u8;
+        \\        z.restore(m);
+        \\        total = a[0usize] + a[1usize] + (d[0usize] as i32) + (d[2usize] as i32);
+        \\    }
+        \\    return total;
+        \\}
+    , "exe_zone_unified_arena");
+    try std.testing.expectEqual(@as(u32, 11), code);
+}
+
 test "exe: a local shadows a top-level function of the same name" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

@@ -604,8 +604,6 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
 
     // ── Apply relocations for every kept section ──
     // (.rdata carries ADDR64 vtable pointers; .text carries the REL32 calls/refs.)
-    // Done inline over a small section table rather than via a helper — a
-    // many-parameter helper taking several slices currently miscompiles.
     thunk_base := text_rva + text_raw;
     srp := alloc(u32, a, 3usize);     // reloc table pointer
     snr := alloc(u32, a, 3usize);     // reloc count
@@ -618,46 +616,47 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
 
     si := 0u32;
     while si < nsec {
-        reloc_ptr := srp[si as usize];
-        num := snr[si as usize];
-        sec_rva := srva[si as usize];
-        sec_off := soff[si as usize];
-        j := 0u32;
-        while j < num {
-            rel := get_reloc(&obj, reloc_ptr, j);
-            sym := get_symbol(&obj, rel.sym_index);
-            field_off := sec_off + (rel.virt_addr as usize);
-            field_rva := sec_rva + (rel.virt_addr as usize);
-            target := 0i64;
-            if sym.section == 0i32 {
-                idx := imp_of(imp_sym, nimp, rel.sym_index);
-                if idx >= 0i64 { target = (thunk_base as i64) + idx * 6i64; }
-            } else {
-                if sym.section > 0i32 { target = (secrva[sym.section as usize] as i64) + (sym.value as i64); }
-            }
-            if rel.kind == 1u32 {                            // ADDR64
-                v64 := (IMAGE_BASE as i64) + target + rd_i64(img, field_off);
-                wr_u64(img, field_off, v64 as u64);
-            } else {
-                if rel.kind == 3u32 {                        // ADDR32NB
-                    wr_u32(img, field_off, (target + rd_i32(img, field_off)) as u32);
-                } else {
-                    if rel.kind >= 4u32 {
-                        if rel.kind <= 9u32 {                // REL32 / REL32_1..5
-                            extra := (rel.kind - 4u32) as i64;
-                            v := (target + rd_i32(img, field_off)) - ((field_rva as i64) + 4i64 + extra);
-                            wr_u32(img, field_off, v as u32);
-                        }
-                    }
-                }
-            }
-            j += 1u32;
-        }
+        apply_relocs(img, &obj, srp[si as usize], snr[si as usize], srva[si as usize], soff[si as usize], secrva, imp_sym, nimp, thunk_base);
         si += 1u32;
     }
 
     if !write_file(a, out_path, img) { return 1; }
     return 0;
+}
+
+// Apply every relocation in one kept section, patching `img` in place.
+apply_relocs :: fn(img: []u8, obj: *CoffObj, reloc_ptr: u32, num: u32, sec_rva: usize, sec_off: usize, secrva: []u32, imp_sym: []u32, nimp: u32, thunk_base: usize) -> void {
+    j := 0u32;
+    while j < num {
+        rel := get_reloc(obj, reloc_ptr, j);
+        sym := get_symbol(obj, rel.sym_index);
+        field_off := sec_off + (rel.virt_addr as usize);
+        field_rva := sec_rva + (rel.virt_addr as usize);
+        target := 0i64;
+        if sym.section == 0i32 {
+            idx := imp_of(imp_sym, nimp, rel.sym_index);
+            if idx >= 0i64 { target = (thunk_base as i64) + idx * 6i64; }
+        } else {
+            if sym.section > 0i32 { target = (secrva[sym.section as usize] as i64) + (sym.value as i64); }
+        }
+        if rel.kind == 1u32 {                            // ADDR64
+            v64 := (IMAGE_BASE as i64) + target + rd_i64(img, field_off);
+            wr_u64(img, field_off, v64 as u64);
+        } else {
+            if rel.kind == 3u32 {                        // ADDR32NB
+                wr_u32(img, field_off, (target + rd_i32(img, field_off)) as u32);
+            } else {
+                if rel.kind >= 4u32 {
+                    if rel.kind <= 9u32 {                // REL32 / REL32_1..5
+                        extra := (rel.kind - 4u32) as i64;
+                        v := (target + rd_i32(img, field_off)) - ((field_rva as i64) + 4i64 + extra);
+                        wr_u32(img, field_off, v as u32);
+                    }
+                }
+            }
+        }
+        j += 1u32;
+    }
 }
 
 // Write one 40-byte section header (no relocations in the output image).

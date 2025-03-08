@@ -79,6 +79,38 @@ test "LLVM lowering accepts full-width u64 constants" {
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "i64 -9223372036854775808") != null);
 }
 
+test "inferred local takes its width from a suffixed integer literal" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // `target := 0i64` must give `target` an i64 slot. A regression here typed
+    // it i32 (only `u32`/`usize` suffixes were recognized), so the later
+    // `store i64 …` smashed 8 bytes into a 4-byte alloca — truncating the value
+    // and corrupting the adjacent local. (Surfaced as the k2lnk relocation bug.)
+    const src =
+        \\widen :: fn() -> i64 {
+        \\    target := 0i64;
+        \\    target = 0x140000000i64;
+        \\    return target;
+        \\}
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "inferred_i64.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "inferred_i64");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "%target = alloca i64") != null);
+    // The full 0x1_4000_0000 value must survive — not truncate to 0x4000_0000.
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "store i64 5368709120") != null);
+}
+
 test "LLVM lowering applies #align to struct allocas" {
     if (comptime !k2.llvm_enabled) return;
 
@@ -184,7 +216,11 @@ test "LLVM optional payload is coerced to its declared integer width" {
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
 
-    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "trunc i32") != null);
+    // The `0u16`-inferred local carries its declared u16 width: it allocates an
+    // i16 slot and the payload reaches the optional as i16 with no detour
+    // through i32. (Before the suffix fix, `0u16` collapsed to i32 and the
+    // return needed a `trunc i32` — that was the bug, not the contract.)
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "%value = alloca i16") != null);
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "insertvalue { i1, i16 }") != null);
 }
 
@@ -491,7 +527,7 @@ test "LLVM lowering reads and writes fields through struct pointers" {
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "store i32") != null);
 }
 
-test "LLVM zones allocate from and drain the process heap" {
+test "LLVM zones are backed by std.heap (make/deinit over VirtualAlloc)" {
     if (comptime !k2.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -516,10 +552,12 @@ test "LLVM zones allocate from and drain the process heap" {
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
 
-    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@HeapAlloc") != null);
-    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@HeapFree") != null);
-    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "zone_pop_free") != null);
-    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "zone allocation failed at zones.k2:") != null);
+    // The handle is a real std.heap.Arena: enter calls @make, exit calls @deinit,
+    // and the arena's backing is VirtualAlloc — not the old per-alloc HeapAlloc.
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@make") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@deinit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@VirtualAlloc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@HeapAlloc") == null);
 }
 
 test "LLVM borrow parameters erase to their underlying ABI type" {

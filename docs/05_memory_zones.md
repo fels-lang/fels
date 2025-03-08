@@ -32,6 +32,36 @@ zone scratch: Arena {
 - You cannot nest zones with the same name.
 - Memory allocated in a zone lives exactly as long as the zone's block.
 
+### The handle is a real `std.heap.Arena`
+
+A zone handle **is** a [`std.heap.Arena`](07_stdlib.md) — the same chunked bump
+allocator you can construct manually with `std.heap.make()`. Entering the zone is
+`handle := make()`; every exit path (normal, `return`, `break`, `continue`,
+`fail`) runs `deinit()` automatically, so the arena is always drained on the way
+out. You never write `make`/`deinit` yourself, and the module does not need to
+`#import std.heap` — the compiler injects it whenever a zone block is present.
+
+Because the handle is a full `Arena`, the entire library API is available on it,
+not just `new`/`new_slice`:
+
+```k2
+zone z: Arena {
+    p   := z.new(i32);              // alias for alloc_one(i32)
+    xs  := z.new_slice(u8, 64);     // alias for alloc(u8, 64)
+    ys  := z.alloc(i32, 16);        // typed allocation
+    raw := z.alloc_bytes(128);      // raw []u8
+    cp  := z.dupe(u8, xs);          // copy a slice into the arena
+
+    m := z.mark();                  // save a watermark …
+    tmp := z.alloc_bytes(4096);     // … scratch work …
+    z.restore(m);                   // … then rewind it, keeping the memory
+}
+```
+
+`new`/`new_slice` remain as the zone-flavored spellings of `alloc_one`/`alloc`.
+`free` is a compile-time-checked no-op: a bump arena reclaims everything at once
+on zone exit, so freeing a single allocation only verifies ownership.
+
 ---
 
 ## Ownership and Escape Analysis

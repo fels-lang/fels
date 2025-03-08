@@ -271,6 +271,18 @@ pub dupe :: fn($T: type, self: *Arena, src: []const T) -> []T {
     return out;
 }
 
+// `new` / `new_slice` are the `zone` block's spelling of `alloc_one` / `alloc`.
+// A `zone X: Arena {}` handle is an ordinary `Arena`, so these resolve by UFCS
+// exactly like the rest of the API — `X.new(T)`, `X.new_slice(T, n)`. Kept so
+// existing zone code (and docs/05) keep working after the allocators unified.
+pub new :: fn($T: type, self: *Arena) -> *T {
+    return alloc_one(T, self);
+}
+
+pub new_slice :: fn($T: type, self: *Arena, n: usize) -> []T {
+    return alloc(T, self, n);
+}
+
 // ── Reuse & lifetime ──────────────────────────────────────────────────────
 
 // Rewind the arena to empty, KEEPING its chunks for reuse. Everything allocated
