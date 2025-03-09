@@ -1,15 +1,28 @@
 # K2 Reflection, `Any`, and Constraints — Design
 
 > Status: **Phase 1 IMPLEMENTED** (matchable `TypeInfo` + comptime `type_info`).
-> **Phase 2 PARTIAL**: built-in composable constraints (`$T: Numeric`/`Int`/
-> `Float`/`Signed`/`Unsigned`/`Struct`/`Enum`/`Ptr`/`Bool`) are checked at
-> resolution with clear reject messages. **User-defined `where { … }` blocks with
-> `reject("msg")` are IMPLEMENTED** (deferred evaluation): the predicate is an
-> arbitrary comptime block that inspects `type_info(T)` and may `reject`, run on
-> the comptime VM per instantiation (`§6.2`). Still design: named `constraint`
-> declarations, binding *rewrite* / output type params (`-> $Acc`), and overload
-> fallback (these need the predicate during *overload selection* in sema, not just
-> at lowering — see `§6.3`). Phases 3–6 are design. Sister to
+> **Phase 2 IMPLEMENTED (two-pass resolution)**: built-in composable constraints
+> (`$T: Numeric`/`Int`/`Float`/`Signed`/`Unsigned`/`Struct`/`Enum`/`Ptr`/`Bool`),
+> **user-defined `constraint Name($T) { … }` declarations** (reusable named
+> predicates, enforced at `$T: Name`), **user-defined `where { … }` blocks** that
+> inspect `type_info(T)` and may `reject("msg")`, **and output type params
+> `-> $Acc`** computed by the `where`.
+> The predicate runs *during generic resolution* on a resolution `ComptimeVm`
+> (tolerant pass-1 → build VM → strict pass-2): rejections are resolution errors
+> reported at the call site, *before* the body is checked (`§6.2`/`§6.3`).
+> Constraints compose via `require(T, Other)`. Still design: binding *rewrite*
+> (`T = u32`, a poor fit — K2 has no implicit arg coercion) and **overload
+> fallback** (moot until K2 has same-name overloading).
+> **Phase 3 + 4a/4b IMPLEMENTED**: `typeid_of(T)` (a stable runtime type identity
+> — a content hash, comparable at runtime, stable across compilation units);
+> `type_name(T)`/`sizeof(T)` fold at lowering so they're real **runtime** values;
+> and **`Any`** — a type-erased value (`any(x)` wraps any value; `any_as(v, T) ->
+> ?T` is a safe downcast, `any_is`, `any_id`, `any_name`). K2's twist on the
+> "baked type table": the type's metadata (id + name) **travels inline with the
+> value**, baked as a tree-shaken string literal — no central table to manage, and
+> reflection you don't use costs nothing. Still design: a recursive runtime
+> `TypeInfo` graph / `v.field`/`.elem`/`.deref` navigation and `info_of(id)` lookup
+> by a bare id (need the baked node graph). Phases 5–6 are design. Sister to
 > [`09_comptime_vm_roadmap.md`](09_comptime_vm_roadmap.md). Describes runtime type
 > information, the `Any` type, reflection-driven serialization, and resolve-time
 > generic constraints (`where`). The goal is to match Jai's metaprogramming reach
@@ -96,18 +109,25 @@ describe :: fn(info: TypeInfo) -> []const u8 {
 
 ## 2. `typeid` — cheap runtime identity
 
+> **Implemented today:** `typeid_of(T) -> usize` — a stable runtime id for a type.
+> It folds at IR lowering to an **FNV-1a content hash** of the type's canonical
+> spelling, so identical types always share an id, distinct types (incl. `*i32`
+> vs `i32`, `[]i32` vs `i32`, two structurally-identical structs) differ, and the
+> id is **stable across compilation units** (no global numbering). In a generic,
+> `typeid_of(T)` folds per instantiation. Identity tests are a single `usize`
+> compare. `info_of(id)` (the dynamic table lookup) is still design (needs §4).
+
 ```k2
-typeid(T) -> typeid          // a small, stable id (usize-sized)
-typeid_of(any_value) -> typeid
-info_of(id: typeid) -> *TypeInfo   // the table lookup
+typeid_of(T) -> usize        // a stable id (content hash); IMPLEMENTED
+typeid_of(any_value) -> usize   // value form — design (needs Any)
+info_of(id) -> *TypeInfo        // table lookup — design (§4)
 ```
 
-A `typeid` is an index into the (tree-shaken) type table, not a pointer. Two
-identical types always share one id, so identity tests are a single integer
+Two identical types always share one id, so identity tests are a single integer
 compare:
 
 ```k2
-if typeid_of(x) == typeid(Vector3) { … }
+if typeid_of(x) == typeid_of(Vector3) { … }
 ```
 
 > **✦ Beyond Jai.** Jai compares `*Type_Info` pointers and bakes the whole table
@@ -119,10 +139,23 @@ if typeid_of(x) == typeid(Vector3) { … }
 ## 3. `Any` — safe dynamic values
 
 `Any` is the runtime-reflection workhorse: a fat value carrying a pointer to data
-and the data's `typeid`.
+and the data's type metadata.
+
+> **Implemented today.** `Any :: struct { data: *const u8, id: usize, name:
+> []const u8 }` (an injected prelude). `any(x)` wraps any value — it spills `x` to
+> a temporary, points at it, and records `typeid_of(T)` and the type's name. The
+> rest is ordinary generic K2 (so it's all type-safe):
+> `any_as(v, T) -> ?T` (safe downcast, null on mismatch), `any_is(v, T) -> bool`,
+> `any_id(v)`, `any_name(v)`. A value passed to an `Any` parameter and recovered by
+> its real type works end to end; the type *name* is available at runtime on the
+> erased value. **K2's twist on the type table:** metadata travels *inline* with
+> the value (no central `info_of(id)` table to bake/manage), and it's tree-shaken
+> automatically — only `any()`'d types' names reach the binary. (Auto-wrap of a
+> bare value into an `Any` parameter, and `.field`/`.elem`/`.deref` navigation,
+> are the next steps.)
 
 ```k2
-Any :: struct { data: *u8, id: typeid }   // conceptually; constructed by the compiler
+Any :: struct { data: *const u8, id: usize, name: []const u8 }   // injected; `any(x)` builds it
 ```
 
 Assigning any value to an `Any` parameter wraps it automatically (the compiler
@@ -244,13 +277,20 @@ reject).
 
 ### 6.1 Named constraints
 
-> **Implemented today:** the **built-in** constraints `$T: Numeric`, `Int`,
-> `Float`, `Signed`, `Unsigned`, `Bool`, `Struct`, `Enum`, `Ptr` are checked at
-> instantiation by type kind, and a non-satisfying type is rejected with a clear
-> message (`type `P` does not satisfy `Numeric`: expected a numeric type`). They
-> use the same `$T: C` syntax as interface conformance. (Generic inference now
-> also binds `$T` from `[]$T`/`?$T` arguments, not just `*$T`.) **User-defined**
-> `constraint` declarations below remain design.
+> **Implemented today:** both **built-in** constraints (`$T: Numeric`, `Int`,
+> `Float`, `Signed`, `Unsigned`, `Bool`, `Struct`, `Enum`, `Ptr` — checked by type
+> kind) **and user-defined `constraint Name($T) { … }` declarations**. A
+> non-satisfying type is rejected with a clear message at the `$T: Name` site
+> (`type `P` does not satisfy `MyNum`: expected a numeric type`). A user
+> `constraint` is a named, reusable comptime predicate (a where-style block over
+> `type_info(T)` that may `reject`); it runs on the resolution VM at each `$T: Name`
+> use, via the same two-pass rail. Built-ins take precedence over a same-named
+> user constraint. **`require(T, Other)` composition works**: a top-level `require`
+> guard recursively enforces another constraint (with cycle detection),
+> propagating its rejection message; the constraint's own checks run after the
+> guards. (Generic inference also binds `$T` from `[]$T`/`?$T`, not just `*$T`.)
+> **Still design:** the `&` combinator below; `require` is a *top-level* guard
+> (not evaluated inside conditional control flow).
 
 A `constraint` is a comptime predicate over a type — first-class, named, and
 composable. Interface conformance becomes *one kind* of constraint.
@@ -284,21 +324,28 @@ serialize :: fn($T: Struct & HasField("id"), v: T) { … }   // composed
 
 ### 6.2 The `where` block — inspect, rewrite, reject
 
-> **Implemented today (inspect + reject).** A `where { … }` block after a generic
-> function signature is an arbitrary comptime predicate. It runs **once per
-> instantiation**, on the comptime VM, with the type parameters bound. It may
-> `reject("msg")` to fail the instantiation with a custom message. The canonical
-> form works end to end:
+> **Implemented today (inspect + reject + output types).** A `where { … }` block
+> after a generic function signature is an arbitrary comptime predicate. It runs
+> **once per instantiation, during resolution**, on a resolution `ComptimeVm`,
+> with the type parameters bound. It may `reject("msg")` to fail the instantiation
+> with a custom message, and it may compute **output type params** (`-> $Acc`).
+> Both work end to end:
 >
 > ```k2
+> // inspect + reject:
 > dbl :: fn(x: $T) -> T
 > where { match type_info(T) { .int => {} .float => {} else => reject("dbl needs a numeric type"); } }
 > { return x +% x; }
+>
+> // output type param computed by the where:
+> acc_of :: fn(x: $T) -> $Acc
+> where { match type_info(T) { .int |i| => if i.bits < 32 { Acc = i32; } else { Acc = T; }  else => Acc = T; } }
+> { total: Acc = x as Acc; return total; }
 > ```
 >
-> A satisfying type compiles; a rejected one fails with
-> `` `dbl` rejected for this type: dbl needs a numeric type``. The *rewrite* /
-> output-type / overload-fallback parts below remain design (see `§6.3`).
+> A satisfying type compiles; a rejected one fails at the call site with
+> `` `dbl` rejected for this type: dbl needs a numeric type``. The *binding
+> rewrite* (`T = u32`) and *overload fallback* parts remain design (see `§6.3`).
 
 When you need to *change* the bindings (Jai's `T = s64`) or compute an output
 type, attach a `where` block. It runs once per instantiation, after type matching,
@@ -340,34 +387,39 @@ push :: fn($T: type, xs: *List(T), vs: []T)     where { … }   { … }
 > (`-> $Acc`) and computed in `where`, instead of a magic `$R` mutated in a side
 > block; (3) the `where` body uses matchable `TypeInfo`, not `cast(*Type_Info_*)`.
 
-### 6.3 How `where` is wired (and what's next)
+### 6.3 How `where` is wired — the two-pass resolution rail
 
-The predicate is evaluated by the **deferred** strategy: sema type-checks the
-`where` block as comptime code (with the type params in scope, `reject` a void
-builtin), but does *not* run it. At **IR lowering**, where the comptime VM already
-exists, each generic instantiation lowers its `where` block to a throwaway
-comptime function `__where() -> []const u8` — `reject(msg)` lowers to `return msg`,
-falling off the end returns `""` (accept) — and runs it on the VM with `T` bound.
-A non-empty result is the rejection message; lowering fails with it.
+The predicate runs **during generic resolution**, not after. This dissolves the
+"run comptime code during resolution, but the VM only exists post-sema"
+chicken-and-egg by reusing the same two-pass pipeline K2 already has for computed
+`#insert #run` (`pipeline.zig`'s `strictPass`):
 
-This sidesteps the chicken-and-egg of "run comptime code during resolution" (the
-VM only exists post-sema) by deferring the check to the point where the VM is
-ready. Key wiring: `lowerWhereToFunction` / `ComptimeVm.evalWhere` in `ir.zig`
-(uses the **per-instantiation** `expr_types`, so the `match type_info(T)` subject
-resolves to `TypeInfo`), `in_where` mode on the `FunctionLowerer` (turns `reject`
-into a `return`), and the instantiation loop in `lowerModuleInner` which calls
-`evalWhere` before lowering the body.
+1. **Tolerant pass-1 sema** type-checks everything (the `where` blocks included)
+   and yields a complete-enough `FrontEnd`.
+2. A **resolution `ComptimeVm`** is built from that `FrontEnd`.
+3. **Strict pass-2 sema** re-checks with the VM wired into the `Checker` (via an
+   opaque ctx + function-pointer callback, so sema never imports `ir` — see
+   `WhereEvalFn` / `WhereTypeEvalFn`). At each generic call/instantiation the
+   predicate runs on the VM with the type params bound.
 
-**What deferred eval gives up** (and why the full feature needs the *two-pass
-resolution* of `§6.1`'s note): the check runs *after* overload selection and
-*after* the body is type-checked, so it can only **inspect + reject** — it cannot
-do **binding rewrite** (`T = u32`), **output type params** (`-> $Acc`), or
-**overload fallback** (try the next candidate on reject). Those require the
-predicate to run *during* overload selection in sema. The planned path is the
-two-pass pipeline K2 already uses for computed `#insert #run`: tolerant pass-1
-sema → build a resolution VM from the predicates → strict pass-2 sema that runs
-them during resolution. Deferred eval is the stepping stone; it covers the common
-single-function `reject` case now.
+**Reject** (`§6.2`): in `checkFunction`, right after the `where` block is checked
+and *before* the body, the callback runs `ComptimeVm.evalWhere` — the block lowers
+to `__where() -> []const u8` (`reject(msg)` → `return msg`, fall-through → `""`).
+A non-empty result is a resolution error at the **call site** (`origin_span` on the
+instantiation) that suppresses the spurious body errors a post-body check couldn't.
+
+**Output type params** `-> $Acc`: parsed as an output type param
+(`output_type_params`), computed at the call site in `inferGenericCallImpl` via
+`computeOutputParamsAtCall` → `ComptimeVm.evalWhereType`. The `where` lowers so
+each `Acc = <type>` returns the **node id** of its right-hand type expression; sema
+resolves that expression (`resolveExprAsType`, with `T` bound) and binds `Acc`, so
+the call's return type *and* the instantiation body both see the computed type.
+(Types flow back as node ids rather than first-class `type_val`s — the latter is a
+heavier `Any`/Phase-4 concern; node ids need zero new VM value machinery.)
+
+**Still design:** **binding rewrite** (`T = u32`) and **overload fallback** (try
+the next candidate on reject). Fallback is moot until K2 grows same-name
+overloading; rewrite is a small extension of the same `evalWhereType` mechanism.
 
 ---
 

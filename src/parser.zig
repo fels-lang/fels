@@ -237,6 +237,12 @@ pub const Parser = struct {
             decl.is_macro = true;
             return .{ .function = decl };
         }
+        // `Name :: constraint($T) { ... }` — a named comptime type predicate.
+        if (self.matchIdent("constraint")) {
+            var decl = try self.finishConstraint(attrs, name);
+            decl.is_public = is_public;
+            return .{ .function = decl };
+        }
         if (self.match(.keyword_struct)) {
             var decl = try self.finishStruct(attrs, name);
             decl.is_public = is_public;
@@ -625,6 +631,33 @@ pub const Parser = struct {
         return .{ .inferred = spanFrom(bang, bang) };
     }
 
+    /// `Name :: constraint($T) { body }` — a named comptime type predicate. Built
+    /// as a generic predicate function (one type param, no value params, the body
+    /// is the predicate); `is_constraint` marks it so it's never lowered.
+    fn finishConstraint(self: *Parser, attrs: []const ast.Attribute, name: Token) ParseError!ast.FunctionDecl {
+        _ = try self.expect(.l_paren, "expected ( after constraint");
+        _ = try self.expect(.dollar, "expected $ before constraint type param");
+        const tp = try self.expect(.ident, "expected type parameter name after $");
+        _ = try self.expect(.r_paren, "expected ) after constraint type param");
+        const body = try self.parseBlock();
+        var type_params: std.ArrayList([]const u8) = .empty;
+        errdefer type_params.deinit(self.allocator);
+        try type_params.append(self.allocator, tp.text(self.source));
+        return .{
+            .attrs = attrs,
+            .name = name.text(self.source),
+            .file_name = self.file_name,
+            .source = self.source,
+            .type_params = try type_params.toOwnedSlice(self.allocator),
+            .params = &.{},
+            .return_ty = namedType("void", spanFrom(name, name)),
+            .error_ty = null,
+            .body = body,
+            .is_constraint = true,
+            .span = Span.new(name.start, body.span.end),
+        };
+    }
+
     fn finishFunction(self: *Parser, attrs: []const ast.Attribute, name: Token, top_level: bool) ParseError!ast.FunctionDecl {
         _ = top_level;
         _ = try self.expect(.l_paren, "expected ( after fn");
@@ -692,6 +725,24 @@ pub const Parser = struct {
 
         _ = try self.expect(.r_paren, "expected ) after parameters");
         const return_ty = if (self.match(.arrow)) try self.parseType() else namedType("void", Span.new(@intCast(name.start), @intCast(name.start + name.len)));
+        // `-> $Acc`: an output type param computed by `where`. Register it as a
+        // type param (if new) and record it as output.
+        var output_type_params: std.ArrayList([]const u8) = .empty;
+        errdefer output_type_params.deinit(self.allocator);
+        if (return_ty == .type_param) {
+            const nm = return_ty.type_param.name;
+            var found = false;
+            for (type_params.items) |tp| {
+                if (std.mem.eql(u8, tp, nm)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                try type_params.append(self.allocator, nm);
+                try output_type_params.append(self.allocator, nm);
+            }
+        }
         const error_ty = if (self.match(.bang)) try self.parseErrorSpec(self.previous()) else null;
         // Optional `where { … }` resolve-time predicate (comptime; may `reject`).
         const where_clause = if (self.matchIdent("where")) try self.parseBlock() else null;
@@ -707,6 +758,7 @@ pub const Parser = struct {
             .file_name = self.file_name,
             .source = self.source,
             .type_params = try type_params.toOwnedSlice(self.allocator),
+            .output_type_params = try output_type_params.toOwnedSlice(self.allocator),
             .type_constraints = try type_constraints.toOwnedSlice(self.allocator),
             .params = try params.toOwnedSlice(self.allocator),
             .return_ty = return_ty,
@@ -1044,6 +1096,13 @@ pub const Parser = struct {
             return .{ .fn_type = .{ .type_params = &.{}, .params = try params.toOwnedSlice(self.allocator), .ret = ret, .error_ty = error_ty, .span = Span.new(start.start, end) } };
         }
         if (self.match(.keyword_opaque)) return .opaque_type;
+
+        // `$Acc` — a type parameter reference. In return position (`-> $Acc`)
+        // this declares an *output* type param computed by the `where` clause.
+        if (self.match(.dollar)) {
+            const tp = try self.expect(.ident, "expected type-param name after $");
+            return .{ .type_param = .{ .name = tp.text(self.source), .span = spanFrom(tp, tp) } };
+        }
 
         const name = self.advance();
         if (!isTypeName(name.kind)) {

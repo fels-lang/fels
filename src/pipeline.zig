@@ -22,6 +22,7 @@ const build_options = @import("build_options");
 const heap_prelude_id_base: ast.NodeId = 600_000;
 /// Node-id base for the injected `TypeInfo` reflection prelude (distinct range).
 const reflection_prelude_id_base: ast.NodeId = 500_000;
+const any_prelude_id_base: ast.NodeId = 400_000;
 
 pub const FrontEnd = struct {
     module: ast.Module,
@@ -333,18 +334,31 @@ fn runPipelineWithSource(
     else
         with_prelude;
 
-    // A `zone X: Arena {}` handle is an ordinary `std.heap.Arena`, so any module
-    // with a zone block depends on std.heap. Prepend the embedded bump-allocator
-    // (and std.ptr, which it uses) so zones work in every compile path — even the
-    // inline `compile(source)` path that never reads disk. Skipped when the
-    // module already provides `Arena` (explicit `#import std.heap`).
-    const with_heap = if (moduleUsesZone(with_reflect) and !moduleProvidesArena(with_reflect))
-        prependHeapPrelude(allocator, with_reflect) catch |err| switch (err) {
+    // `Any` (type-erased value + safe downcast) is mostly ordinary generic K2 —
+    // inject it when the module uses `Any`/`any(`/`any_*` (and doesn't define its
+    // own `Any`). Detected over the combined AST (not the source string, which in
+    // a multi-module compile is only the first file). The wrap `any(x)` is the
+    // only compiler-driven piece.
+    const with_any = if (moduleUsesAny(with_reflect) and !moduleDefinesType(with_reflect, "Any"))
+        prependAnyPrelude(allocator, with_reflect) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,
         }
     else
         with_reflect;
+
+    // A `zone X: Arena {}` handle is an ordinary `std.heap.Arena`, so any module
+    // with a zone block depends on std.heap. Prepend the embedded bump-allocator
+    // (and std.ptr, which it uses) so zones work in every compile path — even the
+    // inline `compile(source)` path that never reads disk. Skipped when the
+    // module already provides `Arena` (explicit `#import std.heap`).
+    const with_heap = if (moduleUsesZone(with_any) and !moduleProvidesArena(with_any))
+        prependHeapPrelude(allocator, with_any) catch |err| switch (err) {
+            error.ParseFailed => return error.ParseFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+        }
+    else
+        with_any;
 
     // Expand macros before any sema sees the tree: `#insert macrocall(...)`
     // becomes a literal `#insert #quote { ... }`, and macro decls are dropped.
@@ -368,13 +382,75 @@ fn runPipelineWithSource(
             error.OutOfMemory => return error.OutOfMemory,
         };
         if (spliced) |module2| {
-            const pass2 = try runSema(allocator, module2, source, file, .strict);
-            return .{ .module = module2, .symbols = pass2.symbols, .types = pass2.types, .arena = arena };
+            return strictPass(allocator, module2, source, file, arena);
         }
     }
 
-    const pass1 = try runSema(allocator, module, source, file, .strict);
-    return .{ .module = module, .symbols = pass1.symbols, .types = pass1.types, .arena = arena };
+    return strictPass(allocator, module, source, file, arena);
+}
+
+/// The final strict sema pass. If the module has `where` clauses, run it as a
+/// two-pass resolution: a tolerant pre-pass builds a resolution `ComptimeVm`,
+/// then the strict pass runs each generic instantiation's `where` predicate on
+/// that VM *during* resolution (rejections become resolution errors, before the
+/// body is checked). Otherwise it's a single strict pass.
+fn strictPass(
+    allocator: std.mem.Allocator,
+    module: ast.Module,
+    source: []const u8,
+    file: []const u8,
+    arena: *std.heap.ArenaAllocator,
+) CompileError!FrontEnd {
+    if (hasWhereClause(module)) {
+        const pre = try runSema(allocator, module, source, file, .tolerant);
+        const fe1 = FrontEnd{ .module = module, .symbols = pre.symbols, .types = pre.types, .arena = arena };
+        var cvm = ir_mod.ComptimeVm.init(allocator, fe1);
+        cvm.current_file = file;
+        defer cvm.deinit();
+        const pass = try runSemaResolved(allocator, module, source, file, .strict, &cvm, whereEvalThunk, whereTypeEvalThunk);
+        return .{ .module = module, .symbols = pass.symbols, .types = pass.types, .arena = arena };
+    }
+    const pass = try runSema(allocator, module, source, file, .strict);
+    return .{ .module = module, .symbols = pass.symbols, .types = pass.types, .arena = arena };
+}
+
+/// Adapts `ComptimeVm.evalWhere` to sema's opaque `WhereEvalFn` callback.
+fn whereEvalThunk(
+    ctx: *anyopaque,
+    eval_file: []const u8,
+    wc: ast.Block,
+    type_args: []const sema.TypeArg,
+    output_params: []const []const u8,
+    expr_types: std.AutoHashMap(ast.NodeId, sema.Ty),
+    out_alloc: std.mem.Allocator,
+) ?[]const u8 {
+    const cvm: *ir_mod.ComptimeVm = @ptrCast(@alignCast(ctx));
+    cvm.current_file = eval_file;
+    return cvm.evalWhere(wc, type_args, output_params, expr_types, out_alloc);
+}
+
+/// Adapts `ComptimeVm.evalWhereType` to sema's `WhereTypeEvalFn` callback.
+fn whereTypeEvalThunk(
+    ctx: *anyopaque,
+    eval_file: []const u8,
+    wc: ast.Block,
+    type_args: []const sema.TypeArg,
+    output_params: []const []const u8,
+    expr_types: std.AutoHashMap(ast.NodeId, sema.Ty),
+) ?u64 {
+    const cvm: *ir_mod.ComptimeVm = @ptrCast(@alignCast(ctx));
+    cvm.current_file = eval_file;
+    return cvm.evalWhereType(wc, type_args, output_params, expr_types);
+}
+
+/// True if the module needs the resolution VM: any function with a `where { … }`
+/// clause, or any `constraint Name($T) { … }` declaration (used at `$T: Name`).
+fn hasWhereClause(module: ast.Module) bool {
+    for (module.items) |item| switch (item) {
+        .function => |f| if (f.where_clause != null or f.is_constraint) return true,
+        else => {},
+    };
+    return false;
 }
 
 /// Run the module's `#compiler` hooks and return the module augmented with the
@@ -470,6 +546,14 @@ fn prependReflectionPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast
     return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
 }
 
+fn prependAnyPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
+    const parsed = try parser.parseSourceFrom(allocator, user.file_name, ast_prelude.any_source, any_prelude_id_base);
+    var items: std.ArrayList(ast.Item) = .empty;
+    try items.appendSlice(allocator, parsed.module.items);
+    try items.appendSlice(allocator, user.items);
+    return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
 /// True when the module declares a top-level type named `name`.
 fn moduleDefinesType(module: ast.Module, name: []const u8) bool {
     for (module.items) |item| switch (item) {
@@ -494,6 +578,92 @@ fn moduleUsesReflection(module: ast.Module) bool {
         else => {},
     };
     return false;
+}
+
+/// True when the module references the `Any` type or calls an `any*` builtin
+/// (`any`/`any_is`/`any_as`/`any_id`), so the `Any` prelude should be injected.
+fn moduleUsesAny(module: ast.Module) bool {
+    for (module.items) |item| switch (item) {
+        .function => |f| {
+            if (typeRefUsesAny(f.return_ty)) return true;
+            for (f.params) |p| if (typeRefUsesAny(p.ty)) return true;
+            if (f.body) |b| if (blockUsesAny(b)) return true;
+        },
+        .const_decl => |d| if (exprUsesAny(d.value)) return true,
+        else => {},
+    };
+    return false;
+}
+
+fn typeRefUsesAny(ty: ast.TypeRef) bool {
+    return switch (ty) {
+        .named, .type_param => |n| std.mem.eql(u8, n.name, "Any"),
+        .pointer, .many_pointer => |p| typeRefUsesAny(p.inner.*),
+        .optional => |o| typeRefUsesAny(o.inner.*),
+        .slice => |s| typeRefUsesAny(s.inner.*),
+        .array => |a| typeRefUsesAny(a.inner.*),
+        .atomic => |a| typeRefUsesAny(a.inner.*),
+        .borrow => |b| typeRefUsesAny(b.inner.*),
+        else => false,
+    };
+}
+
+fn isAnyBuiltin(name: []const u8) bool {
+    return std.mem.eql(u8, name, "any") or std.mem.eql(u8, name, "any_is") or
+        std.mem.eql(u8, name, "any_as") or std.mem.eql(u8, name, "any_id");
+}
+
+fn blockUsesAny(block: ast.Block) bool {
+    for (block.statements) |stmt| if (stmtUsesAny(stmt)) return true;
+    return false;
+}
+
+fn stmtUsesAny(stmt: ast.Stmt) bool {
+    return switch (stmt) {
+        .comptime_run, .unsafe_block => |b| blockUsesAny(b),
+        .if_stmt => |s| blockUsesAny(s.then_block) or
+            (if (s.else_block) |e| blockUsesAny(e) else false) or exprUsesAny(s.condition) or
+            (if (s.binding) |bd| exprUsesAny(bd.value) else false),
+        .while_stmt => |s| blockUsesAny(s.body) or exprUsesAny(s.condition),
+        .for_range => |s| blockUsesAny(s.body) or exprUsesAny(s.start) or exprUsesAny(s.end),
+        .for_slice => |s| blockUsesAny(s.body) or exprUsesAny(s.iter),
+        .zone_block => |s| blockUsesAny(s.body),
+        .defer_stmt => |s| blockUsesAny(s.body),
+        .comptime_if => |s| blockUsesAny(s.then_block) or
+            (if (s.else_block) |e| blockUsesAny(e) else false),
+        .match_stmt => |s| blk: {
+            for (s.arms) |a| if (blockUsesAny(a.body)) break :blk true;
+            break :blk exprUsesAny(s.subject);
+        },
+        .local_typed => |s| typeRefUsesAny(s.ty) or exprUsesAny(s.value),
+        .local_infer => |s| exprUsesAny(s.value),
+        .assign => |s| exprUsesAny(s.target) or exprUsesAny(s.value),
+        .return_stmt => |s| if (s.value) |v| exprUsesAny(v) else false,
+        .expr => |e| exprUsesAny(e),
+        else => false,
+    };
+}
+
+fn exprUsesAny(expr: ast.Expr) bool {
+    return switch (expr.kind) {
+        .call => |c| blk: {
+            if (c.callee.kind == .ident and isAnyBuiltin(c.callee.kind.ident)) break :blk true;
+            if (exprUsesAny(c.callee.*)) break :blk true;
+            for (c.args) |a| switch (a) {
+                .positional => |x| if (exprUsesAny(x)) break :blk true,
+                .named => |nm| if (exprUsesAny(nm.value)) break :blk true,
+            };
+            break :blk false;
+        },
+        .binary => |b| exprUsesAny(b.left.*) or exprUsesAny(b.right.*),
+        .unary => |u| exprUsesAny(u.expr.*),
+        .field => |f| exprUsesAny(f.base.*),
+        .index => |i| exprUsesAny(i.base.*) or exprUsesAny(i.index.*),
+        .force_unwrap, .unsafe_expr, .run_expr => |inner| exprUsesAny(inner.*),
+        .as_cast => |c| exprUsesAny(c.value.*),
+        .nil_coalesce => |nc| exprUsesAny(nc.value.*) or exprUsesAny(nc.default.*),
+        else => false,
+    };
 }
 
 fn blockUsesReflection(block: ast.Block) bool {
@@ -616,6 +786,21 @@ fn runSema(
     file: []const u8,
     mode: SemaMode,
 ) CompileError!SemaResult {
+    return runSemaResolved(allocator, module, source, file, mode, null, null, null);
+}
+
+/// `runSema` with an optional resolution-time `where`-predicate evaluator wired
+/// into the strict pass (the two-pass rail).
+fn runSemaResolved(
+    allocator: std.mem.Allocator,
+    module: ast.Module,
+    source: []const u8,
+    file: []const u8,
+    mode: SemaMode,
+    where_ctx: ?*anyopaque,
+    where_fn: ?sema.WhereEvalFn,
+    where_type_fn: ?sema.WhereTypeEvalFn,
+) CompileError!SemaResult {
     var symbols = sema.collectSymbols(allocator, module) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
         error.OutOfMemory => return error.OutOfMemory,
@@ -635,7 +820,7 @@ fn runSema(
         .tolerant => sema.checkTypesTolerant(allocator, module, &symbols, source, file) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
         },
-        .strict => sema.checkTypesWithContext(allocator, module, &symbols, source, file) catch |err| switch (err) {
+        .strict => sema.checkTypesWithResolution(allocator, module, &symbols, source, file, where_ctx, where_fn, where_type_fn) catch |err| switch (err) {
             error.SemanticFailed => return error.SemanticFailed,
             error.OutOfMemory => return error.OutOfMemory,
         },

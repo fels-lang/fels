@@ -491,6 +491,106 @@ pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) L
 /// `cvm` is the VM-backed comptime evaluator threaded down to `#run` sites. It
 /// is null while *building* the evaluator's own bytecode cache, so nested `#run`
 /// there fall back to the tree-walker — which is exactly the recursion guard.
+/// A stable content hash of a type, used as its runtime `typeid`. Streams a
+/// canonical spelling of the type through FNV-1a, so identical types always hash
+/// the same — no global registry, and stable across compilation units.
+pub fn typeIdHash(ty: IrType) u64 {
+    var h: u64 = 0xcbf29ce484222325; // FNV-1a offset basis
+    hashTypeName(&h, ty);
+    return h;
+}
+
+fn fnvFeed(h: *u64, bytes: []const u8) void {
+    for (bytes) |b| {
+        h.* ^= b;
+        h.* = h.* *% 0x100000001b3; // FNV-1a prime
+    }
+}
+
+fn fnvFeedInt(h: *u64, n: u64) void {
+    var buf: [20]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch return;
+    fnvFeed(h, s);
+}
+
+fn hashTypeName(h: *u64, ty: IrType) void {
+    switch (ty) {
+        .i => |b| {
+            fnvFeed(h, "i");
+            fnvFeedInt(h, b);
+        },
+        .u => |b| {
+            fnvFeed(h, "u");
+            fnvFeedInt(h, b);
+        },
+        .f32 => fnvFeed(h, "f32"),
+        .f64 => fnvFeed(h, "f64"),
+        .bool => fnvFeed(h, "bool"),
+        .byte => fnvFeed(h, "byte"),
+        .usize => fnvFeed(h, "usize"),
+        .isize => fnvFeed(h, "isize"),
+        .addr => fnvFeed(h, "addr"),
+        .void => fnvFeed(h, "void"),
+        .text => fnvFeed(h, "str"),
+        .rune => fnvFeed(h, "rune"),
+        .zone => fnvFeed(h, "zone"),
+        .ptr => |p| {
+            fnvFeed(h, "*");
+            hashTypeName(h, p.*);
+        },
+        .optional => |p| {
+            fnvFeed(h, "?");
+            hashTypeName(h, p.*);
+        },
+        .slice => |p| {
+            fnvFeed(h, "[]");
+            hashTypeName(h, p.*);
+        },
+        .array => |a| {
+            fnvFeed(h, "[");
+            fnvFeedInt(h, a.len);
+            fnvFeed(h, "]");
+            hashTypeName(h, a.elem.*);
+        },
+        .range => |p| {
+            fnvFeed(h, "range ");
+            hashTypeName(h, p.*);
+        },
+        .struct_type => |n| {
+            fnvFeed(h, "struct ");
+            fnvFeed(h, n);
+        },
+        .variant_type => |n| {
+            fnvFeed(h, "enum ");
+            fnvFeed(h, n);
+        },
+        .opaque_type => |n| {
+            fnvFeed(h, "opaque ");
+            fnvFeed(h, n);
+        },
+        .interface_value => |n| {
+            fnvFeed(h, "iface ");
+            fnvFeed(h, n);
+        },
+        .fallible => |f| {
+            fnvFeed(h, "fallible ");
+            hashTypeName(h, f.ok.*);
+            fnvFeed(h, "!");
+            hashTypeName(h, f.err.*);
+        },
+        .fn_ptr => fnvFeed(h, "fn"),
+        .list => |p| {
+            fnvFeed(h, "list ");
+            hashTypeName(h, p.*);
+        },
+        .map => |p| {
+            fnvFeed(h, "map ");
+            hashTypeName(h, p.*);
+        },
+        .unknown => fnvFeed(h, "unknown"),
+    }
+}
+
 fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, cvm: ?*ComptimeVm) LowerError!IrModule {
     var structs: std.ArrayList(StructDef) = .empty;
     var errors: std.ArrayList(ErrorDef) = .empty;
@@ -638,19 +738,10 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                     if (decl.type_params.len == 0) continue;
                     const sym_id = front_end.symbols.resolve(front_end.symbols.root_scope, decl.name) orelse continue;
                     if (sym_id != inst.sym_id) continue;
-                    // A `where { … }` predicate runs on the VM for this binding (final
-                    // pass only, when the cache exists). A non-empty result is the
-                    // rejection message — fail the compile with it.
-                    if (cvm) |c| if (decl.where_clause) |wc| {
-                        c.current_file = decl.file_name;
-                        if (c.evalWhere(wc, inst.type_args, inst.expr_types, allocator)) |msg| {
-                            if (msg.len > 0) {
-                                const full = std.fmt.allocPrint(allocator, "`{s}` rejected for this type: {s}", .{ decl.name, msg }) catch msg;
-                                diag_mod.printErrorAt(full, decl.file_name, decl.source, decl.span);
-                                return error.LoweringFailed;
-                            }
-                        }
-                    };
+                    // `where { … }` predicates are evaluated during *resolution*
+                    // (sema's two-pass rail) — a rejected instantiation never
+                    // reaches lowering, so nothing to check here.
+                    //
                     // A comptime-only generic (e.g. one whose BODY calls `type_info`)
                     // is kept for the VM cache (cvm == null) but excluded from the
                     // final runtime module (cvm != null) — its body can't lower to LLVM.
@@ -1459,6 +1550,14 @@ const FunctionLowerer = struct {
     /// terminates with `return msg` (the predicate returns the rejection message,
     /// or "" to accept).
     in_where: bool = false,
+    /// True while lowering a `where` block to *compute an output type param*
+    /// (`-> $Acc`): an `Acc = <type>` assignment terminates with `return <id>`,
+    /// the node id of the right-hand type expression (sema resolves it back to a
+    /// type). The predicate thus returns which type-expr the branch selected.
+    in_where_type: bool = false,
+    /// Output type param names (`-> $Acc`) for the `where` block being lowered.
+    /// Assignments to these are handled specially in both `where` modes.
+    where_output_params: []const []const u8 = &.{},
     module: ast.Module = .empty(""),
     /// VM-backed comptime evaluator for `#run`, or null to use the tree-walker.
     cvm: ?*ComptimeVm = null,
@@ -1529,6 +1628,17 @@ const FunctionLowerer = struct {
                 try self.emitNoResult(local_ty, .{ .store_local = .{ .name = local.name, .value = value } });
             },
             .assign => |assign| {
+                // Output-type-param assignment (`Acc = <type>`) inside a `where`.
+                if (assign.target.kind == .ident and nameInList(assign.target.kind.ident, self.where_output_params)) {
+                    if (self.in_where_type) {
+                        // Return the node id of the selected type expression; sema
+                        // resolves it back to a concrete type for this instantiation.
+                        try self.terminate(.{ .return_value = .{ .imm = .{ .uint = @intCast(assign.value.id) } } });
+                    }
+                    // In reject mode (or once terminated) the assignment is a no-op:
+                    // computing the output type is the type-eval's job, not this one.
+                    return;
+                }
                 const value = try self.lowerExprAs(assign.value, self.exprType(assign.target));
                 const bin_op = assignBinOp(assign.op);
                 switch (assign.target.kind) {
@@ -2759,6 +2869,11 @@ const FunctionLowerer = struct {
                     try args.append(self.allocator, if (expected) |ty| try self.lowerExprAs(value, ty) else try self.lowerExpr(value));
                 };
                 const arg_slice = try args.toOwnedSlice(self.allocator);
+                // `require(T, Other)` is a constraint-composition guard checked in
+                // sema (runConstraintPredicate), so it's a no-op at eval time.
+                if (self.in_where and std.mem.eql(u8, callee_name, "require")) {
+                    break :blk .{ .imm = .null };
+                }
                 // `reject(msg)` inside a `where` predicate terminates with
                 // `return msg` (the predicate returns the rejection message).
                 if (self.in_where and std.mem.eql(u8, callee_name, "reject")) {
@@ -2781,6 +2896,52 @@ const FunctionLowerer = struct {
                     };
                     const ty = try self.lowerTypeArg(first);
                     break :blk try self.materializeTypeInfo(ty);
+                }
+                // `typeid_of(T)` folds to a stable content hash of the type — a
+                // runtime identity that's cheap to compare and stable across
+                // compilation units (the same type always hashes the same).
+                if (std.mem.eql(u8, callee_name, "typeid_of") and call.args.len > 0) {
+                    const first = switch (call.args[0]) {
+                        .positional => |e| e,
+                        .named => |n| n.value,
+                    };
+                    const ty = try self.lowerTypeArg(first);
+                    break :blk .{ .imm = .{ .uint = typeIdHash(ty) } };
+                }
+                // `type_name(T)` folds to the type's name string at lowering, so it
+                // works at runtime (not just on the VM) — same string as comptime.
+                if (std.mem.eql(u8, callee_name, "type_name") and call.args.len > 0) {
+                    const first = switch (call.args[0]) {
+                        .positional => |e| e,
+                        .named => |n| n.value,
+                    };
+                    const ty = try self.lowerTypeArg(first);
+                    break :blk .{ .imm = .{ .text = vm_compiler.typeNameMangle(ty) } };
+                }
+                // `any(x)` wraps a value into a type-erased `Any { data, id }`:
+                // spill x to a temporary, take its address, and record its typeid.
+                if (std.mem.eql(u8, callee_name, "any") and call.args.len > 0) {
+                    const arg = switch (call.args[0]) {
+                        .positional => |e| e,
+                        .named => |n| n.value,
+                    };
+                    const val = try self.lowerExpr(arg);
+                    const val_ty = self.exprType(arg);
+                    // An immediate has no address; force it into a register (via a
+                    // no-op cast) so `.ref` spills it to a temporary we can point at.
+                    const spillable: Value = if (val == .imm)
+                        try self.emit(val_ty, .{ .cast = .{ .kind = .as, .value = val } })
+                    else
+                        val;
+                    const ptr = try self.emit(.{ .ptr = try boxType(self.allocator, val_ty) }, .{ .unary = .{ .op = .ref, .value = spillable } });
+                    const id_val: Value = .{ .imm = .{ .uint = typeIdHash(val_ty) } };
+                    // The type's name travels with the value — a baked string,
+                    // tree-shaken (only `any()`'d types' names reach the binary).
+                    const name_val: Value = .{ .imm = .{ .text = vm_compiler.typeNameMangle(val_ty) } };
+                    break :blk try self.emit(.{ .struct_type = "Any" }, .{ .builtin = .{
+                        .name = "compound_literal",
+                        .args = try self.allocator.dupe(Value, &.{ ptr, id_val, name_val }),
+                    } });
                 }
                 if (isBuiltinName(callee_name)) {
                     var type_arg: ?IrType = null;
@@ -3781,7 +3942,7 @@ fn isBuiltinName(name: []const u8) bool {
 /// Every entry point is best-effort: it returns null when an expression cannot
 /// be folded to a constant, letting the caller lower the operand for runtime
 /// instead (there is no AST tree-walker fallback).
-const ComptimeVm = struct {
+pub const ComptimeVm = struct {
     /// General-purpose allocator for the VM's transient per-call frames.
     gpa: std.mem.Allocator,
     /// Owns every cache/eval allocation (IR, bytecode, synthetic functions);
@@ -3800,7 +3961,7 @@ const ComptimeVm = struct {
         func_map: std.StringHashMap(u32),
     };
 
-    fn init(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) ComptimeVm {
+    pub fn init(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) ComptimeVm {
         return .{
             .gpa = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
@@ -3808,7 +3969,7 @@ const ComptimeVm = struct {
         };
     }
 
-    fn deinit(self: *ComptimeVm) void {
+    pub fn deinit(self: *ComptimeVm) void {
         self.arena.deinit();
     }
 
@@ -3901,7 +4062,7 @@ const ComptimeVm = struct {
     /// Evaluate a `where { … }` predicate for one instantiation (with `type_args`
     /// bound). Returns the rejection message ("" = accept), or null if the VM
     /// couldn't run it (treated as accept, so a malformed predicate doesn't block).
-    fn evalWhere(self: *ComptimeVm, where_block: ast.Block, type_args: []const sema.TypeArg, inst_expr_types: @TypeOf(@as(sema.TypeEnv, undefined).expr_types), out_alloc: std.mem.Allocator) ?[]const u8 {
+    pub fn evalWhere(self: *ComptimeVm, where_block: ast.Block, type_args: []const sema.TypeArg, output_params: []const []const u8, inst_expr_types: @TypeOf(@as(sema.TypeEnv, undefined).expr_types), out_alloc: std.mem.Allocator) ?[]const u8 {
         const _ct = ctNow();
         defer ctAdd(_ct);
         const c = self.ensureCache() orelse return null;
@@ -3910,13 +4071,35 @@ const ComptimeVm = struct {
         // expr types live in `inst_expr_types`, not the global env.
         var inst_fe = self.front_end;
         inst_fe.types.expr_types = inst_expr_types;
-        const irfn = lowerWhereToFunction(a, inst_fe, where_block, type_args, self.current_file) catch return null;
+        const irfn = lowerWhereToFunction(a, inst_fe, where_block, type_args, output_params, self.current_file) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
         defer vm.deinit();
         const result = vm.executeKeepZones(bc_fn) catch return null;
         return switch (result) {
             .string => |s| out_alloc.dupe(u8, s) catch null,
+            else => null,
+        };
+    }
+
+    /// Run a `where` block to compute the output type param `Acc`: returns the
+    /// node id of the selected `Acc = <type>` right-hand side (0 = not assigned),
+    /// which sema resolves back to a concrete type for this instantiation.
+    pub fn evalWhereType(self: *ComptimeVm, where_block: ast.Block, type_args: []const sema.TypeArg, output_params: []const []const u8, inst_expr_types: @TypeOf(@as(sema.TypeEnv, undefined).expr_types)) ?u64 {
+        const _ct = ctNow();
+        defer ctAdd(_ct);
+        const c = self.ensureCache() orelse return null;
+        const a = self.arena.allocator();
+        var inst_fe = self.front_end;
+        inst_fe.types.expr_types = inst_expr_types;
+        const irfn = lowerWhereTypeToFunction(a, inst_fe, where_block, type_args, output_params, self.current_file) catch return null;
+        const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
+        var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
+        defer vm.deinit();
+        const result = vm.executeKeepZones(bc_fn) catch return null;
+        return switch (result) {
+            .uint => |u| @intCast(u),
+            .int => |i| if (i >= 0) @intCast(i) else null,
             else => null,
         };
     }
@@ -4708,8 +4891,13 @@ fn lowerExprToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEn
 /// the rejection message, or "" to accept. `reject(msg)` lowers to `return msg`;
 /// falling off the end returns "". `type_args` binds the generic params so
 /// `type_info(T)` folds for this instantiation.
-fn lowerWhereToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, where_block: ast.Block, type_args: []const sema.TypeArg, file: []const u8) !IrFunction {
-    const dummy = ast.FunctionDecl{
+fn nameInList(name: []const u8, list: []const []const u8) bool {
+    for (list) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
+}
+
+fn whereDummyDecl(file: []const u8, span: Span) ast.FunctionDecl {
+    return .{
         .attrs = &.{},
         .name = "__where",
         .file_name = file,
@@ -4719,12 +4907,16 @@ fn lowerWhereToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontE
         .return_ty = .opaque_type,
         .error_ty = null,
         .body = null,
-        .span = where_block.span,
+        .span = span,
     };
-    var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, dummy);
+}
+
+fn lowerWhereToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, where_block: ast.Block, type_args: []const sema.TypeArg, output_params: []const []const u8, file: []const u8) !IrFunction {
+    var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, whereDummyDecl(file, where_block.span));
     lowerer.module = front_end.module;
     lowerer.type_binding = type_args;
     lowerer.in_where = true;
+    lowerer.where_output_params = output_params;
     lowerer.current_return_ty = .text;
     // Fall-through (no `reject` hit) accepts: `return ""`.
     try lowerer.lowerBlock(where_block.statements, .{ .return_value = .{ .imm = .{ .text = "" } } });
@@ -4733,6 +4925,35 @@ fn lowerWhereToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontE
         .name = "__where",
         .params = &.{},
         .return_ty = .text,
+        .error_ty = null,
+        .blocks = blocks,
+        .extern_name = null,
+        .inline_hint = false,
+        .no_inline = false,
+        .no_return = false,
+        .entry = false,
+        .naked = false,
+        .export_sym = null,
+    };
+}
+
+/// Lower a `where` block to *compute an output type param*: an `Acc = <type>`
+/// assignment returns the node id of `<type>` (sema maps it back to a concrete
+/// type for this instantiation). Falling off the end returns 0 ("not assigned").
+fn lowerWhereTypeToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, where_block: ast.Block, type_args: []const sema.TypeArg, output_params: []const []const u8, file: []const u8) !IrFunction {
+    var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, whereDummyDecl(file, where_block.span));
+    lowerer.module = front_end.module;
+    lowerer.type_binding = type_args;
+    lowerer.in_where = true;
+    lowerer.in_where_type = true;
+    lowerer.where_output_params = output_params;
+    lowerer.current_return_ty = .{ .u = 64 };
+    try lowerer.lowerBlock(where_block.statements, .{ .return_value = .{ .imm = .{ .uint = 0 } } });
+    const blocks = try lowerer.blocks.toOwnedSlice(allocator);
+    return .{
+        .name = "__where_type",
+        .params = &.{},
+        .return_ty = .{ .u = 64 },
         .error_ty = null,
         .blocks = blocks,
         .extern_name = null,
@@ -5082,10 +5303,12 @@ fn parseIntLiteral(text: []const u8) i128 {
 }
 
 fn parseFloatLiteral(text: []const u8) f64 {
-    // Strip type suffix (f32, f64)
-    var end = text.len;
-    while (end > 0 and std.ascii.isAlphabetic(text[end - 1])) end -= 1;
-    const num = text[0..end];
+    // Strip the `f32`/`f64` type suffix. (Stripping trailing *alphabetic* chars
+    // is wrong: the suffix ends in digits — `3.9f64` would keep `3.9f64` and fail
+    // to parse → 0.0. Match the whole suffix instead.)
+    var num = text;
+    if (std.mem.endsWith(u8, num, "f32") or std.mem.endsWith(u8, num, "f64"))
+        num = num[0 .. num.len - 3];
     if (num.len == 0) return 0.0;
     return std.fmt.parseFloat(f64, num) catch 0.0;
 }

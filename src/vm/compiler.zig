@@ -1161,7 +1161,7 @@ fn buildOpFor(name: []const u8) ?instructions.BuildOp {
     return null;
 }
 
-fn typeNameMangle(ty: ir.IrType) []const u8 {
+pub fn typeNameMangle(ty: ir.IrType) []const u8 {
     return switch (ty) {
         .i => |bits| switch (bits) {
             8 => "i8",
@@ -1177,14 +1177,21 @@ fn typeNameMangle(ty: ir.IrType) []const u8 {
             64 => "u64",
             else => "unknown",
         },
+        .f32 => "f32",
+        .f64 => "f64",
         .bool => "bool",
+        .byte => "byte",
         .void => "void",
         .usize => "usize",
         .isize => "isize",
+        .addr => "addr",
+        .rune => "rune",
+        .text => "str",
         .ptr => "ptr",
         .optional => "opt",
         .slice => "slice",
-        .struct_type, .variant_type => "named",
+        // Named aggregates carry their own name.
+        .struct_type, .variant_type, .opaque_type, .interface_value => |n| n,
         else => "unknown",
     };
 }

@@ -124,6 +124,29 @@ pub const compiler_source =
 ///
 /// Variant ORDER is not load-bearing (looked up by name); keep names in sync with
 /// `materializeTypeInfo`. `void_`/`boolean` avoid the `void`/`bool` keywords.
+/// `Any` — a type-erased value: a borrowed pointer to the data plus the data's
+/// `typeid`. The wrap (`any(x)`) is compiler-driven (it spills `x` and records
+/// `typeid_of(T)`); the rest is ordinary generic K2, so downcasting is safe.
+pub const any_source =
+    \\Any :: struct { data: *const u8, id: usize, name: []const u8 }
+    \\
+    \\any_id :: fn(v: Any) -> usize { return v.id; }
+    \\
+    \\any_name :: fn(v: Any) -> []const u8 { return v.name; }
+    \\
+    \\any_is :: fn(v: Any, $T: type) -> bool { return v.id == typeid_of(T); }
+    \\
+    \\any_as :: fn(v: Any, $T: type) -> ?T {
+    \\    if v.id == typeid_of(T) {
+    \\        unsafe {
+    \\            tp := v.data as *T;
+    \\            return *tp;
+    \\        }
+    \\    }
+    \\    return null;
+    \\}
+;
+
 pub const reflection_source =
     \\TiInt     :: struct { bits: u16, signed: bool }
     \\TiFloat   :: struct { bits: u16 }

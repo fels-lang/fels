@@ -93,7 +93,21 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         },
 
         .cast => |cs| blk: {
-            const src_ty = fncg.irTypeOf(cs.value) orelse .unknown;
+            // An immediate operand has no `irTypeOf`; `.unknown` would lower to
+            // `ptr`, so `ConstInt(ptr, n)` produces garbage (e.g. `7 as i32` → 0).
+            // Give the immediate its natural scalar type so the coercion is real.
+            const src_ty = fncg.irTypeOf(cs.value) orelse switch (cs.value) {
+                .imm => |im| switch (im) {
+                    .int => ir.IrType{ .i = 64 },
+                    .uint => ir.IrType{ .u = 64 },
+                    .float => .f64,
+                    .bool => .bool,
+                    .rune => .rune,
+                    .text => .text,
+                    .null => instr.ty,
+                },
+                else => instr.ty,
+            };
             const val = resolveVal(cg, fncg, cs.value, src_ty);
             const dest = types.lower(cg, instr.ty);
             break :blk values.coerceTyped(cg.builder, cg.ctx, val, src_ty, instr.ty, dest);
@@ -303,19 +317,22 @@ fn lowerUnary(cg: *ModuleCg, fncg: anytype, u: ir.UnaryInstr, ty: ir.IrType, loc
 /// Address-of: for a local name, just return its alloca pointer.
 /// For anything else, build a temporary alloca and store into it.
 fn lowerRef(cg: *ModuleCg, fncg: anytype, val: ir.Value) ?llvm.LLVMValueRef {
+    // The spill allocas below go in the ENTRY block (static frame), not at the
+    // current position: a mid-function alloca makes LLVM emit a dynamic stack
+    // adjustment that calls `__chkstk`, which the CRT-less link doesn't provide.
     return switch (val) {
         .local => |name| fncg.locals.get(name), // alloca IS the address
         .param => |name| blk: {
             const pv = fncg.params.get(name) orelse break :blk null;
             const pty = fncg.param_ir_types.get(name) orelse break :blk null;
-            const tmp = llvm.LLVMBuildAlloca(cg.builder, types.lower(cg, pty), "ref");
+            const tmp = abi.entryAlloca(cg, fncg.llvm_fn, types.lower(cg, pty));
             _ = llvm.LLVMBuildStore(cg.builder, pv, tmp);
             break :blk tmp;
         },
         .reg => |id| blk: {
             const rv = fncg.regs.get(id) orelse break :blk null;
             const rty = fncg.reg_ir_types.get(id) orelse break :blk null;
-            const tmp = llvm.LLVMBuildAlloca(cg.builder, types.lower(cg, rty), "ref");
+            const tmp = abi.entryAlloca(cg, fncg.llvm_fn, types.lower(cg, rty));
             _ = llvm.LLVMBuildStore(cg.builder, rv, tmp);
             break :blk tmp;
         },

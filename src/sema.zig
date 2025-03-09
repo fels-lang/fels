@@ -406,6 +406,10 @@ pub const FnSig = struct {
     type_params: []const []const u8,
     type_constraints: []const ast.TypeConstraint = &.{},
     type_binding: ?[]const u8,
+    /// `where { … }` clause + output type params (`-> $Acc`) — needed to compute
+    /// output types at the call site during generic resolution.
+    where_clause: ?ast.Block = null,
+    output_type_params: []const []const u8 = &.{},
 };
 
 pub const ParamSig = struct {
@@ -510,7 +514,90 @@ pub const GenericInstantiation = struct {
     type_args: []const TypeArg,
     /// Per-instantiation expression types filled during checkGenericInstantiation.
     expr_types: std.AutoHashMap(NodeId, Ty),
+    /// The call site that first requested this instantiation — used to point a
+    /// `where` rejection at the call, not the function declaration.
+    origin_span: Span = Span.new(0, 0),
 };
+
+/// A resolution-time `where`-predicate evaluator. Opaque to sema (the context is
+/// the resolution `ComptimeVm`, owned by pipeline) so sema never imports ir.
+/// Returns the rejection message ("" = accept), or null if it couldn't run.
+pub const WhereEvalFn = *const fn (
+    ctx: *anyopaque,
+    file: []const u8,
+    wc: ast.Block,
+    type_args: []const TypeArg,
+    output_params: []const []const u8,
+    expr_types: std.AutoHashMap(NodeId, Ty),
+    out_alloc: std.mem.Allocator,
+) ?[]const u8;
+
+/// A resolution-time evaluator for an output type param (`-> $Acc`): runs the
+/// `where` block and returns the node id of the selected `Acc = <type>` RHS
+/// (0 = not assigned), which sema resolves back to a concrete type.
+pub const WhereTypeEvalFn = *const fn (
+    ctx: *anyopaque,
+    file: []const u8,
+    wc: ast.Block,
+    type_args: []const TypeArg,
+    output_params: []const []const u8,
+    expr_types: std.AutoHashMap(NodeId, Ty),
+) ?u64;
+
+fn callArgExpr(arg: ast.CallArg) ast.Expr {
+    return switch (arg) {
+        .positional => |e| e,
+        .named => |n| n.value,
+    };
+}
+
+/// If `stmt` is a top-level `require(...)` expression statement, return its call.
+fn requireCall(stmt: ast.Stmt) ?ast.CallExpr {
+    const e = switch (stmt) {
+        .expr => |x| x,
+        else => return null,
+    };
+    const call = switch (e.kind) {
+        .call => |c| c,
+        else => return null,
+    };
+    const callee = switch (call.callee.kind) {
+        .ident => |n| n,
+        else => return null,
+    };
+    return if (std.mem.eql(u8, callee, "require")) call else null;
+}
+
+/// Find the `where` assignment `pname = <rhs>` whose RHS has node id `node_id`,
+/// descending through control flow. Returns the RHS type expression.
+fn findOutputAssign(stmts: []const ast.Stmt, pname: []const u8, node_id: u64) ?ast.Expr {
+    for (stmts) |s| {
+        switch (s) {
+            .assign => |a| {
+                if (a.target.kind == .ident and
+                    std.mem.eql(u8, a.target.kind.ident, pname) and
+                    @as(u64, a.value.id) == node_id) return a.value;
+            },
+            .if_stmt => |i| {
+                if (findOutputAssign(i.then_block.statements, pname, node_id)) |e| return e;
+                if (i.else_block) |eb| if (findOutputAssign(eb.statements, pname, node_id)) |e| return e;
+            },
+            .match_stmt => |m| {
+                for (m.arms) |arm| if (findOutputAssign(arm.body.statements, pname, node_id)) |e| return e;
+            },
+            .comptime_if => |i| {
+                if (findOutputAssign(i.then_block.statements, pname, node_id)) |e| return e;
+                if (i.else_block) |eb| if (findOutputAssign(eb.statements, pname, node_id)) |e| return e;
+            },
+            .while_stmt => |w| if (findOutputAssign(w.body.statements, pname, node_id)) |e| return e,
+            .for_range => |f| if (findOutputAssign(f.body.statements, pname, node_id)) |e| return e,
+            .for_slice => |f| if (findOutputAssign(f.body.statements, pname, node_id)) |e| return e,
+            .unsafe_block, .comptime_run => |b| if (findOutputAssign(b.statements, pname, node_id)) |e| return e,
+            else => {},
+        }
+    }
+    return null;
+}
 
 pub fn fromBuiltinName(name: []const u8) ?Ty {
     // Sub-byte integers — stored as u8/i8 in sema; IR uses correct bit width
@@ -785,9 +872,28 @@ pub fn checkTypesWithContext(
     source: []const u8,
     file: []const u8,
 ) SemanticError!TypeEnv {
+    return checkTypesWithResolution(allocator, module, symbols, source, file, null, null, null);
+}
+
+/// Strict type-check with an optional resolution-time `where`-predicate evaluator
+/// (the two-pass rail). The callbacks are non-null only for pass-2 of a module
+/// that has `where` clauses.
+pub fn checkTypesWithResolution(
+    allocator: std.mem.Allocator,
+    module: ast.Module,
+    symbols: *SymbolTable,
+    source: []const u8,
+    file: []const u8,
+    where_ctx: ?*anyopaque,
+    where_fn: ?WhereEvalFn,
+    where_type_fn: ?WhereTypeEvalFn,
+) SemanticError!TypeEnv {
     var checker = Checker.init(allocator, symbols.*);
     checker.source = source;
     checker.file = file;
+    checker.where_eval_ctx = where_ctx;
+    checker.where_eval_fn = where_fn;
+    checker.where_type_eval_fn = where_type_fn;
     defer checker.deinit();
     // Generic struct/function instantiation appends new symbols to the table.
     // Propagate the grown table back to the caller so later stages (IR lowering)
@@ -855,6 +961,24 @@ const Checker = struct {
     diagnostics: std.ArrayList(Diagnostic) = .empty,
     source: []const u8 = "",
     file: []const u8 = "",
+    /// Resolution-time `where`-predicate evaluator (the two-pass rail). Set only
+    /// for the strict pass-2 of a module that has `where` clauses: an opaque
+    /// context (the resolution `ComptimeVm`) and a thunk that runs the predicate.
+    /// Kept as an opaque callback so sema never imports ir (would be circular).
+    where_eval_ctx: ?*anyopaque = null,
+    where_eval_fn: ?WhereEvalFn = null,
+    /// Companion to `where_eval_fn` for computing output type params (`-> $Acc`).
+    where_type_eval_fn: ?WhereTypeEvalFn = null,
+    /// The call site that requested the instantiation currently being checked,
+    /// so a `where` rejection points at the call, not the function decl.
+    current_inst_span: ?Span = null,
+    /// Output type param names (`-> $Acc`) of the function currently being
+    /// checked — assignments to these inside the `where` block are type-valued.
+    current_output_params: []const []const u8 = &.{},
+    /// Named `constraint Name($T) { … }` predicates, by name. Used to enforce
+    /// `$T: Name` at resolution by running the body on the resolution VM.
+    constraint_decls: std.StringHashMap(ast.FunctionDecl) = undefined,
+    constraint_decls_init: bool = false,
 
     fn init(allocator: std.mem.Allocator, symbols: SymbolTable) Checker {
         return .{
@@ -862,6 +986,8 @@ const Checker = struct {
             .symbols = symbols,
             .env = TypeEnv.init(allocator),
             .scope_stack = .empty,
+            .constraint_decls = std.StringHashMap(ast.FunctionDecl).init(allocator),
+            .constraint_decls_init = true,
         };
     }
 
@@ -872,6 +998,7 @@ const Checker = struct {
         self.zone_owner_scopes.deinit(self.allocator);
         self.active_zones.deinit(self.allocator);
         self.diagnostics.deinit(self.allocator);
+        if (self.constraint_decls_init) self.constraint_decls.deinit();
     }
 
     // ── Diagnostics ──────────────────────────────────────────────────────────
@@ -1070,7 +1197,13 @@ const Checker = struct {
                 .import => {},
                 .const_decl => |decl| _ = try self.inferExpr(decl.value),
                 .type_decl => |decl| try self.checkTypeDecl(decl),
-                .function => |decl| try self.checkFunction(decl),
+                .function => |decl| {
+                    // A `constraint` is a generic predicate template — registered
+                    // for `$T: Name` resolution, never checked/lowered as a fn.
+                    if (decl.is_constraint)
+                        try self.constraint_decls.put(decl.name, decl);
+                    try self.checkFunction(decl);
+                },
                 .interface_impl => |impl| try self.checkInterfaceImpl(impl),
                 .system_library => {},
             }
@@ -1237,6 +1370,8 @@ const Checker = struct {
                         .type_params = decl.type_params,
                         .type_constraints = decl.type_constraints,
                         .type_binding = null,
+                        .where_clause = decl.where_clause,
+                        .output_type_params = decl.output_type_params,
                     });
                     try self.env.set(id, .{ .fn_ptr = .{
                         .params = &.{},
@@ -1371,6 +1506,139 @@ const Checker = struct {
         }
     }
 
+    /// Compute output type params (`-> $Acc`) at a generic call site by running
+    /// the `where` block on the resolution VM. The VM returns the node id of the
+    /// selected `Acc = <type>` right-hand side; we resolve that type expression
+    /// (with the value params already bound) and add it to `binding`, so the
+    /// call's return type and the instantiation's body both see the result.
+    /// Best-effort: silently no-ops when the resolution VM isn't wired (pass-1)
+    /// or the predicate couldn't run, leaving the output param unbound.
+    fn computeOutputParamsAtCall(self: *Checker, sig: FnSig, binding: *std.StringHashMap(Ty)) SemanticError!void {
+        const wc = sig.where_clause orelse return;
+        if (sig.output_type_params.len == 0) return;
+        const teval = self.where_type_eval_fn orelse return;
+        const ctx = self.where_eval_ctx orelse return;
+
+        // A TypeArg view of the value-inferred params (e.g. T), for resolving the
+        // where block and its `type_info(T)`.
+        var bargs: std.ArrayList(TypeArg) = .empty;
+        defer bargs.deinit(self.allocator);
+        for (sig.type_params) |tp| {
+            if (binding.get(tp)) |ty| try bargs.append(self.allocator, .{ .name = tp, .ty = ty });
+        }
+
+        const saved_tp = self.current_type_params;
+        const saved_op = self.current_output_params;
+        const saved_bind = self.current_type_binding;
+        defer {
+            self.current_type_params = saved_tp;
+            self.current_output_params = saved_op;
+            self.current_type_binding = saved_bind;
+        }
+        self.current_type_params = sig.type_params;
+        self.current_output_params = sig.output_type_params;
+        self.current_type_binding = bargs.items;
+
+        // Type the where block (so `type_info(T)` etc. resolve for this binding),
+        // then ask the VM which `Acc = <type>` branch was selected.
+        try self.pushScope();
+        self.checkBlock(wc) catch {
+            self.popScope();
+            return;
+        };
+        self.popScope();
+
+        for (sig.output_type_params) |pname| {
+            const node_id = teval(ctx, self.file, wc, bargs.items, sig.output_type_params, self.env.expr_types) orelse 0;
+            if (node_id != 0) {
+                if (findOutputAssign(wc.statements, pname, node_id)) |rhs| {
+                    if (self.resolveExprAsType(rhs)) |ty| try binding.put(pname, ty);
+                }
+            }
+        }
+    }
+
+    /// Enforce a user `constraint Name($T) { … }` against `ty`. Returns the reject
+    /// message ("" = satisfied), or null if `name` isn't a user constraint (so the
+    /// caller falls through to interface conformance). Runs the body on the
+    /// resolution VM, exactly like a `where` predicate; in pass-1 (no VM) it
+    /// accepts so the tolerant pass doesn't reject prematurely.
+    fn runConstraintPredicate(self: *Checker, name: []const u8, ty: Ty) ?[]const u8 {
+        var visiting = std.StringHashMap(void).init(self.allocator);
+        defer visiting.deinit();
+        return self.runConstraintPredicateRec(name, ty, &visiting);
+    }
+
+    fn runConstraintPredicateRec(self: *Checker, name: []const u8, ty: Ty, visiting: *std.StringHashMap(void)) ?[]const u8 {
+        const decl = self.constraint_decls.get(name) orelse return null;
+        const body = decl.body orelse return ""; // declared but empty → vacuously ok
+        if (decl.type_params.len == 0) return "";
+        if (visiting.contains(name)) return ""; // cycle in `require` graph → stop
+        visiting.put(name, {}) catch return "";
+        defer _ = visiting.remove(name);
+        const eval = self.where_eval_fn orelse return ""; // pass-1: tolerant accept
+        const ctx = self.where_eval_ctx orelse return "";
+
+        var bargs = [_]TypeArg{.{ .name = decl.type_params[0], .ty = ty }};
+
+        const saved_tp = self.current_type_params;
+        const saved_op = self.current_output_params;
+        const saved_bind = self.current_type_binding;
+        defer {
+            self.current_type_params = saved_tp;
+            self.current_output_params = saved_op;
+            self.current_type_binding = saved_bind;
+        }
+        self.current_type_params = decl.type_params;
+        self.current_output_params = &.{};
+        self.current_type_binding = &bargs;
+
+        // Type the body (so `type_info(T)` and `require` args resolve), then check
+        // composition guards before running this constraint's own predicate.
+        self.pushScope() catch return "";
+        self.checkBlock(body) catch {
+            self.popScope();
+            return "";
+        };
+        self.popScope();
+
+        // `require(T, Other)` top-level guards: each required constraint must hold.
+        for (body.statements) |stmt| {
+            const call = requireCall(stmt) orelse continue;
+            if (call.args.len < 2) continue;
+            const other = switch (callArgExpr(call.args[1]).kind) {
+                .ident => |n| n,
+                else => continue,
+            };
+            const req_ty = self.resolveExprAsType(callArgExpr(call.args[0])) orelse ty;
+            if (self.runConstraintPredicateRec(other, req_ty, visiting)) |m| {
+                if (m.len > 0) return m;
+            }
+        }
+
+        return eval(ctx, decl.file_name, body, &bargs, &.{}, self.env.expr_types, self.allocator);
+    }
+
+    /// Resolve a `where` output-type RHS expression (`i32`, `T`, a named type) to
+    /// a concrete `Ty`, using the value params already bound. Null if it isn't a
+    /// plain type name (the only form supported as an output-type RHS).
+    fn resolveExprAsType(self: *Checker, e: ast.Expr) ?Ty {
+        switch (e.kind) {
+            // A bare builtin type (`i32`, `u8`, …) parses to `.type_ref`.
+            .type_ref => |tr| return self.typeFromRef(tr) catch null,
+            // A user/param type name (`T`, `Foo`) parses to `.ident`.
+            .ident => |name| {
+                for (self.current_type_binding) |arg| if (std.mem.eql(u8, arg.name, name)) return arg.ty;
+                if (fromBuiltinName(name)) |t| return t;
+                if (self.resolveSymbol(name)) |id| {
+                    if (self.symbols.symbol(id).kind == .type) return .{ .named = id };
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
     fn checkFunction(self: *Checker, decl: ast.FunctionDecl) SemanticError!void {
         const previous_file = self.file;
         self.file = decl.file_name;
@@ -1381,9 +1649,13 @@ const Checker = struct {
 
         self.current_type_params = decl.type_params;
         defer self.current_type_params = &.{};
+        self.current_output_params = decl.output_type_params;
+        defer self.current_output_params = &.{};
+        // Output type params (`-> $Acc`) are computed by the `where` block below,
+        // so defer resolving the return type until after the binding is extended.
+        const saved_binding = self.current_type_binding;
+        defer self.current_type_binding = saved_binding;
 
-        self.current_return_ty = try self.typeFromRef(decl.return_ty);
-        try self.rejectBorrowOutsideParam(self.current_return_ty, decl.return_ty.span());
         self.current_error_ty = if (decl.error_ty) |err| try self.typeFromErrorSpec(err) else null;
         try self.pushScope();
         defer self.popScope();
@@ -1409,8 +1681,32 @@ const Checker = struct {
         }
 
         // A `where { … }` clause is comptime code (inspects `type_info(T)`, may
-        // `reject`). Checked with the type params in scope, per instantiation.
-        if (decl.where_clause) |wc| try self.checkBlock(wc);
+        // `reject`, and may compute output type params). Checked with the type
+        // params in scope, per instantiation.
+        if (decl.where_clause) |wc| {
+            try self.checkBlock(wc);
+            // Two-pass resolution: if a resolution VM is wired (strict pass-2),
+            // run the predicate now — *before* the body — so a rejection is a
+            // resolution error at the call site and suppresses spurious body
+            // errors for a type the function never accepts.
+            if (self.where_eval_fn) |eval| if (self.where_eval_ctx) |ctx| {
+                if (self.current_type_binding.len > 0) {
+                    if (eval(ctx, decl.file_name, wc, self.current_type_binding, decl.output_type_params, self.env.expr_types, self.allocator)) |msg| {
+                        if (msg.len > 0) {
+                            const span = self.current_inst_span orelse decl.span;
+                            self.emitError(span, "`{s}` rejected for this type: {s}", .{ decl.name, msg });
+                            return error.SemanticFailed;
+                        }
+                    }
+                }
+            };
+            // Output type params (`-> $Acc`) were already computed at the call
+            // site (`computeOutputParamsAtCall`) and stored in `inst.type_args`,
+            // so the binding here already includes them — nothing to do.
+        }
+
+        self.current_return_ty = try self.typeFromRef(decl.return_ty);
+        try self.rejectBorrowOutsideParam(self.current_return_ty, decl.return_ty.span());
 
         if (decl.body) |body| {
             try self.checkBlock(body);
@@ -1457,6 +1753,20 @@ const Checker = struct {
                 try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
             },
             .assign => |assign| {
+                // `Acc = <type>` inside a `where` block: an output-type assignment.
+                // The RHS is a type expression, not a value — validate it resolves
+                // and skip the normal value-assignment check.
+                if (assign.target.kind == .ident) {
+                    for (self.current_output_params) |p| {
+                        if (std.mem.eql(u8, p, assign.target.kind.ident)) {
+                            if (self.resolveExprAsType(assign.value) == null) {
+                                self.emitError(assign.value.span, "output type param `{s}` must be assigned a type", .{p});
+                                return error.SemanticFailed;
+                            }
+                            return;
+                        }
+                    }
+                }
                 try self.checkAssignTarget(assign.target);
                 const target_ty = try self.inferExpr(assign.target);
                 if (try self.coerceEnumLiteral(assign.value, target_ty)) return;
@@ -2136,6 +2446,12 @@ const Checker = struct {
         };
 
         // ── Builtins ────────────────────────────────────────────────────
+        // `require(T, Other)` — constraint composition. Its args are a type and a
+        // constraint name, not values, so return before the argument checks.
+        if (std.mem.eql(u8, name, "require")) return .void;
+        // `typeid_of(T)` — a stable runtime type id (usize). Its arg is a type,
+        // so return before the value-argument checks (like `type_info`).
+        if (std.mem.eql(u8, name, "typeid_of")) return .usize;
         if (isBuiltinValue(name)) for (call.args) |arg| {
             const value = switch (arg) {
                 .positional => |positional| positional,
@@ -2153,6 +2469,13 @@ const Checker = struct {
         if (std.mem.eql(u8, name, "type_name")) return try self.sliceOf(.u8);
         // `reject("msg")` — used in a `where` block to reject the instantiation.
         if (std.mem.eql(u8, name, "reject")) return .void;
+        // `any(x)` wraps any value into a type-erased `Any` (the prelude struct).
+        if (std.mem.eql(u8, name, "any")) {
+            if (self.resolveSymbol("Any")) |id| {
+                if (self.symbols.symbol(id).kind == .type) return .{ .named = id };
+            }
+            return .unknown;
+        }
         // `type_info(T)` yields a matchable `TypeInfo` value (from the injected
         // reflection prelude), so `match`/field access type-check normally.
         if (std.mem.eql(u8, name, "type_info")) {
@@ -2983,6 +3306,14 @@ const Checker = struct {
                 },
                 .not_builtin => {},
             }
+            // A user-defined `constraint Name($T) { … }` — run its predicate.
+            if (self.runConstraintPredicate(constraint.interface, bound_ty)) |msg| {
+                if (msg.len > 0) {
+                    self.emitError(constraint.span, "type `{s}` does not satisfy `{s}`: {s}", .{ self.formatTy(bound_ty), constraint.interface, msg });
+                    return error.SemanticFailed;
+                }
+                continue; // satisfied
+            }
             // Unwrap pointer to get the concrete named type.
             const concrete_id: SymbolId = switch (bound_ty) {
                 .named => |id| id,
@@ -3005,6 +3336,10 @@ const Checker = struct {
                 return error.SemanticFailed;
             }
         }
+
+        // Output type params (`-> $Acc`): run the `where` to compute them now, so
+        // the call's return type and the recorded instantiation both see them.
+        try self.computeOutputParamsAtCall(sig, &binding);
 
         // Build ordered type_args list
         var type_args = std.ArrayList(TypeArg).empty;
@@ -3032,6 +3367,7 @@ const Checker = struct {
                 .mangled_name = mangled,
                 .type_args = try type_args.toOwnedSlice(self.allocator),
                 .expr_types = std.AutoHashMap(NodeId, Ty).init(self.allocator),
+                .origin_span = call.callee.span,
             });
         } else type_args.deinit(self.allocator);
 
@@ -3122,10 +3458,12 @@ const Checker = struct {
                     const saved = self.env.expr_types;
                     self.env.expr_types = inst.expr_types;
                     self.current_type_binding = inst.type_args;
+                    self.current_inst_span = inst.origin_span;
                     defer {
                         inst.expr_types = self.env.expr_types;
                         self.env.expr_types = saved;
                         self.current_type_binding = &.{};
+                        self.current_inst_span = null;
                     }
 
                     try self.checkFunction(decl);
@@ -4050,7 +4388,8 @@ fn isBuiltinValue(name: []const u8) bool {
         "atomic_load", "atomic_store",   "volatile",
         ".acquire",
         // Compile-time reflection builtins
-           "type_info",      "type_name",      "reject",
+           "type_info",      "type_name",      "reject",          "require",
+           "typeid_of",      "any",
         // Compile-time program introspection (Phase 3 message loop)
         "compiler_decls",
         // std.build host intrinsics (the build system, comptime-only)

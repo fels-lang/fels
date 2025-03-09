@@ -59,6 +59,117 @@ test "exe: main returning 0 exits cleanly" {
     try std.testing.expectEqual(@as(u32, 0), code);
 }
 
+test "exe: `<literal> as <type>` casts and suffixed float literals" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: casting an immediate (`7 as i32`) lowered the operand with an
+    // unknown IR type → `ptr` → `ConstInt(ptr, 7)` = 0. And a suffixed float
+    // literal (`3.9f64`) parsed to 0.0 (the suffix ends in digits, so the old
+    // "strip trailing alphabetic" left `3.9f64`, which `parseFloat` rejected).
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    a: i32 = 7 as i32;
+        \\    b: i64 = 5 as i64;
+        \\    c: i32 = 100 as i64 as i32;
+        \\    d: i32 = 3.9f64 as i32;
+        \\    e: f64 = 2.5f64;
+        \\    return a + (b as i32) + c + d + (e as i32);
+        \\}
+    , "exe_lit_cast");
+    try std.testing.expectEqual(@as(u32, 117), code); // 7+5+100+3+2
+}
+
+test "exe: `Any` — wrap a value, dispatch on its runtime type, safe downcast" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `any(x)` wraps any value into a type-erased Any; `any_as(v, T) -> ?T` is a
+    // safe downcast (null on type mismatch), `any_is(v, T)` an identity test —
+    // both ordinary generic K2 over `typeid_of`. Verified across a value passed
+    // through an `Any` parameter and recovered by its real type.
+    const code = try compileAndRun(arena.allocator(),
+        \\describe :: fn(v: Any) -> i32 {
+        \\    if any_as(v, i32)  |x| { return x; }
+        \\    if any_as(v, bool) |b| { if b { return 100; } return 200; }
+        \\    return -1;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    a := describe(any(42));     // recovered as i32 -> 42
+        \\    b := describe(any(true));   // recovered as bool -> 100
+        \\    miss: i32 = 0;
+        \\    if any_as(any(7i32), f64) |x| { miss = 999; }  // wrong type -> null
+        \\    nm: i32 = 0;
+        \\    if any_name(any(1i32)).len == 3 { nm = nm + 1; }  // "i32", metadata travels with the value
+        \\    return a + b + miss + nm - 101;  // 42 + 100 + 0 + 1 - 101 = 42
+        \\}
+    , "exe_any");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: `typeid_of(T)` is a stable runtime type identity" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Identical types share an id; distinct types (incl. `*i32`/`[]i32` vs `i32`,
+    // and two structurally-identical structs) get distinct ids — all comparable
+    // at runtime.
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct { a: i32 }
+        \\Q :: struct { a: i32 }
+        \\main :: fn() -> i32 {
+        \\    total: i32 = 0;
+        \\    if typeid_of(i32) == typeid_of(i32) { total = total + 1; }
+        \\    if typeid_of(i32) != typeid_of(f64) { total = total + 2; }
+        \\    if typeid_of(*i32) != typeid_of(i32) { total = total + 4; }
+        \\    if typeid_of([]i32) != typeid_of(i32) { total = total + 8; }
+        \\    if typeid_of(P)   != typeid_of(Q)   { total = total + 16; }
+        \\    return total;
+        \\}
+    , "exe_typeid");
+    try std.testing.expectEqual(@as(u32, 31), code);
+}
+
+test "exe: `type_name(T)` returns the type's name at runtime" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // type_name used to fold only on the comptime VM (empty at runtime); now it
+    // folds to the name string at lowering, so it's a real runtime value.
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    n := type_name(i32);
+        \\    ok: i32 = 0;
+        \\    if n.len == 3 { ok = ok + 1; }
+        \\    if n[0] == 105 { ok = ok + 1; }  // 'i'
+        \\    if n[1] == 51  { ok = ok + 1; }  // '3'
+        \\    if n[2] == 50  { ok = ok + 1; }  // '2'
+        \\    return ok;
+        \\}
+    , "exe_type_name");
+    try std.testing.expectEqual(@as(u32, 4), code);
+}
+
+test "exe: `where` output type param `-> $Acc` runs end to end" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The `where` computes the accumulator width from `type_info(T)` (sub-32-bit
+    // ints widen to i32) and rejects non-integers; both monomorphizations run.
+    const code = try compileAndRun(arena.allocator(),
+        \\acc :: fn(x: $T) -> $Acc
+        \\where { match type_info(T) { .int |i| => if i.bits < 32 { Acc = i32; } else { Acc = T; }  else => reject("acc: integer only"); } }
+        \\{ total: Acc = x as Acc; return total +% (1 as Acc); }
+        \\main :: fn() -> i32 { return acc(19u8) + acc(21i32); }
+    , "exe_out_ty");
+    try std.testing.expectEqual(@as(u32, 42), code); // (19+1) + (21+1)
+}
+
 test "exe: a function passed as a function-pointer value is called" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

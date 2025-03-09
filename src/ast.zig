@@ -197,7 +197,16 @@ pub const FunctionDecl = struct {
     /// `name :: macro(...) { ... }` — a compile-time AST template, expanded at
     /// its `#insert` call sites by the macroexpand pass and never lowered.
     is_macro: bool = false,
+    /// `Name :: constraint($T) { ... }` — a named, reusable comptime type
+    /// predicate. Structurally a generic function whose body inspects
+    /// `type_info(T)` and may `reject(msg)`; never lowered, run at `$T: Name`
+    /// resolution sites on the resolution VM.
+    is_constraint: bool = false,
     type_params: []const []const u8,
+    /// Names among `type_params` that are *output* type params (`-> $Acc`):
+    /// not inferred from value args nor passed explicitly, but computed by the
+    /// `where` clause during resolution.
+    output_type_params: []const []const u8 = &.{},
     type_constraints: []const TypeConstraint = &.{}, // $T: Interface constraints
     params: []const Param,
     return_ty: TypeRef,

@@ -54,23 +54,136 @@ test "where clause: a satisfying type is accepted (user predicate over type_info
     try k2.ir_mod.validateModule(module);
 }
 
-test "where clause: a non-satisfying type is rejected at lowering with the custom message" {
+test "where clause: a non-satisfying type is rejected during resolution (two-pass)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // A struct fails the `where` predicate; the reject() fires during lowering
-    // (the comptime VM evaluates the predicate per instantiation).
+    // A struct fails the `where` predicate. With the two-pass resolution rail the
+    // predicate runs *during sema* (the body uses `+%`, which would itself error
+    // on a struct — but the reject fires first and suppresses it).
     const src =
         \\P :: struct { a: i32 }
         \\dbl :: fn(x: $T) -> T
         \\where { match type_info(T) { .int => {} .float => {} else => reject("needs a numeric type"); } }
-        \\{ return x; }
+        \\{ return x +% x; }
         \\use :: fn() -> i32 { p: P = .{ 0 }; _ := dbl(p); return 0; }
     ;
-    // Sema accepts (the predicate is comptime); lowering rejects.
-    var fe = try k2.compile(arena.allocator(), "where_bad.k2", src);
+    try std.testing.expectError(
+        error.SemanticFailed,
+        k2.compile(arena.allocator(), "where_bad.k2", src),
+    );
+}
+
+test "named constraint: `Name :: constraint($T)` accepts a satisfying type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // A reusable, named comptime predicate, enforced at `$T: MyNum` resolution.
+    const src =
+        \\MyNum :: constraint($T) { match type_info(T) { .int => {} .float => {} else => reject("expected a numeric type"); } }
+        \\dbl :: fn($T: MyNum, x: T) -> T { return x +% x; }
+        \\use :: fn() -> i32 { return dbl(21); }
+    ;
+    var fe = try k2.compile(arena.allocator(), "constraint_ok.k2", src);
     defer fe.deinit(arena.allocator());
-    try std.testing.expectError(error.LoweringFailed, k2.lowerFrontend(arena.allocator(), fe));
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(module);
+}
+
+test "named constraint: a non-satisfying type is rejected with the predicate's message" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\MyNum :: constraint($T) { match type_info(T) { .int => {} .float => {} else => reject("expected a numeric type"); } }
+        \\P :: struct { a: i32 }
+        \\dbl :: fn($T: MyNum, x: T) -> T { return x; }
+        \\use :: fn() -> i32 { p: P = .{ 0 }; _ := dbl(p); return 0; }
+    ;
+    try std.testing.expectError(
+        error.SemanticFailed,
+        k2.compile(arena.allocator(), "constraint_bad.k2", src),
+    );
+}
+
+test "named constraint: `require(T, Other)` composition accepts when all hold" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // `Ordered` composes `MyNum` via `require`; both must hold for i32.
+    const src =
+        \\MyNum   :: constraint($T) { match type_info(T) { .int => {} .float => {} else => reject("not numeric"); } }
+        \\Ordered :: constraint($T) { require(T, MyNum); }
+        \\use :: fn($T: Ordered, x: T) -> T { return x +% x; }
+        \\go :: fn() -> i32 { return use(21); }
+    ;
+    var fe = try k2.compile(arena.allocator(), "require_ok.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(module);
+}
+
+test "named constraint: `require` propagates the required constraint's rejection" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // A struct fails `MyNum`, so the composing `Ordered` rejects too.
+    const src =
+        \\MyNum   :: constraint($T) { match type_info(T) { .int => {} .float => {} else => reject("not numeric"); } }
+        \\Ordered :: constraint($T) { require(T, MyNum); }
+        \\P :: struct { a: i32 }
+        \\use :: fn($T: Ordered, x: T) -> T { return x; }
+        \\go :: fn() -> i32 { p: P = .{ 0 }; _ := use(p); return 0; }
+    ;
+    try std.testing.expectError(
+        error.SemanticFailed,
+        k2.compile(arena.allocator(), "require_bad.k2", src),
+    );
+}
+
+test "where clause: output type param `-> $Acc` computed from type_info (two-pass)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The `where` block selects the accumulator width from `type_info(T)`:
+    // sub-32-bit ints widen to i32, everything else keeps T. The body and the
+    // call's return type both use the computed `Acc`.
+    const src =
+        \\acc_of :: fn(x: $T) -> $Acc
+        \\where {
+        \\    match type_info(T) {
+        \\        .int |i| => if i.bits < 32 { Acc = i32; } else { Acc = T; }
+        \\        else => Acc = T;
+        \\    }
+        \\} {
+        \\    total: Acc = x as Acc;
+        \\    return total;
+        \\}
+        \\use :: fn() -> i32 { return acc_of(100u8) + acc_of(8i32); }
+    ;
+    var fe = try k2.compile(arena.allocator(), "out_ty.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(module);
+    // Two instantiations (u8 and i32), both with the body checked against Acc.
+    try std.testing.expect(fe.types.generic_instantiations.items.len >= 2);
+}
+
+test "where clause: output type param + reject coexist (reject a float)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The `where` computes `Acc` for integers and rejects everything else.
+    const src =
+        \\acc :: fn(x: $T) -> $Acc
+        \\where { match type_info(T) { .int |i| => Acc = T; else => reject("acc needs an integer"); } }
+        \\{ total: Acc = x; return total; }
+        \\use :: fn() -> i32 { _ := acc(1.5f64); return 0; }
+    ;
+    try std.testing.expectError(
+        error.SemanticFailed,
+        k2.compile(arena.allocator(), "out_ty_reject.k2", src),
+    );
 }
 
 test "generic function: inferred $T, monomorphized to i32" {
