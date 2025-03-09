@@ -420,6 +420,10 @@ pub const BinOp = enum {
     mul,
     div,
     rem,
+    // Wrapping arithmetic — lowers to plain (non-trapping) add/sub/mul.
+    wrap_add,
+    wrap_sub,
+    wrap_mul,
     shl,
     shr,
     lt,
@@ -516,7 +520,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
             },
             .const_decl => |decl| {
                 // #run expr on the right-hand side → evaluate at compile time.
-                const effective_imm = effectiveConstImm(decl.value, cvm);
+                const effective_imm = try effectiveConstImm(decl.value, cvm, decl.file_name, decl.source);
                 // `X :: #run f()` has no literal to infer from; derive the
                 // global's type from the folded constant so the LLVM global's
                 // type matches its initializer.
@@ -634,6 +638,23 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                     if (decl.type_params.len == 0) continue;
                     const sym_id = front_end.symbols.resolve(front_end.symbols.root_scope, decl.name) orelse continue;
                     if (sym_id != inst.sym_id) continue;
+                    // A `where { … }` predicate runs on the VM for this binding (final
+                    // pass only, when the cache exists). A non-empty result is the
+                    // rejection message — fail the compile with it.
+                    if (cvm) |c| if (decl.where_clause) |wc| {
+                        c.current_file = decl.file_name;
+                        if (c.evalWhere(wc, inst.type_args, inst.expr_types, allocator)) |msg| {
+                            if (msg.len > 0) {
+                                const full = std.fmt.allocPrint(allocator, "`{s}` rejected for this type: {s}", .{ decl.name, msg }) catch msg;
+                                diag_mod.printErrorAt(full, decl.file_name, decl.source, decl.span);
+                                return error.LoweringFailed;
+                            }
+                        }
+                    };
+                    // A comptime-only generic (e.g. one whose BODY calls `type_info`)
+                    // is kept for the VM cache (cvm == null) but excluded from the
+                    // final runtime module (cvm != null) — its body can't lower to LLVM.
+                    if (cvm != null and fnIsComptimeOnly(decl)) continue;
                     var inst_types = front_end.types;
                     inst_types.expr_types = inst.expr_types;
                     try functions.append(allocator, try lowerFunctionInstantiation(
@@ -923,9 +944,9 @@ fn foldBinaryImm(op: BinOp, lhs: Imm, rhs: Imm) ?Imm {
         else => return null,
     };
     return switch (op) {
-        .add => .{ .int = l +% r },
-        .sub => .{ .int = l -% r },
-        .mul => .{ .int = l *% r },
+        .add, .wrap_add => .{ .int = l +% r },
+        .sub, .wrap_sub => .{ .int = l -% r },
+        .mul, .wrap_mul => .{ .int = l *% r },
         .div => if (r == 0) null else .{ .int = @divTrunc(l, r) },
         .rem => if (r == 0) null else .{ .int = @rem(l, r) },
         .shl => if (r >= 0 and r < 128) .{ .int = l << @as(u7, @intCast(r)) } else null,
@@ -1434,6 +1455,10 @@ const FunctionLowerer = struct {
     active_zones: std.ArrayList([]const u8) = .empty,
     defers: std.ArrayList(ast.DeferStmt) = .empty,
     type_binding: []const sema.TypeArg = &.{},
+    /// True while lowering a `where { … }` predicate: a `reject(msg)` call
+    /// terminates with `return msg` (the predicate returns the rejection message,
+    /// or "" to accept).
+    in_where: bool = false,
     module: ast.Module = .empty(""),
     /// VM-backed comptime evaluator for `#run`, or null to use the tree-walker.
     cvm: ?*ComptimeVm = null,
@@ -1490,7 +1515,15 @@ const FunctionLowerer = struct {
                 try self.emitNoResult(local_ty, .{ .store_local = .{ .name = local.name, .value = value } });
             },
             .local_typed => |local| {
-                const local_ty = try lowerAstTypeWithEnv(self.allocator, local.ty, self.types, self.symbols);
+                // Inside a generic instantiation, substitute the binding so
+                // `total: T` gets the concrete type (T → i32), not the
+                // unsubstituted param (which lowers to `unknown`/`ptr` and breaks
+                // the return type). Outside generics, keep the env lowering, which
+                // handles `Self`/aliases the binding-aware path doesn't.
+                const local_ty = if (self.type_binding.len > 0)
+                    try lowerTypeWithBindingAndSymbols(self.allocator, local.ty, self.type_binding, self.types, self.symbols)
+                else
+                    try lowerAstTypeWithEnv(self.allocator, local.ty, self.types, self.symbols);
                 const value = try self.lowerExprAs(local.value, local_ty);
                 try self.local_types.put(local.name, local_ty);
                 try self.emitNoResult(local_ty, .{ .store_local = .{ .name = local.name, .value = value } });
@@ -1882,6 +1915,22 @@ const FunctionLowerer = struct {
         return .{ .imm = .{ .text = text } };
     }
 
+    /// A short kind name for types `TypeInfo` doesn't model in detail (`fn`,
+    /// `interface`, …) — the payload of the `other` variant.
+    fn typeInfoKindName(ty: IrType) []const u8 {
+        return switch (ty) {
+            .fn_ptr => "fn",
+            .interface_value => "interface",
+            .fallible => "fallible",
+            .opaque_type => "opaque",
+            .list => "list",
+            .map => "map",
+            .range => "range",
+            .zone => "zone",
+            else => "other",
+        };
+    }
+
     /// Phase 3: materialize the module's top-level declarations into a `[]Decl`
     /// slice the comptime VM can iterate (`Decl{ name, kind }`). Backs the
     /// `compiler_decls()` introspection builtin. Skips anonymous items (imports,
@@ -1921,6 +1970,139 @@ const FunctionLowerer = struct {
             .ptr = arr,
             .len = .{ .imm = .{ .uint = elems.len } },
         } });
+    }
+
+    // ── Materialization: `type_info(T)` → a `TypeInfo` value ──────────────────
+    // Builds the matchable `TypeInfo` tagged enum from a type's layout, the same
+    // way `materializeExpr` builds `ast.*`. Recursive payloads are `*TypeInfo`;
+    // cycles (`Node { next: *Node }`) break with the `other` leaf.
+
+    fn materializeTypeInfo(self: *FunctionLowerer, ty: IrType) LowerError!Value {
+        var visiting = std.StringHashMap(void).init(self.allocator);
+        defer visiting.deinit();
+        return self.materializeTypeInfoRec(ty, &visiting);
+    }
+
+    /// Materialize `ty` and take its address as a `*TypeInfo` (for nested fields).
+    fn tiPtr(self: *FunctionLowerer, ty: IrType, visiting: *std.StringHashMap(void)) LowerError!Value {
+        const inner = try self.allocator.create(IrType);
+        inner.* = .{ .variant_type = "TypeInfo" };
+        const v = try self.materializeTypeInfoRec(ty, visiting);
+        return self.emit(.{ .ptr = inner }, .{ .unary = .{ .op = .ref, .value = v } });
+    }
+
+    fn tiInt(self: *FunctionLowerer, bits: u64, signed: bool) LowerError!Value {
+        const payload = try self.mkStruct("TiInt", &.{
+            .{ .name = "bits", .value = .{ .imm = .{ .uint = bits } } },
+            .{ .name = "signed", .value = .{ .imm = .{ .bool = signed } } },
+        });
+        return self.mkVariant("TypeInfo", "int", payload);
+    }
+
+    fn tiFloat(self: *FunctionLowerer, bits: u64) LowerError!Value {
+        const payload = try self.mkStruct("TiFloat", &.{
+            .{ .name = "bits", .value = .{ .imm = .{ .uint = bits } } },
+        });
+        return self.mkVariant("TypeInfo", "float", payload);
+    }
+
+    fn materializeTypeInfoRec(self: *FunctionLowerer, ty: IrType, visiting: *std.StringHashMap(void)) LowerError!Value {
+        switch (ty) {
+            .i => |b| return self.tiInt(b, true),
+            .u => |b| return self.tiInt(b, false),
+            .byte => return self.tiInt(8, false),
+            .rune => return self.tiInt(32, false),
+            .usize, .addr => return self.tiInt(64, false),
+            .isize => return self.tiInt(64, true),
+            .bool => return self.mkVariant("TypeInfo", "boolean", null),
+            .void => return self.mkVariant("TypeInfo", "void_", null),
+            .f32 => return self.tiFloat(32),
+            .f64 => return self.tiFloat(64),
+            .ptr => |inner| {
+                const elem = try self.tiPtr(inner.*, visiting);
+                const payload = try self.mkStruct("TiPtr", &.{
+                    .{ .name = "elem", .value = elem },
+                    .{ .name = "is_const", .value = .{ .imm = .{ .bool = false } } },
+                });
+                return self.mkVariant("TypeInfo", "pointer", payload);
+            },
+            .slice => |inner| return self.mkVariant("TypeInfo", "slice", try self.tiPtr(inner.*, visiting)),
+            .text => return self.mkVariant("TypeInfo", "slice", try self.tiPtr(.byte, visiting)),
+            .optional => |inner| return self.mkVariant("TypeInfo", "optional", try self.tiPtr(inner.*, visiting)),
+            .array => |arr| {
+                const elem = try self.tiPtr(arr.elem.*, visiting);
+                const payload = try self.mkStruct("TiArray", &.{
+                    .{ .name = "len", .value = .{ .imm = .{ .uint = arr.len } } },
+                    .{ .name = "elem", .value = elem },
+                });
+                return self.mkVariant("TypeInfo", "array", payload);
+            },
+            .struct_type => |name| return self.tiStruct(name, visiting),
+            .variant_type => |name| return self.tiEnum(name, visiting),
+            else => return self.mkVariant("TypeInfo", "other", astStr(typeInfoKindName(ty))),
+        }
+    }
+
+    fn tiStruct(self: *FunctionLowerer, name: []const u8, visiting: *std.StringHashMap(void)) LowerError!Value {
+        if (visiting.contains(name)) return self.mkVariant("TypeInfo", "other", astStr(name));
+        const fields = self.structFieldInfos(name) orelse return self.mkVariant("TypeInfo", "other", astStr(name));
+        try visiting.put(name, {});
+        defer _ = visiting.remove(name);
+
+        var field_vals: std.ArrayList(Value) = .empty;
+        defer field_vals.deinit(self.allocator);
+        for (fields) |f| {
+            const fty = lowerSemaTypeWithEnv(self.allocator, f.ty, self.types, self.symbols) catch IrType.unknown;
+            const fv = try self.mkStruct("TiField", &.{
+                .{ .name = "name", .value = astStr(f.name) },
+                .{ .name = "ty", .value = try self.tiPtr(fty, visiting) },
+            });
+            try field_vals.append(self.allocator, fv);
+        }
+        const slice = try self.materializeSlice(.{ .struct_type = "TiField" }, field_vals.items);
+        const payload = try self.mkStruct("TiStruct", &.{
+            .{ .name = "name", .value = astStr(name) },
+            .{ .name = "fields", .value = slice },
+        });
+        return self.mkVariant("TypeInfo", "struct_", payload);
+    }
+
+    fn tiEnum(self: *FunctionLowerer, name: []const u8, visiting: *std.StringHashMap(void)) LowerError!Value {
+        _ = visiting;
+        const variants = self.enumVariantInfos(name) orelse return self.mkVariant("TypeInfo", "other", astStr(name));
+        var vvals: std.ArrayList(Value) = .empty;
+        defer vvals.deinit(self.allocator);
+        for (variants) |v| {
+            const vv = try self.mkStruct("TiVariant", &.{
+                .{ .name = "name", .value = astStr(v.name) },
+                .{ .name = "has_payload", .value = .{ .imm = .{ .bool = v.payload != null } } },
+            });
+            try vvals.append(self.allocator, vv);
+        }
+        const slice = try self.materializeSlice(.{ .struct_type = "TiVariant" }, vvals.items);
+        const payload = try self.mkStruct("TiEnum", &.{
+            .{ .name = "name", .value = astStr(name) },
+            .{ .name = "variants", .value = slice },
+        });
+        return self.mkVariant("TypeInfo", "enum_", payload);
+    }
+
+    fn structFieldInfos(self: *FunctionLowerer, name: []const u8) ?[]const sema.FieldInfo {
+        const id = self.symbols.resolve(self.symbols.root_scope, name) orelse return null;
+        const layout = self.types.layouts.get(id) orelse return null;
+        return switch (layout.kind) {
+            .struct_type => |f| f,
+            else => null,
+        };
+    }
+
+    fn enumVariantInfos(self: *FunctionLowerer, name: []const u8) ?[]const sema.VariantInfo {
+        const id = self.symbols.resolve(self.symbols.root_scope, name) orelse return null;
+        const layout = self.types.layouts.get(id) orelse return null;
+        return switch (layout.kind) {
+            .variant_type => |v| v,
+            else => null,
+        };
     }
 
     fn materializeVariantSlice(self: *FunctionLowerer, elem_variant: []const u8, elems: []const Value) LowerError!Value {
@@ -2385,6 +2567,32 @@ const FunctionLowerer = struct {
                 break :blk try self.emit(self.exprType(expr), .{ .try_ok = value });
             },
             .call => |call| blk: {
+                // `EnumType.variant(payload)` construction: sema recorded it under
+                // the callee id (like a bare enum literal). Lower to `variant_lit`
+                // with the payload, if any.
+                if (self.types.enum_lits.get(call.callee.id)) |lit| {
+                    const payload: ?Value = if (call.args.len > 0) p: {
+                        const arg = switch (call.args[0]) {
+                            .positional => |e| e,
+                            .named => |n| n.value,
+                        };
+                        // Lower with the variant's payload type, and materialize a
+                        // bare immediate into a typed register: the backend resolves
+                        // a variant_lit payload against `.unknown`, so an untyped
+                        // imm would collapse to a zero-width `i0`.
+                        const pty = self.variantPayloadIrType(lit.type_name, lit.variant);
+                        const raw = try self.lowerExprAs(arg, pty);
+                        break :p switch (raw) {
+                            .imm => |im| try self.emitAt(pty, .{ .const_value = im }, expr.span),
+                            else => raw,
+                        };
+                    } else null;
+                    break :blk try self.emit(self.exprType(expr), .{ .variant_lit = .{
+                        .type_name = lit.type_name,
+                        .variant = lit.variant,
+                        .payload = payload,
+                    } });
+                }
                 // Detect zone method calls: sema marks the field-callee expr with zone_handle.
                 if (call.callee.kind == .field) {
                     const fld = call.callee.kind.field;
@@ -2551,6 +2759,29 @@ const FunctionLowerer = struct {
                     try args.append(self.allocator, if (expected) |ty| try self.lowerExprAs(value, ty) else try self.lowerExpr(value));
                 };
                 const arg_slice = try args.toOwnedSlice(self.allocator);
+                // `reject(msg)` inside a `where` predicate terminates with
+                // `return msg` (the predicate returns the rejection message).
+                if (self.in_where and std.mem.eql(u8, callee_name, "reject")) {
+                    const msg: Value = if (call.args.len > 0) m: {
+                        const arg = switch (call.args[0]) {
+                            .positional => |e| e,
+                            .named => |n| n.value,
+                        };
+                        break :m try self.lowerExpr(arg);
+                    } else .{ .imm = .{ .text = "rejected" } };
+                    try self.terminate(.{ .return_value = msg });
+                    break :blk .{ .imm = .null };
+                }
+                // `type_info(T)` materializes a matchable `TypeInfo` value instead
+                // of a folded builtin — `match`/field access then work normally.
+                if (std.mem.eql(u8, callee_name, "type_info") and call.args.len > 0) {
+                    const first = switch (call.args[0]) {
+                        .positional => |e| e,
+                        .named => |n| n.value,
+                    };
+                    const ty = try self.lowerTypeArg(first);
+                    break :blk try self.materializeTypeInfo(ty);
+                }
                 if (isBuiltinName(callee_name)) {
                     var type_arg: ?IrType = null;
                     if (is_type_arg_builtin and call.args.len > 0) {
@@ -2808,6 +3039,24 @@ const FunctionLowerer = struct {
         return null;
     }
 
+    /// The IrType of variant `variant_name`'s payload in enum `enum_name`, for a
+    /// `match … |v|` binding. Returns `.unknown` only when the enum/variant can't
+    /// be resolved (no payload → `.unknown` is also fine, the binding is unused).
+    fn variantPayloadIrType(self: *FunctionLowerer, enum_name: []const u8, variant_name: []const u8) IrType {
+        const id = self.symbols.resolve(self.symbols.root_scope, enum_name) orelse return .unknown;
+        const layout = self.types.layouts.get(id) orelse return .unknown;
+        const variants = switch (layout.kind) {
+            .variant_type => |v| v,
+            else => return .unknown,
+        };
+        for (variants) |v| {
+            if (!std.mem.eql(u8, v.name, variant_name)) continue;
+            const pty = v.payload orelse return .unknown;
+            return lowerSemaTypeWithEnv(self.allocator, pty, self.types, self.symbols) catch .unknown;
+        }
+        return .unknown;
+    }
+
     fn lowerMatch(self: *FunctionLowerer, m: ast.MatchStmt) LowerError!void {
         // Evaluate the subject once.
         const subject = try self.lowerExpr(m.subject);
@@ -2893,12 +3142,18 @@ const FunctionLowerer = struct {
             self.startBlock(arm_id, "match.arm");
             if (arm.binding) |bname| {
                 const variant = arm.pattern.enum_variant;
-                const payload = try self.emit(.unknown, .{ .variant_payload = .{
+                // The binding must carry the payload's real type: `.unknown` would
+                // lower to a null LLVM type and crash the alloca.
+                const payload_ty = self.variantPayloadIrType(enum_name, variant);
+                const payload = try self.emit(payload_ty, .{ .variant_payload = .{
                     .value = subject,
                     .type_name = enum_name,
                     .variant = variant,
                 } });
-                try self.emitNoResult(.void, .{ .store_local = .{ .name = bname, .value = payload } });
+                try self.local_types.put(bname, payload_ty);
+                // The store_local's type is what the backend allocates the binding
+                // from, so it must be the payload type, not `.void`.
+                try self.emitNoResult(payload_ty, .{ .store_local = .{ .name = bname, .value = payload } });
             }
             try self.lowerBlock(arm.body.statements, .{ .branch = after_id });
 
@@ -3430,6 +3685,9 @@ fn lowerBinOp(op: ast.BinaryOp) BinOp {
         .mul => .mul,
         .div => .div,
         .rem => .rem,
+        .wrap_add => .wrap_add,
+        .wrap_sub => .wrap_sub,
+        .wrap_mul => .wrap_mul,
     };
 }
 
@@ -3630,6 +3888,29 @@ const ComptimeVm = struct {
         const c = self.ensureCache() orelse return null;
         const a = self.arena.allocator();
         const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file) catch return null;
+        const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
+        var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
+        defer vm.deinit();
+        const result = vm.executeKeepZones(bc_fn) catch return null;
+        return switch (result) {
+            .string => |s| out_alloc.dupe(u8, s) catch null,
+            else => null,
+        };
+    }
+
+    /// Evaluate a `where { … }` predicate for one instantiation (with `type_args`
+    /// bound). Returns the rejection message ("" = accept), or null if the VM
+    /// couldn't run it (treated as accept, so a malformed predicate doesn't block).
+    fn evalWhere(self: *ComptimeVm, where_block: ast.Block, type_args: []const sema.TypeArg, inst_expr_types: @TypeOf(@as(sema.TypeEnv, undefined).expr_types), out_alloc: std.mem.Allocator) ?[]const u8 {
+        const _ct = ctNow();
+        defer ctAdd(_ct);
+        const c = self.ensureCache() orelse return null;
+        const a = self.arena.allocator();
+        // The where block was sema-typed in the per-instantiation pass, so its
+        // expr types live in `inst_expr_types`, not the global env.
+        var inst_fe = self.front_end;
+        inst_fe.types.expr_types = inst_expr_types;
+        const irfn = lowerWhereToFunction(a, inst_fe, where_block, type_args, self.current_file) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
         defer vm.deinit();
@@ -4423,18 +4704,73 @@ fn lowerExprToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEn
     };
 }
 
-fn effectiveConstImm(expr: ast.Expr, cvm: ?*ComptimeVm) Imm {
+/// Lower a `where { … }` predicate to a comptime function returning `[]const u8`:
+/// the rejection message, or "" to accept. `reject(msg)` lowers to `return msg`;
+/// falling off the end returns "". `type_args` binds the generic params so
+/// `type_info(T)` folds for this instantiation.
+fn lowerWhereToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, where_block: ast.Block, type_args: []const sema.TypeArg, file: []const u8) !IrFunction {
+    const dummy = ast.FunctionDecl{
+        .attrs = &.{},
+        .name = "__where",
+        .file_name = file,
+        .source = "",
+        .type_params = &.{},
+        .params = &.{},
+        .return_ty = .opaque_type,
+        .error_ty = null,
+        .body = null,
+        .span = where_block.span,
+    };
+    var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, dummy);
+    lowerer.module = front_end.module;
+    lowerer.type_binding = type_args;
+    lowerer.in_where = true;
+    lowerer.current_return_ty = .text;
+    // Fall-through (no `reject` hit) accepts: `return ""`.
+    try lowerer.lowerBlock(where_block.statements, .{ .return_value = .{ .imm = .{ .text = "" } } });
+    const blocks = try lowerer.blocks.toOwnedSlice(allocator);
+    return .{
+        .name = "__where",
+        .params = &.{},
+        .return_ty = .text,
+        .error_ty = null,
+        .blocks = blocks,
+        .extern_name = null,
+        .inline_hint = false,
+        .no_inline = false,
+        .no_return = false,
+        .entry = false,
+        .naked = false,
+        .export_sym = null,
+    };
+}
+
+fn effectiveConstImm(expr: ast.Expr, cvm: ?*ComptimeVm, file: []const u8, source: []const u8) LowerError!Imm {
     const inner = switch (expr.kind) {
         .run_expr => |e| e.*,
         else => return lowerImm(expr),
     };
 
-    // The VM is the sole comptime engine; if it can't fold the expression,
-    // lower it as a best-effort immediate.
-    if (cvm) |c| {
-        if (c.evalToImm(inner)) |imm| return imm;
-    }
-    return lowerImm(inner);
+    // A top-level `X :: #run …` MUST fold to a compile-time constant — there is
+    // no runtime to compute it later. If the VM can't, fail loudly rather than
+    // silently substituting a best-effort (usually wrong) literal.
+    const c = cvm orelse return lowerImm(inner);
+    const v = c.evalRaw(inner) orelse {
+        diag_mod.printErrorAt(
+            "`#run` expression could not be evaluated at compile time " ++
+                "(the comptime VM cannot execute it — e.g. an unsupported construct or a call into runtime-only code)",
+            file, source, expr.span,
+        );
+        return error.LoweringFailed;
+    };
+    return v.toImm() orelse {
+        diag_mod.printErrorAt(
+            "a `#run` constant must evaluate to a scalar value; " ++
+                "aggregate (struct/slice/enum) results are not yet supported as top-level constants",
+            file, source, expr.span,
+        );
+        return error.LoweringFailed;
+    };
 }
 
 /// Map an AST binary operator to its `AstBinOp` variant name, and back. These
@@ -4459,6 +4795,9 @@ fn astBinOpName(op: ast.BinaryOp) ?[]const u8 {
         .bit_xor => "bit_xor",
         .shl => "shl",
         .shr => "shr",
+        .wrap_add => "wrap_add",
+        .wrap_sub => "wrap_sub",
+        .wrap_mul => "wrap_mul",
     };
 }
 
@@ -4473,6 +4812,8 @@ fn astBinOpFromName(name: []const u8) ?ast.BinaryOp {
         .{ "logic_or", ast.BinaryOp.or_or }, .{ "bit_and", ast.BinaryOp.bit_and },
         .{ "bit_or", ast.BinaryOp.bit_or }, .{ "bit_xor", ast.BinaryOp.bit_xor },
         .{ "shl", ast.BinaryOp.shl },     .{ "shr", ast.BinaryOp.shr },
+        .{ "wrap_add", ast.BinaryOp.wrap_add }, .{ "wrap_sub", ast.BinaryOp.wrap_sub },
+        .{ "wrap_mul", ast.BinaryOp.wrap_mul },
     };
     inline for (map) |entry| {
         if (std.mem.eql(u8, name, entry[0])) return entry[1];
@@ -4613,6 +4954,10 @@ fn exprHasQuote(e: ast.Expr) bool {
         .binary => |b| exprHasQuote(b.left.*) or exprHasQuote(b.right.*),
         .unary => |u| exprHasQuote(u.expr.*),
         .call => |c| blk: {
+            // `type_info(T)` materializes a `TypeInfo` value the LLVM backend
+            // can't lower (Phase 1 is comptime-only), so a function that calls it
+            // is comptime-only — exactly like an `ast.*` builder.
+            if (c.callee.kind == .ident and std.mem.eql(u8, c.callee.kind.ident, "type_info")) break :blk true;
             if (exprHasQuote(c.callee.*)) break :blk true;
             for (c.args) |a| switch (a) {
                 .positional => |x| if (exprHasQuote(x)) break :blk true,

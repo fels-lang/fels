@@ -170,21 +170,21 @@ test "vm corpus: wide #run coverage" {
         \\S_arr   :: #run sizeof([4]i32);
         \\S_opti  :: #run sizeof(?i32);
         \\
-        \\// ── type_info ──
-        \\T_psize :: #run type_info(Point).size;
-        \\T_pname :: #run type_info(Point).name;
-        \\T_pkind :: #run type_info(Point).kind;
-        \\T_cname :: #run type_info(Color).name;
-        \\T_ckind :: #run type_info(Color).kind;
-        \\T_bits  :: #run type_info(i32).bits;
-        \\T_sign  :: #run type_info(i32).signed;
-        \\T_uname :: #run type_info(u8).name;
-        \\T_flen  :: #run type_info(Point).fields.len;
-        \\T_f0    :: #run type_info(Point).fields[0].name;
-        \\T_f1    :: #run type_info(Point).fields[1].name;
-        \\T_pk    :: #run type_info(*i32).kind;
-        \\T_sk    :: #run type_info([]u8).kind;
-        \\T_elem  :: #run type_info([]u8).elem_info.name;
+        \\// ── type_info (matchable) ──
+        \\ti_bits   :: fn($T: type) -> i32 { match type_info(T) { .int |i| => return i.bits as i32; else => return 0; } }
+        \\ti_signed :: fn($T: type) -> i32 { match type_info(T) { .int |i| => { if i.signed { return 1; } return 0; } else => return -1; } }
+        \\ti_nflds  :: fn($T: type) -> i32 { match type_info(T) { .struct_ |s| => return s.fields.len as i32; else => return -1; } }
+        \\ti_nmlen  :: fn($T: type) -> i32 { match type_info(T) { .struct_ |s| => return s.name.len as i32; .enum_ |e| => return e.name.len as i32; else => return -1; } }
+        \\ti_isenum :: fn($T: type) -> i32 { match type_info(T) { .enum_ => return 1; else => return 0; } }
+        \\ti_isptr  :: fn($T: type) -> i32 { match type_info(T) { .pointer => return 1; else => return 0; } }
+        \\ti_elembits :: fn($T: type) -> i32 { match type_info(T) { .slice |e| => { match *e { .int |i| => return i.bits as i32; else => return -1; } } else => return -2; } }
+        \\T_bits  :: #run ti_bits(i32);
+        \\T_sign  :: #run ti_signed(i32);
+        \\T_flen  :: #run ti_nflds(Point);
+        \\T_pnm   :: #run ti_nmlen(Point);
+        \\T_cenum :: #run ti_isenum(Color);
+        \\T_pk    :: #run ti_isptr(*i32);
+        \\T_elem  :: #run ti_elembits([]u8);
         \\
         \\// ── TARGET ──
         \\T_debug :: #run TARGET.debug;

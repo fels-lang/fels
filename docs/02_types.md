@@ -35,6 +35,27 @@ Without a suffix, an integer literal's type is inferred from context. If no cont
 
 A suffix is authoritative: it fixes the literal's width even through inference. `x := 0i64` gives `x` a 64-bit slot — the `i64` is not narrowed back to the `i32` default. This matters for values that exceed 32 bits (e.g. addresses built with `usize`/`i64`), where a narrowed slot would silently truncate the value.
 
+#### Wrapping Arithmetic
+
+Plain `+`, `-`, `*` trap on signed/unsigned overflow in debug builds (catching bugs
+close to their source). When you *want* two's-complement wraparound — hashing, PRNGs,
+checksums, fixed-width counters — use the wrapping operators `+%`, `-%`, `*%`:
+
+```k2
+a := 250u8 +% 10u8;   // 4   — wraps at 256, never traps
+h := h *% 16777619u32; // FNV-style hash step
+
+fnv1a :: fn(s: []const u8) -> u32 {
+    h := 2166136261u32;
+    i := 0usize;
+    while i < s.len { h = (h ^ (s[i] as u32)) *% 16777619u32; i = i + 1usize; }
+    return h;
+}
+```
+
+Wrapping operators are integer-only and behave identically at compile time, so a hash
+like the above can be evaluated in a `#run` constant and matches its runtime value.
+
 #### Sub-Byte Integer Types
 
 Within packed structs, K2 supports sub-byte integer types from `u1` through `u7`. These types cannot be used outside of packed struct fields:
@@ -231,10 +252,26 @@ Shape :: enum {
     none,                    // no payload
 }
 
-s := Shape.circle(3.14);
+s := Shape.circle(3.14);     // construct a variant with its payload
 ```
 
-Enums with payloads are K2's approach to tagged unions. Use pattern matching to extract the payload safely.
+Construct a payload-carrying variant by calling the variant as `EnumType.variant(payload)`
+(payload-less variants are just `EnumType.variant`). Recover the payload by pattern
+matching:
+
+```k2
+area :: fn(s: Shape) -> f64 {
+    match s {
+        .circle |r|    => return 3.14159 * r * r;
+        .rectangle |b| => return b.width * b.height;
+        else           => return 0.0;
+    }
+}
+```
+
+Enums with payloads are K2's approach to tagged unions. Construction and matching
+both work at compile time too, so comptime code can build and inspect them — the
+basis for constructing `ast.*` values programmatically in metaprogramming.
 
 ---
 

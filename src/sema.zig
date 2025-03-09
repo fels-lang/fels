@@ -1408,6 +1408,10 @@ const Checker = struct {
             }
         }
 
+        // A `where { … }` clause is comptime code (inspects `type_info(T)`, may
+        // `reject`). Checked with the type params in scope, per instantiation.
+        if (decl.where_clause) |wc| try self.checkBlock(wc);
+
         if (decl.body) |body| {
             try self.checkBlock(body);
             // #noreturn functions are allowed to not have explicit returns.
@@ -1876,6 +1880,9 @@ const Checker = struct {
                     .mul => "*",
                     .div => "/",
                     .rem => "%",
+                    .wrap_add => "+%",
+                    .wrap_sub => "-%",
+                    .wrap_mul => "*%",
                 };
                 const result: Ty = switch (binary.op) {
                     .equal, .not_equal => if ((left.isNumeric() and right.isNumeric()) or left == .error_ty or right == .error_ty or try self.compatible(left, right) or try self.compatible(right, left)) .bool else {
@@ -1896,6 +1903,11 @@ const Checker = struct {
                     },
                     .add, .sub, .mul, .div, .rem => if (left.isNumeric() and right.isNumeric()) left else {
                         self.emitError(expr.span, "operator `{s}` requires numeric operands, found `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
+                        return error.SemanticFailed;
+                    },
+                    // Wrapping arithmetic is integer-only (two's-complement).
+                    .wrap_add, .wrap_sub, .wrap_mul => if (left.isInteger() and right.isInteger()) left else {
+                        self.emitError(expr.span, "operator `{s}` requires integer operands, found `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
                         return error.SemanticFailed;
                     },
                 };
@@ -2034,6 +2046,11 @@ const Checker = struct {
 
         if (call.callee.kind == .field) {
             const fld = call.callee.kind.field;
+
+            // `EnumType.variant(payload)` constructs an enum value. Checked before
+            // `inferExpr(fld.base)`, which would reject a bare type name as a value.
+            if (try self.inferVariantConstruct(call)) |ty| return ty;
+
             const base_ty = try self.inferExpr(fld.base.*);
 
             // `zone_handle.free(ptr)` — a bump arena frees in bulk on zone exit,
@@ -2134,7 +2151,16 @@ const Checker = struct {
         // (#run / #if), where the comptime interpreter produces a concrete
         // value. Their static type is deferred, like the TARGET pseudo-module.
         if (std.mem.eql(u8, name, "type_name")) return try self.sliceOf(.u8);
-        if (std.mem.eql(u8, name, "type_info")) return .unknown;
+        // `reject("msg")` — used in a `where` block to reject the instantiation.
+        if (std.mem.eql(u8, name, "reject")) return .void;
+        // `type_info(T)` yields a matchable `TypeInfo` value (from the injected
+        // reflection prelude), so `match`/field access type-check normally.
+        if (std.mem.eql(u8, name, "type_info")) {
+            if (self.resolveSymbol("TypeInfo")) |id| {
+                if (self.symbols.symbol(id).kind == .type) return .{ .named = id };
+            }
+            return .unknown;
+        }
         // `compiler_decls()` → `[]Decl`, the program's top-level declarations
         // (Phase 3). `Decl` comes from the injected compiler prelude.
         if (std.mem.eql(u8, name, "compiler_decls")) {
@@ -2427,6 +2453,59 @@ const Checker = struct {
             return true;
         }
         return false;
+    }
+
+    /// `EnumType.variant(payload)` — construct an enum value carrying a payload
+    /// (the inverse of a `match … |v|` arm). Type-checks the payload against the
+    /// variant's declared type and records the construction (keyed on the callee
+    /// id) for IR to lower as a `variant_lit`. Returns the enum type, or null when
+    /// `call` is not an enum-variant construction.
+    fn inferVariantConstruct(self: *Checker, call: ast.CallExpr) SemanticError!?Ty {
+        if (call.callee.kind != .field) return null;
+        const fld = call.callee.kind.field;
+        if (fld.base.kind != .ident) return null;
+        const type_id = self.resolveSymbol(fld.base.kind.ident) orelse return null;
+        if (self.symbols.symbol(type_id).kind != .type) return null;
+        const layout = self.env.layouts.get(type_id) orelse return null;
+        const variants = switch (layout.kind) {
+            .variant_type => |v| v,
+            else => return null,
+        };
+        var payload_ty: ?Ty = null;
+        const found = for (variants) |v| {
+            if (std.mem.eql(u8, v.name, fld.name)) {
+                payload_ty = v.payload;
+                break true;
+            }
+        } else false;
+        if (!found) return null;
+
+        if (payload_ty) |pty| {
+            if (call.args.len != 1) {
+                self.emitError(call.callee.span, "variant `.{s}` takes one payload argument", .{fld.name});
+                return error.SemanticFailed;
+            }
+            const arg_expr = switch (call.args[0]) {
+                .positional => |e| e,
+                .named => |n| n.value,
+            };
+            if (!try self.coerceEnumLiteral(arg_expr, pty)) {
+                const arg_ty = try self.inferExpr(arg_expr);
+                if (!try self.compatible(arg_ty, pty)) {
+                    self.emitError(arg_expr.span, "variant `.{s}` payload: expected `{s}`, found `{s}`", .{ fld.name, self.formatTy(pty), self.formatTy(arg_ty) });
+                    return error.SemanticFailed;
+                }
+            }
+        } else if (call.args.len != 0) {
+            self.emitError(call.callee.span, "variant `.{s}` has no payload; write `{s}.{s}`", .{ fld.name, fld.base.kind.ident, fld.name });
+            return error.SemanticFailed;
+        }
+
+        try self.env.enum_lits.put(call.callee.id, .{
+            .type_name = self.symbols.symbol(type_id).name,
+            .variant = fld.name,
+        });
+        return Ty{ .named = type_id };
     }
 
     /// True when a value receiver should be implicitly address-of'd to satisfy a
@@ -2832,6 +2911,28 @@ const Checker = struct {
                     }
                 }
             }
+            // `[]$T` / `?$T` param — bind `$T` from the slice/optional element type.
+            if (param.ty == .slice and param.ty.slice.* == .type_param) {
+                const tp = param.ty.slice.type_param;
+                if (!binding.contains(tp)) {
+                    const concrete: Ty = switch (arg_ty) {
+                        .slice => |e| e.*,
+                        .array => |a| a.elem.*,
+                        else => arg_ty,
+                    };
+                    try binding.put(tp, concrete);
+                }
+            }
+            if (param.ty == .optional and param.ty.optional.* == .type_param) {
+                const tp = param.ty.optional.type_param;
+                if (!binding.contains(tp)) {
+                    const concrete: Ty = switch (arg_ty) {
+                        .optional => |e| e.*,
+                        else => arg_ty,
+                    };
+                    try binding.put(tp, concrete);
+                }
+            }
         }
 
         // Verify all value args are compatible with substituted param types.
@@ -2869,9 +2970,19 @@ const Checker = struct {
             }
         }
 
-        // Check static interface constraints: $T: Interface
+        // Check static constraints: `$T: Numeric` (built-in predicate) or
+        // `$T: Interface` (conformance). Built-ins are checked by type kind here,
+        // with a clear message; everything else falls through to the impl check.
         for (sig.type_constraints) |constraint| {
             const bound_ty = binding.get(constraint.param) orelse continue;
+            switch (checkBuiltinConstraint(self, constraint.interface, bound_ty)) {
+                .ok => continue,
+                .fail => |desc| {
+                    self.emitError(constraint.span, "type `{s}` does not satisfy `{s}`: expected {s}", .{ self.formatTy(bound_ty), constraint.interface, desc });
+                    return error.SemanticFailed;
+                },
+                .not_builtin => {},
+            }
             // Unwrap pointer to get the concrete named type.
             const concrete_id: SymbolId = switch (bound_ty) {
                 .named => |id| id,
@@ -3628,6 +3739,57 @@ fn isArenaAllocMethod(name: []const u8) bool {
     return false;
 }
 
+/// Built-in generic constraints (`$T: Numeric`, `$T: Struct`, …) — composable
+/// type predicates checked at instantiation, distinct from interface conformance.
+const BuiltinConstraint = union(enum) {
+    ok,
+    not_builtin,
+    /// A human-readable description of what was expected (e.g. "a numeric type").
+    fail: []const u8,
+};
+
+fn checkBuiltinConstraint(self: *Checker, name: []const u8, ty: Ty) BuiltinConstraint {
+    const eq = std.mem.eql;
+    const ok = BuiltinConstraint{ .ok = {} };
+    if (eq(u8, name, "Numeric")) return if (ty.isNumeric()) ok else .{ .fail = "a numeric type" };
+    if (eq(u8, name, "Int") or eq(u8, name, "Integer")) return if (ty.isInteger()) ok else .{ .fail = "an integer type" };
+    if (eq(u8, name, "Float")) return if (ty.isFloat()) ok else .{ .fail = "a float type" };
+    if (eq(u8, name, "Bool")) return if (ty.isBool()) ok else .{ .fail = "`bool`" };
+    if (eq(u8, name, "Signed")) return if (isSignedIntTy(ty)) ok else .{ .fail = "a signed integer" };
+    if (eq(u8, name, "Unsigned")) return if (isUnsignedIntTy(ty)) ok else .{ .fail = "an unsigned integer" };
+    if (eq(u8, name, "Struct")) return if (tyLayoutIs(self, ty, .struct_type)) ok else .{ .fail = "a struct type" };
+    if (eq(u8, name, "Enum")) return if (tyLayoutIs(self, ty, .variant_type)) ok else .{ .fail = "an enum type" };
+    if (eq(u8, name, "Ptr") or eq(u8, name, "Pointer")) return switch (ty) {
+        .pointer, .const_ptr => ok,
+        else => .{ .fail = "a pointer type" },
+    };
+    return .not_builtin;
+}
+
+/// True when `ty` is a named type whose layout has the given kind tag.
+fn tyLayoutIs(self: *Checker, ty: Ty, comptime tag: std.meta.Tag(TypeKind)) bool {
+    const id = switch (ty) {
+        .named => |i| i,
+        else => return false,
+    };
+    const layout = self.env.layouts.get(id) orelse return false;
+    return std.meta.activeTag(layout.kind) == tag;
+}
+
+fn isSignedIntTy(ty: Ty) bool {
+    return switch (ty) {
+        .i8, .i16, .i32, .i64, .isize, .int_lit => true,
+        else => false,
+    };
+}
+
+fn isUnsignedIntTy(ty: Ty) bool {
+    return switch (ty) {
+        .u8, .u16, .u32, .u64, .byte, .usize, .addr => true,
+        else => false,
+    };
+}
+
 fn isRuntimeNoReturnName(name: []const u8) bool {
     return std.mem.eql(u8, name, "@panic") or
         std.mem.eql(u8, name, "exit") or
@@ -3888,7 +4050,7 @@ fn isBuiltinValue(name: []const u8) bool {
         "atomic_load", "atomic_store",   "volatile",
         ".acquire",
         // Compile-time reflection builtins
-           "type_info",      "type_name",
+           "type_info",      "type_name",      "reject",
         // Compile-time program introspection (Phase 3 message loop)
         "compiler_decls",
         // std.build host intrinsics (the build system, comptime-only)

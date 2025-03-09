@@ -23,6 +23,7 @@ pub const source =
     \\    eq, ne, lt, le, gt, ge,
     \\    logic_and, logic_or,
     \\    bit_and, bit_or, bit_xor, shl, shr,
+    \\    wrap_add, wrap_sub, wrap_mul,
     \\}
     \\AstUnOp :: enum { neg, logic_not, bit_not, deref, addr }
     \\AstDeferMode :: enum { always, ok_only, err_only }
@@ -113,4 +114,36 @@ pub const source =
 /// "errors", "interface", "distinct", "opaque", "const".
 pub const compiler_source =
     \\Decl :: struct { name: []const u8, kind: []const u8 }
+;
+
+/// `TypeInfo` reflection surface — injected whenever a module uses `type_info`.
+/// A matchable tagged enum (not a cast hierarchy): `match type_info(T) { .int |i| … }`.
+/// The materializer in `ir.zig` (`materializeTypeInfo`) builds these values from a
+/// type's layout; field/payload types are `*TypeInfo` so the tree is finite, and
+/// recursive types are broken with the `other` leaf (carrying the type name).
+///
+/// Variant ORDER is not load-bearing (looked up by name); keep names in sync with
+/// `materializeTypeInfo`. `void_`/`boolean` avoid the `void`/`bool` keywords.
+pub const reflection_source =
+    \\TiInt     :: struct { bits: u16, signed: bool }
+    \\TiFloat   :: struct { bits: u16 }
+    \\TiPtr     :: struct { elem: *TypeInfo, is_const: bool }
+    \\TiArray   :: struct { len: usize, elem: *TypeInfo }
+    \\TiField   :: struct { name: []const u8, ty: *TypeInfo }
+    \\TiStruct  :: struct { name: []const u8, fields: []TiField }
+    \\TiVariant :: struct { name: []const u8, has_payload: bool }
+    \\TiEnum    :: struct { name: []const u8, variants: []TiVariant }
+    \\TypeInfo :: enum {
+    \\    void_,
+    \\    boolean,
+    \\    int:      TiInt,
+    \\    float:    TiFloat,
+    \\    pointer:  TiPtr,
+    \\    slice:    *TypeInfo,
+    \\    array:    TiArray,
+    \\    optional: *TypeInfo,
+    \\    struct_:  TiStruct,
+    \\    enum_:    TiEnum,
+    \\    other:    []const u8,
+    \\}
 ;

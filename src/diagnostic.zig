@@ -59,6 +59,22 @@ pub fn printIce(message: []const u8, comptime src: std.builtin.SourceLocation) v
     );
 }
 
+/// Print a user-facing error tied to a K2 source location (not an ICE — this is
+/// for genuine user errors discovered during lowering, e.g. a `#run` expression
+/// the comptime VM cannot evaluate).
+pub fn printErrorAt(
+    message: []const u8,
+    k2_file: []const u8,
+    k2_source: []const u8,
+    span: Span,
+) void {
+    const location = span.line_col(k2_source);
+    std.debug.print(
+        "{s}:{d}:{d}: error: {s}\n",
+        .{ k2_file, location.line, location.col, message },
+    );
+}
+
 /// Print an ICE with an associated K2 source location.
 pub fn printIceAt(
     message: []const u8,

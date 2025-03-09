@@ -368,6 +368,11 @@ fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType, l
             lowerOverflowingBinary(cg, fncg.llvm_fn, lhs, rhs, if (is_unsigned) "llvm.umul.with.overflow" else "llvm.smul.with.overflow", location)
         else
             llvm.LLVMBuildMul(bl, lhs, rhs, ""),
+        // Wrapping ops never check: plain two's-complement add/sub/mul regardless
+        // of opt level. (Integer-only — sema rejects float operands.)
+        .wrap_add => llvm.LLVMBuildAdd(bl, lhs, rhs, ""),
+        .wrap_sub => llvm.LLVMBuildSub(bl, lhs, rhs, ""),
+        .wrap_mul => llvm.LLVMBuildMul(bl, lhs, rhs, ""),
         .div => if (is_float)
             llvm.LLVMBuildFDiv(bl, lhs, rhs, "")
         else blk: {

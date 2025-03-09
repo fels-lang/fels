@@ -107,6 +107,10 @@ pub const ConstDecl = struct {
     attrs: []const Attribute,
     name: []const u8,
     file_name: []const u8,
+    /// The file's source text, for diagnostics tied to this decl (e.g. a `#run`
+    /// initializer the comptime VM can't evaluate). Defaults to empty for
+    /// compiler-synthesized consts.
+    source: []const u8 = "",
     is_public: bool = false,
     value: Expr,
     span: Span,
@@ -198,6 +202,9 @@ pub const FunctionDecl = struct {
     params: []const Param,
     return_ty: TypeRef,
     error_ty: ?ErrorSpec,
+    /// Optional `where { … }` clause: a comptime predicate run per generic
+    /// instantiation that may `reject("msg")` the type binding. Null when absent.
+    where_clause: ?Block = null,
     body: ?Block,
     span: Span,
 };
@@ -602,6 +609,10 @@ pub const BinaryOp = enum {
     mul,
     div,
     rem,
+    // Explicit wrapping (two's-complement) arithmetic — never traps on overflow.
+    wrap_add,
+    wrap_sub,
+    wrap_mul,
 };
 
 pub const CallExpr = struct {

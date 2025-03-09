@@ -304,6 +304,7 @@ pub const Parser = struct {
             .attrs = attrs,
             .name = name.text(self.source),
             .file_name = self.file_name,
+            .source = self.source,
             .is_public = is_public,
             .value = value,
             .span = spanFrom(name, semi),
@@ -692,6 +693,8 @@ pub const Parser = struct {
         _ = try self.expect(.r_paren, "expected ) after parameters");
         const return_ty = if (self.match(.arrow)) try self.parseType() else namedType("void", Span.new(@intCast(name.start), @intCast(name.start + name.len)));
         const error_ty = if (self.match(.bang)) try self.parseErrorSpec(self.previous()) else null;
+        // Optional `where { … }` resolve-time predicate (comptime; may `reject`).
+        const where_clause = if (self.matchIdent("where")) try self.parseBlock() else null;
         const body = if (self.check(.l_brace)) try self.parseBlock() else null;
         const end = if (body) |b| b.span else blk: {
             const semi = try self.expect(.semicolon, "expected ; after external function declaration");
@@ -708,6 +711,7 @@ pub const Parser = struct {
             .params = try params.toOwnedSlice(self.allocator),
             .return_ty = return_ty,
             .error_ty = error_ty,
+            .where_clause = where_clause,
             .body = body,
             .span = Span.new(name.start, end.end),
         };
@@ -1445,10 +1449,13 @@ fn infixInfo(kind: TokenKind) ?Infix {
         // Additive
         .plus => .{ .left_bp = 15, .right_bp = 16, .op = .add },
         .minus => .{ .left_bp = 15, .right_bp = 16, .op = .sub },
+        .plus_percent => .{ .left_bp = 15, .right_bp = 16, .op = .wrap_add },
+        .minus_percent => .{ .left_bp = 15, .right_bp = 16, .op = .wrap_sub },
         // Multiplicative
         .star => .{ .left_bp = 17, .right_bp = 18, .op = .mul },
         .slash => .{ .left_bp = 17, .right_bp = 18, .op = .div },
         .percent => .{ .left_bp = 17, .right_bp = 18, .op = .rem },
+        .star_percent => .{ .left_bp = 17, .right_bp = 18, .op = .wrap_mul },
         else => null,
     };
 }

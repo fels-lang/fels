@@ -66,14 +66,11 @@ pub fn lowerImm(cg: *ModuleCg, imm: ir.Imm, hint_ty: ir.IrType) llvm.LLVMValueRe
 
 pub fn lowerImmAs(cg: *ModuleCg, imm: ir.Imm, lty: llvm.LLVMTypeRef) llvm.LLVMValueRef {
     return switch (imm) {
-        .int => |v| llvm.LLVMConstInt(
-            lty,
-            if (v < 0)
-                @bitCast(@as(i64, @intCast(v)))
-            else
-                @intCast(v),
-            1,
-        ),
+        // Low 64 bits (two's-complement); `LLVMConstInt` narrows them to `lty`'s
+        // width. A comptime value may exceed i64 (the VM computes in i128, and
+        // wrapping arithmetic overflows narrow types freely), so truncate rather
+        // than `@intCast` — only the low bits matter at the destination width.
+        .int => |v| llvm.LLVMConstInt(lty, @truncate(@as(u128, @bitCast(v))), 1),
         .uint => |v| llvm.LLVMConstInt(lty, @as(c_ulonglong, @truncate(v)), 0),
         .float => |v| llvm.LLVMConstReal(lty, v),
         .bool => |v| llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(cg.ctx), if (v) 1 else 0, 0),

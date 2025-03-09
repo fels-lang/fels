@@ -258,7 +258,10 @@ fn emitLlvmFromFrontend(
     const t_lower = nowNs();
     var module = ir.lowerFrontend(ir_allocator, fe) catch |err| switch (err) {
         error.LoweringFailed => {
-            std.debug.print("{s}: compilation failed due to internal compiler error (see above)\n", .{opts.file_name});
+            // Lowering surfaces both ICEs and genuine user errors (e.g. a `#run`
+            // the comptime VM can't evaluate); the specific diagnostic is already
+            // printed above, so keep this summary neutral.
+            std.debug.print("{s}: compilation failed (see errors above)\n", .{opts.file_name});
             return error.LoweringFailed;
         },
         error.OutOfMemory => return error.OutOfMemory,

@@ -870,6 +870,96 @@ test "exe: generic List(T) backed by Arena, with generic methods" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: wrapping arithmetic wraps instead of trapping" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // +% / -% / *% never trap; plain + would panic on these overflows at -O0.
+    // (Return a value < 256 so the process exit code isn't truncated.)
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    a := 250u8 +% 10u8;     // 4   (wraps at 256)
+        \\    b := 200u8 *% 2u8;      // 144 (400 mod 256)
+        \\    c := 0u8 -% 1u8;        // 255
+        \\    if a == 4u8 && b == 144u8 && c == 255u8 { return 42; }
+        \\    return 0;
+        \\}
+    , "exe_wrapping_arith");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: a wrapping-hash constant matches its runtime value (comptime == runtime)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // FNV-1a needs a wrapping multiply on every byte. Computing it at compile
+    // time (the VM works in i128, wrapping) must agree with the runtime u32
+    // computation — the low 32 bits are congruent regardless of intermediate width.
+    const code = try compileAndRun(arena.allocator(),
+        \\fnv1a :: fn(s: []const u8) -> u32 {
+        \\    h := 2166136261u32;
+        \\    i := 0usize;
+        \\    while i < s.len { h = (h ^ (s[i] as u32)) *% 16777619u32; i = i + 1usize; }
+        \\    return h;
+        \\}
+        \\HASH :: #run fnv1a("hello");
+        \\main :: fn() -> i32 {
+        \\    if fnv1a("hello") == HASH { return 1; }
+        \\    return 0;
+        \\}
+    , "exe_wrapping_hash");
+    try std.testing.expectEqual(@as(u32, 1), code);
+}
+
+test "exe: build AST programmatically (no #quote) and #insert it" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Construct `ast.*` values as data (AstExpr.int / AstStmt.ret_expr / AstBlock)
+    // and splice the generated block — the "programmatic AST without #quote" path,
+    // unblocked by enum-payload construction.
+    const code = try compileAndRun(arena.allocator(),
+        \\gen :: fn() -> AstBlock {
+        \\    stmts: [1]AstStmt = .{ AstStmt.ret_expr(AstExpr.int(42)) };
+        \\    b: AstBlock = .{ stmts[:] };
+        \\    return b;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    #insert #run gen();
+        \\    return 0;
+        \\}
+    , "exe_programmatic_ast");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: enum variant construction with payload (construct, then match)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `EnumType.variant(payload)` builds a payload-carrying enum; the match arm
+    // recovers the payload. This exercised four latent backend bugs in the
+    // payload-enum → LLVM path (binding type, store type, and two `__chkstk`
+    // allocas) that no prior test reached, since payload enums were unbuildable.
+    const code = try compileAndRun(arena.allocator(),
+        \\Expr :: enum { num: i32, flag: bool, nothing }
+        \\eval :: fn(e: Expr) -> i32 {
+        \\    match e {
+        \\        .num |n|  => return n;
+        \\        .flag |b| => { if b { return 100; } return 200; }
+        \\        else      => return 0;
+        \\    }
+        \\}
+        \\main :: fn() -> i32 {
+        \\    return eval(Expr.num(42)) + eval(Expr.flag(true)) - eval(Expr.nothing);
+        \\}
+    , "exe_enum_payload_construct");
+    try std.testing.expectEqual(@as(u32, 142), code);
+}
+
 test "exe: a zone handle is a real std.heap.Arena (full library API)" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

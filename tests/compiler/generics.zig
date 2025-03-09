@@ -1,6 +1,78 @@
 const std = @import("std");
 const k2 = @import("k2_compiler");
 
+test "built-in constraint: a satisfying type is accepted (`$T: Numeric`)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\dbl :: fn($T: Numeric, x: T) -> T { return x +% x; }
+        \\use :: fn() -> i32 { return dbl(20u8) as i32 + dbl(11) as i32; }  // 40 + 22
+    ;
+    var fe = try k2.compile(arena.allocator(), "ok_constraint.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(module);
+    // Numeric accepted both u8 and i32 (the literal) → two instantiations.
+    try std.testing.expect(fe.types.generic_instantiations.items.len >= 1);
+}
+
+test "built-in constraint: a non-satisfying type is rejected with a clear message" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // A struct does not satisfy `Numeric`; the constraint fails at resolution.
+    const src =
+        \\P :: struct { a: i32 }
+        \\dbl :: fn($T: Numeric, x: T) -> T { return x; }
+        \\use :: fn() -> i32 { p: P = .{ 0 }; _ := dbl(p); return 0; }
+    ;
+    var fe = k2.compile(arena.allocator(), "bad_constraint.k2", src);
+    if (fe) |*f| {
+        f.deinit(arena.allocator());
+        try std.testing.expect(false); // should not compile
+    } else |err| {
+        try std.testing.expectEqual(error.SemanticFailed, err);
+    }
+}
+
+test "where clause: a satisfying type is accepted (user predicate over type_info)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The `where` block inspects `type_info(T)` and only accepts numeric types.
+    const src =
+        \\dbl :: fn(x: $T) -> T
+        \\where { match type_info(T) { .int => {} .float => {} else => reject("needs a numeric type"); } }
+        \\{ return x +% x; }
+        \\use :: fn() -> i32 { return dbl(21); }
+    ;
+    var fe = try k2.compile(arena.allocator(), "where_ok.k2", src);
+    defer fe.deinit(arena.allocator());
+    // The where predicate runs at lowering (on the comptime VM); a numeric T accepts.
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(module);
+}
+
+test "where clause: a non-satisfying type is rejected at lowering with the custom message" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // A struct fails the `where` predicate; the reject() fires during lowering
+    // (the comptime VM evaluates the predicate per instantiation).
+    const src =
+        \\P :: struct { a: i32 }
+        \\dbl :: fn(x: $T) -> T
+        \\where { match type_info(T) { .int => {} .float => {} else => reject("needs a numeric type"); } }
+        \\{ return x; }
+        \\use :: fn() -> i32 { p: P = .{ 0 }; _ := dbl(p); return 0; }
+    ;
+    // Sema accepts (the predicate is comptime); lowering rejects.
+    var fe = try k2.compile(arena.allocator(), "where_bad.k2", src);
+    defer fe.deinit(arena.allocator());
+    try std.testing.expectError(error.LoweringFailed, k2.lowerFrontend(arena.allocator(), fe));
+}
+
 test "generic function: inferred $T, monomorphized to i32" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

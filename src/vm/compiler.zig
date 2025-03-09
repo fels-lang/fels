@@ -117,6 +117,11 @@ const FnCompiler = struct {
     /// Register → its position in a `type_info(...)` reflection tree, so a chain
     /// like `type_info(T).fields[0].name` folds step by step.
     type_info_nodes: std.AutoHashMap(ir.RegId, TypeInfoNode),
+    /// Scalar locals/params whose address is taken (`&x`). Their slot holds a
+    /// pointer to a 1-cell zone block instead of the value, so the value is
+    /// addressable; reads/writes go through the cell. (Aggregate locals already
+    /// hold a cell pointer, so they're never spilled here.)
+    addressed: std.StringHashMap(void),
     next_reg: Reg = 0,
 
     fn init(
@@ -135,6 +140,7 @@ const FnCompiler = struct {
             .reg_types = std.AutoHashMap(ir.RegId, ir.IrType).init(allocator),
             .name_types = std.StringHashMap(ir.IrType).init(allocator),
             .type_info_nodes = std.AutoHashMap(ir.RegId, TypeInfoNode).init(allocator),
+            .addressed = std.StringHashMap(void).init(allocator),
         };
     }
 
@@ -146,12 +152,15 @@ const FnCompiler = struct {
         self.reg_types.deinit();
         self.name_types.deinit();
         self.type_info_nodes.deinit();
+        self.addressed.deinit();
     }
 
     fn compile(self: *FnCompiler) CompileError!BytecodeFunction {
         try self.collectLocals();
         try self.collectTypes();
+        try self.collectAddressed();
         self.seedScratchBase();
+        try self.emitAddressedInit();
 
         for (self.func.blocks) |block| {
             try self.block_offsets.put(block.id, @intCast(self.out.items.len));
@@ -210,6 +219,51 @@ const FnCompiler = struct {
         }
     }
 
+    /// Find scalar locals/params whose address is taken (`&x`). They get spilled
+    /// to a 1-cell zone block so the value is addressable. Aggregates already
+    /// hold a cell pointer, so they're skipped. Runs after `collectTypes`.
+    fn collectAddressed(self: *FnCompiler) CompileError!void {
+        for (self.func.blocks) |block| {
+            for (block.instrs) |inst| {
+                if (inst.kind != .unary) continue;
+                const un = inst.kind.unary;
+                if (un.op != .ref) continue;
+                const name = switch (un.value) {
+                    .local, .param => |n| n,
+                    else => continue,
+                };
+                if (isAggregate(self.typeOf(un.value))) continue;
+                try self.addressed.put(name, {});
+            }
+        }
+    }
+
+    /// Allocate a backing cell for each addressed scalar local at function entry
+    /// and point its slot at the cell. An addressed parameter's incoming value is
+    /// moved into the cell first.
+    fn emitAddressedInit(self: *FnCompiler) CompileError!void {
+        var it = self.addressed.keyIterator();
+        while (it.next()) |key| {
+            const name = key.*;
+            const slot = try self.ensureSlot(name);
+            const cell = self.newReg();
+            if (self.isParam(name)) {
+                const pval = self.newReg();
+                try self.emit(Instr.r_imm(.load_local, pval, @intCast(slot)));
+                try self.emit(Instr.r_imm(.zone_alloc, cell, 1));
+                try self.emit(Instr.r_r_imm(.store_cell, cell, pval, 0));
+            } else {
+                try self.emit(Instr.r_imm(.zone_alloc, cell, 1));
+            }
+            try self.emit(Instr.r_r_imm(.store_local, 0, cell, @intCast(slot)));
+        }
+    }
+
+    fn isParam(self: *FnCompiler, name: []const u8) bool {
+        for (self.func.params) |p| if (std.mem.eql(u8, p.name, name)) return true;
+        return false;
+    }
+
     fn ensureSlot(self: *FnCompiler, name: []const u8) CompileError!u32 {
         if (self.local_slots.get(name)) |s| return s;
         const slot: u32 = self.local_slots.count();
@@ -240,7 +294,12 @@ const FnCompiler = struct {
         return switch (v) {
             .reg => |r| self.reg_types.get(r) orelse .unknown,
             .param, .local => |n| self.name_types.get(n) orelse .unknown,
-            .imm, .global => .unknown,
+            // A string literal lowers to a `.text` immediate; recovering that
+            // type lets a `s := "…"` local answer `.len` (and other text ops).
+            // Numeric widths stay `.unknown` (the instruction's result type
+            // carries them), so this doesn't perturb arithmetic.
+            .imm => |imm| if (imm == .text) .text else .unknown,
+            .global => .unknown,
         };
     }
 
@@ -267,6 +326,15 @@ const FnCompiler = struct {
                     }
                 }
                 const slot = self.local_slots.get(name) orelse return error.Unsupported;
+                // An addressed scalar's slot holds a pointer to its cell; read the
+                // value back through it.
+                if (self.addressed.contains(name)) {
+                    const ptr = self.newReg();
+                    try self.emit(Instr.r_imm(.load_local, ptr, @intCast(slot)));
+                    const dst = self.newReg();
+                    try self.emit(Instr.r_r_imm(.load_cell, dst, ptr, 0));
+                    return dst;
+                }
                 const dst = self.newReg();
                 try self.emit(Instr.r_imm(.load_local, dst, slot));
                 return dst;
@@ -281,7 +349,12 @@ const FnCompiler = struct {
                             try self.materializeImm(dst, imm);
                             return dst;
                         },
-                        .struct_init => return error.Unsupported, // aggregate global TODO
+                        // Unreachable today: the const lowering only ever emits
+                        // `.imm` globals, and an aggregate top-level constant is
+                        // rejected with a clear diagnostic at the const decl
+                        // (`effectiveConstImm` in ir.zig). If aggregate consts are
+                        // added, materialize the struct_init into cells here.
+                        .struct_init => return error.Unsupported,
                     }
                 }
                 return error.Unsupported;
@@ -324,13 +397,30 @@ const FnCompiler = struct {
             .unary => |un| {
                 if (un.op == .deref) {
                     const ptr = try self.resolveReg(un.value);
-                    try self.emit(Instr.r_r_imm(.load_cell, target, ptr, 0));
+                    // `*p` of an aggregate (struct/enum/slice/array) IS the pointer
+                    // to its cell block — aggregates are addressed by pointer, so
+                    // there's nothing to load. Only scalar pointees load a cell.
+                    if (isAggregate(inst.ty)) {
+                        try self.emit(Instr.r_r_imm(.copy, target, ptr, 0));
+                    } else {
+                        try self.emit(Instr.r_r_imm(.load_cell, target, ptr, 0));
+                    }
                     return;
                 }
                 if (un.op == .ref) {
+                    // `&x` of an addressed scalar: its slot already holds the cell
+                    // pointer (spilled at entry), so the address is that pointer.
+                    const ref_name: ?[]const u8 = switch (un.value) {
+                        .local, .param => |n| n,
+                        else => null,
+                    };
+                    if (ref_name) |nm| if (self.addressed.contains(nm)) {
+                        const slot = self.local_slots.get(nm) orelse return error.Unsupported;
+                        try self.emit(Instr.r_imm(.load_local, target, @intCast(slot)));
+                        return;
+                    };
                     // An aggregate local already holds a pointer to its cell
-                    // block, so `&arr` / `&s` is that pointer. Taking the address
-                    // of a scalar local needs local addressing (a later cut).
+                    // block, so `&arr` / `&s` is that pointer.
                     if (!isAggregate(self.typeOf(un.value))) return error.Unsupported;
                     const vr = try self.resolveReg(un.value);
                     try self.emit(Instr.r_r_imm(.copy, target, vr, 0));
@@ -367,7 +457,14 @@ const FnCompiler = struct {
             .store_local => |sl| {
                 const slot = self.local_slots.get(sl.name) orelse return error.Unsupported;
                 const vr = try self.resolveReg(sl.value);
-                try self.emit(Instr.r_r_imm(.store_local, 0, vr, slot));
+                // An addressed scalar is written through its backing cell.
+                if (self.addressed.contains(sl.name)) {
+                    const ptr = self.newReg();
+                    try self.emit(Instr.r_imm(.load_local, ptr, @intCast(slot)));
+                    try self.emit(Instr.r_r_imm(.store_cell, ptr, vr, 0));
+                } else {
+                    try self.emit(Instr.r_r_imm(.store_local, 0, vr, slot));
+                }
             },
 
             .call => |ci| try self.lowerCall(target, ci),
@@ -394,8 +491,10 @@ const FnCompiler = struct {
                     // Positional `.{ a, b, ... }` aggregate initializer.
                     try self.lowerCompoundLiteral(target, inst.ty, b.args);
                 } else if (std.mem.startsWith(u8, b.name, "error.")) {
-                    // `fail .v` builds the error value as a `error.<variant>`
-                    // builtin; represent it by its discriminant (payloads TODO).
+                    // The error *discriminant* for `fail .v`. Any payload travels
+                    // separately through the fallible's value cell (see the `.fail`
+                    // terminator and `try_payload`), so a caught `e == .v |p|`
+                    // still recovers `p` — this just yields the tag.
                     const vname = b.name["error.".len..];
                     const idx = self.errorVariantIndex(vname) orelse 1; // non-zero = error
                     try self.emit(Instr.r_imm(.load_imm, target, idx));
@@ -467,7 +566,10 @@ const FnCompiler = struct {
                             try self.emit(Instr.r_imm(.load_imm, target, @intCast(arr.len)));
                             return;
                         },
-                        .slice => {
+                        // Slices carry their length in a cell; a `.text` string is
+                        // a `Value.string` that carries its own. `slice_len`
+                        // handles both value shapes in the engine.
+                        .slice, .text => {
                             const base = try self.resolveReg(f.base);
                             try self.emit(Instr.r_r_imm(.slice_len, target, base, 0));
                             return;
@@ -1133,6 +1235,11 @@ fn mapBinOp(op: ir.BinOp, f: bool) CompileError!Opcode {
         .mul => if (f) .mul_f else .mul_i,
         .div => if (f) .div_f else .div_i,
         .rem => .rem_i,
+        // Comptime arithmetic is wrapping already (the engine's `*_i` ops use
+        // `+%`/`-%`/`*%`), so the wrapping operators reuse them.
+        .wrap_add => .add_i,
+        .wrap_sub => .sub_i,
+        .wrap_mul => .mul_i,
         .shl => .shl,
         .shr => .shr,
         .bit_and => .bit_and,

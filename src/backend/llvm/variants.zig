@@ -7,6 +7,7 @@ const ir       = @import("../../ir.zig");
 const llvm     = @import("c_api.zig").llvm;
 const types    = @import("types.zig");
 const values   = @import("values.zig");
+const abi      = @import("abi.zig");
 const ModuleCg = @import("context.zig").ModuleCg;
 
 /// Per-enum metadata stored in ModuleCg.
@@ -88,11 +89,14 @@ pub fn buildVariantLit(
     var agg = llvm.LLVMGetUndef(meta.llvm_ty);
     agg = llvm.LLVMBuildInsertValue(cg.builder, agg, disc_val, 0, "");
     if (payload) |pv| {
-        // Store the payload into a temp alloca, then load as bytes.
-        const pv_ty  = llvm.LLVMTypeOf(pv);
-        const tmp    = llvm.LLVMBuildAlloca(cg.builder, pv_ty, "");
-        _ = llvm.LLVMBuildStore(cg.builder, pv, tmp);
+        // Reinterpret the payload as the data byte-array through stack memory.
+        // The data array is sized to the LARGEST variant, so it may be wider than
+        // this payload — alloca the data type (not the payload type) so the later
+        // load stays in bounds. Entry-block alloca to avoid a `__chkstk` probe.
         const data_ty    = llvm.LLVMStructGetTypeAtIndex(meta.llvm_ty, 1);
+        const cur_fn     = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(cg.builder));
+        const tmp        = abi.entryAlloca(cg, cur_fn, data_ty);
+        _ = llvm.LLVMBuildStore(cg.builder, pv, tmp);
         const data_bytes = llvm.LLVMBuildLoad2(cg.builder, data_ty, tmp, "");
         agg = llvm.LLVMBuildInsertValue(cg.builder, agg, data_bytes, 1, "");
     }
@@ -131,9 +135,12 @@ pub fn buildVariantPayload(
 
     const data_bytes = values.extractAggregateField(cg, value, 1, "variant payload bytes") orelse
         return llvm.LLVMGetUndef(dest_ty);
-    // Bitcast the data bytes to the target type via alloca.
+    // Reinterpret the data bytes as the target type through stack memory. The
+    // scratch must be an ENTRY-block alloca: a dynamic (mid-function) alloca on
+    // Windows x64 emits a `__chkstk` probe the CRT-less link can't resolve.
     const data_ty = llvm.LLVMStructGetTypeAtIndex(meta.llvm_ty, 1);
-    const tmp = llvm.LLVMBuildAlloca(cg.builder, data_ty, "");
+    const cur_fn = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(cg.builder));
+    const tmp = abi.entryAlloca(cg, cur_fn, data_ty);
     _ = llvm.LLVMBuildStore(cg.builder, data_bytes, tmp);
     return llvm.LLVMBuildLoad2(cg.builder, dest_ty, tmp, "");
 }

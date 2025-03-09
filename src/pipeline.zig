@@ -20,6 +20,8 @@ const build_options = @import("build_options");
 /// collide with a real program's ids (which start at 1), and below the ast.*
 /// prelude base (900_000); ptr is parsed first and heap chains off its next id.
 const heap_prelude_id_base: ast.NodeId = 600_000;
+/// Node-id base for the injected `TypeInfo` reflection prelude (distinct range).
+const reflection_prelude_id_base: ast.NodeId = 500_000;
 
 pub const FrontEnd = struct {
     module: ast.Module,
@@ -321,18 +323,28 @@ fn runPipelineWithSource(
     else
         base_module;
 
-    // A `zone X: Arena {}` handle is an ordinary `std.heap.Arena`, so any module
-    // with a zone block depends on std.heap. Prepend the embedded bump-allocator
-    // (and std.ptr, which it uses) so zones work in every compile path — even the
-    // inline `compile(source)` path that never reads disk. Skipped when the
-    // module already provides `Arena` (explicit `#import std.heap`).
-    const with_heap = if (moduleUsesZone(with_prelude) and !moduleProvidesArena(with_prelude))
-        prependHeapPrelude(allocator, with_prelude) catch |err| switch (err) {
+    // `type_info(T)` yields a matchable `TypeInfo` value; inject that reflection
+    // surface when the module uses it (and doesn't already define `TypeInfo`).
+    const with_reflect = if (moduleUsesReflection(with_prelude) and !moduleDefinesType(with_prelude, "TypeInfo"))
+        prependReflectionPrelude(allocator, with_prelude) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,
         }
     else
         with_prelude;
+
+    // A `zone X: Arena {}` handle is an ordinary `std.heap.Arena`, so any module
+    // with a zone block depends on std.heap. Prepend the embedded bump-allocator
+    // (and std.ptr, which it uses) so zones work in every compile path — even the
+    // inline `compile(source)` path that never reads disk. Skipped when the
+    // module already provides `Arena` (explicit `#import std.heap`).
+    const with_heap = if (moduleUsesZone(with_reflect) and !moduleProvidesArena(with_reflect))
+        prependHeapPrelude(allocator, with_reflect) catch |err| switch (err) {
+            error.ParseFailed => return error.ParseFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+        }
+    else
+        with_reflect;
 
     // Expand macros before any sema sees the tree: `#insert macrocall(...)`
     // becomes a literal `#insert #quote { ... }`, and macro decls are dropped.
@@ -446,6 +458,97 @@ fn prependHeapPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Modul
     };
     try items.appendSlice(allocator, user.items);
     return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
+/// Prepend the `TypeInfo` reflection surface to the user's module. Parsed under
+/// the user's file name (file-private symbols) with a high id base.
+fn prependReflectionPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
+    const parsed = try parser.parseSourceFrom(allocator, user.file_name, ast_prelude.reflection_source, reflection_prelude_id_base);
+    var items: std.ArrayList(ast.Item) = .empty;
+    try items.appendSlice(allocator, parsed.module.items);
+    try items.appendSlice(allocator, user.items);
+    return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
+/// True when the module declares a top-level type named `name`.
+fn moduleDefinesType(module: ast.Module, name: []const u8) bool {
+    for (module.items) |item| switch (item) {
+        .type_decl => |d| if (std.mem.eql(u8, d.name, name)) return true,
+        else => {},
+    };
+    return false;
+}
+
+/// True when any expression in the module calls a reflection builtin
+/// (`type_info`/`type_name`), which need the `TypeInfo` surface in scope.
+fn moduleUsesReflection(module: ast.Module) bool {
+    for (module.items) |item| switch (item) {
+        .function => |f| {
+            if (f.body) |b| if (blockUsesReflection(b)) return true;
+            if (f.where_clause) |w| if (blockUsesReflection(w)) return true;
+        },
+        .const_decl => |d| if (exprUsesReflection(d.value)) return true,
+        .interface_impl => |impl| for (impl.methods) |m| {
+            if (m.body) |b| if (blockUsesReflection(b)) return true;
+        },
+        else => {},
+    };
+    return false;
+}
+
+fn blockUsesReflection(block: ast.Block) bool {
+    for (block.statements) |stmt| if (stmtUsesReflection(stmt)) return true;
+    return false;
+}
+
+fn stmtUsesReflection(stmt: ast.Stmt) bool {
+    return switch (stmt) {
+        .comptime_run, .unsafe_block => |b| blockUsesReflection(b),
+        .if_stmt => |s| blockUsesReflection(s.then_block) or
+            (if (s.else_block) |e| blockUsesReflection(e) else false) or exprUsesReflection(s.condition),
+        .while_stmt => |s| blockUsesReflection(s.body) or exprUsesReflection(s.condition),
+        .for_range => |s| blockUsesReflection(s.body) or exprUsesReflection(s.start) or exprUsesReflection(s.end),
+        .for_slice => |s| blockUsesReflection(s.body) or exprUsesReflection(s.iter),
+        .zone_block => |s| blockUsesReflection(s.body),
+        .defer_stmt => |s| blockUsesReflection(s.body),
+        .comptime_if => |s| blockUsesReflection(s.then_block) or
+            (if (s.else_block) |e| blockUsesReflection(e) else false),
+        .match_stmt => |s| blk: {
+            for (s.arms) |a| if (blockUsesReflection(a.body)) break :blk true;
+            break :blk exprUsesReflection(s.subject);
+        },
+        .local_infer => |s| exprUsesReflection(s.value),
+        .local_typed => |s| exprUsesReflection(s.value),
+        .assign => |s| exprUsesReflection(s.target) or exprUsesReflection(s.value),
+        .return_stmt => |s| if (s.value) |v| exprUsesReflection(v) else false,
+        .expr => |e| exprUsesReflection(e),
+        else => false,
+    };
+}
+
+fn exprUsesReflection(expr: ast.Expr) bool {
+    return switch (expr.kind) {
+        .call => |c| blk: {
+            if (c.callee.kind == .ident) {
+                const n = c.callee.kind.ident;
+                if (std.mem.eql(u8, n, "type_info") or std.mem.eql(u8, n, "type_name")) break :blk true;
+            }
+            if (exprUsesReflection(c.callee.*)) break :blk true;
+            for (c.args) |a| switch (a) {
+                .positional => |x| if (exprUsesReflection(x)) break :blk true,
+                .named => |nm| if (exprUsesReflection(nm.value)) break :blk true,
+            };
+            break :blk false;
+        },
+        .binary => |b| exprUsesReflection(b.left.*) or exprUsesReflection(b.right.*),
+        .unary => |u| exprUsesReflection(u.expr.*),
+        .field => |f| exprUsesReflection(f.base.*),
+        .index => |i| exprUsesReflection(i.base.*) or exprUsesReflection(i.index.*),
+        .force_unwrap, .unsafe_expr, .run_expr => |inner| exprUsesReflection(inner.*),
+        .as_cast => |c| exprUsesReflection(c.value.*),
+        .nil_coalesce => |nc| exprUsesReflection(nc.value.*) or exprUsesReflection(nc.default.*),
+        else => false,
+    };
 }
 
 /// True when the module already supplies `std.heap.Arena` — either an explicit

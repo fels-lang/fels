@@ -39,10 +39,13 @@ pub const TokenKind = enum {
     // Operators
     plus, // +
     plus_eq, // +=
+    plus_percent, // +%  (wrapping add)
     minus, // -
     minus_eq, // -=
+    minus_percent, // -%  (wrapping sub)
     star, // *
     star_eq, // *=
+    star_percent, // *%  (wrapping mul)
     slash, // /
     slash_eq, // /=
     percent, // %
@@ -205,15 +208,18 @@ pub const Lexer = struct {
             },
             '+' => {
                 if (self.match('=')) return token(.plus_eq, start, self.index);
+                if (self.match('%')) return token(.plus_percent, start, self.index);
                 return token(.plus, start, self.index);
             },
             '-' => {
                 if (self.match('>')) return token(.arrow, start, self.index);
                 if (self.match('=')) return token(.minus_eq, start, self.index);
+                if (self.match('%')) return token(.minus_percent, start, self.index);
                 return token(.minus, start, self.index);
             },
             '*' => {
                 if (self.match('=')) return token(.star_eq, start, self.index);
+                if (self.match('%')) return token(.star_percent, start, self.index);
                 return token(.star, start, self.index);
             },
             '/' => {
