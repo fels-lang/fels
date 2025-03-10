@@ -291,6 +291,7 @@ pub const MatchStmt = struct {
 pub const MatchArm = struct {
     pattern: MatchPattern,
     binding: ?[]const u8, // |x| capture, null if none
+    guard: ?Expr = null, // `if <cond>` — arm taken only when the guard holds
     body: Block,
     span: Span,
 };
@@ -298,7 +299,20 @@ pub const MatchArm = struct {
 pub const MatchPattern = union(enum) {
     enum_variant: []const u8,
     int_values: []const Expr,
+    /// `lo..hi` / `lo..=hi` — an integer range.
+    range: RangePattern,
+    /// `"a"` or grouped `"a", "b"` — string literal pattern(s).
+    strings: []const []const u8,
+    /// A bare identifier — binds the whole subject and matches anything
+    /// (a named catch-all, mainly to give a `if`-guard something to test).
+    binding: []const u8,
     else_arm,
+};
+
+pub const RangePattern = struct {
+    lo: Expr,
+    hi: Expr,
+    inclusive: bool,
 };
 
 /// `match subject { pattern => value, ... }` in *expression* position — each arm
@@ -312,6 +326,7 @@ pub const MatchExpr = struct {
 pub const MatchExprArm = struct {
     pattern: MatchPattern,
     binding: ?[]const u8, // |x| capture, null if none
+    guard: ?Expr = null, // `if <cond>` — arm taken only when the guard holds
     value: Expr,
     span: Span,
 };

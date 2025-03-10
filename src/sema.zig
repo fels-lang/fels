@@ -856,6 +856,7 @@ pub fn checkTypesTolerant(
     var checker = Checker.init(allocator, symbols.*);
     checker.source = source;
     checker.file = file;
+    checker.tolerant = true;
     defer checker.deinit();
     defer symbols.* = checker.symbols;
     checker.checkModule(module) catch |err| switch (err) {
@@ -979,6 +980,10 @@ const Checker = struct {
     /// `$T: Name` at resolution by running the body on the resolution VM.
     constraint_decls: std.StringHashMap(ast.FunctionDecl) = undefined,
     constraint_decls_init: bool = false,
+    /// Tolerant mode (the `#compiler` hook pre-pass): keep checking the rest of
+    /// the module after a per-declaration failure, so error-free declarations
+    /// (e.g. imported std) are still fully typed for comptime lowering.
+    tolerant: bool = false,
     /// `match` statements proven exhaustive during checking (covers every enum
     /// variant, or has an `else`), keyed by `match.span.start`. Return-flow
     /// analysis consults this so a total enum match counts as returning on all
@@ -1202,20 +1207,31 @@ const Checker = struct {
 
         for (module.items) |item| {
             self.file = item.fileName();
-            switch (item) {
-                .import => {},
-                .const_decl => |decl| _ = try self.inferExpr(decl.value),
-                .type_decl => |decl| try self.checkTypeDecl(decl),
-                .function => |decl| {
-                    // A `constraint` is a generic predicate template — registered
-                    // for `$T: Name` resolution, never checked/lowered as a fn.
-                    if (decl.is_constraint)
-                        try self.constraint_decls.put(decl.name, decl);
-                    try self.checkFunction(decl);
-                },
-                .interface_impl => |impl| try self.checkInterfaceImpl(impl),
-                .system_library => {},
-            }
+            // Tolerant mode (the `#compiler` hook pre-pass): a failure in one
+            // declaration (e.g. `main` referencing a not-yet-generated symbol)
+            // must not abort the whole module — the rest still needs typing so
+            // imported std functions lower cleanly into the comptime VM cache.
+            self.checkItem(item) catch |err| switch (err) {
+                error.SemanticFailed => if (self.tolerant) continue else return err,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+        }
+    }
+
+    fn checkItem(self: *Checker, item: ast.Item) SemanticError!void {
+        switch (item) {
+            .import => {},
+            .const_decl => |decl| _ = try self.inferExpr(decl.value),
+            .type_decl => |decl| try self.checkTypeDecl(decl),
+            .function => |decl| {
+                // A `constraint` is a generic predicate template — registered for
+                // `$T: Name` resolution, never checked/lowered as a fn.
+                if (decl.is_constraint)
+                    try self.constraint_decls.put(decl.name, decl);
+                try self.checkFunction(decl);
+            },
+            .interface_impl => |impl| try self.checkInterfaceImpl(impl),
+            .system_library => {},
         }
     }
 
@@ -1751,7 +1767,7 @@ const Checker = struct {
                     try self.declareLocal(local.name, declared_ty);
                     return;
                 }
-                const value_ty = try self.inferExpr(local.value);
+                const value_ty = try self.inferExprExpecting(local.value, declared_ty);
                 if (!try self.compatible(value_ty, declared_ty)) {
                     self.emitError(local.value.span, "type mismatch: expected `{s}`, found `{s}`", .{
                         self.formatTy(declared_ty), self.formatTy(value_ty),
@@ -1820,7 +1836,7 @@ const Checker = struct {
                 }
             },
             .return_stmt => |ret| {
-                const actual_ty: Ty = if (ret.value) |value| try self.inferExpr(value) else .void;
+                const actual_ty: Ty = if (ret.value) |value| try self.inferExprExpecting(value, self.current_return_ty) else .void;
                 if (ret.value) |value| if (self.exprZoneOwner(value)) |owner| {
                     const source = if (owner.kind == .borrow) "borrowed value" else "zone-owned value";
                     self.emitError(ret.span, "{s} from `{s}` cannot be returned", .{ source, owner.name });
@@ -2342,7 +2358,7 @@ const Checker = struct {
                     },
                 };
             },
-            .match_expr => |me| try self.inferMatchExpr(me),
+            .match_expr => |me| try self.inferMatchExpr(me, null),
         };
         try self.env.expr_types.put(expr.id, ty);
         return ty;
@@ -2351,112 +2367,58 @@ const Checker = struct {
     /// `match subject { pattern => value, ... }` as a value: each arm yields a
     /// value, all arms must unify to one type, and the match must be exhaustive
     /// (it produces a value on every path). Mirrors `checkMatch`'s pattern rules.
-    fn inferMatchExpr(self: *Checker, me: *const ast.MatchExpr) SemanticError!Ty {
+    fn inferMatchExpr(self: *Checker, me: *const ast.MatchExpr, expected: ?Ty) SemanticError!Ty {
         if (me.arms.len == 0) {
             self.emitError(me.span, "match expression needs at least one arm", .{});
             return error.SemanticFailed;
         }
         const subject_ty = try self.inferExpr(me.subject.*);
-        const is_int = subject_ty.isInteger();
+        const cls = self.classifyMatchSubject(subject_ty);
+        if (cls.kind == .invalid) return self.invalidMatchSubject(me.subject.span);
 
-        var variants: []const VariantInfo = &.{};
-        if (!is_int) {
-            const enum_id: SymbolId = switch (subject_ty) {
-                .named => |id| id,
-                else => return self.invalidMatchSubject(me.subject.span),
-            };
-            const layout = self.env.layouts.get(enum_id) orelse return self.invalidMatchSubject(me.subject.span);
-            variants = switch (layout.kind) {
-                .variant_type => |v| v,
-                else => return self.invalidMatchSubject(me.subject.span),
-            };
-        }
-
-        const covered = try self.allocator.alloc(bool, variants.len);
+        const covered = try self.allocator.alloc(bool, cls.variants.len);
         defer self.allocator.free(covered);
         @memset(covered, false);
-        var has_else = false;
-        var result_ty: ?Ty = null;
+        var catchall = false;
+        // The result type — seeded from the expected context so untyped arm
+        // values (`.{ … }`, bare `.variant`) get a target; otherwise the first
+        // arm establishes it.
+        var result_ty: ?Ty = expected;
 
         for (me.arms) |arm| {
-            var payload_ty: Ty = .void;
-            switch (arm.pattern) {
-                .else_arm => has_else = true,
-                .int_values => |values| {
-                    if (!is_int) {
-                        self.emitError(arm.span, "integer pattern cannot be used with an enum match subject", .{});
-                        return error.SemanticFailed;
-                    }
-                    if (arm.binding != null) {
-                        self.emitError(arm.span, "integer match patterns cannot bind a payload", .{});
-                        return error.SemanticFailed;
-                    }
-                    for (values) |value| {
-                        const value_ty = try self.inferExpr(value);
-                        if (!try self.compatible(value_ty, subject_ty)) {
-                            self.emitError(value.span, "integer match pattern is incompatible with subject type `{s}`", .{self.formatTy(subject_ty)});
-                            return error.SemanticFailed;
-                        }
-                    }
-                },
-                .enum_variant => |name| {
-                    if (is_int) {
-                        self.emitError(arm.span, "enum variant pattern cannot be used with an integer match subject", .{});
-                        return error.SemanticFailed;
-                    }
-                    var found: ?VariantInfo = null;
-                    for (variants, 0..) |v, i| {
-                        if (std.mem.eql(u8, v.name, name)) {
-                            found = v;
-                            if (covered[i]) {
-                                self.emitError(arm.span, "duplicate match arm for variant `.{s}`", .{name});
-                                return error.SemanticFailed;
-                            }
-                            covered[i] = true;
-                            break;
-                        }
-                    }
-                    const variant = found orelse {
-                        self.emitError(arm.span, "unknown variant `.{s}` in match", .{name});
-                        return error.SemanticFailed;
-                    };
-                    payload_ty = variant.payload orelse .void;
-                },
-            }
+            const bind = try self.checkMatchPattern(cls, subject_ty, arm, covered, &catchall);
+            try self.pushScope();
+            defer self.popScope();
+            if (bind) |b| try self.declareLocal(b.name, b.ty);
+            try self.checkMatchGuard(arm.guard);
 
-            const arm_value_ty: Ty = if (arm.binding) |bname| blk: {
-                try self.pushScope();
-                defer self.popScope();
-                try self.declareLocal(bname, payload_ty);
-                break :blk try self.inferExpr(arm.value);
+            const arm_ty: Ty = if (result_ty) |rt| blk: {
+                // A bare `.variant` literal resolves against the known result type.
+                if (try self.coerceEnumLiteral(arm.value, rt)) break :blk rt;
+                const t = try self.inferExpr(arm.value);
+                if (!try self.compatible(t, rt)) {
+                    self.emitError(arm.value.span, "match arms have incompatible types: `{s}` vs `{s}`", .{ self.formatTy(rt), self.formatTy(t) });
+                    return error.SemanticFailed;
+                }
+                break :blk t;
             } else try self.inferExpr(arm.value);
 
-            if (result_ty) |rt| {
-                if (!try self.compatible(arm_value_ty, rt)) {
-                    self.emitError(arm.value.span, "match arms have incompatible types: `{s}` vs `{s}`", .{ self.formatTy(rt), self.formatTy(arm_value_ty) });
-                    return error.SemanticFailed;
-                }
-            } else {
-                result_ty = arm_value_ty;
-            }
+            if (result_ty == null) result_ty = arm_ty;
         }
 
-        // A value-producing match must be exhaustive.
-        if (is_int) {
-            if (!has_else) {
-                self.emitError(me.span, "match expression on an integer must have an `else` arm", .{});
-                return error.SemanticFailed;
-            }
-        } else if (!has_else) {
-            for (variants, 0..) |v, i| {
-                if (!covered[i]) {
-                    self.emitError(me.span, "non-exhaustive match expression: variant `.{s}` is not handled (add it, or an `else` arm)", .{v.name});
-                    return error.SemanticFailed;
-                }
-            }
-        }
-
+        try self.recordMatchExhaustiveness(me.span, cls, covered, catchall, true);
         return result_ty orelse .void;
+    }
+
+    /// Infer an expression in a context with a known expected type, threading it
+    /// into a `match` expression so untyped arm values type-check (bidirectional).
+    fn inferExprExpecting(self: *Checker, expr: ast.Expr, expected: Ty) SemanticError!Ty {
+        if (expr.kind == .match_expr) {
+            const ty = try self.inferMatchExpr(expr.kind.match_expr, expected);
+            try self.env.expr_types.put(expr.id, ty);
+            return ty;
+        }
+        return self.inferExpr(expr);
     }
 
     fn inferCall(self: *Checker, call: ast.CallExpr) SemanticError!Ty {
@@ -2987,119 +2949,183 @@ const Checker = struct {
         return try self.inferExpr(inner);
     }
 
-    fn checkMatch(self: *Checker, m: ast.MatchStmt) SemanticError!void {
-        const subject_ty = try self.inferExpr(m.subject);
+    const MatchKind = enum { integer, string, enum_, invalid };
+    const MatchClass = struct { kind: MatchKind, variants: []const VariantInfo = &.{} };
+    const ArmBind = struct { name: []const u8, ty: Ty };
 
-        if (subject_ty.isInteger()) return self.checkIntMatch(m, subject_ty);
-
-        const enum_id: SymbolId = switch (subject_ty) {
-            .named => |id| id,
-            else => return self.invalidMatchSubject(m.subject.span),
+    fn matchSubjectIsString(ty: Ty) bool {
+        return switch (ty) {
+            .slice => |elem| elem.* == .u8 or elem.* == .byte,
+            else => false,
         };
-        const layout = self.env.layouts.get(enum_id) orelse return self.invalidMatchSubject(m.subject.span);
-        const variants = switch (layout.kind) {
-            .variant_type => |v| v,
-            else => return self.invalidMatchSubject(m.subject.span),
-        };
+    }
 
-        // Track which variants are covered so we can prove exhaustiveness (and
-        // flag a missing variant). `covered[i]` ↔ `variants[i]`.
-        const covered = try self.allocator.alloc(bool, variants.len);
-        defer self.allocator.free(covered);
-        @memset(covered, false);
-        var has_else = false;
+    /// Classify a match subject: integer, string (`[]u8`), enum (with variants),
+    /// or invalid.
+    fn classifyMatchSubject(self: *Checker, ty: Ty) MatchClass {
+        if (ty.isInteger()) return .{ .kind = .integer };
+        if (matchSubjectIsString(ty)) return .{ .kind = .string };
+        switch (ty) {
+            .named => |id| if (self.env.layouts.get(id)) |layout| switch (layout.kind) {
+                .variant_type => |v| return .{ .kind = .enum_, .variants = v },
+                else => {},
+            },
+            else => {},
+        }
+        return .{ .kind = .invalid };
+    }
 
-        for (m.arms) |arm| {
-            const variant_name = switch (arm.pattern) {
-                .else_arm => {
-                    has_else = true;
-                    try self.checkBlock(arm.body);
-                    continue;
-                },
-                .enum_variant => |name| name,
-                .int_values => {
-                    self.emitError(arm.span, "integer pattern cannot be used with an enum match subject", .{});
+    /// Validate one arm's pattern against the subject; record enum coverage and
+    /// set `catchall` for an UNGUARDED `else`/name pattern; return the local the
+    /// arm binds (an enum payload, or a `name` pattern's subject), or null.
+    /// `arm` is a `MatchArm` or `MatchExprArm` (same pattern/binding/guard/span).
+    fn checkMatchPattern(self: *Checker, cls: MatchClass, subject_ty: Ty, arm: anytype, covered: []bool, catchall: *bool) SemanticError!?ArmBind {
+        const guarded = arm.guard != null;
+        switch (arm.pattern) {
+            .else_arm => {
+                if (arm.binding != null) {
+                    self.emitError(arm.span, "`else` arm cannot bind a value", .{});
                     return error.SemanticFailed;
-                },
-            };
-            // Find variant in the enum layout.
-            var found: ?VariantInfo = null;
-            for (variants, 0..) |v, i| {
-                if (std.mem.eql(u8, v.name, variant_name)) {
-                    found = v;
-                    if (covered[i]) {
-                        self.emitError(arm.span, "duplicate match arm for variant `.{s}`", .{variant_name});
+                }
+                if (!guarded) catchall.* = true;
+                return null;
+            },
+            .binding => |name| {
+                if (arm.binding != null) {
+                    self.emitError(arm.span, "a name pattern already binds the subject; remove the `|...|`", .{});
+                    return error.SemanticFailed;
+                }
+                if (!guarded) catchall.* = true;
+                return .{ .name = name, .ty = subject_ty };
+            },
+            .enum_variant => |vname| {
+                if (cls.kind != .enum_) {
+                    self.emitError(arm.span, "enum variant pattern cannot be used with this match subject", .{});
+                    return error.SemanticFailed;
+                }
+                var found: ?VariantInfo = null;
+                for (cls.variants, 0..) |v, i| {
+                    if (std.mem.eql(u8, v.name, vname)) {
+                        found = v;
+                        if (covered[i] and !guarded) {
+                            self.emitError(arm.span, "duplicate match arm for variant `.{s}`", .{vname});
+                            return error.SemanticFailed;
+                        }
+                        if (!guarded) covered[i] = true;
+                        break;
+                    }
+                }
+                const variant = found orelse {
+                    self.emitError(arm.span, "unknown variant `.{s}` in match", .{vname});
+                    return error.SemanticFailed;
+                };
+                if (arm.binding) |b| return .{ .name = b, .ty = variant.payload orelse .void };
+                return null;
+            },
+            .int_values => |values| {
+                if (cls.kind != .integer) {
+                    self.emitError(arm.span, "integer pattern cannot be used with this match subject", .{});
+                    return error.SemanticFailed;
+                }
+                if (arm.binding != null) {
+                    self.emitError(arm.span, "integer match patterns cannot bind a payload", .{});
+                    return error.SemanticFailed;
+                }
+                for (values) |value| {
+                    const vt = try self.inferExpr(value);
+                    if (!try self.compatible(vt, subject_ty)) {
+                        self.emitError(value.span, "integer match pattern is incompatible with subject type `{s}`", .{self.formatTy(subject_ty)});
                         return error.SemanticFailed;
                     }
-                    covered[i] = true;
-                    break;
+                }
+                return null;
+            },
+            .range => |r| {
+                if (cls.kind != .integer) {
+                    self.emitError(arm.span, "range pattern requires an integer match subject", .{});
+                    return error.SemanticFailed;
+                }
+                if (arm.binding != null) {
+                    self.emitError(arm.span, "range match patterns cannot bind a payload", .{});
+                    return error.SemanticFailed;
+                }
+                const lo_ty = try self.inferExpr(r.lo);
+                const hi_ty = try self.inferExpr(r.hi);
+                if (!try self.compatible(lo_ty, subject_ty) or !try self.compatible(hi_ty, subject_ty)) {
+                    self.emitError(arm.span, "range bounds are incompatible with subject type `{s}`", .{self.formatTy(subject_ty)});
+                    return error.SemanticFailed;
+                }
+                return null;
+            },
+            .strings => {
+                if (cls.kind != .string) {
+                    self.emitError(arm.span, "string pattern requires a string (`[]const u8`) match subject", .{});
+                    return error.SemanticFailed;
+                }
+                if (arm.binding != null) {
+                    self.emitError(arm.span, "string match patterns cannot bind a payload", .{});
+                    return error.SemanticFailed;
+                }
+                return null;
+            },
+        }
+    }
+
+    fn checkMatchGuard(self: *Checker, guard: ?ast.Expr) SemanticError!void {
+        if (guard) |g| {
+            const gt = try self.inferExpr(g);
+            if (gt != .bool) {
+                self.emitError(g.span, "match guard must be a `bool`, found `{s}`", .{self.formatTy(gt)});
+                return error.SemanticFailed;
+            }
+        }
+    }
+
+    /// Record exhaustiveness for return-flow analysis, or error when required.
+    /// `require` is set for match *expressions* (must yield a value on every
+    /// path); statement matches still hard-error on a non-exhaustive *enum*.
+    fn recordMatchExhaustiveness(self: *Checker, span: Span, cls: MatchClass, covered: []const bool, catchall: bool, require: bool) SemanticError!void {
+        if (catchall) {
+            try self.exhaustive_matches.put(span.start, {});
+            return;
+        }
+        if (cls.kind == .enum_) {
+            for (cls.variants, 0..) |v, i| {
+                if (!covered[i]) {
+                    self.emitError(span, "non-exhaustive match: variant `.{s}` is not handled (add it, or an `else` arm)", .{v.name});
+                    return error.SemanticFailed;
                 }
             }
-            const variant = found orelse {
-                self.emitError(arm.span, "unknown variant `.{s}` in match", .{variant_name});
-                return error.SemanticFailed;
-            };
-
-            // Push scope with optional payload binding.
-            if (arm.binding) |bname| {
-                const payload_ty = variant.payload orelse .void;
-                try self.pushScope();
-                defer self.popScope();
-                try self.declareLocal(bname, payload_ty);
-                try self.checkBlock(arm.body);
-            } else {
-                try self.checkBlock(arm.body);
-            }
+            try self.exhaustive_matches.put(span.start, {});
+            return;
         }
-
-        // Exhaustiveness: an enum match must cover every variant or have `else`.
-        // A redundant `else` after full coverage is allowed (no warning yet).
-        var missing: ?[]const u8 = null;
-        for (variants, 0..) |v, i| {
-            if (!covered[i]) {
-                missing = v.name;
-                break;
-            }
-        }
-        if (has_else or missing == null) {
-            try self.exhaustive_matches.put(m.span.start, {});
-        } else {
-            self.emitError(m.span, "non-exhaustive match: variant `.{s}` is not handled (add it, or an `else` arm)", .{missing.?});
+        // integer / string: only exhaustive via a catch-all.
+        if (require) {
+            self.emitError(span, "non-exhaustive match expression: add an `else` arm (it must yield a value on every path)", .{});
             return error.SemanticFailed;
         }
     }
 
-    fn checkIntMatch(self: *Checker, m: ast.MatchStmt, subject_ty: Ty) SemanticError!void {
-        var has_else = false;
+    fn checkMatch(self: *Checker, m: ast.MatchStmt) SemanticError!void {
+        const subject_ty = try self.inferExpr(m.subject);
+        const cls = self.classifyMatchSubject(subject_ty);
+        if (cls.kind == .invalid) return self.invalidMatchSubject(m.subject.span);
+
+        const covered = try self.allocator.alloc(bool, cls.variants.len);
+        defer self.allocator.free(covered);
+        @memset(covered, false);
+        var catchall = false;
+
         for (m.arms) |arm| {
-            if (arm.binding != null) {
-                self.emitError(arm.span, "integer match patterns cannot bind a payload", .{});
-                return error.SemanticFailed;
-            }
-            switch (arm.pattern) {
-                .else_arm => {
-                    has_else = true;
-                    try self.checkBlock(arm.body);
-                },
-                .enum_variant => {
-                    self.emitError(arm.span, "enum variant pattern cannot be used with an integer match subject", .{});
-                    return error.SemanticFailed;
-                },
-                .int_values => |values| {
-                    for (values) |value| {
-                        const value_ty = try self.inferExpr(value);
-                        if (!try self.compatible(value_ty, subject_ty)) {
-                            self.emitError(value.span, "integer match pattern is incompatible with subject type `{s}`", .{self.formatTy(subject_ty)});
-                            return error.SemanticFailed;
-                        }
-                    }
-                    try self.checkBlock(arm.body);
-                },
-            }
+            const bind = try self.checkMatchPattern(cls, subject_ty, arm, covered, &catchall);
+            try self.pushScope();
+            defer self.popScope();
+            if (bind) |b| try self.declareLocal(b.name, b.ty);
+            try self.checkMatchGuard(arm.guard);
+            try self.checkBlock(arm.body);
         }
-        // Integers are unbounded, so an integer match is only exhaustive via
-        // `else`. (No missing-case error — that would demand every i64 value.)
-        if (has_else) try self.exhaustive_matches.put(m.span.start, {});
+
+        try self.recordMatchExhaustiveness(m.span, cls, covered, catchall, false);
     }
 
     fn invalidMatchSubject(self: *Checker, span: Span) SemanticError {

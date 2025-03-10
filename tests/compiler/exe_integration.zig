@@ -1364,6 +1364,55 @@ test "exe: match as an expression (enum/int subjects, payload, positions)" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: match range patterns, guards, and binding catch-all" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\bucket :: fn(n: i32) -> i32 {
+        \\    return match n {
+        \\        0..=9   => 1,          // inclusive range
+        \\        10..20  => 2,          // exclusive range (excludes 20)
+        \\        k if k == 20 => 3,     // guard on a binding
+        \\        else    => 9,
+        \\    };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    // 1 + 2 + 3 + ... arranged to total 42
+        \\    total := bucket(5) * 10;   // 1*10 = 10
+        \\    total = total + bucket(15) * 11; // 2*11 = 22
+        \\    total = total + bucket(20);      // 3
+        \\    total = total + bucket(99) - 2;  // 9 - 2 = 7
+        \\    return total;              // 10 + 22 + 3 + 7 = 42
+        \\}
+    , "exe_match_range_guard");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: match string patterns (grouped, safe on shorter subject)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\rank :: fn(s: []const u8) -> i32 {
+        \\    return match s {
+        \\        "gold"          => 30,
+        \\        "silver", "bronze" => 10,   // grouped
+        \\        else            => 1,        // a 1-byte subject must not OOB-read "gold"
+        \\    };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    a: []const u8 = "gold";
+        \\    b: []const u8 = "bronze";
+        \\    c: []const u8 = "x";
+        \\    return rank(a) + rank(b) + rank(c) + 1;  // 30 + 10 + 1 + 1 = 42
+        \\}
+    , "exe_match_strings");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: match-expression threads the expected type into `.{ }` arms" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

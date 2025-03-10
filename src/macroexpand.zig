@@ -253,6 +253,7 @@ const Expander = struct {
             },
             .match_stmt => |s| for (s.arms) |arm| {
                 if (arm.binding) |b| try self.introduce(b, hyg);
+                if (arm.pattern == .binding) try self.introduce(arm.pattern.binding, hyg);
                 try self.collectIntroduced(arm.body, hyg);
             },
             .zone_block => |s| {
@@ -350,11 +351,18 @@ const Expander = struct {
                             for (vals) |e| try nv.append(self.arena, try self.substExpr(e, env, hyg));
                             break :blk .{ .int_values = try nv.toOwnedSlice(self.arena) };
                         },
+                        .range => |r| .{ .range = .{
+                            .lo = try self.substExpr(r.lo, env, hyg),
+                            .hi = try self.substExpr(r.hi, env, hyg),
+                            .inclusive = r.inclusive,
+                        } },
+                        .binding => |name| .{ .binding = self.rename(name, hyg) },
                         else => arm.pattern,
                     };
                     try arms.append(self.arena, .{
                         .pattern = pat,
                         .binding = if (arm.binding) |b| self.rename(b, hyg) else null,
+                        .guard = if (arm.guard) |g| try self.substExpr(g, env, hyg) else null,
                         .body = try self.substBlock(arm.body, env, hyg),
                         .span = arm.span,
                     });

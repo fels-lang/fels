@@ -329,11 +329,26 @@ match shape {
     .none               => { /* nothing */ }
 }
 
-// Integer matching
+// Integer matching: single values, grouped values, and ranges
 match code {
-    0       => { println("ok"); }
-    1, 2, 3 => { println("warning"); }  // grouped cases
-    else    => { println("error"); }
+    0        => { println("ok"); }
+    1, 2, 3  => { println("warning"); }  // grouped cases
+    400..=499 => { println("client"); }  // inclusive range (use `..` for exclusive)
+    else     => { println("error"); }
+}
+
+// String matching
+match command {
+    "start"        => { /* ... */ }
+    "stop", "halt" => { /* grouped */ }
+    else           => { /* ... */ }
+}
+
+// A bare name binds the subject (a catch-all); `if` adds a guard
+match n {
+    0          => { /* zero */ }
+    k if k < 0 => { /* negative, bound as k */ }
+    k          => { /* positive, bound as k */ }
 }
 
 // Single-statement arms (no braces needed)
@@ -368,15 +383,19 @@ return match code { 0 => 200, 1, 2, 3 => 400, else => 500 };
 > **Match as an expression**: in value position each arm is `pattern => value`
 > (an expression, comma-separated). All arms must unify to one type, and the
 > match must be **exhaustive** (it produces a value on every path) — a
-> non-exhaustive value-match is an error. Untyped arm values (`.{ … }`) take
-> their type from context (`p: P = match …`, a `return`, a call argument). Bare
-> `.variant` enum literals as arm values need qualifying (`C.Red`) for now.
+> non-exhaustive value-match is an error. Untyped arm values (`.{ … }`, bare
+> `.variant` enum literals) take their type from context (`c: C = match …`, a
+> `return`, a call argument).
 
 > [!NOTE]
-> Patterns are currently enum variants (`.name`, optionally with a `|payload|`
-> capture), integer values (single or grouped `1, 2, 3`), and `else`. Range
-> patterns, guards, and string patterns are not yet supported — use an `if`/`else`
-> chain for those.
+> **Patterns**: enum variants (`.name`, optionally with a `|payload|` capture),
+> integer values (single or grouped `1, 2, 3`), integer **ranges** (`1..5`
+> exclusive, `1..=5` inclusive), **string** literals (single or grouped), a bare
+> **name** (binds the subject — a catch-all), and `else`. Any arm may carry a
+> **guard** `if <bool>` (evaluated after the binding; a failing guard falls
+> through to the next arm). A guarded arm does not count toward exhaustiveness.
+> String compares are length-gated, so a shorter subject is never read out of
+> bounds.
 
 ---
 

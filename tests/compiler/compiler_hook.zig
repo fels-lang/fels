@@ -15,6 +15,42 @@ fn hasFunction(m: anytype, name: []const u8) bool {
     return false;
 }
 
+test "compiler-hook: rich introspection — reads struct fields and enum variants" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `compiler_decls()` now exposes each decl's structure: a struct's `fields`,
+    // an enum's variants (also via `fields`), and a fn's params + `ret`. The hook
+    // reads `d.fields.len` (and matches on `d.kind` as a string) and only emits
+    // `answer` when the program's shape matches — proving it saw the real fields.
+    const src =
+        \\Point :: struct { x: i32, y: i32 }
+        \\Color :: enum { Red, Green, Blue }
+        \\#compiler shape :: fn() -> []const u8 {
+        \\    nfields: i32 = 0;
+        \\    nvariants: i32 = 0;
+        \\    for d in compiler_decls() {
+        \\        match d.kind {
+        \\            "struct" => { nfields = nfields + (d.fields.len as i32); }
+        \\            "enum"   => { nvariants = nvariants + (d.fields.len as i32); }
+        \\            else     => {}
+        \\        }
+        \\    }
+        \\    if nfields == 2 { if nvariants == 3 {
+        \\        return "answer :: fn() -> i32 { return 42; }";
+        \\    } }
+        \\    return "answer :: fn() -> i32 { return 0; }";
+        \\}
+        \\main :: fn() -> i32 { return answer(); }
+    ;
+    var fe = try k2.compile(a, "hook_introspect.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+    try std.testing.expect(hasFunction(m, "answer"));
+}
+
 test "compiler-hook: generated top-level declaration is added to the module" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

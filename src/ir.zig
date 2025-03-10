@@ -2054,10 +2054,51 @@ const FunctionLowerer = struct {
             const v = try self.mkStruct("Decl", &.{
                 .{ .name = "name", .value = astStr(nm) },
                 .{ .name = "kind", .value = astStr(declKindName(item)) },
+                .{ .name = "fields", .value = try self.lowerDeclFields(item) },
+                .{ .name = "ret", .value = try self.lowerDeclRet(item) },
             });
             try elems.append(self.allocator, v);
         }
         return self.materializeSlice(.{ .struct_type = "Decl" }, elems.items);
+    }
+
+    fn mkCField(self: *FunctionLowerer, name: []const u8, type_name: []const u8) LowerError!Value {
+        return self.mkStruct("CField", &.{
+            .{ .name = "name", .value = astStr(name) },
+            .{ .name = "type_name", .value = astStr(type_name) },
+        });
+    }
+
+    /// `Decl.fields` — a struct's fields, an enum's variants (`type_name` = the
+    /// payload type, "" if none), or a fn's parameters; empty otherwise.
+    fn lowerDeclFields(self: *FunctionLowerer, item: ast.Item) LowerError!Value {
+        var fs: std.ArrayList(Value) = .empty;
+        defer fs.deinit(self.allocator);
+        switch (item) {
+            .type_decl => |t| switch (t.kind) {
+                .struct_type => |s| for (s.fields) |f| {
+                    try fs.append(self.allocator, try self.mkCField(f.name, astTypeName(self.allocator, f.ty)));
+                },
+                .enum_type => |e| for (e.variants) |vrt| {
+                    const pn = if (vrt.payload) |p| astTypeName(self.allocator, p) else "";
+                    try fs.append(self.allocator, try self.mkCField(vrt.name, pn));
+                },
+                else => {},
+            },
+            .function => |fnd| for (fnd.params) |p| {
+                try fs.append(self.allocator, try self.mkCField(p.name, astTypeName(self.allocator, p.ty)));
+            },
+            else => {},
+        }
+        return self.materializeSlice(.{ .struct_type = "CField" }, fs.items);
+    }
+
+    /// `Decl.ret` — a fn's return type name, "" otherwise.
+    fn lowerDeclRet(self: *FunctionLowerer, item: ast.Item) LowerError!Value {
+        return switch (item) {
+            .function => |fnd| astStr(astTypeName(self.allocator, fnd.return_ty)),
+            else => astStr(""),
+        };
     }
 
     /// `*AstExpr` field value: materialize the expr, then take its address.
@@ -2499,7 +2540,9 @@ const FunctionLowerer = struct {
                 for (vals) |v| try pvals.append(self.allocator, try self.materializeExpr(v));
                 break :blk try self.mkVariant("AstPattern", "ints", try self.materializeVariantSlice("AstExpr", pvals.items));
             },
-            .else_arm => try self.mkVariant("AstPattern", "anything", null),
+            // `else`, and (for now) range/string/name patterns, reflect as the
+            // catch-all `anything` — full fidelity for these in `#quote` is TODO.
+            .else_arm, .range, .strings, .binding => try self.mkVariant("AstPattern", "anything", null),
         };
         return self.mkStruct("AstMatchArm", &.{
             .{ .name = "pattern", .value = pattern },
@@ -2996,13 +3039,15 @@ const FunctionLowerer = struct {
             .slice => |slice| blk: {
                 const base_ty = self.exprType(slice.base.*);
                 if (slice.start != null or slice.end != null) {
+                    // An `.unknown` base happens when lowering for the comptime
+                    // cache from the hook-pass's *tolerant* sema; treat it as a
+                    // slice-of-unknown rather than a hard ICE (the VM cell model
+                    // doesn't need a precise element type).
+                    const is_array = base_ty == .array;
                     const elem_ty: IrType = switch (base_ty) {
                         .array => |array| array.elem.*,
                         .slice => |inner| inner.*,
-                        else => {
-                            diag_mod.printIce("slice expr: base is neither array nor slice", @src());
-                            return error.LoweringFailed;
-                        },
+                        else => .unknown,
                     };
 
                     const start_val: Value = if (slice.start) |start_expr|
@@ -3010,20 +3055,19 @@ const FunctionLowerer = struct {
                     else
                         .{ .imm = .{ .uint = 0 } };
 
-                    const base_len: Value = switch (base_ty) {
-                        .array => |array| .{ .imm = .{ .uint = array.len } },
-                        .slice => try self.emit(.usize, .{ .field = .{ .base = try self.lowerExpr(slice.base.*), .name = "len" } }),
-                        else => unreachable,
-                    };
+                    const base_len: Value = if (is_array)
+                        .{ .imm = .{ .uint = base_ty.array.len } }
+                    else
+                        try self.emit(.usize, .{ .field = .{ .base = try self.lowerExpr(slice.base.*), .name = "len" } });
                     const end_val: Value = if (slice.end) |end_expr|
                         try self.lowerExpr(end_expr.*)
                     else
                         base_len;
 
-                    const base_addr = switch (base_ty) {
-                        .array => try self.lowerLValueAddress(slice.base.*),
-                        else => try self.lowerExpr(slice.base.*),
-                    };
+                    const base_addr = if (is_array)
+                        try self.lowerLValueAddress(slice.base.*)
+                    else
+                        try self.lowerExpr(slice.base.*);
                     const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, elem_ty) };
                     const offset_ptr = try self.emitAt(ptr_ty, .{ .index_addr = .{ .base = base_addr, .index = start_val } }, expr.span);
                     const len = try self.emit(.usize, .{ .binary = .{ .op = .sub, .lhs = end_val, .rhs = start_val } });
@@ -3268,80 +3312,126 @@ const FunctionLowerer = struct {
         return "";
     }
 
-    fn lowerMatch(self: *FunctionLowerer, m: ast.MatchStmt) LowerError!void {
-        // Evaluate the subject once.
-        const subject = try self.lowerExpr(m.subject);
-        const enum_name = self.matchEnumName(m.subject);
+    /// The boolean test for `pattern` against `subject`, or null when the pattern
+    /// always matches (`else` / a bare `name` binding).
+    fn lowerPatternCheck(self: *FunctionLowerer, subject: Value, enum_name: []const u8, pattern: ast.MatchPattern) LowerError!?Value {
+        switch (pattern) {
+            .else_arm, .binding => return null,
+            .enum_variant => |variant| return try self.emit(.bool, .{ .variant_is = .{
+                .value = subject,
+                .type_name = enum_name,
+                .variant = variant,
+            } }),
+            .int_values => |values| {
+                var combined: ?Value = null;
+                for (values) |value| {
+                    const equal = try self.emit(.bool, .{ .binary = .{ .op = .eq, .lhs = subject, .rhs = try self.lowerExpr(value) } });
+                    combined = if (combined) |p| try self.emit(.bool, .{ .binary = .{ .op = .or_op, .lhs = p, .rhs = equal } }) else equal;
+                }
+                return combined orelse Value{ .imm = .{ .bool = false } };
+            },
+            .range => |r| {
+                const lo = try self.lowerExpr(r.lo);
+                const hi = try self.lowerExpr(r.hi);
+                const ge = try self.emit(.bool, .{ .binary = .{ .op = .ge, .lhs = subject, .rhs = lo } });
+                const hi_op: BinOp = if (r.inclusive) .le else .lt;
+                const le = try self.emit(.bool, .{ .binary = .{ .op = hi_op, .lhs = subject, .rhs = hi } });
+                return try self.emit(.bool, .{ .binary = .{ .op = .and_op, .lhs = ge, .rhs = le } });
+            },
+            .strings => |strs| {
+                var combined: ?Value = null;
+                for (strs) |s| {
+                    const eq = try self.lowerStringEq(subject, s);
+                    combined = if (combined) |p| try self.emit(.bool, .{ .binary = .{ .op = .or_op, .lhs = p, .rhs = eq } }) else eq;
+                }
+                return combined orelse Value{ .imm = .{ .bool = false } };
+            },
+        }
+    }
 
+    /// Compare a `[]const u8` subject to a string literal, byte by byte. The
+    /// literal's bytes are read only inside a block guarded by a length match, so
+    /// a shorter subject is never read out of bounds (K2's `&&` is eager).
+    fn lowerStringEq(self: *FunctionLowerer, subject: Value, literal_raw: []const u8) LowerError!Value {
+        const lit = trimQuotes(literal_raw);
+        const res_name = try std.fmt.allocPrint(self.allocator, "__streq_{d}", .{self.next_block_id});
+        try self.local_types.put(res_name, .bool);
+        try self.emitNoResult(.bool, .{ .store_local = .{ .name = res_name, .value = .{ .imm = .{ .bool = false } } } });
+
+        const subj_len = try self.emit(.usize, .{ .field = .{ .base = subject, .name = "len" } });
+        const len_eq = try self.emit(.bool, .{ .binary = .{ .op = .eq, .lhs = subj_len, .rhs = .{ .imm = .{ .uint = lit.len } } } });
+        const cmp_id = self.allocBlockId();
+        const done_id = self.allocBlockId();
+        try self.terminate(.{ .cond_branch = .{ .cond = len_eq, .then_block = cmp_id, .else_block = done_id } });
+
+        self.startBlock(cmp_id, "streq.cmp");
+        var acc: Value = .{ .imm = .{ .bool = true } };
+        for (lit, 0..) |c, i| {
+            const byte = try self.emit(.byte, .{ .index = .{ .base = subject, .index = .{ .imm = .{ .uint = i } } } });
+            const beq = try self.emit(.bool, .{ .binary = .{ .op = .eq, .lhs = byte, .rhs = .{ .imm = .{ .uint = c } } } });
+            acc = try self.emit(.bool, .{ .binary = .{ .op = .and_op, .lhs = acc, .rhs = beq } });
+        }
+        try self.emitNoResult(.bool, .{ .store_local = .{ .name = res_name, .value = acc } });
+        try self.terminate(.{ .branch = done_id });
+
+        self.startBlock(done_id, "streq.done");
+        return .{ .local = res_name };
+    }
+
+    /// In the arm's block, bind any local the pattern introduces: an enum payload
+    /// (`.V |x|`), an `else |x|` subject, or a `name`-pattern's subject.
+    fn bindMatchArm(self: *FunctionLowerer, subject: Value, subject_ty: IrType, enum_name: []const u8, pattern: ast.MatchPattern, payload_binding: ?[]const u8) LowerError!void {
+        switch (pattern) {
+            .binding => |name| {
+                try self.local_types.put(name, subject_ty);
+                try self.emitNoResult(subject_ty, .{ .store_local = .{ .name = name, .value = subject } });
+            },
+            .enum_variant => |variant| if (payload_binding) |bname| {
+                const payload_ty = self.variantPayloadIrType(enum_name, variant);
+                const payload = try self.emit(payload_ty, .{ .variant_payload = .{ .value = subject, .type_name = enum_name, .variant = variant } });
+                try self.local_types.put(bname, payload_ty);
+                try self.emitNoResult(payload_ty, .{ .store_local = .{ .name = bname, .value = payload } });
+            },
+            .else_arm => if (payload_binding) |bname| {
+                try self.emitNoResult(.void, .{ .store_local = .{ .name = bname, .value = subject } });
+            },
+            else => {},
+        }
+    }
+
+    fn lowerMatch(self: *FunctionLowerer, m: ast.MatchStmt) LowerError!void {
+        const subject = try self.lowerExpr(m.subject);
+        const subject_ty = self.exprType(m.subject);
+        const enum_name = self.matchEnumName(m.subject);
         const after_id = self.allocBlockId();
 
         for (m.arms) |arm| {
+            const check = try self.lowerPatternCheck(subject, enum_name, arm.pattern);
             const arm_id = self.allocBlockId();
-            const next_id = self.allocBlockId();
+            const needs_next = check != null or arm.guard != null;
+            const next_id = if (needs_next) self.allocBlockId() else after_id;
 
-            if (arm.pattern == .else_arm) {
-                // else arm — fall through from failed checks
+            if (check) |c| {
+                try self.terminate(.{ .cond_branch = .{ .cond = c, .then_block = arm_id, .else_block = next_id } });
+            } else {
                 try self.terminate(.{ .branch = arm_id });
-                self.startBlock(arm_id, "match.else");
-                if (arm.binding) |bname| {
-                    try self.emitNoResult(.void, .{ .store_local = .{ .name = bname, .value = subject } });
-                }
-                try self.lowerBlock(arm.body.statements, .{ .branch = after_id });
-                break; // else must be last
             }
 
-            const check = switch (arm.pattern) {
-                .enum_variant => |variant| try self.emit(.bool, .{ .variant_is = .{
-                    .value = subject,
-                    .type_name = enum_name,
-                    .variant = variant,
-                } }),
-                .int_values => |values| blk: {
-                    var combined: ?Value = null;
-                    for (values) |value| {
-                        const equal = try self.emit(.bool, .{ .binary = .{
-                            .op = .eq,
-                            .lhs = subject,
-                            .rhs = try self.lowerExpr(value),
-                        } });
-                        combined = if (combined) |previous|
-                            try self.emit(.bool, .{ .binary = .{
-                                .op = .or_op,
-                                .lhs = previous,
-                                .rhs = equal,
-                            } })
-                        else
-                            equal;
-                    }
-                    break :blk combined orelse Value{ .imm = .{ .bool = false } };
-                },
-                .else_arm => unreachable,
-            };
-            try self.terminate(.{ .cond_branch = .{ .cond = check, .then_block = arm_id, .else_block = next_id } });
-
-            // Arm body.
             self.startBlock(arm_id, "match.arm");
-            if (arm.binding) |bname| {
-                const variant = arm.pattern.enum_variant;
-                // The binding must carry the payload's real type: `.unknown` would
-                // lower to a null LLVM type and crash the alloca.
-                const payload_ty = self.variantPayloadIrType(enum_name, variant);
-                const payload = try self.emit(payload_ty, .{ .variant_payload = .{
-                    .value = subject,
-                    .type_name = enum_name,
-                    .variant = variant,
-                } });
-                try self.local_types.put(bname, payload_ty);
-                // The store_local's type is what the backend allocates the binding
-                // from, so it must be the payload type, not `.void`.
-                try self.emitNoResult(payload_ty, .{ .store_local = .{ .name = bname, .value = payload } });
+            try self.bindMatchArm(subject, subject_ty, enum_name, arm.pattern, arm.binding);
+            if (arm.guard) |g| {
+                const gv = try self.lowerExpr(g);
+                const body_id = self.allocBlockId();
+                try self.terminate(.{ .cond_branch = .{ .cond = gv, .then_block = body_id, .else_block = next_id } });
+                self.startBlock(body_id, "match.body");
             }
             try self.lowerBlock(arm.body.statements, .{ .branch = after_id });
 
-            self.startBlock(next_id, "match.next");
+            if (needs_next) {
+                self.startBlock(next_id, "match.next");
+            } else break; // unguarded catch-all — the cascade ends here
         }
 
-        // If no else arm, fall through to after.
         if (!self.current_terminated) try self.terminate(.{ .branch = after_id });
         self.startBlock(after_id, "match.after");
     }
@@ -3364,75 +3454,40 @@ const FunctionLowerer = struct {
         const result_name = try std.fmt.allocPrint(self.allocator, "__match_res_{d}", .{self.next_block_id});
 
         const subject = try self.lowerExpr(me.subject.*);
+        const subject_ty = self.exprType(me.subject.*);
         const enum_name = self.matchEnumName(me.subject.*);
         const after_id = self.allocBlockId();
 
-        var has_else = false;
-        for (me.arms) |a| {
-            if (a.pattern == .else_arm) has_else = true;
-        }
-
-        for (me.arms, 0..) |arm, idx| {
-            const is_last = idx + 1 == me.arms.len;
-            const unconditional = arm.pattern == .else_arm or (!has_else and is_last);
+        for (me.arms) |arm| {
+            const check = try self.lowerPatternCheck(subject, enum_name, arm.pattern);
             const arm_id = self.allocBlockId();
-            const next_id = if (unconditional) after_id else self.allocBlockId();
+            const needs_next = check != null or arm.guard != null;
+            const next_id = if (needs_next) self.allocBlockId() else after_id;
 
-            if (unconditional) {
-                try self.terminate(.{ .branch = arm_id });
+            if (check) |c| {
+                try self.terminate(.{ .cond_branch = .{ .cond = c, .then_block = arm_id, .else_block = next_id } });
             } else {
-                const check = switch (arm.pattern) {
-                    .enum_variant => |variant| try self.emit(.bool, .{ .variant_is = .{
-                        .value = subject,
-                        .type_name = enum_name,
-                        .variant = variant,
-                    } }),
-                    .int_values => |values| blk: {
-                        var combined: ?Value = null;
-                        for (values) |value| {
-                            const equal = try self.emit(.bool, .{ .binary = .{
-                                .op = .eq,
-                                .lhs = subject,
-                                .rhs = try self.lowerExpr(value),
-                            } });
-                            combined = if (combined) |previous|
-                                try self.emit(.bool, .{ .binary = .{ .op = .or_op, .lhs = previous, .rhs = equal } })
-                            else
-                                equal;
-                        }
-                        break :blk combined orelse Value{ .imm = .{ .bool = false } };
-                    },
-                    .else_arm => unreachable,
-                };
-                try self.terminate(.{ .cond_branch = .{ .cond = check, .then_block = arm_id, .else_block = next_id } });
+                try self.terminate(.{ .branch = arm_id });
             }
 
             self.startBlock(arm_id, "match.arm");
-            // Bind the payload (`.variant |x|`) or, for `else |x|`, the subject.
-            switch (arm.pattern) {
-                .enum_variant => |variant| if (arm.binding) |bname| {
-                    const payload_ty = self.variantPayloadIrType(enum_name, variant);
-                    const payload = try self.emit(payload_ty, .{ .variant_payload = .{
-                        .value = subject,
-                        .type_name = enum_name,
-                        .variant = variant,
-                    } });
-                    try self.local_types.put(bname, payload_ty);
-                    try self.emitNoResult(payload_ty, .{ .store_local = .{ .name = bname, .value = payload } });
-                },
-                .else_arm => if (arm.binding) |bname| {
-                    try self.emitNoResult(.void, .{ .store_local = .{ .name = bname, .value = subject } });
-                },
-                .int_values => {},
+            try self.bindMatchArm(subject, subject_ty, enum_name, arm.pattern, arm.binding);
+            if (arm.guard) |g| {
+                const gv = try self.lowerExpr(g);
+                const body_id = self.allocBlockId();
+                try self.terminate(.{ .cond_branch = .{ .cond = gv, .then_block = body_id, .else_block = next_id } });
+                self.startBlock(body_id, "match.body");
             }
             const value = try self.lowerExprAs(arm.value, result_ty);
             try self.emitNoResult(result_ty, .{ .store_local = .{ .name = result_name, .value = value } });
             try self.terminate(.{ .branch = after_id });
 
-            if (unconditional) break;
-            self.startBlock(next_id, "match.next");
+            if (needs_next) {
+                self.startBlock(next_id, "match.next");
+            } else break; // unguarded catch-all — the cascade ends here
         }
 
+        if (!self.current_terminated) try self.terminate(.{ .branch = after_id });
         self.startBlock(after_id, "match.after");
         try self.local_types.put(result_name, result_ty);
         return .{ .local = result_name };
@@ -3979,7 +4034,29 @@ fn extractAsmConstraint(expr: ast.Expr) ?[]const u8 {
 /// Names injected by the metaprogramming/compiler preludes — hidden from the
 /// `compiler_decls()` view so a hook sees only the user's (and generated) decls.
 fn isPreludeDeclName(name: []const u8) bool {
-    return std.mem.eql(u8, name, "Decl") or std.mem.startsWith(u8, name, "Ast");
+    const eq = std.mem.eql;
+    return eq(u8, name, "Decl") or eq(u8, name, "CField") or std.mem.startsWith(u8, name, "Ast");
+}
+
+/// Render an AST type reference to its source-ish name for `compiler_decls()`
+/// (`Decl.fields[i].type_name`, `Decl.ret`). Recurses `[]T`/`*T`/`?T`; falls back
+/// to "?" for shapes without a simple spelling (fn types, generics, …).
+fn astTypeName(a: std.mem.Allocator, ty: ast.TypeRef) []const u8 {
+    return switch (ty) {
+        .named => |n| n.name,
+        .type_param => |n| n.name,
+        .slice => |s| (if (s.is_const)
+            std.fmt.allocPrint(a, "[]const {s}", .{astTypeName(a, s.inner.*)})
+        else
+            std.fmt.allocPrint(a, "[]{s}", .{astTypeName(a, s.inner.*)})) catch "?",
+        .pointer => |p| (if (p.is_const)
+            std.fmt.allocPrint(a, "*const {s}", .{astTypeName(a, p.inner.*)})
+        else
+            std.fmt.allocPrint(a, "*{s}", .{astTypeName(a, p.inner.*)})) catch "?",
+        .many_pointer => |p| (std.fmt.allocPrint(a, "[*]{s}", .{astTypeName(a, p.inner.*)})) catch "?",
+        .optional => |o| (std.fmt.allocPrint(a, "?{s}", .{astTypeName(a, o.inner.*)})) catch "?",
+        else => "?",
+    };
 }
 
 /// The `Decl.kind` string for a top-level item (see ast_prelude `compiler_source`).
@@ -4167,6 +4244,22 @@ pub const ComptimeVm = struct {
         const result = vm.executeKeepZones(bc_fn) catch return null;
         return switch (result) {
             .string => |s| out_alloc.dupe(u8, s) catch null,
+            // A hook may RETURN a built `[]u8`/`[]const u8` (e.g. via the compiler
+            // prelude's `CodeBuf`) instead of a string literal — read its bytes out
+            // of the VM zone (kept alive by `executeKeepZones`).
+            .slice => |s| blk: {
+                const bytes = out_alloc.alloc(u8, s.len) catch return null;
+                var i: usize = 0;
+                while (i < s.len) : (i += 1) {
+                    const cell = vm.zone_stack.getCell(s.zone, s.offset + @as(u32, @intCast(i))) catch return null;
+                    bytes[i] = switch (cell) {
+                        .int => |v| @intCast(@mod(v, 256)),
+                        .uint => |v| @intCast(v % 256),
+                        else => return null,
+                    };
+                }
+                break :blk bytes;
+            },
             else => null,
         };
     }

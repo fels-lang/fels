@@ -525,6 +525,7 @@ pub const Parser = struct {
             const arm_start = self.peek();
             const pattern = try self.parseMatchPattern();
             const binding = try self.parseMatchBinding();
+            const guard = try self.parseMatchGuard();
 
             _ = try self.expect(.fat_arrow, "expected => after match pattern");
 
@@ -549,6 +550,7 @@ pub const Parser = struct {
             try arms.append(self.allocator, .{
                 .pattern = pattern,
                 .binding = binding,
+                .guard = guard,
                 .body = body,
                 .span = spanFrom(arm_start, body.span),
             });
@@ -562,23 +564,48 @@ pub const Parser = struct {
         };
     }
 
-    /// Parse one match pattern: `else`, integer values (`1` or grouped `1, 2, 3`),
-    /// or an enum variant (`.name`). Shared by statement- and expression-matches.
+    /// Parse one match pattern. Shared by statement- and expression-matches:
+    ///   `else` · integers (`1`, grouped `1, 2, 3`) · ranges (`1..5`, `1..=5`) ·
+    ///   strings (`"a"`, grouped `"a", "b"`) · enum variants (`.name`) ·
+    ///   a bare identifier (a named catch-all binding).
     fn parseMatchPattern(self: *Parser) ParseError!ast.MatchPattern {
         if (self.match(.keyword_else)) return .else_arm;
+
+        if (self.check(.string_lit)) {
+            var values: std.ArrayList([]const u8) = .empty;
+            errdefer values.deinit(self.allocator);
+            try values.append(self.allocator, self.advance().text(self.source));
+            while (self.check(.comma) and self.peekKind(1) == .string_lit) {
+                _ = self.advance(); // comma
+                try values.append(self.allocator, self.advance().text(self.source));
+            }
+            return .{ .strings = try values.toOwnedSlice(self.allocator) };
+        }
+
         if (self.check(.int_lit)) {
+            const first = try self.parseExpr(0);
+            if (self.match(.dot_dot) or self.match(.dot_dot_eq)) {
+                const inclusive = self.previous().kind == .dot_dot_eq;
+                const hi = try self.parseExpr(0);
+                return .{ .range = .{ .lo = first, .hi = hi, .inclusive = inclusive } };
+            }
             var values: std.ArrayList(ast.Expr) = .empty;
             errdefer values.deinit(self.allocator);
-            try values.append(self.allocator, try self.parseExpr(0));
+            try values.append(self.allocator, first);
             while (self.check(.comma) and self.peekKind(1) == .int_lit) {
                 _ = self.advance();
                 try values.append(self.allocator, try self.parseExpr(0));
             }
             return .{ .int_values = try values.toOwnedSlice(self.allocator) };
         }
-        _ = try self.expect(.dot, "expected . before variant name in match arm");
-        const vname = try self.expect(.ident, "expected variant name");
-        return .{ .enum_variant = vname.text(self.source) };
+
+        if (self.match(.dot)) {
+            const vname = try self.expect(.ident, "expected variant name");
+            return .{ .enum_variant = vname.text(self.source) };
+        }
+
+        const id = try self.expect(.ident, "expected a match pattern (`.variant`, integer, string, a name, or `else`)");
+        return .{ .binding = id.text(self.source) };
     }
 
     /// Optional payload binding after a pattern: `|x|`.
@@ -588,6 +615,12 @@ pub const Parser = struct {
             _ = try self.expect(.pipe, "expected closing | after binding");
             return bname.text(self.source);
         }
+        return null;
+    }
+
+    /// Optional guard after a pattern/binding: `if <cond>`.
+    fn parseMatchGuard(self: *Parser) ParseError!?ast.Expr {
+        if (self.match(.keyword_if)) return try self.parseExpr(0);
         return null;
     }
 
@@ -604,12 +637,14 @@ pub const Parser = struct {
             const arm_start = self.peek();
             const pattern = try self.parseMatchPattern();
             const binding = try self.parseMatchBinding();
+            const guard = try self.parseMatchGuard();
             _ = try self.expect(.fat_arrow, "expected => after match pattern");
             const value = try self.parseExpr(0);
             _ = self.match(.comma);
             try arms.append(self.allocator, .{
                 .pattern = pattern,
                 .binding = binding,
+                .guard = guard,
                 .value = value,
                 .span = spanFrom(arm_start, self.previous()),
             });

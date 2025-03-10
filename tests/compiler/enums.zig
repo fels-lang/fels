@@ -259,6 +259,40 @@ test "enum: match expression arms with incompatible types fail sema" {
     try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad.k2", bad));
 }
 
+test "enum: range pattern on an enum subject fails sema" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const bad =
+        \\Dir :: enum { north, south }
+        \\bad :: fn(d: Dir) -> i32 {
+        \\    match d { 1..=5 => { return 0; } else => { return 1; } }
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad.k2", bad));
+}
+
+test "enum: a non-bool match guard fails sema" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const bad =
+        \\bad :: fn(x: i32) -> i32 {
+        \\    match x { n if n => { return 0; } else => { return 1; } }
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad.k2", bad));
+}
+
+test "enum: a guarded-only catch-all is not exhaustive (expression) — fails sema" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const bad =
+        \\bad :: fn(x: i32) -> i32 {
+        \\    return match x { n if n > 0 => 42 };
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad.k2", bad));
+}
+
 test "enum: match subject must be enum type" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

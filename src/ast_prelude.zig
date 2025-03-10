@@ -107,13 +107,19 @@ pub const source =
     \\AstBlock :: struct { stmts: []AstStmt }
 ;
 
-/// Minimal `std.compiler` surface for `#compiler` hooks (Phase 3 message loop).
-/// Injected whenever a module declares a `#compiler` hook, so the hook can call
-/// the `compiler_decls()` introspection builtin and `for`-iterate the program's
-/// top-level declarations. `Decl.kind` is one of: "fn", "struct", "enum",
-/// "errors", "interface", "distinct", "opaque", "const".
+/// `std.compiler` surface for `#compiler` hooks (Phase 3 message loop). Injected
+/// whenever a module declares a `#compiler` hook, so the hook can call the
+/// `compiler_decls()` introspection builtin and `for`-iterate the program's
+/// top-level declarations WITH structure. `Decl.kind` is one of: "fn", "struct",
+/// "enum", "errors", "interface", "distinct", "opaque", "const".
+///
+/// `Decl.fields` is overloaded by kind: a `struct`'s fields, an `enum`'s variants
+/// (`type_name` = the payload type, or "" if the variant has none), or a `fn`'s
+/// parameters. `Decl.ret` is a `fn`'s return type name ("" otherwise). This lets
+/// a hook generate code driven by a type's real shape (serializers, builders, …).
 pub const compiler_source =
-    \\Decl :: struct { name: []const u8, kind: []const u8 }
+    \\CField :: struct { name: []const u8, type_name: []const u8 }
+    \\Decl :: struct { name: []const u8, kind: []const u8, fields: []CField, ret: []const u8 }
 ;
 
 /// `TypeInfo` reflection surface — injected whenever a module uses `type_info`.

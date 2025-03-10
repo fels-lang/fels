@@ -1,289 +1,192 @@
-# K2 Comptime Bytecode VM & Metaprogramming — Design Roadmap
+# K2 Comptime VM & Metaprogramming — Status & Roadmap
 
-> Status: **design doc** (no implementation yet). This describes the architecture for
-> replacing the comptime tree-walker with a bytecode VM and the metaprogramming features
-> built on top of it. See `src/vm/` for the in-progress skeleton.
+> Status: **Phases 1–4 substantially IMPLEMENTED.** The bytecode VM is the sole
+> comptime engine (the tree-walker is deleted), and the metaprogramming surface
+> (`#run`/`#insert`/`#quote`/`#parse`/macros/reflection/`#compiler` hooks/comptime
+> FFI/comptime zones/`k2 build`) works end-to-end. What remains is the **iterative
+> message loop**, a **richer `std.compiler` surface**, and **Phase 5 capability
+> sandboxing** — plus the K2-unique innovations at the end of this doc.
 
 ## Context
 
-K2's compile-time execution today runs on a **tree-walking interpreter** (`src/comptime.zig`)
-that re-walks the type-checked AST for every `#run`, `#if`, and generic instantiation. It models
-values with a `ComptimeValue` union and has no real memory model — `arena.new()` and zones are not
-executed, only type-checked. This caps how far metaprogramming can go and means comptime code does
-**not** behave identically to runtime code.
+K2's compile-time execution runs on a **register bytecode VM** (`src/vm/`) that
+executes the same **IR** (`src/ir.zig`) the native backend lowers, so **comptime ≡
+runtime**: one lowering, identical semantics. The VM faithfully models K2's
+signature **Zone/Arena** memory at compile time (host arenas that free as zones
+exit), giving zero-leak comptime execution. The original tree-walker
+(`src/comptime.zig`) has been **deleted**; `#run` routes only through the VM.
 
-The goal is to match and then exceed Jai's metaprogramming by replacing the tree-walker with a
-**register-based bytecode VM** that:
-
-- executes the existing K2 **IR** (`src/ir.zig`), so comptime and runtime share one lowering and
-  behave identically;
-- faithfully models K2's signature **Zone/Arena** memory at compile time, giving zero-leak comptime
-  execution that frees as zones exit;
-- grows into a full compiler API (AST injection, FFI, message loop) and ultimately
-  **capability-sandboxed** metaprogramming — fixing the `build.rs`/Jai supply-chain hole.
-
-Three decisions are locked:
-
-1. **Lower from IR, not AST.** The IR already encodes zones (`zone_push`/`zone_pop`/`alloc` carry
-   zone names), basic blocks, and complete types. `src/vm/compiler.zig` already targets
-   `ir.IrFunction`. One lowering = comptime ≡ runtime semantics.
-2. **Tagged `Value` union** for the register/value model (not raw `u64`). Mirrors the proven
-   `ComptimeValue` shape but adds real zone-backed pointers.
-3. **The VM replaces the tree-walker.** `src/comptime.zig` is retired once the VM reaches parity;
-   `#run` routes only through the VM. (No permanent fallback path — see Phase 1.6 migration.)
+The north star is to match and then exceed Jai's metaprogramming, and to close the
+`build.rs`/Jai **supply-chain hole** with capability-sandboxed comptime.
 
 ---
 
-## Current State (what exists vs. what's needed)
+## What's implemented
 
-**Exists and usable:**
-- IR is a solid lowering target: `IrFunction` → `IrBlock[]` → `Instr[]` + `Terminator`, with
-  named registers (`RegId: u32`), `Value` (`reg`/`param`/`local`/`global`/`imm`), full `IrType`,
-  and zone-tagged `alloc`/`alloc_slice`/`zone_push`/`zone_pop`/`zone_free`. (`src/ir.zig`)
-- VM skeleton: `src/vm/instructions.zig` (62-opcode `Opcode` enum, `Instr`, `BytecodeFunction`),
-  `src/vm/engine.zig` (`Vm`, ~10 opcodes), `src/vm/compiler.zig` + `compiler_{math,memory,calls,types}.zig`.
-- One passing smoke test: `tests/compiler/vm.zig` (hand-assembled `10 + 32 → 42`).
-- Comptime integration point already wired: `ir.zig`'s `run_expr` lowering calls
-  `comptime_mod.evalExpr` then `comptimeToValue`. This is the seam the VM plugs into.
+### The VM (Phase 1 — done)
+- `src/vm/value.zig` — tagged `Value` union (ints/floats/bool, zone-backed
+  ptr/slice/struct/variant, strings, first-class `type` values, fn refs).
+- `src/vm/zones.zig` — a `ZoneStack` of host-backed bump arenas; `zone_push/pop`
+  allocate/free real memory; allocations carry their `ZoneId`; **unwinding frees
+  every zone above a frame's watermark** on `ret`/`fail`. Comptime RAM stays
+  bounded (frees as blocks exit) — unlike Zig/Jai, whose comptime memory grows
+  until the build ends.
+- `src/vm/engine.zig` — call stack, frames, locals/globals, **63 opcodes**
+  (scalar core, calls, aggregates, slices, strings, variants, optionals, zones,
+  `host_call`, FFI). `src/vm/compiler.zig` lowers `ir.IrFunction` → bytecode with a
+  block→offset pass and a per-function constant pool.
+- Wired as the sole comptime engine: `#run`, generic/`#if` evaluation, and the
+  resolution rail for `where` constraints all execute here. **comptime ≡ runtime**
+  is verified by the corpus tests.
 
-**Toy-grade and must be redesigned (not extended):**
-- Registers are `[1024]u64` — cannot hold `i128`/`f64`/structs/slices/strings/type values.
-- Branch terminators emit `jmp <block_id>` but the engine treats `imm` as an **instruction
-  index** → control flow is broken for anything past a single block. Needs a block→offset pass.
-- Operand fields `a/b/c` are `u8` (max 256), but `RegId`/`Reg` are `u32`. Width mismatch; the
-  `@intCast(id)` calls in `compiler.zig`/`compiler_*.zig` truncate silently.
-- No call stack / frames — `execute` returns a single `u64`. No `call`, no locals, no globals.
-- Zone opcodes (`zone_push/pop/alloc`) are emitted but do nothing at runtime.
-- `num_locals = params.len` only; non-param locals untracked.
+### Metaprogramming surface (Phases 2 & 4 — done)
+- **`#run expr`** — evaluate an expression at compile time, fold to a constant.
+- **`#insert <code>`** — splice generated code at a site; the spliced subtree is
+  re-resolved and type-checked like hand-written code (re-entrant sema).
+- **`#quote { … }` / `#quote(expr)`** — **typed** AST quotations (an `ast.Block` /
+  `ast.Expr` *value*, parsed once at the definition site — no re-lex per
+  expansion), with `$`-splices.
+- **`#parse(string)`** — the string escape hatch (parse comptime text → code).
+- **Template macros** — `name :: macro(p) { return #quote { … }; }`, hygienic,
+  substituting splices through **every** construct, with `#for` comptime
+  unrolling. (See [13_metaprogramming.md](13_metaprogramming.md).)
+- **First-class `ast.*` values** — programmatic AST construction (build a program
+  in the VM, then `#insert #run gen()`).
 
----
+### Reflection (done) — see [12_reflection_and_constraints.md](12_reflection_and_constraints.md)
+- Comptime: matchable `type_info(T)`, `typeid_of`, `type_name`, `sizeof`.
+- Resolve-time generics: built-in + user `constraint`/`where` with `reject`,
+  output type params `-> $Acc`.
+- Runtime: `Any` (type-erased value), safe downcast, recursive field/slice/pointer
+  navigation, `info_of(id)`.
 
-## Phase 1 — The Virtual Machine & Memory Foundation
-
-**Outcome:** a VM that executes real K2 IR functions (arithmetic, control flow, locals, calls,
-structs, slices, strings) and **actually runs zones** (host memory allocated on `arena.new()`,
-freed on zone exit), wired into `#run` as the sole comptime engine.
-
-### 1.1 Value model — tagged `Value` union (`src/vm/value.zig`, new)
-
-Replace `[1024]u64` registers with slots of:
-
-```
-Value = union(enum) {
-    void,
-    int:    i128,            // all signed widths; width carried by IrType at the instr
-    uint:   u128,            // all unsigned widths
-    float:  f64,
-    bool:   bool,
-    // zone-backed pointer: index of owning zone + byte offset into its arena
-    ptr:    struct { zone: ZoneId, offset: u32, elem: *const ir.IrType },
-    slice:  struct { zone: ZoneId, offset: u32, len: usize, elem: *const ir.IrType },
-    string: []const u8,      // interned in VM string arena
-    struct_ref: struct { zone: ZoneId, offset: u32, ty: *const ir.IrType },
-    variant: struct { tag: u32, payload_zone: ZoneId, payload_offset: u32 },
-    type_val: sema.Ty,       // first-class types ($T), as today's ComptimeValue.type_val
-    fn_ref: u32,             // index into VM function table
-    null_ptr,
-}
-```
-
-Aggregates live in **zone-backed memory** (see 1.4), addressed by `(ZoneId, offset)`, not host
-pointers — this keeps the VM relocatable and makes zone frees trivially correct. Scalars live
-inline in registers. `value.zig` owns conversion helpers `fromImm`, `fromComptime`/`toComptime`
-(bridge to the old representation during migration), and `coerce(value, IrType)`.
-
-### 1.2 Instruction format & control flow (`src/vm/instructions.zig`, revise)
-
-- Widen `Instr` operands to `u32` (`a`, `b`, `c`, plus a `u64` or payload index `imm` so wide
-  immediates/float bits fit). Keep the `r_r_r` / `r_r_imm` / `r_imm` constructors.
-- Add a **block-offset resolution pass** in `compiler.zig`: record each `IrBlock`'s start index in
-  the flattened instruction stream, then rewrite `jmp`/`br_if`/`br_if_not` targets from `BlockId`
-  to instruction offsets. Fixes the current latent jump bug.
-- Large/!-fitting immediates (i128, f64, strings, type values) move into a per-function
-  **constant pool** on `BytecodeFunction`; `load_imm` references a pool index.
-
-### 1.3 Frames, locals, and calls (`src/vm/engine.zig`, rewrite)
-
-- Introduce a **call stack** of frames: each frame has its own register window + local slots +
-  the active-zone watermark (for unwinding). `BytecodeFunction` gains `num_regs`, `num_locals`,
-  `params`, `constant_pool`.
-- Implement the remaining opcodes in tiers:
-  - **Tier A (scalar core):** all `*_i`/`*_f` arithmetic, comparisons, bitwise, `neg`, casts,
-    `copy`, `load_imm`, `load_local`/`store_local`, `ret`/`ret_void`, fixed `jmp`/`br_if`.
-  - **Tier B (calls & globals):** `call` (resolve IR `call` → function-table index; push frame,
-    bind params, copy return), `call_indirect` via `fn_ref`, `load_global`/`store_global` against
-    a VM global table seeded from module constants.
-  - **Tier C (aggregates):** `struct_init`/`field_addr`/`load_ptr`/`store_ptr`,
-    `index_addr`/`slice_init`, `variant_*`, `opt_*`, `try_*` — all reading/writing zone memory.
-- Resolve the lowering TODOs in `compiler_memory.zig` (local name → slot index) and
-  `compiler_calls.zig` (callee name → function index) by building name→index maps when assembling
-  the `BytecodeFunction` / VM module.
-
-### 1.4 Comptime Zones — the differentiator (`src/vm/zones.zig`, new)
-
-This is what makes comptime ≡ runtime and gives zero-leak metaprogramming.
-
-- A `ZoneStack` of arenas. `zone_push(name, kind)` allocates a host-backed arena (bump allocator
-  over a growable buffer) and pushes a `ZoneId`; `zone_pop(name)` frees the entire arena.
-- `zone_alloc` / `alloc` / `alloc_slice` bump-allocate inside the **named** zone and return a
-  `Value.ptr`/`.slice` carrying that `ZoneId`. `zone_free(zone, ptr)` validates the ptr's `ZoneId`
-  matches (sema already guarantees this statically; the VM asserts as defense-in-depth).
-- **Unwinding:** on `ret`/`fail`/error propagation the engine pops every zone above the frame's
-  entry watermark, in reverse order — mirroring `ir.zig`'s return/fail lowering that already emits
-  `zone_pop` for each active zone. Result: comptime RAM footprint stays microscopic; arenas free
-  as their blocks exit, no compiler-lifetime growth.
-- Defends Phase 5: because all comptime allocation is zone-scoped and host memory never leaks into
-  raw pointers the user can hold across zone exit, the VM has a natural boundary to sandbox.
-
-### 1.5 Integration with the pipeline (`src/ir.zig`, `src/root.zig`)
-
-- Replace the `run_expr` hook in `ir.zig` (currently `comptime_mod.evalExpr` + `comptimeToValue`)
-  with: lower the operand to a temporary IR function → `vm.Compiler.compileFunction` →
-  `vm.Vm.execute` → convert the resulting `Value` back to an IR `Value`/immediate (the
-  `comptimeToValue` analogue, now in `value.zig`).
-- Generic struct/`#if` evaluation that currently calls into `comptime.zig` re-points to the VM.
-- `root.zig` already exports `vm_engine`/`vm_instructions`/`vm_compiler`; add `vm_value`/`vm_zones`.
-
-### 1.6 Migration & retiring the tree-walker
-
-Even though the end state has **no fallback**, retire `comptime.zig` safely:
-
-1. Stand up the VM behind the same entry points, keeping `comptime.zig` callable.
-2. Add a differential test mode: run both engines on the comptime corpus, assert equal results.
-3. Port each construct (literals → control flow → locals → calls → aggregates → zones → reflection
-   `sizeof`/`type_name`/`type_info` → `TARGET.*`) until parity.
-4. Delete `src/comptime.zig` and the `ComptimeValue` bridge; `#run` is VM-only.
-
-### 1.7 Tests (`tests/compiler/vm.zig`, expand)
-
-Grow from the single smoke test to: per-opcode unit tests; end-to-end `#run` programs (recursion,
-loops, structs, slices, strings); **zone tests** asserting allocation counts and that host memory
-is released on zone exit (leak check via a counting allocator); differential tests vs. the
-tree-walker during migration; reflection tests (`sizeof`, `type_info`, `TARGET.*`).
+### Compiler API & build (Phase 3 — partially done)
+- **`#compiler` hooks** — a function the compiler runs at comptime that can
+  introspect the program via **`compiler_decls()`** and **generate new top-level
+  declarations** (returns source, spliced + re-checked). `src/pipeline.zig:
+  runCompilerHookPass`, `src/ir.zig:runCompilerHooks`. **Introspection is now
+  *rich* (R1a):** each `Decl` carries its structure — a `struct`'s `fields`, an
+  `enum`'s variants, a `fn`'s params (all `[]CField{name, type_name}`), and a fn's
+  `ret` — so a hook can generate code driven by a type's real shape.
+- **Comptime FFI** — `src/vm/ffi.zig` loads host DLLs (`LoadLibraryA`/
+  `GetProcAddress`) and marshals `Value` ↔ C ABI, callable from `#run`.
+- **`k2 build`** — `build.k2` runs entirely in the VM (`host_call` → `__build_*`
+  intrinsics → `BuildPlan` → real exes/DLLs). See
+  [10_build_system.md](10_build_system.md).
 
 ---
 
-## Phase 2 — AST Injection & FFI
+## What's partial or not yet built
 
-**Outcome:** K2 can generate K2, and comptime code can call the outside world.
-
-### 2.1 `#insert` directive
-- Allow a `#run` expression to yield `[]const u8`. Feed that string back through `src/tokens.zig`
-  → `src/parser.zig`, producing AST nodes spliced into the sema queue at the insertion site.
-- New AST node `insert_expr`/`insert_stmt` in `src/ast.zig` (sibling of the existing `run_expr`,
-  `comptime_run`). Sema re-enters name resolution + type checking on the spliced subtree, inside
-  the enclosing scope.
-- Pipeline change: `src/pipeline.zig` / `src/sema.zig` gain a re-entrant "splice and re-check"
-  path so injected nodes are analyzed like hand-written code.
-
-### 2.2 Comptime FFI (`#extern`)
-- A `libffi`-style bridge so `#extern` functions resolve and execute during compilation (load
-  `kernel32.dll` / `libc`, make real calls). New `src/vm/ffi.zig`; the VM marshals `Value` ↔ C ABI.
-- **Gated** from day one: FFI is a capability the VM only grants to the root workspace (sets up
-  Phase 5). Third-party macros cannot reach it.
-
-### 2.3 Host standard library in the VM
-- Ensure `std.io` / `std.fs` compile and run inside the VM so comptime code can read config files,
-  list directories, and generate code from the filesystem. These are surfaced as **capabilities**
-  (`FileSys`, `Writer`, …) — K2 already models these as first-class interface types in `sema.Ty`,
-  so the VM provides host-backed implementations behind those interfaces.
+| Area | State | Gap |
+|---|---|---|
+| **Message loop** | single-shot | `#compiler` hooks run **once** and can only *introspect + append*. No per-phase events (`File_Parsed`, `Typechecked`), no callback registration, **no modifying existing declarations** (changing a type, rewriting a body). |
+| **`std.compiler` surface** | **rich introspection done (R1a)**; mutation/events pending | `Decl` now exposes `fields`/params/variants + `ret` (read-only). Still missing: declaration **bodies**, per-phase **events**, and **mutating** existing decls. |
+| **Dynamic code generation in hooks** | plumbing done; blocked on hook-pass sema | A hook can now **return a built `[]u8`/`[]const u8`** (not just a string literal) — `evalToString` materializes a byte slice out of the VM zone. `StringBuilder`/`Arena` DO run in the VM (via `#run`). But building source *inside a hook* still traps: the `#compiler` hook-pass runs a **tolerant** sema that under-types `std.strings`, so the comptime cache mis-lowers `StringBuilder` (we made the resulting slice-lowering a graceful failure instead of an ICE). Gates string-based `#derive`. |
+| **Capability sandboxing (Phase 5)** | not started | Comptime FFI/`unsafe` are **unconditionally available** (`ffi.zig`: "for now it is unconditionally available"). A malicious dependency macro can reach the host — the `build.rs` hole is **not** yet closed. |
+| **Host stdlib in the VM** | partial | `build.k2` uses `host_call` intrinsics; general `std.fs`/`std.io` at comptime behind capability interfaces is not generalized. |
+| **`#quote` fidelity for new match patterns** | lossy | range/string/guard/binding patterns reflect as the catch-all `anything`. |
 
 ---
 
-## Phase 3 — The Compiler API & Message Loop (matching Jai)
+## Roadmap — and K2-unique innovations
 
-**Outcome:** user-space K2 can inspect and modify the program as it compiles.
+The first two items finish the "match Jai" story; the rest are **genuinely novel**
+and only sound *because* of K2's design (capability interfaces + zone purity +
+typed AST + IR-shared comptime).
 
-### 3.1 `std.compiler` module
-- Expose internal structures to user code as K2 types mirroring `sema.Ty`, `ast.Expr`, `TypeInfo`,
-  `sema.TypeLayout`/`FieldInfo`/`VariantInfo`. The VM bridges between user-space K2 values and the
-  compiler's live Zig structures (read-mostly, with controlled mutation in 3.2).
+### R1. The iterative message loop (`std.compiler`)
+- **R1a — rich introspection (DONE).** `compiler_decls()` now returns `Decl{name,
+  kind, fields:[]CField, ret}` — a hook reads a struct's fields, an enum's
+  variants, and a fn's params/return. (`src/ir.zig:lowerCompilerDecls` +
+  `astTypeName`; `src/ast_prelude.zig:compiler_source`.) This is the load-bearing
+  foundation for `#derive` (R4) and `#require` (R6).
+- **R1b — events + mutation (next).** Emit events from `src/pipeline.zig` as each
+  unit finishes a phase (`File_Parsed`, `Typechecked`, `Done`); let hooks register
+  VM callbacks that **modify** the program (change a type, rewrite a body, stop the
+  build with a diagnostic), and expose declaration **bodies** in `std.compiler`.
+- **R1c — dynamic code generation (partial; remaining work is architectural).**
+  Hooks return generated *source*. Three pieces landed: a hook may **return a built
+  `[]u8`/`[]const u8`** (`evalToString` materializes the byte slice), an
+  unknown-typed slice lowering is a graceful failure rather than an ICE, and the
+  hook-pass sema is **continue-on-error** (one bad decl no longer aborts typing of
+  the rest). So a hook can introspect richly (R1a) and assemble code from string
+  **literals**. What still **doesn't** work: building source by calling
+  `std.strings.StringBuilder` *inside a hook* **traps**. Root cause is deeper than
+  sema completeness: the same std code runs fine under `#run` (the main-compile
+  comptime VM) but traps in the hook, because the hook-pass builds its **own**
+  comptime VM from an early, separately-resolved module — its cache lowers the
+  non-stub std functions subtly differently than the fully-resolved main VM. The
+  trap-stub lists are identical between the two, and a hook that calls `StringBuilder`
+  but returns a literal still traps, ruling out stubs and the slice-return. The
+  true fix is **architectural**: run hooks on the main-compile VM after full
+  resolution (resolving the chicken-and-egg that hooks generate code the main
+  compile then depends on), or make the hook-pass replicate the full resolution
+  pipeline. (Note: "return a typed `AstBlock`" is NOT an option — `AstBlock` holds
+  statements, there is no top-level-declaration AST type, and `#quote` can't hold a
+  declaration.) Required before R4.
 
-### 3.2 Message-loop hooks
-- Architect `src/pipeline.zig` to emit events — `Message_File_Parsed`, `Message_Typechecked`,
-  (and a completion message) — as each phase finishes a unit.
-- User-space K2 registers callbacks (run in the VM) that intercept messages, inspect/alter types
-  of declarations, and add code before lowering. This is the Jai-style compile-time message loop.
+### R2. Capability-sandboxed metaprogramming — *the flagship*
+**The structural fix to the `build.rs`/Jai supply-chain hole.** K2 already has no
+ambient authority: the only way to touch the OS is through a granted **interface**.
+So a dependency's compile-time hook receives a `*Compiler` carrying only an
+`AstTransform` capability — it can rewrite ASTs but **physically cannot** open a
+file, call FFI, or run `unsafe`. The root `build.k2` workspace gets the privileged
+capabilities; third-party macros are limited to **pure AST transforms**. Enforced
+by the VM capability table + restricting FFI/`unsafe` opcodes to the root
+workspace. *No other systems language can offer "install this dependency, its
+macros cannot harm your machine" as a structural guarantee.*
 
-### 3.3 Build scripts (`k2 build`)
-- A mode where the entry point is **not** compiled to an `.exe` but executed entirely in the VM:
-  it configures target arch, adds source files to the workspace, and drives the message loop.
-- Driver work in `src/main.zig` / `pipeline.zig`; the build script is "just" comptime K2 with the
-  `std.compiler` capability granted.
+### R3. Content-addressed comptime caching — *sound only in K2*
+Because R2 makes third-party comptime **pure** (no hidden I/O — all effects flow
+through capabilities the compiler can observe or deny), a `#run f(args)` result
+can be **cached by the content hash of (function IR + argument values)**. Re-builds
+hit the cache; heavy generators (serializers, parser tables) compute once and are
+reused across builds and machines. Zig/Jai can't safely cache comptime because it
+may perform arbitrary, unobservable I/O. K2 *can*, because purity is enforced, not
+hoped for. (We already have a stable content-hash primitive: `typeid_of`/FNV.)
 
----
+### R4. `#derive` — reflective, capability-scoped generators
+A first-class derive mechanism layered on R1+reflection: `#derive(Serialize, Eq)`
+on a type invokes registered comptime plugins that walk `type_info(T)` and emit
+impls. Plugins are **capability-scoped** (pure AST transforms, R2), so deriving
+from an untrusted crate is safe. This is the practical killer app — automatic
+serialization / equality / hashing / debug-printing with no per-type boilerplate
+and no `build.rs` risk.
 
-## Phase 4 — Exceeding Jai (K2-unique innovations)
+### R5. Zone-budgeted comptime
+Leverage the comptime zone model (R-side already done): give each macro/hook a
+**memory and step budget** drawn from its zone. A generator that blows its budget
+(runaway recursion, pathological expansion) is killed with a diagnostic instead of
+OOM-ing the compiler. Turns "zero-leak comptime" into "**bounded, fair** comptime"
+— a denial-of-service guard for build-time code, again unique to the zone model.
 
-### 4.1 Typed AST quotations (`#quote`)
-- Introduce `#quote { ... }` returning a **typed AST node** (`ast.Block`/`ast.Expr`), not a string
-  — e.g. `macro :: fn() -> ast.Block { return #quote { x := 42; println("Fast!"); }; }`.
-- New AST node + parser support; the quoted body is parsed **once** at definition site (syntax
-  validated, optionally pre-typed), then injected directly into sema — no re-lex/re-parse per
-  expansion. Orders of magnitude faster than Jai's string `insert`, and generated code is
-  guaranteed syntactically correct at the generation site.
-- Splicing reuses the Phase 2.1 re-entrant sema path, but starting from AST nodes instead of text.
+### R6. Whole-program comptime invariants (`#require`)
+After typecheck, a `#compiler` predicate runs over the **entire** typed program and
+can assert global properties — "every `Component` struct is `#packed`", "no public
+fn returns a zone-owned pointer", "this enum's variants form a closed protocol".
+Program-wide, machine-checked design rules expressed in plain K2, enforced at build
+time. Distinct from per-decl attributes: these are *cross-cutting* invariants.
 
-### 4.2 Zero-leak comptime memory
-- Already delivered structurally by Phase 1.4: because comptime allocation is zone-scoped and
-  arenas free as blocks exit, heavy code-generation runs with a microscopic, bounded RAM footprint
-  — unlike Zig/Jai, whose compile-time memory grows until the build ends. Phase 4 adds the
-  stress tests and metrics proving it (peak-RSS assertions over large generators).
-
----
-
-## Phase 5 — Secure Metaprogramming (the supply-chain fix)
-
-**Outcome:** building a malicious dependency **cannot** run arbitrary host code — K2's structural
-answer to the `build.rs` / Jai problem.
-
-### 5.1 Capability-based sandboxing
-- The message loop passes **restricted capabilities** to dependency build hooks. A dependency's
-  `build_plugin :: fn(ctx: *Compiler, fs: *VirtualFileSys)` receives a `VirtualFileSys` that can
-  only read inside its own folder — it physically cannot `#import std.fs` and touch `C:\`.
-- Enforced by the VM capability table (Phases 2.2/2.3/3.1): capabilities are unforgeable values
-  the VM hands out per-workspace. K2's interface/capability system makes this natural — there is no
-  ambient authority to reach the OS except through a granted interface.
-
-### 5.2 Strict comptime auditing
-- Restrict `unsafe` blocks and `#extern` FFI to the **root `build.k2` workspace** only. Third-party
-  library macros are thereby limited to **pure AST transformations** and cannot compromise the host
-  OS. The VM rejects FFI/`unsafe` opcodes when the active workspace lacks the privileged capability.
+### R7. Finish `#quote` reflection fidelity
+Round-trip the new match patterns (range/string/guard/binding) through `AstPattern`
+so quoted/reflected matches are faithful — needed before R4 derive plugins emit
+matches.
 
 ---
 
 ## Critical files
-
-**Phase 1 (core):**
-- `src/vm/value.zig` *(new)* — tagged `Value` union + conversions.
-- `src/vm/zones.zig` *(new)* — host-backed arena stack, alloc/free/unwind.
-- `src/vm/engine.zig` *(rewrite)* — frames, call stack, full opcode set.
-- `src/vm/instructions.zig` *(revise)* — u32 operands, constant pool, wide imm.
-- `src/vm/compiler.zig` + `compiler_{math,memory,calls,types}.zig` *(complete)* — block→offset
-  pass, local/global/callee resolution, finish stubbed lowerings.
-- `src/ir.zig` *(edit)* — repoint `run_expr` (and generic/`#if`) hooks to the VM.
-- `src/root.zig` *(edit)* — export `vm_value`, `vm_zones`.
-- `src/comptime.zig` *(delete at 1.6)*; `tests/compiler/vm.zig` *(expand)*.
-
-**Phases 2–5 (later):**
-- `src/ast.zig`, `src/parser.zig`, `src/tokens.zig`, `src/sema.zig`, `src/pipeline.zig`,
-  `src/main.zig` — `#insert`/`#quote` nodes, re-entrant splice-and-recheck, message-loop events,
-  `k2 build` mode, capability plumbing.
-- `src/vm/ffi.zig` *(new)* — gated comptime FFI.
+- VM: `src/vm/{value,zones,engine,instructions,compiler,ffi}.zig`.
+- Comptime ↔ pipeline: `src/ir.zig` (`run_expr`, `runCompilerHooks`,
+  materialize/reify), `src/pipeline.zig` (`runCompilerHookPass`, prelude
+  injection), `src/macroexpand.zig` (template macros).
+- Surface: `src/ast_prelude.zig` (`std.compiler` `Decl`, `Any`, `TypeInfo`),
+  `src/build.zig` (`k2 build`), `src/parser.zig`/`src/ast.zig` (`#quote`/`#insert`).
 
 ## Verification
-
-- **Phase 1:** `zig build test` with the expanded `tests/compiler/vm.zig` (per-opcode, e2e `#run`,
-  zone leak checks via counting allocator, reflection). Differential pass vs. `comptime.zig` until
-  it is deleted, then VM-only. Build sample K2 programs that use `#run` and confirm identical
-  output to today's tree-walker (and to runtime execution of the same code).
-- **Phases 2–5:** golden-file tests for `#insert`/`#quote` expansion; an FFI smoke test calling a
-  libc function at comptime (root workspace only); a sandbox test asserting a dependency hook is
-  denied filesystem access outside its folder and that `#extern`/`unsafe` are rejected outside the
-  root workspace.
-
-## Open questions (resolve before Phase 2+)
-- IR is non-SSA (mutable registers). Fine for a tree-walking-style VM; revisit if/when we want
-  comptime optimization passes.
-- Exact `std.compiler` surface and which compiler structures are user-mutable vs. read-only.
-- Whether `#quote` nodes are pre-typed at definition site or only at splice site (perf vs. hygiene).
+- `zig build test` — VM opcode/e2e `#run`, zones (leak checks), reflection,
+  macros, `#compiler` hooks, `k2 build`. comptime ≡ runtime is asserted by running
+  the same programs at comptime and natively.
+- Next (R1–R6): message-loop golden tests; a sandbox test proving a dependency
+  hook is denied FFI/fs and that `unsafe`/`#extern` are rejected outside the root
+  workspace; a cache hit/miss test; a `#derive(Serialize)` round-trip.
