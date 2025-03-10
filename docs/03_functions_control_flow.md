@@ -342,10 +342,41 @@ match value {
     .b   => return 2,
     else => return 0,
 }
+
+// Match as an expression — each arm yields a value, the whole match is that value
+sign := match n {
+    .neg  => -1,
+    .zero => 0,
+    .pos  => 1,
+};
+
+// Works in any value position: return, call arguments, initializers, arithmetic
+return match code { 0 => 200, 1, 2, 3 => 400, else => 500 };
 ```
 
 > [!IMPORTANT]
-> Match is **exhaustiveness-checked**. All enum variants must be handled, or an `else` arm must be present. The compiler will error on non-exhaustive matches.
+> Match on an enum is **exhaustiveness-checked**: every variant must be handled,
+> or an `else` arm must be present, otherwise the compiler errors
+> (*"non-exhaustive match: variant `.west` is not handled"*). A **total** match
+> (one that covers every variant) needs no `else`, and because it is provably
+> exhaustive it also **counts as returning on all paths** — so a function whose
+> body is just a total match over `return` arms type-checks without a trailing
+> `return`. A **duplicate** arm for the same variant is rejected. Integer matches
+> are unbounded, so they require an `else` to be exhaustive.
+
+> [!IMPORTANT]
+> **Match as an expression**: in value position each arm is `pattern => value`
+> (an expression, comma-separated). All arms must unify to one type, and the
+> match must be **exhaustive** (it produces a value on every path) — a
+> non-exhaustive value-match is an error. Untyped arm values (`.{ … }`) take
+> their type from context (`p: P = match …`, a `return`, a call argument). Bare
+> `.variant` enum literals as arm values need qualifying (`C.Red`) for now.
+
+> [!NOTE]
+> Patterns are currently enum variants (`.name`, optionally with a `|payload|`
+> capture), integer values (single or grouped `1, 2, 3`), and `else`. Range
+> patterns, guards, and string patterns are not yet supported — use an `if`/`else`
+> chain for those.
 
 ---
 

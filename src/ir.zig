@@ -2534,6 +2534,7 @@ const FunctionLowerer = struct {
             // `#parse` is resolved by the two-pass pipeline (string → AST), never
             // value-lowered; `$`-splices are macro internals.
             .splice, .parse_expr => return error.LoweringFailed,
+            .match_expr => try self.lowerMatchExpr(expr, null),
             .ident => |name| blk: {
                 // Bare enum literal `.variant` resolved by sema against an
                 // expected enum type → the corresponding variant value.
@@ -2925,30 +2926,13 @@ const FunctionLowerer = struct {
                     const ty = try self.lowerTypeArg(first);
                     break :blk .{ .imm = .{ .text = vm_compiler.typeNameMangle(ty) } };
                 }
-                // `any(x)` wraps a value into a type-erased `Any { data, id }`:
-                // spill x to a temporary, take its address, and record its typeid.
+                // `any(x)` wraps a value into a type-erased `Any { data, id, name }`.
                 if (std.mem.eql(u8, callee_name, "any") and call.args.len > 0) {
                     const arg = switch (call.args[0]) {
                         .positional => |e| e,
                         .named => |n| n.value,
                     };
-                    const val = try self.lowerExpr(arg);
-                    const val_ty = self.exprType(arg);
-                    // An immediate has no address; force it into a register (via a
-                    // no-op cast) so `.ref` spills it to a temporary we can point at.
-                    const spillable: Value = if (val == .imm)
-                        try self.emit(val_ty, .{ .cast = .{ .kind = .as, .value = val } })
-                    else
-                        val;
-                    const ptr = try self.emit(.{ .ptr = try boxType(self.allocator, val_ty) }, .{ .unary = .{ .op = .ref, .value = spillable } });
-                    const id_val: Value = .{ .imm = .{ .uint = typeIdHash(val_ty) } };
-                    // The type's name travels with the value — a baked string,
-                    // tree-shaken (only `any()`'d types' names reach the binary).
-                    const name_val: Value = .{ .imm = .{ .text = vm_compiler.typeNameMangle(val_ty) } };
-                    break :blk try self.emit(.{ .struct_type = "Any" }, .{ .builtin = .{
-                        .name = "compound_literal",
-                        .args = try self.allocator.dupe(Value, &.{ ptr, id_val, name_val }),
-                    } });
+                    break :blk try self.lowerAnyWrap(arg);
                 }
                 if (isBuiltinName(callee_name)) {
                     var type_arg: ?IrType = null;
@@ -3061,7 +3045,42 @@ const FunctionLowerer = struct {
         };
     }
 
+    /// Wrap `arg` into a type-erased `Any { data, id, name }`: spill it to a
+    /// temporary, take its address, and record its typeid + name. Shared by the
+    /// `any(x)` builtin and the value→`Any` auto-wrap.
+    fn lowerAnyWrap(self: *FunctionLowerer, arg: ast.Expr) LowerError!Value {
+        const val = try self.lowerExpr(arg);
+        const val_ty = self.exprType(arg);
+        // An immediate has no address; force it into a register (a no-op cast) so
+        // `.ref` spills it to a temporary we can point at.
+        const spillable: Value = if (val == .imm)
+            try self.emit(val_ty, .{ .cast = .{ .kind = .as, .value = val } })
+        else
+            val;
+        const ptr = try self.emit(.{ .ptr = try boxType(self.allocator, val_ty) }, .{ .unary = .{ .op = .ref, .value = spillable } });
+        const id_val: Value = .{ .imm = .{ .uint = typeIdHash(val_ty) } };
+        const name_val: Value = .{ .imm = .{ .text = vm_compiler.typeNameMangle(val_ty) } };
+        return self.emit(.{ .struct_type = "Any" }, .{ .builtin = .{
+            .name = "compound_literal",
+            .args = try self.allocator.dupe(Value, &.{ ptr, id_val, name_val }),
+        } });
+    }
+
     fn lowerExprAs(self: *FunctionLowerer, expr: ast.Expr, expected_ty: IrType) LowerError!Value {
+        // A `match` in value position threads the expected type into its arms, so
+        // untyped arm values (`.{ … }`, `.variant`) get the right target type.
+        if (expr.kind == .match_expr) return self.lowerMatchExpr(expr, expected_ty);
+        // A value passed where an `Any` is expected auto-wraps (compiler inserts
+        // `any(x)`) — unless it's already an `Any`, or a literal that *constructs*
+        // the `Any` (`.{ data, id, name }`), or an unknown-typed expr.
+        if (expected_ty == .struct_type and std.mem.eql(u8, expected_ty.struct_type, "Any") and
+            expr.kind != .compound_literal)
+        {
+            const et = self.exprType(expr);
+            const already_any = et == .unknown or
+                (et == .struct_type and std.mem.eql(u8, et.struct_type, "Any"));
+            if (!already_any) return self.lowerAnyWrap(expr);
+        }
         if (expected_ty == .interface_value and self.exprType(expr) != .interface_value) {
             return self.lowerInterfaceCoercion(expr, expected_ty.interface_value);
         }
@@ -3225,40 +3244,34 @@ const FunctionLowerer = struct {
         return .unknown;
     }
 
-    fn lowerMatch(self: *FunctionLowerer, m: ast.MatchStmt) LowerError!void {
-        // Evaluate the subject once.
-        const subject = try self.lowerExpr(m.subject);
-
-        // Get enum type name for variant_is instructions.
-        // Try three sources in order:
-        //   1. sema expr_types (most accurate)
-        //   2. param type annotation (when subject is a param ident)
-        //   3. empty string (fall-through, match will still work structurally)
-        const enum_name: []const u8 = blk: {
-            // 1. sema expr_types
-            if (self.types.expr_types.get(m.subject.id)) |sema_ty| switch (sema_ty) {
-                .named => |id| break :blk self.symbols.symbol(id).name,
-                else => {},
-            };
-            // 2. param type annotation
-            if (m.subject.kind == .ident) {
-                const ident_name = m.subject.kind.ident;
-                for (self.params) |p| {
-                    if (std.mem.eql(u8, p.name, ident_name)) {
-                        switch (p.ty) {
-                            .named => |named| break :blk named.name,
-                            else => {},
-                        }
-                    }
-                }
-                // 3. lowerer-tracked local type (subject is a local of enum type)
-                if (self.local_types.get(ident_name)) |lty| switch (lty) {
-                    .variant_type, .struct_type => |n| break :blk n,
+    /// Resolve the enum type name of a match subject for `variant_is`/payload
+    /// instructions. Tries, in order: sema `expr_types`, a param's annotated type,
+    /// the lowerer-tracked local type; "" if none (the match still lowers).
+    fn matchEnumName(self: *FunctionLowerer, subject: ast.Expr) []const u8 {
+        if (self.types.expr_types.get(subject.id)) |sema_ty| switch (sema_ty) {
+            .named => |id| return self.symbols.symbol(id).name,
+            else => {},
+        };
+        if (subject.kind == .ident) {
+            const ident_name = subject.kind.ident;
+            for (self.params) |p| {
+                if (std.mem.eql(u8, p.name, ident_name)) switch (p.ty) {
+                    .named => |named| return named.name,
                     else => {},
                 };
             }
-            break :blk "";
-        };
+            if (self.local_types.get(ident_name)) |lty| switch (lty) {
+                .variant_type, .struct_type => |n| return n,
+                else => {},
+            };
+        }
+        return "";
+    }
+
+    fn lowerMatch(self: *FunctionLowerer, m: ast.MatchStmt) LowerError!void {
+        // Evaluate the subject once.
+        const subject = try self.lowerExpr(m.subject);
+        const enum_name = self.matchEnumName(m.subject);
 
         const after_id = self.allocBlockId();
 
@@ -3331,6 +3344,98 @@ const FunctionLowerer = struct {
         // If no else arm, fall through to after.
         if (!self.current_terminated) try self.terminate(.{ .branch = after_id });
         self.startBlock(after_id, "match.after");
+    }
+
+    /// `match subject { pattern => value, ... }` as a value. Lowers to a branch
+    /// cascade where each arm stores its value into a result slot; the merge
+    /// block loads it. The match is exhaustive (sema-guaranteed), so the `else`
+    /// arm — or, when absent, the last arm — is the unconditional fallthrough,
+    /// keeping the result slot defined on every path.
+    fn lowerMatchExpr(self: *FunctionLowerer, expr: ast.Expr, expected: ?IrType) LowerError!Value {
+        const me = expr.kind.match_expr;
+        // Prefer an expected type from context (e.g. `p: P = match …`) so untyped
+        // arm values like `.{ … }` get the right target type; otherwise use the
+        // type sema inferred from the arms.
+        const sema_ty = self.exprType(expr);
+        const result_ty: IrType = if (expected) |e|
+            (if (e == .unknown) sema_ty else e)
+        else
+            sema_ty;
+        const result_name = try std.fmt.allocPrint(self.allocator, "__match_res_{d}", .{self.next_block_id});
+
+        const subject = try self.lowerExpr(me.subject.*);
+        const enum_name = self.matchEnumName(me.subject.*);
+        const after_id = self.allocBlockId();
+
+        var has_else = false;
+        for (me.arms) |a| {
+            if (a.pattern == .else_arm) has_else = true;
+        }
+
+        for (me.arms, 0..) |arm, idx| {
+            const is_last = idx + 1 == me.arms.len;
+            const unconditional = arm.pattern == .else_arm or (!has_else and is_last);
+            const arm_id = self.allocBlockId();
+            const next_id = if (unconditional) after_id else self.allocBlockId();
+
+            if (unconditional) {
+                try self.terminate(.{ .branch = arm_id });
+            } else {
+                const check = switch (arm.pattern) {
+                    .enum_variant => |variant| try self.emit(.bool, .{ .variant_is = .{
+                        .value = subject,
+                        .type_name = enum_name,
+                        .variant = variant,
+                    } }),
+                    .int_values => |values| blk: {
+                        var combined: ?Value = null;
+                        for (values) |value| {
+                            const equal = try self.emit(.bool, .{ .binary = .{
+                                .op = .eq,
+                                .lhs = subject,
+                                .rhs = try self.lowerExpr(value),
+                            } });
+                            combined = if (combined) |previous|
+                                try self.emit(.bool, .{ .binary = .{ .op = .or_op, .lhs = previous, .rhs = equal } })
+                            else
+                                equal;
+                        }
+                        break :blk combined orelse Value{ .imm = .{ .bool = false } };
+                    },
+                    .else_arm => unreachable,
+                };
+                try self.terminate(.{ .cond_branch = .{ .cond = check, .then_block = arm_id, .else_block = next_id } });
+            }
+
+            self.startBlock(arm_id, "match.arm");
+            // Bind the payload (`.variant |x|`) or, for `else |x|`, the subject.
+            switch (arm.pattern) {
+                .enum_variant => |variant| if (arm.binding) |bname| {
+                    const payload_ty = self.variantPayloadIrType(enum_name, variant);
+                    const payload = try self.emit(payload_ty, .{ .variant_payload = .{
+                        .value = subject,
+                        .type_name = enum_name,
+                        .variant = variant,
+                    } });
+                    try self.local_types.put(bname, payload_ty);
+                    try self.emitNoResult(payload_ty, .{ .store_local = .{ .name = bname, .value = payload } });
+                },
+                .else_arm => if (arm.binding) |bname| {
+                    try self.emitNoResult(.void, .{ .store_local = .{ .name = bname, .value = subject } });
+                },
+                .int_values => {},
+            }
+            const value = try self.lowerExprAs(arm.value, result_ty);
+            try self.emitNoResult(result_ty, .{ .store_local = .{ .name = result_name, .value = value } });
+            try self.terminate(.{ .branch = after_id });
+
+            if (unconditional) break;
+            self.startBlock(next_id, "match.next");
+        }
+
+        self.startBlock(after_id, "match.after");
+        try self.local_types.put(result_name, result_ty);
+        return .{ .local = result_name };
     }
 
     fn emitDefersDown(self: *FunctionLowerer, floor: usize, path: DeferPath) LowerError!void {

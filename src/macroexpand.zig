@@ -233,14 +233,37 @@ const Expander = struct {
         for (block.statements) |stmt| switch (stmt) {
             .local_infer => |l| try self.introduce(l.name, hyg),
             .local_typed => |l| try self.introduce(l.name, hyg),
-            // Recurse into nested blocks so their locals are renamed too.
+            // Bindings a statement introduces (loop var, `|x|` capture) are locals
+            // too — collect them so they're renamed and can't capture the caller's.
             .if_stmt => |s| {
+                if (s.binding) |b| try self.introduce(b.name, hyg);
+                if (s.payload_binding) |pb| try self.introduce(pb, hyg);
                 try self.collectIntroduced(s.then_block, hyg);
                 if (s.else_block) |eb| try self.collectIntroduced(eb, hyg);
             },
             .while_stmt => |s| try self.collectIntroduced(s.body, hyg),
-            .for_range => |s| try self.collectIntroduced(s.body, hyg),
-            .for_slice => |s| try self.collectIntroduced(s.body, hyg),
+            .for_range => |s| {
+                try self.introduce(s.binding, hyg);
+                try self.collectIntroduced(s.body, hyg);
+            },
+            .for_slice => |s| {
+                try self.introduce(s.binding, hyg);
+                if (s.index_binding) |ib| try self.introduce(ib, hyg);
+                try self.collectIntroduced(s.body, hyg);
+            },
+            .match_stmt => |s| for (s.arms) |arm| {
+                if (arm.binding) |b| try self.introduce(b, hyg);
+                try self.collectIntroduced(arm.body, hyg);
+            },
+            .zone_block => |s| {
+                try self.introduce(s.name, hyg);
+                try self.collectIntroduced(s.body, hyg);
+            },
+            .defer_stmt => |s| try self.collectIntroduced(s.body, hyg),
+            .comptime_if => |s| {
+                try self.collectIntroduced(s.then_block, hyg);
+                if (s.else_block) |eb| try self.collectIntroduced(eb, hyg);
+            },
             .unsafe_block => |b| try self.collectIntroduced(b, hyg),
             .comptime_run => |b| try self.collectIntroduced(b, hyg),
             else => {},
@@ -286,7 +309,7 @@ const Expander = struct {
             } }),
             .local_typed => |l| try out.append(self.arena, .{ .local_typed = .{
                 .name = self.rename(l.name, hyg),
-                .ty = l.ty,
+                .ty = try self.substType(l.ty, env),
                 .value = try self.substExpr(l.value, env, hyg),
                 .span = l.span,
             } }),
@@ -300,9 +323,14 @@ const Expander = struct {
                 .value = if (r.value) |v| try self.substExpr(v, env, hyg) else null,
                 .span = r.span,
             } }),
+            .fail_stmt => |s| {
+                var payload: std.ArrayList(ast.Expr) = .empty;
+                for (s.payload) |e| try payload.append(self.arena, try self.substExpr(e, env, hyg));
+                try out.append(self.arena, .{ .fail_stmt = .{ .variant = s.variant, .payload = try payload.toOwnedSlice(self.arena), .span = s.span } });
+            },
             .if_stmt => |s| try out.append(self.arena, .{ .if_stmt = .{
-                .binding = s.binding,
-                .payload_binding = s.payload_binding,
+                .binding = if (s.binding) |b| ast.IfBinding{ .name = self.rename(b.name, hyg), .value = try self.substExpr(b.value, env, hyg) } else null,
+                .payload_binding = if (s.payload_binding) |pb| self.rename(pb, hyg) else null,
                 .condition = try self.substExpr(s.condition, env, hyg),
                 .then_block = try self.substBlock(s.then_block, env, hyg),
                 .else_block = if (s.else_block) |eb| try self.substBlock(eb, env, hyg) else null,
@@ -313,12 +341,67 @@ const Expander = struct {
                 .body = try self.substBlock(s.body, env, hyg),
                 .span = s.span,
             } }),
+            .match_stmt => |s| {
+                var arms: std.ArrayList(ast.MatchArm) = .empty;
+                for (s.arms) |arm| {
+                    const pat: ast.MatchPattern = switch (arm.pattern) {
+                        .int_values => |vals| blk: {
+                            var nv: std.ArrayList(ast.Expr) = .empty;
+                            for (vals) |e| try nv.append(self.arena, try self.substExpr(e, env, hyg));
+                            break :blk .{ .int_values = try nv.toOwnedSlice(self.arena) };
+                        },
+                        else => arm.pattern,
+                    };
+                    try arms.append(self.arena, .{
+                        .pattern = pat,
+                        .binding = if (arm.binding) |b| self.rename(b, hyg) else null,
+                        .body = try self.substBlock(arm.body, env, hyg),
+                        .span = arm.span,
+                    });
+                }
+                try out.append(self.arena, .{ .match_stmt = .{ .subject = try self.substExpr(s.subject, env, hyg), .arms = try arms.toOwnedSlice(self.arena), .span = s.span } });
+            },
+            .for_range => |s| try out.append(self.arena, .{ .for_range = .{
+                .binding = self.rename(s.binding, hyg),
+                .start = try self.substExpr(s.start, env, hyg),
+                .end = try self.substExpr(s.end, env, hyg),
+                .inclusive = s.inclusive,
+                .body = try self.substBlock(s.body, env, hyg),
+                .span = s.span,
+            } }),
+            .for_slice => |s| try out.append(self.arena, .{ .for_slice = .{
+                .binding = self.rename(s.binding, hyg),
+                .index_binding = if (s.index_binding) |ib| self.rename(ib, hyg) else null,
+                .by_ref = s.by_ref,
+                .iter = try self.substExpr(s.iter, env, hyg),
+                .body = try self.substBlock(s.body, env, hyg),
+                .span = s.span,
+            } }),
+            .zone_block => |s| try out.append(self.arena, .{ .zone_block = .{
+                .name = self.rename(s.name, hyg),
+                .kind = s.kind,
+                .body = try self.substBlock(s.body, env, hyg),
+                .span = s.span,
+            } }),
+            .defer_stmt => |s| try out.append(self.arena, .{ .defer_stmt = .{
+                .mode = s.mode,
+                .body = try self.substBlock(s.body, env, hyg),
+                .span = s.span,
+            } }),
+            .unsafe_block => |b| try out.append(self.arena, .{ .unsafe_block = try self.substBlock(b, env, hyg) }),
+            .comptime_run => |b| try out.append(self.arena, .{ .comptime_run = try self.substBlock(b, env, hyg) }),
+            .comptime_if => |s| try out.append(self.arena, .{ .comptime_if = .{
+                .condition = try self.substExpr(s.condition, env, hyg),
+                .then_block = try self.substBlock(s.then_block, env, hyg),
+                .else_block = if (s.else_block) |eb| try self.substBlock(eb, env, hyg) else null,
+                .span = s.span,
+            } }),
+            .insert_stmt => |s| try out.append(self.arena, .{ .insert_stmt = .{ .operand = try self.substExpr(s.operand, env, hyg), .span = s.span } }),
+            .break_stmt, .continue_stmt => try out.append(self.arena, stmt),
             .expr => |e| try out.append(self.arena, .{ .expr = try self.substExpr(e, env, hyg) }),
             // `#for` inside a macro template: unroll using the current env (so
             // bounds may reference macro params) plus the loop binding.
             .comptime_for => |cf| try self.unrollFor(cf, env, hyg, out),
-            // Constructs not yet supported inside a template pass through as-is.
-            else => try out.append(self.arena, stmt),
         }
     }
 
@@ -419,13 +502,58 @@ const Expander = struct {
             .force_unwrap => |inner| return self.rebuild(expr, .{ .force_unwrap = try self.substPtr(inner, env, hyg) }),
             .run_expr => |inner| return self.rebuild(expr, .{ .run_expr = try self.substPtr(inner, env, hyg) }),
             .unsafe_expr => |inner| return self.rebuild(expr, .{ .unsafe_expr = try self.substPtr(inner, env, hyg) }),
-            // Leaves and not-yet-handled kinds: unchanged.
+            .compound_literal => |vals| {
+                var nv: std.ArrayList(ast.Expr) = .empty;
+                for (vals) |e| try nv.append(self.arena, try self.substExpr(e, env, hyg));
+                return self.rebuild(expr, .{ .compound_literal = try nv.toOwnedSlice(self.arena) });
+            },
+            .slice => |s| return self.rebuild(expr, .{ .slice = .{
+                .base = try self.substPtr(s.base, env, hyg),
+                .start = if (s.start) |st| try self.substPtr(st, env, hyg) else null,
+                .end = if (s.end) |en| try self.substPtr(en, env, hyg) else null,
+            } }),
+            .scope_access => |sa| return self.rebuild(expr, .{ .scope_access = .{
+                .base = try self.substPtr(sa.base, env, hyg),
+                .member = sa.member,
+            } }),
+            .try_expr => |t| return self.rebuild(expr, .{ .try_expr = .{ .value = try self.substPtr(t.value, env, hyg) } }),
+            .catch_expr => |c| return self.rebuild(expr, .{ .catch_expr = .{
+                .value = try self.substPtr(c.value, env, hyg),
+                .err_name = c.err_name,
+                .handler = try self.substBlock(c.handler, env, hyg),
+            } }),
+            .parse_expr => |inner| return self.rebuild(expr, .{ .parse_expr = try self.substPtr(inner, env, hyg) }),
+            // Leaves (literals, type refs) and nested `#quote`s (kept as data)
+            // substitute to themselves.
             else => return expr,
         }
     }
 
     fn substPtr(self: *Expander, p: *const ast.Expr, env: *Env, hyg: *Hyg) ExpandError!*const ast.Expr {
         return self.dup(try self.substExpr(p.*, env, hyg));
+    }
+
+    /// Substitute `$T` in type position. `$T` parses to a `.type_param`; if it
+    /// names a macro parameter, splice that argument (interpreted as a type).
+    /// Recurses into `*T` / `[]T` / `?T` so e.g. `*$T` works.
+    fn substType(self: *Expander, ty: ast.TypeRef, env: *Env) ExpandError!ast.TypeRef {
+        return switch (ty) {
+            .type_param => |tp| if (env.get(tp.name)) |arg|
+                (exprToTypeRef(arg) orelse fail("macro parameter `${s}` cannot be used as a type", .{tp.name}))
+            else
+                ty,
+            .pointer => |p| .{ .pointer = .{ .is_const = p.is_const, .is_volatile = p.is_volatile, .inner = try self.dupType(try self.substType(p.inner.*, env)), .span = p.span } },
+            .many_pointer => |p| .{ .many_pointer = .{ .is_const = p.is_const, .is_volatile = p.is_volatile, .inner = try self.dupType(try self.substType(p.inner.*, env)), .span = p.span } },
+            .slice => |s| .{ .slice = .{ .is_const = s.is_const, .inner = try self.dupType(try self.substType(s.inner.*, env)), .span = s.span } },
+            .optional => |o| .{ .optional = .{ .inner = try self.dupType(try self.substType(o.inner.*, env)), .span = o.span } },
+            else => ty,
+        };
+    }
+
+    fn dupType(self: *Expander, ty: ast.TypeRef) ExpandError!*const ast.TypeRef {
+        const p = try self.arena.create(ast.TypeRef);
+        p.* = ty;
+        return p;
     }
 
     fn rebuild(self: *Expander, original: ast.Expr, kind: ast.ExprKind) ast.Expr {
@@ -438,6 +566,16 @@ const Expander = struct {
         return hyg.get(name) orelse name;
     }
 };
+
+/// A macro argument used in type position (`x: $t = …`) — convert the argument
+/// expr to a type. Bare type names parse as `.type_ref`; identifiers to `.named`.
+fn exprToTypeRef(e: ast.Expr) ?ast.TypeRef {
+    return switch (e.kind) {
+        .type_ref => |tr| tr,
+        .ident => |name| .{ .named = .{ .name = name, .span = e.span } },
+        else => null,
+    };
+}
 
 /// Integer value of a literal expression (`5`, `-3`), or null if not a literal.
 fn intValue(e: ast.Expr) ?i64 {

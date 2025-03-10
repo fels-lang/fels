@@ -581,6 +581,11 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
     defer slice_elems.deinit();
     var ptr_targets = std.StringHashMap([]const u8).init(allocator);
     defer ptr_targets.deinit();
+    // Every type seen → for `type_name_of(id)` / `type_size_of(id)` (the bare-id
+    // lookup, `info_of`). Seeded with the scalars so they always resolve.
+    var all_types = std.StringHashMap(void).init(allocator);
+    defer all_types.deinit();
+    for ([_][]const u8{ "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "usize", "isize", "f32", "f64", "bool" }) |t| try all_types.put(t, {});
 
     var nav_file: []const u8 = user.file_name;
 
@@ -611,10 +616,12 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
 
         nav_file = decl.file_name;
         try names.append(allocator, decl.name);
+        try all_types.put(decl.name, {});
         try appendFmt(&src, allocator, "__fld_{s} :: fn(d: *const u8, i: usize) -> ?Any {{\n  unsafe {{\n    p := d as *const {s};\n", .{ decl.name, decl.name });
         for (strukt.fields, 0..) |f, j| {
             const tstr = (try renderType(allocator, f.ty)).?;
-            try appendFmt(&src, allocator, "    if i == {d}usize {{ return any_at((&p.{s}) as *const u8, {s}); }}\n", .{ j, f.name, tstr });
+            try all_types.put(tstr, {});
+            try appendFmt(&src, allocator, "    if i == {d}usize {{ return __any_make((&p.{s}) as *const u8, typeid_of({s}), type_name({s})); }}\n", .{ j, f.name, tstr, tstr });
             switch (f.ty) {
                 .slice => |s| if (s.inner.* == .named) try slice_elems.put(tstr, s.inner.named.name),
                 .pointer => |p| if (p.inner.* == .named) try ptr_targets.put(tstr, p.inner.named.name),
@@ -637,16 +644,30 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
         var it = slice_elems.iterator();
         var k: usize = 0;
         while (it.next()) |e| : (k += 1) {
-            try appendFmt(&src, allocator, "__elem_{d} :: fn(v: Any, idx: usize) -> ?Any {{\n  unsafe {{\n    h := v.data as *const __SliceHdr;\n    if idx >= h.len {{ return null; }}\n    ep := ((h.ptr as usize) + idx * sizeof({s})) as *const u8;\n    return any_at(ep, {s});\n  }}\n}}\n", .{ k, e.value_ptr.*, e.value_ptr.* });
+            try appendFmt(&src, allocator, "__elem_{d} :: fn(v: Any, idx: usize) -> ?Any {{\n  unsafe {{\n    h := v.data as *const __SliceHdr;\n    if idx >= h.len {{ return null; }}\n    ep := ((h.ptr as usize) + idx * sizeof({s})) as *const u8;\n    return __any_make(ep, typeid_of({s}), type_name({s}));\n  }}\n}}\n", .{ k, e.value_ptr.*, e.value_ptr.*, e.value_ptr.* });
         }
     }
     {
         var it = ptr_targets.iterator();
         var k: usize = 0;
         while (it.next()) |e| : (k += 1) {
-            try appendFmt(&src, allocator, "__deref_{d} :: fn(v: Any) -> ?Any {{\n  unsafe {{\n    a := *(v.data as *const usize);\n    if a == 0usize {{ return null; }}\n    return any_at(a as *const u8, {s});\n  }}\n}}\n", .{ k, e.value_ptr.* });
+            try appendFmt(&src, allocator, "__deref_{d} :: fn(v: Any) -> ?Any {{\n  unsafe {{\n    a := *(v.data as *const usize);\n    if a == 0usize {{ return null; }}\n    return __any_make(a as *const u8, typeid_of({s}), type_name({s}));\n  }}\n}}\n", .{ k, e.value_ptr.*, e.value_ptr.* });
         }
     }
+
+    // `info_of` surface: name/size from a *bare* typeid (not just from an Any).
+    try src.appendSlice(allocator, "type_name_of :: fn(id: usize) -> []const u8 {\n");
+    {
+        var it = all_types.keyIterator();
+        while (it.next()) |k| try appendFmt(&src, allocator, "  if id == typeid_of({s}) {{ return type_name({s}); }}\n", .{ k.*, k.* });
+    }
+    try src.appendSlice(allocator, "  return \"?\";\n}\n");
+    try src.appendSlice(allocator, "type_size_of :: fn(id: usize) -> usize {\n");
+    {
+        var it = all_types.keyIterator();
+        while (it.next()) |k| try appendFmt(&src, allocator, "  if id == typeid_of({s}) {{ return sizeof({s}); }}\n", .{ k.*, k.* });
+    }
+    try src.appendSlice(allocator, "  return 0usize;\n}\n");
 
     // Dispatchers — always emitted so the `any_field_*`/`any_elem`/`any_deref`
     // surface exists whenever `Any` is in use.

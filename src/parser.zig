@@ -523,30 +523,8 @@ pub const Parser = struct {
 
         while (!self.check(.r_brace) and !self.check(.eof)) {
             const arm_start = self.peek();
-            var binding: ?[]const u8 = null;
-            const pattern: ast.MatchPattern = if (self.match(.keyword_else))
-                .else_arm
-            else if (self.check(.int_lit)) blk: {
-                var values: std.ArrayList(ast.Expr) = .empty;
-                errdefer values.deinit(self.allocator);
-                try values.append(self.allocator, try self.parseExpr(0));
-                while (self.check(.comma) and self.peekKind(1) == .int_lit) {
-                    _ = self.advance();
-                    try values.append(self.allocator, try self.parseExpr(0));
-                }
-                break :blk .{ .int_values = try values.toOwnedSlice(self.allocator) };
-            } else blk: {
-                _ = try self.expect(.dot, "expected . before variant name in match arm");
-                const vname = try self.expect(.ident, "expected variant name");
-                break :blk .{ .enum_variant = vname.text(self.source) };
-            };
-
-            // Optional payload binding: |x|
-            if (self.match(.pipe)) {
-                const bname = try self.expect(.ident, "expected binding name");
-                _ = try self.expect(.pipe, "expected closing | after binding");
-                binding = bname.text(self.source);
-            }
+            const pattern = try self.parseMatchPattern();
+            const binding = try self.parseMatchBinding();
 
             _ = try self.expect(.fat_arrow, "expected => after match pattern");
 
@@ -582,6 +560,69 @@ pub const Parser = struct {
             .arms = try arms.toOwnedSlice(self.allocator),
             .span = spanFrom(start, close),
         };
+    }
+
+    /// Parse one match pattern: `else`, integer values (`1` or grouped `1, 2, 3`),
+    /// or an enum variant (`.name`). Shared by statement- and expression-matches.
+    fn parseMatchPattern(self: *Parser) ParseError!ast.MatchPattern {
+        if (self.match(.keyword_else)) return .else_arm;
+        if (self.check(.int_lit)) {
+            var values: std.ArrayList(ast.Expr) = .empty;
+            errdefer values.deinit(self.allocator);
+            try values.append(self.allocator, try self.parseExpr(0));
+            while (self.check(.comma) and self.peekKind(1) == .int_lit) {
+                _ = self.advance();
+                try values.append(self.allocator, try self.parseExpr(0));
+            }
+            return .{ .int_values = try values.toOwnedSlice(self.allocator) };
+        }
+        _ = try self.expect(.dot, "expected . before variant name in match arm");
+        const vname = try self.expect(.ident, "expected variant name");
+        return .{ .enum_variant = vname.text(self.source) };
+    }
+
+    /// Optional payload binding after a pattern: `|x|`.
+    fn parseMatchBinding(self: *Parser) ParseError!?[]const u8 {
+        if (self.match(.pipe)) {
+            const bname = try self.expect(.ident, "expected binding name");
+            _ = try self.expect(.pipe, "expected closing | after binding");
+            return bname.text(self.source);
+        }
+        return null;
+    }
+
+    /// `match subject { pattern => value, ... }` in value position. Each arm's
+    /// body is an expression (the arm's value); arms are comma-separated.
+    fn parseMatchExpr(self: *Parser, start: Token) ParseError!ast.Expr {
+        const subject = try self.allocExpr(try self.parseExpr(0));
+        _ = try self.expect(.l_brace, "expected { after match subject");
+
+        var arms: std.ArrayList(ast.MatchExprArm) = .empty;
+        errdefer arms.deinit(self.allocator);
+
+        while (!self.check(.r_brace) and !self.check(.eof)) {
+            const arm_start = self.peek();
+            const pattern = try self.parseMatchPattern();
+            const binding = try self.parseMatchBinding();
+            _ = try self.expect(.fat_arrow, "expected => after match pattern");
+            const value = try self.parseExpr(0);
+            _ = self.match(.comma);
+            try arms.append(self.allocator, .{
+                .pattern = pattern,
+                .binding = binding,
+                .value = value,
+                .span = spanFrom(arm_start, self.previous()),
+            });
+        }
+
+        const close = try self.expect(.r_brace, "expected } after match arms");
+        const me = try self.allocator.create(ast.MatchExpr);
+        me.* = .{
+            .subject = subject,
+            .arms = try arms.toOwnedSlice(self.allocator),
+            .span = spanFrom(start, close),
+        };
+        return self.expr(.{ .match_expr = me }, spanFrom(start, close));
     }
 
     fn finishErrors(self: *Parser, attrs: []const ast.Attribute, name: Token) ParseError!ast.TypeDecl {
@@ -1270,6 +1311,8 @@ pub const Parser = struct {
                     Span.new(tok.start, inner.span.end),
                 );
             },
+            // `match subject { pattern => value, ... }` as a value expression.
+            .keyword_match => return self.parseMatchExpr(tok),
             // #run expr — compile-time expression in value position
             .hash => {
                 if (self.matchIdent("run")) {

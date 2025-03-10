@@ -301,6 +301,21 @@ pub const MatchPattern = union(enum) {
     else_arm,
 };
 
+/// `match subject { pattern => value, ... }` in *expression* position — each arm
+/// yields a value, the whole `match` is that value. Must be exhaustive.
+pub const MatchExpr = struct {
+    subject: *const Expr,
+    arms: []const MatchExprArm,
+    span: Span,
+};
+
+pub const MatchExprArm = struct {
+    pattern: MatchPattern,
+    binding: ?[]const u8, // |x| capture, null if none
+    value: Expr,
+    span: Span,
+};
+
 pub const DeferStmt = struct {
     mode: DeferMode,
     body: Block,
@@ -553,6 +568,8 @@ pub const ExprKind = union(enum) {
     scope_access: ScopeAccess,
     index: IndexExpr,
     slice: SliceExpr,
+    /// `match subject { pattern => value, ... }` as a value.
+    match_expr: *const MatchExpr,
 };
 
 pub const ScopeAccess = struct {

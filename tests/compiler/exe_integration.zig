@@ -141,6 +141,63 @@ test "exe: recursive `Any` field navigation (reflection-driven struct walk)" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: `info_of` (type_name_of/type_size_of) from a bare typeid + Any auto-wrap" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `type_name_of`/`type_size_of` resolve a *bare* typeid to name/size; a value
+    // passed to an `Any` parameter auto-wraps (no explicit `any(...)`).
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct { a: i32, b: i32 }
+        \\kind :: fn(v: Any) -> i32 { if any_as(v, i32) |x| { return x; } return 0; }
+        \\main :: fn() -> i32 {
+        \\    total: i32 = 0;
+        \\    if type_size_of(typeid_of(i32)) == 4usize { total = total + 1; }
+        \\    if type_size_of(typeid_of(P)) == 8usize { total = total + 2; }   // 2*i32
+        \\    if type_name_of(typeid_of(i32)).len == 3 { total = total + 4; }   // "i32"
+        \\    total = total + kind(35);   // 35 auto-wrapped into Any, recovered
+        \\    return total;               // 1+2+4+35 = 42
+        \\}
+    , "exe_info_of");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: `Any` slice navigation (any_elem) through a generic walker" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `any_elem(f, i)` indexes a slice field's elements; the walker sums scalars
+    // anywhere — struct fields AND slice elements — with no per-type code.
+    const code = try compileAndRun(arena.allocator(),
+        \\Bag :: struct { items: []i32, count: i32 }
+        \\sum_all :: fn(v: Any) -> i32 {
+        \\    if any_as(v, i32) |x| { return x; }
+        \\    total: i32 = 0;
+        \\    nf := any_field_count(v); i: usize = 0;
+        \\    while i < nf {
+        \\        if any_field_at(v, i) |f| {
+        \\            if any_as(f, i32) |x| { total = total + x; }
+        \\            j: usize = 0; cont: bool = true;
+        \\            while cont {
+        \\                if any_elem(f, j) |e| { if any_as(e, i32) |x| { total = total + x; } j = j + 1usize; }
+        \\                else { cont = false; }
+        \\            }
+        \\        }
+        \\        i = i + 1usize;
+        \\    }
+        \\    return total;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    arr: [3]i32 = .{ 10, 12, 14 };
+        \\    b: Bag = .{ arr[:], 6 };   // items 36 + count 6 = 42
+        \\    return sum_all(any(b));
+        \\}
+    , "exe_any_elem");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: `Any` pointer navigation (any_deref) through a generic walker" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
@@ -1223,5 +1280,104 @@ test "exe: a local inferred from a usize const stays integer-typed" {
         \\    return (to + 5usize) as i32;
         \\}
     , "exe_local_from_usize_const");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: macro templates substitute splices through match/for/compound/type" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression for the "total substitution" work: a macro body may contain a
+    // `match`, a runtime `for`, a compound literal, and a type-position splice —
+    // and `$param` holes inside all of them are substituted.
+    const code = try compileAndRun(arena.allocator(),
+        \\Pair :: struct { a: i32, b: i32 }
+        \\build :: macro(out: Expr, ty: Expr, sel: Expr, lo: Expr, hi: Expr) {
+        \\    return #quote {
+        \\        p: Pair = .{ $lo, $hi };          // splice inside `.{ }`
+        \\        acc: $ty = 0;                     // type-position splice
+        \\        for k in p.a..p.b { acc = acc + k; } // splice-built bounds via fields
+        \\        match $sel {                      // splice as match subject
+        \\            1 => { $out = acc + p.a; }
+        \\            else => { $out = acc; }
+        \\        }
+        \\    };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    r: i32 = 0;
+        \\    #insert build(r, i32, 1, 10, 13);     // p=.{10,13}; acc=10+11+12=33; +p.a(10)=43?
+        \\    return r - 1;                          // 33 + 10 = 43 -> 42
+        \\}
+    , "exe_macro_total_subst");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: macro locals are hygienic (don't capture the caller's same-named local)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The macro introduces its own `tmp` and a `for k`; both must be renamed so
+    // they don't collide with the caller's `tmp`/`k`, including inside the match
+    // arm and for body (hygiene now recurses those).
+    const code = try compileAndRun(arena.allocator(),
+        \\accumulate :: macro(out: Expr, n: Expr) {
+        \\    return #quote {
+        \\        tmp := 0;
+        \\        for k in 0..$n { tmp = tmp + k; }
+        \\        match tmp { else => { $out = tmp; } }
+        \\    };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    tmp: i32 = 100;   // caller's `tmp` must survive the macro untouched
+        \\    k: i32 = 7;       // caller's `k` likewise
+        \\    r: i32 = 0;
+        \\    #insert accumulate(r, 9);          // 0+1+..+8 = 36 into r
+        \\    return r + (tmp - 100) + (k - 7);  // 36 + 0 + 0 = 36 iff tmp/k uncaptured
+        \\}
+    , "exe_macro_hygiene");
+    try std.testing.expectEqual(@as(u32, 36), code);
+}
+
+test "exe: match as an expression (enum/int subjects, payload, positions)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\V :: enum { I: i32, N }
+        \\Sign :: enum { Neg, Zero, Pos }
+        \\sign_val :: fn(s: Sign) -> i32 {
+        \\    // total enum match-expr, no else — used directly in `return`
+        \\    return match s { .Neg => -1, .Zero => 0, .Pos => 1 };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    v := V.I(20);
+        \\    a := match v { .I |p| => p, .N => 0 };       // payload binding -> 20
+        \\    x: i32 = 2;
+        \\    b := match x { 1 => 0, 2 => 21, else => 9 }; // int subject + else -> 21
+        \\    c := sign_val(.Pos);                          // -> 1
+        \\    return a + b + c;                             // 20 + 21 + 1 = 42
+        \\}
+    , "exe_match_expr");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: match-expression threads the expected type into `.{ }` arms" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Untyped struct-literal arms get their type from the local/return context.
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct { x: i32, y: i32 }
+        \\T :: enum { A, B }
+        \\main :: fn() -> i32 {
+        \\    t := T.B;
+        \\    p: P = match t { .A => .{ 1, 2 }, .B => .{ 40, 2 } };
+        \\    return p.x + p.y;   // 40 + 2 = 42
+        \\}
+    , "exe_match_expr_typed");
     try std.testing.expectEqual(@as(u32, 42), code);
 }

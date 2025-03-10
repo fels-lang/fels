@@ -979,6 +979,12 @@ const Checker = struct {
     /// `$T: Name` at resolution by running the body on the resolution VM.
     constraint_decls: std.StringHashMap(ast.FunctionDecl) = undefined,
     constraint_decls_init: bool = false,
+    /// `match` statements proven exhaustive during checking (covers every enum
+    /// variant, or has an `else`), keyed by `match.span.start`. Return-flow
+    /// analysis consults this so a total enum match counts as returning on all
+    /// paths without a redundant `else`.
+    exhaustive_matches: std.AutoHashMap(usize, void) = undefined,
+    exhaustive_matches_init: bool = false,
 
     fn init(allocator: std.mem.Allocator, symbols: SymbolTable) Checker {
         return .{
@@ -988,6 +994,8 @@ const Checker = struct {
             .scope_stack = .empty,
             .constraint_decls = std.StringHashMap(ast.FunctionDecl).init(allocator),
             .constraint_decls_init = true,
+            .exhaustive_matches = std.AutoHashMap(usize, void).init(allocator),
+            .exhaustive_matches_init = true,
         };
     }
 
@@ -999,6 +1007,7 @@ const Checker = struct {
         self.active_zones.deinit(self.allocator);
         self.diagnostics.deinit(self.allocator);
         if (self.constraint_decls_init) self.constraint_decls.deinit();
+        if (self.exhaustive_matches_init) self.exhaustive_matches.deinit();
     }
 
     // ── Diagnostics ──────────────────────────────────────────────────────────
@@ -1714,7 +1723,7 @@ const Checker = struct {
             const is_noreturn = hasAttr(decl.attrs, "noreturn");
             if (!is_noreturn and
                 (self.current_return_ty != .void or self.current_error_ty != null) and
-                !blockDefinitelyReturns(body))
+                !blockDefinitelyReturns(self, body))
             {
                 self.emitError(decl.span, "function `{s}` may not return a value on all code paths", .{decl.name});
                 return error.SemanticFailed;
@@ -2042,9 +2051,11 @@ const Checker = struct {
                 try self.env.expr_symbols.put(expr.id, id);
                 break :blk self.env.get(id) orelse .{ .named = id };
             },
-            // A `$`-splice that survives macro expansion is a misuse.
+            // A `$`-splice that survives macro expansion is a misuse: splices only
+            // mean something inside a `macro`'s `return #quote {{ ... }}` template,
+            // where `$name` names one of the macro's parameters.
             .splice => {
-                self.emitError(expr.span, "`$` splice is only valid inside a macro template", .{});
+                self.emitError(expr.span, "`$name` splice only works inside a `macro` template (its `return #quote {{ ... }}`), and must name a macro parameter", .{});
                 return error.SemanticFailed;
             },
             // `#parse(expr)` yields code (an `AstBlock`); only useful as an
@@ -2331,9 +2342,121 @@ const Checker = struct {
                     },
                 };
             },
+            .match_expr => |me| try self.inferMatchExpr(me),
         };
         try self.env.expr_types.put(expr.id, ty);
         return ty;
+    }
+
+    /// `match subject { pattern => value, ... }` as a value: each arm yields a
+    /// value, all arms must unify to one type, and the match must be exhaustive
+    /// (it produces a value on every path). Mirrors `checkMatch`'s pattern rules.
+    fn inferMatchExpr(self: *Checker, me: *const ast.MatchExpr) SemanticError!Ty {
+        if (me.arms.len == 0) {
+            self.emitError(me.span, "match expression needs at least one arm", .{});
+            return error.SemanticFailed;
+        }
+        const subject_ty = try self.inferExpr(me.subject.*);
+        const is_int = subject_ty.isInteger();
+
+        var variants: []const VariantInfo = &.{};
+        if (!is_int) {
+            const enum_id: SymbolId = switch (subject_ty) {
+                .named => |id| id,
+                else => return self.invalidMatchSubject(me.subject.span),
+            };
+            const layout = self.env.layouts.get(enum_id) orelse return self.invalidMatchSubject(me.subject.span);
+            variants = switch (layout.kind) {
+                .variant_type => |v| v,
+                else => return self.invalidMatchSubject(me.subject.span),
+            };
+        }
+
+        const covered = try self.allocator.alloc(bool, variants.len);
+        defer self.allocator.free(covered);
+        @memset(covered, false);
+        var has_else = false;
+        var result_ty: ?Ty = null;
+
+        for (me.arms) |arm| {
+            var payload_ty: Ty = .void;
+            switch (arm.pattern) {
+                .else_arm => has_else = true,
+                .int_values => |values| {
+                    if (!is_int) {
+                        self.emitError(arm.span, "integer pattern cannot be used with an enum match subject", .{});
+                        return error.SemanticFailed;
+                    }
+                    if (arm.binding != null) {
+                        self.emitError(arm.span, "integer match patterns cannot bind a payload", .{});
+                        return error.SemanticFailed;
+                    }
+                    for (values) |value| {
+                        const value_ty = try self.inferExpr(value);
+                        if (!try self.compatible(value_ty, subject_ty)) {
+                            self.emitError(value.span, "integer match pattern is incompatible with subject type `{s}`", .{self.formatTy(subject_ty)});
+                            return error.SemanticFailed;
+                        }
+                    }
+                },
+                .enum_variant => |name| {
+                    if (is_int) {
+                        self.emitError(arm.span, "enum variant pattern cannot be used with an integer match subject", .{});
+                        return error.SemanticFailed;
+                    }
+                    var found: ?VariantInfo = null;
+                    for (variants, 0..) |v, i| {
+                        if (std.mem.eql(u8, v.name, name)) {
+                            found = v;
+                            if (covered[i]) {
+                                self.emitError(arm.span, "duplicate match arm for variant `.{s}`", .{name});
+                                return error.SemanticFailed;
+                            }
+                            covered[i] = true;
+                            break;
+                        }
+                    }
+                    const variant = found orelse {
+                        self.emitError(arm.span, "unknown variant `.{s}` in match", .{name});
+                        return error.SemanticFailed;
+                    };
+                    payload_ty = variant.payload orelse .void;
+                },
+            }
+
+            const arm_value_ty: Ty = if (arm.binding) |bname| blk: {
+                try self.pushScope();
+                defer self.popScope();
+                try self.declareLocal(bname, payload_ty);
+                break :blk try self.inferExpr(arm.value);
+            } else try self.inferExpr(arm.value);
+
+            if (result_ty) |rt| {
+                if (!try self.compatible(arm_value_ty, rt)) {
+                    self.emitError(arm.value.span, "match arms have incompatible types: `{s}` vs `{s}`", .{ self.formatTy(rt), self.formatTy(arm_value_ty) });
+                    return error.SemanticFailed;
+                }
+            } else {
+                result_ty = arm_value_ty;
+            }
+        }
+
+        // A value-producing match must be exhaustive.
+        if (is_int) {
+            if (!has_else) {
+                self.emitError(me.span, "match expression on an integer must have an `else` arm", .{});
+                return error.SemanticFailed;
+            }
+        } else if (!has_else) {
+            for (variants, 0..) |v, i| {
+                if (!covered[i]) {
+                    self.emitError(me.span, "non-exhaustive match expression: variant `.{s}` is not handled (add it, or an `else` arm)", .{v.name});
+                    return error.SemanticFailed;
+                }
+            }
+        }
+
+        return result_ty orelse .void;
     }
 
     fn inferCall(self: *Checker, call: ast.CallExpr) SemanticError!Ty {
@@ -2879,9 +3002,17 @@ const Checker = struct {
             else => return self.invalidMatchSubject(m.subject.span),
         };
 
+        // Track which variants are covered so we can prove exhaustiveness (and
+        // flag a missing variant). `covered[i]` ↔ `variants[i]`.
+        const covered = try self.allocator.alloc(bool, variants.len);
+        defer self.allocator.free(covered);
+        @memset(covered, false);
+        var has_else = false;
+
         for (m.arms) |arm| {
             const variant_name = switch (arm.pattern) {
                 .else_arm => {
+                    has_else = true;
                     try self.checkBlock(arm.body);
                     continue;
                 },
@@ -2893,9 +3024,14 @@ const Checker = struct {
             };
             // Find variant in the enum layout.
             var found: ?VariantInfo = null;
-            for (variants) |v| {
+            for (variants, 0..) |v, i| {
                 if (std.mem.eql(u8, v.name, variant_name)) {
                     found = v;
+                    if (covered[i]) {
+                        self.emitError(arm.span, "duplicate match arm for variant `.{s}`", .{variant_name});
+                        return error.SemanticFailed;
+                    }
+                    covered[i] = true;
                     break;
                 }
             }
@@ -2915,16 +3051,36 @@ const Checker = struct {
                 try self.checkBlock(arm.body);
             }
         }
+
+        // Exhaustiveness: an enum match must cover every variant or have `else`.
+        // A redundant `else` after full coverage is allowed (no warning yet).
+        var missing: ?[]const u8 = null;
+        for (variants, 0..) |v, i| {
+            if (!covered[i]) {
+                missing = v.name;
+                break;
+            }
+        }
+        if (has_else or missing == null) {
+            try self.exhaustive_matches.put(m.span.start, {});
+        } else {
+            self.emitError(m.span, "non-exhaustive match: variant `.{s}` is not handled (add it, or an `else` arm)", .{missing.?});
+            return error.SemanticFailed;
+        }
     }
 
     fn checkIntMatch(self: *Checker, m: ast.MatchStmt, subject_ty: Ty) SemanticError!void {
+        var has_else = false;
         for (m.arms) |arm| {
             if (arm.binding != null) {
                 self.emitError(arm.span, "integer match patterns cannot bind a payload", .{});
                 return error.SemanticFailed;
             }
             switch (arm.pattern) {
-                .else_arm => try self.checkBlock(arm.body),
+                .else_arm => {
+                    has_else = true;
+                    try self.checkBlock(arm.body);
+                },
                 .enum_variant => {
                     self.emitError(arm.span, "enum variant pattern cannot be used with an integer match subject", .{});
                     return error.SemanticFailed;
@@ -2941,6 +3097,9 @@ const Checker = struct {
                 },
             }
         }
+        // Integers are unbounded, so an integer match is only exhaustive via
+        // `else`. (No missing-case error — that would demand every i64 value.)
+        if (has_else) try self.exhaustive_matches.put(m.span.start, {});
     }
 
     fn invalidMatchSubject(self: *Checker, span: Span) SemanticError {
@@ -3934,10 +4093,19 @@ const Checker = struct {
         };
     }
 
+    fn isAnyTy(self: *Checker, ty: Ty) bool {
+        return switch (ty) {
+            .named => |id| std.mem.eql(u8, self.symbols.symbol(id).name, "Any"),
+            else => false,
+        };
+    }
+
     fn compatible(self: *Checker, actual: Ty, expected: Ty) !bool {
         if (expected == .borrow) return self.compatible(actual, expected.borrow.*);
         if (actual == .borrow) return self.compatible(actual.borrow.*, expected);
         if (sameTy(actual, expected)) return true;
+        // Any value auto-wraps into an `Any` (the compiler inserts `any(x)`).
+        if (self.isAnyTy(expected) and !self.isAnyTy(actual)) return true;
         if (try self.interfaceCoercion(actual, expected)) return true;
         if (expected == .optional) {
             if (actual == .null_ptr) return true;
@@ -4020,14 +4188,14 @@ fn isPointerTy(ty: Ty) bool {
     return ty == .pointer or ty == .const_ptr;
 }
 
-fn blockDefinitelyReturns(block: ast.Block) bool {
+fn blockDefinitelyReturns(self: *Checker, block: ast.Block) bool {
     for (block.statements) |stmt| {
-        if (stmtDefinitelyReturns(stmt)) return true;
+        if (stmtDefinitelyReturns(self, stmt)) return true;
     }
     return false;
 }
 
-fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
+fn stmtDefinitelyReturns(self: *Checker, stmt: ast.Stmt) bool {
     return switch (stmt) {
         .return_stmt, .fail_stmt => true,
         .expr => |e| switch (e.kind) {
@@ -4043,23 +4211,23 @@ fn stmtDefinitelyReturns(stmt: ast.Stmt) bool {
         },
         .break_stmt, .continue_stmt => true,
         .if_stmt => |iff| iff.else_block != null and
-            blockDefinitelyReturns(iff.then_block) and
-            blockDefinitelyReturns(iff.else_block.?),
-        .unsafe_block => |block| blockDefinitelyReturns(block),
-        .zone_block => |zb| blockDefinitelyReturns(zb.body),
+            blockDefinitelyReturns(self, iff.then_block) and
+            blockDefinitelyReturns(self, iff.else_block.?),
+        .unsafe_block => |block| blockDefinitelyReturns(self, block),
+        .zone_block => |zb| blockDefinitelyReturns(self, zb.body),
         .defer_stmt => false,
-        .comptime_run => |b| blockDefinitelyReturns(b),
+        .comptime_run => |b| blockDefinitelyReturns(self, b),
         .comptime_if => |ci| ci.else_block != null and
-            blockDefinitelyReturns(ci.then_block) and
-            blockDefinitelyReturns(ci.else_block.?),
-        // match returns if it has an else arm and ALL arms return.
+            blockDefinitelyReturns(self, ci.then_block) and
+            blockDefinitelyReturns(self, ci.else_block.?),
+        // A match returns on all paths when it is exhaustive (proven during
+        // checking — full enum coverage or an `else`) and every arm returns.
         .match_stmt => |m| blk: {
-            var has_else = false;
+            if (!self.exhaustive_matches.contains(m.span.start)) break :blk false;
             for (m.arms) |arm| {
-                if (!blockDefinitelyReturns(arm.body)) break :blk false;
-                if (arm.pattern == .else_arm) has_else = true;
+                if (!blockDefinitelyReturns(self, arm.body)) break :blk false;
             }
-            break :blk has_else;
+            break :blk true;
         },
         else => false,
     };

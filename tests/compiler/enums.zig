@@ -190,6 +190,75 @@ test "enum: unknown variant in match fails sema" {
     try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad.k2", bad));
 }
 
+test "enum: total match (all variants, no else) is exhaustive and returns on all paths" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // No `else`, no trailing `return` — the match alone must satisfy return-flow
+    // analysis because it covers every variant.
+    const ok =
+        \\Dir :: enum { north, south, east }
+        \\pick :: fn(d: Dir) -> i32 {
+        \\    match d {
+        \\        .north => { return 1; }
+        \\        .south => { return 2; }
+        \\        .east  => { return 3; }
+        \\    }
+        \\}
+    ;
+    var fe = try k2.compile(arena.allocator(), "ok.k2", ok);
+    defer fe.deinit(arena.allocator());
+}
+
+test "enum: non-exhaustive match (missing variant, no else) fails sema" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const bad =
+        \\Dir :: enum { north, south, east }
+        \\bad :: fn(d: Dir) -> i32 {
+        \\    match d { .north => { return 1; } .south => { return 2; } }
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad.k2", bad));
+}
+
+test "enum: duplicate match arm for a variant fails sema" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const bad =
+        \\Dir :: enum { north, south }
+        \\bad :: fn(d: Dir) -> i32 {
+        \\    match d { .north => { return 1; } .north => { return 2; } .south => { return 3; } }
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad.k2", bad));
+}
+
+test "enum: non-exhaustive match *expression* fails sema" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A value-producing match must be exhaustive (it yields a value on every path).
+    const bad =
+        \\Dir :: enum { north, south, east }
+        \\bad :: fn(d: Dir) -> i32 {
+        \\    return match d { .north => 1, .south => 2 };
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad.k2", bad));
+}
+
+test "enum: match expression arms with incompatible types fail sema" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const bad =
+        \\Dir :: enum { north, south }
+        \\bad :: fn(d: Dir) -> i32 {
+        \\    r := match d { .north => 1, .south => true };
+        \\    return r;
+        \\}
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad.k2", bad));
+}
+
 test "enum: match subject must be enum type" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
