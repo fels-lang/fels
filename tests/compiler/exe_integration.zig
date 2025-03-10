@@ -141,6 +141,38 @@ test "exe: recursive `Any` field navigation (reflection-driven struct walk)" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: `Any` pointer navigation (any_deref) through a generic walker" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `any_deref(f)` follows a pointer field; the walker then recurses into the
+    // pointee's fields — reflection across pointer indirection, no per-type code.
+    const code = try compileAndRun(arena.allocator(),
+        \\Node :: struct { val: i32 }
+        \\Holder :: struct { node: *Node, extra: i32 }
+        \\main :: fn() -> i32 {
+        \\    n: Node = .{ 30 };
+        \\    h: Holder = .{ &n, 12 };
+        \\    v := any(h);
+        \\    total: i32 = 0;
+        \\    nf := any_field_count(v);
+        \\    i: usize = 0;
+        \\    while i < nf {
+        \\        if any_field_at(v, i) |f| {
+        \\            if any_as(f, i32) |x| { total = total + x; }           // extra = 12
+        \\            if any_deref(f) |d| {                                   // *Node -> Node
+        \\                if any_field_at(d, 0usize) |nv| { if any_as(nv, i32) |x| { total = total + x; } }  // val = 30
+        \\            }
+        \\        }
+        \\        i = i + 1usize;
+        \\    }
+        \\    return total;  // 12 + 30 = 42
+        \\}
+    , "exe_any_deref");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: reflection-driven scalar serialization + any_at in-place wrap" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

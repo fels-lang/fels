@@ -21,11 +21,14 @@
 > "baked type table": the type's metadata (id + name) **travels inline with the
 > value**, baked as a tree-shaken string literal — no central table to manage, and
 > reflection you don't use costs nothing. **Recursive struct-field navigation**
-> works too: `any_field_at`/`any_field_name`/`any_field_count` (generated per
-> struct from static field access) let a generic walker recurse through nested
-> struct fields — i.e. **reflection-driven serialization** with no per-type code.
-> Still design: `.elem`/`.deref` (slice/pointer) navigation and `info_of(id)`
-> lookup by a bare id. Phases 5–6 are design. Sister to
+> works (`any_field_at`/`any_field_name`/`any_field_count`, generated per struct
+> from static field access) — a generic walker recurses through nested struct
+> fields, i.e. **reflection-driven serialization** with no per-type code. **Pointer
+> `.deref` navigation** (`any_deref`) works too. Still open: **`.elem` (slice
+> element) navigation** is wired but blocked by a slice-`typeid` hashing
+> inconsistency (the generated dispatcher and wrap disagree only for slice types);
+> `info_of(id)` by a bare id and auto-wrapping a value into an `Any` param are
+> deferred ergonomics. Phases 5–6 are design. Sister to
 > [`09_comptime_vm_roadmap.md`](09_comptime_vm_roadmap.md). Describes runtime type
 > information, the `Any` type, reflection-driven serialization, and resolve-time
 > generic constraints (`where`). The goal is to match Jai's metaprogramming reach

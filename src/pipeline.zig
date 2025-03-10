@@ -575,10 +575,20 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
 
     var names: std.ArrayList([]const u8) = .empty;
     defer names.deinit(allocator);
+    // Collected slice/pointer field types → element/pointee name. Generate one
+    // `.elem`/`.deref` accessor per distinct type.
+    var slice_elems = std.StringHashMap([]const u8).init(allocator);
+    defer slice_elems.deinit();
+    var ptr_targets = std.StringHashMap([]const u8).init(allocator);
+    defer ptr_targets.deinit();
 
-    // The generated functions must live in the *user's* file so they can see the
-    // user structs by name (the combined module's file_name may be `<runtime>`).
     var nav_file: []const u8 = user.file_name;
+
+    // Build the Any with `typeid_of`/`type_name` evaluated *here* (the nav file),
+    // so a wrapped value's id matches the dispatchers' `typeid_of(...)` exactly.
+    // (Routing through the generic `any_at` resolves the type via a binding, which
+    // hashes compound types like `[]T` inconsistently with the direct form.)
+    try src.appendSlice(allocator, "__any_make :: fn(ptr: *const u8, id: usize, nm: []const u8) -> Any { r: Any = .{ ptr, id, nm }; return r; }\n");
 
     for (user.items) |item| {
         const decl = switch (item) {
@@ -589,22 +599,27 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
             .struct_type => |s| s,
             else => continue,
         };
-        // Only the user's structs — not the embedded runtime's (whose field
-        // types may not resolve from a generated function in the combined module).
         if (std.mem.eql(u8, decl.file_name, "<runtime>")) continue;
         if (strukt.type_params.len > 0 or strukt.fields.len == 0) continue;
-        var simple = true;
-        for (strukt.fields) |f| if (f.ty != .named) {
-            simple = false;
+        // Every field must render to a supported type (named, []named, *named).
+        var ok = true;
+        for (strukt.fields) |f| if ((try renderType(allocator, f.ty)) == null) {
+            ok = false;
             break;
         };
-        if (!simple) continue;
+        if (!ok) continue;
 
         nav_file = decl.file_name;
         try names.append(allocator, decl.name);
         try appendFmt(&src, allocator, "__fld_{s} :: fn(d: *const u8, i: usize) -> ?Any {{\n  unsafe {{\n    p := d as *const {s};\n", .{ decl.name, decl.name });
         for (strukt.fields, 0..) |f, j| {
-            try appendFmt(&src, allocator, "    if i == {d}usize {{ return any_at((&p.{s}) as *const u8, {s}); }}\n", .{ j, f.name, f.ty.named.name });
+            const tstr = (try renderType(allocator, f.ty)).?;
+            try appendFmt(&src, allocator, "    if i == {d}usize {{ return any_at((&p.{s}) as *const u8, {s}); }}\n", .{ j, f.name, tstr });
+            switch (f.ty) {
+                .slice => |s| if (s.inner.* == .named) try slice_elems.put(tstr, s.inner.named.name),
+                .pointer => |p| if (p.inner.* == .named) try ptr_targets.put(tstr, p.inner.named.name),
+                else => {},
+            }
         }
         try src.appendSlice(allocator, "  }\n  return null;\n}\n");
 
@@ -615,8 +630,26 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
         try src.appendSlice(allocator, "  return \"\";\n}\n");
     }
 
-    // The two dispatchers — always emitted so `any_field_at`/`any_field_name`
-    // exist whenever `Any` is in use (even with no navigable structs).
+    // Element / pointee accessors. A slice value is `{ ptr, len }`; a pointer Any
+    // stores the pointer itself.
+    try src.appendSlice(allocator, "__SliceHdr :: struct { ptr: *const u8, len: usize }\n");
+    {
+        var it = slice_elems.iterator();
+        var k: usize = 0;
+        while (it.next()) |e| : (k += 1) {
+            try appendFmt(&src, allocator, "__elem_{d} :: fn(v: Any, idx: usize) -> ?Any {{\n  unsafe {{\n    h := v.data as *const __SliceHdr;\n    if idx >= h.len {{ return null; }}\n    ep := ((h.ptr as usize) + idx * sizeof({s})) as *const u8;\n    return any_at(ep, {s});\n  }}\n}}\n", .{ k, e.value_ptr.*, e.value_ptr.* });
+        }
+    }
+    {
+        var it = ptr_targets.iterator();
+        var k: usize = 0;
+        while (it.next()) |e| : (k += 1) {
+            try appendFmt(&src, allocator, "__deref_{d} :: fn(v: Any) -> ?Any {{\n  unsafe {{\n    a := *(v.data as *const usize);\n    if a == 0usize {{ return null; }}\n    return any_at(a as *const u8, {s});\n  }}\n}}\n", .{ k, e.value_ptr.* });
+        }
+    }
+
+    // Dispatchers — always emitted so the `any_field_*`/`any_elem`/`any_deref`
+    // surface exists whenever `Any` is in use.
     try src.appendSlice(allocator, "any_field_at :: fn(v: Any, i: usize) -> ?Any {\n");
     for (names.items) |n| try appendFmt(&src, allocator, "  if v.id == typeid_of({s}) {{ return __fld_{s}(v.data, i); }}\n", .{ n, n });
     try src.appendSlice(allocator, "  return null;\n}\n");
@@ -624,6 +657,26 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
     try src.appendSlice(allocator, "any_field_name :: fn(v: Any, i: usize) -> []const u8 {\n");
     for (names.items) |n| try appendFmt(&src, allocator, "  if v.id == typeid_of({s}) {{ return __fldn_{s}(i); }}\n", .{ n, n });
     try src.appendSlice(allocator, "  return \"\";\n}\n");
+
+    try src.appendSlice(allocator, "any_elem :: fn(v: Any, i: usize) -> ?Any {\n");
+    {
+        var it = slice_elems.keyIterator();
+        var k: usize = 0;
+        while (it.next()) |key| : (k += 1) {
+            try appendFmt(&src, allocator, "  if v.id == typeid_of({s}) {{ return __elem_{d}(v, i); }}\n", .{ key.*, k });
+        }
+    }
+    try src.appendSlice(allocator, "  return null;\n}\n");
+
+    try src.appendSlice(allocator, "any_deref :: fn(v: Any) -> ?Any {\n");
+    {
+        var it = ptr_targets.keyIterator();
+        var k: usize = 0;
+        while (it.next()) |key| : (k += 1) {
+            try appendFmt(&src, allocator, "  if v.id == typeid_of({s}) {{ return __deref_{d}(v); }}\n", .{ key.*, k });
+        }
+    }
+    try src.appendSlice(allocator, "  return null;\n}\n");
 
     const parsed = try parser.parseSourceFrom(allocator, nav_file, src.items, fieldnav_prelude_id_base);
     var items: std.ArrayList(ast.Item) = .empty;
@@ -635,6 +688,30 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
 fn appendFmt(src: *std.ArrayList(u8), a: std.mem.Allocator, comptime fmt: []const u8, args: anytype) !void {
     const s = try std.fmt.allocPrint(a, fmt, args);
     try src.appendSlice(a, s);
+}
+
+/// Render a field type for the navigation generator: a plain named type, a slice
+/// of a named type (`[]T` / `[]const T`), or a pointer to one (`*T` / `*const T`).
+/// Returns null for anything else (the struct is then skipped).
+fn renderType(a: std.mem.Allocator, ty: ast.TypeRef) !?[]const u8 {
+    return switch (ty) {
+        .named => |n| n.name,
+        .slice => |s| switch (s.inner.*) {
+            .named => |n| if (s.is_const)
+                try std.fmt.allocPrint(a, "[]const {s}", .{n.name})
+            else
+                try std.fmt.allocPrint(a, "[]{s}", .{n.name}),
+            else => null,
+        },
+        .pointer => |p| switch (p.inner.*) {
+            .named => |n| if (p.is_const)
+                try std.fmt.allocPrint(a, "*const {s}", .{n.name})
+            else
+                try std.fmt.allocPrint(a, "*{s}", .{n.name}),
+            else => null,
+        },
+        else => null,
+    };
 }
 
 fn prependAnyPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
