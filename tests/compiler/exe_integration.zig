@@ -109,6 +109,65 @@ test "exe: `Any` — wrap a value, dispatch on its runtime type, safe downcast" 
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: recursive `Any` field navigation (reflection-driven struct walk)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Generic walk over an erased value: recurses through nested struct fields
+    // via the generated `any_field_at`/`any_field_name`/`any_field_count`,
+    // touching both field NAMES (their lengths) and VALUES — the core of a
+    // reflection-driven serializer, with no per-type code written by hand.
+    const code = try compileAndRun(arena.allocator(),
+        \\Inner :: struct { x: i32, y: i32 }
+        \\Outer :: struct { a: i32, inner: Inner }
+        \\digest :: fn(v: Any) -> i32 {
+        \\    if any_as(v, i32) |x| { return x; }
+        \\    total: i32 = 0;
+        \\    n := any_field_count(v);
+        \\    i: usize = 0;
+        \\    while i < n {
+        \\        total = total + (any_field_name(v, i).len as i32);   // field name length
+        \\        if any_field_at(v, i) |f| { total = total + digest(f); }  // recurse into nested field
+        \\        i = i + 1usize;
+        \\    }
+        \\    return total;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    o: Outer = .{ 10, .{ 12, 12 } };
+        \\    return digest(any(o));   // names a(1)+inner(5)+x(1)+y(1)=8; values 10+12+12=34; =42
+        \\}
+    , "exe_any_nav");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: reflection-driven scalar serialization + any_at in-place wrap" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `ser_tag` dispatches on an erased value's runtime type (the core of a
+    // reflection-driven serializer); `any_at` wraps a pointer in place (no copy).
+    const code = try compileAndRun(arena.allocator(),
+        \\to_bytes :: fn(p: *const i32) -> *const u8 { unsafe { return p as *const u8; } }
+        \\ser_tag :: fn(v: Any) -> i32 {
+        \\    if any_as(v, i32)  |x| { return 100 + x; }
+        \\    if any_as(v, bool) |b| { if b { return 201; } return 200; }
+        \\    if any_as(v, f64)  |f| { return 300 + (f as i32); }
+        \\    return 0;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    s := ser_tag(any(7i32)) + ser_tag(any(false)) + ser_tag(any(2.5f64)); // 107+200+302
+        \\    x: i32 = 33;
+        \\    at := any_at(to_bytes(&x), i32);
+        \\    av: i32 = 0;
+        \\    if any_as(at, i32) |y| { av = y; }   // in-place wrap recovers 33
+        \\    return s - 567 + av - 33;            // (609-567) + 0 = 42
+        \\}
+    , "exe_reflect_ser");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: `typeid_of(T)` is a stable runtime type identity" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

@@ -20,9 +20,12 @@
 > ?T` is a safe downcast, `any_is`, `any_id`, `any_name`). K2's twist on the
 > "baked type table": the type's metadata (id + name) **travels inline with the
 > value**, baked as a tree-shaken string literal — no central table to manage, and
-> reflection you don't use costs nothing. Still design: a recursive runtime
-> `TypeInfo` graph / `v.field`/`.elem`/`.deref` navigation and `info_of(id)` lookup
-> by a bare id (need the baked node graph). Phases 5–6 are design. Sister to
+> reflection you don't use costs nothing. **Recursive struct-field navigation**
+> works too: `any_field_at`/`any_field_name`/`any_field_count` (generated per
+> struct from static field access) let a generic walker recurse through nested
+> struct fields — i.e. **reflection-driven serialization** with no per-type code.
+> Still design: `.elem`/`.deref` (slice/pointer) navigation and `info_of(id)`
+> lookup by a bare id. Phases 5–6 are design. Sister to
 > [`09_comptime_vm_roadmap.md`](09_comptime_vm_roadmap.md). Describes runtime type
 > information, the `Any` type, reflection-driven serialization, and resolve-time
 > generic constraints (`where`). The goal is to match Jai's metaprogramming reach

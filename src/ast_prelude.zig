@@ -134,6 +134,17 @@ pub const any_source =
     \\
     \\any_name :: fn(v: Any) -> []const u8 { return v.name; }
     \\
+    \\any_at :: fn(ptr: *const u8, $T: type) -> Any { r: Any = .{ ptr, typeid_of(T), type_name(T) }; return r; }
+    \\
+    \\any_field_count :: fn(v: Any) -> usize {
+    \\    n: usize = 0;
+    \\    cont: bool = true;
+    \\    while cont {
+    \\        if any_field_at(v, n) |f| { n = n + 1usize; } else { cont = false; }
+    \\    }
+    \\    return n;
+    \\}
+    \\
     \\any_is :: fn(v: Any, $T: type) -> bool { return v.id == typeid_of(T); }
     \\
     \\any_as :: fn(v: Any, $T: type) -> ?T {

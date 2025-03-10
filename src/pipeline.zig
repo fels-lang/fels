@@ -23,6 +23,7 @@ const heap_prelude_id_base: ast.NodeId = 600_000;
 /// Node-id base for the injected `TypeInfo` reflection prelude (distinct range).
 const reflection_prelude_id_base: ast.NodeId = 500_000;
 const any_prelude_id_base: ast.NodeId = 400_000;
+const fieldnav_prelude_id_base: ast.NodeId = 300_000;
 
 pub const FrontEnd = struct {
     module: ast.Module,
@@ -140,7 +141,11 @@ pub fn compileMulti(allocator: std.mem.Allocator, files: []const SourceFile) Com
     }
 
     const items = try all_items.toOwnedSlice(fe_allocator);
-    return runPipelineWithSource(fe_allocator, .{ .file_name = modules.items[0].file_name, .items = items }, files[0].source, modules.items[0].file_name, arena);
+    // The root file (whose name/source drive sema visibility and prelude
+    // injection) is the user's, not the embedded runtime prepended ahead of it.
+    var root: usize = 0;
+    if (std.mem.eql(u8, modules.items[0].file_name, "<runtime>") and modules.items.len > 1) root = 1;
+    return runPipelineWithSource(fe_allocator, .{ .file_name = modules.items[root].file_name, .items = items }, files[root].source, modules.items[root].file_name, arena);
 }
 
 /// Compile a .k2 file from disk, resolving `#import` declarations recursively.
@@ -339,7 +344,8 @@ fn runPipelineWithSource(
     // own `Any`). Detected over the combined AST (not the source string, which in
     // a multi-module compile is only the first file). The wrap `any(x)` is the
     // only compiler-driven piece.
-    const with_any = if (moduleUsesAny(with_reflect) and !moduleDefinesType(with_reflect, "Any"))
+    const uses_any = moduleUsesAny(with_reflect) and !moduleDefinesType(with_reflect, "Any");
+    const with_any = if (uses_any)
         prependAnyPrelude(allocator, with_reflect) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,
@@ -347,18 +353,28 @@ fn runPipelineWithSource(
     else
         with_reflect;
 
-    // A `zone X: Arena {}` handle is an ordinary `std.heap.Arena`, so any module
-    // with a zone block depends on std.heap. Prepend the embedded bump-allocator
-    // (and std.ptr, which it uses) so zones work in every compile path — even the
-    // inline `compile(source)` path that never reads disk. Skipped when the
-    // module already provides `Arena` (explicit `#import std.heap`).
-    const with_heap = if (moduleUsesZone(with_any) and !moduleProvidesArena(with_any))
-        prependHeapPrelude(allocator, with_any) catch |err| switch (err) {
+    // Generate `any_field_at`/`any_field_name` over the module's concrete structs,
+    // so `Any` values navigate their fields (and `serialize` can walk them).
+    const with_nav = if (uses_any)
+        prependFieldNavPrelude(allocator, with_any) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,
         }
     else
         with_any;
+
+    // A `zone X: Arena {}` handle is an ordinary `std.heap.Arena`, so any module
+    // with a zone block depends on std.heap. Prepend the embedded bump-allocator
+    // (and std.ptr, which it uses) so zones work in every compile path — even the
+    // inline `compile(source)` path that never reads disk. Skipped when the
+    // module already provides `Arena` (explicit `#import std.heap`).
+    const with_heap = if (moduleUsesZone(with_nav) and !moduleProvidesArena(with_nav))
+        prependHeapPrelude(allocator, with_nav) catch |err| switch (err) {
+            error.ParseFailed => return error.ParseFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+        }
+    else
+        with_nav;
 
     // Expand macros before any sema sees the tree: `#insert macrocall(...)`
     // becomes a literal `#insert #quote { ... }`, and macro decls are dropped.
@@ -544,6 +560,81 @@ fn prependReflectionPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast
     try items.appendSlice(allocator, parsed.module.items);
     try items.appendSlice(allocator, user.items);
     return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
+/// Generate `any_field_at(v, i)` / `any_field_name(v, i)` over the module's
+/// concrete structs, so an `Any` can navigate its fields. Each struct gets a
+/// `__fld_<S>` that returns the i-th field as an *in-place* `Any` (via `any_at` on
+/// the field address) and a `__fldn_<S>` for the field name; two dispatchers
+/// switch on the runtime `typeid`. Only structs whose fields are all simple named
+/// types are included (others are skipped — their navigation returns null/"").
+fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
+    // NB: `src` must outlive this call — the parsed AST's string slices point into
+    // it. It lives on the front-end arena, which frees it later.
+    var src: std.ArrayList(u8) = .empty;
+
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(allocator);
+
+    // The generated functions must live in the *user's* file so they can see the
+    // user structs by name (the combined module's file_name may be `<runtime>`).
+    var nav_file: []const u8 = user.file_name;
+
+    for (user.items) |item| {
+        const decl = switch (item) {
+            .type_decl => |d| d,
+            else => continue,
+        };
+        const strukt = switch (decl.kind) {
+            .struct_type => |s| s,
+            else => continue,
+        };
+        // Only the user's structs — not the embedded runtime's (whose field
+        // types may not resolve from a generated function in the combined module).
+        if (std.mem.eql(u8, decl.file_name, "<runtime>")) continue;
+        if (strukt.type_params.len > 0 or strukt.fields.len == 0) continue;
+        var simple = true;
+        for (strukt.fields) |f| if (f.ty != .named) {
+            simple = false;
+            break;
+        };
+        if (!simple) continue;
+
+        nav_file = decl.file_name;
+        try names.append(allocator, decl.name);
+        try appendFmt(&src, allocator, "__fld_{s} :: fn(d: *const u8, i: usize) -> ?Any {{\n  unsafe {{\n    p := d as *const {s};\n", .{ decl.name, decl.name });
+        for (strukt.fields, 0..) |f, j| {
+            try appendFmt(&src, allocator, "    if i == {d}usize {{ return any_at((&p.{s}) as *const u8, {s}); }}\n", .{ j, f.name, f.ty.named.name });
+        }
+        try src.appendSlice(allocator, "  }\n  return null;\n}\n");
+
+        try appendFmt(&src, allocator, "__fldn_{s} :: fn(i: usize) -> []const u8 {{\n", .{decl.name});
+        for (strukt.fields, 0..) |f, j| {
+            try appendFmt(&src, allocator, "  if i == {d}usize {{ return \"{s}\"; }}\n", .{ j, f.name });
+        }
+        try src.appendSlice(allocator, "  return \"\";\n}\n");
+    }
+
+    // The two dispatchers — always emitted so `any_field_at`/`any_field_name`
+    // exist whenever `Any` is in use (even with no navigable structs).
+    try src.appendSlice(allocator, "any_field_at :: fn(v: Any, i: usize) -> ?Any {\n");
+    for (names.items) |n| try appendFmt(&src, allocator, "  if v.id == typeid_of({s}) {{ return __fld_{s}(v.data, i); }}\n", .{ n, n });
+    try src.appendSlice(allocator, "  return null;\n}\n");
+
+    try src.appendSlice(allocator, "any_field_name :: fn(v: Any, i: usize) -> []const u8 {\n");
+    for (names.items) |n| try appendFmt(&src, allocator, "  if v.id == typeid_of({s}) {{ return __fldn_{s}(i); }}\n", .{ n, n });
+    try src.appendSlice(allocator, "  return \"\";\n}\n");
+
+    const parsed = try parser.parseSourceFrom(allocator, nav_file, src.items, fieldnav_prelude_id_base);
+    var items: std.ArrayList(ast.Item) = .empty;
+    try items.appendSlice(allocator, parsed.module.items);
+    try items.appendSlice(allocator, user.items);
+    return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
+fn appendFmt(src: *std.ArrayList(u8), a: std.mem.Allocator, comptime fmt: []const u8, args: anytype) !void {
+    const s = try std.fmt.allocPrint(a, fmt, args);
+    try src.appendSlice(a, s);
 }
 
 fn prependAnyPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {

@@ -2603,6 +2603,13 @@ const FunctionLowerer = struct {
                 break :blk try self.emit(ct, .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
             },
             .unary => |unary| blk: {
+                // `&p.field` / `&arr[i]` must take the field/element address in
+                // place (field_addr/index_addr), not `ref` a *loaded copy* —
+                // otherwise the result dangles once the temporary is reused.
+                if (unary.op == .address_of) switch (unary.expr.kind) {
+                    .field, .index => break :blk try self.lowerLValueAddress(unary.expr.*),
+                    else => {},
+                };
                 const value = try self.lowerExpr(unary.expr.*);
                 break :blk switch (unary.op) {
                     .address_of => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .ref, .value = value } }, expr.span),
