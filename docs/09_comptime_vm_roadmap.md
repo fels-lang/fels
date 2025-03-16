@@ -82,7 +82,8 @@ The north star is to match and then exceed Jai's metaprogramming, and to close t
 |---|---|---|
 | **Message loop** | single-shot | `#compiler` hooks run **once** and can only *introspect + append*. No per-phase events (`File_Parsed`, `Typechecked`), no callback registration, **no modifying existing declarations** (changing a type, rewriting a body). |
 | **`std.compiler` surface** | **rich introspection done (R1a)**; mutation/events pending | `Decl` now exposes `fields`/params/variants + `ret` (read-only). Still missing: declaration **bodies**, per-phase **events**, and **mutating** existing decls. |
-| **Dynamic code generation in hooks** | plumbing done; blocked on hook-pass sema | A hook can now **return a built `[]u8`/`[]const u8`** (not just a string literal) — `evalToString` materializes a byte slice out of the VM zone. `StringBuilder`/`Arena` DO run in the VM (via `#run`). But building source *inside a hook* still traps: the `#compiler` hook-pass runs a **tolerant** sema that under-types `std.strings`, so the comptime cache mis-lowers `StringBuilder` (we made the resulting slice-lowering a graceful failure instead of an ICE). Gates string-based `#derive`. |
+| **Dynamic code generation in hooks** | **done (R1c)** | A hook builds generated source with the **real `std.strings.StringBuilder`** (`#import std.strings`) or the no-import prelude `CodeBuf`/`emit`, then returns it. `#derive`-style codegen works end-to-end. |
+| **`std.heap`/byte-addressed memory at comptime** | **done** | The comptime VM now models **real host memory** (`host_ptr`/`host_buf` values; `ptr_from_int`/`slice_from_raw_parts` + host load/store/index do real `@ptrFromInt` access; `VirtualAlloc` via the existing FFI). So `std.heap.Arena` (and `StringBuilder`, …) **run at comptime exactly as at runtime** — comptime ≡ runtime for memory. (`compiler_decls()` is scoped to the user's own declarations so a hook that imports std for codegen doesn't see std's types.) |
 | **Capability sandboxing (Phase 5)** | not started | Comptime FFI/`unsafe` are **unconditionally available** (`ffi.zig`: "for now it is unconditionally available"). A malicious dependency macro can reach the host — the `build.rs` hole is **not** yet closed. |
 | **Host stdlib in the VM** | partial | `build.k2` uses `host_call` intrinsics; general `std.fs`/`std.io` at comptime behind capability interfaces is not generalized. |
 | **`#quote` fidelity for new match patterns** | lossy | range/string/guard/binding patterns reflect as the catch-all `anything`. |
@@ -101,30 +102,30 @@ typed AST + IR-shared comptime).
   variants, and a fn's params/return. (`src/ir.zig:lowerCompilerDecls` +
   `astTypeName`; `src/ast_prelude.zig:compiler_source`.) This is the load-bearing
   foundation for `#derive` (R4) and `#require` (R6).
-- **R1b — events + mutation (next).** Emit events from `src/pipeline.zig` as each
-  unit finishes a phase (`File_Parsed`, `Typechecked`, `Done`); let hooks register
-  VM callbacks that **modify** the program (change a type, rewrite a body, stop the
-  build with a diagnostic), and expose declaration **bodies** in `std.compiler`.
-- **R1c — dynamic code generation (partial; remaining work is architectural).**
-  Hooks return generated *source*. Three pieces landed: a hook may **return a built
-  `[]u8`/`[]const u8`** (`evalToString` materializes the byte slice), an
-  unknown-typed slice lowering is a graceful failure rather than an ICE, and the
-  hook-pass sema is **continue-on-error** (one bad decl no longer aborts typing of
-  the rest). So a hook can introspect richly (R1a) and assemble code from string
-  **literals**. What still **doesn't** work: building source by calling
-  `std.strings.StringBuilder` *inside a hook* **traps**. Root cause is deeper than
-  sema completeness: the same std code runs fine under `#run` (the main-compile
-  comptime VM) but traps in the hook, because the hook-pass builds its **own**
-  comptime VM from an early, separately-resolved module — its cache lowers the
-  non-stub std functions subtly differently than the fully-resolved main VM. The
-  trap-stub lists are identical between the two, and a hook that calls `StringBuilder`
-  but returns a literal still traps, ruling out stubs and the slice-return. The
-  true fix is **architectural**: run hooks on the main-compile VM after full
-  resolution (resolving the chicken-and-egg that hooks generate code the main
-  compile then depends on), or make the hook-pass replicate the full resolution
-  pipeline. (Note: "return a typed `AstBlock`" is NOT an option — `AstBlock` holds
-  statements, there is no top-level-declaration AST type, and `#quote` can't hold a
-  declaration.) Required before R4.
+- **R1b — affect compilation (in progress).** First capability **done**:
+  **`compiler_error("msg")`** lets a `#compiler` hook **halt the build with a
+  custom diagnostic** after introspecting the program — whole-program validation
+  (e.g. "every `Component` must be `#packed`"), the basis for `#require` (R6).
+  Wiring: a `halt_msg` VM opcode records the message on the engine; `evalToString`
+  surfaces it; `runCompilerHooks` reports it and fails. Still to do: per-phase
+  events (`File_Parsed`/`Typechecked`/`Done`), callbacks that **mutate** existing
+  declarations (change a type, rewrite a body), and exposing declaration **bodies**
+  in `std.compiler`.
+- **R1c — dynamic code generation (DONE).** A hook builds generated source with
+  the compiler prelude's `CodeBuf`: `cb := gen_buf(); emit(&cb, "..."); emit(&cb,
+  d.name); … return rendered(&cb);`. `CodeBuf` is backed by **`__str_cat`**, a
+  VM-native string-concat builtin (`str_concat` opcode in the engine, operating on
+  the VM's interned strings) — so it needs **no `Arena`, no raw pointers, no
+  imports**, and runs cleanly in the comptime VM. `evalToString` accepts the
+  resulting `[]const u8`. The `#derive(sum)` demo (emit a `sum_<T>` for every
+  struct, summing its fields) works end-to-end. *Why not `StringBuilder`:*
+  `std.heap.Arena` uses `VirtualAlloc` + raw `slice_from_raw_parts`, which the
+  cell-based comptime VM can't model (it's `Unsupported` → trap-stub); `#run` hides
+  this by falling back to runtime, but a hook can't fall back. `CodeBuf` sidesteps
+  the heap entirely. (Bonus robustness shipped alongside: the hook-pass sema is now
+  continue-on-error, and an unknown-typed slice lowering is graceful, not an ICE.)
+  Minor known limit: K2 string literals don't process `\n` escapes, so use a space
+  separator between generated decls.
 
 ### R2. Capability-sandboxed metaprogramming — *the flagship*
 **The structural fix to the `build.rs`/Jai supply-chain hole.** K2 already has no

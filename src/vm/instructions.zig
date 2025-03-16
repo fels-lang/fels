@@ -56,6 +56,12 @@ pub const Opcode = enum(u8) {
     index_load, // a = dst; b = base (zone slice/ptr OR host string); c = index reg; imm = cells per element → loaded element
     slice_make, // a = dst; b = ptr reg; c = len reg → slice value
     slice_len, // a = dst; b = slice reg → its length as a uint
+    slice_ptr, // a = dst; b = slice/host_buf reg → its base pointer
+    str_concat, // a = dst; b = lhs string reg; c = rhs string reg → concatenated string
+    halt_msg, // a = string reg → record it as a compiler diagnostic and halt (Trap)
+    // ── Host memory (run byte-addressed std.heap at comptime) ────────────
+    host_ptr_make, // a = dst; b = addr reg (uint); imm = byte size of pointee → host_ptr
+    host_buf_make, // a = dst; b = addr/host_ptr reg; c = len reg; imm = byte stride → host_buf
     opt_is_some, // a = dst; b = optional value → bool (non-null)
     interface_method, // a = dst; b = interface value; imm = method slot → fn_ref
     call_indirect, // a = dst; b = callee fn_ref reg; c = arg base reg; imm = arg count

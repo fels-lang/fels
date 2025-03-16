@@ -58,6 +58,13 @@ pub const Vm = struct {
     /// Guard against runaway comptime loops (mirrors the tree-walker's cap).
     steps: u64 = 0,
     step_limit: u64 = 100_000_000,
+    /// Strings built by `str_concat` (the comptime string builder); owned here and
+    /// freed on `deinit` (callers dupe the final result out before then).
+    concat_strings: std.ArrayList([]u8) = .empty,
+    /// Set by `halt_msg` (a `#compiler` hook calling `compiler_error("...")`): the
+    /// diagnostic to report when the run halts. Points into `concat_strings` or a
+    /// module constant, so it lives as long as the VM.
+    compiler_error_msg: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator) Vm {
         return .{ .allocator = allocator, .zone_stack = zones.ZoneStack.init(allocator) };
@@ -73,6 +80,39 @@ pub const Vm = struct {
 
     pub fn deinit(self: *Vm) void {
         self.zone_stack.deinit();
+        for (self.concat_strings.items) |s| self.allocator.free(s);
+        self.concat_strings.deinit(self.allocator);
+    }
+
+    fn strLen(v: Value) ?usize {
+        return switch (v) {
+            .string => |s| s.len,
+            .slice => |s| s.len,
+            .host_buf => |hb| hb.len,
+            else => null,
+        };
+    }
+
+    fn copyStrBytes(self: *Vm, v: Value, dst: []u8) VmError!void {
+        switch (v) {
+            .string => |s| @memcpy(dst, s),
+            .host_buf => |hb| {
+                const p: [*]const u8 = @ptrFromInt(hb.addr);
+                @memcpy(dst, p[0..hb.len]);
+            },
+            .slice => |s| {
+                var i: usize = 0;
+                while (i < s.len) : (i += 1) {
+                    const cell = try self.zone_stack.getCell(s.zone, s.offset + @as(u32, @intCast(i)));
+                    dst[i] = switch (cell) {
+                        .int => |x| @intCast(@mod(x, 256)),
+                        .uint => |x| @intCast(x % 256),
+                        else => return error.TypeMismatch,
+                    };
+                }
+            },
+            else => return error.TypeMismatch,
+        }
     }
 
     /// Execute a standalone function with no arguments. Kept for the simple
@@ -326,39 +366,60 @@ pub const Vm = struct {
                     frame.regs[inst.a] = try self.zone_stack.alloc(@intCast(inst.imm));
                 },
                 .field_addr => {
-                    const base = try asPtr(frame.regs[inst.b]);
-                    frame.regs[inst.a] = .{ .ptr = .{
-                        .zone = base.zone,
-                        .offset = base.offset + @as(u32, @intCast(inst.imm)),
-                    } };
+                    // A field of a HOST struct (e.g. `Chunk` reached via a real
+                    // address): pointer-sized fields, so byte offset = index * 8.
+                    if (frame.regs[inst.b] == .host_ptr) {
+                        const hp = frame.regs[inst.b].host_ptr;
+                        frame.regs[inst.a] = .{ .host_ptr = .{ .addr = hp.addr + @as(usize, @intCast(inst.imm)) * 8, .size = 8 } };
+                    } else {
+                        const base = try asPtr(frame.regs[inst.b]);
+                        frame.regs[inst.a] = .{ .ptr = .{ .zone = base.zone, .offset = base.offset + @as(u32, @intCast(inst.imm)) } };
+                    }
                 },
                 .load_cell => {
-                    const base = try asPtr(frame.regs[inst.b]);
-                    frame.regs[inst.a] = try self.zone_stack.getCell(base.zone, base.offset + @as(u32, @intCast(inst.imm)));
+                    // On a host pointer, `imm` is a field index → byte offset *8;
+                    // host struct fields are pointer-sized (read 8 bytes).
+                    if (frame.regs[inst.b] == .host_ptr) {
+                        const hp = frame.regs[inst.b].host_ptr;
+                        frame.regs[inst.a] = hostLoad(hp.addr + @as(usize, @intCast(inst.imm)) * 8, 8);
+                    } else {
+                        const base = try asPtr(frame.regs[inst.b]);
+                        frame.regs[inst.a] = try self.zone_stack.getCell(base.zone, base.offset + @as(u32, @intCast(inst.imm)));
+                    }
                 },
                 .store_cell => {
-                    const base = try asPtr(frame.regs[inst.a]);
-                    try self.zone_stack.setCell(base.zone, base.offset + @as(u32, @intCast(inst.imm)), frame.regs[inst.b]);
+                    // The target's offset is already baked in by `field_addr` /
+                    // `index_addr`; write `hp.size` bytes at the host address.
+                    if (frame.regs[inst.a] == .host_ptr) {
+                        const hp = frame.regs[inst.a].host_ptr;
+                        hostStore(hp.addr + @as(usize, @intCast(inst.imm)) * 8, hp.size, frame.regs[inst.b]);
+                    } else {
+                        const base = try asPtr(frame.regs[inst.a]);
+                        try self.zone_stack.setCell(base.zone, base.offset + @as(u32, @intCast(inst.imm)), frame.regs[inst.b]);
+                    }
                 },
                 .index_addr => {
-                    const base = try asPtr(frame.regs[inst.b]);
                     const index = frame.regs[inst.c].asI128() orelse return error.TypeMismatch;
-                    const stride: i128 = @intCast(inst.imm);
-                    frame.regs[inst.a] = .{ .ptr = .{
-                        .zone = base.zone,
-                        .offset = base.offset + @as(u32, @intCast(index * stride)),
-                    } };
+                    if (frame.regs[inst.b] == .host_buf) {
+                        const hb = frame.regs[inst.b].host_buf;
+                        frame.regs[inst.a] = .{ .host_ptr = .{ .addr = hb.addr + @as(usize, @intCast(index)) * hb.stride, .size = hb.stride } };
+                    } else {
+                        const base = try asPtr(frame.regs[inst.b]);
+                        const stride: i128 = @intCast(inst.imm);
+                        frame.regs[inst.a] = .{ .ptr = .{ .zone = base.zone, .offset = base.offset + @as(u32, @intCast(index * stride)) } };
+                    }
                 },
                 .index_load => {
-                    // Element read that works for BOTH zone-backed aggregates
-                    // and host strings (`[]const u8` literals/fields are stored
-                    // as `.string`, which has no zone address).
+                    // Element read for zone aggregates, host strings, and host bufs.
                     const index = frame.regs[inst.c].asI128() orelse return error.TypeMismatch;
                     switch (frame.regs[inst.b]) {
                         .string => |s| {
                             const i: usize = std.math.cast(usize, index) orelse return error.TypeMismatch;
                             if (i >= s.len) return error.OutOfBounds;
                             frame.regs[inst.a] = .{ .uint = s[i] };
+                        },
+                        .host_buf => |hb| {
+                            frame.regs[inst.a] = hostLoad(hb.addr + @as(usize, @intCast(index)) * hb.stride, hb.stride);
                         },
                         else => {
                             const base = try asPtr(frame.regs[inst.b]);
@@ -382,8 +443,42 @@ pub const Vm = struct {
                         .slice => |s| .{ .uint = s.len },
                         // `[]const u8` string values carry their own length.
                         .string => |s| .{ .uint = s.len },
+                        .host_buf => |hb| .{ .uint = hb.len },
                         else => return error.TypeMismatch,
                     };
+                },
+                .slice_ptr => {
+                    frame.regs[inst.a] = switch (frame.regs[inst.b]) {
+                        .host_buf => |hb| .{ .host_ptr = .{ .addr = hb.addr, .size = hb.stride } },
+                        .slice => |s| .{ .ptr = .{ .zone = s.zone, .offset = s.offset } },
+                        else => return error.TypeMismatch,
+                    };
+                },
+                .halt_msg => {
+                    // `compiler_error(msg)`: stash the message and halt the hook.
+                    self.compiler_error_msg = switch (frame.regs[inst.a]) {
+                        .string => |s| s,
+                        else => "compiler hook requested a halt",
+                    };
+                    return error.Trap;
+                },
+                .host_ptr_make => frame.regs[inst.a] = .{ .host_ptr = .{
+                    .addr = asAddr(frame.regs[inst.b]) orelse return error.TypeMismatch,
+                    .size = @intCast(inst.imm),
+                } },
+                .host_buf_make => frame.regs[inst.a] = .{ .host_buf = .{
+                    .addr = asAddr(frame.regs[inst.b]) orelse return error.TypeMismatch,
+                    .len = @intCast(frame.regs[inst.c].asI128() orelse return error.TypeMismatch),
+                    .stride = @intCast(inst.imm),
+                } },
+                .str_concat => {
+                    const la = strLen(frame.regs[inst.b]) orelse return error.TypeMismatch;
+                    const lb = strLen(frame.regs[inst.c]) orelse return error.TypeMismatch;
+                    const buf = self.allocator.alloc(u8, la + lb) catch return error.OutOfMemory;
+                    try self.copyStrBytes(frame.regs[inst.b], buf[0..la]);
+                    try self.copyStrBytes(frame.regs[inst.c], buf[la..]);
+                    self.concat_strings.append(self.allocator, buf) catch return error.OutOfMemory;
+                    frame.regs[inst.a] = .{ .string = buf };
                 },
                 .opt_is_some => frame.regs[inst.a] = .{ .bool = switch (frame.regs[inst.b]) {
                     .null_ptr => false,
@@ -431,6 +526,42 @@ fn asPtr(v: Value) VmError!Value.Ptr {
         .slice => |s| .{ .zone = s.zone, .offset = s.offset },
         else => error.TypeMismatch,
     };
+}
+
+/// A raw host address from an int/uint/host pointer (for `ptr_from_int` etc.).
+fn asAddr(v: Value) ?usize {
+    return switch (v) {
+        .uint => |u| std.math.cast(usize, u),
+        .int => |i| std.math.cast(usize, i),
+        .host_ptr => |hp| hp.addr,
+        .null_ptr => 0,
+        else => null,
+    };
+}
+
+/// Read `size` (1–16) bytes of real host memory at `addr` as a little-endian uint.
+fn hostLoad(addr: usize, size: u32) Value {
+    if (addr == 0) return .{ .uint = 0 };
+    const p: [*]const u8 = @ptrFromInt(addr);
+    var v: u128 = 0;
+    var i: u32 = 0;
+    while (i < size and i < 16) : (i += 1) v |= @as(u128, p[i]) << @intCast(i * 8);
+    return .{ .uint = v };
+}
+
+/// Write the low `size` bytes of `val` to real host memory at `addr`.
+fn hostStore(addr: usize, size: u32, val: Value) void {
+    if (addr == 0) return;
+    const p: [*]u8 = @ptrFromInt(addr);
+    const v: u128 = switch (val) {
+        .uint => |x| x,
+        .int => |x| @bitCast(x),
+        .host_ptr => |hp| hp.addr,
+        .bool => |b| @intFromBool(b),
+        else => 0,
+    };
+    var i: u32 = 0;
+    while (i < size and i < 16) : (i += 1) p[i] = @truncate(v >> @intCast(i * 8));
 }
 
 fn constName(consts: []const Value, imm: i64) []const u8 {

@@ -505,6 +505,33 @@ const FnCompiler = struct {
                     const pr = try self.resolveReg(b.args[0]);
                     try self.emit(Instr.r_imm(.zone_alloc, target, 1));
                     try self.emit(Instr.r_r_imm(.store_cell, target, pr, 0));
+                } else if (std.mem.eql(u8, b.name, "__str_cat") and b.args.len == 2) {
+                    const ar = try self.resolveReg(b.args[0]);
+                    const br = try self.resolveReg(b.args[1]);
+                    try self.emit(Instr.r_r_r(.str_concat, target, ar, br));
+                } else if (std.mem.eql(u8, b.name, "compiler_error") and b.args.len == 1) {
+                    // `compiler_error(msg)`: record the diagnostic and halt the hook.
+                    const mr = try self.resolveReg(b.args[0]);
+                    try self.emit(Instr.r_imm(.halt_msg, mr, 0));
+                } else if (std.mem.eql(u8, b.name, "ptr_from_int") and b.args.len >= 2) {
+                    // `ptr_from_int(*T, addr)` → a real host pointer (the VM can now
+                    // run byte-addressed std.heap). `size` = the pointee's byte size,
+                    // so host loads/stores know their width.
+                    const addr = try self.resolveReg(b.args[1]);
+                    const size: u32 = switch (inst.ty) {
+                        .ptr => |p| @intCast(self.byteSize(p.*) orelse 8),
+                        else => 8,
+                    };
+                    try self.emit(Instr.r_r_imm(.host_ptr_make, target, addr, @intCast(size)));
+                } else if (std.mem.eql(u8, b.name, "slice_from_raw_parts") and b.args.len >= 3) {
+                    // `slice_from_raw_parts(T, ptr, n)` → a host slice (addr+len+stride).
+                    const p = try self.resolveReg(b.args[1]);
+                    const n = try self.resolveReg(b.args[2]);
+                    const stride: u32 = switch (inst.ty) {
+                        .slice => |e| @intCast(self.byteSize(e.*) orelse 1),
+                        else => 1,
+                    };
+                    try self.emit(Instr{ .op = .host_buf_make, .a = target, .b = p, .c = n, .imm = @intCast(stride) });
                 } else if (std.mem.eql(u8, b.name, "sizeof")) {
                     // `sizeof(T)` folds to a compile-time byte size (a `usize`).
                     const ta = b.type_arg orelse return error.Unsupported;
@@ -576,6 +603,13 @@ const FnCompiler = struct {
                         },
                         else => {},
                     }
+                }
+                // `slice.ptr` — the base pointer (a host pointer for a host buffer,
+                // a cell pointer otherwise). Like `.len`, not an ordinary field.
+                if (std.mem.eql(u8, f.name, "ptr") and base_ty == .slice) {
+                    const base = try self.resolveReg(f.base);
+                    try self.emit(Instr.r_r_imm(.slice_ptr, target, base, 0));
+                    return;
                 }
                 const base = try self.resolveReg(f.base);
                 const idx = try self.fieldOffset(base_ty, f.name);

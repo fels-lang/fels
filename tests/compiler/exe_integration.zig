@@ -1430,3 +1430,40 @@ test "exe: match-expression threads the expected type into `.{ }` arms" {
     , "exe_match_expr_typed");
     try std.testing.expectEqual(@as(u32, 42), code);
 }
+
+test "exe: `#compiler` hook derives code from struct fields (R1c)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A `#compiler` hook reads each struct's fields (rich introspection, R1a) and
+    // BUILDS generated source from them with the prelude's `CodeBuf`/`__str_cat`
+    // (a VM-native string builder — no heap/raw pointers), emitting a `sum_<T>`
+    // for every struct. This is the `#derive` capability, end-to-end.
+    const code = try compileAndRun(arena.allocator(),
+        \\Point :: struct { x: i32, y: i32 }
+        \\Vec3  :: struct { a: i32, b: i32, c: i32 }
+        \\#compiler derive_sum :: fn() -> []const u8 {
+        \\    cb := gen_buf();
+        \\    for d in compiler_decls() {
+        \\        match d.kind {
+        \\            "struct" => {
+        \\                emit(&cb, "sum_"); emit(&cb, d.name);
+        \\                emit(&cb, " :: fn(p: "); emit(&cb, d.name);
+        \\                emit(&cb, ") -> i32 { return 0");
+        \\                for f in d.fields { emit(&cb, " + p."); emit(&cb, f.name); }
+        \\                emit(&cb, "; } ");
+        \\            }
+        \\            else => {}
+        \\        }
+        \\    }
+        \\    return rendered(&cb);
+        \\}
+        \\main :: fn() -> i32 {
+        \\    p: Point = .{ 30, 2 };
+        \\    v: Vec3 = .{ 3, 3, 4 };
+        \\    return sum_Point(p) + sum_Vec3(v);
+        \\}
+    , "exe_derive_sum");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}

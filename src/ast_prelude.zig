@@ -120,6 +120,11 @@ pub const source =
 pub const compiler_source =
     \\CField :: struct { name: []const u8, type_name: []const u8 }
     \\Decl :: struct { name: []const u8, kind: []const u8, fields: []CField, ret: []const u8 }
+    \\
+    \\CodeBuf :: struct { s: []const u8 }
+    \\gen_buf :: fn() -> CodeBuf { r: CodeBuf = .{ "" }; return r; }
+    \\emit :: fn(self: *CodeBuf, piece: []const u8) { self.s = __str_cat(self.s, piece); }
+    \\rendered :: fn(self: *CodeBuf) -> []const u8 { return self.s; }
 ;
 
 /// `TypeInfo` reflection surface — injected whenever a module uses `type_info`.

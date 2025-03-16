@@ -2537,6 +2537,25 @@ const Checker = struct {
         // `typeid_of(T)` — a stable runtime type id (usize). Its arg is a type,
         // so return before the value-argument checks (like `type_info`).
         if (std.mem.eql(u8, name, "typeid_of")) return .usize;
+        // `__str_cat(a, b)` — VM-native comptime string concat (no-import codegen
+        // helper backing `CodeBuf`; the full `std.strings.StringBuilder` ALSO runs
+        // at comptime now via host memory, but needs an explicit import).
+        if (std.mem.eql(u8, name, "__str_cat")) {
+            for (call.args) |arg| {
+                const v = switch (arg) { .positional => |p| p, .named => |n| n.value };
+                _ = try self.inferExpr(v);
+            }
+            return try self.sliceOf(.u8);
+        }
+        // `compiler_error(msg)` — a `#compiler` hook halts the build with a custom
+        // diagnostic (whole-program validation).
+        if (std.mem.eql(u8, name, "compiler_error")) {
+            for (call.args) |arg| {
+                const v = switch (arg) { .positional => |p| p, .named => |n| n.value };
+                _ = try self.inferExpr(v);
+            }
+            return .void;
+        }
         if (isBuiltinValue(name)) for (call.args) |arg| {
             const value = switch (arg) {
                 .positional => |positional| positional,
@@ -4585,7 +4604,7 @@ fn isBuiltinValue(name: []const u8) bool {
            "type_info",      "type_name",      "reject",          "require",
            "typeid_of",      "any",
         // Compile-time program introspection (Phase 3 message loop)
-        "compiler_decls",
+        "compiler_decls", "__str_cat", "compiler_error",
         // std.build host intrinsics (the build system, comptime-only)
         "__build_artifact", "__build_opt",     "__build_link",
         "__build_libpath",  "__build_output",  "__build_define",

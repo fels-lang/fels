@@ -1,0 +1,34 @@
+// Regression fixture: a `#compiler` hook builds generated source with the REAL
+// `std.strings.StringBuilder`, which is backed by `std.heap.Arena` (VirtualAlloc +
+// raw pointers). A hook runs at compile time and CANNOT fall back to runtime, so
+// this only compiles if the comptime VM truly runs byte-addressed host memory.
+#import std.strings as str;
+#import std.heap as heap;
+
+Point :: struct { x: i32, y: i32 }
+Vec3  :: struct { a: i32, b: i32, c: i32 }
+
+#compiler
+derive_sum :: fn() -> []const u8 {
+    a := heap::make();
+    sb := str::builder(&a);
+    for d in compiler_decls() {
+        match d.kind {
+            "struct" => {
+                sb.append("sum_"); sb.append(d.name);
+                sb.append(" :: fn(p: "); sb.append(d.name);
+                sb.append(") -> i32 { return 0");
+                for f in d.fields { sb.append(" + p."); sb.append(f.name); }
+                sb.append("; } ");
+            }
+            else => {}
+        }
+    }
+    return sb.str();
+}
+
+main :: fn() -> i32 {
+    p: Point = .{ 30, 2 };
+    v: Vec3 = .{ 3, 3, 4 };
+    return sum_Point(p) + sum_Vec3(v);   // 32 + 10 = 42
+}

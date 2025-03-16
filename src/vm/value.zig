@@ -38,11 +38,21 @@ pub const Value = union(enum) {
     /// Index into the VM module's function table.
     fn_ref: u32,
     null_ptr,
+    /// A raw host pointer — a real process address, with the byte size of the
+    /// pointee so loads/stores know their width. Produced by `ptr_from_int` and
+    /// `field_addr` on a host struct; lets the comptime VM run byte-addressed code
+    /// like `std.heap.Arena` (which `VirtualAlloc`s real memory) exactly as at
+    /// runtime. Distinct from the cell `ptr` so the engine dispatches per kind.
+    host_ptr: HostPtr,
+    /// A slice over raw host memory: a real address + element count + byte stride.
+    host_buf: HostBuf,
 
     pub const Ptr = struct { zone: ZoneId, offset: u32 };
     pub const Slice = struct { zone: ZoneId, offset: u32, len: usize };
     pub const Ref = struct { zone: ZoneId, offset: u32 };
     pub const Variant = struct { tag: u32, payload_zone: ZoneId, payload_offset: u32 };
+    pub const HostPtr = struct { addr: usize, size: u32 };
+    pub const HostBuf = struct { addr: usize, len: usize, stride: u32 };
 
     /// Lift an IR immediate into a VM value.
     pub fn fromImm(imm: ir.Imm) Value {

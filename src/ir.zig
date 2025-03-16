@@ -2051,6 +2051,10 @@ const FunctionLowerer = struct {
         for (self.module.items) |item| {
             const nm = item.name() orelse continue;
             if (isPreludeDeclName(nm)) continue;
+            // Only the program's OWN declarations — not types pulled in by an
+            // `#import` (a hook that imports std for its codegen shouldn't see
+            // `std.heap.Chunk` etc.). Generated decls share the root file name.
+            if (!std.mem.eql(u8, item.fileName(), self.module.file_name)) continue;
             const v = try self.mkStruct("Decl", &.{
                 .{ .name = "name", .value = astStr(nm) },
                 .{ .name = "kind", .value = astStr(declKindName(item)) },
@@ -2958,6 +2962,27 @@ const FunctionLowerer = struct {
                     };
                     const ty = try self.lowerTypeArg(first);
                     break :blk .{ .imm = .{ .uint = typeIdHash(ty) } };
+                }
+                // `__str_cat(a, b)` — VM-native comptime string concat (CodeBuf).
+                if (std.mem.eql(u8, callee_name, "__str_cat") and call.args.len == 2) {
+                    const a0 = switch (call.args[0]) { .positional => |e| e, .named => |n| n.value };
+                    const a1 = switch (call.args[1]) { .positional => |e| e, .named => |n| n.value };
+                    const lhs = try self.lowerExpr(a0);
+                    const rhs = try self.lowerExpr(a1);
+                    break :blk try self.emit(string_slice_ty, .{ .builtin = .{
+                        .name = "__str_cat",
+                        .args = try self.allocator.dupe(Value, &.{ lhs, rhs }),
+                    } });
+                }
+                // `compiler_error(msg)` — VM halts the hook with the diagnostic; at
+                // runtime it's never executed (hooks aren't run), so it's a no-op.
+                if (std.mem.eql(u8, callee_name, "compiler_error") and call.args.len == 1) {
+                    const m = switch (call.args[0]) { .positional => |e| e, .named => |n| n.value };
+                    const msg = try self.lowerExpr(m);
+                    break :blk try self.emit(.void, .{ .builtin = .{
+                        .name = "compiler_error",
+                        .args = try self.allocator.dupe(Value, &.{msg}),
+                    } });
                 }
                 // `type_name(T)` folds to the type's name string at lowering, so it
                 // works at runtime (not just on the VM) — same string as comptime.
@@ -4035,7 +4060,9 @@ fn extractAsmConstraint(expr: ast.Expr) ?[]const u8 {
 /// `compiler_decls()` view so a hook sees only the user's (and generated) decls.
 fn isPreludeDeclName(name: []const u8) bool {
     const eq = std.mem.eql;
-    return eq(u8, name, "Decl") or eq(u8, name, "CField") or std.mem.startsWith(u8, name, "Ast");
+    return eq(u8, name, "Decl") or eq(u8, name, "CField") or eq(u8, name, "CodeBuf") or
+        eq(u8, name, "gen_buf") or eq(u8, name, "emit") or eq(u8, name, "rendered") or
+        std.mem.startsWith(u8, name, "Ast");
 }
 
 /// Render an AST type reference to its source-ish name for `compiler_decls()`
@@ -4092,6 +4119,8 @@ fn isBuiltinName(name: []const u8) bool {
         "atomic_store",
         "compound_literal",
         "slice",
+        "__str_cat",
+        "compiler_error",
         // std.build host intrinsics (comptime-only; lowered to host_call in the VM).
         "__build_artifact",
         "__build_opt",
@@ -4143,6 +4172,9 @@ pub const ComptimeVm = struct {
     /// The file a `#run`/`#insert` expression lives in, so synthetic eval
     /// functions resolve namespace (`ns::member`) access in the right module.
     current_file: []const u8 = "",
+    /// Set when a `#compiler` hook called `compiler_error("...")` — the diagnostic
+    /// to report (instead of a generic failure).
+    hook_error: ?[]const u8 = null,
 
     const Cache = struct {
         ir_module: IrModule,
@@ -4241,7 +4273,11 @@ pub const ComptimeVm = struct {
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
         defer vm.deinit();
-        const result = vm.executeKeepZones(bc_fn) catch return null;
+        const result = vm.executeKeepZones(bc_fn) catch {
+            // A `compiler_error("...")` halt — carry the diagnostic out.
+            if (vm.compiler_error_msg) |m| self.hook_error = out_alloc.dupe(u8, m) catch null;
+            return null;
+        };
         return switch (result) {
             .string => |s| out_alloc.dupe(u8, s) catch null,
             // A hook may RETURN a built `[]u8`/`[]const u8` (e.g. via the compiler
@@ -4258,6 +4294,15 @@ pub const ComptimeVm = struct {
                         else => return null,
                     };
                 }
+                break :blk bytes;
+            },
+            // A `[]u8` over real host memory (e.g. `StringBuilder.str()` now that
+            // std.heap runs at comptime) — copy the bytes straight out.
+            .host_buf => |hb| blk: {
+                if (hb.addr == 0) break :blk null;
+                const bytes = out_alloc.alloc(u8, hb.len) catch return null;
+                const p: [*]const u8 = @ptrFromInt(hb.addr);
+                @memcpy(bytes, p[0..hb.len]);
                 break :blk bytes;
             },
             else => null,
@@ -4792,7 +4837,11 @@ pub fn runCompilerHooks(allocator: std.mem.Allocator, front_end: pipeline.FrontE
             const call_expr = ast.Expr{ .id = id + 1, .kind = .{ .call = .{ .callee = callee, .args = &.{} } }, .span = f.span };
             id += 2;
             cvm.current_file = f.file_name;
-            const src = cvm.evalToString(call_expr, allocator) orelse return error.SemanticFailed;
+            const src = cvm.evalToString(call_expr, allocator) orelse {
+                // A `compiler_error("...")` halt prints the hook's diagnostic.
+                if (cvm.hook_error) |m| std.debug.print("error: {s}\n", .{m});
+                return error.SemanticFailed;
+            };
             try out.appendSlice(allocator, src);
             try out.append(allocator, '\n');
             produced = true;

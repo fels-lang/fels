@@ -15,6 +15,55 @@ fn hasFunction(m: anytype, name: []const u8) bool {
     return false;
 }
 
+test "compiler-hook: a hook builds source with the REAL StringBuilder (host memory at comptime)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `std.strings.StringBuilder` is backed by `std.heap.Arena` (VirtualAlloc + raw
+    // pointers). A `#compiler` hook runs at compile time and cannot fall back to
+    // runtime, so this only works because the comptime VM now models real host
+    // memory. The hook emits a `sum_<T>` for every user struct.
+    var fe = try k2.compileFileWithRuntime(a, std.testing.io, "tests/fixtures/hostmem/derive_sb.k2");
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+    try std.testing.expect(hasFunction(m, "sum_Point"));
+    try std.testing.expect(hasFunction(m, "sum_Vec3"));
+}
+
+test "compiler-hook: `compiler_error` halts the build with a custom diagnostic (R1b)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A `#compiler` hook can VALIDATE the whole program and stop compilation with
+    // its own message — the message-loop's "affect compilation" capability.
+    const bad =
+        \\Widget :: struct { x: i32 }
+        \\#compiler policy :: fn() -> []const u8 {
+        \\    for d in compiler_decls() {
+        \\        match d.kind { "struct" => { compiler_error("structs are banned here"); } else => {} }
+        \\    }
+        \\    return "";
+        \\}
+        \\main :: fn() -> i32 { return 0; }
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "policy.k2", bad));
+}
+
+test "compiler-hook: a hook that does NOT call compiler_error compiles normally" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src =
+        \\#compiler ok :: fn() -> []const u8 { return "gen :: fn() -> i32 { return 1; }"; }
+        \\main :: fn() -> i32 { return gen(); }
+    ;
+    var fe = try k2.compile(a, "ok.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+    try std.testing.expect(hasFunction(m, "gen"));
+}
+
 test "compiler-hook: rich introspection — reads struct fields and enum variants" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
