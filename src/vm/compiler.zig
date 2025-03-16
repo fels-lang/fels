@@ -470,6 +470,19 @@ const FnCompiler = struct {
             .call => |ci| try self.lowerCall(target, ci),
 
             .call_indirect => |ci| {
+                // A no-return runtime intrinsic (`@panic`/`exit`/`abort`) sometimes
+                // lowers to an indirect call to a `.local`/`.param` of that name
+                // (when sema didn't bind it to a top-level symbol). Trap instead —
+                // see `isComptimeTrapCall`.
+                const ind_name: ?[]const u8 = switch (ci.callee) {
+                    .local => |n| n,
+                    .param => |n| n,
+                    else => null,
+                };
+                if (ind_name) |nm| if (isComptimeTrapCall(nm)) {
+                    try self.emit(Instr.with_imm(.trap, -1));
+                    return;
+                };
                 const callee = try self.resolveReg(ci.callee);
                 const argc: u32 = @intCast(ci.args.len);
                 const base = self.next_reg;
@@ -801,7 +814,23 @@ const FnCompiler = struct {
         return dst;
     }
 
+    /// A runtime "never returns" intrinsic (`@panic`/`exit`/`abort`). At comptime
+    /// these can't run as real calls (no runtime to call into), but a function
+    /// that merely *contains* one — e.g. `std.heap.alloc_bytes`, which `@panic`s
+    /// only on a NULL out-of-memory branch that a valid alloc never hits — must
+    /// still fold. Lower the call to a `trap`: harmless dead weight unless the
+    /// branch is actually taken (in which case the comptime eval correctly halts).
+    fn isComptimeTrapCall(name: []const u8) bool {
+        return std.mem.eql(u8, name, "@panic") or
+            std.mem.eql(u8, name, "exit") or
+            std.mem.eql(u8, name, "abort");
+    }
+
     fn lowerCall(self: *FnCompiler, target: Reg, ci: ir.CallInstr) CompileError!void {
+        if (isComptimeTrapCall(ci.callee)) {
+            try self.emit(Instr.with_imm(.trap, -1));
+            return;
+        }
         const map = self.func_map orelse return error.Unsupported;
         const fidx = map.get(ci.callee) orelse return error.Unsupported;
 

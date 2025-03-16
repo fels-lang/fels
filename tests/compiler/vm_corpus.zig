@@ -218,6 +218,11 @@ test "vm corpus: wide #run coverage" {
         \\// ── unary float negation ──
         \\fneg :: fn(v: f64) -> i32 { return (-v) as i32; }
         \\C_fneg :: #run fneg(-42.0);
+        \\
+        \\// ── host memory: std.heap.Arena (real VirtualAlloc + raw pointers) runs
+        \\//    in the comptime VM, so this folds via the VM rather than falling back ──
+        \\hmem :: fn() -> i32 { zone a: Arena { buf := a.alloc_bytes(64); buf[0] = 40; buf[1] = 2; return (buf[0] + buf[1]) as i32; } }
+        \\C_hmem :: #run hmem();
     ;
 
     var fe = try k2.compile(a, "corpus.k2", src);
