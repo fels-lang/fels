@@ -526,6 +526,10 @@ const FnCompiler = struct {
                     // `compiler_error(msg)`: record the diagnostic and halt the hook.
                     const mr = try self.resolveReg(b.args[0]);
                     try self.emit(Instr.r_imm(.halt_msg, mr, 0));
+                } else if (std.mem.eql(u8, b.name, "compiler_remove") and b.args.len == 1) {
+                    // `compiler_remove(name)`: record the decl to drop (no halt).
+                    const nr = try self.resolveReg(b.args[0]);
+                    try self.emit(Instr.r_imm(.record_remove, nr, 0));
                 } else if (std.mem.eql(u8, b.name, "ptr_from_int") and b.args.len >= 2) {
                     // `ptr_from_int(*T, addr)` → a real host pointer (the VM can now
                     // run byte-addressed std.heap). `size` = the pointee's byte size,

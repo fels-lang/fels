@@ -31,6 +31,115 @@ test "compiler-hook: a hook builds source with the REAL StringBuilder (host memo
     try std.testing.expect(hasFunction(m, "sum_Vec3"));
 }
 
+test "compiler-hook: a hook reads a declaration's BODY text (R1b-A)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `Decl.body` is the decl's source text. The hook only emits the real
+    // `answer` when it sees the `7` inside `target`'s body — proving it read the
+    // actual body, not just the signature.
+    const src =
+        \\target :: fn() -> i32 { return 7; }
+        \\has_seven :: fn(s: []const u8) -> bool {
+        \\    for i in 0..s.len { if s[i] == 55u8 { return true; } }
+        \\    return false;
+        \\}
+        \\streq :: fn(p: []const u8, q: []const u8) -> bool {
+        \\    if p.len != q.len { return false; }
+        \\    for i in 0..p.len { if p[i] != q[i] { return false; } }
+        \\    return true;
+        \\}
+        \\#compiler gen :: fn() -> []const u8 {
+        \\    for d in compiler_decls() {
+        \\        if streq(d.name, "target") {
+        \\            if has_seven(d.body) { return "answer :: fn() -> i32 { return 42; }"; }
+        \\        }
+        \\    }
+        \\    return "answer :: fn() -> i32 { return 0; }";
+        \\}
+        \\main :: fn() -> i32 { return answer(); }
+    ;
+    var fe = try k2.compile(a, "body.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+    try std.testing.expect(hasFunction(m, "answer"));
+}
+
+test "compiler-hook: `compiler_remove` drops an existing declaration (R1b-B)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The hook removes `scratch`; it must be gone from the lowered module.
+    const src =
+        \\scratch :: fn() -> i32 { return 1; }
+        \\streq :: fn(p: []const u8, q: []const u8) -> bool {
+        \\    if p.len != q.len { return false; }
+        \\    for i in 0..p.len { if p[i] != q[i] { return false; } }
+        \\    return true;
+        \\}
+        \\#compiler gen :: fn() -> []const u8 {
+        \\    for d in compiler_decls() { if streq(d.name, "scratch") { compiler_remove("scratch"); } }
+        \\    return "";
+        \\}
+        \\main :: fn() -> i32 { return 0; }
+    ;
+    var fe = try k2.compile(a, "remove.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+    try std.testing.expect(!hasFunction(m, "scratch")); // removed
+    try std.testing.expect(hasFunction(m, "main"));
+}
+
+test "compiler-hook: a `#compiler(final)` hook runs AFTER generation and sees generated decls (R1b-C)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Phase 1 generates `answer`; the phase-2 `final` hook must see it (else it
+    // halts). Compiling cleanly + `answer` existing proves the phase ordering.
+    const src =
+        \\streq :: fn(p: []const u8, q: []const u8) -> bool {
+        \\    if p.len != q.len { return false; }
+        \\    for i in 0..p.len { if p[i] != q[i] { return false; } }
+        \\    return true;
+        \\}
+        \\#compiler gen :: fn() -> []const u8 { return "answer :: fn() -> i32 { return 42; }"; }
+        \\#compiler(final) check :: fn() -> []const u8 {
+        \\    seen: bool = false;
+        \\    for d in compiler_decls() { if streq(d.name, "answer") { seen = true; } }
+        \\    if !seen { compiler_error("final phase did not see generated `answer`"); }
+        \\    return "";
+        \\}
+        \\main :: fn() -> i32 { return answer(); }
+    ;
+    var fe = try k2.compile(a, "final_phase.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+    try std.testing.expect(hasFunction(m, "answer"));
+}
+
+test "compiler-hook: a `#compiler(final)` hook can halt the build (whole-program validation, R1b-C)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A final-phase hook validates the complete program and rejects it.
+    const bad =
+        \\Banned :: struct { x: i32 }
+        \\streq :: fn(p: []const u8, q: []const u8) -> bool {
+        \\    if p.len != q.len { return false; }
+        \\    for i in 0..p.len { if p[i] != q[i] { return false; } }
+        \\    return true;
+        \\}
+        \\#compiler(final) policy :: fn() -> []const u8 {
+        \\    for d in compiler_decls() { if streq(d.name, "Banned") { compiler_error("type `Banned` is not allowed"); } }
+        \\    return "";
+        \\}
+        \\main :: fn() -> i32 { return 0; }
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "final_policy.k2", bad));
+}
+
 test "compiler-hook: `compiler_error` halts the build with a custom diagnostic (R1b)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

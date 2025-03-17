@@ -61,6 +61,10 @@ pub const Vm = struct {
     /// Strings built by `str_concat` (the comptime string builder); owned here and
     /// freed on `deinit` (callers dupe the final result out before then).
     concat_strings: std.ArrayList([]u8) = .empty,
+    /// Set by `record_remove` (a `#compiler` hook calling `compiler_remove("...")`):
+    /// names of top-level declarations the hook asked to drop. Owned here; the
+    /// driver copies them out before `deinit`.
+    compiler_removals: std.ArrayList([]u8) = .empty,
     /// Set by `halt_msg` (a `#compiler` hook calling `compiler_error("...")`): the
     /// diagnostic to report when the run halts. Points into `concat_strings` or a
     /// module constant, so it lives as long as the VM.
@@ -82,6 +86,8 @@ pub const Vm = struct {
         self.zone_stack.deinit();
         for (self.concat_strings.items) |s| self.allocator.free(s);
         self.concat_strings.deinit(self.allocator);
+        for (self.compiler_removals.items) |s| self.allocator.free(s);
+        self.compiler_removals.deinit(self.allocator);
     }
 
     fn strLen(v: Value) ?usize {
@@ -461,6 +467,14 @@ pub const Vm = struct {
                         else => "compiler hook requested a halt",
                     };
                     return error.Trap;
+                },
+                .record_remove => {
+                    // `compiler_remove(name)`: record a decl name to drop. Does NOT
+                    // halt — the hook keeps running and still returns its source.
+                    const n = strLen(frame.regs[inst.a]) orelse return error.TypeMismatch;
+                    const buf = self.allocator.alloc(u8, n) catch return error.OutOfMemory;
+                    try self.copyStrBytes(frame.regs[inst.a], buf);
+                    self.compiler_removals.append(self.allocator, buf) catch return error.OutOfMemory;
                 },
                 .host_ptr_make => frame.regs[inst.a] = .{ .host_ptr = .{
                     .addr = asAddr(frame.regs[inst.b]) orelse return error.TypeMismatch,

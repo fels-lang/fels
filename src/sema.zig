@@ -2548,8 +2548,9 @@ const Checker = struct {
             return try self.sliceOf(.u8);
         }
         // `compiler_error(msg)` — a `#compiler` hook halts the build with a custom
-        // diagnostic (whole-program validation).
-        if (std.mem.eql(u8, name, "compiler_error")) {
+        // diagnostic (whole-program validation). `compiler_remove(name)` — a hook
+        // drops an existing top-level declaration (mutation; does not halt).
+        if (std.mem.eql(u8, name, "compiler_error") or std.mem.eql(u8, name, "compiler_remove")) {
             for (call.args) |arg| {
                 const v = switch (arg) { .positional => |p| p, .named => |n| n.value };
                 _ = try self.inferExpr(v);
@@ -4604,7 +4605,7 @@ fn isBuiltinValue(name: []const u8) bool {
            "type_info",      "type_name",      "reject",          "require",
            "typeid_of",      "any",
         // Compile-time program introspection (Phase 3 message loop)
-        "compiler_decls", "__str_cat", "compiler_error",
+        "compiler_decls", "__str_cat", "compiler_error", "compiler_remove",
         // std.build host intrinsics (the build system, comptime-only)
         "__build_artifact", "__build_opt",     "__build_link",
         "__build_libpath",  "__build_output",  "__build_define",

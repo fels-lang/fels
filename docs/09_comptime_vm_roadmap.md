@@ -81,7 +81,7 @@ The north star is to match and then exceed Jai's metaprogramming, and to close t
 | Area | State | Gap |
 |---|---|---|
 | **Message loop** | single-shot | `#compiler` hooks run **once** and can only *introspect + append*. No per-phase events (`File_Parsed`, `Typechecked`), no callback registration, **no modifying existing declarations** (changing a type, rewriting a body). |
-| **`std.compiler` surface** | **rich introspection done (R1a)**; mutation/events pending | `Decl` now exposes `fields`/params/variants + `ret` (read-only). Still missing: declaration **bodies**, per-phase **events**, and **mutating** existing decls. |
+| **`std.compiler` surface** | **R1b done** | `Decl` exposes `fields`/params/variants + `ret` + **`body`** (source text). Hooks can **mutate** (replace-by-name, `compiler_remove`), **validate** (`compiler_error`), and run in two **phases** (`#compiler` generate / `#compiler(final)` post-generation). Still future: a `Typechecked` event with *strict* types over the whole program (R6 builds on `#compiler(final)`), and direct AST-node mutation (vs source-text). |
 | **Dynamic code generation in hooks** | **done (R1c)** | A hook builds generated source with the **real `std.strings.StringBuilder`** (`#import std.strings`) or the no-import prelude `CodeBuf`/`emit`, then returns it. `#derive`-style codegen works end-to-end. |
 | **`std.heap`/byte-addressed memory at comptime** | **done** | The comptime VM now models **real host memory** (`host_ptr`/`host_buf` values; `ptr_from_int`/`slice_from_raw_parts` + host load/store/index do real `@ptrFromInt` access; `VirtualAlloc` via the existing FFI). So `std.heap.Arena` (and `StringBuilder`, …) **run at comptime exactly as at runtime** — comptime ≡ runtime for memory. (`compiler_decls()` is scoped to the user's own declarations so a hook that imports std for codegen doesn't see std's types.) |
 | **`zone X: Arena {}` at `#run`** | **done** | A `zone` block folds via the VM (no runtime fallback). The blocker was `@panic`: `std.heap.alloc_bytes` `@panic`s on its OOM branch, and the VM couldn't lower a `@panic`/`exit`/`abort` call (a no-return runtime intrinsic — sometimes a direct call, sometimes an indirect call to a `.local` of that name). The VM compiler now lowers all three to a `trap` opcode — harmless unless the branch actually runs (then comptime correctly halts). Any function that merely *contains* `@panic` (i.e. almost all of std) now folds at compile time. |
@@ -98,35 +98,44 @@ and only sound *because* of K2's design (capability interfaces + zone purity +
 typed AST + IR-shared comptime).
 
 ### R1. The iterative message loop (`std.compiler`)
-- **R1a — rich introspection (DONE).** `compiler_decls()` now returns `Decl{name,
-  kind, fields:[]CField, ret}` — a hook reads a struct's fields, an enum's
-  variants, and a fn's params/return. (`src/ir.zig:lowerCompilerDecls` +
-  `astTypeName`; `src/ast_prelude.zig:compiler_source`.) This is the load-bearing
-  foundation for `#derive` (R4) and `#require` (R6).
-- **R1b — affect compilation (in progress).** First capability **done**:
-  **`compiler_error("msg")`** lets a `#compiler` hook **halt the build with a
-  custom diagnostic** after introspecting the program — whole-program validation
-  (e.g. "every `Component` must be `#packed`"), the basis for `#require` (R6).
-  Wiring: a `halt_msg` VM opcode records the message on the engine; `evalToString`
-  surfaces it; `runCompilerHooks` reports it and fails. Still to do: per-phase
-  events (`File_Parsed`/`Typechecked`/`Done`), callbacks that **mutate** existing
-  declarations (change a type, rewrite a body), and exposing declaration **bodies**
-  in `std.compiler`.
-- **R1c — dynamic code generation (DONE).** A hook builds generated source with
-  the compiler prelude's `CodeBuf`: `cb := gen_buf(); emit(&cb, "..."); emit(&cb,
+- **R1a — rich introspection (DONE).** `compiler_decls()` returns `Decl{name,
+  kind, fields:[]CField, ret, body}` — a hook reads a struct's fields, an enum's
+  variants, a fn's params/return, AND a fn's **body source text** (`Decl.body`,
+  R1b-A). (`src/ir.zig:lowerCompilerDecls`/`declBodyText`; `astTypeName`;
+  `src/ast_prelude.zig:compiler_source`.) The load-bearing foundation for `#derive`
+  (R4) and `#require` (R6).
+- **R1b — affect compilation (DONE).** A `#compiler` hook can now reshape the
+  program four ways:
+  - **`compiler_error("msg")`** — halt the build with a custom diagnostic after
+    introspecting the program (whole-program validation). Wiring: a `halt_msg` VM
+    opcode records the message; `evalToString` surfaces it; `runCompilerHooks`
+    reports it and fails.
+  - **declaration bodies** — `Decl.body` is the decl's source text, so a hook can
+    inspect what a fn *contains*, not just its signature (R1b-A).
+  - **mutation** — a generated decl whose name matches an existing one **replaces**
+    it (rewrite, not just add), and **`compiler_remove(name)`** drops a decl
+    outright. (`record_remove` opcode → `Vm.compiler_removals` → drained to the
+    `ComptimeVm` → `HookOutput.removed` → applied in `applyHookOutput`, which also
+    does replace-by-name. Prelude decls are never touched.)
+  - **per-phase events** — hooks are phase-tagged. Bare `#compiler` runs in the
+    **generate** phase (pre-typecheck, emits/mutates). **`#compiler(final)`** runs
+    in the **final** phase, *after* generation, over the fully-augmented program —
+    so it sees generated decls — and validates (or mutates a second time). The two
+    phases are two passes of the same hook machinery (`runCompilerHooks(.., final_phase)`
+    + `hasFinalHook`); `#compiler(final)` is the direct basis for `#require` (R6).
+- **R1c — dynamic code generation (DONE).** A hook builds generated source two
+  ways: with the **real `std.strings.StringBuilder`** (`#import std.strings` — it
+  runs at comptime now that the VM models host memory), or with the no-import
+  compiler prelude `CodeBuf`: `cb := gen_buf(); emit(&cb, "..."); emit(&cb,
   d.name); … return rendered(&cb);`. `CodeBuf` is backed by **`__str_cat`**, a
-  VM-native string-concat builtin (`str_concat` opcode in the engine, operating on
-  the VM's interned strings) — so it needs **no `Arena`, no raw pointers, no
-  imports**, and runs cleanly in the comptime VM. `evalToString` accepts the
-  resulting `[]const u8`. The `#derive(sum)` demo (emit a `sum_<T>` for every
-  struct, summing its fields) works end-to-end. *Why not `StringBuilder`:*
-  `std.heap.Arena` uses `VirtualAlloc` + raw `slice_from_raw_parts`, which the
-  cell-based comptime VM can't model (it's `Unsupported` → trap-stub); `#run` hides
-  this by falling back to runtime, but a hook can't fall back. `CodeBuf` sidesteps
-  the heap entirely. (Bonus robustness shipped alongside: the hook-pass sema is now
-  continue-on-error, and an unknown-typed slice lowering is graceful, not an ICE.)
-  Minor known limit: K2 string literals don't process `\n` escapes, so use a space
-  separator between generated decls.
+  VM-native string-concat builtin (`str_concat` opcode), so it needs no imports —
+  handy when the harness can't resolve `#import`. `evalToString` accepts the
+  resulting `[]const u8` (string, zone slice, or host_buf). The `#derive(sum)` demo
+  (emit a `sum_<T>` for every struct, summing its fields) works end-to-end with
+  both. (Bonus robustness: the hook-pass sema is continue-on-error, and an
+  unknown-typed slice lowering is graceful, not an ICE.) Minor known limit: K2
+  string literals don't process `\n` escapes, so use a space separator between
+  generated decls.
 
 ### R2. Capability-sandboxed metaprogramming — *the flagship*
 **The structural fix to the `build.rs`/Jai supply-chain hole.** K2 already has no

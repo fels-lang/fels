@@ -1467,3 +1467,19 @@ test "exe: `#compiler` hook derives code from struct fields (R1c)" {
     , "exe_derive_sum");
     try std.testing.expectEqual(@as(u32, 42), code);
 }
+
+test "exe: a `#compiler` hook REPLACES an existing decl by name (R1b-B)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `answer` starts as a placeholder returning 0; the hook emits a same-named
+    // decl that REPLACES it. The program returns 42 only if the replacement won
+    // (and there's no duplicate-decl error).
+    const code = try compileAndRun(arena.allocator(),
+        \\answer :: fn() -> i32 { return 0; }
+        \\#compiler gen :: fn() -> []const u8 { return "answer :: fn() -> i32 { return 42; }"; }
+        \\main :: fn() -> i32 { return answer(); }
+    , "exe_hook_replace");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}

@@ -2060,6 +2060,7 @@ const FunctionLowerer = struct {
                 .{ .name = "kind", .value = astStr(declKindName(item)) },
                 .{ .name = "fields", .value = try self.lowerDeclFields(item) },
                 .{ .name = "ret", .value = try self.lowerDeclRet(item) },
+                .{ .name = "body", .value = astStr(declBodyText(item)) },
             });
             try elems.append(self.allocator, v);
         }
@@ -2982,6 +2983,16 @@ const FunctionLowerer = struct {
                     break :blk try self.emit(.void, .{ .builtin = .{
                         .name = "compiler_error",
                         .args = try self.allocator.dupe(Value, &.{msg}),
+                    } });
+                }
+                // `compiler_remove(name)` — a hook records a top-level decl to drop
+                // (mutation; unlike compiler_error it does NOT halt). No-op at runtime.
+                if (std.mem.eql(u8, callee_name, "compiler_remove") and call.args.len == 1) {
+                    const m = switch (call.args[0]) { .positional => |e| e, .named => |n| n.value };
+                    const nm = try self.lowerExpr(m);
+                    break :blk try self.emit(.void, .{ .builtin = .{
+                        .name = "compiler_remove",
+                        .args = try self.allocator.dupe(Value, &.{nm}),
                     } });
                 }
                 // `type_name(T)` folds to the type's name string at lowering, so it
@@ -4058,7 +4069,7 @@ fn extractAsmConstraint(expr: ast.Expr) ?[]const u8 {
 
 /// Names injected by the metaprogramming/compiler preludes — hidden from the
 /// `compiler_decls()` view so a hook sees only the user's (and generated) decls.
-fn isPreludeDeclName(name: []const u8) bool {
+pub fn isPreludeDeclName(name: []const u8) bool {
     const eq = std.mem.eql;
     return eq(u8, name, "Decl") or eq(u8, name, "CField") or eq(u8, name, "CodeBuf") or
         eq(u8, name, "gen_buf") or eq(u8, name, "emit") or eq(u8, name, "rendered") or
@@ -4104,6 +4115,23 @@ fn declKindName(item: ast.Item) []const u8 {
     };
 }
 
+/// `Decl.body` — the decl's source text. For a function, the body block
+/// (`{ … }`) sliced from its own source; "" for a body-less extern fn or any
+/// non-function decl. Lets a hook read what a declaration contains, not just its
+/// signature.
+fn declBodyText(item: ast.Item) []const u8 {
+    return switch (item) {
+        .function => |fnd| if (fnd.body) |b|
+            (if (b.span.end <= fnd.source.len and b.span.start <= b.span.end)
+                fnd.source[b.span.start..b.span.end]
+            else
+                "")
+        else
+            "",
+        else => "",
+    };
+}
+
 fn isBuiltinName(name: []const u8) bool {
     inline for (.{
         "truncate_to",
@@ -4121,6 +4149,7 @@ fn isBuiltinName(name: []const u8) bool {
         "slice",
         "__str_cat",
         "compiler_error",
+        "compiler_remove",
         // std.build host intrinsics (comptime-only; lowered to host_call in the VM).
         "__build_artifact",
         "__build_opt",
@@ -4175,6 +4204,10 @@ pub const ComptimeVm = struct {
     /// Set when a `#compiler` hook called `compiler_error("...")` — the diagnostic
     /// to report (instead of a generic failure).
     hook_error: ?[]const u8 = null,
+    /// Names a `#compiler` hook asked to drop via `compiler_remove("...")`,
+    /// accumulated across hook evaluations (each eval uses a fresh `Vm`, so the
+    /// names are drained here). Allocated on `arena`.
+    removals: std.ArrayList([]const u8) = .empty,
 
     const Cache = struct {
         ir_module: IrModule,
@@ -4278,6 +4311,12 @@ pub const ComptimeVm = struct {
             if (vm.compiler_error_msg) |m| self.hook_error = out_alloc.dupe(u8, m) catch null;
             return null;
         };
+        // Drain any `compiler_remove("...")` requests into the cvm (the `Vm` is
+        // per-eval and about to be deinit'd) so the driver can apply them.
+        const aa = self.arena.allocator();
+        for (vm.compiler_removals.items) |nm| {
+            self.removals.append(aa, aa.dupe(u8, nm) catch return null) catch return null;
+        }
         return switch (result) {
             .string => |s| out_alloc.dupe(u8, s) catch null,
             // A hook may RETURN a built `[]u8`/`[]const u8` (e.g. via the compiler
@@ -4807,6 +4846,29 @@ pub fn hasCompilerHook(module: ast.Module) bool {
     return false;
 }
 
+/// A `#compiler(final)` hook runs in the FINAL phase — after generation +
+/// mutation, over the fully-augmented program (so it sees generated decls).
+/// A bare `#compiler` runs in the default GENERATE phase. The phase is the first
+/// argument to the `compiler` attribute (an ident `final`).
+fn compilerHookIsFinal(attrs: []const ast.Attribute) bool {
+    for (attrs) |attr| {
+        if (!std.mem.eql(u8, attr.name, "compiler")) continue;
+        if (attr.args.len > 0 and attr.args[0].kind == .ident)
+            return std.mem.eql(u8, attr.args[0].kind.ident, "final");
+    }
+    return false;
+}
+
+/// Whether the module has any `#compiler(final)` hook (so the driver knows to
+/// run the second, post-generation phase).
+pub fn hasFinalHook(module: ast.Module) bool {
+    for (module.items) |item| switch (item) {
+        .function => |f| if (hasAttr(f.attrs, "compiler") and compilerHookIsFinal(f.attrs)) return true,
+        else => {},
+    };
+    return false;
+}
+
 /// Synthetic-expr id base for `#compiler` hook calls (distinct from user ids,
 /// the reifier's 800_000, and the prelude's 900_000).
 const compiler_hook_id_base: ast.NodeId = 500_000;
@@ -4817,8 +4879,16 @@ const compiler_hook_id_base: ast.NodeId = 500_000;
 /// parses that source and adds the declarations to the module — this is how
 /// compile-time code GENERATES new top-level declarations (which `#insert`, a
 /// statement splice, cannot).
-pub fn runCompilerHooks(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) InsertExpandError!?[]const u8 {
-    if (!hasCompilerHook(front_end.module)) return null;
+/// What the `#compiler` hook pass produced: generated source to splice in (if
+/// any) plus the names of declarations the hooks asked to drop via
+/// `compiler_remove(...)`. Both are owned by the caller's allocator.
+pub const HookOutput = struct {
+    source: ?[]const u8 = null,
+    removed: []const []const u8 = &.{},
+};
+
+pub fn runCompilerHooks(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, final_phase: bool) InsertExpandError!HookOutput {
+    if (!hasCompilerHook(front_end.module)) return .{};
 
     var cvm = ComptimeVm.init(allocator, front_end);
     defer cvm.deinit();
@@ -4831,6 +4901,9 @@ pub fn runCompilerHooks(allocator: std.mem.Allocator, front_end: pipeline.FrontE
     for (front_end.module.items) |item| switch (item) {
         .function => |f| {
             if (!hasAttr(f.attrs, "compiler")) continue;
+            // Only run hooks for the phase being processed: bare `#compiler` in
+            // the generate phase, `#compiler(final)` in the final phase.
+            if (compilerHookIsFinal(f.attrs) != final_phase) continue;
             // Build a synthetic `f()` call and evaluate it to a string.
             const callee = allocator.create(ast.Expr) catch return error.OutOfMemory;
             callee.* = .{ .id = id, .kind = .{ .ident = f.name }, .span = f.span };
@@ -4848,8 +4921,15 @@ pub fn runCompilerHooks(allocator: std.mem.Allocator, front_end: pipeline.FrontE
         },
         else => {},
     };
-    if (!produced) return null;
-    return try out.toOwnedSlice(allocator);
+
+    // Copy any `compiler_remove(...)` names out of the cvm arena (freed on deinit).
+    const removed = try allocator.alloc([]const u8, cvm.removals.items.len);
+    for (cvm.removals.items, 0..) |nm, i| removed[i] = try allocator.dupe(u8, nm);
+
+    return .{
+        .source = if (produced) try out.toOwnedSlice(allocator) else null,
+        .removed = removed,
+    };
 }
 
 /// Run a `build.k2`'s `build :: fn(b: Build)` entry on the comptime VM, with

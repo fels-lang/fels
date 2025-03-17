@@ -502,20 +502,66 @@ fn runCompilerHookPass(
     };
     const pass0 = try runSema(allocator, expanded, source, file, .tolerant);
     const fe0 = FrontEnd{ .module = expanded, .symbols = pass0.symbols, .types = pass0.types, .arena = arena };
-    const gen_src = ir_mod.runCompilerHooks(allocator, fe0) catch |err| switch (err) {
+
+    // Phase 1 — GENERATE: bare `#compiler` hooks introspect the program and
+    // emit/mutate declarations.
+    const out1 = ir_mod.runCompilerHooks(allocator, fe0, false) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
-    if (gen_src) |gsrc| {
-        // Generated decls share the user's file_name so they live in the same
-        // module scope; ids start high to avoid colliding with user nodes.
-        const parsed = parser.parseSourceFrom(allocator, file, gsrc, 600_000) catch return error.ParseFailed;
-        var items: std.ArrayList(ast.Item) = .empty;
-        try items.appendSlice(allocator, with_cprelude.items);
-        try items.appendSlice(allocator, parsed.module.items);
-        return ast.Module{ .file_name = raw_module.file_name, .items = try items.toOwnedSlice(allocator) };
+    const m1 = try applyHookOutput(allocator, with_cprelude, out1, file);
+
+    // Phase 2 — FINAL: `#compiler(final)` hooks run over the AUGMENTED program
+    // (they see everything phase 1 generated) and can validate the whole program
+    // (`compiler_error`) or mutate a second time. Skipped when there are none.
+    if (!ir_mod.hasFinalHook(m1)) return m1;
+    const exp1 = macroexpand.expand(allocator, m1) catch |err| switch (err) {
+        error.SemanticFailed => return error.SemanticFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    const pass1 = try runSema(allocator, exp1, source, file, .tolerant);
+    const fe1 = FrontEnd{ .module = exp1, .symbols = pass1.symbols, .types = pass1.types, .arena = arena };
+    const out2 = ir_mod.runCompilerHooks(allocator, fe1, true) catch |err| switch (err) {
+        error.SemanticFailed => return error.SemanticFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    return applyHookOutput(allocator, m1, out2, file);
+}
+
+/// Splice a hook pass's output into `base`: parse the generated source, then
+/// build the new item list. A generated decl REPLACES an existing one of the
+/// same name (rewrite, not just add); `compiler_remove(name)` drops a decl
+/// outright. Prelude decls (`Decl`, `CodeBuf`, …) are never touched. Returns
+/// `base` unchanged when the hooks produced nothing.
+fn applyHookOutput(
+    allocator: std.mem.Allocator,
+    base: ast.Module,
+    hook_out: ir_mod.HookOutput,
+    file: []const u8,
+) CompileError!ast.Module {
+    // Generated decls share the user's file_name so they live in the same module
+    // scope; ids start high to avoid colliding with user nodes.
+    const gen_items: []const ast.Item = if (hook_out.source) |gsrc|
+        (parser.parseSourceFrom(allocator, file, gsrc, 600_000) catch return error.ParseFailed).module.items
+    else
+        &.{};
+
+    if (gen_items.len == 0 and hook_out.removed.len == 0) return base;
+
+    var drop = std.StringHashMap(void).init(allocator);
+    defer drop.deinit();
+    for (gen_items) |gi| if (gi.name()) |gn| try drop.put(gn, {});
+    for (hook_out.removed) |rn| try drop.put(rn, {});
+
+    var items: std.ArrayList(ast.Item) = .empty;
+    for (base.items) |it| {
+        if (it.name()) |inm| {
+            if (!ir_mod.isPreludeDeclName(inm) and drop.contains(inm)) continue;
+        }
+        try items.append(allocator, it);
     }
-    return with_cprelude;
+    try items.appendSlice(allocator, gen_items);
+    return ast.Module{ .file_name = base.file_name, .items = try items.toOwnedSlice(allocator) };
 }
 
 /// Inject the `std.compiler` `Decl` type so `#compiler` hooks can call

@@ -59,6 +59,7 @@ pub const Opcode = enum(u8) {
     slice_ptr, // a = dst; b = slice/host_buf reg → its base pointer
     str_concat, // a = dst; b = lhs string reg; c = rhs string reg → concatenated string
     halt_msg, // a = string reg → record it as a compiler diagnostic and halt (Trap)
+    record_remove, // a = string reg → record a top-level decl name to remove (no halt)
     // ── Host memory (run byte-addressed std.heap at comptime) ────────────
     host_ptr_make, // a = dst; b = addr reg (uint); imm = byte size of pointee → host_ptr
     host_buf_make, // a = dst; b = addr/host_ptr reg; c = len reg; imm = byte stride → host_buf
