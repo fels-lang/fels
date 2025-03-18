@@ -223,6 +223,11 @@ test "vm corpus: wide #run coverage" {
         \\//    in the comptime VM, so this folds via the VM rather than falling back ──
         \\hmem :: fn() -> i32 { zone a: Arena { buf := a.alloc_bytes(64); buf[0] = 40; buf[1] = 2; return (buf[0] + buf[1]) as i32; } }
         \\C_hmem :: #run hmem();
+        \\
+        \\// ── the `core::` builtin namespace folds at comptime ──
+        \\Pt :: struct { x: i32, y: i32 }
+        \\coredemo :: fn() -> i32 { return (core::sizeof(Pt) as i32) + 34; }
+        \\C_core :: #run coredemo();
     ;
 
     var fe = try k2.compile(a, "corpus.k2", src);

@@ -2851,14 +2851,19 @@ const FunctionLowerer = struct {
 
                 const callee_name = switch (call.callee.kind) {
                     .ident => |name| name,
-                    .scope_access => |sa| sa.member,
+                    // `core::panic` maps to the `@panic` intrinsic so it reuses the
+                    // existing runtime-symbol + VM-trap lowering. Other `core::`
+                    // members keep their member name (routed via `isBuiltinName`).
+                    .scope_access => |sa| if (isCoreNs(sa) and std.mem.eql(u8, sa.member, "panic")) "@panic" else sa.member,
                     else => "<expr>",
                 };
                 // The callee's top-level symbol, resolved file-aware (so a
                 // collision-mangled function links by its module-qualified name).
+                // `core::` is not a real module, so its symbol is always null (like a
+                // bare builtin) — routed by `callee_name` below.
                 const callee_sym: ?sema.SymbolId = switch (call.callee.kind) {
                     .ident => resolveTopLevel(self.symbols, self.file_name, callee_name),
-                    .scope_access => |sa| self.resolveScope(sa),
+                    .scope_access => |sa| if (isCoreNs(sa)) null else self.resolveScope(sa),
                     else => null,
                 };
                 // compiler_decls() (Phase 3 introspection): materialize the
@@ -4130,6 +4135,13 @@ fn declBodyText(item: ast.Item) []const u8 {
             "",
         else => "",
     };
+}
+
+/// `core::<member>` — the reserved compiler-builtin namespace (mirrors sema's
+/// `isCoreNamespace`). `core` is not a real module; its members route to the
+/// builtin lowering by member name.
+fn isCoreNs(sa: ast.ScopeAccess) bool {
+    return sa.base.kind == .ident and std.mem.eql(u8, sa.base.kind.ident, "core");
 }
 
 fn isBuiltinName(name: []const u8) bool {

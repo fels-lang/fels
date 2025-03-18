@@ -34,22 +34,47 @@ Attributes modify the behavior or layout of declarations. They are prefixed with
 
 ---
 
-## Builtins
+## Builtins — the `core::` namespace
 
-Builtin functions are implicitly available. Some require an `unsafe` block.
+Builtins live in the reserved **`core::`** namespace — compiler-provided operations,
+always in scope (no import). The `core::` prefix makes a builtin call visually
+distinct from an ordinary function call:
+
+```k2
+n   := core::sizeof(Point);          // a builtin — you can see the compiler is involved
+name := core::type_name(Point);      // "Point"
+buf := unsafe core::slice_from_raw_parts(u8, p, len);
+if bad { core::panic("invalid state"); }   // no-return
+```
+
+`core` is reserved: a user module/import may not be named `core`. Some builtins
+require an `unsafe` block (last column).
+
+> **Migration note:** the bare forms (`sizeof(T)`, `ptr_from_int(...)`, …) still work
+> while the standard library is migrated to `core::`, but they are deprecated — write
+> `core::sizeof(T)`. (A few names are being tidied at the same time, e.g.
+> `typeid_of` → `core::type_id`, `truncate_to` → `core::narrow`,
+> `slice_from_raw_parts` → `core::slice_raw`; see the tracking issue.)
 
 | Builtin | Signature | Unsafe? | Description |
 |---------|-----------|---------|-------------|
-| `sizeof` | `sizeof($T: type) -> usize` | No | Returns the size of `T` in bytes. |
-| `truncate_to` | `truncate_to($T: type, val: any) -> T` | No | Truncates a wider integer into a narrower integer type `T`. |
-| `type_name` | `type_name($T: type) -> []const u8` | No | Returns the name of the type as a string. |
-| `type_info` | `type_info($T: type) -> TypeInfo` | No | Returns compile-time reflection data about the type (fields, variants, etc.). |
-| `atomic_load` | `atomic_load(ptr: *atomic T, order: Enum) -> T` | No | Performs an atomic load (e.g. `.acquire`). |
-| `atomic_store`| `atomic_store(ptr: *atomic T, val: T, order: Enum)` | No | Performs an atomic store. |
-| `ptr_from_int`| `ptr_from_int($T: type, addr: usize) -> T` | **Yes** | Casts an integer address into a pointer type `T`. |
-| `volatile_store`| `volatile_store(ptr: *T, val: T)` | **Yes** | Bypasses compiler optimization to perform a volatile memory write. |
-| `unaligned_read`| `unaligned_read($T: type, ptr: any) -> T` | **Yes** | Reads type `T` from a potentially unaligned memory location. |
-| `asm` | `asm(...)` | **Yes** | Executes inline assembly. Syntax: `asm(volatile, "inst", inputs: {}, outputs: {}, clobbers: {})` |
+| `core::sizeof` | `core::sizeof($T: type) -> usize` | No | Size of `T` in bytes. |
+| `core::truncate_to` | `core::truncate_to($T: type, val) -> T` | No | Truncate a wider integer into a narrower `T`. |
+| `core::type_name` | `core::type_name($T: type) -> []const u8` | No | The type's name as a string. |
+| `core::type_info` | `core::type_info($T: type) -> TypeInfo` | No | Compile-time reflection data (fields, variants, …). |
+| `core::typeid_of` | `core::typeid_of($T: type) -> usize` | No | Stable runtime type id. |
+| `core::any` | `core::any(x) -> Any` | No | Wrap a value into a type-erased `Any`. |
+| `core::panic` | `core::panic(msg: []const u8) -> never` | No | Abort with a message; never returns. |
+| `core::atomic_load` | `core::atomic_load(ptr, order) -> T` | No | Atomic load (e.g. `.acquire`). |
+| `core::atomic_store`| `core::atomic_store(ptr, val, order)` | No | Atomic store. |
+| `core::ptr_from_int`| `core::ptr_from_int($T: type, addr: usize) -> T` | **Yes** | Integer address → pointer `T`. |
+| `core::slice_from_raw_parts`| `core::slice_from_raw_parts($T, ptr, len) -> []T` | **Yes** | Build a slice from a raw pointer + length. |
+| `core::volatile_store`| `core::volatile_store(ptr: *T, val: T)` | **Yes** | Volatile memory write. |
+| `core::unaligned_read`| `core::unaligned_read($T: type, ptr) -> T` | **Yes** | Read `T` from a possibly-unaligned address. |
+| `core::asm` | `core::asm(...)` | **Yes** | Inline assembly: `core::asm(volatile, "inst", inputs: {}, outputs: {}, clobbers: {})` |
+
+More families (source-location constants like `core::file`/`core::line`, math, bit
+ops, and memory primitives) are being added — see the tracking issue / docs roadmap.
 
 ---
 

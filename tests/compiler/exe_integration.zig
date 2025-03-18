@@ -1468,6 +1468,27 @@ test "exe: `#compiler` hook derives code from struct fields (R1c)" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: `core::` builtin namespace works at runtime" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Builtins live in the reserved `core::` namespace (no sigil). `core::sizeof`
+    // and `core::type_name` (via a local — inline `.len` on a folded type_name is a
+    // separate latent bug); `core::panic` is no-return so the `if` needs no trailing
+    // return. Returns 8 (sizeof Point) + 5 (len "Point") = 13.
+    const code = try compileAndRun(arena.allocator(),
+        \\Point :: struct { x: i32, y: i32 }
+        \\pick :: fn(n: i32) -> i32 {
+        \\    nm := core::type_name(Point);
+        \\    if n >= 0 { return (core::sizeof(Point) as i32) + (nm.len as i32); }
+        \\    core::panic("negative");
+        \\}
+        \\main :: fn() -> i32 { return pick(1); }
+    , "exe_core_builtins");
+    try std.testing.expectEqual(@as(u32, 13), code);
+}
+
 test "exe: a `#compiler` hook REPLACES an existing decl by name (R1b-B)" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

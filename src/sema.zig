@@ -2422,8 +2422,10 @@ const Checker = struct {
     }
 
     fn inferCall(self: *Checker, call: ast.CallExpr) SemanticError!Ty {
-        // Namespace function call: `io::print(...)`.
-        if (call.callee.kind == .scope_access) {
+        // Namespace function call: `io::print(...)`. The reserved `core::` namespace
+        // (compiler builtins) is NOT a real module — it falls through to the builtin
+        // dispatch below, keyed on the member name (`core::sizeof` → `sizeof`).
+        if (call.callee.kind == .scope_access and !isCoreNamespace(call.callee.kind.scope_access)) {
             const sa = call.callee.kind.scope_access;
             const id = self.resolveScopeAccessSymbol(sa) orelse {
                 self.emitError(call.callee.span, "no namespace member `{s}` is visible here", .{sa.member});
@@ -2525,12 +2527,26 @@ const Checker = struct {
             }
         }
 
+        // A `core::<member>` callee reaches here (non-core namespaces returned
+        // above); treat the member as the builtin name. `is_core` makes an unknown
+        // member a hard error instead of falling through to user-symbol resolution.
+        const is_core = call.callee.kind == .scope_access;
         const name = switch (call.callee.kind) {
             .ident => |n| n,
+            .scope_access => |sa| sa.member,
             else => return .unknown,
         };
 
         // ── Builtins ────────────────────────────────────────────────────
+        // `core::panic(msg)` — the no-return panic intrinsic (maps to `@panic` in
+        // IR). Other no-return forms (`@panic`, `exit`, `abort`) keep their handling.
+        if (is_core and std.mem.eql(u8, name, "panic")) {
+            for (call.args) |arg| {
+                const v = switch (arg) { .positional => |p| p, .named => |n| n.value };
+                _ = try self.inferExpr(v);
+            }
+            return .void;
+        }
         // `require(T, Other)` — constraint composition. Its args are a type and a
         // constraint name, not values, so return before the argument checks.
         if (std.mem.eql(u8, name, "require")) return .void;
@@ -2656,6 +2672,13 @@ const Checker = struct {
                 return try self.inferTypeArg(ty_expr);
             }
             return .void;
+        }
+
+        // A `core::<member>` whose member matched no builtin above is a hard error
+        // (don't fall through to user-symbol / fn-ptr resolution).
+        if (is_core) {
+            self.emitError(call.callee.span, "unknown core builtin `{s}`", .{name});
+            return error.SemanticFailed;
         }
 
         const id = self.resolveSymbol(name) orelse {
@@ -4251,6 +4274,9 @@ fn stmtDefinitelyReturns(self: *Checker, stmt: ast.Stmt) bool {
             // always terminates — treat it as definitely returning so CFG accepts it.
             .call => |call| switch (call.callee.kind) {
                 .ident => |name| isRuntimeNoReturnName(name),
+                // `core::panic` / `core::exit` / `core::abort` also never return.
+                .scope_access => |sa| isCoreNamespace(sa) and
+                    (std.mem.eql(u8, sa.member, "panic") or std.mem.eql(u8, sa.member, "exit") or std.mem.eql(u8, sa.member, "abort")),
                 else => false,
             },
             else => false,
@@ -4592,6 +4618,12 @@ fn isAddressable(expr: ast.Expr) bool {
         .unary => |u| u.op == .deref,
         else => false,
     };
+}
+
+/// `core::<member>` — the reserved compiler-builtin namespace. Recognized at the
+/// `::` callee/value sites and routed to the builtin dispatch (keyed on member).
+fn isCoreNamespace(sa: ast.ScopeAccess) bool {
+    return sa.base.kind == .ident and std.mem.eql(u8, sa.base.kind.ident, "core");
 }
 
 fn isBuiltinValue(name: []const u8) bool {
