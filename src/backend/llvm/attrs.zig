@@ -36,9 +36,37 @@ pub fn applyFunctionAttrs(cg: *ModuleCg, func: ir.IrFunction, lv: llvm.LLVMValue
             llvm.LLVMSetValueName2(lv, sym.ptr, sym.len);
         }
     }
+
+    // `#cold` — a real LLVM enum attribute so the optimizer moves it off the hot path.
+    if (func.cold) addEnumAttr(cg, lv, fn_idx, "cold");
+
+    // `#weak` — a weak symbol that another definition can override at link time.
+    if (func.weak) llvm.LLVMSetLinkage(lv, llvm.LLVMWeakAnyLinkage);
+
+    // `#keep` — force external linkage so it isn't internalized/DCE'd when unused.
+    if (func.keep) llvm.LLVMSetLinkage(lv, llvm.LLVMExternalLinkage);
+
+    // `#section("name")` — place the function in a specific object section.
+    if (func.section) |sec| {
+        const secz = cg.allocator.dupeZ(u8, sec) catch return;
+        defer cg.allocator.free(secz);
+        llvm.LLVMSetSection(lv, secz.ptr);
+    }
+
+    // `#link_name("name")` — the external symbol name (renames without exporting).
+    if (func.link_name) |ln| if (ln.len > 0) llvm.LLVMSetValueName2(lv, ln.ptr, ln.len);
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+/// Attach a real LLVM *enum* attribute (e.g. `cold`) so the optimizer acts on it,
+/// unlike a string attribute which is opaque to LLVM.
+fn addEnumAttr(cg: *ModuleCg, lv: llvm.LLVMValueRef, index: c_uint, name: []const u8) void {
+    const kind = llvm.LLVMGetEnumAttributeKindForName(name.ptr, name.len);
+    if (kind == 0) return;
+    const attr = llvm.LLVMCreateEnumAttribute(cg.ctx, kind, 0);
+    llvm.LLVMAddAttributeAtIndex(lv, index, attr);
+}
 
 fn addStrAttr(
     cg: *ModuleCg,

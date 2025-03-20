@@ -620,6 +620,32 @@ test "core::: `core::sizeof` and `core::type_id` are accepted" {
     try k2.ir_mod.validateModule(m);
 }
 
+test "attrs: `#must_use` rejects a discarded call result" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\#must_use
+        \\compute :: fn() -> i32 { return 7; }
+        \\main :: fn() -> i32 { compute(); return 0; }
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "mu.k2", src));
+}
+
+test "attrs: `#must_use` allows a used call result" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src =
+        \\#must_use
+        \\compute :: fn() -> i32 { return 7; }
+        \\main :: fn() -> i32 { x := compute(); return x; }
+    ;
+    var fe = try k2.compile(a, "mu_ok.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+}
+
 test "core::: `core` is a reserved import alias" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -973,6 +973,9 @@ const Checker = struct {
     diagnostics: std.ArrayList(Diagnostic) = .empty,
     source: []const u8 = "",
     file: []const u8 = "",
+    /// Functions declared `#must_use` — discarding a call's result is an error.
+    /// Populated at the start of `checkModule`.
+    must_use_fns: std.StringHashMap(void) = undefined,
     /// Resolution-time `where`-predicate evaluator (the two-pass rail). Set only
     /// for the strict pass-2 of a module that has `where` clauses: an opaque
     /// context (the resolution `ComptimeVm`) and a thunk that runs the predicate.
@@ -1213,8 +1216,26 @@ const Checker = struct {
         return error.SemanticFailed;
     }
 
+    /// If `expr` is a direct call to a `#must_use` function, return its name.
+    fn mustUseCallee(self: *Checker, expr: ast.Expr) ?[]const u8 {
+        if (expr.kind != .call) return null;
+        const name = switch (expr.kind.call.callee.kind) {
+            .ident => |n| n,
+            .scope_access => |sa| sa.member,
+            else => return null,
+        };
+        return if (self.must_use_fns.contains(name)) name else null;
+    }
+
     fn checkModule(self: *Checker, module: ast.Module) SemanticError!void {
         try self.collectTopLevelTypes(module);
+
+        // Record `#must_use` functions so a discarded call to one is rejected.
+        self.must_use_fns = std.StringHashMap(void).init(self.allocator);
+        for (module.items) |item| switch (item) {
+            .function => |f| if (hasAttr(f.attrs, "must_use")) try self.must_use_fns.put(f.name, {}),
+            else => {},
+        };
 
         for (module.items) |item| {
             self.file = item.fileName();
@@ -1993,7 +2014,15 @@ const Checker = struct {
                 self.emitError(cf.span, "`#for` bounds must be compile-time integer constants", .{});
                 return error.SemanticFailed;
             },
-            .expr => |expr| try self.checkExpr(expr),
+            .expr => |expr| {
+                // `#must_use`: a bare call statement discards the result — error.
+                // (Use `x := f()` or `_ := f()` to consume it.)
+                if (self.mustUseCallee(expr)) |fname| {
+                    self.emitError(expr.span, "the result of `{s}` must be used (`#must_use`) — assign it or use `_ := …`", .{fname});
+                    return error.SemanticFailed;
+                }
+                try self.checkExpr(expr);
+            },
         }
     }
 

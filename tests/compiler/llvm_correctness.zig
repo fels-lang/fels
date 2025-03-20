@@ -582,3 +582,40 @@ test "LLVM borrow parameters erase to their underlying ABI type" {
     // signature rather than the linkage keyword.
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@touch({ ptr, i64 }") != null);
 }
+
+test "LLVM lowering applies #cold / #section / #weak / #link_name (Phase 3)" {
+    if (comptime !k2.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\#cold
+        \\rare :: fn() -> i32 { return 1; }
+        \\#section(".hot")
+        \\sec :: fn() -> i32 { return 2; }
+        \\#weak
+        \\wk :: fn() -> i32 { return 3; }
+        \\#link_name("renamed_sym")
+        \\rn :: fn() -> i32 { return 4; }
+        \\main :: fn() -> i32 { return rare() + sec() + wk() + rn(); }
+    ;
+
+    var fe = try k2.compile(arena.allocator(), "attrs.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+
+    var backend = k2.LlvmBackend.init(arena.allocator(), "attrs");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    inline for (.{
+        "cold",                // #cold enum attribute
+        "section \".hot\"",    // #section
+        "weak",                // #weak linkage keyword
+        "@renamed_sym",        // #link_name renamed the symbol
+    }) |expected| {
+        try std.testing.expect(std.mem.indexOf(u8, llvm_ir, expected) != null);
+    }
+}

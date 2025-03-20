@@ -93,7 +93,10 @@ fn declareOne(cg: *ModuleCg, func: ir.IrFunction) !void {
     // gets INTERNAL linkage. K2 emits the whole program as one object, so these
     // are module-private — and a global symbol like `exit`/`abort` would clash
     // with the C runtime once `link_libc` is used. (Also lets LLVM drop dead ones.)
-    if (func.blocks.len > 0 and func.extern_name == null and func.export_sym == null and !func.entry)
+    // `#weak` (overridable symbol) and `#keep` (survives stripping) need non-internal
+    // linkage, so they opt out of the module-private internalization.
+    if (func.blocks.len > 0 and func.extern_name == null and func.export_sym == null and
+        !func.entry and !func.weak and !func.keep)
         llvm.LLVMSetLinkage(lv, llvm.LLVMInternalLinkage);
 
     if (abi_sig) |sig| {

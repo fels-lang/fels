@@ -89,6 +89,16 @@ pub const IrFunction = struct {
     entry: bool,
     naked: bool,
     export_sym: ?[]const u8,
+    /// `#cold` — the function is rarely called (optimize for size / off the hot path).
+    cold: bool = false,
+    /// `#weak` — emit a weak symbol (overridable at link time).
+    weak: bool = false,
+    /// `#keep` — never strip, even if unused (best-effort: forces external linkage).
+    keep: bool = false,
+    /// `#section("name")` — place the function in a named object section.
+    section: ?[]const u8 = null,
+    /// `#link_name("name")` — the external symbol name (without exporting it).
+    link_name: ?[]const u8 = null,
 };
 
 pub const IrParam = struct {
@@ -1415,7 +1425,25 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
         .entry = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
         .naked = hasAttr(decl.attrs, "naked"),
         .export_sym = sema.exportSym(decl.attrs),
+        .cold = hasAttr(decl.attrs, "cold"),
+        .weak = hasAttr(decl.attrs, "weak"),
+        .keep = hasAttr(decl.attrs, "keep"),
+        .section = strAttrArg(decl.attrs, "section"),
+        .link_name = strAttrArg(decl.attrs, "link_name"),
     };
+}
+
+/// The first string-literal argument of attribute `name` (e.g. `#section("x")`),
+/// or null if the attribute is absent / has no string argument.
+fn strAttrArg(attrs: []const ast.Attribute, name: []const u8) ?[]const u8 {
+    for (attrs) |attr| {
+        if (!std.mem.eql(u8, attr.name, name) or attr.args.len < 1) continue;
+        return switch (attr.args[0].kind) {
+            .string => |value| trimQuotes(value),
+            else => null,
+        };
+    }
+    return null;
 }
 
 fn lowerInterfaceMethod(

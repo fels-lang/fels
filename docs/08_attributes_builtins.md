@@ -16,6 +16,9 @@ Attributes modify the behavior or layout of declarations. They are prefixed with
 - `#noreturn`: specifies that the function never returns (e.g., exit or panic).
 - `#naked`: produces a function without standard prologue or epilogue. Typically used for raw inline assembly entry points.
 - `#entry`: designates the function as the program entry point (an alternative to naming it `main`).
+- `#cold`: marks a rarely-called function so the optimizer moves it off the hot path (a real LLVM `cold` attribute).
+- `#section("name")`: places the function in a specific object-file section.
+- `#keep`: never strip the function, even if it's unused (forces non-internal linkage).
 
 ### FFI & Linkage
 
@@ -27,10 +30,14 @@ Attributes modify the behavior or layout of declarations. They are prefixed with
   ```
 - `#foreign`: Alias for `#extern`.
 - `#system_library("libname")`: A top-level directive that tells the linker to link against the specified system library.
+- `#link_name("name")`: sets the function's external symbol name **without** exporting it (distinct from `#export`).
+- `#weak`: emits a weak symbol that another definition can override at link time.
 
 ### Diagnostics
 
 - `#deprecated("message")`: Triggers a deprecation warning at the call site.
+- `#must_use`: the caller may not discard the function's return value — `f();` as a statement is an error; use `x := f()` or `_ := f()`.
+- `#maybe_unused`: marks a declaration as possibly unused (accepted; suppresses any future unused-declaration warning).
 
 ---
 
