@@ -1376,7 +1376,6 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
     }
 }
 
-
 fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, module: ast.Module, decl: ast.FunctionDecl, cvm: ?*ComptimeVm) !IrFunction {
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
@@ -1533,6 +1532,9 @@ const FunctionLowerer = struct {
     params: []const ast.Param,
     file_name: []const u8,
     source: []const u8,
+    /// Name of the function being lowered, for `core::func`. "" when unknown
+    /// (where/insert/synthetic lowerers).
+    fn_name: []const u8 = "",
     blocks: std.ArrayList(IrBlock) = .empty,
     current_instrs: std.ArrayList(Instr) = .empty,
     current_id: BlockId = 0,
@@ -1570,6 +1572,7 @@ const FunctionLowerer = struct {
             .params = decl.params,
             .file_name = decl.file_name,
             .source = decl.source,
+            .fn_name = decl.name,
             .local_types = std.StringHashMap(IrType).init(allocator),
         };
     }
@@ -2607,6 +2610,22 @@ const FunctionLowerer = struct {
                 break :blk Value{ .local = name };
             },
             .scope_access => |sa| blk: {
+                // `core::<location constant>` — folds to a compile-time literal at
+                // the use site: `core::file`/`func`/`module` → string, `core::line`/
+                // `column` → int (no parens; this is value position).
+                if (isCoreNs(sa)) {
+                    const m = sa.member;
+                    const eq = std.mem.eql;
+                    if (eq(u8, m, "file")) break :blk astStr(self.file_name);
+                    if (eq(u8, m, "func")) break :blk astStr(self.fn_name);
+                    if (eq(u8, m, "module")) break :blk astStr(moduleNameOf(self.file_name));
+                    if (eq(u8, m, "os")) break :blk astStr(@tagName(@import("builtin").os.tag));
+                    if (eq(u8, m, "arch")) break :blk astStr(@tagName(@import("builtin").cpu.arch));
+                    const lc = expr.span.line_col(self.source);
+                    if (eq(u8, m, "line")) break :blk Value{ .imm = .{ .int = @intCast(lc.line) } };
+                    if (eq(u8, m, "column")) break :blk Value{ .imm = .{ .int = @intCast(lc.col) } };
+                    break :blk Value{ .imm = .null };
+                }
                 // `ns::member` as a value (function/const reference).
                 const id = self.resolveScope(sa) orelse break :blk Value{ .imm = .null };
                 break :blk Value{ .global = self.symbols.symbol(id).link_name };
@@ -2976,8 +2995,14 @@ const FunctionLowerer = struct {
                 }
                 // `__str_cat(a, b)` — VM-native comptime string concat (CodeBuf).
                 if (std.mem.eql(u8, callee_name, "__str_cat") and call.args.len == 2) {
-                    const a0 = switch (call.args[0]) { .positional => |e| e, .named => |n| n.value };
-                    const a1 = switch (call.args[1]) { .positional => |e| e, .named => |n| n.value };
+                    const a0 = switch (call.args[0]) {
+                        .positional => |e| e,
+                        .named => |n| n.value,
+                    };
+                    const a1 = switch (call.args[1]) {
+                        .positional => |e| e,
+                        .named => |n| n.value,
+                    };
                     const lhs = try self.lowerExpr(a0);
                     const rhs = try self.lowerExpr(a1);
                     break :blk try self.emit(string_slice_ty, .{ .builtin = .{
@@ -2988,7 +3013,10 @@ const FunctionLowerer = struct {
                 // `compiler_error(msg)` — VM halts the hook with the diagnostic; at
                 // runtime it's never executed (hooks aren't run), so it's a no-op.
                 if (std.mem.eql(u8, callee_name, "compiler_error") and call.args.len == 1) {
-                    const m = switch (call.args[0]) { .positional => |e| e, .named => |n| n.value };
+                    const m = switch (call.args[0]) {
+                        .positional => |e| e,
+                        .named => |n| n.value,
+                    };
                     const msg = try self.lowerExpr(m);
                     break :blk try self.emit(.void, .{ .builtin = .{
                         .name = "compiler_error",
@@ -2998,7 +3026,10 @@ const FunctionLowerer = struct {
                 // `compiler_remove(name)` — a hook records a top-level decl to drop
                 // (mutation; unlike compiler_error it does NOT halt). No-op at runtime.
                 if (std.mem.eql(u8, callee_name, "compiler_remove") and call.args.len == 1) {
-                    const m = switch (call.args[0]) { .positional => |e| e, .named => |n| n.value };
+                    const m = switch (call.args[0]) {
+                        .positional => |e| e,
+                        .named => |n| n.value,
+                    };
                     const nm = try self.lowerExpr(m);
                     break :blk try self.emit(.void, .{ .builtin = .{
                         .name = "compiler_remove",
@@ -3023,7 +3054,12 @@ const FunctionLowerer = struct {
                     };
                     break :blk try self.lowerAnyWrap(arg);
                 }
-                if (isBuiltinName(callee_name)) {
+                // Route to a `.builtin` node. The newer math/bit/memory families
+                // share names with plausible user functions (`min`, `max`, `abs`, …),
+                // so they only become builtins under `core::` — a bare `min(...)`
+                // still resolves to a user function below.
+                const is_core_call = call.callee.kind == .scope_access and isCoreNs(call.callee.kind.scope_access);
+                if (isBuiltinName(callee_name) and (is_core_call or !isCoreOnlyBuiltin(callee_name))) {
                     var type_arg: ?IrType = null;
                     if (is_type_arg_builtin and call.args.len > 0) {
                         const first = switch (call.args[0]) {
@@ -3730,7 +3766,10 @@ const FunctionLowerer = struct {
         const concrete_name = self.concretePointerExprName(expr) orelse {
             diag_mod.printIceAt(
                 "cannot resolve concrete type for interface coercion",
-                self.file_name, self.source, expr.span, @src(),
+                self.file_name,
+                self.source,
+                expr.span,
+                @src(),
             );
             return error.LoweringFailed;
         };
@@ -4149,6 +4188,15 @@ fn isCoreNs(sa: ast.ScopeAccess) bool {
     return sa.base.kind == .ident and std.mem.eql(u8, sa.base.kind.ident, "core");
 }
 
+/// Derive a module name from a file path for `core::module`: the basename with a
+/// trailing `.k2` stripped (e.g. `lib/std/heap.k2` → `heap`).
+fn moduleNameOf(file: []const u8) []const u8 {
+    var base = file;
+    if (std.mem.lastIndexOfAny(u8, base, "/\\")) |i| base = base[i + 1 ..];
+    if (std.mem.endsWith(u8, base, ".k2")) base = base[0 .. base.len - 3];
+    return base;
+}
+
 /// Map a `core::` member to the internal builtin name: `panic`→`@panic` (reuses
 /// the runtime-symbol + VM-trap path) and the tidied renames (`type_id`→
 /// `typeid_of`, `narrow`→`truncate_to`, `slice_raw`→`slice_from_raw_parts`).
@@ -4207,6 +4255,25 @@ fn isBuiltinName(name: []const u8) bool {
         "__build_linkmode",
         "__build_runtimefile",
         "__build_nodefaultlibs",
+    }) |builtin| {
+        if (std.mem.eql(u8, name, builtin)) return true;
+    }
+    return isCoreOnlyBuiltin(name);
+}
+
+/// Newer `core::` builtin families (math/bit/memory). Separated because their
+/// names overlap plausible user functions (`min`, `max`, `abs`, `round`, …), so
+/// the IR routes them to a builtin ONLY when called as `core::<name>`.
+fn isCoreOnlyBuiltin(name: []const u8) bool {
+    inline for (.{
+        // bit
+        "count_ones",    "count_zeros",   "leading_zeros", "trailing_zeros",
+        "swap_bytes",    "reverse_bits",  "rotate_left",   "rotate_right",
+        // math
+        "min", "max", "abs", "clamp", "sqrt", "floor", "ceil", "round",
+        "trunc", "sin", "cos", "pow", "fma",
+        // memory / control
+        "memcpy", "memset", "trap", "unreachable", "cycle_count", "prefetch",
     }) |builtin| {
         if (std.mem.eql(u8, name, builtin)) return true;
     }
@@ -4518,12 +4585,14 @@ const Reifier = struct {
             } };
         } else if (eq(u8, name, "assign")) {
             const pl = try ptrOf(payload); // AstAssign { target, value }
-            return .{ .assign = .{
-                .target = try self.reifyExpr(try self.cellAt(pl, 0)),
-                .op = .assign, // compound ops were desugared at materialize time
-                .value = try self.reifyExpr(try self.cellAt(pl, 1)),
-                .span = self.span,
-            } };
+            return .{
+                .assign = .{
+                    .target = try self.reifyExpr(try self.cellAt(pl, 0)),
+                    .op = .assign, // compound ops were desugared at materialize time
+                    .value = try self.reifyExpr(try self.cellAt(pl, 1)),
+                    .span = self.span,
+                },
+            };
         } else if (eq(u8, name, "ret")) {
             return .{ .return_stmt = .{ .value = null, .span = self.span } };
         } else if (eq(u8, name, "ret_expr")) {
@@ -4531,15 +4600,17 @@ const Reifier = struct {
         } else if (eq(u8, name, "cond")) {
             const pl = try ptrOf(payload); // AstIf { cond, then_block, else_block }
             const else_block = try self.reifyBlock(try self.cellAt(pl, 2));
-            return .{ .if_stmt = .{
-                .binding = null,
-                .payload_binding = null,
-                .condition = try self.reifyExpr(try self.cellAt(pl, 0)),
-                .then_block = try self.reifyBlock(try self.cellAt(pl, 1)),
-                // An empty else-block means there was no `else`.
-                .else_block = if (else_block.statements.len == 0) null else else_block,
-                .span = self.span,
-            } };
+            return .{
+                .if_stmt = .{
+                    .binding = null,
+                    .payload_binding = null,
+                    .condition = try self.reifyExpr(try self.cellAt(pl, 0)),
+                    .then_block = try self.reifyBlock(try self.cellAt(pl, 1)),
+                    // An empty else-block means there was no `else`.
+                    .else_block = if (else_block.statements.len == 0) null else else_block,
+                    .span = self.span,
+                },
+            };
         } else if (eq(u8, name, "loop")) {
             const pl = try ptrOf(payload); // AstWhile { cond, body }
             return .{ .while_stmt = .{
@@ -5343,7 +5414,9 @@ fn effectiveConstImm(expr: ast.Expr, cvm: ?*ComptimeVm, file: []const u8, source
         diag_mod.printErrorAt(
             "`#run` expression could not be evaluated at compile time " ++
                 "(the comptime VM cannot execute it — e.g. an unsupported construct or a call into runtime-only code)",
-            file, source, expr.span,
+            file,
+            source,
+            expr.span,
         );
         return error.LoweringFailed;
     };
@@ -5351,7 +5424,9 @@ fn effectiveConstImm(expr: ast.Expr, cvm: ?*ComptimeVm, file: []const u8, source
         diag_mod.printErrorAt(
             "a `#run` constant must evaluate to a scalar value; " ++
                 "aggregate (struct/slice/enum) results are not yet supported as top-level constants",
-            file, source, expr.span,
+            file,
+            source,
+            expr.span,
         );
         return error.LoweringFailed;
     };
@@ -5387,15 +5462,15 @@ fn astBinOpName(op: ast.BinaryOp) ?[]const u8 {
 
 fn astBinOpFromName(name: []const u8) ?ast.BinaryOp {
     const map = .{
-        .{ "add", ast.BinaryOp.add },     .{ "sub", ast.BinaryOp.sub },
-        .{ "mul", ast.BinaryOp.mul },     .{ "div", ast.BinaryOp.div },
-        .{ "rem", ast.BinaryOp.rem },     .{ "eq", ast.BinaryOp.equal },
-        .{ "ne", ast.BinaryOp.not_equal },.{ "lt", ast.BinaryOp.less },
-        .{ "le", ast.BinaryOp.le },       .{ "gt", ast.BinaryOp.gt },
-        .{ "ge", ast.BinaryOp.ge },       .{ "logic_and", ast.BinaryOp.and_and },
-        .{ "logic_or", ast.BinaryOp.or_or }, .{ "bit_and", ast.BinaryOp.bit_and },
-        .{ "bit_or", ast.BinaryOp.bit_or }, .{ "bit_xor", ast.BinaryOp.bit_xor },
-        .{ "shl", ast.BinaryOp.shl },     .{ "shr", ast.BinaryOp.shr },
+        .{ "add", ast.BinaryOp.add },           .{ "sub", ast.BinaryOp.sub },
+        .{ "mul", ast.BinaryOp.mul },           .{ "div", ast.BinaryOp.div },
+        .{ "rem", ast.BinaryOp.rem },           .{ "eq", ast.BinaryOp.equal },
+        .{ "ne", ast.BinaryOp.not_equal },      .{ "lt", ast.BinaryOp.less },
+        .{ "le", ast.BinaryOp.le },             .{ "gt", ast.BinaryOp.gt },
+        .{ "ge", ast.BinaryOp.ge },             .{ "logic_and", ast.BinaryOp.and_and },
+        .{ "logic_or", ast.BinaryOp.or_or },    .{ "bit_and", ast.BinaryOp.bit_and },
+        .{ "bit_or", ast.BinaryOp.bit_or },     .{ "bit_xor", ast.BinaryOp.bit_xor },
+        .{ "shl", ast.BinaryOp.shl },           .{ "shr", ast.BinaryOp.shr },
         .{ "wrap_add", ast.BinaryOp.wrap_add }, .{ "wrap_sub", ast.BinaryOp.wrap_sub },
         .{ "wrap_mul", ast.BinaryOp.wrap_mul },
     };
@@ -5417,7 +5492,7 @@ fn astUnOpName(op: ast.UnaryOp) ?[]const u8 {
 
 fn astUnOpFromName(name: []const u8) ?ast.UnaryOp {
     const map = .{
-        .{ "neg", ast.UnaryOp.neg },       .{ "logic_not", ast.UnaryOp.not },
+        .{ "neg", ast.UnaryOp.neg },         .{ "logic_not", ast.UnaryOp.not },
         .{ "bit_not", ast.UnaryOp.bit_not }, .{ "deref", ast.UnaryOp.deref },
         .{ "addr", ast.UnaryOp.address_of },
     };
@@ -5451,11 +5526,11 @@ fn assignOpToBinOpName(op: ast.AssignOp) ?[]const u8 {
 // is excluded from the final (runtime) module.
 
 const ast_prelude_type_names = [_][]const u8{
-    "AstBlock",  "AstStmt",       "AstExpr",     "AstBinary",  "AstBinOp",   "AstUnary",
-    "AstUnOp",   "AstCall",       "AstField",    "AstIndex",   "AstLocal",   "AstAssign",
-    "AstIf",     "AstWhile",      "AstDeferMode", "AstArrayTy", "AstType",   "AstSliceE",
-    "AstCastE",  "AstCoalesce",   "AstCatchE",   "AstLocalTyped", "AstForRange", "AstForSlice",
-    "AstZone",   "AstDefer",      "AstFail",     "AstPattern", "AstMatchArm", "AstMatch",
+    "AstBlock", "AstStmt",     "AstExpr",      "AstBinary",     "AstBinOp",    "AstUnary",
+    "AstUnOp",  "AstCall",     "AstField",     "AstIndex",      "AstLocal",    "AstAssign",
+    "AstIf",    "AstWhile",    "AstDeferMode", "AstArrayTy",    "AstType",     "AstSliceE",
+    "AstCastE", "AstCoalesce", "AstCatchE",    "AstLocalTyped", "AstForRange", "AstForSlice",
+    "AstZone",  "AstDefer",    "AstFail",      "AstPattern",    "AstMatchArm", "AstMatch",
     "AstArg",
 };
 

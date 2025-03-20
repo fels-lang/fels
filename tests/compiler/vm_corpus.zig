@@ -228,6 +228,9 @@ test "vm corpus: wide #run coverage" {
         \\Pt :: struct { x: i32, y: i32 }
         \\coredemo :: fn() -> i32 { return (core::sizeof(Pt) as i32) + 34; }
         \\C_core :: #run coredemo();
+        \\// ── Phase 2 math/bit builtins fold at comptime ──
+        \\mathfold :: fn() -> i32 { return core::max(core::min(100, 50), core::count_ones(7)); }
+        \\C_math :: #run mathfold();
     ;
 
     var fe = try k2.compile(a, "corpus.k2", src);

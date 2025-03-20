@@ -73,8 +73,45 @@ error). Some builtins require an `unsafe` block (last column).
 | `core::unaligned_read`| `core::unaligned_read($T: type, ptr) -> T` | **Yes** | Read `T` from a possibly-unaligned address. |
 | `core::asm` | `core::asm(...)` | **Yes** | Inline assembly: `core::asm(volatile, "inst", inputs: {}, outputs: {}, clobbers: {})` |
 
-More families (source-location constants like `core::file`/`core::line`, math, bit
-ops, and memory primitives) are being added — see the tracking issue / docs roadmap.
+### Source-location & target constants
+
+Compile-time constants (no parens) that fold to a literal at the use site:
+
+| Constant | Type | Value |
+|---|---|---|
+| `core::file` | `[]const u8` | the current source file path |
+| `core::module` | `[]const u8` | the module name (file basename, no `.k2`) |
+| `core::func` | `[]const u8` | the enclosing function's name |
+| `core::line` | `i32` | the line of the `core::line` reference |
+| `core::column` | `i32` | the column |
+| `core::os` | `[]const u8` | target OS (`"windows"`, `"linux"`, …) |
+| `core::arch` | `[]const u8` | target architecture (`"x86_64"`, …) |
+
+```k2
+log :: fn(msg: []const u8) { print(core::file); print(core::line); print(msg); }
+```
+
+### Math
+
+`core::min(a,b)`, `core::max(a,b)`, `core::abs(x)`, `core::clamp(x, lo, hi)` (int or
+float), and the float functions `core::sqrt`, `core::floor`, `core::ceil`,
+`core::round`, `core::trunc`, `core::sin`, `core::cos`, `core::pow(x, y)`,
+`core::fma(a, b, c)`. Each returns its first argument's type and maps to a fast CPU
+instruction. All except `fma` also **fold at compile time** (usable in `#run`).
+
+### Bit operations
+
+On any integer: `core::count_ones(x)`, `core::count_zeros(x)`,
+`core::leading_zeros(x)`, `core::trailing_zeros(x)`, `core::swap_bytes(x)`,
+`core::reverse_bits(x)`, `core::rotate_left(x, n)`, `core::rotate_right(x, n)`.
+Each returns `x`'s type. `core::count_ones` folds at compile time; the
+width-dependent ones currently fall back to runtime inside `#run`.
+
+### Memory & control
+
+`core::memcpy(dst, src, n)`, `core::memset(dst, byte, n)`, `core::trap()`,
+`core::unreachable()`, `core::prefetch(ptr)`, `core::cycle_count() -> u64`. These are
+the low-level primitives the standard library wraps.
 
 ---
 

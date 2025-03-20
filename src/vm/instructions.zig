@@ -60,6 +60,7 @@ pub const Opcode = enum(u8) {
     str_concat, // a = dst; b = lhs string reg; c = rhs string reg → concatenated string
     halt_msg, // a = string reg → record it as a compiler diagnostic and halt (Trap)
     record_remove, // a = string reg → record a top-level decl name to remove (no halt)
+    scalar_builtin, // a = dst; b = arg0; c = arg1; imm = op id → a `core::` math/bit fold
     // ── Host memory (run byte-addressed std.heap at comptime) ────────────
     host_ptr_make, // a = dst; b = addr reg (uint); imm = byte size of pointee → host_ptr
     host_buf_make, // a = dst; b = addr/host_ptr reg; c = len reg; imm = byte stride → host_buf
@@ -76,6 +77,24 @@ pub const Opcode = enum(u8) {
     // imm = host-op id (see BuildOp); b = arg base reg; c = arg count;
     // a = dst reg for the returned value (e.g. a fresh artifact id).
     host_call,
+};
+
+/// Operation id carried in `scalar_builtin`'s `imm` — a `core::` math/bit fold the
+/// comptime VM computes. (Width-dependent bit ops like `leading_zeros` aren't here;
+/// they need the operand width and fall back to runtime at comptime.)
+pub const ScalarOp = enum(i32) {
+    count_ones = 1,
+    abs = 7,
+    sqrt = 8,
+    floor = 9,
+    ceil = 10,
+    round = 11,
+    trunc = 12,
+    sin = 13,
+    cos = 14,
+    min = 15,
+    max = 16,
+    pow = 17,
 };
 
 /// Host operations dispatched by the `host_call` opcode. The VM is agnostic to

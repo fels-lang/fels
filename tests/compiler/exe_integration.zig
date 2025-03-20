@@ -1513,6 +1513,46 @@ test "exe: `core::` builtin namespace works at runtime" {
     try std.testing.expectEqual(@as(u32, 13), code);
 }
 
+test "exe: `core::` math + bit + location builtins (Phase 2)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // count_ones(255)=8, max(10,20)=20, min(10,20)=10, abs(-4)=4 → 42.
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    a := core::count_ones(255);
+        \\    b := core::max(10, 20);
+        \\    c := core::min(10, 20);
+        \\    d := core::abs(-4);
+        \\    return a + b + c + d;
+        \\}
+    , "exe_core_math");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: `core::` memcpy + memset + float math (Phase 2)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // memset 4 bytes to 9, memcpy them, read back 9+9=18; sqrt(16)+floor(9.9)=4+9=13; clamp(50,0,5)=5 → 36.
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    zone a: Arena {
+        \\        s := a.alloc_bytes(8);
+        \\        d := a.alloc_bytes(8);
+        \\        core::memset(s.ptr, 9u8, 4usize);
+        \\        core::memcpy(d.ptr, s.ptr, 4usize);
+        \\        mem := (d[0] + d[1]) as i32;
+        \\        fl  := (core::sqrt(16.0) as i32) + (core::floor(9.9) as i32);
+        \\        return mem + fl + core::clamp(50, 0, 5);
+        \\    }
+        \\}
+    , "exe_core_mem");
+    try std.testing.expectEqual(@as(u32, 36), code);
+}
+
 test "exe: a `#compiler` hook REPLACES an existing decl by name (R1b-B)" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

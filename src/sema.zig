@@ -2335,6 +2335,17 @@ const Checker = struct {
                 break :blk try self.fieldType(base_ty, field.name, expr.span);
             },
             .scope_access => |sa| blk: {
+                // `core::<location constant>` (value position, no parens): `line`/
+                // `column` are `i32`; `file`/`func`/`module` are `[]const u8`.
+                if (isCoreNamespace(sa)) {
+                    const m = sa.member;
+                    if (std.mem.eql(u8, m, "line") or std.mem.eql(u8, m, "column")) break :blk .i32;
+                    if (std.mem.eql(u8, m, "file") or std.mem.eql(u8, m, "func") or std.mem.eql(u8, m, "module") or
+                        std.mem.eql(u8, m, "os") or std.mem.eql(u8, m, "arch"))
+                        break :blk try self.sliceOf(.u8);
+                    self.emitError(expr.span, "unknown core builtin `{s}`", .{m});
+                    return error.SemanticFailed;
+                }
                 const id = self.resolveScopeAccessSymbol(sa) orelse {
                     self.emitError(expr.span, "no namespace member `{s}` is visible here", .{sa.member});
                     return error.SemanticFailed;
@@ -2564,6 +2575,30 @@ const Checker = struct {
                 _ = try self.inferExpr(v);
             }
             return .void;
+        }
+        // core:: math/bit/memory families (Phase 2). Gated on `is_core` so a bare
+        // user `min`/`max`/`abs` function is unaffected.
+        if (is_core) {
+            if (isCoreScalarBuiltin(name)) {
+                var first_ty: Ty = .unknown;
+                for (call.args, 0..) |arg, i| {
+                    const v = switch (arg) { .positional => |p| p, .named => |n| n.value };
+                    const t = try self.inferExpr(v);
+                    if (i == 0) first_ty = t;
+                }
+                return first_ty;
+            }
+            if (std.mem.eql(u8, name, "cycle_count")) return .u64;
+            if (std.mem.eql(u8, name, "memcpy") or std.mem.eql(u8, name, "memset") or
+                std.mem.eql(u8, name, "prefetch") or std.mem.eql(u8, name, "trap") or
+                std.mem.eql(u8, name, "unreachable"))
+            {
+                for (call.args) |arg| {
+                    const v = switch (arg) { .positional => |p| p, .named => |n| n.value };
+                    _ = try self.inferExpr(v);
+                }
+                return .void;
+            }
         }
         // `require(T, Other)` — constraint composition. Its args are a type and a
         // constraint name, not values, so return before the argument checks.
@@ -4652,6 +4687,18 @@ fn coreRename(member: []const u8) []const u8 {
     if (std.mem.eql(u8, member, "narrow")) return "truncate_to";
     if (std.mem.eql(u8, member, "slice_raw")) return "slice_from_raw_parts";
     return member;
+}
+
+/// A `core::` math/bit builtin that returns its FIRST argument's type
+/// (`core::min(a,b)→type of a`, `core::count_ones(x)→type of x`, …).
+fn isCoreScalarBuiltin(name: []const u8) bool {
+    inline for (.{
+        "count_ones",    "count_zeros",   "leading_zeros", "trailing_zeros",
+        "swap_bytes",    "reverse_bits",  "rotate_left",   "rotate_right",
+        "min", "max", "abs", "clamp", "sqrt", "floor", "ceil", "round",
+        "trunc", "sin", "cos", "pow", "fma",
+    }) |b| if (std.mem.eql(u8, name, b)) return true;
+    return false;
 }
 
 /// A builtin that now lives ONLY under `core::` — calling it by its bare name is

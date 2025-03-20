@@ -574,6 +574,20 @@ const FnCompiler = struct {
                         try self.emit(Instr.r_r_imm(.copy, base + @as(Reg, @intCast(i)), ar, 0));
                     }
                     try self.emit(.{ .op = .host_call, .a = target, .b = base, .c = argc, .imm = @intCast(@intFromEnum(op)) });
+                } else if (scalarOpId(b.name)) |op| {
+                    // `core::` math / count_ones fold (the comptime VM computes them).
+                    if (b.args.len < 1) return error.Unsupported;
+                    const a0 = try self.resolveReg(b.args[0]);
+                    const a1: Reg = if (b.args.len >= 2) try self.resolveReg(b.args[1]) else 0;
+                    try self.emit(.{ .op = .scalar_builtin, .a = target, .b = a0, .c = a1, .imm = op });
+                } else if (std.mem.eql(u8, b.name, "clamp") and b.args.len >= 3) {
+                    // clamp(x, lo, hi) = max(min(x, hi), lo) — two scalar folds.
+                    const x = try self.resolveReg(b.args[0]);
+                    const lo = try self.resolveReg(b.args[1]);
+                    const hi = try self.resolveReg(b.args[2]);
+                    const tmp = self.newReg();
+                    try self.emit(.{ .op = .scalar_builtin, .a = tmp, .b = x, .c = hi, .imm = @intFromEnum(instructions.ScalarOp.min) });
+                    try self.emit(.{ .op = .scalar_builtin, .a = target, .b = tmp, .c = lo, .imm = @intFromEnum(instructions.ScalarOp.max) });
                 } else return error.Unsupported;
             },
 
@@ -1192,6 +1206,22 @@ fn typeInfoName(ty: ir.IrType) []const u8 {
 /// enumerate (floats, byte, …) mangle to "unknown".
 /// Map a `std.build` intrinsic name to its host operation, or null if it isn't
 /// one. Drives the `host_call` lowering in the `.builtin` case.
+/// The `ScalarOp` id for a `core::` math/bit builtin the comptime VM folds, or
+/// null (width-dependent bit ops + `fma` fall back to runtime at comptime).
+fn scalarOpId(name: []const u8) ?i32 {
+    const eq = std.mem.eql;
+    const ops = .{
+        .{ "count_ones", instructions.ScalarOp.count_ones }, .{ "abs", instructions.ScalarOp.abs },
+        .{ "sqrt", instructions.ScalarOp.sqrt },   .{ "floor", instructions.ScalarOp.floor },
+        .{ "ceil", instructions.ScalarOp.ceil },   .{ "round", instructions.ScalarOp.round },
+        .{ "trunc", instructions.ScalarOp.trunc }, .{ "sin", instructions.ScalarOp.sin },
+        .{ "cos", instructions.ScalarOp.cos },     .{ "min", instructions.ScalarOp.min },
+        .{ "max", instructions.ScalarOp.max },     .{ "pow", instructions.ScalarOp.pow },
+    };
+    inline for (ops) |o| if (eq(u8, name, o[0])) return @intFromEnum(o[1]);
+    return null;
+}
+
 fn buildOpFor(name: []const u8) ?instructions.BuildOp {
     const table = .{
         .{ "__build_artifact", instructions.BuildOp.artifact },

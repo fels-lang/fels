@@ -476,6 +476,11 @@ pub const Vm = struct {
                     try self.copyStrBytes(frame.regs[inst.a], buf);
                     self.compiler_removals.append(self.allocator, buf) catch return error.OutOfMemory;
                 },
+                .scalar_builtin => frame.regs[inst.a] = computeScalar(
+                    @enumFromInt(inst.imm),
+                    frame.regs[inst.b],
+                    frame.regs[inst.c],
+                ) orelse return error.TypeMismatch,
                 .host_ptr_make => frame.regs[inst.a] = .{ .host_ptr = .{
                     .addr = asAddr(frame.regs[inst.b]) orelse return error.TypeMismatch,
                     .size = @intCast(inst.imm),
@@ -551,6 +556,51 @@ fn asAddr(v: Value) ?usize {
         .null_ptr => 0,
         else => null,
     };
+}
+
+/// Compute a `core::` math/`count_ones` fold at comptime (the `scalar_builtin`
+/// opcode). Float ops return `.float`; int ops return `.int`. Returns null on a
+/// non-numeric operand (caller traps).
+fn computeScalar(op: instructions.ScalarOp, a: Value, b: Value) ?Value {
+    switch (op) {
+        .sqrt, .floor, .ceil, .round, .trunc, .sin, .cos => {
+            const x = a.asF64() orelse return null;
+            return .{ .float = switch (op) {
+                .sqrt => @sqrt(x),
+                .floor => @floor(x),
+                .ceil => @ceil(x),
+                .round => @round(x),
+                .trunc => @trunc(x),
+                .sin => @sin(x),
+                .cos => @cos(x),
+                else => unreachable,
+            } };
+        },
+        .pow => return .{ .float = std.math.pow(f64, a.asF64() orelse return null, b.asF64() orelse return null) },
+        .min, .max => {
+            if (a == .float or b == .float) {
+                const x = a.asF64() orelse return null;
+                const y = b.asF64() orelse return null;
+                return .{ .float = if (op == .min) @min(x, y) else @max(x, y) };
+            }
+            const x = a.asI128() orelse return null;
+            const y = b.asI128() orelse return null;
+            return .{ .int = if (op == .min) @min(x, y) else @max(x, y) };
+        },
+        .abs => {
+            if (a == .float) return .{ .float = @abs(a.float) };
+            const x = a.asI128() orelse return null;
+            return .{ .int = if (x < 0) -x else x };
+        },
+        .count_ones => {
+            const u: u128 = switch (a) {
+                .uint => |v| v,
+                .int => |v| @bitCast(v),
+                else => return null,
+            };
+            return .{ .int = @popCount(u) };
+        },
+    }
 }
 
 /// Read `size` (1–16) bytes of real host memory at `addr` as a little-endian uint.

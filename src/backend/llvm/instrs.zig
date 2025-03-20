@@ -483,6 +483,43 @@ fn isUnsigned(ty: ir.IrType) bool {
     };
 }
 
+/// Declare + call an LLVM intrinsic by name (e.g. `llvm.ctpop`). `overloads` are
+/// the intrinsic's overloaded type params (usually the single operand type);
+/// `args` are the call arguments. Powers the `core::` math/bit/memory builtins.
+fn emitIntrinsic(
+    cg: *ModuleCg,
+    name: []const u8,
+    overloads: []const llvm.LLVMTypeRef,
+    args: []const llvm.LLVMValueRef,
+) llvm.LLVMValueRef {
+    const id = llvm.LLVMLookupIntrinsicID(name.ptr, name.len);
+    const ovl: [*c]llvm.LLVMTypeRef = if (overloads.len == 0) null else @constCast(overloads.ptr);
+    const f = llvm.LLVMGetIntrinsicDeclaration(cg.mod, id, ovl, overloads.len);
+    const fty = llvm.LLVMGlobalGetValueType(f);
+    const ap: [*c]llvm.LLVMValueRef = if (args.len == 0) null else @constCast(args.ptr);
+    return llvm.LLVMBuildCall2(cg.builder, fty, f, ap, @intCast(args.len), "");
+}
+
+/// The LLVM min/max intrinsic for `core::min`/`max`/`clamp`, by element type.
+fn minMaxIntrinsic(ty: ir.IrType, is_max: bool) []const u8 {
+    if (isFloat(ty)) return if (is_max) "llvm.maxnum" else "llvm.minnum";
+    if (isUnsigned(ty)) return if (is_max) "llvm.umax" else "llvm.umin";
+    return if (is_max) "llvm.smax" else "llvm.smin";
+}
+
+/// The LLVM intrinsic for a unary float math builtin, or null if `name` isn't one.
+fn unaryFloatIntrinsic(name: []const u8) ?[]const u8 {
+    const eq = std.mem.eql;
+    if (eq(u8, name, "sqrt")) return "llvm.sqrt";
+    if (eq(u8, name, "floor")) return "llvm.floor";
+    if (eq(u8, name, "ceil")) return "llvm.ceil";
+    if (eq(u8, name, "round")) return "llvm.round";
+    if (eq(u8, name, "trunc")) return "llvm.trunc";
+    if (eq(u8, name, "sin")) return "llvm.sin";
+    if (eq(u8, name, "cos")) return "llvm.cos";
+    return null;
+}
+
 // ── Inline assembly ────────────────────────────────────────────────────────
 
 fn lowerInlineAsm(
@@ -920,6 +957,114 @@ fn lowerBuiltin(
         result = llvm.LLVMBuildInsertValue(cg.builder, result, base_ptr, 0, "");
         result = llvm.LLVMBuildInsertValue(cg.builder, result, len, 1, "");
         return result;
+    }
+
+    // ── Bit builtins (map to LLVM intrinsics) ────────────────────────────────
+    if (std.mem.eql(u8, b.name, "count_ones") or std.mem.eql(u8, b.name, "count_zeros")) {
+        if (b.args.len < 1) return null;
+        var x = resolveVal(cg, fncg, b.args[0], ty);
+        if (std.mem.eql(u8, b.name, "count_zeros")) x = llvm.LLVMBuildNot(bl, x, "");
+        return emitIntrinsic(cg, "llvm.ctpop", &.{llvm.LLVMTypeOf(x)}, &.{x});
+    }
+    if (std.mem.eql(u8, b.name, "leading_zeros") or std.mem.eql(u8, b.name, "trailing_zeros")) {
+        if (b.args.len < 1) return null;
+        const x = resolveVal(cg, fncg, b.args[0], ty);
+        const i1f = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(cg.ctx), 0, 0);
+        const nm = if (std.mem.eql(u8, b.name, "leading_zeros")) "llvm.ctlz" else "llvm.cttz";
+        return emitIntrinsic(cg, nm, &.{llvm.LLVMTypeOf(x)}, &.{ x, i1f });
+    }
+    if (std.mem.eql(u8, b.name, "swap_bytes") or std.mem.eql(u8, b.name, "reverse_bits")) {
+        if (b.args.len < 1) return null;
+        const x = resolveVal(cg, fncg, b.args[0], ty);
+        const nm = if (std.mem.eql(u8, b.name, "swap_bytes")) "llvm.bswap" else "llvm.bitreverse";
+        return emitIntrinsic(cg, nm, &.{llvm.LLVMTypeOf(x)}, &.{x});
+    }
+    if (std.mem.eql(u8, b.name, "rotate_left") or std.mem.eql(u8, b.name, "rotate_right")) {
+        if (b.args.len < 2) return null;
+        const x = resolveVal(cg, fncg, b.args[0], ty);
+        const n = resolveVal(cg, fncg, b.args[1], ty);
+        const nm = if (std.mem.eql(u8, b.name, "rotate_left")) "llvm.fshl" else "llvm.fshr";
+        return emitIntrinsic(cg, nm, &.{llvm.LLVMTypeOf(x)}, &.{ x, x, n });
+    }
+
+    // ── Math builtins ─────────────────────────────────────────────────────────
+    if (std.mem.eql(u8, b.name, "min") or std.mem.eql(u8, b.name, "max")) {
+        if (b.args.len < 2) return null;
+        const x = resolveVal(cg, fncg, b.args[0], ty);
+        const y = resolveVal(cg, fncg, b.args[1], ty);
+        return emitIntrinsic(cg, minMaxIntrinsic(ty, std.mem.eql(u8, b.name, "max")), &.{llvm.LLVMTypeOf(x)}, &.{ x, y });
+    }
+    if (std.mem.eql(u8, b.name, "clamp")) {
+        if (b.args.len < 3) return null;
+        const x = resolveVal(cg, fncg, b.args[0], ty);
+        const lo = resolveVal(cg, fncg, b.args[1], ty);
+        const hi = resolveVal(cg, fncg, b.args[2], ty);
+        const xt = llvm.LLVMTypeOf(x);
+        const capped = emitIntrinsic(cg, minMaxIntrinsic(ty, false), &.{xt}, &.{ x, hi });
+        return emitIntrinsic(cg, minMaxIntrinsic(ty, true), &.{xt}, &.{ capped, lo });
+    }
+    if (std.mem.eql(u8, b.name, "abs")) {
+        if (b.args.len < 1) return null;
+        const x = resolveVal(cg, fncg, b.args[0], ty);
+        if (isFloat(ty)) return emitIntrinsic(cg, "llvm.fabs", &.{llvm.LLVMTypeOf(x)}, &.{x});
+        const i1f = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(cg.ctx), 0, 0);
+        return emitIntrinsic(cg, "llvm.abs", &.{llvm.LLVMTypeOf(x)}, &.{ x, i1f });
+    }
+    if (unaryFloatIntrinsic(b.name)) |fnm| {
+        if (b.args.len < 1) return null;
+        const x = resolveVal(cg, fncg, b.args[0], ty);
+        return emitIntrinsic(cg, fnm, &.{llvm.LLVMTypeOf(x)}, &.{x});
+    }
+    if (std.mem.eql(u8, b.name, "pow")) {
+        if (b.args.len < 2) return null;
+        const x = resolveVal(cg, fncg, b.args[0], ty);
+        const y = resolveVal(cg, fncg, b.args[1], ty);
+        return emitIntrinsic(cg, "llvm.pow", &.{llvm.LLVMTypeOf(x)}, &.{ x, y });
+    }
+    if (std.mem.eql(u8, b.name, "fma")) {
+        if (b.args.len < 3) return null;
+        const a0 = resolveVal(cg, fncg, b.args[0], ty);
+        const a1 = resolveVal(cg, fncg, b.args[1], ty);
+        const a2 = resolveVal(cg, fncg, b.args[2], ty);
+        return emitIntrinsic(cg, "llvm.fma", &.{llvm.LLVMTypeOf(a0)}, &.{ a0, a1, a2 });
+    }
+
+    // ── Memory / control builtins ─────────────────────────────────────────────
+    if (std.mem.eql(u8, b.name, "memcpy")) {
+        if (b.args.len < 3) return null;
+        const dst = resolveVal(cg, fncg, b.args[0], .{ .ptr = undefined });
+        const src = resolveVal(cg, fncg, b.args[1], .{ .ptr = undefined });
+        const n = values.coerce(bl, cg.ctx, resolveVal(cg, fncg, b.args[2], .usize), llvm.LLVMInt64TypeInContext(cg.ctx));
+        _ = llvm.LLVMBuildMemCpy(bl, dst, 1, src, 1, n);
+        return null;
+    }
+    if (std.mem.eql(u8, b.name, "memset")) {
+        if (b.args.len < 3) return null;
+        const dst = resolveVal(cg, fncg, b.args[0], .{ .ptr = undefined });
+        const byte = values.coerce(bl, cg.ctx, resolveVal(cg, fncg, b.args[1], .byte), llvm.LLVMInt8TypeInContext(cg.ctx));
+        const n = values.coerce(bl, cg.ctx, resolveVal(cg, fncg, b.args[2], .usize), llvm.LLVMInt64TypeInContext(cg.ctx));
+        _ = llvm.LLVMBuildMemSet(bl, dst, byte, n, 1);
+        return null;
+    }
+    if (std.mem.eql(u8, b.name, "trap") or std.mem.eql(u8, b.name, "unreachable")) {
+        _ = emitIntrinsic(cg, "llvm.trap", &.{}, &.{});
+        return null;
+    }
+    if (std.mem.eql(u8, b.name, "cycle_count")) {
+        return emitIntrinsic(cg, "llvm.readcyclecounter", &.{}, &.{});
+    }
+    if (std.mem.eql(u8, b.name, "prefetch")) {
+        if (b.args.len < 1) return null;
+        const p = resolveVal(cg, fncg, b.args[0], .{ .ptr = undefined });
+        const i32t = llvm.LLVMInt32TypeInContext(cg.ctx);
+        // (ptr, rw=read, locality=3, cache=data)
+        _ = emitIntrinsic(cg, "llvm.prefetch", &.{llvm.LLVMTypeOf(p)}, &.{
+            p,
+            llvm.LLVMConstInt(i32t, 0, 0),
+            llvm.LLVMConstInt(i32t, 3, 0),
+            llvm.LLVMConstInt(i32t, 1, 0),
+        });
+        return null;
     }
 
     // ── Error builtins ──────────────────────────────────────────────────────
