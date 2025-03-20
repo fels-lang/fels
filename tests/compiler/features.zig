@@ -140,7 +140,7 @@ test "zone block desugars to std.heap.Arena make/new/deinit" {
         \\    zone scratch: Arena {
         \\        h := scratch.new(Header);
         \\        buf := scratch.new_slice(u8, count);
-        \\        h.magic = truncate_to(u32, buf.len);
+        \\        h.magic = core::narrow(u32, buf.len);
         \\    }
         \\    return true;
         \\}
@@ -504,7 +504,7 @@ test "unsafe_expr: unsafe prefix on expression is transparent" {
     defer arena.deinit();
     const src =
         \\read_byte :: fn(ptr: usize) -> u8 {
-        \\    return unsafe unaligned_read(u8, ptr);
+        \\    return unsafe core::unaligned_read(u8, ptr);
         \\}
     ;
     var fe = try k2.compile(arena.allocator(), "unsafe_expr.k2", src);
@@ -519,7 +519,7 @@ test "asm: zero-input volatile instruction (pause)" {
     const src =
         \\cpu_pause :: fn() {
         \\    unsafe {
-        \\        asm(volatile, "pause", inputs: {}, outputs: {}, clobbers: {});
+        \\        core::asm(volatile, "pause", inputs: {}, outputs: {}, clobbers: {});
         \\    }
         \\}
     ;
@@ -535,7 +535,7 @@ test "asm: input operands and typed output (syscall pattern)" {
     // Models Linux write syscall: syscall nr in rax, fd in rdi, ptr in rsi, len in rdx.
     const src =
         \\sys_write :: fn(fd: i32, buf: usize, len: usize) -> isize {
-        \\    return unsafe asm(
+        \\    return unsafe core::asm(
         \\        volatile,
         \\        "syscall",
         \\        inputs:  { "a"(1), "D"(fd), "S"(buf), "d"(len) },
@@ -575,7 +575,7 @@ test "asm: unsafe required — bare asm fails outside unsafe" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const bad =
-        \\bad :: fn() { asm(volatile, "pause", inputs: {}, outputs: {}, clobbers: {}); }
+        \\bad :: fn() { core::asm(volatile, "pause", inputs: {}, outputs: {}, clobbers: {}); }
     ;
     try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bad_asm.k2", bad));
 }
@@ -740,7 +740,7 @@ test "@panic runtime parses, checks, and lowers" {
         \\}
         \\
         \\assert :: fn(cond: bool) {
-        \\    if !cond { @panic("assertion failed\n"); }
+        \\    if !cond { core::panic("assertion failed\n"); }
         \\}
     ;
     var fe = try k2.compile(arena.allocator(), "runtime/windows.k2", src);

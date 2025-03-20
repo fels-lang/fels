@@ -47,28 +47,28 @@ buf := unsafe core::slice_from_raw_parts(u8, p, len);
 if bad { core::panic("invalid state"); }   // no-return
 ```
 
-`core` is reserved: a user module/import may not be named `core`. Some builtins
-require an `unsafe` block (last column).
+`core` is reserved: a user module/import may not be named `core` (it's a compile
+error). Some builtins require an `unsafe` block (last column).
 
-> **Migration note:** the bare forms (`sizeof(T)`, `ptr_from_int(...)`, …) still work
-> while the standard library is migrated to `core::`, but they are deprecated — write
-> `core::sizeof(T)`. (A few names are being tidied at the same time, e.g.
-> `typeid_of` → `core::type_id`, `truncate_to` → `core::narrow`,
-> `slice_from_raw_parts` → `core::slice_raw`; see the tracking issue.)
+> **Bare names are rejected.** Calling a builtin by its bare name (`sizeof(T)`,
+> `ptr_from_int(...)`, …) is a hard error pointing you at the `core::` form. A few
+> names were tidied in the move: `typeid_of` → `core::type_id`, `truncate_to` →
+> `core::narrow`, `slice_from_raw_parts` → `core::slice_raw`. (`@panic` keeps its
+> sigil and also works as `core::panic`.)
 
 | Builtin | Signature | Unsafe? | Description |
 |---------|-----------|---------|-------------|
 | `core::sizeof` | `core::sizeof($T: type) -> usize` | No | Size of `T` in bytes. |
-| `core::truncate_to` | `core::truncate_to($T: type, val) -> T` | No | Truncate a wider integer into a narrower `T`. |
+| `core::narrow` | `core::narrow($T: type, val) -> T` | No | Truncate a wider integer into a narrower `T`. |
 | `core::type_name` | `core::type_name($T: type) -> []const u8` | No | The type's name as a string. |
 | `core::type_info` | `core::type_info($T: type) -> TypeInfo` | No | Compile-time reflection data (fields, variants, …). |
-| `core::typeid_of` | `core::typeid_of($T: type) -> usize` | No | Stable runtime type id. |
+| `core::type_id` | `core::type_id($T: type) -> usize` | No | Stable runtime type id. |
 | `core::any` | `core::any(x) -> Any` | No | Wrap a value into a type-erased `Any`. |
 | `core::panic` | `core::panic(msg: []const u8) -> never` | No | Abort with a message; never returns. |
 | `core::atomic_load` | `core::atomic_load(ptr, order) -> T` | No | Atomic load (e.g. `.acquire`). |
 | `core::atomic_store`| `core::atomic_store(ptr, val, order)` | No | Atomic store. |
 | `core::ptr_from_int`| `core::ptr_from_int($T: type, addr: usize) -> T` | **Yes** | Integer address → pointer `T`. |
-| `core::slice_from_raw_parts`| `core::slice_from_raw_parts($T, ptr, len) -> []T` | **Yes** | Build a slice from a raw pointer + length. |
+| `core::slice_raw`| `core::slice_raw($T, ptr, len) -> []T` | **Yes** | Build a slice from a raw pointer + length. |
 | `core::volatile_store`| `core::volatile_store(ptr: *T, val: T)` | **Yes** | Volatile memory write. |
 | `core::unaligned_read`| `core::unaligned_read($T: type, ptr) -> T` | **Yes** | Read `T` from a possibly-unaligned address. |
 | `core::asm` | `core::asm(...)` | **Yes** | Inline assembly: `core::asm(volatile, "inst", inputs: {}, outputs: {}, clobbers: {})` |
@@ -85,7 +85,7 @@ ops, and memory primitives) are being added — see the tracking issue / docs ro
 Evaluates a condition at compile time and includes only the active branch in the IR.
 
 ```k2
-#if sizeof(usize) == 8 {
+#if core::sizeof(usize) == 8 {
     // 64-bit code
 } else {
     // 32-bit code

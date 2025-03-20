@@ -155,29 +155,29 @@ test "vm corpus: wide #run coverage" {
         \\C_globf :: #run muli(BASE, 2);
         \\
         \\// ── sizeof ──
-        \\S_i8    :: #run sizeof(i8);
-        \\S_i16   :: #run sizeof(i16);
-        \\S_i32   :: #run sizeof(i32);
-        \\S_i64   :: #run sizeof(i64);
-        \\S_u8    :: #run sizeof(u8);
-        \\S_u64   :: #run sizeof(u64);
-        \\S_f32   :: #run sizeof(f32);
-        \\S_f64   :: #run sizeof(f64);
-        \\S_bool  :: #run sizeof(bool);
-        \\S_point :: #run sizeof(Point);
-        \\S_rect  :: #run sizeof(Rect);
-        \\S_nest  :: #run sizeof(Nested);
-        \\S_arr   :: #run sizeof([4]i32);
-        \\S_opti  :: #run sizeof(?i32);
+        \\S_i8    :: #run core::sizeof(i8);
+        \\S_i16   :: #run core::sizeof(i16);
+        \\S_i32   :: #run core::sizeof(i32);
+        \\S_i64   :: #run core::sizeof(i64);
+        \\S_u8    :: #run core::sizeof(u8);
+        \\S_u64   :: #run core::sizeof(u64);
+        \\S_f32   :: #run core::sizeof(f32);
+        \\S_f64   :: #run core::sizeof(f64);
+        \\S_bool  :: #run core::sizeof(bool);
+        \\S_point :: #run core::sizeof(Point);
+        \\S_rect  :: #run core::sizeof(Rect);
+        \\S_nest  :: #run core::sizeof(Nested);
+        \\S_arr   :: #run core::sizeof([4]i32);
+        \\S_opti  :: #run core::sizeof(?i32);
         \\
         \\// ── type_info (matchable) ──
-        \\ti_bits   :: fn($T: type) -> i32 { match type_info(T) { .int |i| => return i.bits as i32; else => return 0; } }
-        \\ti_signed :: fn($T: type) -> i32 { match type_info(T) { .int |i| => { if i.signed { return 1; } return 0; } else => return -1; } }
-        \\ti_nflds  :: fn($T: type) -> i32 { match type_info(T) { .struct_ |s| => return s.fields.len as i32; else => return -1; } }
-        \\ti_nmlen  :: fn($T: type) -> i32 { match type_info(T) { .struct_ |s| => return s.name.len as i32; .enum_ |e| => return e.name.len as i32; else => return -1; } }
-        \\ti_isenum :: fn($T: type) -> i32 { match type_info(T) { .enum_ => return 1; else => return 0; } }
-        \\ti_isptr  :: fn($T: type) -> i32 { match type_info(T) { .pointer => return 1; else => return 0; } }
-        \\ti_elembits :: fn($T: type) -> i32 { match type_info(T) { .slice |e| => { match *e { .int |i| => return i.bits as i32; else => return -1; } } else => return -2; } }
+        \\ti_bits   :: fn($T: type) -> i32 { match core::type_info(T) { .int |i| => return i.bits as i32; else => return 0; } }
+        \\ti_signed :: fn($T: type) -> i32 { match core::type_info(T) { .int |i| => { if i.signed { return 1; } return 0; } else => return -1; } }
+        \\ti_nflds  :: fn($T: type) -> i32 { match core::type_info(T) { .struct_ |s| => return s.fields.len as i32; else => return -1; } }
+        \\ti_nmlen  :: fn($T: type) -> i32 { match core::type_info(T) { .struct_ |s| => return s.name.len as i32; .enum_ |e| => return e.name.len as i32; else => return -1; } }
+        \\ti_isenum :: fn($T: type) -> i32 { match core::type_info(T) { .enum_ => return 1; else => return 0; } }
+        \\ti_isptr  :: fn($T: type) -> i32 { match core::type_info(T) { .pointer => return 1; else => return 0; } }
+        \\ti_elembits :: fn($T: type) -> i32 { match core::type_info(T) { .slice |e| => { match *e { .int |i| => return i.bits as i32; else => return -1; } } else => return -2; } }
         \\T_bits  :: #run ti_bits(i32);
         \\T_sign  :: #run ti_signed(i32);
         \\T_flen  :: #run ti_nflds(Point);

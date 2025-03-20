@@ -6,7 +6,7 @@
 
 /// Write bytes to a file descriptor. Returns bytes written.
 sys_write :: fn(fd: i32, data: []const u8) -> isize {
-    return unsafe asm(volatile, "syscall",
+    return unsafe core::asm(volatile, "syscall",
         inputs:  { "a"(1), "D"(fd), "S"(data.ptr), "d"(data.len) },
         outputs: { "=a"(isize) },
         clobbers: { "rcx", "r11", "memory" },
@@ -16,7 +16,7 @@ sys_write :: fn(fd: i32, data: []const u8) -> isize {
 /// Exit the process with the given code. Never returns.
 #noreturn
 sys_exit :: fn(code: i32) {
-    ignored := unsafe asm(volatile, "syscall",
+    ignored := unsafe core::asm(volatile, "syscall",
         inputs:  { "a"(60), "D"(code) },
         outputs: {},
         clobbers: { "memory" },
@@ -62,10 +62,10 @@ abort :: fn() {
 
 /// Assert a condition is true; panic with a default message if not.
 assert :: fn(cond: bool) {
-    if !cond { @panic("assertion failed"); }
+    if !cond { core::panic("assertion failed"); }
 }
 
 /// Assert with a custom message.
 assert_msg :: fn(cond: bool, msg: []const u8) {
-    if !cond { @panic(msg); }
+    if !cond { core::panic(msg); }
 }

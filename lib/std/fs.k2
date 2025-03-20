@@ -122,7 +122,7 @@ File as Reader {
     read :: fn(self: *Self, buf: []u8) -> usize ! IoError {
         if buf.len == 0usize { return 0usize; }
         read_count := 0u32;
-        ok := ReadFile(self.handle, buf.ptr, truncate_to(u32, buf.len), &read_count, null);
+        ok := ReadFile(self.handle, buf.ptr, core::narrow(u32, buf.len), &read_count, null);
         if !ok { fail .read_failed; }
         return read_count as usize;
     }
@@ -132,7 +132,7 @@ File as Writer {
     write :: fn(self: *Self, data: []const u8) -> usize ! IoError {
         if data.len == 0usize { return 0usize; }
         written := 0u32;
-        ok := WriteFile(self.handle, data.ptr, truncate_to(u32, data.len), &written, null);
+        ok := WriteFile(self.handle, data.ptr, core::narrow(u32, data.len), &written, null);
         if !ok { fail .write_failed; }
         return written as usize;
     }

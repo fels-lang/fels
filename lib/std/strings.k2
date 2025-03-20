@@ -204,7 +204,7 @@ pub append_bool :: fn(self: *StringBuilder, b: bool) {
 
 // The built bytes (a view into the arena storage; valid until the next grow).
 pub str :: fn(self: *StringBuilder) -> []const u8 {
-    return unsafe slice_from_raw_parts(u8, self.buf.ptr, self.n);
+    return unsafe core::slice_raw(u8, self.buf.ptr, self.n);
 }
 
 pub len :: fn(self: *StringBuilder) -> usize {
@@ -294,8 +294,8 @@ pub append_f64_prec :: fn(self: *StringBuilder, v: f64, prec: usize) {
 
 // A subslice s[start..end] (bounds assumed valid).
 substr :: fn(s: []const u8, start: usize, end: usize) -> []const u8 {
-    p: *u8 = unsafe ptr_from_int(*u8, (s.ptr as usize) + start);
-    return unsafe slice_from_raw_parts(u8, p, end - start);
+    p: *u8 = unsafe core::ptr_from_int(*u8, (s.ptr as usize) + start);
+    return unsafe core::slice_raw(u8, p, end - start);
 }
 
 pub str_eq :: fn(a: []const u8, b: []const u8) -> bool {

@@ -1,5 +1,5 @@
 // Phase 3 std.compiler: a #compiler hook INSPECTS the program via
-// compiler_decls(), then generates code conditionally. Here it only emits the
+// core::compiler_decls(), then generates code conditionally. Here it only emits the
 // real `answer` (return 42) because a struct declaration exists; otherwise it
 // would emit a stub returning 0. Expected exit code: 42.
 
@@ -14,7 +14,7 @@ streq :: fn(a: []const u8, b: []const u8) -> bool {
 }
 
 #compiler gen :: fn() -> []const u8 {
-    for d in compiler_decls() {
+    for d in core::compiler_decls() {
         if streq(d.kind, "struct") {
             return "answer :: fn() -> i32 { return 42; }";
         }

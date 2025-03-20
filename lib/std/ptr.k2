@@ -18,7 +18,7 @@ pub to_addr :: fn($T: type, p: *T) -> usize {
 // Reinterpret an integer address as a `*T`. As unsafe as it looks: the caller
 // must know the address is valid and properly aligned for `T`.
 pub from_addr :: fn($T: type, addr: usize) -> *T {
-    return unsafe ptr_from_int(*T, addr);
+    return unsafe core::ptr_from_int(*T, addr);
 }
 
 pub is_null :: fn($T: type, p: *T) -> bool {

@@ -249,9 +249,9 @@ test "comptime: matchable TypeInfo — scalar kinds + fields" {
     defer arena.deinit();
 
     const src =
-        \\bits_of   :: fn($T: type) -> i32 { match type_info(T) { .int |i| => return i.bits as i32; .float |f| => return f.bits as i32; else => return 0; } }
-        \\is_signed :: fn($T: type) -> i32 { match type_info(T) { .int |i| => { if i.signed { return 1; } return 0; } else => return -1; } }
-        \\is_bool   :: fn($T: type) -> i32 { match type_info(T) { .boolean => return 1; else => return 0; } }
+        \\bits_of   :: fn($T: type) -> i32 { match core::type_info(T) { .int |i| => return i.bits as i32; .float |f| => return f.bits as i32; else => return 0; } }
+        \\is_signed :: fn($T: type) -> i32 { match core::type_info(T) { .int |i| => { if i.signed { return 1; } return 0; } else => return -1; } }
+        \\is_bool   :: fn($T: type) -> i32 { match core::type_info(T) { .boolean => return 1; else => return 0; } }
         \\I32_BITS   :: #run bits_of(i32);
         \\U8_BITS    :: #run bits_of(u8);
         \\F64_BITS   :: #run bits_of(f64);
@@ -278,10 +278,10 @@ test "comptime: matchable TypeInfo — struct fields (iterate names + types)" {
 
     const src =
         \\Point :: struct { x: i32, yy: i32, zzz: i32 }
-        \\nfields  :: fn($T: type) -> i32 { match type_info(T) { .struct_ |s| => return s.fields.len as i32; else => return -1; } }
-        \\namelen  :: fn($T: type) -> i32 { match type_info(T) { .struct_ |s| => return s.name.len as i32; else => return -1; } }
-        \\namesum  :: fn($T: type) -> i32 { t := 0; match type_info(T) { .struct_ |s| => { for f in s.fields { t = t + (f.name.len as i32); } return t; } else => return -1; } }
-        \\int_flds :: fn($T: type) -> i32 { n := 0; match type_info(T) { .struct_ |s| => { for f in s.fields { match *f.ty { .int => n = n + 1; else => {} } } return n; } else => return -1; } }
+        \\nfields  :: fn($T: type) -> i32 { match core::type_info(T) { .struct_ |s| => return s.fields.len as i32; else => return -1; } }
+        \\namelen  :: fn($T: type) -> i32 { match core::type_info(T) { .struct_ |s| => return s.name.len as i32; else => return -1; } }
+        \\namesum  :: fn($T: type) -> i32 { t := 0; match core::type_info(T) { .struct_ |s| => { for f in s.fields { t = t + (f.name.len as i32); } return t; } else => return -1; } }
+        \\int_flds :: fn($T: type) -> i32 { n := 0; match core::type_info(T) { .struct_ |s| => { for f in s.fields { match *f.ty { .int => n = n + 1; else => {} } } return n; } else => return -1; } }
         \\FIELD_COUNT :: #run nfields(Point);
         \\STRUCT_NAMELEN :: #run namelen(Point);
         \\NAME_SUM :: #run namesum(Point);
@@ -303,10 +303,10 @@ test "comptime: matchable TypeInfo — pointer/slice/optional + element navigati
     defer arena.deinit();
 
     const src =
-        \\is_ptr   :: fn($T: type) -> i32 { match type_info(T) { .pointer => return 1; else => return 0; } }
-        \\is_slice :: fn($T: type) -> i32 { match type_info(T) { .slice => return 1; else => return 0; } }
-        \\is_opt   :: fn($T: type) -> i32 { match type_info(T) { .optional => return 1; else => return 0; } }
-        \\elem_bits :: fn($T: type) -> i32 { match type_info(T) { .slice |e| => { match *e { .int |i| => return i.bits as i32; else => return -1; } } else => return -2; } }
+        \\is_ptr   :: fn($T: type) -> i32 { match core::type_info(T) { .pointer => return 1; else => return 0; } }
+        \\is_slice :: fn($T: type) -> i32 { match core::type_info(T) { .slice => return 1; else => return 0; } }
+        \\is_opt   :: fn($T: type) -> i32 { match core::type_info(T) { .optional => return 1; else => return 0; } }
+        \\elem_bits :: fn($T: type) -> i32 { match core::type_info(T) { .slice |e| => { match *e { .int |i| => return i.bits as i32; else => return -1; } } else => return -2; } }
         \\IS_PTR   :: #run is_ptr(*i32);
         \\IS_SLICE :: #run is_slice([]u8);
         \\IS_OPT   :: #run is_opt(?i32);
@@ -328,7 +328,7 @@ test "comptime: type_name returns mangled type name" {
     defer arena.deinit();
 
     const src =
-        \\NAME :: #run type_name(i32);
+        \\NAME :: #run core::type_name(i32);
     ;
     var fe = try k2.compile(arena.allocator(), "tn1.k2", src);
     defer fe.deinit(arena.allocator());

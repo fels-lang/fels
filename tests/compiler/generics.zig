@@ -40,10 +40,10 @@ test "where clause: a satisfying type is accepted (user predicate over type_info
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // The `where` block inspects `type_info(T)` and only accepts numeric types.
+    // The `where` block inspects `core::type_info(T)` and only accepts numeric types.
     const src =
         \\dbl :: fn(x: $T) -> T
-        \\where { match type_info(T) { .int => {} .float => {} else => reject("needs a numeric type"); } }
+        \\where { match core::type_info(T) { .int => {} .float => {} else => core::reject("needs a numeric type"); } }
         \\{ return x +% x; }
         \\use :: fn() -> i32 { return dbl(21); }
     ;
@@ -64,7 +64,7 @@ test "where clause: a non-satisfying type is rejected during resolution (two-pas
     const src =
         \\P :: struct { a: i32 }
         \\dbl :: fn(x: $T) -> T
-        \\where { match type_info(T) { .int => {} .float => {} else => reject("needs a numeric type"); } }
+        \\where { match core::type_info(T) { .int => {} .float => {} else => core::reject("needs a numeric type"); } }
         \\{ return x +% x; }
         \\use :: fn() -> i32 { p: P = .{ 0 }; _ := dbl(p); return 0; }
     ;
@@ -80,7 +80,7 @@ test "named constraint: `Name :: constraint($T)` accepts a satisfying type" {
 
     // A reusable, named comptime predicate, enforced at `$T: MyNum` resolution.
     const src =
-        \\MyNum :: constraint($T) { match type_info(T) { .int => {} .float => {} else => reject("expected a numeric type"); } }
+        \\MyNum :: constraint($T) { match core::type_info(T) { .int => {} .float => {} else => core::reject("expected a numeric type"); } }
         \\dbl :: fn($T: MyNum, x: T) -> T { return x +% x; }
         \\use :: fn() -> i32 { return dbl(21); }
     ;
@@ -95,7 +95,7 @@ test "named constraint: a non-satisfying type is rejected with the predicate's m
     defer arena.deinit();
 
     const src =
-        \\MyNum :: constraint($T) { match type_info(T) { .int => {} .float => {} else => reject("expected a numeric type"); } }
+        \\MyNum :: constraint($T) { match core::type_info(T) { .int => {} .float => {} else => core::reject("expected a numeric type"); } }
         \\P :: struct { a: i32 }
         \\dbl :: fn($T: MyNum, x: T) -> T { return x; }
         \\use :: fn() -> i32 { p: P = .{ 0 }; _ := dbl(p); return 0; }
@@ -106,14 +106,14 @@ test "named constraint: a non-satisfying type is rejected with the predicate's m
     );
 }
 
-test "named constraint: `require(T, Other)` composition accepts when all hold" {
+test "named constraint: `core::require(T, Other)` composition accepts when all hold" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
     // `Ordered` composes `MyNum` via `require`; both must hold for i32.
     const src =
-        \\MyNum   :: constraint($T) { match type_info(T) { .int => {} .float => {} else => reject("not numeric"); } }
-        \\Ordered :: constraint($T) { require(T, MyNum); }
+        \\MyNum   :: constraint($T) { match core::type_info(T) { .int => {} .float => {} else => core::reject("not numeric"); } }
+        \\Ordered :: constraint($T) { core::require(T, MyNum); }
         \\use :: fn($T: Ordered, x: T) -> T { return x +% x; }
         \\go :: fn() -> i32 { return use(21); }
     ;
@@ -129,8 +129,8 @@ test "named constraint: `require` propagates the required constraint's rejection
 
     // A struct fails `MyNum`, so the composing `Ordered` rejects too.
     const src =
-        \\MyNum   :: constraint($T) { match type_info(T) { .int => {} .float => {} else => reject("not numeric"); } }
-        \\Ordered :: constraint($T) { require(T, MyNum); }
+        \\MyNum   :: constraint($T) { match core::type_info(T) { .int => {} .float => {} else => core::reject("not numeric"); } }
+        \\Ordered :: constraint($T) { core::require(T, MyNum); }
         \\P :: struct { a: i32 }
         \\use :: fn($T: Ordered, x: T) -> T { return x; }
         \\go :: fn() -> i32 { p: P = .{ 0 }; _ := use(p); return 0; }
@@ -145,13 +145,13 @@ test "where clause: output type param `-> $Acc` computed from type_info (two-pas
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // The `where` block selects the accumulator width from `type_info(T)`:
+    // The `where` block selects the accumulator width from `core::type_info(T)`:
     // sub-32-bit ints widen to i32, everything else keeps T. The body and the
     // call's return type both use the computed `Acc`.
     const src =
         \\acc_of :: fn(x: $T) -> $Acc
         \\where {
-        \\    match type_info(T) {
+        \\    match core::type_info(T) {
         \\        .int |i| => if i.bits < 32 { Acc = i32; } else { Acc = T; }
         \\        else => Acc = T;
         \\    }
@@ -176,7 +176,7 @@ test "where clause: output type param + reject coexist (reject a float)" {
     // The `where` computes `Acc` for integers and rejects everything else.
     const src =
         \\acc :: fn(x: $T) -> $Acc
-        \\where { match type_info(T) { .int |i| => Acc = T; else => reject("acc needs an integer"); } }
+        \\where { match core::type_info(T) { .int |i| => Acc = T; else => core::reject("acc needs an integer"); } }
         \\{ total: Acc = x; return total; }
         \\use :: fn() -> i32 { _ := acc(1.5f64); return 0; }
     ;

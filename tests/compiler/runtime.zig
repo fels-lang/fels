@@ -101,7 +101,7 @@ test "runtime: @panic is #noreturn — CFG allows body without return" {
     const src =
         \\validate :: fn(x: i32) -> i32 {
         \\    if x < 0 {
-        \\        @panic("negative input");
+        \\        core::panic("negative input");
         \\        // no return needed — @panic is #noreturn
         \\    }
         \\    return x;

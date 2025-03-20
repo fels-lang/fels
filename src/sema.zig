@@ -563,6 +563,8 @@ fn requireCall(stmt: ast.Stmt) ?ast.CallExpr {
     };
     const callee = switch (call.callee.kind) {
         .ident => |n| n,
+        // `core::require(T, Other)` — the reserved-namespace spelling.
+        .scope_access => |sa| if (isCoreNamespace(sa)) sa.member else return null,
         else => return null,
     };
     return if (std.mem.eql(u8, callee, "require")) call else null;
@@ -699,6 +701,15 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
             .import => |value| value,
             else => continue,
         };
+        // `core::` is the reserved compiler-builtin namespace — a module may not
+        // claim it (as an alias or a trailing path segment). Checked before import
+        // resolution so it fires even on the in-memory `compile()` path.
+        if (imp.namespace()) |ns| {
+            if (std.mem.eql(u8, ns, "core")) {
+                std.debug.print("{s}: error: `core` is a reserved namespace (compiler builtins) — use a different alias\n", .{imp.file_name});
+                return error.SemanticFailed;
+            }
+        }
         // `compile()` parses one in-memory source and intentionally does not
         // resolve imports. Multi-file and filesystem compilation always set it.
         const target_file = imp.resolved_file orelse continue;
@@ -2533,9 +2544,16 @@ const Checker = struct {
         const is_core = call.callee.kind == .scope_access;
         const name = switch (call.callee.kind) {
             .ident => |n| n,
-            .scope_access => |sa| sa.member,
+            .scope_access => |sa| coreRename(sa.member),
             else => return .unknown,
         };
+
+        // Builtins live under `core::` — a bare call is an error pointing the user
+        // at the namespaced form. (The `@panic` family + `__`-internals are exempt.)
+        if (!is_core and call.callee.kind == .ident and isMigratedBuiltin(name)) {
+            self.emitError(call.callee.span, "`{s}` is a compiler builtin — call it as `core::{s}`", .{ name, name });
+            return error.SemanticFailed;
+        }
 
         // ── Builtins ────────────────────────────────────────────────────
         // `core::panic(msg)` — the no-return panic intrinsic (maps to `@panic` in
@@ -4624,6 +4642,30 @@ fn isAddressable(expr: ast.Expr) bool {
 /// `::` callee/value sites and routed to the builtin dispatch (keyed on member).
 fn isCoreNamespace(sa: ast.ScopeAccess) bool {
     return sa.base.kind == .ident and std.mem.eql(u8, sa.base.kind.ident, "core");
+}
+
+/// Map a `core::` member's friendly spelling to the internal builtin name the
+/// dispatch keys on (the names were tidied when builtins moved under `core::`).
+/// `core::panic` is handled separately (it maps to `@panic` in IR).
+fn coreRename(member: []const u8) []const u8 {
+    if (std.mem.eql(u8, member, "type_id")) return "typeid_of";
+    if (std.mem.eql(u8, member, "narrow")) return "truncate_to";
+    if (std.mem.eql(u8, member, "slice_raw")) return "slice_from_raw_parts";
+    return member;
+}
+
+/// A builtin that now lives ONLY under `core::` — calling it by its bare name is
+/// an error (the user must write `core::<name>`). Excludes the `@panic`/`exit`/
+/// `abort` runtime intrinsics and the compiler-internal `__str_cat`/`__build_*`.
+fn isMigratedBuiltin(name: []const u8) bool {
+    inline for (.{
+        "sizeof",        "type_info",      "type_name",     "typeid_of", "type_id",
+        "truncate_to",   "narrow",         "slice_raw",     "any",
+        "slice_from_raw_parts", "ptr_from_int", "unaligned_read", "volatile_store",
+        "atomic_load",   "atomic_store",   "asm",           "reject",    "require",
+        "compiler_decls", "compiler_error", "compiler_remove",
+    }) |b| if (std.mem.eql(u8, name, b)) return true;
+    return false;
 }
 
 fn isBuiltinValue(name: []const u8) bool {

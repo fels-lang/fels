@@ -42,7 +42,7 @@ const sample =
     \\    ok := WriteFile(
     \\        handle,
     \\        text.ptr,
-    \\        truncate_to(u32, text.len),
+    \\        core::narrow(u32, text.len),
     \\        &written,
     \\        null,
     \\    );
@@ -52,17 +52,17 @@ const sample =
     \\
     \\mmio_write32 :: fn(addr: usize, value: u32) {
     \\    unsafe {
-    \\        reg := ptr_from_int(*volatile u32, addr);
-    \\        volatile_store(reg, value);
+    \\        reg := core::ptr_from_int(*volatile u32, addr);
+    \\        core::volatile_store(reg, value);
     \\    }
     \\}
     \\
     \\read_header :: fn(bytes: []const u8) -> ?Header {
-    \\    if bytes.len < sizeof(Header) {
+    \\    if bytes.len < core::sizeof(Header) {
     \\        return null;
     \\    }
     \\
-    \\    h := unsafe unaligned_read(Header, bytes.ptr);
+    \\    h := unsafe core::unaligned_read(Header, bytes.ptr);
     \\
     \\    if h.magic != 0x324B_324B {
     \\        return null;
@@ -73,7 +73,7 @@ const sample =
     \\
     \\cpu_pause :: fn() {
     \\    unsafe {
-    \\        asm(
+    \\        core::asm(
     \\            volatile,
     \\            "pause",
     \\            inputs: {},
@@ -84,7 +84,7 @@ const sample =
     \\}
     \\
     \\spin_until_ready :: fn(flag: *atomic u32) {
-    \\    while atomic_load(flag, .acquire) == 0 {
+    \\    while core::atomic_load(flag, .acquire) == 0 {
     \\        cpu_pause();
     \\    }
     \\}

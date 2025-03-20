@@ -39,7 +39,7 @@ write_stdout :: fn(data: []const u8) -> usize {
     if data.len == 0 { return 0; }
     handle  := GetStdHandle(STD_OUTPUT_HANDLE);
     written := 0u32;
-    ok := WriteFile(handle, data.ptr, truncate_to(u32, data.len), &written, null);
+    ok := WriteFile(handle, data.ptr, core::narrow(u32, data.len), &written, null);
     if !ok { return 0; }
     return written as usize;
 }
@@ -48,7 +48,7 @@ write_stderr :: fn(data: []const u8) -> usize {
     if data.len == 0 { return 0; }
     handle  := GetStdHandle(STD_ERROR_HANDLE);
     written := 0u32;
-    ok := WriteFile(handle, data.ptr, truncate_to(u32, data.len), &written, null);
+    ok := WriteFile(handle, data.ptr, core::narrow(u32, data.len), &written, null);
     if !ok { return 0; }
     return written as usize;
 }
@@ -78,10 +78,10 @@ abort :: fn() {
 
 /// Assert a condition is true; panic with a default message if not.
 assert :: fn(cond: bool) {
-    if !cond { @panic("assertion failed"); }
+    if !cond { core::panic("assertion failed"); }
 }
 
 /// Assert with a custom message.
 assert_msg :: fn(cond: bool, msg: []const u8) {
-    if !cond { @panic(msg); }
+    if !cond { core::panic(msg); }
 }

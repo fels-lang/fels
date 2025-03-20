@@ -456,7 +456,7 @@ unsafe {
 }
 
 // Unsafe expression
-val := unsafe unaligned_read(u64, &x);
+val := unsafe core::unaligned_read(u64, &x);
 ```
 
 > [!CAUTION]
@@ -470,7 +470,7 @@ K2 supports compile-time evaluation through special directives:
 
 ```k2
 // Compile-time if
-#if sizeof(usize) == 8 {
+#if core::sizeof(usize) == 8 {
     // 64-bit platform code
 } else {
     // 32-bit platform code

@@ -569,7 +569,7 @@ Atomic fields must be accessed through the `atomic_load` and `atomic_store` buil
 
 ```k2
 c := Counter { value = 0 };
-current := atomic_load(&c.value);
+current := core::atomic_load(&c.value);
 atomic_store(&c.value, current + 1);
 ```
 

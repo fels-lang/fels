@@ -1,6 +1,6 @@
 // std.atomic — atomic loads and spin-wait helpers.
 //
-// K2 currently exposes a single atomic primitive: `atomic_load(ptr, .acquire)`,
+// K2 currently exposes a single atomic primitive: `core::atomic_load(ptr, .acquire)`,
 // an acquire-ordered 32-bit load (the ordering argument is required syntax but
 // the backend always emits acquire semantics). There is no atomic store,
 // fetch-add, or compare-exchange yet — this module wraps the one primitive
@@ -9,7 +9,7 @@
 
 // Atomically load the current value of an `atomic u32`.
 pub load :: fn(flag: *atomic u32) -> u32 {
-    return atomic_load(flag, .acquire);
+    return core::atomic_load(flag, .acquire);
 }
 
 // True if the flag currently holds a non-zero value.

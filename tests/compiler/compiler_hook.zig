@@ -3,7 +3,7 @@ const k2 = @import("k2_compiler");
 
 // Phase 3 — the `#compiler` message loop. A `#compiler` hook is a function the
 // compiler runs at compile time; its returned `[]const u8` is parsed as
-// top-level K2 declarations and added to the program. `compiler_decls()` lets a
+// top-level K2 declarations and added to the program. `core::compiler_decls()` lets a
 // hook INSPECT the program (every top-level decl's name + kind) and generate
 // code conditionally. These are the headline capabilities `#insert` (a
 // statement-only splice) cannot provide.
@@ -50,7 +50,7 @@ test "compiler-hook: a hook reads a declaration's BODY text (R1b-A)" {
         \\    return true;
         \\}
         \\#compiler gen :: fn() -> []const u8 {
-        \\    for d in compiler_decls() {
+        \\    for d in core::compiler_decls() {
         \\        if streq(d.name, "target") {
         \\            if has_seven(d.body) { return "answer :: fn() -> i32 { return 42; }"; }
         \\        }
@@ -79,7 +79,7 @@ test "compiler-hook: `compiler_remove` drops an existing declaration (R1b-B)" {
         \\    return true;
         \\}
         \\#compiler gen :: fn() -> []const u8 {
-        \\    for d in compiler_decls() { if streq(d.name, "scratch") { compiler_remove("scratch"); } }
+        \\    for d in core::compiler_decls() { if streq(d.name, "scratch") { core::compiler_remove("scratch"); } }
         \\    return "";
         \\}
         \\main :: fn() -> i32 { return 0; }
@@ -107,8 +107,8 @@ test "compiler-hook: a `#compiler(final)` hook runs AFTER generation and sees ge
         \\#compiler gen :: fn() -> []const u8 { return "answer :: fn() -> i32 { return 42; }"; }
         \\#compiler(final) check :: fn() -> []const u8 {
         \\    seen: bool = false;
-        \\    for d in compiler_decls() { if streq(d.name, "answer") { seen = true; } }
-        \\    if !seen { compiler_error("final phase did not see generated `answer`"); }
+        \\    for d in core::compiler_decls() { if streq(d.name, "answer") { seen = true; } }
+        \\    if !seen { core::compiler_error("final phase did not see generated `answer`"); }
         \\    return "";
         \\}
         \\main :: fn() -> i32 { return answer(); }
@@ -132,7 +132,7 @@ test "compiler-hook: a `#compiler(final)` hook can halt the build (whole-program
         \\    return true;
         \\}
         \\#compiler(final) policy :: fn() -> []const u8 {
-        \\    for d in compiler_decls() { if streq(d.name, "Banned") { compiler_error("type `Banned` is not allowed"); } }
+        \\    for d in core::compiler_decls() { if streq(d.name, "Banned") { core::compiler_error("type `Banned` is not allowed"); } }
         \\    return "";
         \\}
         \\main :: fn() -> i32 { return 0; }
@@ -148,8 +148,8 @@ test "compiler-hook: `compiler_error` halts the build with a custom diagnostic (
     const bad =
         \\Widget :: struct { x: i32 }
         \\#compiler policy :: fn() -> []const u8 {
-        \\    for d in compiler_decls() {
-        \\        match d.kind { "struct" => { compiler_error("structs are banned here"); } else => {} }
+        \\    for d in core::compiler_decls() {
+        \\        match d.kind { "struct" => { core::compiler_error("structs are banned here"); } else => {} }
         \\    }
         \\    return "";
         \\}
@@ -178,7 +178,7 @@ test "compiler-hook: rich introspection — reads struct fields and enum variant
     defer arena.deinit();
     const a = arena.allocator();
 
-    // `compiler_decls()` now exposes each decl's structure: a struct's `fields`,
+    // `core::compiler_decls()` now exposes each decl's structure: a struct's `fields`,
     // an enum's variants (also via `fields`), and a fn's params + `ret`. The hook
     // reads `d.fields.len` (and matches on `d.kind` as a string) and only emits
     // `answer` when the program's shape matches — proving it saw the real fields.
@@ -188,7 +188,7 @@ test "compiler-hook: rich introspection — reads struct fields and enum variant
         \\#compiler shape :: fn() -> []const u8 {
         \\    nfields: i32 = 0;
         \\    nvariants: i32 = 0;
-        \\    for d in compiler_decls() {
+        \\    for d in core::compiler_decls() {
         \\        match d.kind {
         \\            "struct" => { nfields = nfields + (d.fields.len as i32); }
         \\            "enum"   => { nvariants = nvariants + (d.fields.len as i32); }
@@ -232,12 +232,12 @@ test "compiler-hook: generated top-level declaration is added to the module" {
     try std.testing.expect(hasFunction(m, "main"));
 }
 
-test "compiler-hook: compiler_decls() inspection drives conditional generation" {
+test "compiler-hook: core::compiler_decls() inspection drives conditional generation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
-    // The hook walks `compiler_decls()` and only emits the real `answer` (the
+    // The hook walks `core::compiler_decls()` and only emits the real `answer` (the
     // one a passing program needs) because a `struct` declaration is present.
     // Exercises: slice-of-struct iteration, `[]const u8` field reads, comptime
     // string compare (`.len` + byte indexing on host strings), and conditional
@@ -252,7 +252,7 @@ test "compiler-hook: compiler_decls() inspection drives conditional generation" 
         \\    return true;
         \\}
         \\#compiler gen :: fn() -> []const u8 {
-        \\    for d in compiler_decls() {
+        \\    for d in core::compiler_decls() {
         \\        if streq(d.kind, "struct") {
         \\            return "answer :: fn() -> i32 { return 42; }";
         \\        }

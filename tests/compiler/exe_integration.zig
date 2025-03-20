@@ -86,7 +86,7 @@ test "exe: `Any` — wrap a value, dispatch on its runtime type, safe downcast" 
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // `any(x)` wraps any value into a type-erased Any; `any_as(v, T) -> ?T` is a
+    // `core::any(x)` wraps any value into a type-erased Any; `any_as(v, T) -> ?T` is a
     // safe downcast (null on type mismatch), `any_is(v, T)` an identity test —
     // both ordinary generic K2 over `typeid_of`. Verified across a value passed
     // through an `Any` parameter and recovered by its real type.
@@ -97,12 +97,12 @@ test "exe: `Any` — wrap a value, dispatch on its runtime type, safe downcast" 
         \\    return -1;
         \\}
         \\main :: fn() -> i32 {
-        \\    a := describe(any(42));     // recovered as i32 -> 42
-        \\    b := describe(any(true));   // recovered as bool -> 100
+        \\    a := describe(core::any(42));     // recovered as i32 -> 42
+        \\    b := describe(core::any(true));   // recovered as bool -> 100
         \\    miss: i32 = 0;
-        \\    if any_as(any(7i32), f64) |x| { miss = 999; }  // wrong type -> null
+        \\    if any_as(core::any(7i32), f64) |x| { miss = 999; }  // wrong type -> null
         \\    nm: i32 = 0;
-        \\    if any_name(any(1i32)).len == 3 { nm = nm + 1; }  // "i32", metadata travels with the value
+        \\    if any_name(core::any(1i32)).len == 3 { nm = nm + 1; }  // "i32", metadata travels with the value
         \\    return a + b + miss + nm - 101;  // 42 + 100 + 0 + 1 - 101 = 42
         \\}
     , "exe_any");
@@ -135,7 +135,7 @@ test "exe: recursive `Any` field navigation (reflection-driven struct walk)" {
         \\}
         \\main :: fn() -> i32 {
         \\    o: Outer = .{ 10, .{ 12, 12 } };
-        \\    return digest(any(o));   // names a(1)+inner(5)+x(1)+y(1)=8; values 10+12+12=34; =42
+        \\    return digest(core::any(o));   // names a(1)+inner(5)+x(1)+y(1)=8; values 10+12+12=34; =42
         \\}
     , "exe_any_nav");
     try std.testing.expectEqual(@as(u32, 42), code);
@@ -147,15 +147,15 @@ test "exe: `info_of` (type_name_of/type_size_of) from a bare typeid + Any auto-w
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     // `type_name_of`/`type_size_of` resolve a *bare* typeid to name/size; a value
-    // passed to an `Any` parameter auto-wraps (no explicit `any(...)`).
+    // passed to an `Any` parameter auto-wraps (no explicit `core::any(...)`).
     const code = try compileAndRun(arena.allocator(),
         \\P :: struct { a: i32, b: i32 }
         \\kind :: fn(v: Any) -> i32 { if any_as(v, i32) |x| { return x; } return 0; }
         \\main :: fn() -> i32 {
         \\    total: i32 = 0;
-        \\    if type_size_of(typeid_of(i32)) == 4usize { total = total + 1; }
-        \\    if type_size_of(typeid_of(P)) == 8usize { total = total + 2; }   // 2*i32
-        \\    if type_name_of(typeid_of(i32)).len == 3 { total = total + 4; }   // "i32"
+        \\    if type_size_of(core::type_id(i32)) == 4usize { total = total + 1; }
+        \\    if type_size_of(core::type_id(P)) == 8usize { total = total + 2; }   // 2*i32
+        \\    if type_name_of(core::type_id(i32)).len == 3 { total = total + 4; }   // "i32"
         \\    total = total + kind(35);   // 35 auto-wrapped into Any, recovered
         \\    return total;               // 1+2+4+35 = 42
         \\}
@@ -192,7 +192,7 @@ test "exe: `Any` slice navigation (any_elem) through a generic walker" {
         \\main :: fn() -> i32 {
         \\    arr: [3]i32 = .{ 10, 12, 14 };
         \\    b: Bag = .{ arr[:], 6 };   // items 36 + count 6 = 42
-        \\    return sum_all(any(b));
+        \\    return sum_all(core::any(b));
         \\}
     , "exe_any_elem");
     try std.testing.expectEqual(@as(u32, 42), code);
@@ -211,7 +211,7 @@ test "exe: `Any` pointer navigation (any_deref) through a generic walker" {
         \\main :: fn() -> i32 {
         \\    n: Node = .{ 30 };
         \\    h: Holder = .{ &n, 12 };
-        \\    v := any(h);
+        \\    v := core::any(h);
         \\    total: i32 = 0;
         \\    nf := any_field_count(v);
         \\    i: usize = 0;
@@ -246,7 +246,7 @@ test "exe: reflection-driven scalar serialization + any_at in-place wrap" {
         \\    return 0;
         \\}
         \\main :: fn() -> i32 {
-        \\    s := ser_tag(any(7i32)) + ser_tag(any(false)) + ser_tag(any(2.5f64)); // 107+200+302
+        \\    s := ser_tag(core::any(7i32)) + ser_tag(core::any(false)) + ser_tag(core::any(2.5f64)); // 107+200+302
         \\    x: i32 = 33;
         \\    at := any_at(to_bytes(&x), i32);
         \\    av: i32 = 0;
@@ -257,7 +257,7 @@ test "exe: reflection-driven scalar serialization + any_at in-place wrap" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
-test "exe: `typeid_of(T)` is a stable runtime type identity" {
+test "exe: `core::type_id(T)` is a stable runtime type identity" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -270,18 +270,18 @@ test "exe: `typeid_of(T)` is a stable runtime type identity" {
         \\Q :: struct { a: i32 }
         \\main :: fn() -> i32 {
         \\    total: i32 = 0;
-        \\    if typeid_of(i32) == typeid_of(i32) { total = total + 1; }
-        \\    if typeid_of(i32) != typeid_of(f64) { total = total + 2; }
-        \\    if typeid_of(*i32) != typeid_of(i32) { total = total + 4; }
-        \\    if typeid_of([]i32) != typeid_of(i32) { total = total + 8; }
-        \\    if typeid_of(P)   != typeid_of(Q)   { total = total + 16; }
+        \\    if core::type_id(i32) == core::type_id(i32) { total = total + 1; }
+        \\    if core::type_id(i32) != core::type_id(f64) { total = total + 2; }
+        \\    if core::type_id(*i32) != core::type_id(i32) { total = total + 4; }
+        \\    if core::type_id([]i32) != core::type_id(i32) { total = total + 8; }
+        \\    if core::type_id(P)   != core::type_id(Q)   { total = total + 16; }
         \\    return total;
         \\}
     , "exe_typeid");
     try std.testing.expectEqual(@as(u32, 31), code);
 }
 
-test "exe: `type_name(T)` returns the type's name at runtime" {
+test "exe: `core::type_name(T)` returns the type's name at runtime" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -290,7 +290,7 @@ test "exe: `type_name(T)` returns the type's name at runtime" {
     // folds to the name string at lowering, so it's a real runtime value.
     const code = try compileAndRun(arena.allocator(),
         \\main :: fn() -> i32 {
-        \\    n := type_name(i32);
+        \\    n := core::type_name(i32);
         \\    ok: i32 = 0;
         \\    if n.len == 3 { ok = ok + 1; }
         \\    if n[0] == 105 { ok = ok + 1; }  // 'i'
@@ -302,16 +302,40 @@ test "exe: `type_name(T)` returns the type's name at runtime" {
     try std.testing.expectEqual(@as(u32, 4), code);
 }
 
+test "exe: `.len` read INLINE on a folded string constant (type_name / literal)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: `.len` applied DIRECTLY to a folded string constant — the
+    // `.imm.text` result of `core::type_name(T)`, or a string literal — used to read an
+    // undef reg → garbage (`core::type_name(Point).len` returned 240). Through a local
+    // it always worked. `type_name` and a bare literal fold to the identical
+    // `.imm.text`, so this locks in both, plus the local for contrast.
+    const code = try compileAndRun(arena.allocator(),
+        \\Point :: struct { x: i32, y: i32 }
+        \\main :: fn() -> i32 {
+        \\    ok: i32 = 0;
+        \\    if core::type_name(Point).len as i32 == 5 { ok = ok + 1; }  // inline "Point".len
+        \\    if "hello".len as i32 == 5 { ok = ok + 1; }           // inline literal .len
+        \\    nm := core::type_name(Point);
+        \\    if nm.len as i32 == 5 { ok = ok + 1; }                // through a local
+        \\    return ok;
+        \\}
+    , "exe_inline_strlen");
+    try std.testing.expectEqual(@as(u32, 3), code);
+}
+
 test "exe: `where` output type param `-> $Acc` runs end to end" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // The `where` computes the accumulator width from `type_info(T)` (sub-32-bit
+    // The `where` computes the accumulator width from `core::type_info(T)` (sub-32-bit
     // ints widen to i32) and rejects non-integers; both monomorphizations run.
     const code = try compileAndRun(arena.allocator(),
         \\acc :: fn(x: $T) -> $Acc
-        \\where { match type_info(T) { .int |i| => if i.bits < 32 { Acc = i32; } else { Acc = T; }  else => reject("acc: integer only"); } }
+        \\where { match core::type_info(T) { .int |i| => if i.bits < 32 { Acc = i32; } else { Acc = T; }  else => core::reject("acc: integer only"); } }
         \\{ total: Acc = x as Acc; return total +% (1 as Acc); }
         \\main :: fn() -> i32 { return acc(19u8) + acc(21i32); }
     , "exe_out_ty");
@@ -724,7 +748,7 @@ test "exe: @panic exits with panic status" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const code = try compileAndRun(arena.allocator(),
-        \\main :: fn() -> i32 { @panic("test"); }
+        \\main :: fn() -> i32 { core::panic("test"); }
     , "exe_panic");
     // Zig's Windows child-process API reports the low byte of ExitProcess here.
     try std.testing.expectEqual(@as(u32, 0xEF), code);
@@ -873,12 +897,12 @@ test "exe: sizeof returns the actual size of its type argument" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // sizeof(u8) + sizeof(u16) + sizeof(u32) + sizeof(u64) == 1 + 2 + 4 + 8 == 15.
-    // A compiler that always reports sizeof(T) == 8 would instead yield 32.
+    // core::sizeof(u8) + core::sizeof(u16) + core::sizeof(u32) + core::sizeof(u64) == 1 + 2 + 4 + 8 == 15.
+    // A compiler that always reports core::sizeof(T) == 8 would instead yield 32.
     const code = try compileAndRun(arena.allocator(),
         \\main :: fn() -> i32 {
-        \\    total := sizeof(u8) + sizeof(u16) + sizeof(u32) + sizeof(u64);
-        \\    return truncate_to(i32, total);
+        \\    total := core::sizeof(u8) + core::sizeof(u16) + core::sizeof(u32) + core::sizeof(u64);
+        \\    return core::narrow(i32, total);
         \\}
     , "exe_sizeof_widths");
     try std.testing.expectEqual(@as(u32, 15), code);
@@ -892,8 +916,8 @@ test "exe: sizeof on pointer types returns pointer width" {
 
     const code = try compileAndRun(arena.allocator(),
         \\main :: fn() -> i32 {
-        \\    total := sizeof(*i32) + sizeof([*]u8);
-        \\    return truncate_to(i32, total);
+        \\    total := core::sizeof(*i32) + core::sizeof([*]u8);
+        \\    return core::narrow(i32, total);
         \\}
     , "exe_sizeof_pointers");
     try std.testing.expectEqual(@as(u32, 16), code);
@@ -967,20 +991,20 @@ test "exe: fallible return type works inside generics" {
     try std.testing.expectEqual(@as(u32, 37), code);
 }
 
-test "exe: sizeof(T) and slice_from_raw_parts(T) work inside generics" {
+test "exe: core::sizeof(T) and core::slice_raw(T) work inside generics" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // Regression: a type parameter `T` used in `sizeof(T)` / `slice_from_raw_parts(T)`
+    // Regression: a type parameter `T` used in `core::sizeof(T)` / `core::slice_raw(T)`
     // inside a generic body used to ICE (the builtin's type arg was lowered as a
     // value and `firstTypeArg` couldn't resolve a type param). Now both resolve to
     // the concrete instantiation. elem_bytes(i32)=4; the slice sums to 15 → 19.
     const code = try compileAndRun(arena.allocator(),
-        \\elem_bytes :: fn($T: type) -> usize { return sizeof(T); }
+        \\elem_bytes :: fn($T: type) -> usize { return core::sizeof(T); }
         \\mkslice :: fn($T: type, p: *T, n: usize) -> []T {
-        \\    return unsafe slice_from_raw_parts(T, p, n);
+        \\    return unsafe core::slice_raw(T, p, n);
         \\}
         \\main :: fn() -> i32 {
         \\    arr: [3]i32 = .{ 5, 9, 1 };
@@ -1445,7 +1469,7 @@ test "exe: `#compiler` hook derives code from struct fields (R1c)" {
         \\Vec3  :: struct { a: i32, b: i32, c: i32 }
         \\#compiler derive_sum :: fn() -> []const u8 {
         \\    cb := gen_buf();
-        \\    for d in compiler_decls() {
+        \\    for d in core::compiler_decls() {
         \\        match d.kind {
         \\            "struct" => {
         \\                emit(&cb, "sum_"); emit(&cb, d.name);

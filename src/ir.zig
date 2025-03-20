@@ -2853,8 +2853,9 @@ const FunctionLowerer = struct {
                     .ident => |name| name,
                     // `core::panic` maps to the `@panic` intrinsic so it reuses the
                     // existing runtime-symbol + VM-trap lowering. Other `core::`
-                    // members keep their member name (routed via `isBuiltinName`).
-                    .scope_access => |sa| if (isCoreNs(sa) and std.mem.eql(u8, sa.member, "panic")) "@panic" else sa.member,
+                    // members map their friendly spelling to the internal builtin
+                    // name (routed via `isBuiltinName`).
+                    .scope_access => |sa| if (isCoreNs(sa)) coreCanonical(sa.member) else sa.member,
                     else => "<expr>",
                 };
                 // The callee's top-level symbol, resolved file-aware (so a
@@ -2863,7 +2864,11 @@ const FunctionLowerer = struct {
                 // bare builtin) — routed by `callee_name` below.
                 const callee_sym: ?sema.SymbolId = switch (call.callee.kind) {
                     .ident => resolveTopLevel(self.symbols, self.file_name, callee_name),
-                    .scope_access => |sa| if (isCoreNs(sa)) null else self.resolveScope(sa),
+                    // `core::` resolves its CANONICAL name (= `callee_name`): a real
+                    // builtin like `sizeof` has no symbol (→ builtin path), but
+                    // `core::panic`→`@panic` resolves the runtime symbol so it lowers
+                    // as a DIRECT call exactly like bare `@panic` (same exit status).
+                    .scope_access => |sa| if (isCoreNs(sa)) resolveTopLevel(self.symbols, self.file_name, callee_name) else self.resolveScope(sa),
                     else => null,
                 };
                 // compiler_decls() (Phase 3 introspection): materialize the
@@ -4142,6 +4147,18 @@ fn declBodyText(item: ast.Item) []const u8 {
 /// builtin lowering by member name.
 fn isCoreNs(sa: ast.ScopeAccess) bool {
     return sa.base.kind == .ident and std.mem.eql(u8, sa.base.kind.ident, "core");
+}
+
+/// Map a `core::` member to the internal builtin name: `panic`→`@panic` (reuses
+/// the runtime-symbol + VM-trap path) and the tidied renames (`type_id`→
+/// `typeid_of`, `narrow`→`truncate_to`, `slice_raw`→`slice_from_raw_parts`).
+fn coreCanonical(member: []const u8) []const u8 {
+    const eq = std.mem.eql;
+    if (eq(u8, member, "panic")) return "@panic";
+    if (eq(u8, member, "type_id")) return "typeid_of";
+    if (eq(u8, member, "narrow")) return "truncate_to";
+    if (eq(u8, member, "slice_raw")) return "slice_from_raw_parts";
+    return member;
 }
 
 fn isBuiltinName(name: []const u8) bool {
@@ -5523,8 +5540,11 @@ fn exprHasQuote(e: ast.Expr) bool {
         .call => |c| blk: {
             // `type_info(T)` materializes a `TypeInfo` value the LLVM backend
             // can't lower (Phase 1 is comptime-only), so a function that calls it
-            // is comptime-only — exactly like an `ast.*` builder.
+            // is comptime-only — exactly like an `ast.*` builder. (`core::type_info`
+            // is the same builtin in the reserved namespace.)
             if (c.callee.kind == .ident and std.mem.eql(u8, c.callee.kind.ident, "type_info")) break :blk true;
+            if (c.callee.kind == .scope_access and isCoreNs(c.callee.kind.scope_access) and
+                std.mem.eql(u8, c.callee.kind.scope_access.member, "type_info")) break :blk true;
             if (exprHasQuote(c.callee.*)) break :blk true;
             for (c.args) |a| switch (a) {
                 .positional => |x| if (exprHasQuote(x)) break :blk true,

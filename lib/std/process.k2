@@ -169,7 +169,7 @@ pub command_line :: fn(out: []u8) -> []const u8 {
 pub get_env :: fn(name: []const u8, out: []u8) -> ?[]const u8 {
     name_buf: [128]u8 = .{};
     cname := proc_to_cstr(name, name_buf[:]) catch err { return null; };
-    n := GetEnvironmentVariableA(cname, out.ptr, truncate_to(u32, out.len));
+    n := GetEnvironmentVariableA(cname, out.ptr, core::narrow(u32, out.len));
     if n == 0u32 { return null; }
     if n as usize > out.len { return null; }
     return out[0usize..(n as usize)];
@@ -222,7 +222,7 @@ pub spawn :: fn(command: []const u8) -> Child ! ProcessError {
     // Zeroed except `cb` — this tells Win32 "inherit the parent's console
     // and standard handles" rather than configuring a new window.
     startup: StartupInfoA = .{
-        sizeof(StartupInfoA) as u32,
+        core::sizeof(StartupInfoA) as u32,
         0usize, 0usize, 0usize,
         0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32,
         0u16, 0u16,

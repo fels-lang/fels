@@ -380,12 +380,12 @@ test "atomic_load and atomic_store: parse, type-check, and lower to IR" {
         \\Flag :: struct { ready: atomic u32 }
         \\
         \\set_ready :: fn(f: *Flag) {
-        \\    atomic_store(&f.ready, 1u32, .release);
+        \\    core::atomic_store(&f.ready, 1u32, .release);
         \\}
         \\
         \\spin :: fn(f: *Flag) -> u32 {
-        \\    while atomic_load(&f.ready, .acquire) == 0u32 {}
-        \\    return atomic_load(&f.ready, .acquire);
+        \\    while core::atomic_load(&f.ready, .acquire) == 0u32 {}
+        \\    return core::atomic_load(&f.ready, .acquire);
         \\}
     ;
     var fe = try k2.compile(arena.allocator(), "atomic_ops.k2", src);
@@ -591,4 +591,42 @@ test "msvc: discoverLibX64 finds a vcruntime-bearing lib dir (or cleanly returns
         try std.testing.expect(std.mem.endsWith(u8, path, "lib/x64"));
         try std.testing.expect(std.mem.indexOf(u8, path, "MSVC") != null);
     }
+}
+
+// ── `core::` builtin namespace ─────────────────────────────────────────────────
+
+test "core::: a bare builtin call is rejected (must use core::)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Builtins live under `core::`; the bare spelling is a hard error.
+    const src =
+        \\P :: struct { x: i32 }
+        \\main :: fn() -> i32 { return sizeof(P) as i32; }
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "bare.k2", src));
+}
+
+test "core::: `core::sizeof` and `core::type_id` are accepted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src =
+        \\P :: struct { x: i32, y: i32 }
+        \\main :: fn() -> i32 { return (core::sizeof(P) as i32) + (core::type_id(P) as i32); }
+    ;
+    var fe = try k2.compile(a, "ns.k2", src);
+    defer fe.deinit(a);
+    const m = try k2.lowerFrontend(a, fe);
+    try k2.ir_mod.validateModule(m);
+}
+
+test "core::: `core` is a reserved import alias" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A user module may not claim the `core` namespace.
+    const src =
+        \\#import std.heap as core;
+        \\main :: fn() -> i32 { return 0; }
+    ;
+    try std.testing.expectError(error.SemanticFailed, k2.compile(arena.allocator(), "reserve.k2", src));
 }

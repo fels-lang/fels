@@ -668,6 +668,11 @@ fn lowerCallAbi(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrT
 //
 // When `want_addr` is true we return a pointer to the field instead of loading.
 
+// A folded string constant — `type_name(T)` or a string literal — lowers to an
+// `.imm.text` Value, which is a `[]const u8` slice { ptr, len }.
+const str_elem_ty: ir.IrType = .byte;
+const str_slice_ty: ir.IrType = .{ .slice = &str_elem_ty };
+
 fn lowerField(
     cg: *ModuleCg,
     fncg: anytype,
@@ -676,7 +681,18 @@ fn lowerField(
     want_addr: bool,
     location: ir.SourceLocation,
 ) ?llvm.LLVMValueRef {
-    const base_ir_ty = fncg.irTypeOf(f.base) orelse return null;
+    // An `.imm.text` base (a folded string constant) has no irTypeOf, yet it IS
+    // a `[]const u8` slice value. Route it through the `.slice` branch so an
+    // INLINE `.len`/`.ptr` resolves (e.g. `type_name(Point).len`); without this
+    // the read bails to null and the result reg is left undef → garbage. Through
+    // a local it already works — the local carries a `.slice` irType.
+    const base_ir_ty = fncg.irTypeOf(f.base) orelse blk: {
+        switch (f.base) {
+            .imm => |im| if (im == .text) break :blk str_slice_ty,
+            else => {},
+        }
+        return null;
+    };
 
     switch (base_ir_ty) {
         .slice => {

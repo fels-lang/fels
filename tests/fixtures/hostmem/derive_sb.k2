@@ -12,7 +12,7 @@ Vec3  :: struct { a: i32, b: i32, c: i32 }
 derive_sum :: fn() -> []const u8 {
     a := heap::make();
     sb := str::builder(&a);
-    for d in compiler_decls() {
+    for d in core::compiler_decls() {
         match d.kind {
             "struct" => {
                 sb.append("sum_"); sb.append(d.name);

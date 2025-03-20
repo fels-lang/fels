@@ -122,7 +122,7 @@ pub reserve :: fn(max: usize) -> Arena {
         ignored := VirtualFree(base, 0usize, MEM_RELEASE);
         return .{ 0usize, 0usize, ARENA_RESERVED };
     }
-    c := unsafe ptr_from_int(*Chunk, base);
+    c := unsafe core::ptr_from_int(*Chunk, base);
     c.next = 0usize;
     c.cap = max;
     init := PAGE - CHUNK_HEADER;
@@ -137,7 +137,7 @@ pub reserve :: fn(max: usize) -> Arena {
 pub fixed :: fn(buf: []u8) -> Arena {
     if buf.len < CHUNK_HEADER { return .{ 0usize, 0usize, ARENA_FIXED }; }
     base := unsafe (buf.ptr as usize);
-    c := unsafe ptr_from_int(*Chunk, base);
+    c := unsafe core::ptr_from_int(*Chunk, base);
     c.next = 0usize;
     cap := buf.len - CHUNK_HEADER;
     c.cap = cap;
@@ -163,7 +163,7 @@ commit_more :: fn(chunk_addr: usize, c: *Chunk, need_payload: usize) -> bool {
 // Reserve `need` aligned bytes and return their address, or null when exhausted.
 carve :: fn(self: *Arena, need: usize) -> ?usize {
     if self.head != 0usize {
-        c := unsafe ptr_from_int(*Chunk, self.head);
+        c := unsafe core::ptr_from_int(*Chunk, self.head);
         data := self.head + CHUNK_HEADER;
         aligned := align_up(data + c.used, ALIGN);
         if aligned + need <= data + c.cap {
@@ -176,7 +176,7 @@ carve :: fn(self: *Arena, need: usize) -> ?usize {
         }
         // Current chunk full. After reset/restore, the next chunk is reusable.
         if c.next != 0usize {
-            nx := unsafe ptr_from_int(*Chunk, c.next);
+            nx := unsafe core::ptr_from_int(*Chunk, c.next);
             nd := c.next + CHUNK_HEADER;
             na := align_up(nd, ALIGN);
             if na + need <= nd + nx.cap {
@@ -198,7 +198,7 @@ carve :: fn(self: *Arena, need: usize) -> ?usize {
     raw := VirtualAlloc(0usize, CHUNK_HEADER + cap, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if raw == 0usize { return null; }
 
-    nc := unsafe ptr_from_int(*Chunk, raw);
+    nc := unsafe core::ptr_from_int(*Chunk, raw);
     nc.cap = cap;
     nc.committed = cap;
     data2 := raw + CHUNK_HEADER;
@@ -206,7 +206,7 @@ carve :: fn(self: *Arena, need: usize) -> ?usize {
     nc.used = (aligned2 + need) - data2;
 
     if self.head != 0usize {
-        hc := unsafe ptr_from_int(*Chunk, self.head);
+        hc := unsafe core::ptr_from_int(*Chunk, self.head);
         nc.next = hc.next;
         hc.next = raw;
     } else {
@@ -222,17 +222,17 @@ carve :: fn(self: *Arena, need: usize) -> ?usize {
 // Allocate `n` bytes. Aborts on exhaustion.
 pub alloc_bytes :: fn(self: *Arena, n: usize) -> []u8 {
     addr := carve(self, n);
-    if addr == null { @panic("std.heap: out of memory"); }
-    p := unsafe ptr_from_int(*u8, addr!!);
-    return unsafe slice_from_raw_parts(u8, p, n);
+    if addr == null { core::panic("std.heap: out of memory"); }
+    p := unsafe core::ptr_from_int(*u8, addr!!);
+    return unsafe core::slice_raw(u8, p, n);
 }
 
 // Allocate `n` bytes, returning `MemError.out_of_memory` instead of aborting.
 pub try_alloc_bytes :: fn(self: *Arena, n: usize) -> []u8 ! MemError {
     addr := carve(self, n);
     if addr == null { fail .out_of_memory; }
-    p := unsafe ptr_from_int(*u8, addr!!);
-    return unsafe slice_from_raw_parts(u8, p, n);
+    p := unsafe core::ptr_from_int(*u8, addr!!);
+    return unsafe core::slice_raw(u8, p, n);
 }
 
 // ── Typed allocation ──────────────────────────────────────────────────────
@@ -240,22 +240,22 @@ pub try_alloc_bytes :: fn(self: *Arena, n: usize) -> []u8 ! MemError {
 // Allocate a `[]T` of `n` elements (16-byte aligned, which covers any T).
 // Aborts on exhaustion. Call as `(&a).alloc(T, n)` or `alloc(T, &a, n)`.
 pub alloc :: fn($T: type, self: *Arena, n: usize) -> []T {
-    bytes := alloc_bytes(self, n * sizeof(T));
+    bytes := alloc_bytes(self, n * core::sizeof(T));
     tp := unsafe (bytes.ptr as *T);
-    return unsafe slice_from_raw_parts(T, tp, n);
+    return unsafe core::slice_raw(T, tp, n);
 }
 
 // Fallible `alloc`. Call as `(&a).try_alloc(T, n)` or `try_alloc(T, &a, n)`.
 pub try_alloc :: fn($T: type, self: *Arena, n: usize) -> []T ! MemError {
-    bytes := try_alloc_bytes(self, n * sizeof(T))?;
+    bytes := try_alloc_bytes(self, n * core::sizeof(T))?;
     tp := unsafe (bytes.ptr as *T);
-    return unsafe slice_from_raw_parts(T, tp, n);
+    return unsafe core::slice_raw(T, tp, n);
 }
 
 // Allocate a single `T` and return a pointer to it. Aborts on exhaustion.
 // Call as `(&a).alloc_one(T)`.
 pub alloc_one :: fn($T: type, self: *Arena) -> *T {
-    bytes := alloc_bytes(self, sizeof(T));
+    bytes := alloc_bytes(self, core::sizeof(T));
     return unsafe (bytes.ptr as *T);
 }
 
@@ -291,7 +291,7 @@ pub new_slice :: fn($T: type, self: *Arena, n: usize) -> []T {
 pub reset :: fn(self: *Arena) {
     cur := self.first;
     while cur != 0usize {
-        c := unsafe ptr_from_int(*Chunk, cur);
+        c := unsafe core::ptr_from_int(*Chunk, cur);
         c.used = 0usize;
         cur = c.next;
     }
@@ -303,7 +303,7 @@ pub reset :: fn(self: *Arena) {
 // memory). Marks are only valid until the next `reset`/`deinit`.
 pub mark :: fn(self: *Arena) -> Mark {
     if self.head == 0usize { return .{ 0usize, 0usize }; }
-    c := unsafe ptr_from_int(*Chunk, self.head);
+    c := unsafe core::ptr_from_int(*Chunk, self.head);
     return .{ self.head, c.used };
 }
 
@@ -314,10 +314,10 @@ pub restore :: fn(self: *Arena, m: Mark) {
         reset(self);
         return;
     }
-    mc := unsafe ptr_from_int(*Chunk, m.chunk);
+    mc := unsafe core::ptr_from_int(*Chunk, m.chunk);
     cur := mc.next;
     while cur != 0usize {
-        c := unsafe ptr_from_int(*Chunk, cur);
+        c := unsafe core::ptr_from_int(*Chunk, cur);
         c.used = 0usize;
         cur = c.next;
     }
@@ -331,7 +331,7 @@ pub deinit :: fn(self: *Arena) {
     if self.mode != ARENA_FIXED {
         cur := self.first;
         while cur != 0usize {
-            c := unsafe ptr_from_int(*Chunk, cur);
+            c := unsafe core::ptr_from_int(*Chunk, cur);
             nx := c.next;
             ignored := VirtualFree(cur, 0usize, MEM_RELEASE);
             cur = nx;

@@ -194,9 +194,9 @@ test "e2e: #run sizeof folds scalar, struct, and array sizes" {
 
     const src =
         \\Point :: struct { x: i32, y: i32 }
-        \\SI :: #run sizeof(i32);
-        \\SP :: #run sizeof(Point);
-        \\SA :: #run sizeof([4]i32);
+        \\SI :: #run core::sizeof(i32);
+        \\SP :: #run core::sizeof(Point);
+        \\SA :: #run core::sizeof([4]i32);
     ;
     var fe = try k2.compile(a, "sz.k2", src);
     defer fe.deinit(a);

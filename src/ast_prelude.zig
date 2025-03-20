@@ -109,7 +109,7 @@ pub const source =
 
 /// `std.compiler` surface for `#compiler` hooks (Phase 3 message loop). Injected
 /// whenever a module declares a `#compiler` hook, so the hook can call the
-/// `compiler_decls()` introspection builtin and `for`-iterate the program's
+/// `core::compiler_decls()` introspection builtin and `for`-iterate the program's
 /// top-level declarations WITH structure. `Decl.kind` is one of: "fn", "struct",
 /// "enum", "errors", "interface", "distinct", "opaque", "const".
 ///
@@ -128,7 +128,7 @@ pub const compiler_source =
 ;
 
 /// `TypeInfo` reflection surface — injected whenever a module uses `type_info`.
-/// A matchable tagged enum (not a cast hierarchy): `match type_info(T) { .int |i| … }`.
+/// A matchable tagged enum (not a cast hierarchy): `match core::type_info(T) { .int |i| … }`.
 /// The materializer in `ir.zig` (`materializeTypeInfo`) builds these values from a
 /// type's layout; field/payload types are `*TypeInfo` so the tree is finite, and
 /// recursive types are broken with the `other` leaf (carrying the type name).
@@ -136,8 +136,8 @@ pub const compiler_source =
 /// Variant ORDER is not load-bearing (looked up by name); keep names in sync with
 /// `materializeTypeInfo`. `void_`/`boolean` avoid the `void`/`bool` keywords.
 /// `Any` — a type-erased value: a borrowed pointer to the data plus the data's
-/// `typeid`. The wrap (`any(x)`) is compiler-driven (it spills `x` and records
-/// `typeid_of(T)`); the rest is ordinary generic K2, so downcasting is safe.
+/// `typeid`. The wrap (`core::any(x)`) is compiler-driven (it spills `x` and records
+/// `core::type_id(T)`); the rest is ordinary generic K2, so downcasting is safe.
 pub const any_source =
     \\Any :: struct { data: *const u8, id: usize, name: []const u8 }
     \\
@@ -145,7 +145,7 @@ pub const any_source =
     \\
     \\any_name :: fn(v: Any) -> []const u8 { return v.name; }
     \\
-    \\any_at :: fn(ptr: *const u8, $T: type) -> Any { r: Any = .{ ptr, typeid_of(T), type_name(T) }; return r; }
+    \\any_at :: fn(ptr: *const u8, $T: type) -> Any { r: Any = .{ ptr, core::type_id(T), core::type_name(T) }; return r; }
     \\
     \\any_field_count :: fn(v: Any) -> usize {
     \\    n: usize = 0;
@@ -156,10 +156,10 @@ pub const any_source =
     \\    return n;
     \\}
     \\
-    \\any_is :: fn(v: Any, $T: type) -> bool { return v.id == typeid_of(T); }
+    \\any_is :: fn(v: Any, $T: type) -> bool { return v.id == core::type_id(T); }
     \\
     \\any_as :: fn(v: Any, $T: type) -> ?T {
-    \\    if v.id == typeid_of(T) {
+    \\    if v.id == core::type_id(T) {
     \\        unsafe {
     \\            tp := v.data as *T;
     \\            return *tp;

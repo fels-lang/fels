@@ -636,7 +636,7 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
     var nav_file: []const u8 = user.file_name;
 
     // Build the Any with `typeid_of`/`type_name` evaluated *here* (the nav file),
-    // so a wrapped value's id matches the dispatchers' `typeid_of(...)` exactly.
+    // so a wrapped value's id matches the dispatchers' `core::type_id(...)` exactly.
     // (Routing through the generic `any_at` resolves the type via a binding, which
     // hashes compound types like `[]T` inconsistently with the direct form.)
     try src.appendSlice(allocator, "__any_make :: fn(ptr: *const u8, id: usize, nm: []const u8) -> Any { r: Any = .{ ptr, id, nm }; return r; }\n");
@@ -667,7 +667,7 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
         for (strukt.fields, 0..) |f, j| {
             const tstr = (try renderType(allocator, f.ty)).?;
             try all_types.put(tstr, {});
-            try appendFmt(&src, allocator, "    if i == {d}usize {{ return __any_make((&p.{s}) as *const u8, typeid_of({s}), type_name({s})); }}\n", .{ j, f.name, tstr, tstr });
+            try appendFmt(&src, allocator, "    if i == {d}usize {{ return __any_make((&p.{s}) as *const u8, core::type_id({s}), core::type_name({s})); }}\n", .{ j, f.name, tstr, tstr });
             switch (f.ty) {
                 .slice => |s| if (s.inner.* == .named) try slice_elems.put(tstr, s.inner.named.name),
                 .pointer => |p| if (p.inner.* == .named) try ptr_targets.put(tstr, p.inner.named.name),
@@ -690,14 +690,14 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
         var it = slice_elems.iterator();
         var k: usize = 0;
         while (it.next()) |e| : (k += 1) {
-            try appendFmt(&src, allocator, "__elem_{d} :: fn(v: Any, idx: usize) -> ?Any {{\n  unsafe {{\n    h := v.data as *const __SliceHdr;\n    if idx >= h.len {{ return null; }}\n    ep := ((h.ptr as usize) + idx * sizeof({s})) as *const u8;\n    return __any_make(ep, typeid_of({s}), type_name({s}));\n  }}\n}}\n", .{ k, e.value_ptr.*, e.value_ptr.*, e.value_ptr.* });
+            try appendFmt(&src, allocator, "__elem_{d} :: fn(v: Any, idx: usize) -> ?Any {{\n  unsafe {{\n    h := v.data as *const __SliceHdr;\n    if idx >= h.len {{ return null; }}\n    ep := ((h.ptr as usize) + idx * core::sizeof({s})) as *const u8;\n    return __any_make(ep, core::type_id({s}), core::type_name({s}));\n  }}\n}}\n", .{ k, e.value_ptr.*, e.value_ptr.*, e.value_ptr.* });
         }
     }
     {
         var it = ptr_targets.iterator();
         var k: usize = 0;
         while (it.next()) |e| : (k += 1) {
-            try appendFmt(&src, allocator, "__deref_{d} :: fn(v: Any) -> ?Any {{\n  unsafe {{\n    a := *(v.data as *const usize);\n    if a == 0usize {{ return null; }}\n    return __any_make(a as *const u8, typeid_of({s}), type_name({s}));\n  }}\n}}\n", .{ k, e.value_ptr.*, e.value_ptr.* });
+            try appendFmt(&src, allocator, "__deref_{d} :: fn(v: Any) -> ?Any {{\n  unsafe {{\n    a := *(v.data as *const usize);\n    if a == 0usize {{ return null; }}\n    return __any_make(a as *const u8, core::type_id({s}), core::type_name({s}));\n  }}\n}}\n", .{ k, e.value_ptr.*, e.value_ptr.* });
         }
     }
 
@@ -705,24 +705,24 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
     try src.appendSlice(allocator, "type_name_of :: fn(id: usize) -> []const u8 {\n");
     {
         var it = all_types.keyIterator();
-        while (it.next()) |k| try appendFmt(&src, allocator, "  if id == typeid_of({s}) {{ return type_name({s}); }}\n", .{ k.*, k.* });
+        while (it.next()) |k| try appendFmt(&src, allocator, "  if id == core::type_id({s}) {{ return core::type_name({s}); }}\n", .{ k.*, k.* });
     }
     try src.appendSlice(allocator, "  return \"?\";\n}\n");
     try src.appendSlice(allocator, "type_size_of :: fn(id: usize) -> usize {\n");
     {
         var it = all_types.keyIterator();
-        while (it.next()) |k| try appendFmt(&src, allocator, "  if id == typeid_of({s}) {{ return sizeof({s}); }}\n", .{ k.*, k.* });
+        while (it.next()) |k| try appendFmt(&src, allocator, "  if id == core::type_id({s}) {{ return core::sizeof({s}); }}\n", .{ k.*, k.* });
     }
     try src.appendSlice(allocator, "  return 0usize;\n}\n");
 
     // Dispatchers — always emitted so the `any_field_*`/`any_elem`/`any_deref`
     // surface exists whenever `Any` is in use.
     try src.appendSlice(allocator, "any_field_at :: fn(v: Any, i: usize) -> ?Any {\n");
-    for (names.items) |n| try appendFmt(&src, allocator, "  if v.id == typeid_of({s}) {{ return __fld_{s}(v.data, i); }}\n", .{ n, n });
+    for (names.items) |n| try appendFmt(&src, allocator, "  if v.id == core::type_id({s}) {{ return __fld_{s}(v.data, i); }}\n", .{ n, n });
     try src.appendSlice(allocator, "  return null;\n}\n");
 
     try src.appendSlice(allocator, "any_field_name :: fn(v: Any, i: usize) -> []const u8 {\n");
-    for (names.items) |n| try appendFmt(&src, allocator, "  if v.id == typeid_of({s}) {{ return __fldn_{s}(i); }}\n", .{ n, n });
+    for (names.items) |n| try appendFmt(&src, allocator, "  if v.id == core::type_id({s}) {{ return __fldn_{s}(i); }}\n", .{ n, n });
     try src.appendSlice(allocator, "  return \"\";\n}\n");
 
     try src.appendSlice(allocator, "any_elem :: fn(v: Any, i: usize) -> ?Any {\n");
@@ -730,7 +730,7 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
         var it = slice_elems.keyIterator();
         var k: usize = 0;
         while (it.next()) |key| : (k += 1) {
-            try appendFmt(&src, allocator, "  if v.id == typeid_of({s}) {{ return __elem_{d}(v, i); }}\n", .{ key.*, k });
+            try appendFmt(&src, allocator, "  if v.id == core::type_id({s}) {{ return __elem_{d}(v, i); }}\n", .{ key.*, k });
         }
     }
     try src.appendSlice(allocator, "  return null;\n}\n");
@@ -740,7 +740,7 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
         var it = ptr_targets.keyIterator();
         var k: usize = 0;
         while (it.next()) |key| : (k += 1) {
-            try appendFmt(&src, allocator, "  if v.id == typeid_of({s}) {{ return __deref_{d}(v); }}\n", .{ key.*, k });
+            try appendFmt(&src, allocator, "  if v.id == core::type_id({s}) {{ return __deref_{d}(v); }}\n", .{ key.*, k });
         }
     }
     try src.appendSlice(allocator, "  return null;\n}\n");
@@ -848,6 +848,16 @@ fn isAnyBuiltin(name: []const u8) bool {
         std.mem.eql(u8, name, "any_as") or std.mem.eql(u8, name, "any_id");
 }
 
+/// If `callee` is `core::<member>` (the reserved builtin namespace), return the
+/// member name — so the prelude-injection scanners detect builtins written as
+/// `core::type_info(...)`/`core::any(...)`, not only the bare forms.
+fn coreMemberOf(callee: ast.Expr) ?[]const u8 {
+    return switch (callee.kind) {
+        .scope_access => |sa| if (sa.base.kind == .ident and std.mem.eql(u8, sa.base.kind.ident, "core")) sa.member else null,
+        else => null,
+    };
+}
+
 fn blockUsesAny(block: ast.Block) bool {
     for (block.statements) |stmt| if (stmtUsesAny(stmt)) return true;
     return false;
@@ -883,6 +893,7 @@ fn exprUsesAny(expr: ast.Expr) bool {
     return switch (expr.kind) {
         .call => |c| blk: {
             if (c.callee.kind == .ident and isAnyBuiltin(c.callee.kind.ident)) break :blk true;
+            if (coreMemberOf(c.callee.*)) |m| if (isAnyBuiltin(m)) break :blk true;
             if (exprUsesAny(c.callee.*)) break :blk true;
             for (c.args) |a| switch (a) {
                 .positional => |x| if (exprUsesAny(x)) break :blk true,
@@ -936,6 +947,9 @@ fn exprUsesReflection(expr: ast.Expr) bool {
         .call => |c| blk: {
             if (c.callee.kind == .ident) {
                 const n = c.callee.kind.ident;
+                if (std.mem.eql(u8, n, "type_info") or std.mem.eql(u8, n, "type_name")) break :blk true;
+            }
+            if (coreMemberOf(c.callee.*)) |n| {
                 if (std.mem.eql(u8, n, "type_info") or std.mem.eql(u8, n, "type_name")) break :blk true;
             }
             if (exprUsesReflection(c.callee.*)) break :blk true;
