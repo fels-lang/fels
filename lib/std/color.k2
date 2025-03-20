@@ -1,0 +1,58 @@
+// std.color — 32-bit RGBA color for 2D/graphics work.
+//
+//   bg  := color::rgb(30u8, 30u8, 46u8);
+//   hp  := color::lerp(color::red(), color::green(), health);   // red→green bar
+//   packed := color::to_u32(bg);                                // 0xRRGGBBAA
+
+pub Color :: struct { r: u8, g: u8, b: u8, a: u8 }
+
+pub rgb :: fn(r: u8, g: u8, b: u8) -> Color { c: Color = .{ r, g, b, 255u8 }; return c; }
+pub rgba :: fn(r: u8, g: u8, b: u8, a: u8) -> Color { c: Color = .{ r, g, b, a }; return c; }
+
+// Same color with a different alpha.
+pub with_alpha :: fn(c: Color, a: u8) -> Color { o: Color = .{ c.r, c.g, c.b, a }; return o; }
+
+// A solid gray of the given intensity.
+pub gray :: fn(v: u8) -> Color { c: Color = .{ v, v, v, 255u8 }; return c; }
+
+// ── Named colors ─────────────────────────────────────────────────────────────
+pub white   :: fn() -> Color { return rgb(255u8, 255u8, 255u8); }
+pub black   :: fn() -> Color { return rgb(0u8, 0u8, 0u8); }
+pub red     :: fn() -> Color { return rgb(230u8, 41u8, 55u8); }
+pub green   :: fn() -> Color { return rgb(0u8, 228u8, 48u8); }
+pub blue    :: fn() -> Color { return rgb(0u8, 121u8, 241u8); }
+pub yellow  :: fn() -> Color { return rgb(253u8, 249u8, 0u8); }
+pub orange  :: fn() -> Color { return rgb(255u8, 161u8, 0u8); }
+pub purple  :: fn() -> Color { return rgb(200u8, 122u8, 255u8); }
+pub clear   :: fn() -> Color { return rgba(0u8, 0u8, 0u8, 0u8); }
+
+// ── Blending & packing ───────────────────────────────────────────────────────
+
+lerp_u8 :: fn(a: u8, b: u8, t: f32) -> u8 {
+    af: f32 = a as f32;
+    bf: f32 = b as f32;
+    v: f32 = af + (bf - af) * t;
+    return v as u8;
+}
+
+// Component-wise linear blend (`a` at t=0, `b` at t=1).
+pub lerp :: fn(a: Color, b: Color, t: f32) -> Color {
+    o: Color = .{ lerp_u8(a.r, b.r, t), lerp_u8(a.g, b.g, t), lerp_u8(a.b, b.b, t), lerp_u8(a.a, b.a, t) };
+    return o;
+}
+
+// Pack to `0xRRGGBBAA`.
+pub to_u32 :: fn(c: Color) -> u32 {
+    return ((c.r as u32) << 24u32) | ((c.g as u32) << 16u32) | ((c.b as u32) << 8u32) | (c.a as u32);
+}
+
+// Unpack from `0xRRGGBBAA`.
+pub from_u32 :: fn(v: u32) -> Color {
+    o: Color = .{
+        ((v >> 24u32) & 255u32) as u8,
+        ((v >> 16u32) & 255u32) as u8,
+        ((v >> 8u32) & 255u32) as u8,
+        (v & 255u32) as u8,
+    };
+    return o;
+}

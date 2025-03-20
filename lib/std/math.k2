@@ -1,0 +1,150 @@
+// std.math — vectors, rectangles, and scalar helpers for games & graphics.
+//
+// Vectors are `f32` (matching most graphics APIs, e.g. raylib's `Vector2`).
+// Component math wraps the `core::` math builtins (`core::sqrt`, `core::sin`, …),
+// which map to fast CPU instructions and fold at compile time where possible.
+//
+// Naming: there is no function overloading, so per-type ops are prefixed —
+// `v2_*` for Vec2, `v3_*` for Vec3. All work with UFCS: `a.v2_add(b)`.
+
+// ── Constants ──────────────────────────────────────────────────────────────
+pub PI      :: 3.14159265f32;
+pub TAU     :: 6.28318531f32;     // 2π
+pub DEG2RAD :: 0.01745329f32;     // π/180
+pub RAD2DEG :: 57.2957795f32;     // 180/π
+
+// ── Scalar helpers ───────────────────────────────────────────────────────────
+
+// Linear interpolation: `a` at t=0, `b` at t=1.
+pub lerp :: fn(a: f32, b: f32, t: f32) -> f32 { return a + (b - a) * t; }
+
+// Move `cur` toward `tgt` by at most `step` (no overshoot).
+pub approach :: fn(cur: f32, tgt: f32, step: f32) -> f32 {
+    if cur < tgt { d := tgt - cur; if d <= step { return tgt; } return cur + step; }
+    d := cur - tgt;
+    if d <= step { return tgt; }
+    return cur - step;
+}
+
+// -1, 0, or +1 by sign.
+pub signf :: fn(x: f32) -> f32 {
+    if x > 0.0f32 { return 1.0f32; }
+    if x < 0.0f32 { return -1.0f32; }
+    return 0.0f32;
+}
+
+pub deg2rad :: fn(deg: f32) -> f32 { return deg * DEG2RAD; }
+pub rad2deg :: fn(rad: f32) -> f32 { return rad * RAD2DEG; }
+
+// sin/cos via a fast minimax polynomial (~0.001 max error) — no libm dependency,
+// so programs link without a math library. (`core::sin`/`core::cos` are the exact
+// hardware/libm versions, but require linking libm.)
+sin_poly :: fn(x: f32) -> f32 {
+    // x reduced to [-π, π]
+    b := 1.27323954f32;     // 4/π
+    c := -0.40528473f32;    // -4/π²
+    y := b * x + c * x * core::abs(x);
+    return 0.225f32 * (y * core::abs(y) - y) + y;
+}
+pub sin :: fn(x: f32) -> f32 { return sin_poly(wrapf(x + PI, 0.0f32, TAU) - PI); }
+pub cos :: fn(x: f32) -> f32 { return sin(x + 1.57079633f32); }       // cos(x) = sin(x + π/2)
+pub tan :: fn(x: f32) -> f32 { return sin(x) / cos(x); }
+
+// Wrap `x` into the half-open range [lo, hi).
+pub wrapf :: fn(x: f32, lo: f32, hi: f32) -> f32 {
+    span := hi - lo;
+    if span <= 0.0f32 { return lo; }
+    t := x - lo;
+    while t < 0.0f32 { t = t + span; }
+    while t >= span { t = t - span; }
+    return lo + t;
+}
+
+// ── Vec2 (2D) ────────────────────────────────────────────────────────────────
+pub Vec2 :: struct { x: f32, y: f32 }
+
+pub v2 :: fn(x: f32, y: f32) -> Vec2 { r: Vec2 = .{ x, y }; return r; }
+pub v2_zero :: fn() -> Vec2 { r: Vec2 = .{ 0.0f32, 0.0f32 }; return r; }
+pub v2_splat :: fn(s: f32) -> Vec2 { r: Vec2 = .{ s, s }; return r; }
+
+pub v2_add :: fn(a: Vec2, b: Vec2) -> Vec2 { r: Vec2 = .{ a.x + b.x, a.y + b.y }; return r; }
+pub v2_sub :: fn(a: Vec2, b: Vec2) -> Vec2 { r: Vec2 = .{ a.x - b.x, a.y - b.y }; return r; }
+pub v2_mul :: fn(a: Vec2, b: Vec2) -> Vec2 { r: Vec2 = .{ a.x * b.x, a.y * b.y }; return r; }
+pub v2_scale :: fn(a: Vec2, s: f32) -> Vec2 { r: Vec2 = .{ a.x * s, a.y * s }; return r; }
+pub v2_neg :: fn(a: Vec2) -> Vec2 { r: Vec2 = .{ -a.x, -a.y }; return r; }
+
+pub v2_dot :: fn(a: Vec2, b: Vec2) -> f32 { return a.x * b.x + a.y * b.y; }
+pub v2_len2 :: fn(a: Vec2) -> f32 { return a.x * a.x + a.y * a.y; }
+pub v2_len :: fn(a: Vec2) -> f32 { return core::sqrt(a.x * a.x + a.y * a.y); }
+
+pub v2_dist2 :: fn(a: Vec2, b: Vec2) -> f32 {
+    dx := a.x - b.x;
+    dy := a.y - b.y;
+    return dx * dx + dy * dy;
+}
+pub v2_dist :: fn(a: Vec2, b: Vec2) -> f32 { return core::sqrt(v2_dist2(a, b)); }
+
+// Unit vector (returns the zero vector if `a` is ~zero).
+pub v2_normalize :: fn(a: Vec2) -> Vec2 {
+    l := v2_len(a);
+    if l <= 0.0001f32 { return v2_zero(); }
+    inv := 1.0f32 / l;
+    r: Vec2 = .{ a.x * inv, a.y * inv };
+    return r;
+}
+
+pub v2_lerp :: fn(a: Vec2, b: Vec2, t: f32) -> Vec2 {
+    r: Vec2 = .{ lerp(a.x, b.x, t), lerp(a.y, b.y, t) };
+    return r;
+}
+
+// 90° counter-clockwise perpendicular.
+pub v2_perp :: fn(a: Vec2) -> Vec2 { r: Vec2 = .{ -a.y, a.x }; return r; }
+
+// Rotate by `rad` radians.
+pub v2_rotate :: fn(a: Vec2, rad: f32) -> Vec2 {
+    c := cos(rad);
+    s := sin(rad);
+    r: Vec2 = .{ a.x * c - a.y * s, a.x * s + a.y * c };
+    return r;
+}
+
+// A unit vector at angle `rad` (0 = +x).
+pub v2_from_angle :: fn(rad: f32) -> Vec2 { r: Vec2 = .{ cos(rad), sin(rad) }; return r; }
+
+// ── Vec3 (3D) ────────────────────────────────────────────────────────────────
+pub Vec3 :: struct { x: f32, y: f32, z: f32 }
+
+pub v3 :: fn(x: f32, y: f32, z: f32) -> Vec3 { r: Vec3 = .{ x, y, z }; return r; }
+pub v3_add :: fn(a: Vec3, b: Vec3) -> Vec3 { r: Vec3 = .{ a.x + b.x, a.y + b.y, a.z + b.z }; return r; }
+pub v3_sub :: fn(a: Vec3, b: Vec3) -> Vec3 { r: Vec3 = .{ a.x - b.x, a.y - b.y, a.z - b.z }; return r; }
+pub v3_scale :: fn(a: Vec3, s: f32) -> Vec3 { r: Vec3 = .{ a.x * s, a.y * s, a.z * s }; return r; }
+pub v3_dot :: fn(a: Vec3, b: Vec3) -> f32 { return a.x * b.x + a.y * b.y + a.z * b.z; }
+pub v3_len :: fn(a: Vec3) -> f32 { return core::sqrt(a.x * a.x + a.y * a.y + a.z * a.z); }
+pub v3_cross :: fn(a: Vec3, b: Vec3) -> Vec3 {
+    r: Vec3 = .{ a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x };
+    return r;
+}
+pub v3_normalize :: fn(a: Vec3) -> Vec3 {
+    l := v3_len(a);
+    if l <= 0.0001f32 { r: Vec3 = .{ 0.0f32, 0.0f32, 0.0f32 }; return r; }
+    inv := 1.0f32 / l;
+    r: Vec3 = .{ a.x * inv, a.y * inv, a.z * inv };
+    return r;
+}
+
+// ── Rect (axis-aligned, for sprites / UI / collisions) ───────────────────────
+pub Rect :: struct { x: f32, y: f32, w: f32, h: f32 }
+
+pub rect :: fn(x: f32, y: f32, w: f32, h: f32) -> Rect { r: Rect = .{ x, y, w, h }; return r; }
+
+pub rect_contains :: fn(r: Rect, px: f32, py: f32) -> bool {
+    return px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h;
+}
+
+// AABB overlap test.
+pub rect_overlaps :: fn(a: Rect, b: Rect) -> bool {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+pub rect_center :: fn(r: Rect) -> Vec2 { c: Vec2 = .{ r.x + r.w * 0.5f32, r.y + r.h * 0.5f32 }; return c; }

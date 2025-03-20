@@ -100,3 +100,38 @@ Atomic loads and spin-waiting. Operates on `*atomic u32` pointers.
 - `is_set(flag)`
 - `wait_until_set(flag)`
 - `wait_until_eq(flag, value)`
+
+## Game & graphics modules
+
+Small, focused modules for 2D games and graphics. `std.math` and `std.color` are
+self-contained (no libm); `std.rand` is a deterministic PRNG.
+
+### `std.math`
+
+Vectors (`f32`), rectangles, and scalar helpers. Component math wraps the `core::`
+math builtins; `sin`/`cos`/`tan` use a fast polynomial (no libm dependency).
+
+- **Scalars:** `lerp`, `approach`, `signf`, `deg2rad`, `rad2deg`, `wrapf`, `sin`, `cos`, `tan`. Constants `PI`, `TAU`, `DEG2RAD`, `RAD2DEG`.
+- **`Vec2`:** `v2`, `v2_zero`, `v2_splat`, `v2_add/sub/mul/scale/neg`, `v2_dot`, `v2_len`, `v2_len2`, `v2_dist`, `v2_dist2`, `v2_normalize`, `v2_lerp`, `v2_perp`, `v2_rotate`, `v2_from_angle`.
+- **`Vec3`:** `v3`, `v3_add/sub/scale`, `v3_dot`, `v3_cross`, `v3_len`, `v3_normalize`.
+- **`Rect`:** `rect`, `rect_contains`, `rect_overlaps` (AABB), `rect_center`.
+
+### `std.rand`
+
+Deterministic xorshift64\* PRNG — same seed, same sequence (replays, procedural gen).
+
+- `seed(u64) -> Rng`, `next_u64`, `next_u32`, `next_f32` (\[0,1)), `range_i32(lo,hi)`, `range_f32(lo,hi)`, `chance(p)`, `sign()`.
+
+### `std.color`
+
+32-bit RGBA color.
+
+- `rgb`, `rgba`, `with_alpha`, `gray`, named colors (`white`/`black`/`red`/`green`/`blue`/`yellow`/`orange`/`purple`/`clear`), `lerp`, `to_u32`/`from_u32` (0xRRGGBBAA).
+
+### `std.list` *(pending)*
+
+A generic `List(T)` dynamic array backed by an `Arena` — the intended collection
+type for entities/projectiles. Currently blocked on a compiler bug (generic structs
+across a module boundary, issue #6); the design is ready and works when defined
+inline. Use a fixed `[N]T` array + count, or copy the `List` pattern into your file,
+meanwhile.

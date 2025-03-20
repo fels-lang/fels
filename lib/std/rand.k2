@@ -1,0 +1,57 @@
+// std.rand — a small, fast pseudo-random number generator (xorshift64*).
+//
+// Deterministic: the same seed always produces the same sequence — ideal for
+// games (replays, procedural generation, networked lockstep). Not for crypto.
+//
+//   r := rand::seed(12345u64);
+//   roll := r.range_i32(1, 7);      // a d6, 1..6
+//   if r.chance(0.25f32) { ... }    // 25% of the time
+
+pub Rng :: struct { state: u64 }
+
+// Create a generator from a 64-bit seed (zero is remapped so the state is valid).
+pub seed :: fn(s: u64) -> Rng {
+    st: u64 = s;
+    if st == 0u64 { st = 0x9E3779B97F4A7C15u64; }
+    r: Rng = .{ st };
+    return r;
+}
+
+// The next raw 64-bit value (advances the state).
+pub next_u64 :: fn(self: *Rng) -> u64 {
+    x: u64 = self.state;
+    x = x ^ (x >> 12u64);
+    x = x ^ (x << 25u64);
+    x = x ^ (x >> 27u64);
+    self.state = x;
+    return x *% 0x2545F4914F6CDD1Du64;
+}
+
+pub next_u32 :: fn(self: *Rng) -> u32 { return (next_u64(self) >> 32u64) as u32; }
+
+// A float in [0, 1) with 24 bits of mantissa.
+pub next_f32 :: fn(self: *Rng) -> f32 {
+    bits: u32 = (next_u64(self) >> 40u64) as u32;   // top 24 bits
+    return (bits as f32) / 16777216.0f32;            // / 2^24
+}
+
+// An integer in [lo, hi) (returns `lo` if the range is empty).
+pub range_i32 :: fn(self: *Rng, lo: i32, hi: i32) -> i32 {
+    if hi <= lo { return lo; }
+    span: u32 = (hi - lo) as u32;
+    return lo + (next_u32(self) % span) as i32;
+}
+
+// A float in [lo, hi).
+pub range_f32 :: fn(self: *Rng, lo: f32, hi: f32) -> f32 {
+    return lo + next_f32(self) * (hi - lo);
+}
+
+// True with probability `p` (clamped to 0..1).
+pub chance :: fn(self: *Rng, p: f32) -> bool { return next_f32(self) < p; }
+
+// A random sign: -1 or +1.
+pub sign :: fn(self: *Rng) -> f32 {
+    if (next_u64(self) & 1u64) == 0u64 { return -1.0f32; }
+    return 1.0f32;
+}

@@ -368,6 +368,21 @@ test "modules: configured std root loads std.io" {
     try k2.ir_mod.validateModule(module);
 }
 
+test "modules: game stdlib (std.math + std.rand + std.color) resolves and lowers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var fe = try k2.compileFileWithRuntime(
+        arena.allocator(),
+        std.testing.io,
+        "tests/fixtures/stdlib/game_app.k2",
+    );
+    defer fe.deinit(arena.allocator());
+
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(module);
+}
+
 test "modules: configured std root loads std.heap" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

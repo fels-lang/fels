@@ -1,0 +1,83 @@
+// std.list — a growable array `List(T)` backed by an `Arena`.
+//
+// ⚠ KNOWN LIMITATION (issue #6): generic STRUCTS instantiated across a module
+// boundary don't yet lower correctly, so importing this module fails at codegen.
+// The design below is correct and works when the same `List(T)` is defined in the
+// file that uses it (copy this pattern inline meanwhile). Re-enable once #6 lands.
+//
+// Built for games: allocate a persistent world arena once, store your entities /
+// projectiles / particles in `List`s, and `reset` the arena between levels. No
+// per-element frees — the arena owns everything.
+//
+//   a := heap::make();
+//   bullets := list::make(Bullet, &a);
+//   list::push(Bullet, &bullets, b);
+//   list::remove_swap(Bullet, &bullets, i);   // O(1) removal (order not kept)
+//
+// `T` must be passed explicitly to the generic ops (e.g. `list::push(Bullet, …)`).
+
+#import std.heap.{ Arena, alloc };
+
+pub List :: struct($T: type) {
+    arena: *Arena,
+    data:  []T,      // backing storage; capacity == data.len
+    len:   usize,    // elements in use
+}
+
+// A new empty list with a small initial capacity.
+pub make :: fn($T: type, a: *Arena) -> List(T) {
+    r: List(T) = .{ a, alloc(T, a, 4usize), 0usize };
+    return r;
+}
+
+// A new empty list with at least `cap` capacity reserved up front.
+pub with_cap :: fn($T: type, a: *Arena, cap: usize) -> List(T) {
+    want: usize = cap;
+    if want < 1usize { want = 1usize; }
+    r: List(T) = .{ a, alloc(T, a, want), 0usize };
+    return r;
+}
+
+// Ensure room for one more element, growing ×2 if the backing store is full.
+grow_one :: fn($T: type, self: *List(T)) {
+    if self.len < self.data.len { return; }
+    new_cap: usize = self.data.len * 2usize;
+    if new_cap < 4usize { new_cap = 4usize; }
+    nbuf: []T = alloc(T, self.arena, new_cap);
+    i: usize = 0usize;
+    while i < self.len { nbuf[i] = self.data[i]; i = i + 1usize; }
+    self.data = nbuf;
+}
+
+// Append `item`, growing if needed.
+pub push :: fn($T: type, self: *List(T), item: T) {
+    grow_one(T, self);
+    self.data[self.len] = item;
+    self.len = self.len + 1usize;
+}
+
+pub get :: fn($T: type, self: *List(T), i: usize) -> T { return self.data[i]; }
+pub set :: fn($T: type, self: *List(T), i: usize, v: T) { self.data[i] = v; }
+
+pub len :: fn($T: type, self: *List(T)) -> usize { return self.len; }
+pub is_empty :: fn($T: type, self: *List(T)) -> bool { return self.len == 0usize; }
+pub clear :: fn($T: type, self: *List(T)) { self.len = 0usize; }
+
+// The last element (assumes the list is non-empty).
+pub last :: fn($T: type, self: *List(T)) -> T { return self.data[self.len - 1usize]; }
+
+// Remove and return the last element (assumes non-empty).
+pub pop :: fn($T: type, self: *List(T)) -> T {
+    self.len = self.len - 1usize;
+    return self.data[self.len];
+}
+
+// O(1) removal: overwrite index `i` with the last element, then shrink. Does NOT
+// preserve order — perfect for "remove this dead entity" in a game loop.
+pub remove_swap :: fn($T: type, self: *List(T), i: usize) {
+    self.len = self.len - 1usize;
+    if i < self.len { self.data[i] = self.data[self.len]; }
+}
+
+// The live elements as a slice (valid until the next `push`/grow).
+pub items :: fn($T: type, self: *List(T)) -> []T { return self.data[0..self.len]; }

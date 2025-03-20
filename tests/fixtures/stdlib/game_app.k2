@@ -1,0 +1,27 @@
+// Exercises the game-oriented stdlib modules (std.math, std.rand, std.color)
+// so they resolve from the std root and lower without errors.
+#import std.math.{ Vec2, v2, v2_add, v2_scale, v2_len, v2_normalize, v2_rotate, lerp, PI };
+#import std.rand.{ Rng, seed, range_i32, next_f32, chance };
+#import std.color as color;
+
+main :: fn() -> i32 {
+    // vectors
+    p := v2(3.0f32, 4.0f32);
+    dir := v2_normalize(p);
+    spun := v2_rotate(dir, PI * 0.25f32);
+    moved := v2_add(p, v2_scale(spun, 2.0f32));
+    dist := v2_len(moved);
+
+    // rng (deterministic)
+    r := seed(7u64);
+    roll := range_i32(&r, 1, 100);
+    lucky := chance(&r, 0.5f32);
+
+    // color
+    hp := color::lerp(color::red(), color::green(), 0.5f32);
+    packed := color::to_u32(hp);
+
+    base := (dist as i32) + roll + (hp.r as i32) + ((packed & 255u32) as i32);
+    if lucky { return base; }
+    return base + 1;
+}
