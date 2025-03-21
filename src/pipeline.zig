@@ -601,7 +601,9 @@ fn prependHeapPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Modul
 /// Prepend the `TypeInfo` reflection surface to the user's module. Parsed under
 /// the user's file name (file-private symbols) with a high id base.
 fn prependReflectionPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
-    const parsed = try parser.parseSourceFrom(allocator, user.file_name, ast_prelude.reflection_source, reflection_prelude_id_base);
+    // `<runtime>` so the reflection types are visible from every module (a serde
+    // library, etc.), not just the root user file.
+    const parsed = try parser.parseSourceFrom(allocator, "<runtime>", ast_prelude.reflection_source, reflection_prelude_id_base);
     var items: std.ArrayList(ast.Item) = .empty;
     try items.appendSlice(allocator, parsed.module.items);
     try items.appendSlice(allocator, user.items);
@@ -633,7 +635,9 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
     defer all_types.deinit();
     for ([_][]const u8{ "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "usize", "isize", "f32", "f64", "bool" }) |t| try all_types.put(t, {});
 
-    var nav_file: []const u8 = user.file_name;
+    // Generated field navigators live in `<runtime>`, which sees every user type,
+    // so they work no matter which module a struct (or the serializer) is in.
+    const nav_file: []const u8 = "<runtime>";
 
     // Build the Any with `typeid_of`/`type_name` evaluated *here* (the nav file),
     // so a wrapped value's id matches the dispatchers' `core::type_id(...)` exactly.
@@ -650,6 +654,9 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
             .struct_type => |s| s,
             else => continue,
         };
+        // Skip compiler-injected (`<runtime>`) structs; navigate every user struct.
+        // The generated `__fld_<S>` lives in `<runtime>`, which can resolve `S` and
+        // `Any` by bare name regardless of the file they're declared in.
         if (std.mem.eql(u8, decl.file_name, "<runtime>")) continue;
         if (strukt.type_params.len > 0 or strukt.fields.len == 0) continue;
         // Every field must render to a supported type (named, []named, *named).
@@ -660,7 +667,6 @@ fn prependFieldNavPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
         };
         if (!ok) continue;
 
-        nav_file = decl.file_name;
         try names.append(allocator, decl.name);
         try all_types.put(decl.name, {});
         try appendFmt(&src, allocator, "__fld_{s} :: fn(d: *const u8, i: usize) -> ?Any {{\n  unsafe {{\n    p := d as *const {s};\n", .{ decl.name, decl.name });
@@ -760,29 +766,33 @@ fn appendFmt(src: *std.ArrayList(u8), a: std.mem.Allocator, comptime fmt: []cons
 /// Render a field type for the navigation generator: a plain named type, a slice
 /// of a named type (`[]T` / `[]const T`), or a pointer to one (`*T` / `*const T`).
 /// Returns null for anything else (the struct is then skipped).
-fn renderType(a: std.mem.Allocator, ty: ast.TypeRef) !?[]const u8 {
+fn renderType(a: std.mem.Allocator, ty: ast.TypeRef) error{OutOfMemory}!?[]const u8 {
     return switch (ty) {
         .named => |n| n.name,
-        .slice => |s| switch (s.inner.*) {
-            .named => |n| if (s.is_const)
-                try std.fmt.allocPrint(a, "[]const {s}", .{n.name})
+        .slice => |s| {
+            const inner = (try renderType(a, s.inner.*)) orelse return null;
+            return if (s.is_const)
+                try std.fmt.allocPrint(a, "[]const {s}", .{inner})
             else
-                try std.fmt.allocPrint(a, "[]{s}", .{n.name}),
-            else => null,
+                try std.fmt.allocPrint(a, "[]{s}", .{inner});
         },
-        .pointer => |p| switch (p.inner.*) {
-            .named => |n| if (p.is_const)
-                try std.fmt.allocPrint(a, "*const {s}", .{n.name})
+        .pointer => |p| {
+            const inner = (try renderType(a, p.inner.*)) orelse return null;
+            return if (p.is_const)
+                try std.fmt.allocPrint(a, "*const {s}", .{inner})
             else
-                try std.fmt.allocPrint(a, "*{s}", .{n.name}),
-            else => null,
+                try std.fmt.allocPrint(a, "*{s}", .{inner});
+        },
+        .optional => |o| {
+            const inner = (try renderType(a, o.inner.*)) orelse return null;
+            return try std.fmt.allocPrint(a, "?{s}", .{inner});
         },
         else => null,
     };
 }
 
 fn prependAnyPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
-    const parsed = try parser.parseSourceFrom(allocator, user.file_name, ast_prelude.any_source, any_prelude_id_base);
+    const parsed = try parser.parseSourceFrom(allocator, "<runtime>", ast_prelude.any_source, any_prelude_id_base);
     var items: std.ArrayList(ast.Item) = .empty;
     try items.appendSlice(allocator, parsed.module.items);
     try items.appendSlice(allocator, user.items);

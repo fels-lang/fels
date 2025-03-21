@@ -80,10 +80,14 @@ pub const SymbolTable = struct {
     }
 
     pub fn resolveVisible(self: SymbolTable, file_name: []const u8, name: []const u8) ?SymbolId {
+        // Compiler-generated `<runtime>` code (the heap/reflection preludes, the
+        // generated `__fld_<S>` field navigators) sees every top-level symbol: it's
+        // trusted and is generated *for* the user's types, which live in other files.
+        const from_runtime = std.mem.eql(u8, file_name, "<runtime>");
         if (self.resolve(self.root_scope, name)) |id| {
             // Found by its bare name in the root scope (i.e. not collision-mangled).
             const symbol_value = self.symbol(id);
-            if (std.mem.eql(u8, symbol_value.file_name, "<runtime>")) return id;
+            if (from_runtime or std.mem.eql(u8, symbol_value.file_name, "<runtime>")) return id;
             const visible = self.visible_names.get(file_name) orelse return null;
             return visible.get(name);
         }
@@ -3748,9 +3752,36 @@ const Checker = struct {
             try buf.appendSlice(self.allocator, "__");
             try buf.appendSlice(self.allocator, arg.name);
             try buf.append(self.allocator, '_');
-            try buf.appendSlice(self.allocator, tyMangle(arg.ty));
+            try self.appendTyMangle(&buf, arg.ty);
         }
         return buf.toOwnedSlice(self.allocator);
+    }
+
+    /// Mangle a type for an instantiation key. Unlike the bare `tyMangle`, this
+    /// resolves *named* types (structs/enums) to their distinct symbol name —
+    /// otherwise `f(Point)` and `f(Player)` both mangle to `f__T_named` and
+    /// collapse into a single instantiation (sharing one type's body).
+    fn appendTyMangle(self: *Checker, buf: *std.ArrayList(u8), ty: Ty) error{OutOfMemory}!void {
+        switch (ty) {
+            .named => |id| try buf.appendSlice(self.allocator, self.symbols.symbol(id).name),
+            .pointer => |inner| {
+                try buf.appendSlice(self.allocator, "ptr_");
+                try self.appendTyMangle(buf, inner.*);
+            },
+            .const_ptr => |inner| {
+                try buf.appendSlice(self.allocator, "cptr_");
+                try self.appendTyMangle(buf, inner.*);
+            },
+            .optional => |inner| {
+                try buf.appendSlice(self.allocator, "opt_");
+                try self.appendTyMangle(buf, inner.*);
+            },
+            .slice => |inner| {
+                try buf.appendSlice(self.allocator, "slice_");
+                try self.appendTyMangle(buf, inner.*);
+            },
+            else => try buf.appendSlice(self.allocator, tyMangle(ty)),
+        }
     }
 
     /// Type-check a previously recorded generic instantiation, filling its per-instance expr_types.
@@ -3897,7 +3928,7 @@ const Checker = struct {
             try mangled_buf.appendSlice(self.allocator, "__");
             try mangled_buf.appendSlice(self.allocator, arg.name);
             try mangled_buf.append(self.allocator, '_');
-            try mangled_buf.appendSlice(self.allocator, tyMangle(arg.ty));
+            try self.appendTyMangle(&mangled_buf, arg.ty);
         }
         const mangled = try mangled_buf.toOwnedSlice(self.allocator);
 

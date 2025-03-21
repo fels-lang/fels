@@ -1,0 +1,532 @@
+// std.serde — reflection-driven serialization. Turn any value into JSON with no
+// per-type code: the serializer walks the type's `type_info` for structure and an
+// `Any` for the field values.
+//
+//   Point :: struct { x: i32, y: i32, label: []const u8 }
+//   p := Point.{ 3, 4, "hi" };
+//   js := serde::to_json(Point, p, &arena);   // {"x":3,"y":4,"label":"hi"}
+//
+// Supported today: ints (any width), floats, bool, `[]const u8`/`[]u8` (as JSON
+// strings), and structs (recursively, including nested structs and string fields).
+// Slices of non-byte elements and deserialization are the next steps.
+
+#import std.heap.{ Arena };
+#import std.strings.{ StringBuilder, builder, append, append_byte, append_u64, append_i64, append_f64_min, str };
+
+// ── Raw reads from an Any's data pointer ─────────────────────────────────────
+// An `Any` carries `data: *const u8` pointing at the value. We read the scalar
+// bytes directly (width from the `TypeInfo`), which sidesteps `usize`-vs-`u64`
+// id ambiguity and needs no per-type downcast.
+
+read_unsigned :: fn(d: *const u8, bits: u16) -> u64 {
+    unsafe {
+        if bits == 8u16 { return (*(d as *const u8)) as u64; }
+        if bits == 16u16 { return (*(d as *const u16)) as u64; }
+        if bits == 32u16 { return (*(d as *const u32)) as u64; }
+        return *(d as *const u64);
+    }
+}
+
+read_signed :: fn(d: *const u8, bits: u16) -> i64 {
+    unsafe {
+        if bits == 8u16 { return (*(d as *const i8)) as i64; }
+        if bits == 16u16 { return (*(d as *const i16)) as i64; }
+        if bits == 32u16 { return (*(d as *const i32)) as i64; }
+        return *(d as *const i64);
+    }
+}
+
+// True when a slice's element type is an 8-bit integer (`[]const u8`/`[]u8`), i.e.
+// it should render as a JSON string rather than an array.
+is_byte :: fn(ti: TypeInfo) -> bool {
+    match ti { .int |i| => return i.bits == 8u16; else => return false; }
+}
+
+// Length of a slice whose value `v.data` points at a `{ptr,len}` header.
+slice_len :: fn(v: Any) -> usize {
+    unsafe {
+        base: usize = v.data as usize;
+        return *((base + 8usize) as *const usize);
+    }
+}
+
+// Write a `[]const u8`/`[]u8` (whose value `v.data` points at a `{ptr,len}` slice)
+// as a quoted, minimally-escaped JSON string.
+write_string :: fn(v: Any, w: *StringBuilder) {
+    unsafe {
+        base: usize = v.data as usize;
+        ptr:  usize = *(base as *const usize);
+        len:  usize = *((base + 8usize) as *const usize);
+        append_byte(w, 34u8);                       // "
+        i: usize = 0usize;
+        while i < len {
+            c: u8 = *((ptr + i) as *const u8);
+            if c == 34u8 { append_byte(w, 92u8); append_byte(w, 34u8); }        // \"
+            else { if c == 92u8 { append_byte(w, 92u8); append_byte(w, 92u8); } // \\
+            else { if c == 10u8 { append_byte(w, 92u8); append_byte(w, 110u8); } // \n
+            else { if c == 9u8 { append_byte(w, 92u8); append_byte(w, 116u8); }  // \t
+            else { append_byte(w, c); } } } }
+            i = i + 1usize;
+        }
+        append_byte(w, 34u8);                       // "
+    }
+}
+
+// ── The recursive walker ─────────────────────────────────────────────────────
+// `v` is the value (type-erased); `ti` is its static shape. Both come from the
+// generic entry point, and the struct case threads each field's `Any` + `TypeInfo`
+// back into this same function.
+write_val :: fn(v: Any, ti: TypeInfo, w: *StringBuilder) {
+    match ti {
+        .int |i| => {
+            if i.signed { append_i64(w, read_signed(v.data, i.bits)); }
+            else { append_u64(w, read_unsigned(v.data, i.bits)); }
+        }
+        .float |f| => {
+            unsafe {
+                if f.bits == 32u16 { append_f64_min(w, (*(v.data as *const f32)) as f64); }
+                else { append_f64_min(w, *(v.data as *const f64)); }
+            }
+        }
+        .boolean => {
+            unsafe { if *(v.data as *const bool) { append(w, "true"); } else { append(w, "false"); } }
+        }
+        .slice |e| => {
+            et: TypeInfo = *e;           // deref to a typed local (unambiguous vs `*e` as a type)
+            if is_byte(et) { write_string(v, w); }
+            else {
+                append_byte(w, 91u8);    // [
+                // Walk the elements directly (handles scalar, struct, AND nested-slice
+                // elements uniformly): stride from `ti_size`, element id from `ti_id`.
+                unsafe {
+                    base: usize = v.data as usize;
+                    ptr:  usize = *(base as *const usize);
+                    n:    usize = *((base + 8usize) as *const usize);
+                    esz:  usize = ti_size(et);
+                    eid:  usize = ti_id(et);
+                    i: usize = 0usize;
+                    while i < n {
+                        if i > 0usize { append_byte(w, 44u8); }  // ,
+                        ep: *const u8 = (ptr + i * esz) as *const u8;
+                        ev: Any = .{ ep, eid, "" };
+                        write_val(ev, et, w);
+                        i = i + 1usize;
+                    }
+                }
+                append_byte(w, 93u8);    // ]
+            }
+        }
+        .struct_ |s| => {
+            append_byte(w, 123u8);       // {
+            i: usize = 0usize;
+            while i < s.fields.len {
+                if i > 0usize { append_byte(w, 44u8); }     // ,
+                append_byte(w, 34u8); append(w, s.fields[i].name); append_byte(w, 34u8);
+                append_byte(w, 58u8);    // :
+                ft: TypeInfo = *s.fields[i].ty;
+                if any_field_at(v, i) |fv| { write_val(fv, ft, w); }
+                else { append(w, "null"); }
+                i = i + 1usize;
+            }
+            append_byte(w, 125u8);       // }
+        }
+        .optional |inner| => {
+            pt: TypeInfo = *inner;       // `?T` = { i1 is_some, T payload @ align(T) }
+            unsafe {
+                if *(v.data as *const bool) {
+                    off: usize = ti_align(pt);
+                    pp: *const u8 = ((v.data as usize) + off) as *const u8;
+                    pv: Any = .{ pp, ti_id(pt), "" };
+                    write_val(pv, pt, w);
+                } else {
+                    append(w, "null");
+                }
+            }
+        }
+        .enum_ |en| => {
+            // Tagged enum → the variant name as a JSON string ("Red"). Payloads, if
+            // any, aren't emitted (TiVariant carries no payload type).
+            unsafe {
+                disc: i32 = *(v.data as *const i32);
+                append_byte(w, 34u8);
+                if (disc as usize) < en.variants.len { append(w, en.variants[disc as usize].name); }
+                append_byte(w, 34u8);
+            }
+        }
+        else => append(w, "null");
+    }
+}
+
+// Serialize `v` (of type `T`) to a JSON string allocated in `a`.
+pub to_json :: fn($T: type, v: T, a: *Arena) -> []const u8 {
+    sb := builder(a);
+    write_val(core::any(v), core::type_info(T), &sb);
+    return str(&sb);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Deserialize — JSON text → a value of type T, via reflective construction.
+// ═══════════════════════════════════════════════════════════════════════════
+// Build a zeroed `result: T`, wrap a *mutable* `Any` over its address, and walk
+// `type_info(T)` writing each parsed field through the field's real address:
+// `any_field_at` hands back `&result.field` (typed `*const u8`), which we cast
+// to mutable and store into. No per-type code, mirroring the serializer.
+
+Parser :: struct { s: []const u8, pos: usize, ok: bool }
+
+p_cur :: fn(p: *Parser) -> u8 {
+    if p.pos < p.s.len { return p.s[p.pos]; }
+    return 0u8;
+}
+
+p_skip_ws :: fn(p: *Parser) {
+    cont: bool = true;
+    while cont {
+        c: u8 = p_cur(p);
+        if c == 32u8 { p.pos += 1usize; }
+        else { if c == 10u8 { p.pos += 1usize; }
+        else { if c == 9u8 { p.pos += 1usize; }
+        else { if c == 13u8 { p.pos += 1usize; }
+        else { cont = false; } } } }
+    }
+}
+
+p_eat :: fn(p: *Parser, c: u8) -> bool {
+    p_skip_ws(p);
+    if p_cur(p) == c { p.pos += 1usize; return true; }
+    return false;
+}
+
+is_dig :: fn(c: u8) -> bool {
+    if c < 48u8 { return false; }
+    if c > 57u8 { return false; }
+    return true;
+}
+
+p_i64 :: fn(p: *Parser) -> i64 {
+    p_skip_ws(p);
+    neg: bool = false;
+    if p_cur(p) == 45u8 { neg = true; p.pos += 1usize; }
+    v: i64 = 0;
+    while is_dig(p_cur(p)) {
+        v = v * 10 + ((p_cur(p) - 48u8) as i64);
+        p.pos += 1usize;
+    }
+    if neg { return -v; }
+    return v;
+}
+
+p_f64 :: fn(p: *Parser) -> f64 {
+    p_skip_ws(p);
+    neg: bool = false;
+    if p_cur(p) == 45u8 { neg = true; p.pos += 1usize; }
+    ip: f64 = 0.0;
+    while is_dig(p_cur(p)) {
+        ip = ip * 10.0 + ((p_cur(p) - 48u8) as f64);
+        p.pos += 1usize;
+    }
+    if p_cur(p) == 46u8 {
+        p.pos += 1usize;
+        scale: f64 = 1.0;
+        while is_dig(p_cur(p)) {
+            scale = scale / 10.0;
+            ip = ip + ((p_cur(p) - 48u8) as f64) * scale;
+            p.pos += 1usize;
+        }
+    }
+    if neg { return -ip; }
+    return ip;
+}
+
+p_bool :: fn(p: *Parser) -> bool {
+    p_skip_ws(p);
+    if p_cur(p) == 116u8 { p.pos += 4usize; return true; }   // "true"
+    p.pos += 5usize;                                          // "false"
+    return false;
+}
+
+// Parse a JSON string (minimal unescaping) into a fresh arena-backed buffer.
+p_str :: fn(p: *Parser, a: *Arena) -> []const u8 {
+    p_skip_ws(p);
+    sb := builder(a);
+    if p_cur(p) != 34u8 { return str(&sb); }
+    p.pos += 1usize;
+    cont: bool = true;
+    while cont {
+        if p.pos >= p.s.len { cont = false; }
+        else {
+            c: u8 = p.s[p.pos];
+            if c == 34u8 { p.pos += 1usize; cont = false; }      // closing "
+            else { if c == 92u8 {                                // backslash
+                p.pos += 1usize;
+                if p.pos < p.s.len {
+                    e: u8 = p.s[p.pos];
+                    if e == 110u8 { append_byte(&sb, 10u8); }    // \n
+                    else { if e == 116u8 { append_byte(&sb, 9u8); }  // \t
+                    else { append_byte(&sb, e); } }              // \" \\ etc → literal
+                    p.pos += 1usize;
+                }
+            } else {
+                append_byte(&sb, c);
+                p.pos += 1usize;
+            } }
+        }
+    }
+    return str(&sb);
+}
+
+// ── Field writers (cast away const, store the parsed value) ──────────────────
+set_int :: fn(d: *const u8, ti: TiInt, val: i64) {
+    unsafe {
+        if ti.bits == 8u16 { *(d as *u8) = val as u8; }
+        else { if ti.bits == 16u16 { *(d as *u16) = val as u16; }
+        else { if ti.bits == 32u16 { *(d as *u32) = val as u32; }
+        else { *(d as *u64) = val as u64; } } }
+    }
+}
+set_f :: fn(d: *const u8, ti: TiFloat, val: f64) {
+    unsafe {
+        if ti.bits == 32u16 { *(d as *f32) = val as f32; }
+        else { *(d as *f64) = val; }
+    }
+}
+set_bool :: fn(d: *const u8, val: bool) { unsafe { *(d as *bool) = val; } }
+set_str :: fn(d: *const u8, bytes: []const u8) {
+    unsafe {
+        base: usize = d as usize;
+        *(base as *usize) = bytes.ptr as usize;
+        *((base + 8usize) as *usize) = bytes.len;
+    }
+}
+set_empty :: fn(d: *const u8) {
+    unsafe {
+        base: usize = d as usize;
+        *(base as *usize) = 0usize;
+        *((base + 8usize) as *usize) = 0usize;
+    }
+}
+
+// Byte size + type id of an element TypeInfo (for allocating + wrapping arrays).
+ti_size :: fn(et: TypeInfo) -> usize {
+    match et {
+        .int |i| => return (i.bits as usize) / 8usize;
+        .float |f| => return (f.bits as usize) / 8usize;
+        .boolean => return 1usize;
+        .struct_ |s| => return type_size_of(s.id);
+        .slice |se| => return 16usize;
+        .pointer |pe| => return 8usize;
+        else => return 8usize;
+    }
+}
+ti_id :: fn(et: TypeInfo) -> usize {
+    match et { .struct_ |s| => return s.id; else => return 0usize; }
+}
+// Alignment of a type — needed to find an optional's payload offset (`?T` lays out
+// as `{ i1 is_some, T payload }`, payload at offset `align(T)`). A struct's alignment
+// is the max of its fields', computed straight from `type_info` (no `align_of` builtin).
+ti_align :: fn(et: TypeInfo) -> usize {
+    match et {
+        .int |i| => {
+            b: usize = (i.bits as usize) / 8usize;
+            if b > 8usize { return 8usize; }
+            return b;
+        }
+        .float |f| => return (f.bits as usize) / 8usize;
+        .boolean => return 1usize;
+        .slice |se| => return 8usize;
+        .pointer |pe| => return 8usize;
+        .struct_ |s| => {
+            mx: usize = 1usize;
+            i: usize = 0usize;
+            while i < s.fields.len {
+                fa: TypeInfo = *s.fields[i].ty;
+                fal: usize = ti_align(fa);
+                if fal > mx { mx = fal; }
+                i = i + 1usize;
+            }
+            return mx;
+        }
+        else => return 8usize;
+    }
+}
+
+name_eq :: fn(x: []const u8, y: []const u8) -> bool {
+    if x.len != y.len { return false; }
+    i: usize = 0usize;
+    while i < x.len { if x[i] != y[i] { return false; } i = i + 1usize; }
+    return true;
+}
+find_field :: fn(s: TiStruct, key: []const u8) -> usize {
+    i: usize = 0usize;
+    while i < s.fields.len {
+        if name_eq(s.fields[i].name, key) { return i; }
+        i = i + 1usize;
+    }
+    return s.fields.len;   // not found
+}
+
+// ── Skipping (for unknown object keys + counting array elements) ─────────────
+p_skip_scalar :: fn(p: *Parser) {
+    cont: bool = true;
+    while cont {
+        if p.pos >= p.s.len { cont = false; }
+        else {
+            d: u8 = p.s[p.pos];
+            if d == 44u8 { cont = false; }
+            else { if d == 125u8 { cont = false; }
+            else { if d == 93u8 { cont = false; }
+            else { if d == 32u8 { cont = false; }
+            else { if d == 10u8 { cont = false; }
+            else { if d == 9u8 { cont = false; }
+            else { if d == 13u8 { cont = false; }
+            else { p.pos += 1usize; } } } } } } }
+        }
+    }
+}
+p_skip_value :: fn(p: *Parser, a: *Arena) {
+    p_skip_ws(p);
+    c: u8 = p_cur(p);
+    if c == 34u8 { p_str(p, a); }
+    else { if c == 123u8 { p_skip_obj(p, a); }
+    else { if c == 91u8 { p_skip_arr(p, a); }
+    else { p_skip_scalar(p); } } }
+}
+p_skip_obj :: fn(p: *Parser, a: *Arena) {
+    p_eat(p, 123u8);
+    p_skip_ws(p);
+    if p_cur(p) == 125u8 { p.pos += 1usize; return; }
+    cont: bool = true;
+    while cont {
+        p_str(p, a);
+        p_eat(p, 58u8);
+        p_skip_value(p, a);
+        p_skip_ws(p);
+        if p_cur(p) == 44u8 { p.pos += 1usize; } else { cont = false; }
+    }
+    p_eat(p, 125u8);
+}
+p_skip_arr :: fn(p: *Parser, a: *Arena) {
+    p_eat(p, 91u8);
+    p_skip_ws(p);
+    if p_cur(p) == 93u8 { p.pos += 1usize; return; }
+    cont: bool = true;
+    while cont {
+        p_skip_value(p, a);
+        p_skip_ws(p);
+        if p_cur(p) == 44u8 { p.pos += 1usize; } else { cont = false; }
+    }
+    p_eat(p, 93u8);
+}
+
+// ── The recursive parser ─────────────────────────────────────────────────────
+parse_value :: fn(p: *Parser, target: Any, ti: TypeInfo, a: *Arena) {
+    match ti {
+        .int |i| => set_int(target.data, i, p_i64(p));
+        .float |f| => set_f(target.data, f, p_f64(p));
+        .boolean => set_bool(target.data, p_bool(p));
+        .slice |e| => {
+            et: TypeInfo = *e;
+            if is_byte(et) { set_str(target.data, p_str(p, a)); }
+            else { parse_array(p, target, et, a); }
+        }
+        .struct_ |s| => parse_struct(p, target, s, a);
+        .optional |inner| => {
+            pt: TypeInfo = *inner;
+            p_skip_ws(p);
+            if p_cur(p) == 110u8 {              // 'n' → null → leave is_some = 0
+                p.pos += 4usize;
+                unsafe { *(target.data as *u8) = 0u8; }
+            } else {
+                unsafe { *(target.data as *u8) = 1u8; }   // is_some = true
+                off: usize = ti_align(pt);
+                pp: *const u8 = unsafe ((target.data as usize) + off) as *const u8;
+                pv: Any = .{ pp, ti_id(pt), "" };
+                parse_value(p, pv, pt, a);
+            }
+        }
+        .enum_ |en| => {
+            key: []const u8 = p_str(p, a);      // the variant name
+            disc: i32 = 0;
+            i: usize = 0usize;
+            while i < en.variants.len {
+                if name_eq(en.variants[i].name, key) { disc = i as i32; }
+                i = i + 1usize;
+            }
+            unsafe { *(target.data as *i32) = disc; }
+        }
+        else => p_skip_value(p, a);
+    }
+}
+
+parse_struct :: fn(p: *Parser, target: Any, s: TiStruct, a: *Arena) {
+    if !p_eat(p, 123u8) { p.ok = false; return; }   // {
+    p_skip_ws(p);
+    if p_cur(p) == 125u8 { p.pos += 1usize; return; }   // empty {}
+    cont: bool = true;
+    while cont {
+        key: []const u8 = p_str(p, a);
+        if !p_eat(p, 58u8) { p.ok = false; return; }   // :
+        fi: usize = find_field(s, key);
+        if fi < s.fields.len {
+            ft: TypeInfo = *s.fields[fi].ty;
+            if any_field_at(target, fi) |fld| { parse_value(p, fld, ft, a); }
+            else { p_skip_value(p, a); }
+        } else {
+            p_skip_value(p, a);   // unknown key
+        }
+        p_skip_ws(p);
+        if p_cur(p) == 44u8 { p.pos += 1usize; } else { cont = false; }
+    }
+    p_eat(p, 125u8);   // }
+}
+
+parse_array :: fn(p: *Parser, target: Any, et: TypeInfo, a: *Arena) {
+    if !p_eat(p, 91u8) { p.ok = false; return; }   // [
+    p_skip_ws(p);
+    if p_cur(p) == 93u8 { p.pos += 1usize; set_empty(target.data); return; }   // []
+    // Pass 1: count elements (so we can allocate exactly).
+    start: usize = p.pos;
+    count: usize = 0usize;
+    cont: bool = true;
+    while cont {
+        p_skip_value(p, a);
+        count = count + 1usize;
+        p_skip_ws(p);
+        if p_cur(p) == 44u8 { p.pos += 1usize; } else { cont = false; }
+    }
+    esz: usize = ti_size(et);
+    eid: usize = ti_id(et);
+    buf: []u8 = a.alloc_bytes(count * esz);
+    // Pass 2: parse each element into its slot.
+    p.pos = start;
+    i: usize = 0usize;
+    while i < count {
+        slot: *const u8 = unsafe ((buf.ptr as usize) + i * esz) as *const u8;
+        elem: Any = .{ slot, eid, "" };
+        parse_value(p, elem, et, a);
+        p_skip_ws(p);
+        if p_cur(p) == 44u8 { p.pos += 1usize; }
+        i = i + 1usize;
+    }
+    p_eat(p, 93u8);   // ]
+    set_arr(target.data, buf, count);   // write the slice header {ptr, count}
+}
+set_arr :: fn(d: *const u8, buf: []u8, count: usize) {
+    unsafe {
+        base: usize = d as usize;
+        *(base as *usize) = buf.ptr as usize;
+        *((base + 8usize) as *usize) = count;
+    }
+}
+
+// Deserialize `text` into a value of type `T`. Returns null on a structural
+// parse error. Allocations (strings, arrays) live in `a`.
+pub from_json :: fn($T: type, text: []const u8, a: *Arena) -> ?T {
+    result: T = .{};
+    dp: *const u8 = unsafe (&result) as *const u8;
+    base: Any = .{ dp, core::type_id(T), core::type_name(T) };
+    p: Parser = .{ text, 0usize, true };
+    parse_value(&p, base, core::type_info(T), a);
+    if !p.ok { return null; }
+    return result;
+}

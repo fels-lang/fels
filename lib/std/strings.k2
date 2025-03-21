@@ -288,6 +288,27 @@ pub append_f64_prec :: fn(self: *StringBuilder, v: f64, prec: usize) {
     append_u64_pad(self, fd, prec, 48u8);  // zero-padded fractional digits
 }
 
+// Like `append_f64`, but drops trailing fractional zeros (and a bare trailing
+// dot): 2.5 → "2.5", 2.0 → "2", 0.25 → "0.25". Produces minimal JSON numbers.
+pub append_f64_min :: fn(self: *StringBuilder, v: f64) {
+    start: usize = self.n;
+    append_f64_prec(self, v, 6usize);
+    has_dot: bool = false;
+    i: usize = start;
+    while i < self.n {
+        if self.buf[i] == 46u8 { has_dot = true; }
+        i += 1usize;
+    }
+    if !has_dot { return; }
+    while self.n > start {
+        if self.buf[self.n - 1usize] == 48u8 { self.n -= 1usize; }  // strip '0'
+        else { break; }
+    }
+    if self.n > start {
+        if self.buf[self.n - 1usize] == 46u8 { self.n -= 1usize; }  // strip bare '.'
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Byte-string utilities (free functions over []const u8)
 // ═══════════════════════════════════════════════════════════════════════════

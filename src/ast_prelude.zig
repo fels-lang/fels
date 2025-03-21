@@ -175,7 +175,7 @@ pub const reflection_source =
     \\TiPtr     :: struct { elem: *TypeInfo, is_const: bool }
     \\TiArray   :: struct { len: usize, elem: *TypeInfo }
     \\TiField   :: struct { name: []const u8, ty: *TypeInfo }
-    \\TiStruct  :: struct { name: []const u8, fields: []TiField }
+    \\TiStruct  :: struct { name: []const u8, fields: []TiField, id: usize }
     \\TiVariant :: struct { name: []const u8, has_payload: bool }
     \\TiEnum    :: struct { name: []const u8, variants: []TiVariant }
     \\TypeInfo :: enum {

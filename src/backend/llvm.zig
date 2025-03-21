@@ -50,8 +50,19 @@ pub const LlvmBackend = struct {
         // Expose module metadata needed by instruction lowering.
         self.cg.error_defs = module.errors;
 
-        try vars_mod.lowerAll(&self.cg, module.variants); // enums first (referenced by fns)
+        // Order-independent type registration via shells, satisfying two opposing
+        // constraints at once:
+        //  1. A struct's by-value enum field (`color: Color`, even a payloaded enum)
+        //     needs the enum's TYPE before the struct is bodied — else it falls back
+        //     to a pointer (wrong-typed/sized field, breaks `match s.field`).
+        //  2. A payloaded enum's `[N x i8]` payload must be sized against fully
+        //     bodied struct variants (e.g. `TypeInfo.struct_: TiStruct` = 32 B).
+        // So: declare all enum types (payloaded = named opaque shell), body structs
+        // (their enum fields reference the shell, resolved lazily), then fill the
+        // enum shells' bodies now that payload sizes are known.
+        try vars_mod.declareAll(&self.cg, module.variants);
         try structs.lowerAll(&self.cg, module.structs);
+        try vars_mod.bodyAll(&self.cg, module.variants);
         try globals.lowerAll(&self.cg, module.globals);
         try fns.declareAll(&self.cg, module.functions);
         try vtables.lowerAll(&self.cg, module.vtables);

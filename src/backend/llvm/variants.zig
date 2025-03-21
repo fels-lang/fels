@@ -20,55 +20,65 @@ pub const EnumMeta = struct {
     is_simple: bool,
 };
 
-/// Register all enum (VariantDef) types and build metadata.
-pub fn lowerAll(cg: *ModuleCg, variant_defs: []const ir.VariantDef) !void {
-    for (variant_defs) |vd| try lowerOne(cg, vd);
+/// Register every enum's *type* and metadata, but leave a payloaded enum's body
+/// unset. Simple enums are plain `i32`; a payloaded enum gets a NAMED opaque shell
+/// (`{ i32, [N x i8] }`, body filled by `bodyAll`). Declaring the shell up front —
+/// before structs are bodied — means a struct's by-value enum field finds the real
+/// enum type (resolved lazily at emit), instead of falling back to a pointer.
+pub fn declareAll(cg: *ModuleCg, variant_defs: []const ir.VariantDef) !void {
+    for (variant_defs) |vd| {
+        const is_simple = for (vd.variants) |v| {
+            if (v.payload != null) break false;
+        } else true;
+
+        const llvm_ty = if (is_simple)
+            llvm.LLVMInt32TypeInContext(cg.ctx)
+        else blk: {
+            const nm = try std.fmt.allocPrintSentinel(cg.allocator, "{s}.enum", .{vd.name}, 0);
+            defer cg.allocator.free(nm);
+            break :blk llvm.LLVMStructCreateNamed(cg.ctx, nm.ptr);
+        };
+
+        var disc_map = std.StringHashMap(u32).init(cg.allocator);
+        for (vd.variants, 0..) |v, i| try disc_map.put(v.name, @intCast(i));
+
+        const meta = try cg.allocator.create(EnumMeta);
+        meta.* = .{ .discriminants = disc_map, .llvm_ty = llvm_ty, .is_simple = is_simple };
+        try cg.enum_meta.put(vd.name, meta);
+        try cg.struct_types.put(vd.name, llvm_ty);
+    }
 }
 
-fn lowerOne(cg: *ModuleCg, vd: ir.VariantDef) !void {
-    const i32_ty = llvm.LLVMInt32TypeInContext(cg.ctx);
+/// Fill in each payloaded enum's body — run AFTER structs are bodied, so a struct
+/// payload's size measures correctly (e.g. `TypeInfo.struct_: TiStruct` = 32 B,
+/// not a truncated shell).
+pub fn bodyAll(cg: *ModuleCg, variant_defs: []const ir.VariantDef) !void {
+    for (variant_defs) |vd| {
+        const meta = cg.enum_meta.get(vd.name).?;
+        if (meta.is_simple) continue;
 
-    // Determine if any variant has a payload, and find max payload size.
-    var is_simple = true;
-    var max_payload_bits: u64 = 0;
-    for (vd.variants) |v| {
-        if (v.payload) |pt| {
-            is_simple = false;
-            const lty  = types.lower(cg, pt);
-            const bits = llvm.LLVMGetIntTypeWidth(lty);  // works for int types
-            // For non-int types, use a safe upper bound via sizeof
-            const payload_bits = if (llvm.LLVMGetTypeKind(lty) == llvm.LLVMIntegerTypeKind)
-                @as(u64, bits)
-            else
-                llvm.LLVMStoreSizeOfType(llvm.LLVMCreateTargetData(""), lty) * 8;
-            if (payload_bits > max_payload_bits) max_payload_bits = payload_bits;
+        var max_payload_bits: u64 = 0;
+        for (vd.variants) |v| {
+            if (v.payload) |pt| {
+                const lty = types.lower(cg, pt);
+                // Module layout isn't stamped until emit; the default target data
+                // (64-bit ptrs, natural alignment) measures the now-bodied payload.
+                const dl = llvm.LLVMCreateTargetData("");
+                defer llvm.LLVMDisposeTargetData(dl);
+                const payload_bits = if (llvm.LLVMGetTypeKind(lty) == llvm.LLVMIntegerTypeKind)
+                    @as(u64, llvm.LLVMGetIntTypeWidth(lty))
+                else
+                    llvm.LLVMABISizeOfType(dl, lty) * 8;
+                if (payload_bits > max_payload_bits) max_payload_bits = payload_bits;
+            }
         }
-    }
 
-    // Build the LLVM type.
-    const llvm_ty = if (is_simple) i32_ty else blk: {
         const payload_bytes: u64 = (max_payload_bits + 7) / 8;
-        const i8_ty   = llvm.LLVMInt8TypeInContext(cg.ctx);
+        const i8_ty = llvm.LLVMInt8TypeInContext(cg.ctx);
         const data_ty = llvm.LLVMArrayType2(i8_ty, payload_bytes);
-        var fields    = [_]llvm.LLVMTypeRef{ i32_ty, data_ty };
-        break :blk llvm.LLVMStructTypeInContext(cg.ctx, &fields, 2, 0);
-    };
-
-    // Build discriminant map.
-    var disc_map = std.StringHashMap(u32).init(cg.allocator);
-    for (vd.variants, 0..) |v, i| try disc_map.put(v.name, @intCast(i));
-
-    // Store in cg.
-    const meta = try cg.allocator.create(EnumMeta);
-    meta.* = .{
-        .discriminants = disc_map,
-        .llvm_ty       = llvm_ty,
-        .is_simple     = is_simple,
-    };
-    try cg.enum_meta.put(vd.name, meta);
-
-    // Also register the LLVM type in struct_types so types.lower() can find it.
-    try cg.struct_types.put(vd.name, llvm_ty);
+        var fields = [_]llvm.LLVMTypeRef{ llvm.LLVMInt32TypeInContext(cg.ctx), data_ty };
+        llvm.LLVMStructSetBody(meta.llvm_ty, &fields, 2, 0);
+    }
 }
 
 /// Build an LLVM value for a variant literal (no payload).

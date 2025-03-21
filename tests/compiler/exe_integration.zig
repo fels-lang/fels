@@ -1608,21 +1608,108 @@ fn compileFileAndRun(allocator: std.mem.Allocator, file_name: []const u8, label:
     };
 }
 
-test "exe: std.path / std.time / std.crypto run correctly cross-module" {
+test "exe: std.path / std.time / std.crypto / std.serde run correctly cross-module" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     // Each fixture self-checks its module's API and returns 42 iff all correct
-    // (path: query/join; time: UTC calendar + live clocks; crypto: crc32/fnv).
+    // (path: query/join; time: UTC calendar + live clocks; crypto: crc32/fnv;
+    // serde: reflection-driven JSON for scalars/strings/nested structs/all widths).
     inline for (.{
         .{ "tests/fixtures/stdlib/path_app.k2", "exe_path_app" },
         .{ "tests/fixtures/stdlib/time_app.k2", "exe_time_app" },
         .{ "tests/fixtures/stdlib/crypto_app.k2", "exe_crypto_app" },
+        .{ "tests/fixtures/stdlib/serde_app.k2", "exe_serde_app" },
     }) |c| {
         const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);
         try std.testing.expectEqual(@as(u32, 42), code);
     }
+}
+
+test "exe: generic fn instantiated for two distinct struct types stays distinct" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `tyMangle(.named)` used to return the literal "named", so a generic
+    // instantiated with two different structs collapsed into ONE body (the first
+    // type's), and the second call silently reused it. Here `nf(A)` must see 2
+    // fields and `nf(B)` must see 3 — distinct instantiations.
+    const code = try compileAndRun(arena.allocator(),
+        \\A :: struct { x: i32, y: i32 }
+        \\B :: struct { p: i32, q: i32, r: i32 }
+        \\nf :: fn($T: type, v: T) -> usize {
+        \\    match core::type_info(T) { .struct_ |s| => return s.fields.len; else => return 0usize; }
+        \\}
+        \\#entry
+        \\main :: fn() -> i32 {
+        \\    a: A = .{ 1, 2 };
+        \\    b: B = .{ 1, 2, 3 };
+        \\    return (nf(A, a) * 10usize + nf(B, b)) as i32;
+        \\}
+    , "exe_generic_two_structs");
+    try std.testing.expectEqual(@as(u32, 23), code); // 2*10 + 3
+}
+
+test "exe: same-named local of different types across disjoint scopes stays distinct" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The backend keys locals by name (one alloca per name). Reusing `n` as a
+    // struct binding in one match arm and an i32 counter in another used to make
+    // them share a slot (the loop `n` picked up the struct type → backend crash).
+    // The IR now gives colliding same-name locals distinct slots (scope-aware).
+    const code = try compileAndRun(arena.allocator(),
+        \\Box :: struct { v: i32 }
+        \\pick :: fn(sel: i32, b: Box, lim: i32) -> i32 {
+        \\    match sel {
+        \\        0 => { n: Box = b; return n.v; }       // `n` is a struct here
+        \\        else => {
+        \\            sum: i32 = 0;
+        \\            n: i32 = 0;                          // `n` is an i32 here
+        \\            while n < lim { sum = sum + n; n = n + 1; }
+        \\            return sum;
+        \\        }
+        \\    }
+        \\}
+        \\#entry
+        \\main :: fn() -> i32 {
+        \\    bx: Box = .{ 100 };
+        \\    return pick(0, bx, 5) + pick(1, bx, 5);   // 100 + (0+1+2+3+4=10) = 110
+        \\}
+    , "exe_local_scope_collision");
+    try std.testing.expectEqual(@as(u32, 110), code);
+}
+
+test "exe: match on a by-value enum field of a struct (simple + payloaded)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A struct's by-value enum field must resolve to the enum's real type before
+    // the struct is bodied; otherwise the field falls back to a pointer and a
+    // `match s.field` lowers an `icmp ptr, i32` / extracts a discriminant from a
+    // pointer (LLVM verify / ICE). Enums are now declared as shells before structs
+    // (payloaded enums = named opaque shells, bodied after), so BOTH a simple enum
+    // field AND a payloaded enum field work.
+    const code = try compileAndRun(arena.allocator(),
+        \\Color :: enum { Red, Green, Blue }
+        \\Shape :: enum { Dot, Circle: i32 }
+        \\Box :: struct { c: Color, s: Shape, n: i32 }
+        \\color_score :: fn(b: Box) -> i32 {
+        \\    match b.c { .Red => return 1; .Green => return 2; .Blue => return 3; }
+        \\}
+        \\#entry
+        \\main :: fn() -> i32 {
+        \\    b: Box = .{ Color.Blue, Shape.Circle(7), 9 };
+        \\    r: i32 = 0;
+        \\    match b.s { .Circle |x| => r = x; else => {} }       // payloaded field
+        \\    return color_score(b) * 50 + r * 5 + b.n;            // 3*50 + 7*5 + 9 = 194 (< 256)
+        \\}
+    , "exe_enum_field_match");
+    try std.testing.expectEqual(@as(u32, 194), code);
 }
 
 test "exe: `[N]T = .{}` actually zero-inits the whole array (issue #7)" {

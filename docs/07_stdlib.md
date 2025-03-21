@@ -211,3 +211,46 @@ k := crypto::fnv1a_64("key");                   // fast non-crypto hash (and fnv
 
 `sha256`/`sha256_into` match the standard test vectors. It's a software SHA-256 — fine
 for integrity/checksums and content addressing, not audited for adversarial use.
+
+### `std.serde`
+
+Reflection-driven JSON, both directions, with **no per-type code**. One generic serializer
+and one generic parser walk the type's `core::type_info` for its *shape* and an `core::any`
+for the field *values/slots*, recursing through nested structs and slices automatically.
+
+```k2
+#import std.heap as heap;
+#import std.serde as serde;
+
+Player :: struct { name: []const u8, pos: Point, hp: u8, alive: bool, scores: []i32 }
+
+a := heap::make();
+pl: Player = .{ "Mario", .{ 10, 20 }, 100u8, true, xs };
+js := serde::to_json(Player, pl, &a);
+//   {"name":"Mario","pos":{"x":10,"y":20},"hp":100,"alive":true,"scores":[1,2,3]}
+
+// …and back. `from_json` returns `?T` (null on a structural parse error):
+if serde::from_json(Player, js, &a) |back| { /* back == pl, field for field */ }
+```
+
+Both `to_json($T, v, arena)` and `from_json($T, text, arena) -> ?T` handle:
+
+- ints of every width, floats (minimal form — `2.5`, not `2.500000`), `bool`
+- `[]const u8`/`[]u8` as JSON strings (with `\"`, `\\`, `\n`, `\t` escaping/unescaping)
+- structs, **recursively** (nested structs, string fields)
+- slices — scalars (`[]i32`), structs (`[]Point`), **and nested** (`[][]i32`) — as JSON arrays
+- **optionals** (`?T`): `null` for none, else the payload (scalar / string / struct)
+- **enums**: the variant name as a JSON string (`"Blue"`)
+- on parse, **unknown object keys are skipped**, and missing fields stay zero-initialized
+
+Deserialization constructs the value reflectively: it zero-inits a `result: T`, wraps a
+*mutable* `Any` over its address, and writes each parsed field through the real field
+address that `any_field_at` hands back. Arrays/strings are allocated in the arena.
+
+How it works (the "one serializer, two speeds" design from docs/12): the *structure* comes
+from `type_info` (a struct's `id` sizes/tags slice + optional-payload elements; alignment is
+derived recursively from field types) and the *bytes* come from `Any`, so adding a new type
+needs zero serializer/parser changes.
+
+Limit: enum *payloads* aren't emitted (only the variant name — `TiVariant` carries no payload
+type), and `?*T` / maps aren't modeled.

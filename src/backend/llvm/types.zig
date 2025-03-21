@@ -43,8 +43,13 @@ pub fn lower(cg: *ModuleCg, ty: ir.IrType) llvm.LLVMTypeRef {
             break :blk llvm.LLVMStructTypeInContext(ctx, &fields, 2, 0);
         },
 
-        // Error/variant discriminant types lower to i32.
-        .variant_type => llvm.LLVMInt32TypeInContext(ctx),
+        // Tagged enums lower to their registered type: `{ i32, [N x i8] }` for
+        // payloaded enums (e.g. `TypeInfo`), plain `i32` for simple/error-discriminant
+        // enums. Using a bare `i32` here under-sized a `ref`/alloca of a payloaded
+        // enum value, so the store overflowed and corrupted adjacent stack (e.g.
+        // nested `TypeInfo` in reflection trees).
+        .variant_type => |name| cg.struct_types.get(name) orelse
+            llvm.LLVMInt32TypeInContext(ctx),
 
         // All other pointer-like types are opaque `ptr` (LLVM 15+).
         .ptr => llvm.LLVMPointerTypeInContext(ctx, 0),

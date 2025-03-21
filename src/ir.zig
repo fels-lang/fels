@@ -1631,6 +1631,13 @@ const FunctionLowerer = struct {
     module: ast.Module = .empty(""),
     /// VM-backed comptime evaluator for `#run`, or null to use the tree-walker.
     cvm: ?*ComptimeVm = null,
+    /// Source name → its currently-active unique IR name, populated only when a
+    /// name is re-declared with an incompatible type in a sibling/enclosing scope
+    /// (e.g. two match arms each binding `i`). The backend keys locals by name with
+    /// one alloca per name, so colliding names must get distinct IR slots. The map
+    /// is snapshotted/restored around blocks and match arms (lexical scoping).
+    local_alias: std.StringHashMap([]const u8),
+    shadow_counter: u32 = 0,
 
     fn init(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, decl: ast.FunctionDecl) FunctionLowerer {
         return .{
@@ -1642,7 +1649,59 @@ const FunctionLowerer = struct {
             .source = decl.source,
             .fn_name = decl.name,
             .local_types = std.StringHashMap(IrType).init(allocator),
+            .local_alias = std.StringHashMap([]const u8).init(allocator),
         };
+    }
+
+    /// The active IR slot name for a source local (identity unless it was renamed
+    /// to dodge a same-name/incompatible-type collision in another scope).
+    fn curLocal(self: *FunctionLowerer, name: []const u8) []const u8 {
+        return self.local_alias.get(name) orelse name;
+    }
+
+    /// Register a user local/binding and return the IR name to store it under.
+    /// Reuses the existing slot for a compatible re-declaration; allocates a fresh
+    /// uniquely-suffixed slot (aliased for this scope) when the live local of the
+    /// same name has an incompatible type, so the two never share one alloca.
+    fn declareLocal(self: *FunctionLowerer, name: []const u8, ty: IrType) LowerError![]const u8 {
+        const cur = self.curLocal(name);
+        if (self.local_types.get(cur)) |old| {
+            if (sameLocalType(old, ty)) return cur;
+            const uniq = try std.fmt.allocPrint(self.allocator, "{s}#{d}", .{ name, self.shadow_counter });
+            self.shadow_counter += 1;
+            try self.local_alias.put(name, uniq);
+            try self.local_types.put(uniq, ty);
+            return uniq;
+        }
+        try self.local_types.put(name, ty);
+        return name;
+    }
+
+    /// Conservative same-slot test: two locals share an alloca only when proven
+    /// the same shape. Unknowns default to "different" (a fresh slot is always safe).
+    fn sameLocalType(a: IrType, b: IrType) bool {
+        const Tag = std.meta.Tag(IrType);
+        if (@as(Tag, a) != @as(Tag, b)) return false;
+        return switch (a) {
+            .i => |bits| bits == b.i,
+            .u => |bits| bits == b.u,
+            .f32, .f64, .bool, .void, .usize, .isize, .addr, .byte, .rune, .ptr, .slice, .text => true,
+            .struct_type => |n| std.mem.eql(u8, n, b.struct_type),
+            .variant_type => |n| std.mem.eql(u8, n, b.variant_type),
+            else => false,
+        };
+    }
+
+    /// Save the current local-alias map so a nested lexical scope's renames can be
+    /// undone on exit (`leaveScope`). Cheap when no collisions are active (the map
+    /// is empty, which is the overwhelming common case).
+    fn enterScope(self: *FunctionLowerer) LowerError!std.StringHashMap([]const u8) {
+        return self.local_alias.clone();
+    }
+
+    fn leaveScope(self: *FunctionLowerer, saved: std.StringHashMap([]const u8)) void {
+        self.local_alias.deinit();
+        self.local_alias = saved;
     }
 
     fn lowerBody(self: *FunctionLowerer, body: ast.Block) LowerError![]const IrBlock {
@@ -1681,8 +1740,8 @@ const FunctionLowerer = struct {
             .local_infer => |local| {
                 const value = try self.lowerExpr(local.value);
                 const local_ty = self.exprType(local.value);
-                try self.local_types.put(local.name, local_ty);
-                try self.emitNoResult(local_ty, .{ .store_local = .{ .name = local.name, .value = value } });
+                const ir_name = try self.declareLocal(local.name, local_ty);
+                try self.emitNoResult(local_ty, .{ .store_local = .{ .name = ir_name, .value = value } });
             },
             .local_typed => |local| {
                 // Inside a generic instantiation, substitute the binding so
@@ -1695,8 +1754,8 @@ const FunctionLowerer = struct {
                 else
                     try lowerAstTypeWithEnv(self.allocator, local.ty, self.types, self.symbols);
                 const value = try self.lowerExprAs(local.value, local_ty);
-                try self.local_types.put(local.name, local_ty);
-                try self.emitNoResult(local_ty, .{ .store_local = .{ .name = local.name, .value = value } });
+                const ir_name = try self.declareLocal(local.name, local_ty);
+                try self.emitNoResult(local_ty, .{ .store_local = .{ .name = ir_name, .value = value } });
             },
             .assign => |assign| {
                 // Output-type-param assignment (`Acc = <type>`) inside a `where`.
@@ -1714,12 +1773,13 @@ const FunctionLowerer = struct {
                 const bin_op = assignBinOp(assign.op);
                 switch (assign.target.kind) {
                     .ident => |name| {
+                        const ir_name = self.curLocal(name);
                         if (bin_op) |op| {
-                            const current: Value = .{ .local = name };
+                            const current: Value = .{ .local = ir_name };
                             const result = try self.emitAt(self.exprType(assign.target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } }, assign.span);
-                            try self.emitNoResult(self.exprType(assign.target), .{ .store_local = .{ .name = name, .value = result } });
+                            try self.emitNoResult(self.exprType(assign.target), .{ .store_local = .{ .name = ir_name, .value = result } });
                         } else {
-                            try self.emitNoResult(self.exprType(assign.target), .{ .store_local = .{ .name = name, .value = value } });
+                            try self.emitNoResult(self.exprType(assign.target), .{ .store_local = .{ .name = ir_name, .value = value } });
                         }
                     },
                     else => {
@@ -1851,7 +1911,8 @@ const FunctionLowerer = struct {
                     break :blk try self.emit(.bool, .{ .optional_is_some = value });
                 },
                 else => {
-                    try self.emitNoResult(value_ty, .{ .store_local = .{ .name = binding.name, .value = value } });
+                    const ir_name = try self.declareLocal(binding.name, value_ty);
+                    try self.emitNoResult(value_ty, .{ .store_local = .{ .name = ir_name, .value = value } });
                     break :blk value;
                 },
             }
@@ -1884,18 +1945,24 @@ const FunctionLowerer = struct {
         } });
 
         self.startBlock(then_id, "if.then");
+        // The `if … |x|` payload binding is only in scope in the then-block — scope
+        // its alias so reusing the name in a sibling `if` (with a different type)
+        // gets its own slot rather than aliasing.
+        const then_scope = try self.enterScope();
         if (optional_binding_name) |name| {
             const opt_value = optional_binding_value.?;
             const payload_ty = optional_payload_ty.?;
             const payload = try self.emit(payload_ty, .{ .optional_payload = opt_value });
-            try self.emitNoResult(payload_ty, .{ .store_local = .{ .name = name, .value = payload } });
+            const ir_name = try self.declareLocal(name, payload_ty);
+            try self.emitNoResult(payload_ty, .{ .store_local = .{ .name = ir_name, .value = payload } });
         }
         if (error_payload_binding) |name| {
             const pty = self.local_types.get("__errpayload") orelse .unknown;
-            try self.emitNoResult(pty, .{ .store_local = .{ .name = name, .value = .{ .local = "__errpayload" } } });
-            try self.local_types.put(name, pty);
+            const ir_name = try self.declareLocal(name, pty);
+            try self.emitNoResult(pty, .{ .store_local = .{ .name = ir_name, .value = .{ .local = "__errpayload" } } });
         }
         try self.lowerBlock(iff.then_block.statements, .{ .branch = after_id });
+        self.leaveScope(then_scope);
 
         if (iff.else_block) |else_block| {
             self.startBlock(else_id.?, "if.else");
@@ -2193,8 +2260,14 @@ const FunctionLowerer = struct {
             .name = "compound_literal",
             .args = try self.allocator.dupe(Value, elems),
         } });
+        // A slice's `ptr` field is a real pointer, so spill the array to memory and
+        // take its address (`&arr` == `&arr[0]`). Using the array *value* directly
+        // produced `insertvalue [N x T]` into the `{ptr,i64}` slice — invalid LLVM.
+        const arr_ty = try self.allocator.create(IrType);
+        arr_ty.* = .{ .array = .{ .elem = inner, .len = elems.len } };
+        const ptr = try self.emit(.{ .ptr = arr_ty }, .{ .unary = .{ .op = .ref, .value = arr } });
         return self.emit(.{ .slice = inner }, .{ .slice_expr = .{
-            .ptr = arr,
+            .ptr = ptr,
             .len = .{ .imm = .{ .uint = elems.len } },
         } });
     }
@@ -2264,7 +2337,12 @@ const FunctionLowerer = struct {
                 });
                 return self.mkVariant("TypeInfo", "array", payload);
             },
-            .struct_type => |name| return self.tiStruct(name, visiting),
+            .struct_type => |name| {
+                // A *named* enum lowers to `.struct_type` (like any named type), so
+                // disambiguate here: if it has variants it's an enum, else a struct.
+                if (self.enumVariantInfos(name) != null) return self.tiEnum(name, visiting);
+                return self.tiStruct(name, visiting);
+            },
             .variant_type => |name| return self.tiEnum(name, visiting),
             else => return self.mkVariant("TypeInfo", "other", astStr(typeInfoKindName(ty))),
         }
@@ -2290,6 +2368,10 @@ const FunctionLowerer = struct {
         const payload = try self.mkStruct("TiStruct", &.{
             .{ .name = "name", .value = astStr(name) },
             .{ .name = "fields", .value = slice },
+            // The type's stable runtime id (== `core::type_id(S)`), so a reflective
+            // consumer (serde deserialize) can build an `Any` over a struct element
+            // and look its size up via `type_size_of`.
+            .{ .name = "id", .value = .{ .imm = .{ .uint = typeIdHash(.{ .struct_type = name }) } } },
         });
         return self.mkVariant("TypeInfo", "struct_", payload);
     }
@@ -2670,7 +2752,8 @@ const FunctionLowerer = struct {
                 // A declared local shadows a top-level function/const of the same
                 // name (matching sema's `lookupLocal`-first resolution). Without
                 // this, `foo := 10` next to a `foo :: fn()` lowered to `@foo`.
-                if (self.local_types.contains(name)) break :blk Value{ .local = name };
+                const cur = self.curLocal(name);
+                if (self.local_types.contains(cur)) break :blk Value{ .local = cur };
                 if (resolveTopLevel(self.symbols, self.file_name, name)) |id| {
                     const kind = self.symbols.symbol(id).kind;
                     if (kind == .function or kind == .const_symbol) break :blk Value{ .global = self.symbols.symbol(id).link_name };
@@ -2990,6 +3073,12 @@ const FunctionLowerer = struct {
                 errdefer args.deinit(self.allocator);
                 const direct_sig = if (callee_sym) |id| self.types.fn_sigs.get(id) else null;
                 var value_param_index: usize = 0;
+                // Bind explicit type arguments (e.g. the `Point` in `f(Point, v)`)
+                // so a following value param declared `v: T` gets `T`'s concrete
+                // type as its expected type — otherwise an inline `.{…}` argument
+                // is lowered untyped and reads as garbage.
+                var call_tp_ir = std.StringHashMap(IrType).init(self.allocator);
+                defer call_tp_ir.deinit();
                 if (!is_type_arg_builtin) for (call.args, 0..) |arg, arg_idx| {
                     if (type_first_builtin and arg_idx == 0) {
                         try args.append(self.allocator, .{ .imm = .null });
@@ -3010,12 +3099,21 @@ const FunctionLowerer = struct {
                             } else false;
                             if (!is_constrained) {
                                 is_explicit_type_arg = true;
+                                // Remember the concrete type this `$T` is bound to.
+                                if (self.lowerTypeArg(value)) |bound_ty| {
+                                    call_tp_ir.put(type_param.name, bound_ty) catch {};
+                                } else |_| {}
                                 break;
                             }
                         }
                         if (is_explicit_type_arg) continue;
                         if (value_param_index < sig.params.len) {
-                            expected = lowerSemaTypeWithEnv(self.allocator, sig.params[value_param_index].ty, self.types, self.symbols) catch null;
+                            const pty = sig.params[value_param_index].ty;
+                            if (pty == .type_param) {
+                                if (call_tp_ir.get(pty.type_param)) |bound| expected = bound;
+                            }
+                            if (expected == null)
+                                expected = lowerSemaTypeWithEnv(self.allocator, pty, self.types, self.symbols) catch null;
                             value_param_index += 1;
                         }
                     }
@@ -3279,7 +3377,10 @@ const FunctionLowerer = struct {
             return self.lowerInterfaceCoercion(expr, expected_ty.interface_value);
         }
         if (expected_ty == .optional and self.exprType(expr) != .optional and expr.kind != .null) {
-            const payload = try self.lowerExpr(expr);
+            // Lower the payload AT the optional's payload type so a nested literal
+            // (`here: ?Point = .{7,8}`) gets the right field types, not an untyped
+            // aggregate that reads back as garbage.
+            const payload = try self.lowerExprAs(expr, expected_ty.optional.*);
             return self.emit(expected_ty, .{ .builtin = .{
                 .name = "optional_some",
                 .args = try self.allocator.dupe(Value, &.{payload}),
@@ -3325,7 +3426,7 @@ const FunctionLowerer = struct {
         const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, self.exprType(expr)) };
         return switch (expr.kind) {
             .ident => |name| blk: {
-                const local: Value = .{ .local = name };
+                const local: Value = .{ .local = self.curLocal(name) };
                 break :blk try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = local } });
             },
             .field => |field| blk: {
@@ -3454,7 +3555,7 @@ const FunctionLowerer = struct {
                     else => {},
                 };
             }
-            if (self.local_types.get(ident_name)) |lty| switch (lty) {
+            if (self.local_types.get(self.curLocal(ident_name))) |lty| switch (lty) {
                 .variant_type, .struct_type => |n| return n,
                 else => {},
             };
@@ -3533,17 +3634,18 @@ const FunctionLowerer = struct {
     fn bindMatchArm(self: *FunctionLowerer, subject: Value, subject_ty: IrType, enum_name: []const u8, pattern: ast.MatchPattern, payload_binding: ?[]const u8) LowerError!void {
         switch (pattern) {
             .binding => |name| {
-                try self.local_types.put(name, subject_ty);
-                try self.emitNoResult(subject_ty, .{ .store_local = .{ .name = name, .value = subject } });
+                const ir_name = try self.declareLocal(name, subject_ty);
+                try self.emitNoResult(subject_ty, .{ .store_local = .{ .name = ir_name, .value = subject } });
             },
             .enum_variant => |variant| if (payload_binding) |bname| {
                 const payload_ty = self.variantPayloadIrType(enum_name, variant);
                 const payload = try self.emit(payload_ty, .{ .variant_payload = .{ .value = subject, .type_name = enum_name, .variant = variant } });
-                try self.local_types.put(bname, payload_ty);
-                try self.emitNoResult(payload_ty, .{ .store_local = .{ .name = bname, .value = payload } });
+                const ir_name = try self.declareLocal(bname, payload_ty);
+                try self.emitNoResult(payload_ty, .{ .store_local = .{ .name = ir_name, .value = payload } });
             },
             .else_arm => if (payload_binding) |bname| {
-                try self.emitNoResult(.void, .{ .store_local = .{ .name = bname, .value = subject } });
+                const ir_name = try self.declareLocal(bname, subject_ty);
+                try self.emitNoResult(.void, .{ .store_local = .{ .name = ir_name, .value = subject } });
             },
             else => {},
         }
@@ -3568,6 +3670,7 @@ const FunctionLowerer = struct {
             }
 
             self.startBlock(arm_id, "match.arm");
+            const arm_scope = try self.enterScope(); // scope the pattern binding to this arm
             try self.bindMatchArm(subject, subject_ty, enum_name, arm.pattern, arm.binding);
             if (arm.guard) |g| {
                 const gv = try self.lowerExpr(g);
@@ -3576,6 +3679,7 @@ const FunctionLowerer = struct {
                 self.startBlock(body_id, "match.body");
             }
             try self.lowerBlock(arm.body.statements, .{ .branch = after_id });
+            self.leaveScope(arm_scope);
 
             if (needs_next) {
                 self.startBlock(next_id, "match.next");
@@ -3621,6 +3725,7 @@ const FunctionLowerer = struct {
             }
 
             self.startBlock(arm_id, "match.arm");
+            const arm_scope = try self.enterScope(); // scope the pattern binding to this arm
             try self.bindMatchArm(subject, subject_ty, enum_name, arm.pattern, arm.binding);
             if (arm.guard) |g| {
                 const gv = try self.lowerExpr(g);
@@ -3630,6 +3735,7 @@ const FunctionLowerer = struct {
             }
             const value = try self.lowerExprAs(arm.value, result_ty);
             try self.emitNoResult(result_ty, .{ .store_local = .{ .name = result_name, .value = value } });
+            self.leaveScope(arm_scope);
             try self.terminate(.{ .branch = after_id });
 
             if (needs_next) {
@@ -3658,6 +3764,8 @@ const FunctionLowerer = struct {
     // (pass null to let the caller handle it).
     fn lowerBlock(self: *FunctionLowerer, stmts: []const ast.Stmt, on_fallthrough: ?Terminator) LowerError!void {
         const floor = self.defers.items.len;
+        const alias_scope = try self.enterScope();
+        defer self.leaveScope(alias_scope);
         for (stmts) |s| try self.lowerStmt(s);
         if (!self.current_terminated) {
             try self.emitDefersDown(floor, .ok);
@@ -3820,9 +3928,20 @@ const FunctionLowerer = struct {
     fn exprType(self: FunctionLowerer, expr: ast.Expr) IrType {
         const ty = self.types.expr_types.get(expr.id) orelse {
             if (expr.kind == .ident) {
-                if (self.local_types.get(expr.kind.ident)) |local_ty| return local_ty;
-                for (self.params) |param| if (std.mem.eql(u8, param.name, expr.kind.ident))
+                const cur = self.local_alias.get(expr.kind.ident) orelse expr.kind.ident;
+                if (self.local_types.get(cur)) |local_ty| return local_ty;
+                for (self.params) |param| if (std.mem.eql(u8, param.name, expr.kind.ident)) {
+                    // In a generic instantiation a param declared `v: T` must resolve
+                    // to the bound concrete type, not the type-param name itself —
+                    // otherwise e.g. `any(v)` hashes "T" and misses the real dispatcher.
+                    if (param.ty == .named) {
+                        for (self.type_binding) |binding_arg| {
+                            if (std.mem.eql(u8, binding_arg.name, param.ty.named.name))
+                                return lowerSemaTypeWithEnv(self.allocator, binding_arg.ty, self.types, self.symbols) catch .unknown;
+                        }
+                    }
                     return lowerAstTypeWithEnv(self.allocator, param.ty, self.types, self.symbols) catch .unknown;
+                };
             }
             return .unknown;
         };
@@ -5681,13 +5800,10 @@ fn exprHasQuote(e: ast.Expr) bool {
         .binary => |b| exprHasQuote(b.left.*) or exprHasQuote(b.right.*),
         .unary => |u| exprHasQuote(u.expr.*),
         .call => |c| blk: {
-            // `type_info(T)` materializes a `TypeInfo` value the LLVM backend
-            // can't lower (Phase 1 is comptime-only), so a function that calls it
-            // is comptime-only — exactly like an `ast.*` builder. (`core::type_info`
-            // is the same builtin in the reserved namespace.)
-            if (c.callee.kind == .ident and std.mem.eql(u8, c.callee.kind.ident, "type_info")) break :blk true;
-            if (c.callee.kind == .scope_access and isCoreNs(c.callee.kind.scope_access) and
-                std.mem.eql(u8, c.callee.kind.scope_access.member, "type_info")) break :blk true;
+            // NOTE: `type_info(T)` is NOT comptime-only — `materializeTypeInfo`
+            // lowers it to a real runtime `TypeInfo` value (the same machinery as
+            // `ast.*`), so `match type_info(T)` works at runtime (and folds when the
+            // type is constant). Only true `ast.*` builders (#quote) are comptime-only.
             if (exprHasQuote(c.callee.*)) break :blk true;
             for (c.args) |a| switch (a) {
                 .positional => |x| if (exprHasQuote(x)) break :blk true,

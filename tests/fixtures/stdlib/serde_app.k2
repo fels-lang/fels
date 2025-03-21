@@ -1,0 +1,82 @@
+// Reflection-driven JSON serialization + deserialization (std.serde). One generic
+// serializer and one generic parser walk any value via `type_info` + `Any` — no
+// per-type code. Returns 42 on success.
+
+#import std.heap as heap;
+#import std.serde as serde;
+
+Point  :: struct { x: i32, y: i32 }
+Player :: struct { name: []const u8, pos: Point, hp: u8, alive: bool }
+Wide   :: struct { a: u8, b: i16, c: u32, d: i64, e: bool, f: f64 }
+Nums   :: struct { vals: []i32, tag: []const u8 }
+Poly   :: struct { pts: []Point, n: u32 }
+Color  :: enum { Red, Green, Blue }
+Rich   :: struct { label: ?[]const u8, spot: ?Point, weight: ?f64, kind: Color, matrix: [][]i32 }
+
+streq :: fn(a: []const u8, b: []const u8) -> bool {
+    if a.len != b.len { return false; }
+    i: usize = 0usize;
+    while i < a.len {
+        if a[i] != b[i] { return false; }
+        i = i + 1usize;
+    }
+    return true;
+}
+
+#entry
+main :: fn() -> i32 {
+    a := heap::make();
+
+    // ── Serialize ────────────────────────────────────────────────────────────
+    p: Point = .{ 3, -4 };
+    if !streq(serde::to_json(Point, p, &a), "{\"x\":3,\"y\":-4}") { return 1; }
+
+    pl: Player = .{ "Mar\"io", .{ 10, 20 }, 100u8, true };
+    if !streq(serde::to_json(Player, pl, &a),
+        "{\"name\":\"Mar\\\"io\",\"pos\":{\"x\":10,\"y\":20},\"hp\":100,\"alive\":true}") { return 2; }
+
+    w: Wide = .{ 255u8, -3i16, 70000u32, -5000000000i64, false, 2.5f64 };
+    if !streq(serde::to_json(Wide, w, &a),
+        "{\"a\":255,\"b\":-3,\"c\":70000,\"d\":-5000000000,\"e\":false,\"f\":2.5}") { return 3; }
+
+    xs: [3]i32 = .{ 10, 20, 30 };
+    nv: Nums = .{ xs[0..3usize], "xs" };
+    if !streq(serde::to_json(Nums, nv, &a), "{\"vals\":[10,20,30],\"tag\":\"xs\"}") { return 4; }
+
+    // ── Deserialize + round-trip (parse → re-serialize must reproduce input) ──
+    rt_player: []const u8 = "{\"name\":\"Bowser\",\"pos\":{\"x\":-1,\"y\":2},\"hp\":250,\"alive\":false}";
+    if serde::from_json(Player, rt_player, &a) |q| {
+        if !streq(serde::to_json(Player, q, &a), rt_player) { return 5; }
+    } else { return 6; }
+
+    rt_nums: []const u8 = "{\"vals\":[1,2,3,4],\"tag\":\"v\"}";
+    if serde::from_json(Nums, rt_nums, &a) |q| {
+        if q.vals.len != 4usize { return 7; }
+        if !streq(serde::to_json(Nums, q, &a), rt_nums) { return 8; }
+    } else { return 9; }
+
+    rt_poly: []const u8 = "{\"pts\":[{\"x\":1,\"y\":2},{\"x\":3,\"y\":4}],\"n\":2}";
+    if serde::from_json(Poly, rt_poly, &a) |q| {
+        if q.pts[1].y != 4 { return 10; }
+        if !streq(serde::to_json(Poly, q, &a), rt_poly) { return 11; }
+    } else { return 12; }
+
+    // Unknown keys are skipped, not fatal.
+    extra: []const u8 = "{\"x\":7,\"junk\":[1,2],\"y\":9}";
+    if serde::from_json(Point, extra, &a) |q| {
+        if q.x != 7 { return 13; }
+        if q.y != 9 { return 14; }
+    } else { return 15; }
+
+    // Optionals (some + none, scalar + struct payloads), enum-as-string, and a
+    // nested `[][]i32` — full round-trip.
+    rt_rich: []const u8 =
+        "{\"label\":\"hi\",\"spot\":{\"x\":1,\"y\":2},\"weight\":null,\"kind\":\"Blue\",\"matrix\":[[1,2],[3]]}";
+    if serde::from_json(Rich, rt_rich, &a) |q| {
+        match q.kind { .Blue => {} else => return 16; }   // enum parsed correctly
+        if q.matrix[1][0] != 3 { return 17; }             // nested slice
+        if !streq(serde::to_json(Rich, q, &a), rt_rich) { return 18; }
+    } else { return 19; }
+
+    return 42;
+}
