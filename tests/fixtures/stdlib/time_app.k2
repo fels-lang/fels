@@ -1,0 +1,16 @@
+// std.time: UTC calendar (deterministic) + live wall/monotonic clocks. → 42 iff correct.
+#import std.time as time;
+#entry
+main :: fn() -> i32 {
+    ok: i32 = 0;
+    e := time::utc(0i64);              // 1970-01-01 00:00:00 Thu
+    if e.year == 1970i64 && e.month == 1u8 && e.day == 1u8 && e.weekday == 4u8 { ok = ok + 1; }
+    d := time::utc(1700000000i64);     // 2023-11-14 22:13:20 Tue
+    if d.year == 2023i64 && d.month == 11u8 && d.day == 14u8 { ok = ok + 1; }
+    if d.hour == 22u8 && d.minute == 13u8 && d.second == 20u8 && d.weekday == 2u8 { ok = ok + 1; }
+    if time::unix_seconds() > 1700000000i64 { ok = ok + 1; }
+    s := time::now(); time::sleep_ms(2u32);
+    if time::since_nanos(s) >= 0i64 && time::monotonic_millis() > 0u64 { ok = ok + 1; }
+    if ok == 5 { return 42; }
+    return ok;
+}

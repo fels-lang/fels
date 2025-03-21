@@ -1,9 +1,39 @@
 /// ModuleCg — owns the LLVM context, module, and builder for one compilation unit.
 const std = @import("std");
+const builtin = @import("builtin");
 const ir = @import("../../ir.zig");
 const llvm = @import("c_api.zig").llvm;
 const variants = @import("variants.zig");
 const abi = @import("abi.zig");
+
+/// Windows x64 stack-probe stub. LLVM emits `call __chkstk` in the prologue of any
+/// function whose frame exceeds one page (4 KiB); the CRT that normally supplies
+/// `__chkstk` isn't linked in K2's minimal-runtime setup, so we provide it. This is
+/// the standard probe-only routine (AT&T): it touches each page of the frame to
+/// grow the guard page correctly, preserves RAX/RCX, and lets the caller do the
+/// actual `sub rsp, rax`. Emitted weak so future multi-object links don't collide.
+const chkstk_x64_asm =
+    \\.weak __chkstk
+    \\__chkstk:
+    \\  push %rcx
+    \\  push %rax
+    \\  cmp $0x1000, %rax
+    \\  lea 24(%rsp), %rcx
+    \\  jb 1f
+    \\2:
+    \\  sub $0x1000, %rcx
+    \\  test %rcx, (%rcx)
+    \\  sub $0x1000, %rax
+    \\  cmp $0x1000, %rax
+    \\  ja 2b
+    \\1:
+    \\  sub %rax, %rcx
+    \\  test %rcx, (%rcx)
+    \\  pop %rax
+    \\  pop %rcx
+    \\  ret
+    \\
+;
 
 /// One entry in a struct's field table.
 pub const StructField = struct {
@@ -83,6 +113,8 @@ pub const ModuleCg = struct {
     pub fn init(allocator: std.mem.Allocator, module_name: [*:0]const u8) ModuleCg {
         const ctx = llvm.LLVMContextCreate();
         const mod = llvm.LLVMModuleCreateWithNameInContext(module_name, ctx);
+        if (builtin.target.os.tag == .windows and builtin.target.cpu.arch == .x86_64)
+            llvm.LLVMAppendModuleInlineAsm(mod, chkstk_x64_asm.ptr, chkstk_x64_asm.len);
         const builder = llvm.LLVMCreateBuilderInContext(ctx);
         return .{
             .allocator = allocator,

@@ -1,0 +1,23 @@
+// std.crypto: SHA-256 + CRC-32 + FNV-1a against known vectors. → 42 iff correct.
+#import std.heap as heap;
+#import std.crypto as crypto;
+#import std.strings.{ str_eq };
+#entry
+main :: fn() -> i32 {
+    a := heap::make();
+    ok: i32 = 0;
+    // SHA-256 vectors — multiple calls (regression for the .{} zero-init fix).
+    if str_eq(crypto::to_hex(&a, crypto::sha256("abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") { ok = ok + 1; }
+    if str_eq(crypto::to_hex(&a, crypto::sha256("")), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") { ok = ok + 1; }
+    if str_eq(crypto::to_hex(&a, crypto::sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")), "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1") { ok = ok + 1; }
+    // out-param form
+    buf: [32]u8 = .{};
+    crypto::sha256_into("abc", buf[0..32usize]);
+    if buf[0] == 0xbau8 && buf[31] == 0xadu8 { ok = ok + 1; }
+    // checksums
+    if crypto::crc32("123456789") == 0xcbf43926u32 { ok = ok + 1; }
+    if crypto::fnv1a_64("") == 0xcbf29ce484222325u64 { ok = ok + 1; }
+    if crypto::fnv1a_32("abc") == 0x1a47e90bu32 { ok = ok + 1; }
+    if ok == 7 { return 42; }
+    return ok;
+}

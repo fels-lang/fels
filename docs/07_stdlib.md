@@ -153,3 +153,61 @@ for_each := list::items(i32, &xs);  // []T view, valid until the next push/grow
 
 > `list::make` deliberately shares the name `make` with `heap::make`; calling both
 > from the same file is fine (the module system keeps them distinct).
+
+## General-purpose modules
+
+### `std.path`
+
+Filesystem path strings — pure manipulation, no I/O. Both `/` and `\` are accepted
+as separators; `join` writes the platform `SEP`. Query functions return sub-slices
+(no allocation); builders take an `*Arena`.
+
+```k2
+path::basename("a/b/c.txt")            // "c.txt"
+path::dirname ("a/b/c.txt")            // "a/b"   ("." when no separator)
+path::extension("c.txt")               // ".txt"  (with the dot; "" if none)
+path::stem("c.txt")                    // "c"
+path::is_absolute("/x")                // true (also "C:\…" and "\unc")
+path::has_extension("c.k2", "k2")      // true (leading dot optional)
+path::join(&a, "a/b", "c.txt")         // "a/b\c.txt"
+path::with_extension(&a, "c.txt", "md")// "c.md"
+```
+
+Invariant: `basename(p)` == `stem(p)` ++ `extension(p)`.
+
+### `std.time`
+
+Wall-clock time, a monotonic clock, sleeping, and a UTC calendar breakdown
+(Windows backend, kernel32).
+
+```k2
+secs := time::unix_seconds();          // i64 seconds since 1970-01-01 UTC
+ms   := time::unix_millis();
+dt   := time::utc(secs);               // DateTime { year, month, day, hour, minute, second, weekday }
+
+start := time::now();                  // monotonic Instant
+time::sleep_ms(16u32);
+ns := time::since_nanos(start);        // also since_millis / since_seconds
+boot := time::monotonic_millis();      // GetTickCount64, coarse monotonic
+```
+
+`utc` is exact for any time ≥ the epoch (Howard Hinnant's civil-from-days). `weekday`
+is `0`=Sunday … `6`=Saturday.
+
+### `std.crypto`
+
+Hashing and checksums — pure computation.
+
+```k2
+d := crypto::sha256("abc");                     // FIPS 180-4 SHA-256 → Digest
+h := crypto::to_hex(&a, d);                      // "ba7816bf8f01cfea…"
+
+buf: [32]u8 = .{};                               // or write into your own buffer
+crypto::sha256_into("abc", buf[0..32usize]);
+
+c := crypto::crc32("123456789");                // 0xcbf43926 (IEEE)
+k := crypto::fnv1a_64("key");                   // fast non-crypto hash (and fnv1a_32)
+```
+
+`sha256`/`sha256_into` match the standard test vectors. It's a software SHA-256 — fine
+for integrity/checksums and content addressing, not audited for adversarial use.

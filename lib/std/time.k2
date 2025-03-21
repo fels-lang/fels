@@ -1,0 +1,158 @@
+// std.time — wall-clock time, a monotonic clock, sleeping, and a UTC calendar
+// breakdown (Windows backend, kernel32).
+//
+//   secs := time::unix_seconds();          // seconds since 1970-01-01 UTC
+//   dt   := time::utc(secs);               // → DateTime { year, month, day, ... }
+//
+//   start := time::now();                  // monotonic Instant
+//   time::sleep_ms(16u32);
+//   ns := time::since_nanos(start);        // elapsed, never goes backwards
+//
+// Wall-clock values come from GetSystemTimePreciseAsFileTime; the monotonic
+// clock from QueryPerformanceCounter. The UTC breakdown is exact for any time
+// at or after the epoch (uses Howard Hinnant's civil-from-days algorithm).
+
+// ── kernel32 imports ──────────────────────────────────────────────────────
+
+// FILETIME is a 64-bit count of 100 ns ticks since 1601-01-01; we read it as a
+// single u64 (the struct is two little-endian u32s, i.e. exactly a u64).
+#extern("kernel32", "GetSystemTimePreciseAsFileTime")
+GetSystemTimePreciseAsFileTime :: fn(out: *u64);
+
+#extern("kernel32", "QueryPerformanceCounter")
+QueryPerformanceCounter :: fn(out: *i64) -> bool;
+
+#extern("kernel32", "QueryPerformanceFrequency")
+QueryPerformanceFrequency :: fn(out: *i64) -> bool;
+
+#extern("kernel32", "Sleep")
+Sleep :: fn(millis: u32);
+
+#extern("kernel32", "GetTickCount64")
+GetTickCount64 :: fn() -> u64;
+
+// ── Wall clock (Unix epoch) ─────────────────────────────────────────────────
+
+// 100 ns ticks between 1601-01-01 (FILETIME epoch) and 1970-01-01 (Unix epoch).
+EPOCH_DIFF_100NS :: 116444736000000000u64;
+
+filetime_now :: fn() -> u64 {
+    ft: u64 = 0u64;
+    GetSystemTimePreciseAsFileTime(&ft);
+    return ft;
+}
+
+// 100 ns ticks since the Unix epoch.
+unix_100ns :: fn() -> u64 {
+    return filetime_now() - EPOCH_DIFF_100NS;
+}
+
+// Whole seconds since 1970-01-01 00:00:00 UTC.
+pub unix_seconds :: fn() -> i64 { return (unix_100ns() / 10000000u64) as i64; }
+
+// Milliseconds since the Unix epoch.
+pub unix_millis :: fn() -> i64 { return (unix_100ns() / 10000u64) as i64; }
+
+// Nanoseconds since the Unix epoch (100 ns resolution from the OS clock).
+pub unix_nanos :: fn() -> i64 { return (unix_100ns() as i64) * 100i64; }
+
+// ── Monotonic clock ─────────────────────────────────────────────────────────
+
+// A point on the monotonic clock. Compare via `since_*`; never wall-time.
+pub Instant :: struct { ticks: i64 }
+
+raw_ticks :: fn() -> i64 {
+    t: i64 = 0i64;
+    QueryPerformanceCounter(&t);
+    return t;
+}
+
+raw_freq :: fn() -> i64 {
+    f: i64 = 1i64;
+    QueryPerformanceFrequency(&f);
+    return f;
+}
+
+// Capture the current monotonic instant.
+pub now :: fn() -> Instant { r: Instant = .{ raw_ticks() }; return r; }
+
+// Convert an elapsed tick delta to nanoseconds without overflowing: split into
+// whole-second and remainder parts (the remainder is < 1 s, so `* 1e9` is safe).
+ticks_to_nanos :: fn(delta: i64) -> i64 {
+    f := raw_freq();
+    return (delta / f) * 1000000000i64 + ((delta % f) * 1000000000i64) / f;
+}
+
+// Nanoseconds elapsed since `start` (monotonic — never negative for `start`
+// captured in the past).
+pub since_nanos :: fn(start: Instant) -> i64 { return ticks_to_nanos(raw_ticks() - start.ticks); }
+
+// Milliseconds elapsed since `start`.
+pub since_millis :: fn(start: Instant) -> i64 { return since_nanos(start) / 1000000i64; }
+
+// Fractional seconds elapsed since `start`.
+pub since_seconds :: fn(start: Instant) -> f64 {
+    return (since_nanos(start) as f64) / 1000000000.0;
+}
+
+// Milliseconds since system boot (coarse, monotonic — handy for frame timing).
+pub monotonic_millis :: fn() -> u64 { return GetTickCount64(); }
+
+// Suspend the current thread for at least `millis` milliseconds.
+pub sleep_ms :: fn(millis: u32) { Sleep(millis); }
+
+// ── UTC calendar breakdown ──────────────────────────────────────────────────
+
+// A broken-down UTC date and time. `weekday` is 0=Sunday … 6=Saturday.
+pub DateTime :: struct {
+    year:    i64,
+    month:   u8,   // 1–12
+    day:     u8,   // 1–31
+    hour:    u8,   // 0–23
+    minute:  u8,   // 0–59
+    second:  u8,   // 0–59
+    weekday: u8,   // 0=Sun … 6=Sat
+}
+
+// Floor-divide (rounds toward −∞), so pre-epoch times still break down correctly.
+fdiv :: fn(a: i64, b: i64) -> i64 {
+    q: i64 = a / b;
+    if (a % b != 0i64) && ((a < 0i64) != (b < 0i64)) { return q - 1i64; }
+    return q;
+}
+
+// Break `secs` (seconds since the Unix epoch) into its UTC components.
+pub utc :: fn(secs: i64) -> DateTime {
+    days:    i64 = fdiv(secs, 86400i64);
+    rem:     i64 = secs - days * 86400i64;   // 0 … 86399 (floor-correct)
+
+    // Howard Hinnant's civil-from-days: shift the epoch to 0000-03-01.
+    z:   i64 = days + 719468i64;
+    era: i64 = fdiv(z, 146097i64);
+    doe: i64 = z - era * 146097i64;                                  // 0 … 146096
+    yoe: i64 = (doe - doe / 1460i64 + doe / 36524i64 - doe / 146096i64) / 365i64; // 0 … 399
+    y:   i64 = yoe + era * 400i64;
+    doy: i64 = doe - (365i64 * yoe + yoe / 4i64 - yoe / 100i64);     // 0 … 365
+    mp:  i64 = (5i64 * doy + 2i64) / 153i64;                         // 0 … 11
+    d:   i64 = doy - (153i64 * mp + 2i64) / 5i64 + 1i64;             // 1 … 31
+    m:   i64 = mp + 3i64;
+    if mp >= 10i64 { m = mp - 9i64; }
+    if m <= 2i64 { y = y + 1i64; }
+
+    wd: i64 = fdiv(days + 4i64, 7i64);                              // 1970-01-01 = Thursday
+    weekday: i64 = days + 4i64 - wd * 7i64;
+
+    out: DateTime = .{
+        y,
+        m as u8,
+        d as u8,
+        (rem / 3600i64) as u8,
+        ((rem / 60i64) % 60i64) as u8,
+        (rem % 60i64) as u8,
+        weekday as u8,
+    };
+    return out;
+}
+
+// `utc(unix_seconds())` — the current UTC date and time.
+pub now_utc :: fn() -> DateTime { return utc(unix_seconds()); }

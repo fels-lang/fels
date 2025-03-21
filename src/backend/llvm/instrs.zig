@@ -1235,26 +1235,47 @@ fn lowerCompoundLiteral(
 ) ?llvm.LLVMValueRef {
     switch (ty) {
         .array => |arr| {
+            // The literal supplies the first `n` elements; the REST are zero-filled
+            // to the array's declared length. `.{}` therefore zero-inits the whole
+            // array (and a partial `.{ a, b }` zeroes the tail) — building only
+            // `args.len` elements (the old behavior) produced a `[0 x T]` for `.{}`
+            // / left the tail undef, so a stale stack slot leaked through (e.g. a
+            // SHA-256 padding buffer not actually cleared on reuse).
             const elem_lty = types.lower(cg, arr.elem.*);
-            const vals = cg.allocator.alloc(llvm.LLVMValueRef, args.len) catch return null;
-            defer cg.allocator.free(vals);
-            for (args, 0..) |arg, i| vals[i] = resolveVal(cg, fncg, arg, arr.elem.*);
-            // Try to build a constant array; fall back to insertvalue chain.
-            const const_arr = llvm.LLVMConstArray2(elem_lty, vals.ptr, @intCast(vals.len));
-            if (const_arr != null) return const_arr;
-            // Non-constant: build via insertvalue.
+            const total: usize = arr.len;
+            const n = @min(args.len, total);
+
+            const provided = cg.allocator.alloc(llvm.LLVMValueRef, n) catch return null;
+            defer cg.allocator.free(provided);
+            var all_const = true;
+            for (0..n) |i| {
+                provided[i] = resolveVal(cg, fncg, args[i], arr.elem.*);
+                if (llvm.LLVMIsConstant(provided[i]) == 0) all_const = false;
+            }
+
+            if (all_const) {
+                const full = cg.allocator.alloc(llvm.LLVMValueRef, total) catch return null;
+                defer cg.allocator.free(full);
+                const zero = llvm.LLVMConstNull(elem_lty);
+                for (0..total) |i| full[i] = if (i < n) provided[i] else zero;
+                return llvm.LLVMConstArray2(elem_lty, full.ptr, @intCast(total));
+            }
+
+            // Non-constant elements: start from a fully zeroed array and insert the
+            // provided ones, so the unwritten tail stays zero (not undef).
             const arr_ty = types.lower(cg, ty);
-            var agg = llvm.LLVMGetUndef(arr_ty);
-            for (vals, 0..) |v, i| {
-                const idx: u32 = @intCast(i);
-                agg = llvm.LLVMBuildInsertValue(cg.builder, agg, v, idx, "");
+            var agg = llvm.LLVMConstNull(arr_ty);
+            for (0..n) |i| {
+                agg = llvm.LLVMBuildInsertValue(cg.builder, agg, provided[i], @intCast(i), "");
             }
             return agg;
         },
         .struct_type => |name| {
             const struct_lty = cg.struct_types.get(name) orelse return null;
             const fields = cg.struct_fields.get(name) orelse return null;
-            var agg = llvm.LLVMGetUndef(struct_lty);
+            // Start zeroed so any field the literal omits (`.{}`, partial `.{ a }`)
+            // is zero rather than undef — same fix as the array case above.
+            var agg = llvm.LLVMConstNull(struct_lty);
             const n = @min(args.len, fields.len);
             for (0..n) |i| {
                 const v = resolveVal(cg, fncg, args[i], fields[i].ir_ty);

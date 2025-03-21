@@ -1608,6 +1608,63 @@ fn compileFileAndRun(allocator: std.mem.Allocator, file_name: []const u8, label:
     };
 }
 
+test "exe: std.path / std.time / std.crypto run correctly cross-module" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Each fixture self-checks its module's API and returns 42 iff all correct
+    // (path: query/join; time: UTC calendar + live clocks; crypto: crc32/fnv).
+    inline for (.{
+        .{ "tests/fixtures/stdlib/path_app.k2", "exe_path_app" },
+        .{ "tests/fixtures/stdlib/time_app.k2", "exe_time_app" },
+        .{ "tests/fixtures/stdlib/crypto_app.k2", "exe_crypto_app" },
+    }) |c| {
+        const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);
+        try std.testing.expectEqual(@as(u32, 42), code);
+    }
+}
+
+test "exe: `[N]T = .{}` actually zero-inits the whole array (issue #7)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `.{}` used to lower to a zero-length array store (the backend built a
+    // `[0 x T]` from the literal's arg count), so the array kept whatever was on
+    // the stack. `dirty` fills a frame with 0xff; `check` must then see all zeros.
+    const code = try compileAndRun(arena.allocator(),
+        \\dirty :: fn() -> u32 {
+        \\    a: [128]u8 = .{};
+        \\    i: usize = 0usize; while i < 128usize { a[i] = 0xffu8; i = i + 1usize; }
+        \\    s: u32 = 0u32; i = 0usize; while i < 128usize { s = s +% (a[i] as u32); i = i + 1usize; }
+        \\    return s;
+        \\}
+        \\check :: fn() -> u32 {
+        \\    a: [128]u8 = .{};
+        \\    s: u32 = 0u32; i: usize = 0usize; while i < 128usize { s = s +% (a[i] as u32); i = i + 1usize; }
+        \\    return s;
+        \\}
+        \\main :: fn() -> i32 { _ := dirty(); return check() as i32; }
+    , "exe_zero_init");
+    try std.testing.expectEqual(@as(u32, 0), code);
+}
+
+test "exe: a large stack frame links and runs (provides __chkstk)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // An 8 KiB stack frame exceeds one page, so LLVM emits a `__chkstk` probe.
+    // The CRT-less link supplies its own `__chkstk` (module inline asm), so this
+    // both links and runs correctly.
+    const code = try compileAndRun(arena.allocator(),
+        \\f :: fn(x: u32) -> u32 { w: [2048]u32 = .{}; w[0] = x; w[2047] = x + 1u32; return w[0] + w[2047]; }
+        \\main :: fn() -> i32 { return f(20u32) as i32; }
+    , "exe_big_frame");
+    try std.testing.expectEqual(@as(u32, 41), code);
+}
+
 test "exe: std.list works cross-module (issue #6 + generic collision/realloc fixes)" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

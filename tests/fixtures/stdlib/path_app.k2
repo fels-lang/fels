@@ -1,0 +1,23 @@
+// std.path: pure path string manipulation. Returns 42 iff every query is correct.
+#import std.heap as heap;
+#import std.path as path;
+#import std.strings.{ str_eq };
+#entry
+main :: fn() -> i32 {
+    a := heap::make();
+    ok: i32 = 0;
+    if str_eq(path::basename("a/b/c.txt"), "c.txt") { ok = ok + 1; }
+    if str_eq(path::dirname("a/b/c.txt"), "a/b") { ok = ok + 1; }
+    if str_eq(path::extension("c.txt"), ".txt") { ok = ok + 1; }
+    if str_eq(path::stem("c.txt"), "c") { ok = ok + 1; }
+    if path::extension("README").len == 0usize { ok = ok + 1; }
+    if str_eq(path::dirname("noslash"), ".") { ok = ok + 1; }
+    if path::is_absolute("/x") && !path::is_absolute("x/y") && path::is_absolute("C:foo") { ok = ok + 1; }
+    if path::has_extension("c.txt", "txt") && path::has_extension("c.txt", ".txt") { ok = ok + 1; }
+    jp := path::join(&a, "a/b", "c.txt");
+    if jp.len == 9usize && str_eq(path::basename(jp), "c.txt") && jp[3] == 92u8 { ok = ok + 1; }
+    if str_eq(path::with_extension(&a, "c.txt", "md"), "c.md") { ok = ok + 1; }
+    if str_eq(path::extension(".gitignore"), "") { ok = ok + 1; }
+    if ok == 11 { return 42; }
+    return ok;
+}

@@ -383,6 +383,21 @@ test "modules: game stdlib (std.math + std.rand + std.color) resolves and lowers
     try k2.ir_mod.validateModule(module);
 }
 
+test "modules: general stdlib (std.path + std.time + std.crypto) resolves and lowers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    inline for (.{
+        "tests/fixtures/stdlib/path_app.k2",
+        "tests/fixtures/stdlib/time_app.k2",
+        "tests/fixtures/stdlib/crypto_app.k2",
+    }) |fixture| {
+        var fe = try k2.compileFileWithRuntime(arena.allocator(), std.testing.io, fixture);
+        defer fe.deinit(arena.allocator());
+        const module = try k2.lowerFrontend(arena.allocator(), fe);
+        try k2.ir_mod.validateModule(module);
+    }
+}
+
 test "modules: configured std root loads std.heap" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

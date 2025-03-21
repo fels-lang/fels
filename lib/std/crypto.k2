@@ -1,0 +1,190 @@
+// std.crypto — hashing and checksums (pure computation, no I/O).
+//
+//   d := crypto::sha256("abc");                   // → Digest (32 bytes)
+//   h := crypto::to_hex(&a, d);                   // "ba7816bf8f01cfea…"
+//   crypto::sha256_into("abc", buf[0..32usize]);  // or write into your own buffer
+//   c := crypto::crc32("123456789");              // 0xcbf43926
+//   k := crypto::fnv1a_64("key");                 // fast non-crypto hash for tables
+//
+// SHA-256 follows FIPS 180-4 and matches the standard test vectors. The hot
+// arithmetic uses the wrapping operators (`+%`, `*%`, `-%`) since every add is
+// mod 2^32 / 2^64. It's a from-scratch software implementation — fine for
+// integrity/checksums and content addressing, not audited for adversarial use.
+
+#import std.heap.{ Arena };
+#import std.strings as strings;
+
+// ── FNV-1a (fast, non-cryptographic — hash maps, content keys) ───────────────
+
+pub fnv1a_64 :: fn(data: []const u8) -> u64 {
+    h: u64 = 0xcbf29ce484222325u64;
+    i: usize = 0usize;
+    while i < data.len {
+        h = (h ^ (data[i] as u64)) *% 0x100000001b3u64;
+        i = i + 1usize;
+    }
+    return h;
+}
+
+pub fnv1a_32 :: fn(data: []const u8) -> u32 {
+    h: u32 = 0x811c9dc5u32;
+    i: usize = 0usize;
+    while i < data.len {
+        h = (h ^ (data[i] as u32)) *% 0x01000193u32;
+        i = i + 1usize;
+    }
+    return h;
+}
+
+// ── CRC-32 (IEEE 802.3, the zip/png polynomial) ──────────────────────────────
+
+// Bitwise (table-free) CRC-32. `crc32("123456789")` == 0xcbf43926.
+pub crc32 :: fn(data: []const u8) -> u32 {
+    crc: u32 = 0xffffffffu32;
+    i: usize = 0usize;
+    while i < data.len {
+        crc = crc ^ (data[i] as u32);
+        b: usize = 0usize;
+        while b < 8usize {
+            mask: u32 = 0u32 -% (crc & 1u32);          // 0xffffffff if low bit set
+            crc = (crc >> 1u32) ^ (0xedb88320u32 & mask);
+            b = b + 1usize;
+        }
+        i = i + 1usize;
+    }
+    return crc ^ 0xffffffffu32;
+}
+
+// ── SHA-256 (FIPS 180-4) ─────────────────────────────────────────────────────
+
+// Digest length in bytes — `sha256_into`'s `out` must be at least this long.
+pub SHA256_LEN :: 32usize;
+
+// A 256-bit digest. Render with `to_hex`, or read `.bytes` directly.
+pub Digest :: struct { bytes: [32]u8 }
+
+rotr :: fn(x: u32, n: u32) -> u32 { return (x >> n) | (x << (32u32 - n)); }
+
+// Mix one 64-byte block `blk` into the running state `h` (8 words), using the
+// round-constant table `k`.
+sha256_block :: fn(blk: []const u8, h: []u32, k: []const u32) {
+    w: [64]u32 = .{};
+    t: usize = 0usize;
+    while t < 16usize {
+        o: usize = t * 4usize;
+        w[t] = ((blk[o] as u32) << 24u32) | ((blk[o + 1usize] as u32) << 16u32)
+             | ((blk[o + 2usize] as u32) << 8u32) | (blk[o + 3usize] as u32);
+        t = t + 1usize;
+    }
+    t = 16usize;
+    while t < 64usize {
+        x15: u32 = w[t - 15usize];
+        x2:  u32 = w[t - 2usize];
+        s0: u32 = rotr(x15, 7u32) ^ rotr(x15, 18u32) ^ (x15 >> 3u32);
+        s1: u32 = rotr(x2, 17u32) ^ rotr(x2, 19u32) ^ (x2 >> 10u32);
+        w[t] = w[t - 16usize] +% s0 +% w[t - 7usize] +% s1;
+        t = t + 1usize;
+    }
+
+    a: u32 = h[0]; b: u32 = h[1]; c: u32 = h[2]; d: u32 = h[3];
+    e: u32 = h[4]; f: u32 = h[5]; g: u32 = h[6]; hh: u32 = h[7];
+    t = 0usize;
+    while t < 64usize {
+        s1: u32 = rotr(e, 6u32) ^ rotr(e, 11u32) ^ rotr(e, 25u32);
+        ch: u32 = (e & f) ^ ((~e) & g);
+        t1: u32 = hh +% s1 +% ch +% k[t] +% w[t];
+        s0: u32 = rotr(a, 2u32) ^ rotr(a, 13u32) ^ rotr(a, 22u32);
+        maj: u32 = (a & b) ^ (a & c) ^ (b & c);
+        t2: u32 = s0 +% maj;
+        hh = g; g = f; f = e; e = d +% t1; d = c; c = b; b = a; a = t1 +% t2;
+        t = t + 1usize;
+    }
+
+    h[0] = h[0] +% a; h[1] = h[1] +% b; h[2] = h[2] +% c; h[3] = h[3] +% d;
+    h[4] = h[4] +% e; h[5] = h[5] +% f; h[6] = h[6] +% g; h[7] = h[7] +% hh;
+}
+
+// Write the 32-byte SHA-256 digest of `data` into `out` (which must be at least
+// `SHA256_LEN` bytes). Out-param form — the caller owns the buffer:
+//   d: [32]u8 = .{};
+//   crypto::sha256_into(msg, d[0..32usize]);
+//   hex := crypto::hex(&a, d[0..32usize]);
+pub sha256_into :: fn(data: []const u8, out: []u8) {
+    h: [8]u32 = .{
+        0x6a09e667u32, 0xbb67ae85u32, 0x3c6ef372u32, 0xa54ff53au32,
+        0x510e527fu32, 0x9b05688cu32, 0x1f83d9abu32, 0x5be0cd19u32,
+    };
+    k: [64]u32 = .{
+        0x428a2f98u32, 0x71374491u32, 0xb5c0fbcfu32, 0xe9b5dba5u32, 0x3956c25bu32, 0x59f111f1u32, 0x923f82a4u32, 0xab1c5ed5u32,
+        0xd807aa98u32, 0x12835b01u32, 0x243185beu32, 0x550c7dc3u32, 0x72be5d74u32, 0x80deb1feu32, 0x9bdc06a7u32, 0xc19bf174u32,
+        0xe49b69c1u32, 0xefbe4786u32, 0x0fc19dc6u32, 0x240ca1ccu32, 0x2de92c6fu32, 0x4a7484aau32, 0x5cb0a9dcu32, 0x76f988dau32,
+        0x983e5152u32, 0xa831c66du32, 0xb00327c8u32, 0xbf597fc7u32, 0xc6e00bf3u32, 0xd5a79147u32, 0x06ca6351u32, 0x14292967u32,
+        0x27b70a85u32, 0x2e1b2138u32, 0x4d2c6dfcu32, 0x53380d13u32, 0x650a7354u32, 0x766a0abbu32, 0x81c2c92eu32, 0x92722c85u32,
+        0xa2bfe8a1u32, 0xa81a664bu32, 0xc24b8b70u32, 0xc76c51a3u32, 0xd192e819u32, 0xd6990624u32, 0xf40e3585u32, 0x106aa070u32,
+        0x19a4c116u32, 0x1e376c08u32, 0x2748774cu32, 0x34b0bcb5u32, 0x391c0cb3u32, 0x4ed8aa4au32, 0x5b9cca4fu32, 0x682e6ff3u32,
+        0x748f82eeu32, 0x78a5636fu32, 0x84c87814u32, 0x8cc70208u32, 0x90befffau32, 0xa4506cebu32, 0xbef9a3f7u32, 0xc67178f2u32,
+    };
+
+    full: usize = data.len / 64usize;
+    b: usize = 0usize;
+    while b < full {
+        sha256_block(data[(b * 64usize)..((b * 64usize) + 64usize)], h[0..8usize], k[0..64usize]);
+        b = b + 1usize;
+    }
+
+    // Final padded block(s) in a zeroed stack buffer (one block, or two when the
+    // remaining bytes leave no room for the 64-bit length).
+    rem: usize = data.len - full * 64usize;
+    tail: [128]u8 = .{};
+    i: usize = 0usize;
+    while i < rem { tail[i] = data[full * 64usize + i]; i = i + 1usize; }
+    tail[rem] = 0x80u8;
+
+    nblk: usize = 1usize;
+    if rem >= 56usize { nblk = 2usize; }
+    end: usize = nblk * 64usize;
+
+    bits: u64 = (data.len as u64) * 8u64;
+    j: usize = 0usize;
+    while j < 8usize {
+        sh: u64 = (j as u64) * 8u64;
+        tail[end - 1usize - j] = ((bits >> sh) & 0xffu64) as u8;
+        j = j + 1usize;
+    }
+
+    sha256_block(tail[0..64usize], h[0..8usize], k[0..64usize]);
+    if nblk == 2usize { sha256_block(tail[64usize..128usize], h[0..8usize], k[0..64usize]); }
+
+    o: usize = 0usize;
+    while o < 8usize {
+        v: u32 = h[o];
+        out[o * 4usize]          = (v >> 24u32) as u8;
+        out[o * 4usize + 1usize] = (v >> 16u32) as u8;
+        out[o * 4usize + 2usize] = (v >> 8u32) as u8;
+        out[o * 4usize + 3usize] = v as u8;
+        o = o + 1usize;
+    }
+}
+
+// One-shot SHA-256 of `data`, returned as a `Digest`.
+pub sha256 :: fn(data: []const u8) -> Digest {
+    d: Digest = .{ .{} };
+    sha256_into(data, d.bytes[0..32usize]);
+    return d;
+}
+
+// Lowercase hex of a byte slice (2 characters per byte).
+pub hex :: fn(a: *Arena, bytes: []const u8) -> []const u8 {
+    sb := strings::builder(a);
+    i: usize = 0usize;
+    while i < bytes.len {
+        strings::append_hex_byte(&sb, bytes[i]);
+        i = i + 1usize;
+    }
+    return strings::str(&sb);
+}
+
+// Lowercase hex of a digest (64 characters) — `hex(a, d.bytes[0..32])`.
+pub to_hex :: fn(a: *Arena, d: Digest) -> []const u8 {
+    return hex(a, d.bytes[0..32usize]);
+}
