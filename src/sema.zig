@@ -3764,13 +3764,17 @@ const Checker = struct {
                     const sym_id = self.symbols.resolveVisible(decl.file_name, decl.name) orelse continue;
                     if (sym_id != inst.sym_id) continue;
 
-                    // Swap in a fresh expr_types for this instantiation
+                    // Swap in a fresh expr_types for this instantiation.
+                    // NOTE: `checkFunction` may discover further instantiations (generic
+                    // calls in the body) and append them to `generic_instantiations`,
+                    // reallocating it and dangling the `inst` pointer. So write the
+                    // grown map back by INDEX, not through `inst`.
                     const saved = self.env.expr_types;
                     self.env.expr_types = inst.expr_types;
                     self.current_type_binding = inst.type_args;
                     self.current_inst_span = inst.origin_span;
                     defer {
-                        inst.expr_types = self.env.expr_types;
+                        self.env.generic_instantiations.items[inst_idx].expr_types = self.env.expr_types;
                         self.env.expr_types = saved;
                         self.current_type_binding = &.{};
                         self.current_inst_span = null;
@@ -3865,10 +3869,18 @@ const Checker = struct {
 
         const saved_binding = self.current_type_binding;
         const saved_params = self.current_type_params;
+        // Field type names (e.g. `arena: *Arena`) must resolve in the TEMPLATE's file
+        // context, not the call site's. A caller that imports the field's type under a
+        // namespace alias (`heap::Arena`) — or not at all — has no bare `Arena` in scope,
+        // so resolving against the call site would spuriously fail and leave the return
+        // type an uncollapsed `generic_app`.
+        const saved_file = self.file;
         defer {
             self.current_type_binding = saved_binding;
             self.current_type_params = saved_params;
+            self.file = saved_file;
         }
+        self.file = self.symbols.symbol(template_id).file_name;
         var binding = std.ArrayList(TypeArg).empty;
         defer binding.deinit(self.allocator);
         for (strukt.type_params, arg_tys) |tp_name, arg_ty| {

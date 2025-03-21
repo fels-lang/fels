@@ -1,0 +1,43 @@
+// Cross-module exercise of std.list (generic `List(T)` on an Arena) — regression
+// coverage for issue #6 and the surrounding generic/collision fixes:
+//   * a generic STRUCT instantiated across a module boundary substitutes its
+//     field type params (`data: []T` → `[]i32`, `value`-style scalar fields),
+//   * `list::make` colliding with `heap::make` (same bare name in two modules)
+//     routes to the right function and doesn't corrupt sibling generic bodies,
+//   * field type names in the template (`arena: *Arena`) resolve in the module
+//     that DEFINES `List`, even though the caller imports `Arena` as `heap::Arena`.
+// Returns 42 iff every operation produced the expected value (exit codes are
+// 8-bit, so we self-check rather than returning a large running total).
+#import std.heap as heap;
+#import std.list as list;
+
+#entry
+main :: fn() -> i32 {
+    a := heap::make();
+    ok: i32 = 0;
+
+    xs := list::make(i32, &a);
+    i: i32 = 0;
+    while i < 10 { list::push(i32, &xs, i * i); i = i + 1; }   // grows past initial cap 4
+    if list::len(i32, &xs) == 10usize { ok = ok + 1; }
+
+    sum: i32 = 0;
+    j: usize = 0usize;
+    while j < list::len(i32, &xs) { sum = sum + list::get(i32, &xs, j); j = j + 1usize; }
+    if sum == 285 { ok = ok + 1; }                            // 0+1+4+...+81
+
+    if list::get(i32, &xs, 9usize) == 81 { ok = ok + 1; }     // survives the grows
+    list::remove_swap(i32, &xs, 0usize);                      // O(1) removal → xs[0] = last = 81
+    if list::get(i32, &xs, 0usize) == 81 { ok = ok + 1; }
+    if list::pop(i32, &xs) == 64 { ok = ok + 1; }             // was xs[8]
+    if list::len(i32, &xs) == 8usize { ok = ok + 1; }
+
+    // a second, independent List(T) + the items() slice view
+    ys := list::with_cap(i32, &a, 2usize);
+    list::push(i32, &ys, 5); list::push(i32, &ys, 7);
+    sl := list::items(i32, &ys);
+    if sl.len == 2usize && sl[0] + sl[1] == 12 { ok = ok + 1; }
+
+    if ok == 7 { return 42; }
+    return ok;
+}

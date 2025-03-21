@@ -1568,3 +1568,78 @@ test "exe: a `#compiler` hook REPLACES an existing decl by name (R1b-B)" {
     , "exe_hook_replace");
     try std.testing.expectEqual(@as(u32, 42), code);
 }
+
+/// Compile a K2 source FILE (resolving its `#import`s from disk) to an exe and
+/// return its exit code. Unlike `compileAndRun`, this exercises cross-module
+/// lowering (the std library, user modules, …).
+fn compileFileAndRun(allocator: std.mem.Allocator, file_name: []const u8, label: []const u8) !u32 {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    const obj_path = try std.fmt.allocPrint(allocator, ".zig-cache/{s}.o", .{label});
+    defer allocator.free(obj_path);
+    const exe_path = try std.fmt.allocPrint(allocator, ".zig-cache/{s}.exe", .{label});
+    defer allocator.free(exe_path);
+
+    const lib_path = k2.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (lib_path.len > 0) &.{lib_path} else &.{};
+    try k2.compileFileWithLlvm(allocator, io, .{
+        .file_name = file_name,
+        .source = "",
+        .obj_path = obj_path,
+        .exe_path = exe_path,
+        .opt_level = 2,
+        .llvm_bin = k2.llvm_path ++ "/bin",
+        .lib_paths = lib_paths,
+    });
+
+    const exe_argv = [_][]const u8{exe_path};
+    var child = std.process.spawn(io, .{
+        .argv = &exe_argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.SkipZigTest;
+    const term = child.wait(io) catch return 255;
+    return switch (term) {
+        .exited => |code| @intCast(code),
+        else => 255,
+    };
+}
+
+test "exe: std.list works cross-module (issue #6 + generic collision/realloc fixes)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The fixture self-checks every list op and returns 42 iff all are correct.
+    // Exercises: a generic struct instantiated across a module boundary (#6),
+    // `list::make` colliding with `heap::make`, and field types resolving in the
+    // module that defines `List`.
+    const code = try compileFileAndRun(
+        arena.allocator(),
+        "tests/fixtures/stdlib/list_app.k2",
+        "exe_list_app",
+    );
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: generic struct built inside a generic body resolves the concrete instance (issue #6)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression for issue #6: a `Box(T)` constructed/read inside an INSTANTIATED
+    // generic body must lower to the concrete instance `Box__T_i32` (field
+    // `value: i32`), not the template `Box` (whose `T`-typed field is opaque).
+    // Before the fix this emitted `insertvalue %Box undef, i32 %v, 0` (invalid) /
+    // a `ptr`-indexed GEP and failed LLVM verification.
+    const code = try compileAndRun(arena.allocator(),
+        \\Box :: struct($T: type) { value: T }
+        \\box_make :: fn($T: type, v: T) -> Box(T) { r: Box(T) = .{ v }; return r; }
+        \\box_get  :: fn($T: type, b: *Box(T)) -> T { return b.value; }
+        \\main :: fn() -> i32 { b := box_make(i32, 42); return box_get(i32, &b); }
+    , "exe_generic_struct_instance");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}

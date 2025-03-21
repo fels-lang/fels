@@ -746,7 +746,12 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
             switch (item) {
                 .function => |decl| {
                     if (decl.type_params.len == 0) continue;
-                    const sym_id = front_end.symbols.resolve(front_end.symbols.root_scope, decl.name) orelse continue;
+                    // File-aware resolution: the root scope is keyed by *link_name*, so
+                    // a bare `resolve(root, decl.name)` misses (or mis-resolves) a
+                    // collision-mangled decl — e.g. `make` declared in two modules. Match
+                    // the instantiation's owning decl exactly, mirroring sema's
+                    // `checkGenericInstantiation`.
+                    const sym_id = front_end.symbols.resolveVisible(decl.file_name, decl.name) orelse continue;
                     if (sym_id != inst.sym_id) continue;
                     // `where { … }` predicates are evaluated during *resolution*
                     // (sema's two-pass rail) — a rejected instantiation never
@@ -1319,7 +1324,6 @@ fn lowerFunctionInstantiation(
             .ty = lowerTypeWithBindingAndSymbols(allocator, param.ty, type_args, types, symbols) catch .unknown,
         });
     }
-
     const ret_ty = lowerTypeWithBindingAndSymbols(allocator, decl.return_ty, type_args, types, symbols) catch .unknown;
 
     const blocks = if (decl.body) |body| blk: {
@@ -1382,6 +1386,42 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
             .elem = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, arr.inner.*, binding, types, symbols)),
             .len = parseArrayLen(arr.len.*),
         } },
+        // `Box(T)` inside an instantiated generic body must resolve to the concrete
+        // INSTANCE (`Box__T_i32`), not the template `Box` (whose `T`-typed fields are
+        // opaque → invalid insertvalue / GEP). Mangle exactly like sema's
+        // `instantiateConcrete`: name + `__<param>_<tyMangle(arg)>` per type param,
+        // resolving each arg through the binding.
+        .generic_inst => |gi| {
+            const tmpl = types.generic_struct_templates.get(gi.name) orelse return lowerType(allocator, ty);
+            const tparams = switch (tmpl.kind) {
+                .struct_type => |s| s.type_params,
+                else => return lowerType(allocator, ty),
+            };
+            if (gi.args.len != tparams.len) return lowerType(allocator, ty);
+            var buf: std.ArrayList(u8) = .empty;
+            errdefer buf.deinit(allocator);
+            try buf.appendSlice(allocator, gi.name);
+            for (tparams, gi.args) |pname, arg_ref| {
+                const arg_name = switch (arg_ref) {
+                    .type_param => |t| t.name,
+                    .named => |n| n.name,
+                    else => return lowerType(allocator, ty),
+                };
+                var found: ?sema.Ty = null;
+                for (binding) |b| {
+                    if (std.mem.eql(u8, b.name, arg_name)) {
+                        found = b.ty;
+                        break;
+                    }
+                }
+                const aty = found orelse return lowerType(allocator, ty); // concrete arg → keep old path
+                try buf.appendSlice(allocator, "__");
+                try buf.appendSlice(allocator, pname);
+                try buf.append(allocator, '_');
+                try buf.appendSlice(allocator, sema.tyMangle(aty));
+            }
+            return .{ .struct_type = try buf.toOwnedSlice(allocator) };
+        },
         else => return lowerType(allocator, ty),
     }
 }

@@ -1,10 +1,5 @@
 // std.list — a growable array `List(T)` backed by an `Arena`.
 //
-// ⚠ KNOWN LIMITATION (issue #6): generic STRUCTS instantiated across a module
-// boundary don't yet lower correctly, so importing this module fails at codegen.
-// The design below is correct and works when the same `List(T)` is defined in the
-// file that uses it (copy this pattern inline meanwhile). Re-enable once #6 lands.
-//
 // Built for games: allocate a persistent world arena once, store your entities /
 // projectiles / particles in `List`s, and `reset` the arena between levels. No
 // per-element frees — the arena owns everything.
