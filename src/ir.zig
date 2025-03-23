@@ -761,10 +761,11 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                     // is kept for the VM cache (cvm == null) but excluded from the
                     // final runtime module (cvm != null) — its body can't lower to LLVM.
                     if (cvm != null and fnIsComptimeOnly(decl)) continue;
-                    if (std.mem.indexOf(u8, inst.mangled_name, "bdot") != null or std.mem.indexOf(u8, inst.mangled_name, "bget") != null)
-                        std.debug.print("[INSTDBG] {s}  type_args[0]={s}\n", .{ inst.mangled_name, if (inst.type_args.len > 0) @tagName(inst.type_args[0].ty) else "<none>" });
                     var inst_types = front_end.types;
                     inst_types.expr_types = inst.expr_types;
+                    // Per-instantiation generic-callee names: the same call node maps
+                    // to a different concrete callee in each instantiation.
+                    inst_types.generic_call_insts = inst.call_insts;
                     try functions.append(allocator, try lowerFunctionInstantiation(
                         allocator,
                         inst_types,

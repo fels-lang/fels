@@ -518,6 +518,11 @@ pub const GenericInstantiation = struct {
     type_args: []const TypeArg,
     /// Per-instantiation expression types filled during checkGenericInstantiation.
     expr_types: std.AutoHashMap(NodeId, Ty),
+    /// Per-instantiation generic-callee mangled names. The SAME call node in a
+    /// generic body (`bget(T, …)`) resolves to a different concrete instantiation
+    /// in each parent instantiation (`bget__T_i32` vs `bget__T_f64`), so this must
+    /// not share the global map — the last writer would clobber the others.
+    call_insts: std.AutoHashMap(NodeId, []const u8),
     /// The call site that first requested this instantiation — used to point a
     /// `where` rejection at the call, not the function declaration.
     origin_span: Span = Span.new(0, 0),
@@ -3681,11 +3686,15 @@ const Checker = struct {
                 .mangled_name = mangled,
                 .type_args = try type_args.toOwnedSlice(self.allocator),
                 .expr_types = std.AutoHashMap(NodeId, Ty).init(self.allocator),
+                .call_insts = std.AutoHashMap(NodeId, []const u8).init(self.allocator),
                 .origin_span = call.callee.span,
             });
         } else type_args.deinit(self.allocator);
 
         // Remember the mangled name so the IR lowerer can emit the right callee.
+        // (Writes to whichever `generic_call_insts` is active — the global map for
+        // top-level calls, or the current instantiation's map when checking a
+        // generic body, so the SAME call node can map to different callees.)
         try self.env.generic_call_insts.put(call.callee.id, mangled);
 
         // Return substituted return type
@@ -3801,12 +3810,16 @@ const Checker = struct {
                     // reallocating it and dangling the `inst` pointer. So write the
                     // grown map back by INDEX, not through `inst`.
                     const saved = self.env.expr_types;
+                    const saved_calls = self.env.generic_call_insts;
                     self.env.expr_types = inst.expr_types;
+                    self.env.generic_call_insts = inst.call_insts;
                     self.current_type_binding = inst.type_args;
                     self.current_inst_span = inst.origin_span;
                     defer {
                         self.env.generic_instantiations.items[inst_idx].expr_types = self.env.expr_types;
+                        self.env.generic_instantiations.items[inst_idx].call_insts = self.env.generic_call_insts;
                         self.env.expr_types = saved;
+                        self.env.generic_call_insts = saved_calls;
                         self.current_type_binding = &.{};
                         self.current_inst_span = null;
                     }
@@ -4509,6 +4522,10 @@ pub fn tyMangle(ty: Ty) []const u8 {
         .u16 => "u16",
         .u32 => "u32",
         .u64 => "u64",
+        .f32 => "f32",
+        .f64 => "f64",
+        .byte => "byte",
+        .rune => "rune",
         .bool => "bool",
         .void => "void",
         .usize => "usize",

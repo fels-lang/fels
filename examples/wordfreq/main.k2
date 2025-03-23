@@ -7,7 +7,7 @@
 #import std.list.{ List, len, set, push, get };
 #import std.list;
 #import std.strings.{ str_eq, is_alpha, to_lower_byte };
-#import std.io.{ print, print_u64 };
+#import std.io.{ print, print_u64, println};
 #import std.process;
 
 Entry :: struct { word: []const u8, count: u64 }
@@ -56,7 +56,7 @@ main :: fn() -> i32 {
     text: []u8 = .{};
     if arg.len > 0usize {
         text = fs::read_all(arg, &a) catch err { print("wordfreq: cannot read "); print(arg); print("\n"); return 1; };
-        print("words in "); print(arg); print(":\n");
+        print("words in "); print(arg); println(":");
     } else {
         sample := "the cat sat on the mat the cat ran the dog sat the cat and the dog";
         text = str_dup_mut(&a, sample);
