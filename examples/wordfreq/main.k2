@@ -1,0 +1,112 @@
+// wordfreq — top word frequencies in a text. Showcases the generic std.list.
+//
+//   wordfreq [file]    count words; print the 8 most frequent (default: embedded text)
+
+#import std.fs;
+#import std.heap.{ Arena, make };
+#import std.list.{ List, len, set, push, get };
+#import std.list;
+#import std.strings.{ str_eq, is_alpha, to_lower_byte };
+#import std.io.{ print, print_u64 };
+#import std.process;
+
+Entry :: struct { word: []const u8, count: u64 }
+
+bump :: fn(words: *List(Entry), w: []const u8) {
+    i: usize = 0usize;
+    n: usize = len(Entry, words);
+    while i < n {
+        e := get(Entry, words, i);
+        if str_eq(e.word, w) {
+            e.count += 1u64;
+            set(Entry, words, i, e);
+            return;
+        }
+        i += 1usize;
+    }
+    new: Entry = .{ w, 1u64 };
+    push(Entry, words, new);
+}
+
+tally :: fn(text: []u8, words: *List(Entry)) {
+    i: usize = 0usize;
+    while i < text.len {
+        if is_alpha(text[i]) {
+            start: usize = i;
+            while i < text.len {
+                if !is_alpha(text[i]) { break; }
+                text[i] = to_lower_byte(text[i]);          // normalise in place
+                i += 1usize;
+            }
+            bump(words, text[start..i]);
+        } else {
+            i += 1usize;
+        }
+    }
+}
+
+#entry
+main :: fn() -> i32 {
+    a := make();
+    line_buf: [1024]u8 = .{};
+    line := process::command_line(line_buf[:]);
+
+    // Use a file argument if given, else an embedded passage.
+    arg := first_arg(line);
+    text: []u8 = .{};
+    if arg.len > 0usize {
+        text = fs::read_all(arg, &a) catch err { print("wordfreq: cannot read "); print(arg); print("\n"); return 1; };
+        print("words in "); print(arg); print(":\n");
+    } else {
+        sample := "the cat sat on the mat the cat ran the dog sat the cat and the dog";
+        text = str_dup_mut(&a, sample);
+        print("words in the embedded sample:\n");
+    }
+
+    words := list::make(Entry, &a);
+    tally(text, &words);
+
+    // Print the 8 most frequent (destructive selection — zero each as printed).
+    n: usize = len(Entry, &words);
+    shown: usize = 0usize;
+    limit: usize = 8usize;
+    if n < limit { limit = n; }
+    while shown < limit {
+        best: usize = 0usize;
+        best_c: u64 = 0u64;
+        i: usize = 0usize;
+        while i < n {
+            e := get(Entry, &words, i);
+            if e.count > best_c { best_c = e.count; best = i; }
+            i += 1usize;
+        }
+        if best_c == 0u64 { break; }
+        be := get(Entry, &words, best);
+        print("  "); print_u64(be.count); print("  "); print(be.word); print("\n");
+        be.count = 0u64;
+        set(Entry, &words, best, be);
+        shown += 1usize;
+    }
+    return 0;
+}
+
+// A mutable copy of a string literal in the arena (so we can lowercase it).
+str_dup_mut :: fn(a: *Arena, s: []const u8) -> []u8 {
+    buf: []u8 = a.alloc_bytes(s.len);
+    i: usize = 0usize;
+    while i < s.len { buf[i] = s[i]; i += 1usize; }
+    return buf;
+}
+
+first_arg :: fn(line: []const u8) -> []const u8 {
+    i: usize = 0usize;
+    if line.len > 0usize {
+        if line[0] == 34u8 { i = 1usize; while i < line.len { q: bool = line[i] == 34u8; i += 1usize; if q { break; } } }
+        else { while i < line.len { if line[i] == 32u8 { break; } i += 1usize; } }
+    }
+    while i < line.len { if line[i] != 32u8 { break; } i += 1usize; }
+    if i >= line.len { return ""; }
+    start: usize = i;
+    while i < line.len { if line[i] == 32u8 { break; } i += 1usize; }
+    return line[start..i];
+}

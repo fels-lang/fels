@@ -1,0 +1,104 @@
+// calc — an integer expression evaluator (recursive descent with precedence).
+//
+//   calc "2 + 3 * (4 - 1)"     →  11
+//
+// Grammar:   expr = term (('+'|'-') term)*
+//            term = factor (('*'|'/'|'%') factor)*
+//            factor = number | '(' expr ')' | '-' factor
+
+#import std.io.{ print, print_i64 };
+#import std.process;
+
+P :: struct { s: []const u8, pos: usize }
+
+cur :: fn(p: *P) -> u8 {
+    if p.pos < p.s.len { return p.s[p.pos]; }
+    return 0u8;
+}
+ws :: fn(p: *P) { while cur(p) == 32u8 { p.pos += 1usize; } }
+
+number :: fn(p: *P) -> i64 {
+    ws(p);
+    v: i64 = 0;
+    while cur(p) >= 48u8 {
+        c: u8 = cur(p);
+        if c > 57u8 { break; }
+        v = v * 10 + ((c - 48u8) as i64);
+        p.pos += 1usize;
+    }
+    return v;
+}
+
+factor :: fn(p: *P) -> i64 {
+    ws(p);
+    c: u8 = cur(p);
+    if c == 40u8 {                      // '(' expr ')'
+        p.pos += 1usize;
+        v: i64 = expr(p);
+        ws(p);
+        if cur(p) == 41u8 { p.pos += 1usize; }
+        return v;
+    }
+    if c == 45u8 { p.pos += 1usize; return -factor(p); }   // unary minus
+    return number(p);
+}
+
+term :: fn(p: *P) -> i64 {
+    v: i64 = factor(p);
+    cont: bool = true;
+    while cont {
+        ws(p);
+        c: u8 = cur(p);
+        if c == 42u8 { p.pos += 1usize; v = v * factor(p); }
+        else {
+            if c == 47u8 { p.pos += 1usize; d: i64 = factor(p); if d != 0 { v = v / d; } }
+            else {
+                if c == 37u8 { p.pos += 1usize; d2: i64 = factor(p); if d2 != 0 { v = v % d2; } }
+                else { cont = false; }
+            }
+        }
+    }
+    return v;
+}
+
+expr :: fn(p: *P) -> i64 {
+    v: i64 = term(p);
+    cont: bool = true;
+    while cont {
+        ws(p);
+        c: u8 = cur(p);
+        if c == 43u8 { p.pos += 1usize; v = v + term(p); }
+        else {
+            if c == 45u8 { p.pos += 1usize; v = v - term(p); }
+            else { cont = false; }
+        }
+    }
+    return v;
+}
+
+expr_arg :: fn(line: []const u8, def: []const u8) -> []const u8 {
+    i: usize = 0usize;
+    if line.len > 0usize {
+        if line[0] == 34u8 { i = 1usize; while i < line.len { q: bool = line[i] == 34u8; i += 1usize; if q { break; } } }
+        else { while i < line.len { if line[i] == 32u8 { break; } i += 1usize; } }
+    }
+    while i < line.len { if line[i] != 32u8 { break; } i += 1usize; }
+    if i >= line.len { return def; }
+    rest := line[i..line.len];
+    if rest.len >= 2usize {
+        if rest[0] == 34u8 {
+            if rest[rest.len - 1usize] == 34u8 { return rest[1usize..(rest.len - 1usize)]; }
+        }
+    }
+    return rest;
+}
+
+#entry
+main :: fn() -> i32 {
+    line_buf: [1024]u8 = .{};
+    src := expr_arg(process::command_line(line_buf[:]), "2 + 3 * (4 - 1)");
+    p: P = .{ src, 0usize };
+    result := expr(&p);
+    print(src); print(" = "); print_i64(result); print("\n");
+    return 0;
+}

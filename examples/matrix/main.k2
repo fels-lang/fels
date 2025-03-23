@@ -1,0 +1,124 @@
+// matrix — a generic dense-matrix library, `Mat(T)`, exercised on i32 and f64.
+// The operations (make/get/set/mul/transpose) are fully generic over `T`; only
+// the pretty-printers are type-specific.
+
+#import std.heap.{ Arena, make };
+#import std.strings.{ StringBuilder, builder, str, append, append_i64, append_f64_min, append_byte };
+#import std.io.{ print };
+
+Mat :: struct($T: type) { rows: usize, cols: usize, data: []T }
+
+mat_make :: fn($T: type, a: *Arena, rows: usize, cols: usize) -> Mat(T) {
+    d: []T = a.alloc(T, rows * cols);
+    m: Mat(T) = .{ rows, cols, d };
+    return m;
+}
+mat_get :: fn($T: type, m: *Mat(T), r: usize, c: usize) -> T { return m.data[r * m.cols + c]; }
+mat_set :: fn($T: type, m: *Mat(T), r: usize, c: usize, v: T) { m.data[r * m.cols + c] = v; }
+
+// out = x · y  (no literal zero needed: seed the sum with the k=0 product).
+mat_mul :: fn($T: type, a: *Arena, x: *Mat(T), y: *Mat(T)) -> Mat(T) {
+    out := mat_make(T, a, x.rows, y.cols);
+    i: usize = 0usize;
+    while i < x.rows {
+        j: usize = 0usize;
+        while j < y.cols {
+            sum: T = mat_get(T, x, i, 0usize) * mat_get(T, y, 0usize, j);
+            k: usize = 1usize;
+            while k < x.cols {
+                sum = sum + mat_get(T, x, i, k) * mat_get(T, y, k, j);
+                k += 1usize;
+            }
+            mat_set(T, &out, i, j, sum);
+            j += 1usize;
+        }
+        i += 1usize;
+    }
+    return out;
+}
+
+mat_transpose :: fn($T: type, a: *Arena, m: *Mat(T)) -> Mat(T) {
+    out := mat_make(T, a, m.cols, m.rows);
+    i: usize = 0usize;
+    while i < m.rows {
+        j: usize = 0usize;
+        while j < m.cols { mat_set(T, &out, j, i, mat_get(T, m, i, j)); j += 1usize; }
+        i += 1usize;
+    }
+    return out;
+}
+
+print_i32_mat :: fn(m: *Mat(i32), a: *Arena) {
+    i: usize = 0usize;
+    while i < m.rows {
+        sb := builder(a);
+        append(&sb, "  [");
+        j: usize = 0usize;
+        while j < m.cols {
+            if j > 0usize { append_byte(&sb, 32u8); }
+            append_i64(&sb, mat_get(i32, m, i, j) as i64);
+            j += 1usize;
+        }
+        append(&sb, "]");
+        print(str(&sb)); print("\n");
+        i += 1usize;
+    }
+}
+
+print_f64_mat :: fn(m: *Mat(f64), a: *Arena) {
+    i: usize = 0usize;
+    while i < m.rows {
+        sb := builder(a);
+        append(&sb, "  [");
+        j: usize = 0usize;
+        while j < m.cols {
+            if j > 0usize { append_byte(&sb, 32u8); }
+            append_f64_min(&sb, mat_get(f64, m, i, j));
+            j += 1usize;
+        }
+        append(&sb, "]");
+        print(str(&sb)); print("\n");
+        i += 1usize;
+    }
+}
+
+#entry
+main :: fn() -> i32 {
+    a := make();
+
+    // i32: a 2x3 times a 3x2 → 2x2.
+    x := mat_make(i32, &a, 2usize, 3usize);
+    xv: [6]i32 = .{ 1, 2, 3, 4, 5, 6 };
+    fill_i32(&x, xv[0..6usize]);
+    y := mat_make(i32, &a, 3usize, 2usize);
+    yv: [6]i32 = .{ 7, 8, 9, 10, 11, 12 };
+    fill_i32(&y, yv[0..6usize]);
+
+    print("i32:  x (2x3) * y (3x2) =\n");
+    xy := mat_mul(i32, &a, &x, &y);
+    print_i32_mat(&xy, &a);
+    print("transpose of the result:\n");
+    xyt := mat_transpose(i32, &a, &xy);
+    print_i32_mat(&xyt, &a);
+
+    // f64: same code path, different element type.
+    p := mat_make(f64, &a, 2usize, 2usize);
+    pv: [4]f64 = .{ 1.5, 0.0, 0.0, 2.0 };
+    fill_f64(&p, pv[0..4usize]);
+    q := mat_make(f64, &a, 2usize, 2usize);
+    qv: [4]f64 = .{ 2.0, 1.0, 4.0, 3.0 };
+    fill_f64(&q, qv[0..4usize]);
+    print("f64:  p (2x2) * q (2x2) =\n");
+    pq := mat_mul(f64, &a, &p, &q);
+    print_f64_mat(&pq, &a);
+    return 0;
+}
+
+fill_i32 :: fn(m: *Mat(i32), vals: []i32) {
+    i: usize = 0usize;
+    while i < vals.len { m.data[i] = vals[i]; i += 1usize; }
+}
+fill_f64 :: fn(m: *Mat(f64), vals: []f64) {
+    i: usize = 0usize;
+    while i < vals.len { m.data[i] = vals[i]; i += 1usize; }
+}

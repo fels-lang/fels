@@ -1,0 +1,86 @@
+// bf — a complete Brainfuck interpreter (30000-cell wrapping tape).
+//
+//   bf "<program>"     run a BF program (default: "Hello World!")
+//
+// Commands: > < + - . [ ]  (',' input is treated as 0 for non-interactive use.)
+
+#import std.heap.{ Arena, make };
+#import std.io.{ print };
+#import std.process;
+
+out :: fn(c: u8) {
+    buf: [1]u8 = .{ c };
+    print(buf[0usize..1usize]);
+}
+
+// From the '[' at `pc`, return the index of the matching ']'.
+match_fwd :: fn(prog: []const u8, pc: usize) -> usize {
+    depth: i32 = 1;
+    i: usize = pc + 1usize;
+    while i < prog.len {
+        if prog[i] == 91u8 { depth += 1; }
+        else { if prog[i] == 93u8 { depth -= 1; if depth == 0 { return i; } } }
+        i += 1usize;
+    }
+    return prog.len;
+}
+
+// From the ']' at `pc`, return the index of the matching '['.
+match_bwd :: fn(prog: []const u8, pc: usize) -> usize {
+    depth: i32 = 1;
+    i: usize = pc;
+    while i > 0usize {
+        i -= 1usize;
+        if prog[i] == 93u8 { depth += 1; }
+        else { if prog[i] == 91u8 { depth -= 1; if depth == 0 { return i; } } }
+    }
+    return 0usize;
+}
+
+run :: fn(prog: []const u8, a: *Arena) {
+    tape: []u8 = a.alloc_bytes(30000usize);
+    i: usize = 0usize;
+    while i < tape.len { tape[i] = 0u8; i += 1usize; }
+    ptr: usize = 0usize;
+    pc:  usize = 0usize;
+    while pc < prog.len {
+        c: u8 = prog[pc];
+        match c {
+            62u8 => { ptr += 1usize; }                          // >
+            60u8 => { if ptr > 0usize { ptr -= 1usize; } }      // <
+            43u8 => { tape[ptr] = tape[ptr] +% 1u8; }           // +
+            45u8 => { tape[ptr] = tape[ptr] -% 1u8; }           // -
+            46u8 => { out(tape[ptr]); }                          // .
+            91u8 => { if tape[ptr] == 0u8 { pc = match_fwd(prog, pc); } }   // [
+            93u8 => { if tape[ptr] != 0u8 { pc = match_bwd(prog, pc); } }   // ]
+            else => {}
+        }
+        pc += 1usize;
+    }
+}
+
+prog_arg :: fn(line: []const u8, def: []const u8) -> []const u8 {
+    i: usize = 0usize;
+    if line.len > 0usize {
+        if line[0] == 34u8 { i = 1usize; while i < line.len { q: bool = line[i] == 34u8; i += 1usize; if q { break; } } }
+        else { while i < line.len { if line[i] == 32u8 { break; } i += 1usize; } }
+    }
+    while i < line.len { if line[i] != 32u8 { break; } i += 1usize; }
+    if i >= line.len { return def; }
+    rest := line[i..line.len];
+    if rest.len >= 2usize {
+        if rest[0] == 34u8 { if rest[rest.len - 1usize] == 34u8 { return rest[1usize..(rest.len - 1usize)]; } }
+    }
+    return rest;
+}
+
+#entry
+main :: fn() -> i32 {
+    a := make();
+    line_buf: [4096]u8 = .{};
+    // "Hello World!\n"
+    hello := "++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++.";
+    prog := prog_arg(process::command_line(line_buf[:]), hello);
+    run(prog, &a);
+    return 0;
+}

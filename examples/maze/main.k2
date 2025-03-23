@@ -1,0 +1,109 @@
+// maze — recursive-backtracker generator + breadth-first solver, in ASCII.
+// Carves a grid maze with std.rand, then BFS-solves it and marks the path with '+'.
+
+#import std.heap.{ Arena, make };
+#import std.rand.{ Rng, seed, next_u64 };
+#import std.io.{ print };
+#import std.process;
+
+W :: 14;   // cells wide
+H :: 8;    // cells tall
+GW :: 29;  // 2*W + 1
+GH :: 17;  // 2*H + 1
+
+idx :: fn(x: i32, y: i32) -> usize { return (y * GW + x) as usize; }
+
+carve :: fn(grid: []u8, x: i32, y: i32, rng: *Rng) {
+    grid[idx(x, y)] = 32u8;                       // ' '
+    dx: [4]i32 = .{ 0, 0, 1, -1 };
+    dy: [4]i32 = .{ -1, 1, 0, 0 };
+    order: [4]i32 = .{ 0, 1, 2, 3 };
+    k: i32 = 3;
+    while k > 0 {                                  // Fisher–Yates shuffle
+        j: i32 = (next_u64(rng) % ((k + 1) as u64)) as i32;
+        tmp := order[k]; order[k] = order[j]; order[j] = tmp;
+        k -= 1;
+    }
+    m: i32 = 0;
+    while m < 4 {
+        d: i32 = order[m];
+        nx: i32 = x + 2 * dx[d as usize];
+        ny: i32 = y + 2 * dy[d as usize];
+        inb: bool = nx >= 1 && nx < GW - 1 && ny >= 1 && ny < GH - 1;
+        if inb {
+            if grid[idx(nx, ny)] == 35u8 {         // '#' = unvisited
+                grid[idx(x + dx[d as usize], y + dy[d as usize])] = 32u8;   // knock wall
+                carve(grid, nx, ny, rng);
+            }
+        }
+        m += 1;
+    }
+}
+
+solve :: fn(grid: []u8, a: *Arena) {
+    n: usize = (GW * GH) as usize;
+    SENT: usize = 0xFFFFFFFFusize;
+    prev: []usize = a.alloc(usize, n);
+    queue: []usize = a.alloc(usize, n);
+    i: usize = 0usize;
+    while i < n { prev[i] = SENT; i += 1usize; }
+
+    start: usize = idx(1, 1);
+    goal:  usize = idx(GW - 2, GH - 2);
+    head: usize = 0usize;
+    tail: usize = 0usize;
+    queue[tail] = start; tail += 1usize;
+    prev[start] = start;
+
+    dx: [4]i32 = .{ 0, 0, 1, -1 };
+    dy: [4]i32 = .{ -1, 1, 0, 0 };
+    while head < tail {
+        cur: usize = queue[head]; head += 1usize;
+        if cur == goal { head = tail; }            // stop early
+        else {
+            d: usize = 0usize;
+            while d < 4usize {
+                nb: usize = ((cur as i64) + (dy[d] as i64) * (GW as i64) + (dx[d] as i64)) as usize;
+                if grid[nb] == 32u8 {
+                    if prev[nb] == SENT { prev[nb] = cur; queue[tail] = nb; tail += 1usize; }
+                }
+                d += 1usize;
+            }
+        }
+    }
+
+    if prev[goal] != SENT {
+        p: usize = goal;
+        cont: bool = true;
+        while cont {
+            grid[p] = 43u8;                         // '+'
+            if p == start { cont = false; }
+            else { p = prev[p]; }
+        }
+    }
+}
+
+#entry
+main :: fn() -> i32 {
+    a := make();
+    grid: []u8 = a.alloc_bytes((GW * GH) as usize);
+    i: usize = 0usize;
+    while i < grid.len { grid[i] = 35u8; i += 1usize; }   // all walls
+
+    line_buf: [256]u8 = .{};
+    sd: u64 = 0x2545F4914F6CDD1Du64 ^ (process::command_line(line_buf[:]).len as u64);
+    rng := seed(sd);
+
+    carve(grid, 1, 1, &rng);
+    solve(grid, &a);
+
+    y: i32 = 0;
+    while y < GH {
+        x: i32 = 0;
+        line: [GW]u8 = .{};
+        while x < GW { line[x as usize] = grid[idx(x, y)]; x += 1; }
+        print(line[0usize..(GW as usize)]); print("\n");
+        y += 1;
+    }
+    return 0;
+}

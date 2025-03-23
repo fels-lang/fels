@@ -349,7 +349,15 @@ fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType, l
     var rhs = resolveVal(cg, fncg, b.rhs, rhs_hint);
     rhs = values.coerce(cg.builder, cg.ctx, rhs, llvm.LLVMTypeOf(lhs));
     const bl = cg.builder;
-    const is_float = isFloat(lhs_hint);
+    // Pick float vs integer ops by the actual operand type, not just the IR hint:
+    // in a generic instantiation the hint can be lost (e.g. a generic helper call's
+    // result type), and an integer `mul` on `double` operands is an LLVM verify
+    // error. The LLVM type is the ground truth for add/sub/mul/div/cmp selection.
+    const lhs_kind = llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(lhs));
+    const lhs_is_float_ty = lhs_kind == llvm.LLVMFloatTypeKind or
+        lhs_kind == llvm.LLVMDoubleTypeKind or
+        lhs_kind == llvm.LLVMHalfTypeKind;
+    const is_float = isFloat(lhs_hint) or lhs_is_float_ty;
     const is_unsigned = isUnsigned(lhs_hint);
     return switch (b.op) {
         .add => blk: {

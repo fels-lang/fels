@@ -1,0 +1,70 @@
+// todo — a persistent todo list. Real serialization round-trip: build a list,
+// save it as JSON with std.serde, read it back from disk, mutate, and re-save.
+// This is exactly a CLI todo app's persistence layer, dogfooded end-to-end.
+
+#import std.fs;
+#import std.heap.{ Arena, make };
+#import std.serde;
+#import std.io.{ Writer, print };
+
+Task  :: struct { id: i32, done: bool, text: []const u8 }
+Store :: struct { next_id: i32, tasks: []Task }
+
+write_file :: fn(path: []const u8, data: []const u8) -> bool {
+    f := fs::create(path) catch err { return false; };
+    w: *Writer = &f;
+    w.write_all(data) catch err {};
+    (&f).close();
+    return true;
+}
+
+print_store :: fn(s: Store) {
+    i: usize = 0usize;
+    while i < s.tasks.len {
+        t := s.tasks[i];
+        if t.done { print("  [x] "); } else { print("  [ ] "); }
+        print(t.text); print("\n");
+        i += 1usize;
+    }
+}
+
+#entry
+main :: fn() -> i32 {
+    a := make();
+
+    tasks: [3]Task = .{
+        .{ 1, false, "write the loc tool" },
+        .{ 2, false, "add fs.read_dir" },
+        .{ 3, false, "ship 10 examples" },
+    };
+    store: Store = .{ 4, tasks[0..3usize] };
+
+    json := serde::to_json(Store, store, &a);
+    if !write_file("todos.json", json) { print("todo: cannot write todos.json\n"); return 1; }
+    print("saved todos.json:\n  "); print(json); print("\n\n");
+
+    // Reload from disk and verify the round-trip.
+    bytes := fs::read_all("todos.json", &a) catch err { print("todo: cannot read back\n"); return 2; };
+    if serde::from_json(Store, bytes, &a) |loaded| {
+        print("loaded "); print_count(loaded.tasks.len); print(" tasks:\n");
+        print_store(loaded);
+
+        // Complete the first task and re-save (mutating the deserialized value).
+        loaded.tasks[0].done = true;
+        print("\nafter completing #1:\n");
+        print_store(loaded);
+        ignored := write_file("todos.json", serde::to_json(Store, loaded, &a));
+    } else {
+        print("todo: parse failed\n");
+        fs::delete("todos.json") catch err {};
+        return 3;
+    }
+
+    fs::delete("todos.json") catch err {};   // clean up the fixture
+    return 0;
+}
+
+print_count :: fn(n: usize) {
+    if n == 1usize { print("1"); }
+    else { if n == 2usize { print("2"); } else { if n == 3usize { print("3"); } else { print("several"); } } }
+}
