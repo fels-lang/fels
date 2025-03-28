@@ -489,7 +489,10 @@ pub const TypeEnv = struct {
         self.receiver_auto_addr.deinit();
         self.enum_lits.deinit();
         self.generic_call_insts.deinit();
-        for (self.generic_instantiations.items) |*gi| gi.expr_types.deinit();
+        for (self.generic_instantiations.items) |*gi| {
+            gi.expr_types.deinit();
+            gi.call_insts.deinit();
+        }
         self.generic_instantiations.deinit(allocator);
         self.generic_struct_templates.deinit();
         self.generic_struct_instances.deinit();
