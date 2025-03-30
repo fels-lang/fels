@@ -1,0 +1,86 @@
+// world — the ECS core: a struct-of-arrays component store with entity
+// allocation (free-slot reuse) and a few queries. Systems operate on `*World`.
+
+#import vec.{ Vec2 };
+#import components.{ Kind, MAX_ENTITIES };
+
+pub World :: struct {
+    // ── components (parallel arrays, indexed by entity id) ──────────────
+    pos:    [MAX_ENTITIES]Vec2,
+    vel:    [MAX_ENTITIES]Vec2,
+    radius: [MAX_ENTITIES]f32,
+    hp:     [MAX_ENTITIES]i32,
+    kind:   [MAX_ENTITIES]Kind,
+    alive:  [MAX_ENTITIES]bool,
+    count:  usize,                 // high-water mark of used slots
+    // ── running stats ───────────────────────────────────────────────────
+    spawned: u32,
+    killed:  u32,
+    shots:   u32,
+    hits:    u32,
+}
+
+pub init :: fn(w: *World) {
+    w.count = 0usize;
+    i: usize = 0usize;
+    while i < MAX_ENTITIES { w.alive[i] = false; i += 1usize; }
+    w.spawned = 0u32;
+    w.killed = 0u32;
+    w.shots = 0u32;
+    w.hits = 0u32;
+}
+
+// Allocate an entity (reusing a dead slot when possible). Returns its id, or
+// MAX_ENTITIES if the world is full.
+pub spawn :: fn(w: *World, k: Kind, p: Vec2, vl: Vec2, rad: f32, life: i32) -> usize {
+    e: usize = MAX_ENTITIES;
+    i: usize = 0usize;
+    while i < w.count {
+        if !w.alive[i] { e = i; break; }
+        i += 1usize;
+    }
+    if e == MAX_ENTITIES {
+        if w.count >= MAX_ENTITIES { return MAX_ENTITIES; }     // full
+        e = w.count;
+        w.count = w.count + 1usize;
+    }
+    w.kind[e]   = k;
+    w.pos[e]    = p;
+    w.vel[e]    = vl;
+    w.radius[e] = rad;
+    w.hp[e]     = life;
+    w.alive[e]  = true;
+    w.spawned   = w.spawned + 1u32;
+    return e;
+}
+
+pub kill :: fn(w: *World, e: usize) {
+    if e < MAX_ENTITIES {
+        if w.alive[e] {
+            w.alive[e] = false;
+            w.killed = w.killed + 1u32;
+        }
+    }
+}
+
+pub count_kind :: fn(w: *World, k: Kind) -> u32 {
+    n: u32 = 0u32;
+    i: usize = 0usize;
+    while i < w.count {
+        if w.alive[i] {
+            if w.kind[i] == k { n = n + 1u32; }
+        }
+        i += 1usize;
+    }
+    return n;
+}
+
+pub live_count :: fn(w: *World) -> u32 {
+    n: u32 = 0u32;
+    i: usize = 0usize;
+    while i < w.count {
+        if w.alive[i] { n = n + 1u32; }
+        i += 1usize;
+    }
+    return n;
+}

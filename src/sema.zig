@@ -452,6 +452,9 @@ pub const TypeEnv = struct {
     /// Mangled name → SymbolId for already-instantiated generic structs.
     generic_struct_instances: std.StringHashMap(SymbolId) = undefined,
     interface_impls: std.StringHashMap(ast.InterfaceImpl) = undefined,
+    /// Integer-valued top-level constants by name — so a `[N]T` array size can
+    /// resolve a named const (`N :: 29`) or simple arithmetic over them.
+    const_ints: std.StringHashMap(u64) = undefined,
     diagnostics: std.ArrayList(Diagnostic) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) TypeEnv {
@@ -472,6 +475,7 @@ pub const TypeEnv = struct {
             .generic_struct_templates = std.StringHashMap(ast.TypeDecl).init(allocator),
             .generic_struct_instances = std.StringHashMap(SymbolId).init(allocator),
             .interface_impls = std.StringHashMap(ast.InterfaceImpl).init(allocator),
+            .const_ints = std.StringHashMap(u64).init(allocator),
         };
     }
 
@@ -488,6 +492,7 @@ pub const TypeEnv = struct {
         self.extension_calls.deinit();
         self.receiver_auto_addr.deinit();
         self.enum_lits.deinit();
+        self.const_ints.deinit();
         self.generic_call_insts.deinit();
         for (self.generic_instantiations.items) |*gi| {
             gi.expr_types.deinit();
@@ -1240,6 +1245,29 @@ const Checker = struct {
     }
 
     fn checkModule(self: *Checker, module: ast.Module) SemanticError!void {
+        // Pre-fold integer-valued top-level constants FIRST (before collecting
+        // struct layouts), so a `[N]T` array field/local resolves its named-const
+        // size (`N :: 29`) or simple arithmetic over them. A few passes let a const
+        // reference an earlier one (`GW :: 2*W + 1`).
+        {
+            var pass: usize = 0;
+            while (pass < 4) : (pass += 1) {
+                var changed = false;
+                for (module.items) |item| switch (item) {
+                    .const_decl => |decl| {
+                        if (self.env.const_ints.contains(decl.name)) continue;
+                        const v = resolveArrayLen(decl.value, self.env.const_ints);
+                        if (v != 0 or decl.value.kind == .int) {
+                            self.env.const_ints.put(decl.name, v) catch {};
+                            changed = true;
+                        }
+                    },
+                    else => {},
+                };
+                if (!changed) break;
+            }
+        }
+
         try self.collectTopLevelTypes(module);
 
         // Record `#must_use` functions so a discarded call to one is rejected.
@@ -4038,7 +4066,7 @@ const Checker = struct {
                 _ = try self.inferExpr(array.len.*);
                 return .{ .array = .{
                     .elem = try self.boxTy(try self.typeFromRef(array.inner.*)),
-                    .len = parseArrayLen(array.len.*),
+                    .len = resolveArrayLen(array.len.*, self.env.const_ints),
                 } };
             },
             .atomic => |atomic| return try self.typeFromRef(atomic.inner.*),
@@ -4653,6 +4681,29 @@ fn floatLiteralType(text: []const u8) Ty {
 fn parseArrayLen(expr: ast.Expr) u64 {
     return switch (expr.kind) {
         .int => |text| @intCast(@max(parseIntLiteral(text), 0)),
+        else => 0,
+    };
+}
+
+/// Evaluate an array-size expression to a length: an integer literal, a named
+/// integer constant (`N :: 29`), or simple arithmetic over those (`2*W + 1`).
+/// Falls back to 0 for anything it can't fold at this stage.
+pub fn resolveArrayLen(expr: ast.Expr, const_ints: std.StringHashMap(u64)) u64 {
+    return switch (expr.kind) {
+        .int => |text| @intCast(@max(parseIntLiteral(text), 0)),
+        .ident => |name| const_ints.get(name) orelse 0,
+        .binary => |b| blk: {
+            const l = resolveArrayLen(b.left.*, const_ints);
+            const r = resolveArrayLen(b.right.*, const_ints);
+            break :blk switch (b.op) {
+                .add => l +% r,
+                .sub => if (l >= r) l - r else 0,
+                .mul => l *% r,
+                .div => if (r != 0) l / r else 0,
+                .rem => if (r != 0) l % r else 0,
+                else => 0,
+            };
+        },
         else => 0,
     };
 }

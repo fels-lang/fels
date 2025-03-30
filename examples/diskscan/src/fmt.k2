@@ -1,0 +1,52 @@
+// fmt — human-readable byte sizes (1.5 GB, 870.4 KB, 42 B).
+
+#import std.strings.{ StringBuilder, append, append_byte, append_u64 };
+
+KB :: 1024u64;
+MB :: 1048576u64;
+GB :: 1073741824u64;
+TB :: 1099511627776u64;
+
+unit :: fn(sb: *StringBuilder, b: u64, div: u64, suffix: []const u8) {
+    append_u64(sb, b / div);
+    append_byte(sb, 46u8);                       // '.'
+    append_u64(sb, (b % div) * 10u64 / div);     // one decimal
+    append(sb, suffix);
+}
+
+// Append `b` to the builder as a human-readable size.
+pub fmt_size :: fn(sb: *StringBuilder, b: u64) {
+    if b >= TB { unit(sb, b, TB, " TB"); }
+    else { if b >= GB { unit(sb, b, GB, " GB"); }
+    else { if b >= MB { unit(sb, b, MB, " MB"); }
+    else { if b >= KB { unit(sb, b, KB, " KB"); }
+    else { append_u64(sb, b); append(sb, " B"); } } } }
+}
+
+// Pad a human size left into a `w`-wide field, then append it.
+pub fmt_size_padded :: fn(sb: *StringBuilder, b: u64, w: usize) {
+    n: usize = size_width(b);
+    while n < w { append_byte(sb, 32u8); n = n + 1usize; }
+    fmt_size(sb, b);
+}
+
+// How many characters fmt_size would emit for `b` (for alignment).
+size_width :: fn(b: u64) -> usize {
+    div: u64 = 1u64;
+    suf: usize = 2usize;          // " B"
+    if b >= TB { div = TB; suf = 3usize; }
+    else { if b >= GB { div = GB; suf = 3usize; }
+    else { if b >= MB { div = MB; suf = 3usize; }
+    else { if b >= KB { div = KB; suf = 3usize; } } } }
+    if div == 1u64 { return digits(b) + 2usize; }
+    // "<whole>.<decimal><suffix>"
+    return digits(b / div) + 2usize + suf;
+}
+
+digits :: fn(n: u64) -> usize {
+    if n == 0u64 { return 1usize; }
+    d: usize = 0usize;
+    v: u64 = n;
+    while v > 0u64 { d = d + 1usize; v = v / 10u64; }
+    return d;
+}

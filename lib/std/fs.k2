@@ -32,8 +32,15 @@
 
 // ── kernel32 imports ──────────────────────────────────────────────────────
 
-#extern("kernel32", "FindFirstFileA")
-FindFirstFileA :: fn(file_name: *const u8, find_data: *WIN32_FIND_DATAA) -> usize;
+#extern("kernel32", "FindFirstFileExA")
+FindFirstFileExA :: fn(
+    file_name:       *const u8,
+    info_level:      u32,       // FindExInfoBasic (1) — skip the 8.3 alt-name
+    find_data:       *WIN32_FIND_DATAA,
+    search_op:       u32,       // FindExSearchNameMatch (0)
+    search_filter:   ?*void,    // NULL
+    additional_flags: u32,      // FIND_FIRST_EX_LARGE_FETCH (2) — batch internally
+) -> usize;
 
 #extern("kernel32", "FindNextFileA")
 FindNextFileA :: fn(handle: usize, find_data: *WIN32_FIND_DATAA) -> bool;
@@ -277,7 +284,9 @@ pub open_dir :: fn(pattern: []const u8) -> DirIter ! FsError {
     iter: DirIter = .{ FS_INVALID_HANDLE, .{}, true };
     path_buf: [260]u8 = .{};
     cpath := fs_to_cstr(pattern, path_buf[:])?;
-    iter.handle = FindFirstFileA(cpath, &iter.data);
+    // FindExInfoBasic (1) skips the slow 8.3 alt-name; LARGE_FETCH (2) lets the OS
+    // return entries in bigger internal batches — both cut per-entry overhead.
+    iter.handle = FindFirstFileExA(cpath, 1u32, &iter.data, 0u32, null, 2u32);
     if iter.handle == FS_INVALID_HANDLE { fail .not_found; }
     return iter;
 }
@@ -301,6 +310,18 @@ pub dir_next :: fn(self: *DirIter) -> ?[]const u8 {
 // Whether the entry most recently returned by `dir_next` is a subdirectory.
 pub dir_is_dir :: fn(self: *DirIter) -> bool {
     return (self.data.attrs & FILE_ATTRIBUTE_DIRECTORY) != 0u32;
+}
+
+// Size in bytes of the entry most recently returned by `dir_next` (comes free
+// with the directory listing — no extra stat call).
+pub dir_size :: fn(self: *DirIter) -> u64 {
+    return ((self.data.size_hi as u64) << 32u64) | (self.data.size_lo as u64);
+}
+
+// True if the most recent entry is a reparse point (symlink/junction) — skip
+// these when scanning to avoid cycles and double-counting.
+pub dir_is_reparse :: fn(self: *DirIter) -> bool {
+    return (self.data.attrs & 0x400u32) != 0u32;   // FILE_ATTRIBUTE_REPARSE_POINT
 }
 
 pub dir_close :: fn(self: *DirIter) {

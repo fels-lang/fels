@@ -1,0 +1,205 @@
+// du — a WinDirStat-style disk-usage scanner.
+//
+//   du [dir]      recursively sum sizes under `dir` (default: current dir),
+//                 print the biggest top-level items, and report scan throughput.
+//
+// The size of each file comes FREE with the directory listing (it's in the
+// WIN32_FIND_DATA the FindNextFile iterator already returns) — so there is one
+// syscall per directory entry and no per-file `stat`. A single reusable path
+// buffer is appended in place during recursion, so the scan does ZERO per-entry
+// heap allocation. Native code: the wall-clock cost is essentially the OS's
+// directory enumeration, which is the same ceiling C hits.
+
+#import std.fs;
+#import std.heap.{ Arena, make, new_slice };
+#import std.strings.{ StringBuilder, builder, str, clear, append, append_byte, append_u64, str_dup };
+#import std.io.{ print };
+#import std.time.{ Instant, now, since_millis };
+#import std.process;
+
+Scan  :: struct { files: u64, dirs: u64, bytes: u64 }
+Entry :: struct { name: []const u8, size: u64, is_dir: bool }
+
+MAXENT :: 16384;
+PATHCAP :: 4096;
+
+// Recursively sum the bytes under the directory in `buf[0..plen]`. The buffer is
+// reused: we append "\<child>" in place before recursing and the next sibling
+// overwrites it. Returns the subtree total; accumulates global counts in `s`.
+scan :: fn(buf: []u8, plen: usize, s: *Scan) -> u64 {
+    if plen + 3usize >= buf.len { return 0u64; }
+    buf[plen] = 92u8;        // '\'
+    buf[plen + 1usize] = 42u8;   // '*'
+    it := fs::open_dir(buf[0usize..(plen + 2usize)]) catch err { return 0u64; };
+
+    total: u64 = 0u64;
+    cont: bool = true;
+    while cont {
+        if (&it).dir_next() |name| {
+            skip: bool = name_dot(name);
+            if !skip {
+                if (&it).dir_is_reparse() {
+                    // skip symlinks/junctions — avoid cycles + double counting
+                } else {
+                    if (&it).dir_is_dir() {
+                        s.dirs = s.dirs + 1u64;
+                        nlen: usize = plen + 1usize + name.len;
+                        if nlen + 3usize < buf.len {
+                            buf[plen] = 92u8;
+                            j: usize = 0usize;
+                            while j < name.len { buf[plen + 1usize + j] = name[j]; j = j + 1usize; }
+                            total = total + scan(buf, nlen, s);
+                        }
+                    } else {
+                        sz: u64 = (&it).dir_size();
+                        s.files = s.files + 1u64;
+                        s.bytes = s.bytes + sz;
+                        total = total + sz;
+                    }
+                }
+            }
+        } else { cont = false; }
+    }
+    (&it).dir_close();
+    return total;
+}
+
+name_dot :: fn(n: []const u8) -> bool {
+    if n.len == 1usize { return n[0] == 46u8; }
+    if n.len == 2usize { if n[0] == 46u8 { return n[1] == 46u8; } }
+    return false;
+}
+
+fmt_size :: fn(sb: *StringBuilder, b: u64) {
+    KB: u64 = 1024u64;
+    MB: u64 = 1048576u64;
+    GB: u64 = 1073741824u64;
+    if b >= GB { unit(sb, b, GB, " GB"); }
+    else { if b >= MB { unit(sb, b, MB, " MB"); }
+    else { if b >= KB { unit(sb, b, KB, " KB"); }
+    else { append_u64(sb, b); append(sb, " B"); } } }
+}
+unit :: fn(sb: *StringBuilder, b: u64, div: u64, suffix: []const u8) {
+    append_u64(sb, b / div);
+    append_byte(sb, 46u8);                       // '.'
+    append_u64(sb, (b % div) * 10u64 / div);     // one decimal
+    append(sb, suffix);
+}
+
+first_arg :: fn(line: []const u8, def: []const u8) -> []const u8 {
+    i: usize = 0usize;
+    if line.len > 0usize {
+        if line[0] == 34u8 { i = 1usize; while i < line.len { q: bool = line[i] == 34u8; i += 1usize; if q { break; } } }
+        else { while i < line.len { if line[i] == 32u8 { break; } i += 1usize; } }
+    }
+    while i < line.len { if line[i] != 32u8 { break; } i += 1usize; }
+    if i >= line.len { return def; }
+    start: usize = i;
+    while i < line.len { if line[i] == 32u8 { break; } i += 1usize; }
+    return line[start..i];
+}
+
+#entry
+main :: fn() -> i32 {
+    a := make();
+    line_buf: [1024]u8 = .{};
+    root := first_arg(process::command_line(line_buf[:]), ".");
+
+    // Working path buffer (reused throughout the scan).
+    buf: [PATHCAP]u8 = .{};
+    rlen: usize = 0usize;
+    while rlen < root.len { buf[rlen] = root[rlen]; rlen = rlen + 1usize; }
+
+    s: Scan = .{ 0u64, 0u64, 0u64 };
+    entries: []Entry = new_slice(Entry, &a, MAXENT);   // arena, not a 512KB stack frame
+    nent: usize = 0usize;
+
+    t0: Instant = now();
+
+    // Top level: record each immediate child with its (recursive) size.
+    buf[rlen] = 92u8; buf[rlen + 1usize] = 42u8;
+    it := fs::open_dir(buf[0usize..(rlen + 2usize)]) catch err {
+        print("du: cannot open "); print(root); print("\n"); return 1;
+    };
+    cont: bool = true;
+    while cont {
+        if (&it).dir_next() |name| {
+            if !name_dot(name) {
+                reparse: bool = (&it).dir_is_reparse();
+                if !reparse {
+                    nm := str_dup(&a, name);
+                    if (&it).dir_is_dir() {
+                        s.dirs = s.dirs + 1u64;
+                        nlen: usize = rlen + 1usize + name.len;
+                        sub: u64 = 0u64;
+                        if nlen + 3usize < buf.len {
+                            buf[rlen] = 92u8;
+                            j: usize = 0usize;
+                            while j < name.len { buf[rlen + 1usize + j] = name[j]; j = j + 1usize; }
+                            sub = scan(buf[:], nlen, &s);
+                        }
+                        if nent < MAXENT { entries[nent] = .{ nm, sub, true }; nent = nent + 1usize; }
+                    } else {
+                        sz: u64 = (&it).dir_size();
+                        s.files = s.files + 1u64;
+                        s.bytes = s.bytes + sz;
+                        if nent < MAXENT { entries[nent] = .{ nm, sz, false }; nent = nent + 1usize; }
+                    }
+                }
+            }
+        } else { cont = false; }
+    }
+    (&it).dir_close();
+
+    ms: i64 = since_millis(t0);
+
+    // ── Biggest top-level items (repeated max-selection) ─────────────────────
+    sb := builder(&a);
+    append(&sb, "Disk usage for "); append(&sb, root); append(&sb, "\n\n");
+
+    limit: usize = 20usize;
+    if nent < limit { limit = nent; }
+    shown: usize = 0usize;
+    while shown < limit {
+        best: usize = MAXENT;
+        bestsz: u64 = 0u64;
+        i: usize = 0usize;
+        while i < nent {
+            if entries[i].size >= bestsz { bestsz = entries[i].size; best = i; }
+            i = i + 1usize;
+        }
+        if best == MAXENT { break; }
+        append(&sb, "  ");
+        pct: u64 = 0u64;
+        if s.bytes > 0u64 { pct = entries[best].size * 100u64 / s.bytes; }
+        pad_pct(&sb, pct);
+        append(&sb, "   ");
+        fmt_size(&sb, entries[best].size);
+        append(&sb, "   ");
+        if entries[best].is_dir { append(&sb, "[D] "); } else { append(&sb, "    "); }
+        append(&sb, entries[best].name);
+        append(&sb, "\n");
+        entries[best].size = 0u64;     // consume
+        shown = shown + 1usize;
+    }
+
+    // ── Throughput report ────────────────────────────────────────────────────
+    append(&sb, "\n");
+    append(&sb, "total:    "); fmt_size(&sb, s.bytes); append(&sb, "\n");
+    append(&sb, "files:    "); append_u64(&sb, s.files); append(&sb, "\n");
+    append(&sb, "dirs:     "); append_u64(&sb, s.dirs); append(&sb, "\n");
+    append(&sb, "scanned:  "); append_u64(&sb, ms as u64); append(&sb, " ms\n");
+    if ms > 0i64 {
+        rate: u64 = s.files * 1000u64 / (ms as u64);
+        append(&sb, "rate:     "); append_u64(&sb, rate); append(&sb, " files/sec\n");
+    }
+    print(str(&sb));
+    return 0;
+}
+
+// Right-align a percentage in a 3-wide field (e.g. " 42%").
+pad_pct :: fn(sb: *StringBuilder, p: u64) {
+    if p < 10u64 { append(sb, "  "); } else { if p < 100u64 { append(sb, " "); } }
+    append_u64(sb, p);
+    append_byte(sb, 37u8);   // '%'
+}

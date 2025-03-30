@@ -1,0 +1,27 @@
+// vec — a tiny 2D vector module (local project module, imported as `vec`).
+
+pub Vec2 :: struct { x: f32, y: f32 }
+
+pub v2 :: fn(x: f32, y: f32) -> Vec2 { r: Vec2 = .{ x, y }; return r; }
+pub zero :: fn() -> Vec2 { r: Vec2 = .{ 0.0f32, 0.0f32 }; return r; }
+
+pub add   :: fn(a: Vec2, b: Vec2) -> Vec2 { r: Vec2 = .{ a.x + b.x, a.y + b.y }; return r; }
+pub sub   :: fn(a: Vec2, b: Vec2) -> Vec2 { r: Vec2 = .{ a.x - b.x, a.y - b.y }; return r; }
+pub scale :: fn(a: Vec2, s: f32) -> Vec2 { r: Vec2 = .{ a.x * s, a.y * s }; return r; }
+
+pub len2 :: fn(a: Vec2) -> f32 { return a.x * a.x + a.y * a.y; }
+pub len  :: fn(a: Vec2) -> f32 { return core::sqrt(len2(a)); }
+
+// Distance squared between two points (no sqrt — for cheap range checks).
+pub dist2 :: fn(a: Vec2, b: Vec2) -> f32 {
+    dx: f32 = a.x - b.x;
+    dy: f32 = a.y - b.y;
+    return dx * dx + dy * dy;
+}
+
+// Unit vector in the direction of `a` (or zero if `a` is ~zero).
+pub norm :: fn(a: Vec2) -> Vec2 {
+    l: f32 = len(a);
+    if l < 0.0001f32 { return zero(); }
+    return scale(a, 1.0f32 / l);
+}

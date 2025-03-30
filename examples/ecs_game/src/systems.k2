@@ -1,0 +1,133 @@
+// systems — the behaviours that run each tick over the World's components.
+
+#import vec.{ Vec2, add, sub, scale, dist2, norm };
+#import world.{ World, spawn, kill };
+#import components.{ Kind, FIELD_W, FIELD_H, MAX_ENTITIES };
+#import std.rand.{ Rng, range_f32 };
+
+// Integrate position; asteroids bounce off the walls, bullets expire off-field.
+pub movement :: fn(w: *World, dt: f32) {
+    fw: f32 = FIELD_W as f32;
+    fh: f32 = FIELD_H as f32;
+    i: usize = 0usize;
+    while i < w.count {
+        if w.alive[i] {
+            w.pos[i] = add(w.pos[i], scale(w.vel[i], dt));
+            if w.kind[i] == Kind.Asteroid {
+                if w.pos[i].x < 0.0f32 { w.pos[i].x = 0.0f32; w.vel[i].x = 0.0f32 - w.vel[i].x; }
+                if w.pos[i].x > fw    { w.pos[i].x = fw;      w.vel[i].x = 0.0f32 - w.vel[i].x; }
+                if w.pos[i].y < 0.0f32 { w.pos[i].y = 0.0f32; w.vel[i].y = 0.0f32 - w.vel[i].y; }
+                if w.pos[i].y > fh    { w.pos[i].y = fh;      w.vel[i].y = 0.0f32 - w.vel[i].y; }
+            } else {
+                off: bool = false;
+                if w.pos[i].x < 0.0f32 { off = true; }
+                if w.pos[i].x > fw    { off = true; }
+                if w.pos[i].y < 0.0f32 { off = true; }
+                if w.pos[i].y > fh    { off = true; }
+                if off { kill(w, i); }
+            }
+        }
+        i += 1usize;
+    }
+}
+
+// Bullets carry a frame countdown in `hp`; expire at zero.
+pub lifetime :: fn(w: *World) {
+    i: usize = 0usize;
+    while i < w.count {
+        if w.alive[i] {
+            if w.kind[i] == Kind.Bullet {
+                w.hp[i] = w.hp[i] - 1;
+                if w.hp[i] <= 0 { kill(w, i); }
+            }
+        }
+        i += 1usize;
+    }
+}
+
+// The turret fires at the nearest asteroid on a fixed cadence.
+pub fire :: fn(w: *World) {
+    turret: usize = MAX_ENTITIES;
+    i: usize = 0usize;
+    while i < w.count {
+        if w.alive[i] { if w.kind[i] == Kind.Turret { turret = i; } }
+        i += 1usize;
+    }
+    if turret == MAX_ENTITIES { return; }
+
+    best: usize = MAX_ENTITIES;
+    bestd: f32 = 1000000.0f32;
+    i = 0usize;
+    while i < w.count {
+        if w.alive[i] {
+            if w.kind[i] == Kind.Asteroid {
+                d: f32 = dist2(w.pos[turret], w.pos[i]);
+                if d < bestd { bestd = d; best = i; }
+            }
+        }
+        i += 1usize;
+    }
+    if best == MAX_ENTITIES { return; }
+
+    aim: Vec2 = sub(w.pos[best], w.pos[turret]);
+    bv: Vec2 = scale(norm(aim), 22.0f32);
+    discard := spawn(w, Kind.Bullet, w.pos[turret], bv, 0.7f32, 24);
+    w.shots = w.shots + 1u32;
+}
+
+// Bullet ↔ asteroid collisions. A hit damages the asteroid and consumes the
+// bullet; a destroyed asteroid splits into two smaller ones (if large enough).
+pub collisions :: fn(w: *World, rng: *Rng) {
+    i: usize = 0usize;
+    while i < w.count {
+        if w.alive[i] {
+            if w.kind[i] == Kind.Bullet {
+                j: usize = 0usize;
+                while j < w.count {
+                    if w.alive[j] {
+                        if w.kind[j] == Kind.Asteroid {
+                            rr: f32 = w.radius[i] + w.radius[j];
+                            if dist2(w.pos[i], w.pos[j]) < rr * rr {
+                                w.hp[j] = w.hp[j] - 12;
+                                kill(w, i);
+                                w.hits = w.hits + 1u32;
+                                if w.hp[j] <= 0 { split(w, j, rng); }
+                                j = w.count;            // bullet spent — stop
+                            }
+                        }
+                    }
+                    j += 1usize;
+                }
+            }
+        }
+        i += 1usize;
+    }
+}
+
+// Spawn a fresh drifting asteroid on a cadence.
+pub spawner :: fn(w: *World, rng: *Rng, frame: u32) {
+    if frame % 14u32 == 0u32 {
+        p: Vec2 = .{ range_f32(rng, 3.0f32, (FIELD_W - 3) as f32), range_f32(rng, 3.0f32, (FIELD_H - 3) as f32) };
+        d: Vec2 = .{ range_f32(rng, -1.0f32, 1.0f32), range_f32(rng, -1.0f32, 1.0f32) };
+        vel: Vec2 = scale(norm(d), range_f32(rng, 3.0f32, 6.0f32));
+        rad: f32 = range_f32(rng, 2.5f32, 4.5f32);
+        discard := spawn(w, Kind.Asteroid, p, vel, rad, (rad as i32) * 14);
+    }
+}
+
+// An asteroid breaks into two smaller fragments flying apart.
+split :: fn(w: *World, a: usize, rng: *Rng) {
+    r: f32 = w.radius[a];
+    p: Vec2 = w.pos[a];
+    kill(w, a);
+    if r > 2.2f32 {
+        nr: f32 = r * 0.6f32;
+        k: i32 = 0;
+        while k < 2 {
+            d: Vec2 = .{ range_f32(rng, -1.0f32, 1.0f32), range_f32(rng, -1.0f32, 1.0f32) };
+            nv: Vec2 = scale(norm(d), range_f32(rng, 4.0f32, 8.0f32));
+            discard := spawn(w, Kind.Asteroid, p, nv, nr, (nr as i32) * 14);
+            k = k + 1;
+        }
+    }
+}

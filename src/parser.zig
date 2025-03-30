@@ -1406,21 +1406,11 @@ pub const Parser = struct {
                 return self.expr(.{ .unary = .{ .op = .address_of, .expr = try self.allocExpr(operand) } }, Span.new(tok.start, operand.span.end));
             },
             .star => {
-                // Disambiguate a pointer *type* in value position (e.g.
-                // `ptr_from_int(*Chunk, p)`, `sizeof(*u8)`) from a *dereference*
-                // (`*p`). A type only ever appears as a call argument, so it is
-                // followed by `,` or `)`; `;`, `}`, and operators all mean a
-                // dereference (so `x := *p;` and `*p + 1` parse correctly).
-                if (self.check(.keyword_const) or self.check(.keyword_volatile) or
-                    (isTypeName(self.peek().kind) and switch (self.peekKind(1)) {
-                        .comma, .r_paren => true,
-                        else => false,
-                    }))
-                {
-                    self.index -= 1;
-                    const ty = try self.parseType();
-                    return self.expr(.{ .type_ref = ty }, ty.span());
-                }
+                // `*p` — a dereference. A pointer *type* in value position
+                // (`ptr_from_int(*Chunk, p)`, `sizeof(*u8)`) only ever appears as
+                // a call argument and is disambiguated there (parseCallArgExpr);
+                // in every other position — grouping `(*p)`, `unsafe (*p)`,
+                // `*p + 1`, `return *p` — a leading `*` is unambiguously a load.
                 // Bind as tightly as the other prefix operators (`&`, `-`, `!`),
                 // so `*p + 1` is `(*p) + 1`, not `*(p + 1)`.
                 const operand = try self.parseExpr(18);
@@ -1458,6 +1448,26 @@ pub const Parser = struct {
         return self.expr(.{ .compound_literal = try values.toOwnedSlice(self.allocator) }, spanFrom(start, close));
     }
 
+    // Parse a single call argument. A leading `*Type` here is a pointer *type*
+    // passed to a builtin (`sizeof(*u8)`, `ptr_from_int(*Chunk, p)`) — the one
+    // place a type appears in value position. Elsewhere `*x` is a dereference
+    // (handled by the generic prefix parser).
+    fn parseCallArgExpr(self: *Parser) ParseError!ast.Expr {
+        if (self.check(.star)) {
+            const k1 = self.peekKind(1);
+            const looks_like_type = (k1 == .keyword_const or k1 == .keyword_volatile) or
+                (isTypeName(k1) and switch (self.peekKind(2)) {
+                    .comma, .r_paren => true,
+                    else => false,
+                });
+            if (looks_like_type) {
+                const ty = try self.parseType();
+                return self.expr(.{ .type_ref = ty }, ty.span());
+            }
+        }
+        return self.parseExpr(0);
+    }
+
     fn finishCall(self: *Parser, callee: ast.Expr) ParseError!ast.Expr {
         var args: std.ArrayList(ast.CallArg) = .empty;
         errdefer args.deinit(self.allocator);
@@ -1467,10 +1477,10 @@ pub const Parser = struct {
                     const name = self.advance();
                     _ = self.advance();
                     // Named arg value: parse a full compound literal `{ ... }` or a regular expression.
-                    const value = if (self.check(.l_brace)) try self.finishCompound(self.advance()) else try self.parseExpr(0);
+                    const value = if (self.check(.l_brace)) try self.finishCompound(self.advance()) else try self.parseCallArgExpr();
                     try args.append(self.allocator, .{ .named = .{ .name = name.text(self.source), .value = value } });
                 } else {
-                    try args.append(self.allocator, .{ .positional = try self.parseExpr(0) });
+                    try args.append(self.allocator, .{ .positional = try self.parseCallArgExpr() });
                 }
                 if (!self.match(.comma)) break;
                 if (self.check(.r_paren)) break;

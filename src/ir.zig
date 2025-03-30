@@ -1387,7 +1387,7 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
         .borrow => |b| return lowerTypeWithBindingAndSymbols(allocator, b.inner.*, binding, types, symbols),
         .array => |arr| return .{ .array = .{
             .elem = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, arr.inner.*, binding, types, symbols)),
-            .len = parseArrayLen(arr.len.*),
+            .len = sema.resolveArrayLen(arr.len.*, types.const_ints),
         } },
         // `Box(T)` inside an instantiated generic body must resolve to the concrete
         // INSTANCE (`Box__T_i32`), not the template `Box` (whose `T`-typed fields are
@@ -3433,7 +3433,15 @@ const FunctionLowerer = struct {
                 break :blk try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = local } });
             },
             .field => |field| blk: {
-                const base = try self.lowerExpr(field.base.*);
+                // Take the base's ADDRESS when the base is itself an lvalue (a field
+                // or index access). Lowering it as a value loads a COPY, so the store
+                // would land on a throwaway temp and be silently dropped (`a.b.c = v`,
+                // `arr[i].f = v`, `s[i].f = v`). For ident/pointer bases `lowerExpr`
+                // already yields the alloca/pointer address, so keep that.
+                const base = switch (field.base.*.kind) {
+                    .field, .index => try self.lowerLValueAddress(field.base.*),
+                    else => try self.lowerExpr(field.base.*),
+                };
                 break :blk try self.emitAt(ptr_ty, .{ .field_addr = .{ .base = base, .name = field.name } }, expr.span);
             },
             .index => |index| blk: {
@@ -4113,6 +4121,14 @@ fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sem
                 return lowerAstTypeWithEnv(allocator, aliased, types, symbols);
             }
         }
+    }
+    // Arrays here (vs the env-less `lowerType`) so a named-const size resolves
+    // (`[N]T`): the bare `lowerType` can't see `const_ints`.
+    if (ty == .array) {
+        return .{ .array = .{
+            .elem = try boxType(allocator, try lowerAstTypeWithEnv(allocator, ty.array.inner.*, types, symbols)),
+            .len = sema.resolveArrayLen(ty.array.len.*, types.const_ints),
+        } };
     }
     return lowerType(allocator, ty);
 }

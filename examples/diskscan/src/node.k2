@@ -1,0 +1,114 @@
+// node — the directory tree.
+//
+// Each directory and file is a Node. During the scan, children are pushed onto
+// a singly-linked list (O(1), no per-node array churn). The first time a node's
+// children are needed for display they are *finalized*: collected into a slice
+// and heap-sorted by size, descending. Finalization is lazy, so a full-drive
+// tree (hundreds of thousands of dirs) only pays the sort for the handful of
+// directories the user actually opens.
+
+#import std.heap.{ Arena, new, new_slice };
+
+pub Node :: struct {
+    name:        []const u8,   // basename (arena-owned)
+    size:        u64,          // total bytes in this subtree
+    is_dir:      bool,
+    deleted:     bool,         // tombstoned by a GUI delete
+    finalized:   bool,         // kids[] built + sorted?
+    n_children:  u32,
+    first_child: ?*Node,       // build-time linked list
+    next:        ?*Node,       // next sibling
+    parent:      ?*Node,
+    kids:        []*Node,      // finalized, sorted by size desc
+}
+
+pub make_node :: fn(a: *Arena, name: []const u8, is_dir: bool) -> *Node {
+    n := new(Node, a);
+    n.name = name;
+    n.size = 0u64;
+    n.is_dir = is_dir;
+    n.deleted = false;
+    n.finalized = false;
+    n.n_children = 0u32;
+    n.first_child = null;
+    n.next = null;
+    n.parent = null;
+    n.kids = new_slice(*Node, a, 0usize);
+    return n;
+}
+
+// Push `child` onto `parent`'s child list (order irrelevant; we sort later).
+pub add_child :: fn(parent: *Node, child: *Node) {
+    child.parent = parent;
+    child.next = parent.first_child;
+    parent.first_child = child;
+    parent.n_children = parent.n_children + 1u32;
+}
+
+// Build + sort this node's `kids` slice on first use.
+pub finalize :: fn(a: *Arena, node: *Node) {
+    if node.finalized { return; }
+    node.finalized = true;
+    arr := new_slice(*Node, a, node.n_children as usize);
+    i: usize = 0usize;
+    cur := node.first_child;
+    cont: bool = true;
+    while cont {
+        if cur |c| { arr[i] = c; i = i + 1usize; cur = c.next; }
+        else { cont = false; }
+    }
+    sort_desc(arr);
+    node.kids = arr;
+}
+
+// How many non-deleted children this node has (call finalize first).
+pub live_children :: fn(node: *Node) -> usize {
+    n: usize = 0usize;
+    i: usize = 0usize;
+    while i < node.kids.len { if !node.kids[i].deleted { n = n + 1usize; } i = i + 1usize; }
+    return n;
+}
+
+// Tombstone a node and refund its bytes up the ancestor chain.
+pub mark_deleted :: fn(node: *Node) {
+    if node.deleted { return; }
+    node.deleted = true;
+    sz: u64 = node.size;
+    p := node.parent;
+    cont: bool = true;
+    while cont {
+        if p |pp| { pp.size = pp.size - sz; p = pp.parent; } else { cont = false; }
+    }
+}
+
+// ── heapsort by .size descending (no recursion, O(n log n)) ──────────────────
+swap :: fn(a: []*Node, i: usize, j: usize) { t := a[i]; a[i] = a[j]; a[j] = t; }
+
+sift_down :: fn(a: []*Node, start: usize, end: usize) {
+    root: usize = start;
+    cont: bool = true;
+    while cont {
+        child: usize = 2usize * root + 1usize;
+        if child >= end { cont = false; }
+        else {
+            // pick larger child
+            if child + 1usize < end { if a[child + 1usize].size > a[child].size { child = child + 1usize; } }
+            if a[root].size < a[child].size { swap(a, root, child); root = child; }
+            else { cont = false; }
+        }
+    }
+}
+
+sort_desc :: fn(a: []*Node) {
+    n: usize = a.len;
+    if n < 2usize { return; }
+    // build max-heap → ascending order
+    i: usize = n / 2usize;
+    while i > 0usize { i = i - 1usize; sift_down(a, i, n); }
+    e: usize = n;
+    while e > 1usize { e = e - 1usize; swap(a, 0usize, e); sift_down(a, 0usize, e); }
+    // reverse to descending
+    l: usize = 0usize;
+    r: usize = n - 1usize;
+    while l < r { swap(a, l, r); l = l + 1usize; r = r - 1usize; }
+}

@@ -1,0 +1,55 @@
+// render — rasterize the World into an ASCII frame.
+
+#import world.{ World };
+#import components.{ Kind, FIELD_W, FIELD_H };
+#import std.strings.{ StringBuilder, append_byte };
+
+GW :: 58;   // grid columns
+GH :: 20;   // grid rows
+
+glyph :: fn(k: Kind, r: f32) -> u8 {
+    match k {
+        .Turret   => return 64u8;                                  // @
+        .Bullet   => return 42u8;                                  // *
+        .Asteroid => { if r > 3.2f32 { return 79u8; } return 111u8; }  // O / o
+        else      => return 32u8;
+    }
+}
+
+// Append a bordered ASCII rendering of the field to `sb`.
+pub render :: fn(w: *World, sb: *StringBuilder) {
+    cells: [GH * GW]u8 = .{};
+    i: usize = 0usize;
+    while i < (GH * GW) as usize { cells[i] = 32u8; i += 1usize; }   // spaces
+
+    e: usize = 0usize;
+    while e < w.count {
+        if w.alive[e] {
+            gx: i32 = ((w.pos[e].x / (FIELD_W as f32)) * (GW as f32)) as i32;
+            gy: i32 = ((w.pos[e].y / (FIELD_H as f32)) * (GH as f32)) as i32;
+            inb: bool = gx >= 0 && gx < GW && gy >= 0 && gy < GH;
+            if inb { cells[(gy * GW + gx) as usize] = glyph(w.kind[e], w.radius[e]); }
+        }
+        e += 1usize;
+    }
+
+    hbar(sb);
+    y: usize = 0usize;
+    while y < GH {
+        append_byte(sb, 124u8);                 // |
+        x: usize = 0usize;
+        while x < GW { append_byte(sb, cells[y * GW + x]); x += 1usize; }
+        append_byte(sb, 124u8);
+        append_byte(sb, 10u8);                  // \n
+        y += 1usize;
+    }
+    hbar(sb);
+}
+
+hbar :: fn(sb: *StringBuilder) {
+    append_byte(sb, 43u8);                       // +
+    x: usize = 0usize;
+    while x < GW { append_byte(sb, 45u8); x += 1usize; }   // -
+    append_byte(sb, 43u8);
+    append_byte(sb, 10u8);
+}

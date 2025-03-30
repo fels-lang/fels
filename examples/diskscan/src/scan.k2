@@ -1,0 +1,224 @@
+// scan — the fast disk scanner, using both performance levers.
+//
+//   Lever 1 — bulk reads.  Instead of FindNextFile (one entry per syscall), each
+//   directory is opened as a handle and drained with GetFileInformationByHandleEx,
+//   which fills a 64 KB buffer with *many* FILE_FULL_DIR_INFO records per call.
+//   We read a directory completely before descending, so a single 64 KB buffer is
+//   reused for the whole subtree a thread owns (no per-directory allocation).
+//
+//   Lever 2 — threads.  The root's immediate sub-directories are partitioned
+//   round-robin across one worker thread per CPU. Each worker owns a disjoint set
+//   of subtrees and its own arena, so the scan is lock-free: threads never touch
+//   each other's nodes. NTFS/SSD loves the concurrent reads.
+
+#import std.heap.{ Arena, make, new_slice };
+#import std.strings.{ str_dup, str_concat };
+
+#import win32;
+#import node.{ Node, make_node, add_child };
+
+pub Stats :: struct { files: u64, dirs: u64 }
+
+BUFSZ :: 65536usize;          // 64 KB directory-read buffer
+
+// ── raw little-endian loads from the read buffer ─────────────────────────────
+ld_u32 :: fn(addr: usize) -> u32 { p := unsafe ((addr) as *const u32); return unsafe (*p); }
+ld_i64 :: fn(addr: usize) -> i64 { p := unsafe ((addr) as *const i64); return unsafe (*p); }
+
+is_dot :: fn(n: []const u8) -> bool {
+    if n.len == 1usize { return n[0] == 46u8; }
+    if n.len == 2usize { if n[0] == 46u8 { return n[1] == 46u8; } }
+    return false;
+}
+
+// Append "\<name>" (or just "<name>" if path already ends in '\') at `path[plen]`.
+// Returns the new length, or 0 if it would overflow.
+append_child :: fn(path: []u8, plen: usize, name: []const u8) -> usize {
+    sep: usize = 1usize;
+    if plen > 0usize { if path[plen - 1usize] == 92u8 { sep = 0usize; } }
+    nlen: usize = plen + sep + name.len;
+    if nlen + 2usize >= path.len { return 0usize; }
+    if sep == 1usize { path[plen] = 92u8; }
+    j: usize = 0usize;
+    while j < name.len { path[plen + sep + j] = name[j]; j = j + 1usize; }
+    return nlen;
+}
+
+// Read every entry of the directory at path[0..plen] and create child nodes
+// (files get their size now; sub-directory sizes are filled in later). Does NOT
+// recurse. Returns nothing; counts into `st`.
+drain :: fn(a: *Arena, dir: *Node, path: []u8, plen: usize, buf: []u64, st: *Stats) {
+    if plen + 1usize >= path.len { return; }
+    path[plen] = 0u8;                                   // NUL-terminate for CreateFileA
+    pcs := unsafe ((&path[0]) as *const u8);
+    h := win32::CreateFileA(pcs, win32::GENERIC_READ,
+        win32::FILE_SHARE_READ | win32::FILE_SHARE_WRITE | win32::FILE_SHARE_DELETE,
+        null, win32::OPEN_EXISTING, win32::FILE_FLAG_BACKUP_SEMANTICS, 0usize);
+    if h == win32::INVALID_HANDLE { return; }
+
+    bufp := unsafe ((&buf[0]) as *void);
+    base := unsafe ((&buf[0]) as usize);
+    more: bool = true;
+    while more {
+        ok := win32::GetFileInformationByHandleEx(h, win32::FileFullDirectoryInfo, bufp, BUFSZ as u32);
+        if !ok { more = false; }
+        else {
+            off: usize = 0usize;
+            scanning: bool = true;
+            while scanning {
+                ep: usize = base + off;
+                attrs := ld_u32(ep + win32::OFF_ATTRS);
+                namelen_b := ld_u32(ep + win32::OFF_NAMELEN);
+                wname := unsafe ((ep + win32::OFF_NAME) as *const u16);
+
+                nbuf: [1024]u8 = .{};
+                nchars: i32 = (namelen_b / 2u32) as i32;
+                nb := win32::WideCharToMultiByte(win32::CP_ACP, 0u32, wname, nchars, &nbuf[0], 1024i32, null, null);
+                aname := nbuf[0usize..(nb as usize)];
+
+                is_dir: bool = (attrs & win32::FILE_ATTRIBUTE_DIRECTORY) != 0u32;
+                is_reparse: bool = (attrs & win32::FILE_ATTRIBUTE_REPARSE) != 0u32;
+                if !is_dot(aname) {
+                    if is_reparse {
+                        // skip symlinks/junctions — avoid cycles + double counting
+                    } else {
+                        nm := str_dup(a, aname);
+                        child := make_node(a, nm, is_dir);
+                        if is_dir { st.dirs = st.dirs + 1u64; }
+                        else {
+                            sz := ld_i64(ep + win32::OFF_ENDOFFILE) as u64;
+                            child.size = sz;
+                            st.files = st.files + 1u64;
+                        }
+                        add_child(dir, child);
+                    }
+                }
+                next := ld_u32(ep + win32::OFF_NEXT);
+                if next == 0u32 { scanning = false; } else { off = off + (next as usize); }
+            }
+        }
+    }
+    ignored := CloseHandle(h);
+}
+
+// Fully scan a directory subtree: drain it, then recurse into each sub-directory
+// (reusing the same 64 KB buffer), then sum the subtree size.
+pub scan_into :: fn(a: *Arena, dir: *Node, path: []u8, plen: usize, buf: []u64, st: *Stats) {
+    drain(a, dir, path, plen, buf, st);
+    total: u64 = 0u64;
+    cur := dir.first_child;
+    cont: bool = true;
+    while cont {
+        if cur |c| {
+            if c.is_dir {
+                nlen := append_child(path, plen, c.name);
+                if nlen > 0usize { scan_into(a, c, path, nlen, buf, st); }
+            }
+            total = total + c.size;
+            cur = c.next;
+        } else { cont = false; }
+    }
+    dir.size = total;
+}
+
+// ── multithreading: one worker per CPU over the top-level sub-directories ─────
+ThreadArg :: struct {
+    dirs:      []*Node,         // shared: top-level dir nodes (disjoint per thread)
+    paths:     [][]const u8,    // shared: full path of each top-level dir
+    start:     usize,
+    stride:    usize,
+    out_files: u64,
+    out_dirs:  u64,
+}
+
+worker :: fn(param: *void) -> u32 {
+    arg := unsafe (param as *ThreadArg);
+    ta := make();                                  // this thread's private arena
+    rbuf := new_slice(u64, &ta, BUFSZ / 8usize);   // 8-byte-aligned 64 KB buffer
+    pbuf: [4096]u8 = .{};
+    st: Stats = .{ 0u64, 0u64 };
+
+    i: usize = arg.start;
+    while i < arg.dirs.len {
+        p := arg.paths[i];
+        k: usize = 0usize;
+        while k < p.len { pbuf[k] = p[k]; k = k + 1usize; }
+        scan_into(&ta, arg.dirs[i], pbuf[:], p.len, rbuf, &st);
+        i = i + arg.stride;
+    }
+    arg.out_files = st.files;
+    arg.out_dirs = st.dirs;
+    return 0u32;
+}
+
+// Scan `root_path`, returning the populated tree root. Counts land in `out`.
+pub scan :: fn(a: *Arena, root_path: []const u8, out: *Stats) -> *Node {
+    root := make_node(a, str_dup(a, root_path), true);
+
+    // Drain the root directory itself (top-level files + dirs), single-threaded.
+    pbuf: [4096]u8 = .{};
+    k: usize = 0usize;
+    while k < root_path.len { pbuf[k] = root_path[k]; k = k + 1usize; }
+    rootbuf := new_slice(u64, a, BUFSZ / 8usize);
+    rstat: Stats = .{ 0u64, 0u64 };
+    drain(a, root, pbuf[:], root_path.len, rootbuf, &rstat);
+
+    // Collect the top-level sub-directories + their full paths.
+    ndir: usize = 0usize;
+    cur := root.first_child;
+    cont: bool = true;
+    while cont { if cur |c| { if c.is_dir { ndir = ndir + 1usize; } cur = c.next; } else { cont = false; } }
+
+    top_dirs := new_slice(*Node, a, ndir);
+    top_paths := new_slice([]const u8, a, ndir);
+    idx: usize = 0usize;
+    cur = root.first_child;
+    cont = true;
+    while cont {
+        if cur |c| {
+            if c.is_dir {
+                top_dirs[idx] = c;
+                sepp: []const u8 = "\\";
+                if root_path.len > 0usize { if root_path[root_path.len - 1usize] == 92u8 { sepp = ""; } }
+                top_paths[idx] = str_concat(a, str_concat(a, root_path, sepp), c.name);
+                idx = idx + 1usize;
+            }
+            cur = c.next;
+        } else { cont = false; }
+    }
+
+    // Spawn workers.
+    nthreads: usize = win32::cpu_count() as usize;
+    if nthreads < 1usize { nthreads = 1usize; }
+    if nthreads > 16usize { nthreads = 16usize; }
+    if nthreads > ndir { nthreads = ndir; }
+    if nthreads < 1usize { nthreads = 1usize; }
+
+    args := new_slice(ThreadArg, a, nthreads);
+    handles := new_slice(usize, a, nthreads);
+    t: usize = 0usize;
+    while t < nthreads {
+        args[t] = .{ top_dirs, top_paths, t, nthreads, 0u64, 0u64 };
+        p := unsafe ((&args[t]) as *void);
+        handles[t] = win32::CreateThread(null, 0usize, worker, p, 0u32, null);
+        t = t + 1usize;
+    }
+    hp := unsafe ((&handles[0]) as *const usize);
+    ignored := win32::WaitForMultipleObjects(nthreads as u32, hp, true, win32::WAIT_FOREVER);
+
+    // Merge stats + sum the root.
+    files: u64 = rstat.files;
+    dirs: u64 = rstat.dirs;
+    t = 0usize;
+    while t < nthreads { files = files + args[t].out_files; dirs = dirs + args[t].out_dirs; t = t + 1usize; }
+
+    total: u64 = 0u64;
+    cur = root.first_child;
+    cont = true;
+    while cont { if cur |c| { total = total + c.size; cur = c.next; } else { cont = false; } }
+    root.size = total;
+
+    out.files = files;
+    out.dirs = dirs;
+    return root;
+}

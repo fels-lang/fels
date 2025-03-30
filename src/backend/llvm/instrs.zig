@@ -792,6 +792,24 @@ fn lowerField(
             return llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, result_ty), field_ptr, "");
         },
 
+        .array => |arr| {
+            // Fixed array: `.len` is the compile-time element count; `.ptr` is the
+            // address of the first element.
+            if (std.mem.eql(u8, f.name, "len")) {
+                return llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), arr.len, 0);
+            }
+            if (std.mem.eql(u8, f.name, "ptr")) {
+                const arr_lty = types.lower(cg, base_ir_ty);
+                const base_ptr = localOrAllocaPtr(cg, fncg, f.base, arr_lty) orelse return null;
+                var indices = [_]llvm.LLVMValueRef{
+                    llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), 0, 0),
+                    llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), 0, 0),
+                };
+                return llvm.LLVMBuildGEP2(cg.builder, arr_lty, base_ptr, &indices, 2, "");
+            }
+            return null;
+        },
+
         else => return null,
     }
 }

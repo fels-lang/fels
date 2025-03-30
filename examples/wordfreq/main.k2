@@ -1,34 +1,31 @@
-// wordfreq — top word frequencies in a text. Showcases the generic std.list.
+// wordfreq — top word frequencies in a text.
 //
 //   wordfreq [file]    count words; print the 8 most frequent (default: embedded text)
 
 #import std.fs;
 #import std.heap.{ Arena, make };
-#import std.list.{ List, len, set, push, get };
-#import std.list;
 #import std.strings.{ str_eq, is_alpha, to_lower_byte };
-#import std.io.{ print, print_u64, println};
+#import std.io.{ print, print_u64 };
 #import std.process;
 
+MAXW :: 1024;
 Entry :: struct { word: []const u8, count: u64 }
 
-bump :: fn(words: *List(Entry), w: []const u8) {
+bump :: fn(words: []Entry, n: *usize, w: []const u8) {
+    cnt: usize = *n;
     i: usize = 0usize;
-    n: usize = len(Entry, words);
-    while i < n {
-        e := get(Entry, words, i);
-        if str_eq(e.word, w) {
-            e.count += 1u64;
-            set(Entry, words, i, e);
-            return;
-        }
+    while i < cnt {
+        if str_eq(words[i].word, w) { words[i].count += 1u64; return; }
         i += 1usize;
     }
-    new: Entry = .{ w, 1u64 };
-    push(Entry, words, new);
+    if cnt < MAXW {
+        words[cnt].word = w;
+        words[cnt].count = 1u64;
+        *n = cnt + 1usize;
+    }
 }
 
-tally :: fn(text: []u8, words: *List(Entry)) {
+tally :: fn(text: []u8, words: []Entry, n: *usize) {
     i: usize = 0usize;
     while i < text.len {
         if is_alpha(text[i]) {
@@ -38,59 +35,13 @@ tally :: fn(text: []u8, words: *List(Entry)) {
                 text[i] = to_lower_byte(text[i]);          // normalise in place
                 i += 1usize;
             }
-            bump(words, text[start..i]);
+            bump(words, n, text[start..i]);
         } else {
             i += 1usize;
         }
     }
 }
 
-#entry
-main :: fn() -> i32 {
-    a := make();
-    line_buf: [1024]u8 = .{};
-    line := process::command_line(line_buf[:]);
-
-    // Use a file argument if given, else an embedded passage.
-    arg := first_arg(line);
-    text: []u8 = .{};
-    if arg.len > 0usize {
-        text = fs::read_all(arg, &a) catch err { print("wordfreq: cannot read "); print(arg); print("\n"); return 1; };
-        print("words in "); print(arg); println(":");
-    } else {
-        sample := "the cat sat on the mat the cat ran the dog sat the cat and the dog";
-        text = str_dup_mut(&a, sample);
-        print("words in the embedded sample:\n");
-    }
-
-    words := list::make(Entry, &a);
-    tally(text, &words);
-
-    // Print the 8 most frequent (destructive selection — zero each as printed).
-    n: usize = len(Entry, &words);
-    shown: usize = 0usize;
-    limit: usize = 8usize;
-    if n < limit { limit = n; }
-    while shown < limit {
-        best: usize = 0usize;
-        best_c: u64 = 0u64;
-        i: usize = 0usize;
-        while i < n {
-            e := get(Entry, &words, i);
-            if e.count > best_c { best_c = e.count; best = i; }
-            i += 1usize;
-        }
-        if best_c == 0u64 { break; }
-        be := get(Entry, &words, best);
-        print("  "); print_u64(be.count); print("  "); print(be.word); print("\n");
-        be.count = 0u64;
-        set(Entry, &words, best, be);
-        shown += 1usize;
-    }
-    return 0;
-}
-
-// A mutable copy of a string literal in the arena (so we can lowercase it).
 str_dup_mut :: fn(a: *Arena, s: []const u8) -> []u8 {
     buf: []u8 = a.alloc_bytes(s.len);
     i: usize = 0usize;
@@ -109,4 +60,43 @@ first_arg :: fn(line: []const u8) -> []const u8 {
     start: usize = i;
     while i < line.len { if line[i] == 32u8 { break; } i += 1usize; }
     return line[start..i];
+}
+
+#entry
+main :: fn() -> i32 {
+    a := make();
+    line_buf: [1024]u8 = .{};
+    arg := first_arg(process::command_line(line_buf[:]));
+
+    text: []u8 = .{};
+    if arg.len > 0usize {
+        text = fs::read_all(arg, &a) catch err { print("wordfreq: cannot read "); print(arg); print("\n"); return 1; };
+        print("words in "); print(arg); print(":\n");
+    } else {
+        text = str_dup_mut(&a, "the cat sat on the mat the cat ran the dog sat the cat and the dog");
+        print("words in the embedded sample:\n");
+    }
+
+    words: [MAXW]Entry = .{};
+    n: usize = 0usize;
+    tally(text, words[0..MAXW], &n);
+
+    // Print the 8 most frequent (destructive selection — zero each as printed).
+    limit: usize = 8usize;
+    if n < limit { limit = n; }
+    shown: usize = 0usize;
+    while shown < limit {
+        best: usize = 0usize;
+        best_c: u64 = 0u64;
+        i: usize = 0usize;
+        while i < n {
+            if words[i].count > best_c { best_c = words[i].count; best = i; }
+            i += 1usize;
+        }
+        if best_c == 0u64 { break; }
+        print("  "); print_u64(best_c); print("  "); print(words[best].word); print("\n");
+        words[best].count = 0u64;
+        shown += 1usize;
+    }
+    return 0;
 }
