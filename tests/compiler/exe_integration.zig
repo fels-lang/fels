@@ -1737,6 +1737,28 @@ test "exe: `[N]T = .{}` actually zero-inits the whole array (issue #7)" {
     try std.testing.expectEqual(@as(u32, 0), code);
 }
 
+test "exe: compound-lvalue field assignment lands (a.b.c, arr[i].f) (issue #8)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `l.p.x = 40` and `g.cells[2].y = 2` used to be silently dropped — the
+    // address of the nested place wasn't taken, so the store hit a temp copy.
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct { x: i32, y: i32 }
+        \\L :: struct { p: P, n: i32 }
+        \\Grid :: struct { cells: [4]P }
+        \\main :: fn() -> i32 {
+        \\    l: L = .{ .{1,2}, 0 };
+        \\    l.p.x = 40;
+        \\    g: Grid = .{ .{ .{0,0}, .{0,0}, .{0,0}, .{0,0} } };
+        \\    g.cells[2].y = 2;
+        \\    return l.p.x + g.cells[2].y;
+        \\}
+    , "exe_compound_lvalue");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: `[N]T` with a named-const size has the right length (issue #9)" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
