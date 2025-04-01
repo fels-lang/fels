@@ -1737,6 +1737,24 @@ test "exe: `[N]T = .{}` actually zero-inits the whole array (issue #7)" {
     try std.testing.expectEqual(@as(u32, 0), code);
 }
 
+test "exe: `[N]T` with a named-const size has the right length (issue #9)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `[N]u8` with a named const N used to get a garbage length (the const map
+    // was populated after layout). Now `a.len == N` and the storage is real.
+    const code = try compileAndRun(arena.allocator(),
+        \\N :: 48;
+        \\main :: fn() -> i32 {
+        \\    a: [N]u8 = .{};
+        \\    a[N - 1usize] = 7u8;
+        \\    return (a.len as i32) + (a[N - 1usize] as i32);
+        \\}
+    , "exe_named_const_array");
+    try std.testing.expectEqual(@as(u32, 55), code); // 48 + 7
+}
+
 test "exe: a nested `#run` in a top-level const folds (issue #4)" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
