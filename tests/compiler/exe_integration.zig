@@ -1737,6 +1737,22 @@ test "exe: `[N]T = .{}` actually zero-inits the whole array (issue #7)" {
     try std.testing.expectEqual(@as(u32, 0), code);
 }
 
+test "exe: a nested `#run` in a top-level const folds (issue #4)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `10 + #run f()` used to drop the `#run` and fold to 0 — only a whole-RHS
+    // `#run` was routed to the comptime VM. Now any embedded `#run` folds too.
+    const code = try compileAndRun(arena.allocator(),
+        \\f :: fn() -> i32 { return 5; }
+        \\K :: 10 + #run f();
+        \\P :: #run f() * 3;
+        \\main :: fn() -> i32 { return K + P; }
+    , "exe_nested_run_const");
+    try std.testing.expectEqual(@as(u32, 30), code);
+}
+
 test "exe: a large stack frame links and runs (provides __chkstk)" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
