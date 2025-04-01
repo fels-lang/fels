@@ -1335,6 +1335,16 @@ pub const Parser = struct {
             .int_lit => return self.expr(.{ .int = tok.text(self.source) }, spanFrom(tok, tok)),
             .float_lit => return self.expr(.{ .float = tok.text(self.source) }, spanFrom(tok, tok)),
             .string_lit => return self.expr(.{ .string = tok.text(self.source) }, spanFrom(tok, tok)),
+            .char_lit => {
+                // A char literal is just sugar for its integer code point — an
+                // untyped int literal that coerces to u8/rune/i32/etc. like `65`.
+                const value = decodeCharLit(tok.text(self.source)) catch {
+                    try self.errorAt(tok, "invalid character literal");
+                    return error.ParseFailed;
+                };
+                const dec = std.fmt.allocPrint(self.allocator, "{d}", .{value}) catch return error.ParseFailed;
+                return self.expr(.{ .int = dec }, spanFrom(tok, tok));
+            },
             .keyword_true => return self.expr(.{ .bool = true }, spanFrom(tok, tok)),
             .keyword_false => return self.expr(.{ .bool = false }, spanFrom(tok, tok)),
             .keyword_null => return self.expr(.null, spanFrom(tok, tok)),
@@ -1566,6 +1576,38 @@ pub const Parser = struct {
 fn trimQuotes(text: []const u8) []const u8 {
     if (text.len >= 2 and text[0] == '"' and text[text.len - 1] == '"') return text[1 .. text.len - 1];
     return text;
+}
+
+/// Decode a char-literal token (`'a'`, `'\n'`, `'\x41'`) — quotes included — to
+/// its Unicode code point. Supports the usual escapes and `\xNN`; a bare
+/// (possibly multi-byte UTF-8) character decodes to its code point.
+fn decodeCharLit(raw: []const u8) !u32 {
+    if (raw.len < 3 or raw[0] != '\'' or raw[raw.len - 1] != '\'') return error.Invalid;
+    const inner = raw[1 .. raw.len - 1];
+    if (inner.len == 0) return error.Invalid;
+    if (inner[0] != '\\') {
+        const n = std.unicode.utf8ByteSequenceLength(inner[0]) catch return error.Invalid;
+        if (n == 1) return inner[0];
+        if (inner.len < n) return error.Invalid;
+        return std.unicode.utf8Decode(inner[0..n]) catch error.Invalid;
+    }
+    if (inner.len < 2) return error.Invalid;
+    return switch (inner[1]) {
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        '0' => 0,
+        '\\' => '\\',
+        '\'' => '\'',
+        '"' => '"',
+        'x' => blk: {
+            if (inner.len < 4) return error.Invalid;
+            const hi = std.fmt.charToDigit(inner[2], 16) catch return error.Invalid;
+            const lo = std.fmt.charToDigit(inner[3], 16) catch return error.Invalid;
+            break :blk @as(u32, hi) * 16 + lo;
+        },
+        else => error.Invalid,
+    };
 }
 
 const Infix = struct {

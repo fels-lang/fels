@@ -9,6 +9,7 @@ pub const TokenKind = enum {
     int_lit,
     float_lit,
     string_lit,
+    char_lit, // 'a', '\n', '\x41' — decoded to an integer literal in the parser
 
     // Delimiters
     l_paren, // (
@@ -273,6 +274,7 @@ pub const Lexer = struct {
                 return token(.gt, start, self.index);
             },
             '"' => return self.string(start),
+            '\'' => return self.charLit(start),
             else => {
                 if (isIdentStart(ch)) return self.ident(start);
                 if (std.ascii.isDigit(ch)) return self.number(start);
@@ -383,6 +385,22 @@ pub const Lexer = struct {
             if (ch == '"') return token(.string_lit, start, self.index);
         }
 
+        return token(.invalid, start, self.index);
+    }
+
+    // `'a'`, `'\n'`, `'\x41'`. The opening quote is already consumed; scan to the
+    // closing quote (the parser decodes the value). A backslash escapes the next
+    // byte so `'\''` lexes correctly.
+    fn charLit(self: *Lexer, start: usize) Token {
+        while (self.index < self.source.len) {
+            const ch = self.advance();
+            if (ch == '\\' and self.index < self.source.len) {
+                self.index += 1;
+                continue;
+            }
+            if (ch == '\'') return token(.char_lit, start, self.index);
+            if (ch == '\n') break;
+        }
         return token(.invalid, start, self.index);
     }
 };
