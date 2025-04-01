@@ -108,6 +108,9 @@ State :: struct {
     scan_path: []const u8, files: u64, dirs: u64,
     // double-buffer
     mem_dc: usize, mem_bmp: usize, mem_w: i32, mem_h: i32,
+    // cached treemap layer — re-rendered only when the tree/pane changes, NOT on
+    // hover or scroll. hitboxes are in pane-local coords (offset by tm_px/tm_py).
+    tm_dc: usize, tm_bmp: usize, tm_bw: i32, tm_bh: i32, tm_dirty: bool, tm_px: i32, tm_py: i32,
 }
 
 rgb :: fn(r: u32, g: u32, b: u32) -> u32 { return r | (g << 8u32) | (b << 16u32); }
@@ -244,18 +247,17 @@ draw_cell :: fn(s: *State, hdc: usize, n: *Node, x: f64, y: f64, w: f64, h: f64,
     r: RECT = .{ ix, iy, ix + iw, iy + ih };
     if n.is_dir { if depth < MAXD { if w > 14.0 { if h > 14.0 {
         finalize(s.arena, n);
-        ig := SetDCBrushColor(hdc, scale_rgb(rgb(40u32, 44u32, 52u32), s.anim));
+        ig := SetDCBrushColor(hdc, rgb(40u32, 44u32, 52u32));
         ig2 := FillRect(hdc, &r, s.dcbrush);
         treemap(s, hdc, n.kids, x + 1.0, y + 1.0, w - 2.0, h - 2.0, n.size, depth + 1i32);
         ig3 := FrameRect(hdc, &r, s.br_border);
         return;
     } } } }
-    // leaf
-    ig4 := SetDCBrushColor(hdc, scale_rgb(color_for(n), s.anim));
+    // leaf — full colour (no per-frame scaling, so the layer is cacheable)
+    ig4 := SetDCBrushColor(hdc, color_for(n));
     ig5 := FillRect(hdc, &r, s.dcbrush);
     if iw > 3i32 { if ih > 3i32 { ig6 := FrameRect(hdc, &r, s.br_border); } }
     if s.nhits < s.hits.len { s.hits[s.nhits] = .{ ix, iy, iw, ih, n }; s.nhits = s.nhits + 1usize; }
-    if s.hover |hv| { if hv == n { ig7 := FrameRect(hdc, &r, s.br_hover); } }
 }
 treemap :: fn(s: *State, hdc: usize, items: []*Node, x: f64, y: f64, w: f64, h: f64, total: u64, depth: i32) {
     if w < 1.0 { return; } if h < 1.0 { return; } if total == 0u64 { return; }
@@ -319,6 +321,7 @@ wndproc :: fn(hwnd: usize, msg: u32, wp: usize, lp: isize) -> isize {
         s.width = (lp & 0xFFFFisize) as i32;
         s.height = ((lp >> 16isize) & 0xFFFFisize) as i32;
         s.rows = (s.height - HEAD_H - FOOT_H) / LINE_H;
+        s.tm_dirty = true;
         ignored := InvalidateRect(hwnd, null, false);
         return 0isize;
     }
@@ -328,7 +331,7 @@ wndproc :: fn(hwnd: usize, msg: u32, wp: usize, lp: isize) -> isize {
             ignored := InvalidateRect(hwnd, null, false);
         } else { if s.was_scanning {
             s.was_scanning = false;                  // scan just finished → reveal + grow-in
-            s.anim = 0.05; set_title(s);
+            s.anim = 0.05; s.tm_dirty = true; set_title(s);
             ignored2 := InvalidateRect(hwnd, null, false);
         } else {
             s.anim = s.anim + 0.12;
@@ -341,11 +344,15 @@ wndproc :: fn(hwnd: usize, msg: u32, wp: usize, lp: isize) -> isize {
     if msg == WM_MOUSEMOVE {
         s.mx = (lp & 0xFFFFisize) as i32;
         s.my = ((lp >> 16isize) & 0xFFFFisize) as i32;
-        nh := hit_test(s, s.mx, s.my);
+        nh: ?*Node = null;
+        if s.view != 2i32 { if s.mx >= s.tm_px { if s.my >= s.tm_py {
+            nh = hit_test(s, s.mx - s.tm_px, s.my - s.tm_py);   // pane-local
+        } } }
         changed: bool = true;
         if nh |a| { if s.hover |b| { if a == b { changed = false; } } }
         else { if s.hover |b| { changed = true; } else { changed = false; } }
         s.hover = nh;
+        // only the cheap composite redraws — the cached treemap layer is untouched
         if changed { ignored := InvalidateRect(hwnd, null, false); }
         return 0isize;
     }
@@ -355,9 +362,9 @@ wndproc :: fn(hwnd: usize, msg: u32, wp: usize, lp: isize) -> isize {
         if x < LIST_W { if s.view != 1i32 {
             row := (y - HEAD_H) / LINE_H;
             if row >= 0i32 { s.sel = s.scroll + row; clamp_sel(s); ignored := InvalidateRect(hwnd, null, false); }
-        } } else {
-            if hit_test(s, x, y) |hitn| { jump_to(s, hitn); }
-        }
+        } } else { if s.view != 2i32 {
+            if hit_test(s, x - s.tm_px, y - s.tm_py) |hitn| { jump_to(s, hitn); }
+        } }
         return 0isize;
     }
     if msg == WM_LBUTTONDBLCLK { descend(s); kick(s); return 0isize; }
@@ -379,7 +386,7 @@ wndproc :: fn(hwnd: usize, msg: u32, wp: usize, lp: isize) -> isize {
         if key == VK_RETURN { descend(s); kick(s); }
         if key == VK_BACK  { ascend(s); kick(s); }
         if key == VK_DELETE { do_delete(s); }
-        if key == VK_TAB   { s.view = (s.view + 1i32) % 3i32; }
+        if key == VK_TAB   { s.view = (s.view + 1i32) % 3i32; s.tm_dirty = true; }
         if key == VK_F5    { rescan(s); }
         if key == VK_O     { open_in_explorer(s); }
         if key == VK_ESCAPE { PostQuitMessage(0); }
@@ -390,7 +397,7 @@ wndproc :: fn(hwnd: usize, msg: u32, wp: usize, lp: isize) -> isize {
 }
 
 kick :: fn(s: *State) {
-    s.anim = 0.08; s.animating = true;
+    s.anim = 0.08; s.animating = true; s.tm_dirty = true;   // the directory changed → re-render the treemap layer
     ig := SetTimer(s.hwnd, 1usize, 16u32, null);
     ignored := InvalidateRect(s.hwnd, null, false);
 }
@@ -463,7 +470,7 @@ do_delete :: fn(s: *State) {
         if MessageBoxA(s.hwnd, mptr, cap, MB_YESNO | MB_ICONWARNING) == IDYES {
             pp := unsafe ((&path[0]) as *const u8);
             op: SHFILEOP = .{ s.hwnd, 3u32, pp, null, 0x50u16, 0i32, null, null };
-            if SHFileOperationA(&op) == 0i32 { mark_deleted(c); clamp_sel(s); }
+            if SHFileOperationA(&op) == 0i32 { mark_deleted(c); clamp_sel(s); s.tm_dirty = true; }
         }
     }
 }
@@ -546,8 +553,43 @@ paint_scanning :: fn(s: *State, mdc: usize) {
     igk2 := FillRect(mdc, &knob, s.dcbrush);
 }
 
+// (Re)render the treemap into its own cached bitmap, but only when it's dirty or
+// the pane was resized. This is the expensive operation — keeping it out of the
+// hover/scroll path is what makes those smooth on directories with 100k+ files.
+render_treemap :: fn(s: *State, tw: i32, th: i32) {
+    if s.tm_dc == 0usize { s.tm_dc = CreateCompatibleDC(s.mem_dc); }
+    if s.tm_bw != tw { s.tm_bw = -1i32; }
+    if s.tm_bh != th { s.tm_bh = -1i32; }
+    if s.tm_bw < 0i32 {
+        nbmp := CreateCompatibleBitmap(s.mem_dc, tw, th);
+        prev := SelectObject(s.tm_dc, nbmp);
+        if s.tm_bmp != 0usize { ig := DeleteObject(s.tm_bmp); } else { ig0 := prev; }
+        s.tm_bmp = nbmp; s.tm_bw = tw; s.tm_bh = th; s.tm_dirty = true;
+    }
+    if s.tm_dirty {
+        s.nhits = 0usize;
+        pane: RECT = .{ 0i32, 0i32, tw, th };
+        igf := FillRect(s.tm_dc, &pane, s.br_pane);
+        treemap(s, s.tm_dc, s.cur.kids, 1.0, 1.0, (tw - 2i32) as f64, (th - 2i32) as f64, s.cur.size, 0i32);
+        s.tm_dirty = false;
+    }
+}
+
+// Outline the hovered cell on the composite (transient, never baked into the cache).
+draw_hover :: fn(s: *State, mdc: usize, hv: *Node, ox: i32, oy: i32) {
+    i: usize = 0usize;
+    while i < s.nhits {
+        hb := s.hits[i];
+        if hb.node == hv {
+            r: RECT = .{ hb.x + ox, hb.y + oy, hb.x + hb.w + ox, hb.y + hb.h + oy };
+            ig := FrameRect(mdc, &r, s.br_hover);
+            return;
+        }
+        i = i + 1usize;
+    }
+}
+
 paint_browse :: fn(s: *State, mdc: usize) {
-    s.nhits = 0usize;
     full: RECT = .{ 0i32, 0i32, s.width, s.height };
     ig := FillRect(mdc, &full, s.br_bg);
     head: RECT = .{ 0i32, 0i32, s.width, HEAD_H };
@@ -575,9 +617,10 @@ paint_browse :: fn(s: *State, mdc: usize) {
         tw := s.width - tx;
         ty := HEAD_H; th := s.height - HEAD_H - FOOT_H;
         if tw > 8i32 { if th > 8i32 {
-            pane: RECT = .{ tx, ty, tx + tw, ty + th };
-            igp := FillRect(mdc, &pane, s.br_pane);
-            treemap(s, mdc, s.cur.kids, (tx + 1i32) as f64, (ty + 1i32) as f64, (tw - 2i32) as f64, (th - 2i32) as f64, s.cur.size, 0i32);
+            s.tm_px = tx; s.tm_py = ty;
+            render_treemap(s, tw, th);                                  // cached — usually a no-op
+            igb := BitBlt(mdc, tx, ty, tw, th, s.tm_dc, 0i32, 0i32, SRCCOPY);
+            if s.hover |hv| { draw_hover(s, mdc, hv, tx, ty); }
         } }
     }
 
@@ -726,7 +769,8 @@ main :: fn() -> i32 {
                   CreateSolidBrush(rgb(255u32, 255u32, 255u32)),
                   CreateSolidBrush(rgb(18u32, 18u32, 20u32)),
                   true, true, 0i32, root_path, 0u64, 0u64,
-                  0usize, 0usize, -1i32, -1i32 };
+                  0usize, 0usize, -1i32, -1i32,
+                  0usize, 0usize, -1i32, -1i32, true, 0i32, 0i32 };
 
     wc: WNDCLASSEXA = .{ 80u32, 3u32, wndproc, 0i32, 0i32, inst, 0usize,
                          LoadCursorA(0usize, 32512usize), s.br_bg, null, cname, 0usize };
