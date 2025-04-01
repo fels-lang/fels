@@ -5606,15 +5606,45 @@ fn lowerWhereTypeToFunction(allocator: std.mem.Allocator, front_end: pipeline.Fr
     };
 }
 
+/// Does `expr` contain a `#run` anywhere? A top-level const whose initializer
+/// merely embeds a `#run` (e.g. `10 + #run f()`) must be folded by the comptime
+/// VM as a whole — not treated as a plain literal expression, which would drop
+/// the `#run` and fold to garbage.
+fn exprHasRun(expr: ast.Expr) bool {
+    return switch (expr.kind) {
+        .run_expr => true,
+        .binary => |b| exprHasRun(b.left.*) or exprHasRun(b.right.*),
+        .unary => |u| exprHasRun(u.expr.*),
+        .as_cast => |c| exprHasRun(c.value.*),
+        .force_unwrap, .unsafe_expr => |inner| exprHasRun(inner.*),
+        .nil_coalesce => |nc| exprHasRun(nc.value.*) or exprHasRun(nc.default.*),
+        .field => |f| exprHasRun(f.base.*),
+        .index => |i| exprHasRun(i.base.*) or exprHasRun(i.index.*),
+        .call => |c| blk: {
+            if (exprHasRun(c.callee.*)) break :blk true;
+            for (c.args) |a| switch (a) {
+                .positional => |x| if (exprHasRun(x)) break :blk true,
+                .named => |n| if (exprHasRun(n.value)) break :blk true,
+            };
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
 fn effectiveConstImm(expr: ast.Expr, cvm: ?*ComptimeVm, file: []const u8, source: []const u8) LowerError!Imm {
+    // A plain literal expression takes the fast path. Anything containing a
+    // `#run` — whether the whole RHS (`X :: #run f()`) or nested inside a bigger
+    // expression (`X :: 10 + #run f()`) — must fold on the comptime VM, since
+    // there is no runtime to compute a top-level const later.
+    if (expr.kind != .run_expr and !exprHasRun(expr)) return lowerImm(expr);
     const inner = switch (expr.kind) {
         .run_expr => |e| e.*,
-        else => return lowerImm(expr),
+        else => expr,
     };
 
-    // A top-level `X :: #run …` MUST fold to a compile-time constant — there is
-    // no runtime to compute it later. If the VM can't, fail loudly rather than
-    // silently substituting a best-effort (usually wrong) literal.
+    // If the VM can't fold it, fail loudly rather than silently substituting a
+    // best-effort (usually wrong) literal.
     const c = cvm orelse return lowerImm(inner);
     const v = c.evalRaw(inner) orelse {
         diag_mod.printErrorAt(
