@@ -1793,6 +1793,29 @@ test "exe: a nested `#run` in a top-level const folds (issue #4)" {
     try std.testing.expectEqual(@as(u32, 30), code);
 }
 
+test "exe: character literals decode to their code points" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `'A'`, `'\n'`, `'\x05'` are untyped int literals; `s[i] == '.'` coerces the
+    // literal to u8 in the comparison just like `s[i] == 46u8` would.
+    const code = try compileAndRun(arena.allocator(),
+        \\count_dots :: fn(s: []const u8) -> i32 {
+        \\    n: i32 = 0; i: usize = 0usize;
+        \\    while i < s.len { if s[i] == '.' { n = n + 1; } i = i + 1usize; }
+        \\    return n;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    a: i32 = 'A';
+        \\    nl: i32 = '\n';
+        \\    hx: i32 = '\x05';
+        \\    return a + nl + hx + count_dots("a.b.c");
+        \\}
+    , "exe_char_literals");
+    try std.testing.expectEqual(@as(u32, 82), code); // 65 + 10 + 5 + 2
+}
+
 test "exe: a large stack frame links and runs (provides __chkstk)" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
