@@ -411,6 +411,9 @@ pub const IfBinding = struct {
 
 pub const WhileStmt = struct {
     condition: Expr,
+    /// `while opt |x| { … }` — loops while `condition` is a non-null optional,
+    /// binding the unwrapped payload to `x` each iteration.
+    payload_binding: ?[]const u8,
     body: Block,
     span: Span,
 };

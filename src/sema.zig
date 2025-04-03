@@ -1960,12 +1960,26 @@ const Checker = struct {
             },
             .while_stmt => |while_stmt| {
                 const cond_ty = try self.inferExpr(while_stmt.condition);
-                if (!cond_ty.isBool()) {
-                    self.emitError(while_stmt.condition.span, "`while` condition must be `bool`, found `{s}`", .{self.formatTy(cond_ty)});
+                const payload_ty: ?Ty = switch (cond_ty) {
+                    .optional => |inner| inner.*,
+                    else => null,
+                };
+                if (!cond_ty.isBool() and payload_ty == null) {
+                    self.emitError(while_stmt.condition.span, "`while` condition must be `bool` or optional, found `{s}`", .{self.formatTy(cond_ty)});
+                    return error.SemanticFailed;
+                }
+                if (while_stmt.payload_binding != null and payload_ty == null) {
+                    self.emitError(while_stmt.condition.span, "`while … |x|` requires an optional condition, found `{s}`", .{self.formatTy(cond_ty)});
                     return error.SemanticFailed;
                 }
                 self.loop_depth += 1;
                 defer self.loop_depth -= 1;
+                try self.pushScope();
+                defer self.popScope();
+                if (while_stmt.payload_binding) |payload_name| {
+                    try self.declareLocal(payload_name, payload_ty orelse .unknown);
+                    try self.setLocalZoneOwner(payload_name, self.exprZoneOwner(while_stmt.condition));
+                }
                 try self.checkBlock(while_stmt.body);
             },
             .for_range => |for_stmt| {

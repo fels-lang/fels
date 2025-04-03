@@ -1040,8 +1040,15 @@ pub const Parser = struct {
 
     fn parseWhile(self: *Parser, start: Token) ParseError!ast.WhileStmt {
         const condition = try self.parseExpr(0);
+        // `while opt |x| { … }` — unwrap the optional payload each iteration.
+        var payload_binding: ?[]const u8 = null;
+        if (self.match(.pipe)) {
+            const name = try self.expect(.ident, "expected binding name after `|`");
+            _ = try self.expect(.pipe, "expected `|` after the binding name");
+            payload_binding = name.text(self.source);
+        }
         const body = try self.parseBlock();
-        return .{ .condition = condition, .body = body, .span = Span.new(start.start, body.span.end) };
+        return .{ .condition = condition, .payload_binding = payload_binding, .body = body, .span = Span.new(start.start, body.span.end) };
     }
 
     fn parseFor(self: *Parser, start: Token) ParseError!ast.Stmt {

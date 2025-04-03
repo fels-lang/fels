@@ -1991,7 +1991,20 @@ const FunctionLowerer = struct {
         try self.terminate(.{ .branch = cond_id });
 
         self.startBlock(cond_id, "while.cond");
-        const cond = try self.lowerExpr(while_stmt.condition);
+        const value = try self.lowerExpr(while_stmt.condition);
+        const value_ty = self.exprType(while_stmt.condition);
+        // `while opt |x|`: loop while the optional is non-null; the payload value
+        // computed here dominates the body, so we unwrap it there.
+        var payload_value: ?Value = null;
+        var payload_ty: ?IrType = null;
+        const cond = switch (value_ty) {
+            .optional => |inner| blk: {
+                payload_value = value;
+                payload_ty = inner.*;
+                break :blk try self.emit(.bool, .{ .optional_is_some = value });
+            },
+            else => value,
+        };
         try self.terminate(.{ .cond_branch = .{
             .cond = cond,
             .then_block = body_id,
@@ -1999,7 +2012,14 @@ const FunctionLowerer = struct {
         } });
 
         self.startBlock(body_id, "while.body");
+        const body_scope = try self.enterScope();
+        if (while_stmt.payload_binding) |name| {
+            const payload = try self.emit(payload_ty.?, .{ .optional_payload = payload_value.? });
+            const ir_name = try self.declareLocal(name, payload_ty.?);
+            try self.emitNoResult(payload_ty.?, .{ .store_local = .{ .name = ir_name, .value = payload } });
+        }
         try self.lowerBlock(while_stmt.body.statements, .{ .branch = cond_id });
+        self.leaveScope(body_scope);
 
         _ = self.loop_stack.pop();
         self.startBlock(after_id, "while.after");
@@ -4821,6 +4841,7 @@ const Reifier = struct {
             const pl = try ptrOf(payload); // AstWhile { cond, body }
             return .{ .while_stmt = .{
                 .condition = try self.reifyExpr(try self.cellAt(pl, 0)),
+                .payload_binding = null,
                 .body = try self.reifyBlock(try self.cellAt(pl, 1)),
                 .span = self.span,
             } };

@@ -339,6 +339,7 @@ const Expander = struct {
             } }),
             .while_stmt => |s| try out.append(self.arena, .{ .while_stmt = .{
                 .condition = try self.substExpr(s.condition, env, hyg),
+                .payload_binding = s.payload_binding,
                 .body = try self.substBlock(s.body, env, hyg),
                 .span = s.span,
             } }),
