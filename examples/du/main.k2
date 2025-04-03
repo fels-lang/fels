@@ -28,8 +28,8 @@ PATHCAP :: 4096;
 // overwrites it. Returns the subtree total; accumulates global counts in `s`.
 scan :: fn(buf: []u8, plen: usize, s: *Scan) -> u64 {
     if plen + 3usize >= buf.len { return 0u64; }
-    buf[plen] = 92u8;        // '\'
-    buf[plen + 1usize] = 42u8;   // '*'
+    buf[plen] = '\\';        // '\'
+    buf[plen + 1usize] = '*';   // '*'
     it := fs::open_dir(buf[0usize..(plen + 2usize)]) catch err { return 0u64; };
 
     total: u64 = 0u64;
@@ -45,7 +45,7 @@ scan :: fn(buf: []u8, plen: usize, s: *Scan) -> u64 {
                         s.dirs = s.dirs + 1u64;
                         nlen: usize = plen + 1usize + name.len;
                         if nlen + 3usize < buf.len {
-                            buf[plen] = 92u8;
+                            buf[plen] = '\\';
                             j: usize = 0usize;
                             while j < name.len { buf[plen + 1usize + j] = name[j]; j = j + 1usize; }
                             total = total + scan(buf, nlen, s);
@@ -65,8 +65,8 @@ scan :: fn(buf: []u8, plen: usize, s: *Scan) -> u64 {
 }
 
 name_dot :: fn(n: []const u8) -> bool {
-    if n.len == 1usize { return n[0] == 46u8; }
-    if n.len == 2usize { if n[0] == 46u8 { return n[1] == 46u8; } }
+    if n.len == 1usize { return n[0] == '.'; }
+    if n.len == 2usize { if n[0] == '.' { return n[1] == '.'; } }
     return false;
 }
 
@@ -81,7 +81,7 @@ fmt_size :: fn(sb: *StringBuilder, b: u64) {
 }
 unit :: fn(sb: *StringBuilder, b: u64, div: u64, suffix: []const u8) {
     append_u64(sb, b / div);
-    append_byte(sb, 46u8);                       // '.'
+    append_byte(sb, '.');                       // '.'
     append_u64(sb, (b % div) * 10u64 / div);     // one decimal
     append(sb, suffix);
 }
@@ -89,13 +89,13 @@ unit :: fn(sb: *StringBuilder, b: u64, div: u64, suffix: []const u8) {
 first_arg :: fn(line: []const u8, def: []const u8) -> []const u8 {
     i: usize = 0usize;
     if line.len > 0usize {
-        if line[0] == 34u8 { i = 1usize; while i < line.len { q: bool = line[i] == 34u8; i += 1usize; if q { break; } } }
-        else { while i < line.len { if line[i] == 32u8 { break; } i += 1usize; } }
+        if line[0] == '"' { i = 1usize; while i < line.len { q: bool = line[i] == '"'; i += 1usize; if q { break; } } }
+        else { while i < line.len { if line[i] == ' ' { break; } i += 1usize; } }
     }
-    while i < line.len { if line[i] != 32u8 { break; } i += 1usize; }
+    while i < line.len { if line[i] != ' ' { break; } i += 1usize; }
     if i >= line.len { return def; }
     start: usize = i;
-    while i < line.len { if line[i] == 32u8 { break; } i += 1usize; }
+    while i < line.len { if line[i] == ' ' { break; } i += 1usize; }
     return line[start..i];
 }
 
@@ -117,7 +117,7 @@ main :: fn() -> i32 {
     t0: Instant = now();
 
     // Top level: record each immediate child with its (recursive) size.
-    buf[rlen] = 92u8; buf[rlen + 1usize] = 42u8;
+    buf[rlen] = '\\'; buf[rlen + 1usize] = '*';
     it := fs::open_dir(buf[0usize..(rlen + 2usize)]) catch err {
         print("du: cannot open "); print(root); print("\n"); return 1;
     };
@@ -133,7 +133,7 @@ main :: fn() -> i32 {
                         nlen: usize = rlen + 1usize + name.len;
                         sub: u64 = 0u64;
                         if nlen + 3usize < buf.len {
-                            buf[rlen] = 92u8;
+                            buf[rlen] = '\\';
                             j: usize = 0usize;
                             while j < name.len { buf[rlen + 1usize + j] = name[j]; j = j + 1usize; }
                             sub = scan(buf[:], nlen, &s);
@@ -201,5 +201,5 @@ main :: fn() -> i32 {
 pad_pct :: fn(sb: *StringBuilder, p: u64) {
     if p < 10u64 { append(sb, "  "); } else { if p < 100u64 { append(sb, " "); } }
     append_u64(sb, p);
-    append_byte(sb, 37u8);   // '%'
+    append_byte(sb, '%');   // '%'
 }
