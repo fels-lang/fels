@@ -17,10 +17,10 @@ unit :: fn(sb: *StringBuilder, b: u64, div: u64, suffix: []const u8) {
 // Append `b` to the builder as a human-readable size.
 pub fmt_size :: fn(sb: *StringBuilder, b: u64) {
     if b >= TB { unit(sb, b, TB, " TB"); }
-    else { if b >= GB { unit(sb, b, GB, " GB"); }
-    else { if b >= MB { unit(sb, b, MB, " MB"); }
-    else { if b >= KB { unit(sb, b, KB, " KB"); }
-    else { append_u64(sb, b); append(sb, " B"); } } } }
+    else if b >= GB { unit(sb, b, GB, " GB"); }
+    else if b >= MB { unit(sb, b, MB, " MB"); }
+    else if b >= KB { unit(sb, b, KB, " KB"); }
+    else { append_u64(sb, b); append(sb, " B"); }
 }
 
 // Pad a human size left into a `w`-wide field, then append it.
@@ -35,9 +35,9 @@ size_width :: fn(b: u64) -> usize {
     div: u64 = 1u64;
     suf: usize = 2usize;          // " B"
     if b >= TB { div = TB; suf = 3usize; }
-    else { if b >= GB { div = GB; suf = 3usize; }
-    else { if b >= MB { div = MB; suf = 3usize; }
-    else { if b >= KB { div = KB; suf = 3usize; } } } }
+    else if b >= GB { div = GB; suf = 3usize; }
+    else if b >= MB { div = MB; suf = 3usize; }
+    else if b >= KB { div = KB; suf = 3usize; }
     if div == 1u64 { return digits(b) + 2usize; }
     // "<whole>.<decimal><suffix>"
     return digits(b / div) + 2usize + suf;
