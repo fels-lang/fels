@@ -1793,6 +1793,23 @@ test "exe: a nested `#run` in a top-level const folds (issue #4)" {
     try std.testing.expectEqual(@as(u32, 30), code);
 }
 
+test "exe: else-if chains pick the right branch" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\bucket :: fn(x: i32) -> i32 {
+        \\    if x < 0 { return 10; }
+        \\    else if x < 10 { return 20; }
+        \\    else if x < 20 { return 30; }
+        \\    else { return 40; }
+        \\}
+        \\main :: fn() -> i32 { return bucket(-1) + bucket(5) + bucket(15) + bucket(99); }
+    , "exe_else_if");
+    try std.testing.expectEqual(@as(u32, 100), code); // 10+20+30+40
+}
+
 test "exe: character literals decode to their code points" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
