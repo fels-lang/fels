@@ -224,18 +224,15 @@ if result := try_parse(input) |err| {
 }
 ```
 
-> [!IMPORTANT]
-> K2 does **not** have `else if`. Nest `if` statements inside `else` blocks instead:
+`else if` chains are supported and desugar to a nested `if` inside the `else`:
 
 ```k2
 if x > 0 {
     // positive
+} else if x == 0 {
+    // zero
 } else {
-    if x == 0 {
-        // zero
-    } else {
-        // negative
-    }
+    // negative
 }
 ```
 

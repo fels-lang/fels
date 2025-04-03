@@ -199,9 +199,29 @@ String literals are enclosed in double quotes. The type of a string literal is `
 | `\r` | Carriage return |
 | `\0` | Null byte |
 
-### Character-like Literals
+### Character Literals
 
-K2 does not have a dedicated `char` type. Use `u8` values directly, or access individual bytes from strings.
+A character literal is written in single quotes and is **sugar for its integer
+code point** — an untyped integer literal (like `65`) that coerces to `u8`,
+`i32`, a `rune`, etc. from context. There is no dedicated `char` type.
+
+```k2
+'A'        // 65
+'.'        // 46
+'\n'       // 10  — same escapes as strings
+'\\'       // 92
+'\''       // 39
+'\x41'     // 65  — hex escape
+```
+
+Because it is just an integer literal, it works anywhere a number does:
+
+```k2
+nl: u8 = '\n';
+if name[i] == '.' { dots = dots + 1; }   // coerces to u8 in the comparison
+```
+
+A bare multi-byte UTF-8 character (e.g. `'é'`) decodes to its Unicode code point.
 
 ### Boolean Literals
 
