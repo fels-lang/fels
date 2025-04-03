@@ -955,7 +955,18 @@ pub const Parser = struct {
         }
 
         const then_block = try self.parseBlock();
-        const else_block = if (self.match(.keyword_else)) try self.parseBlock() else null;
+        // `else if …` desugars to `else { if … }` — wrap the nested if in a
+        // one-statement block so the rest of the pipeline sees plain nesting.
+        const else_block: ?ast.Block = if (self.match(.keyword_else)) blk: {
+            if (self.check(.keyword_if)) {
+                const if_kw = self.advance();
+                const nested = try self.parseIf(if_kw);
+                const stmts = try self.allocator.alloc(ast.Stmt, 1);
+                stmts[0] = .{ .if_stmt = nested };
+                break :blk ast.Block{ .statements = stmts, .span = nested.span };
+            }
+            break :blk try self.parseBlock();
+        } else null;
         const end = if (else_block) |b| b.span else then_block.span;
         return .{ .binding = binding, .payload_binding = payload_binding, .condition = condition, .then_block = then_block, .else_block = else_block, .span = Span.new(start.start, end.end) };
     }
