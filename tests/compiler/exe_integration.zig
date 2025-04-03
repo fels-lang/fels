@@ -1793,6 +1793,28 @@ test "exe: a nested `#run` in a top-level const folds (issue #4)" {
     try std.testing.expectEqual(@as(u32, 30), code);
 }
 
+test "exe: while opt |x| walks an optional chain" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `while cur |n|` re-evaluates the optional each iteration, binds the unwrapped
+    // payload, and exits on null — no `cont` bool flag needed.
+    const code = try compileAndRun(arena.allocator(),
+        \\Node :: struct { val: i32, next: ?*Node }
+        \\main :: fn() -> i32 {
+        \\    c: Node = .{ 4, null };
+        \\    b: Node = .{ 3, &c };
+        \\    a: Node = .{ 2, &b };
+        \\    sum: i32 = 0;
+        \\    cur: ?*Node = &a;
+        \\    while cur |n| { sum = sum + n.val; cur = n.next; }
+        \\    return sum;
+        \\}
+    , "exe_while_unwrap");
+    try std.testing.expectEqual(@as(u32, 9), code); // 2+3+4
+}
+
 test "exe: else-if chains pick the right branch" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
