@@ -24,19 +24,11 @@ pub count_where :: fn($T: type, s: []T, pred: fn(T) -> bool) -> usize {
     return n;
 }
 
-// Does any element match `pred`?
-pub any :: fn($T: type, s: []T, pred: fn(T) -> bool) -> bool {
-    i: usize = 0usize;
-    while i < s.len { if pred(s[i]) { return true; } i += 1usize; }
-    return false;
-}
-
-// Do all elements match `pred`?
-pub all :: fn($T: type, s: []T, pred: fn(T) -> bool) -> bool {
-    i: usize = 0usize;
-    while i < s.len { if !pred(s[i]) { return false; } i += 1usize; }
-    return true;
-}
+// NOTE: generic `any`/`all` (a generic fn returning `bool`) are intentionally
+// omitted for now — a generic bool-returning fn's call miscompiles to `undef`
+// when two or more generics share a module (compiler bug, issue #10).
+// Until that's fixed, use `count_where(...) > 0` / `== s.len`. The non-bool HOFs
+// below are unaffected, and the concrete byte-slice helpers return bool fine.
 
 // Apply `f` to every element (for its side effects).
 pub each :: fn($T: type, s: []T, f: fn(T)) {
