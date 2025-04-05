@@ -52,11 +52,7 @@ pub finalize :: fn(a: *Arena, node: *Node) {
     arr := new_slice(*Node, a, node.n_children as usize);
     i: usize = 0usize;
     cur := node.first_child;
-    cont: bool = true;
-    while cont {
-        if cur |c| { arr[i] = c; i = i + 1usize; cur = c.next; }
-        else { cont = false; }
-    }
+    while cur |c| { arr[i] = c; i = i + 1usize; cur = c.next; }
     sort_desc(arr);
     node.kids = arr;
 }
@@ -75,10 +71,7 @@ pub mark_deleted :: fn(node: *Node) {
     node.deleted = true;
     sz: u64 = node.size;
     p := node.parent;
-    cont: bool = true;
-    while cont {
-        if p |pp| { pp.size = pp.size - sz; p = pp.parent; } else { cont = false; }
-    }
+    while p |pp| { pp.size = pp.size - sz; p = pp.parent; }
 }
 
 // ── heapsort by .size descending (no recursion, O(n log n)) ──────────────────
