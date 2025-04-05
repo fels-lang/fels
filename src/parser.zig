@@ -1183,8 +1183,12 @@ pub const Parser = struct {
                 }
             }
             _ = try self.expect(.r_paren, "expected ) after fn type params");
-            _ = try self.expect(.arrow, "expected -> in fn type");
-            const ret = try self.allocType(try self.parseType());
+            // `-> ret` is optional: a fn type with no arrow returns `void`, just
+            // like a fn declaration with no `->` (e.g. `fn(T)` is `fn(T) -> void`).
+            const ret = if (self.match(.arrow))
+                try self.allocType(try self.parseType())
+            else
+                try self.allocType(namedType("void", Span.new(start.start, start.start + start.len)));
             const error_ty = if (self.match(.bang)) try self.parseErrorSpec(self.previous()) else null;
             const end = if (error_ty) |err| err.span().end else ret.span().end;
             return .{ .fn_type = .{ .type_params = &.{}, .params = try params.toOwnedSlice(self.allocator), .ret = ret, .error_ty = error_ty, .span = Span.new(start.start, end) } };
