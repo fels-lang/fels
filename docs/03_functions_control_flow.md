@@ -257,6 +257,21 @@ while true {
 }
 ```
 
+**Optional-unwrap loop** — `while opt |x|` re-evaluates `opt` each iteration,
+binds the unwrapped payload to `x`, and exits when it is null. This is the clean
+way to walk a linked structure or drain an iterator:
+
+```k2
+cur: ?*Node = head;
+while cur |n| {
+    visit(n.val);
+    cur = n.next;
+}
+```
+
+The condition may be any optional; the `|x|` binding is optional itself
+(`while opt { … }` loops while `opt` is non-null without binding the payload).
+
 ---
 
 ### For Range Loop
