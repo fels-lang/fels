@@ -14,6 +14,7 @@
 #import std.heap.{ Arena, make, new_slice };
 #import std.strings.{ StringBuilder, builder, str, clear, append, append_byte, append_u64, str_dup };
 #import std.io.{ print };
+#import std.slice;
 #import std.time.{ Instant, now, since_millis };
 #import std.process;
 
@@ -65,9 +66,7 @@ scan :: fn(buf: []u8, plen: usize, s: *Scan) -> u64 {
 }
 
 name_dot :: fn(n: []const u8) -> bool {
-    if n.len == 1usize { return n[0] == '.'; }
-    if n.len == 2usize { if n[0] == '.' { return n[1] == '.'; } }
-    return false;
+    return slice::bytes_eql(n, ".") || slice::bytes_eql(n, "..");
 }
 
 fmt_size :: fn(sb: *StringBuilder, b: u64) {
