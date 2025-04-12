@@ -46,46 +46,12 @@ pub map_into :: fn($T: type, $U: type, dst: []U, src: []T, f: fn(T) -> U) -> usi
     return n;
 }
 
-// ── byte-slice search ([]const u8) ───────────────────────────────────────────
-// Concrete `[]const u8` versions — the common case (strings) without a closure.
-
-pub bytes_eql :: fn(a: []const u8, b: []const u8) -> bool {
-    if a.len != b.len { return false; }
-    i: usize = 0usize;
-    while i < a.len { if a[i] != b[i] { return false; } i += 1usize; }
-    return true;
-}
-
-// Index of the first byte equal to `b`, or null.
-pub index_of :: fn(s: []const u8, b: u8) -> ?usize {
-    i: usize = 0usize;
-    while i < s.len { if s[i] == b { return i; } i += 1usize; }
-    return null;
-}
-
-// Index of the last byte equal to `b`, or null.
-pub last_index_of :: fn(s: []const u8, b: u8) -> ?usize {
+// Index of the last element matching `pred`, or null.
+pub rfind :: fn($T: type, s: []T, pred: fn(T) -> bool) -> ?usize {
     i: usize = s.len;
-    while i > 0usize { i -= 1usize; if s[i] == b { return i; } }
+    while i > 0usize { i -= 1usize; if pred(s[i]) { return i; } }
     return null;
 }
 
-pub contains :: fn(s: []const u8, b: u8) -> bool {
-    if index_of(s, b) |_idx| { return true; }
-    return false;
-}
-
-pub starts_with :: fn(s: []const u8, prefix: []const u8) -> bool {
-    if s.len < prefix.len { return false; }
-    i: usize = 0usize;
-    while i < prefix.len { if s[i] != prefix[i] { return false; } i += 1usize; }
-    return true;
-}
-
-pub ends_with :: fn(s: []const u8, suffix: []const u8) -> bool {
-    if s.len < suffix.len { return false; }
-    off: usize = s.len - suffix.len;
-    i: usize = 0usize;
-    while i < suffix.len { if s[off + i] != suffix[i] { return false; } i += 1usize; }
-    return true;
-}
+// For plain element search / equality (`eql`, `index_of`, `contains`,
+// `starts_with`, `ends_with`) without a predicate, use std.mem.

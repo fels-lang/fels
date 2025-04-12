@@ -1,5 +1,6 @@
-// Exercises std.slice: generic HOFs (find/count_where/any/all/map_into) and the
-// byte-slice search helpers. Returns 42 iff every check passes.
+// Exercises std.slice's higher-order helpers (find/rfind/count_where/map_into,
+// each taking a fn-pointer predicate). Returns 42 iff every check passes.
+// (Plain element search/equality lives in std.mem; this module is the HOFs.)
 
 #import std.slice;
 
@@ -19,19 +20,13 @@ main :: fn() -> i32 {
     if slice::map_into(i32, i32, out[:], a[:], inc) != 5usize { ok = false; }
     if out[0] != 4 { ok = false; }
 
-    found: bool = false;
-    if slice::find(i32, a[:], is_neg) |i| { if i == 1usize { found = true; } }
-    if !found { ok = false; }
+    fwd: bool = false;
+    if slice::find(i32, a[:], is_neg) |i| { if i == 1usize { fwd = true; } }
+    if !fwd { ok = false; }
 
-    s: []const u8 = "hello.world.txt";
-    if !slice::bytes_eql("abc", "abc") { ok = false; }
-    if slice::bytes_eql("abc", "abd") { ok = false; }
-    if !slice::starts_with(s, "hello") { ok = false; }
-    if !slice::ends_with(s, ".txt") { ok = false; }
-    if !slice::contains(s, '.') { ok = false; }
-    last: bool = false;
-    if slice::last_index_of(s, '.') |i| { if i == 11usize { last = true; } }
-    if !last { ok = false; }
+    rev: bool = false;
+    if slice::rfind(i32, a[:], is_neg) |i| { if i == 4usize { rev = true; } }
+    if !rev { ok = false; }
 
     if ok { return 42; }
     return 0;
