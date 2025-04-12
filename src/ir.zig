@@ -3236,7 +3236,10 @@ const FunctionLowerer = struct {
                     break :blk .{ .imm = .{ .text = vm_compiler.typeNameMangle(ty) } };
                 }
                 // `any(x)` wraps a value into a type-erased `Any { data, id, name }`.
-                if (std.mem.eql(u8, callee_name, "any") and call.args.len > 0) {
+                // Only when `any` isn't a user function: a user fn named `any`
+                // (e.g. `slice::any`) resolves to a symbol and takes precedence,
+                // just like the math builtins defer to a user `min`/`max`.
+                if (std.mem.eql(u8, callee_name, "any") and call.args.len > 0 and callee_sym == null) {
                     const arg = switch (call.args[0]) {
                         .positional => |e| e,
                         .named => |n| n.value,
