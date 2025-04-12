@@ -1,4 +1,4 @@
-// std.slice — higher-order helpers over `[]T`, plus byte-slice search utilities.
+// std.slice — higher-order helpers over `[]T` (find, count_where, any, all, …).
 //
 // k2 has no closures yet, but it does pass function pointers, so these take a
 // plain `fn(T) -> …`. They replace the hand-written `while i < s.len { … }`
@@ -24,11 +24,19 @@ pub count_where :: fn($T: type, s: []T, pred: fn(T) -> bool) -> usize {
     return n;
 }
 
-// NOTE: generic `any`/`all` (a generic fn returning `bool`) are intentionally
-// omitted for now — a generic bool-returning fn's call miscompiles to `undef`
-// when two or more generics share a module (compiler bug, issue #10).
-// Until that's fixed, use `count_where(...) > 0` / `== s.len`. The non-bool HOFs
-// below are unaffected, and the concrete byte-slice helpers return bool fine.
+// Does any element match `pred`?
+pub any :: fn($T: type, s: []T, pred: fn(T) -> bool) -> bool {
+    i: usize = 0usize;
+    while i < s.len { if pred(s[i]) { return true; } i += 1usize; }
+    return false;
+}
+
+// Do all elements match `pred`?
+pub all :: fn($T: type, s: []T, pred: fn(T) -> bool) -> bool {
+    i: usize = 0usize;
+    while i < s.len { if !pred(s[i]) { return false; } i += 1usize; }
+    return true;
+}
 
 // Apply `f` to every element (for its side effects).
 pub each :: fn($T: type, s: []T, f: fn(T)) {
