@@ -4585,7 +4585,16 @@ pub const ComptimeVm = struct {
         defer vm.deinit();
         // `execute` enters the implicit root zone so aggregate `#run` exprs
         // (struct/enum/optional construction) have an arena to allocate in.
-        return vm.execute(bc_fn) catch null;
+        const result = vm.execute(bc_fn) catch |err| {
+            // A comptime `@panic("…")` records its message via `halt_msg`; capture
+            // it (dup before the VM is torn down) so the `#run` error shows it
+            // instead of a generic "could not evaluate" message.
+            if (err == error.Trap) {
+                if (vm.compiler_error_msg) |m| self.hook_error = self.arena.allocator().dupe(u8, m) catch null;
+            }
+            return null;
+        };
+        return result;
     }
 
     fn evalToValue(self: *ComptimeVm, expr: ast.Expr) ?Value {
@@ -5670,7 +5679,13 @@ fn effectiveConstImm(expr: ast.Expr, cvm: ?*ComptimeVm, file: []const u8, source
     // If the VM can't fold it, fail loudly rather than silently substituting a
     // best-effort (usually wrong) literal.
     const c = cvm orelse return lowerImm(inner);
+    c.hook_error = null;
     const v = c.evalRaw(inner) orelse {
+        // A comptime `@panic("…")` recorded its message — show it verbatim.
+        if (c.hook_error) |msg| {
+            diag_mod.printErrorAt(msg, file, source, expr.span);
+            return error.LoweringFailed;
+        }
         diag_mod.printErrorAt(
             "`#run` expression could not be evaluated at compile time " ++
                 "(the comptime VM cannot execute it — e.g. an unsupported construct or a call into runtime-only code)",

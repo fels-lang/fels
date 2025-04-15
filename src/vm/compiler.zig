@@ -480,7 +480,7 @@ const FnCompiler = struct {
                     else => null,
                 };
                 if (ind_name) |nm| if (isComptimeTrapCall(nm)) {
-                    try self.emit(Instr.with_imm(.trap, -1));
+                    if (std.mem.eql(u8, nm, "@panic")) try self.emitTrapOrHalt(ci.args) else try self.emit(Instr.with_imm(.trap, -1));
                     return;
                 };
                 const callee = try self.resolveReg(ci.callee);
@@ -499,7 +499,7 @@ const FnCompiler = struct {
                     const ar = try self.resolveReg(b.args[0]);
                     try self.emit(Instr.r_imm(.sys_print, ar, 0));
                 } else if (std.mem.eql(u8, b.name, "panic")) {
-                    try self.emit(Instr.with_imm(.trap, -1));
+                    try self.emitTrapOrHalt(b.args);
                 } else if (std.mem.eql(u8, b.name, "compound_literal")) {
                     // Positional `.{ a, b, ... }` aggregate initializer.
                     try self.lowerCompoundLiteral(target, inst.ty, b.args);
@@ -844,9 +844,25 @@ const FnCompiler = struct {
             std.mem.eql(u8, name, "abort");
     }
 
+    /// A comptime `@panic("literal")` records its message via `halt_msg` (the same
+    /// path `compiler_error` uses), so the `#run`/hook error surfaces it instead
+    /// of a bare trap. `exit`/`abort`, or a non-constant/absent message, keep the
+    /// plain `trap` — a never-taken panic still folds to harmless dead weight.
+    fn emitTrapOrHalt(self: *FnCompiler, args: []const ir.Value) CompileError!void {
+        if (args.len >= 1) switch (args[0]) {
+            .imm => |imm| if (imm == .text) {
+                const mr = try self.resolveReg(args[0]);
+                try self.emit(Instr.r_imm(.halt_msg, mr, 0));
+                return;
+            },
+            else => {},
+        };
+        try self.emit(Instr.with_imm(.trap, -1));
+    }
+
     fn lowerCall(self: *FnCompiler, target: Reg, ci: ir.CallInstr) CompileError!void {
         if (isComptimeTrapCall(ci.callee)) {
-            try self.emit(Instr.with_imm(.trap, -1));
+            if (std.mem.eql(u8, ci.callee, "@panic")) try self.emitTrapOrHalt(ci.args) else try self.emit(Instr.with_imm(.trap, -1));
             return;
         }
         const map = self.func_map orelse return error.Unsupported;
