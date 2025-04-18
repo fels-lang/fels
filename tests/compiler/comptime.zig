@@ -203,6 +203,23 @@ test "#run: an un-foldable constant fails with a diagnostic, not silent garbage"
     try std.testing.expectError(error.LoweringFailed, k2.lowerFrontend(arena.allocator(), fe));
 }
 
+test "#run: a comptime @panic halts the build with its message (#2)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A comptime `@panic("…")` used to bare-trap (message thrown away). It now
+    // records the message via `halt_msg` and the `#run` fails with it instead of
+    // the generic "could not be evaluated". The text goes straight to stderr, so
+    // this asserts the halt (LoweringFailed); the message itself is verified by
+    // eye — `error: explicit comptime panic`.
+    const src =
+        \\boom :: fn() -> i32 { @panic("explicit comptime panic"); return 0; }
+        \\BAD :: #run boom();
+    ;
+    var fe = try k2.compile(arena.allocator(), "panic_ct.k2", src);
+    defer fe.deinit(arena.allocator());
+    try std.testing.expectError(error.LoweringFailed, k2.lowerFrontend(arena.allocator(), fe));
+}
+
 test "#if: only live branch emitted to IR" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
