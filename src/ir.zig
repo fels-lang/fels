@@ -2081,6 +2081,11 @@ const FunctionLowerer = struct {
     }
 
     fn lowerForSlice(self: *FunctionLowerer, for_stmt: ast.ForSliceStmt) LowerError!void {
+        // `for x in it` over an iterator (sema recorded its `next` method) lowers
+        // to a `while it.next() |x|` loop rather than slice indexing.
+        if (self.types.iterator_fors.get(for_stmt.iter.id)) |next_sym| {
+            return self.lowerForIterator(for_stmt, next_sym);
+        }
         const iter_ty = self.exprType(for_stmt.iter);
         const elem_ty: IrType = switch (iter_ty) {
             .slice => |elem| elem.*,
@@ -2161,6 +2166,70 @@ const FunctionLowerer = struct {
 
         _ = self.loop_stack.pop();
         self.startBlock(after_id, "for.slice.after");
+    }
+
+    /// `for x in it` over an iterator: store `it` in a local, then each iteration
+    /// call `next(&it) -> ?T`, break on null, bind the payload to `x`. This is the
+    /// same shape as `while it.next() |x|`.
+    fn lowerForIterator(self: *FunctionLowerer, for_stmt: ast.ForSliceStmt, next_sym: sema.SymbolId) LowerError!void {
+        const sig = self.types.fn_sigs.get(next_sym) orelse return error.LoweringFailed;
+        const ret_ir = try lowerSemaTypeWithEnv(self.allocator, sig.return_ty, self.types, self.symbols);
+        const elem_ir: IrType = switch (ret_ir) {
+            .optional => |p| p.*,
+            else => .unknown,
+        };
+        const next_link = self.symbols.symbol(next_sym).link_name;
+        const iter_ty = self.exprType(for_stmt.iter);
+
+        const suffix = self.next_block_id;
+        const iter_name = try std.fmt.allocPrint(self.allocator, "__for_iter_{d}", .{suffix});
+        const index_name = try std.fmt.allocPrint(self.allocator, "__for_index_{d}", .{suffix});
+
+        // Hold the iterator in a local so `&it` is stable and `next` advances it.
+        try self.emitNoResult(iter_ty, .{ .store_local = .{
+            .name = iter_name,
+            .value = try self.lowerExpr(for_stmt.iter),
+        } });
+        if (for_stmt.index_binding != null) {
+            try self.emitNoResult(.usize, .{ .store_local = .{ .name = index_name, .value = .{ .imm = .{ .uint = 0 } } } });
+        }
+
+        const cond_id = self.allocBlockId();
+        const body_id = self.allocBlockId();
+        const incr_id = self.allocBlockId();
+        const after_id = self.allocBlockId();
+        try self.loop_stack.append(self.allocator, .{
+            .cond_id = cond_id,
+            .continue_id = incr_id,
+            .after_id = after_id,
+            .zone_depth = self.active_zones.items.len,
+            .defer_floor = self.defers.items.len,
+        });
+
+        try self.terminate(.{ .branch = cond_id });
+        self.startBlock(cond_id, "for.iter.cond");
+        const recv = try self.emit(.{ .ptr = try boxType(self.allocator, iter_ty) }, .{ .unary = .{ .op = .ref, .value = .{ .local = iter_name } } });
+        const opt = try self.emit(ret_ir, .{ .call = .{ .callee = next_link, .args = try self.allocator.dupe(Value, &.{recv}) } });
+        const cond = try self.emit(.bool, .{ .optional_is_some = opt });
+        try self.terminate(.{ .cond_branch = .{ .cond = cond, .then_block = body_id, .else_block = after_id } });
+
+        self.startBlock(body_id, "for.iter.body");
+        const payload = try self.emit(elem_ir, .{ .optional_payload = opt });
+        try self.emitNoResult(elem_ir, .{ .store_local = .{ .name = for_stmt.binding, .value = payload } });
+        if (for_stmt.index_binding) |name| {
+            try self.emitNoResult(.usize, .{ .store_local = .{ .name = name, .value = .{ .local = index_name } } });
+        }
+        try self.lowerBlock(for_stmt.body.statements, .{ .branch = incr_id });
+
+        self.startBlock(incr_id, "for.iter.incr");
+        if (for_stmt.index_binding != null) {
+            const nx = try self.emit(.usize, .{ .binary = .{ .op = .add, .lhs = .{ .local = index_name }, .rhs = .{ .imm = .{ .uint = 1 } } } });
+            try self.emitNoResult(.usize, .{ .store_local = .{ .name = index_name, .value = nx } });
+        }
+        try self.terminate(.{ .branch = cond_id });
+
+        _ = self.loop_stack.pop();
+        self.startBlock(after_id, "for.iter.after");
     }
 
     // ── Materialization: quoted AST → ast.* construction IR ──────────────────

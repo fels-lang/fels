@@ -437,6 +437,10 @@ pub const TypeEnv = struct {
     expr_scopes: std.AutoHashMap(ast.NodeId, ScopeId),
     /// Field-callee NodeId -> visible top-level function used as an extension method.
     extension_calls: std.AutoHashMap(ast.NodeId, SymbolId),
+    /// `for x in it` where `it` is an iterator (not a slice/array): the iter
+    /// expr's NodeId -> the `next(self: *Self) -> ?T` method's symbol. IR lowers
+    /// these as a `while it.next() |x|` loop.
+    iterator_fors: std.AutoHashMap(ast.NodeId, SymbolId),
     /// Method-call (field-callee) NodeIds whose value receiver must be implicitly
     /// address-of'd because the method takes a `*Self`/`*const Self` (UFCS auto-ref).
     /// IR lowers these receivers via `lowerLValueAddress`.
@@ -469,6 +473,7 @@ pub const TypeEnv = struct {
             .expr_symbols = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .expr_scopes = std.AutoHashMap(ast.NodeId, ScopeId).init(allocator),
             .extension_calls = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
+            .iterator_fors = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .receiver_auto_addr = std.AutoHashMap(ast.NodeId, void).init(allocator),
             .enum_lits = std.AutoHashMap(ast.NodeId, EnumLit).init(allocator),
             .generic_call_insts = std.AutoHashMap(ast.NodeId, []const u8).init(allocator),
@@ -490,6 +495,7 @@ pub const TypeEnv = struct {
         self.expr_symbols.deinit();
         self.expr_scopes.deinit();
         self.extension_calls.deinit();
+        self.iterator_fors.deinit();
         self.receiver_auto_addr.deinit();
         self.enum_lits.deinit();
         self.const_ints.deinit();
@@ -2003,8 +2009,22 @@ const Checker = struct {
                 const elem_ty = switch (iter_ty) {
                     .slice => |elem| elem.*,
                     .array => |array| array.elem.*,
-                    else => {
-                        self.emitError(for_stmt.iter.span, "for loop requires a slice or array", .{});
+                    else => blk: {
+                        // Iterator protocol: a `next(self: *Self) -> ?T` method.
+                        // `for x in it` then loops as `while it.next() |x|`.
+                        if (self.resolveExtensionMethod("next", iter_ty)) |m| {
+                            if (m.sig.return_ty == .optional and m.sig.params.len >= 1 and
+                                (m.sig.params[0].ty == .pointer))
+                            {
+                                if (for_stmt.by_ref) {
+                                    self.emitError(for_stmt.iter.span, "`for &x in …` is not supported over an iterator (next returns a value)", .{});
+                                    return error.SemanticFailed;
+                                }
+                                try self.env.iterator_fors.put(for_stmt.iter.id, m.id);
+                                break :blk m.sig.return_ty.optional.*;
+                            }
+                        }
+                        self.emitError(for_stmt.iter.span, "for loop requires a slice, an array, or a type with a `next(self: *Self) -> ?T` method", .{});
                         return error.SemanticFailed;
                     },
                 };
