@@ -1794,6 +1794,29 @@ test "exe: a nested `#run` in a top-level const folds (issue #4)" {
     try std.testing.expectEqual(@as(u32, 30), code);
 }
 
+test "exe: for-in over an iterator (next protocol)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `for x in r` over a type with `next(self: *Self) -> ?T` desugars to a
+    // `while r.next() |x|` loop; the iterator state advances in a hidden local.
+    const code = try compileAndRun(arena.allocator(),
+        \\Range :: struct { cur: i32, end: i32 }
+        \\next :: fn(self: *Range) -> ?i32 {
+        \\    if self.cur >= self.end { return null; }
+        \\    v := self.cur; self.cur = self.cur + 1; return v;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    r: Range = .{ 1, 5 };
+        \\    sum: i32 = 0;
+        \\    for x in r { sum = sum + x; }
+        \\    return sum;
+        \\}
+    , "exe_iterator");
+    try std.testing.expectEqual(@as(u32, 10), code); // 1+2+3+4
+}
+
 test "exe: while opt |x| walks an optional chain" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
