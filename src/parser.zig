@@ -108,6 +108,12 @@ pub const Parser = struct {
     index: usize = 0,
     next_id: ast.NodeId,
     diagnostics: std.ArrayList(Diagnostic) = .empty,
+    /// Lambdas (`fn(x){…}` expressions) are lifted to synthetic top-level
+    /// functions during parsing: each becomes `__lambda_N` here and the
+    /// expression is replaced by an ident referencing it. Appended to the
+    /// module's items at the end of `parseModule`.
+    lifted_lambdas: std.ArrayList(ast.FunctionDecl) = .empty,
+    lambda_counter: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, file_name: []const u8, source: []const u8, next_id: ast.NodeId) !Parser {
         var lex = lexer.Lexer.init(source);
@@ -123,6 +129,7 @@ pub const Parser = struct {
     pub fn deinit(self: *Parser) void {
         self.allocator.free(self.tokens);
         self.diagnostics.deinit(self.allocator);
+        self.lifted_lambdas.deinit(self.allocator);
     }
 
     pub fn parseModule(self: *Parser) ParseError!ast.Module {
@@ -157,6 +164,11 @@ pub const Parser = struct {
                 }
             }
             try items.append(self.allocator, try self.parseTopLevel(attrs, is_public));
+        }
+
+        // Append lambdas lifted from expressions as synthetic top-level functions.
+        for (self.lifted_lambdas.items) |decl| {
+            try items.append(self.allocator, .{ .function = decl });
         }
 
         return .{
@@ -732,6 +744,44 @@ pub const Parser = struct {
             .is_constraint = true,
             .span = Span.new(name.start, body.span.end),
         };
+    }
+
+    /// Parse a lambda `fn(name: T, …) [-> R] { body }` (the `fn` token is already
+    /// consumed). The lambda is lifted to a synthetic top-level function and the
+    /// expression becomes an ident referencing it. No captures yet: the body sees
+    /// only its parameters and globals.
+    fn parseLambda(self: *Parser, fn_tok: Token) ParseError!ast.Expr {
+        _ = try self.expect(.l_paren, "expected ( after fn");
+        var params: std.ArrayList(ast.Param) = .empty;
+        errdefer params.deinit(self.allocator);
+        if (!self.check(.r_paren)) {
+            while (true) {
+                const pname = try self.expect(.ident, "expected parameter name");
+                _ = try self.expect(.colon, "expected : after parameter name");
+                const ty = try self.parseType();
+                try params.append(self.allocator, .{ .name = pname.text(self.source), .ty = ty, .span = ty.span() });
+                if (!self.match(.comma)) break;
+                if (self.check(.r_paren)) break;
+            }
+        }
+        _ = try self.expect(.r_paren, "expected ) after lambda parameters");
+        const return_ty = if (self.match(.arrow)) try self.parseType() else namedType("void", spanFrom(fn_tok, fn_tok));
+        const body = try self.parseBlock();
+        const name = try std.fmt.allocPrint(self.allocator, "__lambda_{d}", .{self.lambda_counter});
+        self.lambda_counter += 1;
+        try self.lifted_lambdas.append(self.allocator, .{
+            .attrs = &.{},
+            .name = name,
+            .file_name = self.file_name,
+            .source = self.source,
+            .type_params = &.{},
+            .params = try params.toOwnedSlice(self.allocator),
+            .return_ty = return_ty,
+            .error_ty = null,
+            .body = body,
+            .span = Span.new(fn_tok.start, body.span.end),
+        });
+        return self.expr(.{ .ident = name }, Span.new(fn_tok.start, body.span.end));
     }
 
     fn finishFunction(self: *Parser, attrs: []const ast.Attribute, name: Token, top_level: bool) ParseError!ast.FunctionDecl {
@@ -1377,6 +1427,17 @@ pub const Parser = struct {
                     .{ .unsafe_expr = try self.allocExpr(inner) },
                     Span.new(tok.start, inner.span.end),
                 );
+            },
+            .keyword_fn => {
+                // `fn(x: T) [-> R] { body }` — a lambda (anonymous function),
+                // distinguished from a fn *type* in value position (`fn(T) -> R`,
+                // a builtin type-arg) by a named first parameter.
+                if (self.check(.l_paren) and self.peekKind(1) == .ident and self.peekKind(2) == .colon) {
+                    return self.parseLambda(tok);
+                }
+                self.index -= 1; // un-consume `fn`; re-parse as a fn type value
+                const ty = try self.parseType();
+                return self.expr(.{ .type_ref = ty }, ty.span());
             },
             // `match subject { pattern => value, ... }` as a value expression.
             .keyword_match => return self.parseMatchExpr(tok),
