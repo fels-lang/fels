@@ -746,6 +746,52 @@ pub const Parser = struct {
         };
     }
 
+    /// At a `fn` in expression position (the `fn` token consumed, `self.index`
+    /// on the `(`), decide whether it's a lambda `fn(…){…}` or a fn-pointer
+    /// *type* `fn(…)->R` (used as a builtin type-arg). The distinguisher is a
+    /// trailing `{ body }`: scan to the matching `)`, skip an optional `-> <type>`,
+    /// and a `{` next means a lambda.
+    fn lambdaAhead(self: Parser) bool {
+        if (self.peekKind(0) != .l_paren) return false;
+        // Fast path: a named first parameter (`fn(x: …`) is unambiguously a lambda.
+        if (self.peekKind(1) == .ident and self.peekKind(2) == .colon) return true;
+        // Scan to the matching `)`.
+        var off: usize = 0;
+        var depth: i32 = 0;
+        while (true) : (off += 1) {
+            switch (self.peekKind(off)) {
+                .l_paren => depth += 1,
+                .r_paren => {
+                    depth -= 1;
+                    if (depth == 0) {
+                        off += 1;
+                        break;
+                    }
+                },
+                .eof => return false,
+                else => {},
+            }
+        }
+        // Skip an optional `-> <return type>`; a `{` ends the signature → lambda.
+        if (self.peekKind(off) == .arrow) {
+            off += 1;
+            var d2: i32 = 0;
+            while (true) : (off += 1) {
+                switch (self.peekKind(off)) {
+                    .l_paren, .l_bracket => d2 += 1,
+                    .r_paren, .r_bracket => {
+                        d2 -= 1;
+                        if (d2 < 0) return false; // hit an enclosing close → a type
+                    },
+                    .l_brace => if (d2 == 0) return true,
+                    .semicolon, .comma, .eof, .r_brace => return false,
+                    else => {},
+                }
+            }
+        }
+        return self.peekKind(off) == .l_brace;
+    }
+
     /// Parse a lambda `fn(name: T, …) [-> R] { body }` (the `fn` token is already
     /// consumed). The lambda is lifted to a synthetic top-level function and the
     /// expression becomes an ident referencing it. No captures yet: the body sees
@@ -1429,10 +1475,10 @@ pub const Parser = struct {
                 );
             },
             .keyword_fn => {
-                // `fn(x: T) [-> R] { body }` — a lambda (anonymous function),
+                // `fn(…) [-> R] { body }` — a lambda (anonymous function),
                 // distinguished from a fn *type* in value position (`fn(T) -> R`,
-                // a builtin type-arg) by a named first parameter.
-                if (self.check(.l_paren) and self.peekKind(1) == .ident and self.peekKind(2) == .colon) {
+                // a builtin type-arg) by a trailing `{ body }`.
+                if (self.lambdaAhead()) {
                     return self.parseLambda(tok);
                 }
                 self.index -= 1; // un-consume `fn`; re-parse as a fn type value
