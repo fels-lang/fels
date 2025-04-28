@@ -117,6 +117,41 @@ print_to :: fn($W: Writer, writer: *W, data: []const u8) -> usize ! IoError {
 
 ---
 
+## Lambdas (Anonymous Functions)
+
+An expression of the form `fn(params) -> Ret { body }` is a **lambda** — an
+anonymous function you can pass directly to a higher-order function or store in
+a variable. The return type is optional (defaults to `void`).
+
+```k2
+// As an argument — no need to declare a named predicate.
+n := slice::count_where(i32, xs, fn(x: i32) -> bool { return x < 0; });
+
+// Stored in a local, then called.
+twice := fn(x: i32) -> i32 { return x * 2; };
+y := twice(21); // 42
+
+// A bare function name is itself a value:
+sq := square;   // square is a top-level fn
+z := sq(8);
+```
+
+Functions are first-class values: a function name (or a lambda) has a
+**function-pointer type** `fn(Params) -> Ret`, which you can name explicitly:
+
+```k2
+op: fn(i32, i32) -> i32 = add;
+r := op(2, 3);
+```
+
+> [!NOTE]
+> Lambdas are **lifted** to ordinary top-level functions at compile time, so
+> they cost no more than a named function and a pointer. They do **not** yet
+> capture variables from the enclosing scope — the body sees only its own
+> parameters and module-level declarations. (Captures are planned.)
+
+---
+
 ## Fallible Functions
 
 Functions that can fail use `!` after the return type to declare an error channel:
@@ -318,6 +353,36 @@ for &val in data[:] {
 
 > [!TIP]
 > Use `data[:]` to create a slice from a fixed-size array. See the [Types & Values](02_types_values.md) chapter for more on slices and arrays.
+
+### For Iterators
+
+`for x in it` also works over any value whose type has a method
+`next(self: *Self) -> ?T`. Each iteration calls `next`; the loop binds the
+unwrapped payload and stops when `next` returns `null` — exactly like
+`while it.next() |x| { … }`, but without exposing the loop plumbing.
+
+```k2
+Range :: struct { cur: i32, end: i32 }
+
+// The iterator protocol: advance and yield, or return null when exhausted.
+next :: fn(self: *Range) -> ?i32 {
+    if self.cur >= self.end { return null; }
+    v := self.cur;
+    self.cur = self.cur + 1;
+    return v;
+}
+
+main :: fn() -> i32 {
+    r: Range = .{ 1, 5 };
+    sum: i32 = 0;
+    for x in r { sum = sum + x; } // 1 + 2 + 3 + 4 = 10
+    return sum;
+}
+```
+
+The index form `for x, i in it` is available too — `i` counts iterations from
+`0`. Iterating by reference (`for &x in it`) is not allowed: a `next` method
+yields values, not addresses.
 
 ---
 
