@@ -1817,6 +1817,29 @@ test "exe: for-in over an iterator (next protocol)" {
     try std.testing.expectEqual(@as(u32, 10), code); // 1+2+3+4
 }
 
+test "exe: lambdas — inline, in a local, and a fn value held in a local" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `fn(x){…}` lifts to a top-level fn; storing a fn value in a local and
+    // calling it types the (indirect) call's args from the fn-pointer signature
+    // (regression: an `.imm` literal arg used to lower to a zero-width `i0`).
+    const code = try compileAndRun(arena.allocator(),
+        \\dbl :: fn(x: i32) -> i32 { return x * 2; }
+        \\apply :: fn(g: fn(i32) -> i32, v: i32) -> i32 { return g(v); }
+        \\main :: fn() -> i32 {
+        \\    f := fn(x: i32) -> i32 { return x + 1; };      // lambda in a local
+        \\    g := dbl;                                       // a fn value in a local
+        \\    a := f(10);                                     // 11
+        \\    b := g(16);                                     // 32
+        \\    c := apply(fn(x: i32) -> i32 { return x * 3; }, 7); // 21 (lambda as a HOF arg)
+        \\    return a + b + c;
+        \\}
+    , "exe_lambdas");
+    try std.testing.expectEqual(@as(u32, 64), code); // 11 + 32 + 21
+}
+
 test "exe: while opt |x| walks an optional chain" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
