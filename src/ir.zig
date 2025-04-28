@@ -278,6 +278,11 @@ pub const CallInstr = struct {
 pub const CallIndirectInstr = struct {
     callee: Value,
     args: []const Value,
+    /// Expected IR type per argument, from the callee's fn-pointer signature.
+    /// Lets the backend type an untyped `.imm` literal arg (which otherwise has
+    /// no tracked type and lowers to a zero-width `i0`). Empty = fall back to
+    /// each arg's tracked type.
+    param_tys: []const IrType = &.{},
 };
 
 pub const BuiltinInstr = struct {
@@ -3163,7 +3168,22 @@ const FunctionLowerer = struct {
 
                 var args = std.ArrayList(Value).empty;
                 errdefer args.deinit(self.allocator);
+                // Parallel to `args`: the expected IR type of each argument (or
+                // `.unknown`). Used to type an indirect call's `.imm` literal args.
+                var arg_tys = std.ArrayList(IrType).empty;
+                errdefer arg_tys.deinit(self.allocator);
                 const direct_sig = if (callee_sym) |id| self.types.fn_sigs.get(id) else null;
+                // For an INDIRECT call (a fn-pointer local/param, e.g. a lambda or
+                // `f := dbl`) there's no direct signature — type the args from the
+                // callee's fn-pointer signature so an untyped literal gets the
+                // right width instead of a zero-width `i0`.
+                const indirect_params: ?[]const sema.Ty = if (direct_sig == null) ip: {
+                    const cty = self.types.expr_types.get(call.callee.id) orelse break :ip null;
+                    break :ip switch (cty) {
+                        .fn_ptr => |fp| fp.params,
+                        else => null,
+                    };
+                } else null;
                 var value_param_index: usize = 0;
                 // Bind explicit type arguments (e.g. the `Point` in `f(Point, v)`)
                 // so a following value param declared `v: T` gets `T`'s concrete
@@ -3174,6 +3194,7 @@ const FunctionLowerer = struct {
                 if (!is_type_arg_builtin) for (call.args, 0..) |arg, arg_idx| {
                     if (type_first_builtin and arg_idx == 0) {
                         try args.append(self.allocator, .{ .imm = .null });
+                        try arg_tys.append(self.allocator, .unknown);
                         continue;
                     }
                     const value = switch (arg) {
@@ -3208,10 +3229,15 @@ const FunctionLowerer = struct {
                                 expected = lowerSemaTypeWithEnv(self.allocator, pty, self.types, self.symbols) catch null;
                             value_param_index += 1;
                         }
+                    } else if (indirect_params) |params| {
+                        if (arg_idx < params.len)
+                            expected = lowerSemaTypeWithEnv(self.allocator, params[arg_idx], self.types, self.symbols) catch null;
                     }
                     try args.append(self.allocator, if (expected) |ty| try self.lowerExprAs(value, ty) else try self.lowerExpr(value));
+                    try arg_tys.append(self.allocator, expected orelse .unknown);
                 };
                 const arg_slice = try args.toOwnedSlice(self.allocator);
+                const arg_ty_slice = try arg_tys.toOwnedSlice(self.allocator);
                 // `require(T, Other)` is a constraint-composition guard checked in
                 // sema (runConstraintPredicate), so it's a no-op at eval time.
                 if (self.in_where and std.mem.eql(u8, callee_name, "require")) {
@@ -3346,6 +3372,7 @@ const FunctionLowerer = struct {
                     break :blk try self.emit(self.exprType(expr), .{ .call_indirect = .{
                         .callee = callee_val,
                         .args = arg_slice,
+                        .param_tys = arg_ty_slice,
                     } });
                 }
 

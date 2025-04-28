@@ -1476,8 +1476,17 @@ const Checker = struct {
                         .where_clause = decl.where_clause,
                         .output_type_params = decl.output_type_params,
                     });
+                    // The function's value type is a fn-pointer carrying its
+                    // VALUE parameter types (skip `$T` type params) — so
+                    // `f := some_fn; f(x)` types the call's arguments correctly.
+                    var fnptr_params = std.ArrayList(Ty).empty;
+                    errdefer fnptr_params.deinit(self.allocator);
+                    for (decl.params) |param| {
+                        if (param.is_type_param) continue;
+                        try fnptr_params.append(self.allocator, try self.typeFromRef(param.ty));
+                    }
                     try self.env.set(id, .{ .fn_ptr = .{
-                        .params = &.{},
+                        .params = try fnptr_params.toOwnedSlice(self.allocator),
                         .ret = try self.boxTy(if (err_ty) |err| .{ .fallible = .{ .ok = try self.boxTy(ret), .err = try self.boxTy(err) } } else ret),
                     } });
                 },
@@ -2856,6 +2865,9 @@ const Checker = struct {
                             return error.SemanticFailed;
                         }
                     }
+                    // Record the callee's fn-pointer type so IR types the
+                    // (indirect) call's arguments from it.
+                    try self.env.expr_types.put(call.callee.id, local_ty);
                     return fp.ret.*;
                 },
                 else => {},

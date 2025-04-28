@@ -610,9 +610,20 @@ fn lowerCallIndirect(
     defer cg.allocator.free(param_tys);
 
     for (ci.args, 0..) |arg, i| {
-        // Use the tracked IR type of each arg to get the LLVM type.
-        const arg_ir_ty = fncg.irTypeOf(arg) orelse ir.IrType.unknown;
-        resolved_args[i] = resolveVal(cg, fncg, arg, arg_ir_ty);
+        // Prefer the type from the callee's fn-pointer signature (the IR records
+        // it in `param_tys`): an `.imm` literal arg has no tracked type of its
+        // own and would otherwise lower to a zero-width `i0`.
+        const sig_ty: ?ir.IrType = if (i < ci.param_tys.len and ci.param_tys[i] != .unknown) ci.param_tys[i] else null;
+        if (sig_ty) |ty| {
+            const lty = types.lower(cg, ty);
+            resolved_args[i] = switch (arg) {
+                .imm => |imm| values.lowerImmAs(cg, imm, lty),
+                else => values.coerce(cg.builder, cg.ctx, resolveVal(cg, fncg, arg, ty), lty),
+            };
+        } else {
+            const arg_ir_ty = fncg.irTypeOf(arg) orelse ir.IrType.unknown;
+            resolved_args[i] = resolveVal(cg, fncg, arg, arg_ir_ty);
+        }
         param_tys[i] = llvm.LLVMTypeOf(resolved_args[i]);
     }
 
