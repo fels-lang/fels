@@ -258,10 +258,15 @@ pub const InterfaceMethodInstr = struct {
 };
 
 pub const ClosureMakeInstr = struct {
-    /// Linkage name of the raw function (or forwarding thunk) the closure calls.
+    /// Linkage name of the function the closure calls.
     fn_link: []const u8,
     /// Captured environment pointer, or `.imm = .null` for no captures.
     env: Value,
+    /// True when `fn_link` already takes a leading `__env` parameter (a lifted
+    /// lambda). False for a plain top-level function — the backend wraps it in a
+    /// forwarding thunk `__thunk_<fn>(__env, args)` so every closure is called
+    /// uniformly as `fn(env, args)`.
+    fn_takes_env: bool = false,
 };
 
 pub const UnaryInstr = struct {
@@ -1453,6 +1458,13 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
 fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, module: ast.Module, decl: ast.FunctionDecl, cvm: ?*ComptimeVm) !IrFunction {
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
+
+    // A lifted lambda takes a leading `__env: *u8` (the captured environment), so
+    // every closure is called uniformly as `fn(env, args)`. The body looks params
+    // up by name, so this extra leading param doesn't disturb the user params.
+    if (std.mem.startsWith(u8, decl.name, "__lambda_")) {
+        try params.append(allocator, .{ .name = "__env", .ty = .{ .ptr = try boxType(allocator, .void) } });
+    }
 
     for (decl.params) |param| {
         if (param.is_type_param) continue;
@@ -2875,7 +2887,11 @@ const FunctionLowerer = struct {
                     // Constraints/macros are compile-time templates, not callable
                     // values — keep them as a bare symbol reference.
                     if (kind == .function and !self.isTemplateFn(name))
-                        break :blk try self.emit(self.fnPtrTypeOf(expr), .{ .closure_make = .{ .fn_link = link, .env = .{ .imm = .null } } });
+                        break :blk try self.emit(self.fnPtrTypeOf(expr), .{ .closure_make = .{
+                            .fn_link = link,
+                            .env = .{ .imm = .null },
+                            .fn_takes_env = std.mem.startsWith(u8, name, "__lambda_"),
+                        } });
                     if (kind == .function or kind == .const_symbol) break :blk Value{ .global = link };
                 }
                 break :blk Value{ .local = name };

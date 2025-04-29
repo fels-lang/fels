@@ -199,7 +199,10 @@ fn lowerInterfaceMake(cg: *ModuleCg, fncg: anytype, make: ir.InterfaceMakeInstr)
 }
 
 fn lowerClosureMake(cg: *ModuleCg, fncg: anytype, mk: ir.ClosureMakeInstr) ?llvm.LLVMValueRef {
-    const fn_ptr = cg.fn_decls.get(mk.fn_link) orelse return null;
+    const target = cg.fn_decls.get(mk.fn_link) orelse return null;
+    // A lifted lambda already takes a leading `__env`; a plain function does not,
+    // so wrap it in a forwarding thunk that drops the env and forwards the args.
+    const fn_ptr = if (mk.fn_takes_env) target else getOrCreateThunk(cg, mk.fn_link, target) orelse return null;
     const ptr_ty = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
     const env = switch (mk.env) {
         .imm => |imm| values.lowerImmAs(cg, imm, ptr_ty),
@@ -208,6 +211,50 @@ fn lowerClosureMake(cg: *ModuleCg, fncg: anytype, mk: ir.ClosureMakeInstr) ?llvm
     var result = llvm.LLVMGetUndef(cg.getClosureType());
     result = llvm.LLVMBuildInsertValue(cg.builder, result, fn_ptr, 0, "clos.fn");
     return llvm.LLVMBuildInsertValue(cg.builder, result, env, 1, "clos.env");
+}
+
+/// Build (once, cached) `__thunk_<fn>(__env: ptr, args…) -> Ret { return fn(args); }`
+/// so a plain function can be called through the uniform `fn(env, args)` closure
+/// convention. The env argument is ignored.
+fn getOrCreateThunk(cg: *ModuleCg, fn_link: []const u8, target: llvm.LLVMValueRef) ?llvm.LLVMValueRef {
+    if (cg.closure_thunks.get(fn_link)) |t| return t;
+
+    const target_ty = llvm.LLVMGlobalGetValueType(target);
+    const n = llvm.LLVMCountParamTypes(target_ty);
+    const ptr_ty = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
+
+    const ptys = cg.allocator.alloc(llvm.LLVMTypeRef, n + 1) catch return null;
+    defer cg.allocator.free(ptys);
+    ptys[0] = ptr_ty; // __env
+    if (n > 0) llvm.LLVMGetParamTypes(target_ty, ptys.ptr + 1);
+    const ret_ty = llvm.LLVMGetReturnType(target_ty);
+    const thunk_ty = llvm.LLVMFunctionType(ret_ty, ptys.ptr, n + 1, 0);
+
+    const name_slice = std.fmt.allocPrint(cg.allocator, "__thunk_{s}", .{fn_link}) catch return null;
+    defer cg.allocator.free(name_slice);
+    const name = cg.allocator.dupeZ(u8, name_slice) catch return null;
+    defer cg.allocator.free(name);
+    const thunk = llvm.LLVMAddFunction(cg.mod, name.ptr, thunk_ty);
+    llvm.LLVMSetLinkage(thunk, llvm.LLVMInternalLinkage);
+
+    // Build the body, then restore the builder to where it was.
+    const saved = llvm.LLVMGetInsertBlock(cg.builder);
+    const entry = llvm.LLVMAppendBasicBlockInContext(cg.ctx, thunk, "entry");
+    llvm.LLVMPositionBuilderAtEnd(cg.builder, entry);
+    const args = cg.allocator.alloc(llvm.LLVMValueRef, n) catch return null;
+    defer cg.allocator.free(args);
+    var i: c_uint = 0;
+    while (i < n) : (i += 1) args[i] = llvm.LLVMGetParam(thunk, i + 1); // skip __env
+    const call = llvm.LLVMBuildCall2(cg.builder, target_ty, target, args.ptr, n, "");
+    if (llvm.LLVMGetTypeKind(ret_ty) == llvm.LLVMVoidTypeKind) {
+        _ = llvm.LLVMBuildRetVoid(cg.builder);
+    } else {
+        _ = llvm.LLVMBuildRet(cg.builder, call);
+    }
+    if (saved) |bb| llvm.LLVMPositionBuilderAtEnd(cg.builder, bb);
+
+    cg.closure_thunks.put(fn_link, thunk) catch {};
+    return thunk;
 }
 
 fn lowerInterfaceData(cg: *ModuleCg, fncg: anytype, value: ir.Value) ?llvm.LLVMValueRef {
@@ -613,49 +660,57 @@ fn lowerCallIndirect(
     ci: ir.CallIndirectInstr,
     ret_ty: ir.IrType,
 ) ?llvm.LLVMValueRef {
-    // Resolve the callee. For a k2 function value it's a fat closure `{ fn, env }`
-    // — extract the `fn` field to get the raw call target. (Phase 1 does not yet
-    // pass the env to the callee.)
-    const callee_ptr = blk: {
-        const v = resolveVal(cg, fncg, ci.callee, .unknown);
-        if (ci.is_closure) break :blk llvm.LLVMBuildExtractValue(cg.builder, v, 0, "clos.fn");
-        break :blk v;
-    };
+    // For a k2 function value the callee is a fat closure `{ fn, env }`: extract
+    // the `fn` field to call, and pass the `env` as a hidden leading argument so
+    // every closure is invoked uniformly as `fn(env, args)`.
+    const closure_val = if (ci.is_closure) resolveVal(cg, fncg, ci.callee, .unknown) else null;
+    const callee_ptr = if (closure_val) |v|
+        llvm.LLVMBuildExtractValue(cg.builder, v, 0, "clos.fn")
+    else
+        resolveVal(cg, fncg, ci.callee, .unknown);
+    const lead: usize = if (ci.is_closure) 1 else 0;
 
-    // Resolve argument values and collect their LLVM types.
-    const resolved_args = cg.allocator.alloc(llvm.LLVMValueRef, ci.args.len) catch return null;
+    // Resolve argument values and collect their LLVM types (slot 0 = env for a closure).
+    const total = lead + ci.args.len;
+    const resolved_args = cg.allocator.alloc(llvm.LLVMValueRef, total) catch return null;
     defer cg.allocator.free(resolved_args);
-    const param_tys = cg.allocator.alloc(llvm.LLVMTypeRef, ci.args.len) catch return null;
+    const param_tys = cg.allocator.alloc(llvm.LLVMTypeRef, total) catch return null;
     defer cg.allocator.free(param_tys);
 
+    if (closure_val) |v| {
+        resolved_args[0] = llvm.LLVMBuildExtractValue(cg.builder, v, 1, "clos.env");
+        param_tys[0] = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
+    }
+
     for (ci.args, 0..) |arg, i| {
+        const slot = lead + i;
         // Prefer the type from the callee's fn-pointer signature (the IR records
         // it in `param_tys`): an `.imm` literal arg has no tracked type of its
         // own and would otherwise lower to a zero-width `i0`.
         const sig_ty: ?ir.IrType = if (i < ci.param_tys.len and ci.param_tys[i] != .unknown) ci.param_tys[i] else null;
         if (sig_ty) |ty| {
             const lty = types.lower(cg, ty);
-            resolved_args[i] = switch (arg) {
+            resolved_args[slot] = switch (arg) {
                 .imm => |imm| values.lowerImmAs(cg, imm, lty),
                 else => values.coerce(cg.builder, cg.ctx, resolveVal(cg, fncg, arg, ty), lty),
             };
         } else {
             const arg_ir_ty = fncg.irTypeOf(arg) orelse ir.IrType.unknown;
-            resolved_args[i] = resolveVal(cg, fncg, arg, arg_ir_ty);
+            resolved_args[slot] = resolveVal(cg, fncg, arg, arg_ir_ty);
         }
-        param_tys[i] = llvm.LLVMTypeOf(resolved_args[i]);
+        param_tys[slot] = llvm.LLVMTypeOf(resolved_args[slot]);
     }
 
     // Reconstruct the function type from args + return type.
     const ret_lty = types.lower(cg, ret_ty);
-    const fn_ty = llvm.LLVMFunctionType(ret_lty, param_tys.ptr, @intCast(ci.args.len), 0);
+    const fn_ty = llvm.LLVMFunctionType(ret_lty, param_tys.ptr, @intCast(total), 0);
 
     const result = llvm.LLVMBuildCall2(
         cg.builder,
         fn_ty,
         callee_ptr,
         resolved_args.ptr,
-        @intCast(ci.args.len),
+        @intCast(total),
         "",
     );
     return if (ret_ty == .void) null else result;

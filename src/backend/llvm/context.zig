@@ -69,6 +69,9 @@ pub const ModuleCg = struct {
     slice_type: ?llvm.LLVMTypeRef = null,
     interface_type: ?llvm.LLVMTypeRef = null,
     closure_type: ?llvm.LLVMTypeRef = null,
+    /// Cache of forwarding thunks `__thunk_<fn>` generated for plain functions
+    /// used as closure values (so they accept the leading `__env` arg).
+    closure_thunks: std.StringHashMap(llvm.LLVMValueRef) = undefined,
     /// Per-enum metadata (discriminants, LLVM type).
     enum_meta: std.StringHashMap(*variants.EnumMeta),
     /// Counter for unique string-literal global names.
@@ -130,6 +133,7 @@ pub const ModuleCg = struct {
             .global_decls = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
             .global_ir_types = std.StringHashMap(ir.IrType).init(allocator),
             .enum_meta = std.StringHashMap(*variants.EnumMeta).init(allocator),
+            .closure_thunks = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
         };
     }
 
