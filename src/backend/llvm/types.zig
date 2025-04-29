@@ -54,6 +54,9 @@ pub fn lower(cg: *ModuleCg, ty: ir.IrType) llvm.LLVMTypeRef {
         // All other pointer-like types are opaque `ptr` (LLVM 15+).
         .ptr => llvm.LLVMPointerTypeInContext(ctx, 0),
 
+        // A function value is a fat closure `{ fn, env }` (not a bare pointer).
+        .fn_ptr => cg.getClosureType(),
+
         .array => |arr| llvm.LLVMArrayType2(lower(cg, arr.elem.*), arr.len),
 
         .struct_type => |name| cg.struct_types.get(name) orelse

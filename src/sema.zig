@@ -414,6 +414,9 @@ pub const FnSig = struct {
     /// output types at the call site during generic resolution.
     where_clause: ?ast.Block = null,
     output_type_params: []const []const u8 = &.{},
+    /// A `constraint`/`macro` template, not a callable runtime value — IR must
+    /// not wrap a reference to it as a closure.
+    is_template: bool = false,
 };
 
 pub const ParamSig = struct {
@@ -1475,6 +1478,7 @@ const Checker = struct {
                         .type_binding = null,
                         .where_clause = decl.where_clause,
                         .output_type_params = decl.output_type_params,
+                        .is_template = decl.is_constraint or decl.is_macro,
                     });
                     // The function's value type is a fn-pointer carrying its
                     // VALUE parameter types (skip `$T` type params) — so

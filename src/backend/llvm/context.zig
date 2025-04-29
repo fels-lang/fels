@@ -68,6 +68,7 @@ pub const ModuleCg = struct {
     /// Cached { ptr, usize } slice struct type — created once on first use.
     slice_type: ?llvm.LLVMTypeRef = null,
     interface_type: ?llvm.LLVMTypeRef = null,
+    closure_type: ?llvm.LLVMTypeRef = null,
     /// Per-enum metadata (discriminants, LLVM type).
     enum_meta: std.StringHashMap(*variants.EnumMeta),
     /// Counter for unique string-literal global names.
@@ -188,6 +189,21 @@ pub const ModuleCg = struct {
         };
         const st = llvm.LLVMStructTypeInContext(self.ctx, &fields, 2, 0);
         self.interface_type = st;
+        return st;
+    }
+
+    /// A function value is a fat closure `{ fn: ptr, env: ptr }` — `fn` is the
+    /// raw function (or thunk) pointer, `env` the captured environment (null when
+    /// there are no captures). Lets every fn-value flow uniformly and lets a
+    /// higher-order function accept a closure where a plain fn pointer once went.
+    pub fn getClosureType(self: *ModuleCg) llvm.LLVMTypeRef {
+        if (self.closure_type) |st| return st;
+        var fields = [_]llvm.LLVMTypeRef{
+            llvm.LLVMPointerTypeInContext(self.ctx, 0), // .fn
+            llvm.LLVMPointerTypeInContext(self.ctx, 0), // .env
+        };
+        const st = llvm.LLVMStructTypeInContext(self.ctx, &fields, 2, 0);
+        self.closure_type = st;
         return st;
     }
 

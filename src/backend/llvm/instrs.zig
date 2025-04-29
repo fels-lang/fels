@@ -141,6 +141,7 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         .interface_make => |make| lowerInterfaceMake(cg, fncg, make),
         .interface_data => |value| lowerInterfaceData(cg, fncg, value),
         .interface_method => |method| lowerInterfaceMethod(cg, fncg, method),
+        .closure_make => |mk| lowerClosureMake(cg, fncg, mk),
 
         // ── Error / fallible ─────────────────────────────────────────────────
 
@@ -195,6 +196,18 @@ fn lowerInterfaceMake(cg: *ModuleCg, fncg: anytype, make: ir.InterfaceMakeInstr)
     var result = llvm.LLVMGetUndef(cg.getInterfaceType());
     result = llvm.LLVMBuildInsertValue(cg.builder, result, data, 0, "");
     return llvm.LLVMBuildInsertValue(cg.builder, result, vtable, 1, "");
+}
+
+fn lowerClosureMake(cg: *ModuleCg, fncg: anytype, mk: ir.ClosureMakeInstr) ?llvm.LLVMValueRef {
+    const fn_ptr = cg.fn_decls.get(mk.fn_link) orelse return null;
+    const ptr_ty = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
+    const env = switch (mk.env) {
+        .imm => |imm| values.lowerImmAs(cg, imm, ptr_ty),
+        else => values.coerce(cg.builder, cg.ctx, resolveVal(cg, fncg, mk.env, .unknown), ptr_ty),
+    };
+    var result = llvm.LLVMGetUndef(cg.getClosureType());
+    result = llvm.LLVMBuildInsertValue(cg.builder, result, fn_ptr, 0, "clos.fn");
+    return llvm.LLVMBuildInsertValue(cg.builder, result, env, 1, "clos.env");
 }
 
 fn lowerInterfaceData(cg: *ModuleCg, fncg: anytype, value: ir.Value) ?llvm.LLVMValueRef {
@@ -600,8 +613,14 @@ fn lowerCallIndirect(
     ci: ir.CallIndirectInstr,
     ret_ty: ir.IrType,
 ) ?llvm.LLVMValueRef {
-    // Resolve the callee — a `ptr` to the function.
-    const callee_ptr = resolveVal(cg, fncg, ci.callee, .unknown);
+    // Resolve the callee. For a k2 function value it's a fat closure `{ fn, env }`
+    // — extract the `fn` field to get the raw call target. (Phase 1 does not yet
+    // pass the env to the callee.)
+    const callee_ptr = blk: {
+        const v = resolveVal(cg, fncg, ci.callee, .unknown);
+        if (ci.is_closure) break :blk llvm.LLVMBuildExtractValue(cg.builder, v, 0, "clos.fn");
+        break :blk v;
+    };
 
     // Resolve argument values and collect their LLVM types.
     const resolved_args = cg.allocator.alloc(llvm.LLVMValueRef, ci.args.len) catch return null;

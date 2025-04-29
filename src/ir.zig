@@ -238,6 +238,9 @@ pub const InstrKind = union(enum) {
     interface_make: InterfaceMakeInstr,
     interface_data: Value,
     interface_method: InterfaceMethodInstr,
+    /// Build a fat closure value `{ fn, env }` — a function (or thunk) pointer
+    /// plus its captured environment (null when there are no captures).
+    closure_make: ClosureMakeInstr,
     store_local: StoreLocalInstr,
     global_load: []const u8,
     global_store: GlobalStoreInstr,
@@ -252,6 +255,13 @@ pub const InterfaceMakeInstr = struct {
 pub const InterfaceMethodInstr = struct {
     value: Value,
     index: u32,
+};
+
+pub const ClosureMakeInstr = struct {
+    /// Linkage name of the raw function (or forwarding thunk) the closure calls.
+    fn_link: []const u8,
+    /// Captured environment pointer, or `.imm = .null` for no captures.
+    env: Value,
 };
 
 pub const UnaryInstr = struct {
@@ -283,6 +293,10 @@ pub const CallIndirectInstr = struct {
     /// no tracked type and lowers to a zero-width `i0`). Empty = fall back to
     /// each arg's tracked type.
     param_tys: []const IrType = &.{},
+    /// True when `callee` is a fat closure value `{ fn, env }` (a k2 function
+    /// value) rather than a raw function pointer (an interface method). The
+    /// backend extracts the `fn` field before calling.
+    is_closure: bool = false,
 };
 
 pub const BuiltinInstr = struct {
@@ -881,6 +895,7 @@ fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
         .interface_make => |make| try validateValue(function, make.data),
         .interface_data => |value| try validateValue(function, value),
         .interface_method => |method| try validateValue(function, method.value),
+        .closure_make => |mk| try validateValue(function, mk.env),
         .store_local => |store| try validateValue(function, store.value),
         .global_store => |store| try validateValue(function, store.value),
         .store => |store| {
@@ -1236,6 +1251,7 @@ fn instrUsesReg(instr: Instr, id: RegId) bool {
         .interface_make => |make| valueUsesReg(make.data, id),
         .interface_data => |value| valueUsesReg(value, id),
         .interface_method => |method| valueUsesReg(method.value, id),
+        .closure_make => |mk| valueUsesReg(mk.env, id),
         .store_local => |store| valueUsesReg(store.value, id),
         .global_store => |store| valueUsesReg(store.value, id),
         .store => |store| valueUsesReg(store.target, id) or valueUsesReg(store.value, id),
@@ -2853,7 +2869,14 @@ const FunctionLowerer = struct {
                 if (self.local_types.contains(cur)) break :blk Value{ .local = cur };
                 if (resolveTopLevel(self.symbols, self.file_name, name)) |id| {
                     const kind = self.symbols.symbol(id).kind;
-                    if (kind == .function or kind == .const_symbol) break :blk Value{ .global = self.symbols.symbol(id).link_name };
+                    const link = self.symbols.symbol(id).link_name;
+                    // A function used as a VALUE (not a direct call) becomes a fat
+                    // closure `{ fn, env }`. Phase 1: env is always null (no captures).
+                    // Constraints/macros are compile-time templates, not callable
+                    // values — keep them as a bare symbol reference.
+                    if (kind == .function and !self.isTemplateFn(name))
+                        break :blk try self.emit(self.fnPtrTypeOf(expr), .{ .closure_make = .{ .fn_link = link, .env = .{ .imm = .null } } });
+                    if (kind == .function or kind == .const_symbol) break :blk Value{ .global = link };
                 }
                 break :blk Value{ .local = name };
             },
@@ -3369,10 +3392,15 @@ const FunctionLowerer = struct {
                         }
                         break :cv .{ .local = callee_name };
                     };
+                    // Only a genuine k2 function VALUE (a `fn_ptr`-typed local/param)
+                    // is a fat closure `{ fn, env }`; other indirect callees (e.g.
+                    // `@`-prefixed runtime fns) are called by their raw pointer.
+                    const callee_is_closure = self.exprType(call.callee.*) == .fn_ptr;
                     break :blk try self.emit(self.exprType(expr), .{ .call_indirect = .{
                         .callee = callee_val,
                         .args = arg_slice,
                         .param_tys = arg_ty_slice,
+                        .is_closure = callee_is_closure,
                     } });
                 }
 
@@ -4055,6 +4083,24 @@ const FunctionLowerer = struct {
         try self.current_instrs.append(self.allocator, .{ .id = null, .ty = ty, .kind = kind });
     }
 
+    /// A `constraint`/`macro` template function — registered for `$T: Name`
+    /// resolution or macro expansion, never a callable runtime value. Such a name
+    /// must NOT be wrapped as a closure (it breaks `require(T, Name)` composition).
+    fn isTemplateFn(self: *FunctionLowerer, name: []const u8) bool {
+        const id = resolveTopLevel(self.symbols, self.file_name, name) orelse return false;
+        const sig = self.types.fn_sigs.get(id) orelse return false;
+        return sig.is_template;
+    }
+
+    /// The fn-pointer (closure) IR type of an expression that names a function.
+    /// Falls back to an opaque fn-pointer when sema didn't record one, so a
+    /// `closure_make` always carries a `.fn_ptr` type (→ the backend closure struct).
+    fn fnPtrTypeOf(self: *FunctionLowerer, expr: ast.Expr) IrType {
+        const t = self.exprType(expr);
+        if (t == .fn_ptr) return t;
+        return .{ .fn_ptr = .{ .params = &.{}, .ret = boxType(self.allocator, .void) catch &voidType } };
+    }
+
     fn exprType(self: FunctionLowerer, expr: ast.Expr) IrType {
         const ty = self.types.expr_types.get(expr.id) orelse {
             if (expr.kind == .ident) {
@@ -4072,6 +4118,23 @@ const FunctionLowerer = struct {
                     }
                     return lowerAstTypeWithEnv(self.allocator, param.ty, self.types, self.symbols) catch .unknown;
                 };
+                // A bare function name used as a value is a fat closure — type it
+                // `fn_ptr` (carrying the function's value-param + return types) so a
+                // `f := dbl` local is sized/loaded as a closure, not a raw pointer.
+                if (resolveTopLevel(self.symbols, self.file_name, expr.kind.ident)) |id| {
+                    if (self.symbols.symbol(id).kind == .function) {
+                        if (self.types.fn_sigs.get(id)) |sig| {
+                            var ps = std.ArrayList(IrType).empty;
+                            for (sig.params) |p| {
+                                if (p.is_type_param) continue;
+                                ps.append(self.allocator, lowerSemaTypeWithEnv(self.allocator, p.ty, self.types, self.symbols) catch .unknown) catch {};
+                            }
+                            const ret = lowerSemaTypeWithEnv(self.allocator, sig.return_ty, self.types, self.symbols) catch .void;
+                            return .{ .fn_ptr = .{ .params = ps.toOwnedSlice(self.allocator) catch &.{}, .ret = boxType(self.allocator, ret) catch &voidType } };
+                        }
+                        return .{ .fn_ptr = .{ .params = &.{}, .ret = &voidType } };
+                    }
+                }
             }
             return .unknown;
         };
@@ -4344,6 +4407,16 @@ fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.Symbol
         .int_lit => .{ .i = 32 },
         .float_lit => .f64,
         .null_ptr => .{ .ptr = try boxType(allocator, .void) },
+        // A function value is a fat closure `{ fn, env }` — carry the value-param
+        // and return types so calls through it type their arguments correctly.
+        .fn_ptr => |fp| blk: {
+            var ps = std.ArrayList(IrType).empty;
+            for (fp.params) |p| try ps.append(allocator, try lowerSemaType(allocator, p, symbols));
+            break :blk .{ .fn_ptr = .{
+                .params = try ps.toOwnedSlice(allocator),
+                .ret = try boxType(allocator, try lowerSemaType(allocator, fp.ret.*, symbols)),
+            } };
+        },
         .unknown, .error_ty => .unknown,
         else => .unknown,
     };
@@ -4386,6 +4459,9 @@ fn boxType(allocator: std.mem.Allocator, ty: IrType) !*const IrType {
     ptr.* = ty;
     return ptr;
 }
+
+/// A static `void` IrType — an OOM-proof fallback for `*const IrType` slots.
+const voidType: IrType = .void;
 
 fn assignBinOp(op: ast.AssignOp) ?BinOp {
     return switch (op) {
