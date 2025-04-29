@@ -205,9 +205,11 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "k2_compiler", .module = compiler_mod }},
     });
 
-    const compiler_unit_tests = b.addTest(.{ .root_module = compiler_mod });
-    const exe_unit_tests = b.addTest(.{ .root_module = exe_mod });
-    const integration_tests = b.addTest(.{ .root_module = test_mod });
+    const test_filter = b.option([]const u8, "test-filter", "Only run tests whose name contains this substring");
+    const filters: []const []const u8 = if (test_filter) |f| &.{f} else &.{};
+    const compiler_unit_tests = b.addTest(.{ .root_module = compiler_mod, .filters = filters });
+    const exe_unit_tests = b.addTest(.{ .root_module = exe_mod, .filters = filters });
+    const integration_tests = b.addTest(.{ .root_module = test_mod, .filters = filters });
 
     // Tests are a separate step — `zig build test` — not part of install.
     const test_step = b.step("test", "Run all tests");
