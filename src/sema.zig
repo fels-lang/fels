@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const freevars = @import("freevars.zig");
 const NodeId = ast.NodeId;
 const diag_mod = @import("diagnostic.zig");
 const Diagnostic = diag_mod.Diagnostic;
@@ -462,6 +463,10 @@ pub const TypeEnv = struct {
     /// Integer-valued top-level constants by name — so a `[N]T` array size can
     /// resolve a named const (`N :: 29`) or simple arithmetic over them.
     const_ints: std.StringHashMap(u64) = undefined,
+    /// Lifted-lambda link name → the free-variable names in its body (candidates
+    /// for capture). Populated at registration; resolved to actual captures at
+    /// each definition site (see `lambda_captures`).
+    lambda_free: std.StringHashMap([]const []const u8) = undefined,
     diagnostics: std.ArrayList(Diagnostic) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) TypeEnv {
@@ -484,6 +489,7 @@ pub const TypeEnv = struct {
             .generic_struct_instances = std.StringHashMap(SymbolId).init(allocator),
             .interface_impls = std.StringHashMap(ast.InterfaceImpl).init(allocator),
             .const_ints = std.StringHashMap(u64).init(allocator),
+            .lambda_free = std.StringHashMap([]const []const u8).init(allocator),
         };
     }
 
@@ -511,6 +517,9 @@ pub const TypeEnv = struct {
         self.generic_struct_templates.deinit();
         self.generic_struct_instances.deinit();
         self.interface_impls.deinit();
+        var lf = self.lambda_free.valueIterator();
+        while (lf.next()) |v| allocator.free(v.*);
+        self.lambda_free.deinit();
         self.diagnostics.deinit(allocator);
     }
 
@@ -1493,6 +1502,14 @@ const Checker = struct {
                         .params = try fnptr_params.toOwnedSlice(self.allocator),
                         .ret = try self.boxTy(if (err_ty) |err| .{ .fallible = .{ .ok = try self.boxTy(ret), .err = try self.boxTy(err) } } else ret),
                     } });
+                    // A lifted lambda: record its free variables (capture candidates),
+                    // keyed by linkage name so the def site can resolve them.
+                    if (std.mem.startsWith(u8, decl.name, "__lambda_")) {
+                        if (decl.body) |body| {
+                            const free = freevars.analyze(self.allocator, decl.params, body) catch &.{};
+                            self.env.lambda_free.put(self.symbols.symbol(id).link_name, free) catch {};
+                        }
+                    }
                 },
                 .import => {},
                 .interface_impl => unreachable,
