@@ -426,6 +426,12 @@ pub const ParamSig = struct {
     is_type_param: bool = false,
 };
 
+/// A variable a lambda captures from its enclosing scope (by value).
+pub const Capture = struct {
+    name: []const u8,
+    ty: Ty,
+};
+
 pub const TypeEnv = struct {
     symbol_types: std.AutoHashMap(SymbolId, Ty),
     layouts: std.AutoHashMap(SymbolId, TypeLayout),
@@ -467,6 +473,10 @@ pub const TypeEnv = struct {
     /// for capture). Populated at registration; resolved to actual captures at
     /// each definition site (see `lambda_captures`).
     lambda_free: std.StringHashMap([]const []const u8) = undefined,
+    /// Lifted-lambda link name → the variables it captures from the enclosing
+    /// scope (the free vars that resolved to enclosing locals), with their types.
+    /// Resolved at the definition site; read by the lambda body check and by IR.
+    lambda_captures: std.StringHashMap([]const Capture) = undefined,
     diagnostics: std.ArrayList(Diagnostic) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) TypeEnv {
@@ -490,6 +500,7 @@ pub const TypeEnv = struct {
             .interface_impls = std.StringHashMap(ast.InterfaceImpl).init(allocator),
             .const_ints = std.StringHashMap(u64).init(allocator),
             .lambda_free = std.StringHashMap([]const []const u8).init(allocator),
+            .lambda_captures = std.StringHashMap([]const Capture).init(allocator),
         };
     }
 
@@ -520,6 +531,9 @@ pub const TypeEnv = struct {
         var lf = self.lambda_free.valueIterator();
         while (lf.next()) |v| allocator.free(v.*);
         self.lambda_free.deinit();
+        var lc = self.lambda_captures.valueIterator();
+        while (lc.next()) |v| allocator.free(v.*);
+        self.lambda_captures.deinit();
         self.diagnostics.deinit(allocator);
     }
 
@@ -1772,6 +1786,22 @@ const Checker = struct {
         }
     }
 
+    /// At a lifted lambda's definition site, resolve which of its free variables
+    /// are enclosing locals — those become its captures (recorded by-value with
+    /// their types). Resolved once per lambda.
+    fn resolveLambdaCaptures(self: *Checker, link: []const u8) SemanticError!void {
+        const frees = self.env.lambda_free.get(link) orelse return;
+        if (self.env.lambda_captures.contains(link)) return;
+        var caps = std.ArrayList(Capture).empty;
+        errdefer caps.deinit(self.allocator);
+        for (frees) |fname| {
+            if (self.lookupLocal(fname)) |fty| {
+                try caps.append(self.allocator, .{ .name = fname, .ty = fty });
+            }
+        }
+        try self.env.lambda_captures.put(link, try caps.toOwnedSlice(self.allocator));
+    }
+
     fn checkFunction(self: *Checker, decl: ast.FunctionDecl) SemanticError!void {
         const previous_file = self.file;
         self.file = decl.file_name;
@@ -1810,6 +1840,17 @@ const Checker = struct {
                 });
             } else {
                 try self.declareLocal(param.name, param_ty);
+            }
+        }
+
+        // A lifted lambda sees its captured variables as locals (by value), so its
+        // body type-checks. Captures are resolved at the definition site; if that
+        // hasn't run yet (e.g. a nested lambda) there are simply none.
+        if (std.mem.startsWith(u8, decl.name, "__lambda_")) {
+            if (self.resolveSymbol(decl.name)) |id| {
+                if (self.env.lambda_captures.get(self.symbols.symbol(id).link_name)) |caps| {
+                    for (caps) |c| try self.declareLocal(c.name, c.ty);
+                }
             }
         }
 
@@ -2178,6 +2219,10 @@ const Checker = struct {
                     // `usize` const mistyped `to` as a pointer → `add ptr` ICE).
                     const sym_ty = self.env.get(id) orelse Ty{ .named = id };
                     try self.env.expr_types.put(expr.id, sym_ty);
+                    // A reference to a lifted lambda is its definition site:
+                    // resolve which of its free vars are enclosing locals (the
+                    // captures) against THIS scope, for the body check + IR env.
+                    try self.resolveLambdaCaptures(self.symbols.symbol(id).link_name);
                     return sym_ty;
                 }
                 if (fromBuiltinName(name)) |builtin_ty| return builtin_ty;
