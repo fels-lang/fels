@@ -144,11 +144,37 @@ op: fn(i32, i32) -> i32 = add;
 r := op(2, 3);
 ```
 
+### Capturing closures
+
+A lambda may reference variables from the enclosing scope; they are **captured by
+value** when the closure is created:
+
+```k2
+mul :: fn(f: fn(i32) -> i32, v: i32) -> i32 { return f(v); }
+
+main :: fn() -> i32 {
+    factor: i32 = 10;
+    scale := fn(x: i32) -> i32 { return x * factor; }; // captures `factor`
+    return mul(scale, 4); // 40
+}
+```
+
+A function value is a **fat closure** `{ fn, env }`: a function pointer plus a
+pointer to its captured environment. A plain (non-capturing) function or lambda
+has an empty environment, so it costs no more than a bare pointer; a capturing
+lambda copies the captured values into a small environment when it is created.
+
+> [!IMPORTANT]
+> Captured environments currently live on the **defining function's stack frame**.
+> A capturing closure is therefore safe to *call* and to *pass down* to a
+> higher-order function (the common case), but must **not escape** the function
+> that created it — returning or storing a capturing closure for later use reads a
+> dead frame. (Allocating the environment in an enclosing `zone` so closures can
+> escape is the planned next step.)
+
 > [!NOTE]
-> Lambdas are **lifted** to ordinary top-level functions at compile time, so
-> they cost no more than a named function and a pointer. They do **not** yet
-> capture variables from the enclosing scope — the body sees only its own
-> parameters and module-level declarations. (Captures are planned.)
+> Lambdas are **lifted** to ordinary top-level functions at compile time. A
+> non-capturing lambda is just a named function and a pointer.
 
 ---
 
