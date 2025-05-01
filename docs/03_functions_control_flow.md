@@ -164,13 +164,35 @@ pointer to its captured environment. A plain (non-capturing) function or lambda
 has an empty environment, so it costs no more than a bare pointer; a capturing
 lambda copies the captured values into a small environment when it is created.
 
+**Where the environment lives** follows k2's region model:
+
+- Inside a `zone`, a capturing closure's environment is allocated on the **zone's
+  Arena**, so the closure is valid for the whole zone — it can be stored and
+  handed around freely within that scope:
+
+  ```k2
+  zone scratch: Arena {
+      base: i32 = 100;
+      f := fn(x: i32) -> i32 { return base + x; }; // env on `scratch`
+      r = call_it(f, 7);                            // safe anywhere in the zone
+  }
+  ```
+
+- Outside any zone, the environment lives on the **stack frame** that created it.
+  Such a closure is safe to *call* and to *pass down* to a higher-order function
+  (the common case), but cannot outlive that frame.
+
 > [!IMPORTANT]
-> Captured environments currently live on the **defining function's stack frame**.
-> A capturing closure is therefore safe to *call* and to *pass down* to a
-> higher-order function (the common case), but must **not escape** the function
-> that created it — returning or storing a capturing closure for later use reads a
-> dead frame. (Allocating the environment in an enclosing `zone` so closures can
-> escape is the planned next step.)
+> **Returning a capturing closure is a compile error** — its environment belongs
+> to the function that created it (a stack frame, or a zone that ends with the
+> function), so returning it would dangle:
+> ```
+> error: a capturing closure cannot be returned: its captured environment lives
+> in this function and would be left dangling
+> ```
+> Returning a *non*-capturing function value is fine (it's just a pointer).
+> Letting a factory return an escaping closure needs **region passing** (the
+> caller supplies the `*Arena` the environment is allocated in) — a planned step.
 
 > [!NOTE]
 > Lambdas are **lifted** to ordinary top-level functions at compile time. A
