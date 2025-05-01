@@ -241,6 +241,11 @@ pub const InstrKind = union(enum) {
     /// Build a fat closure value `{ fn, env }` — a function (or thunk) pointer
     /// plus its captured environment (null when there are no captures).
     closure_make: ClosureMakeInstr,
+    /// Allocate a capture environment and store the captured values into it,
+    /// yielding a pointer (the closure's `env`).
+    closure_env_make: ClosureEnvMakeInstr,
+    /// Read capture field `index` out of a lambda's `__env` pointer.
+    closure_env_load: ClosureEnvLoadInstr,
     store_local: StoreLocalInstr,
     global_load: []const u8,
     global_store: GlobalStoreInstr,
@@ -267,6 +272,26 @@ pub const ClosureMakeInstr = struct {
     /// forwarding thunk `__thunk_<fn>(__env, args)` so every closure is called
     /// uniformly as `fn(env, args)`.
     fn_takes_env: bool = false,
+};
+
+pub const EnvField = struct {
+    value: Value,
+    ty: IrType,
+};
+
+pub const ClosureEnvMakeInstr = struct {
+    /// The captured values + their types, in capture order. The env is laid out
+    /// as an anonymous struct `{ ty0, ty1, … }`.
+    fields: []const EnvField,
+};
+
+pub const ClosureEnvLoadInstr = struct {
+    /// The `__env` pointer (a lambda's first parameter).
+    env: Value,
+    index: u32,
+    /// The env's field types (same order as `closure_env_make`), so the backend
+    /// can GEP into the right anonymous-struct layout.
+    fields: []const IrType,
 };
 
 pub const UnaryInstr = struct {
@@ -901,6 +926,8 @@ fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
         .interface_data => |value| try validateValue(function, value),
         .interface_method => |method| try validateValue(function, method.value),
         .closure_make => |mk| try validateValue(function, mk.env),
+        .closure_env_make => |mk| for (mk.fields) |f| try validateValue(function, f.value),
+        .closure_env_load => |ld| try validateValue(function, ld.env),
         .store_local => |store| try validateValue(function, store.value),
         .global_store => |store| try validateValue(function, store.value),
         .store => |store| {
@@ -1257,6 +1284,11 @@ fn instrUsesReg(instr: Instr, id: RegId) bool {
         .interface_data => |value| valueUsesReg(value, id),
         .interface_method => |method| valueUsesReg(method.value, id),
         .closure_make => |mk| valueUsesReg(mk.env, id),
+        .closure_env_make => |mk| blk: {
+            for (mk.fields) |f| if (valueUsesReg(f.value, id)) break :blk true;
+            break :blk false;
+        },
+        .closure_env_load => |ld| valueUsesReg(ld.env, id),
         .store_local => |store| valueUsesReg(store.value, id),
         .global_store => |store| valueUsesReg(store.value, id),
         .store => |store| valueUsesReg(store.target, id) or valueUsesReg(store.value, id),
@@ -1674,8 +1706,15 @@ const FunctionLowerer = struct {
     /// is snapshotted/restored around blocks and match arms (lexical scoping).
     local_alias: std.StringHashMap([]const u8),
     shadow_counter: u32 = 0,
+    /// When lowering a lifted lambda body, the variables it captures (in env
+    /// order). A reference to one reads field `index` out of the `__env` pointer.
+    lambda_captures: []const sema.Capture = &.{},
 
     fn init(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, decl: ast.FunctionDecl) FunctionLowerer {
+        const captures: []const sema.Capture = if (std.mem.startsWith(u8, decl.name, "__lambda_"))
+            types.lambda_captures.get(linkNameFor(symbols, decl.file_name, decl.name)) orelse &.{}
+        else
+            &.{};
         return .{
             .allocator = allocator,
             .types = types,
@@ -1686,6 +1725,7 @@ const FunctionLowerer = struct {
             .fn_name = decl.name,
             .local_types = std.StringHashMap(IrType).init(allocator),
             .local_alias = std.StringHashMap([]const u8).init(allocator),
+            .lambda_captures = captures,
         };
     }
 
@@ -2871,6 +2911,17 @@ const FunctionLowerer = struct {
                         .payload = null,
                     } });
                 }
+                // Inside a lambda body, a captured variable reads from `__env`.
+                for (self.lambda_captures, 0..) |c, idx| {
+                    if (std.mem.eql(u8, c.name, name)) {
+                        const fields = try self.captureFieldTys();
+                        break :blk try self.emit(fields[idx], .{ .closure_env_load = .{
+                            .env = .{ .param = "__env" },
+                            .index = @intCast(idx),
+                            .fields = fields,
+                        } });
+                    }
+                }
                 for (self.params) |p| {
                     if (std.mem.eql(u8, p.name, name)) break :blk Value{ .param = name };
                 }
@@ -2886,12 +2937,14 @@ const FunctionLowerer = struct {
                     // closure `{ fn, env }`. Phase 1: env is always null (no captures).
                     // Constraints/macros are compile-time templates, not callable
                     // values — keep them as a bare symbol reference.
-                    if (kind == .function and !self.isTemplateFn(name))
+                    if (kind == .function and !self.isTemplateFn(name)) {
+                        const is_lambda = std.mem.startsWith(u8, name, "__lambda_");
                         break :blk try self.emit(self.fnPtrTypeOf(expr), .{ .closure_make = .{
                             .fn_link = link,
-                            .env = .{ .imm = .null },
-                            .fn_takes_env = std.mem.startsWith(u8, name, "__lambda_"),
+                            .env = if (is_lambda) try self.buildCaptureEnv(link) else .{ .imm = .null },
+                            .fn_takes_env = is_lambda,
                         } });
+                    }
                     if (kind == .function or kind == .const_symbol) break :blk Value{ .global = link };
                 }
                 break :blk Value{ .local = name };
@@ -4097,6 +4150,28 @@ const FunctionLowerer = struct {
     fn emitNoResult(self: *FunctionLowerer, ty: IrType, kind: InstrKind) LowerError!void {
         if (self.current_terminated) return;
         try self.current_instrs.append(self.allocator, .{ .id = null, .ty = ty, .kind = kind });
+    }
+
+    /// Build a capture environment for a lambda: allocate it and store the
+    /// current value of each captured enclosing local (capture by value).
+    fn buildCaptureEnv(self: *FunctionLowerer, link: []const u8) LowerError!Value {
+        const caps = self.types.lambda_captures.get(link) orelse return .{ .imm = .null };
+        if (caps.len == 0) return .{ .imm = .null };
+        const fields = try self.allocator.alloc(EnvField, caps.len);
+        for (caps, 0..) |c, i| {
+            const cty = lowerSemaTypeWithEnv(self.allocator, c.ty, self.types, self.symbols) catch .unknown;
+            fields[i] = .{ .value = .{ .local = self.curLocal(c.name) }, .ty = cty };
+        }
+        return try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .closure_env_make = .{ .fields = fields } });
+    }
+
+    /// The IR types of this lambda body's captures, in env order.
+    fn captureFieldTys(self: *FunctionLowerer) LowerError![]const IrType {
+        const tys = try self.allocator.alloc(IrType, self.lambda_captures.len);
+        for (self.lambda_captures, 0..) |c, i| {
+            tys[i] = lowerSemaTypeWithEnv(self.allocator, c.ty, self.types, self.symbols) catch .unknown;
+        }
+        return tys;
     }
 
     /// A `constraint`/`macro` template function — registered for `$T: Name`

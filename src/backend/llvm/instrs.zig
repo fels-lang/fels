@@ -142,6 +142,8 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         .interface_data => |value| lowerInterfaceData(cg, fncg, value),
         .interface_method => |method| lowerInterfaceMethod(cg, fncg, method),
         .closure_make => |mk| lowerClosureMake(cg, fncg, mk),
+        .closure_env_make => |mk| lowerClosureEnvMake(cg, fncg, mk),
+        .closure_env_load => |ld| lowerClosureEnvLoad(cg, fncg, ld),
 
         // ── Error / fallible ─────────────────────────────────────────────────
 
@@ -211,6 +213,35 @@ fn lowerClosureMake(cg: *ModuleCg, fncg: anytype, mk: ir.ClosureMakeInstr) ?llvm
     var result = llvm.LLVMGetUndef(cg.getClosureType());
     result = llvm.LLVMBuildInsertValue(cg.builder, result, fn_ptr, 0, "clos.fn");
     return llvm.LLVMBuildInsertValue(cg.builder, result, env, 1, "clos.env");
+}
+
+/// Allocate a lambda's capture environment as an anonymous struct and store each
+/// captured value into it; yields the pointer used as the closure's `env`.
+fn lowerClosureEnvMake(cg: *ModuleCg, fncg: anytype, mk: ir.ClosureEnvMakeInstr) ?llvm.LLVMValueRef {
+    const n = mk.fields.len;
+    const ftys = cg.allocator.alloc(llvm.LLVMTypeRef, n) catch return null;
+    defer cg.allocator.free(ftys);
+    for (mk.fields, 0..) |f, i| ftys[i] = types.lower(cg, f.ty);
+    const struct_ty = llvm.LLVMStructTypeInContext(cg.ctx, ftys.ptr, @intCast(n), 0);
+    const slot = llvm.LLVMBuildAlloca(cg.builder, struct_ty, "clos.env");
+    for (mk.fields, 0..) |f, i| {
+        const gep = llvm.LLVMBuildStructGEP2(cg.builder, struct_ty, slot, @intCast(i), "");
+        _ = llvm.LLVMBuildStore(cg.builder, resolveVal(cg, fncg, f.value, f.ty), gep);
+    }
+    return slot;
+}
+
+/// Read capture field `index` out of a lambda's `__env` pointer (the env's layout
+/// is the anonymous struct of `fields`, matching `closure_env_make`).
+fn lowerClosureEnvLoad(cg: *ModuleCg, fncg: anytype, ld: ir.ClosureEnvLoadInstr) ?llvm.LLVMValueRef {
+    const n = ld.fields.len;
+    const ftys = cg.allocator.alloc(llvm.LLVMTypeRef, n) catch return null;
+    defer cg.allocator.free(ftys);
+    for (ld.fields, 0..) |t, i| ftys[i] = types.lower(cg, t);
+    const struct_ty = llvm.LLVMStructTypeInContext(cg.ctx, ftys.ptr, @intCast(n), 0);
+    const env_ptr = resolveVal(cg, fncg, ld.env, .unknown);
+    const gep = llvm.LLVMBuildStructGEP2(cg.builder, struct_ty, env_ptr, ld.index, "");
+    return llvm.LLVMBuildLoad2(cg.builder, ftys[ld.index], gep, "");
 }
 
 /// Build (once, cached) `__thunk_<fn>(__env: ptr, args…) -> Ret { return fn(args); }`

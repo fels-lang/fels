@@ -1840,6 +1840,26 @@ test "exe: lambdas — inline, in a local, and a fn value held in a local" {
     try std.testing.expectEqual(@as(u32, 64), code); // 11 + 32 + 21
 }
 
+test "exe: a lambda captures enclosing locals by value (closure env)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `base` and `step` are captured by value into the closure's environment;
+    // the lambda reads them through its hidden `__env` pointer — both when called
+    // directly and when passed to a higher-order function.
+    const code = try compileAndRun(arena.allocator(),
+        \\apply :: fn(f: fn(i32) -> i32, v: i32) -> i32 { return f(v); }
+        \\main :: fn() -> i32 {
+        \\    base: i32 = 100;
+        \\    step: i32 = 5;
+        \\    f := fn(x: i32) -> i32 { return base + step * x; };
+        \\    return apply(f, 3) + f(1); // (100 + 15) + (100 + 5) = 220
+        \\}
+    , "exe_capture");
+    try std.testing.expectEqual(@as(u32, 220), code);
+}
+
 test "exe: while opt |x| walks an optional chain" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
