@@ -3299,6 +3299,7 @@ const FunctionLowerer = struct {
                     };
                     var expected: ?IrType = null;
                     var is_explicit_type_arg = false;
+                    var raw_fn_ptr = false;
                     if (direct_sig) |sig| {
                         while (value_param_index < sig.params.len and sig.params[value_param_index].is_type_param) {
                             const type_param = sig.params[value_param_index];
@@ -3323,13 +3324,18 @@ const FunctionLowerer = struct {
                             }
                             if (expected == null)
                                 expected = lowerSemaTypeWithEnv(self.allocator, pty, self.types, self.symbols) catch null;
+                            // A `fn(...)` arg to an `#extern` C function is a THIN raw
+                            // pointer (no closure/env) — C cannot call a fat closure.
+                            if (sig.extern_name != null and pty == .fn_ptr) raw_fn_ptr = true;
                             value_param_index += 1;
                         }
                     } else if (indirect_params) |params| {
                         if (arg_idx < params.len)
                             expected = lowerSemaTypeWithEnv(self.allocator, params[arg_idx], self.types, self.symbols) catch null;
                     }
-                    try args.append(self.allocator, if (expected) |ty| try self.lowerExprAs(value, ty) else try self.lowerExpr(value));
+                    if (raw_fn_ptr) {
+                        try args.append(self.allocator, try self.lowerRawFnArg(value));
+                    } else try args.append(self.allocator, if (expected) |ty| try self.lowerExprAs(value, ty) else try self.lowerExpr(value));
                     try arg_tys.append(self.allocator, expected orelse .unknown);
                 };
                 const arg_slice = try args.toOwnedSlice(self.allocator);
@@ -4154,6 +4160,28 @@ const FunctionLowerer = struct {
     fn emitNoResult(self: *FunctionLowerer, ty: IrType, kind: InstrKind) LowerError!void {
         if (self.current_terminated) return;
         try self.current_instrs.append(self.allocator, .{ .id = null, .ty = ty, .kind = kind });
+    }
+
+    /// Lower a `fn(...)` argument passed to an `#extern` C function as a THIN raw
+    /// function pointer (C cannot call k2's fat `{fn, env}` closure). Only a plain
+    /// top-level function works — its signature matches C; a lambda/closure carries
+    /// an environment, so it is rejected.
+    fn lowerRawFnArg(self: *FunctionLowerer, value: ast.Expr) LowerError!Value {
+        if (value.kind == .ident) {
+            if (resolveTopLevel(self.symbols, self.file_name, value.kind.ident)) |id| {
+                if (self.symbols.symbol(id).kind == .function and !std.mem.startsWith(u8, value.kind.ident, "__lambda_")) {
+                    return Value{ .global = self.symbols.symbol(id).link_name };
+                }
+            }
+        }
+        diag_mod.printErrorAt(
+            "a C callback argument must be a plain top-level function — a lambda or " ++
+                "captured closure carries an environment that C cannot call",
+            self.file_name,
+            self.source,
+            value.span,
+        );
+        return error.LoweringFailed;
     }
 
     /// Build a capture environment for a lambda: allocate it and store the

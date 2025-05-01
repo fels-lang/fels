@@ -139,7 +139,9 @@ pub fn externFnType(cg: *ModuleCg, func: ir.IrFunction, sig: FnAbi) !llvm.LLVMTy
     }
     for (sig.params) |p| {
         tys[n] = switch (p.class) {
-            .direct => types.lower(cg, p.ir_ty),
+            // A `fn(...)` param at the C boundary is a THIN function pointer, not
+            // k2's fat `{fn, env}` closure — C expects a bare pointer.
+            .direct => if (p.ir_ty == .fn_ptr) ptr_ty else types.lower(cg, p.ir_ty),
             .coerce => |bits| llvm.LLVMIntTypeInContext(cg.ctx, bits),
             .indirect => ptr_ty,
         };
@@ -147,7 +149,7 @@ pub fn externFnType(cg: *ModuleCg, func: ir.IrFunction, sig: FnAbi) !llvm.LLVMTy
     }
 
     const ret_lty = switch (sig.ret) {
-        .direct => types.lower(cg, func.return_ty),
+        .direct => if (func.return_ty == .fn_ptr) ptr_ty else types.lower(cg, func.return_ty),
         .coerce => |bits| llvm.LLVMIntTypeInContext(cg.ctx, bits),
         .indirect => llvm.LLVMVoidTypeInContext(cg.ctx),
     };

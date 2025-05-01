@@ -92,10 +92,21 @@ pub fn lowerSlice(cg: *ModuleCg, tys: []const ir.IrType) ![]llvm.LLVMTypeRef {
 /// Build an LLVM function type from an IrFunction.
 /// Fallible functions (!T) get return type { T, i32 } where i32 is the error discriminant.
 pub fn fnType(cg: *ModuleCg, func: ir.IrFunction) !llvm.LLVMTypeRef {
+    // At the C (`#extern`) boundary a `fn(...)` param/return is a THIN function
+    // pointer, not k2's fat `{fn, env}` closure (C cannot call a closure).
+    const is_extern = func.extern_name != null;
     const param_tys = try cg.allocator.alloc(llvm.LLVMTypeRef, func.params.len);
     defer cg.allocator.free(param_tys);
-    for (func.params, 0..) |p, i| param_tys[i] = lower(cg, p.ty);
-    const ret_lty = fallibleReturnType(cg, func);
+    for (func.params, 0..) |p, i| {
+        param_tys[i] = if (is_extern and p.ty == .fn_ptr)
+            llvm.LLVMPointerTypeInContext(cg.ctx, 0)
+        else
+            lower(cg, p.ty);
+    }
+    const ret_lty = if (is_extern and func.return_ty == .fn_ptr)
+        llvm.LLVMPointerTypeInContext(cg.ctx, 0)
+    else
+        fallibleReturnType(cg, func);
     return llvm.LLVMFunctionType(ret_lty, param_tys.ptr, @intCast(param_tys.len), 0);
 }
 
