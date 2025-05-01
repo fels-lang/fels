@@ -12,6 +12,30 @@ test "diagnostics: return type mismatch shows types" {
     try std.testing.expectError(error.SemanticFailed, result);
 }
 
+test "diagnostics: returning a capturing closure is rejected (would dangle)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The lambda captures `n` (a param), whose value lives on this stack frame —
+    // returning the closure would dangle, so it must be a compile error.
+    const bad =
+        \\make :: fn(n: i32) -> fn(i32) -> i32 { return fn(x: i32) -> i32 { return x + n; }; }
+    ;
+    const result = k2.compile(arena.allocator(), "escape.k2", bad);
+    try std.testing.expectError(error.SemanticFailed, result);
+}
+
+test "diagnostics: returning a non-capturing function value is allowed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // No captures → just a fn pointer with an empty environment; safe to return.
+    const ok =
+        \\dbl :: fn(x: i32) -> i32 { return x * 2; }
+        \\get :: fn() -> fn(i32) -> i32 { return dbl; }
+    ;
+    var fe = try k2.compile(arena.allocator(), "ok.k2", ok);
+    fe.deinit(arena.allocator());
+}
+
 test "diagnostics: unknown name shows identifier" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

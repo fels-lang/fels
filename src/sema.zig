@@ -1786,6 +1786,17 @@ const Checker = struct {
         }
     }
 
+    /// If `expr` is a reference to a lifted lambda that captures variables,
+    /// returns its link name; else null. A capturing closure's environment lives
+    /// in the function that created it, so returning one would dangle.
+    fn capturingClosureLink(self: *Checker, expr: ast.Expr) ?[]const u8 {
+        if (expr.kind != .ident) return null;
+        const id = self.resolveSymbol(expr.kind.ident) orelse return null;
+        const link = self.symbols.symbol(id).link_name;
+        if (self.env.lambda_captures.get(link)) |caps| if (caps.len > 0) return link;
+        return null;
+    }
+
     /// At a lifted lambda's definition site, resolve which of its free variables
     /// are enclosing locals — those become its captures (recorded by-value with
     /// their types). Resolved once per lambda.
@@ -1989,6 +2000,12 @@ const Checker = struct {
                 if (ret.value) |value| if (self.exprZoneOwner(value)) |owner| {
                     const source = if (owner.kind == .borrow) "borrowed value" else "zone-owned value";
                     self.emitError(ret.span, "{s} from `{s}` cannot be returned", .{ source, owner.name });
+                    return error.SemanticFailed;
+                };
+                // A capturing closure's environment lives in this function, so
+                // returning it would leave the captured values dangling.
+                if (ret.value) |value| if (self.capturingClosureLink(value) != null) {
+                    self.emitError(value.span, "a capturing closure cannot be returned: its captured environment lives in this function and would be left dangling (escaping closures need region passing, not yet supported)", .{});
                     return error.SemanticFailed;
                 };
                 if (!try self.compatible(actual_ty, self.current_return_ty)) {
