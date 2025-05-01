@@ -223,12 +223,30 @@ fn lowerClosureEnvMake(cg: *ModuleCg, fncg: anytype, mk: ir.ClosureEnvMakeInstr)
     defer cg.allocator.free(ftys);
     for (mk.fields, 0..) |f, i| ftys[i] = types.lower(cg, f.ty);
     const struct_ty = llvm.LLVMStructTypeInContext(cg.ctx, ftys.ptr, @intCast(n), 0);
-    const slot = llvm.LLVMBuildAlloca(cg.builder, struct_ty, "clos.env");
+
+    // Allocate the env on the enclosing `zone` Arena (so the closure may escape
+    // the current frame), or on the stack when there's no zone.
+    const env_ptr = blk: {
+        if (mk.zone.len > 0) {
+            if (fncg.locals.get(mk.zone)) |arena| { // the zone handle's alloca == *Arena
+                if (cg.fn_decls.get("alloc_bytes")) |alloc_fn| {
+                    const i64_ty = llvm.LLVMInt64TypeInContext(cg.ctx);
+                    const size = llvm.LLVMABISizeOfType(cg.targetData(), struct_ty);
+                    var args = [_]llvm.LLVMValueRef{ arena, llvm.LLVMConstInt(i64_ty, size, 0) };
+                    const fn_ty = llvm.LLVMGlobalGetValueType(alloc_fn);
+                    const slice = llvm.LLVMBuildCall2(cg.builder, fn_ty, alloc_fn, &args, 2, "");
+                    break :blk llvm.LLVMBuildExtractValue(cg.builder, slice, 0, "clos.env.heap");
+                }
+            }
+        }
+        break :blk llvm.LLVMBuildAlloca(cg.builder, struct_ty, "clos.env");
+    };
+
     for (mk.fields, 0..) |f, i| {
-        const gep = llvm.LLVMBuildStructGEP2(cg.builder, struct_ty, slot, @intCast(i), "");
+        const gep = llvm.LLVMBuildStructGEP2(cg.builder, struct_ty, env_ptr, @intCast(i), "");
         _ = llvm.LLVMBuildStore(cg.builder, resolveVal(cg, fncg, f.value, f.ty), gep);
     }
-    return slot;
+    return env_ptr;
 }
 
 /// Read capture field `index` out of a lambda's `__env` pointer (the env's layout

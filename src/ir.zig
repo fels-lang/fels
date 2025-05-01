@@ -283,6 +283,10 @@ pub const ClosureEnvMakeInstr = struct {
     /// The captured values + their types, in capture order. The env is laid out
     /// as an anonymous struct `{ ty0, ty1, … }`.
     fields: []const EnvField,
+    /// Name of the enclosing `zone` Arena handle to allocate the env on, so the
+    /// closure can escape the defining frame (it lives as long as the zone).
+    /// Empty = allocate on the stack (the closure must not escape).
+    zone: []const u8 = "",
 };
 
 pub const ClosureEnvLoadInstr = struct {
@@ -4162,7 +4166,13 @@ const FunctionLowerer = struct {
             const cty = lowerSemaTypeWithEnv(self.allocator, c.ty, self.types, self.symbols) catch .unknown;
             fields[i] = .{ .value = .{ .local = self.curLocal(c.name) }, .ty = cty };
         }
-        return try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .closure_env_make = .{ .fields = fields } });
+        // Allocate the env on the innermost enclosing zone (if any) so the closure
+        // can escape the current frame; otherwise on the stack (non-escaping).
+        const zone: []const u8 = if (self.active_zones.items.len > 0)
+            self.active_zones.items[self.active_zones.items.len - 1]
+        else
+            "";
+        return try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .closure_env_make = .{ .fields = fields, .zone = zone } });
     }
 
     /// The IR types of this lambda body's captures, in env order.

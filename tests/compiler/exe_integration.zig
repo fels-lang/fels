@@ -1860,6 +1860,29 @@ test "exe: a lambda captures enclosing locals by value (closure env)" {
     try std.testing.expectEqual(@as(u32, 220), code);
 }
 
+test "exe: a capturing closure's environment lives on the enclosing zone" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Created inside a `zone`, the closure's captured environment is allocated on
+    // that zone's Arena (not the stack), so it survives being handed to another
+    // function — the basis for escaping closures.
+    const code = try compileAndRun(arena.allocator(),
+        \\call_it :: fn(f: fn(i32) -> i32, v: i32) -> i32 { return f(v); }
+        \\main :: fn() -> i32 {
+        \\    r: i32 = 0;
+        \\    zone scratch: Arena {
+        \\        base: i32 = 100;
+        \\        f := fn(x: i32) -> i32 { return base + x; };
+        \\        r = call_it(f, 7); // 107
+        \\    }
+        \\    return r;
+        \\}
+    , "exe_zone_closure");
+    try std.testing.expectEqual(@as(u32, 107), code);
+}
+
 test "exe: while opt |x| walks an optional chain" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
