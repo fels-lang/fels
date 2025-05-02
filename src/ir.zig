@@ -3007,10 +3007,13 @@ const FunctionLowerer = struct {
                 // compound literals (`.{ .{1,2}, 3 }`) build their aggregate.
                 const ct = self.exprType(expr);
                 for (values, 0..) |value, i| {
-                    if (self.compoundFieldType(ct, i)) |fty|
-                        try args.append(self.allocator, try self.lowerExprAs(value, fty))
-                    else
-                        try args.append(self.allocator, try self.lowerExpr(value));
+                    if (self.compoundFieldType(ct, i)) |fty| {
+                        // A `fn(...)` struct field holds a THIN raw function pointer.
+                        if (fty == .fn_ptr)
+                            try args.append(self.allocator, try self.lowerRawFnArg(value))
+                        else
+                            try args.append(self.allocator, try self.lowerExprAs(value, fty));
+                    } else try args.append(self.allocator, try self.lowerExpr(value));
                 }
                 break :blk try self.emit(ct, .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
             },
@@ -3620,10 +3623,13 @@ const FunctionLowerer = struct {
                 var args = std.ArrayList(Value).empty;
                 errdefer args.deinit(self.allocator);
                 for (values, 0..) |value, i| {
-                    if (self.compoundFieldType(expected_ty, i)) |fty|
-                        try args.append(self.allocator, try self.lowerExprAs(value, fty))
-                    else
-                        try args.append(self.allocator, try self.lowerExpr(value));
+                    if (self.compoundFieldType(expected_ty, i)) |fty| {
+                        // A `fn(...)` struct field holds a THIN raw function pointer.
+                        if (fty == .fn_ptr)
+                            try args.append(self.allocator, try self.lowerRawFnArg(value))
+                        else
+                            try args.append(self.allocator, try self.lowerExprAs(value, fty));
+                    } else try args.append(self.allocator, try self.lowerExpr(value));
                 }
                 break :blk try self.emit(expected_ty, .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
             },

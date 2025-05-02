@@ -1883,6 +1883,25 @@ test "exe: a capturing closure's environment lives on the enclosing zone" {
     try std.testing.expectEqual(@as(u32, 107), code);
 }
 
+test "exe: a fn-ptr struct field is a thin C pointer, not a fat closure" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A `fn(...)` field must be a single pointer (8 bytes) so the struct layout
+    // matches C structs like Win32 `WNDCLASSEXA` — a fat `{fn, env}` closure would
+    // make this 32. Layout: u32(4) + pad(4) + ptr(8) + u32(4) + tail pad(4) = 24.
+    const code = try compileAndRun(arena.allocator(),
+        \\WC :: struct { a: u32, proc: fn(usize) -> isize, b: u32 }
+        \\handler :: fn(h: usize) -> isize { return 0isize; }
+        \\main :: fn() -> i32 {
+        \\    wc: WC = .{ 1u32, handler, 2u32 };
+        \\    return core::sizeof(WC) as i32;
+        \\}
+    , "exe_fnptr_field");
+    try std.testing.expectEqual(@as(u32, 24), code);
+}
+
 test "exe: while opt |x| walks an optional chain" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
