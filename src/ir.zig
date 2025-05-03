@@ -283,10 +283,10 @@ pub const ClosureEnvMakeInstr = struct {
     /// The captured values + their types, in capture order. The env is laid out
     /// as an anonymous struct `{ ty0, ty1, … }`.
     fields: []const EnvField,
-    /// Name of the enclosing `zone` Arena handle to allocate the env on, so the
-    /// closure can escape the defining frame (it lives as long as the zone).
-    /// Empty = allocate on the stack (the closure must not escape).
-    zone: []const u8 = "",
+    /// The `*Arena` region to allocate the env in (an enclosing `zone` handle's
+    /// address, or a caller-supplied `*Arena` parameter) so the closure can escape
+    /// the defining frame. `.imm = .null` = allocate on the stack (no escape).
+    arena: Value = .{ .imm = .null },
 };
 
 pub const ClosureEnvLoadInstr = struct {
@@ -930,7 +930,10 @@ fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
         .interface_data => |value| try validateValue(function, value),
         .interface_method => |method| try validateValue(function, method.value),
         .closure_make => |mk| try validateValue(function, mk.env),
-        .closure_env_make => |mk| for (mk.fields) |f| try validateValue(function, f.value),
+        .closure_env_make => |mk| {
+            try validateValue(function, mk.arena);
+            for (mk.fields) |f| try validateValue(function, f.value);
+        },
         .closure_env_load => |ld| try validateValue(function, ld.env),
         .store_local => |store| try validateValue(function, store.value),
         .global_store => |store| try validateValue(function, store.value),
@@ -1289,6 +1292,7 @@ fn instrUsesReg(instr: Instr, id: RegId) bool {
         .interface_method => |method| valueUsesReg(method.value, id),
         .closure_make => |mk| valueUsesReg(mk.env, id),
         .closure_env_make => |mk| blk: {
+            if (valueUsesReg(mk.arena, id)) break :blk true;
             for (mk.fields) |f| if (valueUsesReg(f.value, id)) break :blk true;
             break :blk false;
         },
@@ -4227,15 +4231,34 @@ const FunctionLowerer = struct {
         const fields = try self.allocator.alloc(EnvField, caps.len);
         for (caps, 0..) |c, i| {
             const cty = lowerSemaTypeWithEnv(self.allocator, c.ty, self.types, self.symbols) catch .unknown;
-            fields[i] = .{ .value = .{ .local = self.curLocal(c.name) }, .ty = cty };
+            // The captured variable may be a parameter or a local of the enclosing
+            // function — read whichever it is (a param isn't a local alloca).
+            const val: Value = vblk: {
+                for (self.params) |p| if (std.mem.eql(u8, p.name, c.name)) break :vblk Value{ .param = c.name };
+                break :vblk Value{ .local = self.curLocal(c.name) };
+            };
+            fields[i] = .{ .value = val, .ty = cty };
         }
-        // Allocate the env on the innermost enclosing zone (if any) so the closure
-        // can escape the current frame; otherwise on the stack (non-escaping).
-        const zone: []const u8 = if (self.active_zones.items.len > 0)
-            self.active_zones.items[self.active_zones.items.len - 1]
-        else
-            "";
-        return try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .closure_env_make = .{ .fields = fields, .zone = zone } });
+        // Allocate the env on a region so the closure can escape the current
+        // frame: the innermost enclosing `zone`, else a caller-supplied `*Arena`
+        // parameter, else the stack (non-escaping).
+        const arena: Value = if (self.active_zones.items.len > 0) blk: {
+            const handle = self.active_zones.items[self.active_zones.items.len - 1];
+            const arena_ty: IrType = .{ .ptr = try boxType(self.allocator, .{ .struct_type = "Arena" }) };
+            break :blk try self.emit(arena_ty, .{ .unary = .{ .op = .ref, .value = .{ .local = handle } } });
+        } else if (self.arenaParam()) |pname| Value{ .param = pname } else Value{ .imm = .null };
+        return try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .closure_env_make = .{ .fields = fields, .arena = arena } });
+    }
+
+    /// Name of the first `*Arena` parameter of the function being lowered (a
+    /// caller-supplied region for an escaping closure's environment), or null.
+    fn arenaParam(self: *FunctionLowerer) ?[]const u8 {
+        for (self.params) |p| {
+            if (p.is_type_param) continue;
+            const ty = lowerAstTypeWithEnv(self.allocator, p.ty, self.types, self.symbols) catch continue;
+            if (ty == .ptr and ty.ptr.* == .struct_type and std.mem.eql(u8, ty.ptr.struct_type, "Arena")) return p.name;
+        }
+        return null;
     }
 
     /// The IR types of this lambda body's captures, in env order.

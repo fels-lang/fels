@@ -1920,6 +1920,31 @@ test "exe: a function pointer stored in a struct field can be called" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: a factory returns escaping closures whose env lives in the caller's Arena" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `make_adder` takes an `*Arena`; the closure it returns allocates its capture
+    // environment in that caller-owned region (region passing), so it can escape
+    // the factory and stay valid for the zone's lifetime.
+    const code = try compileAndRun(arena.allocator(),
+        \\make_adder :: fn(into: *Arena, n: i32) -> fn(i32) -> i32 {
+        \\    return fn(x: i32) -> i32 { return x + n; };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    r: i32 = 0;
+        \\    zone z: Arena {
+        \\        add5 := make_adder(&z, 5);
+        \\        add100 := make_adder(&z, 100);
+        \\        r = add5(10) + add100(1); // 15 + 101 = 116
+        \\    }
+        \\    return r;
+        \\}
+    , "exe_factory");
+    try std.testing.expectEqual(@as(u32, 116), code);
+}
+
 test "exe: while opt |x| walks an optional chain" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

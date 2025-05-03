@@ -1025,6 +1025,14 @@ const Checker = struct {
     /// Functions declared `#must_use` — discarding a call's result is an error.
     /// Populated at the start of `checkModule`.
     must_use_fns: std.StringHashMap(void) = undefined,
+    /// Locals in the function being checked that hold a CAPTURING closure (by
+    /// direct assignment or aliasing). Cleared per function. Used to reject
+    /// returning such a closure (its environment lives in this function).
+    capturing_locals: std.StringHashMap(void) = undefined,
+    /// True when the function being checked has an `*Arena` parameter — then a
+    /// capturing closure's environment is allocated in that caller-owned region,
+    /// so returning the closure is allowed (region passing).
+    current_has_arena_param: bool = false,
     /// Resolution-time `where`-predicate evaluator (the two-pass rail). Set only
     /// for the strict pass-2 of a module that has `where` clauses: an opaque
     /// context (the resolution `ComptimeVm`) and a thunk that runs the predicate.
@@ -1304,6 +1312,7 @@ const Checker = struct {
 
         // Record `#must_use` functions so a discarded call to one is rejected.
         self.must_use_fns = std.StringHashMap(void).init(self.allocator);
+        self.capturing_locals = std.StringHashMap(void).init(self.allocator);
         for (module.items) |item| switch (item) {
             .function => |f| if (hasAttr(f.attrs, "must_use")) try self.must_use_fns.put(f.name, {}),
             else => {},
@@ -1786,6 +1795,25 @@ const Checker = struct {
         }
     }
 
+    /// Whether `ty` is `*Arena` (a region a closure environment can be allocated
+    /// in by the caller).
+    fn isArenaPtr(self: *Checker, ty: Ty) bool {
+        return switch (ty) {
+            .pointer, .const_ptr => |inner| switch (inner.*) {
+                .named => |id| std.mem.eql(u8, self.symbols.symbol(id).name, "Arena"),
+                else => false,
+            },
+            else => false,
+        };
+    }
+
+    /// Whether `expr` evaluates to a capturing closure — a capturing lambda
+    /// written inline, or a local that holds one (tracked in `capturing_locals`).
+    fn valueIsCapturingClosure(self: *Checker, expr: ast.Expr) bool {
+        if (self.capturingClosureLink(expr) != null) return true;
+        return expr.kind == .ident and self.capturing_locals.contains(expr.kind.ident);
+    }
+
     /// If `expr` is a reference to a lifted lambda that captures variables,
     /// returns its link name; else null. A capturing closure's environment lives
     /// in the function that created it, so returning one would dangle.
@@ -1831,12 +1859,15 @@ const Checker = struct {
         defer self.current_type_binding = saved_binding;
 
         self.current_error_ty = if (decl.error_ty) |err| try self.typeFromErrorSpec(err) else null;
+        self.capturing_locals.clearRetainingCapacity();
+        self.current_has_arena_param = false;
         try self.pushScope();
         defer self.popScope();
 
         for (decl.params) |param| {
             if (param.is_type_param) continue; // type-only params aren't values in scope
             const param_ty = try self.typeFromRef(param.ty);
+            if (self.isArenaPtr(param_ty)) self.current_has_arena_param = true;
             try self.validateBorrowParam(param_ty, param.span);
             if (param_ty == .borrow) {
                 if (decl.body == null) {
@@ -1919,6 +1950,7 @@ const Checker = struct {
                 const local_ty = try self.inferExpr(local.value);
                 try self.declareLocal(local.name, local_ty);
                 try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
+                if (self.valueIsCapturingClosure(local.value)) try self.capturing_locals.put(local.name, {});
             },
             .local_typed => |local| {
                 const declared_ty = try self.typeFromRef(local.ty);
@@ -1936,6 +1968,7 @@ const Checker = struct {
                 }
                 try self.declareLocal(local.name, declared_ty);
                 try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
+                if (self.valueIsCapturingClosure(local.value)) try self.capturing_locals.put(local.name, {});
             },
             .assign => |assign| {
                 // `Acc = <type>` inside a `where` block: an output-type assignment.
@@ -2003,9 +2036,10 @@ const Checker = struct {
                     return error.SemanticFailed;
                 };
                 // A capturing closure's environment lives in this function, so
-                // returning it would leave the captured values dangling.
-                if (ret.value) |value| if (self.capturingClosureLink(value) != null) {
-                    self.emitError(value.span, "a capturing closure cannot be returned: its captured environment lives in this function and would be left dangling (escaping closures need region passing, not yet supported)", .{});
+                // returning it would leave the captured values dangling — unless
+                // the function passes an `*Arena` region the env can outlive on.
+                if (ret.value) |value| if (self.valueIsCapturingClosure(value) and !self.current_has_arena_param) {
+                    self.emitError(value.span, "a capturing closure cannot be returned: its captured environment lives in this function and would be left dangling (take an `*Arena` parameter so the closure's environment is allocated in the caller's region)", .{});
                     return error.SemanticFailed;
                 };
                 if (!try self.compatible(actual_ty, self.current_return_ty)) {

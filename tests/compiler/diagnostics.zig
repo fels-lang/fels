@@ -24,6 +24,17 @@ test "diagnostics: returning a capturing closure is rejected (would dangle)" {
     try std.testing.expectError(error.SemanticFailed, result);
 }
 
+test "diagnostics: returning a capturing closure held in a local is rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The indirect form — assign the capturing closure to a local, then return it.
+    const bad =
+        \\make :: fn(n: i32) -> fn(i32) -> i32 { f := fn(x: i32) -> i32 { return x + n; }; return f; }
+    ;
+    const result = k2.compile(arena.allocator(), "escape2.k2", bad);
+    try std.testing.expectError(error.SemanticFailed, result);
+}
+
 test "diagnostics: returning a non-capturing function value is allowed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

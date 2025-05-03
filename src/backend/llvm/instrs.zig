@@ -224,19 +224,23 @@ fn lowerClosureEnvMake(cg: *ModuleCg, fncg: anytype, mk: ir.ClosureEnvMakeInstr)
     for (mk.fields, 0..) |f, i| ftys[i] = types.lower(cg, f.ty);
     const struct_ty = llvm.LLVMStructTypeInContext(cg.ctx, ftys.ptr, @intCast(n), 0);
 
-    // Allocate the env on the enclosing `zone` Arena (so the closure may escape
-    // the current frame), or on the stack when there's no zone.
+    // Allocate the env on the `*Arena` region (an enclosing `zone` handle or a
+    // caller-supplied `*Arena` param) so the closure may escape the current frame,
+    // or on the stack when there's no region.
+    const has_arena = switch (mk.arena) {
+        .imm => false,
+        else => true,
+    };
     const env_ptr = blk: {
-        if (mk.zone.len > 0) {
-            if (fncg.locals.get(mk.zone)) |arena| { // the zone handle's alloca == *Arena
-                if (cg.fn_decls.get("alloc_bytes")) |alloc_fn| {
-                    const i64_ty = llvm.LLVMInt64TypeInContext(cg.ctx);
-                    const size = llvm.LLVMABISizeOfType(cg.targetData(), struct_ty);
-                    var args = [_]llvm.LLVMValueRef{ arena, llvm.LLVMConstInt(i64_ty, size, 0) };
-                    const fn_ty = llvm.LLVMGlobalGetValueType(alloc_fn);
-                    const slice = llvm.LLVMBuildCall2(cg.builder, fn_ty, alloc_fn, &args, 2, "");
-                    break :blk llvm.LLVMBuildExtractValue(cg.builder, slice, 0, "clos.env.heap");
-                }
+        if (has_arena) {
+            if (cg.fn_decls.get("alloc_bytes")) |alloc_fn| {
+                const arena = resolveVal(cg, fncg, mk.arena, .unknown); // a *Arena
+                const i64_ty = llvm.LLVMInt64TypeInContext(cg.ctx);
+                const size = llvm.LLVMABISizeOfType(cg.targetData(), struct_ty);
+                var args = [_]llvm.LLVMValueRef{ arena, llvm.LLVMConstInt(i64_ty, size, 0) };
+                const fn_ty = llvm.LLVMGlobalGetValueType(alloc_fn);
+                const slice = llvm.LLVMBuildCall2(cg.builder, fn_ty, alloc_fn, &args, 2, "");
+                break :blk llvm.LLVMBuildExtractValue(cg.builder, slice, 0, "clos.env.heap");
             }
         }
         break :blk llvm.LLVMBuildAlloca(cg.builder, struct_ty, "clos.env");
