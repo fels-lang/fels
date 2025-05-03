@@ -178,21 +178,37 @@ lambda copies the captured values into a small environment when it is created.
   }
   ```
 
-- Outside any zone, the environment lives on the **stack frame** that created it.
-  Such a closure is safe to *call* and to *pass down* to a higher-order function
-  (the common case), but cannot outlive that frame.
+- Given an `*Arena` parameter, the environment is allocated in that
+  **caller-supplied region** — so a factory can *return* an escaping closure that
+  stays valid for as long as the caller's arena (region passing):
+
+  ```k2
+  make_adder :: fn(into: *Arena, n: i32) -> fn(i32) -> i32 {
+      return fn(x: i32) -> i32 { return x + n; }; // env allocated in `into`
+  }
+
+  zone z: Arena {
+      add5 := make_adder(&z, 5);
+      r = add5(10); // 15 — `add5` outlives `make_adder`, valid for the zone
+  }
+  ```
+
+- Otherwise, the environment lives on the **stack frame** that created it. Such a
+  closure is safe to *call* and to *pass down* to a higher-order function (the
+  common case), but cannot outlive that frame.
 
 > [!IMPORTANT]
-> **Returning a capturing closure is a compile error** — its environment belongs
-> to the function that created it (a stack frame, or a zone that ends with the
-> function), so returning it would dangle:
+> **Returning a capturing closure requires an `*Arena` parameter** (so the
+> environment lives in the caller's region). Without one it is a compile error —
+> the environment belongs to a stack frame or a zone that ends with the function,
+> so it would dangle:
 > ```
 > error: a capturing closure cannot be returned: its captured environment lives
-> in this function and would be left dangling
+> in this function and would be left dangling (take an `*Arena` parameter so the
+> closure's environment is allocated in the caller's region)
 > ```
-> Returning a *non*-capturing function value is fine (it's just a pointer).
-> Letting a factory return an escaping closure needs **region passing** (the
-> caller supplies the `*Arena` the environment is allocated in) — a planned step.
+> This applies whether you return the closure directly or via a local. Returning
+> a *non*-capturing function value is always fine (it's just a pointer).
 
 > [!NOTE]
 > Lambdas are **lifted** to ordinary top-level functions at compile time. A
