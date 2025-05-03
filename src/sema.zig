@@ -2667,6 +2667,27 @@ const Checker = struct {
 
             const base_ty = try self.inferExpr(fld.base.*);
 
+            // `b.f(args)` where `f` is a fn-pointer struct field → an indirect
+            // (thin) call through the stored function pointer.
+            if (self.fieldTypeOpt(base_ty, fld.name)) |field_ty| {
+                if (field_ty == .fn_ptr) {
+                    const fp = field_ty.fn_ptr;
+                    for (call.args, 0..) |arg, i| {
+                        const arg_expr = switch (arg) {
+                            .positional => |e| e,
+                            .named => |n| n.value,
+                        };
+                        const arg_ty = try self.inferExpr(arg_expr);
+                        if (i < fp.params.len and !try self.compatible(arg_ty, fp.params[i])) {
+                            self.emitError(arg_expr.span, "argument {d}: expected `{s}`, found `{s}`", .{ i + 1, self.formatTy(fp.params[i]), self.formatTy(arg_ty) });
+                            return error.SemanticFailed;
+                        }
+                    }
+                    try self.env.expr_types.put(call.callee.id, field_ty);
+                    return fp.ret.*;
+                }
+            }
+
             // `zone_handle.free(ptr)` — a bump arena frees in bulk on zone exit,
             // so this is a validated no-op: it only checks `ptr` is owned by this
             // zone (and not a borrow). Every *other* Arena method falls through to
@@ -4309,6 +4330,27 @@ const Checker = struct {
             },
             else => false,
         };
+    }
+
+    /// Field type by name, or null if `base_ty` is not a struct (or has no such
+    /// field). Unlike `fieldType`, never emits an error — for speculative checks.
+    fn fieldTypeOpt(self: *Checker, base_ty: Ty, name: []const u8) ?Ty {
+        const type_id = switch (base_ty) {
+            .named => |id| id,
+            .pointer, .const_ptr => |inner| switch (inner.*) {
+                .named => |id| id,
+                else => return null,
+            },
+            else => return null,
+        };
+        const layout = self.env.layouts.get(type_id) orelse return null;
+        switch (layout.kind) {
+            .struct_type => |fields| {
+                for (fields) |field| if (std.mem.eql(u8, field.name, name)) return field.ty;
+                return null;
+            },
+            else => return null,
+        }
     }
 
     fn fieldType(self: *Checker, base_ty: Ty, name: []const u8, span: Span) SemanticError!Ty {

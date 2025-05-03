@@ -1902,6 +1902,24 @@ test "exe: a fn-ptr struct field is a thin C pointer, not a fat closure" {
     try std.testing.expectEqual(@as(u32, 24), code);
 }
 
+test "exe: a function pointer stored in a struct field can be called" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `b.op(args)` calls the function pointer stored in the field — a thin
+    // indirect call (e.g. dispatch tables, stored C callbacks).
+    const code = try compileAndRun(arena.allocator(),
+        \\dbl :: fn(x: i32) -> i32 { return x * 2; }
+        \\Box :: struct { op: fn(i32) -> i32, n: i32 }
+        \\main :: fn() -> i32 {
+        \\    b: Box = .{ dbl, 21 };
+        \\    return b.op(b.n); // 42
+        \\}
+    , "exe_field_call");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: while opt |x| walks an optional chain" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

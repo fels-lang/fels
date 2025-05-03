@@ -3159,6 +3159,35 @@ const FunctionLowerer = struct {
                             };
                             break :blk try self.lowerZoneMethod(zone_name, zone_field.name, call.args, expr);
                         }
+                        // `b.f(args)` where `f` is a fn-pointer struct field → a THIN
+                        // indirect call through the stored pointer (no env: a struct
+                        // fn-ptr field is a thin C pointer, not a fat closure).
+                        if (callee_ty == .fn_ptr) {
+                            const fp = callee_ty.fn_ptr;
+                            const callee_val = try self.lowerExpr(call.callee.*);
+                            var args = std.ArrayList(Value).empty;
+                            errdefer args.deinit(self.allocator);
+                            var arg_ts = std.ArrayList(IrType).empty;
+                            errdefer arg_ts.deinit(self.allocator);
+                            for (call.args, 0..) |arg, i| {
+                                const v = switch (arg) {
+                                    .positional => |e| e,
+                                    .named => |n| n.value,
+                                };
+                                const ety: ?IrType = if (i < fp.params.len)
+                                    (lowerSemaTypeWithEnv(self.allocator, fp.params[i], self.types, self.symbols) catch null)
+                                else
+                                    null;
+                                try args.append(self.allocator, if (ety) |t| try self.lowerExprAs(v, t) else try self.lowerExpr(v));
+                                try arg_ts.append(self.allocator, ety orelse .unknown);
+                            }
+                            break :blk try self.emit(self.exprType(expr), .{ .call_indirect = .{
+                                .callee = callee_val,
+                                .args = try args.toOwnedSlice(self.allocator),
+                                .param_tys = try arg_ts.toOwnedSlice(self.allocator),
+                                .is_closure = false,
+                            } });
+                        }
                     }
                     if (self.types.extension_calls.get(call.callee.id)) |extension_id| {
                         const sig = self.types.fn_sigs.get(extension_id) orelse {
