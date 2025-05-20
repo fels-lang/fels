@@ -775,14 +775,28 @@ const FnCompiler = struct {
             .closure_make => |mk| {
                 const map = self.func_map orelse return error.Unsupported;
                 const fidx = map.get(mk.fn_link) orelse return error.Unsupported;
-                // Only non-capturing closures fold at comptime for now (a captured
-                // environment is not yet modelled in the cell VM).
                 const non_capturing = switch (mk.env) {
                     .imm => |im| im == .null,
                     else => false,
                 };
-                if (!non_capturing) return error.Unsupported;
-                try self.loadConst(target, .{ .closure = .{ .fn_idx = @intCast(fidx), .takes_env = mk.fn_takes_env } });
+                if (non_capturing) {
+                    try self.loadConst(target, .{ .closure = .{ .fn_idx = @intCast(fidx), .takes_env = mk.fn_takes_env } });
+                } else {
+                    const env_reg = try self.resolveReg(mk.env);
+                    try self.emit(.{ .op = .closure_make, .a = target, .b = env_reg, .c = if (mk.fn_takes_env) 1 else 0, .imm = @intCast(fidx) });
+                }
+            },
+            .closure_env_make => |mk| {
+                // One cell per capture (scalar captures only at comptime).
+                try self.emit(Instr.r_imm(.zone_alloc, target, @intCast(mk.fields.len)));
+                for (mk.fields, 0..) |f, i| {
+                    const vr = try self.resolveReg(f.value);
+                    try self.emit(Instr.r_r_imm(.store_cell, target, vr, @intCast(i)));
+                }
+            },
+            .closure_env_load => |ld| {
+                const env = try self.resolveReg(ld.env);
+                try self.emit(Instr.r_r_imm(.load_cell, target, env, @intCast(ld.index)));
             },
 
             .alloc => |a| {

@@ -1961,6 +1961,26 @@ test "exe: a non-capturing closure folds at compile time in #run" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: a capturing closure folds at compile time in #run" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The comptime VM builds the closure's environment in its cell memory and
+    // reads the captured value back, so a capturing closure folds too.
+    const code = try compileAndRun(arena.allocator(),
+        \\apply :: fn(f: fn(i32) -> i32, v: i32) -> i32 { return f(v); }
+        \\compute :: fn() -> i32 {
+        \\    factor: i32 = 10;
+        \\    g := fn(x: i32) -> i32 { return x * factor; };
+        \\    return apply(g, 5);
+        \\}
+        \\K :: #run compute();
+        \\main :: fn() -> i32 { return K; }
+    , "exe_run_capture");
+    try std.testing.expectEqual(@as(u32, 50), code);
+}
+
 test "exe: while opt |x| walks an optional chain" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

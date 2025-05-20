@@ -344,7 +344,11 @@ pub const Vm = struct {
                         .fn_ref => |fr| idx = fr,
                         .closure => |c| {
                             idx = c.fn_idx;
-                            if (c.takes_env) lead_env = .void; // non-capturing: void env
+                            if (c.takes_env) lead_env = switch (c.env) {
+                                .none => .void, // non-capturing: void env
+                                .cell => |p| .{ .ptr = p },
+                                .host => |h| .{ .host_ptr = h },
+                            };
                         },
                         else => return error.TypeMismatch,
                     }
@@ -532,6 +536,18 @@ pub const Vm = struct {
                     const vt = mod.vtables[vt_idx];
                     if (method_idx >= vt.len) return error.InvalidInstruction;
                     frame.regs[inst.a] = .{ .fn_ref = vt[method_idx] };
+                },
+                .closure_make => {
+                    const env: Value.EnvRef = switch (frame.regs[inst.b]) {
+                        .ptr => |p| .{ .cell = p },
+                        .host_ptr => |h| .{ .host = h },
+                        else => .none,
+                    };
+                    frame.regs[inst.a] = .{ .closure = .{
+                        .fn_idx = @intCast(inst.imm),
+                        .takes_env = inst.c != 0,
+                        .env = env,
+                    } };
                 },
 
                 // ── System ───────────────────────────────────────────────

@@ -67,6 +67,7 @@ pub const Opcode = enum(u8) {
     opt_is_some, // a = dst; b = optional value → bool (non-null)
     interface_method, // a = dst; b = interface value; imm = method slot → fn_ref
     call_indirect, // a = dst; b = callee fn_ref reg; c = arg base reg; imm = arg count
+    closure_make, // a = dst; b = env ptr reg; c = takes_env (0/1); imm = fn index → closure
 
     // ── System / diagnostics ─────────────────────────────────────────────
     sys_print, // a = reg to print

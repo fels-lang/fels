@@ -57,9 +57,17 @@ pub const Value = union(enum) {
     pub const HostPtr = struct { addr: usize, size: u32 };
     pub const HostBuf = struct { addr: usize, len: usize, stride: u32 };
     /// `fn_idx`: index into the module function table. `takes_env`: the function
-    /// expects a leading `__env` argument (a lifted lambda). (Capturing closures —
-    /// a non-void env — are not yet supported at comptime.)
-    pub const Closure = struct { fn_idx: u32, takes_env: bool };
+    /// expects a leading `__env` argument (a lifted lambda). `env`: the captured
+    /// environment passed as that argument (`.none` for a non-capturing closure).
+    pub const Closure = struct { fn_idx: u32, takes_env: bool, env: EnvRef = .none };
+
+    /// A closure's captured environment: nothing, or a pointer (cell or host) to
+    /// the environment block built by `closure_env_make`.
+    pub const EnvRef = union(enum) {
+        none,
+        cell: Ptr,
+        host: HostPtr,
+    };
 
     /// Lift an IR immediate into a VM value.
     pub fn fromImm(imm: ir.Imm) Value {
