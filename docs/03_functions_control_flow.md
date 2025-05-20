@@ -214,6 +214,13 @@ lambda copies the captured values into a small environment when it is created.
 > Lambdas are **lifted** to ordinary top-level functions at compile time. A
 > non-capturing lambda is just a named function and a pointer.
 
+> [!NOTE]
+> Function values also work at **compile time**: a higher-order call evaluated in
+> `#run` (or any comptime context) folds to a constant — both non-capturing and
+> capturing closures. One edge: an inline lambda used *directly* as an argument in
+> a top-level constant initializer isn't supported yet — bind it to a local first
+> (`f := fn(x){ … }; K :: #run g(f);`) or use a named function.
+
 ---
 
 ## Fallible Functions
