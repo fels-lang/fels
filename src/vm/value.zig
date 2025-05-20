@@ -37,6 +37,9 @@ pub const Value = union(enum) {
     type_val: sema.Ty,
     /// Index into the VM module's function table.
     fn_ref: u32,
+    /// A comptime closure value: a function plus whether it expects a leading
+    /// `__env` argument (a lifted lambda does; a plain function does not).
+    closure: Closure,
     null_ptr,
     /// A raw host pointer — a real process address, with the byte size of the
     /// pointee so loads/stores know their width. Produced by `ptr_from_int` and
@@ -53,6 +56,10 @@ pub const Value = union(enum) {
     pub const Variant = struct { tag: u32, payload_zone: ZoneId, payload_offset: u32 };
     pub const HostPtr = struct { addr: usize, size: u32 };
     pub const HostBuf = struct { addr: usize, len: usize, stride: u32 };
+    /// `fn_idx`: index into the module function table. `takes_env`: the function
+    /// expects a leading `__env` argument (a lifted lambda). (Capturing closures —
+    /// a non-void env — are not yet supported at comptime.)
+    pub const Closure = struct { fn_idx: u32, takes_env: bool };
 
     /// Lift an IR immediate into a VM value.
     pub fn fromImm(imm: ir.Imm) Value {

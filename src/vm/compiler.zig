@@ -772,6 +772,19 @@ const FnCompiler = struct {
                 try self.emit(.{ .op = .interface_method, .a = target, .b = r, .imm = @intCast(im.index) });
             },
 
+            .closure_make => |mk| {
+                const map = self.func_map orelse return error.Unsupported;
+                const fidx = map.get(mk.fn_link) orelse return error.Unsupported;
+                // Only non-capturing closures fold at comptime for now (a captured
+                // environment is not yet modelled in the cell VM).
+                const non_capturing = switch (mk.env) {
+                    .imm => |im| im == .null,
+                    else => false,
+                };
+                if (!non_capturing) return error.Unsupported;
+                try self.loadConst(target, .{ .closure = .{ .fn_idx = @intCast(fidx), .takes_env = mk.fn_takes_env } });
+            },
+
             .alloc => |a| {
                 const cells = self.cellCount(a.ty);
                 try self.emit(Instr.r_imm(.zone_alloc, target, @intCast(cells)));

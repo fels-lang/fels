@@ -1945,6 +1945,22 @@ test "exe: a factory returns escaping closures whose env lives in the caller's A
     try std.testing.expectEqual(@as(u32, 116), code);
 }
 
+test "exe: a non-capturing closure folds at compile time in #run" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The comptime VM can build a (non-capturing) closure value and call through
+    // it, so a higher-order call folds to a constant at compile time.
+    const code = try compileAndRun(arena.allocator(),
+        \\dbl :: fn(x: i32) -> i32 { return x * 2; }
+        \\apply :: fn(f: fn(i32) -> i32, v: i32) -> i32 { return f(v); }
+        \\K :: #run apply(dbl, 21);
+        \\main :: fn() -> i32 { return K; }
+    , "exe_run_closure");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: while opt |x| walks an optional chain" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

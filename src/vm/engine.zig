@@ -334,18 +334,33 @@ pub const Vm = struct {
                 },
                 .call_indirect => {
                     const mod = self.module orelse return error.NoModule;
-                    const idx: usize = switch (frame.regs[inst.b]) {
-                        .fn_ref => |fr| fr,
+                    // The callee is a bare function reference (an interface method)
+                    // or a closure value. A closure that `takes_env` (a lifted
+                    // lambda) gets its environment passed as the leading argument;
+                    // a plain function is called directly.
+                    var idx: usize = undefined;
+                    var lead_env: ?Value = null;
+                    switch (frame.regs[inst.b]) {
+                        .fn_ref => |fr| idx = fr,
+                        .closure => |c| {
+                            idx = c.fn_idx;
+                            if (c.takes_env) lead_env = .void; // non-capturing: void env
+                        },
                         else => return error.TypeMismatch,
-                    };
+                    }
                     if (idx >= mod.functions.len) return error.InvalidInstruction;
                     const callee = &mod.functions[idx];
                     const argc: usize = @intCast(inst.imm);
                     const base: usize = inst.c;
+                    const total = argc + @as(usize, if (lead_env != null) 1 else 0);
                     var buf: [16]Value = undefined;
-                    const arg_slice = if (argc <= buf.len) buf[0..argc] else try self.allocator.alloc(Value, argc);
-                    defer if (argc > buf.len) self.allocator.free(arg_slice);
-                    for (0..argc) |i| arg_slice[i] = frame.regs[base + i];
+                    const arg_slice = if (total <= buf.len) buf[0..total] else try self.allocator.alloc(Value, total);
+                    defer if (total > buf.len) self.allocator.free(arg_slice);
+                    const off: usize = if (lead_env) |e| blk: {
+                        arg_slice[0] = e;
+                        break :blk 1;
+                    } else 0;
+                    for (0..argc) |i| arg_slice[off + i] = frame.regs[base + i];
                     frame.regs[inst.a] = if (callee.extern_call) |ec|
                         ffi.call(self.allocator, ec, arg_slice) catch return error.Trap
                     else
