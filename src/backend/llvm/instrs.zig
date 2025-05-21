@@ -1070,18 +1070,22 @@ fn lowerBuiltin(
         return null;
     }
 
-    // atomic_add/sub/and/or/xor/exchange(ptr, value, ord) -> T (the OLD value)
+    // atomic_add/sub/and/or/xor/nand/exchange(ptr, value, ord) -> T (the OLD value).
+    // add/sub are float-aware (FAdd/FSub for floats); the rest are integer-only.
     {
+        const is_float = (ty == .f32 or ty == .f64);
         const rmw_op: ?c_uint = if (std.mem.eql(u8, b.name, "atomic_add"))
-            llvm.LLVMAtomicRMWBinOpAdd
+            (if (is_float) llvm.LLVMAtomicRMWBinOpFAdd else llvm.LLVMAtomicRMWBinOpAdd)
         else if (std.mem.eql(u8, b.name, "atomic_sub"))
-            llvm.LLVMAtomicRMWBinOpSub
+            (if (is_float) llvm.LLVMAtomicRMWBinOpFSub else llvm.LLVMAtomicRMWBinOpSub)
         else if (std.mem.eql(u8, b.name, "atomic_and"))
             llvm.LLVMAtomicRMWBinOpAnd
         else if (std.mem.eql(u8, b.name, "atomic_or"))
             llvm.LLVMAtomicRMWBinOpOr
         else if (std.mem.eql(u8, b.name, "atomic_xor"))
             llvm.LLVMAtomicRMWBinOpXor
+        else if (std.mem.eql(u8, b.name, "atomic_nand"))
+            llvm.LLVMAtomicRMWBinOpNand
         else if (std.mem.eql(u8, b.name, "atomic_exchange"))
             llvm.LLVMAtomicRMWBinOpXchg
         else

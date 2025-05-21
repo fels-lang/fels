@@ -1457,39 +1457,12 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
         } },
         // `Box(T)` inside an instantiated generic body must resolve to the concrete
         // INSTANCE (`Box__T_i32`), not the template `Box` (whose `T`-typed fields are
-        // opaque → invalid insertvalue / GEP). Mangle exactly like sema's
-        // `instantiateConcrete`: name + `__<param>_<tyMangle(arg)>` per type param,
-        // resolving each arg through the binding.
+        // opaque → invalid insertvalue / GEP). `mangleGenericInst` mirrors sema's
+        // `instantiateConcrete`, resolving each arg through the binding.
         .generic_inst => |gi| {
-            const tmpl = types.generic_struct_templates.get(gi.name) orelse return lowerType(allocator, ty);
-            const tparams = switch (tmpl.kind) {
-                .struct_type => |s| s.type_params,
-                else => return lowerType(allocator, ty),
-            };
-            if (gi.args.len != tparams.len) return lowerType(allocator, ty);
-            var buf: std.ArrayList(u8) = .empty;
-            errdefer buf.deinit(allocator);
-            try buf.appendSlice(allocator, gi.name);
-            for (tparams, gi.args) |pname, arg_ref| {
-                const arg_name = switch (arg_ref) {
-                    .type_param => |t| t.name,
-                    .named => |n| n.name,
-                    else => return lowerType(allocator, ty),
-                };
-                var found: ?sema.Ty = null;
-                for (binding) |b| {
-                    if (std.mem.eql(u8, b.name, arg_name)) {
-                        found = b.ty;
-                        break;
-                    }
-                }
-                const aty = found orelse return lowerType(allocator, ty); // concrete arg → keep old path
-                try buf.appendSlice(allocator, "__");
-                try buf.appendSlice(allocator, pname);
-                try buf.append(allocator, '_');
-                try buf.appendSlice(allocator, sema.tyMangle(aty));
-            }
-            return .{ .struct_type = try buf.toOwnedSlice(allocator) };
+            if (try mangleGenericInst(allocator, gi, binding, types, symbols)) |m|
+                return .{ .struct_type = m };
+            return lowerType(allocator, ty);
         },
         else => return lowerType(allocator, ty),
     }
@@ -4465,6 +4438,121 @@ fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
     };
 }
 
+/// Faithful copy of sema's `Checker.appendTyMangle` — symbol-name-aware so two
+/// distinct named-type instantiations don't collapse onto one mangled name. Keep
+/// in lockstep with sema so the IR instance name matches the materialized
+/// `generic_struct_instances` key.
+fn appendSemaTyMangle(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), ty: sema.Ty, symbols: sema.SymbolTable) !void {
+    switch (ty) {
+        .named => |id| try buf.appendSlice(allocator, symbols.symbol(id).name),
+        .pointer => |inner| {
+            try buf.appendSlice(allocator, "ptr_");
+            try appendSemaTyMangle(allocator, buf, inner.*, symbols);
+        },
+        .const_ptr => |inner| {
+            try buf.appendSlice(allocator, "cptr_");
+            try appendSemaTyMangle(allocator, buf, inner.*, symbols);
+        },
+        .optional => |inner| {
+            try buf.appendSlice(allocator, "opt_");
+            try appendSemaTyMangle(allocator, buf, inner.*, symbols);
+        },
+        .slice => |inner| {
+            try buf.appendSlice(allocator, "slice_");
+            try appendSemaTyMangle(allocator, buf, inner.*, symbols);
+        },
+        else => try buf.appendSlice(allocator, sema.tyMangle(ty)),
+    }
+}
+
+/// Mangle one generic type argument (an AST `TypeRef`) into `buf`, matching sema's
+/// resolution order: a `binding` entry wins (inside a generic body, `T` → its
+/// concrete type), then transparent aliases, then the bare name — which serves both
+/// builtin scalars and user structs, exactly as sema's `appendTyMangle` produces.
+fn appendGenericArgMangle(
+    allocator: std.mem.Allocator,
+    buf: *std.ArrayList(u8),
+    arg_ref: ast.TypeRef,
+    binding: []const sema.TypeArg,
+    types: sema.TypeEnv,
+    symbols: sema.SymbolTable,
+) error{ OutOfMemory, UnsupportedGenericArg }!void {
+    switch (arg_ref) {
+        .type_param => |t| {
+            for (binding) |b| if (std.mem.eql(u8, b.name, t.name))
+                return appendSemaTyMangle(allocator, buf, b.ty, symbols);
+            return error.UnsupportedGenericArg;
+        },
+        .named => |n| {
+            // A bare name may be a bound type param inside a generic body…
+            for (binding) |b| if (std.mem.eql(u8, b.name, n.name))
+                return appendSemaTyMangle(allocator, buf, b.ty, symbols);
+            // …a transparent alias (mangle the underlying, as sema's typeFromRef does)…
+            if (symbols.resolve(symbols.root_scope, n.name)) |id|
+                if (types.alias_refs.get(id)) |aliased|
+                    return appendGenericArgMangle(allocator, buf, aliased, binding, types, symbols);
+            // …or a builtin scalar / user struct, both of which mangle to the name.
+            try buf.appendSlice(allocator, n.name);
+        },
+        .pointer => |p| {
+            try buf.appendSlice(allocator, if (p.is_const) "cptr_" else "ptr_");
+            try appendGenericArgMangle(allocator, buf, p.inner.*, binding, types, symbols);
+        },
+        .many_pointer => |p| {
+            try buf.appendSlice(allocator, if (p.is_const) "cptr_" else "ptr_");
+            try appendGenericArgMangle(allocator, buf, p.inner.*, binding, types, symbols);
+        },
+        .optional => |o| {
+            try buf.appendSlice(allocator, "opt_");
+            try appendGenericArgMangle(allocator, buf, o.inner.*, binding, types, symbols);
+        },
+        .slice => |s| {
+            try buf.appendSlice(allocator, "slice_");
+            try appendGenericArgMangle(allocator, buf, s.inner.*, binding, types, symbols);
+        },
+        else => return error.UnsupportedGenericArg,
+    }
+}
+
+/// The instance struct name for a `Name(Args…)` application, matching sema's
+/// `instantiateConcrete` mangling so the IR type references the concrete instance
+/// materialized from `generic_struct_instances` — NOT the bare template, whose
+/// type-parameter fields are opaque (→ dropped field values / invalid LLVM). Works
+/// in both a generic body (args resolved through `binding`) and a non-generic
+/// context with explicit concrete args (`Pair(i32)` — `binding` empty). Returns
+/// null if `gi` is not a known generic struct or an argument can't be mangled, in
+/// which case the caller falls back to the bare template name.
+fn mangleGenericInst(
+    allocator: std.mem.Allocator,
+    gi: ast.GenericInstType,
+    binding: []const sema.TypeArg,
+    types: sema.TypeEnv,
+    symbols: sema.SymbolTable,
+) !?[]const u8 {
+    const tmpl = types.generic_struct_templates.get(gi.name) orelse return null;
+    const tparams = switch (tmpl.kind) {
+        .struct_type => |s| s.type_params,
+        else => return null,
+    };
+    if (gi.args.len != tparams.len) return null;
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, gi.name);
+    for (tparams, gi.args) |pname, arg_ref| {
+        try buf.appendSlice(allocator, "__");
+        try buf.appendSlice(allocator, pname);
+        try buf.append(allocator, '_');
+        appendGenericArgMangle(allocator, &buf, arg_ref, binding, types, symbols) catch |e| switch (e) {
+            error.UnsupportedGenericArg => {
+                buf.deinit(allocator);
+                return null;
+            },
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+    }
+    return try buf.toOwnedSlice(allocator);
+}
+
 fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable) !IrType {
     if (ty == .borrow) return lowerAstTypeWithEnv(allocator, ty.borrow.inner.*, types, symbols);
     const ptr_inner_ast: ?ast.TypeRef = switch (ty) {
@@ -4498,6 +4586,15 @@ fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sem
             .elem = try boxType(allocator, try lowerAstTypeWithEnv(allocator, ty.array.inner.*, types, symbols)),
             .len = sema.resolveArrayLen(ty.array.len.*, types.const_ints),
         } };
+    }
+    // A concrete instantiation in a NON-generic context (`p: Pair(i32)`, a field, a
+    // param/return type) must resolve to the materialized instance struct
+    // (`Pair__T_i32`), not the bare template `Pair` whose `T`-typed fields are opaque
+    // — otherwise a compound literal lowers against the empty template and drops its
+    // field values. There's no binding here (args are already concrete).
+    if (ty == .generic_inst) {
+        if (try mangleGenericInst(allocator, ty.generic_inst, &.{}, types, symbols)) |m|
+            return .{ .struct_type = m };
     }
     return lowerType(allocator, ty);
 }
@@ -4820,6 +4917,7 @@ fn isBuiltinName(name: []const u8) bool {
         "atomic_fence",
         "atomic_max",
         "atomic_min",
+        "atomic_nand",
         "compound_literal",
         "slice",
         "__str_cat",
