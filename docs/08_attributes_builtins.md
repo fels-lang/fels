@@ -72,8 +72,17 @@ error). Some builtins require an `unsafe` block (last column).
 | `core::type_id` | `core::type_id($T: type) -> usize` | No | Stable runtime type id. |
 | `core::any` | `core::any(x) -> Any` | No | Wrap a value into a type-erased `Any`. |
 | `core::panic` | `core::panic(msg: []const u8) -> never` | No | Abort with a message; never returns. |
-| `core::atomic_load` | `core::atomic_load(ptr, order) -> T` | No | Atomic load (e.g. `.acquire`). |
-| `core::atomic_store`| `core::atomic_store(ptr, val, order)` | No | Atomic store. |
+| `core::atomic_load` | `core::atomic_load(ptr, ord) -> T` | No | Atomic load with ordering `ord`. |
+| `core::atomic_store`| `core::atomic_store(ptr, val, ord)` | No | Atomic store. |
+| `core::atomic_add`/`_sub`/`_and`/`_or`/`_xor` | `core::atomic_add(ptr, v, ord) -> T` | No | Read-modify-write; returns the **previous** value. |
+| `core::atomic_max`/`_min` | `core::atomic_max(ptr, v, ord) -> T` | No | Atomic max/min (signed vs unsigned chosen from `T`). |
+| `core::atomic_exchange` | `core::atomic_exchange(ptr, v, ord) -> T` | No | Swap; returns the previous value. |
+| `core::atomic_cas` | `core::atomic_cas(ptr, expected, desired, ord) -> T` | No | Compare-and-swap; returns the value seen (`== expected` on success). |
+| `core::atomic_fence` | `core::atomic_fence(ord)` | No | Memory fence. |
+
+The trailing `ord` is an integer ordering constant — `0` relaxed, `1` acquire, `2` release,
+`3` acq_rel, `4` seq_cst — and **must be compile-time known**. Prefer the
+[`std.atomics`](07_stdlib.md#stdatomics) wrappers, which default to seq_cst.
 | `core::ptr_from_int`| `core::ptr_from_int($T: type, addr: usize) -> T` | **Yes** | Integer address → pointer `T`. |
 | `core::slice_raw`| `core::slice_raw($T, ptr, len) -> []T` | **Yes** | Build a slice from a raw pointer + length. |
 | `core::volatile_store`| `core::volatile_store(ptr: *T, val: T)` | **Yes** | Volatile memory write. |

@@ -94,12 +94,32 @@ Bit-twiddling utilities.
 ---
 
 ## `std.atomics`
-Atomic loads and spin-waiting. Operates on `*atomic u32` pointers.
+Atomic operations over shared memory — the foundation for lock-free code and
+synchronising threads. Generic over the value type `T` (any integer width / pointer),
+acting on a pointer to the value. **Read-modify-write helpers return the previous
+value**, like C/LLVM. All helpers use **sequentially consistent** ordering (the
+safe default); for finer control call the `core::atomic_*` builtins with an explicit
+ordering constant (`Relaxed`/`Acquire`/`Release`/`AcqRel`/`SeqCst`).
 
-- `load(flag)`
-- `is_set(flag)`
-- `wait_until_set(flag)`
-- `wait_until_eq(flag, value)`
+```k2
+#import std.atomics;
+
+counter: u32 = 0u32;
+old := atomics::fetch_add(u32, &counter, 1u32);   // returns the previous value
+if atomics::compare_exchange(u32, &counter, 1u32, 100u32) { /* swapped */ }
+```
+
+- **Load/store:** `load(T, p)`, `store(T, p, v)`, `load_acquire`, `store_release`
+- **Read-modify-write** (return previous): `swap`, `fetch_add`, `fetch_sub`,
+  `fetch_and`, `fetch_or`, `fetch_xor`, `fetch_max`, `fetch_min`, `fetch_mul`,
+  `fetch_div` (the last two via a CAS retry loop)
+- **Compare-exchange:** `compare_exchange(T, p, expected, desired) -> bool`,
+  `compare_exchange_value` (returns the value actually seen)
+- **Fence:** `fence()`
+- **Flag helpers:** `is_set(p)`, `wait_until_set(p)`, `wait_until_eq(p, v)`
+
+> Atomic increments across threads lose nothing under contention — that's the whole
+> point (a plain `+= 1` would race). See `tests/fixtures/stdlib/atomics_thread_app.k2`.
 
 ## Game & graphics modules
 
