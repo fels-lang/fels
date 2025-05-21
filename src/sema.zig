@@ -2890,6 +2890,7 @@ const Checker = struct {
         if (std.mem.eql(u8, name, "atomic_load") or std.mem.eql(u8, name, "atomic_add") or
             std.mem.eql(u8, name, "atomic_sub") or std.mem.eql(u8, name, "atomic_and") or
             std.mem.eql(u8, name, "atomic_or") or std.mem.eql(u8, name, "atomic_xor") or
+            std.mem.eql(u8, name, "atomic_max") or std.mem.eql(u8, name, "atomic_min") or
             std.mem.eql(u8, name, "atomic_exchange") or std.mem.eql(u8, name, "atomic_cas"))
         {
             if (call.args.len == 0) return .u32;
@@ -5075,7 +5076,7 @@ fn isMigratedBuiltin(name: []const u8) bool {
         "slice_from_raw_parts", "ptr_from_int", "unaligned_read", "volatile_store",
         "atomic_load",   "atomic_store",   "asm",           "reject",    "require",
         "atomic_add",    "atomic_sub",     "atomic_and",    "atomic_or", "atomic_xor",
-        "atomic_exchange", "atomic_cas",   "atomic_fence",
+        "atomic_exchange", "atomic_cas",   "atomic_fence",  "atomic_max", "atomic_min",
         "compiler_decls", "compiler_error", "compiler_remove",
     }) |b| if (std.mem.eql(u8, name, b)) return true;
     return false;
@@ -5088,7 +5089,7 @@ fn isBuiltinValue(name: []const u8) bool {
         "sizeof",      "unaligned_read", "asm",
         "atomic_load", "atomic_store",   "volatile",
         "atomic_add",  "atomic_sub",     "atomic_and",  "atomic_or", "atomic_xor",
-        "atomic_exchange", "atomic_cas", "atomic_fence",
+        "atomic_exchange", "atomic_cas", "atomic_fence", "atomic_max", "atomic_min",
         ".acquire",
         // Compile-time reflection builtins
            "type_info",      "type_name",      "reject",          "require",

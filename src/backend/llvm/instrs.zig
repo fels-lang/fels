@@ -1094,6 +1094,23 @@ fn lowerBuiltin(
         }
     }
 
+    // atomic_max/atomic_min(ptr, value, ord) -> T (signedness picks signed vs unsigned)
+    if (std.mem.eql(u8, b.name, "atomic_max") or std.mem.eql(u8, b.name, "atomic_min")) {
+        if (b.args.len < 3) return null;
+        const ptr = resolveVal(cg, fncg, b.args[0], .{ .ptr = undefined });
+        const val = resolveVal(cg, fncg, b.args[1], ty);
+        const signed = switch (ty) {
+            .i, .isize => true,
+            else => false,
+        };
+        const is_min = std.mem.eql(u8, b.name, "atomic_min");
+        const op: c_uint = if (is_min)
+            (if (signed) llvm.LLVMAtomicRMWBinOpMin else llvm.LLVMAtomicRMWBinOpUMin)
+        else
+            (if (signed) llvm.LLVMAtomicRMWBinOpMax else llvm.LLVMAtomicRMWBinOpUMax);
+        return llvm.LLVMBuildAtomicRMW(bl, op, ptr, val, atomicOrdering(b.args[2]), 0);
+    }
+
     // atomic_cas(ptr, expected, desired, ord) -> T (the value seen; == expected on success)
     if (std.mem.eql(u8, b.name, "atomic_cas")) {
         if (b.args.len < 4) return null;

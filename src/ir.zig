@@ -4818,6 +4818,8 @@ fn isBuiltinName(name: []const u8) bool {
         "atomic_exchange",
         "atomic_cas",
         "atomic_fence",
+        "atomic_max",
+        "atomic_min",
         "compound_literal",
         "slice",
         "__str_cat",
