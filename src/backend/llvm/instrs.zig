@@ -1038,25 +1038,77 @@ fn lowerBuiltin(
         return ld;
     }
 
-    // atomic_load(ptr, ordering) — atomic load.
+    // ── Atomics ─────────────────────────────────────────────────────────────
+    // Each takes a trailing integer ordering constant: 0=relaxed, 1=acquire,
+    // 2=release, 3=acq_rel, 4=seq_cst. Alignment is the type's natural width.
+
+    // atomic_load(ptr, ord) -> T
     if (std.mem.eql(u8, b.name, "atomic_load")) {
-        if (b.args.len < 1) return null;
+        if (b.args.len < 2) return null;
         const ptr = resolveVal(cg, fncg, b.args[0], .{ .ptr = undefined });
         const lty = types.lower(cg, ty);
         const ld = llvm.LLVMBuildLoad2(bl, lty, ptr, "");
-        llvm.LLVMSetOrdering(ld, llvm.LLVMAtomicOrderingAcquire);
-        llvm.LLVMSetAlignment(ld, 4);
+        llvm.LLVMSetOrdering(ld, atomicOrdering(b.args[1]));
+        llvm.LLVMSetAlignment(ld, atomicAlign(cg, lty));
         return ld;
     }
 
-    // atomic_store(ptr, value, ordering) — atomic store with release ordering.
+    // atomic_store(ptr, value, ord)
     if (std.mem.eql(u8, b.name, "atomic_store")) {
-        if (b.args.len < 2) return null;
+        if (b.args.len < 3) return null;
         const ptr = resolveVal(cg, fncg, b.args[0], .{ .ptr = undefined });
-        const val = resolveVal(cg, fncg, b.args[1], .unknown);
+        // Type the value from the pointer's pointee — an untyped `.imm` would
+        // otherwise lower to a zero-width `i0` (wrong value + a bogus alignment).
+        const pointee: ir.IrType = switch (fncg.irTypeOf(b.args[0]) orelse ir.IrType.unknown) {
+            .ptr => |p| p.*,
+            else => ir.IrType.unknown,
+        };
+        const val = resolveVal(cg, fncg, b.args[1], pointee);
         const st = llvm.LLVMBuildStore(bl, val, ptr);
-        llvm.LLVMSetOrdering(st, llvm.LLVMAtomicOrderingRelease);
-        llvm.LLVMSetAlignment(st, 4);
+        llvm.LLVMSetOrdering(st, atomicOrdering(b.args[2]));
+        llvm.LLVMSetAlignment(st, atomicAlign(cg, llvm.LLVMTypeOf(val)));
+        return null;
+    }
+
+    // atomic_add/sub/and/or/xor/exchange(ptr, value, ord) -> T (the OLD value)
+    {
+        const rmw_op: ?c_uint = if (std.mem.eql(u8, b.name, "atomic_add"))
+            llvm.LLVMAtomicRMWBinOpAdd
+        else if (std.mem.eql(u8, b.name, "atomic_sub"))
+            llvm.LLVMAtomicRMWBinOpSub
+        else if (std.mem.eql(u8, b.name, "atomic_and"))
+            llvm.LLVMAtomicRMWBinOpAnd
+        else if (std.mem.eql(u8, b.name, "atomic_or"))
+            llvm.LLVMAtomicRMWBinOpOr
+        else if (std.mem.eql(u8, b.name, "atomic_xor"))
+            llvm.LLVMAtomicRMWBinOpXor
+        else if (std.mem.eql(u8, b.name, "atomic_exchange"))
+            llvm.LLVMAtomicRMWBinOpXchg
+        else
+            null;
+        if (rmw_op) |op| {
+            if (b.args.len < 3) return null;
+            const ptr = resolveVal(cg, fncg, b.args[0], .{ .ptr = undefined });
+            const val = resolveVal(cg, fncg, b.args[1], ty);
+            return llvm.LLVMBuildAtomicRMW(bl, op, ptr, val, atomicOrdering(b.args[2]), 0);
+        }
+    }
+
+    // atomic_cas(ptr, expected, desired, ord) -> T (the value seen; == expected on success)
+    if (std.mem.eql(u8, b.name, "atomic_cas")) {
+        if (b.args.len < 4) return null;
+        const ptr = resolveVal(cg, fncg, b.args[0], .{ .ptr = undefined });
+        const cmp = resolveVal(cg, fncg, b.args[1], ty);
+        const new = resolveVal(cg, fncg, b.args[2], ty);
+        const ord = atomicOrdering(b.args[3]);
+        const xchg = llvm.LLVMBuildAtomicCmpXchg(bl, ptr, cmp, new, ord, failureOrdering(ord), 0);
+        return llvm.LLVMBuildExtractValue(bl, xchg, 0, ""); // {old, i1 success} → old
+    }
+
+    // atomic_fence(ord)
+    if (std.mem.eql(u8, b.name, "atomic_fence")) {
+        if (b.args.len < 1) return null;
+        _ = llvm.LLVMBuildFence(bl, atomicOrdering(b.args[0]), 0, "");
         return null;
     }
 
@@ -1477,4 +1529,40 @@ fn lowerStructLit(
         agg = llvm.LLVMBuildInsertValue(cg.builder, agg, v, i, "");
     }
     return agg;
+}
+
+// ── Atomic helpers ───────────────────────────────────────────────────────────
+
+/// Map a k2 ordering constant (0=relaxed … 4=seq_cst) to an LLVM atomic ordering.
+fn atomicOrdering(arg: ir.Value) c_uint {
+    const n: i64 = switch (arg) {
+        .imm => |im| switch (im) {
+            .int => |v| @intCast(v),
+            .uint => |v| @intCast(v),
+            else => 4,
+        },
+        else => 4,
+    };
+    return switch (n) {
+        0 => llvm.LLVMAtomicOrderingMonotonic, // relaxed
+        1 => llvm.LLVMAtomicOrderingAcquire,
+        2 => llvm.LLVMAtomicOrderingRelease,
+        3 => llvm.LLVMAtomicOrderingAcquireRelease,
+        else => llvm.LLVMAtomicOrderingSequentiallyConsistent,
+    };
+}
+
+/// A valid failure ordering for a cmpxchg with the given success ordering: it
+/// can't be release/acq_rel and can't be stronger than success.
+fn failureOrdering(success: c_uint) c_uint {
+    if (success == llvm.LLVMAtomicOrderingSequentiallyConsistent)
+        return llvm.LLVMAtomicOrderingSequentiallyConsistent;
+    if (success == llvm.LLVMAtomicOrderingAcquire or success == llvm.LLVMAtomicOrderingAcquireRelease)
+        return llvm.LLVMAtomicOrderingAcquire;
+    return llvm.LLVMAtomicOrderingMonotonic;
+}
+
+/// Natural alignment for an atomic of LLVM type `lty` (its ABI size).
+fn atomicAlign(cg: *ModuleCg, lty: llvm.LLVMTypeRef) c_uint {
+    return @intCast(llvm.LLVMABISizeOfType(cg.targetData(), lty));
 }

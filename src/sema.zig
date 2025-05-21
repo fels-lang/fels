@@ -2885,8 +2885,24 @@ const Checker = struct {
         };
         if (std.mem.eql(u8, name, "truncate_to")) return self.firstTypeArg(call) orelse error.SemanticFailed;
         if (std.mem.eql(u8, name, "sizeof")) return .usize;
-        if (std.mem.eql(u8, name, "atomic_load")) return .u32;
-        if (std.mem.eql(u8, name, "atomic_store")) return .void;
+        // Value-returning atomics (`load` + read-modify-write + compare-exchange)
+        // yield the pointee type of the first (pointer) argument.
+        if (std.mem.eql(u8, name, "atomic_load") or std.mem.eql(u8, name, "atomic_add") or
+            std.mem.eql(u8, name, "atomic_sub") or std.mem.eql(u8, name, "atomic_and") or
+            std.mem.eql(u8, name, "atomic_or") or std.mem.eql(u8, name, "atomic_xor") or
+            std.mem.eql(u8, name, "atomic_exchange") or std.mem.eql(u8, name, "atomic_cas"))
+        {
+            if (call.args.len == 0) return .u32;
+            const a0 = switch (call.args[0]) {
+                .positional => |e| e,
+                .named => |n| n.value,
+            };
+            return switch (try self.inferExpr(a0)) {
+                .pointer, .const_ptr => |inner| inner.*,
+                else => .u32,
+            };
+        }
+        if (std.mem.eql(u8, name, "atomic_store") or std.mem.eql(u8, name, "atomic_fence")) return .void;
         // Reflection builtins: only meaningful inside compile-time contexts
         // (#run / #if), where the comptime interpreter produces a concrete
         // value. Their static type is deferred, like the TARGET pseudo-module.
@@ -5058,6 +5074,8 @@ fn isMigratedBuiltin(name: []const u8) bool {
         "truncate_to",   "narrow",         "slice_raw",     "any",
         "slice_from_raw_parts", "ptr_from_int", "unaligned_read", "volatile_store",
         "atomic_load",   "atomic_store",   "asm",           "reject",    "require",
+        "atomic_add",    "atomic_sub",     "atomic_and",    "atomic_or", "atomic_xor",
+        "atomic_exchange", "atomic_cas",   "atomic_fence",
         "compiler_decls", "compiler_error", "compiler_remove",
     }) |b| if (std.mem.eql(u8, name, b)) return true;
     return false;
@@ -5069,6 +5087,8 @@ fn isBuiltinValue(name: []const u8) bool {
         "slice_from_raw_parts",
         "sizeof",      "unaligned_read", "asm",
         "atomic_load", "atomic_store",   "volatile",
+        "atomic_add",  "atomic_sub",     "atomic_and",  "atomic_or", "atomic_xor",
+        "atomic_exchange", "atomic_cas", "atomic_fence",
         ".acquire",
         // Compile-time reflection builtins
            "type_info",      "type_name",      "reject",          "require",
