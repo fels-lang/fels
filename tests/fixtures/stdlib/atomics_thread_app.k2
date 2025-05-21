@@ -1,0 +1,31 @@
+// The real proof of atomicity: 4 threads each do 50_000 atomic increments on a
+// shared counter. The final value is exactly 200_000 only if every increment is
+// atomic — a plain `+= 1` would race and lose some. Returns 42 on success.
+#import std.atomics;
+
+#extern("kernel32", "CreateThread")
+CreateThread :: fn(attrs: ?*void, stack: usize, start: fn(*void) -> u32, param: *void, flags: u32, id: ?*u32) -> usize;
+#extern("kernel32", "WaitForMultipleObjects")
+WaitForMultipleObjects :: fn(n: u32, handles: *usize, wait_all: bool, ms: u32) -> u32;
+
+worker :: fn(p: *void) -> u32 {
+    c := unsafe (p as *u32);
+    i: u32 = 0u32;
+    while i < 50000u32 { atomics::fetch_add(u32, c, 1u32); i += 1u32; }
+    return 0u32;
+}
+
+#entry
+main :: fn() -> i32 {
+    counter: u32 = 0u32;
+    cp := unsafe ((&counter) as *void);
+    handles: [4]usize = .{ 0usize, 0usize, 0usize, 0usize };
+    t: usize = 0usize;
+    while t < 4usize {
+        handles[t] = CreateThread(null, 0usize, worker, cp, 0u32, null);
+        t += 1usize;
+    }
+    ignored := WaitForMultipleObjects(4u32, &handles[0], true, 0xFFFFFFFFu32);
+    if counter == 200000u32 { return 42; }
+    return 1;
+}
