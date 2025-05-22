@@ -1624,6 +1624,7 @@ test "exe: std.path / std.time / std.crypto / std.serde run correctly cross-modu
         .{ "tests/fixtures/stdlib/slice_app.k2", "exe_slice_app" },
         .{ "tests/fixtures/stdlib/atomics_app.k2", "exe_atomics_app" },
         .{ "tests/fixtures/stdlib/atomics_thread_app.k2", "exe_atomics_thread_app" },
+        .{ "tests/fixtures/stdlib/atomic_cell_app.k2", "exe_atomic_cell_app" },
     }) |c| {
         const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);
         try std.testing.expectEqual(@as(u32, 42), code);
@@ -2094,4 +2095,29 @@ test "exe: generic struct built inside a generic body resolves the concrete inst
         \\main :: fn() -> i32 { b := box_make(i32, 42); return box_get(i32, &b); }
     , "exe_generic_struct_instance");
     try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: generic-struct compound literal at a concrete instantiation in a non-generic fn" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The non-generic-context variant of issue #6: a local `p: Pair(i32) = .{...}`
+    // (or a field of named type, `Pair(Point)`) declared directly in a NON-generic
+    // function must resolve to the materialized instance struct (`Pair__T_i32`), not
+    // the bare template `Pair`. Before the fix, `lowerAstTypeWithEnv` had no
+    // `generic_inst` case, so the local typed as the template (opaque `T` fields) →
+    // the compound literal lowered to `store %Pair zeroinitializer` (silently
+    // dropping the field values) and `%Pair(i32)` failed LLVM verification.
+    // Checks the field values round-trip: 3+4 (scalar arg) + 1+2+3+4 (named arg) = 17.
+    const code = try compileAndRun(arena.allocator(),
+        \\Point :: struct { x: i32, y: i32 }
+        \\Pair :: struct($T: type) { a: T, b: T }
+        \\main :: fn() -> i32 {
+        \\    p: Pair(i32) = .{ 3, 4 };
+        \\    q: Pair(Point) = .{ .{1,2}, .{3,4} };
+        \\    return p.a + p.b + q.a.x + q.a.y + q.b.x + q.b.y;
+        \\}
+    , "exe_generic_struct_literal_nongeneric");
+    try std.testing.expectEqual(@as(u32, 17), code);
 }

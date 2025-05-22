@@ -190,3 +190,60 @@ pub spin_lock :: fn(lock: *u32) {
 
 // Release a spinlock previously taken with `spin_lock`.
 pub spin_unlock :: fn(lock: *u32) { store_release(lock, 0u32); }
+
+// ── Atomic(T): a typed cell you may only touch atomically ────────────────────
+// The free functions above act on a raw `*T`; `Atomic(T)` wraps the value so the
+// type itself documents "this is shared, access it atomically". Because the
+// element type is recovered from the receiver, the method form needs no `$T`:
+//
+//     counter: Atomic(u32) = .{ 0u32 };   // or: counter := atomics::make(0u32);
+//     counter.add(1);                      // returns the previous value
+//     if counter.cas(1u32, 100u32) { ... } // compare-and-swap
+//     n := counter.get();
+//
+// The same compile-time contracts apply (`add` is Numeric, `and` is Integer, …).
+pub Atomic :: struct($T: type) { value: T }
+
+// Build an Atomic holding `v`.
+pub make :: fn($T: Native, v: T) -> Atomic(T) { return .{ v }; }
+
+// Read / write.
+pub get :: fn($T: Native, self: *Atomic(T)) -> T { return core::atomic_load(&self.value, 4); }
+pub set :: fn($T: Native, self: *Atomic(T), v: T) { core::atomic_store(&self.value, v, 4); }
+pub get_acquire :: fn($T: Native, self: *Atomic(T)) -> T { return core::atomic_load(&self.value, 1); }
+pub set_release :: fn($T: Native, self: *Atomic(T), v: T) { core::atomic_store(&self.value, v, 2); }
+pub exchange :: fn($T: Native, self: *Atomic(T), v: T) -> T { return core::atomic_exchange(&self.value, v, 4); }
+
+// Compare-and-swap — boolean (succeeded?) and value-returning variants.
+pub cas :: fn($T: Native, self: *Atomic(T), expected: T, desired: T) -> bool {
+    return core::atomic_cas(&self.value, expected, desired, 4) == expected;
+}
+pub cas_value :: fn($T: Native, self: *Atomic(T), expected: T, desired: T) -> T {
+    return core::atomic_cas(&self.value, expected, desired, 4);
+}
+
+// Arithmetic (numeric; return the previous value).
+pub add :: fn($T: Numeric, self: *Atomic(T), v: T) -> T { return core::atomic_add(&self.value, v, 4); }
+pub sub :: fn($T: Numeric, self: *Atomic(T), v: T) -> T { return core::atomic_sub(&self.value, v, 4); }
+pub mul :: fn($T: Numeric, self: *Atomic(T), v: T) -> T {
+    while true {
+        old := core::atomic_load(&self.value, 4);
+        if core::atomic_cas(&self.value, old, old * v, 4) == old { return old; }
+    }
+    return core::atomic_load(&self.value, 4); // unreachable
+}
+pub div :: fn($T: Numeric, self: *Atomic(T), v: T) -> T {
+    while true {
+        old := core::atomic_load(&self.value, 4);
+        if core::atomic_cas(&self.value, old, old / v, 4) == old { return old; }
+    }
+    return core::atomic_load(&self.value, 4); // unreachable
+}
+
+// Min / max + bitwise (integers; return the previous value).
+pub max  :: fn($T: Integer, self: *Atomic(T), v: T) -> T { return core::atomic_max(&self.value, v, 4); }
+pub min  :: fn($T: Integer, self: *Atomic(T), v: T) -> T { return core::atomic_min(&self.value, v, 4); }
+pub and  :: fn($T: Integer, self: *Atomic(T), v: T) -> T { return core::atomic_and(&self.value, v, 4); }
+pub or   :: fn($T: Integer, self: *Atomic(T), v: T) -> T { return core::atomic_or(&self.value, v, 4); }
+pub xor  :: fn($T: Integer, self: *Atomic(T), v: T) -> T { return core::atomic_xor(&self.value, v, 4); }
+pub nand :: fn($T: Integer, self: *Atomic(T), v: T) -> T { return core::atomic_nand(&self.value, v, 4); }

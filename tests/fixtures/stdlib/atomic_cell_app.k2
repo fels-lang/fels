@@ -1,0 +1,32 @@
+// std.atomics `Atomic(T)` wrapper, exercised through the UFCS method API. The
+// element type is recovered from the receiver, so no `$T` is ever written.
+// Returns 42 iff every method behaves; a non-42 code marks the failing step.
+#import std.atomics;
+#import std.atomics.{Atomic};
+
+#entry
+main :: fn() -> i32 {
+    c: Atomic(u32) = .{ 10u32 };               // generic-struct literal (now works)
+    if c.add(5u32) != 10u32 { return 1; }      // returns previous; value 15
+    if c.get() != 15u32 { return 2; }          // receiver-only — T from `*Atomic(T)`
+    if c.sub(3u32) != 15u32 { return 3; }      // 12
+    if c.mul(5u32) != 12u32 { return 4; }      // 60 (CAS loop)
+    if c.div(2u32) != 60u32 { return 5; }      // 30
+    if !c.cas(30u32, 100u32) { return 6; }     // 100
+    if c.cas(30u32, 7u32) { return 7; }        // no change (100 != 30)
+    if c.max(50u32) != 100u32 { return 8; }    // stays 100
+    if c.min(7u32) != 100u32 { return 9; }     // 7
+    if c.or(8u32) != 7u32 { return 10; }       // 15
+    if c.and(12u32) != 15u32 { return 11; }    // 12
+    if c.xor(4u32) != 12u32 { return 12; }     // 8
+    if c.exchange(0u32) != 8u32 { return 13; } // 0
+    c.set(99u32);
+    if c.get() != 99u32 { return 14; }
+
+    // make() + a 64-bit cell.
+    d := atomics::make(1000i64);
+    if d.add(1i64) != 1000i64 { return 15; }
+    if d.get() != 1001i64 { return 16; }
+
+    return 42;
+}
