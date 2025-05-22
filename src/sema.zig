@@ -465,6 +465,10 @@ pub const TypeEnv = struct {
     generic_struct_templates: std.StringHashMap(ast.TypeDecl) = undefined,
     /// Mangled name → SymbolId for already-instantiated generic structs.
     generic_struct_instances: std.StringHashMap(SymbolId) = undefined,
+    /// Reverse of the above: instance SymbolId → its template + concrete type
+    /// args. Lets generic-argument inference recover `T` from an argument typed
+    /// `*Atomic(u32)` when the parameter is `*Atomic(T)` (see inferGenericCallImpl).
+    generic_struct_instance_args: std.AutoHashMap(SymbolId, GenericApp) = undefined,
     interface_impls: std.StringHashMap(ast.InterfaceImpl) = undefined,
     /// Integer-valued top-level constants by name — so a `[N]T` array size can
     /// resolve a named const (`N :: 29`) or simple arithmetic over them.
@@ -497,6 +501,7 @@ pub const TypeEnv = struct {
             .generic_call_insts = std.AutoHashMap(ast.NodeId, []const u8).init(allocator),
             .generic_struct_templates = std.StringHashMap(ast.TypeDecl).init(allocator),
             .generic_struct_instances = std.StringHashMap(SymbolId).init(allocator),
+            .generic_struct_instance_args = std.AutoHashMap(SymbolId, GenericApp).init(allocator),
             .interface_impls = std.StringHashMap(ast.InterfaceImpl).init(allocator),
             .const_ints = std.StringHashMap(u64).init(allocator),
             .lambda_free = std.StringHashMap([]const []const u8).init(allocator),
@@ -527,6 +532,7 @@ pub const TypeEnv = struct {
         self.generic_instantiations.deinit(allocator);
         self.generic_struct_templates.deinit();
         self.generic_struct_instances.deinit();
+        self.generic_struct_instance_args.deinit();
         self.interface_impls.deinit();
         var lf = self.lambda_free.valueIterator();
         while (lf.next()) |v| allocator.free(v.*);
@@ -3808,6 +3814,39 @@ const Checker = struct {
                     try binding.put(tp, concrete);
                 }
             }
+            // `*Atomic(T)` / `Atomic(T)` param — bind `$T` from a concrete instance
+            // argument (`*Atomic(u32)` / `Atomic(u32)`). This is what lets a
+            // receiver-only generic method (`get(self: *Atomic(T))`) infer `T` from
+            // its receiver, since `T` appears only nested inside the struct.
+            {
+                const param_app: ?GenericApp = switch (param.ty) {
+                    .generic_app => |g| g,
+                    .pointer, .const_ptr => |i| if (i.* == .generic_app) i.*.generic_app else null,
+                    else => null,
+                };
+                if (param_app) |papp| {
+                    // Unwrap the argument past one pointer, then recover its
+                    // template + concrete args (either a collapsed `.named`
+                    // instance via the reverse map, or a still-`.generic_app`).
+                    const arg_inner: Ty = switch (arg_ty) {
+                        .pointer, .const_ptr => |i| i.*,
+                        else => arg_ty,
+                    };
+                    const arg_app: ?GenericApp = switch (arg_inner) {
+                        .generic_app => |g| g,
+                        .named => |id| self.env.generic_struct_instance_args.get(id),
+                        else => null,
+                    };
+                    if (arg_app) |aapp| {
+                        if (aapp.template == papp.template and aapp.args.len == papp.args.len) {
+                            for (papp.args, aapp.args) |pa, aa| {
+                                if (pa == .type_param and !binding.contains(pa.type_param))
+                                    try binding.put(pa.type_param, aa);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Verify all value args are compatible with substituted param types.
@@ -4200,6 +4239,12 @@ const Checker = struct {
 
         try self.env.symbol_types.put(inst_id, .{ .named = inst_id });
         try self.env.generic_struct_instances.put(mangled, inst_id);
+        // Record the reverse mapping so inference can recover `T` from an
+        // `*Atomic(u32)` argument matched against an `*Atomic(T)` parameter.
+        try self.env.generic_struct_instance_args.put(inst_id, .{
+            .template = template_id,
+            .args = try self.allocator.dupe(Ty, arg_tys),
+        });
 
         // Build the instantiated struct layout (substitute type params in fields).
         var fields = std.ArrayList(FieldInfo).empty;
