@@ -129,8 +129,29 @@ require an integer type
 - **Flags / spinlock:** `is_set`, `test_and_set`, `clear`, `wait_until_set`,
   `wait_until_eq`, `spin_lock`, `spin_unlock`
 
+### `Atomic(T)` — a typed atomic cell
+
+The free functions act on a raw `*T`. `Atomic(T)` instead *wraps* the value, so the
+type itself documents that it's shared, and the operations read as methods. The
+element type is recovered from the receiver, so you never write `$T`:
+
+```k2
+#import std.atomics;
+#import std.atomics.{Atomic};         // bring the type name into scope
+
+counter: Atomic(u32) = .{ 0u32 };     // or: counter := atomics::make(0u32);
+old := counter.add(1u32);             // returns the previous value
+if counter.cas(1u32, 100u32) { ... }  // compare-and-swap
+n := counter.get();
+```
+
+Methods: `get`/`set`, `get_acquire`/`set_release`, `exchange`, `cas`/`cas_value`,
+`add`/`sub`/`mul`/`div` (numeric), `max`/`min`, `and`/`or`/`xor`/`nand` (integer) —
+each carrying the same compile-time contract as its free-function counterpart.
+
 > Atomic increments across threads lose nothing under contention — that's the whole
-> point (a plain `+= 1` would race). See `tests/fixtures/stdlib/atomics_thread_app.k2`.
+> point (a plain `+= 1` would race). See `tests/fixtures/stdlib/atomics_thread_app.k2`,
+> and `atomic_cell_app.k2` for the `Atomic(T)` method API.
 
 ## Game & graphics modules
 
