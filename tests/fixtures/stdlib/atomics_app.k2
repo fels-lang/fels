@@ -1,29 +1,43 @@
-// std.atomics API self-check (single-threaded determinism). Returns 42 iff all
-// operations behave as specified; a non-42 code points at the failing step.
+// std.atomics API self-check (single-threaded determinism). The element type is
+// inferred from the pointer, so no explicit `$T` is passed. Returns 42 iff every
+// operation behaves as specified; a non-42 code points at the failing step.
 #import std.atomics;
 
 #entry
 main :: fn() -> i32 {
     x: u32 = 10u32;
-    if atomics::fetch_add(u32, &x, 5u32) != 10u32 { return 1; }      // x=15, old=10
-    if atomics::load(u32, &x) != 15u32 { return 2; }
-    if atomics::fetch_sub(u32, &x, 3u32) != 15u32 { return 3; }      // x=12
-    if atomics::fetch_mul(u32, &x, 5u32) != 12u32 { return 4; }      // x=60 (CAS loop)
-    if atomics::fetch_div(u32, &x, 2u32) != 60u32 { return 5; }      // x=30 (CAS loop)
-    if !atomics::compare_exchange(u32, &x, 30u32, 100u32) { return 6; } // x=100
-    if atomics::compare_exchange(u32, &x, 30u32, 7u32) { return 7; }  // 100 != 30 → no change
-    if atomics::fetch_max(u32, &x, 50u32) != 100u32 { return 8; }    // stays 100
-    if atomics::fetch_min(u32, &x, 7u32) != 100u32 { return 9; }     // x=7
-    if atomics::fetch_or(u32, &x, 8u32) != 7u32 { return 10; }       // x=15
-    if atomics::fetch_and(u32, &x, 12u32) != 15u32 { return 11; }    // x=12
-    if atomics::fetch_xor(u32, &x, 4u32) != 12u32 { return 12; }     // x=8
-    if atomics::swap(u32, &x, 0u32) != 8u32 { return 13; }           // x=0
+    if atomics::fetch_add(&x, 5u32) != 10u32 { return 1; }      // x=15, old=10
+    if atomics::load(&x) != 15u32 { return 2; }
+    if atomics::fetch_sub(&x, 3u32) != 15u32 { return 3; }      // x=12
+    if atomics::fetch_mul(&x, 5u32) != 12u32 { return 4; }      // x=60 (CAS loop)
+    if atomics::fetch_div(&x, 2u32) != 60u32 { return 5; }      // x=30 (CAS loop)
+    if !atomics::compare_exchange(&x, 30u32, 100u32) { return 6; } // x=100
+    if atomics::compare_exchange(&x, 30u32, 7u32) { return 7; }  // 100 != 30 → no change
+    if atomics::fetch_max(&x, 50u32) != 100u32 { return 8; }    // stays 100
+    if atomics::fetch_min(&x, 7u32) != 100u32 { return 9; }     // x=7
+    if atomics::fetch_or(&x, 8u32) != 7u32 { return 10; }       // x=15
+    if atomics::fetch_and(&x, 12u32) != 15u32 { return 11; }    // x=12
+    if atomics::fetch_xor(&x, 4u32) != 12u32 { return 12; }     // x=8
+    if atomics::fetch_shl(&x, 1u32) != 8u32 { return 13; }      // x=16 (CAS loop)
+    if atomics::fetch_shr(&x, 2u32) != 16u32 { return 14; }     // x=4  (CAS loop)
+    if atomics::swap(&x, 0u32) != 4u32 { return 15; }           // x=0
 
     // 64-bit + release/acquire pairing.
     y: i64 = 64i64;
-    atomics::store_release(i64, &y, 99i64);
-    if atomics::load_acquire(i64, &y) != 99i64 { return 14; }
-    if atomics::fetch_add(i64, &y, 1i64) != 99i64 { return 15; }     // y=100
+    atomics::store_release(&y, 99i64);
+    if atomics::load_acquire(&y) != 99i64 { return 16; }
+    if atomics::fetch_add(&y, 1i64) != 99i64 { return 17; }     // y=100
+
+    // Float arithmetic (native atomic add).
+    f: f64 = 1.5;
+    if atomics::fetch_add(&f, 2.0) != 1.5 { return 18; }        // f=3.5
+
+    // Test-and-set / spinlock flag.
+    lock: u32 = 0u32;
+    if atomics::test_and_set(&lock) { return 19; }              // was 0 → returns false, now 1
+    if !atomics::test_and_set(&lock) { return 20; }             // was 1 → returns true
+    atomics::clear(&lock);
+    if atomics::is_set(&lock) { return 21; }
 
     atomics::fence();
     return 42;

@@ -11,7 +11,7 @@ WaitForMultipleObjects :: fn(n: u32, handles: *usize, wait_all: bool, ms: u32) -
 worker :: fn(p: *void) -> u32 {
     c := unsafe (p as *u32);
     i: u32 = 0u32;
-    while i < 50000u32 { atomics::fetch_add(u32, c, 1u32); i += 1u32; }
+    while i < 50000u32 { atomics::fetch_add(c, 1u32); i += 1u32; }
     return 0u32;
 }
 

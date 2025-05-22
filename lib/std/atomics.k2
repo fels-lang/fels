@@ -1,56 +1,112 @@
-// std.atomics — atomic operations over shared memory.
+// std.atomics — atomic operations over shared memory, the foundation for
+// lock-free code and synchronising threads.
 //
-// These wrap the `core::atomic_*` compiler builtins. The high-level helpers use
-// **sequentially consistent** ordering — the easy-to-reason-about default, and
-// what you want unless you are deliberately writing lock-free code. For finer
-// control, call the `core::atomic_*` builtins directly with one of the ordering
-// constants below (they are integer constants, required to be compile-time
-// known by the hardware atomic instructions).
+// Every operation is **generic over the value type** and acts on a pointer to
+// the value (`&counter`). Read-modify-write helpers return the PREVIOUS value,
+// like C/LLVM.
 //
-// Every operation acts on a pointer to the value, e.g. `&counter`. Read-modify-
-// write helpers (`fetch_*`, `swap`) return the PREVIOUS value, like C/LLVM.
+// **Type safety is enforced at compile time** via `where`-style constraints built
+// on `core::type_info` reflection (k2's equivalent of C3's `@require`/`@if`): a
+// bitwise op on a float, or any atomic op on a non-scalar type, is a compile error
+// with a clear message — not a confusing backend failure. See the constraints
+// below; they are what `$T: Numeric` etc. refer to.
+//
+// All helpers use **sequentially consistent** ordering — the easy-to-reason-about
+// default. For finer control call the `core::atomic_*` builtins directly with one
+// of the ordering constants below (the hardware requires a compile-time-known
+// ordering, so it can't be a runtime parameter).
 
 // ── Memory orderings (for the `core::atomic_*` builtins) ─────────────────────
-pub Relaxed :: 0; // no ordering, only atomicity
-pub Acquire :: 1; // later reads/writes can't move before this load
-pub Release :: 2; // earlier reads/writes can't move after this store
-pub AcqRel  :: 3; // acquire + release (for read-modify-write)
-pub SeqCst  :: 4; // a single total order over all seq-cst operations
+pub Relaxed :: 0; // atomicity only, no ordering between threads
+pub Acquire :: 1; // later memory accesses can't move before this load
+pub Release :: 2; // earlier memory accesses can't move after this store
+pub AcqRel  :: 3; // acquire + release (for a read-modify-write)
+pub SeqCst  :: 4; // a single total order across all seq-cst operations
 
-// ── Load / store (sequentially consistent) ──────────────────────────────────
+// ── Compile-time type contracts ──────────────────────────────────────────────
+// These run during generic resolution: an unsuitable `T` is rejected at the call
+// site before any code is generated.
+
+// A value that the hardware can operate on atomically: an integer, float, bool,
+// or pointer no wider than a machine word.
+pub Native :: constraint($T) {
+    match core::type_info(T) {
+        .int => {}
+        .float => {}
+        .boolean => {}
+        .pointer => {}
+        else => core::reject("atomics require a native scalar (int, float, bool, or pointer)");
+    }
+}
+
+// Numeric — for arithmetic (add/sub/mul/div). Integers use native instructions;
+// floats are handled too (add/sub natively, mul/div via a CAS loop).
+pub Numeric :: constraint($T) {
+    match core::type_info(T) {
+        .int => {}
+        .float => {}
+        else => core::reject("arithmetic atomics require a numeric (integer or float) type");
+    }
+}
+
+// Integer — for bitwise (and/or/xor/nand), shifts, and min/max.
+pub Integer :: constraint($T) {
+    match core::type_info(T) {
+        .int => {}
+        else => core::reject("bitwise/shift/min/max atomics require an integer type");
+    }
+}
+
+// Boolean — for flag helpers.
+pub Boolean :: constraint($T) {
+    match core::type_info(T) {
+        .boolean => {}
+        else => core::reject("flag atomics require a `bool`");
+    }
+}
+
+// ── Load / store ─────────────────────────────────────────────────────────────
 
 // Atomically read the current value.
-pub load :: fn($T: type, p: *T) -> T { return core::atomic_load(p, 4); }
+pub load :: fn($T: Native, p: *T) -> T { return core::atomic_load(p, 4); }
 
 // Atomically write `v`.
-pub store :: fn($T: type, p: *T, v: T) { core::atomic_store(p, v, 4); }
+pub store :: fn($T: Native, p: *T, v: T) { core::atomic_store(p, v, 4); }
 
-// Acquire-ordered load — pairs with a `store_release` to publish data written
-// before the release to whoever observes the value with this acquire.
-pub load_acquire :: fn($T: type, p: *T) -> T { return core::atomic_load(p, 1); }
+// Acquire-ordered load — pairs with a `store_release` so that everything written
+// before the release becomes visible to whoever observes this acquire.
+pub load_acquire :: fn($T: Native, p: *T) -> T { return core::atomic_load(p, 1); }
 
 // Release-ordered store (see `load_acquire`).
-pub store_release :: fn($T: type, p: *T, v: T) { core::atomic_store(p, v, 2); }
-
-// ── Read-modify-write (return the previous value) ────────────────────────────
+pub store_release :: fn($T: Native, p: *T, v: T) { core::atomic_store(p, v, 2); }
 
 // Atomically replace the value with `v`; returns the previous value.
-pub swap :: fn($T: type, p: *T, v: T) -> T { return core::atomic_exchange(p, v, 4); }
+pub swap :: fn($T: Native, p: *T, v: T) -> T { return core::atomic_exchange(p, v, 4); }
 
-pub fetch_add :: fn($T: type, p: *T, v: T) -> T { return core::atomic_add(p, v, 4); }
-pub fetch_sub :: fn($T: type, p: *T, v: T) -> T { return core::atomic_sub(p, v, 4); }
-pub fetch_and :: fn($T: type, p: *T, v: T) -> T { return core::atomic_and(p, v, 4); }
-pub fetch_or  :: fn($T: type, p: *T, v: T) -> T { return core::atomic_or(p, v, 4); }
-pub fetch_xor :: fn($T: type, p: *T, v: T) -> T { return core::atomic_xor(p, v, 4); }
+// ── Compare-exchange ─────────────────────────────────────────────────────────
 
-// Atomically set the value to the max/min of it and `v`; returns the previous
-// value. Signed vs unsigned is chosen from `T`.
-pub fetch_max :: fn($T: type, p: *T, v: T) -> T { return core::atomic_max(p, v, 4); }
-pub fetch_min :: fn($T: type, p: *T, v: T) -> T { return core::atomic_min(p, v, 4); }
+// If `*p` equals `expected`, atomically replace it with `desired` and return true;
+// otherwise leave it and return false. The core building block for lock-free
+// algorithms and spinlocks.
+pub compare_exchange :: fn($T: Native, p: *T, expected: T, desired: T) -> bool {
+    return core::atomic_cas(p, expected, desired, 4) == expected;
+}
 
-// Multiply/divide have no native atomic instruction — done with a compare-and-
-// swap retry loop. Returns the previous value.
-pub fetch_mul :: fn($T: type, p: *T, v: T) -> T {
+// Like `compare_exchange`, but returns the value actually observed (equal to
+// `expected` on success), so a caller can retry with the fresh value.
+pub compare_exchange_value :: fn($T: Native, p: *T, expected: T, desired: T) -> T {
+    return core::atomic_cas(p, expected, desired, 4);
+}
+
+// ── Arithmetic (return the previous value) ───────────────────────────────────
+
+// Integer add/sub use native instructions; float add/sub use native float atomics.
+pub fetch_add :: fn($T: Numeric, p: *T, v: T) -> T { return core::atomic_add(p, v, 4); }
+pub fetch_sub :: fn($T: Numeric, p: *T, v: T) -> T { return core::atomic_sub(p, v, 4); }
+
+// Multiply/divide have no hardware atomic — implemented with a compare-and-swap
+// retry loop (works for integers and floats).
+pub fetch_mul :: fn($T: Numeric, p: *T, v: T) -> T {
     while true {
         old := core::atomic_load(p, 4);
         if core::atomic_cas(p, old, old * v, 4) == old { return old; }
@@ -58,7 +114,7 @@ pub fetch_mul :: fn($T: type, p: *T, v: T) -> T {
     return core::atomic_load(p, 4); // unreachable
 }
 
-pub fetch_div :: fn($T: type, p: *T, v: T) -> T {
+pub fetch_div :: fn($T: Numeric, p: *T, v: T) -> T {
     while true {
         old := core::atomic_load(p, 4);
         if core::atomic_cas(p, old, old / v, 4) == old { return old; }
@@ -66,37 +122,71 @@ pub fetch_div :: fn($T: type, p: *T, v: T) -> T {
     return core::atomic_load(p, 4); // unreachable
 }
 
-// ── Compare-exchange ─────────────────────────────────────────────────────────
+// ── Min / max (integers; signed vs unsigned chosen from `T`) ─────────────────
+pub fetch_max :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_max(p, v, 4); }
+pub fetch_min :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_min(p, v, 4); }
 
-// If `*p` equals `expected`, atomically replace it with `desired` and return
-// true; otherwise leave it unchanged and return false. The textbook building
-// block for lock-free algorithms and spinlocks.
-pub compare_exchange :: fn($T: type, p: *T, expected: T, desired: T) -> bool {
-    return core::atomic_cas(p, expected, desired, 4) == expected;
+// ── Bitwise (integers; return the previous value) ────────────────────────────
+pub fetch_and  :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_and(p, v, 4); }
+pub fetch_or   :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_or(p, v, 4); }
+pub fetch_xor  :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_xor(p, v, 4); }
+pub fetch_nand :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_nand(p, v, 4); }
+
+// Shifts have no hardware atomic — compare-and-swap retry loops.
+pub fetch_shl :: fn($T: Integer, p: *T, bits: T) -> T {
+    while true {
+        old := core::atomic_load(p, 4);
+        if core::atomic_cas(p, old, old << bits, 4) == old { return old; }
+    }
+    return core::atomic_load(p, 4); // unreachable
 }
 
-// Like `compare_exchange`, but returns the value actually seen (equal to
-// `expected` on success) so the caller can retry with the fresh value.
-pub compare_exchange_value :: fn($T: type, p: *T, expected: T, desired: T) -> T {
-    return core::atomic_cas(p, expected, desired, 4);
+pub fetch_shr :: fn($T: Integer, p: *T, bits: T) -> T {
+    while true {
+        old := core::atomic_load(p, 4);
+        if core::atomic_cas(p, old, old >> bits, 4) == old { return old; }
+    }
+    return core::atomic_load(p, 4); // unreachable
 }
 
 // ── Fences ───────────────────────────────────────────────────────────────────
 
-// A sequentially-consistent memory fence (orders all surrounding atomics).
+// A sequentially-consistent fence (orders all surrounding atomic accesses).
 pub fence :: fn() { core::atomic_fence(4); }
 
-// ── Flag helpers (the common ready/done signal between threads) ──────────────
+// An acquire fence — no load/store after it may move before it.
+pub fence_acquire :: fn() { core::atomic_fence(1); }
+
+// A release fence — no load/store before it may move after it.
+pub fence_release :: fn() { core::atomic_fence(2); }
+
+// ── 32-bit flag helpers (the common ready/done signal between threads) ──────
+// A 0/non-zero `u32` is the simplest cross-thread flag.
 
 // True if the flag currently holds a non-zero value.
-pub is_set :: fn(flag: *u32) -> bool { return load(u32, flag) != 0u32; }
+pub is_set :: fn(flag: *u32) -> bool { return load(flag) != 0u32; }
+
+// Atomically set the flag to 1, returning whether it was already set (the
+// textbook test-and-set lock primitive).
+pub test_and_set :: fn(flag: *u32) -> bool { return swap(flag, 1u32) != 0u32; }
+
+// Atomically clear the flag to 0.
+pub clear :: fn(flag: *u32) { store(flag, 0u32); }
 
 // Busy-wait until the flag becomes non-zero.
 pub wait_until_set :: fn(flag: *u32) {
-    while load(u32, flag) == 0u32 {}
+    while load(flag) == 0u32 {}
 }
 
 // Busy-wait until the flag holds exactly `value`.
 pub wait_until_eq :: fn(flag: *u32, value: u32) {
-    while load(u32, flag) != value {}
+    while load(flag) != value {}
 }
+
+// Acquire a spinlock: spin on `test_and_set` until we win the 0 → 1 transition.
+pub spin_lock :: fn(lock: *u32) {
+    while test_and_set(lock) {}
+}
+
+// Release a spinlock previously taken with `spin_lock`.
+pub spin_unlock :: fn(lock: *u32) { store_release(lock, 0u32); }
