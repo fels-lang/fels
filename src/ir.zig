@@ -2868,7 +2868,22 @@ const FunctionLowerer = struct {
             .ident => |n| n,
             else => return null,
         };
-        return self.symbols.resolveScoped(self.file_name, alias, sa.member);
+        if (self.symbols.resolveScoped(self.file_name, alias, sa.member)) |id| return id;
+        // `Type::method` — an associated function hoisted from a struct body to a
+        // top-level `"<Type>.<member>"` (mirrors sema's resolveScopeAccessSymbol).
+        if (resolveTopLevel(self.symbols, self.file_name, alias)) |tid| {
+            if (self.symbols.symbol(tid).kind == .type) {
+                var buf: [256]u8 = undefined;
+                const dotted = std.fmt.bufPrint(&buf, "{s}.{s}", .{ alias, sa.member }) catch return null;
+                const file = self.symbols.symbol(tid).file_name;
+                for (self.symbols.symbols.items) |sym| {
+                    if (sym.kind == .function and std.mem.eql(u8, sym.file_name, file) and
+                        std.mem.eql(u8, sym.name, dotted))
+                        return sym.id;
+                }
+            }
+        }
+        return null;
     }
 
     fn lowerExpr(self: *FunctionLowerer, expr: ast.Expr) LowerError!Value {

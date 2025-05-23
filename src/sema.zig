@@ -1183,6 +1183,16 @@ const Checker = struct {
         return self.symbols.resolveVisible(self.file, name);
     }
 
+    /// Resolve a (possibly namespace-qualified) type name to its symbol. A
+    /// qualified `ns::Name` is reached through the import alias (`#import a.b;`
+    /// brings the module in as `b::Name`); an unqualified name resolves the
+    /// usual visible way. Used for both plain `ns::Name` types and the template
+    /// of a `ns::Name(args)` generic instantiation.
+    fn resolveTypeSymbol(self: Checker, namespace: ?[]const u8, name: []const u8) ?SymbolId {
+        if (namespace) |ns| return self.symbols.resolveScoped(self.file, ns, name);
+        return self.resolveSymbol(name);
+    }
+
     /// Resolve `alias::member` (single-level namespace access). The base must be a
     /// namespace alias bound by `#import a.b;` / `#import a.b as alias;`.
     fn resolveScopeAccessSymbol(self: Checker, sa: ast.ScopeAccess) ?SymbolId {
@@ -1190,7 +1200,28 @@ const Checker = struct {
             .ident => |n| n,
             else => return null,
         };
-        return self.symbols.resolveScoped(self.file, alias, sa.member);
+        if (self.symbols.resolveScoped(self.file, alias, sa.member)) |id| return id;
+        // `Type::method` — an associated (no-receiver) function declared inside the
+        // struct body, hoisted to a top-level `"<Type>.<member>"`.
+        if (self.resolveSymbol(alias)) |tid| {
+            if (self.symbols.symbol(tid).kind == .type)
+                return self.assocFnInFile(alias, sa.member, self.symbols.symbol(tid).file_name);
+        }
+        return null;
+    }
+
+    /// Find a hoisted in-struct function `"<base>.<member>"` in `file`, visible from
+    /// the current file (public, or same file).
+    fn assocFnInFile(self: Checker, base: []const u8, member: []const u8, file: []const u8) ?SymbolId {
+        var buf: [256]u8 = undefined;
+        const dotted = std.fmt.bufPrint(&buf, "{s}.{s}", .{ base, member }) catch return null;
+        for (self.symbols.symbols.items) |sym| {
+            if (sym.kind == .function and std.mem.eql(u8, sym.file_name, file) and
+                std.mem.eql(u8, sym.name, dotted) and
+                (sym.is_public or std.mem.eql(u8, sym.file_name, self.file)))
+                return sym.id;
+        }
+        return null;
     }
 
     fn localScopeIndex(self: Checker, name: []const u8) ?usize {
@@ -3075,17 +3106,46 @@ const Checker = struct {
     };
 
     fn resolveExtensionMethod(self: *Checker, name: []const u8, base_ty: Ty) ?ExtensionMethod {
-        // First a visible (own/imported-unqualified) function; then a `self`-first
-        // method defined in the receiver type's own module — so `value.method()`
-        // works when that module is imported as a namespace, without importing
-        // each method by hand.
-        const id = self.resolveSymbol(name) orelse self.methodFromTypeModule(name, base_ty) orelse return null;
+        // An in-struct method (`Type.method`) defined on the receiver's own type
+        // wins first — so a type's own `load` shadows a free `load` of the same
+        // name. Then a visible (own/imported-unqualified) free function; then a
+        // `self`-first method defined in the receiver type's own module (cross-
+        // module UFCS).
+        const id = self.assocMethodSymbol(name, base_ty) orelse
+            self.resolveSymbol(name) orelse
+            self.methodFromTypeModule(name, base_ty) orelse return null;
         if (self.symbols.symbol(id).kind != .function) return null;
         const sig = self.env.fn_sigs.get(id) orelse return null;
         for (sig.params) |param| {
             if (param.is_type_param) continue;
             if (!std.mem.eql(u8, param.name, "self")) return null;
             return .{ .id = id, .sig = sig };
+        }
+        return null;
+    }
+
+    /// The struct's *base* name: the template name for a generic instance
+    /// (`Atomic__T_u32` → `Atomic`), otherwise the symbol's own name.
+    fn typeBaseName(self: *Checker, type_id: SymbolId) []const u8 {
+        if (self.env.generic_struct_instance_args.get(type_id)) |app|
+            return self.symbols.symbol(app.template).name;
+        return self.symbols.symbol(type_id).name;
+    }
+
+    /// Resolve an in-struct method `Type.method` for the receiver type, if one was
+    /// hoisted from a `struct { … method :: fn … }` body. The hoisted function is
+    /// a top-level function named `"<BaseName>.<method>"` in the struct's file.
+    fn assocMethodSymbol(self: *Checker, name: []const u8, base_ty: Ty) ?SymbolId {
+        const type_id = typeSymbolOf(base_ty) orelse return null;
+        const base = self.typeBaseName(type_id);
+        const file = self.symbols.symbol(type_id).file_name;
+        var buf: [256]u8 = undefined;
+        const dotted = std.fmt.bufPrint(&buf, "{s}.{s}", .{ base, name }) catch return null;
+        for (self.symbols.symbols.items) |sym| {
+            if (sym.kind == .function and std.mem.eql(u8, sym.file_name, file) and
+                std.mem.eql(u8, sym.name, dotted) and
+                (sym.is_public or std.mem.eql(u8, sym.file_name, self.file)))
+                return sym.id;
         }
         return null;
     }
@@ -4121,7 +4181,9 @@ const Checker = struct {
     }
 
     fn instantiateGenericStruct(self: *Checker, gi: ast.GenericInstType) SemanticError!Ty {
-        _ = self.resolveSymbol(gi.name) orelse {
+        // `ns::Name(args)` reaches the template through the import alias; the
+        // template registry and mangling stay keyed on the bare member name.
+        _ = self.resolveTypeSymbol(gi.namespace, gi.name) orelse {
             self.emitError(gi.span, "unknown generic type `{s}`", .{gi.name});
             return error.SemanticFailed;
         };
@@ -4159,12 +4221,12 @@ const Checker = struct {
         // so `substituteTy` can later produce the concrete instance once `T` is
         // bound, instead of collapsing to the bare template (which loses `T`).
         if (any_type_var) {
-            const tmpl_id = self.resolveSymbol(gi.name) orelse return .unknown;
+            const tmpl_id = self.resolveTypeSymbol(gi.namespace, gi.name) orelse return .unknown;
             const arg_tys = self.allocator.alloc(Ty, binding.items.len) catch return .unknown;
             for (binding.items, 0..) |arg, i| arg_tys[i] = arg.ty;
             return .{ .generic_app = .{ .template = tmpl_id, .args = arg_tys } };
         }
-        const tmpl_id = self.resolveSymbol(gi.name).?;
+        const tmpl_id = self.resolveTypeSymbol(gi.namespace, gi.name).?;
         const arg_tys = try self.allocator.alloc(Ty, binding.items.len);
         for (binding.items, 0..) |arg, i| arg_tys[i] = arg.ty;
         return try self.instantiateConcrete(tmpl_id, arg_tys);
@@ -4281,9 +4343,13 @@ const Checker = struct {
                 return self.resolveTypeParam(tp.name) orelse .{ .type_param = tp.name };
             },
             .named => |named| {
-                if (self.resolveTypeParam(named.name)) |tp_ty| return tp_ty;
-                if (std.mem.eql(u8, named.name, "Self")) return self.current_self_ty orelse error.SemanticFailed;
-                if (self.resolveSymbol(named.name)) |id| {
+                // A qualifier (`ns::Name`) names a real type in another module —
+                // never a type param, `Self`, or a built-in scalar.
+                if (named.namespace == null) {
+                    if (self.resolveTypeParam(named.name)) |tp_ty| return tp_ty;
+                    if (std.mem.eql(u8, named.name, "Self")) return self.current_self_ty orelse error.SemanticFailed;
+                }
+                if (self.resolveTypeSymbol(named.namespace, named.name)) |id| {
                     if (self.symbols.symbol(id).kind != .type) return error.SemanticFailed;
                     // Transparent alias: resolve to the underlying type (transitively).
                     if (self.env.alias_refs.get(id)) |aliased| {
@@ -4297,6 +4363,7 @@ const Checker = struct {
                     }
                     return .{ .named = id };
                 }
+                if (named.namespace != null) return error.SemanticFailed;
                 return fromBuiltinName(named.name) orelse error.SemanticFailed;
             },
             .pointer => |ptr| {

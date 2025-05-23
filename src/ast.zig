@@ -163,6 +163,12 @@ pub const EnumVariantDecl = struct {
 pub const StructDecl = struct {
     type_params: []const []const u8, // e.g. ["T"] for struct($T: type) { ... }
     fields: []const FieldDecl,
+    /// Associated declarations written inside the struct body
+    /// (`name :: fn(...) { ... }`). The parser also hoists each to a synthetic
+    /// top-level function named `"<Struct>.<method>"` (with `Self` substituted and
+    /// the struct's type params inherited) so the existing generic/UFCS machinery
+    /// handles them; this list is kept for reference/introspection.
+    methods: []const FunctionDecl = &.{},
 };
 
 pub const ErrorDecl = struct {
@@ -492,6 +498,9 @@ pub const InlineErrorSet = struct {
 
 pub const NamedType = struct {
     name: []const u8,
+    /// Namespace qualifier for `ns::Name` — the import alias the type is reached
+    /// through (`#import a.b;` → `b`). Null for a bare, unqualified name.
+    namespace: ?[]const u8 = null,
     span: Span,
 };
 
@@ -531,6 +540,9 @@ pub const BorrowType = struct {
 
 pub const GenericInstType = struct {
     name: []const u8,
+    /// Namespace qualifier for `ns::Name(args)` — the import alias the generic
+    /// template is reached through. Null for a bare, unqualified instantiation.
+    namespace: ?[]const u8 = null,
     args: []const TypeRef,
     span: Span,
 };

@@ -114,6 +114,11 @@ pub const Parser = struct {
     /// module's items at the end of `parseModule`.
     lifted_lambdas: std.ArrayList(ast.FunctionDecl) = .empty,
     lambda_counter: u32 = 0,
+    /// Functions declared inside a `struct { … }` body are hoisted here as
+    /// synthetic top-level functions (named `"<Struct>.<method>"`, with `Self`
+    /// resolved to the struct and its type params inherited). Appended to the
+    /// module's items at the end of `parseModule`, just like `lifted_lambdas`.
+    hoisted_methods: std.ArrayList(ast.FunctionDecl) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, file_name: []const u8, source: []const u8, next_id: ast.NodeId) !Parser {
         var lex = lexer.Lexer.init(source);
@@ -130,6 +135,7 @@ pub const Parser = struct {
         self.allocator.free(self.tokens);
         self.diagnostics.deinit(self.allocator);
         self.lifted_lambdas.deinit(self.allocator);
+        self.hoisted_methods.deinit(self.allocator);
     }
 
     pub fn parseModule(self: *Parser) ParseError!ast.Module {
@@ -168,6 +174,10 @@ pub const Parser = struct {
 
         // Append lambdas lifted from expressions as synthetic top-level functions.
         for (self.lifted_lambdas.items) |decl| {
+            try items.append(self.allocator, .{ .function = decl });
+        }
+        // Append functions hoisted out of struct bodies (in-struct methods).
+        for (self.hoisted_methods.items) |decl| {
             try items.append(self.allocator, .{ .function = decl });
         }
 
@@ -407,30 +417,142 @@ pub const Parser = struct {
         _ = try self.expect(.l_brace, "expected { after struct");
         var fields: std.ArrayList(ast.FieldDecl) = .empty;
         errdefer fields.deinit(self.allocator);
+        var methods: std.ArrayList(ast.FunctionDecl) = .empty;
+        errdefer methods.deinit(self.allocator);
 
         while (!self.check(.r_brace) and !self.check(.eof)) {
-            const field_name = try self.expect(.ident, "expected field name");
+            // An associated declaration: `[pub] name :: fn(...) { ... }`. A field is
+            // `name : type`. Disambiguate on `::` vs `:` after the (optional pub +)
+            // leading identifier.
+            const method_attrs = try self.parseAttributes();
+            const is_pub = self.match(.keyword_pub);
+            const member_name = try self.expect(.ident, "expected field or method name");
+            if (self.match(.colon_colon)) {
+                _ = try self.expect(.keyword_fn, "expected fn after `::` in struct body");
+                var method = try self.finishFunction(method_attrs, member_name, false);
+                method.is_public = is_pub;
+                try methods.append(self.allocator, method);
+                continue;
+            }
+            if (method_attrs.len != 0 or is_pub) {
+                try self.errorAt(member_name, "struct fields take no attributes or `pub`");
+                return error.ParseFailed;
+            }
             _ = try self.expect(.colon, "expected : after field name");
             const ty = try self.parseType();
-            const end = if (self.match(.comma)) self.previous() else field_name;
+            const end = if (self.match(.comma)) self.previous() else member_name;
             try fields.append(self.allocator, .{
-                .name = field_name.text(self.source),
+                .name = member_name.text(self.source),
                 .ty = ty,
-                .span = spanFrom(field_name, end),
+                .span = spanFrom(member_name, end),
             });
         }
 
         const close = try self.expect(.r_brace, "expected } after struct fields");
+        const tps = try type_params.toOwnedSlice(self.allocator);
+        const method_decls = try methods.toOwnedSlice(self.allocator);
+        // Hoist each in-struct method to a synthetic top-level function so the
+        // existing generic/UFCS machinery handles it (see `hoistMethod`).
+        for (method_decls) |m| {
+            try self.hoisted_methods.append(self.allocator, try self.hoistMethod(name, tps, m));
+        }
         return .{
             .attrs = attrs,
             .name = name.text(self.source),
             .file_name = self.file_name,
             .kind = .{ .struct_type = .{
-                .type_params = try type_params.toOwnedSlice(self.allocator),
+                .type_params = tps,
                 .fields = try fields.toOwnedSlice(self.allocator),
+                .methods = method_decls,
             } },
             .span = spanFrom(name, close),
         };
+    }
+
+    /// Turn an in-struct method into a top-level function named `"<Struct>.<m>"`:
+    /// inherit the struct's type params (as inferred type vars — names only, never
+    /// passed explicitly) and substitute `Self` with the struct type so the body
+    /// and signature resolve in the ordinary top-level context.
+    fn hoistMethod(self: *Parser, struct_name: Token, struct_tps: []const []const u8, m: ast.FunctionDecl) ParseError!ast.FunctionDecl {
+        const sname = struct_name.text(self.source);
+        // The Self target: `Struct` (no type params) or `Struct(T, …)` (generic).
+        const self_ref: ast.TypeRef = if (struct_tps.len == 0)
+            .{ .named = .{ .name = sname, .span = spanFrom(struct_name, struct_name) } }
+        else blk: {
+            const args = try self.allocator.alloc(ast.TypeRef, struct_tps.len);
+            for (struct_tps, 0..) |tp, i| {
+                args[i] = .{ .type_param = .{ .name = tp, .span = spanFrom(struct_name, struct_name) } };
+            }
+            break :blk .{ .generic_inst = .{ .name = sname, .args = args, .span = spanFrom(struct_name, struct_name) } };
+        };
+
+        // Substitute Self in every parameter type and the return type.
+        const params = try self.allocator.alloc(ast.Param, m.params.len);
+        for (m.params, 0..) |p, i| {
+            params[i] = .{
+                .name = p.name,
+                .ty = try self.substSelf(p.ty, self_ref),
+                .is_type_param = p.is_type_param,
+                .span = p.span,
+            };
+        }
+        const return_ty = try self.substSelf(m.return_ty, self_ref);
+
+        // type_params = struct's (inferred) ++ method's own. Struct type params are
+        // names only here (no `$T` param), so they are inferred from the args, never
+        // passed explicitly.
+        var tps: std.ArrayList([]const u8) = .empty;
+        try tps.appendSlice(self.allocator, struct_tps);
+        try tps.appendSlice(self.allocator, m.type_params);
+
+        const mangled = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ sname, m.name });
+        return .{
+            .attrs = m.attrs,
+            .name = mangled,
+            .file_name = self.file_name,
+            .source = self.source,
+            .is_public = m.is_public,
+            .type_params = try tps.toOwnedSlice(self.allocator),
+            .output_type_params = m.output_type_params,
+            .type_constraints = m.type_constraints,
+            .params = params,
+            .return_ty = return_ty,
+            .error_ty = m.error_ty,
+            .where_clause = m.where_clause,
+            .body = m.body,
+            .span = m.span,
+        };
+    }
+
+    /// Recursively replace `Self` (a bare named type) with `target` inside a TypeRef.
+    fn substSelf(self: *Parser, ty: ast.TypeRef, target: ast.TypeRef) ParseError!ast.TypeRef {
+        switch (ty) {
+            .named => |n| {
+                if (n.namespace == null and std.mem.eql(u8, n.name, "Self")) return target;
+                return ty;
+            },
+            .pointer => |p| {
+                const inner = try self.allocator.create(ast.TypeRef);
+                inner.* = try self.substSelf(p.inner.*, target);
+                return .{ .pointer = .{ .is_const = p.is_const, .is_volatile = p.is_volatile, .inner = inner, .span = p.span } };
+            },
+            .many_pointer => |p| {
+                const inner = try self.allocator.create(ast.TypeRef);
+                inner.* = try self.substSelf(p.inner.*, target);
+                return .{ .many_pointer = .{ .is_const = p.is_const, .is_volatile = p.is_volatile, .inner = inner, .span = p.span } };
+            },
+            .optional => |o| {
+                const inner = try self.allocator.create(ast.TypeRef);
+                inner.* = try self.substSelf(o.inner.*, target);
+                return .{ .optional = .{ .inner = inner, .span = o.span } };
+            },
+            .slice => |s| {
+                const inner = try self.allocator.create(ast.TypeRef);
+                inner.* = try self.substSelf(s.inner.*, target);
+                return .{ .slice = .{ .is_const = s.is_const, .inner = inner, .span = s.span } };
+            },
+            else => return ty,
+        }
     }
 
     fn parseComptimeDirective(self: *Parser, hash: Token) ParseError!ast.Stmt {
@@ -1303,6 +1425,17 @@ pub const Parser = struct {
             try self.errorAt(name, "expected type");
             return error.ParseFailed;
         }
+        // Namespace-qualified type: `ns::Name`. The base names an import alias
+        // (`#import a.b;` → `b::Name`); the member is the actual type name. A
+        // generic argument list may still follow (`ns::Name(args)`), handled
+        // below exactly as for a bare name.
+        var namespace: ?[]const u8 = null;
+        var type_tok = name;
+        if (self.match(.colon_colon)) {
+            const member = try self.expect(.ident, "expected name after `::`");
+            namespace = name.text(self.source);
+            type_tok = member;
+        }
         // Generic instantiation: Name(TypeArg1, TypeArg2, ...)
         if (self.match(.l_paren)) {
             var args: std.ArrayList(ast.TypeRef) = .empty;
@@ -1313,12 +1446,17 @@ pub const Parser = struct {
             }
             const close = try self.expect(.r_paren, "expected ) after type arguments");
             return .{ .generic_inst = .{
-                .name = name.text(self.source),
+                .name = type_tok.text(self.source),
+                .namespace = namespace,
                 .args = try args.toOwnedSlice(self.allocator),
                 .span = spanFrom(name, close),
             } };
         }
-        return namedType(name.text(self.source), spanFrom(name, name));
+        return .{ .named = .{
+            .name = type_tok.text(self.source),
+            .namespace = namespace,
+            .span = spanFrom(name, type_tok),
+        } };
     }
 
     fn parseExpr(self: *Parser, min_bp: u8) ParseError!ast.Expr {
