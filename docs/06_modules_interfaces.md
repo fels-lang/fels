@@ -133,6 +133,12 @@ pub write_all :: fn(self: *Writer, data: []const u8) -> usize ! IoError {
 // w.write_all(data)?
 ```
 
+A type's *own* methods can instead be declared **inside the struct body** (where
+`Self` and the struct's type parameters are implicit) — see
+[Methods](02_types.md#methods). Use in-struct declarations for a type's own API and
+free `self`-first functions to extend a type you don't own; an in-struct method
+shadows a free function of the same name when called on that type.
+
 ---
 
 ## Generics

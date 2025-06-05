@@ -212,6 +212,61 @@ list: ArrayList(u8) = .{};
 
 ---
 
+### Methods
+
+Functions can be declared **inside** a struct body. Within the body, `Self` is the
+struct type and the struct's type parameters are in scope, so methods on a generic
+struct never re-spell `$T`:
+
+```k2
+Vec2 :: struct {
+    x: i32, y: i32
+
+    // Associated function (no receiver) — called `Vec2::new(...)`:
+    new :: fn(a: i32, b: i32) -> Self { return .{ a, b }; }
+
+    // Methods (receiver `self: *Self`) — called `v.method(...)` via UFCS:
+    dot  :: fn(self: *Self, o: *Self) -> i32 { return self.x * o.x + self.y * o.y; }
+    len2 :: fn(self: *Self) -> i32 { return self.dot(self); }
+}
+
+p := Vec2::new(3, 4);   // associated function: `::`, no receiver
+n := p.len2();          // method: `.`, receiver auto-passed (25)
+```
+
+```k2
+Box :: struct($T: type) {
+    value: T
+    make :: fn(v: T) -> Self { return .{ v }; }       // T inferred from the arg
+    get  :: fn(self: *Self) -> T { return self.value; } // T inferred from the receiver
+}
+
+b := Box::make(10);     // Box(i32)
+v := b.get();           // 10
+```
+
+Two call forms, matching K2's `::` / `.` split:
+
+- **`Type::name(...)`** for an *associated* function — one with no `self` (a
+  constructor, factory, or type-level helper). Mirrors module member access.
+- **`value.name(...)`** for a *method* — one whose first parameter is `self: *Self`
+  (or `Self`). Uses the same UFCS machinery as free-function extension methods.
+
+A method declared inside a type **shadows** a free function of the same name when
+called on that type, so a type can own a `load`/`add`/… without colliding with an
+unrelated free function. Conversely, you can still add methods to a type you don't
+own by writing a free `self`-first function (see *Extension Methods* in the modules
+chapter) — in-struct declarations are for a type's own API, free functions for
+extension.
+
+> In-struct methods are sugar: each is lowered to a top-level function named
+> `<Struct>.<method>` with `Self` resolved and the struct's type parameters
+> inherited, so they cost nothing the existing generic/UFCS machinery doesn't
+> already pay. To constrain an inherited type parameter (e.g. "integers only"),
+> give the method a `where { … }` clause.
+
+---
+
 ### Enums
 
 Enums define a type that holds one of a fixed set of variants:
