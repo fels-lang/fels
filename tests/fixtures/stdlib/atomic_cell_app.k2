@@ -23,8 +23,8 @@ main :: fn() -> i32 {
     c.set(99u32);
     if c.get() != 99u32 { return 14; }
 
-    // make() + a 64-bit cell.
-    d := atomics::make(1000i64);
+    // Atomic::make() (associated function) + a 64-bit cell.
+    d := Atomic::make(1000i64);
     if d.add(1i64) != 1000i64 { return 15; }
     if d.get() != 1001i64 { return 16; }
 
