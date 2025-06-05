@@ -1,0 +1,36 @@
+// In-struct methods: functions declared inside a struct body. Covers a
+// non-generic and a generic struct, associated functions (`Type::new`, no
+// receiver), UFCS method calls (`v.method()`), a method that takes another
+// `*Self`, and a method calling a sibling method. Returns 42.
+
+Vec2 :: struct {
+    x: i32, y: i32
+    // Associated function (no receiver): called `Vec2::new(...)`.
+    new :: fn(a: i32, b: i32) -> Self { return .{ a, b }; }
+    // Methods (receiver `*Self`): called `v.method(...)` via UFCS.
+    add :: fn(self: *Self, o: *Self) -> Self { return .{ self.x + o.x, self.y + o.y }; }
+    dot :: fn(self: *Self, o: *Self) -> i32 { return self.x * o.x + self.y * o.y; }
+    len2 :: fn(self: *Self) -> i32 { return self.dot(self); } // method calls method
+}
+
+Stack :: struct($T: type) {
+    top: T, count: i32
+    make :: fn(v: T) -> Self { return .{ v, 1 }; } // generic associated fn
+    push :: fn(self: *Self, v: T) { self.top = v; self.count = self.count + 1; }
+    peek :: fn(self: *Self) -> T { return self.top; }
+    size :: fn(self: *Self) -> i32 { return self.count; }
+}
+
+#entry
+main :: fn() -> i32 {
+    p := Vec2::new(3, 4);
+    q := Vec2::new(1, 1);
+    r := p.add(&q);          // (4, 5)
+    a := r.len2();           // 16 + 25 = 41
+
+    s := Stack::make(1);     // top=1, count=1  (T inferred = i32)
+    s.push(9);               // top=9, count=2
+    if s.peek() != 9 { return 1; }
+
+    return a + (s.size() - 1); // 41 + 1 = 42
+}

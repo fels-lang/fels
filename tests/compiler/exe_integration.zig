@@ -1625,6 +1625,8 @@ test "exe: std.path / std.time / std.crypto / std.serde run correctly cross-modu
         .{ "tests/fixtures/stdlib/atomics_app.k2", "exe_atomics_app" },
         .{ "tests/fixtures/stdlib/atomics_thread_app.k2", "exe_atomics_thread_app" },
         .{ "tests/fixtures/stdlib/atomic_cell_app.k2", "exe_atomic_cell_app" },
+        .{ "tests/fixtures/stdlib/atomic_qualified_app.k2", "exe_atomic_qualified_app" },
+        .{ "tests/fixtures/lang/struct_methods_app.k2", "exe_struct_methods_app" },
     }) |c| {
         const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);
         try std.testing.expectEqual(@as(u32, 42), code);
