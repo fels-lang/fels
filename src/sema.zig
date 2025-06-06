@@ -1351,7 +1351,14 @@ const Checker = struct {
         self.must_use_fns = std.StringHashMap(void).init(self.allocator);
         self.capturing_locals = std.StringHashMap(void).init(self.allocator);
         for (module.items) |item| switch (item) {
-            .function => |f| if (hasAttr(f.attrs, "must_use")) try self.must_use_fns.put(f.name, {}),
+            .function => |f| {
+                if (hasAttr(f.attrs, "must_use")) try self.must_use_fns.put(f.name, {});
+                // Pre-register every `constraint Name($T) { … }` so a `$T: Name`
+                // use (in a fn signature OR a `struct($T: Name)`) resolves
+                // regardless of source order — a struct may be instantiated while
+                // checking a body declared before the constraint itself.
+                if (f.is_constraint) try self.constraint_decls.put(f.name, f);
+            },
             else => {},
         };
 
@@ -2416,19 +2423,30 @@ const Checker = struct {
                         else => {},
                     }
                 }
+                // A function pointer is a pointer-sized value: allow reinterpreting
+                // it as another fn-pointer signature, a data pointer, or an integer
+                // address (and back). Needed for thin C callbacks / thread entries
+                // where the OS signature is fixed (`fn(*void) -> u32`).
+                const fn_ptr_cast = from_ty == .fn_ptr or to_ty == .fn_ptr;
+                const reinterpretable = struct {
+                    fn ok(t: Ty) bool {
+                        return t == .fn_ptr or isPointerTy(t) or t.isInteger();
+                    }
+                };
                 const valid = distinct_cast or
                     (from_ty.isNumeric() and to_ty.isNumeric()) or
                     (from_ty.isInteger() and to_ty == .bool) or
                     (from_ty == .bool and to_ty.isInteger()) or
                     (pointer_cast and (isPointerTy(from_ty) or from_ty.isInteger()) and
-                        (isPointerTy(to_ty) or to_ty.isInteger()));
+                        (isPointerTy(to_ty) or to_ty.isInteger())) or
+                    (fn_ptr_cast and reinterpretable.ok(from_ty) and reinterpretable.ok(to_ty));
                 if (!valid) {
                     self.emitError(expr.span, "cannot cast `{s}` to `{s}`", .{
                         self.formatTy(from_ty), self.formatTy(to_ty),
                     });
                     return error.SemanticFailed;
                 }
-                if (pointer_cast) try self.requireUnsafe(expr.span, "pointer cast");
+                if (pointer_cast or fn_ptr_cast) try self.requireUnsafe(expr.span, "pointer cast");
                 break :blk to_ty;
             },
             .type_ref => |type_ref| try self.typeFromRef(type_ref),
@@ -2862,6 +2880,17 @@ const Checker = struct {
                 _ = try self.inferExpr(v);
             }
             return .void;
+        }
+        // core::fn_ptr(f) — the raw thin function pointer of a top-level function,
+        // typed `*void` so it can be handed to a C callback / thread entry (k2's
+        // ordinary fn value is a fat `{fn, env}` closure a C ABI cannot call). The
+        // argument must be a plain function reference; it is resolved in IR.
+        if (is_core and std.mem.eql(u8, name, "fn_ptr")) {
+            if (call.args.len != 1) {
+                self.emitError(call.callee.span, "`core::fn_ptr` takes exactly one function argument", .{});
+                return error.SemanticFailed;
+            }
+            return try self.ptrTo(.void);
         }
         // core:: math/bit/memory families (Phase 2). Gated on `is_core` so a bare
         // user `min`/`max`/`abs` function is unaffected.
@@ -4226,10 +4255,56 @@ const Checker = struct {
             for (binding.items, 0..) |arg, i| arg_tys[i] = arg.ty;
             return .{ .generic_app = .{ .template = tmpl_id, .args = arg_tys } };
         }
+        // Enforce `struct($T: Constraint)` at the concrete use site (mirrors the
+        // `fn($T: Name)` check). Only meaningful once every arg is concrete, which
+        // is the path taken here.
+        try self.enforceStructConstraints(strukt.type_constraints, binding.items, gi.span);
+
         const tmpl_id = self.resolveTypeSymbol(gi.namespace, gi.name).?;
         const arg_tys = try self.allocator.alloc(Ty, binding.items.len);
         for (binding.items, 0..) |arg, i| arg_tys[i] = arg.ty;
         return try self.instantiateConcrete(tmpl_id, arg_tys);
+    }
+
+    /// Enforce a generic struct's `$T: Constraint` contracts on a concrete
+    /// instantiation, emitting the reject message at `span` (the use site).
+    /// Mirrors the function `$T: Name` check (built-in predicate, then a user
+    /// `constraint` decl run on the resolution VM). A constraint whose param isn't
+    /// bound, or whose name isn't a built-in or registered `constraint` (e.g. the
+    /// resolution VM isn't wired in this pass), is left to the method call site.
+    fn enforceStructConstraints(
+        self: *Checker,
+        constraints: []const ast.TypeConstraint,
+        binding: []const TypeArg,
+        span: Span,
+    ) SemanticError!void {
+        for (constraints) |c| {
+            var bound_ty: ?Ty = null;
+            for (binding) |b| {
+                if (std.mem.eql(u8, b.name, c.param)) {
+                    bound_ty = b.ty;
+                    break;
+                }
+            }
+            const bt = bound_ty orelse continue;
+            switch (checkBuiltinConstraint(self, c.interface, bt)) {
+                .ok => continue,
+                .fail => |desc| {
+                    self.emitError(span, "type `{s}` does not satisfy `{s}`: expected {s}", .{ self.formatTy(bt), c.interface, desc });
+                    return error.SemanticFailed;
+                },
+                .not_builtin => {},
+            }
+            // A user-defined `constraint Name($T) { … }` — run its predicate. A
+            // non-empty result is the reject message; "" is satisfied; null means
+            // the name isn't a registered constraint, so defer to the call site.
+            if (self.runConstraintPredicate(c.interface, bt)) |msg| {
+                if (msg.len > 0) {
+                    self.emitError(span, "type `{s}` does not satisfy `{s}`: {s}", .{ self.formatTy(bt), c.interface, msg });
+                    return error.SemanticFailed;
+                }
+            }
+        }
     }
 
     /// Instantiate a generic struct from a template symbol and concrete argument
@@ -5190,7 +5265,7 @@ fn isMigratedBuiltin(name: []const u8) bool {
         "atomic_load",   "atomic_store",   "asm",           "reject",    "require",
         "atomic_add",    "atomic_sub",     "atomic_and",    "atomic_or", "atomic_xor",
         "atomic_exchange", "atomic_cas",   "atomic_fence",  "atomic_max", "atomic_min",
-        "atomic_nand",
+        "atomic_nand",     "fn_ptr",
         "compiler_decls", "compiler_error", "compiler_remove",
     }) |b| if (std.mem.eql(u8, name, b)) return true;
     return false;
@@ -5204,7 +5279,7 @@ fn isBuiltinValue(name: []const u8) bool {
         "atomic_load", "atomic_store",   "volatile",
         "atomic_add",  "atomic_sub",     "atomic_and",  "atomic_or", "atomic_xor",
         "atomic_exchange", "atomic_cas", "atomic_fence", "atomic_max", "atomic_min",
-        "atomic_nand",
+        "atomic_nand",     "fn_ptr",
         ".acquire",
         // Compile-time reflection builtins
            "type_info",      "type_name",      "reject",          "require",

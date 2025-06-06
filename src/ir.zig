@@ -3269,6 +3269,19 @@ const FunctionLowerer = struct {
                 if (std.mem.eql(u8, callee_name, "asm")) {
                     break :blk try self.lowerAsmCall(call, expr);
                 }
+                // core::fn_ptr(f) — the RAW thin function pointer of a top-level
+                // function, as a `*void` usable as a C callback / thread entry.
+                // Bypasses k2's fat `{fn, env}` closure (which a C ABI can't call):
+                // reuses the same raw-function-arg lowering as a direct extern call.
+                if (call.callee.kind == .scope_access and isCoreNs(call.callee.kind.scope_access) and
+                    std.mem.eql(u8, callee_name, "fn_ptr") and call.args.len == 1)
+                {
+                    const fn_arg = switch (call.args[0]) {
+                        .positional => |e| e,
+                        .named => |n| n.value,
+                    };
+                    break :blk try self.lowerRawFnArg(fn_arg);
+                }
                 // sizeof/type_info/type_name take a TYPE as their sole argument,
                 // not a value — it goes into `type_arg`, never lowered as a value
                 // (lowering a type parameter `T` as a value produces a bad reg
