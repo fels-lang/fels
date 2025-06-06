@@ -153,6 +153,50 @@ each carrying the same compile-time contract as its free-function counterpart.
 > point (a plain `+= 1` would race). See `tests/fixtures/stdlib/atomics_thread_app.k2`,
 > and `atomic_cell_app.k2` for the `Atomic(T)` method API.
 
+## `std.thread`
+Native OS threads and structured helpers. k2 favours *real threads* over async/await
+— no function colouring, no hidden executor, no heap-allocated coroutine frames; a
+thread is a stack plus an entry point. An entry has the shape `fn(*void) -> u32`: it
+receives a single context pointer and returns an exit code.
+
+Because k2's ordinary function value is a fat `{fn, env}` closure that a C ABI can't
+call, hand the entry over as **`core::fn_ptr(worker)`** — the raw thin function
+pointer. The context pointer you pass must outlive the thread (join before its data
+leaves scope, or put the data on a long-lived arena).
+
+```k2
+#import std.thread;
+#import std.atomics;
+
+worker :: fn(p: *void) -> u32 {
+    c := unsafe (p as *u32);
+    atomics::fetch_add(c, 1u32);
+    return 0u32;                 // exit code
+}
+
+counter: u32 = 0u32;
+t := thread::spawn(core::fn_ptr(worker), unsafe ((&counter) as *void));
+code := t.join();                // blocks; returns the worker's exit code
+```
+
+- **`Thread`** (methods): `join() -> u32` (waits, returns exit code, closes handle),
+  `detach()` (fire-and-forget), `is_running()` (non-blocking poll), `ok()`.
+- **`spawn(entry, arg) -> Thread`** — start a thread; `entry` is `core::fn_ptr(fn)`.
+- **Helpers:** `current_id()`, `sleep(ms)`, `yield_now()`, `cpu_count()`.
+- **`ThreadGroup`** — structured fan-out: `spawn(entry, arg)` adds a thread,
+  `join_all()` blocks until the whole batch finishes (the batch can't outlive the
+  call site). `thread::group()` makes an empty one.
+
+```k2
+g := thread::group();
+i: usize = 0usize;
+while i < thread::cpu_count() as usize { g.spawn(core::fn_ptr(worker), cp); i += 1usize; }
+g.join_all();                    // wait for all
+```
+
+> Thread pools and channels build on a future `std.sync` (Mutex/CondVar); for now
+> coordinate with `std.atomics`. See `tests/fixtures/stdlib/thread_app.k2`.
+
 ## Game & graphics modules
 
 Small, focused modules for 2D games and graphics. `std.math` and `std.color` are

@@ -84,6 +84,7 @@ The trailing `ord` is an integer ordering constant — `0` relaxed, `1` acquire,
 `3` acq_rel, `4` seq_cst — and **must be compile-time known**. Prefer the
 [`std.atomics`](07_stdlib.md#stdatomics) wrappers, which default to seq_cst.
 | `core::ptr_from_int`| `core::ptr_from_int($T: type, addr: usize) -> T` | **Yes** | Integer address → pointer `T`. |
+| `core::fn_ptr`| `core::fn_ptr(f) -> *void` | **Yes** | Raw thin pointer of a top-level function, for a C callback / thread entry (k2's ordinary fn value is a fat closure a C ABI can't call). |
 | `core::slice_raw`| `core::slice_raw($T, ptr, len) -> []T` | **Yes** | Build a slice from a raw pointer + length. |
 | `core::volatile_store`| `core::volatile_store(ptr: *T, val: T)` | **Yes** | Volatile memory write. |
 | `core::unaligned_read`| `core::unaligned_read($T: type, ptr) -> T` | **Yes** | Read `T` from a possibly-unaligned address. |
