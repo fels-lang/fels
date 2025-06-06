@@ -1,0 +1,39 @@
+// std.thread end-to-end: a single spawn+join (with a real exit code), a structured
+// ThreadGroup fanning 8 threads over a shared atomic counter, and cpu_count.
+// Returns 42 iff every thread ran and no atomic increment was lost.
+#import std.thread;
+#import std.atomics;
+
+// Each worker bumps the shared counter 1000 times, then exits with code 7.
+inc_worker :: fn(p: *void) -> u32 {
+    c := unsafe (p as *u32);
+    i: u32 = 0u32;
+    while i < 1000u32 { atomics::fetch_add(c, 1u32); i += 1u32; }
+    return 7u32;
+}
+
+#entry
+main :: fn() -> i32 {
+    // 1. A single thread: join returns the worker's exit code.
+    solo: u32 = 0u32;
+    t := thread::spawn(core::fn_ptr(inc_worker), unsafe ((&solo) as *void));
+    if t.join() != 7u32 { return 1; }
+    if solo != 1000u32 { return 2; }
+
+    // 2. A ThreadGroup: 8 threads × 1000 increments on one shared counter.
+    counter: u32 = 0u32;
+    cp := unsafe ((&counter) as *void);
+    g := thread::group();
+    n: usize = 0usize;
+    while n < 8usize {
+        g.spawn(core::fn_ptr(inc_worker), cp); // ThreadGroup.spawn (UFCS)
+        n += 1usize;
+    }
+    g.join_all();
+    if counter != 8000u32 { return 3; } // exactly 8000 — nothing lost
+
+    // 3. cpu_count reports at least one processor.
+    if thread::cpu_count() < 1u32 { return 4; }
+
+    return 42;
+}
