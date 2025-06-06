@@ -141,6 +141,65 @@ test "named constraint: `require` propagates the required constraint's rejection
     );
 }
 
+test "struct constraint: `struct($T: Name)` accepts a satisfying type (+ method)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // A struct-level type-param constraint, mirroring `fn($T: Name)`. A native
+    // scalar satisfies it; an in-struct method inherits the contract and works.
+    const src =
+        \\Native :: constraint($T) { match core::type_info(T) { .int => {} .float => {} else => core::reject("expected a native scalar"); } }
+        \\Cell :: struct($T: Native) {
+        \\    value: T
+        \\    pub get :: fn(self: *Self) -> T { return self.value; }
+        \\}
+        \\use :: fn() -> i32 { c: Cell(i32) = .{ 7 }; return c.get(); }
+    ;
+    var fe = try k2.compile(arena.allocator(), "struct_constraint_ok.k2", src);
+    defer fe.deinit(arena.allocator());
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(module);
+}
+
+test "struct constraint: a non-satisfying type is rejected at instantiation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // A struct fails `Native`; the constraint fires where `Cell(P)` is named (here
+    // a function-parameter type position), before any body is checked.
+    const src =
+        \\Native :: constraint($T) { match core::type_info(T) { .int => {} .float => {} else => core::reject("expected a native scalar"); } }
+        \\P :: struct { a: i32 }
+        \\Cell :: struct($T: Native) { value: T }
+        \\bad :: fn(c: *Cell(P)) -> i32 { return 0; }
+    ;
+    try std.testing.expectError(
+        error.SemanticFailed,
+        k2.compile(arena.allocator(), "struct_constraint_bad.k2", src),
+    );
+}
+
+test "struct constraint: a non-satisfying type is rejected through an in-struct method" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The struct's constraint is inherited by each hoisted method, so even when
+    // the type is only ever reached via a method call the contract still fires.
+    const src =
+        \\Native :: constraint($T) { match core::type_info(T) { .int => {} .float => {} else => core::reject("expected a native scalar"); } }
+        \\P :: struct { a: i32 }
+        \\Cell :: struct($T: Native) {
+        \\    value: T
+        \\    pub get :: fn(self: *Self) -> T { return self.value; }
+        \\}
+        \\use :: fn() -> i32 { p: P = .{ 0 }; c: Cell(P) = .{ p }; _ := c.get(); return 0; }
+    ;
+    try std.testing.expectError(
+        error.SemanticFailed,
+        k2.compile(arena.allocator(), "struct_constraint_method_bad.k2", src),
+    );
+}
+
 test "where clause: output type param `-> $Acc` computed from type_info (two-pass)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

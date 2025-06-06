@@ -162,6 +162,10 @@ pub const EnumVariantDecl = struct {
 
 pub const StructDecl = struct {
     type_params: []const []const u8, // e.g. ["T"] for struct($T: type) { ... }
+    /// Constraints on the type params (`struct($T: Native) { … }`), mirroring the
+    /// `fn($T: Name)` form. Checked at concrete instantiation; also inherited by
+    /// each in-struct method (see `methods`) so the method call site enforces them.
+    type_constraints: []const TypeConstraint = &.{},
     fields: []const FieldDecl,
     /// Associated declarations written inside the struct body
     /// (`name :: fn(...) { ... }`). The parser also hoists each to a synthetic

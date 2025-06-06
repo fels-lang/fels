@@ -1,0 +1,30 @@
+// Regression: a namespace-qualified generic type (`atomics::Atomic(u32)`) used
+// in a local's type annotation. Before the fix the parser handled `Name(args)`
+// and `ns::Name`, but not the combination `ns::Name(args)` — it stopped after
+// the `::`-qualified name and reported "expected = after typed local". Only the
+// namespace import is brought in (no selective `.{Atomic}`), so the type is
+// reachable *only* through the `atomics::` qualifier. Returns 42 iff correct.
+#import std.atomics;
+
+// Qualified generic type in parameter and return position, too.
+bump :: fn(c: *atomics::Atomic(u32), by: u32) -> u32 {
+    return c.add(by);
+}
+
+#entry
+main :: fn() -> i32 {
+    c: atomics::Atomic(u32) = .{ 10u32 };          // the qualified-generic local
+    if bump(&c, 5u32) != 10u32 { return 1; }       // returns previous; value 15
+    if c.get() != 15u32 { return 2; }              // receiver-only — T from `*Atomic(T)`
+    if c.sub(3u32) != 15u32 { return 3; }          // 12
+    if !c.cas(12u32, 100u32) { return 4; }         // 100
+    c.set(99u32);
+    if c.get() != 99u32 { return 5; }
+
+    // A second width through `make`, also reached via the qualifier.
+    d: atomics::Atomic(i64) = .{ 1000i64 };
+    if d.add(1i64) != 1000i64 { return 6; }
+    if d.get() != 1001i64 { return 7; }
+
+    return 42;
+}

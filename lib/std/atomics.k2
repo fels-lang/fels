@@ -205,7 +205,7 @@ pub spin_unlock :: fn(lock: *u32) { store_release(lock, 0u32); }
 // For compile-time type contracts (e.g. rejecting a bitwise op on a float), use
 // the constrained free functions above (`fetch_and`, …); the cell methods are
 // thin ergonomic delegates.
-pub Atomic :: struct($T: type) {
+pub Atomic :: struct($T: Native) {
     value: T
 
     // Build an Atomic holding `v`: `Atomic::make(0u32)`.

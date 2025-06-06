@@ -399,15 +399,31 @@ pub const Parser = struct {
     }
 
     fn finishStruct(self: *Parser, attrs: []const ast.Attribute, name: Token) ParseError!ast.TypeDecl {
-        // Optional type params: struct($T: type, $U: type) { ... }
+        // Optional type params: struct($T: type, $U: type) { ... } or, with a
+        // constraint, struct($T: Native) { ... } (a built-in or `constraint` name,
+        // mirroring fn($T: Name)).
         var type_params: std.ArrayList([]const u8) = .empty;
         errdefer type_params.deinit(self.allocator);
+        var type_constraints: std.ArrayList(ast.TypeConstraint) = .empty;
+        errdefer type_constraints.deinit(self.allocator);
         if (self.match(.l_paren)) {
             while (!self.check(.r_paren) and !self.check(.eof)) {
                 _ = try self.expect(.dollar, "expected $ before struct type param");
                 const tp = try self.expect(.ident, "expected type param name");
                 _ = try self.expect(.colon, "expected : after type param");
-                _ = try self.expect(.keyword_type, "expected 'type' after $T:");
+                if (self.match(.keyword_type)) {
+                    // Unconstrained: $T: type
+                } else if (self.check(.ident)) {
+                    // Constrained: $T: ConstraintName
+                    const iface_tok = self.advance();
+                    try type_constraints.append(self.allocator, .{
+                        .param = tp.text(self.source),
+                        .interface = iface_tok.text(self.source),
+                        .span = spanFrom(tp, iface_tok),
+                    });
+                } else {
+                    _ = try self.expect(.keyword_type, "expected 'type' or a constraint name after $T:");
+                }
                 try type_params.append(self.allocator, tp.text(self.source));
                 if (!self.match(.comma)) break;
             }
@@ -450,11 +466,14 @@ pub const Parser = struct {
 
         const close = try self.expect(.r_brace, "expected } after struct fields");
         const tps = try type_params.toOwnedSlice(self.allocator);
+        const tcs = try type_constraints.toOwnedSlice(self.allocator);
         const method_decls = try methods.toOwnedSlice(self.allocator);
         // Hoist each in-struct method to a synthetic top-level function so the
-        // existing generic/UFCS machinery handles it (see `hoistMethod`).
+        // existing generic/UFCS machinery handles it (see `hoistMethod`). The
+        // struct's type-param constraints are inherited by each method so the
+        // method call site enforces them via the existing constraint machinery.
         for (method_decls) |m| {
-            try self.hoisted_methods.append(self.allocator, try self.hoistMethod(name, tps, m));
+            try self.hoisted_methods.append(self.allocator, try self.hoistMethod(name, tps, tcs, m));
         }
         return .{
             .attrs = attrs,
@@ -462,6 +481,7 @@ pub const Parser = struct {
             .file_name = self.file_name,
             .kind = .{ .struct_type = .{
                 .type_params = tps,
+                .type_constraints = tcs,
                 .fields = try fields.toOwnedSlice(self.allocator),
                 .methods = method_decls,
             } },
@@ -473,7 +493,7 @@ pub const Parser = struct {
     /// inherit the struct's type params (as inferred type vars — names only, never
     /// passed explicitly) and substitute `Self` with the struct type so the body
     /// and signature resolve in the ordinary top-level context.
-    fn hoistMethod(self: *Parser, struct_name: Token, struct_tps: []const []const u8, m: ast.FunctionDecl) ParseError!ast.FunctionDecl {
+    fn hoistMethod(self: *Parser, struct_name: Token, struct_tps: []const []const u8, struct_tcs: []const ast.TypeConstraint, m: ast.FunctionDecl) ParseError!ast.FunctionDecl {
         const sname = struct_name.text(self.source);
         // The Self target: `Struct` (no type params) or `Struct(T, …)` (generic).
         const self_ref: ast.TypeRef = if (struct_tps.len == 0)
@@ -505,6 +525,13 @@ pub const Parser = struct {
         try tps.appendSlice(self.allocator, struct_tps);
         try tps.appendSlice(self.allocator, m.type_params);
 
+        // type_constraints = struct's (inherited, on the struct's $T) ++ method's own.
+        // The struct constraints reference struct type params, which are included in
+        // `tps`, so the existing call-site machinery checks them on each method call.
+        var tcs: std.ArrayList(ast.TypeConstraint) = .empty;
+        try tcs.appendSlice(self.allocator, struct_tcs);
+        try tcs.appendSlice(self.allocator, m.type_constraints);
+
         const mangled = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ sname, m.name });
         return .{
             .attrs = m.attrs,
@@ -514,7 +541,7 @@ pub const Parser = struct {
             .is_public = m.is_public,
             .type_params = try tps.toOwnedSlice(self.allocator),
             .output_type_params = m.output_type_params,
-            .type_constraints = m.type_constraints,
+            .type_constraints = try tcs.toOwnedSlice(self.allocator),
             .params = params,
             .return_ty = return_ty,
             .error_ty = m.error_ty,

@@ -436,6 +436,53 @@ test "modules: imported self functions are extension methods" {
     try k2.ir_mod.validateModule(module);
 }
 
+test "parser: namespace-qualified generic type in a typed local (ns::Name(args))" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: `parseType` handled `Name(args)` and `ns::Name`, but not the
+    // combination — after the `::`-qualified name it expected `=` and reported
+    // "expected = after typed local". The qualifier must now flow into the AST.
+    const src =
+        \\run :: fn() -> i32 {
+        \\    c: atomics::Atomic(u32) = .{ 0u32 };
+        \\    return 0;
+        \\}
+    ;
+    const module = try k2.parseSource(arena.allocator(), "q.k2", src);
+    const ty = module.items[0].function.body.?.statements[0].local_typed.ty;
+    try std.testing.expect(ty == .generic_inst);
+    try std.testing.expectEqualStrings("Atomic", ty.generic_inst.name);
+    try std.testing.expect(ty.generic_inst.namespace != null);
+    try std.testing.expectEqualStrings("atomics", ty.generic_inst.namespace.?);
+    try std.testing.expectEqual(@as(usize, 1), ty.generic_inst.args.len);
+}
+
+test "modules: namespace-qualified generic type resolves + lowers (ns::Name(args))" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The generic template is reached *only* through the namespace alias (a plain
+    // `#import`, no selective `.{Pair}`), so `lib::Pair(i32)` exercises namespace
+    // resolution of the template AND the non-generic-context instantiation.
+    const lib =
+        \\pub Pair :: struct($T: type) { a: T, b: T }
+    ;
+    const app =
+        \\#import lib;
+        \\sum :: fn() -> i32 {
+        \\    p: lib::Pair(i32) = .{ 3, 4 };
+        \\    return p.a + p.b;
+        \\}
+    ;
+    var fe = try k2.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "lib.k2", .source = lib },
+        .{ .file_name = "app.k2", .source = app },
+    });
+    defer fe.deinit(arena.allocator());
+
+    const module = try k2.lowerFrontend(arena.allocator(), fe);
+    try k2.ir_mod.validateModule(module);
+}
+
 test "modules: unimported self functions are not extension methods" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
