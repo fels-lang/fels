@@ -160,6 +160,11 @@ pub const FallibleType = struct {
 pub const FnPtrType = struct {
     params: []const IrType,
     ret: *const IrType,
+    /// A THIN function pointer (a bare address, not k2's fat `{fn, env}` closure).
+    /// Produced by reinterpreting a raw pointer/address as `fn(...)`; callable as a
+    /// direct indirect call. This is what makes a dynamically-loaded function
+    /// (`wglGetProcAddress`, `GetProcAddress`, a COM vtable slot) callable.
+    thin: bool = false,
 };
 
 pub const StructDef = struct {
@@ -3508,10 +3513,14 @@ const FunctionLowerer = struct {
                         }
                         break :cv .{ .local = callee_name };
                     };
-                    // Only a genuine k2 function VALUE (a `fn_ptr`-typed local/param)
-                    // is a fat closure `{ fn, env }`; other indirect callees (e.g.
-                    // `@`-prefixed runtime fns) are called by their raw pointer.
-                    const callee_is_closure = self.exprType(call.callee.*) == .fn_ptr;
+                    // Only a genuine k2 function VALUE (a fat `{ fn, env }` closure)
+                    // is called through its env. A THIN `extern fn(...)` pointer and
+                    // other raw callees (`@`-prefixed runtime fns) are called by
+                    // their bare pointer — a direct indirect call.
+                    const callee_is_closure = switch (self.exprType(call.callee.*)) {
+                        .fn_ptr => |fp| !fp.thin,
+                        else => false,
+                    };
                     break :blk try self.emit(self.exprType(expr), .{ .call_indirect = .{
                         .callee = callee_val,
                         .args = arg_slice,
@@ -4459,6 +4468,7 @@ fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
             break :blk .{ .fn_ptr = .{
                 .params = try params.toOwnedSlice(allocator),
                 .ret = try boxType(allocator, final_ret),
+                .thin = func.is_extern,
             } };
         },
         .inline_error_set => |set| try lowerInlineErrorSet(allocator, set),
@@ -4727,6 +4737,7 @@ fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.Symbol
             break :blk .{ .fn_ptr = .{
                 .params = try ps.toOwnedSlice(allocator),
                 .ret = try boxType(allocator, try lowerSemaType(allocator, fp.ret.*, symbols)),
+                .thin = fp.thin,
             } };
         },
         .unknown, .error_ty => .unknown,

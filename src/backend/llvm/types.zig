@@ -54,8 +54,9 @@ pub fn lower(cg: *ModuleCg, ty: ir.IrType) llvm.LLVMTypeRef {
         // All other pointer-like types are opaque `ptr` (LLVM 15+).
         .ptr => llvm.LLVMPointerTypeInContext(ctx, 0),
 
-        // A function value is a fat closure `{ fn, env }` (not a bare pointer).
-        .fn_ptr => cg.getClosureType(),
+        // A k2 function value is a fat closure `{ fn, env }`; a THIN `extern fn(...)`
+        // pointer (a raw C-ABI address) is a bare pointer.
+        .fn_ptr => |fp| if (fp.thin) llvm.LLVMPointerTypeInContext(ctx, 0) else cg.getClosureType(),
 
         .array => |arr| llvm.LLVMArrayType2(lower(cg, arr.elem.*), arr.len),
 

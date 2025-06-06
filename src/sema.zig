@@ -347,6 +347,9 @@ pub const FallibleTy = struct {
 pub const FnPtrTy = struct {
     params: []const Ty,
     ret: *const Ty,
+    /// `extern fn(...)` — a thin C-ABI function pointer (a bare address), directly
+    /// callable, as opposed to k2's fat `{fn, env}` closure. See ast.FnType.
+    thin: bool = false,
 };
 
 pub const TypeLayout = struct {
@@ -4469,6 +4472,7 @@ const Checker = struct {
                 return .{ .fn_ptr = .{
                     .params = try params.toOwnedSlice(self.allocator),
                     .ret = try self.boxTy(if (err) |error_ty_value| .{ .fallible = .{ .ok = try self.boxTy(ret), .err = try self.boxTy(error_ty_value) } } else ret),
+                    .thin = func.is_extern,
                 } };
             },
             .inline_error_set => |set| return .{ .error_set = try self.errorVariantsFromDecl(set.variants) },

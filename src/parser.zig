@@ -1417,7 +1417,13 @@ pub const Parser = struct {
             const inner = try self.allocType(try self.parseType());
             return .{ .borrow = .{ .inner = inner, .span = Span.new(start.start, inner.span().end) } };
         }
-        if (self.match(.keyword_fn)) {
+        // `extern fn(...)` — a thin C-ABI function pointer (contextual `extern`
+        // prefix; `extern` is not otherwise a keyword). Plain `fn(...)` stays a
+        // fat closure.
+        const is_extern_fn = self.checkIdentAt(0, "extern") and self.peekKind(1) == .keyword_fn;
+        if (is_extern_fn) _ = self.advance(); // consume `extern`
+        if (is_extern_fn or self.match(.keyword_fn)) {
+            if (is_extern_fn) _ = self.advance(); // consume `fn`
             _ = try self.expect(.l_paren, "expected ( after fn type");
             var params: std.ArrayList(ast.TypeRef) = .empty;
             errdefer params.deinit(self.allocator);
@@ -1436,7 +1442,7 @@ pub const Parser = struct {
                 try self.allocType(namedType("void", Span.new(start.start, start.start + start.len)));
             const error_ty = if (self.match(.bang)) try self.parseErrorSpec(self.previous()) else null;
             const end = if (error_ty) |err| err.span().end else ret.span().end;
-            return .{ .fn_type = .{ .type_params = &.{}, .params = try params.toOwnedSlice(self.allocator), .ret = ret, .error_ty = error_ty, .span = Span.new(start.start, end) } };
+            return .{ .fn_type = .{ .type_params = &.{}, .params = try params.toOwnedSlice(self.allocator), .ret = ret, .error_ty = error_ty, .is_extern = is_extern_fn, .span = Span.new(start.start, end) } };
         }
         if (self.match(.keyword_opaque)) return .opaque_type;
 
