@@ -1,33 +1,45 @@
-// `#derive(Eq)` generates a structural equality method `eq(self, other) -> bool`
-// from a struct's fields — no per-type boilerplate. Works on multi-field, generic,
-// and empty structs. Returns 42.
+// `#derive(...)` generates mechanical impls from a struct's fields — no per-type
+// boilerplate. Covers all built-in generators plus generic and empty structs.
+// Returns 42.
+
+#derive(Eq, Ord, Hash, Default, Add, Sub, Neg)
+Vec2 :: struct { x: i32, y: i32 }
 
 #derive(Eq)
-Vec3 :: struct { x: i32, y: i32, z: i32 }
-
-#derive(Eq)
-Box :: struct($T: type) { value: T }   // generic — Eq is generated per instantiation
+Box :: struct($T: type) { value: T }   // generic — Eq generated per instantiation
 
 #derive(Eq)
 Unit :: struct { }                       // empty → always equal
 
 #entry
 main :: fn() -> i32 {
-    p: Vec3 = .{ 1, 2, 3 };
-    q: Vec3 = .{ 1, 2, 3 };
-    r: Vec3 = .{ 1, 9, 3 };
-    if !p.eq(&q) { return 1; }   // a.eq(&b) — generated, called via UFCS
-    if p.eq(&r) { return 2; }
+    a: Vec2 = .{ 3, 4 };
+    b: Vec2 = .{ 3, 4 };
+    c: Vec2 = .{ 5, 1 };
 
-    b1: Box(i32) = .{ 7 };
-    b2: Box(i32) = .{ 7 };
-    b3: Box(i32) = .{ 8 };
-    if !b1.eq(&b2) { return 3; }
-    if b1.eq(&b3) { return 4; }
+    if !a.eq(&b) { return 1; }              // Eq
+    if a.cmp(&b) != 0 { return 2; }         // Ord — equal → 0
+    if a.cmp(&c) >= 0 { return 3; }         // 3 < 5 → -1
+    if a.hash() != b.hash() { return 4; }   // Hash — equal values hash equal
+    if a.hash() == c.hash() { return 5; }   // distinct values differ
 
+    z := Vec2::default();                    // Default (associated fn) → .{0,0}
+    if z.x != 0 || z.y != 0 { return 6; }
+
+    sum := a.add(&c);                        // Add → {8, 5}
+    if sum.x != 8 || sum.y != 5 { return 7; }
+    diff := c.sub(&a);                       // Sub → {2, -3}
+    if diff.x != 2 || diff.y != -3 { return 8; }
+    n := a.neg();                            // Neg → {-3, -4}
+    if n.x != -3 || n.y != -4 { return 9; }
+
+    // Generic + empty Eq.
+    bx1: Box(i32) = .{ 7 };
+    bx2: Box(i32) = .{ 7 };
+    if !bx1.eq(&bx2) { return 10; }
     u1: Unit = .{};
     u2: Unit = .{};
-    if !u1.eq(&u2) { return 5; }
+    if !u1.eq(&u2) { return 11; }
 
     return 42;
 }
