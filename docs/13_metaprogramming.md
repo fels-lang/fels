@@ -228,3 +228,33 @@ control flow, compound literals, declarations) and underpins reflection-driven
 code generation and `#compiler` hooks. Reflection helpers that pair well with it
 (`type_info`, `typeid_of`, `Any`, field navigation) are documented in
 [12](12_reflection_and_constraints.md).
+
+## 8. `#derive` — generated impls from a type's shape
+
+Tag a struct with `#derive(...)` and the compiler writes the mechanical, field-by-
+field implementation for you — no per-type boilerplate:
+
+```k2
+#derive(Eq)
+Vec3 :: struct { x: i32, y: i32, z: i32 }
+
+a: Vec3 = .{ 1, 2, 3 };
+b: Vec3 = .{ 1, 2, 3 };
+if a.eq(&b) { ... }     // `eq` was generated; called via UFCS
+```
+
+`#derive(Eq)` synthesizes `eq(self: *Self, other: *Self) -> bool` as an in-struct
+method (`return self.x == other.x && self.y == other.y && …`; an empty struct is
+always equal). It works on multi-field, **generic** (`Box($T)`), and empty structs,
+and a method is generated per instantiation. List several to derive at once:
+`#derive(Eq, Hash)`.
+
+Unlike Rust's `#[derive]` (proc-macros with full ambient power — the `build.rs`
+supply-chain surface), a k2 derive is a compiler-side generator driven by the type's
+structure; the roadmap (R2, [09](09_comptime_vm_roadmap.md)) scopes user-written
+generators to a pure `AstTransform` capability so a third-party derive **cannot**
+touch the filesystem, network, or FFI. *Derive without the build.rs risk.*
+
+> Built-in derives so far: `Eq`. `Hash`, `format`, and `json` follow the same shape
+> (walk the fields, emit the impl) — they slot into the derive registry in
+> `src/parser.zig:synthDerive`.
