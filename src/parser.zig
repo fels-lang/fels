@@ -489,7 +489,7 @@ pub const Parser = struct {
                     },
                 };
                 const m = (try self.synthDerive(name, which, fields_slice)) orelse {
-                    try self.errorAt(name, "unknown #derive — known: Eq, Ord, Hash, Default, Add, Sub, Neg");
+                    try self.errorAt(name, "unknown #derive — known: Eq, Ord, Hash, Default, Clone, Add, Sub, Mul, Neg, Min, Max, Clamp, Scale, Lerp, format");
                     return error.ParseFailed;
                 };
                 try self.hoisted_methods.append(self.allocator, try self.hoistMethod(name, tps, tcs, m));
@@ -527,19 +527,18 @@ pub const Parser = struct {
                 chain = if (chain) |c| try self.binop(.and_and, c, eq, sp) else eq;
             }
             const v = chain orelse try self.expr(.{ .bool = true }, sp);
-            return try self.synthFn("eq", true, true, namedType("bool", sp), try self.oneStmt(.{ .return_stmt = .{ .value = v, .span = sp } }, sp), sp);
+            return try self.synthFn("eq", try self.selfParams(&.{ "self", "other" }, sp), namedType("bool", sp), try self.retOne(v, sp), sp);
         }
 
         // Ord — 3-way compare: `a.cmp(&b)` → -1 / 0 / 1, lexicographic over fields.
         if (std.mem.eql(u8, which, "Ord")) {
             var stmts: std.ArrayList(ast.Stmt) = .empty;
             for (fields) |f| {
-                // if self.f < other.f { return -1; }   if self.f > other.f { return 1; }
                 try stmts.append(self.allocator, try self.ifReturn(.less, f.name, try self.neg(try self.intLit("1", sp), sp), sp));
                 try stmts.append(self.allocator, try self.ifReturn(.gt, f.name, try self.intLit("1", sp), sp));
             }
             try stmts.append(self.allocator, .{ .return_stmt = .{ .value = try self.intLit("0", sp), .span = sp } });
-            return try self.synthFn("cmp", true, true, namedType("i32", sp), .{ .statements = try stmts.toOwnedSlice(self.allocator), .span = sp }, sp);
+            return try self.synthFn("cmp", try self.selfParams(&.{ "self", "other" }, sp), namedType("i32", sp), .{ .statements = try stmts.toOwnedSlice(self.allocator), .span = sp }, sp);
         }
 
         // Hash — FNV-1a-style mix of the fields cast to u64: `a.hash()`.
@@ -547,41 +546,136 @@ pub const Parser = struct {
             var stmts: std.ArrayList(ast.Stmt) = .empty;
             try stmts.append(self.allocator, .{ .local_typed = .{ .name = "h", .ty = namedType("u64", sp), .value = try self.intLit("14695981039346656037u64", sp), .span = sp } });
             for (fields) |f| {
-                // h = (h ^ (self.f as u64)) *% 1099511628211;
                 const fld_u64 = try self.castTo(try self.fld("self", f.name, sp), "u64", sp);
                 const xored = try self.binop(.bit_xor, try self.ident("h", sp), fld_u64, sp);
                 const mixed = try self.binop(.wrap_mul, xored, try self.intLit("1099511628211u64", sp), sp);
                 try stmts.append(self.allocator, .{ .assign = .{ .target = try self.ident("h", sp), .op = .assign, .value = mixed, .span = sp } });
             }
             try stmts.append(self.allocator, .{ .return_stmt = .{ .value = try self.ident("h", sp), .span = sp } });
-            return try self.synthFn("hash", true, false, namedType("u64", sp), .{ .statements = try stmts.toOwnedSlice(self.allocator), .span = sp }, sp);
+            return try self.synthFn("hash", try self.selfParams(&.{"self"}, sp), namedType("u64", sp), .{ .statements = try stmts.toOwnedSlice(self.allocator), .span = sp }, sp);
         }
 
         // Default — zero/default value: `Type::default()` → `.{}`.
         if (std.mem.eql(u8, which, "Default")) {
             const v = try self.expr(.{ .compound_literal = &.{} }, sp);
-            return try self.synthFn("default", false, false, namedType("Self", sp), try self.oneStmt(.{ .return_stmt = .{ .value = v, .span = sp } }, sp), sp);
+            return try self.synthFn("default", &.{}, namedType("Self", sp), try self.retOne(v, sp), sp);
         }
 
-        // Add / Sub — field-wise arithmetic: `a.add(&b)` / `a.sub(&b)` → Self.
-        if (std.mem.eql(u8, which, "Add") or std.mem.eql(u8, which, "Sub")) {
-            const op: ast.BinaryOp = if (which[0] == 'A') .add else .sub;
+        // Clone — a structural copy: `a.clone()` → `.{ self.f0, self.f1, … }`.
+        if (std.mem.eql(u8, which, "Clone")) {
             const elems = try self.allocator.alloc(ast.Expr, fields.len);
-            for (fields, 0..) |f, i| elems[i] = try self.binop(op, try self.fld("self", f.name, sp), try self.fld("other", f.name, sp), sp);
-            const v = try self.expr(.{ .compound_literal = elems }, sp);
-            const nm = if (op == .add) "add" else "sub";
-            return try self.synthFn(nm, true, true, namedType("Self", sp), try self.oneStmt(.{ .return_stmt = .{ .value = v, .span = sp } }, sp), sp);
+            for (fields, 0..) |f, i| elems[i] = try self.fld("self", f.name, sp);
+            return try self.synthFn("clone", try self.selfParams(&.{"self"}, sp), namedType("Self", sp), try self.retOne(try self.expr(.{ .compound_literal = elems }, sp), sp), sp);
         }
 
         // Neg — field-wise negation: `a.neg()` → Self.
         if (std.mem.eql(u8, which, "Neg")) {
             const elems = try self.allocator.alloc(ast.Expr, fields.len);
             for (fields, 0..) |f, i| elems[i] = try self.neg(try self.fld("self", f.name, sp), sp);
-            const v = try self.expr(.{ .compound_literal = elems }, sp);
-            return try self.synthFn("neg", true, false, namedType("Self", sp), try self.oneStmt(.{ .return_stmt = .{ .value = v, .span = sp } }, sp), sp);
+            return try self.synthFn("neg", try self.selfParams(&.{"self"}, sp), namedType("Self", sp), try self.retOne(try self.expr(.{ .compound_literal = elems }, sp), sp), sp);
+        }
+
+        // Add / Sub / Mul — field-wise arithmetic (`a.add(&b)` …) → Self.
+        {
+            const op: ?ast.BinaryOp =
+                if (std.mem.eql(u8, which, "Add")) .add else if (std.mem.eql(u8, which, "Sub")) .sub else if (std.mem.eql(u8, which, "Mul")) .mul else null;
+            if (op) |o| {
+                const elems = try self.allocator.alloc(ast.Expr, fields.len);
+                for (fields, 0..) |f, i| elems[i] = try self.binop(o, try self.fld("self", f.name, sp), try self.fld("other", f.name, sp), sp);
+                const nm = if (o == .add) "add" else if (o == .sub) "sub" else "mul";
+                return try self.synthFn(nm, try self.selfParams(&.{ "self", "other" }, sp), namedType("Self", sp), try self.retOne(try self.expr(.{ .compound_literal = elems }, sp), sp), sp);
+            }
+        }
+
+        // Min / Max — field-wise, via `core::min`/`core::max`: `a.min(&b)` → Self.
+        if (std.mem.eql(u8, which, "Min") or std.mem.eql(u8, which, "Max")) {
+            const fn_nm = if (std.mem.eql(u8, which, "Min")) "min" else "max";
+            const elems = try self.allocator.alloc(ast.Expr, fields.len);
+            for (fields, 0..) |f, i| elems[i] = try self.coreCall(fn_nm, &.{ try self.fld("self", f.name, sp), try self.fld("other", f.name, sp) }, sp);
+            return try self.synthFn(fn_nm, try self.selfParams(&.{ "self", "other" }, sp), namedType("Self", sp), try self.retOne(try self.expr(.{ .compound_literal = elems }, sp), sp), sp);
+        }
+
+        // Clamp — field-wise `core::clamp(self.f, lo.f, hi.f)`: `a.clamp(&lo, &hi)`.
+        if (std.mem.eql(u8, which, "Clamp")) {
+            const elems = try self.allocator.alloc(ast.Expr, fields.len);
+            for (fields, 0..) |f, i| elems[i] = try self.coreCall("clamp", &.{ try self.fld("self", f.name, sp), try self.fld("lo", f.name, sp), try self.fld("hi", f.name, sp) }, sp);
+            return try self.synthFn("clamp", try self.selfParams(&.{ "self", "lo", "hi" }, sp), namedType("Self", sp), try self.retOne(try self.expr(.{ .compound_literal = elems }, sp), sp), sp);
+        }
+
+        // Scale — multiply every field by a scalar `s` (the first field's type):
+        // `a.scale(s)` → Self.
+        if (std.mem.eql(u8, which, "Scale") and fields.len > 0) {
+            const elems = try self.allocator.alloc(ast.Expr, fields.len);
+            for (fields, 0..) |f, i| elems[i] = try self.binop(.mul, try self.fld("self", f.name, sp), try self.ident("s", sp), sp);
+            var ps = try self.selfParams(&.{"self"}, sp);
+            ps = try self.appendParam(ps, .{ .name = "s", .ty = fields[0].ty, .span = sp });
+            return try self.synthFn("scale", ps, namedType("Self", sp), try self.retOne(try self.expr(.{ .compound_literal = elems }, sp), sp), sp);
+        }
+
+        // Lerp — field-wise linear interpolation `self.f + (other.f - self.f) * t`:
+        // `a.lerp(&b, t)` → Self (t has the first field's type).
+        if (std.mem.eql(u8, which, "Lerp") and fields.len > 0) {
+            const elems = try self.allocator.alloc(ast.Expr, fields.len);
+            for (fields, 0..) |f, i| {
+                const delta = try self.binop(.sub, try self.fld("other", f.name, sp), try self.fld("self", f.name, sp), sp);
+                const scaled = try self.binop(.mul, delta, try self.ident("t", sp), sp);
+                elems[i] = try self.binop(.add, try self.fld("self", f.name, sp), scaled, sp);
+            }
+            var ps = try self.selfParams(&.{ "self", "other" }, sp);
+            ps = try self.appendParam(ps, .{ .name = "t", .ty = fields[0].ty, .span = sp });
+            return try self.synthFn("lerp", ps, namedType("Self", sp), try self.retOne(try self.expr(.{ .compound_literal = elems }, sp), sp), sp);
+        }
+
+        // format — append a debug rendering to a `std.strings.StringBuilder`:
+        // `a.format(sb)` writes `Point { x: 3, y: 4 }`. Requires the struct's file to
+        // bring `StringBuilder` into scope (`#import std.strings.{StringBuilder};`).
+        if (std.mem.eql(u8, which, "format")) {
+            const sname = struct_name.text(self.source);
+            var stmts: std.ArrayList(ast.Stmt) = .empty;
+            try stmts.append(self.allocator, try self.appendStr(try std.fmt.allocPrint(self.allocator, "{s} {{ ", .{sname}), sp));
+            for (fields, 0..) |f, i| {
+                const label = if (i == 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}: ", .{f.name})
+                else
+                    try std.fmt.allocPrint(self.allocator, ", {s}: ", .{f.name});
+                try stmts.append(self.allocator, try self.appendStr(label, sp));
+                try stmts.append(self.allocator, .{ .expr = try self.formatField(f, sp) });
+            }
+            try stmts.append(self.allocator, try self.appendStr(" }", sp));
+            var ps = try self.selfParams(&.{"self"}, sp);
+            ps = try self.appendParam(ps, .{ .name = "sb", .ty = .{ .pointer = .{ .inner = try self.allocType(namedType("StringBuilder", sp)), .span = sp } }, .span = sp });
+            return try self.synthFn("format", ps, namedType("void", sp), .{ .statements = try stmts.toOwnedSlice(self.allocator), .span = sp }, sp);
         }
 
         return null;
+    }
+
+    /// `sb.append(<text>);` as a statement.
+    fn appendStr(self: *Parser, text: []const u8, sp: Span) ParseError!ast.Stmt {
+        const lit = try self.expr(.{ .string = text }, sp);
+        return .{ .expr = try self.methodCall(try self.ident("sb", sp), "append", &.{lit}, sp) };
+    }
+    /// Render one field's value into `sb`, dispatched on its type.
+    fn formatField(self: *Parser, f: ast.FieldDecl, sp: Span) ParseError!ast.Expr {
+        const sb = try self.ident("sb", sp);
+        const val = try self.fld("self", f.name, sp);
+        switch (f.ty) {
+            .named => |n| {
+                const name = n.name;
+                if (isOneOf(name, &.{ "i8", "i16", "i32", "i64", "isize" }))
+                    return self.methodCall(sb, "append_i64", &.{try self.castTo(val, "i64", sp)}, sp);
+                if (isOneOf(name, &.{ "u8", "u16", "u32", "u64", "usize", "byte" }))
+                    return self.methodCall(sb, "append_u64", &.{try self.castTo(val, "u64", sp)}, sp);
+                if (isOneOf(name, &.{ "f32", "f64" }))
+                    return self.methodCall(sb, "append_f64", &.{try self.castTo(val, "f64", sp)}, sp);
+                if (std.mem.eql(u8, name, "bool"))
+                    return self.methodCall(sb, "append_bool", &.{val}, sp);
+                // A nested type: recurse into its own `format` (assumes it derives one).
+                return self.methodCall(val, "format", &.{sb}, sp);
+            },
+            .slice => return self.methodCall(sb, "append", &.{val}, sp), // assume []const u8
+            else => return self.methodCall(sb, "append", &.{try self.expr(.{ .string = "?" }, sp)}, sp),
+        }
     }
 
     // ── tiny AST builders for synthesized (derived) code ──────────────────────--
@@ -617,12 +711,39 @@ pub const Parser = struct {
         stmts[0] = s;
         return .{ .statements = stmts, .span = sp };
     }
-    /// Build a public synthesized fn. `with_self`/`with_other` add `*Self` params.
-    fn synthFn(self: *Parser, name: []const u8, with_self: bool, with_other: bool, ret: ast.TypeRef, body: ast.Block, sp: Span) ParseError!ast.FunctionDecl {
-        var params: std.ArrayList(ast.Param) = .empty;
-        const self_ptr = ast.TypeRef{ .pointer = .{ .inner = try self.allocType(namedType("Self", sp)), .span = sp } };
-        if (with_self) try params.append(self.allocator, .{ .name = "self", .ty = self_ptr, .span = sp });
-        if (with_other) try params.append(self.allocator, .{ .name = "other", .ty = ast.TypeRef{ .pointer = .{ .inner = try self.allocType(namedType("Self", sp)), .span = sp } }, .span = sp });
+    /// A one-statement body that just `return`s `v`.
+    fn retOne(self: *Parser, v: ast.Expr, sp: Span) ParseError!ast.Block {
+        return self.oneStmt(.{ .return_stmt = .{ .value = v, .span = sp } }, sp);
+    }
+    /// A slice of `*Self` value params with the given names.
+    fn selfParams(self: *Parser, names: []const []const u8, sp: Span) ParseError![]ast.Param {
+        const ps = try self.allocator.alloc(ast.Param, names.len);
+        for (names, 0..) |n, i| ps[i] = .{ .name = n, .ty = .{ .pointer = .{ .inner = try self.allocType(namedType("Self", sp)), .span = sp } }, .span = sp };
+        return ps;
+    }
+    /// Append one more parameter to a params slice (for a scalar `s`/`t` or `sb`).
+    fn appendParam(self: *Parser, ps: []ast.Param, p: ast.Param) ParseError![]ast.Param {
+        const out = try self.allocator.alloc(ast.Param, ps.len + 1);
+        @memcpy(out[0..ps.len], ps);
+        out[ps.len] = p;
+        return out;
+    }
+    /// `recv.method(args…)` — a UFCS method call.
+    fn methodCall(self: *Parser, recv: ast.Expr, method: []const u8, args: []const ast.Expr, sp: Span) ParseError!ast.Expr {
+        const callee = try self.fieldAccess(recv, method, sp);
+        const cargs = try self.allocator.alloc(ast.CallArg, args.len);
+        for (args, 0..) |a, i| cargs[i] = .{ .positional = a };
+        return self.expr(.{ .call = .{ .callee = try self.allocExpr(callee), .args = cargs } }, sp);
+    }
+    /// `core::<member>(args…)`.
+    fn coreCall(self: *Parser, member: []const u8, args: []const ast.Expr, sp: Span) ParseError!ast.Expr {
+        const callee = try self.expr(.{ .scope_access = .{ .base = try self.allocExpr(try self.ident("core", sp)), .member = member } }, sp);
+        const cargs = try self.allocator.alloc(ast.CallArg, args.len);
+        for (args, 0..) |a, i| cargs[i] = .{ .positional = a };
+        return self.expr(.{ .call = .{ .callee = try self.allocExpr(callee), .args = cargs } }, sp);
+    }
+    /// Build a public synthesized fn with the given parameters.
+    fn synthFn(self: *Parser, name: []const u8, params: []const ast.Param, ret: ast.TypeRef, body: ast.Block, sp: Span) ParseError!ast.FunctionDecl {
         return ast.FunctionDecl{
             .attrs = &.{},
             .name = name,
@@ -630,7 +751,7 @@ pub const Parser = struct {
             .source = self.source,
             .is_public = true,
             .type_params = &.{},
-            .params = try params.toOwnedSlice(self.allocator),
+            .params = params,
             .return_ty = ret,
             .error_ty = null,
             .body = body,
@@ -2144,6 +2265,11 @@ fn assignOpFromToken(kind: TokenKind) ast.AssignOp {
 
 fn namedType(name: []const u8, span: Span) ast.TypeRef {
     return .{ .named = .{ .name = name, .span = span } };
+}
+
+fn isOneOf(name: []const u8, set: []const []const u8) bool {
+    for (set) |s| if (std.mem.eql(u8, name, s)) return true;
+    return false;
 }
 
 fn spanFrom(start: anytype, end: anytype) Span {

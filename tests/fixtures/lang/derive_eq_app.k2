@@ -1,8 +1,11 @@
 // `#derive(...)` generates mechanical impls from a struct's fields — no per-type
 // boilerplate. Covers all built-in generators plus generic and empty structs.
 // Returns 42.
+#import std.strings;
+#import std.strings.{StringBuilder};
+#import std.heap as heap;
 
-#derive(Eq, Ord, Hash, Default, Add, Sub, Neg)
+#derive(Eq, Ord, Hash, Default, Clone, Add, Sub, Mul, Neg, Min, Max, Clamp, Scale, Lerp, format)
 Vec2 :: struct { x: i32, y: i32 }
 
 #derive(Eq)
@@ -13,33 +16,42 @@ Unit :: struct { }                       // empty → always equal
 
 #entry
 main :: fn() -> i32 {
-    a: Vec2 = .{ 3, 4 };
+    a: Vec2 = .{ 2, 10 };
     b: Vec2 = .{ 3, 4 };
-    c: Vec2 = .{ 5, 1 };
 
-    if !a.eq(&b) { return 1; }              // Eq
-    if a.cmp(&b) != 0 { return 2; }         // Ord — equal → 0
-    if a.cmp(&c) >= 0 { return 3; }         // 3 < 5 → -1
-    if a.hash() != b.hash() { return 4; }   // Hash — equal values hash equal
-    if a.hash() == c.hash() { return 5; }   // distinct values differ
+    if !a.eq(&a.clone()) { return 1; }      // Eq + Clone
+    if a.cmp(&b) >= 0 { return 2; }         // Ord: 2 < 3 → -1
+    if a.hash() == b.hash() { return 3; }   // Hash: distinct values differ
 
-    z := Vec2::default();                    // Default (associated fn) → .{0,0}
-    if z.x != 0 || z.y != 0 { return 6; }
+    z := Vec2::default();                    // Default → .{0,0}
+    if z.x != 0 || z.y != 0 { return 4; }
 
-    sum := a.add(&c);                        // Add → {8, 5}
-    if sum.x != 8 || sum.y != 5 { return 7; }
-    diff := c.sub(&a);                       // Sub → {2, -3}
-    if diff.x != 2 || diff.y != -3 { return 8; }
-    n := a.neg();                            // Neg → {-3, -4}
-    if n.x != -3 || n.y != -4 { return 9; }
+    if a.add(&b).x != 5 { return 5; }        // Add  {5, 14}
+    if a.sub(&b).y != 6 { return 6; }        // Sub  {-1, 6}
+    if a.mul(&b).y != 40 { return 7; }       // Mul  {6, 40}
+    if a.neg().x != -2 { return 8; }         // Neg  {-2, -10}
+    if a.min(&b).y != 4 { return 9; }        // Min  {2, 4}
+    if a.max(&b).x != 3 { return 10; }       // Max  {3, 10}
+    lo: Vec2 = .{ 0, 5 }; hi: Vec2 = .{ 5, 8 };
+    if a.clamp(&lo, &hi).y != 8 { return 11; } // Clamp {2, 8}
+    if b.scale(2).x != 6 { return 12; }      // Scale {6, 8}
+    if a.lerp(&b, 1).x != 3 { return 13; }   // Lerp  t=1 → other
 
-    // Generic + empty Eq.
+    // generic + empty Eq
     bx1: Box(i32) = .{ 7 };
     bx2: Box(i32) = .{ 7 };
-    if !bx1.eq(&bx2) { return 10; }
-    u1: Unit = .{};
-    u2: Unit = .{};
-    if !u1.eq(&u2) { return 11; }
+    if !bx1.eq(&bx2) { return 14; }
+    u1: Unit = .{}; u2: Unit = .{};
+    if !u1.eq(&u2) { return 15; }
+
+    // format: a debug rendering into a StringBuilder.
+    ar := heap::make();
+    sb := strings::builder(&ar);
+    p: Vec2 = .{ 3, 4 };
+    p.format(&sb);
+    s := sb.str();                           // "Vec2 { x: 3, y: 4 }"
+    if s.len != 19 { return 16; }                          // "Vec2 { x: 3, y: 4 }"
+    if s[0] != 'V' || s[7] != 'x' || s[10] != '3' { return 17; }
 
     return 42;
 }
