@@ -252,14 +252,26 @@ struct's fields. Built-in generators:
 | `Ord` | `cmp(self, other) -> i32` — lexicographic `-1/0/1` | `a.cmp(&b)` |
 | `Hash` | `hash(self) -> u64` — FNV-1a-style mix of the fields | `a.hash()` |
 | `Default` | `default() -> Self` — `.{}` (associated fn) | `T::default()` |
-| `Add` / `Sub` | `add`/`sub(self, other) -> Self` — field-wise | `a.add(&b)` |
+| `Clone` | `clone(self) -> Self` — structural copy | `a.clone()` |
+| `Add`/`Sub`/`Mul` | `add`/`sub`/`mul(self, other) -> Self` — field-wise | `a.add(&b)` |
 | `Neg` | `neg(self) -> Self` — field-wise negation | `a.neg()` |
+| `Min`/`Max` | field-wise via `core::min`/`core::max` | `a.min(&b)` |
+| `Clamp` | field-wise `core::clamp(self.f, lo.f, hi.f)` | `a.clamp(&lo, &hi)` |
+| `Scale` | `scale(self, s) -> Self` — multiply each field by scalar `s` | `a.scale(2)` |
+| `Lerp` | `lerp(self, other, t) -> Self` — field-wise interpolation | `a.lerp(&b, t)` |
+| `format` | `format(self, sb)` → `"Vec2 { x: 3, y: 4 }"` into a `StringBuilder` | `a.format(&sb)` |
 
-List several at once: `#derive(Eq, Ord, Hash)`. They work on multi-field, **generic**
-(`Box($T)` — a method per instantiation), and empty structs. The generated bodies use
-the struct's own fields (`==`, `<`, `+`, …), so a field whose type doesn't support the
-operation is a clear compile error; recursing into a nested struct's own derived impl
-is a planned enhancement.
+List several at once: `#derive(Eq, Ord, Hash, Add, Lerp, format)`. They work on
+multi-field, **generic** (`Box($T)` — a method per instantiation), and empty structs.
+The generated bodies use the struct's own fields (`==`, `<`, `+`, …), so a field whose
+type doesn't support the operation is a clear compile error. The arithmetic/vector
+derives (`Add`/`Sub`/`Mul`/`Neg`/`Min`/`Max`/`Clamp`/`Scale`/`Lerp`) are how you do
+vector math given k2 has no operator overloading — ideal for `std.math`'s
+`Vec2`/`Vec3`/`Color`. `format` requires the struct's file to bring `StringBuilder`
+into scope (`#import std.strings.{StringBuilder};`) and dispatches per field type
+(`append_i64`/`append_u64`/`append_f64`/`append_bool`, recursing into a nested type's
+own `format`). Recursing into nested fields for the other derives is a planned
+enhancement.
 
 Unlike Rust's `#[derive]` (proc-macros with full ambient power — the `build.rs`
 supply-chain surface), a k2 derive is a compiler-side generator driven by the type's
@@ -267,6 +279,7 @@ structure; the roadmap (R2, [09](09_comptime_vm_roadmap.md)) scopes user-written
 generators to a pure `AstTransform` capability so a third-party derive **cannot**
 touch the filesystem, network, or FFI. *Derive without the build.rs risk.*
 
-> Built-in derives: `Eq`, `Ord`, `Hash`, `Default`, `Add`, `Sub`, `Neg`. `format`,
-> `json`, `Clone`, and `Builder` follow the same shape (walk the fields, emit the
-> impl) — they slot into the derive registry in `src/parser.zig:synthDerive`.
+> Built-in derives: `Eq`, `Ord`, `Hash`, `Default`, `Clone`, `Add`, `Sub`, `Mul`,
+> `Neg`, `Min`, `Max`, `Clamp`, `Scale`, `Lerp`, `format`. `json`, `Builder`, and
+> `bytes` follow the same shape — they slot into the derive registry in
+> `src/parser.zig:synthDerive`.
