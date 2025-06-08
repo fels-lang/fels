@@ -243,11 +243,23 @@ b: Vec3 = .{ 1, 2, 3 };
 if a.eq(&b) { ... }     // `eq` was generated; called via UFCS
 ```
 
-`#derive(Eq)` synthesizes `eq(self: *Self, other: *Self) -> bool` as an in-struct
-method (`return self.x == other.x && self.y == other.y && …`; an empty struct is
-always equal). It works on multi-field, **generic** (`Box($T)`), and empty structs,
-and a method is generated per instantiation. List several to derive at once:
-`#derive(Eq, Hash)`.
+Each generator synthesizes an in-struct method (or associated function) from the
+struct's fields. Built-in generators:
+
+| Derive | Generates | Call |
+|---|---|---|
+| `Eq` | `eq(self, other) -> bool` — field-by-field `&&` | `a.eq(&b)` |
+| `Ord` | `cmp(self, other) -> i32` — lexicographic `-1/0/1` | `a.cmp(&b)` |
+| `Hash` | `hash(self) -> u64` — FNV-1a-style mix of the fields | `a.hash()` |
+| `Default` | `default() -> Self` — `.{}` (associated fn) | `T::default()` |
+| `Add` / `Sub` | `add`/`sub(self, other) -> Self` — field-wise | `a.add(&b)` |
+| `Neg` | `neg(self) -> Self` — field-wise negation | `a.neg()` |
+
+List several at once: `#derive(Eq, Ord, Hash)`. They work on multi-field, **generic**
+(`Box($T)` — a method per instantiation), and empty structs. The generated bodies use
+the struct's own fields (`==`, `<`, `+`, …), so a field whose type doesn't support the
+operation is a clear compile error; recursing into a nested struct's own derived impl
+is a planned enhancement.
 
 Unlike Rust's `#[derive]` (proc-macros with full ambient power — the `build.rs`
 supply-chain surface), a k2 derive is a compiler-side generator driven by the type's
@@ -255,6 +267,6 @@ structure; the roadmap (R2, [09](09_comptime_vm_roadmap.md)) scopes user-written
 generators to a pure `AstTransform` capability so a third-party derive **cannot**
 touch the filesystem, network, or FFI. *Derive without the build.rs risk.*
 
-> Built-in derives so far: `Eq`. `Hash`, `format`, and `json` follow the same shape
-> (walk the fields, emit the impl) — they slot into the derive registry in
-> `src/parser.zig:synthDerive`.
+> Built-in derives: `Eq`, `Ord`, `Hash`, `Default`, `Add`, `Sub`, `Neg`. `format`,
+> `json`, `Clone`, and `Builder` follow the same shape (walk the fields, emit the
+> impl) — they slot into the derive registry in `src/parser.zig:synthDerive`.
