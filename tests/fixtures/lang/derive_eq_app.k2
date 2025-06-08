@@ -1,0 +1,33 @@
+// `#derive(Eq)` generates a structural equality method `eq(self, other) -> bool`
+// from a struct's fields — no per-type boilerplate. Works on multi-field, generic,
+// and empty structs. Returns 42.
+
+#derive(Eq)
+Vec3 :: struct { x: i32, y: i32, z: i32 }
+
+#derive(Eq)
+Box :: struct($T: type) { value: T }   // generic — Eq is generated per instantiation
+
+#derive(Eq)
+Unit :: struct { }                       // empty → always equal
+
+#entry
+main :: fn() -> i32 {
+    p: Vec3 = .{ 1, 2, 3 };
+    q: Vec3 = .{ 1, 2, 3 };
+    r: Vec3 = .{ 1, 9, 3 };
+    if !p.eq(&q) { return 1; }   // a.eq(&b) — generated, called via UFCS
+    if p.eq(&r) { return 2; }
+
+    b1: Box(i32) = .{ 7 };
+    b2: Box(i32) = .{ 7 };
+    b3: Box(i32) = .{ 8 };
+    if !b1.eq(&b2) { return 3; }
+    if b1.eq(&b3) { return 4; }
+
+    u1: Unit = .{};
+    u2: Unit = .{};
+    if !u1.eq(&u2) { return 5; }
+
+    return 42;
+}

@@ -467,6 +467,7 @@ pub const Parser = struct {
         const close = try self.expect(.r_brace, "expected } after struct fields");
         const tps = try type_params.toOwnedSlice(self.allocator);
         const tcs = try type_constraints.toOwnedSlice(self.allocator);
+        const fields_slice = try fields.toOwnedSlice(self.allocator);
         const method_decls = try methods.toOwnedSlice(self.allocator);
         // Hoist each in-struct method to a synthetic top-level function so the
         // existing generic/UFCS machinery handles it (see `hoistMethod`). The
@@ -475,6 +476,25 @@ pub const Parser = struct {
         for (method_decls) |m| {
             try self.hoisted_methods.append(self.allocator, try self.hoistMethod(name, tps, tcs, m));
         }
+        // `#derive(Eq, …)` — synthesize each requested impl as an in-struct method
+        // (built from the struct's fields) and hoist it like any other method.
+        for (attrs) |attr| {
+            if (!std.mem.eql(u8, attr.name, "derive")) continue;
+            for (attr.args) |arg| {
+                const which = switch (arg.kind) {
+                    .ident => |n| n,
+                    else => {
+                        try self.errorAt(name, "#derive argument must be a name (e.g. `Eq`)");
+                        return error.ParseFailed;
+                    },
+                };
+                const m = (try self.synthDerive(name, which, fields_slice)) orelse {
+                    try self.errorAt(name, "unknown #derive — known: Eq");
+                    return error.ParseFailed;
+                };
+                try self.hoisted_methods.append(self.allocator, try self.hoistMethod(name, tps, tcs, m));
+            }
+        }
         return .{
             .attrs = attrs,
             .name = name.text(self.source),
@@ -482,10 +502,64 @@ pub const Parser = struct {
             .kind = .{ .struct_type = .{
                 .type_params = tps,
                 .type_constraints = tcs,
-                .fields = try fields.toOwnedSlice(self.allocator),
+                .fields = fields_slice,
                 .methods = method_decls,
             } },
             .span = spanFrom(name, close),
+        };
+    }
+
+    /// Generate a derived impl for `#derive(<which>)` as an in-struct method
+    /// (params use `*Self`; `hoistMethod` resolves `Self` to the struct). Returns
+    /// null for an unknown derive. This is the derive registry — add `Hash`,
+    /// `format`, etc. as new cases here.
+    fn synthDerive(self: *Parser, struct_name: Token, which: []const u8, fields: []const ast.FieldDecl) ParseError!?ast.FunctionDecl {
+        const sp = spanFrom(struct_name, struct_name);
+        if (std.mem.eql(u8, which, "Eq")) {
+            // body: `return self.f0 == other.f0 && self.f1 == other.f1 && …;`
+            // (an empty struct is always equal → `return true;`).
+            var chain: ?ast.Expr = null;
+            for (fields) |f| {
+                const lhs = try self.fieldAccess(try self.ident("self", sp), f.name, sp);
+                const rhs = try self.fieldAccess(try self.ident("other", sp), f.name, sp);
+                const eq = try self.binop(.equal, lhs, rhs, sp);
+                chain = if (chain) |c| try self.binop(.and_and, c, eq, sp) else eq;
+            }
+            const ret_val = chain orelse try self.expr(.{ .bool = true }, sp);
+            const stmts = try self.allocator.alloc(ast.Stmt, 1);
+            stmts[0] = .{ .return_stmt = .{ .value = ret_val, .span = sp } };
+            return try self.synthMethod("eq", "other", namedType("bool", sp), .{ .statements = stmts, .span = sp }, sp);
+        }
+        return null;
+    }
+
+    // ── tiny AST builders for synthesized (derived) code ──────────────────────--
+    fn ident(self: *Parser, name: []const u8, sp: Span) ParseError!ast.Expr {
+        return self.expr(.{ .ident = name }, sp);
+    }
+    fn fieldAccess(self: *Parser, base: ast.Expr, name: []const u8, sp: Span) ParseError!ast.Expr {
+        return self.expr(.{ .field = .{ .base = try self.allocExpr(base), .name = name } }, sp);
+    }
+    fn binop(self: *Parser, op: ast.BinaryOp, l: ast.Expr, r: ast.Expr, sp: Span) ParseError!ast.Expr {
+        return self.expr(.{ .binary = .{ .op = op, .left = try self.allocExpr(l), .right = try self.allocExpr(r) } }, sp);
+    }
+    /// Build a public in-struct method `name :: fn(self: *Self, <arg2>: *Self) -> ret { body }`.
+    fn synthMethod(self: *Parser, name: []const u8, arg2: []const u8, ret: ast.TypeRef, body: ast.Block, sp: Span) ParseError!ast.FunctionDecl {
+        const params = try self.allocator.alloc(ast.Param, 2);
+        params[0] = .{ .name = "self", .ty = .{ .pointer = .{ .inner = try self.allocType(namedType("Self", sp)), .span = sp } }, .span = sp };
+        params[1] = .{ .name = arg2, .ty = .{ .pointer = .{ .inner = try self.allocType(namedType("Self", sp)), .span = sp } }, .span = sp };
+        return ast.FunctionDecl{
+            .attrs = &.{},
+            .name = name,
+            .file_name = self.file_name,
+            .source = self.source,
+            .is_public = true,
+            .type_params = &.{},
+            .params = params,
+            .return_ty = ret,
+            .error_ty = null,
+            .body = body,
+            .span = sp,
         };
     }
 
