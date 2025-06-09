@@ -23,11 +23,20 @@ Attributes modify the behavior or layout of declarations. They are prefixed with
 ### FFI & Linkage
 
 - `#export("name")`: exports the symbol with external linkage. If no string is provided, exports it using its K2 name.
-- `#extern("library_name", "symbol_name")`: declares an external function binding (FFI). 
+- `#extern("library_name", "symbol_name")`: declares an external function binding (FFI).
+  The second argument is the **real link symbol** — the K2 declaration name is free to
+  differ from the C symbol, so you can give a binding an idiomatic K2 name:
   ```k2
   #extern("kernel32", "WriteFile")
-  WriteFile :: fn(...) -> bool;
+  WriteFile :: fn(...) -> bool;          // K2 name == C symbol
+
+  #extern("ws2_32", "connect")
+  sys_connect :: fn(...) -> i32;         // K2 name `sys_connect`, links `connect`
   ```
+  Two externs may bind the same C symbol under different K2 names (the one external
+  declaration is deduplicated at link time). A plain K2 function may even share a name
+  with a renamed extern's C symbol (e.g. a `connect` wrapper over `sys_connect`); the
+  wrapper keeps internal linkage under a module-private symbol so the two don't clash.
 - `#foreign`: Alias for `#extern`.
 - `#system_library("libname")`: A top-level directive that tells the linker to link against the specified system library.
 - `#link_name("name")`: sets the function's external symbol name **without** exporting it (distinct from `#export`).
