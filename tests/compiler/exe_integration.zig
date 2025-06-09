@@ -1629,6 +1629,7 @@ test "exe: std.path / std.time / std.crypto / std.serde run correctly cross-modu
         .{ "tests/fixtures/lang/struct_methods_app.k2", "exe_struct_methods_app" },
         .{ "tests/fixtures/lang/extern_fnptr_app.k2", "exe_extern_fnptr_app" },
         .{ "tests/fixtures/lang/derive_eq_app.k2", "exe_derive_eq_app" },
+        .{ "tests/fixtures/lang/user_derive_app.k2", "exe_user_derive_app" },
         .{ "tests/fixtures/stdlib/thread_app.k2", "exe_thread_app" },
     }) |c| {
         const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);

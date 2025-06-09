@@ -119,7 +119,7 @@ pub const source =
 /// a hook generate code driven by a type's real shape (serializers, builders, …).
 pub const compiler_source =
     \\CField :: struct { name: []const u8, type_name: []const u8 }
-    \\Decl :: struct { name: []const u8, kind: []const u8, fields: []CField, ret: []const u8, body: []const u8 }
+    \\Decl :: struct { name: []const u8, kind: []const u8, fields: []CField, ret: []const u8, body: []const u8, derives: []const u8 }
     \\
     \\CodeBuf :: struct { s: []const u8 }
     \\gen_buf :: fn() -> CodeBuf { r: CodeBuf = .{ "" }; return r; }

@@ -2350,6 +2350,7 @@ const FunctionLowerer = struct {
                 .{ .name = "fields", .value = try self.lowerDeclFields(item) },
                 .{ .name = "ret", .value = try self.lowerDeclRet(item) },
                 .{ .name = "body", .value = astStr(declBodyText(item)) },
+                .{ .name = "derives", .value = astStr(try declDerives(self.allocator, item)) },
             });
             try elems.append(self.allocator, v);
         }
@@ -4903,6 +4904,32 @@ fn declBodyText(item: ast.Item) []const u8 {
             "",
         else => "",
     };
+}
+
+/// `Decl.derives` — the space-separated names requested by `#derive(...)` on the
+/// declaration. A user `#compiler` hook reads this to generate impls for its own
+/// derive name (e.g. `if d.derives == "Show"`). Built-in derive names appear here
+/// too (the parser also generates their impls).
+fn declDerives(allocator: std.mem.Allocator, item: ast.Item) ![]const u8 {
+    const attrs: []const ast.Attribute = switch (item) {
+        .type_decl => |t| t.attrs,
+        .function => |f| f.attrs,
+        .const_decl => |c| c.attrs,
+        else => return "",
+    };
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    for (attrs) |a| {
+        if (!std.mem.eql(u8, a.name, "derive")) continue;
+        for (a.args) |arg| switch (arg.kind) {
+            .ident => |n| {
+                if (buf.items.len > 0) try buf.append(allocator, ' ');
+                try buf.appendSlice(allocator, n);
+            },
+            else => {},
+        };
+    }
+    return buf.toOwnedSlice(allocator);
 }
 
 /// `core::<member>` — the reserved compiler-builtin namespace (mirrors sema's

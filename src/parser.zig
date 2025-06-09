@@ -488,11 +488,12 @@ pub const Parser = struct {
                         return error.ParseFailed;
                     },
                 };
-                const m = (try self.synthDerive(name, which, fields_slice)) orelse {
-                    try self.errorAt(name, "unknown #derive — known: Eq, Ord, Hash, Default, Clone, Add, Sub, Mul, Neg, Min, Max, Clamp, Scale, Lerp, format");
-                    return error.ParseFailed;
-                };
-                try self.hoisted_methods.append(self.allocator, try self.hoistMethod(name, tps, tcs, m));
+                // A built-in derive generates its method here; an UNKNOWN name is
+                // left in the struct's attributes (no error) for a user `#compiler`
+                // hook to handle by reading `Decl.derives` via `compiler_decls()`.
+                if (try self.synthDerive(name, which, fields_slice)) |m| {
+                    try self.hoisted_methods.append(self.allocator, try self.hoistMethod(name, tps, tcs, m));
+                }
             }
         }
         return .{
