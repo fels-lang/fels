@@ -431,6 +431,30 @@ String literals in K2 have the type `[]const u8`:
 greeting: []const u8 = "hello, world";
 ```
 
+### Comparing strings
+
+`==` and `!=` on `[]const u8` (and `[]u8`) compare **contents**, not slice
+identity. The comparison checks the length first, then the bytes, so it never
+reads past either slice:
+
+```k2
+a: []const u8 = "abc";
+b: []const u8 = "abc";
+
+a == b        // true  — same contents
+a == "abc"    // true  — either side may be a literal
+a != "abd"    // true
+"ab" == "abc" // false — different length
+```
+
+This is the same byte-wise lowering used by `match` string patterns, and it
+runs in the compile-time VM too, so string comparisons fold at comptime (handy
+in `#run` constants and `#compiler` hooks, e.g. `if d.derives == "Sum"`).
+
+> [!NOTE]
+> Other slice element types (e.g. `[]i32`) do not get content comparison —
+> `==` is defined for byte slices (strings). Compare those element-by-element.
+
 > [!TIP]
 > Slices are the preferred way to pass sequences of data. They are lightweight (just two machine words) and safe (bounds-checked at runtime).
 
