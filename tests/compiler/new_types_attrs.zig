@@ -444,8 +444,9 @@ test "C ABI: #extern declarations lower by-value aggregates per Win64" {
     const llvm_ir = try backend.getIrText(arena.allocator());
 
     inline for (.{
-        "@clear_background(i32", // Color (4 bytes) → i32
-        "@draw_circle_v(i64, float, i32", // Vector2 (8) → i64; radius f32; Color → i32
+        // Symbols are the C names (the `#extern` 2nd arg), not the k2 decl names.
+        "@ClearBackground(i32", // Color (4 bytes) → i32
+        "@DrawCircleV(i64, float, i32", // Vector2 (8) → i64; radius f32; Color → i32
         "byval(%Rectangle)", // Rectangle (16) argument passed indirectly
         "sret(%Rectangle)", // Rectangle (16) returned via hidden sret pointer
     }) |needle| {
@@ -472,8 +473,9 @@ test "C ABI: call sites coerce by-value struct arguments and sret returns" {
     const llvm_ir = try backend.getIrText(arena.allocator());
 
     inline for (.{
-        "call void @clear_background(i32", // a %Color value coerced to i32 at the call
-        "call void @get_rect(ptr", // sret slot + byval pointers passed to the call
+        // Call sites use the C symbol names too (`#extern` 2nd arg).
+        "call void @ClearBackground(i32", // a %Color value coerced to i32 at the call
+        "call void @GetCollisionRec(ptr", // sret slot + byval pointers passed to the call
     }) |needle| {
         std.testing.expect(std.mem.indexOf(u8, llvm_ir, needle) != null) catch |err| {
             std.debug.print("missing expected ABI call fragment: {s}\n", .{needle});
