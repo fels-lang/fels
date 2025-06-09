@@ -1,0 +1,31 @@
+// std.net.addr — IP addresses with `#derive(Eq)`, a hand-written `format`,
+// nested-struct Eq (SocketAddr recurses into IpV4.eq), and fallible parsing.
+// Deterministic (no sockets). Returns 42.
+#import std.net.addr as net;
+#import std.strings as str;
+#import std.strings.{StringBuilder};
+#import std.heap as heap;
+
+#entry
+main :: fn() -> i32 {
+    lo := net::localhost();
+    if !lo.eq(&net::ipv4(127u8, 0u8, 0u8, 1u8)) { return 1; }   // derived Eq
+    p := net::parse("192.168.1.7") catch e { return 2; };       // fallible parse
+    if p.b != 168u8 || p.d != 7u8 { return 3; }
+
+    // SocketAddr Eq recurses into the nested IpV4's own .eq.
+    sa := net::socket_addr(lo, 8080u16);
+    sb := net::socket_addr(net::localhost(), 8080u16);
+    if !sa.eq(&sb) { return 4; }
+    if sa.eq(&net::socket_addr(lo, 9090u16)) { return 5; }
+
+    // Custom format → "127.0.0.1:8080".
+    a := heap::make();
+    b := str::builder(&a);
+    sa.format(&b);
+    s := b.str();
+    if s.len != 14usize { return 6; }                    // "127.0.0.1:8080"
+    if s[0] != 49u8 || s[9] != 58u8 || s[10] != 56u8 { return 7; }  // '1' ':' '8'
+
+    return 42;
+}

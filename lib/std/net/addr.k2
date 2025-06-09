@@ -1,0 +1,79 @@
+// std.net.addr — IP addresses and socket addresses.
+//
+// Showcases the language's newer additions: `#derive` for equality, in-struct
+// methods, and `!`-fallible parsing.
+
+#import std.strings.{StringBuilder};
+
+pub AddrError :: errors {
+    bad_format,   // not a dotted-quad `a.b.c.d`
+    octet_range,  // an octet was > 255
+}
+
+// An IPv4 address. `#derive(Eq)` gives `a.eq(&b)`; `format` is hand-written so it
+// renders `127.0.0.1` rather than the generic struct dump.
+#derive(Eq)
+pub IpV4 :: struct {
+    a: u8, b: u8, c: u8, d: u8
+
+    // The packed 32-bit value in NETWORK byte order, as stored in `sockaddr_in`.
+    pub to_net :: fn(self: *Self) -> u32 {
+        return (self.a as u32) | ((self.b as u32) << 8u32) | ((self.c as u32) << 16u32) | ((self.d as u32) << 24u32);
+    }
+
+    // Render as a dotted quad into a StringBuilder: `a.format(&sb)` → "127.0.0.1".
+    pub format :: fn(self: *Self, sb: *StringBuilder) {
+        sb.append_u64(self.a as u64); sb.append(".");
+        sb.append_u64(self.b as u64); sb.append(".");
+        sb.append_u64(self.c as u64); sb.append(".");
+        sb.append_u64(self.d as u64);
+    }
+}
+
+// Construct an address from its four octets: `net::ipv4(127, 0, 0, 1)`.
+pub ipv4 :: fn(a: u8, b: u8, c: u8, d: u8) -> IpV4 { return .{ a, b, c, d }; }
+
+// The loopback address, 127.0.0.1.
+pub localhost :: fn() -> IpV4 { return .{ 127u8, 0u8, 0u8, 1u8 }; }
+
+// The unspecified address, 0.0.0.0 (bind to every interface).
+pub any :: fn() -> IpV4 { return .{ 0u8, 0u8, 0u8, 0u8 }; }
+
+// Parse a dotted-quad string (`"127.0.0.1"`) into an `IpV4`.
+pub parse :: fn(s: []const u8) -> IpV4 ! AddrError {
+    octets: [4]u32 = .{ 0u32, 0u32, 0u32, 0u32 };
+    idx: usize = 0usize;       // which octet
+    seen: bool = false;        // saw a digit for this octet
+    i: usize = 0usize;
+    while i < s.len {
+        c := s[i];
+        if c == 46u8 {                       // '.'
+            if !seen || idx >= 3usize { fail .bad_format; }
+            idx += 1usize;
+            seen = false;
+        } else {
+            if c < 48u8 || c > 57u8 { fail .bad_format; }   // not 0-9
+            octets[idx] = octets[idx] * 10u32 + ((c - 48u8) as u32);
+            if octets[idx] > 255u32 { fail .octet_range; }
+            seen = true;
+        }
+        i += 1usize;
+    }
+    if idx != 3usize || !seen { fail .bad_format; }
+    return .{ octets[0] as u8, octets[1] as u8, octets[2] as u8, octets[3] as u8 };
+}
+
+// An IPv4 address + port — what you connect to or listen on.
+#derive(Eq)
+pub SocketAddr :: struct {
+    ip: IpV4, port: u16
+
+    pub format :: fn(self: *Self, sb: *StringBuilder) {
+        self.ip.format(sb);
+        sb.append(":");
+        sb.append_u64(self.port as u64);
+    }
+}
+
+// `net::socket_addr(net::localhost(), 8080)`.
+pub socket_addr :: fn(ip: IpV4, port: u16) -> SocketAddr { return .{ ip, port }; }

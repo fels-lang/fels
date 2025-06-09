@@ -1,0 +1,42 @@
+// std.net end-to-end over loopback: a TCP echo server runs in its own thread; the
+// main thread connects, sends, and verifies the echoed bytes. Exercises std.net
+// (sockets + in-struct methods + fallible returns), std.net.addr, and std.thread
+// together. Returns 42.
+#import std.net as net;
+#import std.net.addr as addr;
+#import std.thread as thread;
+
+PORT :: 17981;
+
+// Server: accept one client, echo what it sends, then close.
+server_fn :: fn(p: *void) -> u32 {
+    ln := unsafe (p as *net::TcpListener);
+    conn := ln.accept() catch e { return 1u32; };
+    buf: [64]u8 = .{};
+    n := conn.recv(buf[:]) catch e { return 2u32; };
+    ignored := conn.send(buf[0..n]) catch e {};
+    conn.close();
+    return 0u32;
+}
+
+#entry
+main :: fn() -> i32 {
+    net::init() catch e { return 1; };
+    sa := addr::socket_addr(addr::localhost(), PORT as u16);
+    ln := net::serve(sa) catch e { return 2; };
+    t := thread::spawn(core::fn_ptr(server_fn), unsafe ((&ln) as *void));
+    thread::sleep(50u32);                       // let the server reach accept()
+
+    cl := net::dial(sa) catch e { return 3; };
+    ignored := cl.send("hello net") catch e { return 4; };
+    buf: [64]u8 = .{};
+    n := cl.recv(buf[:]) catch e { return 5; };  // the echo
+    cl.close();
+    ig := t.join();
+    ln.close();
+    net::shutdown();
+
+    if n != 9usize { return 6; }                 // "hello net"
+    if buf[0] != 104u8 || buf[8] != 116u8 { return 7; } // 'h' .. 't'
+    return 42;
+}
