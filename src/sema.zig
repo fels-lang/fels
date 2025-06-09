@@ -720,8 +720,23 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
     defer first_file.deinit();
     var colliding = std.StringHashMap(void).init(allocator);
     defer colliding.deinit();
+    // C symbols claimed by a *renamed* extern (its k2 name differs from the C
+    // symbol). A plain k2 decl that happens to share that bare name (e.g. a
+    // `connect` wrapper over a `sys_connect :: #extern(.., "connect")` binding)
+    // must take a module-qualified link name too — otherwise its internal body
+    // and the external decl would emit the same LLVM symbol and clash.
+    var extern_syms = std.StringHashMap(void).init(allocator);
+    defer extern_syms.deinit();
     for (module.items) |item| {
-        if (!isMangleable(item)) continue;
+        if (!isMangleable(item)) {
+            switch (item) {
+                .function => |f| if (externName(f.attrs)) |c_sym| {
+                    if (!std.mem.eql(u8, c_sym, f.name)) try extern_syms.put(c_sym, {});
+                },
+                else => {},
+            }
+            continue;
+        }
         const nm = item.name() orelse continue;
         const gop = try first_file.getOrPut(nm);
         if (!gop.found_existing) {
@@ -733,7 +748,7 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
 
     for (module.items) |item| {
         const name = item.name() orelse continue;
-        const link = if (isMangleable(item) and colliding.contains(name))
+        const link = if (isMangleable(item) and (colliding.contains(name) or extern_syms.contains(name)))
             try std.fmt.allocPrint(allocator, "{s}${s}", .{ moduleSlug(allocator, item.fileName()) catch name, name })
         else
             name;
@@ -750,6 +765,18 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
             .system_library => unreachable,
         };
         const id = try table.insertLinked(allocator, table.root_scope, name, link, kind, item.span(), item.fileName(), item.isPublic());
+        // An extern function links against its C symbol (the `#extern` 2nd arg),
+        // not its k2 declaration name. The root-scope key stays the bare/collision
+        // name (so resolution is unchanged and two externs may share one C symbol
+        // across modules without colliding), but the *linkage* name — emitted for
+        // the LLVM declaration and every call site via `linkNameFor` — becomes the
+        // C symbol. When the k2 name already equals the C name this is a no-op.
+        switch (item) {
+            .function => |f| if (externName(f.attrs)) |c_sym| {
+                table.symbols.items[id].link_name = c_sym;
+            },
+            else => {},
+        }
         const visible = try visibleNamesFor(&table, allocator, item.fileName());
         try visible.put(name, id);
     }
