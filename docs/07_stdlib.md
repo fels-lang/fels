@@ -197,6 +197,46 @@ g.join_all();                    // wait for all
 > Thread pools and channels build on a future `std.sync` (Mutex/CondVar); for now
 > coordinate with `std.atomics`. See `tests/fixtures/stdlib/thread_app.k2`.
 
+## `std.net` and `std.net.addr`
+TCP networking over Winsock2, spread across two files (a subdirectory module):
+`std.net.addr` for addresses, `std.net` for sockets. It leans on the newer language
+features — in-struct methods, `#derive`, and `!`-fallible returns.
+
+**`std.net.addr`** — `IpV4` (`#derive(Eq)` + a hand-written `format` rendering a
+dotted quad) and `SocketAddr` (whose derived `Eq` recurses into `IpV4.eq`):
+```k2
+#import std.net.addr as addr;
+ip  := addr::parse("127.0.0.1") catch e { ... };   // fallible
+sa  := addr::socket_addr(addr::localhost(), 8080u16);
+sa.format(&sb);                                      // "127.0.0.1:8080"
+```
+
+**`std.net`** — `init()` (call once), then `dial(addr)` / `serve(addr)`:
+```k2
+#import std.net as net;
+
+net::init() catch e { return; };
+
+// client
+s := net::dial(net::socket_addr(net::localhost(), 8080u16)) catch e { return; };
+ignored := s.send("ping") catch e {};
+n := s.recv(buf[:]) catch e {};
+s.close();
+
+// server
+ln := net::serve(addr) catch e { return; };
+conn := ln.accept() catch e { return; };   // blocks for a client
+```
+
+- **`TcpStream`** (methods): `send(data) -> usize`, `recv(buf) -> usize` (0 = closed),
+  `close()`.
+- **`TcpListener`** (methods): `accept() -> TcpStream`, `close()`.
+- **Free fns:** `init()`, `shutdown()`, `dial(addr)`, `serve(addr)` — all `! NetError`.
+
+> A complete loopback TCP echo (server thread + client round-trip, combining net +
+> thread + addr) is in `tests/fixtures/stdlib/net_echo_app.k2`. UDP, DNS
+> (`getaddrinfo`), and a small HTTP client are the natural next additions.
+
 ## Game & graphics modules
 
 Small, focused modules for 2D games and graphics. `std.math` and `std.color` are
