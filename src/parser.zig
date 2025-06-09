@@ -491,7 +491,7 @@ pub const Parser = struct {
                 // A built-in derive generates its method here; an UNKNOWN name is
                 // left in the struct's attributes (no error) for a user `#compiler`
                 // hook to handle by reading `Decl.derives` via `compiler_decls()`.
-                if (try self.synthDerive(name, which, fields_slice)) |m| {
+                if (try self.synthDerive(name, tps, which, fields_slice)) |m| {
                     try self.hoisted_methods.append(self.allocator, try self.hoistMethod(name, tps, tcs, m));
                 }
             }
@@ -517,15 +517,22 @@ pub const Parser = struct {
     /// field whose type doesn't support the operation is a clear compile error at
     /// the call site; nested-struct recursion (calling a field's own derived impl)
     /// is a future enhancement.
-    fn synthDerive(self: *Parser, struct_name: Token, which: []const u8, fields: []const ast.FieldDecl) ParseError!?ast.FunctionDecl {
+    fn synthDerive(self: *Parser, struct_name: Token, tps: []const []const u8, which: []const u8, fields: []const ast.FieldDecl) ParseError!?ast.FunctionDecl {
         const sp = spanFrom(struct_name, struct_name);
 
-        // Eq — structural equality: `a.eq(&b)`.
+        // Eq — structural equality: `a.eq(&b)`. A scalar field uses `==`; a nested
+        // struct field recurses into its own `.eq` (`self.f.eq(&other.f)`), so Eq
+        // composes (the nested type must also derive Eq).
         if (std.mem.eql(u8, which, "Eq")) {
             var chain: ?ast.Expr = null;
             for (fields) |f| {
-                const eq = try self.binop(.equal, try self.fld("self", f.name, sp), try self.fld("other", f.name, sp), sp);
-                chain = if (chain) |c| try self.binop(.and_and, c, eq, sp) else eq;
+                const lhs = try self.fld("self", f.name, sp);
+                const rhs = try self.fld("other", f.name, sp);
+                const cmp = if (fieldIsNamedStruct(f.ty, tps))
+                    try self.methodCall(lhs, "eq", &.{try self.addrOf(rhs, sp)}, sp)
+                else
+                    try self.binop(.equal, lhs, rhs, sp);
+                chain = if (chain) |c| try self.binop(.and_and, c, cmp, sp) else cmp;
             }
             const v = chain orelse try self.expr(.{ .bool = true }, sp);
             return try self.synthFn("eq", try self.selfParams(&.{ "self", "other" }, sp), namedType("bool", sp), try self.retOne(v, sp), sp);
@@ -698,6 +705,9 @@ pub const Parser = struct {
     }
     fn neg(self: *Parser, e: ast.Expr, sp: Span) ParseError!ast.Expr {
         return self.expr(.{ .unary = .{ .op = .neg, .expr = try self.allocExpr(e) } }, sp);
+    }
+    fn addrOf(self: *Parser, e: ast.Expr, sp: Span) ParseError!ast.Expr {
+        return self.expr(.{ .unary = .{ .op = .address_of, .expr = try self.allocExpr(e) } }, sp);
     }
     fn castTo(self: *Parser, e: ast.Expr, ty_name: []const u8, sp: Span) ParseError!ast.Expr {
         return self.expr(.{ .as_cast = .{ .value = try self.allocExpr(e), .to = namedType(ty_name, sp) } }, sp);
@@ -2271,6 +2281,24 @@ fn namedType(name: []const u8, span: Span) ast.TypeRef {
 fn isOneOf(name: []const u8, set: []const []const u8) bool {
     for (set) |s| if (std.mem.eql(u8, name, s)) return true;
     return false;
+}
+
+/// A field whose type is a NAMED user type (a struct), not a builtin scalar — so a
+/// derive should recurse into the field's own impl (`.eq`) rather than use `==`.
+fn fieldIsNamedStruct(ty: ast.TypeRef, tps: []const []const u8) bool {
+    return switch (ty) {
+        .named => |n| {
+            if (n.namespace != null) return false;
+            // A generic type parameter (`value: T`) isn't known to be a struct —
+            // could be `i32`, which has no `.eq` — so compare it with `==`.
+            for (tps) |tp| if (std.mem.eql(u8, tp, n.name)) return false;
+            return !isOneOf(n.name, &.{
+                "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                "f32", "f64", "bool", "byte", "usize", "isize", "rune", "addr", "void", "Self",
+            });
+        },
+        else => false,
+    };
 }
 
 fn spanFrom(start: anytype, end: anytype) Span {

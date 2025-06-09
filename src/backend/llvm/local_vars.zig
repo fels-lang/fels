@@ -36,6 +36,10 @@ pub fn allocateLocals(
         defer cg.allocator.free(name_z);
         // types.lower handles slice → fat-pointer struct.
         const lty = types.lower(cg, entry.value_ptr.*);
+        // A `void`-typed local has no storage — you cannot `alloca void` (it
+        // crashes LLVM). This shows up for the ok-payload of a `void ! Error`
+        // function. Skip it; any reference resolves to the void immediate.
+        if (llvm.LLVMGetTypeKind(lty) == llvm.LLVMVoidTypeKind) continue;
         const alloca = llvm.LLVMBuildAlloca(cg.builder, lty, name_z);
 
         switch (entry.value_ptr.*) {
