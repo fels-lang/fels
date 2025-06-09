@@ -273,6 +273,41 @@ into scope (`#import std.strings.{StringBuilder};`) and dispatches per field typ
 own `format`). Recursing into nested fields for the other derives is a planned
 enhancement.
 
+### Writing your own derive
+
+The built-ins above are not special — `#derive` is **open**. A `#derive(Name)` the
+compiler doesn't recognize is *not an error*: it's left on the declaration for a
+`#compiler` hook to handle. `compiler_decls()` exposes each declaration's requested
+derives as `Decl.derives` (the space-separated `#derive(...)` names), so a hook
+filters to the structs that opted in and generates their impl:
+
+```k2
+#compiler
+derive_sum :: fn() -> []const u8 {
+    a := heap::make();
+    sb := str::builder(&a);
+    for d in core::compiler_decls() {
+        match d.derives {                       // (string `==` isn't supported — use `match`)
+            "Sum" => {
+                sb.append("sum_"); sb.append(d.name);
+                sb.append(" :: fn(p: "); sb.append(d.name); sb.append(") -> i32 { return 0");
+                for f in d.fields { sb.append(" + p."); sb.append(f.name); }
+                sb.append("; } ");
+            }
+            else => {}
+        }
+    }
+    return sb.str();
+}
+
+#derive(Sum)
+Point :: struct { x: i32, y: i32 }              // → `sum_Point` is generated
+```
+
+Built-in (parser-side) and user (hook-side) derives coexist on the same struct. For a
+struct with several derives `Decl.derives` is `"A B C"`, so match the exact string for
+a single derive or substring-check for membership.
+
 Unlike Rust's `#[derive]` (proc-macros with full ambient power — the `build.rs`
 supply-chain surface), a k2 derive is a compiler-side generator driven by the type's
 structure; the roadmap (R2, [09](09_comptime_vm_roadmap.md)) scopes user-written
