@@ -3046,6 +3046,28 @@ const FunctionLowerer = struct {
                         if (binary.op == .not_equal) break :blk is_some;
                         break :blk try self.emitAt(.bool, .{ .unary = .{ .op = .not, .value = is_some } }, expr.span);
                     }
+                    // `s == t` / `s != t` on strings compares CONTENTS, not the
+                    // fat `{ ptr, len }` slice value (LLVM can't `icmp` an
+                    // aggregate). Reuse the match string-pattern lowering: a
+                    // length check then a byte compare (eager `&&`-safe), so it
+                    // folds in the comptime VM too (`#compiler` string compares).
+                    const left_str = binary.left.kind == .string or isByteSliceTy(self.exprType(binary.left.*));
+                    const right_str = binary.right.kind == .string or isByteSliceTy(self.exprType(binary.right.*));
+                    if (left_str and right_str) {
+                        // Two literals fold to a constant (no indexing needed).
+                        if (binary.left.kind == .string and binary.right.kind == .string) {
+                            const equal = std.mem.eql(u8, trimQuotes(binary.left.kind.string), trimQuotes(binary.right.kind.string));
+                            break :blk .{ .imm = .{ .bool = if (binary.op == .equal) equal else !equal } };
+                        }
+                        const eqv = if (binary.right.kind == .string)
+                            try self.lowerStringEq(try self.lowerExpr(binary.left.*), binary.right.kind.string)
+                        else if (binary.left.kind == .string)
+                            try self.lowerStringEq(try self.lowerExpr(binary.right.*), binary.left.kind.string)
+                        else
+                            try self.lowerStringEqDynamic(try self.lowerExpr(binary.left.*), try self.lowerExpr(binary.right.*));
+                        if (binary.op == .not_equal) break :blk try self.emit(.bool, .{ .unary = .{ .op = .not, .value = eqv } });
+                        break :blk eqv;
+                    }
                 }
                 const lhs = try self.lowerExpr(binary.left.*);
                 const rhs = try self.lowerExpr(binary.right.*);
@@ -3887,10 +3909,24 @@ const FunctionLowerer = struct {
         }
     }
 
+    /// Spill a folded string constant (`.imm.text`, e.g. a string literal or
+    /// `core::file`) into a typed `[]byte` local so it can be `.field`/`.index`-ed
+    /// — a bare `.imm.text` has no slice irType and can't be indexed. Non-`.imm`
+    /// values (locals, params, registers) already carry a slice type, so pass
+    /// through untouched.
+    fn materializeStrOperand(self: *FunctionLowerer, v: Value) LowerError!Value {
+        if (v != .imm) return v;
+        const name = try std.fmt.allocPrint(self.allocator, "__streq_s_{d}", .{self.next_block_id});
+        try self.local_types.put(name, byteSliceType);
+        try self.emitNoResult(byteSliceType, .{ .store_local = .{ .name = name, .value = v } });
+        return .{ .local = name };
+    }
+
     /// Compare a `[]const u8` subject to a string literal, byte by byte. The
     /// literal's bytes are read only inside a block guarded by a length match, so
     /// a shorter subject is never read out of bounds (K2's `&&` is eager).
-    fn lowerStringEq(self: *FunctionLowerer, subject: Value, literal_raw: []const u8) LowerError!Value {
+    fn lowerStringEq(self: *FunctionLowerer, subject_in: Value, literal_raw: []const u8) LowerError!Value {
+        const subject = try self.materializeStrOperand(subject_in);
         const lit = trimQuotes(literal_raw);
         const res_name = try std.fmt.allocPrint(self.allocator, "__streq_{d}", .{self.next_block_id});
         try self.local_types.put(res_name, .bool);
@@ -3910,6 +3946,64 @@ const FunctionLowerer = struct {
             acc = try self.emit(.bool, .{ .binary = .{ .op = .and_op, .lhs = acc, .rhs = beq } });
         }
         try self.emitNoResult(.bool, .{ .store_local = .{ .name = res_name, .value = acc } });
+        try self.terminate(.{ .branch = done_id });
+
+        self.startBlock(done_id, "streq.done");
+        return .{ .local = res_name };
+    }
+
+    /// Compare two `[]const u8` slices for content equality when neither length
+    /// is known at compile time: match `.len`, then a byte-by-byte loop. The
+    /// loop body is reached only after the length check, so the eager `&&`-free
+    /// structure never reads past either slice. Same op set as `lowerStringEq`,
+    /// so it folds in the comptime VM too (`#compiler` string compares).
+    fn lowerStringEqDynamic(self: *FunctionLowerer, lhs_in: Value, rhs_in: Value) LowerError!Value {
+        const lhs = try self.materializeStrOperand(lhs_in);
+        const rhs = try self.materializeStrOperand(rhs_in);
+        const suffix = self.next_block_id;
+        const res_name = try std.fmt.allocPrint(self.allocator, "__streq_{d}", .{suffix});
+        const idx_name = try std.fmt.allocPrint(self.allocator, "__streq_i_{d}", .{suffix});
+        try self.local_types.put(res_name, .bool);
+        try self.local_types.put(idx_name, .usize);
+        // result starts false; only the all-bytes-matched path sets it true.
+        try self.emitNoResult(.bool, .{ .store_local = .{ .name = res_name, .value = .{ .imm = .{ .bool = false } } } });
+
+        const lhs_len = try self.emit(.usize, .{ .field = .{ .base = lhs, .name = "len" } });
+        const rhs_len = try self.emit(.usize, .{ .field = .{ .base = rhs, .name = "len" } });
+        const len_eq = try self.emit(.bool, .{ .binary = .{ .op = .eq, .lhs = lhs_len, .rhs = rhs_len } });
+
+        const init_id = self.allocBlockId();
+        const cond_id = self.allocBlockId();
+        const body_id = self.allocBlockId();
+        const incr_id = self.allocBlockId();
+        const matched_id = self.allocBlockId();
+        const done_id = self.allocBlockId();
+
+        // Different lengths → done (result stays false), never touching the loop.
+        try self.terminate(.{ .cond_branch = .{ .cond = len_eq, .then_block = init_id, .else_block = done_id } });
+
+        self.startBlock(init_id, "streq.init");
+        try self.emitNoResult(.usize, .{ .store_local = .{ .name = idx_name, .value = .{ .imm = .{ .uint = 0 } } } });
+        try self.terminate(.{ .branch = cond_id });
+
+        self.startBlock(cond_id, "streq.cond");
+        const more = try self.emit(.bool, .{ .binary = .{ .op = .lt, .lhs = .{ .local = idx_name }, .rhs = lhs_len } });
+        try self.terminate(.{ .cond_branch = .{ .cond = more, .then_block = body_id, .else_block = matched_id } });
+
+        self.startBlock(body_id, "streq.body");
+        const a = try self.emit(.byte, .{ .index = .{ .base = lhs, .index = .{ .local = idx_name } } });
+        const b = try self.emit(.byte, .{ .index = .{ .base = rhs, .index = .{ .local = idx_name } } });
+        const beq = try self.emit(.bool, .{ .binary = .{ .op = .eq, .lhs = a, .rhs = b } });
+        // A mismatched byte → done (result stays false).
+        try self.terminate(.{ .cond_branch = .{ .cond = beq, .then_block = incr_id, .else_block = done_id } });
+
+        self.startBlock(incr_id, "streq.incr");
+        const nx = try self.emit(.usize, .{ .binary = .{ .op = .add, .lhs = .{ .local = idx_name }, .rhs = .{ .imm = .{ .uint = 1 } } } });
+        try self.emitNoResult(.usize, .{ .store_local = .{ .name = idx_name, .value = nx } });
+        try self.terminate(.{ .branch = cond_id });
+
+        self.startBlock(matched_id, "streq.matched");
+        try self.emitNoResult(.bool, .{ .store_local = .{ .name = res_name, .value = .{ .imm = .{ .bool = true } } } });
         try self.terminate(.{ .branch = done_id });
 
         self.startBlock(done_id, "streq.done");
@@ -4786,6 +4880,25 @@ fn boxType(allocator: std.mem.Allocator, ty: IrType) !*const IrType {
 
 /// A static `void` IrType — an OOM-proof fallback for `*const IrType` slots.
 const voidType: IrType = .void;
+
+/// A static `[]byte` IrType (the shape of `[]const u8`/`[]u8`/string literals),
+/// used when spilling a folded string constant into a typed local.
+const byteElemType: IrType = .byte;
+const byteSliceType: IrType = .{ .slice = &byteElemType };
+
+/// True for the IR shape of a string: a slice of bytes (`[]const u8`, `[]u8`)
+/// or a folded string constant (`text`). Drives content `==`/`!=` lowering.
+fn isByteSliceTy(ty: IrType) bool {
+    return switch (ty) {
+        .slice => |elem| switch (elem.*) {
+            .byte => true,
+            .u => |w| w == 8,
+            else => false,
+        },
+        .text => true,
+        else => false,
+    };
+}
 
 fn assignBinOp(op: ast.AssignOp) ?BinOp {
     return switch (op) {
