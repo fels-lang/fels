@@ -21,6 +21,14 @@ pub IpV4 :: struct {
         return (self.a as u32) | ((self.b as u32) << 8u32) | ((self.c as u32) << 16u32) | ((self.d as u32) << 24u32);
     }
 
+    // True for 127.x.x.x (the loopback block).
+    pub is_loopback :: fn(self: *Self) -> bool { return self.a == 127u8; }
+
+    // True for 0.0.0.0 (the unspecified / "any interface" address).
+    pub is_unspecified :: fn(self: *Self) -> bool {
+        return self.a == 0u8 && self.b == 0u8 && self.c == 0u8 && self.d == 0u8;
+    }
+
     // Render as a dotted quad into a StringBuilder: `a.format(&sb)` → "127.0.0.1".
     pub format :: fn(self: *Self, sb: *StringBuilder) {
         sb.append_u64(self.a as u64); sb.append(".");
@@ -38,6 +46,20 @@ pub localhost :: fn() -> IpV4 { return .{ 127u8, 0u8, 0u8, 1u8 }; }
 
 // The unspecified address, 0.0.0.0 (bind to every interface).
 pub any :: fn() -> IpV4 { return .{ 0u8, 0u8, 0u8, 0u8 }; }
+
+// The limited broadcast address, 255.255.255.255.
+pub broadcast :: fn() -> IpV4 { return .{ 255u8, 255u8, 255u8, 255u8 }; }
+
+// Unpack a NETWORK-byte-order 32-bit `in_addr` (as stored in `sockaddr_in`) back
+// into octets — the inverse of `to_net`. Used to decode peer addresses.
+pub from_net :: fn(n: u32) -> IpV4 {
+    return .{
+        (n & 0xFFu32) as u8,
+        ((n >> 8u32) & 0xFFu32) as u8,
+        ((n >> 16u32) & 0xFFu32) as u8,
+        ((n >> 24u32) & 0xFFu32) as u8,
+    };
+}
 
 // Parse a dotted-quad string (`"127.0.0.1"`) into an `IpV4`.
 pub parse :: fn(s: []const u8) -> IpV4 ! AddrError {
