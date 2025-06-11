@@ -1,127 +1,59 @@
-// std.net — TCP networking over Winsock2.
+// std.net — TCP/UDP networking over Winsock2.
 //
-// Built on the language's newer features: in-struct methods (`stream.send(...)`),
-// `!`-fallible returns (`dial(...) ! NetError`), and the `std.net.addr` types.
-// Call `net::init()` once before using any socket.
+// This file is a thin convenience facade. The library is layered across a
+// subdirectory module so each piece stays small and focused:
+//
+//   std.net.os     — raw ws2_32 bindings, constants, `NetError`, the wire addr
+//   std.net.addr   — IpV4 / SocketAddr (parsing, formatting, `#derive(Eq)`)
+//   std.net.socket — `Socket`: the typed handle + shared options (timeouts, …)
+//   std.net.tcp    — `TcpStream` / `TcpListener` (+ `send_all` / `recv_exact`)
+//   std.net.udp    — `UdpSocket` (datagrams: `send_to` / `recv_from`)
+//
+// `net::init()` once per process, then either use the helpers here or import a
+// submodule directly for its types:
 //
 //   net::init() catch e { return; };
-//   s := net::dial(net::socket_addr(net::localhost(), 8080u16)) catch e { return; };
-//   ignored := s.send("ping") catch e {};
-//   n := s.recv(buf[:]) catch e {};
-//   s.close();
+//   s := net::connect(addr::socket_addr(addr::localhost(), 8080u16)) catch e { return; };
+//   ignored := s.send_all("ping") catch e {};
+//   net::shutdown();
 //
-// A server: `ln := net::serve(addr); conn := ln.accept()?; ...`.
+// Types live in their submodule (`tcp::TcpStream`, `udp::UdpSocket`, …) because
+// the language doesn't re-export a type across modules; the constructors here
+// hand those types back, so you only need the submodule import for annotations.
 
+#import std.net.os as os;
+#import std.net.os.{NetError};
 #import std.net.addr as addr;
+#import std.net.tcp as tcp;
+#import std.net.udp as udp;
 
-// ── Winsock2 bindings (ws2_32.dll) ───────────────────────────────────────────
-// NOTE: the k2 name must equal the C symbol (the `#extern` rename-arg isn't yet
-// applied to the link symbol), so these keep their Winsock names.
-#extern("ws2_32", "WSAStartup")   WSAStartup  :: fn(version: u16, data: *u8) -> i32;
-#extern("ws2_32", "WSACleanup")   WSACleanup  :: fn() -> i32;
-#extern("ws2_32", "socket")       socket      :: fn(af: i32, kind: i32, proto: i32) -> usize;
-#extern("ws2_32", "connect")      connect     :: fn(s: usize, name: *const u8, namelen: i32) -> i32;
-#extern("ws2_32", "bind")         bind        :: fn(s: usize, name: *const u8, namelen: i32) -> i32;
-#extern("ws2_32", "listen")       listen      :: fn(s: usize, backlog: i32) -> i32;
-#extern("ws2_32", "accept")       accept      :: fn(s: usize, name: ?*u8, namelen: ?*i32) -> usize;
-#extern("ws2_32", "send")         send        :: fn(s: usize, buf: *const u8, len: i32, flags: i32) -> i32;
-#extern("ws2_32", "recv")         recv        :: fn(s: usize, buf: *u8, len: i32, flags: i32) -> i32;
-#extern("ws2_32", "closesocket")  closesocket :: fn(s: usize) -> i32;
-#extern("ws2_32", "htons")        htons       :: fn(port: u16) -> u16;
-
-AF_INET        :: 2;
-SOCK_STREAM    :: 1;
-IPPROTO_TCP    :: 6;
-INVALID_SOCKET :: 0xFFFFFFFFFFFFFFFF;   // (SOCKET)(~0)
-SOCKADDR_LEN   :: 16;                    // sizeof(sockaddr_in)
-
-// `sockaddr_in` — 16 bytes: family(2) port(2) addr(4) zero(8).
-Sockaddr :: struct { family: u16, port: u16, addr: u32, zero: u64 }
-
-sockaddr_of :: fn(sa: addr::SocketAddr) -> Sockaddr {
-    return .{ AF_INET as u16, htons(sa.port), sa.ip.to_net(), 0u64 };
-}
-
-pub NetError :: errors {
-    startup_failed,   // WSAStartup
-    socket_failed,    // socket()
-    connect_failed,   // connect()
-    bind_failed,      // bind()
-    listen_failed,    // listen()
-    accept_failed,    // accept()
-    send_failed,      // send()
-    recv_failed,      // recv()
-}
+// ── Library lifecycle ────────────────────────────────────────────────────────
 
 // Initialise Winsock — call once before any socket call.
-pub init :: fn() -> void ! NetError {
-    data: [512]u8 = .{};
-    if WSAStartup(0x0202u16, &data[0]) != 0 { fail .startup_failed; }
-    return;
-}
+pub init :: fn() -> void ! NetError { os::init()?; return; }
 
 // Tear Winsock down (optional, at process exit).
-pub shutdown :: fn() { ignored := WSACleanup(); }
+pub shutdown :: fn() { os::cleanup(); }
 
-// ── TcpStream — a connected TCP socket ───────────────────────────────────────
-pub TcpStream :: struct {
-    sock: usize
+// The last Winsock error code on this thread (`WSAGetLastError`), for diagnosing
+// a `NetError`.
+pub last_error :: fn() -> i32 { return os::last_error(); }
 
-    // Send up to `data.len` bytes; returns how many were written.
-    pub send :: fn(self: *Self, data: []const u8) -> usize ! NetError {
-        n := send(self.sock, data.ptr, data.len as i32, 0);
-        if n < 0 { fail .send_failed; }
-        return n as usize;
-    }
+// ── TCP convenience ──────────────────────────────────────────────────────────
 
-    // Receive into `buf`; returns bytes read (0 = the peer closed the connection).
-    pub recv :: fn(self: *Self, buf: []u8) -> usize ! NetError {
-        n := recv(self.sock, buf.ptr, buf.len as i32, 0);
-        if n < 0 { fail .recv_failed; }
-        return n as usize;
-    }
-
-    pub close :: fn(self: *Self) { ignored := closesocket(self.sock); }
+// Connect to `sa` and return a ready `tcp::TcpStream` (client side).
+pub connect :: fn(sa: addr::SocketAddr) -> tcp::TcpStream ! NetError {
+    return tcp::connect(sa)?;
 }
 
-// Connect to `sa` and return a ready stream (client side).
-pub dial :: fn(sa: addr::SocketAddr) -> TcpStream ! NetError {
-    s := socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if s == INVALID_SOCKET { fail .socket_failed; }
-    sad := sockaddr_of(sa);
-    if connect(s, unsafe ((&sad) as *const u8), SOCKADDR_LEN as i32) != 0 {
-        ignored := closesocket(s);
-        fail .connect_failed;
-    }
-    return .{ s };
+// Bind + listen on `sa`, returning a `tcp::TcpListener` (server side, backlog 16).
+pub listen :: fn(sa: addr::SocketAddr) -> tcp::TcpListener ! NetError {
+    return tcp::listen(sa)?;
 }
 
-// ── TcpListener — a bound, listening TCP socket ──────────────────────────────
-pub TcpListener :: struct {
-    sock: usize
+// ── UDP convenience ──────────────────────────────────────────────────────────
 
-    // Block until a client connects; returns the accepted stream.
-    pub accept :: fn(self: *Self) -> TcpStream ! NetError {
-        c := accept(self.sock, null, null);
-        if c == INVALID_SOCKET { fail .accept_failed; }
-        return .{ c };
-    }
-
-    pub close :: fn(self: *Self) { ignored := closesocket(self.sock); }
-}
-
-// Bind to `sa` and start listening (server side, backlog 16).
-pub serve :: fn(sa: addr::SocketAddr) -> TcpListener ! NetError {
-    s := socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if s == INVALID_SOCKET { fail .socket_failed; }
-    sad := sockaddr_of(sa);
-    if bind(s, unsafe ((&sad) as *const u8), SOCKADDR_LEN as i32) != 0 {
-        ignored := closesocket(s);
-        fail .bind_failed;
-    }
-    if listen(s, 16) != 0 {
-        ignored := closesocket(s);
-        fail .listen_failed;
-    }
-    return .{ s };
+// A `udp::UdpSocket` bound to `sa`.
+pub udp_bind :: fn(sa: addr::SocketAddr) -> udp::UdpSocket ! NetError {
+    return udp::bind(sa)?;
 }
