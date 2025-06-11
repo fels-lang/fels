@@ -1,0 +1,90 @@
+// std.net.udp — UDP datagram sockets.
+//
+// Connectionless: one socket can talk to many peers via `send_to` / `recv_from`,
+// each call carrying the remote address. If you mostly talk to one peer, call
+// `connect` once and then use the plain `send` / `recv` (the kernel remembers the
+// default destination and drops datagrams from anyone else).
+//
+//   s := udp::bind(addr::socket_addr(addr::any(), 9000u16))?;  // server
+//   d := s.recv_from(buf[:])?;                                  // d.len, d.from
+//   ignored := s.send_to("pong", d.from)?;                      // reply
+
+#import std.net.os as os;
+#import std.net.os.{NetError};
+#import std.net.addr as addr;
+#import std.net.socket as socket;
+
+// The result of `recv_from`: how many bytes arrived and who sent them.
+pub Datagram :: struct { len: usize, from: addr::SocketAddr }
+
+pub UdpSocket :: struct {
+    sock: socket::Socket
+
+    // Send `data` to `to` as one datagram; returns bytes sent.
+    pub send_to :: fn(self: *Self, data: []const u8, to: addr::SocketAddr) -> usize ! NetError {
+        raw := os::raw_from(to);
+        n := os::sys_sendto(self.sock.fd, data.ptr, data.len as i32, 0,
+                            unsafe ((&raw) as *const u8), os::SOCKADDR_LEN as i32);
+        if n < 0 { fail .send_failed; }
+        return n as usize;
+    }
+
+    // Receive one datagram into `buf`; returns its length and the sender address.
+    // A datagram longer than `buf` is truncated (UDP semantics).
+    pub recv_from :: fn(self: *Self, buf: []u8) -> Datagram ! NetError {
+        raw: os::RawSockaddr = .{ 0u16, 0u16, 0u32, 0u64 };
+        len: i32 = os::SOCKADDR_LEN as i32;
+        n := os::sys_recvfrom(self.sock.fd, buf.ptr, buf.len as i32, 0,
+                             unsafe ((&raw) as *u8), &len);
+        if n < 0 { fail .recv_failed; }
+        return .{ n as usize, os::addr_from_raw(raw) };
+    }
+
+    // Fix a default peer so plain `send`/`recv` can be used (and datagrams from
+    // other addresses are filtered out).
+    pub connect :: fn(self: *Self, to: addr::SocketAddr) -> void ! NetError {
+        raw := os::raw_from(to);
+        if os::sys_connect(self.sock.fd, unsafe ((&raw) as *const u8), os::SOCKADDR_LEN as i32) != 0 {
+            fail .connect_failed;
+        }
+        return;
+    }
+
+    // Send to the connected peer (call `connect` first); returns bytes sent.
+    pub send :: fn(self: *Self, data: []const u8) -> usize ! NetError {
+        n := os::sys_send(self.sock.fd, data.ptr, data.len as i32, 0);
+        if n < 0 { fail .send_failed; }
+        return n as usize;
+    }
+
+    // Receive from the connected peer; returns bytes read.
+    pub recv :: fn(self: *Self, buf: []u8) -> usize ! NetError {
+        n := os::sys_recv(self.sock.fd, buf.ptr, buf.len as i32, 0);
+        if n < 0 { fail .recv_failed; }
+        return n as usize;
+    }
+
+    pub set_broadcast    :: fn(self: *Self, on: bool) -> void ! NetError { self.sock.set_broadcast(on)?; return; }
+    pub set_read_timeout :: fn(self: *Self, ms: i32) -> void ! NetError { self.sock.set_recv_timeout(ms)?; return; }
+    pub local_addr       :: fn(self: *Self) -> addr::SocketAddr ! NetError { return self.sock.local_addr()?; }
+
+    pub close :: fn(self: *Self) { self.sock.close(); }
+}
+
+// ── Free constructors ────────────────────────────────────────────────────────
+
+// A UDP socket bound to `sa` (a server, or any socket with a fixed local port).
+// Sets `SO_REUSEADDR` so a quick restart can reclaim the port.
+pub bind :: fn(sa: addr::SocketAddr) -> UdpSocket ! NetError {
+    s := socket::udp()?;
+    s.set_reuse_addr(true) catch e { s.close(); fail .option_failed; };
+    s.bind_to(sa) catch e { s.close(); fail .bind_failed; };
+    return .{ s };
+}
+
+// An unbound UDP socket (the OS assigns an ephemeral port on first send) — fine
+// for a pure client that only needs `connect` + `send`/`recv` or `send_to`.
+pub unbound :: fn() -> UdpSocket ! NetError {
+    s := socket::udp()?;
+    return .{ s };
+}
