@@ -1638,6 +1638,49 @@ test "exe: std.path / std.time / std.crypto / std.serde run correctly cross-modu
     }
 }
 
+test "exe: std.net layered TCP + UDP loopback round-trips (os/socket/tcp/udp)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Real loopback sockets across the layered std.net (os → socket → tcp/udp),
+    // each fixture spawning a server thread and doing a client round-trip:
+    //   tcp: connect / accept (with peer addr) / send_all / recv / local_addr
+    //   udp: bind / recv_from / send_to / connected connect+send+recv
+    // Each returns 42 iff the bytes echoed back intact.
+    inline for (.{
+        .{ "tests/fixtures/stdlib/net_echo_app.k2", "exe_net_echo_app" },
+        .{ "tests/fixtures/stdlib/net_udp_app.k2", "exe_net_udp_app" },
+    }) |c| {
+        const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);
+        try std.testing.expectEqual(@as(u32, 42), code);
+    }
+}
+
+test "exe: #extern links against its C symbol (2nd arg), not its k2 name" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: an `#extern("lib", "CSym")` used to emit its k2 declaration name
+    // as the link symbol (so `mul_div` → undefined symbol `mul_div`). The 2nd
+    // `#extern` arg is now the real link name, so the k2 name is free to differ.
+    // Also: two externs with DIFFERENT k2 names may bind the SAME C symbol without
+    // colliding (distinct scope keys; LLVM dedups the one external decl).
+    const code = try compileAndRun(arena.allocator(),
+        \\#extern("kernel32", "MulDiv") mul_div :: fn(a: i32, b: i32, c: i32) -> i32;
+        \\#extern("kernel32", "MulDiv") scale   :: fn(a: i32, b: i32, c: i32) -> i32;
+        \\#entry
+        \\main :: fn() -> i32 {
+        \\    x := mul_div(6, 7, 1);   // round(42/1)  = 42
+        \\    y := scale(84, 1, 2);    // round(84/2)  = 42
+        \\    if x != y { return 1; }  // both reach the same MulDiv
+        \\    return x;
+        \\}
+    , "exe_extern_rename");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: generic fn instantiated for two distinct struct types stays distinct" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
@@ -2127,4 +2170,68 @@ test "exe: generic-struct compound literal at a concrete instantiation in a non-
         \\}
     , "exe_generic_struct_literal_nongeneric");
     try std.testing.expectEqual(@as(u32, 17), code);
+}
+
+test "exe: `==`/`!=` on `[]const u8` compares contents" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `s == t` on string slices used to lower to `icmp eq { ptr, i64 }` — an
+    // aggregate compare LLVM rejects. Now it compares CONTENTS: length first,
+    // then byte-wise (the match string-pattern lowering). Covers literal==literal
+    // (`"a"=="a"` true, `"a"=="b"` false, `"ab"=="a"` false — different length),
+    // local-vs-literal both orders, local-vs-local (dynamic loop), and `!=`.
+    // The boolean checks dodge the 8-bit exit-code truncation; failure pinpoints.
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    if !("a" == "a") { return 2; }
+        \\    if   "a" == "b"  { return 3; }
+        \\    if   "ab" == "a" { return 4; }
+        \\    if   "a" != "a"  { return 5; }
+        \\    if !("a" != "b") { return 6; }
+        \\    a: []const u8 = "abc";
+        \\    b: []const u8 = "abc";
+        \\    c: []const u8 = "abd";
+        \\    d: []const u8 = "ab";
+        \\    if !(a == b)    { return 7; }   // local == local, equal
+        \\    if   a == c     { return 8; }   // same length, last byte differs
+        \\    if   a == d     { return 9; }   // different length
+        \\    if !(a == "abc"){ return 10; }  // local == literal
+        \\    if !("abc" == a){ return 11; }  // literal == local
+        \\    if !(a != c)    { return 12; }  // != differing
+        \\    if   a != b     { return 13; }  // != equal
+        \\    return 1;
+        \\}
+    , "exe_string_eq");
+    try std.testing.expectEqual(@as(u32, 1), code);
+}
+
+test "exe: `[]const u8` `==` folds at compile time (`#run` / `#compiler` use)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The comptime VM runs the same IR, so string `==` must fold there too — a
+    // `#compiler` hook does `if d.derives == "Sum"`. `cmp` (one literal operand →
+    // `lowerStringEq`) and `cmp2` (both operands runtime → the dynamic loop) both
+    // fold via `#run`. 8-bit exit code is fine here (all values < 256).
+    const code = try compileAndRun(arena.allocator(),
+        \\cmp  :: fn(s: []const u8) -> i32 { if s == "Sum" { return 42; } return 0; }
+        \\cmp2 :: fn(a: []const u8, b: []const u8) -> i32 { if a == b { return 7; } return 0; }
+        \\HIT  :: #run cmp("Sum");            // 42  (literal path)
+        \\MISS :: #run cmp("Nope");           // 0
+        \\EQ   :: #run cmp2("hello", "hello");// 7   (dynamic path)
+        \\NE   :: #run cmp2("hello", "world");// 0
+        \\LEN  :: #run cmp2("hi", "hello");   // 0   (different length)
+        \\main :: fn() -> i32 {
+        \\    if HIT != 42 { return 2; }
+        \\    if MISS != 0 { return 3; }
+        \\    if EQ != 7   { return 4; }
+        \\    if NE != 0   { return 5; }
+        \\    if LEN != 0  { return 6; }
+        \\    return 1;
+        \\}
+    , "exe_string_eq_comptime");
+    try std.testing.expectEqual(@as(u32, 1), code);
 }
