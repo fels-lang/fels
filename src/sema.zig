@@ -708,6 +708,56 @@ pub fn fromBuiltinName(name: []const u8) ?Ty {
     return null;
 }
 
+/// The spellable built-in type names, used to offer a "did you mean" when an
+/// unknown type is referenced. (Not exhaustive — just the ones a user types.)
+const builtin_type_names = [_][]const u8{
+    "i8",   "i16",  "i32",  "i64",  "isize",
+    "u8",   "u16",  "u32",  "u64",  "usize",
+    "f32",  "f64",  "bool", "byte", "void",
+    "addr", "Text", "Rune", "Writer", "Reader",
+};
+
+/// If `name` is an integer-type spelling (`u<N>` / `i<N>`), return its width.
+/// Used to give a tailored message for unsupported widths like `u128`.
+fn intWidthName(name: []const u8) ?struct { signed: bool, bits: u32 } {
+    if (name.len < 2) return null;
+    const signed = switch (name[0]) {
+        'i' => true,
+        'u' => false,
+        else => return null,
+    };
+    var bits: u32 = 0;
+    for (name[1..]) |ch| {
+        if (ch < '0' or ch > '9') return null;
+        bits = bits * 10 + (ch - '0');
+        if (bits > 100000) return null; // absurd width — stop accumulating
+    }
+    return .{ .signed = signed, .bits = bits };
+}
+
+/// Classic Levenshtein edit distance, capped to short identifiers (anything
+/// longer than the scratch rows is treated as "far"). Drives type suggestions.
+fn levenshtein(a: []const u8, b: []const u8) usize {
+    if (a.len == 0) return b.len;
+    if (b.len == 0) return a.len;
+    if (b.len + 1 > 64) return @max(a.len, b.len);
+    var prev: [64]usize = undefined;
+    var curr: [64]usize = undefined;
+    var j: usize = 0;
+    while (j <= b.len) : (j += 1) prev[j] = j;
+    var i: usize = 0;
+    while (i < a.len) : (i += 1) {
+        curr[0] = i + 1;
+        var k: usize = 0;
+        while (k < b.len) : (k += 1) {
+            const cost: usize = if (a[i] == b[k]) 0 else 1;
+            curr[k + 1] = @min(@min(curr[k] + 1, prev[k + 1] + 1), prev[k] + cost);
+        }
+        @memcpy(prev[0 .. b.len + 1], curr[0 .. b.len + 1]);
+    }
+    return prev[b.len];
+}
+
 pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) SemanticError!SymbolTable {
     var table = try SymbolTable.init(allocator);
     errdefer table.deinit(allocator);
@@ -4442,6 +4492,50 @@ const Checker = struct {
         return null;
     }
 
+    /// The closest known type name to `name` (a built-in or a user-declared
+    /// type), within a small edit distance — for "did you mean `X`?" hints.
+    /// Returns null when nothing is close enough to be a likely typo.
+    fn suggestTypeName(self: *Checker, name: []const u8) ?[]const u8 {
+        var best: ?[]const u8 = null;
+        var best_dist: usize = 3; // only suggest within 2 edits
+        const consider = struct {
+            fn f(cand: []const u8, target: []const u8, b: *?[]const u8, bd: *usize) void {
+                const d = levenshtein(target, cand);
+                if (d < bd.*) {
+                    bd.* = d;
+                    b.* = cand;
+                }
+            }
+        }.f;
+        for (builtin_type_names) |cand| consider(cand, name, &best, &best_dist);
+        for (self.symbols.symbols.items) |sym| {
+            if (sym.kind == .type) consider(sym.name, name, &best, &best_dist);
+        }
+        // Reject suggestions that are a large fraction of the name (avoids
+        // nonsense like suggesting `u8` for a 3-letter typo).
+        if (best) |b| if (best_dist * 2 > @max(name.len, b.len)) return null;
+        return best;
+    }
+
+    /// Diagnose a type name that resolved to nothing: a tailored message for an
+    /// unsupported integer width (`u128`), otherwise "unknown type" + a hint.
+    fn reportUnknownType(self: *Checker, name: []const u8, span: Span) void {
+        if (intWidthName(name)) |w| {
+            const p: []const u8 = if (w.signed) "i" else "u";
+            if (w.bits > 64) {
+                self.emitError(span, "unsupported integer width `{s}`: k2 integers are at most 64-bit — use `{s}64` or `{s}size`", .{ name, p, p });
+            } else {
+                self.emitError(span, "unsupported integer width `{s}`: k2 has `{s}8`, `{s}16`, `{s}32`, `{s}64` (and `{s}size`), plus sub-byte `{s}1`–`{s}7`", .{ name, p, p, p, p, p, p, p });
+            }
+            return;
+        }
+        if (self.suggestTypeName(name)) |hint| {
+            self.emitError(span, "unknown type `{s}`; did you mean `{s}`?", .{ name, hint });
+        } else {
+            self.emitError(span, "unknown type `{s}`", .{name});
+        }
+    }
+
     fn typeFromRef(self: *Checker, ty: ast.TypeRef) SemanticError!Ty {
         switch (ty) {
             .type_param => |tp| {
@@ -4452,10 +4546,16 @@ const Checker = struct {
                 // never a type param, `Self`, or a built-in scalar.
                 if (named.namespace == null) {
                     if (self.resolveTypeParam(named.name)) |tp_ty| return tp_ty;
-                    if (std.mem.eql(u8, named.name, "Self")) return self.current_self_ty orelse error.SemanticFailed;
+                    if (std.mem.eql(u8, named.name, "Self")) return self.current_self_ty orelse {
+                        self.emitError(named.span, "`Self` is only valid inside a method or a type body", .{});
+                        return error.SemanticFailed;
+                    };
                 }
                 if (self.resolveTypeSymbol(named.namespace, named.name)) |id| {
-                    if (self.symbols.symbol(id).kind != .type) return error.SemanticFailed;
+                    if (self.symbols.symbol(id).kind != .type) {
+                        self.emitError(named.span, "`{s}` is not a type (it is a {s})", .{ named.name, self.symbols.symbol(id).kind.label() });
+                        return error.SemanticFailed;
+                    }
                     // Transparent alias: resolve to the underlying type (transitively).
                     if (self.env.alias_refs.get(id)) |aliased| {
                         if (self.alias_depth > 32) {
@@ -4468,8 +4568,14 @@ const Checker = struct {
                     }
                     return .{ .named = id };
                 }
-                if (named.namespace != null) return error.SemanticFailed;
-                return fromBuiltinName(named.name) orelse error.SemanticFailed;
+                if (named.namespace) |ns| {
+                    self.emitError(named.span, "unknown type `{s}::{s}`", .{ ns, named.name });
+                    return error.SemanticFailed;
+                }
+                return fromBuiltinName(named.name) orelse {
+                    self.reportUnknownType(named.name, named.span);
+                    return error.SemanticFailed;
+                };
             },
             .pointer => |ptr| {
                 const inner = try self.typeFromRef(ptr.inner.*);
@@ -4513,10 +4619,26 @@ const Checker = struct {
             .inferred => .error_ty,
             .named => |named| blk: {
                 if (std.mem.eql(u8, named.name, "void")) break :blk .error_ty;
-                const id = self.resolveSymbol(named.name) orelse return error.SemanticFailed;
-                if (self.symbols.symbol(id).kind != .type) return error.SemanticFailed;
-                const layout = self.env.layouts.get(id) orelse return error.SemanticFailed;
-                if (layout.kind != .error_set) return error.SemanticFailed;
+                const id = self.resolveSymbol(named.name) orelse {
+                    if (self.suggestTypeName(named.name)) |hint| {
+                        self.emitError(named.span, "unknown error type `{s}`; did you mean `{s}`?", .{ named.name, hint });
+                    } else {
+                        self.emitError(named.span, "unknown error type `{s}`", .{named.name});
+                    }
+                    return error.SemanticFailed;
+                };
+                if (self.symbols.symbol(id).kind != .type) {
+                    self.emitError(named.span, "`{s}` is not an error type (it is a {s})", .{ named.name, self.symbols.symbol(id).kind.label() });
+                    return error.SemanticFailed;
+                }
+                const layout = self.env.layouts.get(id) orelse {
+                    self.emitError(named.span, "`{s}` is not an error type", .{named.name});
+                    return error.SemanticFailed;
+                };
+                if (layout.kind != .error_set) {
+                    self.emitError(named.span, "`{s}` is not an error type (declare it with `errors {{ ... }}`)", .{named.name});
+                    return error.SemanticFailed;
+                }
                 break :blk .{ .named = id };
             },
             .inline_set => |set| .{ .error_set = try self.errorVariantsFromDecl(set.variants) },
