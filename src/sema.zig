@@ -2924,7 +2924,13 @@ const Checker = struct {
                 try self.env.extension_calls.put(call.callee.id, extension.id);
                 const extension_call = try self.extensionCall(call, fld.base.*, extension.sig);
                 if (extension.sig.type_params.len > 0) {
-                    return try self.inferGenericCallImpl(extension.id, fld.name, extension.sig, extension_call, true);
+                    // Mangle the generic instantiation off the method's STRUCT-
+                    // qualified name (`Vec.push`), not the bare member (`push`):
+                    // two generic structs sharing a method name + type arg would
+                    // otherwise collide on one symbol (`push__T_i32`) and emit
+                    // calls with mismatched arity.
+                    const qualified = self.symbols.symbol(extension.id).name;
+                    return try self.inferGenericCallImpl(extension.id, qualified, extension.sig, extension_call, true);
                 }
                 return try self.inferDirectCallImpl(extension.id, fld.name, extension.sig, extension_call, true);
             }
