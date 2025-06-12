@@ -133,3 +133,52 @@ test "diagnostics: renderDiagnostic produces correct format" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "test message") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "^^^") != null);
 }
+
+/// Return the first `error`-level diagnostic message for `src`, type-checking in
+/// tolerant mode so the diagnostics survive even though checking fails. Lets the
+/// tests below assert the *text* of an error, not just that one occurred.
+fn firstError(arena: std.mem.Allocator, src: []const u8) !?[]const u8 {
+    const mod = try k2.parseSource(arena, "t.k2", src);
+    var syms = try k2.sema_mod.collectSymbols(arena, mod);
+    const env = try k2.sema_mod.checkTypesTolerant(arena, mod, &syms, src, "t.k2");
+    for (env.diagnostics.items) |d| {
+        if (d.kind == .err) return d.message;
+    }
+    return null;
+}
+
+test "diagnostics: unknown type is reported, never 'no further details'" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // u128/i128 → a tailored "unsupported integer width" message (used to fail
+    // silently with the catch-all "semantic error (no further details)").
+    try std.testing.expect(std.mem.indexOf(u8,
+        (try firstError(a, "main :: fn() -> i32 { x: u128 = 0u64; return 0; }")).?,
+        "unsupported integer width `u128`") != null);
+    try std.testing.expect(std.mem.indexOf(u8,
+        (try firstError(a, "main :: fn() -> i32 { x: i128 = 0i64; return 0; }")).?,
+        "at most 64-bit") != null);
+
+    // A non-standard width still gets a clear message (not the catch-all).
+    try std.testing.expect(std.mem.indexOf(u8,
+        (try firstError(a, "main :: fn() -> i32 { x: u9 = 0u8; return 0; }")).?,
+        "unsupported integer width `u9`") != null);
+
+    // An unknown type close to a known one suggests it.
+    const typo = (try firstError(a,
+        "Point :: struct { x: i32 }\nmain :: fn() -> i32 { p: Poimt = .{0}; return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, typo, "unknown type `Poimt`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, typo, "did you mean `Point`?") != null);
+
+    // A value used in type position names what it actually is.
+    try std.testing.expect(std.mem.indexOf(u8,
+        (try firstError(a, "foo :: fn() {}\nmain :: fn() -> i32 { x: foo = 0; return 0; }")).?,
+        "`foo` is not a type") != null);
+
+    // An unknown error type after `!` is reported, not swallowed.
+    try std.testing.expect(std.mem.indexOf(u8,
+        (try firstError(a, "f :: fn() -> i32 ! Ooops { return 0; }")).?,
+        "unknown error type `Ooops`") != null);
+}
