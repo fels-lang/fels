@@ -1,20 +1,25 @@
 // std.net end-to-end over loopback: a TCP echo server runs in its own thread; the
-// main thread connects, sends, and verifies the echoed bytes. Exercises std.net
-// (sockets + in-struct methods + fallible returns), std.net.addr, and std.thread
-// together. Returns 42.
+// main thread connects, sends, and verifies the echoed bytes. Exercises the layered
+// std.net (os → socket → tcp), std.net.addr, and std.thread together. Returns 42.
+//
+// Uses the deeper TCP surface: `send_all` (no short writes), `accept` returning the
+// peer address, and `local_addr` to discover the OS-chosen ephemeral port.
 #import std.net as net;
 #import std.net.addr as addr;
+#import std.net.tcp as tcp;
 #import std.thread as thread;
 
 PORT :: 17981;
 
 // Server: accept one client, echo what it sends, then close.
 server_fn :: fn(p: *void) -> u32 {
-    ln := unsafe (p as *net::TcpListener);
-    conn := ln.accept() catch e { return 1u32; };
+    ln := unsafe (p as *tcp::TcpListener);
+    a := ln.accept() catch e { return 1u32; };      // a.stream + a.peer
+    conn := a.stream;
+    if !a.peer.ip.is_loopback() { return 9u32; }     // client came from 127.x
     buf: [64]u8 = .{};
     n := conn.recv(buf[:]) catch e { return 2u32; };
-    ignored := conn.send(buf[0..n]) catch e {};
+    conn.send_all(buf[0..n]) catch e { return 3u32; };
     conn.close();
     return 0u32;
 }
@@ -23,12 +28,17 @@ server_fn :: fn(p: *void) -> u32 {
 main :: fn() -> i32 {
     net::init() catch e { return 1; };
     sa := addr::socket_addr(addr::localhost(), PORT as u16);
-    ln := net::serve(sa) catch e { return 2; };
+    ln := net::listen(sa) catch e { return 2; };
+
+    // local_addr resolves the bound address (same port we asked for).
+    la := ln.local_addr() catch e { return 8; };
+    if la.port != PORT as u16 { return 9; }
+
     t := thread::spawn(core::fn_ptr(server_fn), unsafe ((&ln) as *void));
     thread::sleep(50u32);                       // let the server reach accept()
 
-    cl := net::dial(sa) catch e { return 3; };
-    ignored := cl.send("hello net") catch e { return 4; };
+    cl := net::connect(sa) catch e { return 3; };
+    cl.send_all("hello net") catch e { return 4; };
     buf: [64]u8 = .{};
     n := cl.recv(buf[:]) catch e { return 5; };  // the echo
     cl.close();

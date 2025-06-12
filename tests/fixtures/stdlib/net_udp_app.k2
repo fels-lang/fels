@@ -1,0 +1,45 @@
+// std.net.udp end-to-end over loopback: a UDP echo server runs in its own thread;
+// the main thread sends a datagram and verifies the reply. Exercises os → socket →
+// udp (bind / recv_from / send_to / connected send+recv) and std.net.addr. Returns 42.
+#import std.net as net;
+#import std.net.addr as addr;
+#import std.net.udp as udp;
+#import std.thread as thread;
+
+PORT :: 18421;
+
+// Server: receive one datagram, echo it back to whoever sent it, then stop.
+server_fn :: fn(p: *void) -> u32 {
+    s := unsafe (p as *udp::UdpSocket);
+    buf: [64]u8 = .{};
+    d := s.recv_from(buf[:]) catch e { return 1u32; };   // d.len + d.from
+    if !d.from.ip.is_loopback() { return 2u32; }          // came from 127.x
+    ignored := s.send_to(buf[0..d.len], d.from) catch e { return 3u32; };
+    return 0u32;
+}
+
+#entry
+main :: fn() -> i32 {
+    net::init() catch e { return 1; };
+    sa := addr::socket_addr(addr::localhost(), PORT as u16);
+
+    srv := net::udp_bind(sa) catch e { return 2; };
+    t := thread::spawn(core::fn_ptr(server_fn), unsafe ((&srv) as *void));
+    thread::sleep(50u32);                       // let the server reach recv_from
+
+    // Client: connect (fix the peer), then plain send/recv.
+    cl := udp::unbound() catch e { return 3; };
+    cl.connect(sa) catch e { return 4; };
+    ignored := cl.send("udp ping") catch e { return 5; };
+    buf: [64]u8 = .{};
+    n := cl.recv(buf[:]) catch e { return 6; };
+
+    cl.close();
+    ig := t.join();
+    srv.close();
+    net::shutdown();
+
+    if n != 8usize { return 7; }                            // "udp ping"
+    if buf[0] != 117u8 || buf[4] != 112u8 { return 8; }     // 'u' .. 'p'
+    return 42;
+}

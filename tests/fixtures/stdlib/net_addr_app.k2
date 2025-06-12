@@ -27,5 +27,16 @@ main :: fn() -> i32 {
     if s.len != 14usize { return 6; }                    // "127.0.0.1:8080"
     if s[0] != 49u8 || s[9] != 58u8 || s[10] != 56u8 { return 7; }  // '1' ':' '8'
 
+    // Classification helpers (bind to locals — UFCS auto-ref needs an lvalue).
+    if !lo.is_loopback() { return 8; }
+    anyip := net::any();
+    if !anyip.is_unspecified() { return 9; }
+    bc := net::broadcast();
+    if bc.is_loopback() { return 10; }
+
+    // to_net / from_net round-trip through the packed network-order word.
+    rt := net::from_net(p.to_net());
+    if !rt.eq(&p) { return 11; }                          // 192.168.1.7 survives
+
     return 42;
 }
