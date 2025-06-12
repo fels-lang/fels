@@ -197,13 +197,24 @@ g.join_all();                    // wait for all
 > Thread pools and channels build on a future `std.sync` (Mutex/CondVar); for now
 > coordinate with `std.atomics`. See `tests/fixtures/stdlib/thread_app.k2`.
 
-## `std.net` and `std.net.addr`
-TCP networking over Winsock2, spread across two files (a subdirectory module):
-`std.net.addr` for addresses, `std.net` for sockets. It leans on the newer language
-features — in-struct methods, `#derive`, and `!`-fallible returns.
+## `std.net` — networking
+TCP and UDP over Winsock2, layered across a subdirectory module so each piece stays
+small and focused. From the bottom up:
 
-**`std.net.addr`** — `IpV4` (`#derive(Eq)` + a hand-written `format` rendering a
-dotted quad) and `SocketAddr` (whose derived `Eq` recurses into `IpV4.eq`):
+| Module | What it gives you |
+| --- | --- |
+| `std.net.os` | Raw `ws2_32` `#extern` bindings, protocol constants, the `sockaddr_in` wire struct, the shared `NetError`, and `addr ⇄ wire` conversions. The foundation; reach for it directly only for an option the upper layers don't expose. |
+| `std.net.addr` | `IpV4` / `SocketAddr` — parse, format, classify (`is_loopback`/`is_unspecified`), `to_net`/`from_net`, `#derive(Eq)`. |
+| `std.net.socket` | `Socket`: the typed handle and the options shared by every protocol (`set_recv_timeout`/`set_send_timeout`, `set_reuse_addr`, `set_broadcast`, `set_nonblocking`, `shutdown`, `bind_to`, `local_addr`). |
+| `std.net.tcp` | `TcpStream` / `TcpListener` — streams plus `send_all` / `recv_exact`, `set_nodelay`, `accept` returning the peer address. |
+| `std.net.udp` | `UdpSocket` — datagrams (`send_to` / `recv_from`) and the connected `connect`+`send`/`recv` shortcut. |
+| `std.net` | A thin facade re-exporting the lifecycle (`init` / `shutdown` / `last_error`) and the constructors (`connect` / `listen` / `udp_bind`). |
+
+It leans on the newer language features throughout — in-struct methods, `#derive`,
+and `!`-fallible returns. Every layer fails with the one shared `os::NetError`.
+
+**Addresses** (`std.net.addr`) — `IpV4` (`#derive(Eq)` + a hand-written `format`
+rendering a dotted quad) and `SocketAddr` (whose derived `Eq` recurses into `IpV4.eq`):
 ```k2
 #import std.net.addr as addr;
 ip  := addr::parse("127.0.0.1") catch e { ... };   // fallible
@@ -211,31 +222,48 @@ sa  := addr::socket_addr(addr::localhost(), 8080u16);
 sa.format(&sb);                                      // "127.0.0.1:8080"
 ```
 
-**`std.net`** — `init()` (call once), then `dial(addr)` / `serve(addr)`:
+**TCP** — `init()` once, then `connect(addr)` / `listen(addr)`:
 ```k2
 #import std.net as net;
+#import std.net.addr as addr;
+#import std.net.tcp as tcp;          // for the TcpStream / TcpListener types
 
 net::init() catch e { return; };
 
 // client
-s := net::dial(net::socket_addr(net::localhost(), 8080u16)) catch e { return; };
-ignored := s.send("ping") catch e {};
-n := s.recv(buf[:]) catch e {};
+s := net::connect(addr::socket_addr(addr::localhost(), 8080u16)) catch e { return; };
+s.send_all("ping") catch e {};       // loops over short writes
+n := s.recv(buf[:]) catch e {};      // 0 = peer closed
 s.close();
 
 // server
-ln := net::serve(addr) catch e { return; };
-conn := ln.accept() catch e { return; };   // blocks for a client
+ln := net::listen(sa) catch e { return; };
+a  := ln.accept() catch e { return; };   // a.stream + a.peer (blocks for a client)
 ```
 
-- **`TcpStream`** (methods): `send(data) -> usize`, `recv(buf) -> usize` (0 = closed),
-  `close()`.
-- **`TcpListener`** (methods): `accept() -> TcpStream`, `close()`.
-- **Free fns:** `init()`, `shutdown()`, `dial(addr)`, `serve(addr)` — all `! NetError`.
+**UDP** — connectionless datagrams, or `connect` to pin a default peer:
+```k2
+#import std.net.udp as udp;
 
-> A complete loopback TCP echo (server thread + client round-trip, combining net +
-> thread + addr) is in `tests/fixtures/stdlib/net_echo_app.k2`. UDP, DNS
-> (`getaddrinfo`), and a small HTTP client are the natural next additions.
+srv := udp::bind(addr::socket_addr(addr::any(), 9000u16)) catch e { return; };
+d   := srv.recv_from(buf[:]) catch e { return; };   // d.len + d.from
+ignored := srv.send_to("pong", d.from) catch e {};  // reply to sender
+```
+
+- **`TcpStream`**: `send`/`send_all`, `recv`/`recv_exact`, `set_nodelay`,
+  `set_read_timeout`/`set_write_timeout`, `local_addr`, `shutdown_write`, `close`.
+- **`TcpListener`**: `accept() -> Accepted{stream, peer}`, `accept_stream()`, `local_addr`, `close`.
+- **`UdpSocket`**: `send_to`/`recv_from`, `connect`+`send`/`recv`, `set_broadcast`,
+  `set_read_timeout`, `local_addr`, `close`.
+- Types live in their submodule (`tcp::TcpStream`, `udp::UdpSocket`, …) because the
+  language doesn't re-export a type across modules; the facade hands those types
+  back, so you only need the submodule import for a type annotation.
+- The raw Winsock bindings keep a `sys_` prefix; the `#extern` 2nd arg is the real
+  link symbol, so the k2 name is free to differ from the C name.
+
+> Loopback round-trips combining net + thread + addr are in
+> `tests/fixtures/stdlib/net_echo_app.k2` (TCP echo) and `net_udp_app.k2` (UDP echo).
+> DNS (`getaddrinfo`) and a small HTTP client are the natural next additions.
 
 ## Game & graphics modules
 
