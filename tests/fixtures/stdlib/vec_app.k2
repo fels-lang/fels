@@ -1,0 +1,48 @@
+// std.vec — `Vec(T)` (managed, region-bound) and `VecUnmanaged(T)` (region passed
+// per call). Exercises push/insert/remove/remove_swap/pop/reserve/extend, the
+// cross-region `clone_into`, and the unmanaged twin — all in one program, which
+// also pins the generic-method mangling fix (Vec/VecUnmanaged share method names
+// + the `i32` type arg, and must NOT collide on one symbol). Returns 42.
+#import std.heap as heap;
+#import std.vec as vec;
+
+#entry
+main :: fn() -> i32 {
+    a := heap::make();
+    v := vec::make(i32, &a);
+    v.push(10); v.push(20); v.push(30);
+    if v.len() != 3usize { return 1; }
+    if v.get(1) != 20 { return 2; }
+
+    total: i32 = 0;
+    for x in v.items() { total += x; }
+    if total != 60 { return 3; }
+
+    v.insert(1, 15);                         // [10,15,20,30]
+    if v.get(1) != 15 || v.len() != 4usize { return 4; }
+    if v.remove(0) != 10 || v.get(0) != 15 { return 5; }   // [15,20,30]
+    if v.remove_swap(1) != 20 || v.len() != 2usize { return 6; }  // [15,30]
+    if v.pop() != 30 { return 7; }           // [15]
+    v.reserve(100usize);
+    if v.cap() < 100usize { return 8; }
+
+    more: [3]i32 = .{ 1, 2, 3 };
+    v.extend(more[:]);                       // [15,1,2,3]
+
+    // clone into a SECOND region, then wipe the first — the clone must survive.
+    b := heap::make();
+    w := v.clone_into(&b);
+    a.reset();
+    if w.len() != 4usize { return 9; }
+    if w.get(0) != 15 || w.get(3) != 3 { return 10; }
+
+    // Unmanaged twin: the region is threaded through each growing call.
+    u: vec::VecUnmanaged(i32) = vec::empty(i32);
+    u.push(&b, 7); u.push(&b, 8); u.push(&b, 9);
+    usum: i32 = 0;
+    for y in u.items() { usum += y; }
+    if usum != 24 { return 11; }
+    if u.pop() != 9 { return 12; }
+
+    return 42;
+}

@@ -1,0 +1,52 @@
+// std.map — `AutoHashMap(K, V)` (byte-hashed, any value-type key) and `StrMap(V)`
+// (string keys hashed/compared by content). Exercises growth across many inserts,
+// overwrite-vs-new, absent→null, contains, remove + tombstone reuse, struct keys,
+// and a runtime-rebuilt string key matching by content. Returns 42.
+#import std.heap as heap;
+#import std.map as map;
+
+Point :: struct { x: i32, y: i32 }
+
+#entry
+main :: fn() -> i32 {
+    a := heap::make();
+
+    // AutoHashMap, i32 keys — force several grows.
+    m := map::auto(i32, i32, &a);
+    n: i32 = 0;
+    while n < 100 { m.put(n, n * 10); n += 1; }
+    if m.len() != 100usize { return 1; }
+    if m.get(42)!! != 420 { return 2; }
+    m.put(42, 999);                           // overwrite, not a new entry
+    if m.get(42)!! != 999 || m.len() != 100usize { return 3; }
+    if m.get(1000) != null { return 4; }
+    if !m.contains(7) { return 5; }
+    if !m.remove(7) || m.contains(7) || m.len() != 99usize { return 6; }
+    if m.remove(7) { return 7; }              // already gone
+    m.put(7, 77);                             // reuses the tombstone
+    if m.get(7)!! != 77 || m.len() != 100usize { return 8; }
+
+    // AutoHashMap, struct keys (hashed by raw bytes).
+    pm := map::auto(Point, i32, &a);
+    k12: Point = .{ 1, 2 };
+    k34: Point = .{ 3, 4 };
+    k99: Point = .{ 9, 9 };
+    pm.put(k12, 12); pm.put(k34, 34);
+    if pm.get(k12)!! != 12 || pm.get(k34)!! != 34 { return 9; }
+    if pm.get(k99) != null { return 10; }
+
+    // StrMap, content keys.
+    sm := map::strmap(i32, &a);
+    sm.put("alpha", 1); sm.put("beta", 2); sm.put("gamma", 3);
+    sm.put("alpha", 11);                      // overwrite by content
+    if sm.get("alpha")!! != 11 || sm.get("beta")!! != 2 { return 11; }
+    if sm.get("delta") != null || sm.len() != 3usize { return 12; }
+    if !sm.remove("beta") || sm.contains("beta") { return 13; }
+
+    // A key rebuilt at runtime (different address, same bytes) still hits.
+    buf: [5]u8 = .{ 97u8, 108u8, 112u8, 104u8, 97u8 };   // "alpha"
+    rebuilt: []const u8 = buf[:];
+    if sm.get(rebuilt)!! != 11 { return 14; }
+
+    return 42;
+}

@@ -1632,10 +1632,35 @@ test "exe: std.path / std.time / std.crypto / std.serde run correctly cross-modu
         .{ "tests/fixtures/lang/user_derive_app.k2", "exe_user_derive_app" },
         .{ "tests/fixtures/stdlib/thread_app.k2", "exe_thread_app" },
         .{ "tests/fixtures/stdlib/net_addr_app.k2", "exe_net_addr_app" },
+        .{ "tests/fixtures/stdlib/vec_app.k2", "exe_vec_app" },
+        .{ "tests/fixtures/stdlib/map_app.k2", "exe_map_app" },
     }) |c| {
         const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);
         try std.testing.expectEqual(@as(u32, 42), code);
     }
+}
+
+test "exe: two generic structs sharing a method name + type arg don't collide" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A generic in-struct method used to mangle off the bare member name, so
+    // `Box(i32).get` and `Cell(i32).get` both became `get__T_i32` — one
+    // definition won and the other call passed mismatched arity (LLVM verify
+    // error / miscompile). They must be distinct symbols now. `Box.get` takes no
+    // extra arg, `Cell.get` takes one — different arity makes the collision fatal.
+    const code = try compileAndRun(arena.allocator(),
+        \\Box  :: struct($T: type) { v: T   pub get :: fn(self: *Self) -> T { return self.v; } }
+        \\Cell :: struct($T: type) { v: T   pub get :: fn(self: *Self, add: T) -> T { return self.v + add; } }
+        \\#entry
+        \\main :: fn() -> i32 {
+        \\    b: Box(i32)  = .{ 40 };
+        \\    c: Cell(i32) = .{ 1 };
+        \\    return b.get() + c.get(1);   // 40 + (1+1) = 42
+        \\}
+    , "exe_generic_method_no_collision");
+    try std.testing.expectEqual(@as(u32, 42), code);
 }
 
 test "exe: std.net layered TCP + UDP loopback round-trips (os/socket/tcp/udp)" {
