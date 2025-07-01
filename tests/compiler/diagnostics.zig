@@ -182,3 +182,29 @@ test "diagnostics: unknown type is reported, never 'no further details'" {
         (try firstError(a, "f :: fn() -> i32 ! Ooops { return 0; }")).?,
         "unknown error type `Ooops`") != null);
 }
+
+test "diagnostics: invalid integer/float literal width suffix is reported" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `0u128`: an over-wide suffix on a literal used to be silently dropped
+    // (collapsing to i32); now it errors like the type-side `u128`.
+    try std.testing.expect(std.mem.indexOf(u8,
+        (try firstError(a, "main :: fn() -> i32 { x := 0u128; return 0; }")).?,
+        "unsupported integer width `u128`") != null);
+
+    // A non-standard width on a literal is flagged, not swallowed.
+    try std.testing.expect(std.mem.indexOf(u8,
+        (try firstError(a, "main :: fn() -> i32 { x := 0u9; return 0; }")).?,
+        "unsupported integer width `u9`") != null);
+
+    // The float side is symmetric — only `f32`/`f64` are valid widths.
+    try std.testing.expect(std.mem.indexOf(u8,
+        (try firstError(a, "main :: fn() -> i32 { x := 3.0f16; return 0; }")).?,
+        "unsupported float width `f16`") != null);
+
+    // A hex literal that legitimately ends in letters is NOT a bad suffix.
+    try std.testing.expect((try firstError(a,
+        "main :: fn() -> i32 { return 0xABC; }")) == null);
+}

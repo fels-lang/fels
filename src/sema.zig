@@ -2530,8 +2530,21 @@ const Checker = struct {
                 break :blk to_ty;
             },
             .type_ref => |type_ref| try self.typeFromRef(type_ref),
-            .int => |text| intLiteralType(text),
-            .float => |text| floatLiteralType(text),
+            .int => |text| blk: {
+                // A suffix-shaped trailing segment that isn't a real width is a
+                // mistake (`0u128`, `0u9`), not a polymorphic literal — flag it
+                // rather than silently dropping the suffix.
+                const suffix = intLiteralSuffix(text);
+                if (suffix.len != 0 and !isValidIntSuffix(suffix))
+                    self.reportUnknownType(suffix, expr.span);
+                break :blk intLiteralType(text);
+            },
+            .float => |text| blk: {
+                const suffix = floatLiteralSuffix(text);
+                if (suffix.len != 0 and !std.mem.eql(u8, suffix, "f32") and !std.mem.eql(u8, suffix, "f64"))
+                    self.emitError(expr.span, "unsupported float width `{s}`: k2 floats are `f32` or `f64`", .{suffix});
+                break :blk floatLiteralType(text);
+            },
             .string => try self.sliceOf(.u8),
             .bool => .bool,
             .null => .null_ptr,
@@ -5245,6 +5258,54 @@ fn floatLiteralType(text: []const u8) Ty {
     if (std.mem.endsWith(u8, text, "f32")) return .f32;
     if (std.mem.endsWith(u8, text, "f64")) return .f64;
     return .float_lit;
+}
+
+/// The integer-literal suffixes k2 accepts (mirrors `intLiteralType`).
+const int_literal_suffixes = [_][]const u8{
+    "usize", "isize", "u64", "u32", "u16", "u8",
+    "i64",   "i32",   "i16", "i8",  "byte",
+};
+
+/// Split off an integer literal's trailing type-suffix (possibly empty) by
+/// consuming the numeric body in its own radix, mirroring the lexer's number
+/// scan. Splitting on the radix is what tells a real suffix from hex digits, so
+/// `0xABC` yields no suffix while `0xFFu32` / `0u128` yield `u32` / `u128`.
+fn intLiteralSuffix(text: []const u8) []const u8 {
+    var i: usize = 0;
+    var radix: u8 = 10;
+    if (text.len >= 2 and text[0] == '0' and (text[1] == 'x' or text[1] == 'X')) {
+        i = 2;
+        radix = 16;
+    } else if (text.len >= 2 and text[0] == '0' and (text[1] == 'b' or text[1] == 'B')) {
+        i = 2;
+        radix = 2;
+    }
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (ch == '_') continue;
+        const is_digit = switch (radix) {
+            16 => std.ascii.isHex(ch),
+            2 => ch == '0' or ch == '1',
+            else => std.ascii.isDigit(ch),
+        };
+        if (!is_digit) break;
+    }
+    return text[i..];
+}
+
+fn isValidIntSuffix(suffix: []const u8) bool {
+    for (int_literal_suffixes) |valid| if (std.mem.eql(u8, suffix, valid)) return true;
+    return false;
+}
+
+/// Split off a float literal's trailing type-suffix (possibly empty). k2 float
+/// literals are `<digits>.<digits>` so the suffix is whatever follows the
+/// fractional digits — only `f32`/`f64` are valid.
+fn floatLiteralSuffix(text: []const u8) []const u8 {
+    const dot = std.mem.indexOfScalar(u8, text, '.') orelse return "";
+    var i: usize = dot + 1;
+    while (i < text.len and (std.ascii.isDigit(text[i]) or text[i] == '_')) : (i += 1) {}
+    return text[i..];
 }
 
 fn parseArrayLen(expr: ast.Expr) u64 {
