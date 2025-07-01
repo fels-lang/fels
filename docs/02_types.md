@@ -35,6 +35,16 @@ Without a suffix, an integer literal's type is inferred from context. If no cont
 
 A suffix is authoritative: it fixes the literal's width even through inference. `x := 0i64` gives `x` a 64-bit slot — the `i64` is not narrowed back to the `i32` default. This matters for values that exceed 32 bits (e.g. addresses built with `usize`/`i64`), where a narrowed slot would silently truncate the value.
 
+Only the widths in the table above are valid suffixes (`i8`/`i16`/`i32`/`i64`/`isize`, their `u` twins, and `byte`). An unsupported or malformed width is a compile error rather than a silently-dropped suffix:
+
+```k2
+x := 0u128;   // error: unsupported integer width `u128`: k2 integers are at most 64-bit — use `u64` or `usize`
+y := 0u9;     // error: unsupported integer width `u9`: ...
+z := 3.0f16;  // error: unsupported float width `f16`: k2 floats are `f32` or `f64`
+```
+
+A hex literal that legitimately ends in letters (`0xABC`, `0xFF`) is *not* a bad suffix — the suffix is split off only after the radix's digits, so hex digits are never mistaken for a width. Float literals accept only `f32`/`f64`.
+
 #### Wrapping Arithmetic
 
 Plain `+`, `-`, `*` trap on signed/unsigned overflow in debug builds (catching bugs
