@@ -111,6 +111,9 @@ pub fn main(init: std.process.Init) u8 {
     // `k2 bindgen <header.h>` generates K2 FFI bindings from a C header.
     if (std.mem.eql(u8, cmd, "bindgen")) return cmdBindgen(allocator, io, args[2..]);
 
+    // `k2 lsp` starts the language server (JSON-RPC over stdio). No source file.
+    if (std.mem.eql(u8, cmd, "lsp")) return k2.runLsp(allocator, io);
+
     if (args.len < 3) {
         std.debug.print("k2: '{s}' needs a source file\n\n", .{cmd});
         printUsage();

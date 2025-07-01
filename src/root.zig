@@ -40,6 +40,7 @@ pub const compileMulti = pipeline.compileMulti;
 pub const compileFile = pipeline.compileFile;
 pub const compileFileWithRuntime = pipeline.compileFileWithRuntime;
 pub const FrontEnd = pipeline.FrontEnd;
+pub const runLsp = @import("lsp.zig").run;
 pub const NodeId = ast.NodeId;
 pub const SymbolKind = sema.SymbolKind;
 pub const SymbolTable = sema.SymbolTable;
