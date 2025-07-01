@@ -1173,8 +1173,17 @@ pub const Parser = struct {
             return .{ .inline_set = .{ .variants = variants, .span = spanFrom(bang, close) } };
         }
         if (isTypeName(self.peek().kind)) {
-            const name = self.advance();
-            return .{ .named = .{ .name = name.text(self.source), .span = spanFrom(name, name) } };
+            const first = self.advance();
+            // `! ns::Error` — a qualified error type from an imported module.
+            if (self.match(.colon_colon)) {
+                const member = try self.expect(.ident, "expected error type name after `::`");
+                return .{ .named = .{
+                    .namespace = first.text(self.source),
+                    .name = member.text(self.source),
+                    .span = spanFrom(first, member),
+                } };
+            }
+            return .{ .named = .{ .name = first.text(self.source), .span = spanFrom(first, first) } };
         }
         return .{ .inferred = spanFrom(bang, bang) };
     }

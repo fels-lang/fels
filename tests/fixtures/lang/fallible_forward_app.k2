@@ -1,0 +1,26 @@
+// Fallible tail-forwarding + qualified `! ns::Error` return types. `return inner()`
+// passes a whole `{ok,err}` value through (ok on success, error on failure) with no
+// `?`. `-> T ! heap::MemError` qualifies the error type from another module without a
+// dual-import. Returns 42.
+#import std.heap as heap;
+
+E :: errors { bad }
+
+inner :: fn(x: i32) -> i32 ! E { if x < 0 { fail .bad; } return x; }
+fwd   :: fn(x: i32) -> i32 ! E { return inner(x); }            // tail-forward
+
+// A qualified error type from std.heap, forwarded from a fallible heap call.
+grab :: fn(a: *heap::Arena, n: usize) -> []u8 ! heap::MemError {
+    return a.try_alloc_bytes(n);                                // forward + ! ns::Error
+}
+
+#entry
+main :: fn() -> i32 {
+    a := heap::make();
+    buf := grab(&a, 16usize) catch e { return 1; };
+    if buf.len != 16usize { return 2; }
+
+    ok := fwd(40) catch e { return 3; };                       // ok value forwarded → 40
+    bad := fwd(-1) catch e { return ok + 2; };                  // error forwarded → caught → 42
+    return bad + 99;                                            // only if -1 wrongly came back ok
+}

@@ -2166,6 +2166,17 @@ const Checker = struct {
                     self.emitError(value.span, "a capturing closure cannot be returned: its captured environment lives in this function and would be left dangling (take an `*Arena` parameter so the closure's environment is allocated in the caller's region)", .{});
                     return error.SemanticFailed;
                 };
+                // Fallible tail-forward: `return inner();` where the function and the
+                // returned value are BOTH fallible with compatible ok/err types —
+                // pass the whole `{ok,err}` value through, no `?` needed.
+                if (self.current_error_ty != null and actual_ty == .fallible) {
+                    const f = actual_ty.fallible;
+                    if (try self.compatible(f.ok.*, self.current_return_ty) and
+                        try self.compatible(f.err.*, self.current_error_ty.?))
+                    {
+                        return; // accepted; IR forwards the fallible value directly
+                    }
+                }
                 if (!try self.compatible(actual_ty, self.current_return_ty)) {
                     self.emitError(ret.span, "return type mismatch: expected `{s}`, found `{s}`", .{ self.formatTy(self.current_return_ty), self.formatTy(actual_ty) });
                     return error.SemanticFailed;
@@ -4669,8 +4680,10 @@ const Checker = struct {
             .inferred => .error_ty,
             .named => |named| blk: {
                 if (std.mem.eql(u8, named.name, "void")) break :blk .error_ty;
-                const id = self.resolveSymbol(named.name) orelse {
-                    if (self.suggestTypeName(named.name)) |hint| {
+                const id = self.resolveTypeSymbol(named.namespace, named.name) orelse {
+                    if (named.namespace) |ns| {
+                        self.emitError(named.span, "unknown error type `{s}::{s}`", .{ ns, named.name });
+                    } else if (self.suggestTypeName(named.name)) |hint| {
                         self.emitError(named.span, "unknown error type `{s}`; did you mean `{s}`?", .{ named.name, hint });
                     } else {
                         self.emitError(named.span, "unknown error type `{s}`", .{named.name});

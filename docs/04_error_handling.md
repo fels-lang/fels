@@ -109,6 +109,34 @@ pub writer_append :: fn(self: *Byte_Writer, values: []const u8) -> usize ! Strin
 }
 ```
 
+### Tail-forwarding a fallible result
+
+When a function's whole job is to delegate to another fallible function with a
+compatible error type, `return inner();` forwards the entire `{ok, err}` result —
+no `?` needed. On success it returns the ok value; on failure the error flows out
+unchanged:
+
+```k2
+connect :: fn(sa: SocketAddr) -> TcpStream ! NetError {
+    return tcp::connect(sa);     // forwards ok or error, both
+}
+```
+
+This is the value-returning twin of `?`: `?` *unwraps* (yielding the ok value to
+the current function), while a tail-`return` *passes the result through*.
+
+### Qualified error types
+
+A `!` error type may be qualified with the module it comes from, just like any
+other type:
+
+```k2
+#import std.heap as heap;
+build :: fn(into: *heap::Arena, n: usize) -> []u8 ! heap::MemError {
+    return into.try_alloc_bytes(n);
+}
+```
+
 ---
 
 ## Catching Errors with `catch`

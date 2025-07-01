@@ -1663,6 +1663,20 @@ test "exe: two generic structs sharing a method name + type arg don't collide" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: fallible tail-forward + qualified `! ns::Error` return type" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `return inner();` passes a whole `{ok,err}` value through (no `?`); ok value
+    // forwarded on success, error forwarded on failure. `-> T ! heap::MemError`
+    // qualifies an error type from another module without a dual-import. (A fixture
+    // because both features need a real cross-module import.)
+    const code = try compileFileAndRun(arena.allocator(),
+        "tests/fixtures/lang/fallible_forward_app.k2", "exe_fallible_forward_qualerr");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: if-expressions (value position, else-if, bidirectional typing)" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

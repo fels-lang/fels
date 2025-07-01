@@ -17,6 +17,15 @@ pub fn lower(
         .return_value => |maybe_val| {
             // Fallible functions (error_ty != null): wrap ok value in { ok_val, 0 }.
             if (func.error_ty != null) {
+                // Tail-forward: `return inner();` where the value is ALREADY a
+                // fallible `{ok,err}` — return it as-is, don't double-wrap it.
+                if (maybe_val) |val| {
+                    if (fncg.irTypeOf(val)) |vt| if (vt == .fallible) {
+                        const fv = values.resolveValue(cg, fncg, val, vt);
+                        _ = llvm.LLVMBuildRet(cg.builder, fv);
+                        return;
+                    };
+                }
                 const ret_lty = types.fallibleReturnType(cg, func);
                 var ret = llvm.LLVMGetUndef(ret_lty);
                 if (maybe_val) |val| {
