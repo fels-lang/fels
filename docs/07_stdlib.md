@@ -318,6 +318,76 @@ for_each := list::items(i32, &xs);  // []T view, valid until the next push/grow
 > `list::make` deliberately shares the name `make` with `heap::make`; calling both
 > from the same file is fine (the module system keeps them distinct).
 
+## Containers — `std.vec` and `std.map`
+
+The container library has one defining trait: every container is **region-bound**.
+It carries a borrowed `*Arena` and grows by bump-allocating from it — there are no
+per-element frees and no destructors. When the region is `reset`/`deinit`-ed, every
+container that lived in it is gone at once. That's the whole memory story, and it's
+what makes k2's containers different from Rust's owning collections or Zig's
+allocator-injected ones.
+
+### `std.vec` — `Vec(T)`
+
+A growable array with in-struct methods (UFCS), the ergonomic successor to
+`std.list`:
+
+```k2
+#import std.heap as heap;
+#import std.vec as vec;
+
+a := heap::make();
+v := vec::make(i32, &a);            // or with_cap / from(T, &a, slice)
+v.push(10); v.push(20);
+v.insert(1, 15);                    // order-preserving (O(n))
+g := v.remove(0);                   // order-preserving removal
+s := v.remove_swap(i);             // O(1) unordered removal
+for x in v.items() { ... }          // []T view until the next growth
+
+b := heap::make();
+w := v.clone_into(&b);             // deep-copy into ANOTHER region (data escapes)
+```
+
+- Access: `get`, `set`, `at` (→ `*T`), `last`, `items`. Size: `len`, `cap`, `is_empty`.
+- Mutation: `push`, `pop`, `insert`, `remove`, `remove_swap`, `extend`, `reserve`,
+  `clear`. Region-moving: `clone_into(into)`.
+
+**Managed vs unmanaged.** `Vec(T)` is *managed* — it remembers its region.
+`VecUnmanaged(T)` is the *unmanaged* twin: it holds no region, and each growing call
+takes the `*Arena` explicitly (`u.push(&a, x)`). Use it when one vector is filled
+from several regions or stored in bulk. Copy unmanaged data into the managed API
+with `vec::from(T, a, u.items())`.
+
+### `std.map` — `AutoHashMap(K, V)` and `StrMap(V)`
+
+Open-addressed (linear-probing) hash maps, also region-bound.
+
+```k2
+#import std.map as map;
+
+m := map::auto(i32, i32, &a);       // keys: ANY value type
+m.put(7, 100); m.put(7, 101);       // overwrite → still one entry
+if m.get(7) |v| { ... }             // v == 101 ; get returns ?V
+m.contains(7); m.remove(7);
+
+sm := map::strmap(i32, &a);         // keys: []const u8, by content
+sm.put("alpha", 1);
+sm.get("alpha");                    // hashes + compares the string bytes
+```
+
+- **`AutoHashMap(K, V)`** keys *any value type* — no `Hash`/`Eq` impl, no derive,
+  no context object. The map hashes the key's **raw bytes** and compares them
+  byte-for-byte. Ideal for integers, enums, points, small POD structs. It is *not*
+  for keys containing pointers/slices (a string, a `Vec`) or structs with
+  uninitialised padding — use `StrMap` or a hand-rolled map there.
+- **`StrMap(V)`** keys `[]const u8`, hashing and comparing the string **contents**
+  (and copying each key into the region so the map owns its keys).
+- Both: `put`, `get` (→ `?V`), `contains`, `remove`, `clear`, `len`, `cap`, `is_empty`.
+
+> k2's hashing identity: a struct that `#derive(Hash, Eq)`s gets `hash()`/`eq()` for
+> free — but `AutoHashMap` doesn't even need that, because byte-hashing covers every
+> POD key with zero ceremony. Drop a value in and it's a key.
+
 ## General-purpose modules
 
 ### `std.path`
