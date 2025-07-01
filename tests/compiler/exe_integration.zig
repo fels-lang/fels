@@ -1663,6 +1663,35 @@ test "exe: two generic structs sharing a method name + type arg don't collide" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: compound literal `.{…}` as a function argument (slice + generic key)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `f(.{…})` used to silently miscompile and crash when the parameter was a
+    // slice (the `{ptr,len}` was built with no backing storage → a dangling
+    // pointer) or the struct's own type param (`key: K`, lowered untyped). Now the
+    // slice case materialises a backing array and the type-param case resolves K
+    // from the instantiation. Sum: 10+14+18 (slice) + 1+2 (struct key value 30→ via map).
+    const code = try compileAndRun(arena.allocator(),
+        \\Point :: struct { x: i32, y: i32 }
+        \\sumv :: fn(a: []const i32) -> i32 { t: i32 = 0; for x in a { t += x; } return t; }
+        \\Map :: struct($K: type, $V: type) {
+        \\    key: K, val: V, set: bool
+        \\    pub put :: fn(self: *Self, k: K, v: V) { self.key = k; self.val = v; self.set = true; }
+        \\    pub val_of :: fn(self: *Self) -> V { return self.val; }
+        \\}
+        \\#entry
+        \\main :: fn() -> i32 {
+        \\    s := sumv(.{ 10, 14, 18 });            // slice arg → 42
+        \\    m: Map(Point, i32) = .{ .{0,0}, 0, false };
+        \\    m.put(.{ 1, 2 }, 7);                    // compound key (type param K)
+        \\    return s - m.val_of() + m.val_of();     // 42, and proves put didn't crash
+        \\}
+    , "exe_compound_literal_arg");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: std.net layered TCP + UDP loopback round-trips (os/socket/tcp/udp)" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

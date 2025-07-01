@@ -1664,6 +1664,7 @@ const FunctionLowerer = struct {
     current_terminated: bool = false,
     next_reg: RegId = 1,
     next_block_id: BlockId = 1,
+    temp_id: u32 = 0,
     loop_stack: std.ArrayList(LoopContext) = .empty,
     local_types: std.StringHashMap(IrType),
     current_return_ty: IrType = .void,
@@ -3251,7 +3252,25 @@ const FunctionLowerer = struct {
                             if (is_receiver and self.types.receiver_auto_addr.contains(call.callee.id)) {
                                 try args.append(self.allocator, try self.lowerLValueAddress(value));
                             } else {
-                                const expected = try lowerSemaTypeWithEnv(self.allocator, param.ty, self.types, self.symbols);
+                                var expected = try lowerSemaTypeWithEnv(self.allocator, param.ty, self.types, self.symbols);
+                                // A param typed as the struct's own type param (`key: K`)
+                                // lowers to `.unknown` here. Resolve it against THIS call's
+                                // instantiation binding (K→Point) so an inline `.{ … }`
+                                // argument is materialized at its real type, not garbage.
+                                if (expected == .unknown) {
+                                    if (self.types.generic_call_insts.get(call.callee.id)) |mangled| {
+                                        for (self.types.generic_instantiations.items) |inst| {
+                                            if (!std.mem.eql(u8, inst.mangled_name, mangled)) continue;
+                                            const r = lowerSemaTypeWithEnv(self.allocator, resolveTypeParamInTy(param.ty, inst.type_args), self.types, self.symbols) catch IrType.unknown;
+                                            if (r != .unknown) expected = r;
+                                            break;
+                                        }
+                                    }
+                                    if (expected == .unknown) {
+                                        const et = self.exprType(value);
+                                        if (et != .unknown) expected = et;
+                                    }
+                                }
                                 try args.append(self.allocator, try self.lowerExprAs(value, expected));
                             }
                         }
@@ -3683,6 +3702,25 @@ const FunctionLowerer = struct {
                 .name = "optional_some",
                 .args = try self.allocator.dupe(Value, &.{payload}),
             } });
+        }
+        // `.{ a, b, … }` where a SLICE is expected: materialize a backing array on
+        // the stack and take a full slice of it (otherwise the `{ptr,len}` slice is
+        // built with no storage → a dangling pointer that crashes when read).
+        if (expected_ty == .slice and expr.kind == .compound_literal) {
+            const values = expr.kind.compound_literal;
+            const elem_ty = expected_ty.slice.*;
+            const arr_ty: IrType = .{ .array = .{ .elem = try boxType(self.allocator, elem_ty), .len = values.len } };
+            var arr_args = std.ArrayList(Value).empty;
+            errdefer arr_args.deinit(self.allocator);
+            for (values) |value| try arr_args.append(self.allocator, try self.lowerExprAs(value, elem_ty));
+            const arr_val = try self.emit(arr_ty, .{ .builtin = .{ .name = "compound_literal", .args = try arr_args.toOwnedSlice(self.allocator) } });
+            self.temp_id += 1;
+            const name = try std.fmt.allocPrint(self.allocator, "__slicelit_{d}", .{self.temp_id});
+            try self.local_types.put(name, arr_ty);
+            try self.emitNoResult(arr_ty, .{ .store_local = .{ .name = name, .value = arr_val } });
+            const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, elem_ty) };
+            const elem0 = try self.emit(ptr_ty, .{ .index_addr = .{ .base = .{ .local = name }, .index = .{ .imm = .{ .uint = 0 } } } });
+            return self.emit(expected_ty, .{ .slice_expr = .{ .ptr = elem0, .len = .{ .imm = .{ .uint = values.len } } } });
         }
         return switch (expr.kind) {
             .compound_literal => |values| blk: {
