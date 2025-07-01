@@ -1,10 +1,10 @@
 # Tooling & the language server — design
 
-> Status: **design**. Today's CLI is `build / run / check / object / ir / bindgen`.
-> A tree-sitter grammar (`tree-sitter-k2/`) and a Zed extension (`zed-k2/`) already
-> give syntactic highlighting. This document designs the rest of the developer
-> surface — the language server, the formatter, doc generation, a test runner, and
-> a REPL — around one principle.
+> Status: **`k2 lsp` is implemented** (diagnostics, completion, hover,
+> go-to-definition, document symbols) — see §8 to wire it into your editor. The
+> formatter, doc generator, test runner, and REPL are still design. A tree-sitter
+> grammar (`tree-sitter-k2/`) and a Zed extension (`zed-k2/`) give syntactic
+> highlighting. This document designs the developer surface around one principle.
 
 ## 0. The principle: the compiler is a library
 
@@ -186,3 +186,47 @@ The throughline: because the compiler is already a tolerant, reflection-capable
 library, each tool is small. The investment is the **library seams**
 (position mapping, a reference index, comment-anchoring) — not re-implementing the
 language five times.
+
+## 8. Using `k2 lsp` today
+
+`k2 lsp` is built into the `k2` binary and speaks LSP over stdio. It gives live
+diagnostics, scope completion, hover, go-to-definition, and a document outline.
+Point any LSP-capable editor at `k2 lsp`.
+
+**Helix** — `~/.config/helix/languages.toml` (zero compilation):
+
+```toml
+[language-server.k2]
+command = "k2"
+args = ["lsp"]
+
+[[language]]
+name = "k2"
+scope = "source.k2"
+file-types = ["k2"]
+roots = ["build.k2"]
+language-servers = ["k2"]
+comment-tokens = ["//"]
+```
+
+**Neovim** — in your config:
+
+```lua
+vim.filetype.add({ extension = { k2 = "k2" } })
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "k2",
+  callback = function()
+    vim.lsp.start({ name = "k2", cmd = { "k2", "lsp" },
+      root_dir = vim.fs.root(0, { "build.k2", ".git" }) })
+  end,
+})
+```
+
+**Zed** — the `zed-k2/` extension declares the server (`[language_servers]` +
+the Rust glue in `zed-k2/src/lib.rs`, which launches `k2 lsp` from your `PATH`).
+Install it as a dev extension; building it needs a Rust toolchain (Zed compiles
+the extension to WASM). VS Code support is a thin client wrapper (future).
+
+> Smoke-test the protocol without an editor: `python tests/lsp_smoke.py` drives a
+> full `initialize` → `didOpen` → `completion`/`hover`/`definition`/`documentSymbol`
+> exchange against the built binary and prints the results.
