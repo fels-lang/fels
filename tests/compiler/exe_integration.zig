@@ -1663,6 +1663,28 @@ test "exe: two generic structs sharing a method name + type arg don't collide" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: if-expressions (value position, else-if, bidirectional typing)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `if c { a } else { b }` as a value: in a `:=`, a typed local (the branch
+    // literal gets the local's type), an else-if chain, inside arithmetic, and a
+    // struct-literal branch (bidirectional typing). Statement-`if` is unaffected.
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct { x: i32, y: i32 }
+        \\classify :: fn(n: i32) -> i32 { return if n == 1 { 100 } else if n == 2 { 7 } else { 0 }; }
+        \\#entry
+        \\main :: fn() -> i32 {
+        \\    a := if true { 30 } else { 0 };          // := if
+        \\    w: u32 = if a > 0 { 5u32 } else { 0u32 }; // typed-local branch literal
+        \\    p: P = if a > 0 { .{ 1, 2 } } else { .{ 0, 0 } }; // struct branch
+        \\    return a + (w as i32) + p.x + p.y + classify(2) - 3; // 30+5+1+2+7-3 = 42
+        \\}
+    , "exe_if_expression");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: compound literal `.{…}` as a function argument (slice + generic key)" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

@@ -1102,6 +1102,36 @@ pub const Parser = struct {
         return self.expr(.{ .match_expr = me }, spanFrom(start, close));
     }
 
+    /// `if cond { value } else { value }` / `if c { a } else if d { b } else { c }`
+    /// — a value-producing if. Each branch is a single expression in braces; an
+    /// `else` is mandatory (an expression must always produce a value).
+    fn parseIfExpr(self: *Parser, start: Token) ParseError!ast.Expr {
+        const cond = try self.parseExpr(0);
+        _ = try self.expect(.l_brace, "expected { after if-expression condition");
+        const then_value = try self.parseExpr(0);
+        const close_then = try self.expect(.r_brace, "expected } after if-expression branch");
+        _ = try self.expect(.keyword_else, "an if-expression must have an `else` branch");
+
+        const else_value: ast.Expr = if (self.match(.keyword_if))
+            try self.parseIfExpr(self.previous()) // `else if …` chain
+        else blk: {
+            _ = try self.expect(.l_brace, "expected { after else");
+            const v = try self.parseExpr(0);
+            _ = try self.expect(.r_brace, "expected } after else branch");
+            break :blk v;
+        };
+
+        const ie = try self.allocator.create(ast.IfExpr);
+        ie.* = .{
+            .cond = cond,
+            .then_value = then_value,
+            .else_value = else_value,
+            .span = spanFrom(start, self.previous()),
+        };
+        _ = close_then;
+        return self.expr(.{ .if_expr = ie }, spanFrom(start, self.previous()));
+    }
+
     fn finishErrors(self: *Parser, attrs: []const ast.Attribute, name: Token) ParseError!ast.TypeDecl {
         _ = try self.expect(.l_brace, "expected { after errors");
         const variants = try self.parseErrorVariants(.r_brace);
@@ -1939,6 +1969,10 @@ pub const Parser = struct {
             },
             // `match subject { pattern => value, ... }` as a value expression.
             .keyword_match => return self.parseMatchExpr(tok),
+            // `if cond { value } else { value }` as a value expression. (Statement
+            // position is intercepted by the statement parser, so this only fires
+            // when `if` is parsed as an operand — after `:=`/`=`/`return`/in args.)
+            .keyword_if => return self.parseIfExpr(tok),
             // #run expr — compile-time expression in value position
             .hash => {
                 if (self.matchIdent("run")) {

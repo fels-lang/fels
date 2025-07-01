@@ -342,6 +342,24 @@ if x > 0 {
 }
 ```
 
+#### If as an expression
+
+In value position, `if` produces a value. Each branch is a single expression in
+braces, and an `else` is mandatory (an expression must always yield something):
+
+```k2
+sign := if n > 0 { 1 } else if n < 0 { -1 } else { 0 };
+
+mode: u32 = if enabled { 1u32 } else { 0u32 };   // branch literal takes the type
+
+return base + if hit { bonus } else { 0 };        // anywhere an expression fits
+```
+
+The two branches must have compatible types, and the expected type flows into the
+branches — so an untyped branch value (`.{ … }`, a bare `.variant`) is typed from
+context, exactly like a `match` expression. (Statement-position `if { … }` is
+unchanged; the expression form only applies where a value is required.)
+
 ---
 
 ### While Loop

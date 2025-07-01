@@ -192,6 +192,11 @@ const Analyzer = struct {
                     self.bound.shrinkRetainingCapacity(mark);
                 }
             },
+            .if_expr => |ie| {
+                try self.walkExpr(ie.cond);
+                try self.walkExpr(ie.then_value);
+                try self.walkExpr(ie.else_value);
+            },
             // `ns::member` — the base names a namespace, not a local; a quotation
             // is inert data. Neither contributes free variables.
             .scope_access, .quote, .type_ref, .int, .float, .string, .bool, .null => {},

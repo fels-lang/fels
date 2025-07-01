@@ -2904,6 +2904,7 @@ const FunctionLowerer = struct {
             // value-lowered; `$`-splices are macro internals.
             .splice, .parse_expr => return error.LoweringFailed,
             .match_expr => try self.lowerMatchExpr(expr, null),
+            .if_expr => try self.lowerIfExpr(expr, null),
             .ident => |name| blk: {
                 // Bare enum literal `.variant` resolved by sema against an
                 // expected enum type → the corresponding variant value.
@@ -3679,6 +3680,7 @@ const FunctionLowerer = struct {
         // A `match` in value position threads the expected type into its arms, so
         // untyped arm values (`.{ … }`, `.variant`) get the right target type.
         if (expr.kind == .match_expr) return self.lowerMatchExpr(expr, expected_ty);
+        if (expr.kind == .if_expr) return self.lowerIfExpr(expr, expected_ty);
         // A value passed where an `Any` is expected auto-wraps (compiler inserts
         // `any(x)`) — unless it's already an `Any`, or a literal that *constructs*
         // the `Any` (`.{ data, id, name }`), or an unknown-typed expr.
@@ -4165,6 +4167,39 @@ const FunctionLowerer = struct {
         if (!self.current_terminated) try self.terminate(.{ .branch = after_id });
         self.startBlock(after_id, "match.after");
         try self.local_types.put(result_name, result_ty);
+        return .{ .local = result_name };
+    }
+
+    /// `if cond { a } else { b }` in value position: branch on `cond`, each branch
+    /// stores its value into a result local, then both join.
+    fn lowerIfExpr(self: *FunctionLowerer, expr: ast.Expr, expected: ?IrType) LowerError!Value {
+        const ie = expr.kind.if_expr;
+        const sema_ty = self.exprType(expr);
+        const result_ty: IrType = if (expected) |e|
+            (if (e == .unknown) sema_ty else e)
+        else
+            sema_ty;
+        self.temp_id += 1;
+        const result_name = try std.fmt.allocPrint(self.allocator, "__if_res_{d}", .{self.temp_id});
+        try self.local_types.put(result_name, result_ty);
+
+        const cond = try self.lowerExpr(ie.cond);
+        const then_id = self.allocBlockId();
+        const else_id = self.allocBlockId();
+        const after_id = self.allocBlockId();
+        try self.terminate(.{ .cond_branch = .{ .cond = cond, .then_block = then_id, .else_block = else_id } });
+
+        self.startBlock(then_id, "ifx.then");
+        const tv = try self.lowerExprAs(ie.then_value, result_ty);
+        try self.emitNoResult(result_ty, .{ .store_local = .{ .name = result_name, .value = tv } });
+        try self.terminate(.{ .branch = after_id });
+
+        self.startBlock(else_id, "ifx.else");
+        const ev = try self.lowerExprAs(ie.else_value, result_ty);
+        try self.emitNoResult(result_ty, .{ .store_local = .{ .name = result_name, .value = ev } });
+        try self.terminate(.{ .branch = after_id });
+
+        self.startBlock(after_id, "ifx.after");
         return .{ .local = result_name };
     }
 

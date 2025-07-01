@@ -609,6 +609,15 @@ pub const ExprKind = union(enum) {
     slice: SliceExpr,
     /// `match subject { pattern => value, ... }` as a value.
     match_expr: *const MatchExpr,
+    /// `if cond { value } else { value }` as a value.
+    if_expr: *const IfExpr,
+};
+
+pub const IfExpr = struct {
+    cond: Expr,
+    then_value: Expr,
+    else_value: Expr,
+    span: Span,
 };
 
 pub const ScopeAccess = struct {

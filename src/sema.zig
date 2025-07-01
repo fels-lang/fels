@@ -2758,6 +2758,7 @@ const Checker = struct {
                 };
             },
             .match_expr => |me| try self.inferMatchExpr(me, null),
+            .if_expr => |ie| try self.inferIfExpr(ie, null),
         };
         try self.env.expr_types.put(expr.id, ty);
         return ty;
@@ -2817,7 +2818,37 @@ const Checker = struct {
             try self.env.expr_types.put(expr.id, ty);
             return ty;
         }
+        if (expr.kind == .if_expr) {
+            const ty = try self.inferIfExpr(expr.kind.if_expr, expected);
+            try self.env.expr_types.put(expr.id, ty);
+            return ty;
+        }
         return self.inferExpr(expr);
+    }
+
+    /// `if cond { a } else { b }` as a value: the condition is `bool` and the two
+    /// branches must unify. `expected` seeds the branch types so untyped branch
+    /// values (`.{…}`, bare `.variant`) get a target (bidirectional, like match).
+    fn inferIfExpr(self: *Checker, ie: *const ast.IfExpr, expected: ?Ty) SemanticError!Ty {
+        const cond_ty = try self.inferExpr(ie.cond);
+        if (!cond_ty.isBool()) {
+            self.emitError(ie.cond.span, "if-expression condition must be `bool`, found `{s}`", .{self.formatTy(cond_ty)});
+            return error.SemanticFailed;
+        }
+        const then_ty: Ty = if (expected) |rt| blk: {
+            if (try self.coerceEnumLiteral(ie.then_value, rt)) break :blk rt;
+            const t = try self.inferExprExpecting(ie.then_value, rt);
+            if (!try self.compatible(t, rt)) break :blk rt;
+            break :blk t;
+        } else try self.inferExpr(ie.then_value);
+        // The else branch must be compatible with the then branch's type.
+        if (try self.coerceEnumLiteral(ie.else_value, then_ty)) return then_ty;
+        const else_ty = try self.inferExprExpecting(ie.else_value, then_ty);
+        if (!try self.compatible(else_ty, then_ty) and !try self.compatible(then_ty, else_ty)) {
+            self.emitError(ie.else_value.span, "if-expression branches have incompatible types: `{s}` vs `{s}`", .{ self.formatTy(then_ty), self.formatTy(else_ty) });
+            return error.SemanticFailed;
+        }
+        return then_ty;
     }
 
     fn inferCall(self: *Checker, call: ast.CallExpr) SemanticError!Ty {
