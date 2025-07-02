@@ -77,12 +77,22 @@ Any top-level function whose first parameter is named `self` can be called using
 pub distance :: fn(self: *Point) -> f64 { ... }
 
 // Calling:
-p := Point { x = 3, y = 4 };
-d := (&p).distance();   // or: distance(&p)
+p: Point = .{ 3, 4 };
+d := p.distance();      // auto-referenced to `&p`; same as distance(&p)
 ```
 
-> [!IMPORTANT]
-> For struct pointer receivers, you must take the address explicitly with `&`. K2 does not auto-reference.
+A `*Self` method auto-references its receiver, so you call it with a plain value —
+no explicit `&`. This works on a **temporary** too (the value is spilled to a stack
+slot and pointed at), which means methods chain on returned values:
+
+```k2
+n := make_point(3, 4).distance();        // call on a temporary
+q := origin().translate(1, 2).scaled(3); // chain method calls
+```
+
+> [!NOTE]
+> A method on a temporary receiver sees a copy, so any mutation it makes is
+> discarded with the temporary — chaining is for transforming/reading.
 
 ---
 

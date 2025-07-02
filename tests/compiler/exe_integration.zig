@@ -1663,6 +1663,32 @@ test "exe: two generic structs sharing a method name + type arg don't collide" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: UFCS method call on a temporary receiver (chaining)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A method's `*Self` receiver auto-refs a value receiver. It used to require an
+    // lvalue, so `mk().get()` and `a.method().other()` errored. Now a temporary is
+    // spilled to a stack slot and pointed at, enabling method chaining on returned
+    // values. Addressable receivers still point in place.
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct {
+        \\    v: i32
+        \\    pub inc :: fn(self: *Self) -> P { return .{ self.v + 1 }; }
+        \\    pub get :: fn(self: *Self) -> i32 { return self.v; }
+        \\}
+        \\mk :: fn(n: i32) -> P { return .{ n }; }
+        \\#entry
+        \\main :: fn() -> i32 {
+        \\    a := mk(40).get();          // call temporary → 40
+        \\    b := mk(40).inc().inc();    // chain on returned values → 42
+        \\    return a - 40 + b.get();    // 0 + 42
+        \\}
+    , "exe_ufcs_temporary");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: fallible tail-forward + qualified `! ns::Error` return type" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

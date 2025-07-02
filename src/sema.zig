@@ -3533,7 +3533,11 @@ const Checker = struct {
             .pointer, .const_ptr => return false,
             else => {},
         }
-        if (!isAddressable(recv_expr)) return false;
+        // A non-addressable receiver (a temporary, e.g. `mk().method()` or
+        // `ns::any().method()`) is auto-ref'd too: IR spills it to a stack slot and
+        // points at that. Read-only methods are the common case; a mutation through
+        // a discarded temporary is harmless. Addressable receivers point in place.
+        _ = recv_expr;
         return self.compatible(recv_ty, pointee) catch false;
     }
 
