@@ -190,6 +190,27 @@ fn printFeDiagnostics(
     }
 }
 
+/// Comptime test lane: run every `#test` function on the VM during compilation.
+/// A failed assertion (`t.eq`, `t.expect`, …) becomes a build error — the program
+/// does not compile, exactly like a type error. On success the test functions are
+/// pruned so they never reach the backend. No-op when the module has no tests.
+fn runComptimeTestLane(allocator: std.mem.Allocator, fe: *pipeline.FrontEnd, file_name: []const u8) LlvmDriverError!void {
+    if (!ir.hasTestDecl(fe.module)) return;
+    const report = ir.runComptimeTests(allocator, fe.*) catch {
+        std.debug.print("{s}: internal compiler error while running comptime tests\n", .{file_name});
+        return error.CompileFailed;
+    };
+    if (report.failed != 0) {
+        for (report.failures) |f| {
+            std.debug.print("comptime test '{s}' failed: {s}\n", .{ f.name, f.message });
+        }
+        std.debug.print("\n{d} passed, {d} failed (comptime)\n", .{ report.passed, report.failed });
+        return error.CompileFailed;
+    }
+    // All green — drop the test functions so they never reach the backend.
+    fe.module = ir.pruneTestDecls(fe.arena.allocator(), fe.module) catch fe.module;
+}
+
 /// Full pipeline: source → IR → LLVM IR → .o → (optional) .exe
 pub fn compileWithLlvm(
     allocator: std.mem.Allocator,
@@ -209,6 +230,7 @@ pub fn compileWithLlvm(
         return error.CompileFailed;
     }
 
+    try runComptimeTestLane(allocator, &fe, opts.file_name);
     try emitLlvmFromFrontend(allocator, io, fe, opts);
 }
 
@@ -235,6 +257,7 @@ pub fn compileFileWithLlvm(
         return error.CompileFailed;
     }
 
+    try runComptimeTestLane(allocator, &fe, opts.file_name);
     try emitLlvmFromFrontend(allocator, io, fe, opts);
 
     if (opts.timings) |tm| {

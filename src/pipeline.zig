@@ -24,6 +24,8 @@ const heap_prelude_id_base: ast.NodeId = 600_000;
 const reflection_prelude_id_base: ast.NodeId = 500_000;
 const any_prelude_id_base: ast.NodeId = 400_000;
 const fieldnav_prelude_id_base: ast.NodeId = 300_000;
+/// Node-id base for the injected `Test` testing prelude (distinct range).
+const testing_prelude_id_base: ast.NodeId = 200_000;
 
 pub const FrontEnd = struct {
     module: ast.Module,
@@ -376,9 +378,20 @@ fn runPipelineWithSource(
     else
         with_nav;
 
+    // `#test` functions take a `*Test` context; inject the `Test` type (and its
+    // assertion methods) when the module declares any test, so tests compile with
+    // no import. The tests themselves run in the driver (comptime lane), not here.
+    const with_testing = if (ir_mod.hasTestDecl(with_heap) and !moduleDefinesType(with_heap, "Test"))
+        prependTestingPrelude(allocator, with_heap) catch |err| switch (err) {
+            error.ParseFailed => return error.ParseFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+        }
+    else
+        with_heap;
+
     // Expand macros before any sema sees the tree: `#insert macrocall(...)`
     // becomes a literal `#insert #quote { ... }`, and macro decls are dropped.
-    const module = macroexpand.expand(allocator, with_heap) catch |err| switch (err) {
+    const module = macroexpand.expand(allocator, with_testing) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
@@ -604,6 +617,18 @@ fn prependReflectionPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast
     // `<runtime>` so the reflection types are visible from every module (a serde
     // library, etc.), not just the root user file.
     const parsed = try parser.parseSourceFrom(allocator, "<runtime>", ast_prelude.reflection_source, reflection_prelude_id_base);
+    var items: std.ArrayList(ast.Item) = .empty;
+    try items.appendSlice(allocator, parsed.module.items);
+    try items.appendSlice(allocator, user.items);
+    return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
+/// Inject the `Test` context type (`fn(t: *Test)`) so `#test` functions compile
+/// without importing anything. Parsed under `<runtime>` so it's visible from any
+/// module that declares a test. Only injected when the module has a `#test` decl
+/// and doesn't already define its own `Test`.
+fn prependTestingPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
+    const parsed = try parser.parseSourceFrom(allocator, "<runtime>", ast_prelude.testing_source, testing_prelude_id_base);
     var items: std.ArrayList(ast.Item) = .empty;
     try items.appendSlice(allocator, parsed.module.items);
     try items.appendSlice(allocator, user.items);
