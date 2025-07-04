@@ -6013,6 +6013,105 @@ pub fn runBuildHook(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
     _ = vm.call("build", &.{build_arg}) catch return error.SemanticFailed;
 }
 
+// ── Comptime test lane ──────────────────────────────────────────────────────────
+
+pub const TestFailure = struct {
+    name: []const u8,
+    message: []const u8,
+};
+
+pub const TestReport = struct {
+    passed: u32,
+    failed: u32,
+    failures: []const TestFailure,
+};
+
+fn isTestFn(f: ast.FunctionDecl) bool {
+    if (f.is_macro or f.is_constraint or f.body == null) return false;
+    for (f.attrs) |a| if (std.mem.eql(u8, a.name, "test")) return true;
+    return false;
+}
+
+/// True if the module declares any `#test` function. Drives `Test`-prelude
+/// injection (pipeline) and lets the driver skip the whole lane for ordinary
+/// programs (so a build with no tests pays nothing).
+pub fn hasTestDecl(module: ast.Module) bool {
+    for (module.items) |item| switch (item) {
+        .function => |f| if (isTestFn(f)) return true,
+        else => {},
+    };
+    return false;
+}
+
+/// Run every `#test` function on the comptime VM. A test *passes* when its call
+/// completes; it *fails* when an assertion calls `core::compiler_error(...)` (the
+/// VM traps and stashes the diagnostic) or when the VM otherwise can't run it.
+/// Each test gets a fresh VM over the shared bytecode module, so one failure
+/// can't corrupt the next. Report strings are duped onto the front end's arena.
+pub fn runComptimeTests(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) InsertExpandError!TestReport {
+    const out = front_end.arena.allocator();
+    var cvm = ComptimeVm.init(allocator, front_end);
+    defer cvm.deinit();
+    const c = cvm.ensureCache() orelse return error.SemanticFailed;
+
+    var failures = std.ArrayList(TestFailure).empty;
+    var passed: u32 = 0;
+    for (front_end.module.items) |item| {
+        const f = switch (item) {
+            .function => |fd| fd,
+            else => continue,
+        };
+        if (!isTestFn(f)) continue;
+        // Only invocable tests for now: a single `*Test` parameter, no generics.
+        if (f.type_params.len != 0 or f.params.len != 1) {
+            try failures.append(out, .{ .name = out.dupe(u8, f.name) catch f.name, .message = "a #test function must take exactly one parameter `t: *Test`" });
+            continue;
+        }
+
+        var vm = vm_engine.Vm.initModule(cvm.gpa, &c.bc);
+        defer vm.deinit();
+        // The `t: *Test` argument: a one-field struct cell the test carries but
+        // never meaningfully reads — assertions report through `compiler_error`.
+        _ = vm.zone_stack.push("__test") catch return error.OutOfMemory;
+        const cell = vm.zone_stack.alloc(1) catch return error.OutOfMemory;
+        vm.zone_stack.setCell(cell.ptr.zone, cell.ptr.offset, .{ .int = 0 }) catch return error.SemanticFailed;
+        const t_arg = vm_value.Value{ .struct_ref = .{ .zone = cell.ptr.zone, .offset = cell.ptr.offset } };
+
+        if (vm.call(f.name, &.{t_arg})) |_| {
+            passed += 1;
+        } else |err| {
+            const msg = if (vm.compiler_error_msg) |m|
+                out.dupe(u8, m) catch "assertion failed"
+            else
+                out.dupe(u8, @errorName(err)) catch "comptime evaluation error";
+            try failures.append(out, .{ .name = out.dupe(u8, f.name) catch f.name, .message = msg });
+        }
+    }
+
+    return .{ .passed = passed, .failed = @intCast(failures.items.len), .failures = try failures.toOwnedSlice(out) };
+}
+
+/// Drop every `#test` function from the module so the runtime backend never sees
+/// it: the comptime lane already ran them, and they'd otherwise be dead code
+/// referencing the no-op `compiler_error` builtin. Returns the module unchanged
+/// when there are no tests.
+pub fn pruneTestDecls(allocator: std.mem.Allocator, module: ast.Module) !ast.Module {
+    var items = std.ArrayList(ast.Item).empty;
+    var dropped = false;
+    for (module.items) |item| {
+        switch (item) {
+            .function => |f| if (isTestFn(f)) {
+                dropped = true;
+                continue;
+            },
+            else => {},
+        }
+        try items.append(allocator, item);
+    }
+    if (!dropped) return module;
+    return ast.Module{ .file_name = module.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
 /// Returns the rewritten module if it contained computed inserts, else null.
 pub fn expandComputedInserts(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) InsertExpandError!?ast.Module {
     var any = false;

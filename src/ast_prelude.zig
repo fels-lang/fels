@@ -192,3 +192,43 @@ pub const reflection_source =
     \\    other:    []const u8,
     \\}
 ;
+
+/// `Test` — the context handle a `#test` function receives (`fn(t: *Test)`).
+/// Injected whenever a module declares a `#test` decl, so a test can assert
+/// without importing anything. The assertion methods call `core::compiler_error`
+/// on failure: in the comptime lane the test runs on the VM during compilation,
+/// so a failed assertion halts that run and the driver turns it into a real
+/// compile diagnostic (the build goes red, exactly like a type error).
+///
+/// `eq`/`ne` compare with `==`/`!=`. In the *comptime* lane they run on the VM,
+/// which evaluates scalar comparisons (ints, floats, bools, enums); dynamic
+/// `[]const u8` content compare and struct equality lower to a spill+byte-loop
+/// the VM doesn't execute yet, so those belong to the runtime lane (next). Use
+/// `t.expect(...)` for a comptime string/struct check today.
+pub const testing_source =
+    \\Test :: struct {
+    \\    failures: u32,
+    \\
+    \\    pub fatal :: fn(self: *Self, msg: []const u8) {
+    \\        core::compiler_error(msg);
+    \\    }
+    \\
+    \\    pub expect :: fn(self: *Self, cond: bool) {
+    \\        if cond == false {
+    \\            core::compiler_error("t.expect: condition was false");
+    \\        }
+    \\    }
+    \\
+    \\    pub eq :: fn(self: *Self, a: $V, b: $V) {
+    \\        if a != b {
+    \\            core::compiler_error("t.eq: values are not equal");
+    \\        }
+    \\    }
+    \\
+    \\    pub ne :: fn(self: *Self, a: $V, b: $V) {
+    \\        if a == b {
+    \\            core::compiler_error("t.ne: values are unexpectedly equal");
+    \\        }
+    \\    }
+    \\}
+;
