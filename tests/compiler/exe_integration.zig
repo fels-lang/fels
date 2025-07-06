@@ -2403,3 +2403,55 @@ test "exe: t.fatal fails the build with its message" {
         \\main :: fn() -> i32 { return 0; }
     , "exe_ctest_fatal"));
 }
+
+test "exe: t.eq/t.ne compare []const u8 contents at comptime" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The generic `eq`/`ne` (V = []const u8) must run the content compare on the
+    // VM — a regression guard for the type-binding resolution in `exprType`.
+    const code = try compileAndRun(arena.allocator(),
+        \\#test
+        \\strings :: fn(t: *Test) {
+        \\    t.eq("hello", "hello");
+        \\    t.ne("hello", "world");
+        \\}
+        \\main :: fn() -> i32 { return 3; }
+    , "exe_ctest_strings");
+    try std.testing.expectEqual(@as(u32, 3), code);
+}
+
+test "exe: a wrong comptime string t.eq fails the build" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.CompileFailed, compileAndRun(arena.allocator(),
+        \\#test
+        \\wrong :: fn(t: *Test) { t.eq("abc", "xyz"); }
+        \\main :: fn() -> i32 { return 0; }
+    , "exe_ctest_str_fail"));
+}
+
+test "exe: generic []const u8 == folds in a #run (binding-resolved)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The latent bug behind the test failure: a generic function comparing two
+    // `$V = []const u8` values lowered to a scalar compare on the fat slice, so
+    // the comptime VM couldn't evaluate it. The instantiation binding must reach
+    // the `==` lowering. 8-bit exit codes are fine (values < 256).
+    const code = try compileAndRun(arena.allocator(),
+        \\geq :: fn(a: $V, b: $V) -> bool { return a == b; }
+        \\SAME :: #run geq("abc", "abc");   // true
+        \\DIFF :: #run geq("abc", "xyz");   // false
+        \\main :: fn() -> i32 {
+        \\    if SAME == false { return 1; }
+        \\    if DIFF { return 2; }
+        \\    return 7;
+        \\}
+    , "exe_generic_streq_run");
+    try std.testing.expectEqual(@as(u32, 7), code);
+}
