@@ -2351,3 +2351,55 @@ test "exe: `[]const u8` `==` folds at compile time (`#run` / `#compiler` use)" {
     , "exe_string_eq_comptime");
     try std.testing.expectEqual(@as(u32, 1), code);
 }
+
+// ── Comptime test lane (#test) ──────────────────────────────────────────────────
+
+test "exe: passing #test compiles and the program runs" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `Test` is auto-injected, so a `#test` needs no import. The assertions run on
+    // the comptime VM during compilation; all pass, so the build succeeds and the
+    // (test-free) program runs normally. The test fns are pruned before codegen.
+    const code = try compileAndRun(arena.allocator(),
+        \\#test
+        \\arithmetic :: fn(t: *Test) {
+        \\    t.eq(2 + 2, 4);
+        \\    t.ne(2 + 2, 5);
+        \\    t.expect((1 + 2) + 3 == 1 + (2 + 3));
+        \\}
+        \\main :: fn() -> i32 { return 7; }
+    , "exe_ctest_pass");
+    try std.testing.expectEqual(@as(u32, 7), code);
+}
+
+test "exe: failing #test fails the build" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A failed comptime assertion is a compile error — exactly like a type error.
+    // The whole compilation fails; no executable is produced.
+    try std.testing.expectError(error.CompileFailed, compileAndRun(arena.allocator(),
+        \\#test
+        \\broken :: fn(t: *Test) {
+        \\    t.eq(2 + 2, 5);
+        \\}
+        \\main :: fn() -> i32 { return 0; }
+    , "exe_ctest_fail"));
+}
+
+test "exe: t.fatal fails the build with its message" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.CompileFailed, compileAndRun(arena.allocator(),
+        \\#test
+        \\always :: fn(t: *Test) {
+        \\    t.fatal("explicit failure");
+        \\}
+        \\main :: fn() -> i32 { return 0; }
+    , "exe_ctest_fatal"));
+}
