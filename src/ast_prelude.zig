@@ -200,11 +200,12 @@ pub const reflection_source =
 /// so a failed assertion halts that run and the driver turns it into a real
 /// compile diagnostic (the build goes red, exactly like a type error).
 ///
-/// `eq`/`ne` compare with `==`/`!=`. In the *comptime* lane they run on the VM,
-/// which evaluates scalar comparisons (ints, floats, bools, enums); dynamic
-/// `[]const u8` content compare and struct equality lower to a spill+byte-loop
-/// the VM doesn't execute yet, so those belong to the runtime lane (next). Use
-/// `t.expect(...)` for a comptime string/struct check today.
+/// `eq`/`ne` compare with `==`/`!=`, which the comptime VM evaluates for scalars
+/// (ints, floats, bools, simple enums) and `[]const u8` (content compare — the
+/// byte-loop lowering folds on the VM). Struct/aggregate equality is not yet
+/// supported anywhere (`==` on a struct is an aggregate compare the backend can't
+/// emit); that arrives with the reflection-driven structural diff. Use
+/// `t.expect(...)` on fields for a struct check today.
 pub const testing_source =
     \\Test :: struct {
     \\    failures: u32,

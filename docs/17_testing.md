@@ -66,14 +66,25 @@ stops the build the same way a type mismatch does.
 `eq`/`ne` are generic (`fn(self: *Self, a: $V, b: $V)`), so they take any two
 values of the same type.
 
-### Comptime-lane limitation
+### What the comptime lane compares
 
-In the comptime lane the comparison runs on the VM, which evaluates **scalar**
-`==`/`!=` (ints, floats, bools, enums). Dynamic `[]const u8` content comparison
-and struct equality lower to a spill+byte-loop the VM does not execute yet, so
-`t.eq("a", "a")` traps with `TypeMismatch`. Until the runtime lane lands (§5),
-use `t.expect(...)` for a comptime string or struct check, or compare lengths /
-scalar fields directly.
+`==`/`!=` run on the VM, which evaluates:
+
+- **scalars** — ints, floats, bools, simple enums; and
+- **`[]const u8`** — content comparison (`t.eq("a", "a")`), the same length-then-
+  byte-loop lowering that folds in a `#compiler` hook.
+
+Struct (aggregate) equality is **not** supported — `==` on a struct lowers to an
+aggregate compare the backend can't emit at all (it fails at runtime too, not
+just at comptime). That case arrives with the reflection-driven structural diff
+(§5), which walks `type_info` instead of leaning on `==`. For a struct check
+today, assert on the fields: `t.eq(p.x, 1); t.eq(p.y, 2);`.
+
+> Generic string compare used to miscompile everywhere, not just in tests: inside
+> a generic function `a == b` on `$V = []const u8` fell through to a scalar
+> compare on the fat slice because the lowerer didn't resolve the param's type
+> through the instantiation binding. Fixed in `exprType`
+> ([src/ir.zig](../src/ir.zig)) so type-directed lowering sees the concrete type.
 
 ## 4. How it works
 
