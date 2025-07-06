@@ -4472,9 +4472,18 @@ const FunctionLowerer = struct {
                 const cur = self.local_alias.get(expr.kind.ident) orelse expr.kind.ident;
                 if (self.local_types.get(cur)) |local_ty| return local_ty;
                 for (self.params) |param| if (std.mem.eql(u8, param.name, expr.kind.ident)) {
-                    // In a generic instantiation a param declared `v: T` must resolve
-                    // to the bound concrete type, not the type-param name itself —
-                    // otherwise e.g. `any(v)` hashes "T" and misses the real dispatcher.
+                    // In a generic instantiation a param whose declared type mentions a
+                    // type parameter (`v: $T`, `xs: []$T`, …) must resolve through the
+                    // binding to the concrete type, not the type-param name — otherwise
+                    // type-directed lowering misfires: `any(v)` hashes "T" and misses the
+                    // dispatcher, and `a == b` on `$T = []const u8` falls through to a
+                    // scalar compare on the fat slice (an LLVM/VM type error) instead of
+                    // a content compare. `lowerTypeWithBindingAndSymbols` resolves the
+                    // type param at any nesting depth.
+                    if (self.type_binding.len != 0) {
+                        const bound = lowerTypeWithBindingAndSymbols(self.allocator, param.ty, self.type_binding, self.types, self.symbols) catch IrType.unknown;
+                        if (bound != .unknown) return bound;
+                    }
                     if (param.ty == .named) {
                         for (self.type_binding) |binding_arg| {
                             if (std.mem.eql(u8, binding_arg.name, param.ty.named.name))
