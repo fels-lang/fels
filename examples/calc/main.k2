@@ -97,6 +97,7 @@ expr_arg :: fn(line: []const u8, def: []const u8) -> []const u8 {
 main :: fn() -> i32 {
     line_buf: [1024]u8 = .{};
     src := expr_arg(process::command_line(line_buf[:]), "2 + 3 * (4 - 1)");
+
     p: P = .{ src, 0usize };
     result := expr(&p);
     print(src); print(" = "); print_i64(result); print("\n");
