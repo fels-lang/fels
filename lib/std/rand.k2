@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.rand — a small, fast pseudo-random number generator (xorshift64*).
 //
 // Deterministic: the same seed always produces the same sequence — ideal for

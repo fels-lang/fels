@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /// K2 Linux runtime — compiled automatically into every Linux K2 program.
 /// Provides: @panic, assert, write_stdout, write_stderr
 /// No libc. Uses direct Linux syscalls.

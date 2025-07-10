@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.heap — runtime dynamic memory for K2.
 //
 // A bump arena: allocation is a pointer bump inside the current region.

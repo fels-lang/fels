@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.color — 32-bit RGBA color for 2D/graphics work.
 //
 //   bg  := color::rgb(30u8, 30u8, 46u8);

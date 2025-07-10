@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.crypto — hashing and checksums (pure computation, no I/O).
 //
 //   d := crypto::sha256("abc");                   // → Digest (32 bytes)

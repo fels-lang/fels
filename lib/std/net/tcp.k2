@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.net.tcp — TCP streams and listeners.
 //
 // Built on `socket.Socket`, so timeouts / reuse-addr / non-blocking all come for

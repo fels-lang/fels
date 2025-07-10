@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.path — filesystem path manipulation (pure string ops, no I/O).
 //
 // Paths are plain `[]const u8` byte slices. Both `/` and `\` are treated as

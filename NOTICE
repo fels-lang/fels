@@ -1,0 +1,6 @@
+k2-lang standard library and runtime
+Copyright (c) 2026 Christian Brendlin
+
+This product's runtime and standard library (the components licensed under the
+Apache License, Version 2.0 — see LICENSE-APACHE-2.0.txt and the licensing
+overview in LICENSE) include software developed by Christian Brendlin.

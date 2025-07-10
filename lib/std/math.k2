@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.math — vectors, rectangles, and scalar helpers for games & graphics.
 //
 // Vectors are `f32` (matching most graphics APIs, e.g. raylib's `Vector2`).

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.build — K2's integrated build system.
 //
 // A project's `build.k2` defines `build :: fn(b: Build)`. `k2 build` runs it

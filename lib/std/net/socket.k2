@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.net.socket — a typed handle over a raw OS socket.
 //
 // `Socket` wraps a Winsock `SOCKET` and carries the operations that are common

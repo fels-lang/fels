@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.list — a growable array `List(T)` backed by an `Arena`.
 //
 // Built for games: allocate a persistent world arena once, store your entities /

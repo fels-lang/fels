@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.thread — native OS threads and structured helpers.
 //
 // k2 favours *real OS threads* over async/await: no function colouring, no hidden

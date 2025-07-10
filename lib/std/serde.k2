@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.serde — reflection-driven serialization. Turn any value into JSON with no
 // per-type code: the serializer walks the type's `type_info` for structure and an
 // `Any` for the field values.

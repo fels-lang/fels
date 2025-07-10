@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.net.udp — UDP datagram sockets.
 //
 // Connectionless: one socket can talk to many peers via `send_to` / `recv_from`,

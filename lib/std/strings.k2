@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.strings — a growable StringBuilder and a library of byte-string utilities.
 //
 // `StringBuilder` is a dynamic byte buffer backed by an `std.heap.Arena`: it

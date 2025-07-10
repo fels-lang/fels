@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.fmt — formatting on top of std.io.Writer: padding/alignment,
 // width-justified numbers, and joining.
 //

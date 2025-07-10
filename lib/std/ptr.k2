@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.ptr — pointer/address conversions and alignment arithmetic.
 //
 // K2 has no pointer-arithmetic operators (no `p + 1`); address math goes

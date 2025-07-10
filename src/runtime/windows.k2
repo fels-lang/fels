@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /// K2 Windows runtime — compiled automatically into every Windows K2 program.
 /// Provides: @panic, assert, write_stdout, write_stderr
 /// No libc. Uses kernel32.dll only (always available on Windows).

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.net.addr — IP addresses and socket addresses.
 //
 // Showcases the language's newer additions: `#derive` for equality, in-struct

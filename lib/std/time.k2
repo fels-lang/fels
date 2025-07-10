@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.time — wall-clock time, a monotonic clock, sleeping, and a UTC calendar
 // breakdown (Windows backend, kernel32).
 //

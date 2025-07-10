@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.bits — bit-twiddling for fixed-width unsigned integers.
 //
 // K2 has no generic `Integer` interface to constrain `$T: type`, so these

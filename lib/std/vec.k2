@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.vec — `Vec(T)`, a growable array with an identity all k2's own.
 //
 // k2 containers are REGION-BOUND: a `Vec` carries a borrowed `*Arena` (its

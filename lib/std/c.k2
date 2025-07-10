@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.c — C ABI primitive types, for clearer `#extern` FFI declarations.
 //
 // These are transparent aliases (interchangeable with the underlying K2 type),

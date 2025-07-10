@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // std.process — process info, environment variables, and child-process
 // spawning for K2 (Windows backend, kernel32).
 //
