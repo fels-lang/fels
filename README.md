@@ -353,5 +353,14 @@ expected debug trap fires. The compiler is written in Zig; start with
 
 ## License
 
-Not yet chosen. Until a `LICENSE` file is added, all rights are reserved by the
-authors; open an issue if you want to use K2 and need clarity.
+K2 is dual-licensed by component:
+
+- **The compiler** (`src/`) — [GNU GPL v3](LICENSE-GPLv3.txt).
+- **The runtime, standard library, compiler-injected preludes, and code the
+  compiler generates into your program** (`lib/`, `src/runtime/`, `#derive`/serde/
+  test output) — [Apache License 2.0](LICENSE-APACHE-2.0.txt).
+
+**Programs you compile with K2 are not GPL-encumbered** — they contain only your
+own code plus the Apache-2.0 runtime and standard library, so you may license and
+ship them however you wish. See [LICENSING.md](LICENSING.md) for the full rationale
+and the file-by-file boundary (also recorded in `SPDX-License-Identifier` headers).
