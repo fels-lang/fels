@@ -1,92 +1,113 @@
 # K2 Roadmap
 
-This file tracks where the language and compiler are headed. For the design of
-the comptime VM and metaprogramming layer specifically, see
-[`docs/09_comptime_vm_roadmap.md`](docs/09_comptime_vm_roadmap.md).
+Where the language and compiler are headed. For the design of the comptime VM and
+metaprogramming layer specifically, see
+[`docs/09_comptime_vm_roadmap.md`](docs/09_comptime_vm_roadmap.md); for the
+component-by-component status, see the table in [README.md](README.md#project-status).
 
-Status legend: **done** · **in progress** · **next** · **later**.
-
----
-
-## Recently landed
-
-The comptime engine and the first metaprogramming layer are in and tested:
-
-- **Comptime bytecode VM** — a register-based VM that executes the compiler's own
-  IR, so compile-time and runtime share one lowering and behave identically. It
-  replaced the old AST tree-walker entirely (the tree-walker is deleted; the VM
-  is the sole comptime engine).
-- **Full comptime data-type coverage** — scalars, floats, structs (nested),
-  arrays, slices, enums + `match`, optionals, errors/fallible + payloads,
-  interfaces with dynamic dispatch, recursion, loops.
-- **Reflection** — `sizeof`, `type_name`, and nested `type_info`
-  (`.fields[i].name`, `.elem_info`, `.bits`, `.signed`, `.kind`, …).
-- **Metaprogramming** — `#quote` / `#insert` (splice + re-check), template
-  `macro`s with `$`-splices and hygiene, `#for` comptime unrolling, a faithful
-  `ast.*` value surface you can `match` on, and `#insert #run gen()` — running
-  arbitrary comptime code that *builds* AST and splices it back in, type-checked
-  like hand-written code.
+The near-term goal is the **v0.1.0 release** — the first tagged, announced, public
+build. Its tracking checklist lives in the GitHub issues.
 
 ---
 
-## Now: fix what blocks real programs
+## Landed
 
-- **Interface-through-interface dispatch** — a method on `*InterfaceA` that calls
-  a method on a `*InterfaceB` argument causes an LLVM verification error. Top
-  compiler bug; blocks `std.fmt.Display`.
-- **Symbol mangling / package namespaces** — top-level names must be globally
-  unique, which prevents multi-package projects and third-party code.
-- **Wrapping arithmetic** — decide and implement `+%` / `-%` / `*%` and the
-  release-build overflow policy.
+The language is substantial and end-to-end on Windows (parse → check → IR → LLVM →
+executable), covered by a 200+ test suite.
 
-## Soon: complete the language
+**Core language** — structs/packed structs, enums with payloads + `match`
+(exhaustive, ranges, string/guard patterns, value-producing `match` and `if`
+expressions), integers `i8`–`i128`/`u1`–`u128` + floats, pointers/arrays/slices/
+optionals with debug checks, casts, distinct/opaque types, monomorphized generics,
+functions, control flow, UFCS extension methods (including on temporaries),
+in-struct methods, lambdas + iterators.
 
-- Static interface constraints (`where T: Writer`-style).
-- Const-correct interface values and receiver mutability rules.
-- `#test` runner and test attribute.
-- `#callconv`, `#link`, `#section` attributes.
-- Linux native entry-point generation and linking; macOS runtime.
-- Continue bootstrapping `std.*` (string slicing, sorting, hash maps).
+**Errors & memory** — fallible functions (`T ! E`, `fail`, `?`, `catch`, `!!`,
+`??`, success/error `defer` modes, tail-forwarding, qualified error types) and
+`Arena` zones with compiler-enforced non-escape and deterministic cleanup.
 
-## Soon: widen metaprogramming
+**Comptime & metaprogramming** — a register-based bytecode VM that executes the
+compiler's own IR (one lowering for comptime and runtime); `#run`/`#if`;
+`#quote`/`#insert` with re-checking and hygiene; template `macro`s with `$`-splice;
+`#for` unrolling; `#parse`; the `ast.*` value surface you can `match` on;
+`#compiler` hooks + `compiler_decls()` introspection (a Jai-style message loop);
+`#derive`.
 
-- More `ast.*` node kinds (calls, field/index access, `if`/`while`/`return`, …)
-  in materialization, reification, and the prelude — so generators are more
-  expressive.
-- Building `ast.*` values programmatically without `#quote` (needs growable
-  comptime lists / array construction).
-- `#parse("…")` — the marked string escape hatch.
-- Bare-call macros (`name(args)` without an explicit `#insert`).
-- Typed macro parameters (real `ast.Expr` / `ast.Block` instead of a `Code`
-  marker) and an auto-generated, complete `std.ast`.
+**Reflection** — `sizeof`, `type_name`, matchable `type_info(T)`, `typeid`, and
+`Any`, driving `std.serde` (JSON ser/deser with no per-type code).
 
-## Later: tooling and ergonomics
+**Generics & constraints** — `$T:` constraints, `where { … }` predicates run on
+the resolution VM, named `constraint($T){}`, and output type params (`-> $Acc`).
 
-- Formatter.
-- Language server (LSP).
-- Package manifest and dependency management.
-- Improved diagnostics for generic instantiation and interface conformance.
+**Modules** — file-as-module, `#import a.b` → `b::member`, `as`/`.*`/`.{x}`,
+visibility, per-module name mangling.
 
-## Later: the metaprogramming endgame
+**C interop** — `#extern`, the Win64 by-value aggregate ABI, thin C function
+pointers, and `k2 bindgen` (libclang → K2 declarations; full `raylib.h`).
 
-These are designed in [`docs/09_comptime_vm_roadmap.md`](docs/09_comptime_vm_roadmap.md):
+**Backend & build** — the LLVM backend, in-process LLD plus a from-scratch K2
+linker (`k2lnk`), and `k2 build` running `build.k2` entirely in the comptime VM to
+produce real executables and DLLs.
 
-- Gated comptime FFI (`#extern`) and a host stdlib (`std.io`/`std.fs`) exposed as
-  capabilities.
-- A `std.compiler` module and a Jai-style compile-time message loop, so user code
-  can inspect and modify the program as it compiles.
-- `k2 build` scripts — the entry point runs entirely in the VM.
-- **Capability-sandboxed metaprogramming** — the structural answer to the
-  `build.rs` / supply-chain problem: a dependency's build hook receives only the
-  capabilities it was granted and physically cannot reach the host OS.
+**Standard library** — 25 modules: `io`, `fmt`, `mem`, `strings`, `slice`, `vec`,
+`map`, `list`, `heap`, `math`, `rand`, `color`, `bits`, `ptr`, `path`, `time`,
+`crypto`, `serde`, `net` (TCP/UDP), `atomics`, `thread`, `fs`, `process`, `c`,
+`build`.
 
-## Future language expansion (after a stable foundation)
+**Tooling** — `k2 lsp` (diagnostics, completion, hover, go-to-definition, document
+symbols), a tree-sitter grammar with highlight queries, a Zed extension, and the
+`#test` comptime test lane (a failed assertion fails the build like a type error).
 
-- Runtime type identity, reflection, `Any`.
-- SIMD and vector operations.
-- Contracts (`#require`, `#ensure`).
-- Interface composition, owned dynamic objects, downcasting.
-- User-defined attributes.
+---
+
+## Toward v0.1.0
+
+Release-blocking work and the polish needed for a first public build.
+
+- **Release mechanics** — settle the version number (the repo has stray local
+  `v0.1.x` tags and `build.zig.zon` still says `0.0.0`), write a CHANGELOG / release
+  notes, and cut a tagged GitHub release with prebuilt Windows binaries.
+- **Documentation consistency** — keep the README status, this file, `docs/15`
+  (tooling), and `docs/17` (testing) in sync with what actually ships; complete the
+  `docs/00` "where to go next" index.
+- **Known correctness gaps** — decide fix-or-document for each (see below).
+- **Getting started** — a clean build-from-source path (Zig + LLVM), the
+  Windows-only caveat stated up front, and a working examples sweep.
+
+## After v0.1.0
+
+- **Testing** — the runtime lane (`k2 test`, per-test zones + leak checks, TTY/TAP/
+  JSON reporters), reflection-driven structural diffs on assertion failure (which
+  also unlocks struct equality), property testing, and snapshots (`docs/17` §5).
+- **More tooling** — `k2 fmt` (canonical formatter), `k2 doc` (reflection-driven
+  docs), `k2 repl`, and LSP v2/v3 (rename, semantic tokens, code actions).
+- **Linux/ELF backend** — the second target (ELF + SysV ABI), designed in
+  `docs/14`; today K2 is Windows-only.
+- **Packages** — the capability-bounded, content-hashed package manager designed in
+  `docs/16` — the structural answer to the `build.rs` / supply-chain problem: a
+  dependency's build hook receives only the capabilities it was granted.
+- **Wider metaprogramming** — more `ast.*` node kinds, building `ast.*` values
+  without `#quote`, bare-call macros, typed macro parameters, an auto-generated
+  `std.ast`.
+- **Language reach** — static interface conformance constraints, interface
+  composition / owned dynamic objects / downcasting, SIMD, and contracts
+  (`#require`/`#ensure`).
+- **Attributes needing infrastructure** — `#when(cond)`, `#bench`,
+  `#on_start`/`#on_exit` (see the open attributes issue).
+
+---
+
+## Known limitations & blocking bugs
+
+- **Interface-through-interface dispatch** — a method on `*InterfaceA` calling a
+  method on a `*InterfaceB` argument produces an LLVM verification error. Blocks a
+  fully generic `std.fmt.Display`.
+- **Struct/aggregate equality** — `==` on a struct is an aggregate compare the
+  backend cannot emit (it fails at runtime, not just at comptime). Compare fields,
+  or wait for the reflection-driven structural compare.
+- **Single target** — Windows x86-64 only; no Linux/macOS codegen yet.
+- **No external packages** — projects are single-tree until the package manager
+  lands.
 
 ---
 
@@ -94,11 +115,9 @@ These are designed in [`docs/09_comptime_vm_roadmap.md`](docs/09_comptime_vm_roa
 
 | Decision | Question |
 | --- | --- |
-| Plain arithmetic | Does overflow trap, wrap, or become UB in release builds? |
 | Debug safety | Which checks are mandatory vs. disabled inside `unsafe`? |
-| Error ABI | How are fallible returns propagated across modules and FFI? |
+| Error ABI across FFI | How do fallible returns cross the C boundary? |
 | Borrow scope | Should `borrow` expand to fields, returns, or extern contracts? |
-| Static constraints | What is the `where T: Trait` syntax? Coherence rules? |
+| Interface coherence | Conformance/coherence rules for static interface constraints. |
 | Mutability | How do `const`, receiver mutability, pointers, and interface coercions interact? |
-| `Any` / reflection | Borrowed or owned? What defines stable runtime type identity? |
-| Packages | How are packages named, versioned, and represented in symbols? |
+| Package identity | How are packages named, versioned, and represented in symbols? |

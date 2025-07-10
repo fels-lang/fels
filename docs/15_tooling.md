@@ -2,7 +2,8 @@
 
 > Status: **`k2 lsp` is implemented** (diagnostics, completion, hover,
 > go-to-definition, document symbols) — see §8 to wire it into your editor. The
-> formatter, doc generator, test runner, and REPL are still design. A tree-sitter
+> `#test` comptime test lane is implemented ([docs/17](17_testing.md)); the
+> formatter, doc generator, runtime test lane, and REPL are still design. A tree-sitter
 > grammar (`tree-sitter-k2/`) and a Zed extension (`zed-k2/`) give syntactic
 > highlighting. This document designs the developer surface around one principle.
 

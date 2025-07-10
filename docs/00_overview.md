@@ -177,3 +177,12 @@ main :: fn() -> i32 {
 - [06_modules_interfaces.md](06_modules_interfaces.md) - Modules, Interfaces, and Generics
 - [07_stdlib.md](07_stdlib.md) - Standard Library
 - [08_attributes_builtins.md](08_attributes_builtins.md) - Attributes & Builtins
+- [09_comptime_vm_roadmap.md](09_comptime_vm_roadmap.md) - Comptime VM
+- [10_build_system.md](10_build_system.md) - Build System
+- [11_c_interop.md](11_c_interop.md) - C Interop & `#extern`
+- [12_reflection_and_constraints.md](12_reflection_and_constraints.md) - Reflection & Generic Constraints
+- [13_metaprogramming.md](13_metaprogramming.md) - Metaprogramming (`#quote`/`#insert`/macros)
+- [14_linux_elf_backend.md](14_linux_elf_backend.md) - Linux/ELF Backend (design)
+- [15_tooling.md](15_tooling.md) - Tooling & LSP
+- [16_packages.md](16_packages.md) - Packages (design)
+- [17_testing.md](17_testing.md) - Testing & `#test`

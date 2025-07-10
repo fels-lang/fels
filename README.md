@@ -304,11 +304,29 @@ The stdlib lives in the in-tree [`lib/std/`](lib/std/) directory.
 | --- | --- |
 | `std.io` | `Writer`/`Reader` interfaces; `Stdout`, `Stderr`, `FixedBuf`; numeric formatters; `print`/`println`. |
 | `std.fmt` | Width-justified output, padding, integer columns, joined slices. |
-| `std.mem` | Typed-slice helpers: `eql`, `copy`, `fill`, `index_of`, `contains`. |
+| `std.mem` | Typed-slice helpers: `eql`, `copy`, `fill`, `index_of`, `contains`; byte search. |
+| `std.strings` | Arena-backed growable `StringBuilder` + byte utilities. |
+| `std.slice` | Higher-order helpers: `map`, `filter`, `any`, `all`, `find`/`rfind`. |
+| `std.vec` | Growable `Vec(T)` and `VecUnmanaged(T)` (region-bound). |
+| `std.map` | `AutoHashMap` (byte-hash any key) and `StrMap` (content-keyed). |
+| `std.list` | Linked-list container. |
+| `std.heap` | Bump-allocating `Arena` (the backing for `zone … : Arena`). |
+| `std.math` | `Vec2`/`Vec3`/`Rect` and scalar math (no libm dependency). |
+| `std.rand` | Pseudo-random number generation. |
+| `std.color` | Color types and conversions. |
+| `std.bits` | Bit-twiddling for u32/u64: popcount, clz/ctz, rotate, power-of-two test. |
+| `std.ptr` | Pointer/address conversions and alignment arithmetic. |
+| `std.path` | Path manipulation. |
+| `std.time` | Clocks and timestamps (kernel32). |
+| `std.crypto` | `crc32`, FNV, SHA-256. |
+| `std.serde` | Reflection-driven JSON serialize/deserialize — no per-type code. |
+| `std.net` | TCP + UDP over Winsock, layered (`os`/`socket`/`tcp`/`udp`). |
+| `std.atomics` | Atomic load/store/swap/`compare_exchange`/fetch-ops; `Atomic(T)` cell. |
+| `std.thread` | OS thread `spawn`/`join`. |
 | `std.fs` | `File` implementing `Reader` + `Writer`; `open`, `create`, `append`, `delete`, `exists` (Windows). |
 | `std.process` | PID, command line, env vars, child spawn/wait/kill (Windows). |
-| `std.ptr` | Pointer/address conversions and alignment arithmetic. |
-| `std.bits` | Bit-twiddling for u32/u64: popcount, clz/ctz, rotate, power-of-two test. |
+| `std.c` | C ABI types for `#extern` FFI. |
+| `std.build` | The `build.k2` API (executables, libraries, steps) — runs in the comptime VM. |
 
 ---
 
@@ -331,11 +349,17 @@ frontend is platform-independent. What's solid, partial, and missing:
 | Zones (`Arena`, non-escape checking, deterministic cleanup) | Implemented |
 | **Comptime VM** (`#run`, `#if`, reflection, full data types) | Implemented |
 | **Metaprogramming** (`#quote`, `#insert`, `macro`, `#for`, generative `#insert #run`) | Implemented (node-kind coverage still growing) |
-| Modules, imports, visibility, extension methods | Implemented (globally-unique names; no packages yet) |
-| Interfaces | Partial — dynamic dispatch works; static constraints, composition, and nested-interface dispatch do not |
-| Standard library | Partial — `io`, `fmt`, `mem`, `fs`, `process`, `ptr`, `bits` |
-| Atomics | Partial — load/store work; CAS and fetch-ops do not |
-| Tooling | Partial — check/IR/object/build; no formatter, LSP, package manager, or test runner |
+| Modules, imports, `::` namespacing, visibility, UFCS extension methods | Implemented (per-module name mangling; no external packages yet) |
+| Generics: monomorphization, `$T:` constraints, `where {}` predicates, named constraints | Implemented |
+| Reflection (`type_info`, `typeid`, `Any`) + reflection-driven serde | Implemented |
+| C interop (`#extern`, by-value struct ABI, `k2 bindgen` from libclang) | Implemented |
+| Build system (`build.k2` run in the comptime VM → real exes/DLLs) | Implemented |
+| Interfaces | Partial — dynamic dispatch works; static interface conformance constraints and nested-interface dispatch do not |
+| Standard library | Implemented — 25 modules incl. `io`, `fmt`, `mem`, `strings`, `vec`, `map`, `heap`, `serde` (JSON), `net` (TCP/UDP), `atomics`, `thread`, `crypto`, `time`, `fs`, `process`, `build` |
+| Atomics + concurrency | Implemented — load/store/swap/`compare_exchange`/fetch-ops, `Atomic(T)`, `std.thread` |
+| Testing | Implemented — `#test` comptime lane (a failed assertion fails the build); runtime lane planned |
+| Tooling | Implemented — `check`/`ir`/`object`/`build`, `k2 lsp` (language server), tree-sitter grammar + Zed extension, `k2 bindgen`. No formatter, doc generator, REPL, or package manager yet |
+| Platform support | Windows x86-64 only (the frontend is platform-independent; Linux/ELF backend is designed but not implemented) |
 
 See [ROADMAP.md](ROADMAP.md) for what's planned and the known blocking bugs, and
 [`docs/`](docs/) for the language reference (syntax, types, memory zones,
