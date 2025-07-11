@@ -188,6 +188,16 @@ pub const ErrorVariantDecl = struct {
 pub const FieldDecl = struct {
     name: []const u8,
     ty: TypeRef,
+    /// `name: T = expr` — the value used when a literal omits this field. Null
+    /// when the field has no default (it must then be supplied explicitly).
+    default: ?Expr = null,
+    span: Span,
+};
+
+/// One `.name = value` entry in a named struct literal `.{ .x = 1, .y = 2 }`.
+pub const FieldInit = struct {
+    name: []const u8,
+    value: Expr,
     span: Span,
 };
 
@@ -592,6 +602,10 @@ pub const ExprKind = union(enum) {
     /// escape hatch out of typed quotations.
     parse_expr: *const Expr,
     compound_literal: []const Expr,
+    /// `.{ .x = 1, .y = 2 }` — a struct literal with named fields. Resolved against
+    /// the expected struct type (reordered to declaration order, omitted fields
+    /// take their declared default) and lowered like a positional literal.
+    struct_literal: []const FieldInit,
     unary: UnaryExpr,
     binary: BinaryExpr,
     unsafe_expr: *const Expr,

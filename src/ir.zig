@@ -3015,8 +3015,10 @@ const FunctionLowerer = struct {
                             try args.append(self.allocator, try self.lowerExprAs(value, fty));
                     } else try args.append(self.allocator, try self.lowerExpr(value));
                 }
+                try self.appendTrailingDefaults(&args, ct, values.len);
                 break :blk try self.emit(ct, .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
             },
+            .struct_literal => |inits| try self.lowerStructLiteral(inits, self.exprType(expr), expr.span),
             .unary => |unary| blk: {
                 // `&p.field` / `&arr[i]` must take the field/element address in
                 // place (field_addr/index_addr), not `ref` a *loaded copy* —
@@ -3737,8 +3739,10 @@ const FunctionLowerer = struct {
                             try args.append(self.allocator, try self.lowerExprAs(value, fty));
                     } else try args.append(self.allocator, try self.lowerExpr(value));
                 }
+                try self.appendTrailingDefaults(&args, expected_ty, values.len);
                 break :blk try self.emit(expected_ty, .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
             },
+            .struct_literal => |inits| try self.lowerStructLiteral(inits, expected_ty, expr.span),
             else => try self.lowerExpr(expr),
         };
     }
@@ -3760,6 +3764,80 @@ const FunctionLowerer = struct {
                 }
             },
             else => return null,
+        }
+    }
+
+    /// The declared fields of a struct `IrType` (declaration order), or null if
+    /// `ty` is not a resolvable struct.
+    fn structFields(self: *FunctionLowerer, ty: IrType) ?[]const sema.FieldInfo {
+        if (ty != .struct_type) return null;
+        const id = self.symbols.resolve(self.symbols.root_scope, ty.struct_type) orelse return null;
+        const layout = self.types.layouts.get(id) orelse return null;
+        return switch (layout.kind) {
+            .struct_type => |fields| fields,
+            else => null,
+        };
+    }
+
+    /// Lower a named struct literal `.{ .x = …, .y = … }` against `struct_ty`:
+    /// reorder the inits into declaration order, fill an omitted field from its
+    /// declared default (and error if it has none), reject unknown field names,
+    /// then build the aggregate exactly like a positional literal.
+    fn lowerStructLiteral(self: *FunctionLowerer, inits: []const ast.FieldInit, struct_ty: IrType, span: Span) LowerError!Value {
+        const fields = self.structFields(struct_ty) orelse {
+            diag_mod.printErrorAt("a `.{ .field = … }` struct literal needs a known struct type here", self.file_name, self.source, span);
+            return error.LoweringFailed;
+        };
+        // Reject names that aren't fields of the struct.
+        for (inits) |fi| {
+            var known = false;
+            for (fields) |f| if (std.mem.eql(u8, f.name, fi.name)) {
+                known = true;
+                break;
+            };
+            if (!known) {
+                const msg = std.fmt.allocPrint(self.allocator, "no field `{s}` in struct `{s}`", .{ fi.name, struct_ty.struct_type }) catch "unknown field in struct literal";
+                diag_mod.printErrorAt(msg, self.file_name, self.source, fi.span);
+                return error.LoweringFailed;
+            }
+        }
+        var args = std.ArrayList(Value).empty;
+        errdefer args.deinit(self.allocator);
+        for (fields) |field| {
+            const fty = lowerSemaTypeWithEnv(self.allocator, field.ty, self.types, self.symbols) catch IrType.unknown;
+            var provided: ?ast.Expr = null;
+            for (inits) |fi| if (std.mem.eql(u8, fi.name, field.name)) {
+                provided = fi.value;
+                break;
+            };
+            const value = provided orelse field.default orelse {
+                const msg = std.fmt.allocPrint(self.allocator, "missing field `{s}` in struct literal (it has no default value)", .{field.name}) catch "missing field in struct literal";
+                diag_mod.printErrorAt(msg, self.file_name, self.source, span);
+                return error.LoweringFailed;
+            };
+            if (fty == .fn_ptr)
+                try args.append(self.allocator, try self.lowerRawFnArg(value))
+            else
+                try args.append(self.allocator, try self.lowerExprAs(value, fty));
+        }
+        return self.emit(struct_ty, .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
+    }
+
+    /// For a POSITIONAL struct literal that supplied fewer values than there are
+    /// fields, append the declared defaults of the trailing fields (`.{}` and
+    /// short `.{ a }` literals pick up defaults). Stops at the first remaining
+    /// field with no default — the builtin zero-fills whatever is left — so
+    /// defaults behave like trailing default arguments. No-op for non-structs.
+    fn appendTrailingDefaults(self: *FunctionLowerer, args: *std.ArrayList(Value), ty: IrType, start: usize) LowerError!void {
+        const fields = self.structFields(ty) orelse return;
+        var i = start;
+        while (i < fields.len) : (i += 1) {
+            const dflt = fields[i].default orelse return;
+            const fty = lowerSemaTypeWithEnv(self.allocator, fields[i].ty, self.types, self.symbols) catch IrType.unknown;
+            if (fty == .fn_ptr)
+                try args.append(self.allocator, try self.lowerRawFnArg(dflt))
+            else
+                try args.append(self.allocator, try self.lowerExprAs(dflt, fty));
         }
     }
 

@@ -374,6 +374,9 @@ pub const InterfaceMethodInfo = struct {
 pub const FieldInfo = struct {
     name: []const u8,
     ty: Ty,
+    /// `name: T = expr` default, carried from the field decl so a literal that
+    /// omits this field (named `.{…}`, short positional, or `.{}`) can fill it.
+    default: ?ast.Expr = null,
 };
 
 pub const VariantInfo = struct {
@@ -1524,6 +1527,7 @@ const Checker = struct {
                                     try fields.append(self.allocator, .{
                                         .name = field.name,
                                         .ty = try self.typeFromRef(field.ty),
+                                        .default = field.default,
                                     });
                                 }
                                 try self.env.layouts.put(id, .{
@@ -2561,6 +2565,10 @@ const Checker = struct {
             .null => .null_ptr,
             .compound_literal => |values| blk: {
                 for (values) |value| _ = try self.inferExpr(value);
+                break :blk .unknown;
+            },
+            .struct_literal => |fields| blk: {
+                for (fields) |f| _ = try self.inferExpr(f.value);
                 break :blk .unknown;
             },
             .unary => |unary| switch (unary.op) {
@@ -4535,6 +4543,7 @@ const Checker = struct {
             try fields.append(self.allocator, .{
                 .name = field.name,
                 .ty = try self.typeFromRef(field.ty), // uses current_type_binding
+                .default = field.default,
             });
         }
         try self.env.layouts.put(inst_id, .{

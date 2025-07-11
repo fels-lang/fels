@@ -456,10 +456,14 @@ pub const Parser = struct {
             }
             _ = try self.expect(.colon, "expected : after field name");
             const ty = try self.parseType();
+            // Optional default value: `name: T = expr`, used when a literal omits
+            // the field.
+            const field_default: ?ast.Expr = if (self.match(.eq)) try self.parseExpr(0) else null;
             const end = if (self.match(.comma)) self.previous() else member_name;
             try fields.append(self.allocator, .{
                 .name = member_name.text(self.source),
                 .ty = ty,
+                .default = field_default,
                 .span = spanFrom(member_name, end),
             });
         }
@@ -2072,6 +2076,27 @@ pub const Parser = struct {
     }
 
     fn finishCompound(self: *Parser, start: Token) ParseError!ast.Expr {
+        // Named struct literal: `.{ .x = 1, .y = 2 }`. Detected by a leading
+        // `.<ident> =`. (`.{ .red, .green }` — bare enum values — has no `=`, so it
+        // stays a positional literal.)
+        if (self.check(.dot) and self.peekKind(1) == .ident and self.peekKind(2) == .eq) {
+            var fields: std.ArrayList(ast.FieldInit) = .empty;
+            errdefer fields.deinit(self.allocator);
+            while (!self.check(.r_brace) and !self.check(.eof)) {
+                _ = try self.expect(.dot, "expected `.field` in struct literal");
+                const name = try self.expect(.ident, "expected field name after `.`");
+                _ = try self.expect(.eq, "expected `=` after `.field` in struct literal");
+                const value = try self.parseExpr(0);
+                try fields.append(self.allocator, .{
+                    .name = name.text(self.source),
+                    .value = value,
+                    .span = spanFrom(name, self.previous()),
+                });
+                _ = self.match(.comma);
+            }
+            const close = try self.expect(.r_brace, "expected } after struct literal");
+            return self.expr(.{ .struct_literal = try fields.toOwnedSlice(self.allocator) }, spanFrom(start, close));
+        }
         var values: std.ArrayList(ast.Expr) = .empty;
         errdefer values.deinit(self.allocator);
         while (!self.check(.r_brace) and !self.check(.eof)) {

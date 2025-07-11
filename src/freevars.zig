@@ -182,6 +182,7 @@ const Analyzer = struct {
                 self.bound.shrinkRetainingCapacity(mark);
             },
             .compound_literal => |fields| for (fields) |f| try self.walkExpr(f),
+            .struct_literal => |fields| for (fields) |f| try self.walkExpr(f.value),
             .match_expr => |m| {
                 try self.walkExpr(m.subject.*);
                 for (m.arms) |arm| {
