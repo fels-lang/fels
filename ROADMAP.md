@@ -15,12 +15,15 @@ build. Its tracking checklist lives in the GitHub issues.
 The language is substantial and end-to-end on Windows (parse → check → IR → LLVM →
 executable), covered by a 200+ test suite.
 
-**Core language** — structs/packed structs, enums with payloads + `match`
-(exhaustive, ranges, string/guard patterns, value-producing `match` and `if`
-expressions), integers `i8`–`i128`/`u1`–`u128` + floats, pointers/arrays/slices/
-optionals with debug checks, casts, distinct/opaque types, monomorphized generics,
-functions, control flow, UFCS extension methods (including on temporaries),
-in-struct methods, lambdas + iterators.
+**Core language** — structs/packed structs (named-field literals `.{ .x = 1 }`
+and default field values), enums with payloads + `match` (exhaustive, ranges,
+string/guard patterns, value-producing `match` and `if` expressions), integers
+`i8`–`i128`/`u1`–`u128` + floats, pointers/arrays/slices/optionals with debug
+checks, casts, distinct/opaque types, monomorphized generics, functions, control
+flow, UFCS extension methods (including on temporaries), in-struct methods,
+lambdas + iterators. Arithmetic overflow **traps in debug, wraps in release**
+(never UB); `+%`/`-%`/`*%` always wrap. Operator precedence is fixed and
+locked by tests.
 
 **Errors & memory** — fallible functions (`T ! E`, `fail`, `?`, `catch`, `!!`,
 `??`, success/error `defer` modes, tail-forwarding, qualified error types) and
