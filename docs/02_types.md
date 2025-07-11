@@ -45,11 +45,19 @@ z := 3.0f16;  // error: unsupported float width `f16`: k2 floats are `f32` or `f
 
 A hex literal that legitimately ends in letters (`0xABC`, `0xFF`) is *not* a bad suffix — the suffix is split off only after the radix's digits, so hex digits are never mistaken for a width. Float literals accept only `f32`/`f64`.
 
-#### Wrapping Arithmetic
+#### Overflow policy
 
-Plain `+`, `-`, `*` trap on signed/unsigned overflow in debug builds (catching bugs
-close to their source). When you *want* two's-complement wraparound — hashing, PRNGs,
-checksums, fixed-width counters — use the wrapping operators `+%`, `-%`, `*%`:
+K2's policy for plain `+`, `-`, `*` is fixed and never undefined behavior:
+
+| Build | Plain `+` `-` `*` on overflow |
+| --- | --- |
+| Debug (`-O0`) | **traps** — aborts at the operation, catching the bug at its source |
+| Release (`-O1`+) | **wraps** (two's complement) |
+
+So overflow is a loud crash while you develop and well-defined wraparound when you
+ship — there is no overflow UB to exploit. When you specifically *want* wraparound
+in every build (hashing, PRNGs, checksums, fixed-width counters), use the explicit
+wrapping operators `+%`, `-%`, `*%`, which never trap:
 
 ```k2
 a := 250u8 +% 10u8;   // 4   — wraps at 256, never traps
@@ -144,14 +152,37 @@ Point :: struct {
 #### Construction
 
 ```k2
-// Named field construction
-p := Point { x = 10, y = 20 };
+// Named-field literal — order doesn't matter
+p: Point = .{ .x = 10, .y = 20 };
 
 // Positional compound literal (fields filled in declaration order)
 p2: Point = .{ 10, 20 };
 
 // Zero-initialized (all fields set to their zero value)
 p3: Point = .{};
+```
+
+A named literal must name a real field of the struct, and every field without a
+default must be supplied — otherwise it's a compile error (`no field …` /
+`missing field …`).
+
+#### Default field values
+
+A field may declare a default with `= expr`. A named literal that omits the
+field, or a positional/`.{}` literal that stops short of it, fills it from the
+default. Defaults work like trailing default arguments — put defaulted fields
+last so a positional literal can reach them:
+
+```k2
+Config :: struct {
+    name: []const u8,
+    retries: i32 = 3,
+    verbose: bool = false,
+}
+
+a: Config = .{ .name = "build" };               // retries = 3, verbose = false
+b: Config = .{ .name = "ci", .verbose = true }; // retries = 3
+c: Config = .{ "deploy", 5 };                   // verbose = false (default)
 ```
 
 #### Field Access
