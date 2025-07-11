@@ -2455,3 +2455,64 @@ test "exe: generic []const u8 == folds in a #run (binding-resolved)" {
     , "exe_generic_streq_run");
     try std.testing.expectEqual(@as(u32, 7), code);
 }
+
+// ── Named struct literals + default field values ────────────────────────────────
+
+test "exe: named struct literal, fields out of order" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct { x: i32, y: i32 }
+        \\main :: fn() -> i32 { p: P = .{ .y = 20, .x = 22 }; return p.x + p.y; }
+    , "exe_named_lit");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: named literal omits a defaulted field" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct { x: i32, y: i32 = 100 }
+        \\main :: fn() -> i32 { p: P = .{ .x = 5 }; return p.x + p.y; }
+    , "exe_named_default");
+    try std.testing.expectEqual(@as(u32, 105), code);
+}
+
+test "exe: default fields fill .{} and trailing positions" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `.{ 5 }` supplies `a`, `b` falls back to its default 50.
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct { a: i32, b: i32 = 50 }
+        \\main :: fn() -> i32 { p: P = .{ 5 }; return p.a + p.b; }
+    , "exe_default_trailing");
+    try std.testing.expectEqual(@as(u32, 55), code);
+}
+
+test "exe: unknown field in a struct literal fails the build" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.LoweringFailed, compileAndRun(arena.allocator(),
+        \\P :: struct { x: i32, y: i32 }
+        \\main :: fn() -> i32 { p: P = .{ .x = 1, .z = 2 }; return p.x; }
+    , "exe_named_unknown"));
+}
+
+test "exe: missing required field (no default) fails the build" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.LoweringFailed, compileAndRun(arena.allocator(),
+        \\P :: struct { x: i32, y: i32 }
+        \\main :: fn() -> i32 { p: P = .{ .x = 1 }; return p.x; }
+    , "exe_named_missing"));
+}
