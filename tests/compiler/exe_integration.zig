@@ -2516,3 +2516,34 @@ test "exe: missing required field (no default) fails the build" {
         \\main :: fn() -> i32 { p: P = .{ .x = 1 }; return p.x; }
     , "exe_named_missing"));
 }
+
+// ── Operator precedence & chaining (locked for 0.1.0) ───────────────────────────
+
+test "exe: operator precedence ladder is stable" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    if (1 << 3 > 3) == false { return 1; }  // shift tighter than `>`: (1<<3)>3
+        \\    if (6 & 2 == 2) == false { return 2; }  // `&` tighter than `==`: (6&2)==2 (fixes C wart)
+        \\    if 1 + 1 << 2 != 8 { return 3; }        // `+` tighter than `<<`: (1+1)<<2
+        \\    if 1 << 2 << 1 != 8 { return 4; }        // `<<` left-associative
+        \\    return 9;
+        \\}
+    , "exe_precedence");
+    try std.testing.expectEqual(@as(u32, 9), code);
+}
+
+test "exe: chained comparison is rejected, not silently misparsed" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `(1 < 2) < 3` would compare a bool to an int — rejected, so the C footgun
+    // (`1<2<3` quietly becoming `true<3`) can't fire.
+    try std.testing.expectError(error.CompileFailed, compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 { b := 1 < 2 < 3; if b { return 1; } return 0; }
+    , "exe_chained_cmp"));
+}
