@@ -2578,6 +2578,57 @@ test "exe: interface-through-interface dispatch" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: array and slice == compare elementwise" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\sliceq :: fn(a: []const i32, b: []const i32) -> bool { return a == b; }
+        \\S :: struct { v: [2]i32, n: i32 }
+        \\main :: fn() -> i32 {
+        \\    a: [3]i32 = .{ 1, 2, 3 };
+        \\    b: [3]i32 = .{ 1, 2, 3 };
+        \\    if a != b { return 1; }                 // array ==
+        \\    x: S = .{ .v = .{ 4, 5 }, .n = 6 };
+        \\    y: S = .{ .v = .{ 4, 5 }, .n = 6 };
+        \\    if x != y { return 2; }                 // struct with array field
+        \\    if sliceq(a[:], b[:]) == false { return 3; }  // []i32 ==
+        \\    return 8;
+        \\}
+    , "exe_array_slice_eq");
+    try std.testing.expectEqual(@as(u32, 8), code);
+}
+
+test "exe: payload-enum == .variant dispatches by discriminant" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\E :: enum { a, b, c: i32 }
+        \\main :: fn() -> i32 {
+        \\    x := E.b;
+        \\    if x == .a { return 1; }
+        \\    if x != .b { return 2; }
+        \\    return 9;
+        \\}
+    , "exe_enum_variant_eq");
+    try std.testing.expectEqual(@as(u32, 9), code);
+}
+
+test "exe: comparing two payload-enum values is a clean error" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A clear diagnostic ("use `match`"), not an LLVM aggregate-icmp crash.
+    try std.testing.expectError(error.LoweringFailed, compileAndRun(arena.allocator(),
+        \\E :: enum { a, b, c: i32 }
+        \\main :: fn() -> i32 { x := E.a; y := E.a; if x == y { return 1; } return 0; }
+    , "exe_enum_two_values"));
+}
+
 // ── Operator precedence & chaining (locked for 0.1.0) ───────────────────────────
 
 test "exe: operator precedence ladder is stable" {
