@@ -2517,6 +2517,67 @@ test "exe: missing required field (no default) fails the build" {
     , "exe_named_missing"));
 }
 
+// ── Struct equality + interface-through-interface dispatch ──────────────────────
+
+test "exe: struct == compares field by field (nested + string fields)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\Inner :: struct { a: i32, name: []const u8 }
+        \\Outer :: struct { p: Inner, n: i32 }
+        \\main :: fn() -> i32 {
+        \\    x: Outer = .{ .p = .{ .a = 1, .name = "hi" }, .n = 3 };
+        \\    y: Outer = .{ .p = .{ .a = 1, .name = "hi" }, .n = 3 };
+        \\    z: Outer = .{ .p = .{ .a = 1, .name = "bye" }, .n = 3 };
+        \\    if x != y { return 1; }
+        \\    if x == z { return 2; }   // differs in the nested string field
+        \\    return 7;
+        \\}
+    , "exe_struct_eq");
+    try std.testing.expectEqual(@as(u32, 7), code);
+}
+
+test "exe: struct == folds at comptime (#run)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct { x: i32, y: i32 }
+        \\cmp :: fn() -> i32 { a: P = .{ 3, 4 }; b: P = .{ 3, 4 }; if a == b { return 11; } return 0; }
+        \\R :: #run cmp();
+        \\main :: fn() -> i32 { return R; }
+    , "exe_struct_eq_comptime");
+    try std.testing.expectEqual(@as(u32, 11), code);
+}
+
+test "exe: interface-through-interface dispatch" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A method on `*Wrapper` (interface) calls a method on a `*Display`
+    // (interface) argument — previously an LLVM verification error.
+    const code = try compileAndRun(arena.allocator(),
+        \\Display :: interface { fmt :: fn(self: *Self) -> i32; }
+        \\Wrapper :: interface { wrap :: fn(self: *Self, d: *Display) -> i32; }
+        \\Num :: struct { v: i32 }
+        \\Num as Display { fmt :: fn(self: *Self) -> i32 { return self.v; } }
+        \\Box :: struct { mul: i32 }
+        \\Box as Wrapper { wrap :: fn(self: *Self, d: *Display) -> i32 { return d.fmt() * self.mul; } }
+        \\main :: fn() -> i32 {
+        \\    n: Num = .{ 7 };
+        \\    b: Box = .{ 6 };
+        \\    w: *Wrapper = &b;
+        \\    d: *Display = &n;
+        \\    return w.wrap(d);
+        \\}
+    , "exe_iface_thru_iface");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 // ── Operator precedence & chaining (locked for 0.1.0) ───────────────────────────
 
 test "exe: operator precedence ladder is stable" {
