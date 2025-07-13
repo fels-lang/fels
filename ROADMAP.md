@@ -102,12 +102,13 @@ Release-blocking work and the polish needed for a first public build.
 
 ## Known limitations & blocking bugs
 
-- **Interface-through-interface dispatch** — a method on `*InterfaceA` calling a
-  method on a `*InterfaceB` argument produces an LLVM verification error. Blocks a
-  fully generic `std.fmt.Display`.
-- **Struct/aggregate equality** — `==` on a struct is an aggregate compare the
-  backend cannot emit (it fails at runtime, not just at comptime). Compare fields,
-  or wait for the reflection-driven structural compare.
+- **`==` on two payload-enum values** — comparing two full enum values (where a
+  variant carries a payload) is rejected with a clear error; use `match`, or
+  compare against a specific `.variant` (which works). Scalars, `[]const u8`,
+  structs, arrays, slices, and simple enums all compare with `==`.
+- **Static interface constraints** — `where T: SomeInterface` conformance bounds
+  aren't enforced yet (dynamic and interface-through-interface dispatch work).
+- **Non-capturing lambdas** — `fn(x){…}` can't close over outer variables.
 - **Single target** — Windows x86-64 only; no Linux/macOS codegen yet.
 - **No external packages** — projects are single-tree until the package manager
   lands.

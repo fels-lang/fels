@@ -68,17 +68,18 @@ values of the same type.
 
 ### What the comptime lane compares
 
-`==`/`!=` run on the VM, which evaluates:
+`==`/`!=` run on the VM and now cover the aggregates too:
 
-- **scalars** — ints, floats, bools, simple enums; and
-- **`[]const u8`** — content comparison (`t.eq("a", "a")`), the same length-then-
-  byte-loop lowering that folds in a `#compiler` hook.
+- **scalars** — ints, floats, bools, simple enums;
+- **`[]const u8`** and other slices — content comparison (`t.eq("a", "a")`); and
+- **structs and arrays** — field-by-field / element-by-element (recursing into
+  nested structs and string fields), so `t.eq(point_a, point_b)` works at comptime.
 
-Struct (aggregate) equality is **not** supported — `==` on a struct lowers to an
-aggregate compare the backend can't emit at all (it fails at runtime too, not
-just at comptime). That case arrives with the reflection-driven structural diff
-(§5), which walks `type_info` instead of leaning on `==`. For a struct check
-today, assert on the fields: `t.eq(p.x, 1); t.eq(p.y, 2);`.
+The one gap is comparing two *payload*-enum values directly (`E.c(1) == E.c(1)`),
+which is a compile error — compare against a specific `.variant`, or `match`. The
+richer reflection-driven structural *diff* (§5) — which prints which field
+differs on failure — is still the post-0.1.0 upgrade; today a failed `t.eq`
+reports a generic message.
 
 > Generic string compare used to miscompile everywhere, not just in tests: inside
 > a generic function `a == b` on `$V = []const u8` fell through to a scalar
