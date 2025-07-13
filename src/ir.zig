@@ -3072,11 +3072,35 @@ const FunctionLowerer = struct {
                         if (binary.op == .not_equal) break :blk try self.emit(.bool, .{ .unary = .{ .op = .not, .value = eqv } });
                         break :blk eqv;
                     }
-                    // `a == b` / `a != b` on a struct compares field by field — the
-                    // backend can't `icmp` an aggregate. Mirrors the string path.
                     const lty = self.exprType(binary.left.*);
-                    if (lty == .struct_type) {
-                        const eqv = try self.lowerStructEq(try self.lowerExpr(binary.left.*), try self.lowerExpr(binary.right.*), lty);
+                    const rty = self.exprType(binary.right.*);
+                    // Payload enums are aggregates `{tag, …}` (a simple/payloadless
+                    // enum is a scalar and compares fine below). `e == .variant`
+                    // becomes a discriminant check (`variant_is`); two full enum
+                    // VALUES have no discriminant-extract op, so reject them cleanly
+                    // (use `match`) rather than emit an invalid aggregate `icmp`.
+                    if (self.payloadEnumName(lty) orelse self.payloadEnumName(rty)) |ename| {
+                        var value_expr: ?ast.Expr = null;
+                        var vname: ?[]const u8 = null;
+                        if (bareEnumVariant(binary.right.*)) |vn| {
+                            vname = vn;
+                            value_expr = binary.left.*;
+                        } else if (bareEnumVariant(binary.left.*)) |vn| {
+                            vname = vn;
+                            value_expr = binary.right.*;
+                        }
+                        if (vname) |vn| {
+                            const v = try self.emit(.bool, .{ .variant_is = .{ .value = try self.lowerExpr(value_expr.?), .type_name = ename, .variant = vn } });
+                            break :blk if (binary.op == .not_equal) try self.emit(.bool, .{ .unary = .{ .op = .not, .value = v } }) else v;
+                        }
+                        diag_mod.printErrorAt("`==` on two enum values isn't supported — use `match`, or compare against a `.variant`", self.file_name, self.source, expr.span);
+                        return error.LoweringFailed;
+                    }
+                    // `a == b` / `a != b` on an aggregate (struct, array, or
+                    // non-byte slice) compares element/field-wise — the backend
+                    // can't `icmp` an aggregate. (Byte slices were handled above.)
+                    if (lty == .struct_type or lty == .array or lty == .slice) {
+                        const eqv = try self.lowerValueEq(try self.lowerExpr(binary.left.*), try self.lowerExpr(binary.right.*), lty);
                         if (binary.op == .not_equal) break :blk try self.emit(.bool, .{ .unary = .{ .op = .not, .value = eqv } });
                         break :blk eqv;
                     }
@@ -3831,6 +3855,22 @@ const FunctionLowerer = struct {
         return self.emit(struct_ty, .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
     }
 
+    /// If `ty` is a PAYLOAD enum (an aggregate `{tag, payload}`), its type name;
+    /// else null. A simple/payloadless enum is a scalar and is not flagged here.
+    /// (An enum's IR type is `.struct_type "E"`; its layout kind is `.variant_type`.)
+    fn payloadEnumName(self: *FunctionLowerer, ty: IrType) ?[]const u8 {
+        if (ty != .struct_type) return null;
+        const id = self.symbols.resolve(self.symbols.root_scope, ty.struct_type) orelse return null;
+        const layout = self.types.layouts.get(id) orelse return null;
+        return switch (layout.kind) {
+            .variant_type => |variants| blk: {
+                for (variants) |v| if (v.payload != null) break :blk ty.struct_type;
+                break :blk null;
+            },
+            else => null,
+        };
+    }
+
     /// `a == b` on a struct: compare field by field (recursing into nested
     /// structs and byte-slice fields) and AND the results. This is valid LLVM
     /// (extractvalue + icmp + and) and runs on the comptime VM, replacing the
@@ -3850,12 +3890,79 @@ const FunctionLowerer = struct {
     }
 
     /// Equality of two values of IR type `ty`, choosing the right comparison:
-    /// nested struct → field-by-field, byte slice → content compare, else a
-    /// scalar `eq` (ints, floats, bools, enums, pointers).
+    /// nested struct → field-by-field, array → element-by-element, slice →
+    /// length + element compare, else a scalar `eq` (ints, floats, bools, plain
+    /// enums, pointers). All of these are aggregates LLVM can't `icmp` directly.
     fn lowerValueEq(self: *FunctionLowerer, a: Value, b: Value, ty: IrType) LowerError!Value {
         if (ty == .struct_type) return self.lowerStructEq(a, b, ty);
         if (isByteSliceTy(ty)) return self.lowerStringEqDynamic(a, b);
+        if (ty == .slice) return self.lowerSliceEqDynamic(a, b, ty.slice.*);
+        if (ty == .array) {
+            const arr = ty.array;
+            var acc: ?Value = null;
+            var i: u64 = 0;
+            while (i < arr.len) : (i += 1) {
+                const le = try self.emit(arr.elem.*, .{ .index = .{ .base = a, .index = .{ .imm = .{ .uint = i } } } });
+                const re = try self.emit(arr.elem.*, .{ .index = .{ .base = b, .index = .{ .imm = .{ .uint = i } } } });
+                const eeq = try self.lowerValueEq(le, re, arr.elem.*);
+                acc = if (acc) |x| try self.emit(.bool, .{ .binary = .{ .op = .and_op, .lhs = x, .rhs = eeq } }) else eeq;
+            }
+            return acc orelse .{ .imm = .{ .bool = true } };
+        }
         return self.emit(.bool, .{ .binary = .{ .op = .eq, .lhs = a, .rhs = b } });
+    }
+
+    /// `a == b` on a slice of any element type: equal length, then element by
+    /// element (recursing via `lowerValueEq`). The byte-slice specialization is
+    /// `lowerStringEqDynamic`; this is the general form for `[]T`.
+    fn lowerSliceEqDynamic(self: *FunctionLowerer, lhs_in: Value, rhs_in: Value, elem_ty: IrType) LowerError!Value {
+        const lhs = try self.materializeStrOperand(lhs_in);
+        const rhs = try self.materializeStrOperand(rhs_in);
+        const suffix = self.next_block_id;
+        const res_name = try std.fmt.allocPrint(self.allocator, "__sliceq_{d}", .{suffix});
+        const idx_name = try std.fmt.allocPrint(self.allocator, "__sliceq_i_{d}", .{suffix});
+        try self.local_types.put(res_name, .bool);
+        try self.local_types.put(idx_name, .usize);
+        try self.emitNoResult(.bool, .{ .store_local = .{ .name = res_name, .value = .{ .imm = .{ .bool = false } } } });
+
+        const lhs_len = try self.emit(.usize, .{ .field = .{ .base = lhs, .name = "len" } });
+        const rhs_len = try self.emit(.usize, .{ .field = .{ .base = rhs, .name = "len" } });
+        const len_eq = try self.emit(.bool, .{ .binary = .{ .op = .eq, .lhs = lhs_len, .rhs = rhs_len } });
+
+        const init_id = self.allocBlockId();
+        const cond_id = self.allocBlockId();
+        const body_id = self.allocBlockId();
+        const incr_id = self.allocBlockId();
+        const matched_id = self.allocBlockId();
+        const done_id = self.allocBlockId();
+
+        try self.terminate(.{ .cond_branch = .{ .cond = len_eq, .then_block = init_id, .else_block = done_id } });
+
+        self.startBlock(init_id, "sliceq.init");
+        try self.emitNoResult(.usize, .{ .store_local = .{ .name = idx_name, .value = .{ .imm = .{ .uint = 0 } } } });
+        try self.terminate(.{ .branch = cond_id });
+
+        self.startBlock(cond_id, "sliceq.cond");
+        const more = try self.emit(.bool, .{ .binary = .{ .op = .lt, .lhs = .{ .local = idx_name }, .rhs = lhs_len } });
+        try self.terminate(.{ .cond_branch = .{ .cond = more, .then_block = body_id, .else_block = matched_id } });
+
+        self.startBlock(body_id, "sliceq.body");
+        const ea = try self.emit(elem_ty, .{ .index = .{ .base = lhs, .index = .{ .local = idx_name } } });
+        const eb = try self.emit(elem_ty, .{ .index = .{ .base = rhs, .index = .{ .local = idx_name } } });
+        const eeq = try self.lowerValueEq(ea, eb, elem_ty);
+        try self.terminate(.{ .cond_branch = .{ .cond = eeq, .then_block = incr_id, .else_block = done_id } });
+
+        self.startBlock(incr_id, "sliceq.incr");
+        const nx = try self.emit(.usize, .{ .binary = .{ .op = .add, .lhs = .{ .local = idx_name }, .rhs = .{ .imm = .{ .uint = 1 } } } });
+        try self.emitNoResult(.usize, .{ .store_local = .{ .name = idx_name, .value = nx } });
+        try self.terminate(.{ .branch = cond_id });
+
+        self.startBlock(matched_id, "sliceq.matched");
+        try self.emitNoResult(.bool, .{ .store_local = .{ .name = res_name, .value = .{ .imm = .{ .bool = true } } } });
+        try self.terminate(.{ .branch = done_id });
+
+        self.startBlock(done_id, "sliceq.done");
+        return .{ .local = res_name };
     }
 
     /// For a POSITIONAL struct literal that supplied fewer values than there are
@@ -5083,6 +5190,15 @@ const byteSliceType: IrType = .{ .slice = &byteElemType };
 
 /// True for the IR shape of a string: a slice of bytes (`[]const u8`, `[]u8`)
 /// or a folded string constant (`text`). Drives content `==`/`!=` lowering.
+/// A bare enum-variant operand `.a` parses to an ident whose text keeps the
+/// leading dot (`".a"`). Returns the variant name without the dot, else null.
+fn bareEnumVariant(e: ast.Expr) ?[]const u8 {
+    return if (e.kind == .ident and e.kind.ident.len > 1 and e.kind.ident[0] == '.')
+        e.kind.ident[1..]
+    else
+        null;
+}
+
 fn isByteSliceTy(ty: IrType) bool {
     return switch (ty) {
         .slice => |elem| switch (elem.*) {
