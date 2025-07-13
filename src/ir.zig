@@ -3072,6 +3072,14 @@ const FunctionLowerer = struct {
                         if (binary.op == .not_equal) break :blk try self.emit(.bool, .{ .unary = .{ .op = .not, .value = eqv } });
                         break :blk eqv;
                     }
+                    // `a == b` / `a != b` on a struct compares field by field — the
+                    // backend can't `icmp` an aggregate. Mirrors the string path.
+                    const lty = self.exprType(binary.left.*);
+                    if (lty == .struct_type) {
+                        const eqv = try self.lowerStructEq(try self.lowerExpr(binary.left.*), try self.lowerExpr(binary.right.*), lty);
+                        if (binary.op == .not_equal) break :blk try self.emit(.bool, .{ .unary = .{ .op = .not, .value = eqv } });
+                        break :blk eqv;
+                    }
                 }
                 const lhs = try self.lowerExpr(binary.left.*);
                 const rhs = try self.lowerExpr(binary.right.*);
@@ -3821,6 +3829,33 @@ const FunctionLowerer = struct {
                 try args.append(self.allocator, try self.lowerExprAs(value, fty));
         }
         return self.emit(struct_ty, .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
+    }
+
+    /// `a == b` on a struct: compare field by field (recursing into nested
+    /// structs and byte-slice fields) and AND the results. This is valid LLVM
+    /// (extractvalue + icmp + and) and runs on the comptime VM, replacing the
+    /// invalid aggregate `icmp` that a scalar compare would emit.
+    fn lowerStructEq(self: *FunctionLowerer, lhs: Value, rhs: Value, struct_ty: IrType) LowerError!Value {
+        const fields = self.structFields(struct_ty) orelse
+            return self.emit(.bool, .{ .binary = .{ .op = .eq, .lhs = lhs, .rhs = rhs } });
+        var acc: ?Value = null;
+        for (fields) |field| {
+            const fty = lowerSemaTypeWithEnv(self.allocator, field.ty, self.types, self.symbols) catch IrType.unknown;
+            const lf = try self.emit(fty, .{ .field = .{ .base = lhs, .name = field.name } });
+            const rf = try self.emit(fty, .{ .field = .{ .base = rhs, .name = field.name } });
+            const feq = try self.lowerValueEq(lf, rf, fty);
+            acc = if (acc) |a| try self.emit(.bool, .{ .binary = .{ .op = .and_op, .lhs = a, .rhs = feq } }) else feq;
+        }
+        return acc orelse .{ .imm = .{ .bool = true } }; // a field-less struct is always equal
+    }
+
+    /// Equality of two values of IR type `ty`, choosing the right comparison:
+    /// nested struct → field-by-field, byte slice → content compare, else a
+    /// scalar `eq` (ints, floats, bools, enums, pointers).
+    fn lowerValueEq(self: *FunctionLowerer, a: Value, b: Value, ty: IrType) LowerError!Value {
+        if (ty == .struct_type) return self.lowerStructEq(a, b, ty);
+        if (isByteSliceTy(ty)) return self.lowerStringEqDynamic(a, b);
+        return self.emit(.bool, .{ .binary = .{ .op = .eq, .lhs = a, .rhs = b } });
     }
 
     /// For a POSITIONAL struct literal that supplied fewer values than there are
