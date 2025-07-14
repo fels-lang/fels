@@ -3093,7 +3093,11 @@ const FunctionLowerer = struct {
                             const v = try self.emit(.bool, .{ .variant_is = .{ .value = try self.lowerExpr(value_expr.?), .type_name = ename, .variant = vn } });
                             break :blk if (binary.op == .not_equal) try self.emit(.bool, .{ .unary = .{ .op = .not, .value = v } }) else v;
                         }
-                        diag_mod.printErrorAt("`==` on two enum values isn't supported — use `match`, or compare against a `.variant`", self.file_name, self.source, expr.span);
+                        // Two enum values: equal iff same variant and equal payloads.
+                        if (try self.lowerEnumEq(try self.lowerExpr(binary.left.*), try self.lowerExpr(binary.right.*), ename)) |eqv| {
+                            break :blk if (binary.op == .not_equal) try self.emit(.bool, .{ .unary = .{ .op = .not, .value = eqv } }) else eqv;
+                        }
+                        diag_mod.printErrorAt("`==` on enum values with non-scalar payloads isn't supported — use `match`", self.file_name, self.source, expr.span);
                         return error.LoweringFailed;
                     }
                     // `a == b` / `a != b` on an aggregate (struct, array, or
@@ -3869,6 +3873,39 @@ const FunctionLowerer = struct {
             },
             else => null,
         };
+    }
+
+    /// `e1 == e2` on a payload enum: same variant AND (payloadless OR payloads
+    /// equal). Built as OR over variants of `is(e1,V) && is(e2,V) && payloadEq`.
+    /// Returns null when any variant carries a non-scalar payload — reading the
+    /// wrong variant's payload as an aggregate from a garbage slot is unsafe — so
+    /// the caller falls back to an error there.
+    fn lowerEnumEq(self: *FunctionLowerer, lhs: Value, rhs: Value, ename: []const u8) LowerError!?Value {
+        const id = self.symbols.resolve(self.symbols.root_scope, ename) orelse return null;
+        const layout = self.types.layouts.get(id) orelse return null;
+        const variants = switch (layout.kind) {
+            .variant_type => |vs| vs,
+            else => return null,
+        };
+        for (variants) |v| if (v.payload) |pty| {
+            const ip = lowerSemaTypeWithEnv(self.allocator, pty, self.types, self.symbols) catch return null;
+            if (!isScalarPayload(ip)) return null;
+        };
+        var result: ?Value = null;
+        for (variants) |v| {
+            const is1 = try self.emit(.bool, .{ .variant_is = .{ .value = lhs, .type_name = ename, .variant = v.name } });
+            const is2 = try self.emit(.bool, .{ .variant_is = .{ .value = rhs, .type_name = ename, .variant = v.name } });
+            var term = try self.emit(.bool, .{ .binary = .{ .op = .and_op, .lhs = is1, .rhs = is2 } });
+            if (v.payload) |pty| {
+                const ip = lowerSemaTypeWithEnv(self.allocator, pty, self.types, self.symbols) catch return null;
+                const p1 = try self.emit(ip, .{ .variant_payload = .{ .value = lhs, .type_name = ename, .variant = v.name } });
+                const p2 = try self.emit(ip, .{ .variant_payload = .{ .value = rhs, .type_name = ename, .variant = v.name } });
+                const peq = try self.lowerValueEq(p1, p2, ip);
+                term = try self.emit(.bool, .{ .binary = .{ .op = .and_op, .lhs = term, .rhs = peq } });
+            }
+            result = if (result) |r| try self.emit(.bool, .{ .binary = .{ .op = .or_op, .lhs = r, .rhs = term } }) else term;
+        }
+        return result orelse .{ .imm = .{ .bool = true } };
     }
 
     /// `a == b` on a struct: compare field by field (recursing into nested
@@ -5190,6 +5227,15 @@ const byteSliceType: IrType = .{ .slice = &byteElemType };
 
 /// True for the IR shape of a string: a slice of bytes (`[]const u8`, `[]u8`)
 /// or a folded string constant (`text`). Drives content `==`/`!=` lowering.
+/// A payload comparable by a plain `eq` (so reading it for the wrong variant is
+/// harmless). Aggregates (struct/array/slice/…) are excluded.
+fn isScalarPayload(ty: IrType) bool {
+    return switch (ty) {
+        .i, .u, .f32, .f64, .bool, .byte, .usize, .isize, .addr, .rune, .ptr => true,
+        else => false,
+    };
+}
+
 /// A bare enum-variant operand `.a` parses to an ident whose text keeps the
 /// leading dot (`".a"`). Returns the variant name without the dot, else null.
 fn bareEnumVariant(e: ast.Expr) ?[]const u8 {
