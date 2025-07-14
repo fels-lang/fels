@@ -2617,16 +2617,33 @@ test "exe: payload-enum == .variant dispatches by discriminant" {
     try std.testing.expectEqual(@as(u32, 9), code);
 }
 
-test "exe: comparing two payload-enum values is a clean error" {
+test "exe: two payload-enum values compare by variant + scalar payload" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // A clear diagnostic ("use `match`"), not an LLVM aggregate-icmp crash.
-    try std.testing.expectError(error.LoweringFailed, compileAndRun(arena.allocator(),
+    const code = try compileAndRun(arena.allocator(),
         \\E :: enum { a, b, c: i32 }
-        \\main :: fn() -> i32 { x := E.a; y := E.a; if x == y { return 1; } return 0; }
-    , "exe_enum_two_values"));
+        \\main :: fn() -> i32 {
+        \\    if E.c(5) != E.c(5) { return 1; }   // same variant + payload
+        \\    if E.c(5) == E.c(9) { return 2; }   // same variant, different payload
+        \\    if E.a == E.b { return 3; }         // different variant
+        \\    return 8;
+        \\}
+    , "exe_enum_two_values");
+    try std.testing.expectEqual(@as(u32, 8), code);
+}
+
+test "exe: comparing enum values with non-scalar payloads is a clean error" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A clear diagnostic ("use `match`"), not an LLVM crash or garbage-memory read.
+    try std.testing.expectError(error.LoweringFailed, compileAndRun(arena.allocator(),
+        \\E :: enum { a, s: []const u8 }
+        \\main :: fn() -> i32 { x := E.s("hi"); y := E.s("hi"); if x == y { return 1; } return 0; }
+    , "exe_enum_agg_payload"));
 }
 
 // ── Operator precedence & chaining (locked for 0.1.0) ───────────────────────────
