@@ -75,11 +75,11 @@ values of the same type.
 - **structs and arrays** — field-by-field / element-by-element (recursing into
   nested structs and string fields), so `t.eq(point_a, point_b)` works at comptime.
 
-The one gap is comparing two *payload*-enum values directly (`E.c(1) == E.c(1)`),
-which is a compile error — compare against a specific `.variant`, or `match`. The
-richer reflection-driven structural *diff* (§5) — which prints which field
-differs on failure — is still the post-0.1.0 upgrade; today a failed `t.eq`
-reports a generic message.
+Two payload-enum values compare too, as long as the payloads are scalar
+(`E.c(1) == E.c(1)`); a variant carrying a struct/string/array payload is the one
+case that errors (use `match`). The richer reflection-driven structural *diff*
+(§5) — which prints which field differs on failure — is still the post-0.1.0
+upgrade; today a failed `t.eq` reports a generic message.
 
 > Generic string compare used to miscompile everywhere, not just in tests: inside
 > a generic function `a == b` on `$V = []const u8` fell through to a scalar

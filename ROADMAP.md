@@ -100,15 +100,18 @@ Release-blocking work and the polish needed for a first public build.
 
 ---
 
-## Known limitations & blocking bugs
-
-- **`==` on two payload-enum values** — comparing two full enum values (where a
-  variant carries a payload) is rejected with a clear error; use `match`, or
-  compare against a specific `.variant` (which works). Scalars, `[]const u8`,
-  structs, arrays, slices, and simple enums all compare with `==`.
-- **Static interface constraints** — `where T: SomeInterface` conformance bounds
-  aren't enforced yet (dynamic and interface-through-interface dispatch work).
-- **Non-capturing lambdas** — `fn(x){…}` can't close over outer variables.
+- **Calling an interface's methods on the implementing type** — a `$T: Show`
+  bound *is* enforced (a non-conforming type is rejected), but the interface's
+  methods can currently be called only through a `*Interface` value, not directly
+  on the constrained/implementing type (`x.val()` where `x: *T`). Dynamic and
+  interface-through-interface dispatch work; the `where T: Interface` clause form
+  isn't parsed yet (use `$T: Interface`).
+- **`==` on non-scalar enum payloads** — comparing two enum values whose variant
+  carries a struct/string/array payload is a clear error (use `match`). Scalar
+  payloads, `.variant` comparison, and every other `==` (scalars, strings,
+  structs, arrays, slices, simple enums) work.
+- **Returning a capturing closure** needs an `*Arena` parameter (the captured
+  environment must outlive the function) — lambdas otherwise capture freely.
 - **Single target** — Windows x86-64 only; no Linux/macOS codegen yet.
 - **No external packages** — projects are single-tree until the package manager
   lands.
