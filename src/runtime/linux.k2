@@ -7,9 +7,11 @@
 
 /// Write bytes to a file descriptor. Returns bytes written.
 sys_write :: fn(fd: i32, data: []const u8) -> isize {
+    // Explicit register constraints (`{rax}` etc.) — the proven Linux-syscall
+    // form: the result and the syscall number share rax via the same register.
     return unsafe core::asm(volatile, "syscall",
-        inputs:  { "a"(1), "D"(fd), "S"(data.ptr), "d"(data.len) },
-        outputs: { "=a"(isize) },
+        inputs:  { "{rax}"(1), "{rdi}"(fd), "{rsi}"(data.ptr), "{rdx}"(data.len) },
+        outputs: { "={rax}"(isize) },
         clobbers: { "rcx", "r11", "memory" },
     );
 }
@@ -18,10 +20,31 @@ sys_write :: fn(fd: i32, data: []const u8) -> isize {
 #noreturn
 sys_exit :: fn(code: i32) {
     ignored := unsafe core::asm(volatile, "syscall",
-        inputs:  { "a"(60), "D"(code) },
+        inputs:  { "{rax}"(60), "{rdi}"(code) },
         outputs: {},
         clobbers: { "memory" },
     );
+}
+
+// ── ELF entry point ─────────────────────────────────────────────────────────
+// The kernel enters here with a 16-byte-aligned stack (argc on top, no return
+// address). Clear the frame pointer, re-align, call `main`, and pass its i32
+// return to the exit syscall. `#naked` = no prologue/epilogue, so the stack
+// discipline is exactly as written; `#keep` keeps the symbol for `ld -e _start`.
+#naked
+#entry
+_start :: fn() {
+    unsafe {
+        // `;` separates statements (x86 GAS); `$$` escapes a literal `$` in LLVM
+        // inline asm (a bare `$` is an operand reference), so AT&T immediates are
+        // written `$$-16` / `$$60`.
+        core::asm(volatile,
+            "xor %ebp, %ebp; and $$-16, %rsp; call main; mov %eax, %edi; mov $$60, %eax; syscall",
+            inputs: {},
+            outputs: {},
+            clobbers: { "memory" },
+        );
+    }
 }
 
 // ── Low-level I/O ─────────────────────────────────────────────────────────

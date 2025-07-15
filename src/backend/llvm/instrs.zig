@@ -679,15 +679,26 @@ fn lowerInlineAsm(
         0, // canThrow
     );
 
-    // Resolve argument values (cast each to i64 for now).
+    // Resolve argument values and coerce each to i64 — the asm function type
+    // declares every parameter i64 (registers are 64-bit), so a narrower int
+    // (e.g. an `i32` fd / exit code) or a pointer must be widened to match, else
+    // LLVM rejects the call as a signature mismatch.
     const args = cg.allocator.alloc(llvm.LLVMValueRef, ai.args.len) catch return null;
     defer cg.allocator.free(args);
     const i64_ty = llvm.LLVMInt64TypeInContext(cg.ctx);
     for (ai.args, 0..) |arg, i| {
         var v = resolveVal(cg, fncg, arg, .usize);
-        // If the value isn't already an integer, cast it.
-        if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(v)) != llvm.LLVMIntegerTypeKind)
+        const vty = llvm.LLVMTypeOf(v);
+        if (llvm.LLVMGetTypeKind(vty) == llvm.LLVMIntegerTypeKind) {
+            const w = llvm.LLVMGetIntTypeWidth(vty);
+            if (w < 64) {
+                v = llvm.LLVMBuildZExt(cg.builder, v, i64_ty, "");
+            } else if (w > 64) {
+                v = llvm.LLVMBuildTrunc(cg.builder, v, i64_ty, "");
+            }
+        } else {
             v = llvm.LLVMBuildPtrToInt(cg.builder, v, i64_ty, "");
+        }
         args[i] = v;
     }
 
