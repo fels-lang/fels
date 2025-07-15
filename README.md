@@ -354,7 +354,7 @@ frontend is platform-independent. What's solid, partial, and missing:
 | Reflection (`type_info`, `typeid`, `Any`) + reflection-driven serde | Implemented |
 | C interop (`#extern`, by-value struct ABI, `k2 bindgen` from libclang) | Implemented |
 | Build system (`build.k2` run in the comptime VM → real exes/DLLs) | Implemented |
-| Interfaces | Implemented — dynamic + interface-through-interface dispatch; `$T: Iface` conformance bounds (enforced) with the interface's methods callable directly on the bound/implementing type. (`where T: Iface` clause syntax not yet parsed — use `$T: Iface`.) |
+| Interfaces | Implemented — dynamic + interface-through-interface dispatch; conformance bounds via `$T: Iface` or a `where T: Iface` clause (enforced), with the interface's methods callable directly on the bound/implementing type |
 | Standard library | Implemented — 25 modules incl. `io`, `fmt`, `mem`, `strings`, `vec`, `map`, `heap`, `serde` (JSON), `net` (TCP/UDP), `atomics`, `thread`, `crypto`, `time`, `fs`, `process`, `build` |
 | Atomics + concurrency | Implemented — load/store/swap/`compare_exchange`/fetch-ops, `Atomic(T)`, `std.thread` |
 | Testing | Implemented — `#test` comptime lane (a failed assertion fails the build); runtime lane planned |

@@ -100,9 +100,6 @@ Release-blocking work and the polish needed for a first public build.
 
 ---
 
-- **`where T: Interface` clause syntax** isn't parsed — use the `$T: Interface`
-  parameter form (which is enforced, and whose methods are callable on the bound
-  type).
 - **`==` on non-scalar enum payloads** — comparing two enum values whose variant
   carries a struct/string/array payload is a clear error (use `match`). Scalar
   payloads, `.variant` comparison, and every other `==` (scalars, strings,

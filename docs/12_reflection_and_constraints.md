@@ -56,8 +56,12 @@ Five orthogonal primitives, each type-safe, each composing with the rest:
 3. **`Any`** — a `(pointer, typeid)` pair with *safe* navigation and downcasting.
 4. **`constraint`** — a comptime predicate over `TypeInfo`; `$T: C` and interface
    conformance are the same mechanism.
-5. **`where`** — a per-instantiation block that can inspect, *rewrite*, and
-   *reject* the type bindings, with overload fallback.
+5. **`where`** — either a per-instantiation block that can inspect, *rewrite*, and
+   *reject* the type bindings (with overload fallback), **or** interface bounds:
+   `fn($T, x: *T) where T: Show` is equivalent to the inline `fn($T: Show, …)`
+   (comma-separate several, `where T: A, U: B`). A bound type is checked for
+   conformance, and the interface's methods are callable on it directly
+   (`x.val()`), not only via a `*Iface` value.
 
 Reflection-driven serialization, custom iteration, and code generation all fall
 out of these — no new directives.
