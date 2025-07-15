@@ -2551,6 +2551,37 @@ test "exe: interface method on a $T: Iface-constrained generic" {
     try std.testing.expectEqual(@as(u32, 9), code);
 }
 
+test "exe: where T: Iface clause (single + multiple bounds)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\Show :: interface { val :: fn(self: *Self) -> i32; }
+        \\one  :: fn($T, x: *T) -> i32 where T: Show { return x.val(); }
+        \\both :: fn($T, $U, a: *T, b: *U) -> i32 where T: Show, U: Show { return a.val() + b.val(); }
+        \\A :: struct { z: i32 }
+        \\A as Show { val :: fn(self: *Self) -> i32 { return self.z; } }
+        \\B :: struct { w: i32 }
+        \\B as Show { val :: fn(self: *Self) -> i32 { return self.w; } }
+        \\main :: fn() -> i32 { a: A = .{ 10 }; b: B = .{ 5 }; return one(&a) + both(&a, &b); }
+    , "exe_where_clause");
+    try std.testing.expectEqual(@as(u32, 25), code);
+}
+
+test "exe: where T: Iface rejects a non-conforming type" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.CompileFailed, compileAndRun(arena.allocator(),
+        \\Show :: interface { val :: fn(self: *Self) -> i32; }
+        \\needs :: fn($T, x: *T) -> i32 where T: Show { return x.val(); }
+        \\Bad :: struct { z: i32 }
+        \\main :: fn() -> i32 { b: Bad = .{ 3 }; return needs(&b); }
+    , "exe_where_nonconforming"));
+}
+
 test "exe: $T: Iface still rejects a non-conforming type" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
