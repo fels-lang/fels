@@ -438,6 +438,15 @@ pub const Capture = struct {
     ty: Ty,
 };
 
+/// An `x.method()` call that resolved to an interface method the receiver's
+/// concrete type implements. IR turns it into a direct call to the
+/// `{type}.{interface}.{method}` function.
+pub const ImplMethodCall = struct {
+    type_name: []const u8,
+    interface_name: []const u8,
+    method_name: []const u8,
+};
+
 pub const TypeEnv = struct {
     symbol_types: std.AutoHashMap(SymbolId, Ty),
     layouts: std.AutoHashMap(SymbolId, TypeLayout),
@@ -453,6 +462,11 @@ pub const TypeEnv = struct {
     expr_scopes: std.AutoHashMap(ast.NodeId, ScopeId),
     /// Field-callee NodeId -> visible top-level function used as an extension method.
     extension_calls: std.AutoHashMap(ast.NodeId, SymbolId),
+    /// Field-callee NodeId -> the interface-impl method it resolves to, when the
+    /// receiver's concrete type *implements* an interface that declares the method
+    /// (`g.val()` where `Good as Show { val … }`). IR lowers a direct call to the
+    /// `{type}.{interface}.{method}` function the vtable lowering already emits.
+    impl_method_calls: std.AutoHashMap(ast.NodeId, ImplMethodCall),
     /// `for x in it` where `it` is an iterator (not a slice/array): the iter
     /// expr's NodeId -> the `next(self: *Self) -> ?T` method's symbol. IR lowers
     /// these as a `while it.next() |x|` loop.
@@ -501,6 +515,7 @@ pub const TypeEnv = struct {
             .expr_symbols = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .expr_scopes = std.AutoHashMap(ast.NodeId, ScopeId).init(allocator),
             .extension_calls = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
+            .impl_method_calls = std.AutoHashMap(ast.NodeId, ImplMethodCall).init(allocator),
             .iterator_fors = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .receiver_auto_addr = std.AutoHashMap(ast.NodeId, void).init(allocator),
             .enum_lits = std.AutoHashMap(ast.NodeId, EnumLit).init(allocator),
@@ -526,6 +541,7 @@ pub const TypeEnv = struct {
         self.expr_symbols.deinit();
         self.expr_scopes.deinit();
         self.extension_calls.deinit();
+        self.impl_method_calls.deinit();
         self.iterator_fors.deinit();
         self.receiver_auto_addr.deinit();
         self.enum_lits.deinit();
@@ -2997,6 +3013,11 @@ const Checker = struct {
                 }
                 return try self.inferDirectCallImpl(extension.id, fld.name, extension.sig, extension_call, true);
             }
+            // `g.val()` where `g`'s concrete type *implements* an interface that
+            // declares `val` — call the impl method directly (interface methods are
+            // otherwise reachable only through a `*Interface` value). Also covers a
+            // `$T: Iface`-bound generic at instantiation, where `T` is concrete.
+            if (try self.resolveImplMethodCall(call, fld, base_ty)) |ret| return ret;
             if (!extensionLookupDeferred(base_ty)) {
                 self.emitError(call.callee.span, "no visible method or extension function `{s}`", .{fld.name});
                 return error.SemanticFailed;
@@ -3298,6 +3319,62 @@ const Checker = struct {
             if (param.is_type_param) continue;
             if (!std.mem.eql(u8, param.name, "self")) return null;
             return .{ .id = id, .sig = sig };
+        }
+        return null;
+    }
+
+    /// The concrete named type behind a receiver (`Good`, `*Good`, `*const Good`),
+    /// or null if the receiver isn't a concrete named type (e.g. a `*T` type param).
+    fn concreteReceiverTypeName(self: *Checker, ty: Ty) ?[]const u8 {
+        return switch (ty) {
+            .named => |id| self.symbols.symbol(id).name,
+            .pointer, .const_ptr, .borrow => |inner| self.concreteReceiverTypeName(inner.*),
+            else => null,
+        };
+    }
+
+    /// Resolve `recv.method(args)` to an interface method that `recv`'s concrete
+    /// type implements (`Good as Show { val … }` → `g.val()`). Type-checks the
+    /// call against the interface method's signature and records it in
+    /// `impl_method_calls` so IR emits a direct call to the impl. Returns the
+    /// call's result type, or null when no implemented interface declares it.
+    fn resolveImplMethodCall(self: *Checker, call: ast.CallExpr, fld: ast.FieldExpr, base_ty: Ty) SemanticError!?Ty {
+        const type_name = self.concreteReceiverTypeName(base_ty) orelse return null;
+        var it = self.env.interface_impls.valueIterator();
+        while (it.next()) |impl| {
+            if (!std.mem.eql(u8, impl.type_name, type_name)) continue;
+            const interface_id = self.resolveSymbol(impl.interface_name) orelse continue;
+            const method = self.findInterfaceMethod(interface_id, fld.name) orelse continue;
+            const want_args = if (method.params.len > 0) method.params.len - 1 else 0;
+            if (call.args.len != want_args) {
+                self.emitError(call.callee.span, "`{s}` expects {d} argument(s)", .{ fld.name, want_args });
+                return error.SemanticFailed;
+            }
+            for (call.args, 0..) |arg, i| {
+                const arg_expr = switch (arg) {
+                    .positional => |v| v,
+                    .named => |n| n.value,
+                };
+                const arg_ty = try self.inferExpr(arg_expr);
+                if (!try self.compatible(arg_ty, method.params[i + 1].ty)) {
+                    self.emitError(arg_expr.span, "argument {d} of `{s}`: expected `{s}`, found `{s}`", .{ i + 1, fld.name, self.formatTy(method.params[i + 1].ty), self.formatTy(arg_ty) });
+                    return error.SemanticFailed;
+                }
+            }
+            try self.env.impl_method_calls.put(call.callee.id, .{
+                .type_name = type_name,
+                .interface_name = impl.interface_name,
+                .method_name = fld.name,
+            });
+            // A value receiver (`g.val()`, not `gp.val()`) is implicitly `&`-d.
+            switch (base_ty) {
+                .pointer, .const_ptr => {},
+                else => try self.env.receiver_auto_addr.put(call.callee.id, {}),
+            }
+            if (method.error_ty) |err_ty| {
+                return .{ .fallible = .{ .ok = try self.boxTy(method.return_ty), .err = try self.boxTy(err_ty) } };
+            }
+            return method.return_ty;
         }
         return null;
     }

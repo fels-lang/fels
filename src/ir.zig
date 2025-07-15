@@ -3188,6 +3188,27 @@ const FunctionLowerer = struct {
                 // Detect zone method calls: sema marks the field-callee expr with zone_handle.
                 if (call.callee.kind == .field) {
                     const fld = call.callee.kind.field;
+                    // `g.val()` resolved to an interface-impl method: a direct call to
+                    // the `{type}.{interface}.{method}` function the vtable lowering
+                    // already emits. The value receiver is `&`-d when sema flagged it.
+                    if (self.types.impl_method_calls.get(call.callee.id)) |ic| {
+                        const mangled = try interfaceMethodName(self.allocator, ic.type_name, ic.interface_name, ic.method_name);
+                        var args = std.ArrayList(Value).empty;
+                        errdefer args.deinit(self.allocator);
+                        const recv = if (self.types.receiver_auto_addr.contains(call.callee.id))
+                            try self.lowerLValueAddress(fld.base.*)
+                        else
+                            try self.lowerExpr(fld.base.*);
+                        try args.append(self.allocator, recv);
+                        for (call.args) |arg| {
+                            const v = switch (arg) {
+                                .positional => |e| e,
+                                .named => |n| n.value,
+                            };
+                            try args.append(self.allocator, try self.lowerExpr(v));
+                        }
+                        break :blk try self.emit(self.exprType(expr), .{ .call = .{ .callee = mangled, .args = try args.toOwnedSlice(self.allocator) } });
+                    }
                     if (self.exprType(fld.base.*) == .interface_value) {
                         const iface_name = self.exprType(fld.base.*).interface_value;
                         if (self.interfaceMethodIndex(iface_name, fld.name)) |method_index| {
