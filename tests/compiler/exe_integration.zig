@@ -2517,6 +2517,53 @@ test "exe: missing required field (no default) fails the build" {
     , "exe_named_missing"));
 }
 
+// ── Calling interface methods on the implementing / constrained type ────────────
+
+test "exe: interface method called directly on the implementing type" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\Calc :: interface { add :: fn(self: *Self, x: i32) -> i32; base :: fn(self: *Self) -> i32; }
+        \\Acc :: struct { n: i32 }
+        \\Acc as Calc {
+        \\    add  :: fn(self: *Self, x: i32) -> i32 { return self.n + x; }
+        \\    base :: fn(self: *Self) -> i32 { return self.n; }
+        \\}
+        \\main :: fn() -> i32 { a: Acc = .{ 10 }; return a.add(5) + a.base(); }   // 15 + 10
+    , "exe_iface_method_direct");
+    try std.testing.expectEqual(@as(u32, 25), code);
+}
+
+test "exe: interface method on a $T: Iface-constrained generic" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\Show :: interface { val :: fn(self: *Self) -> i32; }
+        \\needs :: fn($T: Show, x: *T) -> i32 { return x.val(); }
+        \\Good :: struct { z: i32 }
+        \\Good as Show { val :: fn(self: *Self) -> i32 { return self.z; } }
+        \\main :: fn() -> i32 { g: Good = .{ 9 }; return needs(&g); }
+    , "exe_iface_method_constrained");
+    try std.testing.expectEqual(@as(u32, 9), code);
+}
+
+test "exe: $T: Iface still rejects a non-conforming type" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.CompileFailed, compileAndRun(arena.allocator(),
+        \\Show :: interface { val :: fn(self: *Self) -> i32; }
+        \\needs :: fn($T: Show, x: *T) -> i32 { return x.val(); }
+        \\Bad :: struct { z: i32 }
+        \\main :: fn() -> i32 { b: Bad = .{ 3 }; return needs(&b); }
+    , "exe_iface_nonconforming"));
+}
+
 // ── Struct equality + interface-through-interface dispatch ──────────────────────
 
 test "exe: struct == compares field by field (nested + string fields)" {
