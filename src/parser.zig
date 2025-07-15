@@ -1316,22 +1316,24 @@ pub const Parser = struct {
         if (!self.check(.r_paren)) {
             while (true) {
                 if (self.match(.dollar)) {
+                    // $T                  — bare type param (a `where T: …` clause may constrain it)
                     // $T: type            — unconstrained type param
                     // $T: InterfaceName   — constrained type param
                     const tp_name = try self.expect(.ident, "expected type parameter name after $");
-                    _ = try self.expect(.colon, "expected : after $T");
-                    if (self.match(.keyword_type)) {
-                        // Unconstrained: $T: type
-                    } else if (self.check(.ident)) {
-                        // Constrained: $T: InterfaceName
-                        const iface_tok = self.advance();
-                        try type_constraints.append(self.allocator, .{
-                            .param = tp_name.text(self.source),
-                            .interface = iface_tok.text(self.source),
-                            .span = spanFrom(tp_name, iface_tok),
-                        });
-                    } else {
-                        return error.ParseFailed;
+                    if (self.match(.colon)) {
+                        if (self.match(.keyword_type)) {
+                            // Unconstrained: $T: type
+                        } else if (self.check(.ident)) {
+                            // Constrained: $T: InterfaceName
+                            const iface_tok = self.advance();
+                            try type_constraints.append(self.allocator, .{
+                                .param = tp_name.text(self.source),
+                                .interface = iface_tok.text(self.source),
+                                .span = spanFrom(tp_name, iface_tok),
+                            });
+                        } else {
+                            return error.ParseFailed;
+                        }
                     }
                     try type_params.append(self.allocator, tp_name.text(self.source));
                     try params.append(self.allocator, .{
@@ -1389,8 +1391,27 @@ pub const Parser = struct {
             }
         }
         const error_ty = if (self.match(.bang)) try self.parseErrorSpec(self.previous()) else null;
-        // Optional `where { … }` resolve-time predicate (comptime; may `reject`).
-        const where_clause = if (self.matchIdent("where")) try self.parseBlock() else null;
+        // Optional `where` clause — either a `where { … }` resolve-time predicate
+        // (comptime; may `reject`), or interface-conformance bounds
+        // `where T: Iface, U: Iface2` (equivalent to writing `$T: Iface` inline).
+        var where_clause: ?ast.Block = null;
+        if (self.matchIdent("where")) {
+            if (self.check(.l_brace)) {
+                where_clause = try self.parseBlock();
+            } else {
+                while (true) {
+                    const tp = try self.expect(.ident, "expected a type-parameter name in the `where` clause");
+                    _ = try self.expect(.colon, "expected `:` after the type parameter in the `where` clause");
+                    const iface = try self.expect(.ident, "expected an interface name after `:` in the `where` clause");
+                    try type_constraints.append(self.allocator, .{
+                        .param = tp.text(self.source),
+                        .interface = iface.text(self.source),
+                        .span = spanFrom(tp, iface),
+                    });
+                    if (!self.match(.comma)) break;
+                }
+            }
+        }
         const body = if (self.check(.l_brace)) try self.parseBlock() else null;
         const end = if (body) |b| b.span else blk: {
             const semi = try self.expect(.semicolon, "expected ; after external function declaration");
