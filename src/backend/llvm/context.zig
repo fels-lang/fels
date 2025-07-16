@@ -84,6 +84,10 @@ pub const ModuleCg = struct {
     error_defs: []const ir.ErrorDef = &.{},
     /// Optimisation level (0 = debug). Debug builds insert runtime safety checks.
     opt_level: u2 = 0,
+    /// The OS we are generating code for. Defaults to the host; overridden by
+    /// `--target` for cross-compilation. Drives the entry point, `__chkstk`, and
+    /// `_fltused`.
+    target_os: std.Target.Os.Tag = @import("builtin").os.tag,
 
     /// Set when an internal lowering invariant is violated (e.g. a value's
     /// actual LLVM shape doesn't match what an instruction lowering assumed —
@@ -114,11 +118,18 @@ pub const ModuleCg = struct {
         self.lowering_failed = true;
     }
 
+    /// Append the target's required compiler stubs as module-level inline asm.
+    /// Windows x64 needs `__chkstk` (large-frame stack probe) since the CRT that
+    /// normally supplies it isn't linked. Linux needs nothing here. Call once the
+    /// target OS is set, before emission.
+    pub fn applyTargetStubs(self: *ModuleCg) void {
+        if (self.target_os == .windows and builtin.target.cpu.arch == .x86_64)
+            llvm.LLVMAppendModuleInlineAsm(self.mod, chkstk_x64_asm.ptr, chkstk_x64_asm.len);
+    }
+
     pub fn init(allocator: std.mem.Allocator, module_name: [*:0]const u8) ModuleCg {
         const ctx = llvm.LLVMContextCreate();
         const mod = llvm.LLVMModuleCreateWithNameInContext(module_name, ctx);
-        if (builtin.target.os.tag == .windows and builtin.target.cpu.arch == .x86_64)
-            llvm.LLVMAppendModuleInlineAsm(mod, chkstk_x64_asm.ptr, chkstk_x64_asm.len);
         const builder = llvm.LLVMCreateBuilderInContext(ctx);
         return .{
             .allocator = allocator,

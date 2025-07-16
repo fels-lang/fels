@@ -45,10 +45,18 @@ pub const LlvmBackend = struct {
         self.cg.opt_level = opt_level;
     }
 
+    /// Set the target OS (cross-compilation). Must be called before `lower`.
+    pub fn setTarget(self: *LlvmBackend, target_os: std.Target.Os.Tag) void {
+        self.cg.target_os = target_os;
+    }
+
     /// Lower a complete IrModule to LLVM IR in memory.
     pub fn lower(self: *LlvmBackend, module: ir.IrModule) !void {
         // Expose module metadata needed by instruction lowering.
         self.cg.error_defs = module.errors;
+
+        // Target-specific module-level stubs (Windows `__chkstk`; nothing on Linux).
+        self.cg.applyTargetStubs();
 
         // Order-independent type registration via shells, satisfying two opposing
         // constraints at once:
@@ -69,18 +77,22 @@ pub const LlvmBackend = struct {
         try fns.defineAll(&self.cg, module.functions);
 
         // Windows floating-point support requires _fltused when /NODEFAULTLIB is used.
-        if (@import("builtin").os.tag == .windows) {
+        if (self.cg.target_os == .windows) {
             const i32_ty = llvm_c.LLVMInt32TypeInContext(self.cg.ctx);
             const fltused = llvm_c.LLVMAddGlobal(self.cg.mod, i32_ty, "_fltused");
             llvm_c.LLVMSetInitializer(fltused, llvm_c.LLVMConstInt(i32_ty, 1, 0));
             llvm_c.LLVMSetLinkage(fltused, llvm_c.LLVMExternalLinkage);
         }
 
-        // Auto-generate the platform entry point if needed.
-        for (module.functions) |f| {
-            if (f.entry) {
-                try emitWindowsEntryPoint(&self.cg, f);
-                break;
+        // Auto-generate the platform entry point. Windows: a `mainCRTStartup` that
+        // calls `main` + `ExitProcess`. Linux: nothing — the runtime provides a
+        // `#naked _start` that calls `main` + the exit syscall.
+        if (self.cg.target_os == .windows) {
+            for (module.functions) |f| {
+                if (f.entry) {
+                    try emitWindowsEntryPoint(&self.cg, f);
+                    break;
+                }
             }
         }
 
@@ -108,7 +120,7 @@ pub const LlvmBackend = struct {
     /// Emit the object into an in-memory byte buffer (caller frees).
     pub fn emitObjectToMemory(self: *LlvmBackend, allocator: std.mem.Allocator, opt_level: u2) ![]u8 {
         self.setOptLevel(opt_level);
-        const tm = try emit.TargetMachine.initNative(opt_level);
+        const tm = try emit.TargetMachine.initTarget(self.cg.target_os, opt_level);
         defer tm.deinit();
         tm.applyToModule(&self.cg);
         try emit.verify(&self.cg);
@@ -119,6 +131,12 @@ pub const LlvmBackend = struct {
     pub fn linkWindows(self: *LlvmBackend, allocator: std.mem.Allocator, io: std.Io, opts: link.WindowsLinkOptions) !void {
         _ = self;
         return link.windows(allocator, io, opts);
+    }
+
+    /// Link an in-memory ELF object into a static Linux executable via ld.lld.
+    pub fn linkLinuxMem(self: *LlvmBackend, allocator: std.mem.Allocator, io: std.Io, obj_path: []const u8, obj_bytes: []const u8, opts: link.LinuxLinkOptions) !void {
+        _ = self;
+        return link.linkLinux(allocator, io, obj_path, obj_bytes, opts);
     }
 
     /// Link straight from in-memory object bytes (no .obj on disk) — k2lnk fast

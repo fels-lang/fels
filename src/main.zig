@@ -66,6 +66,8 @@ const Options = struct {
     show_time: bool = false,
     dll: bool = false,
     libc: bool = false,
+    /// Codegen target OS (cross-compilation). Defaults to the host.
+    target_os: std.Target.Os.Tag = @import("builtin").os.tag,
 };
 
 pub fn main(init: std.process.Init) u8 {
@@ -163,6 +165,17 @@ pub fn main(init: std.process.Init) u8 {
         } else if (std.mem.eql(u8, a, "--lib") and i + 1 < args.len) {
             i += 1;
             opts.extra_libs.append(allocator, args[i]) catch return 1;
+        } else if (std.mem.eql(u8, a, "--target") and i + 1 < args.len) {
+            i += 1;
+            const t = args[i];
+            opts.target_os = if (std.mem.indexOf(u8, t, "linux") != null)
+                .linux
+            else if (std.mem.indexOf(u8, t, "windows") != null)
+                .windows
+            else {
+                std.debug.print("k2: unknown --target `{s}` (expected linux or windows)\n", .{t});
+                return 1;
+            };
         } else if (std.mem.eql(u8, a, "--opt") and i + 1 < args.len) {
             i += 1;
             opts.opt_level = std.fmt.parseInt(u2, args[i], 10) catch 0;
@@ -311,6 +324,7 @@ fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source:
         .source = source,
         .obj_path = obj_path,
         .opt_level = opts.opt_level,
+        .target_os = opts.target_os,
         .lib_paths = opts.lib_paths.items,
         .extra_libs = opts.extra_libs.items,
         .progress = progressStep,
@@ -338,6 +352,7 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
         .exe_path = exe_path,
         .dll = opts.dll,
         .opt_level = opts.opt_level,
+        .target_os = opts.target_os,
         .llvm_bin = opts.llvm_bin,
         .lib_paths = opts.lib_paths.items,
         .extra_libs = opts.extra_libs.items,

@@ -87,7 +87,18 @@ pub fn compileWithRuntime(
     file_name: []const u8,
     source: []const u8,
 ) CompileError!FrontEnd {
-    const rt_src = runtime.runtimeSourceFor(@import("builtin").os.tag) orelse return error.RuntimeUnavailable;
+    return compileWithRuntimeTarget(allocator, file_name, source, @import("builtin").os.tag);
+}
+
+/// Like `compileWithRuntime`, but for an explicit target OS (cross-compilation):
+/// selects that platform's embedded runtime.
+pub fn compileWithRuntimeTarget(
+    allocator: std.mem.Allocator,
+    file_name: []const u8,
+    source: []const u8,
+    target_os: std.Target.Os.Tag,
+) CompileError!FrontEnd {
+    const rt_src = runtime.runtimeSourceFor(target_os) orelse return error.RuntimeUnavailable;
     return compileMulti(allocator, &.{
         .{ .file_name = "<runtime>", .source = rt_src },
         .{ .file_name = file_name, .source = source },
@@ -157,7 +168,7 @@ pub fn compileFile(
     io: std.Io,
     path: []const u8,
 ) CompileError!FrontEnd {
-    return compileFileInternal(allocator, io, path, false);
+    return compileFileInternal(allocator, io, path, false, @import("builtin").os.tag);
 }
 
 /// Compile a .k2 file and its imports with the embedded platform runtime.
@@ -166,7 +177,17 @@ pub fn compileFileWithRuntime(
     io: std.Io,
     path: []const u8,
 ) CompileError!FrontEnd {
-    return compileFileInternal(allocator, io, path, true);
+    return compileFileWithRuntimeTarget(allocator, io, path, @import("builtin").os.tag);
+}
+
+/// Like `compileFileWithRuntime`, but for an explicit target OS.
+pub fn compileFileWithRuntimeTarget(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    target_os: std.Target.Os.Tag,
+) CompileError!FrontEnd {
+    return compileFileInternal(allocator, io, path, true, target_os);
 }
 
 fn compileFileInternal(
@@ -174,6 +195,7 @@ fn compileFileInternal(
     io: std.Io,
     path: []const u8,
     include_runtime: bool,
+    target_os: std.Target.Os.Tag,
 ) CompileError!FrontEnd {
     const arena = try createFrontendArena(allocator);
     errdefer destroyFrontendArena(allocator, arena);
@@ -189,7 +211,7 @@ fn compileFileInternal(
     var next_id: ast.NodeId = 1;
 
     if (include_runtime) {
-        const rt_src = runtime.runtimeSourceFor(@import("builtin").os.tag) orelse return error.RuntimeUnavailable;
+        const rt_src = runtime.runtimeSourceFor(target_os) orelse return error.RuntimeUnavailable;
         const parsed = parser.parseSourceFrom(fe_allocator, "<runtime>", rt_src, next_id) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,

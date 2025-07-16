@@ -253,6 +253,76 @@ fn linkWithLld(allocator: std.mem.Allocator, io: std.Io, opts: WindowsLinkOption
     }
 }
 
+// ── Linux / ELF linking ─────────────────────────────────────────────────────────
+
+pub const LinuxLinkOptions = struct {
+    /// Directory containing `ld.lld[.exe]` (e.g. <llvm>/bin). Empty = use PATH.
+    llvm_bin: []const u8 = "",
+    output: []const u8,
+    lib_paths: []const []const u8 = &.{},
+    /// Libraries to link (`-l<name>`), e.g. "c" when the user opts into libc.
+    libs: []const []const u8 = &.{},
+    entry: []const u8 = "_start",
+    extra_flags: []const []const u8 = &.{},
+};
+
+/// Link a single ELF object into a **static, non-PIE** Linux executable via
+/// `ld.lld`. Freestanding by default (no libc) — a pure-K2 program has zero
+/// dynamic dependencies. libc is pulled in only when the user's `#extern` /
+/// `build.k2` adds `-lc`. Runs `ld.lld` on the host (cross-linking from Windows
+/// works since LLD is target-agnostic).
+pub fn linkLinux(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    obj_path: []const u8,
+    obj_bytes: []const u8,
+    opts: LinuxLinkOptions,
+) LinkError!void {
+    // ld.lld reads the object from disk.
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = obj_path, .data = obj_bytes }) catch return error.OutOfMemory;
+
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (argv.items) |a| allocator.free(@constCast(a));
+        argv.deinit(allocator);
+    }
+    const append = struct {
+        fn one(a: std.mem.Allocator, list: *std.ArrayList([]const u8), s: []const u8) LinkError!void {
+            list.append(a, a.dupe(u8, s) catch return error.OutOfMemory) catch return error.OutOfMemory;
+        }
+    }.one;
+
+    const ld_name = if (builtin.os.tag == .windows) "ld.lld.exe" else "ld.lld";
+    if (opts.llvm_bin.len > 0)
+        try argv.append(allocator, std.fmt.allocPrint(allocator, "{s}/{s}", .{ opts.llvm_bin, ld_name }) catch return error.OutOfMemory)
+    else
+        try append(allocator, &argv, ld_name);
+
+    try append(allocator, &argv, obj_path);
+    try append(allocator, &argv, "-o");
+    try append(allocator, &argv, opts.output);
+    try append(allocator, &argv, "-static"); // freestanding, ET_EXEC (no PIE / dynamic linker)
+    try append(allocator, &argv, "-e");
+    try append(allocator, &argv, opts.entry);
+    for (opts.lib_paths) |p|
+        try argv.append(allocator, std.fmt.allocPrint(allocator, "-L{s}", .{p}) catch return error.OutOfMemory);
+    for (opts.libs) |l|
+        try argv.append(allocator, std.fmt.allocPrint(allocator, "-l{s}", .{l}) catch return error.OutOfMemory);
+    for (opts.extra_flags) |f| try append(allocator, &argv, f);
+
+    var child = std.process.spawn(io, .{
+        .argv = argv.items,
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch return error.SpawnFailed;
+    const term = child.wait(io) catch return error.WaitFailed;
+    switch (term) {
+        .exited => |code| if (code != 0) return error.ExitCodeFailure,
+        .signal, .stopped, .unknown => return error.ProcessTerminated,
+    }
+}
+
 /// A concrete reason the fast k2lnk path can't be used (null = it *would* have
 /// been eligible, so the only explanation is k2lnk.dll being absent/failing —
 /// not worth warning about, e.g. in the test runner). Used to explain the

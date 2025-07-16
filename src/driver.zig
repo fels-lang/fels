@@ -126,7 +126,9 @@ pub const LlvmCompileOptions = struct {
     dll: bool = false,
     /// LLVM opt level (0–3).
     opt_level: u2 = if (@import("builtin").mode == .Debug) 0 else 2,
-    /// Path to the LLVM bin directory (for lld-link).
+    /// Target OS to generate for (cross-compilation). Defaults to the host.
+    target_os: std.Target.Os.Tag = @import("builtin").os.tag,
+    /// Path to the LLVM bin directory (for lld-link / ld.lld).
     llvm_bin: []const u8 = "",
     /// Extra library search paths for the linker.
     lib_paths: []const []const u8 = &.{},
@@ -220,7 +222,7 @@ pub fn compileWithLlvm(
     if (!build_options.enable_llvm) return error.LlvmNotEnabled;
 
     // compileWithRuntime auto-prepends the platform runtime (@panic, assert, etc.)
-    var fe = pipeline.compileWithRuntime(allocator, opts.file_name, opts.source) catch |err| switch (err) {
+    var fe = pipeline.compileWithRuntimeTarget(allocator, opts.file_name, opts.source, opts.target_os) catch |err| switch (err) {
         error.ParseFailed, error.SemanticFailed, error.IoError, error.RuntimeUnavailable => return error.CompileFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
@@ -246,7 +248,7 @@ pub fn compileFileWithLlvm(
     const t_total = nowNs();
     if (opts.progress) |p| p(opts.progress_ctx, .frontend);
     const t_fe = nowNs();
-    var fe = pipeline.compileFileWithRuntime(allocator, io, opts.file_name) catch |err| switch (err) {
+    var fe = pipeline.compileFileWithRuntimeTarget(allocator, io, opts.file_name, opts.target_os) catch |err| switch (err) {
         error.ParseFailed, error.SemanticFailed, error.IoError, error.RuntimeUnavailable => return error.CompileFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
@@ -311,6 +313,7 @@ fn emitLlvmFromFrontend(
     var be = llvm_backend.LlvmBackend.init(allocator, module_name);
     defer be.deinit();
 
+    be.setTarget(opts.target_os);
     be.setOptLevel(opts.opt_level);
     if (opts.progress) |p| p(opts.progress_ctx, .codegen);
     const t_codegen = nowNs();
@@ -338,6 +341,19 @@ fn emitLlvmFromFrontend(
         defer libs.deinit(allocator);
         try libs.appendSlice(allocator, module.extern_libs);
         try libs.appendSlice(allocator, opts.extra_libs);
+
+        if (opts.target_os == .linux) {
+            be.linkLinuxMem(allocator, io, opts.obj_path, obj_bytes, .{
+                .llvm_bin = opts.llvm_bin,
+                .output = exe,
+                .lib_paths = opts.lib_paths,
+                .libs = libs.items,
+                .entry = opts.entry orelse "_start",
+                .extra_flags = opts.link_flags,
+            }) catch return error.LinkFailed;
+            if (opts.timings) |tm| tm.link_ns = sinceNs(t_link);
+            return;
+        }
 
         be.linkWindowsMem(allocator, io, obj_bytes, .{
             .llvm_bin = opts.llvm_bin,

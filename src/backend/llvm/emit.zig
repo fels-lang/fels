@@ -67,6 +67,48 @@ pub const TargetMachine = struct {
         return .{ .tm = tm, .triple = triple };
     }
 
+    /// Create a TargetMachine for an explicit target OS (cross-compilation).
+    /// Falls back to the host path when the target is the host. The only non-host
+    /// target today is Linux x86-64: a static, non-PIE ELF using the SysV ABI
+    /// (LLVM derives both from the triple).
+    pub fn initTarget(target_os: std.Target.Os.Tag, opt_level: u2) EmitError!TargetMachine {
+        if (target_os == @import("builtin").os.tag) return initNative(opt_level);
+        try initNativeTarget(); // the host's X86 backend also emits for x86_64-linux
+
+        const triple_lit = switch (target_os) {
+            .linux => "x86_64-unknown-linux-musl",
+            else => return error.TargetInitFailed,
+        };
+        const triple = llvm.LLVMCreateMessage(triple_lit); // disposable copy (deinit frees it)
+
+        var target: llvm.LLVMTargetRef = undefined;
+        var err: [*c]u8 = null;
+        if (llvm.LLVMGetTargetFromTriple(triple, &target, &err) != 0) {
+            if (err) |msg| llvm.LLVMDisposeMessage(msg);
+            llvm.LLVMDisposeMessage(triple);
+            return error.TargetInitFailed;
+        }
+
+        const llvm_opt: llvm.LLVMCodeGenOptLevel = switch (opt_level) {
+            0 => llvm.LLVMCodeGenLevelNone,
+            1 => llvm.LLVMCodeGenLevelLess,
+            2 => llvm.LLVMCodeGenLevelDefault,
+            3 => llvm.LLVMCodeGenLevelAggressive,
+        };
+
+        const tm = llvm.LLVMCreateTargetMachine(
+            target,
+            triple,
+            "x86-64", // generic baseline CPU so the binary runs on any x86-64
+            "",
+            llvm_opt,
+            llvm.LLVMRelocStatic, // static, non-PIE executable
+            llvm.LLVMCodeModelDefault,
+        );
+
+        return .{ .tm = tm, .triple = triple };
+    }
+
     pub fn deinit(self: TargetMachine) void {
         llvm.LLVMDisposeTargetMachine(self.tm);
         llvm.LLVMDisposeMessage(self.triple);
