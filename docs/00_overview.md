@@ -182,7 +182,8 @@ main :: fn() -> i32 {
 - [11_c_interop.md](11_c_interop.md) - C Interop & `#extern`
 - [12_reflection_and_constraints.md](12_reflection_and_constraints.md) - Reflection & Generic Constraints
 - [13_metaprogramming.md](13_metaprogramming.md) - Metaprogramming (`#quote`/`#insert`/macros)
-- [14_linux_elf_backend.md](14_linux_elf_backend.md) - Linux/ELF Backend (design)
+- [14_linux_elf_backend.md](14_linux_elf_backend.md) - Linux/ELF Backend (core implemented)
 - [15_tooling.md](15_tooling.md) - Tooling & LSP
 - [16_packages.md](16_packages.md) - Packages (design)
 - [17_testing.md](17_testing.md) - Testing & `#test`
+- [18_targets_and_tiers.md](18_targets_and_tiers.md) - Targets, ABIs & support tiers
