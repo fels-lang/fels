@@ -61,6 +61,61 @@ write_stderr :: fn(data: []const u8) -> usize {
     return written as usize;
 }
 
+// ── OS page memory (backs std.heap) ─────────────────────────────────────────
+// mmap=9, mprotect=10, munmap=11. The Linux syscall ABI passes the 4th argument
+// in r10 (the `syscall` insn clobbers rcx), so mmap's flags go in r10.
+
+sys_mmap :: fn(addr: usize, len: usize, prot: i32, flags: i32, fd: i32, off: usize) -> usize {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(9), "{rdi}"(addr), "{rsi}"(len), "{rdx}"(prot), "{r10}"(flags), "{r8}"(fd), "{r9}"(off) },
+        outputs: { "={rax}"(usize) },
+        clobbers: { "rcx", "r11", "memory" },
+    );
+}
+
+sys_mprotect :: fn(addr: usize, len: usize, prot: i32) -> i32 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(10), "{rdi}"(addr), "{rsi}"(len), "{rdx}"(prot) },
+        outputs: { "={rax}"(i32) },
+        clobbers: { "rcx", "r11", "memory" },
+    );
+}
+
+sys_munmap :: fn(addr: usize, len: usize) -> i32 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(11), "{rdi}"(addr), "{rsi}"(len) },
+        outputs: { "={rax}"(i32) },
+        clobbers: { "rcx", "r11", "memory" },
+    );
+}
+
+// MAP_PRIVATE|MAP_ANONYMOUS = 0x22; PROT_READ|WRITE = 3; fd = -1. mmap returns
+// `-errno` (a small negative as isize) on failure → report 0 to match VirtualAlloc.
+
+// Reserve address space with no physical backing (commit lazily via os_commit).
+os_reserve :: fn(size: usize) -> usize {
+    r := sys_mmap(0usize, size, 0, 0x22, -1, 0usize); // PROT_NONE
+    if (r as isize) < 0 { return 0usize; }
+    return r;
+}
+
+// Make `[addr, addr+size)` readable + writable.
+os_commit :: fn(addr: usize, size: usize) -> bool {
+    return sys_mprotect(addr, size, 3) == 0; // PROT_READ|WRITE
+}
+
+// Reserve and commit in one call.
+os_alloc :: fn(size: usize) -> usize {
+    r := sys_mmap(0usize, size, 3, 0x22, -1, 0usize); // PROT_READ|WRITE
+    if (r as isize) < 0 { return 0usize; }
+    return r;
+}
+
+// Return a region (its exact size is required on Linux).
+os_release :: fn(addr: usize, size: usize) {
+    ignored := sys_munmap(addr, size);
+}
+
 // ── Core runtime functions ─────────────────────────────────────────────────
 
 /// Exit with an application-defined status.

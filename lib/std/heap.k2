@@ -38,18 +38,16 @@
 
 #import std.ptr.{ align_up };
 
-// ── Win32 ─────────────────────────────────────────────────────────────────
-
-#extern("kernel32", "VirtualAlloc")
-VirtualAlloc :: fn(addr: usize, size: usize, alloc_type: u32, protect: u32) -> usize;
-
-#extern("kernel32", "VirtualFree")
-VirtualFree :: fn(addr: usize, size: usize, free_type: u32) -> bool;
-
-MEM_COMMIT     :: 0x00001000u32;
-MEM_RESERVE    :: 0x00002000u32;
-MEM_RELEASE    :: 0x00008000u32;
-PAGE_READWRITE :: 0x00000004u32;
+// ── OS page memory ──────────────────────────────────────────────────────────
+// Page reserve/commit/release is provided by the platform runtime (windows.k2
+// → VirtualAlloc/VirtualFree; linux.k2 → mmap/mprotect/munmap), so this module
+// stays OS-agnostic:
+//   os_reserve(size)       -> usize   reserve address space, no physical pages
+//   os_commit(addr, size)  -> bool    back [addr, addr+size) with RW pages
+//   os_alloc(size)         -> usize   reserve + commit in one call
+//   os_release(addr, size)            return a region to the OS
+// The platform runtime supplies the definitions; the runtime-free `compile` path
+// injects a host shim (see pipeline.prependHeapPrelude).
 
 // ── Tunables ──────────────────────────────────────────────────────────────
 
@@ -116,11 +114,11 @@ pub make :: fn() -> Arena {
 // Reserve `max` bytes of address space up front (no physical memory yet) and
 // commit pages on demand. One contiguous region; pointers never move.
 pub reserve :: fn(max: usize) -> Arena {
-    base := VirtualAlloc(0usize, CHUNK_HEADER + max, MEM_RESERVE, PAGE_READWRITE);
+    base := os_reserve(CHUNK_HEADER + max);
     if base == 0usize { return .{ 0usize, 0usize, ARENA_RESERVED }; }
     // Commit the first page so the header (and a little payload) is writable.
-    if VirtualAlloc(base, PAGE, MEM_COMMIT, PAGE_READWRITE) == 0usize {
-        ignored := VirtualFree(base, 0usize, MEM_RELEASE);
+    if !os_commit(base, PAGE) {
+        os_release(base, CHUNK_HEADER + max);
         return .{ 0usize, 0usize, ARENA_RESERVED };
     }
     c := unsafe core::ptr_from_int(*Chunk, base);
@@ -154,7 +152,7 @@ pub fixed :: fn(buf: []u8) -> Arena {
 commit_more :: fn(chunk_addr: usize, c: *Chunk, need_payload: usize) -> bool {
     want := align_up(need_payload, PAGE);
     if want > c.cap { want = c.cap; }
-    if VirtualAlloc(chunk_addr, CHUNK_HEADER + want, MEM_COMMIT, PAGE_READWRITE) == 0usize {
+    if !os_commit(chunk_addr, CHUNK_HEADER + want) {
         return false;
     }
     c.committed = want;
@@ -196,7 +194,7 @@ carve :: fn(self: *Arena, need: usize) -> ?usize {
     if self.mode != ARENA_CHUNKED { return null; }
     cap := DEFAULT_CHUNK;
     if need + ALIGN > cap { cap = need + ALIGN; }
-    raw := VirtualAlloc(0usize, CHUNK_HEADER + cap, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    raw := os_alloc(CHUNK_HEADER + cap);
     if raw == 0usize { return null; }
 
     nc := unsafe core::ptr_from_int(*Chunk, raw);
@@ -334,7 +332,7 @@ pub deinit :: fn(self: *Arena) {
         while cur != 0usize {
             c := unsafe core::ptr_from_int(*Chunk, cur);
             nx := c.next;
-            ignored := VirtualFree(cur, 0usize, MEM_RELEASE);
+            os_release(cur, CHUNK_HEADER + c.cap);
             cur = nx;
         }
     }

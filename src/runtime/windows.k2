@@ -28,6 +28,28 @@ ExitProcess :: fn(code: u32);
 #extern("kernel32", "CloseHandle")
 CloseHandle :: fn(handle: usize) -> bool;
 
+#extern("kernel32", "VirtualAlloc")
+VirtualAlloc :: fn(addr: usize, size: usize, alloc_type: u32, protect: u32) -> usize;
+
+#extern("kernel32", "VirtualFree")
+VirtualFree :: fn(addr: usize, size: usize, free_type: u32) -> bool;
+
+// ── OS page memory (backs std.heap) ─────────────────────────────────────────
+// MEM_RESERVE=0x2000, MEM_COMMIT=0x1000, MEM_RELEASE=0x8000, PAGE_READWRITE=0x4.
+
+os_reserve :: fn(size: usize) -> usize {
+    return VirtualAlloc(0usize, size, 0x2000u32, 0x4u32);
+}
+os_commit :: fn(addr: usize, size: usize) -> bool {
+    return VirtualAlloc(addr, size, 0x1000u32, 0x4u32) != 0usize;
+}
+os_alloc :: fn(size: usize) -> usize {
+    return VirtualAlloc(0usize, size, 0x3000u32, 0x4u32); // MEM_COMMIT|MEM_RESERVE
+}
+os_release :: fn(addr: usize, size: usize) {
+    ignored := VirtualFree(addr, 0usize, 0x8000u32); // MEM_RELEASE frees the whole region; size unused
+}
+
 // ── Handle constants ──────────────────────────────────────────────────────
 
 STD_OUTPUT_HANDLE :: -11;

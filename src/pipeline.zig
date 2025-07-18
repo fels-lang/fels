@@ -621,6 +621,19 @@ fn prependHeapPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Modul
     const heap_parsed = try parser.parseSourceFrom(allocator, user.file_name, std_prelude.heap_src, ptr_parsed.next_id);
 
     var items: std.ArrayList(ast.Item) = .empty;
+
+    // heap.k2 calls the platform runtime's page primitives (`os_reserve`, …).
+    // The runtime-free `compile` path has no runtime, so supply a host shim
+    // (VirtualAlloc-backed) — but only when no runtime already defines them, so
+    // real builds (which prepend a runtime) don't see a duplicate declaration.
+    if (!moduleDeclaresFunction(user, "os_reserve")) {
+        const shim_parsed = try parser.parseSourceFrom(allocator, "<runtime>", os_host_shim_src, ptr_parsed.next_id + 4096);
+        for (shim_parsed.module.items) |item| switch (item) {
+            .import => {},
+            else => try items.append(allocator, item),
+        };
+    }
+
     for (ptr_parsed.module.items) |item| switch (item) {
         .import => {},
         else => try items.append(allocator, item),
@@ -632,6 +645,29 @@ fn prependHeapPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Modul
     try items.appendSlice(allocator, user.items);
     return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
 }
+
+/// True when the module already declares a top-level function `name`.
+fn moduleDeclaresFunction(module: ast.Module, name: []const u8) bool {
+    for (module.items) |item| switch (item) {
+        .function => |f| if (std.mem.eql(u8, f.name, name)) return true,
+        else => {},
+    };
+    return false;
+}
+
+/// Host (Windows) page-memory shim for the runtime-free `compile` path. Mirrors
+/// the `os_*` surface that windows.k2 provides at runtime; injected by
+/// `prependHeapPrelude` only when no runtime is present (so it never collides).
+const os_host_shim_src =
+    \\#extern("kernel32", "VirtualAlloc")
+    \\VirtualAlloc :: fn(addr: usize, size: usize, alloc_type: u32, protect: u32) -> usize;
+    \\#extern("kernel32", "VirtualFree")
+    \\VirtualFree :: fn(addr: usize, size: usize, free_type: u32) -> bool;
+    \\os_reserve :: fn(size: usize) -> usize { return VirtualAlloc(0usize, size, 0x2000u32, 0x4u32); }
+    \\os_commit :: fn(addr: usize, size: usize) -> bool { return VirtualAlloc(addr, size, 0x1000u32, 0x4u32) != 0usize; }
+    \\os_alloc :: fn(size: usize) -> usize { return VirtualAlloc(0usize, size, 0x3000u32, 0x4u32); }
+    \\os_release :: fn(addr: usize, size: usize) { ignored := VirtualFree(addr, 0usize, 0x8000u32); }
+;
 
 /// Prepend the `TypeInfo` reflection surface to the user's module. Parsed under
 /// the user's file name (file-private symbols) with a high id base.
