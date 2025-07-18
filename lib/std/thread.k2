@@ -34,8 +34,7 @@ GetExitCodeThread :: fn(handle: usize, code: *u32) -> bool;
 // `CloseHandle` is a global runtime primitive (src/runtime/windows.k2) — reused.
 #extern("kernel32", "GetCurrentThreadId")
 GetCurrentThreadId :: fn() -> u32;
-#extern("kernel32", "Sleep")
-Sleep :: fn(ms: u32);
+// `Sleep` is a shared runtime primitive (src/runtime/windows.k2) — reused.
 #extern("kernel32", "SwitchToThread")
 SwitchToThread :: fn() -> bool;
 #extern("kernel32", "GetActiveProcessorCount")

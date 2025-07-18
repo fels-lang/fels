@@ -50,6 +50,44 @@ os_release :: fn(addr: usize, size: usize) {
     ignored := VirtualFree(addr, 0usize, 0x8000u32); // MEM_RELEASE frees the whole region; size unused
 }
 
+// ── OS time (backs std.time) ─────────────────────────────────────────────────
+// `Sleep` is a shared runtime primitive (std.thread reuses it, like CloseHandle).
+
+#extern("kernel32", "GetSystemTimePreciseAsFileTime")
+GetSystemTimePreciseAsFileTime :: fn(out: *u64);
+#extern("kernel32", "QueryPerformanceCounter")
+QueryPerformanceCounter :: fn(out: *i64) -> bool;
+#extern("kernel32", "QueryPerformanceFrequency")
+QueryPerformanceFrequency :: fn(out: *i64) -> bool;
+#extern("kernel32", "Sleep")
+Sleep :: fn(ms: u32);
+
+// 100 ns ticks between the FILETIME epoch (1601) and the Unix epoch (1970).
+TIME_EPOCH_DIFF_100NS :: 116444736000000000u64;
+
+// Nanoseconds since 1970-01-01 00:00:00 UTC.
+os_wall_nanos :: fn() -> i64 {
+    ft: u64 = 0u64;
+    GetSystemTimePreciseAsFileTime(&ft);
+    return ((ft - TIME_EPOCH_DIFF_100NS) as i64) * 100i64;
+}
+
+// Monotonic nanoseconds (arbitrary origin). Split the tick delta into whole
+// seconds + remainder so `* 1e9` never overflows.
+os_monotonic_nanos :: fn() -> i64 {
+    t: i64 = 0i64;
+    f: i64 = 1i64;
+    QueryPerformanceCounter(&t);
+    QueryPerformanceFrequency(&f);
+    return (t / f) * 1000000000i64 + ((t % f) * 1000000000i64) / f;
+}
+
+// Sleep at least `ns` nanoseconds (Windows `Sleep` has ms granularity).
+os_sleep_nanos :: fn(ns: i64) {
+    if ns <= 0i64 { return; }
+    Sleep((ns / 1000000i64) as u32);
+}
+
 // ── Handle constants ──────────────────────────────────────────────────────
 
 STD_OUTPUT_HANDLE :: -11;

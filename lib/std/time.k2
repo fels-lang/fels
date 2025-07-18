@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // std.time — wall-clock time, a monotonic clock, sleeping, and a UTC calendar
-// breakdown (Windows backend, kernel32).
+// breakdown. Cross-platform.
 //
 //   secs := time::unix_seconds();          // seconds since 1970-01-01 UTC
 //   dt   := time::utc(secs);               // → DateTime { year, month, day, ... }
@@ -9,84 +9,36 @@
 //   time::sleep_ms(16u32);
 //   ns := time::since_nanos(start);        // elapsed, never goes backwards
 //
-// Wall-clock values come from GetSystemTimePreciseAsFileTime; the monotonic
-// clock from QueryPerformanceCounter. The UTC breakdown is exact for any time
-// at or after the epoch (uses Howard Hinnant's civil-from-days algorithm).
-
-// ── kernel32 imports ──────────────────────────────────────────────────────
-
-// FILETIME is a 64-bit count of 100 ns ticks since 1601-01-01; we read it as a
-// single u64 (the struct is two little-endian u32s, i.e. exactly a u64).
-#extern("kernel32", "GetSystemTimePreciseAsFileTime")
-GetSystemTimePreciseAsFileTime :: fn(out: *u64);
-
-#extern("kernel32", "QueryPerformanceCounter")
-QueryPerformanceCounter :: fn(out: *i64) -> bool;
-
-#extern("kernel32", "QueryPerformanceFrequency")
-QueryPerformanceFrequency :: fn(out: *i64) -> bool;
-
-#extern("kernel32", "Sleep")
-Sleep :: fn(millis: u32);
-
-#extern("kernel32", "GetTickCount64")
-GetTickCount64 :: fn() -> u64;
+// The OS clocks come through the platform runtime's nanosecond seam
+// (windows.k2 → kernel32; linux.k2 → clock_gettime/nanosleep):
+//   os_wall_nanos()       -> i64   nanoseconds since 1970-01-01 UTC
+//   os_monotonic_nanos()  -> i64   monotonic nanoseconds (arbitrary origin)
+//   os_sleep_nanos(ns)            sleep at least ns nanoseconds
+// The UTC breakdown is pure arithmetic (Howard Hinnant's civil-from-days),
+// exact for any time at or after the epoch.
 
 // ── Wall clock (Unix epoch) ─────────────────────────────────────────────────
 
-// 100 ns ticks between 1601-01-01 (FILETIME epoch) and 1970-01-01 (Unix epoch).
-EPOCH_DIFF_100NS :: 116444736000000000u64;
-
-filetime_now :: fn() -> u64 {
-    ft: u64 = 0u64;
-    GetSystemTimePreciseAsFileTime(&ft);
-    return ft;
-}
-
-// 100 ns ticks since the Unix epoch.
-unix_100ns :: fn() -> u64 {
-    return filetime_now() - EPOCH_DIFF_100NS;
-}
-
-// Whole seconds since 1970-01-01 00:00:00 UTC.
-pub unix_seconds :: fn() -> i64 { return (unix_100ns() / 10000000u64) as i64; }
+// Nanoseconds since 1970-01-01 00:00:00 UTC.
+pub unix_nanos :: fn() -> i64 { return os_wall_nanos(); }
 
 // Milliseconds since the Unix epoch.
-pub unix_millis :: fn() -> i64 { return (unix_100ns() / 10000u64) as i64; }
+pub unix_millis :: fn() -> i64 { return os_wall_nanos() / 1000000i64; }
 
-// Nanoseconds since the Unix epoch (100 ns resolution from the OS clock).
-pub unix_nanos :: fn() -> i64 { return (unix_100ns() as i64) * 100i64; }
+// Whole seconds since 1970-01-01 00:00:00 UTC.
+pub unix_seconds :: fn() -> i64 { return os_wall_nanos() / 1000000000i64; }
 
 // ── Monotonic clock ─────────────────────────────────────────────────────────
 
 // A point on the monotonic clock. Compare via `since_*`; never wall-time.
-pub Instant :: struct { ticks: i64 }
-
-raw_ticks :: fn() -> i64 {
-    t: i64 = 0i64;
-    QueryPerformanceCounter(&t);
-    return t;
-}
-
-raw_freq :: fn() -> i64 {
-    f: i64 = 1i64;
-    QueryPerformanceFrequency(&f);
-    return f;
-}
+pub Instant :: struct { nanos: i64 }
 
 // Capture the current monotonic instant.
-pub now :: fn() -> Instant { r: Instant = .{ raw_ticks() }; return r; }
-
-// Convert an elapsed tick delta to nanoseconds without overflowing: split into
-// whole-second and remainder parts (the remainder is < 1 s, so `* 1e9` is safe).
-ticks_to_nanos :: fn(delta: i64) -> i64 {
-    f := raw_freq();
-    return (delta / f) * 1000000000i64 + ((delta % f) * 1000000000i64) / f;
-}
+pub now :: fn() -> Instant { r: Instant = .{ os_monotonic_nanos() }; return r; }
 
 // Nanoseconds elapsed since `start` (monotonic — never negative for `start`
 // captured in the past).
-pub since_nanos :: fn(start: Instant) -> i64 { return ticks_to_nanos(raw_ticks() - start.ticks); }
+pub since_nanos :: fn(start: Instant) -> i64 { return os_monotonic_nanos() - start.nanos; }
 
 // Milliseconds elapsed since `start`.
 pub since_millis :: fn(start: Instant) -> i64 { return since_nanos(start) / 1000000i64; }
@@ -96,11 +48,11 @@ pub since_seconds :: fn(start: Instant) -> f64 {
     return (since_nanos(start) as f64) / 1000000000.0;
 }
 
-// Milliseconds since system boot (coarse, monotonic — handy for frame timing).
-pub monotonic_millis :: fn() -> u64 { return GetTickCount64(); }
+// Milliseconds on the monotonic clock (handy for frame timing).
+pub monotonic_millis :: fn() -> u64 { return (os_monotonic_nanos() / 1000000i64) as u64; }
 
 // Suspend the current thread for at least `millis` milliseconds.
-pub sleep_ms :: fn(millis: u32) { Sleep(millis); }
+pub sleep_ms :: fn(millis: u32) { os_sleep_nanos((millis as i64) * 1000000i64); }
 
 // ── UTC calendar breakdown ──────────────────────────────────────────────────
 

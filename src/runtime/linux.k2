@@ -116,6 +116,43 @@ os_release :: fn(addr: usize, size: usize) {
     ignored := sys_munmap(addr, size);
 }
 
+// ── OS time (backs std.time) ─────────────────────────────────────────────────
+// clock_gettime=228, nanosleep=35. struct timespec = { i64 tv_sec; i64 tv_nsec }.
+
+TimeSpec :: struct { sec: i64, nsec: i64 }
+
+sys_clock_gettime :: fn(clk: i32, ts: *TimeSpec) -> i32 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(228), "{rdi}"(clk), "{rsi}"(ts) },
+        outputs: { "={rax}"(i32) },
+        clobbers: { "rcx", "r11", "memory" },
+    );
+}
+
+sys_nanosleep :: fn(req: *TimeSpec, rem: *TimeSpec) -> i32 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(35), "{rdi}"(req), "{rsi}"(rem) },
+        outputs: { "={rax}"(i32) },
+        clobbers: { "rcx", "r11", "memory" },
+    );
+}
+
+clock_nanos :: fn(clk: i32) -> i64 {
+    ts: TimeSpec = .{ 0i64, 0i64 };
+    ignored := sys_clock_gettime(clk, &ts);
+    return ts.sec * 1000000000i64 + ts.nsec;
+}
+
+os_wall_nanos :: fn() -> i64 { return clock_nanos(0); }      // CLOCK_REALTIME
+os_monotonic_nanos :: fn() -> i64 { return clock_nanos(1); } // CLOCK_MONOTONIC
+
+os_sleep_nanos :: fn(ns: i64) {
+    if ns <= 0i64 { return; }
+    req: TimeSpec = .{ ns / 1000000000i64, ns % 1000000000i64 };
+    rem: TimeSpec = .{ 0i64, 0i64 };
+    ignored := sys_nanosleep(&req, &rem);
+}
+
 // ── Core runtime functions ─────────────────────────────────────────────────
 
 /// Exit with an application-defined status.
