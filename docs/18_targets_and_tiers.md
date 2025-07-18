@@ -127,8 +127,10 @@ future Tier 3.
 
 Borrowed from Rust's model, adapted to k2's seam architecture.
 
-- **Tier 1 — guaranteed.** Builds, runs, and the full test suite passes in CI;
-  complete stdlib. *Regressions block a release.*
+- **Tier 1 — guaranteed.** A first-class target k2 commits to and gates releases
+  on: language, codegen, and runtime build and run, and the test suite passes in
+  CI. The stdlib is expected complete; any remaining gap is a **release blocker**,
+  not a reason to demote the target. *Regressions block a release.*
 - **Tier 2 — supported.** Builds and runs; stdlib complete or near-complete;
   smoke-tested (not every module in CI). *Best-effort fixes.*
 - **Tier 3 — experimental.** Codegen exists and may build; runtime/stdlib partial
@@ -137,7 +139,7 @@ Borrowed from Rust's model, adapted to k2's seam architecture.
 | Target | Tier | Notes |
 | --- | --- | --- |
 | `x86_64-windows-msvc` | **1** | original host target; full stdlib |
-| `x86_64-linux-none` (static) | **1** (core) | cross-compiles from Windows; io/heap/time/Vec/strings done; fs/process/net/thread pending → **2** until ported |
+| `x86_64-linux-none` (static) | **1** | first-class target — cross-compiles from Windows; language + codegen + core stdlib (io/heap/time/Vec/strings) verified; completing fs/process/net/thread is a **Tier-1 release blocker**, not a demotion |
 | `x86_64-linux-gnu` (glibc) | **2** | same codegen; needs a libc toolchain/sysroot to link |
 | `aarch64-linux` | **3 → 2** | unblock by adding the aarch64 runtime + ABI arm |
 | `riscv64-linux`, `wasm32-wasi` | **3** | LLVM-ready; runtime/seam not yet written |
