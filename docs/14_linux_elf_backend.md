@@ -1,10 +1,59 @@
-# Linux / ELF / SysV backend — design
+# Linux / ELF / SysV backend
 
-> Status: **design** (not yet implemented). k2 today targets Windows only —
-> Win64 ABI, COFF objects, `lld-link`, Win32 syscalls. This document is the plan
-> for a second target: **Linux x86-64** (ELF objects, the System V AMD64 ABI,
-> glibc). It maps the work to concrete files and orders it so each phase is
-> independently testable.
+> Status: **core implemented** — k2 cross-compiles from Windows to a **static,
+> freestanding Linux x86-64 ELF** (no libc) and runs it. Compute/CLI programs
+> work today: I/O, the heap allocator, `Vec`, strings, and formatting. File
+> system, time, process, net, and threads are not yet ported (they still call
+> Win32). The design sections below (§2 onward) are the original plan and remain
+> a useful reference; where the implementation diverges it is **freestanding +
+> direct syscalls**, not glibc/crt1.o — see the implementation notes next.
+
+## 0. Implemented (current status)
+
+Use `--target linux` to cross-compile from a Windows host:
+
+```
+k2 build hello.k2 -o hello --target linux --llvm-path Y:/SDK/LLVM
+# → a static, non-PIE ELF; runs under Linux/WSL with no shared-library deps
+```
+
+What works end-to-end (verified under WSL):
+
+| Area | Status | How |
+| --- | --- | --- |
+| Codegen / object | ✅ | `emit.initTarget(.linux, …)` builds an `x86_64-unknown-linux-musl` `TargetMachine` (static reloc) and emits an ELF `.o` |
+| Linking | ✅ | `link.linkLinux` invokes `ld.lld -static -e _start` (cross-links from Windows; **no libc, no crt1.o**) |
+| Entry point | ✅ | a `#naked #entry _start` in the runtime: clears `%rbp`, aligns `%rsp`, `call main`, then the `exit` syscall — no `mainCRTStartup` |
+| Syscalls | ✅ | inline asm with explicit register constraints (`{rax}`,`{rdi}`,…; `r10` for the 4th arg); `write`, `exit`, `mmap`, `mprotect`, `munmap` |
+| I/O (`std.io`) | ✅ | `write_stdout`/`write_stderr` route through the `write` syscall (already portable) |
+| Allocator (`std.heap`) | ✅ | `Arena` reserve/commit/release go through runtime `os_reserve`/`os_commit`/`os_alloc`/`os_release`; Linux backs them with `mmap`(PROT_NONE)/`mprotect`/`mmap`(RW)/`munmap` |
+| `Vec`, strings, fmt | ✅ | fall out of the allocator + I/O above |
+| `__chkstk`, `_fltused`, Windows entry | ✅ gated off | `context.applyTargetStubs` and `llvm.lower` emit them only when `target_os == .windows` |
+
+Not yet ported (still Win32-only): `std.fs`, `std.time`, `std.process`,
+`std.net`, `std.thread`. These need the corresponding Linux syscalls behind the
+same kind of runtime/stdlib seam the allocator now uses.
+
+Key implementation notes / gotchas:
+
+- **Freestanding, not glibc.** The original plan (§4) linked glibc's `crt1.o`
+  and let its `_start` call `main`. The implementation instead ships its own
+  `#naked _start` and talks to the kernel directly — so the output is a single
+  static ELF with **zero** dynamic dependencies (`ldd` → "not a dynamic
+  executable"). This matches k2's no-libc Windows story.
+- **`_start` must be a GLOBAL symbol.** `ld.lld -e _start` resolves the entry
+  against global symbols; `#keep` (external linkage) was not enough on its own,
+  so `_start` uses `#entry` (which also keeps it out of internalization, like
+  `main`). A local `_start` links "successfully" with entry `0x0` → segfault.
+- **Inline-asm template quirks.** k2's asm template does not process `\n`
+  escapes, so multi-instruction asm uses `;` separators (a valid x86 GAS
+  statement separator). A literal `$` in an LLVM asm string is an operand
+  reference, so AT&T immediates are escaped as `$$-16` / `$$60`. Integer asm
+  args are coerced to `i64` to match the asm function type.
+- **The platform allocator is a runtime seam, not `#if`.** k2 has no conditional
+  compilation, so `std.heap` stays OS-agnostic and the *runtime* (selected per
+  target) provides `os_*`. The runtime-free `compile` path injects a host shim
+  so the prelude still type-checks (`pipeline.prependHeapPrelude`).
 
 ## 1. What is already portable
 

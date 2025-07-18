@@ -48,6 +48,48 @@ fn compileAndRun(allocator: std.mem.Allocator, src: []const u8, label: []const u
     };
 }
 
+/// Cross-compile `src` to a static Linux ELF and return its bytes. Runs on the
+/// Windows host (cross-link via ld.lld) — no WSL needed, since the assertions
+/// inspect the ELF header rather than executing it. Skips if ld.lld is absent.
+fn compileLinuxElf(allocator: std.mem.Allocator, src: []const u8, label: []const u8) ![]u8 {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const obj_path = try std.fmt.allocPrint(allocator, ".zig-cache/{s}.o", .{label});
+    const exe_path = try std.fmt.allocPrint(allocator, ".zig-cache/{s}.elf", .{label});
+    k2.compileWithLlvm(allocator, io, .{
+        .file_name = label,
+        .source = src,
+        .obj_path = obj_path,
+        .exe_path = exe_path,
+        .opt_level = 2,
+        .llvm_bin = k2.llvm_path ++ "/bin",
+        .target_os = .linux,
+    }) catch return error.SkipZigTest;
+    return std.Io.Dir.cwd().readFileAlloc(io, exe_path, allocator, .unlimited) catch return error.SkipZigTest;
+}
+
+test "exe: cross-compile to a static Linux ELF (format + resolved entry)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A program that uses the heap exercises the mmap-backed allocator seam too.
+    const elf = try compileLinuxElf(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    zone a: Arena { buf := a.new_slice(u8, 64); buf[0] = 7u8; return buf[0] as i32; }
+        \\}
+    , "elf_smoke");
+    try std.testing.expect(elf.len > 64);
+    // ELF magic.
+    try std.testing.expectEqualSlices(u8, "\x7fELF", elf[0..4]);
+    // ET_EXEC (static, non-PIE) — e_type at offset 16.
+    try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, elf[16..18], .little));
+    // Non-zero entry — proves `ld.lld -e _start` resolved a GLOBAL `_start`.
+    // A local `_start` links "successfully" with entry 0 → runtime segfault.
+    try std.testing.expect(std.mem.readInt(u64, elf[24..32], .little) != 0);
+}
+
 test "exe: main returning 0 exits cleanly" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
