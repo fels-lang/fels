@@ -153,6 +153,188 @@ os_sleep_nanos :: fn(ns: i64) {
     ignored := sys_nanosleep(&req, &rem);
 }
 
+// ── OS file system (backs std.fs) ────────────────────────────────────────────
+// openat=257, read=0, write=1, close=3, lseek=8, newfstatat=262, unlink=87,
+// getdents64=217. Paths are NUL-terminated C strings; AT_FDCWD = -100. A handle
+// is the raw fd (>= 0); -1 means failure (matches the file seam's contract).
+
+sys_openat :: fn(dirfd: i32, path: *const u8, flags: i32, mode: i32) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(257), "{rdi}"(dirfd), "{rsi}"(path), "{rdx}"(flags), "{r10}"(mode) },
+        outputs: { "={rax}"(i64) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+sys_read :: fn(fd: i64, buf: *u8, len: usize) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(0), "{rdi}"(fd), "{rsi}"(buf), "{rdx}"(len) },
+        outputs: { "={rax}"(i64) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+sys_write_fd :: fn(fd: i64, buf: *const u8, len: usize) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(1), "{rdi}"(fd), "{rsi}"(buf), "{rdx}"(len) },
+        outputs: { "={rax}"(i64) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+sys_close :: fn(fd: i64) -> i32 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(3), "{rdi}"(fd) },
+        outputs: { "={rax}"(i32) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+sys_lseek :: fn(fd: i64, off: i64, whence: i32) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(8), "{rdi}"(fd), "{rsi}"(off), "{rdx}"(whence) },
+        outputs: { "={rax}"(i64) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+sys_unlink :: fn(path: *const u8) -> i32 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(87), "{rdi}"(path) },
+        outputs: { "={rax}"(i32) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+sys_getdents64 :: fn(fd: i64, buf: *u8, len: usize) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(217), "{rdi}"(fd), "{rsi}"(buf), "{rdx}"(len) },
+        outputs: { "={rax}"(i64) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+
+// struct stat is 144 bytes on x86-64; st_mode is a u32 at byte offset 24.
+StatBuf :: struct { data: [144]u8 }
+sys_newfstatat :: fn(dirfd: i32, path: *const u8, st: *StatBuf, flags: i32) -> i32 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(262), "{rdi}"(dirfd), "{rsi}"(path), "{rdx}"(st), "{r10}"(flags) },
+        outputs: { "={rax}"(i32) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+
+// mode: 0 = read existing, 1 = create/truncate write, 2 = open/create append.
+os_file_open :: fn(path: *const u8, mode: i32) -> i64 {
+    flags: i32 = 0;                       // O_RDONLY
+    if mode == 1 { flags = 577; }         // O_WRONLY|O_CREAT|O_TRUNC
+    if mode == 2 { flags = 1089; }        // O_WRONLY|O_CREAT|O_APPEND
+    fd := sys_openat(-100, path, flags, 420);   // AT_FDCWD, 0644
+    if fd < 0i64 { return -1i64; }
+    return fd;
+}
+os_file_read :: fn(h: i64, buf: *u8, len: usize) -> i64 {
+    r := sys_read(h, buf, len);
+    if r < 0i64 { return -1i64; }
+    return r;
+}
+os_file_write :: fn(h: i64, buf: *const u8, len: usize) -> i64 {
+    r := sys_write_fd(h, buf, len);
+    if r < 0i64 { return -1i64; }
+    return r;
+}
+os_file_close :: fn(h: i64) { ignored := sys_close(h); }
+os_file_seek :: fn(h: i64, off: i64, whence: i32) -> i64 {
+    r := sys_lseek(h, off, whence);       // SEEK_SET/CUR/END = 0/1/2
+    if r < 0i64 { return -1i64; }
+    return r;
+}
+// 0 = missing, 1 = file, 2 = directory.
+os_path_kind :: fn(path: *const u8) -> i32 {
+    st: StatBuf = .{};
+    if sys_newfstatat(-100, path, &st, 0) < 0 { return 0; }
+    mode: u32 = (st.data[24] as u32) | ((st.data[25] as u32) << 8u32)
+              | ((st.data[26] as u32) << 16u32) | ((st.data[27] as u32) << 24u32);
+    if (mode & 0xF000u32) == 0x4000u32 { return 2; }   // S_IFDIR
+    return 1;
+}
+os_unlink :: fn(path: *const u8) -> i32 {
+    if sys_unlink(path) < 0 { return -1; }
+    return 0;
+}
+
+// Directory iteration over getdents64. The runtime owns the per-iterator state
+// (a heap struct holding the dirfd + a read-ahead buffer); std.fs sees an opaque
+// i64 handle. linux_dirent64: d_ino@0, d_off@8, d_reclen(u16)@16, d_type(u8)@18,
+// d_name@19. DT_DIR = 4.
+DirState :: struct {
+    fd:           i64,
+    buf_used:     i64,
+    buf_pos:      i64,
+    last_is_dir:  bool,
+    last_is_link: bool,
+    buf:          [4096]u8,
+}
+
+os_dir_open :: fn(path: *const u8) -> i64 {
+    // Accept a directory path with an optional trailing wildcard ("dir", "dir/*"
+    // both work); strip the glob to the bare directory for openat.
+    clean: [320]u8 = .{};
+    n: usize = 0usize;
+    while n < 316usize {
+        c := unsafe *core::ptr_from_int(*u8, (path as usize) + n);
+        if c == 0u8 { break; }
+        clean[n] = c;
+        n += 1usize;
+    }
+    if n > 0usize && clean[n - 1usize] == 42u8 {                          // trailing '*'
+        n -= 1usize;
+        if n > 0usize && (clean[n - 1usize] == 47u8 || clean[n - 1usize] == 92u8) { n -= 1usize; }  // '/' or '\'
+    }
+    if n == 0usize { clean[0] = 46u8; n = 1usize; }                      // empty → "."
+    clean[n] = 0u8;
+    fd := sys_openat(-100, &clean[0], 65536, 0);   // O_RDONLY|O_DIRECTORY (0x10000)
+    if fd < 0i64 { return -1i64; }
+    raw := os_alloc(4160usize);               // sizeof(DirState), rounded up
+    if raw == 0usize { ignored := sys_close(fd); return -1i64; }
+    st := unsafe core::ptr_from_int(*DirState, raw);
+    st.fd = fd;
+    st.buf_used = 0i64;
+    st.buf_pos = 0i64;
+    st.last_is_dir = false;
+    st.last_is_link = false;
+    return raw as i64;
+}
+// Copy the next entry's name into `name` (NUL not written); returns its length,
+// or -1 at end. Read fields by indexing the read-ahead buffer — no raw pointer
+// arithmetic. d_reclen(u16)@16, d_type(u8)@18, d_name@19; DT_DIR = 4.
+os_dir_next :: fn(h: i64, name: []u8) -> i64 {
+    st := unsafe core::ptr_from_int(*DirState, h as usize);
+    if st.buf_pos >= st.buf_used {
+        n := sys_getdents64(st.fd, &st.buf[0], 4096usize);
+        if n <= 0i64 { st.last_is_dir = false; return -1i64; }
+        st.buf_used = n;
+        st.buf_pos = 0i64;
+    }
+    p := st.buf_pos as usize;
+    reclen := (st.buf[p + 16usize] as usize) | ((st.buf[p + 17usize] as usize) << 8usize);
+    dtype := st.buf[p + 18usize];
+    st.last_is_dir = (dtype == 4u8);     // DT_DIR
+    st.last_is_link = (dtype == 10u8);   // DT_LNK
+    i: usize = 0usize;
+    while i + 1usize < name.len {
+        c := st.buf[p + 19usize + i];
+        if c == 0u8 { break; }
+        name[i] = c;
+        i += 1usize;
+    }
+    st.buf_pos = st.buf_pos + (reclen as i64);
+    return i as i64;
+}
+os_dir_is_dir :: fn(h: i64) -> bool {
+    st := unsafe core::ptr_from_int(*DirState, h as usize);
+    return st.last_is_dir;
+}
+os_dir_is_reparse :: fn(h: i64) -> bool {
+    st := unsafe core::ptr_from_int(*DirState, h as usize);
+    return st.last_is_link;
+}
+os_dir_size :: fn(h: i64) -> u64 {
+    ignored := h;
+    return 0u64;    // getdents64 doesn't carry the size (Windows' FindData does)
+}
+os_dir_close :: fn(h: i64) {
+    st := unsafe core::ptr_from_int(*DirState, h as usize);
+    ignored := sys_close(st.fd);
+    os_release(h as usize, 4160usize);
+}
+
 // ── Core runtime functions ─────────────────────────────────────────────────
 
 /// Exit with an application-defined status.

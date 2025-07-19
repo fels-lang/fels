@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.fs — minimal synchronous file I/O for K2 (Windows backend, kernel32).
+// std.fs — minimal synchronous file I/O for K2. Cross-platform: every OS call
+// goes through the platform runtime's file seam (windows.k2 → kernel32;
+// linux.k2 → openat/read/write/close/lseek/getdents64), so this module itself
+// is OS-agnostic.
 //
 // Provides:
 //   File     — an open file handle; implements std.io.Reader and std.io.Writer
@@ -7,130 +10,56 @@
 //   create   — create (or truncate) a file for writing
 //   append   — open a file for appending, creating it if it doesn't exist
 //   exists   — check whether a path refers to an existing file or directory
+//   is_dir   — check whether a path is a directory
 //   delete   — remove a file
+//   read_all — read a whole file into an arena
+//   DirIter  — directory iteration (open_dir / dir_next / dir_is_dir / ...)
 //   FsError  — error set shared by all std.fs operations
 //
-// Paths are plain `[]const u8` byte slices (ANSI bytes — no wide-string/UTF-16
-// support yet, matching the Win32 `*A` APIs). Internally each path is copied
-// into a small stack buffer and NUL-terminated before being handed to Win32;
-// paths that don't fit (including the terminator) fail with `path_too_long`.
-//
-// Typical use:
+// Paths are plain `[]const u8` byte slices; each is copied into a small stack
+// buffer and NUL-terminated before being handed to the OS. Paths that don't fit
+// (including the terminator) fail with `path_too_long`.
 //
 //   f := fs.create("out.txt") catch err { return 1; };
 //   w: *Writer = &f;
 //   w.write_all("hello\n") catch err {};
 //   (&f).close();
-//
-//   g := fs.open("out.txt") catch err { return 1; };
-//   r: *Reader = &g;
-//   buf: [64]u8 = .{};
-//   n := r.read(buf[:]) catch err { return 1; };
-//   (&g).close();
 
 #import std.io.{ Writer, Reader, IoError };
 #import std.heap.{ Arena };
 
-// ── kernel32 imports ──────────────────────────────────────────────────────
+// The file/dir seam, provided by the platform runtime:
+//   os_file_open(path, mode) -> i64   mode 0=read, 1=create/trunc, 2=append; -1 = fail
+//   os_file_read(h, buf, len) -> i64  bytes read, or -1
+//   os_file_write(h, buf, len) -> i64 bytes written, or -1
+//   os_file_close(h)
+//   os_file_seek(h, off, whence) -> i64   whence 0=set, 1=cur, 2=end; new pos or -1
+//   os_path_kind(path) -> i32         0=missing, 1=file, 2=directory
+//   os_unlink(path) -> i32            0 = ok
+//   os_dir_open(path) -> i64          opaque iterator handle, or -1
+//   os_dir_next(h, name) -> i64       entry-name length copied into `name`, or -1 at end
+//   os_dir_is_dir(h)/os_dir_is_reparse(h) -> bool, os_dir_size(h) -> u64   (last entry)
+//   os_dir_close(h)
 
-#extern("kernel32", "FindFirstFileExA")
-FindFirstFileExA :: fn(
-    file_name:       *const u8,
-    info_level:      u32,       // FindExInfoBasic (1) — skip the 8.3 alt-name
-    find_data:       *WIN32_FIND_DATAA,
-    search_op:       u32,       // FindExSearchNameMatch (0)
-    search_filter:   ?*void,    // NULL
-    additional_flags: u32,      // FIND_FIRST_EX_LARGE_FETCH (2) — batch internally
-) -> usize;
-
-#extern("kernel32", "FindNextFileA")
-FindNextFileA :: fn(handle: usize, find_data: *WIN32_FIND_DATAA) -> bool;
-
-#extern("kernel32", "FindClose")
-FindClose :: fn(handle: usize) -> bool;
-
-#extern("kernel32", "CreateFileA")
-CreateFileA :: fn(
-    file_name:            *const u8,
-    desired_access:       u32,
-    share_mode:           u32,
-    security_attributes:  ?*void,
-    creation_disposition: u32,
-    flags_and_attributes: u32,
-    template_file:        usize,
-) -> usize;
-
-#extern("kernel32", "ReadFile")
-ReadFile :: fn(
-    handle:     usize,
-    buf:        *u8,
-    len:        u32,
-    bytes_read: *u32,
-    overlapped: ?*void,
-) -> bool;
-
-#extern("kernel32", "DeleteFileA")
-DeleteFileA :: fn(file_name: *const u8) -> bool;
-
-#extern("kernel32", "GetFileAttributesA")
-GetFileAttributesA :: fn(file_name: *const u8) -> u32;
-
-#extern("kernel32", "SetFilePointerEx")
-SetFilePointerEx :: fn(
-    handle:      usize,
-    distance:    i64,
-    new_pointer: ?*i64,
-    move_method: u32,
-) -> bool;
-
-// ── Win32 constants (see winbase.h / fileapi.h) ───────────────────────────
-
-GENERIC_READ            :: 0x80000000u32;
-GENERIC_WRITE           :: 0x40000000u32;
-FILE_SHARE_READ         :: 0x00000001u32;
-FILE_SHARE_WRITE        :: 0x00000002u32;
-OPEN_EXISTING           :: 3u32;
-CREATE_ALWAYS           :: 2u32;
-OPEN_ALWAYS             :: 4u32;
-FILE_ATTRIBUTE_NORMAL   :: 0x00000080u32;
-INVALID_FILE_ATTRIBUTES :: 4294967295u32;       // (DWORD)-1
-FILE_END                :: 2u32;
-FILE_BEGIN              :: 0u32;
-FILE_ATTRIBUTE_DIRECTORY :: 0x00000010u32;
-
-// WIN32_FIND_DATAA (fileapi.h) — laid out field-for-field so `cFileName` lands
-// at the right offset for the Win32 `Find*FileA` APIs.
-WIN32_FIND_DATAA :: struct {
-    attrs:     u32,
-    ctime_lo:  u32, ctime_hi:  u32,
-    atime_lo:  u32, atime_hi:  u32,
-    wtime_lo:  u32, wtime_hi:  u32,
-    size_hi:   u32, size_lo:   u32,
-    reserved0: u32, reserved1: u32,
-    name:      [260]u8,
-    alt_name:  [14]u8,
-}
-
-FS_INVALID_HANDLE  :: 18446744073709551615usize;   // (HANDLE)-1, i.e. INVALID_HANDLE_VALUE
-MAX_PATH_BYTES  :: 260usize;
+FS_INVALID :: -1i64;       // a closed/invalid handle (matches the seam's failure value)
+MAX_PATH_BYTES :: 260usize;
 
 // ── Errors ────────────────────────────────────────────────────────────────
 
 pub FsError :: errors {
-    not_found,       // CreateFileA(OPEN_EXISTING) failed — the path doesn't exist (or access denied)
-    create_failed,   // CreateFileA(CREATE_ALWAYS / OPEN_ALWAYS) failed
-    read_failed,     // ReadFile returned an error
-    write_failed,    // WriteFile returned an error
-    seek_failed,     // SetFilePointerEx returned an error
-    delete_failed,   // DeleteFileA returned an error
+    not_found,       // open of an existing file failed — the path doesn't exist (or access denied)
+    create_failed,   // create/append failed
+    read_failed,     // a read returned an error
+    write_failed,    // a write returned an error
+    seek_failed,     // a seek returned an error
+    delete_failed,   // delete failed
     path_too_long,   // path (plus NUL terminator) doesn't fit in the internal buffer
 }
 
 // ── Path helpers ──────────────────────────────────────────────────────────
 
-// Copy `path` into `buf`, append a NUL terminator, and return a pointer to
-// the start of `buf` suitable for Win32 `*A` APIs. Fails if `path` (plus its
-// terminator) doesn't fit in `buf`.
+// Copy `path` into `buf`, append a NUL terminator, and return a pointer to the
+// start of `buf` suitable for the OS `*A`/syscall APIs.
 fs_to_cstr :: fn(path: []const u8, buf: []u8) -> *const u8 ! FsError {
     if path.len + 1usize > buf.len { fail .path_too_long; }
     i := 0usize;
@@ -144,189 +73,167 @@ fs_to_cstr :: fn(path: []const u8, buf: []u8) -> *const u8 ! FsError {
 
 // ── File ──────────────────────────────────────────────────────────────────
 
-// An open OS file handle. Implements both `Reader` and `Writer` so it can be
-// used anywhere a `*Reader`/`*Writer` is expected — pipelines, formatters,
-// loggers, etc.
+// An open OS file handle. Implements both `Reader` and `Writer`, so it works
+// anywhere a `*Reader`/`*Writer` is expected — pipelines, formatters, loggers.
 pub File :: struct {
-    handle: usize,
+    handle: i64,
 }
 
 File as Reader {
     read :: fn(self: *Self, buf: []u8) -> usize ! IoError {
         if buf.len == 0usize { return 0usize; }
-        read_count := 0u32;
-        ok := ReadFile(self.handle, buf.ptr, core::narrow(u32, buf.len), &read_count, null);
-        if !ok { fail .read_failed; }
-        return read_count as usize;
+        n := os_file_read(self.handle, buf.ptr, buf.len);
+        if n < 0i64 { fail .read_failed; }
+        return n as usize;
     }
 }
 
 File as Writer {
     write :: fn(self: *Self, data: []const u8) -> usize ! IoError {
         if data.len == 0usize { return 0usize; }
-        written := 0u32;
-        ok := WriteFile(self.handle, data.ptr, core::narrow(u32, data.len), &written, null);
-        if !ok { fail .write_failed; }
-        return written as usize;
+        n := os_file_write(self.handle, data.ptr, data.len);
+        if n < 0i64 { fail .write_failed; }
+        return n as usize;
     }
     flush :: fn(self: *Self) -> void ! IoError {
         return;
     }
 }
 
-// True while the handle is open (i.e. `close` hasn't been called).
-// Call as `(&file).is_open()`.
+// True while the handle is open. Call as `(&file).is_open()`.
 pub is_open :: fn(self: *File) -> bool {
-    return self.handle != FS_INVALID_HANDLE;
+    return self.handle != FS_INVALID;
 }
 
-// Close the underlying OS handle. Safe to call more than once — subsequent
-// calls are no-ops once the handle has been released. Call as `(&file).close()`.
+// Close the underlying OS handle. Safe to call more than once. Call as
+// `(&file).close()`.
 pub close :: fn(self: *File) {
-    if self.handle == FS_INVALID_HANDLE { return; }
-    ignored := CloseHandle(self.handle);
-    self.handle = FS_INVALID_HANDLE;
+    if self.handle == FS_INVALID { return; }
+    os_file_close(self.handle);
+    self.handle = FS_INVALID;
 }
 
-// Open an existing file for reading. Fails with `not_found` if the path
-// doesn't exist or can't be opened for read access.
+// Open an existing file for reading. Fails with `not_found` if it can't be
+// opened for read access.
 pub open :: fn(path: []const u8) -> File ! FsError {
     path_buf: [260]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
-    handle := CreateFileA(cpath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, null, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0usize);
-    if handle == FS_INVALID_HANDLE { fail .not_found; }
-    return .{ handle };
+    h := os_file_open(cpath, 0);
+    if h == FS_INVALID { fail .not_found; }
+    return .{ h };
 }
 
-// Create a file for writing. If the file already exists its contents are
-// discarded (truncate-on-open), matching `fopen(path, "w")` semantics.
+// Create a file for writing, truncating it if it already exists (`fopen(…,"w")`).
 pub create :: fn(path: []const u8) -> File ! FsError {
     path_buf: [260]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
-    handle := CreateFileA(cpath, GENERIC_WRITE, FILE_SHARE_READ, null, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0usize);
-    if handle == FS_INVALID_HANDLE { fail .create_failed; }
-    return .{ handle };
+    h := os_file_open(cpath, 1);
+    if h == FS_INVALID { fail .create_failed; }
+    return .{ h };
 }
 
-// Open a file for appending, creating it if it doesn't exist. The file
-// position starts at the current end-of-file, matching `fopen(path, "a")`.
+// Open a file for appending, creating it if it doesn't exist (`fopen(…,"a")`).
 pub append :: fn(path: []const u8) -> File ! FsError {
     path_buf: [260]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
-    handle := CreateFileA(cpath, GENERIC_WRITE, FILE_SHARE_READ, null, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0usize);
-    if handle == FS_INVALID_HANDLE { fail .create_failed; }
-    moved: i64 = 0i64;
-    ignored := SetFilePointerEx(handle, 0i64, &moved, FILE_END);
-    return .{ handle };
+    h := os_file_open(cpath, 2);
+    if h == FS_INVALID { fail .create_failed; }
+    return .{ h };
 }
 
-// True if `path` refers to an existing file or directory. Never fails —
-// an unreadable or too-long path is simply reported as "doesn't exist".
+// True if `path` refers to an existing file or directory. Never fails.
 pub exists :: fn(path: []const u8) -> bool {
     path_buf: [260]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:]) catch err { return false; };
-    attrs := GetFileAttributesA(cpath);
-    return attrs != INVALID_FILE_ATTRIBUTES;
-}
-
-// Remove a file. Fails with `delete_failed` if the path doesn't exist, is a
-// directory, or can't be removed (e.g. still open elsewhere).
-pub delete :: fn(path: []const u8) -> void ! FsError {
-    path_buf: [260]u8 = .{};
-    cpath := fs_to_cstr(path, path_buf[:])?;
-    ok := DeleteFileA(cpath);
-    if !ok { fail .delete_failed; }
-    return;
+    return os_path_kind(cpath) != 0;
 }
 
 // True if `path` is a directory.
 pub is_dir :: fn(path: []const u8) -> bool {
     path_buf: [260]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:]) catch err { return false; };
-    attrs := GetFileAttributesA(cpath);
-    if attrs == INVALID_FILE_ATTRIBUTES { return false; }
-    return (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0u32;
+    return os_path_kind(cpath) == 2;
+}
+
+// Remove a file. Fails with `delete_failed` if it can't be removed.
+pub delete :: fn(path: []const u8) -> void ! FsError {
+    path_buf: [260]u8 = .{};
+    cpath := fs_to_cstr(path, path_buf[:])?;
+    if os_unlink(cpath) != 0 { fail .delete_failed; }
+    return;
 }
 
 // Read an entire file into a fresh buffer allocated in `a`. Returns the bytes.
 pub read_all :: fn(path: []const u8, a: *Arena) -> []u8 ! FsError {
     path_buf: [260]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
-    handle := CreateFileA(cpath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, null, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0usize);
-    if handle == FS_INVALID_HANDLE { fail .not_found; }
-    sz: i64 = 0i64;
-    seek_ok := SetFilePointerEx(handle, 0i64, &sz, FILE_END);
-    back_ok := SetFilePointerEx(handle, 0i64, null, FILE_BEGIN);
-    if !seek_ok { ignored := CloseHandle(handle); fail .seek_failed; }
-    if !back_ok { ignored := CloseHandle(handle); fail .seek_failed; }
+    h := os_file_open(cpath, 0);
+    if h == FS_INVALID { fail .not_found; }
+    sz := os_file_seek(h, 0i64, 2);     // SEEK_END → size
+    back := os_file_seek(h, 0i64, 0);   // SEEK_SET → rewind
+    if sz < 0i64 || back < 0i64 { os_file_close(h); fail .seek_failed; }
     buf: []u8 = a.alloc_bytes(sz as usize);
     total: usize = 0usize;
     while total < buf.len {
-        got: u32 = 0u32;
-        rok := ReadFile(handle, &buf[total], core::narrow(u32, buf.len - total), &got, null);
-        if !rok { ignored := CloseHandle(handle); fail .read_failed; }
-        if got == 0u32 { break; }
-        total += got as usize;
+        n := os_file_read(h, &buf[total], buf.len - total);
+        if n < 0i64 { os_file_close(h); fail .read_failed; }
+        if n == 0i64 { break; }
+        total += n as usize;
     }
-    ignored := CloseHandle(handle);
+    os_file_close(h);
     return buf[0usize..total];
 }
 
 // ── Directory iteration ────────────────────────────────────────────────────
-// Open with a glob pattern (e.g. `"src\\*"`). `dir_next` yields each entry name
-// (including "." and ".."), valid only until the following `dir_next` call.
+// `open_dir` takes a directory PATH (each platform adds its own glob/listing
+// mechanism). `dir_next` yields each entry name (including "." and ".."), valid
+// only until the following `dir_next` call.
 pub DirIter :: struct {
-    handle: usize,
-    data:   WIN32_FIND_DATAA,
-    first:  bool,
+    handle:  i64,
+    namebuf: [260]u8,
+    namelen: usize,
 }
 
-pub open_dir :: fn(pattern: []const u8) -> DirIter ! FsError {
-    iter: DirIter = .{ FS_INVALID_HANDLE, .{}, true };
+pub open_dir :: fn(path: []const u8) -> DirIter ! FsError {
+    iter: DirIter = .{ FS_INVALID, .{}, 0usize };
     path_buf: [260]u8 = .{};
-    cpath := fs_to_cstr(pattern, path_buf[:])?;
-    // FindExInfoBasic (1) skips the slow 8.3 alt-name; LARGE_FETCH (2) lets the OS
-    // return entries in bigger internal batches — both cut per-entry overhead.
-    iter.handle = FindFirstFileExA(cpath, 1u32, &iter.data, 0u32, null, 2u32);
-    if iter.handle == FS_INVALID_HANDLE { fail .not_found; }
+    cpath := fs_to_cstr(path, path_buf[:])?;
+    iter.handle = os_dir_open(cpath);
+    if iter.handle == FS_INVALID { fail .not_found; }
     return iter;
 }
 
 // The next entry name, or null at the end. Call as `(&it).dir_next()`.
 pub dir_next :: fn(self: *DirIter) -> ?[]const u8 {
-    if self.handle == FS_INVALID_HANDLE { return null; }
-    if self.first {
-        self.first = false;
-    } else {
-        if !FindNextFileA(self.handle, &self.data) { return null; }
-    }
-    n: usize = 0usize;
-    while n < 260usize {
-        if self.data.name[n] == 0u8 { break; }
-        n += 1usize;
-    }
-    return self.data.name[0usize..n];
+    if self.handle == FS_INVALID { return null; }
+    n := os_dir_next(self.handle, self.namebuf[:]);
+    if n < 0i64 { return null; }
+    self.namelen = n as usize;
+    return self.namebuf[0usize..self.namelen];
 }
 
 // Whether the entry most recently returned by `dir_next` is a subdirectory.
 pub dir_is_dir :: fn(self: *DirIter) -> bool {
-    return (self.data.attrs & FILE_ATTRIBUTE_DIRECTORY) != 0u32;
+    if self.handle == FS_INVALID { return false; }
+    return os_dir_is_dir(self.handle);
 }
 
-// Size in bytes of the entry most recently returned by `dir_next` (comes free
-// with the directory listing — no extra stat call).
+// Size in bytes of the most recent entry (free on Windows; 0 on Linux, whose
+// getdents64 doesn't carry it — stat the path if you need it there).
 pub dir_size :: fn(self: *DirIter) -> u64 {
-    return ((self.data.size_hi as u64) << 32u64) | (self.data.size_lo as u64);
+    if self.handle == FS_INVALID { return 0u64; }
+    return os_dir_size(self.handle);
 }
 
-// True if the most recent entry is a reparse point (symlink/junction) — skip
-// these when scanning to avoid cycles and double-counting.
+// True if the most recent entry is a symlink/reparse point — skip these when
+// scanning to avoid cycles and double-counting.
 pub dir_is_reparse :: fn(self: *DirIter) -> bool {
-    return (self.data.attrs & 0x400u32) != 0u32;   // FILE_ATTRIBUTE_REPARSE_POINT
+    if self.handle == FS_INVALID { return false; }
+    return os_dir_is_reparse(self.handle);
 }
 
 pub dir_close :: fn(self: *DirIter) {
-    if self.handle == FS_INVALID_HANDLE { return; }
-    ignored := FindClose(self.handle);
-    self.handle = FS_INVALID_HANDLE;
+    if self.handle == FS_INVALID { return; }
+    os_dir_close(self.handle);
+    self.handle = FS_INVALID;
 }
