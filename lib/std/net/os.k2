@@ -14,26 +14,30 @@
 
 #import std.net.addr as addr;
 
-// ── Winsock2 bindings ────────────────────────────────────────────────────────
-#extern("ws2_32", "WSAStartup") pub sys_wsa_startup  :: fn(version: u16, data: *u8) -> i32;
-#extern("ws2_32", "WSACleanup") pub sys_wsa_cleanup  :: fn() -> i32;
-#extern("ws2_32", "WSAGetLastError") pub sys_wsa_lasterr :: fn() -> i32;
-#extern("ws2_32", "socket") pub sys_socket       :: fn(af: i32, kind: i32, proto: i32) -> usize;
-#extern("ws2_32", "closesocket") pub sys_closesocket  :: fn(s: usize) -> i32;
-#extern("ws2_32", "connect") pub sys_connect      :: fn(s: usize, name: *const u8, namelen: i32) -> i32;
-#extern("ws2_32", "bind") pub sys_bind         :: fn(s: usize, name: *const u8, namelen: i32) -> i32;
-#extern("ws2_32", "listen") pub sys_listen       :: fn(s: usize, backlog: i32) -> i32;
-#extern("ws2_32", "accept") pub sys_accept       :: fn(s: usize, name: ?*u8, namelen: ?*i32) -> usize;
-#extern("ws2_32", "send") pub sys_send         :: fn(s: usize, buf: *const u8, len: i32, flags: i32) -> i32;
-#extern("ws2_32", "recv") pub sys_recv         :: fn(s: usize, buf: *u8, len: i32, flags: i32) -> i32;
-#extern("ws2_32", "sendto") pub sys_sendto       :: fn(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: i32) -> i32;
-#extern("ws2_32", "recvfrom") pub sys_recvfrom     :: fn(s: usize, buf: *u8, len: i32, flags: i32, from: *u8, fromlen: *i32) -> i32;
-#extern("ws2_32", "setsockopt") pub sys_setsockopt   :: fn(s: usize, level: i32, opt: i32, val: *const u8, len: i32) -> i32;
-#extern("ws2_32", "getsockname") pub sys_getsockname  :: fn(s: usize, name: *u8, namelen: *i32) -> i32;
-#extern("ws2_32", "ioctlsocket") pub sys_ioctlsocket  :: fn(s: usize, cmd: u32, argp: *u32) -> i32;
-#extern("ws2_32", "shutdown") pub sys_shutdown     :: fn(s: usize, how: i32) -> i32;
-#extern("ws2_32", "htons") pub sys_htons        :: fn(x: u16) -> u16;
-#extern("ws2_32", "ntohs") pub sys_ntohs        :: fn(x: u16) -> u16;
+// ── OS socket layer ──────────────────────────────────────────────────────────
+// Thin wrappers over the platform runtime's socket seam (windows.k2 → Winsock2;
+// linux.k2 → socket syscalls, translating these Windows option constants). The
+// `sys_` names are kept so the wrappers above are unchanged.
+pub sys_wsa_startup  :: fn(version: u16, data: *u8) -> i32 { ignored := version; ignored2 := data; return os_net_init(); }
+pub sys_wsa_cleanup  :: fn() -> i32 { return os_net_cleanup(); }
+pub sys_wsa_lasterr  :: fn() -> i32 { return os_net_lasterr(); }
+pub sys_socket       :: fn(af: i32, kind: i32, proto: i32) -> usize { return os_net_socket(af, kind, proto); }
+pub sys_closesocket  :: fn(s: usize) -> i32 { return os_net_close(s); }
+pub sys_connect      :: fn(s: usize, name: *const u8, namelen: i32) -> i32 { return os_net_connect(s, name, namelen); }
+pub sys_bind         :: fn(s: usize, name: *const u8, namelen: i32) -> i32 { return os_net_bind(s, name, namelen); }
+pub sys_listen       :: fn(s: usize, backlog: i32) -> i32 { return os_net_listen(s, backlog); }
+pub sys_accept       :: fn(s: usize, name: ?*u8, namelen: ?*i32) -> usize { return os_net_accept(s, name, namelen); }
+pub sys_send         :: fn(s: usize, buf: *const u8, len: i32, flags: i32) -> i32 { return os_net_send(s, buf, len, flags); }
+pub sys_recv         :: fn(s: usize, buf: *u8, len: i32, flags: i32) -> i32 { return os_net_recv(s, buf, len, flags); }
+pub sys_sendto       :: fn(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: i32) -> i32 { return os_net_sendto(s, buf, len, flags, to, tolen); }
+pub sys_recvfrom     :: fn(s: usize, buf: *u8, len: i32, flags: i32, from: *u8, fromlen: *i32) -> i32 { return os_net_recvfrom(s, buf, len, flags, from, fromlen); }
+pub sys_setsockopt   :: fn(s: usize, level: i32, opt: i32, val: *const u8, len: i32) -> i32 { return os_net_setsockopt(s, level, opt, val, len); }
+pub sys_getsockname  :: fn(s: usize, name: *u8, namelen: *i32) -> i32 { return os_net_getsockname(s, name, namelen); }
+pub sys_ioctlsocket  :: fn(s: usize, cmd: u32, argp: *u32) -> i32 { return os_net_ioctlsocket(s, cmd, argp); }
+pub sys_shutdown     :: fn(s: usize, how: i32) -> i32 { return os_net_shutdown(s, how); }
+// Host order ↔ network order for a 16-bit port (x86 is little-endian on both OSes).
+pub sys_htons        :: fn(x: u16) -> u16 { return (x << 8u16) | (x >> 8u16); }
+pub sys_ntohs        :: fn(x: u16) -> u16 { return (x << 8u16) | (x >> 8u16); }
 
 // ── Protocol constants ───────────────────────────────────────────────────────
 pub AF_INET        :: 2;

@@ -489,6 +489,137 @@ os_wait :: fn(token: i64, block: bool) -> i64 {
 os_kill :: fn(token: i64) -> bool { return sys_kill(token, 9) == 0i64; }  // SIGKILL
 os_proc_release :: fn(token: i64) { ignored := token; }                  // no handles to free
 
+// ── OS sockets (backs std.net) ───────────────────────────────────────────────
+// socket=41 connect=42 accept=43 sendto=44 recvfrom=45 shutdown=48 bind=49
+// listen=50 getsockname=51 setsockopt=54 fcntl=72. AF_INET/SOCK_*/IPPROTO_* match
+// Windows; only the SOL_SOCKET option *constants* differ, translated below.
+// std.net passes Windows constants; the runtime maps them. A socket handle is the
+// raw fd as usize; failures normalize to NET_INVALID (~0) to match INVALID_SOCKET.
+
+NET_INVALID :: 18446744073709551615usize;
+
+ll_socket :: fn(dom: i32, kind: i32, proto: i32) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(41), "{rdi}"(dom), "{rsi}"(kind), "{rdx}"(proto) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+ll_connect :: fn(fd: usize, addr: *const u8, len: i32) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(42), "{rdi}"(fd), "{rsi}"(addr), "{rdx}"(len) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+ll_accept :: fn(fd: usize, addr: usize, lenp: usize) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(43), "{rdi}"(fd), "{rsi}"(addr), "{rdx}"(lenp) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+ll_sendto :: fn(fd: usize, buf: *const u8, len: i32, flags: i32, to: usize, tolen: i32) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(44), "{rdi}"(fd), "{rsi}"(buf), "{rdx}"(len), "{r10}"(flags), "{r8}"(to), "{r9}"(tolen) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+ll_recvfrom :: fn(fd: usize, buf: *u8, len: i32, flags: i32, from: usize, fromlen: usize) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(45), "{rdi}"(fd), "{rsi}"(buf), "{rdx}"(len), "{r10}"(flags), "{r8}"(from), "{r9}"(fromlen) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+ll_shutdown :: fn(fd: usize, how: i32) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(48), "{rdi}"(fd), "{rsi}"(how) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+ll_bind :: fn(fd: usize, addr: *const u8, len: i32) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(49), "{rdi}"(fd), "{rsi}"(addr), "{rdx}"(len) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+ll_listen :: fn(fd: usize, backlog: i32) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(50), "{rdi}"(fd), "{rsi}"(backlog) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+ll_getsockname :: fn(fd: usize, addr: usize, lenp: usize) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(51), "{rdi}"(fd), "{rsi}"(addr), "{rdx}"(lenp) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+ll_setsockopt :: fn(fd: usize, level: i32, opt: i32, val: *const u8, len: i32) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(54), "{rdi}"(fd), "{rsi}"(level), "{rdx}"(opt), "{r10}"(val), "{r8}"(len) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+ll_fcntl :: fn(fd: usize, cmd: i32, arg: i64) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(72), "{rdi}"(fd), "{rsi}"(cmd), "{rdx}"(arg) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+
+os_net_init :: fn() -> i32 { return 0; }      // no Winsock to start
+os_net_cleanup :: fn() -> i32 { return 0; }
+os_net_lasterr :: fn() -> i32 { return 0; }   // no per-thread errno without mutable globals
+
+os_net_socket :: fn(af: i32, kind: i32, proto: i32) -> usize {
+    r := ll_socket(af, kind, proto);
+    if r < 0i64 { return NET_INVALID; }
+    return r as usize;
+}
+os_net_close :: fn(s: usize) -> i32 { return sys_close(s as i64); }
+os_net_connect :: fn(s: usize, name: *const u8, namelen: i32) -> i32 { return ll_connect(s, name, namelen) as i32; }
+os_net_bind :: fn(s: usize, name: *const u8, namelen: i32) -> i32 { return ll_bind(s, name, namelen) as i32; }
+os_net_listen :: fn(s: usize, backlog: i32) -> i32 { return ll_listen(s, backlog) as i32; }
+os_net_accept :: fn(s: usize, name: ?*u8, namelen: ?*i32) -> usize {
+    an: usize = 0usize; al: usize = 0usize;
+    if name |p|    { an = unsafe (p as usize); }
+    if namelen |q| { al = unsafe (q as usize); }
+    r := ll_accept(s, an, al);
+    if r < 0i64 { return NET_INVALID; }
+    return r as usize;
+}
+os_net_send :: fn(s: usize, buf: *const u8, len: i32, flags: i32) -> i32 {
+    return ll_sendto(s, buf, len, flags, 0usize, 0) as i32;
+}
+os_net_recv :: fn(s: usize, buf: *u8, len: i32, flags: i32) -> i32 {
+    return ll_recvfrom(s, buf, len, flags, 0usize, 0usize) as i32;
+}
+os_net_sendto :: fn(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: i32) -> i32 {
+    return ll_sendto(s, buf, len, flags, unsafe (to as usize), tolen) as i32;
+}
+os_net_recvfrom :: fn(s: usize, buf: *u8, len: i32, flags: i32, from: *u8, fromlen: *i32) -> i32 {
+    return ll_recvfrom(s, buf, len, flags, unsafe (from as usize), unsafe (fromlen as usize)) as i32;
+}
+os_net_getsockname :: fn(s: usize, name: *u8, namelen: *i32) -> i32 {
+    return ll_getsockname(s, unsafe (name as usize), unsafe (namelen as usize)) as i32;
+}
+os_net_shutdown :: fn(s: usize, how: i32) -> i32 { return ll_shutdown(s, how) as i32; }
+
+// Translate the Windows SOL_SOCKET option constants std.net passes to Linux ones.
+os_net_setsockopt :: fn(s: usize, level: i32, opt: i32, val: *const u8, len: i32) -> i32 {
+    if level == 65535 {                                  // Windows SOL_SOCKET (0xFFFF)
+        if opt == 4 { return ll_setsockopt(s, 1, 2, val, len) as i32; }        // SO_REUSEADDR → 2
+        if opt == 32 { return ll_setsockopt(s, 1, 6, val, len) as i32; }       // SO_BROADCAST → 6
+        if opt == 4102 { return setsockopt_timeo(s, 20, val); }                // SO_RCVTIMEO(0x1006) → 20
+        if opt == 4101 { return setsockopt_timeo(s, 21, val); }                // SO_SNDTIMEO(0x1005) → 21
+        return ll_setsockopt(s, 1, opt, val, len) as i32;
+    }
+    return ll_setsockopt(s, level, opt, val, len) as i32;                      // e.g. IPPROTO_TCP/TCP_NODELAY (same)
+}
+// Windows passes a 4-byte ms DWORD; Linux wants a struct timeval { i64 sec; i64 usec }.
+setsockopt_timeo :: fn(s: usize, optname: i32, val: *const u8) -> i32 {
+    ms := unsafe *core::ptr_from_int(*i32, val as usize);
+    tv: TimeSpec = .{ (ms / 1000) as i64, ((ms % 1000) * 1000) as i64 };  // {sec, usec}; TimeSpec is 2×i64
+    return ll_setsockopt(s, 1, optname, unsafe ((&tv) as *const u8), 16) as i32;
+}
+// std.net uses ioctlsocket(FIONBIO) for non-blocking; Linux uses fcntl(F_SETFL).
+os_net_ioctlsocket :: fn(s: usize, cmd: u32, argp: *u32) -> i32 {
+    ignored := cmd;   // only FIONBIO is used
+    mode := unsafe *core::ptr_from_int(*u32, argp as usize);
+    cur := ll_fcntl(s, 3, 0i64);             // F_GETFL
+    nf := cur;
+    if mode != 0u32 { nf = cur | 2048i64; }  // set O_NONBLOCK (0x800)
+    else { nf = cur & (-2049i64); }          // clear O_NONBLOCK
+    return ll_fcntl(s, 4, nf) as i32;        // F_SETFL
+}
+
 // ── Core runtime functions ─────────────────────────────────────────────────
 
 /// Exit with an application-defined status.

@@ -344,6 +344,45 @@ os_proc_release :: fn(token: i64) {
     os_release(token as usize, 32usize);
 }
 
+// ── OS sockets (backs std.net) ───────────────────────────────────────────────
+// Winsock2 passthrough — std.net already passes Windows level/option constants.
+
+#extern("ws2_32", "WSAStartup") ws_startup :: fn(version: u16, data: *u8) -> i32;
+#extern("ws2_32", "WSACleanup") ws_cleanup :: fn() -> i32;
+#extern("ws2_32", "WSAGetLastError") ws_lasterr :: fn() -> i32;
+#extern("ws2_32", "socket") ws_socket :: fn(af: i32, kind: i32, proto: i32) -> usize;
+#extern("ws2_32", "closesocket") ws_close :: fn(s: usize) -> i32;
+#extern("ws2_32", "connect") ws_connect :: fn(s: usize, name: *const u8, namelen: i32) -> i32;
+#extern("ws2_32", "bind") ws_bind :: fn(s: usize, name: *const u8, namelen: i32) -> i32;
+#extern("ws2_32", "listen") ws_listen :: fn(s: usize, backlog: i32) -> i32;
+#extern("ws2_32", "accept") ws_accept :: fn(s: usize, name: ?*u8, namelen: ?*i32) -> usize;
+#extern("ws2_32", "send") ws_send :: fn(s: usize, buf: *const u8, len: i32, flags: i32) -> i32;
+#extern("ws2_32", "recv") ws_recv :: fn(s: usize, buf: *u8, len: i32, flags: i32) -> i32;
+#extern("ws2_32", "sendto") ws_sendto :: fn(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: i32) -> i32;
+#extern("ws2_32", "recvfrom") ws_recvfrom :: fn(s: usize, buf: *u8, len: i32, flags: i32, from: *u8, fromlen: *i32) -> i32;
+#extern("ws2_32", "setsockopt") ws_setsockopt :: fn(s: usize, level: i32, opt: i32, val: *const u8, len: i32) -> i32;
+#extern("ws2_32", "getsockname") ws_getsockname :: fn(s: usize, name: *u8, namelen: *i32) -> i32;
+#extern("ws2_32", "ioctlsocket") ws_ioctlsocket :: fn(s: usize, cmd: u32, argp: *u32) -> i32;
+#extern("ws2_32", "shutdown") ws_shutdown :: fn(s: usize, how: i32) -> i32;
+
+os_net_init :: fn() -> i32 { data: [512]u8 = .{}; return ws_startup(0x0202u16, &data[0]); }
+os_net_cleanup :: fn() -> i32 { return ws_cleanup(); }
+os_net_lasterr :: fn() -> i32 { return ws_lasterr(); }
+os_net_socket :: fn(af: i32, kind: i32, proto: i32) -> usize { return ws_socket(af, kind, proto); }
+os_net_close :: fn(s: usize) -> i32 { return ws_close(s); }
+os_net_connect :: fn(s: usize, name: *const u8, namelen: i32) -> i32 { return ws_connect(s, name, namelen); }
+os_net_bind :: fn(s: usize, name: *const u8, namelen: i32) -> i32 { return ws_bind(s, name, namelen); }
+os_net_listen :: fn(s: usize, backlog: i32) -> i32 { return ws_listen(s, backlog); }
+os_net_accept :: fn(s: usize, name: ?*u8, namelen: ?*i32) -> usize { return ws_accept(s, name, namelen); }
+os_net_send :: fn(s: usize, buf: *const u8, len: i32, flags: i32) -> i32 { return ws_send(s, buf, len, flags); }
+os_net_recv :: fn(s: usize, buf: *u8, len: i32, flags: i32) -> i32 { return ws_recv(s, buf, len, flags); }
+os_net_sendto :: fn(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: i32) -> i32 { return ws_sendto(s, buf, len, flags, to, tolen); }
+os_net_recvfrom :: fn(s: usize, buf: *u8, len: i32, flags: i32, from: *u8, fromlen: *i32) -> i32 { return ws_recvfrom(s, buf, len, flags, from, fromlen); }
+os_net_setsockopt :: fn(s: usize, level: i32, opt: i32, val: *const u8, len: i32) -> i32 { return ws_setsockopt(s, level, opt, val, len); }
+os_net_getsockname :: fn(s: usize, name: *u8, namelen: *i32) -> i32 { return ws_getsockname(s, name, namelen); }
+os_net_ioctlsocket :: fn(s: usize, cmd: u32, argp: *u32) -> i32 { return ws_ioctlsocket(s, cmd, argp); }
+os_net_shutdown :: fn(s: usize, how: i32) -> i32 { return ws_shutdown(s, how); }
+
 // ── Handle constants ──────────────────────────────────────────────────────
 
 STD_OUTPUT_HANDLE :: -11;
