@@ -155,8 +155,12 @@ Borrowed from Rust's model, adapted to k2's seam architecture.
 | `std.fs` | ✅ ported | `openat`/`read`/`write`/`close`/`lseek`/`newfstatat`/`unlink`/`getdents64` (done) |
 | `std.process` (id/cmdline/env/spawn) | ✅ ported | `getpid` + `/proc/self/{cmdline,environ}` + `fork`/`execve`(`/bin/sh -c`)/`wait4`/`kill` (done) |
 | `std.process` (`set_env`/`unset_env`) | ⛔ blocked | needs a mutable process-wide environ — see note |
-| `std.net` | ⏳ pending | `socket`/`bind`/`connect`/`listen`/`accept`/`sendto`/`recvfrom`/`setsockopt` |
-| `std.thread` | ⏳ pending | `clone`/`futex` (or pthread under `gnu`) — the hardest (child stack + TLS) |
+| `std.net` | ✅ ported | socket syscalls (41/42/43/44/45/48/49/50/51/54) + SOL_SOCKET option translation + `fcntl` (done) |
+| `std.thread` | ✅ ported | `clone` (allocated child stack, asm child-entry) + `wait4` join + `sched_getaffinity`/`sched_yield` (done) |
+
+**Every `std` module now runs on Linux.** The static `x86_64-linux-none` target
+has a complete stdlib (only `set_env`/`unset_env` differ — the mutable-globals
+gap below) — Tier 1 in full.
 
 The pending modules are mechanical given the proven seam: declare their syscalls
 in `linux.k2`, route the module through the seam, keep the Windows path intact.
