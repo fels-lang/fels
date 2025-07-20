@@ -1,130 +1,112 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.thread — native OS threads and structured helpers.
+// std.thread — native OS threads and structured helpers. Cross-platform: thread
+// creation/join/etc. go through the platform runtime's thread seam (windows.k2 →
+// CreateThread; linux.k2 → clone with an allocated child stack), so this module
+// is OS-agnostic.
 //
 // k2 favours *real OS threads* over async/await: no function colouring, no hidden
-// executor, no heap-allocated coroutine frames — a thread is a stack plus an entry
-// point. Each thread runs an entry `fn(*void) -> u32` with a single context pointer
-// (its "argument"); the function's return value becomes the thread's exit code.
+// executor — a thread is a stack plus an entry point. Each thread runs an entry
+// `fn(*void) -> u32` with a single context pointer; the return value becomes the
+// thread's exit code.
 //
 // Because k2's ordinary function value is a fat `{fn, env}` closure that a C ABI
 // cannot call, hand the entry over as `core::fn_ptr(my_worker)` — the raw thin
-// function pointer. The context pointer you pass MUST outlive the thread: join it
-// before the data leaves scope, or allocate the data on a long-lived arena.
+// function pointer. The context pointer you pass MUST outlive the thread.
 //
 //     worker :: fn(p: *void) -> u32 {
 //         data := unsafe (p as *MyData);
-//         // ... work ...
 //         return 0u32;
 //     }
-//
 //     t := thread::spawn(core::fn_ptr(worker), unsafe ((&data) as *void));
 //     code := t.join();   // blocks; returns worker's exit code
 //
-// For lock-free coordination between threads, reach for `std.atomics`.
+// LINUX NOTE: a thread's exit code carries only 8 bits (the exit syscall), so
+// return 0..255 from an entry if you read it back via `join`.
 
-// ── Win32 bindings ───────────────────────────────────────────────────────────
-#extern("kernel32", "CreateThread")
-CreateThread :: fn(attrs: ?*void, stack: usize, start: *void, param: *void, flags: u32, id: ?*u32) -> usize;
-// `WaitForSingleObject` is a shared runtime primitive (src/runtime/windows.k2) — reused.
-#extern("kernel32", "WaitForMultipleObjects")
-WaitForMultipleObjects :: fn(n: u32, handles: *usize, wait_all: bool, ms: u32) -> u32;
-#extern("kernel32", "GetExitCodeThread")
-GetExitCodeThread :: fn(handle: usize, code: *u32) -> bool;
-// `CloseHandle` is a global runtime primitive (src/runtime/windows.k2) — reused.
-#extern("kernel32", "GetCurrentThreadId")
-GetCurrentThreadId :: fn() -> u32;
-// `Sleep` is a shared runtime primitive (src/runtime/windows.k2) — reused.
-#extern("kernel32", "SwitchToThread")
-SwitchToThread :: fn() -> bool;
-#extern("kernel32", "GetActiveProcessorCount")
-GetActiveProcessorCount :: fn(group: u16) -> u32;
+// The thread seam, provided by the platform runtime:
+//   os_thread_spawn(entry, arg) -> i64   opaque token, -1 on failure
+//   os_thread_join(token) -> u32         block, return exit code
+//   os_thread_detach(token) / os_thread_running(token) -> bool
+//   os_thread_id() -> u32 / os_thread_yield() / os_cpu_count() -> u32
 
-INFINITE     :: 0xFFFFFFFF; // wait with no timeout
-WAIT_TIMEOUT :: 0x00000102; // a zero-timeout wait that didn't complete
-ALL_GROUPS   :: 0xFFFF;     // every processor group (GetActiveProcessorCount)
+THREAD_INVALID :: -1i64;
+MAX_GROUP :: 64;
 
-// A thread entry has the shape `fn(*void) -> u32`: it takes the context pointer
-// and returns an exit code. Spawn it with `core::fn_ptr(an_entry)`.
+// A thread entry has the shape `fn(*void) -> u32`. Spawn it with
+// `core::fn_ptr(an_entry)`.
 
 // ── Thread ───────────────────────────────────────────────────────────────────
 pub Thread :: struct {
-    handle: usize // OS thread HANDLE (0 when the spawn failed)
-    id: u32       // OS thread id
+    token: i64
 
     // Did the thread start successfully?
-    pub ok :: fn(self: *Self) -> bool { return self.handle != 0usize; }
+    pub ok :: fn(self: *Self) -> bool { return self.token != THREAD_INVALID; }
 
-    // Block until the thread finishes, returning its exit code (the value its
-    // entry returned). Closes the handle — a joined Thread must not be reused.
+    // Block until the thread finishes, returning its exit code. A joined Thread
+    // must not be reused.
     pub join :: fn(self: *Self) -> u32 {
-        ig := WaitForSingleObject(self.handle, INFINITE);
-        code: u32 = 0u32;
-        ig2 := GetExitCodeThread(self.handle, &code);
-        ig3 := CloseHandle(self.handle);
+        if self.token == THREAD_INVALID { return 0u32; }
+        code := os_thread_join(self.token);
+        self.token = THREAD_INVALID;
         return code;
     }
 
-    // Release the OS handle without waiting; the thread runs to completion on its
-    // own. Use for fire-and-forget work whose result you don't need.
+    // Release the thread without waiting; it runs to completion on its own.
     pub detach :: fn(self: *Self) {
-        ig := CloseHandle(self.handle);
+        if self.token == THREAD_INVALID { return; }
+        os_thread_detach(self.token);
+        self.token = THREAD_INVALID;
     }
 
     // True while the thread is still executing (a non-blocking poll).
     pub is_running :: fn(self: *Self) -> bool {
-        return WaitForSingleObject(self.handle, 0u32) == WAIT_TIMEOUT;
+        if self.token == THREAD_INVALID { return false; }
+        return os_thread_running(self.token);
     }
 }
 
 // Spawn a thread that runs `entry(arg)`. `entry` is a raw thread-entry pointer
 // (`core::fn_ptr(worker)`); `arg` is the single context pointer it receives.
 pub spawn :: fn(entry: *void, arg: *void) -> Thread {
-    tid: u32 = 0u32;
-    h := CreateThread(null, 0usize, entry, arg, 0u32, &tid);
-    return .{ h, tid };
+    return .{ os_thread_spawn(entry, arg) };
 }
 
 // ── Free helpers ───────────────────────────────────────────────────────────--
 
 // The calling thread's OS id.
-pub current_id :: fn() -> u32 { return GetCurrentThreadId(); }
+pub current_id :: fn() -> u32 { return os_thread_id(); }
 
 // Suspend the calling thread for at least `ms` milliseconds.
-pub sleep :: fn(ms: u32) { Sleep(ms); }
+pub sleep :: fn(ms: u32) { os_sleep_nanos((ms as i64) * 1000000i64); }
 
 // Hint the scheduler to run another ready thread now (cooperative back-off).
-pub yield_now :: fn() { ig := SwitchToThread(); }
+pub yield_now :: fn() { os_thread_yield(); }
 
 // Number of logical processors available — a sensible default thread count.
-pub cpu_count :: fn() -> u32 { return GetActiveProcessorCount(ALL_GROUPS); }
+pub cpu_count :: fn() -> u32 { return os_cpu_count(); }
 
 // ── ThreadGroup: fan out, then join the whole batch (structured) ─────────────-
 // Spawn several threads as a unit and wait for all of them. The group owns its
-// handles; `join_all` blocks until every thread has finished and then closes
-// them. This is the simplest form of structured concurrency: the batch cannot
+// tokens; `join_all` blocks until every thread has finished. The batch cannot
 // outlive the `join_all` call site.
-MAX_GROUP :: 64;
-
 pub ThreadGroup :: struct {
-    handles: [64]usize // MAX_GROUP slots
+    tokens: [64]i64 // MAX_GROUP slots
     count: usize
 
     // Add a thread running `entry(arg)` to the group. Silently ignored past
-    // MAX_GROUP threads (check `count` first if that matters to you).
+    // MAX_GROUP threads.
     pub spawn :: fn(self: *Self, entry: *void, arg: *void) {
         if self.count >= 64usize { return; }
-        self.handles[self.count] = CreateThread(null, 0usize, entry, arg, 0u32, null);
+        self.tokens[self.count] = os_thread_spawn(entry, arg);
         self.count += 1usize;
     }
 
-    // Block until every thread in the group has finished, then close all handles
-    // and reset the group so it can be reused.
+    // Block until every thread in the group has finished, then reset the group
+    // so it can be reused.
     pub join_all :: fn(self: *Self) {
-        if self.count == 0usize { return; }
-        ig := WaitForMultipleObjects(self.count as u32, &self.handles[0], true, INFINITE);
         i: usize = 0usize;
         while i < self.count {
-            ig2 := CloseHandle(self.handles[i]);
+            if self.tokens[i] != THREAD_INVALID { ig := os_thread_join(self.tokens[i]); }
             i += 1usize;
         }
         self.count = 0usize;

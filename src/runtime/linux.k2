@@ -620,6 +620,95 @@ os_net_ioctlsocket :: fn(s: usize, cmd: u32, argp: *u32) -> i32 {
     return ll_fcntl(s, 4, nf) as i32;        // F_SETFL
 }
 
+// ── OS threads (backs std.thread) ────────────────────────────────────────────
+// clone=56, gettid=186, sched_yield=24, sched_getaffinity=204. A thread is a
+// clone() that shares VM/FS/FILES and exits with SIGCHLD so the parent can
+// wait4() it for join. We allocate the child stack, then in asm: clone; the
+// PARENT gets the tid, the CHILD (rax==0, rsp==stack top) calls entry(arg) and
+// exits with its return value. r15/r14 hold entry/arg (callee-saved across the
+// syscall). The token is a heap ThreadState { tid, stack, size }.
+
+ThreadState :: struct { tid: i64, stack: usize, size: usize }
+
+sys_gettid :: fn() -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(186) }, outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+sys_sched_yield :: fn() -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(24) }, outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+sys_sched_getaffinity :: fn(pid: i64, len: usize, mask: *u8) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(204), "{rdi}"(pid), "{rsi}"(len), "{rdx}"(mask) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+
+os_thread_spawn :: fn(entry: *void, arg: *void) -> i64 {
+    size := 1048576usize;                 // 1 MiB child stack
+    base := os_alloc(size);
+    if base == 0usize { return -1i64; }
+    top := base + size;                   // grows down; clone sets child rsp = top (16-aligned)
+    flags := 0x711;                       // CLONE_VM|CLONE_FS|CLONE_FILES | SIGCHLD(17)
+    tid := unsafe core::asm(volatile,
+        "syscall; test %rax, %rax; jnz 1f; mov %r14, %rdi; call *%r15; mov %eax, %edi; mov $$60, %eax; syscall; 1:",
+        inputs: { "{rax}"(56), "{rdi}"(flags), "{rsi}"(top), "{rdx}"(0), "{r10}"(0), "{r8}"(0), "{r15}"(entry), "{r14}"(arg) },
+        outputs: { "={rax}"(i64) },
+        clobbers: { "rcx", "r11", "memory" },
+    );
+    if tid < 0i64 { os_release(base, size); return -1i64; }
+    raw := os_alloc(24usize);
+    if raw == 0usize { os_release(base, size); return -1i64; }
+    st := unsafe core::ptr_from_int(*ThreadState, raw);
+    st.tid = tid;
+    st.stack = base;
+    st.size = size;
+    return raw as i64;
+}
+
+// Decode a wait4 status into an exit code (low 8 bits — exit() only carries that).
+thread_code :: fn(status: i32) -> u32 {
+    if (status & 0x7f) == 0 { return ((status >> 8) & 0xff) as u32; }
+    return 0u32;
+}
+
+os_thread_join :: fn(token: i64) -> u32 {
+    st := unsafe core::ptr_from_int(*ThreadState, token as usize);
+    status: i32 = 0;
+    ig := sys_wait4(st.tid, &status, 0, 0usize);
+    os_release(st.stack, st.size);
+    os_release(token as usize, 24usize);
+    return thread_code(status);
+}
+os_thread_detach :: fn(token: i64) {
+    // The thread runs on; its stack must outlive it and we can't know when it
+    // exits, so the stack is intentionally leaked (reclaimed at process exit).
+    // Only the small token state is freed.
+    os_release(token as usize, 24usize);
+}
+os_thread_running :: fn(token: i64) -> bool {
+    st := unsafe core::ptr_from_int(*ThreadState, token as usize);
+    status: i32 = 0;
+    r := sys_wait4(st.tid, &status, 1, 0usize);   // WNOHANG
+    return r == 0i64;                              // 0 → not yet exited
+}
+os_thread_id :: fn() -> u32 { return sys_gettid() as u32; }
+os_thread_yield :: fn() { ignored := sys_sched_yield(); }
+os_cpu_count :: fn() -> u32 {
+    mask: [128]u8 = .{};                  // up to 1024 CPUs
+    n := sys_sched_getaffinity(0i64, 128usize, &mask[0]);
+    if n <= 0i64 { return 1u32; }
+    count: u32 = 0u32;
+    i: usize = 0usize;
+    while i < (n as usize) {
+        b := mask[i];
+        while b != 0u8 { count = count + ((b & 1u8) as u32); b = b >> 1u8; }
+        i += 1usize;
+    }
+    if count == 0u32 { return 1u32; }
+    return count;
+}
+
 // ── Core runtime functions ─────────────────────────────────────────────────
 
 /// Exit with an application-defined status.

@@ -383,6 +383,36 @@ os_net_getsockname :: fn(s: usize, name: *u8, namelen: *i32) -> i32 { return ws_
 os_net_ioctlsocket :: fn(s: usize, cmd: u32, argp: *u32) -> i32 { return ws_ioctlsocket(s, cmd, argp); }
 os_net_shutdown :: fn(s: usize, how: i32) -> i32 { return ws_shutdown(s, how); }
 
+// ── OS threads (backs std.thread) ────────────────────────────────────────────
+// The thread token is the Win32 thread HANDLE; join/running reuse the shared
+// WaitForSingleObject / CloseHandle runtime primitives.
+
+#extern("kernel32", "CreateThread") k_create_thread :: fn(attrs: ?*void, stack: usize, start: *void, param: *void, flags: u32, id: ?*u32) -> usize;
+#extern("kernel32", "GetExitCodeThread") k_thread_exit :: fn(h: usize, code: *u32) -> bool;
+#extern("kernel32", "GetCurrentThreadId") k_thread_id :: fn() -> u32;
+#extern("kernel32", "SwitchToThread") k_switch :: fn() -> bool;
+#extern("kernel32", "GetActiveProcessorCount") k_cpus :: fn(group: u16) -> u32;
+
+os_thread_spawn :: fn(entry: *void, arg: *void) -> i64 {
+    tid: u32 = 0u32;
+    h := k_create_thread(null, 0usize, entry, arg, 0u32, &tid);
+    if h == 0usize { return -1i64; }
+    return h as i64;
+}
+os_thread_join :: fn(token: i64) -> u32 {
+    h := token as usize;
+    ig := WaitForSingleObject(h, 4294967295u32);   // INFINITE
+    code: u32 = 0u32;
+    ig2 := k_thread_exit(h, &code);
+    ig3 := CloseHandle(h);
+    return code;
+}
+os_thread_detach :: fn(token: i64) { ignored := CloseHandle(token as usize); }
+os_thread_running :: fn(token: i64) -> bool { return WaitForSingleObject(token as usize, 0u32) == 258u32; } // WAIT_TIMEOUT
+os_thread_id :: fn() -> u32 { return k_thread_id(); }
+os_thread_yield :: fn() { ignored := k_switch(); }
+os_cpu_count :: fn() -> u32 { return k_cpus(0xFFFFu16); }
+
 // ── Handle constants ──────────────────────────────────────────────────────
 
 STD_OUTPUT_HANDLE :: -11;
