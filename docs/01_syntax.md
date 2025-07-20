@@ -376,6 +376,26 @@ Point :: struct {
 };
 ```
 
+### Mutable globals
+
+A top-level binding written with `: T =` (instead of `::`) is a **mutable
+global** — exactly the local-variable form, lifted to module scope. The operator
+is the whole distinction: `::` is an immutable compile-time constant; `: T =`
+(like a local's `=`) is a runtime-mutable variable. No `mut`/`var`/`static`
+keyword.
+
+```k2
+counter: i64 = 0;          // mutable global, explicit type required
+flags:   u32 = 0u32;
+
+bump :: fn() { counter += 1; }   // read + write from anywhere
+```
+
+The initializer must be a compile-time constant (it lives in static storage, like
+a C `static`). A global's type is written explicitly; an immutable `::` constant
+infers its type from the initializer. Reads load the current value; `=` and the
+compound assignments (`+=`, …) store to it.
+
 ### Variables (Inferred Type)
 
 Variables are declared with `:=`. The type is inferred from the right-hand side:

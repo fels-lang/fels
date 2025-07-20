@@ -689,10 +689,13 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
             .const_decl => |decl| {
                 // #run expr on the right-hand side → evaluate at compile time.
                 const effective_imm = try effectiveConstImm(decl.value, cvm, decl.file_name, decl.source);
-                // `X :: #run f()` has no literal to infer from; derive the
-                // global's type from the folded constant so the LLVM global's
-                // type matches its initializer.
-                var ty = inferConstType(decl.value);
+                // A mutable global (`name: T = init;`) takes its explicit type;
+                // an immutable constant derives it from the folded initializer
+                // (`X :: #run f()` has no literal to infer from).
+                var ty = if (decl.ty) |t|
+                    try lowerAstTypeWithEnv(allocator, t, front_end.types, front_end.symbols)
+                else
+                    inferConstType(decl.value);
                 if (ty == .unknown) ty = switch (effective_imm) {
                     .int => .{ .i = 32 },
                     .uint => .{ .u = 64 },
@@ -707,7 +710,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                     .name = clink,
                     .ty = ty,
                     .init = .{ .imm = effective_imm },
-                    .mutable = false,
+                    .mutable = decl.is_mutable,
                 });
             },
             .function => |decl| {
@@ -1837,7 +1840,23 @@ const FunctionLowerer = struct {
                 switch (assign.target.kind) {
                     .ident => |name| {
                         const ir_name = self.curLocal(name);
-                        if (bin_op) |op| {
+                        // A name that isn't a local but resolves to a mutable
+                        // top-level global stores through the global directly.
+                        const gvar: ?[]const u8 = if (self.local_types.contains(ir_name)) null else gv: {
+                            if (resolveTopLevel(self.symbols, self.file_name, name)) |id| {
+                                if (self.symbols.symbol(id).kind == .global_var) break :gv self.symbols.symbol(id).link_name;
+                            }
+                            break :gv null;
+                        };
+                        if (gvar) |link| {
+                            if (bin_op) |op| {
+                                const current: Value = .{ .global = link };
+                                const result = try self.emitAt(self.exprType(assign.target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } }, assign.span);
+                                try self.emitNoResult(self.exprType(assign.target), .{ .global_store = .{ .name = link, .value = result } });
+                            } else {
+                                try self.emitNoResult(self.exprType(assign.target), .{ .global_store = .{ .name = link, .value = value } });
+                            }
+                        } else if (bin_op) |op| {
                             const current: Value = .{ .local = ir_name };
                             const result = try self.emitAt(self.exprType(assign.target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } }, assign.span);
                             try self.emitNoResult(self.exprType(assign.target), .{ .store_local = .{ .name = ir_name, .value = result } });
@@ -2949,7 +2968,7 @@ const FunctionLowerer = struct {
                             .fn_takes_env = is_lambda,
                         } });
                     }
-                    if (kind == .function or kind == .const_symbol) break :blk Value{ .global = link };
+                    if (kind == .function or kind == .const_symbol or kind == .global_var) break :blk Value{ .global = link };
                 }
                 break :blk Value{ .local = name };
             },

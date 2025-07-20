@@ -244,6 +244,26 @@ pub const Parser = struct {
             }
             return .{ .interface_impl = try self.finishInterfaceImpl(name) };
         }
+        // `name: T = init;` — a mutable top-level global. The single `:` (vs `::`)
+        // and the `=` (vs the constant's `::`) mark it mutable, exactly like a
+        // local variable. `::` is one token, so a bare `:` is unambiguous here.
+        if (self.match(.colon)) {
+            const ty = try self.parseType();
+            _ = try self.expect(.eq, "expected `=` in global variable declaration");
+            const value = try self.parseExpr(0);
+            const semi = try self.expect(.semicolon, "expected ; after global variable declaration");
+            return .{ .const_decl = .{
+                .attrs = attrs,
+                .name = name.text(self.source),
+                .file_name = self.file_name,
+                .source = self.source,
+                .is_public = is_public,
+                .value = value,
+                .is_mutable = true,
+                .ty = ty,
+                .span = spanFrom(name, semi),
+            } };
+        }
         _ = try self.expect(.colon_colon, "expected :: after declaration name");
 
         if (self.match(.keyword_fn)) {

@@ -101,6 +101,29 @@ test "exe: main returning 0 exits cleanly" {
     try std.testing.expectEqual(@as(u32, 0), code);
 }
 
+test "exe: mutable top-level globals (read/write/compound, shared across fns)" {
+    if (comptime !k2.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `name: T = init;` is a mutable global — distinct from the immutable
+    // `name :: …` (the `=` marks it mutable, like a local). It lives in static
+    // storage shared across functions and supports `=` and compound `+=`. The
+    // initializer must be a compile-time constant.
+    const code = try compileAndRun(arena.allocator(),
+        \\counter: i64 = 0i64;
+        \\total: i32 = 5;
+        \\bump :: fn() { counter = counter + 1i64; }
+        \\main :: fn() -> i32 {
+        \\    bump(); bump(); bump();   // counter: 0 → 3 (mutated in another fn)
+        \\    counter += 10i64;          // compound assign → 13
+        \\    total = total + (counter as i32);
+        \\    return total;              // 5 + 13 = 18
+        \\}
+    , "exe_mutable_global");
+    try std.testing.expectEqual(@as(u32, 18), code);
+}
+
 test "exe: `<literal> as <type>` casts and suffixed float literals" {
     if (comptime !k2.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

@@ -113,6 +113,10 @@ pub const ConstDecl = struct {
     source: []const u8 = "",
     is_public: bool = false,
     value: Expr,
+    /// A mutable top-level global: `name: T = init;` (vs the immutable `name :: …`).
+    /// The `=` marks it mutable, mirroring locals; `ty` is its explicit type.
+    is_mutable: bool = false,
+    ty: ?TypeRef = null,
     span: Span,
 };
 

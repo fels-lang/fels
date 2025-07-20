@@ -827,7 +827,7 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
         }
         const kind: SymbolKind = switch (item) {
             .import => unreachable,
-            .const_decl => .const_symbol,
+            .const_decl => |d| if (d.is_mutable) .global_var else .const_symbol,
             .type_decl => .type,
             .function => .function,
             .interface_impl => unreachable,
@@ -1524,7 +1524,9 @@ const Checker = struct {
             // symbol (a bare root-scope lookup would miss them).
             const id = self.symbols.resolveVisible(item.fileName(), name) orelse continue;
             switch (item) {
-                .const_decl => |decl| try self.env.set(id, try self.inferExpr(decl.value)),
+                // A mutable global carries an explicit type; an immutable constant
+                // takes the type of its (comptime) initializer.
+                .const_decl => |decl| try self.env.set(id, if (decl.ty) |t| try self.typeFromRef(t) else try self.inferExpr(decl.value)),
                 .type_decl => |decl| {
                     try self.env.set(id, .{ .named = id });
                     switch (decl.kind) {
