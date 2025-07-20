@@ -33,15 +33,16 @@ test "runtime: @panic and assert are available via compileWithRuntime" {
 }
 
 test "runtime: supported platform sources are explicit and independently valid" {
-    try std.testing.expect(k2.k2_runtime.runtimeSourceFor(.windows) != null);
-    try std.testing.expect(k2.k2_runtime.runtimeSourceFor(.linux) != null);
-    try std.testing.expect(k2.k2_runtime.runtimeSourceFor(.macos) == null);
+    try std.testing.expect(k2.k2_runtime.runtimeSourceFor(.windows, false) != null);
+    try std.testing.expect(k2.k2_runtime.runtimeSourceFor(.linux, false) != null);
+    try std.testing.expect(k2.k2_runtime.runtimeSourceFor(.linux, true) != null); // linux-gnu
+    try std.testing.expect(k2.k2_runtime.runtimeSourceFor(.macos, false) == null);
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
     var fe = try k2.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "<runtime-linux>", .source = k2.k2_runtime.runtimeSourceFor(.linux).? },
+        .{ .file_name = "<runtime-linux>", .source = k2.k2_runtime.runtimeSourceFor(.linux, false).? },
         .{ .file_name = "main.k2", .source = "main :: fn() -> i32 { return 0; }" },
     });
     defer fe.deinit(arena.allocator());

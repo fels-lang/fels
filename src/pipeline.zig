@@ -87,18 +87,20 @@ pub fn compileWithRuntime(
     file_name: []const u8,
     source: []const u8,
 ) CompileError!FrontEnd {
-    return compileWithRuntimeTarget(allocator, file_name, source, @import("builtin").os.tag);
+    return compileWithRuntimeTarget(allocator, file_name, source, @import("builtin").os.tag, false);
 }
 
 /// Like `compileWithRuntime`, but for an explicit target OS (cross-compilation):
-/// selects that platform's embedded runtime.
+/// selects that platform's embedded runtime. `link_libc` picks the glibc entry
+/// point on Linux (the `linux-gnu` ABI).
 pub fn compileWithRuntimeTarget(
     allocator: std.mem.Allocator,
     file_name: []const u8,
     source: []const u8,
     target_os: std.Target.Os.Tag,
+    link_libc: bool,
 ) CompileError!FrontEnd {
-    const rt_src = runtime.runtimeSourceFor(target_os) orelse return error.RuntimeUnavailable;
+    const rt_src = runtime.runtimeSourceFor(target_os, link_libc) orelse return error.RuntimeUnavailable;
     return compileMulti(allocator, &.{
         .{ .file_name = "<runtime>", .source = rt_src },
         .{ .file_name = file_name, .source = source },
@@ -168,7 +170,7 @@ pub fn compileFile(
     io: std.Io,
     path: []const u8,
 ) CompileError!FrontEnd {
-    return compileFileInternal(allocator, io, path, false, @import("builtin").os.tag);
+    return compileFileInternal(allocator, io, path, false, @import("builtin").os.tag, false);
 }
 
 /// Compile a .k2 file and its imports with the embedded platform runtime.
@@ -177,7 +179,7 @@ pub fn compileFileWithRuntime(
     io: std.Io,
     path: []const u8,
 ) CompileError!FrontEnd {
-    return compileFileWithRuntimeTarget(allocator, io, path, @import("builtin").os.tag);
+    return compileFileWithRuntimeTarget(allocator, io, path, @import("builtin").os.tag, false);
 }
 
 /// Like `compileFileWithRuntime`, but for an explicit target OS.
@@ -186,8 +188,9 @@ pub fn compileFileWithRuntimeTarget(
     io: std.Io,
     path: []const u8,
     target_os: std.Target.Os.Tag,
+    link_libc: bool,
 ) CompileError!FrontEnd {
-    return compileFileInternal(allocator, io, path, true, target_os);
+    return compileFileInternal(allocator, io, path, true, target_os, link_libc);
 }
 
 fn compileFileInternal(
@@ -196,6 +199,7 @@ fn compileFileInternal(
     path: []const u8,
     include_runtime: bool,
     target_os: std.Target.Os.Tag,
+    link_libc: bool,
 ) CompileError!FrontEnd {
     const arena = try createFrontendArena(allocator);
     errdefer destroyFrontendArena(allocator, arena);
@@ -211,7 +215,7 @@ fn compileFileInternal(
     var next_id: ast.NodeId = 1;
 
     if (include_runtime) {
-        const rt_src = runtime.runtimeSourceFor(target_os) orelse return error.RuntimeUnavailable;
+        const rt_src = runtime.runtimeSourceFor(target_os, link_libc) orelse return error.RuntimeUnavailable;
         const parsed = parser.parseSourceFrom(fe_allocator, "<runtime>", rt_src, next_id) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,

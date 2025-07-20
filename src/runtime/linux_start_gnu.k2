@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: Apache-2.0
+// glibc ELF entry point for the dynamically-linked `linux-gnu` target. Instead of
+// calling `main` directly, hand off to glibc's `__libc_start_main`, which sets up
+// the C runtime (TLS, locale, malloc arenas, atexit) and then calls
+// `main(argc, argv, envp)` and `exit`s with its return value. This mirrors what
+// crt1.o's `_start` does. `__libc_start_main` is an undefined symbol here,
+// resolved at link against libc.so.6.
+#naked
+#entry
+_start :: fn() {
+    unsafe {
+        // SysV entry state: the kernel passes rdx = rtld_fini; [rsp] = argc,
+        // [rsp+8..] = argv. Marshal the 7-arg __libc_start_main call:
+        //   rdi=main rsi=argc rdx=argv rcx=init(0) r8=fini(0) r9=rtld_fini
+        //   and stack_end pushed on the (16-aligned) stack.
+        core::asm(volatile,
+            "xor %ebp, %ebp; mov %rdx, %r9; pop %rsi; mov %rsp, %rdx; and $$-16, %rsp; push %rax; push %rsp; xor %ecx, %ecx; xor %r8d, %r8d; lea main(%rip), %rdi; call __libc_start_main; hlt",
+            inputs: {},
+            outputs: {},
+            clobbers: { "memory" },
+        );
+    }
+}

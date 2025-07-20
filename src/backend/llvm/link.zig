@@ -264,6 +264,12 @@ pub const LinuxLinkOptions = struct {
     libs: []const []const u8 = &.{},
     entry: []const u8 = "_start",
     extra_flags: []const []const u8 = &.{},
+    /// Dynamically link against glibc (the `linux-gnu` ABI) instead of producing
+    /// a static, freestanding ELF.
+    link_libc: bool = false,
+    /// Sysroot holding `libc.so.6` for a `link_libc` build (the dynamic linker is
+    /// referenced at the standard target path).
+    sysroot: []const u8 = "",
 };
 
 /// Link a single ELF object into a **static, non-PIE** Linux executable via
@@ -299,9 +305,21 @@ pub fn linkLinux(
         try append(allocator, &argv, ld_name);
 
     try append(allocator, &argv, obj_path);
-    try append(allocator, &argv, "-o");
-    try append(allocator, &argv, opts.output);
-    try append(allocator, &argv, "-static"); // freestanding, ET_EXEC (no PIE / dynamic linker)
+    if (opts.link_libc) {
+        // Dynamically linked against glibc. Link libc.so.6 directly (a minimal
+        // sysroot has no `libc.so` dev symlink), and point the interpreter at the
+        // standard target path. Our `_start` calls __libc_start_main from libc.
+        if (opts.sysroot.len > 0)
+            try argv.append(allocator, std.fmt.allocPrint(allocator, "{s}/libc.so.6", .{opts.sysroot}) catch return error.OutOfMemory);
+        try append(allocator, &argv, "-o");
+        try append(allocator, &argv, opts.output);
+        try append(allocator, &argv, "-dynamic-linker");
+        try append(allocator, &argv, "/lib64/ld-linux-x86-64.so.2");
+    } else {
+        try append(allocator, &argv, "-o");
+        try append(allocator, &argv, opts.output);
+        try append(allocator, &argv, "-static"); // freestanding, ET_EXEC (no PIE / dynamic linker)
+    }
     try append(allocator, &argv, "-e");
     try append(allocator, &argv, opts.entry);
     for (opts.lib_paths) |p|

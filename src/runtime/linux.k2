@@ -26,26 +26,9 @@ sys_exit :: fn(code: i32) {
     );
 }
 
-// ── ELF entry point ─────────────────────────────────────────────────────────
-// The kernel enters here with a 16-byte-aligned stack (argc on top, no return
-// address). Clear the frame pointer, re-align, call `main`, and pass its i32
-// return to the exit syscall. `#naked` = no prologue/epilogue, so the stack
-// discipline is exactly as written; `#keep` keeps the symbol for `ld -e _start`.
-#naked
-#entry
-_start :: fn() {
-    unsafe {
-        // `;` separates statements (x86 GAS); `$$` escapes a literal `$` in LLVM
-        // inline asm (a bare `$` is an operand reference), so AT&T immediates are
-        // written `$$-16` / `$$60`.
-        core::asm(volatile,
-            "xor %ebp, %ebp; and $$-16, %rsp; call main; mov %eax, %edi; mov $$60, %eax; syscall",
-            inputs: {},
-            outputs: {},
-            clobbers: { "memory" },
-        );
-    }
-}
+// The ELF entry point (`_start`) is appended per ABI by the runtime selector:
+// linux_start_none.k2 (freestanding: call main + exit syscall) or
+// linux_start_gnu.k2 (glibc: hand off to __libc_start_main).
 
 // ── Low-level I/O ─────────────────────────────────────────────────────────
 

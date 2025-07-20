@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: Apache-2.0
+// Freestanding (no-libc) ELF entry point for the static Linux target. The kernel
+// enters with a 16-byte-aligned stack (argc on top, no return address); clear the
+// frame pointer, re-align, call `main`, and pass its i32 return to the exit
+// syscall. `#naked` = no prologue/epilogue; `#entry` keeps `_start` GLOBAL so
+// `ld -e _start` resolves it.
+#naked
+#entry
+_start :: fn() {
+    unsafe {
+        // `;` separates statements (x86 GAS); `$$` escapes a literal `$` (a bare
+        // `$` is an LLVM operand reference), so AT&T immediates are `$$-16`/`$$60`.
+        core::asm(volatile,
+            "xor %ebp, %ebp; and $$-16, %rsp; call main; mov %eax, %edi; mov $$60, %eax; syscall",
+            inputs: {},
+            outputs: {},
+            clobbers: { "memory" },
+        );
+    }
+}

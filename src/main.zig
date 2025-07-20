@@ -68,6 +68,11 @@ const Options = struct {
     libc: bool = false,
     /// Codegen target OS (cross-compilation). Defaults to the host.
     target_os: std.Target.Os.Tag = @import("builtin").os.tag,
+    /// Dynamically link against glibc (`--target linux-gnu`); otherwise Linux is
+    /// a static, freestanding, no-libc ELF.
+    link_libc: bool = false,
+    /// Sysroot holding `libc.so.6` for a `linux-gnu` link (`--sysroot`).
+    sysroot: []const u8 = "",
 };
 
 pub fn main(init: std.process.Init) u8 {
@@ -173,9 +178,15 @@ pub fn main(init: std.process.Init) u8 {
             else if (std.mem.indexOf(u8, t, "windows") != null)
                 .windows
             else {
-                std.debug.print("k2: unknown --target `{s}` (expected linux or windows)\n", .{t});
+                std.debug.print("k2: unknown --target `{s}` (expected linux, linux-gnu, or windows)\n", .{t});
                 return 1;
             };
+            // `-gnu` selects the dynamically-linked glibc ABI; otherwise Linux is
+            // a static, freestanding, no-libc ELF.
+            opts.link_libc = std.mem.indexOf(u8, t, "gnu") != null;
+        } else if (std.mem.eql(u8, a, "--sysroot") and i + 1 < args.len) {
+            i += 1;
+            opts.sysroot = args[i];
         } else if (std.mem.eql(u8, a, "--opt") and i + 1 < args.len) {
             i += 1;
             opts.opt_level = std.fmt.parseInt(u2, args[i], 10) catch 0;
@@ -325,6 +336,8 @@ fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source:
         .obj_path = obj_path,
         .opt_level = opts.opt_level,
         .target_os = opts.target_os,
+        .link_libc = opts.link_libc,
+        .sysroot = opts.sysroot,
         .lib_paths = opts.lib_paths.items,
         .extra_libs = opts.extra_libs.items,
         .progress = progressStep,
@@ -353,6 +366,8 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
         .dll = opts.dll,
         .opt_level = opts.opt_level,
         .target_os = opts.target_os,
+        .link_libc = opts.link_libc,
+        .sysroot = opts.sysroot,
         .llvm_bin = opts.llvm_bin,
         .lib_paths = opts.lib_paths.items,
         .extra_libs = opts.extra_libs.items,

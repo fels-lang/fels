@@ -128,6 +128,12 @@ pub const LlvmCompileOptions = struct {
     opt_level: u2 = if (@import("builtin").mode == .Debug) 0 else 2,
     /// Target OS to generate for (cross-compilation). Defaults to the host.
     target_os: std.Target.Os.Tag = @import("builtin").os.tag,
+    /// Link dynamically against the system libc (the `linux-gnu` ABI). When false
+    /// (default), Linux output is a static, freestanding, no-libc ELF.
+    link_libc: bool = false,
+    /// Sysroot holding libc.so.6 + the dynamic linker for `linux-gnu` links
+    /// (empty → the runtime's default search). Only used when `link_libc`.
+    sysroot: []const u8 = "",
     /// Path to the LLVM bin directory (for lld-link / ld.lld).
     llvm_bin: []const u8 = "",
     /// Extra library search paths for the linker.
@@ -222,7 +228,7 @@ pub fn compileWithLlvm(
     if (!build_options.enable_llvm) return error.LlvmNotEnabled;
 
     // compileWithRuntime auto-prepends the platform runtime (@panic, assert, etc.)
-    var fe = pipeline.compileWithRuntimeTarget(allocator, opts.file_name, opts.source, opts.target_os) catch |err| switch (err) {
+    var fe = pipeline.compileWithRuntimeTarget(allocator, opts.file_name, opts.source, opts.target_os, opts.link_libc) catch |err| switch (err) {
         error.ParseFailed, error.SemanticFailed, error.IoError, error.RuntimeUnavailable => return error.CompileFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
@@ -248,7 +254,7 @@ pub fn compileFileWithLlvm(
     const t_total = nowNs();
     if (opts.progress) |p| p(opts.progress_ctx, .frontend);
     const t_fe = nowNs();
-    var fe = pipeline.compileFileWithRuntimeTarget(allocator, io, opts.file_name, opts.target_os) catch |err| switch (err) {
+    var fe = pipeline.compileFileWithRuntimeTarget(allocator, io, opts.file_name, opts.target_os, opts.link_libc) catch |err| switch (err) {
         error.ParseFailed, error.SemanticFailed, error.IoError, error.RuntimeUnavailable => return error.CompileFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
@@ -350,6 +356,8 @@ fn emitLlvmFromFrontend(
                 .libs = libs.items,
                 .entry = opts.entry orelse "_start",
                 .extra_flags = opts.link_flags,
+                .link_libc = opts.link_libc,
+                .sysroot = opts.sysroot,
             }) catch return error.LinkFailed;
             if (opts.timings) |tm| tm.link_ns = sinceNs(t_link);
             return;
