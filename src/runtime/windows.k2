@@ -236,6 +236,114 @@ os_dir_close :: fn(h: i64) {
     os_release(h as usize, 384usize);
 }
 
+// ── OS process (backs std.process) ───────────────────────────────────────────
+// A child token is a heap ProcState holding the process + thread handles.
+
+#extern("kernel32", "GetCurrentProcessId")
+GetCurrentProcessId :: fn() -> u32;
+#extern("kernel32", "GetCommandLineA")
+GetCommandLineA :: fn() -> [*]const u8;
+#extern("kernel32", "GetEnvironmentVariableA")
+GetEnvironmentVariableA :: fn(name: *const u8, buffer: *u8, size: u32) -> u32;
+#extern("kernel32", "SetEnvironmentVariableA")
+SetEnvironmentVariableA :: fn(name: *const u8, value: ?*const u8) -> bool;
+#extern("kernel32", "WaitForSingleObject")
+WaitForSingleObject :: fn(handle: usize, ms: u32) -> u32;
+#extern("kernel32", "GetExitCodeProcess")
+GetExitCodeProcess :: fn(handle: usize, code: *u32) -> bool;
+#extern("kernel32", "TerminateProcess")
+TerminateProcess :: fn(handle: usize, code: u32) -> bool;
+#extern("kernel32", "CreateProcessA")
+CreateProcessA :: fn(
+    app: ?*const u8, cmd: ?*u8, proc_attr: ?*void, thread_attr: ?*void,
+    inherit: u32, flags: u32, env: ?*void, cwd: ?*const u8,
+    startup: *StartupInfoA, info: *ProcessInformation) -> bool;
+
+StartupInfoA :: struct {
+    cb: u32, reserved1: usize, desktop: usize, title: usize,
+    x: u32, y: u32, x_size: u32, y_size: u32, x_count: u32, y_count: u32,
+    fill: u32, flags: u32, show: u16, reserved2_count: u16,
+    reserved2: usize, std_input: usize, std_output: usize, std_error: usize,
+}
+ProcessInformation :: struct { process: usize, thread: usize, pid: u32, tid: u32 }
+ProcState :: struct { process: usize, thread: usize }
+
+os_pid :: fn() -> i64 { return GetCurrentProcessId() as i64; }
+
+os_cmdline :: fn(out: []u8) -> i64 {
+    raw := GetCommandLineA();
+    i: usize = 0usize;
+    while i < out.len {
+        c := raw[i];
+        if c == 0u8 { break; }
+        out[i] = c;
+        i += 1usize;
+    }
+    return i as i64;
+}
+os_get_env :: fn(name: *const u8, out: []u8) -> i64 {
+    n := GetEnvironmentVariableA(name, out.ptr, out.len as u32);
+    if n == 0u32 { return -1i64; }
+    if (n as usize) > out.len { return -1i64; }
+    return n as i64;
+}
+os_set_env :: fn(name: *const u8, value: *const u8) -> bool {
+    return SetEnvironmentVariableA(name, value);
+}
+os_unset_env :: fn(name: *const u8) -> bool {
+    return SetEnvironmentVariableA(name, null);
+}
+
+os_spawn :: fn(cmd: *const u8) -> i64 {
+    cmdbuf: [1024]u8 = .{};
+    i: usize = 0usize;
+    while i + 1usize < 1024usize {
+        c := unsafe *core::ptr_from_int(*u8, (cmd as usize) + i);
+        if c == 0u8 { break; }
+        cmdbuf[i] = c;
+        i += 1usize;
+    }
+    cmdbuf[i] = 0u8;
+    startup: StartupInfoA = .{
+        core::sizeof(StartupInfoA) as u32, 0usize, 0usize, 0usize,
+        0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u16, 0u16,
+        0usize, 0usize, 0usize, 0usize,
+    };
+    info: ProcessInformation = .{ 0usize, 0usize, 0u32, 0u32 };
+    if !CreateProcessA(null, &cmdbuf[0], null, null, 0u32, 0u32, null, null, &startup, &info) {
+        return -1i64;
+    }
+    raw := os_alloc(32usize);
+    if raw == 0usize {
+        ignored := CloseHandle(info.process); ignored2 := CloseHandle(info.thread);
+        return -1i64;
+    }
+    st := unsafe core::ptr_from_int(*ProcState, raw);
+    st.process = info.process;
+    st.thread = info.thread;
+    return raw as i64;
+}
+os_wait :: fn(token: i64, block: bool) -> i64 {
+    st := unsafe core::ptr_from_int(*ProcState, token as usize);
+    ms: u32 = if block { 4294967295u32 } else { 0u32 };   // INFINITE : 0
+    r := WaitForSingleObject(st.process, ms);
+    if r == 258u32 { return -2i64; }     // WAIT_TIMEOUT
+    if r != 0u32 { return -1i64; }       // not WAIT_OBJECT_0
+    code: u32 = 0u32;
+    if !GetExitCodeProcess(st.process, &code) { return -1i64; }
+    return code as i64;
+}
+os_kill :: fn(token: i64) -> bool {
+    st := unsafe core::ptr_from_int(*ProcState, token as usize);
+    return TerminateProcess(st.process, 1u32);
+}
+os_proc_release :: fn(token: i64) {
+    st := unsafe core::ptr_from_int(*ProcState, token as usize);
+    ignored := CloseHandle(st.process);
+    ignored2 := CloseHandle(st.thread);
+    os_release(token as usize, 32usize);
+}
+
 // ── Handle constants ──────────────────────────────────────────────────────
 
 STD_OUTPUT_HANDLE :: -11;

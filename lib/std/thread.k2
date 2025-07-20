@@ -25,8 +25,7 @@
 // ── Win32 bindings ───────────────────────────────────────────────────────────
 #extern("kernel32", "CreateThread")
 CreateThread :: fn(attrs: ?*void, stack: usize, start: *void, param: *void, flags: u32, id: ?*u32) -> usize;
-#extern("kernel32", "WaitForSingleObject")
-WaitForSingleObject :: fn(handle: usize, ms: u32) -> u32;
+// `WaitForSingleObject` is a shared runtime primitive (src/runtime/windows.k2) — reused.
 #extern("kernel32", "WaitForMultipleObjects")
 WaitForMultipleObjects :: fn(n: u32, handles: *usize, wait_all: bool, ms: u32) -> u32;
 #extern("kernel32", "GetExitCodeThread")

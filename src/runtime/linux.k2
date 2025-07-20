@@ -335,6 +335,160 @@ os_dir_close :: fn(h: i64) {
     os_release(h as usize, 4160usize);
 }
 
+// ── OS process (backs std.process) ───────────────────────────────────────────
+// getpid=39, fork=57, execve=59, wait4=61, kill=62. Process info (cmdline, env)
+// is read from /proc; spawn runs `/bin/sh -c <cmd>`, so the shell does arg
+// splitting + PATH lookup. A child token is just its pid.
+
+sys_getpid :: fn() -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(39) }, outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+sys_fork :: fn() -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(57) }, outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+sys_execve :: fn(path: *const u8, argv: *usize, envp: *usize) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(59), "{rdi}"(path), "{rsi}"(argv), "{rdx}"(envp) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+sys_wait4 :: fn(pid: i64, status: *i32, options: i32, rusage: usize) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(61), "{rdi}"(pid), "{rsi}"(status), "{rdx}"(options), "{r10}"(rusage) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+sys_kill :: fn(pid: i64, sig: i32) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(62), "{rdi}"(pid), "{rsi}"(sig) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+
+os_pid :: fn() -> i64 { return sys_getpid(); }
+
+// Read a whole (small) /proc file into `buf`; returns bytes read, or -1.
+proc_read :: fn(pathlit: []const u8, buf: []u8) -> i64 {
+    p: [64]u8 = .{};
+    if pathlit.len + 1usize > 64usize { return -1i64; }
+    i: usize = 0usize;
+    while i < pathlit.len { p[i] = pathlit[i]; i += 1usize; }
+    p[pathlit.len] = 0u8;
+    fd := sys_openat(-100, &p[0], 0, 0);
+    if fd < 0i64 { return -1i64; }
+    total: i64 = 0i64;
+    while (total as usize) < buf.len {
+        n := sys_read(fd, &buf[total as usize], buf.len - (total as usize));
+        if n <= 0i64 { break; }
+        total = total + n;
+    }
+    ignored := sys_close(fd);
+    return total;
+}
+
+// The command line, reconstructed from /proc/self/cmdline (NUL-separated args).
+os_cmdline :: fn(out: []u8) -> i64 {
+    n := proc_read("/proc/self/cmdline", out);
+    if n < 0i64 { return -1i64; }
+    i: usize = 0usize;
+    while i < (n as usize) {
+        if out[i] == 0u8 { out[i] = 32u8; }   // arg separators → spaces
+        i += 1usize;
+    }
+    if n > 0i64 && out[(n as usize) - 1usize] == 32u8 { return n - 1i64; }  // drop trailing
+    return n;
+}
+
+// Look up `name` in /proc/self/environ ("KEY=VALUE" entries, NUL-separated).
+os_get_env :: fn(name: *const u8, out: []u8) -> i64 {
+    buf: [8192]u8 = .{};
+    n := proc_read("/proc/self/environ", buf[:]);
+    if n <= 0i64 { return -1i64; }
+    nlen: usize = 0usize;
+    while unsafe *core::ptr_from_int(*u8, (name as usize) + nlen) != 0u8 { nlen += 1usize; }
+    total := n as usize;
+    i: usize = 0usize;
+    while i < total {
+        start := i;
+        eq := i;
+        while eq < total && buf[eq] != 0u8 && buf[eq] != 61u8 { eq += 1usize; }  // '='
+        if eq < total && buf[eq] == 61u8 && (eq - start) == nlen {
+            matched := true;
+            j: usize = 0usize;
+            while j < nlen {
+                if buf[start + j] != unsafe *core::ptr_from_int(*u8, (name as usize) + j) { matched = false; }
+                j += 1usize;
+            }
+            if matched {
+                vstart := eq + 1usize;
+                vend := vstart;
+                while vend < total && buf[vend] != 0u8 { vend += 1usize; }
+                vlen := vend - vstart;
+                if vlen > out.len { return -1i64; }   // doesn't fit (matches Windows)
+                k: usize = 0usize;
+                while k < vlen { out[k] = buf[vstart + k]; k += 1usize; }
+                return vlen as i64;
+            }
+        }
+        while i < total && buf[i] != 0u8 { i += 1usize; }   // skip to next entry
+        i += 1usize;
+    }
+    return -1i64;
+}
+
+// No mutable process-wide state (k2 has no mutable globals), so env mutation
+// can't be modelled on Linux yet — report failure rather than lie.
+os_set_env :: fn(name: *const u8, value: *const u8) -> bool {
+    ignored := name; ignored2 := value;
+    return false;
+}
+os_unset_env :: fn(name: *const u8) -> bool {
+    ignored := name;
+    return false;
+}
+
+// fork + execve `/bin/sh -c <cmd>`; the child token is its pid (-1 on failure).
+os_spawn :: fn(cmd: *const u8) -> i64 {
+    pid := sys_fork();
+    if pid < 0i64 { return -1i64; }
+    if pid == 0i64 {
+        sh:  [12]u8 = .{};
+        dc:  [4]u8 = .{};
+        pe:  [48]u8 = .{};
+        cstrcpy(sh[:], "/bin/sh");
+        cstrcpy(dc[:], "-c");
+        cstrcpy(pe[:], "PATH=/usr/local/bin:/usr/bin:/bin");
+        p_sh: usize = unsafe ((&sh[0]) as usize);
+        p_dc: usize = unsafe ((&dc[0]) as usize);
+        p_cmd: usize = unsafe (cmd as usize);
+        p_pe: usize = unsafe ((&pe[0]) as usize);
+        argv: [4]usize = .{ p_sh, p_dc, p_cmd, 0usize };
+        envp: [2]usize = .{ p_pe, 0usize };
+        ignored := sys_execve(&sh[0], &argv[0], &envp[0]);
+        sys_exit(127);   // only reached if execve failed
+    }
+    return pid;
+}
+
+// Copy a literal into a NUL-terminated byte buffer.
+cstrcpy :: fn(dst: []u8, src: []const u8) {
+    i: usize = 0usize;
+    while i < src.len && i + 1usize < dst.len { dst[i] = src[i]; i += 1usize; }
+    dst[i] = 0u8;
+}
+
+// block=true → wait; else poll. Returns exit code, -2 if still running, -1 error.
+os_wait :: fn(token: i64, block: bool) -> i64 {
+    status: i32 = 0;
+    options: i32 = if block { 0 } else { 1 };   // WNOHANG = 1
+    r := sys_wait4(token, &status, options, 0usize);
+    if r < 0i64 { return -1i64; }
+    if r == 0i64 { return -2i64; }               // WNOHANG: not yet exited
+    if (status & 0x7f) == 0 { return ((status >> 8) & 0xff) as i64; }  // WIFEXITED
+    return 128i64 + ((status & 0x7f) as i64);    // killed by signal
+}
+os_kill :: fn(token: i64) -> bool { return sys_kill(token, 9) == 0i64; }  // SIGKILL
+os_proc_release :: fn(token: i64) { ignored := token; }                  // no handles to free
+
 // ── Core runtime functions ─────────────────────────────────────────────────
 
 /// Exit with an application-defined status.
