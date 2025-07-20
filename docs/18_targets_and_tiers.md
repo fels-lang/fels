@@ -152,11 +152,21 @@ Borrowed from Rust's model, adapted to k2's seam architecture.
 | `std.io` | ✅ ported | `write` (done) |
 | `std.heap` | ✅ ported | `mmap`/`mprotect`/`munmap` (done) |
 | `std.time` | ✅ ported | `clock_gettime`/`nanosleep` (done) |
-| `std.process` (exit/abort) | ✅ ported | `exit` (done) |
-| `std.fs` | ⏳ pending | `openat`/`read`/`write`/`close`/`fstat`/`lseek`/`unlink`/`mkdir` |
-| `std.process` (spawn/wait) | ⏳ pending | `fork`/`execve`/`wait4`/`pipe` |
-| `std.net` | ⏳ pending | `socket`/`bind`/`connect`/`listen`/`accept`/`send`/`recv` |
-| `std.thread` | ⏳ pending | `clone`/`futex` (or pthread under `gnu`) |
+| `std.fs` | ✅ ported | `openat`/`read`/`write`/`close`/`lseek`/`newfstatat`/`unlink`/`getdents64` (done) |
+| `std.process` (id/cmdline/env/spawn) | ✅ ported | `getpid` + `/proc/self/{cmdline,environ}` + `fork`/`execve`(`/bin/sh -c`)/`wait4`/`kill` (done) |
+| `std.process` (`set_env`/`unset_env`) | ⛔ blocked | needs a mutable process-wide environ — see note |
+| `std.net` | ⏳ pending | `socket`/`bind`/`connect`/`listen`/`accept`/`sendto`/`recvfrom`/`setsockopt` |
+| `std.thread` | ⏳ pending | `clone`/`futex` (or pthread under `gnu`) — the hardest (child stack + TLS) |
 
 The pending modules are mechanical given the proven seam: declare their syscalls
 in `linux.k2`, route the module through the seam, keep the Windows path intact.
+
+> **Language gap found: no mutable top-level globals.** k2 has only `::`
+> (immutable) top-level declarations, so there is no place to anchor
+> process-wide mutable state. Two consequences for the Linux port: (1) an
+> `_start`-captured `argv`/`envp` pointer has nowhere to live — so `command_line`
+> and `get_env` read `/proc/self/{cmdline,environ}` instead (clean, no global
+> needed); (2) `set_env`/`unset_env` (which on Windows mutate the kernel32 env
+> block) cannot maintain an overlay environ — they will return `false` on Linux
+> until k2 grows mutable globals (or a runtime-owned env table). This is the one
+> real parity gap, and it's a missing *language* feature, not a porting miss.
