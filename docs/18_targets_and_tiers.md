@@ -140,7 +140,7 @@ Borrowed from Rust's model, adapted to k2's seam architecture.
 | --- | --- | --- |
 | `x86_64-windows-msvc` | **1** | original host target; full stdlib |
 | `x86_64-linux-none` (static) | **1** | first-class target — cross-compiles from Windows; language + codegen + core stdlib (io/heap/time/Vec/strings) verified; completing fs/process/net/thread is a **Tier-1 release blocker**, not a demotion |
-| `x86_64-linux-gnu` (glibc) | **2** | same codegen; needs a libc toolchain/sysroot to link |
+| `x86_64-linux-gnu` (glibc) | **2** | implemented — `--target linux-gnu` + `--sysroot`; our `_start` → `__libc_start_main`, links `libc.so.6` directly. Needs a sysroot with `libc.so.6` at link time |
 | `aarch64-linux` | **3 → 2** | unblock by adding the aarch64 runtime + ABI arm |
 | `riscv64-linux`, `wasm32-wasi` | **3** | LLVM-ready; runtime/seam not yet written |
 | `*-macos` | **3** | Mach-O + Apple ABI; larger effort |

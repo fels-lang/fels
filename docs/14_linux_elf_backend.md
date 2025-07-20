@@ -15,7 +15,16 @@ Use `--target linux` to cross-compile from a Windows host:
 ```
 k2 build hello.k2 -o hello --target linux --llvm-path Y:/SDK/LLVM
 # → a static, non-PIE ELF; runs under Linux/WSL with no shared-library deps
+
+k2 build hello.k2 -o hello --target linux-gnu --sysroot <dir-with-libc.so.6> --llvm-path Y:/SDK/LLVM
+# → a normal dynamically-linked glibc ELF (ldd → libc.so.6); _start hands off to
+#   __libc_start_main. The whole stdlib works under either ABI (it uses syscalls).
 ```
+
+The entire `std` library (io, heap, time, fs, process, net, thread) runs on Linux
+— only `std.process.set_env`/`unset_env` are unavailable (a missing *language*
+feature, mutable globals; see §0 note). Both the static (`linux`, default) and
+glibc (`linux-gnu`) ABIs are implemented and verified.
 
 What works end-to-end (verified under WSL):
 
