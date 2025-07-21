@@ -1699,6 +1699,7 @@ test "exe: std.path / std.time / std.crypto / std.serde run correctly cross-modu
         .{ "tests/fixtures/stdlib/net_addr_app.k2", "exe_net_addr_app" },
         .{ "tests/fixtures/stdlib/vec_app.k2", "exe_vec_app" },
         .{ "tests/fixtures/stdlib/map_app.k2", "exe_map_app" },
+        .{ "tests/fixtures/stdlib/env_app.k2", "exe_env_app" },
     }) |c| {
         const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);
         try std.testing.expectEqual(@as(u32, 42), code);

@@ -153,24 +153,17 @@ Borrowed from Rust's model, adapted to k2's seam architecture.
 | `std.heap` | ✅ ported | `mmap`/`mprotect`/`munmap` (done) |
 | `std.time` | ✅ ported | `clock_gettime`/`nanosleep` (done) |
 | `std.fs` | ✅ ported | `openat`/`read`/`write`/`close`/`lseek`/`newfstatat`/`unlink`/`getdents64` (done) |
-| `std.process` (id/cmdline/env/spawn) | ✅ ported | `getpid` + `/proc/self/{cmdline,environ}` + `fork`/`execve`(`/bin/sh -c`)/`wait4`/`kill` (done) |
-| `std.process` (`set_env`/`unset_env`) | ⛔ blocked | needs a mutable process-wide environ — see note |
+| `std.process` (all, incl. `set_env`) | ✅ ported | `getpid` + `/proc/self/{cmdline,environ}` + `fork`/`execve`(`/bin/sh -c`)/`wait4`/`kill`; `set_env`/`unset_env` via a runtime env overlay (done) |
 | `std.net` | ✅ ported | socket syscalls (41/42/43/44/45/48/49/50/51/54) + SOL_SOCKET option translation + `fcntl` (done) |
 | `std.thread` | ✅ ported | `clone` (allocated child stack, asm child-entry) + `wait4` join + `sched_getaffinity`/`sched_yield` (done) |
 
-**Every `std` module now runs on Linux.** The static `x86_64-linux-none` target
-has a complete stdlib (only `set_env`/`unset_env` differ — the mutable-globals
-gap below) — Tier 1 in full.
+**Every `std` module runs on Linux — full parity with Windows.** The static
+`x86_64-linux-none` target has a complete stdlib: Tier 1 in full.
 
-The pending modules are mechanical given the proven seam: declare their syscalls
-in `linux.k2`, route the module through the seam, keep the Windows path intact.
-
-> **Language gap found: no mutable top-level globals.** k2 has only `::`
-> (immutable) top-level declarations, so there is no place to anchor
-> process-wide mutable state. Two consequences for the Linux port: (1) an
-> `_start`-captured `argv`/`envp` pointer has nowhere to live — so `command_line`
-> and `get_env` read `/proc/self/{cmdline,environ}` instead (clean, no global
-> needed); (2) `set_env`/`unset_env` (which on Windows mutate the kernel32 env
-> block) cannot maintain an overlay environ — they will return `false` on Linux
-> until k2 grows mutable globals (or a runtime-owned env table). This is the one
-> real parity gap, and it's a missing *language* feature, not a porting miss.
+> **Note — mutable globals + the env overlay.** `command_line`/`get_env` read
+> `/proc/self/{cmdline,environ}` (no captured `argv`/`envp` pointer needed).
+> `set_env`/`unset_env` were initially blocked because k2 had no mutable
+> top-level globals to anchor a process-wide environ — that language feature was
+> since added (`name: T = init;`, see [01_syntax](01_syntax.md)), so the runtime
+> now keeps an env overlay (`get_env` consults it first; `spawn` merges it into
+> the child's environment). No remaining parity gap.

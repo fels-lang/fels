@@ -381,13 +381,118 @@ os_cmdline :: fn(out: []u8) -> i64 {
     return n;
 }
 
-// Look up `name` in /proc/self/environ ("KEY=VALUE" entries, NUL-separated).
+// Length of a NUL-terminated C string.
+cstrlen :: fn(s: *const u8) -> usize {
+    n := 0usize;
+    while unsafe *core::ptr_from_int(*u8, (s as usize) + n) != 0u8 { n += 1usize; }
+    return n;
+}
+
+// ── Environment overlay (set_env / unset_env) ────────────────────────────────
+// Linux has no syscall to mutate the process environ; libc keeps a `char**` it
+// edits. Freestanding, we keep our own overlay table (lazily heap-allocated,
+// anchored by a mutable global) that get_env consults first and spawn merges in.
+// Parallel flat arrays avoid nested struct-array access; mmap zero-fills it.
+EnvTable :: struct {
+    count:   usize,
+    klen:    [64]usize,
+    vlen:    [64]usize,
+    removed: [64]i32,
+    keys:    [8192]u8,    // 64 × 128
+    vals:    [32768]u8,   // 64 × 512
+}
+env_overlay: usize = 0usize;   // *EnvTable, lazily allocated; 0 = none yet
+
+env_overlay_table :: fn() -> usize {
+    if env_overlay == 0usize { env_overlay = os_alloc(core::sizeof(EnvTable)); } // pages are zero
+    return env_overlay;
+}
+
+// Index of the slot whose key equals `name` (nlen bytes), or -1.
+env_find :: fn(t: *EnvTable, name: *const u8, nlen: usize) -> i64 {
+    i := 0usize;
+    while i < t.count {
+        if t.klen[i] == nlen {
+            same := true;
+            j := 0usize;
+            while j < nlen {
+                if t.keys[i * 128usize + j] != unsafe *core::ptr_from_int(*u8, (name as usize) + j) { same = false; }
+                j += 1usize;
+            }
+            if same { return i as i64; }
+        }
+        i += 1usize;
+    }
+    return -1i64;
+}
+
+os_set_env :: fn(name: *const u8, value: *const u8) -> bool {
+    raw := env_overlay_table();
+    if raw == 0usize { return false; }
+    t := unsafe core::ptr_from_int(*EnvTable, raw);
+    nlen := cstrlen(name);
+    vlen := cstrlen(value);
+    if nlen >= 128usize || vlen >= 512usize { return false; }
+    idx := env_find(t, name, nlen);
+    slot: usize = 0usize;
+    if idx >= 0i64 {
+        slot = idx as usize;
+    } else {
+        if t.count >= 64usize { return false; }
+        slot = t.count;
+        j := 0usize;
+        while j < nlen { t.keys[slot * 128usize + j] = unsafe *core::ptr_from_int(*u8, (name as usize) + j); j += 1usize; }
+        t.klen[slot] = nlen;
+        t.count = t.count + 1usize;
+    }
+    k := 0usize;
+    while k < vlen { t.vals[slot * 512usize + k] = unsafe *core::ptr_from_int(*u8, (value as usize) + k); k += 1usize; }
+    t.vlen[slot] = vlen;
+    t.removed[slot] = 0;
+    return true;
+}
+
+os_unset_env :: fn(name: *const u8) -> bool {
+    raw := env_overlay_table();
+    if raw == 0usize { return false; }
+    t := unsafe core::ptr_from_int(*EnvTable, raw);
+    nlen := cstrlen(name);
+    if nlen >= 128usize { return false; }
+    idx := env_find(t, name, nlen);
+    if idx >= 0i64 {
+        t.removed[idx as usize] = 1;
+    } else {
+        if t.count >= 64usize { return false; }
+        slot := t.count;
+        j := 0usize;
+        while j < nlen { t.keys[slot * 128usize + j] = unsafe *core::ptr_from_int(*u8, (name as usize) + j); j += 1usize; }
+        t.klen[slot] = nlen;
+        t.removed[slot] = 1;
+        t.count = t.count + 1usize;
+    }
+    return true;
+}
+
+// Look up `name`: the overlay (set_env/unset_env) wins over the inherited
+// environment, which is read from /proc/self/environ ("KEY=VALUE", NUL-separated).
 os_get_env :: fn(name: *const u8, out: []u8) -> i64 {
+    if env_overlay != 0usize {
+        t := unsafe core::ptr_from_int(*EnvTable, env_overlay);
+        idx := env_find(t, name, cstrlen(name));
+        if idx >= 0i64 {
+            si := idx as usize;
+            if t.removed[si] != 0 { return -1i64; }   // unset shadows the inherited value
+            vl := t.vlen[si];
+            if vl > out.len { return -1i64; }
+            k := 0usize;
+            while k < vl { out[k] = t.vals[si * 512usize + k]; k += 1usize; }
+            return vl as i64;
+        }
+    }
     buf: [8192]u8 = .{};
     n := proc_read("/proc/self/environ", buf[:]);
     if n <= 0i64 { return -1i64; }
-    nlen: usize = 0usize;
-    while unsafe *core::ptr_from_int(*u8, (name as usize) + nlen) != 0u8 { nlen += 1usize; }
+    nlen: usize = cstrlen(name);
     total := n as usize;
     i: usize = 0usize;
     while i < total {
@@ -418,35 +523,97 @@ os_get_env :: fn(name: *const u8, out: []u8) -> i64 {
     return -1i64;
 }
 
-// No mutable process-wide state (k2 has no mutable globals), so env mutation
-// can't be modelled on Linux yet — report failure rather than lie.
-os_set_env :: fn(name: *const u8, value: *const u8) -> bool {
-    ignored := name; ignored2 := value;
-    return false;
+// Index of the overlay slot whose key equals `buf[start..start+klen]`, or -1.
+env_find_bytes :: fn(t: *EnvTable, buf: []u8, start: usize, klen: usize) -> i64 {
+    i := 0usize;
+    while i < t.count {
+        if t.klen[i] == klen {
+            same := true;
+            j := 0usize;
+            while j < klen {
+                if t.keys[i * 128usize + j] != buf[start + j] { same = false; }
+                j += 1usize;
+            }
+            if same { return i as i64; }
+        }
+        i += 1usize;
+    }
+    return -1i64;
 }
-os_unset_env :: fn(name: *const u8) -> bool {
-    ignored := name;
-    return false;
+
+// Build the child's environment (the inherited /proc env with the overlay
+// applied) as a NULL-terminated char** in `eptr`: pointers into `pbuf` (the
+// inherited bytes) for kept entries, and into `ebuf` for overlay entries.
+build_child_env :: fn(pbuf: []u8, ebuf: []u8, eptr: []usize) {
+    cnt := 0usize;
+    np := proc_read("/proc/self/environ", pbuf);
+    if np > 0i64 {
+        total := np as usize;
+        i := 0usize;
+        while i < total && cnt + 1usize < eptr.len {
+            start := i;
+            eq := i;
+            while eq < total && pbuf[eq] != 0u8 && pbuf[eq] != 61u8 { eq += 1usize; }  // '='
+            ee := eq;
+            while ee < total && pbuf[ee] != 0u8 { ee += 1usize; }                       // entry end
+            // Keep the inherited entry unless the overlay overrides/removes its key.
+            keep := eq < total && pbuf[eq] == 61u8;
+            if keep && env_overlay != 0usize {
+                t := unsafe core::ptr_from_int(*EnvTable, env_overlay);
+                if env_find_bytes(t, pbuf, start, eq - start) >= 0i64 { keep = false; }
+            }
+            if keep {
+                eptr[cnt] = unsafe ((&pbuf[start]) as usize);
+                cnt += 1usize;
+            }
+            i = ee + 1usize;
+        }
+    }
+    // Append overlay (non-removed) entries as fresh "KEY=VALUE\0" strings.
+    if env_overlay != 0usize {
+        t := unsafe core::ptr_from_int(*EnvTable, env_overlay);
+        off := 0usize;
+        s := 0usize;
+        while s < t.count && cnt + 1usize < eptr.len {
+            if t.removed[s] == 0 {
+                kl := t.klen[s]; vl := t.vlen[s];
+                if off + kl + vl + 2usize < ebuf.len {
+                    estart := off;
+                    j := 0usize;
+                    while j < kl { ebuf[off] = t.keys[s * 128usize + j]; off += 1usize; j += 1usize; }
+                    ebuf[off] = 61u8; off += 1usize;   // '='
+                    j = 0usize;
+                    while j < vl { ebuf[off] = t.vals[s * 512usize + j]; off += 1usize; j += 1usize; }
+                    ebuf[off] = 0u8; off += 1usize;
+                    eptr[cnt] = unsafe ((&ebuf[estart]) as usize);
+                    cnt += 1usize;
+                }
+            }
+            s += 1usize;
+        }
+    }
+    eptr[cnt] = 0usize;   // NULL-terminate the char** array
 }
 
 // fork + execve `/bin/sh -c <cmd>`; the child token is its pid (-1 on failure).
+// The child inherits the parent's environment (with set_env/unset_env applied).
 os_spawn :: fn(cmd: *const u8) -> i64 {
+    pbuf: [8192]u8 = .{};
+    ebuf: [8192]u8 = .{};
+    eptr: [256]usize = .{};
+    build_child_env(pbuf[:], ebuf[:], eptr[:]);   // before fork; COW-copied to the child
     pid := sys_fork();
     if pid < 0i64 { return -1i64; }
     if pid == 0i64 {
-        sh:  [12]u8 = .{};
-        dc:  [4]u8 = .{};
-        pe:  [48]u8 = .{};
+        sh: [12]u8 = .{};
+        dc: [4]u8 = .{};
         cstrcpy(sh[:], "/bin/sh");
         cstrcpy(dc[:], "-c");
-        cstrcpy(pe[:], "PATH=/usr/local/bin:/usr/bin:/bin");
         p_sh: usize = unsafe ((&sh[0]) as usize);
         p_dc: usize = unsafe ((&dc[0]) as usize);
         p_cmd: usize = unsafe (cmd as usize);
-        p_pe: usize = unsafe ((&pe[0]) as usize);
         argv: [4]usize = .{ p_sh, p_dc, p_cmd, 0usize };
-        envp: [2]usize = .{ p_pe, 0usize };
-        ignored := sys_execve(&sh[0], &argv[0], &envp[0]);
+        ignored := sys_execve(&sh[0], &argv[0], &eptr[0]);
         sys_exit(127);   // only reached if execve failed
     }
     return pid;

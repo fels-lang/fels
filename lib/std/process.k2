@@ -15,9 +15,9 @@
 // don't need to import this module to use them.
 //
 // PLATFORM NOTES (Linux): `command_line`/`get_env` read /proc/self/{cmdline,
-// environ}; `spawn` runs the command via `/bin/sh -c`. `set_env`/`unset_env`
-// require process-wide mutable state, which k2 doesn't have yet (no mutable
-// globals) — they return `false` on Linux.
+// environ}; `set_env`/`unset_env` mutate a process-wide overlay (consulted first
+// by `get_env`); `spawn` runs the command via `/bin/sh -c` and passes the child
+// the inherited environment with that overlay applied.
 
 #import std.io.{ IoError };
 
@@ -84,8 +84,7 @@ pub get_env :: fn(name: []const u8, out: []u8) -> ?[]const u8 {
 }
 
 // Set (or overwrite) an environment variable for the current process — and for
-// any processes it spawns afterwards. Returns false on platforms without
-// mutable process env (Linux, currently).
+// any processes it spawns afterwards.
 pub set_env :: fn(name: []const u8, value: []const u8) -> bool {
     name_buf:  [128]u8 = .{};
     value_buf: [512]u8 = .{};
