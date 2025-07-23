@@ -43,6 +43,12 @@ pub fn build(b: *std.Build) void {
     opts.addOption([]const u8, "windows_sdk_lib_path", windows_sdk_lib_path);
     opts.addOption([]const u8, "msvc_lib_path", msvc_lib_path);
     opts.addOption([]const u8, "stdlib_root", stdlib_root);
+    // Single version source: build.zig.zon, with a best-effort `+<git-sha>` so
+    // dev/nightly builds are identifiable. Overridable with `-Dversion=...`.
+    const base_version = @import("build.zig.zon").version;
+    const version = b.option([]const u8, "version", "Override the reported version") orelse
+        gitVersion(b, base_version);
+    opts.addOption([]const u8, "version", version);
     compiler_mod.addOptions("build_options", opts);
 
     // Embed the bump-allocator stdlib so a `zone` block (whose handle is a real
@@ -216,4 +222,15 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(compiler_unit_tests).step);
     test_step.dependOn(&b.addRunArtifact(exe_unit_tests).step);
     test_step.dependOn(&b.addRunArtifact(integration_tests).step);
+}
+
+/// `base` version with a best-effort `+<git-short-sha>` appended — but only for a
+/// pre-release version (one containing `-`, e.g. `0.1.0-dev`); a clean release is
+/// returned as-is. Falls back to `base` when git isn't available.
+fn gitVersion(b: *std.Build, base: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, base, '-') == null) return base;
+    var code: u8 = 0;
+    const out = b.runAllowFail(&.{ "git", "rev-parse", "--short", "HEAD" }, &code, .ignore) catch return base;
+    const sha = std.mem.trim(u8, out, " \t\r\n");
+    return if (sha.len == 0) base else b.fmt("{s}+{s}", .{ base, sha });
 }

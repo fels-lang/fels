@@ -12,7 +12,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const k2 = @import("k2_compiler");
 
-const version = "0.1.0-dev";
+const version = k2.version; // single source: build.zig.zon (+git-sha for dev)
 
 // The Windows console defaults to a legacy OEM code page, which mangles the
 // UTF-8 bytes we print (✓, box-drawing). Switch it to UTF-8 (65001) at startup.

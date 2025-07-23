@@ -69,6 +69,8 @@ pub const ucrt_lib_path = blk: {
     break :blk "";
 };
 pub const stdlib_root = build_options.stdlib_root;
+/// The compiler version (single source: build.zig.zon, `+<git-sha>` for dev builds).
+pub const version = build_options.version;
 /// LLVM backend — only available when compiled with `-Dllvm-path=<path>`.
 pub const LlvmBackend = if (build_options.enable_llvm)
     @import("backend/llvm.zig").LlvmBackend
