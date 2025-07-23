@@ -6,3 +6,6 @@
 **/.zig-global-cache/
 **/zig-out/
 *.o
+
+# Release archives (scripts/package.ps1)
+dist/

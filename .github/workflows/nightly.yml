@@ -1,0 +1,65 @@
+name: Nightly
+
+# A rolling pre-release built from the latest `main` on every push, so users can
+# always grab the newest build without compiling. The `nightly` tag/release is
+# refreshed each run to point at the current commit.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create/refresh the nightly release + tag
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  nightly:
+    name: build + publish nightly
+    runs-on: windows-latest
+    # Enable by setting the repo variable LLVM_AVAILABLE=true and the secret
+    # LLVM_URL (a downloadable LLVM prebuilt with LLVM-C + libclang).
+    if: ${{ vars.LLVM_AVAILABLE == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the `+<git-sha>` is correct
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+      - name: Cache LLVM
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: llvm
+          key: llvm-${{ vars.LLVM_VERSION || 'pinned' }}-windows
+      - name: Download LLVM
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "${{ secrets.LLVM_URL }}" -OutFile llvm-archive
+          7z x llvm-archive -ollvm
+      - name: Build + package
+        id: pkg
+        shell: pwsh
+        run: ./scripts/package.ps1 -LlvmPath "${{ github.workspace }}/llvm"
+      - name: Drop the previous nightly (so the tag moves to this commit)
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete nightly --cleanup-tag --yes
+      - name: Publish nightly
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          target_commitish: ${{ github.sha }}
+          name: "Nightly ${{ steps.pkg.outputs.version }}"
+          prerelease: true
+          files: ${{ steps.pkg.outputs.archive }}
+          body: |
+            Automated build from the latest `main` — version `${{ steps.pkg.outputs.version }}`.
+            Download `${{ steps.pkg.outputs.archive_name }}`, extract, and run `bin/k2`
+            (the standard library + linker travel with it). Refreshed on every push.

@@ -41,8 +41,8 @@ jobs:
   full:
     name: build + test (LLVM)
     runs-on: windows-latest
-    # Enable once LLVM_URL is configured (so CI is green meanwhile).
-    if: ${{ false }}
+    # Enable by setting repo variable LLVM_AVAILABLE=true + secret LLVM_URL.
+    if: ${{ vars.LLVM_AVAILABLE == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v1

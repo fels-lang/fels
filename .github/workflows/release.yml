@@ -1,0 +1,67 @@
+name: Release
+
+# Triggered by a version tag. Handles stable releases and pre-releases by the
+# SemVer tag itself:
+#   v0.1.0          → stable release "k2 0.1.0"
+#   v0.1.0-beta.1   → pre-release "k2 0.1.0-beta.1+<sha>" (full SemVer w/ metadata)
+#   v0.2.0-rc.1     → pre-release, etc.
+# A tag containing `-` is published as a GitHub pre-release; the `+<git-sha>`
+# build metadata is added to the reported version (and release name) for
+# traceability, while the asset filename stays URL-friendly.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release
+
+jobs:
+  release:
+    name: build + publish release
+    runs-on: windows-latest
+    if: ${{ vars.LLVM_AVAILABLE == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+      - name: Derive version + channel from the tag
+        id: tag
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}" -replace '^v', ''   # v0.1.0-beta.1 -> 0.1.0-beta.1
+          "version=$v" | Out-File -Append $env:GITHUB_OUTPUT
+          # A SemVer pre-release (contains '-') publishes as a GitHub pre-release.
+          $pre = if ($v -match '-') { 'true' } else { 'false' }
+          "prerelease=$pre" | Out-File -Append $env:GITHUB_OUTPUT
+      - name: Cache LLVM
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: llvm
+          key: llvm-${{ vars.LLVM_VERSION || 'pinned' }}-windows
+      - name: Download LLVM
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "${{ secrets.LLVM_URL }}" -OutFile llvm-archive
+          7z x llvm-archive -ollvm
+      - name: Build + package (version from the tag)
+        id: pkg
+        shell: pwsh
+        run: ./scripts/package.ps1 -LlvmPath "${{ github.workspace }}/llvm" -Version "${{ steps.tag.outputs.version }}"
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "k2 ${{ steps.pkg.outputs.version }}"
+          prerelease: ${{ steps.tag.outputs.prerelease }}
+          files: ${{ steps.pkg.outputs.archive }}
+          generate_release_notes: true
+          body: |
+            **k2 ${{ steps.pkg.outputs.version }}** — x86_64-windows.
+
+            Download `${{ steps.pkg.outputs.archive_name }}`, extract, and run
+            `bin/k2` — the standard library and linker travel with it (no install
+            step, no separate LLVM needed to *use* the compiler).
