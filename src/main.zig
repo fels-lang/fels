@@ -65,11 +65,11 @@ const Options = struct {
     quiet: bool = false,
     show_time: bool = false,
     dll: bool = false,
-    libc: bool = false,
     /// Codegen target OS (cross-compilation). Defaults to the host.
     target_os: std.Target.Os.Tag = @import("builtin").os.tag,
-    /// Dynamically link against glibc (`--target linux-gnu`); otherwise Linux is
-    /// a static, freestanding, no-libc ELF.
+    /// The portable "link libc" switch (`--libc`, or `--target *-gnu`): the
+    /// Windows CRT on Windows; glibc (dynamic `libc.so.6` + glibc entry) on Linux,
+    /// where it also makes the freestanding default into a normal dynamic ELF.
     link_libc: bool = false,
     /// Sysroot holding `libc.so.6` for a `linux-gnu` link (`--sysroot`).
     sysroot: []const u8 = "",
@@ -205,14 +205,17 @@ pub fn main(init: std.process.Init) u8 {
         } else if (eqAny(a, &.{ "--shared", "--dll" })) {
             opts.dll = true;
         } else if (eqAny(a, &.{ "--libc", "-lc" })) {
-            opts.libc = true;
+            opts.link_libc = true;
         } else {
             std.debug.print("k2: unknown option '{s}'\n", .{a});
             return 1;
         }
     }
-    if (opts.libc) {
-        // Link the C runtime (UCRT + VC runtime) for C libs built against it.
+    // `--libc` (and `--target *-gnu`) is the portable "I need libc" switch,
+    // resolved per target: the Windows CRT (ucrt + vcruntime) on Windows; glibc
+    // (a dynamic `libc.so.6` + the glibc entry point) on Linux, which the
+    // `link_libc` path in the driver/backend handles.
+    if (opts.link_libc and opts.target_os == .windows) {
         opts.extra_libs.append(allocator, "ucrt") catch return 1;
         opts.extra_libs.append(allocator, "vcruntime") catch return 1;
     }

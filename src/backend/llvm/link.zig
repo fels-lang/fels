@@ -322,10 +322,19 @@ pub fn linkLinux(
     }
     try append(allocator, &argv, "-e");
     try append(allocator, &argv, opts.entry);
+    // Search the sysroot too, so `#extern("<lib>", …)` libraries (`-l<lib>`)
+    // resolve from it (e.g. a libm.so the user dropped in alongside libc.so.6).
+    if (opts.link_libc and opts.sysroot.len > 0)
+        try argv.append(allocator, std.fmt.allocPrint(allocator, "-L{s}", .{opts.sysroot}) catch return error.OutOfMemory);
     for (opts.lib_paths) |p|
         try argv.append(allocator, std.fmt.allocPrint(allocator, "-L{s}", .{p}) catch return error.OutOfMemory);
-    for (opts.libs) |l|
+    for (opts.libs) |l| {
+        // In glibc mode, `#extern("c", …)` adds `c`, but libc.so.6 is already
+        // linked directly — drop the redundant `-lc` (a minimal sysroot has no
+        // `libc.so` for the linker to find).
+        if (opts.link_libc and std.mem.eql(u8, l, "c")) continue;
         try argv.append(allocator, std.fmt.allocPrint(allocator, "-l{s}", .{l}) catch return error.OutOfMemory);
+    }
     for (opts.extra_flags) |f| try append(allocator, &argv, f);
 
     var child = std.process.spawn(io, .{

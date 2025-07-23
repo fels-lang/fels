@@ -130,6 +130,7 @@ pub const BuildOp = enum(u32) {
     link_mode,  // (id, mode:i32)                    0 dynamic, 1 static (static auto-links libc)
     runtime_file,// (id, path)                        copy a runtime dep (e.g. a .dll) next to the output
     no_default_libs,// (id)                           don't honor a C lib's /DEFAULTLIB directives
+    link_libc,  // (id)                               link the host libc (Win CRT / glibc) — portable
 };
 
 pub const Instr = struct {

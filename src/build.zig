@@ -56,6 +56,9 @@ pub const Artifact = struct {
     /// Opt out of honoring a static C library's own `/DEFAULTLIB` directives
     /// (keep the strict `/NODEFAULTLIB` and list system deps yourself).
     no_default_libs: bool = false,
+    /// Link the host's libc (`link_libc()`): the Windows CRT (ucrt+vcruntime) on
+    /// Windows, glibc on Linux. Resolved per host below.
+    link_libc: bool = false,
 };
 
 pub const StepKind = enum(u8) { run, test_dir };
@@ -299,6 +302,11 @@ fn hostCall(ctx: *anyopaque, op_raw: u32, args: []const Value) Value {
             if (id < plan.artifacts.items.len) plan.artifacts.items[id].no_default_libs = true;
             return .void;
         },
+        .link_libc => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len) plan.artifacts.items[id].link_libc = true;
+            return .void;
+        },
     }
 }
 
@@ -480,7 +488,7 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
         search_dirs.append(a, joinPath(a, base_dir, lp) catch continue) catch {};
     search_dirs.append(a, base_dir) catch {};
 
-    var need_libc = art.link_mode == 1 or opts.link_libc;
+    var need_libc = art.link_mode == 1 or opts.link_libc or art.link_libc;
     var auto_dlls: std.ArrayList([]const u8) = .empty;
     for (art.libs.items) |lib_name| {
         for (search_dirs.items) |dir| {
@@ -507,7 +515,9 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
     // library is involved (it brings code but not the CRT it depends on).
     var libs: std.ArrayList([]const u8) = .empty;
     libs.appendSlice(a, art.libs.items) catch return error.OutOfMemory;
-    if (need_libc) {
+    // "Link libc" resolves per host: the Windows CRT (ucrt + vcruntime) here; on
+    // Linux the driver's `link_libc` path links glibc instead (no Windows libs).
+    if (need_libc and builtin.os.tag == .windows) {
         libs.append(a, "ucrt") catch return error.OutOfMemory;
         libs.append(a, "vcruntime") catch return error.OutOfMemory;
     }
@@ -537,6 +547,7 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
         .stack_reserve = art.stack,
         .link_flags = art.link_flags.items,
         .honor_defaultlibs = honor_defaultlibs,
+        .link_libc = need_libc,
     }) catch |err| {
         std.debug.print("k2 build: failed to build '{s}': {s}\n", .{ art.name, @errorName(err) });
         return error.CompileFailed;

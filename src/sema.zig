@@ -5651,7 +5651,7 @@ fn isBuiltinValue(name: []const u8) bool {
         "__build_outdir",   "__build_version", "__build_desc",
         "__build_workspace", "__build_outroot", "__build_install",
         "__build_optionflag", "__build_optionstr", "__build_summary",
-        "__build_linkmode", "__build_runtimefile", "__build_nodefaultlibs",
+        "__build_linkmode", "__build_runtimefile", "__build_nodefaultlibs", "__build_linklibc",
         // Compile-time pseudo-modules
         "TARGET",
     }) |builtin| {

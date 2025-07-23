@@ -1294,6 +1294,7 @@ fn buildOpFor(name: []const u8) ?instructions.BuildOp {
         .{ "__build_linkmode", instructions.BuildOp.link_mode },
         .{ "__build_runtimefile", instructions.BuildOp.runtime_file },
         .{ "__build_nodefaultlibs", instructions.BuildOp.no_default_libs },
+        .{ "__build_linklibc", instructions.BuildOp.link_libc },
     };
     inline for (table) |entry| {
         if (std.mem.eql(u8, name, entry[0])) return entry[1];
