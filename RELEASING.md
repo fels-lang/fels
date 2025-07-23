@@ -1,10 +1,14 @@
 # Releasing k2
 
-k2 ships as a **self-contained, relocatable archive**: `k2.exe` plus the LLVM/clang
-DLLs, the `lld` linkers, and the standard library, laid out so the binary finds
-everything relative to itself (see Phase 0 — the runtime resolves `std/` and the
-linker from the exe's directory). Download, extract, run `bin/k2`. No install
-step, and no separate LLVM needed to *use* the compiler.
+k2 ships as a **slim, relocatable core archive**: `k2.exe` plus `LLVM-C.dll`
+(codegen), the `lld` linkers, and the standard library, laid out so the binary
+finds everything relative to itself (see Phase 0 — the runtime resolves `std/`
+and the linker from the exe's directory). Download, extract, run `bin/k2`. No
+install step, and no separate LLVM needed to *use* the compiler.
+
+The core does **not** bundle `libclang` (81 MB) — `k2 bindgen` loads it on demand
+and ships as a separate optional component (`k2-bindgen-<ver>-<target>.zip`). See
+[docs/19_distribution.md](docs/19_distribution.md) for the full model.
 
 ## One-time CI setup
 
@@ -51,8 +55,19 @@ git tag v0.1.0        && git push origin v0.1.0           # → stable release
 
 ```pwsh
 pwsh scripts/package.ps1 -LlvmPath <your-llvm-dir> [-Version 0.1.0-beta.1]
-# → dist/k2-<version>-x86_64-windows.zip
+# → dist/k2-<version>-x86_64-windows.zip          (slim core)
+# → dist/k2-bindgen-<version>-x86_64-windows.zip  (optional libclang component)
 ```
+
+The core archive carries `install.ps1` (Windows); the Linux/macOS archives carry
+`install.sh`. Both copy the layout to a stable prefix and wire up `PATH` +
+`K2_HOME`. The release/nightly workflows publish both the core and the bindgen
+component as assets.
+
+> Heads-up: an aggressive behavioral AV (e.g. G DATA DeepRay) may quarantine the
+> freshly built `k2.exe` or kill the packaging process — a compiler emitting fresh
+> unsigned executables looks like a dropper. Add a build-folder / process
+> exception, or code-sign the release binaries.
 
 ## Known gap
 
