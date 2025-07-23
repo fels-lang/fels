@@ -67,8 +67,11 @@ pub fn build(b: *std.Build) void {
         //   Windows prebuilt (llvm.org): LLVM-C
         //   Linux/macOS:                 LLVM-17 / LLVM
         compiler_mod.linkSystemLibrary("LLVM-C", .{});
-        // libclang (same SDK) powers the C binding generator (`k2 bindgen`).
-        compiler_mod.linkSystemLibrary("libclang", .{});
+        // libclang (the C binding generator, `k2 bindgen`) is deliberately NOT
+        // linked: the include path above gives `@cImport` its types, but the
+        // functions are loaded at runtime via std.DynLib (see clang_c.zig). So
+        // k2.exe carries no dependency on the 81 MB libclang.dll — it ships as
+        // an optional component, loaded only when `k2 bindgen` actually runs.
     }
 
     // ── Optional in-process LLD (k2lld.dll) ───────────────────────────────

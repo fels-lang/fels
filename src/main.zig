@@ -120,7 +120,7 @@ pub fn main(init: std.process.Init) u8 {
     }
 
     // `k2 bindgen <header.h>` generates K2 FFI bindings from a C header.
-    if (std.mem.eql(u8, cmd, "bindgen")) return cmdBindgen(allocator, io, args[2..]);
+    if (std.mem.eql(u8, cmd, "bindgen")) return cmdBindgen(allocator, io, init.environ_map, args[2..]);
 
     // `k2 lsp` starts the language server (JSON-RPC over stdio). No source file.
     if (std.mem.eql(u8, cmd, "lsp")) return k2.runLsp(allocator, io);
@@ -279,7 +279,7 @@ pub fn main(init: std.process.Init) u8 {
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 /// `k2 bindgen <header.h> [--lib <name>] [-o <out.k2>] [-I... -D...] [-- <clang args>]`
-fn cmdBindgen(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8) u8 {
+fn cmdBindgen(allocator: std.mem.Allocator, io: std.Io, env: anytype, args: []const []const u8) u8 {
     if (!k2.llvm_enabled) {
         std.debug.print("k2 bindgen: requires an LLVM-enabled build (libclang).\n    Rebuild: zig build -Dllvm-path=<path>\n", .{});
         return 1;
@@ -320,11 +320,79 @@ fn cmdBindgen(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8
     const out_path = out orelse deriveOut(allocator, header, ".k2");
     defer if (out == null) allocator.free(out_path);
 
-    k2.bindgen.generate(allocator, io, header, lib, out_path, clang_args.items) catch |err| {
+    // libclang is loaded on demand (the core compiler carries no dependency on
+    // it). Resolve it from the usual spots; a clear hint if it's missing.
+    const exe_dir = std.process.executableDirPathAlloc(io, allocator) catch null;
+    defer if (exe_dir) |d| allocator.free(d);
+    loadLibclang(allocator, io, env, exe_dir) catch return 1;
+
+    k2.bindgen.generate(allocator, io, header, lib, out_path, clang_args.items, exe_dir) catch |err| {
         std.debug.print("k2 bindgen: failed: {s}\n", .{@errorName(err)});
         return 1;
     };
     return 0;
+}
+
+/// Find libclang and load it (bindgen only). Order: `$K2_LIBCLANG` (file or dir)
+/// > beside k2.exe > `<exe>/bindgen` > `$K2_LLVM/bin` > the build-time LLVM dir >
+/// the bare name (OS loader search). Prints how to get it on total failure.
+fn loadLibclang(allocator: std.mem.Allocator, io: std.Io, env: anytype, exe_dir: ?[]const u8) !void {
+    const name = switch (@import("builtin").os.tag) {
+        .windows => "libclang.dll",
+        .macos => "libclang.dylib",
+        else => "libclang.so",
+    };
+    // 1. $K2_LIBCLANG — a direct path to the library, or a dir containing it.
+    if (env.get("K2_LIBCLANG")) |v| {
+        if (fileExists(io, v) and tryLoadClang(v)) return;
+        if (tryLoadClangIn(allocator, io, v, name)) return;
+    }
+    // 2/3. Beside k2.exe, then `<exe>/bindgen` (the component layout).
+    if (exe_dir) |ed| {
+        if (tryLoadClangIn(allocator, io, ed, name)) return;
+        if (std.fmt.allocPrint(allocator, "{s}/bindgen", .{ed})) |sub| {
+            defer allocator.free(sub);
+            if (tryLoadClangIn(allocator, io, sub, name)) return;
+        } else |_| {}
+    }
+    // 4/5. `$K2_LLVM/bin`, then the build-time LLVM dir (dev/CI fallback).
+    if (env.get("K2_LLVM")) |r| {
+        if (std.fmt.allocPrint(allocator, "{s}/bin", .{r})) |b| {
+            defer allocator.free(b);
+            if (tryLoadClangIn(allocator, io, b, name)) return;
+        } else |_| {}
+    }
+    if (k2.llvm_path.len != 0) {
+        if (std.fmt.allocPrint(allocator, "{s}/bin", .{k2.llvm_path})) |b| {
+            defer allocator.free(b);
+            if (tryLoadClangIn(allocator, io, b, name)) return;
+        } else |_| {}
+    }
+    // 6. Bare name — the OS loader searches the exe dir, system dirs, PATH.
+    if (tryLoadClang(name)) return;
+
+    std.debug.print(
+        \\k2 bindgen: could not find {s}.
+        \\    bindgen is an optional feature — libclang is not bundled with the core compiler.
+        \\    Provide it any of these ways:
+        \\      - put {s} next to k2.exe (or in a 'bindgen' folder beside it)
+        \\      - set K2_LIBCLANG to its full path
+        \\      - set K2_LLVM to an LLVM install (uses its bin/<libclang>)
+        \\
+    , .{ name, name });
+    return error.LibclangNotFound;
+}
+
+fn tryLoadClang(path: []const u8) bool {
+    k2.bindgen.loadClang(path) catch return false;
+    return true;
+}
+
+fn tryLoadClangIn(allocator: std.mem.Allocator, io: std.Io, dir: []const u8, name: []const u8) bool {
+    const p = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, name }) catch return false;
+    defer allocator.free(p);
+    if (!fileExists(io, p)) return false;
+    return tryLoadClang(p);
 }
 
 fn cmdCheck(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8) u8 {

@@ -95,6 +95,9 @@ else
     BindgenStub;
 
 const BindgenStub = struct {
+    pub fn loadClang(_: []const u8) anyerror!void {
+        return error.ClangNotEnabled;
+    }
     pub fn generate(
         _: std.mem.Allocator,
         _: std.Io,
@@ -102,6 +105,7 @@ const BindgenStub = struct {
         _: ?[]const u8,
         _: []const u8,
         _: []const []const u8,
+        _: ?[]const u8,
     ) anyerror!void {
         return error.ClangNotEnabled;
     }

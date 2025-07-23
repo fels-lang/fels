@@ -16,7 +16,9 @@
 //! typedefs (mapped to a raw pointer), bitfields, and variadics.
 
 const std = @import("std");
-const c = @import("clang_c.zig").c;
+const cc = @import("clang_c.zig");
+const c = cc.c; // libclang types / enums / constants (compile-time, via @cImport)
+const cl = &cc.lib; // libclang functions — resolved at runtime (see clang_c.zig)
 const build_options = @import("build_options");
 const keywordKind = @import("lexer/tokens.zig").keywordKind;
 
@@ -26,6 +28,12 @@ pub const BindgenError = error{
     WriteFailed,
     OutOfMemory,
 };
+
+/// Load libclang from an explicit path (the CLI's resolved location). Optional —
+/// `generate`/`generateString` lazily `ensureLoaded()` a default otherwise.
+pub fn loadClang(path: []const u8) cc.LoadError!void {
+    return cc.load(path);
+}
 
 /// Generate bindings for `header_path` into `out_path`. `lib_name` names the
 /// import library for `#extern`/`#system_library` (defaults to the header stem).
@@ -37,18 +45,22 @@ pub fn generate(
     lib_name: ?[]const u8,
     out_path: []const u8,
     clang_args: []const []const u8,
+    exe_dir: ?[]const u8,
 ) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const lib = lib_name orelse stem(header_path);
-    const index = c.clang_createIndex(0, 0);
-    defer c.clang_disposeIndex(index);
+    // Resolve libclang now (no-op if the CLI already loaded it explicitly).
+    try cc.ensureLoaded();
 
-    const argv = try buildArgv(arena, clang_args, io);
+    const lib = lib_name orelse stem(header_path);
+    const index = cl.clang_createIndex(0, 0);
+    defer cl.clang_disposeIndex(index);
+
+    const argv = try buildArgv(arena, clang_args, io, exe_dir);
     const header_z = try arena.dupeZ(u8, header_path);
-    const tu = c.clang_parseTranslationUnit(
+    const tu = cl.clang_parseTranslationUnit(
         index,
         header_z.ptr,
         argv.ptr,
@@ -61,7 +73,7 @@ pub fn generate(
         std.debug.print("k2 bindgen: clang failed to parse '{s}'\n", .{header_path});
         return error.ParseFailed;
     }
-    defer c.clang_disposeTranslationUnit(tu);
+    defer cl.clang_disposeTranslationUnit(tu);
     reportDiagnostics(tu, header_path);
 
     const text = try emitModule(arena, tu, lib, header_path);
@@ -84,11 +96,13 @@ pub fn generateString(
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const lib = lib_name orelse stem(header_name);
-    const index = c.clang_createIndex(0, 0);
-    defer c.clang_disposeIndex(index);
+    try cc.ensureLoaded();
 
-    const argv = try buildArgv(arena, clang_args, null);
+    const lib = lib_name orelse stem(header_name);
+    const index = cl.clang_createIndex(0, 0);
+    defer cl.clang_disposeIndex(index);
+
+    const argv = try buildArgv(arena, clang_args, null, null);
     const name_z = try arena.dupeZ(u8, header_name);
     const src_z = try arena.dupeZ(u8, source);
     var unsaved = c.CXUnsavedFile{
@@ -96,7 +110,7 @@ pub fn generateString(
         .Contents = src_z.ptr,
         .Length = @intCast(source.len),
     };
-    const tu = c.clang_parseTranslationUnit(
+    const tu = cl.clang_parseTranslationUnit(
         index,
         name_z.ptr,
         argv.ptr,
@@ -106,7 +120,7 @@ pub fn generateString(
         c.CXTranslationUnit_SkipFunctionBodies | c.CXTranslationUnit_DetailedPreprocessingRecord,
     );
     if (tu == null) return error.ParseFailed;
-    defer c.clang_disposeTranslationUnit(tu);
+    defer cl.clang_disposeTranslationUnit(tu);
 
     const text = try emitModule(arena, tu, lib, header_name);
     return gpa.dupe(u8, text);
@@ -114,15 +128,15 @@ pub fn generateString(
 
 /// Default clang command line: Win64 target, C input, the SDK's builtin-header
 /// dir (only when `io` is given), then the caller's `-I`/`-D`/etc.
-fn buildArgv(arena: std.mem.Allocator, clang_args: []const []const u8, io: ?std.Io) ![]const [*c]const u8 {
+fn buildArgv(arena: std.mem.Allocator, clang_args: []const []const u8, io: ?std.Io, exe_dir: ?[]const u8) ![]const [*c]const u8 {
     var argv: std.ArrayList([*c]const u8) = .empty;
     try argv.append(arena, "-x");
     try argv.append(arena, "c");
     try argv.append(arena, "-target");
     try argv.append(arena, "x86_64-pc-windows-msvc");
     // libclang loaded as a DLL doesn't auto-locate its builtin headers
-    // (stddef.h/stdint.h/…). Point it at the SDK's clang resource include dir.
-    if (io) |the_io| if (clangResourceInclude(arena, the_io)) |inc| {
+    // (stddef.h/stdint.h/…). Point it at the clang resource include dir.
+    if (io) |the_io| if (clangResourceInclude(arena, the_io, exe_dir)) |inc| {
         try argv.append(arena, "-isystem");
         try argv.append(arena, (try arena.dupeZ(u8, inc)).ptr);
     };
@@ -148,12 +162,12 @@ fn emitModule(arena: std.mem.Allocator, tu: c.CXTranslationUnit, lib: []const u8
         \\
     , .{ label, lib });
 
-    const root = c.clang_getTranslationUnitCursor(tu);
+    const root = cl.clang_getTranslationUnitCursor(tu);
     const decls = try directChildren(arena, root);
     for (decls) |cursor| {
         // Skip declarations pulled in from system headers — keep the output to
         // the target header's own surface.
-        if (c.clang_Location_isInSystemHeader(c.clang_getCursorLocation(cursor)) != 0) continue;
+        if (cl.clang_Location_isInSystemHeader(cl.clang_getCursorLocation(cursor)) != 0) continue;
         try gen.emitDecl(cursor);
     }
 
@@ -201,10 +215,10 @@ const Generator = struct {
     }
 
     fn emitDecl(self: *Generator, cursor: c.CXCursor) !void {
-        switch (c.clang_getCursorKind(cursor)) {
+        switch (cl.clang_getCursorKind(cursor)) {
             c.CXCursor_FunctionDecl => try self.emitFunction(cursor),
             c.CXCursor_StructDecl, c.CXCursor_UnionDecl => {
-                if (c.clang_isCursorDefinition(cursor) != 0)
+                if (cl.clang_isCursorDefinition(cursor) != 0)
                     try self.emitRecord(cursor, spelling(self.arena, cursor) catch return);
             },
             c.CXCursor_EnumDecl => try self.emitEnum(cursor),
@@ -220,8 +234,8 @@ const Generator = struct {
     ///   * `[CLITERAL](Type){ v, ... }` (raylib colors like `RAYWHITE`)
     ///                                          → a `#run`-folded typed constant
     fn emitMacro(self: *Generator, cursor: c.CXCursor) !void {
-        if (c.clang_Cursor_isMacroFunctionLike(cursor) != 0) return;
-        if (c.clang_Cursor_isMacroBuiltin(cursor) != 0) return;
+        if (cl.clang_Cursor_isMacroFunctionLike(cursor) != 0) return;
+        if (cl.clang_Cursor_isMacroBuiltin(cursor) != 0) return;
 
         const name = try spelling(self.arena, cursor);
         if (name.len == 0 or std.mem.startsWith(u8, name, "_")) return; // skip guards/internal
@@ -256,14 +270,14 @@ const Generator = struct {
     /// the macro name), dropping libclang's spurious trailing token via a source
     /// offset filter.
     fn macroBody(self: *Generator, cursor: c.CXCursor, name: []const u8) ![]const Tok {
-        const range = c.clang_getCursorExtent(cursor);
+        const range = cl.clang_getCursorExtent(cursor);
         var end_off: c_uint = 0;
-        c.clang_getFileLocation(c.clang_getRangeEnd(range), null, null, null, &end_off);
+        cl.clang_getFileLocation(cl.clang_getRangeEnd(range), null, null, null, &end_off);
 
         var toks: [*c]c.CXToken = undefined;
         var n: c_uint = 0;
-        c.clang_tokenize(self.tu, range, &toks, &n);
-        defer c.clang_disposeTokens(self.tu, toks, n);
+        cl.clang_tokenize(self.tu, range, &toks, &n);
+        defer cl.clang_disposeTokens(self.tu, toks, n);
 
         var out: std.ArrayList(Tok) = .empty;
         var seen_name = false;
@@ -271,14 +285,14 @@ const Generator = struct {
         while (i < n) : (i += 1) {
             const t = toks[i];
             var off: c_uint = 0;
-            c.clang_getFileLocation(c.clang_getTokenLocation(self.tu, t), null, null, null, &off);
+            cl.clang_getFileLocation(cl.clang_getTokenLocation(self.tu, t), null, null, null, &off);
             if (off >= end_off) continue; // libclang off-by-one: drop trailing token
-            const text = try cxString(self.arena, c.clang_getTokenSpelling(self.tu, t));
+            const text = try cxString(self.arena, cl.clang_getTokenSpelling(self.tu, t));
             if (!seen_name) {
                 if (std.mem.eql(u8, text, name)) seen_name = true;
                 continue; // skip up to and including the macro name
             }
-            try out.append(self.arena, .{ .kind = tokKind(c.clang_getTokenKind(t)), .text = text });
+            try out.append(self.arena, .{ .kind = tokKind(cl.clang_getTokenKind(t)), .text = text });
         }
         return out.items;
     }
@@ -311,12 +325,12 @@ const Generator = struct {
         if (try self.markEmitted(name)) return;
 
         var params: std.ArrayList(u8) = .empty;
-        const n = c.clang_Cursor_getNumArguments(cursor);
+        const n = cl.clang_Cursor_getNumArguments(cursor);
         var i: c_int = 0;
         while (i < n) : (i += 1) {
-            const arg = c.clang_Cursor_getArgument(cursor, @intCast(i));
+            const arg = cl.clang_Cursor_getArgument(cursor, @intCast(i));
             const pname = try spelling(self.arena, arg);
-            const pty = try self.mapType(c.clang_getCursorType(arg));
+            const pty = try self.mapType(cl.clang_getCursorType(arg));
             if (i != 0) try params.appendSlice(self.arena, ", ");
             if (pname.len != 0)
                 try params.print(self.arena, "{s}: {s}", .{ try self.ident(pname), pty })
@@ -324,7 +338,7 @@ const Generator = struct {
                 try params.print(self.arena, "arg{d}: {s}", .{ i, pty });
         }
 
-        const ret = c.clang_getCursorResultType(cursor);
+        const ret = cl.clang_getCursorResultType(cursor);
         const ret_str = try self.mapType(ret);
         const ret_clause = if (std.mem.eql(u8, ret_str, "void"))
             ""
@@ -332,7 +346,7 @@ const Generator = struct {
             try std.fmt.allocPrint(self.arena, " -> {s}", .{ret_str});
 
         // C variadics aren't representable; bind the fixed parameters and flag it.
-        if (c.clang_isFunctionTypeVariadic(c.clang_getCursorType(cursor)) != 0)
+        if (cl.clang_isFunctionTypeVariadic(cl.clang_getCursorType(cursor)) != 0)
             try self.out.appendSlice(self.arena, "// note: C variadic function — only the fixed parameters are bound\n");
 
         try self.out.print(self.arena,
@@ -351,24 +365,24 @@ const Generator = struct {
         // Unions and bitfield structs can't be field-mapped without breaking the
         // ABI (overlapping / packed storage). Emit a size+align-correct opaque
         // blob instead, so by-value passing stays correct (poke via casts).
-        const is_union = c.clang_getCursorKind(cursor) == c.CXCursor_UnionDecl;
+        const is_union = cl.clang_getCursorKind(cursor) == c.CXCursor_UnionDecl;
         var has_bitfield = false;
         for (fields) |f| {
-            if (c.clang_getCursorKind(f) == c.CXCursor_FieldDecl and c.clang_Cursor_isBitField(f) != 0) {
+            if (cl.clang_getCursorKind(f) == c.CXCursor_FieldDecl and cl.clang_Cursor_isBitField(f) != 0) {
                 has_bitfield = true;
                 break;
             }
         }
         if (is_union or has_bitfield)
-            return self.emitSizedBlob(name, c.clang_getCursorType(cursor), if (is_union) "C union" else "C struct with bitfields");
+            return self.emitSizedBlob(name, cl.clang_getCursorType(cursor), if (is_union) "C union" else "C struct with bitfields");
 
         if (try self.markEmitted(name)) return;
         try self.out.print(self.arena, "pub {s} :: struct {{\n", .{try self.ident(name)});
         var any = false;
         for (fields) |f| {
-            if (c.clang_getCursorKind(f) != c.CXCursor_FieldDecl) continue;
+            if (cl.clang_getCursorKind(f) != c.CXCursor_FieldDecl) continue;
             const fname = try spelling(self.arena, f);
-            const fty = try self.mapType(c.clang_getCursorType(f));
+            const fty = try self.mapType(cl.clang_getCursorType(f));
             try self.out.print(self.arena, "    {s}: {s},\n", .{ try self.ident(fname), fty });
             any = true;
         }
@@ -381,13 +395,13 @@ const Generator = struct {
     fn emitSizedBlob(self: *Generator, name: []const u8, ty: c.CXType, why: []const u8) !void {
         if (name.len == 0) return;
         if (try self.markEmitted(name)) return;
-        const sz = c.clang_Type_getSizeOf(ty);
+        const sz = cl.clang_Type_getSizeOf(ty);
         if (sz <= 0) { // incomplete — fall back to an opaque type
             try self.out.print(self.arena, "pub {s} :: opaque;\n\n", .{try self.ident(name)});
             return;
         }
         try self.out.print(self.arena, "// {s} — opaque storage ({d} bytes); access via casts\n", .{ why, sz });
-        const al = c.clang_Type_getAlignOf(ty);
+        const al = cl.clang_Type_getAlignOf(ty);
         if (al > 1) try self.out.print(self.arena, "#align({d})\n", .{al});
         try self.out.print(self.arena, "pub {s} :: struct {{ _bytes: [{d}]u8 }}\n\n", .{ try self.ident(name), sz });
     }
@@ -398,10 +412,10 @@ const Generator = struct {
         const consts = try directChildren(self.arena, cursor);
         var any = false;
         for (consts) |k| {
-            if (c.clang_getCursorKind(k) != c.CXCursor_EnumConstantDecl) continue;
+            if (cl.clang_getCursorKind(k) != c.CXCursor_EnumConstantDecl) continue;
             const cname = try spelling(self.arena, k);
             if (try self.markEmitted(cname)) continue;
-            const val = c.clang_getEnumConstantDeclValue(k);
+            const val = cl.clang_getEnumConstantDeclValue(k);
             try self.out.print(self.arena, "pub {s} :: {d};\n", .{ try self.ident(cname), val });
             any = true;
         }
@@ -415,11 +429,11 @@ const Generator = struct {
         const name = try spelling(self.arena, cursor);
         if (self.emitted.contains(name)) return;
 
-        const under = c.clang_getTypedefDeclUnderlyingType(cursor);
-        const canon = c.clang_getCanonicalType(under);
+        const under = cl.clang_getTypedefDeclUnderlyingType(cursor);
+        const canon = cl.clang_getCanonicalType(under);
         switch (canon.kind) {
             // typedef struct {...} Name;  → emit the struct under the typedef name.
-            c.CXType_Record => try self.emitRecord(c.clang_getTypeDeclaration(canon), name),
+            c.CXType_Record => try self.emitRecord(cl.clang_getTypeDeclaration(canon), name),
             // typedef enum {...} Name;    → already handled by the EnumDecl; alias the type.
             c.CXType_Enum => {
                 if (!(try self.markEmitted(name)))
@@ -431,7 +445,7 @@ const Generator = struct {
                 // (`Name :: fn(...)` parses as a function decl), so it's expanded
                 // inline at use sites — emit only a note here.
                 if (canon.kind == c.CXType_Pointer) {
-                    const pk = c.clang_getPointeeType(canon).kind;
+                    const pk = cl.clang_getPointeeType(canon).kind;
                     if (pk == c.CXType_FunctionProto or pk == c.CXType_FunctionNoProto) {
                         try self.out.print(self.arena, "// {s}: C function pointer (expanded inline at use sites)\n\n", .{name});
                         return;
@@ -464,17 +478,17 @@ const Generator = struct {
             c.CXType_LongDouble => "f64", // Win64: long double == double (8 bytes)
             c.CXType_Pointer => try self.mapPointer(ty),
             c.CXType_ConstantArray => try std.fmt.allocPrint(self.arena, "[{d}]{s}", .{
-                c.clang_getArraySize(ty),
-                try self.mapType(c.clang_getArrayElementType(ty)),
+                cl.clang_getArraySize(ty),
+                try self.mapType(cl.clang_getArrayElementType(ty)),
             }),
             c.CXType_IncompleteArray => try std.fmt.allocPrint(self.arena, "[*]{s}", .{
-                try self.mapType(c.clang_getArrayElementType(ty)),
+                try self.mapType(cl.clang_getArrayElementType(ty)),
             }),
             c.CXType_Record, c.CXType_Enum, c.CXType_Elaborated => try self.namedType(ty),
             c.CXType_Typedef => blk: {
                 // A typedef to a struct/enum keeps the name; a scalar typedef
                 // (size_t, int32_t, …) resolves to its canonical primitive.
-                const canon = c.clang_getCanonicalType(ty);
+                const canon = cl.clang_getCanonicalType(ty);
                 break :blk switch (canon.kind) {
                     c.CXType_Record, c.CXType_Enum => try self.namedType(ty),
                     else => try self.mapType(canon),
@@ -491,20 +505,20 @@ const Generator = struct {
     fn mapFnType(self: *Generator, fnproto: c.CXType) BindgenError![]const u8 {
         var buf: std.ArrayList(u8) = .empty;
         try buf.appendSlice(self.arena, "fn(");
-        const nargs = @max(c.clang_getNumArgTypes(fnproto), 0);
+        const nargs = @max(cl.clang_getNumArgTypes(fnproto), 0);
         var i: c_int = 0;
         while (i < nargs) : (i += 1) {
             if (i != 0) try buf.appendSlice(self.arena, ", ");
-            try buf.appendSlice(self.arena, try self.mapType(c.clang_getArgType(fnproto, @intCast(i))));
+            try buf.appendSlice(self.arena, try self.mapType(cl.clang_getArgType(fnproto, @intCast(i))));
         }
         try buf.appendSlice(self.arena, ") -> ");
-        try buf.appendSlice(self.arena, try self.mapType(c.clang_getResultType(fnproto)));
+        try buf.appendSlice(self.arena, try self.mapType(cl.clang_getResultType(fnproto)));
         return buf.items;
     }
 
     fn mapPointer(self: *Generator, ty: c.CXType) BindgenError![]const u8 {
-        const pointee = c.clang_getPointeeType(ty);
-        const is_const = c.clang_isConstQualifiedType(pointee) != 0;
+        const pointee = cl.clang_getPointeeType(ty);
+        const is_const = cl.clang_isConstQualifiedType(pointee) != 0;
         return switch (pointee.kind) {
             c.CXType_Void => "*opaque",
             c.CXType_Char_S, c.CXType_Char_U, c.CXType_SChar, c.CXType_UChar =>
@@ -522,7 +536,7 @@ const Generator = struct {
 
     /// Clean name of a record/enum/typedef type (its declaration's spelling).
     fn namedType(self: *Generator, ty: c.CXType) BindgenError![]const u8 {
-        const decl = c.clang_getTypeDeclaration(ty);
+        const decl = cl.clang_getTypeDeclaration(ty);
         const name = spelling(self.arena, decl) catch return error.OutOfMemory;
         if (name.len == 0) return "usize"; // anonymous type used inline — fallback
         self.referenced.put(name, {}) catch {};
@@ -571,13 +585,13 @@ fn cleanLiteral(text: []const u8) ?[]const u8 {
 
 /// A cursor's spelling, duped into `arena`.
 fn spelling(arena: std.mem.Allocator, cursor: c.CXCursor) ![]const u8 {
-    return cxString(arena, c.clang_getCursorSpelling(cursor));
+    return cxString(arena, cl.clang_getCursorSpelling(cursor));
 }
 
 /// Copy a CXString into `arena` and dispose the original.
 fn cxString(arena: std.mem.Allocator, cxstr: c.CXString) ![]const u8 {
-    defer c.clang_disposeString(cxstr);
-    const ptr = c.clang_getCString(cxstr) orelse return "";
+    defer cl.clang_disposeString(cxstr);
+    const ptr = cl.clang_getCString(cxstr) orelse return "";
     return arena.dupe(u8, std.mem.span(ptr));
 }
 
@@ -600,49 +614,64 @@ fn visitCollect(cursor: c.CXCursor, parent: c.CXCursor, data: c.CXClientData) ca
 /// The direct children of `cursor` (one level, no recursion).
 fn directChildren(gpa: std.mem.Allocator, cursor: c.CXCursor) ![]c.CXCursor {
     var col = Collector{ .gpa = gpa };
-    _ = c.clang_visitChildren(cursor, visitCollect, &col);
+    _ = cl.clang_visitChildren(cursor, visitCollect, &col);
     if (col.oom) return error.OutOfMemory;
     return col.list.toOwnedSlice(gpa);
 }
 
 /// Print clang's own parse diagnostics (errors/warnings) to stderr.
 fn reportDiagnostics(tu: c.CXTranslationUnit, header_path: []const u8) void {
-    const n = c.clang_getNumDiagnostics(tu);
+    const n = cl.clang_getNumDiagnostics(tu);
     if (n == 0) return;
     var i: c_uint = 0;
     var errors: u32 = 0;
     while (i < n) : (i += 1) {
-        const diag = c.clang_getDiagnostic(tu, i);
-        defer c.clang_disposeDiagnostic(diag);
-        const sev = c.clang_getDiagnosticSeverity(diag);
+        const diag = cl.clang_getDiagnostic(tu, i);
+        defer cl.clang_disposeDiagnostic(diag);
+        const sev = cl.clang_getDiagnosticSeverity(diag);
         if (sev < c.CXDiagnostic_Error) continue; // only surface errors
         errors += 1;
-        const cxs = c.clang_formatDiagnostic(diag, c.clang_defaultDiagnosticDisplayOptions());
-        defer c.clang_disposeString(cxs);
-        if (c.clang_getCString(cxs)) |s|
+        const cxs = cl.clang_formatDiagnostic(diag, cl.clang_defaultDiagnosticDisplayOptions());
+        defer cl.clang_disposeString(cxs);
+        if (cl.clang_getCString(cxs)) |s|
             std.debug.print("k2 bindgen: {s}\n", .{std.mem.span(s)});
     }
     if (errors != 0)
         std.debug.print("k2 bindgen: {s} parsed with {d} clang error(s); bindings may be incomplete\n", .{ header_path, errors });
 }
 
-/// Discover the clang builtin-header directory shipped with the SDK
-/// (`<llvm>/lib/clang/<version>/include`), so libclang can find stddef.h etc.
-/// Best-effort: returns null if it can't be located (clang then errors on the
-/// missing system headers, but non-dependent declarations still come through).
-fn clangResourceInclude(arena: std.mem.Allocator, io: std.Io) ?[]const u8 {
-    const llvm_path = build_options.llvm_path;
-    if (llvm_path.len == 0) return null;
-    // Probe descending clang major versions for `<llvm>/lib/clang/<v>/include`,
-    // confirming it by reading the stddef.h that lives there.
-    var v: u32 = 30;
-    while (v >= 10) : (v -= 1) {
-        const probe = std.fmt.allocPrint(arena, "{s}/lib/clang/{d}/include/stddef.h", .{ llvm_path, v }) catch return null;
-        const data = std.Io.Dir.cwd().readFileAlloc(io, probe, arena, .unlimited) catch continue;
-        arena.free(data);
-        return std.fmt.allocPrint(arena, "{s}/lib/clang/{d}/include", .{ llvm_path, v }) catch return null;
+/// Discover the clang builtin-header directory (with stddef.h/stdint.h/…), so
+/// libclang can resolve system includes. Relocatable, in priority order:
+///   1. `<exe>/bindgen/clang-headers` — the optional bindgen component's layout
+///   2. `$K2_LLVM/lib/clang/<v>/include` — a user-pointed LLVM install
+///   3. `<build-time llvm>/lib/clang/<v>/include` — the dev/CI fallback
+/// Best-effort: returns null if none is found (clang then errors on missing
+/// system headers, but headers that don't pull them in still come through).
+fn clangResourceInclude(arena: std.mem.Allocator, io: std.Io, exe_dir: ?[]const u8) ?[]const u8 {
+    // 1. Component layout: a flat include dir shipped beside k2.
+    if (exe_dir) |ed| {
+        const flat = std.fmt.allocPrint(arena, "{s}/bindgen/clang-headers", .{ed}) catch return null;
+        if (dirHasStddef(io, arena, flat)) return flat;
+    }
+    // 2. The build-time LLVM tree: `<root>/lib/clang/<v>/include`, descending
+    //    versions (valid on the dev/CI box; the component layout covers releases).
+    const root = build_options.llvm_path;
+    if (root.len != 0) {
+        var v: u32 = 30;
+        while (v >= 10) : (v -= 1) {
+            const inc = std.fmt.allocPrint(arena, "{s}/lib/clang/{d}/include", .{ root, v }) catch continue;
+            if (dirHasStddef(io, arena, inc)) return inc;
+        }
     }
     return null;
+}
+
+/// Confirm `dir` is a real clang include dir by reading the stddef.h in it.
+fn dirHasStddef(io: std.Io, arena: std.mem.Allocator, dir: []const u8) bool {
+    const probe = std.fmt.allocPrint(arena, "{s}/stddef.h", .{dir}) catch return false;
+    const data = std.Io.Dir.cwd().readFileAlloc(io, probe, arena, .unlimited) catch return false;
+    arena.free(data);
+    return true;
 }
 
 /// The file stem of a path (no directory, no extension), for a default lib name.
