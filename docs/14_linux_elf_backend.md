@@ -16,15 +16,19 @@ Use `--target linux` to cross-compile from a Windows host:
 k2 build hello.k2 -o hello --target linux --llvm-path Y:/SDK/LLVM
 # → a static, non-PIE ELF; runs under Linux/WSL with no shared-library deps
 
-k2 build hello.k2 -o hello --target linux-gnu --sysroot <dir-with-libc.so.6> --llvm-path Y:/SDK/LLVM
+k2 build app.k2 -o app --target linux --libc --sysroot <dir-with-libc.so.6> --llvm-path Y:/SDK/LLVM
 # → a normal dynamically-linked glibc ELF (ldd → libc.so.6); _start hands off to
-#   __libc_start_main. The whole stdlib works under either ABI (it uses syscalls).
+#   __libc_start_main, which initializes glibc. `#extern("c", …)` now resolves
+#   against libc.so.6 (verified: getpid, and puts via glibc stdio). The whole k2
+#   stdlib still works under either ABI (it uses syscalls either way).
+#   `--target linux-gnu` is sugar for `--target linux --libc`.
 ```
 
-The entire `std` library (io, heap, time, fs, process, net, thread) runs on Linux
-— only `std.process.set_env`/`unset_env` are unavailable (a missing *language*
-feature, mutable globals; see §0 note). Both the static (`linux`, default) and
-glibc (`linux-gnu`) ABIs are implemented and verified.
+`--libc` (or build.k2 `app.link_libc()`) is the **portable "I need libc" switch**:
+the Windows CRT on Windows, glibc on Linux. The entire `std` library (io, heap,
+time, fs, process — incl. `set_env`, net, thread) runs on Linux — **full parity
+with Windows**. Both the static (`linux`, default) and glibc (`linux --libc`)
+ABIs are implemented and verified.
 
 What works end-to-end (verified under WSL):
 
