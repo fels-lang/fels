@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# One run per ref; a newer push cancels the older in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Fast lane: no external LLVM ──────────────────────────────────────────────
+  # The LLVM backend compiles to a no-op stub without -Dllvm-path, and the
+  # codegen / exe-integration tests skip themselves when LLVM is absent. So this
+  # builds the whole compiler and runs the front-end / sema / IR / comptime-VM
+  # tests (incl. the 74-case VM corpus) with zero heavyweight setup — it catches
+  # the bulk of regressions in ~a minute and gates every PR.
+  check:
+    name: build + test (no LLVM)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+      - name: Build (LLVM backend = stub)
+        run: zig build
+      - name: Test (LLVM-independent suite)
+        run: zig build test
+
+  # ── Full lane: LLVM codegen + exe integration ────────────────────────────────
+  # Builds the real LLVM backend and runs the codegen / exe tests (which compile
+  # and run native binaries). Needs an LLVM prebuilt that ships LLVM-C + libclang
+  # + headers — the same one used locally. Provide it via the repo secret
+  # `LLVM_URL` (a downloadable archive), then flip the `if:` below to `true`.
+  full:
+    name: build + test (LLVM)
+    runs-on: windows-latest
+    # Enable once LLVM_URL is configured (so CI is green meanwhile).
+    if: ${{ false }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+      - name: Cache LLVM
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: llvm
+          key: llvm-${{ vars.LLVM_VERSION || 'pinned' }}-windows
+      - name: Download LLVM
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "${{ secrets.LLVM_URL }}" -OutFile llvm-archive
+          # Adjust the extractor to your archive format (.7z / .zip / .tar.xz).
+          7z x llvm-archive -ollvm
+      - name: Discover the Windows SDK lib dir
+        shell: pwsh
+        run: |
+          $sdk = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Lib" |
+                 Sort-Object Name -Descending | Select-Object -First 1
+          "SDK_LIB=$($sdk.FullName)\um\x64" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build + test (full suite)
+        run: >
+          zig build test
+          -Dllvm-path="${{ github.workspace }}/llvm"
+          -Dwindows-sdk-lib-path="${{ env.SDK_LIB }}"
