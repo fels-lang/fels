@@ -73,6 +73,10 @@ const Options = struct {
     link_libc: bool = false,
     /// Sysroot holding `libc.so.6` for a `linux-gnu` link (`--sysroot`).
     sysroot: []const u8 = "",
+    /// Explicit standard-library root (`--std-path`, the dir containing `std/`).
+    std_path: []const u8 = "",
+    /// True once `--llvm-path` was given, so auto-resolution doesn't override it.
+    llvm_from_flag: bool = false,
 };
 
 pub fn main(init: std.process.Init) u8 {
@@ -164,6 +168,10 @@ pub fn main(init: std.process.Init) u8 {
             if (opts.llvm_bin_owned) allocator.free(opts.llvm_bin);
             opts.llvm_bin = std.fmt.allocPrint(allocator, "{s}/bin", .{args[i]}) catch return 1;
             opts.llvm_bin_owned = true;
+            opts.llvm_from_flag = true;
+        } else if (std.mem.eql(u8, a, "--std-path") and i + 1 < args.len) {
+            i += 1;
+            opts.std_path = args[i];
         } else if (std.mem.eql(u8, a, "--lib-path") and i + 1 < args.len) {
             i += 1;
             opts.lib_paths.append(allocator, args[i]) catch return 1;
@@ -218,6 +226,27 @@ pub fn main(init: std.process.Init) u8 {
     if (opts.link_libc and opts.target_os == .windows) {
         opts.extra_libs.append(allocator, "ucrt") catch return 1;
         opts.extra_libs.append(allocator, "vcruntime") catch return 1;
+    }
+
+    // ── Relocatable runtime: find the stdlib + the LLVM/linker dir wherever k2 is
+    // installed, so the binary isn't tied to its build machine. Resolved paths
+    // live on the process arena (cleaned at exit).
+    {
+        const ra = init.arena.allocator();
+        const exe_dir: ?[]const u8 = std.process.executableDirPathAlloc(io, ra) catch null;
+        // std root (dir containing `std/`): --std-path > $K2_STD > $K2_HOME/lib >
+        // exe-relative (lib, ../lib, ../../lib) > build-baked.
+        if (resolveStdRoot(ra, io, init.environ_map, opts.std_path, exe_dir)) |root|
+            k2.pipeline_mod.stdlib_root_override = root;
+        // LLVM/linker dir (lld + the LLVM-C/clang DLLs): --llvm-path (set above) >
+        // $K2_LLVM > lld next to k2.exe > build-baked (set above).
+        if (!opts.llvm_from_flag) {
+            if (resolveLlvmBin(ra, io, init.environ_map, exe_dir)) |bin| {
+                if (opts.llvm_bin_owned) allocator.free(opts.llvm_bin);
+                opts.llvm_bin = bin;
+                opts.llvm_bin_owned = false; // arena-owned
+            }
+        }
     }
 
     const cwd = std.Io.Dir.cwd();
@@ -479,6 +508,51 @@ fn fileExists(io: std.Io, path: []const u8) bool {
     const data = std.Io.Dir.cwd().readFileAlloc(io, path, std.heap.page_allocator, .unlimited) catch return false;
     std.heap.page_allocator.free(data);
     return true;
+}
+
+// ── Relocatable-runtime path resolution ──────────────────────────────────────
+
+/// True if `dir/<rel>` exists (probe via the page allocator, freed immediately).
+fn dirHasFile(io: std.Io, dir: []const u8, rel: []const u8) bool {
+    const probe = std.fmt.allocPrint(std.heap.page_allocator, "{s}/{s}", .{ dir, rel }) catch return false;
+    defer std.heap.page_allocator.free(probe);
+    return fileExists(io, probe);
+}
+
+/// Find the standard-library root (the directory containing `std/`), returning a
+/// path allocated on `ra` (the process arena). Order: `--std-path` > `$K2_STD` >
+/// `$K2_HOME/lib` > exe-relative (`lib`, `../lib`, `../../lib`) > build-baked.
+fn resolveStdRoot(ra: std.mem.Allocator, io: std.Io, env: anytype, flag: []const u8, exe_dir: ?[]const u8) ?[]const u8 {
+    if (flag.len > 0) return ra.dupe(u8, flag) catch null;
+    if (env.get("K2_STD")) |v|
+        if (dirHasFile(io, v, "std/io.k2")) return ra.dupe(u8, v) catch null;
+    if (env.get("K2_HOME")) |home| {
+        if (std.fmt.allocPrint(ra, "{s}/lib", .{home}) catch null) |c|
+            if (dirHasFile(io, c, "std/io.k2")) return c;
+    }
+    if (exe_dir) |ed| {
+        for ([_][]const u8{ "lib", "../lib", "../../lib" }) |rel| {
+            const cand = std.fmt.allocPrint(ra, "{s}/{s}", .{ ed, rel }) catch continue;
+            if (dirHasFile(io, cand, "std/io.k2")) return cand;
+        }
+    }
+    if (k2.stdlib_root.len > 0 and dirHasFile(io, k2.stdlib_root, "std/io.k2"))
+        return ra.dupe(u8, k2.stdlib_root) catch null;
+    return null;
+}
+
+/// Find the LLVM/linker bin dir (with `lld-link`/`ld.lld` + the LLVM DLLs).
+/// Order: `$K2_LLVM/bin` > the exe's own dir (lld shipped beside k2) > null
+/// (keep whatever was already resolved from `--llvm-path` / the build-baked path).
+fn resolveLlvmBin(ra: std.mem.Allocator, io: std.Io, env: anytype, exe_dir: ?[]const u8) ?[]const u8 {
+    const lld = if (@import("builtin").os.tag == .windows) "lld-link.exe" else "ld.lld";
+    if (env.get("K2_LLVM")) |v| {
+        if (std.fmt.allocPrint(ra, "{s}/bin", .{v}) catch null) |b|
+            if (dirHasFile(io, b, lld)) return b;
+    }
+    if (exe_dir) |ed|
+        if (dirHasFile(io, ed, lld)) return ra.dupe(u8, ed) catch null;
+    return null;
 }
 
 // ── Stats ───────────────────────────────────────────────────────────────────────

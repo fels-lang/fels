@@ -60,6 +60,13 @@ pub const CompileError = error{
     OutOfMemory,
 };
 
+/// Runtime override for the standard-library root (the directory containing
+/// `std/`). `null` → use the build-baked `build_options.stdlib_root`. The CLI
+/// resolves this from an installed/dev layout (`--std-path`, `$K2_STD`,
+/// `$K2_HOME/lib`, or exe-relative) so one binary finds its stdlib wherever it
+/// lands. Set once at startup; the compiler is single-threaded per build.
+pub var stdlib_root_override: ?[]const u8 = null;
+
 // ── Public entry points ───────────────────────────────────────────────────────
 
 /// Compile source text directly (no file I/O).
@@ -254,6 +261,12 @@ fn loadFile(
 
     const source = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| {
         std.debug.print("{s}: error: cannot read imported module: {s}\n", .{ path, @errorName(err) });
+        // A missing `std/...` module almost always means the compiler can't find
+        // its standard library — point the user at the relocation knobs.
+        if (std.mem.indexOf(u8, path, "std") != null) {
+            std.debug.print("  hint: the k2 standard library wasn't found at this path. " ++
+                "Set K2_HOME to your k2 install dir, or pass --std-path <dir-containing-std>.\n", .{});
+        }
         return err;
     };
     if (is_root) root_source.* = source;
@@ -266,7 +279,7 @@ fn loadFile(
     for (parsed.module.items) |item| {
         switch (item) {
             .import => |imp| {
-                const resolved = try resolveImportPath(allocator, dir, imp.path, build_options.stdlib_root);
+                const resolved = try resolveImportPath(allocator, dir, imp.path, stdlib_root_override orelse build_options.stdlib_root);
                 var resolved_import = imp;
                 resolved_import.resolved_file = resolved;
                 try all_items.append(allocator, .{ .import = resolved_import });
