@@ -82,6 +82,10 @@ pub const LlvmBackend = struct {
             const fltused = llvm_c.LLVMAddGlobal(self.cg.mod, i32_ty, "_fltused");
             llvm_c.LLVMSetInitializer(fltused, llvm_c.LLVMConstInt(i32_ty, 1, 0));
             llvm_c.LLVMSetLinkage(fltused, llvm_c.LLVMExternalLinkage);
+
+            // The k2lnk import map (a `.k2imp` section). Lets the self-hosted
+            // linker resolve each import's DLL without parsing any `.lib`.
+            try emitImportMap(&self.cg, module);
         }
 
         // Auto-generate the platform entry point. Windows: a `mainCRTStartup` that
@@ -169,6 +173,34 @@ pub const linkWindows = link.windows;
 //   }
 //
 // This replaces k2rt — no separate object file to compile or distribute.
+
+/// Emit the k2lnk import map as a `.k2imp` COFF section: a flat list of
+/// `symbol\0dll\0` records, one per `#extern("dll","symbol")` import. The
+/// self-hosted linker reads this to know each undefined symbol's DLL directly —
+/// no `.lib` archive parsing (LLD's biggest cost). LLD ignores the section.
+fn emitImportMap(cg: *ctx_mod.ModuleCg, module: ir.IrModule) !void {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(cg.allocator);
+    for (module.functions) |f| {
+        const sym = f.extern_name orelse continue;
+        const lib = f.extern_lib orelse continue;
+        if (sym.len == 0 or lib.len == 0) continue;
+        try buf.appendSlice(cg.allocator, sym);
+        try buf.append(cg.allocator, 0);
+        try buf.appendSlice(cg.allocator, lib);
+        try buf.append(cg.allocator, 0);
+    }
+    if (buf.items.len == 0) return; // no DLL imports — nothing for k2lnk to map
+
+    const i8_ty = llvm_c.LLVMInt8TypeInContext(cg.ctx);
+    const arr_ty = llvm_c.LLVMArrayType(i8_ty, @intCast(buf.items.len));
+    const init = llvm_c.LLVMConstStringInContext(cg.ctx, buf.items.ptr, @intCast(buf.items.len), 1);
+    const g = llvm_c.LLVMAddGlobal(cg.mod, arr_ty, "__k2_import_map");
+    llvm_c.LLVMSetInitializer(g, init);
+    llvm_c.LLVMSetLinkage(g, llvm_c.LLVMExternalLinkage);
+    llvm_c.LLVMSetGlobalConstant(g, 1);
+    llvm_c.LLVMSetSection(g, ".k2imp");
+}
 
 fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {
     // Declare ExitProcess(u32) if not already present.
