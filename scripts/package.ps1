@@ -18,6 +18,9 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+# Resolve a relative output dir against the repo, not the caller's cwd — so the
+# script works run from anywhere (e.g. C:\Windows\System32), not only repo root.
+if (-not [System.IO.Path]::IsPathRooted($OutDir)) { $OutDir = Join-Path $repo $OutDir }
 
 # 1. Build the compiler (release), injecting the version when given.
 $buildArgs = @("build", "-Dllvm-path=$LlvmPath", "-Doptimize=$Optimize")
