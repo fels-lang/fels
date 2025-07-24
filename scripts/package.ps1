@@ -2,7 +2,7 @@
 #
 # Produces  dist/k2-<version>-x86_64-windows.zip  laid out as:
 #   k2-<version>-x86_64-windows/
-#     bin/   k2.exe, LLVM-C.dll, lld-link.exe, ld.lld.exe
+#     bin/   k2.exe, LLVM-C.dll, k2lld.dll (in-process linker)
 #     lib/   std/...
 #     LICENSE-*.txt, NOTICE, README.md, VERSION.txt
 # which the relocatable runtime (Phase 0) finds with no flags: std via ../lib,
@@ -23,7 +23,9 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if (-not [System.IO.Path]::IsPathRooted($OutDir)) { $OutDir = Join-Path $repo $OutDir }
 
 # 1. Build the compiler (release), injecting the version when given.
-$buildArgs = @("build", "-Dllvm-path=$LlvmPath", "-Doptimize=$Optimize")
+# -Din-process-lld builds k2lld.dll so the release links COFF in-process instead
+# of shipping (and spawning) a 69 MB lld-link.exe.
+$buildArgs = @("build", "-Dllvm-path=$LlvmPath", "-Doptimize=$Optimize", "-Din-process-lld")
 if ($Version) { $buildArgs += "-Dversion=$Version" }
 Write-Host "==> zig $($buildArgs -join ' ')"
 Push-Location $repo
@@ -50,20 +52,17 @@ New-Item -ItemType Directory -Force (Join-Path $stage "bin") | Out-Null
 
 Copy-Item (Join-Path $repo "zig-out/bin/k2.exe") (Join-Path $stage "bin")
 
-# Required runtime deps; ld.lld (Linux cross-link) optional. libclang is NOT
-# here - k2 loads it on demand only for `k2 bindgen`, so it ships as the separate
-# bindgen component below (keeps the core archive ~81 MB lighter).
-$required = @("LLVM-C.dll", "lld-link.exe")
-$optional = @("ld.lld.exe")
-foreach ($f in $required) {
-    $src = Join-Path $LlvmPath "bin/$f"
-    if (-not (Test-Path $src)) { throw "required dependency not found: $src" }
-    Copy-Item $src (Join-Path $stage "bin")
-}
-foreach ($f in $optional) {
-    $src = Join-Path $LlvmPath "bin/$f"
-    if (Test-Path $src) { Copy-Item $src (Join-Path $stage "bin") } else { Write-Host "  (skipping optional $f)" }
-}
+# In-process linker: k2lld.dll (built above) replaces a spawned 69 MB lld-link.exe.
+# k2 LoadLibrary's it at link time; no standalone linker exe in the core.
+$k2lld = Join-Path $repo "zig-out/bin/k2lld.dll"
+if (-not (Test-Path $k2lld)) { throw "k2lld.dll missing - build must use -Din-process-lld" }
+Copy-Item $k2lld (Join-Path $stage "bin")
+
+# LLVM-C.dll (codegen) is the only LLVM DLL the core needs. libclang (bindgen)
+# and ld.lld.exe (Linux cross-link) are separate opt-in components below.
+$llvmc = Join-Path $LlvmPath "bin/LLVM-C.dll"
+if (-not (Test-Path $llvmc)) { throw "required dependency not found: $llvmc" }
+Copy-Item $llvmc (Join-Path $stage "bin")
 
 Copy-Item -Recurse (Join-Path $repo "lib") (Join-Path $stage "lib")
 foreach ($m in @("LICENSE-APACHE-2.0.txt", "LICENSE-GPLv3.txt", "NOTICE", "README.md")) {
@@ -115,6 +114,32 @@ k2 finds libclang here on demand; the core compiler never loads it.
     Write-Host "  (no libclang.dll in $LlvmPath/bin - skipping bindgen component)"
 }
 
+# 5b. Optional linux cross-compile component - ld.lld (the ELF linker for
+# `k2 build --target linux`). Windows linking is in-process (k2lld.dll); only
+# cross-compiling to Linux needs this, so it ships separately. Drop ld.lld.exe
+# into bin/ next to k2.exe; the runtime resolves it there (LLVM-C.dll marker).
+$xZip = ""
+$ldlld = Join-Path $LlvmPath "bin/ld.lld.exe"
+if (Test-Path $ldlld) {
+    $xRoot = Join-Path $OutDir "linux-cross-stage"
+    if (Test-Path $xRoot) { Remove-Item -Recurse -Force $xRoot }
+    New-Item -ItemType Directory -Force $xRoot | Out-Null
+    Copy-Item $ldlld $xRoot
+    @"
+k2 linux cross-compile component (ld.lld).
+
+Put ld.lld.exe into k2's bin/ (next to k2.exe). Then you can cross-compile to
+Linux from Windows:
+
+    k2 build <file.k2> --target linux              # static, no-libc ELF
+    k2 build <file.k2> --target linux-gnu --sysroot <dir>   # glibc ELF
+"@ | Out-File -Encoding ascii (Join-Path $xRoot "README.txt")
+    $xZip = Join-Path $OutDir "k2-linux-cross-$fileVer-x86_64-windows.zip"
+    if (Test-Path $xZip) { Remove-Item -Force $xZip }
+    Compress-Archive -Path (Join-Path $xRoot "*") -DestinationPath $xZip
+    Write-Host ("==> linux-cross component: $xZip  ({0:N1} MB)" -f ((Get-Item $xZip).Length / 1MB))
+}
+
 # 6. Emit outputs for CI.
 if ($env:GITHUB_OUTPUT) {
     "archive=$zip"     | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
@@ -124,5 +149,9 @@ if ($env:GITHUB_OUTPUT) {
     if ($bgZip) {
         "bindgen_archive=$bgZip" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
         "bindgen_archive_name=k2-bindgen-$fileVer-x86_64-windows.zip" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+    }
+    if ($xZip) {
+        "linux_cross_archive=$xZip" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+        "linux_cross_archive_name=k2-linux-cross-$fileVer-x86_64-windows.zip" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
     }
 }

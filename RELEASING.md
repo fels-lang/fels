@@ -1,10 +1,11 @@
 # Releasing k2
 
 k2 ships as a **slim, relocatable core archive**: `k2.exe` plus `LLVM-C.dll`
-(codegen), the `lld` linkers, and the standard library, laid out so the binary
-finds everything relative to itself (see Phase 0 — the runtime resolves `std/`
-and the linker from the exe's directory). Download, extract, run `bin/k2`. No
-install step, and no separate LLVM needed to *use* the compiler.
+(codegen) and `k2lld.dll` (the in-process COFF linker — no spawned `lld-link.exe`),
+and the standard library, laid out so the binary finds everything relative to
+itself (see Phase 0 — the runtime resolves `std/` from the exe's directory).
+Download, extract, run `bin/k2`. No install step, and no separate LLVM needed to
+*use* the compiler.
 
 The core does **not** bundle `libclang` (81 MB) — `k2 bindgen` loads it on demand
 and ships as a separate optional component (`k2-bindgen-<ver>-<target>.zip`). See
@@ -55,8 +56,9 @@ git tag v0.1.0        && git push origin v0.1.0           # → stable release
 
 ```pwsh
 pwsh scripts/package.ps1 -LlvmPath <your-llvm-dir> [-Version 0.1.0-beta.1]
-# → dist/k2-<version>-x86_64-windows.zip          (slim core)
-# → dist/k2-bindgen-<version>-x86_64-windows.zip  (optional libclang component)
+# → dist/k2-<version>-x86_64-windows.zip              (slim core, in-process LLD)
+# → dist/k2-bindgen-<version>-x86_64-windows.zip      (optional libclang component)
+# → dist/k2-linux-cross-<version>-x86_64-windows.zip  (optional ld.lld for --target linux)
 ```
 
 The core archive carries `install.ps1` (Windows); the Linux/macOS archives carry

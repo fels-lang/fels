@@ -609,11 +609,14 @@ fn resolveStdRoot(ra: std.mem.Allocator, io: std.Io, env: anytype, flag: []const
     return null;
 }
 
-/// Find the LLVM/linker bin dir (with `lld-link`/`ld.lld` + the LLVM DLLs).
-/// Order: `$K2_LLVM/bin` > the exe's own dir (lld shipped beside k2) > null
-/// (keep whatever was already resolved from `--llvm-path` / the build-baked path).
+/// Find the LLVM/linker bin dir (the LLVM DLLs + any linker shipped beside k2).
+/// Order: `$K2_LLVM/bin` > the exe's own dir > null (keep what `--llvm-path` /
+/// the build-baked path resolved). Marker is `LLVM-C.dll`: it's in both an LLVM
+/// install and the k2 core bin, and unlike `lld-link.exe` it survives the switch
+/// to in-process linking (k2lld.dll). The Linux cross-linker `ld.lld.exe`, when
+/// shipped, lives in this same dir, so cross-compiles resolve it here too.
 fn resolveLlvmBin(ra: std.mem.Allocator, io: std.Io, env: anytype, exe_dir: ?[]const u8) ?[]const u8 {
-    const lld = if (@import("builtin").os.tag == .windows) "lld-link.exe" else "ld.lld";
+    const lld = if (@import("builtin").os.tag == .windows) "LLVM-C.dll" else "ld.lld";
     if (env.get("K2_LLVM")) |v| {
         if (std.fmt.allocPrint(ra, "{s}/bin", .{v}) catch null) |b|
             if (dirHasFile(io, b, lld)) return b;

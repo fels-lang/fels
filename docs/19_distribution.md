@@ -11,9 +11,11 @@ The compiler links exactly what it needs to *compile and link your code*:
 | Dependency | Why | Shipped in core |
 | --- | --- | --- |
 | `LLVM-C.dll` | code generation | yes (~69 MB) |
-| `lld-link.exe` / `ld.lld.exe` | linking (Windows / Linux) | yes |
+| `k2lld.dll` | **in-process** COFF linker (Windows) | yes (~65 MB) |
 | `lib/std` | the standard library (k2 source) | yes |
-| `libclang.dll` | **only** `k2 bindgen` (C-header → bindings) | **no** — see §3 |
+| `lld-link.exe` | spawned COFF linker | **no** — replaced by `k2lld.dll` (§2.5) |
+| `ld.lld.exe` | ELF linker, `--target linux` only | **no** — cross component (§3) |
+| `libclang.dll` | **only** `k2 bindgen` (C-header → bindings) | **no** — bindgen component (§3) |
 
 `libclang` is **81 MB** and is used by a single, optional subcommand most users
 never run. Linking it would force every `k2.exe` to load it just to *start*
@@ -51,10 +53,28 @@ If none resolve, `k2 bindgen` prints exactly how to provide it. The clang
 *resource headers* (`stddef.h`, …) resolve in parallel: `<exe>/bindgen/clang-headers`
 first, then the build-time LLVM tree.
 
-## 3. The bindgen component
+## 2.5 In-process linking (no spawned linker exe)
 
-`k2 bindgen` ships as a **separate download**, `k2-bindgen-<ver>-<target>.zip`,
-containing a single `bindgen/` folder:
+k2 compiles to a `.o`, then needs a linker to make the final `.exe`. Rather than
+ship and *spawn* the 69 MB `lld-link.exe`, the LLD COFF driver is built into
+**`k2lld.dll`** (`-Din-process-lld` → `src/backend/llvm/lld_shim.cpp`), which k2
+`LoadLibrary`s and calls in-process — no subprocess, faster, and no standalone
+linker executable in the distribution. The spawn path (`lld-link.exe`) remains a
+fallback only if `k2lld.dll` is somehow absent. LLD is ~65 MB either way (it
+carries its own LLVM object-handling code), so this is an *architecture* win, not
+a raw-size one — the size win comes from no longer shipping **two** 69 MB LLD
+exes (`lld-link` + `ld.lld`).
+
+The truly small linker is k2's own native PE/COFF linker (`k2lnk`); once it
+handles `.lib` imports + multi-object + DLL output it can replace LLD entirely.
+
+## 3. Optional components
+
+Two features ship as **separate downloads** instead of bloating the core. Each is
+a folder you drop next to `k2.exe` (in `bin/`); the runtime finds it there with no
+LLVM install and no environment variables.
+
+**`k2-bindgen-<ver>-<target>.zip`** — `k2 bindgen` (C-header → bindings):
 
 ```
 bindgen/
@@ -63,20 +83,30 @@ bindgen/
   README.txt
 ```
 
-Drop that `bindgen/` folder next to `k2.exe` (in `bin/`) and binding generation
-"just works" — `k2` finds both libclang and the headers there, with no LLVM
-install and no environment variables. Without it, the core is fully functional;
-only `k2 bindgen` is unavailable.
+**`k2-linux-cross-<ver>-<target>.zip`** — `k2 build --target linux`:
+
+```
+ld.lld.exe              # the ELF linker; drop into bin/ next to k2.exe
+README.txt
+```
+
+(`ld.lld.exe` is resolved from k2's `bin/` via the `LLVM-C.dll` marker — see
+`resolveLlvmBin`.) Without either component the core is fully functional; only
+that one feature is unavailable.
 
 ## 4. Packaging (`scripts/package.ps1`)
 
 Builds k2 (ReleaseSafe) and emits, into `dist/`:
 
 - **`k2-<ver>-<target>.zip`** — the relocatable core: `bin/` (k2.exe + LLVM-C +
-  the lld linkers), `lib/std`, the licenses, `VERSION.txt`, and the platform
-  installer. The Phase 0 runtime finds the stdlib + linker relative to `k2.exe`,
-  so it runs from anywhere with no flags.
-- **`k2-bindgen-<ver>-<target>.zip`** — the optional component above (§3).
+  `k2lld.dll`), `lib/std`, the licenses, `VERSION.txt`, and the platform
+  installer. The Phase 0 runtime finds the stdlib relative to `k2.exe`, so it
+  runs from anywhere with no flags.
+- **`k2-bindgen-<ver>-<target>.zip`** — the bindgen component (§3).
+- **`k2-linux-cross-<ver>-<target>.zip`** — the Linux cross-compile component (§3).
+
+It builds with `-Din-process-lld` so the core ships `k2lld.dll` instead of a
+spawned `lld-link.exe`.
 
 The binary-reported version is the single source of truth; the asset filename
 drops the `+<sha>` build metadata for URL-friendliness.
@@ -96,8 +126,16 @@ carries the right ones, so the installer just keeps `bin/` and `lib/` together.
 
 ## 6. Size
 
-Dropping `libclang` from the core takes the Windows archive from **110 MB → 78 MB**
-(~30 % smaller) while keeping `k2 bindgen` available as a 31 MB opt-in. The next
-size lever is **static-linking `LLVM-C`** into `k2.exe` (à la C3's single
-`c3c.exe`), which removes `LLVM-C.dll` as a separate file; the static LLVM libs
-are already wired for `-Din-process-lld`.
+The Windows core archive, compressed:
+
+| Step | Size |
+| --- | --- |
+| Original (libclang + both LLD exes in core) | 110 MB |
+| − `libclang` → bindgen component | 78 MB |
+| − `lld-link.exe`/`ld.lld.exe` → in-process `k2lld.dll` + cross component | **50 MB** |
+
+So ~**55 % smaller** than where we started, with `k2 bindgen` (31 MB) and Linux
+cross-compile (26 MB) available as opt-ins. The next size lever is
+**static-linking `LLVM-C`** into `k2.exe` (à la C3's single `c3c.exe`), which
+removes `LLVM-C.dll` as a separate file; the static LLVM libs are already wired
+for `-Din-process-lld`.
