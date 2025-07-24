@@ -25,16 +25,15 @@ const K2LinkFn = *const fn (in_path: [*:0]const u8, out_path: [*:0]const u8) cal
 fn k2lnkEligible(opts: WindowsLinkOptions) bool {
     if (opts.dll) return false;
     if (opts.obj_files.len != 1) return false;
-    for (opts.libs) |lib| {
-        if (!std.mem.eql(u8, lib, "kernel32")) return false;
-    }
+    // Imports from any DLL are fine — k2lnk reads the compiler's `.k2imp` map and
+    // fails cleanly (→ LLD) on a symbol it can't map (e.g. a static-CRT symbol).
     // k2lnk writes a fixed PE (console subsystem, `mainCRTStartup` entry, default
     // stack, no extra flags). Anything that overrides those must use LLD.
     if (opts.subsystem != .console) return false;
     if (opts.entry != null) return false;
     if (opts.stack_reserve != 0) return false;
     if (opts.extra_flags.len != 0) return false;
-    if (opts.honor_defaultlibs) return false; // k2lnk can't parse /DEFAULTLIB directives
+    if (opts.honor_defaultlibs) return false; // /DEFAULTLIB pulls in static CRT objects
     return true;
 }
 
@@ -357,10 +356,6 @@ pub fn linkLinux(
 fn lldFallbackReason(opts: WindowsLinkOptions, obj_bytes: ?[]const u8) ?[]const u8 {
     if (opts.dll) return "output is a shared library";
     if (opts.obj_files.len != 1) return "multiple object files (k2lnk links one object)";
-    for (opts.libs) |lib| {
-        if (!std.mem.eql(u8, lib, "kernel32"))
-            return "links a non-kernel32 import library (k2lnk can't read .lib archives yet)";
-    }
     if (opts.subsystem != .console or opts.entry != null or opts.stack_reserve != 0 or opts.extra_flags.len != 0)
         return "custom linker settings (subsystem/entry/stack/flags) k2lnk can't apply";
     if (opts.honor_defaultlibs)
