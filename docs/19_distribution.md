@@ -65,8 +65,25 @@ carries its own LLVM object-handling code), so this is an *architecture* win, no
 a raw-size one — the size win comes from no longer shipping **two** 69 MB LLD
 exes (`lld-link` + `ld.lld`).
 
-The truly small linker is k2's own native PE/COFF linker (`k2lnk`); once it
-handles `.lib` imports + multi-object + DLL output it can replace LLD entirely.
+## 2.6 The self-hosted native linker (k2lnk)
+
+The release also ships **`k2lnk.dll`** — a PE/COFF linker **written in k2 itself**
+(`linker/k2lnk.k2`). k2 prefers it for eligible programs and falls back to
+`k2lld.dll`/LLD for the rest. Its defining trick, and why it's fast and
+*k2-specific*: it never parses a `.lib` import archive (LLD's single biggest
+cost). The compiler already knows every import's DLL from `#extern("dll","sym")`
+and emits a `.k2imp` map section; k2lnk reads that and synthesizes one PE import
+descriptor per DLL directly.
+
+What it does today (single object): reads the AMD64 COFF, keeps `.text`/`.rdata`/
+`.data`/`.bss`, builds **multi-DLL** import tables from the map, applies the
+REL32 / ADDR64 / ADDR32NB relocations, and writes a running PE32+ console exe.
+The full exe-integration suite links through it. Remaining for full parity (then
+it can replace LLD outright): merging duplicate-named sections (float constant
+pools), custom subsystem/entry/stack (GUI, games), DLL output, and `.pdata`/
+`.xdata` unwind tables. Anything it can't do yet falls back to LLD automatically,
+so it's always safe. Bootstrapped via LLD; built by `package.ps1` with the
+just-built compiler.
 
 ## 3. Optional components
 
