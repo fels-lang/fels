@@ -75,15 +75,21 @@ cost). The compiler already knows every import's DLL from `#extern("dll","sym")`
 and emits a `.k2imp` map section; k2lnk reads that and synthesizes one PE import
 descriptor per DLL directly.
 
-What it does today (single object): reads the AMD64 COFF, keeps `.text`/`.rdata`/
-`.data`/`.bss`, builds **multi-DLL** import tables from the map, applies the
-REL32 / ADDR64 / ADDR32NB relocations, and writes a running PE32+ console exe.
-The full exe-integration suite links through it. Remaining for full parity (then
-it can replace LLD outright): merging duplicate-named sections (float constant
-pools), custom subsystem/entry/stack (GUI, games), DLL output, and `.pdata`/
-`.xdata` unwind tables. Anything it can't do yet falls back to LLD automatically,
-so it's always safe. Bootstrapped via LLD; built by `package.ps1` with the
-just-built compiler.
+It is a **full single-object COFF linker**: it reads the AMD64 COFF, classifies
+and **merges sections by class** (`.text`/`.rdata`+`.xdata`/`.data`/`.pdata`/
+`.bss`) honoring each section's required alignment (16/32/64-byte SIMD pools at
+-O2), builds **multi-DLL** import tables from the `.k2imp` map, applies the
+REL32 / ADDR64 / ADDR32NB relocations, keeps `.pdata`/`.xdata` and wires the
+exception directory, and writes a PE32+ image with the requested **subsystem**
+(console/GUI), **entry**, and **stack**. It also produces **DLLs** — building an
+export table (`.edata`) from the compiler's `.k2exp` map — which means **k2lnk
+builds itself**: the shipped `k2lnk.dll` is linked by `k2lnk`.
+
+The whole exe-integration suite links through it at `-O2`. It bails to LLD only on
+the genuinely hard cases (multiple objects, raw linker flags, a C library's
+`/DEFAULTLIB` static-CRT objects), always safely. The first DLL-capable
+`k2lnk.dll` is bootstrapped via LLD (the prior one couldn't emit a DLL); after
+that it self-hosts. `package.ps1` builds it with the just-built compiler.
 
 ## 3. Optional components
 
