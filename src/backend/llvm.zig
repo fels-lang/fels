@@ -86,6 +86,9 @@ pub const LlvmBackend = struct {
             // The k2lnk import map (a `.k2imp` section). Lets the self-hosted
             // linker resolve each import's DLL without parsing any `.lib`.
             try emitImportMap(&self.cg, module);
+            // The export map (`.k2exp`) — `#export`ed symbol names, so k2lnk can
+            // build a DLL's export table (.edata) without /EXPORT: directives.
+            try emitExportMap(&self.cg, module);
         }
 
         // Auto-generate the platform entry point. Windows: a `mainCRTStartup` that
@@ -200,6 +203,30 @@ fn emitImportMap(cg: *ctx_mod.ModuleCg, module: ir.IrModule) !void {
     llvm_c.LLVMSetLinkage(g, llvm_c.LLVMExternalLinkage);
     llvm_c.LLVMSetGlobalConstant(g, 1);
     llvm_c.LLVMSetSection(g, ".k2imp");
+}
+
+/// Emit the k2lnk export map as a `.k2exp` section: a flat list of `name\0`
+/// records, one per `#export`ed function. k2lnk reads it to build a DLL's export
+/// directory (.edata) — no `/EXPORT:` linker directives, no .drectve parsing.
+fn emitExportMap(cg: *ctx_mod.ModuleCg, module: ir.IrModule) !void {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(cg.allocator);
+    for (module.functions) |f| {
+        const name = f.export_sym orelse continue;
+        if (name.len == 0) continue;
+        try buf.appendSlice(cg.allocator, name);
+        try buf.append(cg.allocator, 0);
+    }
+    if (buf.items.len == 0) return; // nothing exported
+
+    const i8_ty = llvm_c.LLVMInt8TypeInContext(cg.ctx);
+    const arr_ty = llvm_c.LLVMArrayType(i8_ty, @intCast(buf.items.len));
+    const init = llvm_c.LLVMConstStringInContext(cg.ctx, buf.items.ptr, @intCast(buf.items.len), 1);
+    const g = llvm_c.LLVMAddGlobal(cg.mod, arr_ty, "__k2_export_map");
+    llvm_c.LLVMSetInitializer(g, init);
+    llvm_c.LLVMSetLinkage(g, llvm_c.LLVMExternalLinkage);
+    llvm_c.LLVMSetGlobalConstant(g, 1);
+    llvm_c.LLVMSetSection(g, ".k2exp");
 }
 
 fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {

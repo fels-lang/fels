@@ -19,21 +19,14 @@ const LldLinkFn = *const fn (argc: c_int, argv: [*]const [*:0]const u8) callconv
 // The K2-written linker (k2lnk.dll), exporting `k2_link(in_obj, out_exe) -> int`.
 const K2LinkFn = *const fn (in_path: [*:0]const u8, out_path: [*:0]const u8) callconv(.c) c_int;
 
-/// k2lnk currently links a single COFF object whose only imports are kernel32,
-/// into an executable. Anything else (DLL output, multiple objects, non-kernel32
-/// import libs) falls back to LLD.
+/// k2lnk links a single COFF object into an exe or DLL. It reads the compiler's
+/// `.k2imp`/`.k2exp` maps (so it needs no `.lib`), handles any DLL set, subsystem,
+/// entry, stack, and DLL output. It bails (→ LLD) only on multiple objects,
+/// arbitrary linker flags, or a C library's `/DEFAULTLIB` (static-CRT objects).
 fn k2lnkEligible(opts: WindowsLinkOptions) bool {
-    if (opts.dll) return false;
     if (opts.obj_files.len != 1) return false;
-    // Imports from any DLL are fine — k2lnk reads the compiler's `.k2imp` map and
-    // fails cleanly (→ LLD) on a symbol it can't map (e.g. a static-CRT symbol).
-    // k2lnk writes a fixed PE (console subsystem, `mainCRTStartup` entry, default
-    // stack, no extra flags). Anything that overrides those must use LLD.
-    if (opts.subsystem != .console) return false;
-    if (opts.entry != null) return false;
-    if (opts.stack_reserve != 0) return false;
     if (opts.extra_flags.len != 0) return false;
-    if (opts.honor_defaultlibs) return false; // /DEFAULTLIB pulls in static CRT objects
+    if (opts.honor_defaultlibs) return false;
     return true;
 }
 
@@ -43,6 +36,10 @@ fn k2lnkEligible(opts: WindowsLinkOptions) bool {
 fn tryK2lnk(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ?bool {
     if (builtin.os.tag != .windows) return null;
     if (!k2lnkEligible(opts)) return null;
+    // The file entry point (`k2_link`) uses default console-exe settings — a DLL /
+    // GUI / custom entry / stack build must go through the in-memory path
+    // (`k2_link_mem`), which carries those. Fall to LLD here.
+    if (opts.dll or opts.subsystem != .console or opts.entry != null or opts.stack_reserve != 0) return null;
     const module = win.LoadLibraryA("k2lnk.dll") orelse return null;
     const proc = win.GetProcAddress(module, "k2_link") orelse return null;
     const link_fn: K2LinkFn = @ptrCast(proc);
@@ -53,8 +50,17 @@ fn tryK2lnk(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ?bool {
     return link_fn(obj_z.ptr, out_z.ptr) == 0;
 }
 
-// In-memory variant: k2lnk reads the object bytes directly — no .obj on disk.
-const K2LinkMemFn = *const fn (obj_ptr: [*]const u8, obj_len: usize, out_path: [*:0]const u8) callconv(.c) c_int;
+// In-memory variant: k2lnk reads the object bytes directly — no .obj on disk —
+// plus the PE settings (subsystem / entry / stack / DLL) the compiler knows.
+const K2LinkMemFn = *const fn (
+    obj_ptr: [*]const u8,
+    obj_len: usize,
+    out_path: [*:0]const u8,
+    subsystem: u32,
+    entry: [*:0]const u8,
+    stack_reserve: u64,
+    is_dll: u32,
+) callconv(.c) c_int;
 
 fn tryK2lnkMem(allocator: std.mem.Allocator, obj_bytes: []const u8, opts: WindowsLinkOptions) ?bool {
     if (builtin.os.tag != .windows) return null;
@@ -64,7 +70,14 @@ fn tryK2lnkMem(allocator: std.mem.Allocator, obj_bytes: []const u8, opts: Window
     const link_fn: K2LinkMemFn = @ptrCast(proc);
     const out_z = allocator.dupeZ(u8, opts.output) catch return false;
     defer allocator.free(out_z);
-    return link_fn(obj_bytes.ptr, obj_bytes.len, out_z.ptr) == 0;
+    const entry_z = allocator.dupeZ(u8, opts.entry orelse "") catch return false;
+    defer allocator.free(entry_z);
+    const subsystem: u32 = switch (opts.subsystem) {
+        .console => 3,
+        .windows => 2,
+    };
+    const is_dll: u32 = if (opts.dll) 1 else 0;
+    return link_fn(obj_bytes.ptr, obj_bytes.len, out_z.ptr, subsystem, entry_z.ptr, @intCast(opts.stack_reserve), is_dll) == 0;
 }
 
 /// Try the in-process linker. Returns null if k2lld.dll is unavailable (caller
@@ -324,10 +337,8 @@ pub fn linkLinux(
 /// not worth warning about, e.g. in the test runner). Used to explain the
 /// slower LLD fallback to the user. These are exactly k2lnk's current gaps.
 fn lldFallbackReason(opts: WindowsLinkOptions, obj_bytes: ?[]const u8) ?[]const u8 {
-    if (opts.dll) return "output is a shared library";
     if (opts.obj_files.len != 1) return "multiple object files (k2lnk links one object)";
-    if (opts.subsystem != .console or opts.entry != null or opts.stack_reserve != 0 or opts.extra_flags.len != 0)
-        return "custom linker settings (subsystem/entry/stack/flags) k2lnk can't apply";
+    if (opts.extra_flags.len != 0) return "extra raw linker flags k2lnk can't apply";
     if (opts.honor_defaultlibs)
         return "honoring a C library's /DEFAULTLIB directives (k2lnk can't parse them)";
     _ = obj_bytes;

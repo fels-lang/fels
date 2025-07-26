@@ -436,10 +436,10 @@ imp_of :: fn(imp_sym: []u32, n: u32, sym_index: u32) -> i64 {
 }
 
 // Link a single COFF object FILE into a PE32+ executable.
-link :: fn(a: *Arena, obj_path: []const u8, out_path: []const u8) -> i32 {
+link :: fn(a: *Arena, obj_path: []const u8, out_path: []const u8, opts: *LinkOpts) -> i32 {
     data := read_file(a, obj_path);
     if data.len == 0usize { return 1; }
-    return link_bytes(a, data, out_path);
+    return link_bytes(a, data, out_path, opts);
 }
 
 // The ".k2imp" section bytes — the compiler's import map: flat `name\0dll\0`
@@ -475,8 +475,69 @@ dll_for :: fn(map: []const u8, sym: []const u8) -> []const u8 {
     return sub(map, 0usize, 0usize);
 }
 
-// Link a single COFF object held in `data` into a PE32+ executable at `out_path`.
-link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
+// Linker settings the compiler passes per output (subsystem / entry / stack / DLL).
+LinkOpts :: struct {
+    subsystem:     u32,        // 2 = GUI ("windows"), 3 = console
+    entry:         []const u8, // "" = default (mainCRTStartup for an exe; none for a DLL)
+    stack_reserve: u64,        // 0 = default (0x100000)
+    is_dll:        bool,
+}
+
+// A console-exe default (the CLI + the file entry point use this).
+default_opts :: fn() -> LinkOpts {
+    return .{ 3u32, "", 0u64, false };
+}
+
+// The ".k2exp" section bytes — the compiler's export map (flat `name\0` records).
+k2exp_bytes :: fn(obj: *CoffObj) -> []const u8 {
+    s := 0u32;
+    while s < obj.num_sections {
+        sec := get_section(obj, s);
+        if name_eq(sec.name, ".k2exp") {
+            return sub(obj.data, sec.raw_ptr as usize, sec.raw_size as usize);
+        }
+        s += 1u32;
+    }
+    return sub(obj.data, 0usize, 0usize);
+}
+
+// RVA of a DEFINED symbol by name (for a custom entry point / each export), or 0.
+sym_rva :: fn(obj: *CoffObj, secrva: []u32, want: []const u8) -> u32 {
+    i := 0u32;
+    while i < obj.num_symbols {
+        s := get_symbol(obj, i);
+        if name_eq(s.name, want) { if s.section > 0i32 { return secrva[s.section as usize] + s.value; } }
+        i += 1u32 + s.aux_count;
+    }
+    return 0u32;
+}
+
+// The file name (no directory) of `path`, for the export directory's DLL name.
+basename :: fn(path: []const u8) -> []const u8 {
+    start := 0usize;
+    i := 0usize;
+    while i < path.len {
+        if path[i] == 47u8 { start = i + 1usize; }   // '/'
+        if path[i] == 92u8 { start = i + 1usize; }   // '\'
+        i += 1usize;
+    }
+    return sub(path, start, path.len - start);
+}
+
+// Lexicographic `x < y` (export names must be sorted for GetProcAddress).
+str_lt :: fn(x: []const u8, y: []const u8) -> bool {
+    n := x.len;
+    if y.len < n { n = y.len; }
+    i := 0usize;
+    while i < n {
+        if x[i] != y[i] { return x[i] < y[i]; }
+        i += 1usize;
+    }
+    return x.len < y.len;
+}
+
+// Link a single COFF object held in `data` into a PE32+ image at `out_path`.
+link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8, opts: *LinkOpts) -> i32 {
     obj := coff_open(data);
     if !obj.ok { return 1; }
 
@@ -594,7 +655,66 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
         cur = cur + au(dll_names[d as usize].len + 4usize + 1usize, 2usize);  // "<base>.dll"
         d += 1u32;
     }
-    rdata_total := cur;                          // whole .rdata class (input + imports)
+
+    // ── Export table layout (DLL only), after the import tables in .rdata ──
+    map_exp := k2exp_bytes(&obj);
+    nexp := 0u32;
+    ei := 0usize;
+    while ei < map_exp.len {
+        es := ei;
+        while ei < map_exp.len { if map_exp[ei] == 0u8 { break; } ei += 1usize; }
+        if ei > es { if opts.is_dll { nexp += 1u32; } }
+        if ei < map_exp.len { ei += 1usize; }
+    }
+    expname := alloc([]const u8, a, (nexp + 1u32) as usize);
+    exp_name_off := alloc(usize, a, (nexp + 1u32) as usize);
+    exp_dir_off := 0usize;
+    eat_off := 0usize;
+    nameptr_off := 0usize;
+    ord_off := 0usize;
+    expdll_off := 0usize;
+    exp_total := 0usize;
+    out_dll := basename(out_path);
+    if opts.is_dll {
+        // collect names
+        e := 0u32;
+        ei = 0usize;
+        while ei < map_exp.len {
+            es := ei;
+            while ei < map_exp.len { if map_exp[ei] == 0u8 { break; } ei += 1usize; }
+            if ei > es { expname[e as usize] = sub(map_exp, es, ei - es); e += 1u32; }
+            if ei < map_exp.len { ei += 1usize; }
+        }
+        // sort ascending (insertion sort) for GetProcAddress binary search
+        a2 := 1u32;
+        while a2 < nexp {
+            key := expname[a2 as usize];
+            b2 := a2;
+            while b2 > 0u32 {
+                if str_lt(expname[(b2 - 1u32) as usize], key) { break; }
+                expname[b2 as usize] = expname[(b2 - 1u32) as usize];
+                b2 -= 1u32;
+            }
+            expname[b2 as usize] = key;
+            a2 += 1u32;
+        }
+        // offsets: directory (40) + EAT + name-ptr + ordinals + name strings + dll name
+        exp_dir_off = au(cur, 4usize);
+        eat_off = exp_dir_off + 40usize;
+        nameptr_off = eat_off + (nexp as usize) * 4usize;
+        ord_off = nameptr_off + (nexp as usize) * 4usize;
+        cur = ord_off + (nexp as usize) * 2usize;
+        e = 0u32;
+        while e < nexp {
+            exp_name_off[e as usize] = cur;
+            cur = cur + expname[e as usize].len + 1usize;
+            e += 1u32;
+        }
+        expdll_off = cur;
+        cur = cur + out_dll.len + 1usize;
+        exp_total = cur - exp_dir_off;
+    }
+    rdata_total := cur;                          // whole .rdata class (input + imports + exports)
 
     // ── Class file offsets + RVAs (empty classes collapse) ──
     np := 2u32;                                   // .text + .rdata always present
@@ -641,16 +761,12 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
     import_dir_rva := rdata_rva + dir_off;
     iat_first_rva := rdata_rva + iat_first;
 
-    // Entry point = mainCRTStartup.
+    // Entry point: opts.entry if given, else mainCRTStartup for an exe. A DLL with
+    // no entry has AddressOfEntryPoint = 0 (no DllMain; the runtime inits lazily).
     entry_rva := 0u32;
-    i = 0u32;
-    while i < obj.num_symbols {
-        sy := get_symbol(&obj, i);
-        if name_eq(sy.name, "mainCRTStartup") {
-            if sy.section > 0i32 { entry_rva = secrva[sy.section as usize] + sy.value; }
-        }
-        i += 1u32 + sy.aux_count;
-    }
+    ename := opts.entry;
+    if ename.len == 0usize { if !opts.is_dll { ename = "mainCRTStartup"; } }
+    if ename.len > 0usize { entry_rva = sym_rva(&obj, secrva, ename); }
 
     // ── Build the image ──
     img := alloc_bytes(a, file_size);          // zero-filled (fresh arena pages)
@@ -663,7 +779,9 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
     wr_u16(img, coff, 0x8664u32);                   // Machine AMD64
     wr_u16(img, coff + 2usize, np);                 // NumberOfSections
     wr_u16(img, coff + 16usize, 240u32);            // SizeOfOptionalHeader
-    wr_u16(img, coff + 18usize, 0x22u32);           // EXECUTABLE | LARGE_ADDRESS_AWARE
+    chars := 0x22u32;                               // EXECUTABLE | LARGE_ADDRESS_AWARE
+    if opts.is_dll { chars = chars | 0x2000u32; }   // + IMAGE_FILE_DLL
+    wr_u16(img, coff + 18usize, chars);
 
     opt := coff + 20usize;
     wr_u16(img, opt, 0x20bu32);                     // PE32+
@@ -676,8 +794,10 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
     wr_u16(img, opt + 48usize, 6u32);               // MajorSubsystemVersion
     wr_u32(img, opt + 56usize, image_size as u32);  // SizeOfImage
     wr_u32(img, opt + 60usize, soh as u32);         // SizeOfHeaders
-    wr_u16(img, opt + 68usize, 3u32);               // Subsystem = CONSOLE
-    wr_u64(img, opt + 72usize, 0x100000u64);        // StackReserve
+    wr_u16(img, opt + 68usize, opts.subsystem);     // Subsystem (3=console, 2=GUI)
+    stk := 0x100000u64;
+    if opts.stack_reserve > 0u64 { stk = opts.stack_reserve; }
+    wr_u64(img, opt + 72usize, stk);                // StackReserve
     wr_u64(img, opt + 80usize, 0x1000u64);          // StackCommit
     wr_u64(img, opt + 88usize, 0x100000u64);        // HeapReserve
     wr_u64(img, opt + 96usize, 0x1000u64);          // HeapCommit
@@ -685,6 +805,10 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
     dd := opt + 112usize;                            // data directories
     wr_u32(img, dd + 8usize, import_dir_rva as u32);        // [1] Import RVA
     wr_u32(img, dd + 12usize, dir_sz as u32);               // [1] size
+    if opts.is_dll {
+        wr_u32(img, dd + 0usize, (rdata_rva + exp_dir_off) as u32);  // [0] Export RVA
+        wr_u32(img, dd + 4usize, exp_total as u32);                  // [0] size
+    }
     if pdata_in > 0usize {
         wr_u32(img, dd + 24usize, pdata_rva as u32);        // [3] Exception RVA
         wr_u32(img, dd + 28usize, pdata_in as u32);         // [3] size
@@ -777,6 +901,28 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
         blit(img, noff, nm, 0usize, nm.len);
         blit(img, noff + nm.len, ".dll", 0usize, 4usize);
         d += 1u32;
+    }
+
+    // ── Export directory (.edata) for a DLL ──
+    if opts.is_dll {
+        ed := rdata_off + exp_dir_off;
+        wr_u32(img, ed + 12usize, (rdata_rva + expdll_off) as u32);   // Name → "<out>.dll"
+        wr_u32(img, ed + 16usize, 1u32);                              // Base ordinal
+        wr_u32(img, ed + 20usize, nexp);                              // NumberOfFunctions
+        wr_u32(img, ed + 24usize, nexp);                              // NumberOfNames
+        wr_u32(img, ed + 28usize, (rdata_rva + eat_off) as u32);      // AddressOfFunctions
+        wr_u32(img, ed + 32usize, (rdata_rva + nameptr_off) as u32);  // AddressOfNames
+        wr_u32(img, ed + 36usize, (rdata_rva + ord_off) as u32);      // AddressOfNameOrdinals
+        e := 0u32;
+        while e < nexp {
+            wr_u32(img, rdata_off + eat_off + (e as usize) * 4usize, sym_rva(&obj, secrva, expname[e as usize]));
+            wr_u32(img, rdata_off + nameptr_off + (e as usize) * 4usize, (rdata_rva + exp_name_off[e as usize]) as u32);
+            wr_u16(img, rdata_off + ord_off + (e as usize) * 2usize, e);
+            eno := rdata_off + exp_name_off[e as usize];
+            blit(img, eno, expname[e as usize], 0usize, expname[e as usize].len);
+            e += 1u32;
+        }
+        blit(img, rdata_off + expdll_off, out_dll, 0usize, out_dll.len);
     }
 
     // ── Apply relocations for every kept section ──
@@ -888,7 +1034,8 @@ main :: fn() -> i32 {
         (&a).deinit();
         return 2;
     }
-    r := link(&a, in_path, out_path);
+    o := default_opts();
+    r := link(&a, in_path, out_path, &o);
     if r == 0i32 { p("k2lnk: wrote "); p(out_path); p("\n"); }
     (&a).deinit();
     return r;
@@ -906,20 +1053,24 @@ from_cstr :: fn(cp: *const u8) -> []const u8 {
 #export("k2_link")
 k2_link :: fn(in_cstr: *const u8, out_cstr: *const u8) -> i32 {
     a := make();
-    r := link(&a, from_cstr(in_cstr), from_cstr(out_cstr));
+    o := default_opts();
+    r := link(&a, from_cstr(in_cstr), from_cstr(out_cstr), &o);
     (&a).deinit();
     return r;
 }
 
 // In-memory entry point: the compiler hands over the object BYTES directly
-// (`obj_ptr`/`obj_len`) — no .obj file is ever written or read. This is the
-// fast path that deletes the disk round-trip.
+// (`obj_ptr`/`obj_len`) — no .obj file is ever written or read — plus the PE
+// settings (subsystem / entry / stack / DLL) it knows from the build options.
+// `entry_cstr` is "" for the default; `is_dll` is 0/1. This is the fast path.
 #export("k2_link_mem")
-k2_link_mem :: fn(obj_ptr: *const u8, obj_len: usize, out_cstr: *const u8) -> i32 {
+k2_link_mem :: fn(obj_ptr: *const u8, obj_len: usize, out_cstr: *const u8,
+                  subsystem: u32, entry_cstr: *const u8, stack_reserve: u64, is_dll: u32) -> i32 {
     a := make();
     base := unsafe (obj_ptr as usize);
     data := unsafe core::slice_from_raw_parts(u8, unsafe core::ptr_from_int(*u8, base), obj_len);
-    r := link_bytes(&a, data, from_cstr(out_cstr));
+    o: LinkOpts = .{ subsystem, from_cstr(entry_cstr), stack_reserve, is_dll != 0u32 };
+    r := link_bytes(&a, data, from_cstr(out_cstr), &o);
     (&a).deinit();
     return r;
 }
