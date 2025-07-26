@@ -314,6 +314,41 @@ find_section :: fn(obj: *CoffObj, want: []const u8) -> u32 {
     return 0u32;
 }
 
+starts_with :: fn(s: []const u8, pre: []const u8) -> bool {
+    if s.len < pre.len { return false; }
+    i := 0usize;
+    while i < pre.len { if s[i] != pre[i] { return false; } i += 1usize; }
+    return true;
+}
+
+// Output-section class for an input section by name prefix:
+//   1=.text  2=.rdata (+.xdata unwind info)  3=.data  4=.pdata  5=.bss
+//   0=skip (.drectve / .debug* / .k2imp / anything else).
+// `.rdata$…`, `.data$…`, `.text$…` COMDAT/group variants all fold into their base
+// class — this is what lets k2lnk merge the float constant pool (a 2nd `.rdata`).
+sec_class :: fn(name: []const u8) -> u32 {
+    if starts_with(name, ".text")  { return 1u32; }
+    if starts_with(name, ".rdata") { return 2u32; }
+    if starts_with(name, ".xdata") { return 2u32; }   // unwind info → .rdata
+    if starts_with(name, ".pdata") { return 4u32; }
+    if starts_with(name, ".data")  { return 3u32; }
+    if starts_with(name, ".bss")   { return 5u32; }
+    return 0u32;
+}
+
+// A section's required alignment from its COFF flags (bits 20-23). At -O2 the
+// constant pool can need 32- or 64-byte alignment for SIMD aligned loads; placing
+// it 16-aligned faults (movaps/vmovaps on a misaligned address). 0 = unspecified
+// → default 16.
+sec_align_of :: fn(flags: u32) -> usize {
+    aval := (flags >> 20u32) & 0xfu32;
+    if aval == 0u32 { return 16usize; }
+    al := 1usize;
+    n := aval - 1u32;
+    while n > 0u32 { al = al * 2usize; n -= 1u32; }
+    return al;
+}
+
 Import :: struct {
     sym_index:  u32,
     name:       []const u8,
@@ -445,45 +480,59 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
     obj := coff_open(data);
     if !obj.ok { return 1; }
 
-    ti := find_section(&obj, ".text");
-    ri := find_section(&obj, ".rdata");
-    di := find_section(&obj, ".data");
-    bi := find_section(&obj, ".bss");
-    if ti == 0u32 { p("k2lnk: no .text section\n"); return 1; }
-    text := get_section(&obj, ti - 1u32);
-
-    has_rdata := ri > 0u32;
-    has_data := di > 0u32;
-    has_bss := bi > 0u32;
-    rdata := text;
-    data_s := text;
-    bss := text;
-    if has_rdata { rdata = get_section(&obj, ri - 1u32); }
-    if has_data { data_s = get_section(&obj, di - 1u32); }
-    if has_bss { bss = get_section(&obj, bi - 1u32); }
-    text_raw := text.raw_size as usize;
-    rdata_raw := 0usize;
-    data_raw := 0usize;
-    if has_rdata { rdata_raw = rdata.raw_size as usize; }
-    if has_data { data_raw = data_s.raw_size as usize; }
-    // .bss holds zero-initialized globals: no file bytes, just reserved virtual
-    // space the loader zero-fills. Size is in SizeOfRawData (VirtualSize for some
-    // toolchains), with PointerToRawData == 0.
-    bss_size := 0usize;
-    if has_bss {
-        bss_size = bss.raw_size as usize;
-        if (bss.virt_size as usize) > bss_size { bss_size = bss.virt_size as usize; }
+    // ── Classify input sections into output classes + size each ──
+    ns := obj.num_sections;
+    nslot := (ns + 1u32) as usize;
+    cls := alloc(u32, a, nslot);      // class per 1-based section index
+    ssz := alloc(usize, a, nslot);    // size (raw, or virtual for .bss)
+    sraw := alloc(u32, a, nslot);     // raw_ptr (0 = no file bytes)
+    srelp := alloc(u32, a, nslot);    // reloc table ptr
+    sreln := alloc(u32, a, nslot);    // reloc count
+    salign := alloc(usize, a, nslot); // required alignment (from COFF flags)
+    s := 0u32;
+    while s < ns {
+        sec := get_section(&obj, s);
+        idx := (s + 1u32) as usize;
+        c := sec_class(sec.name);
+        cls[idx] = c;
+        sz := sec.raw_size as usize;
+        if c == 5u32 { if (sec.virt_size as usize) > sz { sz = sec.virt_size as usize; } }
+        ssz[idx] = sz;
+        sraw[idx] = sec.raw_ptr;
+        srelp[idx] = sec.reloc_ptr;
+        sreln[idx] = sec.num_relocs;
+        salign[idx] = sec_align_of(sec.flags);
+        s += 1u32;
     }
-    if bss_size == 0usize { has_bss = false; }   // an empty .bss → don't emit it
+    // Offset of each section within its class (concatenated in section order).
+    secin := alloc(usize, a, nslot);
+    crun := alloc(usize, a, 6usize);  // running size per class (zero-filled)
+    s = 0u32;
+    while s < ns {
+        idx := (s + 1u32) as usize;
+        c := cls[idx];
+        if c != 0u32 {
+            o := au(crun[c as usize], salign[idx]);   // honor the section's own alignment
+            secin[idx] = o;
+            crun[c as usize] = o + ssz[idx];
+        }
+        s += 1u32;
+    }
+    text_in := crun[1usize];
+    rdata_in := crun[2usize];
+    data_in := crun[3usize];
+    pdata_in := crun[4usize];
+    bss_in := crun[5usize];
+    if text_in == 0usize { p("k2lnk: no .text section\n"); return 1; }
 
     // ── Collect imports (undefined externals) + group them by DLL via the map ──
     map := k2imp_bytes(&obj);
     nimp := 0u32;
     i := 0u32;
     while i < obj.num_symbols {
-        s := get_symbol(&obj, i);
-        if s.storage_class == 2u32 { if s.section == 0i32 { nimp += 1u32; } }
-        i += 1u32 + s.aux_count;
+        sy := get_symbol(&obj, i);
+        if sy.storage_class == 2u32 { if sy.section == 0i32 { nimp += 1u32; } }
+        i += 1u32 + sy.aux_count;
     }
     nimp_u := nimp as usize;
     imp_sym := alloc(u32, a, nimp_u);
@@ -496,9 +545,9 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
     k := 0u32;
     i = 0u32;
     while i < obj.num_symbols {
-        s := get_symbol(&obj, i);
-        if s.storage_class == 2u32 { if s.section == 0i32 {
-            dl := dll_for(map, s.name);
+        sy := get_symbol(&obj, i);
+        if sy.storage_class == 2u32 { if sy.section == 0i32 {
+            dl := dll_for(map, sy.name);
             if dl.len == 0usize { return 1; }   // unmapped symbol → let LLD handle it
             d := 0u32;
             found := false;
@@ -515,15 +564,13 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
             dll_count[d as usize] += 1u32;
             k += 1u32;
         } }
-        i += 1u32 + s.aux_count;
+        i += 1u32 + sy.aux_count;
     }
 
-    // ── Import-table layout within .rdata (after the object's rdata) ──
-    // Import directory: one 20-byte descriptor per DLL + a null terminator.
-    dir_off := au(rdata_raw, 8usize);
-    dir_sz  := ((ndll as usize) + 1usize) * 20usize;
-    // Per-DLL ILTs, then per-DLL IATs — each run is (count+1)*8 (NULL-terminated),
-    // laid out contiguously so the IAT data directory can span all of them.
+    // ── Import-table layout: appended to the .rdata class, after input rdata ──
+    dir_off := au(rdata_in, 8usize);            // import directory
+    dir_sz  := ((ndll as usize) + 1usize) * 20usize;  // one descriptor per DLL + null
+    // Per-DLL ILTs then per-DLL IATs — contiguous so the IAT data-dir spans them.
     ilt_dll := alloc(usize, a, 64usize);
     iat_dll := alloc(usize, a, 64usize);
     dll_name_off := alloc(usize, a, 64usize);
@@ -534,7 +581,6 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
     d = 0u32;
     while d < ndll { iat_dll[d as usize] = cur; cur = cur + ((dll_count[d as usize] as usize) + 1usize) * 8usize; d += 1u32; }
     iat_total := cur - iat_first;
-    // Hint/name entries (global import order).
     j := 0u32;
     while j < nimp {
         imp_name_off[j as usize] = cur;
@@ -542,41 +588,56 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
         cur = cur + au(2usize + nm.len + 1usize, 2usize);
         j += 1u32;
     }
-    // DLL name strings ("<base>.dll").
     d = 0u32;
     while d < ndll {
         dll_name_off[d as usize] = cur;
-        cur = cur + au(dll_names[d as usize].len + 4usize + 1usize, 2usize);
+        cur = cur + au(dll_names[d as usize].len + 4usize + 1usize, 2usize);  // "<base>.dll"
         d += 1u32;
     }
-    rdata_total := cur;
+    rdata_total := cur;                          // whole .rdata class (input + imports)
 
-    // ── Section RVAs / file offsets ──
+    // ── Class file offsets + RVAs (empty classes collapse) ──
+    np := 2u32;                                   // .text + .rdata always present
+    if data_in > 0usize { np += 1u32; }
+    if pdata_in > 0usize { np += 1u32; }
+    if bss_in > 0usize { np += 1u32; }
+    // SizeOfHeaders must cover the section table (up to 5 headers ⇒ may need 0x400).
+    soh: usize = au(0x148usize + (np as usize) * 40usize, FILE_ALIGN);
     thunks_sz := (nimp as usize) * 6usize;
-    text_total := text_raw + thunks_sz;
-    // (Explicit `usize` annotations: a local inferred directly from a usize
-    // const is currently mis-typed as a pointer by the compiler — see notes.)
-    soh: usize = FILE_ALIGN;                    // headers fit in one 0x200 block
+    thunk_local := au(text_in, 16usize);          // thunks after input .text
+    text_total := thunk_local + thunks_sz;
     text_off: usize = soh;
     text_rva: usize = SEC_ALIGN;
     rdata_off := au(text_off + text_total, FILE_ALIGN);
     rdata_rva := au(text_rva + text_total, SEC_ALIGN);
     data_off := au(rdata_off + rdata_total, FILE_ALIGN);
     data_rva := au(rdata_rva + rdata_total, SEC_ALIGN);
-    bss_rva := au(data_rva + data_raw, SEC_ALIGN);     // virtual-only, after .data
-    image_end := bss_rva;
-    if has_bss { image_end = bss_rva + bss_size; }
-    image_size := au(image_end, SEC_ALIGN);
-    file_size := au(data_off + data_raw, FILE_ALIGN);  // .bss adds no file bytes
+    pdata_off := au(data_off + data_in, FILE_ALIGN);
+    pdata_rva := au(data_rva + data_in, SEC_ALIGN);
+    bss_rva := au(pdata_rva + pdata_in, SEC_ALIGN);   // virtual-only, last
+    image_size := au(bss_rva + bss_in, SEC_ALIGN);
+    file_size := au(pdata_off + pdata_in, FILE_ALIGN);
 
-    // Section RVA by object section number (1-based). Arena slice (zero-filled).
-    secrva := alloc(u32, a, 32usize);
-    secrva[ti as usize] = text_rva as u32;
-    if has_rdata { secrva[ri as usize] = rdata_rva as u32; }
-    if has_data { secrva[di as usize] = data_rva as u32; }
-    if has_bss { secrva[bi as usize] = bss_rva as u32; }
-
-    // Absolute RVAs of the import tables.
+    // Per-section RVA + file offset = class base + within-class offset.
+    secrva := alloc(u32, a, nslot);
+    secoff := alloc(usize, a, nslot);
+    s = 0u32;
+    while s < ns {
+        idx := (s + 1u32) as usize;
+        c := cls[idx];
+        crva := 0usize;
+        coff := 0usize;
+        if c == 1u32 { crva = text_rva;  coff = text_off; }
+        if c == 2u32 { crva = rdata_rva; coff = rdata_off; }
+        if c == 3u32 { crva = data_rva;  coff = data_off; }
+        if c == 4u32 { crva = pdata_rva; coff = pdata_off; }
+        if c == 5u32 { crva = bss_rva;   coff = 0usize; }
+        if c != 0u32 {
+            secrva[idx] = (crva + secin[idx]) as u32;
+            secoff[idx] = coff + secin[idx];
+        }
+        s += 1u32;
+    }
     import_dir_rva := rdata_rva + dir_off;
     iat_first_rva := rdata_rva + iat_first;
 
@@ -584,26 +645,23 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
     entry_rva := 0u32;
     i = 0u32;
     while i < obj.num_symbols {
-        s := get_symbol(&obj, i);
-        if name_eq(s.name, "mainCRTStartup") {
-            if s.section > 0i32 { entry_rva = secrva[s.section as usize] + s.value; }
+        sy := get_symbol(&obj, i);
+        if name_eq(sy.name, "mainCRTStartup") {
+            if sy.section > 0i32 { entry_rva = secrva[sy.section as usize] + sy.value; }
         }
-        i += 1u32 + s.aux_count;
+        i += 1u32 + sy.aux_count;
     }
 
     // ── Build the image ──
     img := alloc_bytes(a, file_size);          // zero-filled (fresh arena pages)
 
-    // DOS header: "MZ", e_lfanew → 0x40.
-    img[0usize] = 0x4du8; img[1usize] = 0x5au8;
+    img[0usize] = 0x4du8; img[1usize] = 0x5au8;     // "MZ"
     wr_u32(img, 0x3cusize, 0x40u32);
     pe := 0x40usize;
     img[pe] = 0x50u8; img[pe + 1usize] = 0x45u8;   // "PE\0\0"
     coff := pe + 4usize;
     wr_u16(img, coff, 0x8664u32);                   // Machine AMD64
-    nsec_out := 3u32;
-    if has_bss { nsec_out = 4u32; }
-    wr_u16(img, coff + 2usize, nsec_out);           // NumberOfSections (+ .bss)
+    wr_u16(img, coff + 2usize, np);                 // NumberOfSections
     wr_u16(img, coff + 16usize, 240u32);            // SizeOfOptionalHeader
     wr_u16(img, coff + 18usize, 0x22u32);           // EXECUTABLE | LARGE_ADDRESS_AWARE
 
@@ -625,36 +683,55 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
     wr_u64(img, opt + 96usize, 0x1000u64);          // HeapCommit
     wr_u32(img, opt + 108usize, 16u32);             // NumberOfRvaAndSizes
     dd := opt + 112usize;                            // data directories
-    wr_u32(img, dd + 8usize, import_dir_rva as u32);        // [1] Import Table RVA
+    wr_u32(img, dd + 8usize, import_dir_rva as u32);        // [1] Import RVA
     wr_u32(img, dd + 12usize, dir_sz as u32);               // [1] size
+    if pdata_in > 0usize {
+        wr_u32(img, dd + 24usize, pdata_rva as u32);        // [3] Exception RVA
+        wr_u32(img, dd + 28usize, pdata_in as u32);         // [3] size
+    }
     wr_u32(img, dd + 96usize, iat_first_rva as u32);        // [12] IAT RVA
     wr_u32(img, dd + 100usize, iat_total as u32);           // [12] IAT size
 
-    // Section headers.
+    // ── Section headers (only present classes, in order) ──
     sh := opt + 240usize;
-    write_shdr(img, sh,            ".text",  text_total, text_rva,  text_off,  0x60000020u32);
-    write_shdr(img, sh + 40usize,  ".rdata", rdata_total, rdata_rva, rdata_off, 0x40000040u32);
-    write_shdr(img, sh + 80usize,  ".data",  data_raw,   data_rva,  data_off,  0xc0000040u32);
-    // .bss: VirtualSize reserved, but SizeOfRawData/PointerToRawData = 0 (the
-    // loader zero-fills it). write_shdr can't express that, so write it by hand.
-    if has_bss {
-        bsh := sh + 120usize;
-        blit(img, bsh, ".bss", 0usize, 4usize);         // section name
-        wr_u32(img, bsh + 8usize,  bss_size as u32);    // VirtualSize
-        wr_u32(img, bsh + 12usize, bss_rva as u32);     // VirtualAddress
-        wr_u32(img, bsh + 36usize, 0xc0000080u32);      // UNINIT_DATA | READ | WRITE
+    write_shdr(img, sh,           ".text",  text_total,  text_rva,  text_off,  0x60000020u32);
+    write_shdr(img, sh + 40usize, ".rdata", rdata_total, rdata_rva, rdata_off, 0x40000040u32);
+    ho := sh + 80usize;
+    if data_in > 0usize {
+        write_shdr(img, ho, ".data", data_in, data_rva, data_off, 0xc0000040u32);
+        ho = ho + 40usize;
+    }
+    if pdata_in > 0usize {
+        write_shdr(img, ho, ".pdata", pdata_in, pdata_rva, pdata_off, 0x40000040u32);
+        ho = ho + 40usize;
+    }
+    if bss_in > 0usize {
+        // .bss: VirtualSize reserved, SizeOfRawData/PointerToRawData = 0 (zero-filled).
+        blit(img, ho, ".bss", 0usize, 4usize);
+        wr_u32(img, ho + 8usize,  bss_in as u32);
+        wr_u32(img, ho + 12usize, bss_rva as u32);
+        wr_u32(img, ho + 36usize, 0xc0000080u32);    // UNINIT_DATA | READ | WRITE
     }
 
-    // Section raw data.
-    blit(img, text_off, obj.data, text.raw_ptr as usize, text_raw);
-    if has_rdata { blit(img, rdata_off, obj.data, rdata.raw_ptr as usize, rdata_raw); }
-    if has_data { blit(img, data_off, obj.data, data_s.raw_ptr as usize, data_raw); }
+    // ── Section raw data: blit every kept input section to its file offset ──
+    s = 0u32;
+    while s < ns {
+        idx := (s + 1u32) as usize;
+        c := cls[idx];
+        if c != 0u32 { if c != 5u32 {            // skip nothing / no file bytes for .bss
+            if sraw[idx] != 0u32 { if ssz[idx] > 0usize {
+                blit(img, secoff[idx], obj.data, sraw[idx] as usize, ssz[idx]);
+            } }
+        } }
+        s += 1u32;
+    }
 
     // Import thunks (in .text): jmp qword [rip + (its IAT slot - rip)].
+    thunk_base := text_rva + thunk_local;
     j = 0u32;
     while j < nimp {
-        toff := text_off + text_raw + (j as usize) * 6usize;
-        trva := text_rva + text_raw + (j as usize) * 6usize;
+        toff := text_off + thunk_local + (j as usize) * 6usize;
+        trva := text_rva + thunk_local + (j as usize) * 6usize;
         slot := rdata_rva + iat_dll[imp_dll[j as usize] as usize] + (imp_pos[j as usize] as usize) * 8usize;
         img[toff] = 0xffu8; img[toff + 1usize] = 0x25u8;
         wr_u32(img, toff + 2usize, ((slot as i64) - ((trva as i64) + 6i64)) as u32);
@@ -665,9 +742,9 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
     d = 0u32;
     while d < ndll {
         do := rdata_off + dir_off + (d as usize) * 20usize;
-        wr_u32(img, do,           (rdata_rva + ilt_dll[d as usize]) as u32);       // OriginalFirstThunk → ILT
-        wr_u32(img, do + 12usize, (rdata_rva + dll_name_off[d as usize]) as u32);  // Name → "<dll>.dll"
-        wr_u32(img, do + 16usize, (rdata_rva + iat_dll[d as usize]) as u32);       // FirstThunk → IAT
+        wr_u32(img, do,           (rdata_rva + ilt_dll[d as usize]) as u32);       // OriginalFirstThunk
+        wr_u32(img, do + 12usize, (rdata_rva + dll_name_off[d as usize]) as u32);  // Name
+        wr_u32(img, do + 16usize, (rdata_rva + iat_dll[d as usize]) as u32);       // FirstThunk
         d += 1u32;
     }
 
@@ -703,21 +780,14 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8) -> i32 {
     }
 
     // ── Apply relocations for every kept section ──
-    // (.rdata carries ADDR64 vtable pointers; .text carries the REL32 calls/refs.)
-    thunk_base := text_rva + text_raw;
-    srp := alloc(u32, a, 3usize);     // reloc table pointer
-    snr := alloc(u32, a, 3usize);     // reloc count
-    srva := alloc(usize, a, 3usize);  // section RVA
-    soff := alloc(usize, a, 3usize);  // section file offset
-    nsec := 1u32;
-    srp[0usize] = text.reloc_ptr; snr[0usize] = text.num_relocs; srva[0usize] = text_rva; soff[0usize] = text_off;
-    if has_rdata { srp[1usize] = rdata.reloc_ptr; snr[1usize] = rdata.num_relocs; srva[1usize] = rdata_rva; soff[1usize] = rdata_off; nsec = 2u32; }
-    if has_data { srp[nsec as usize] = data_s.reloc_ptr; snr[nsec as usize] = data_s.num_relocs; srva[nsec as usize] = data_rva; soff[nsec as usize] = data_off; nsec = nsec + 1u32; }
-
-    si := 0u32;
-    while si < nsec {
-        apply_relocs(img, &obj, srp[si as usize], snr[si as usize], srva[si as usize], soff[si as usize], secrva, imp_sym, nimp, thunk_base);
-        si += 1u32;
+    s = 0u32;
+    while s < ns {
+        idx := (s + 1u32) as usize;
+        c := cls[idx];
+        if c != 0u32 { if sreln[idx] > 0u32 {
+            apply_relocs(img, &obj, srelp[idx], sreln[idx], secrva[idx] as usize, secoff[idx], secrva, imp_sym, nimp, thunk_base);
+        } }
+        s += 1u32;
     }
 
     if !write_file(a, out_path, img) { return 1; }
