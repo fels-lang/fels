@@ -23,22 +23,16 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if (-not [System.IO.Path]::IsPathRooted($OutDir)) { $OutDir = Join-Path $repo $OutDir }
 
 # 1. Build the compiler (release), injecting the version when given.
-# -Din-process-lld builds k2lld.dll so the release links COFF in-process instead
-# of shipping (and spawning) a 69 MB lld-link.exe.
-$buildArgs = @("build", "-Dllvm-path=$LlvmPath", "-Doptimize=$Optimize", "-Din-process-lld")
+# -Din-process-lld builds k2lld.dll (the LLD fallback) so the release never spawns
+# a 69 MB lld-link.exe. -Dembed-linker bakes the self-hosted k2lnk INTO k2.exe, so
+# the common link path needs no separate k2lnk.dll (single-binary linker).
+$buildArgs = @("build", "-Dllvm-path=$LlvmPath", "-Doptimize=$Optimize", "-Din-process-lld", "-Dembed-linker")
 if ($Version) { $buildArgs += "-Dversion=$Version" }
 Write-Host "==> zig $($buildArgs -join ' ')"
 Push-Location $repo
 try { & zig @buildArgs; if ($LASTEXITCODE -ne 0) { throw "zig build failed ($LASTEXITCODE)" } }
 finally { Pop-Location }
-
-# 1b. Build the self-hosted linker k2lnk.dll with the just-built compiler, so the
-# release links eligible programs natively (no LLD). Bootstrapped via LLD (k2lnk
-# can't yet emit a DLL itself); it falls back to LLD for anything it can't handle.
-$k2lnkDll = Join-Path $repo "zig-out/bin/k2lnk.dll"
-Write-Host "==> building k2lnk.dll (self-hosted native linker)"
-& (Join-Path $repo "zig-out/bin/k2.exe") build (Join-Path $repo "linker/k2lnk.k2") --dll -o $k2lnkDll
-if ($LASTEXITCODE -ne 0) { throw "k2lnk.dll build failed ($LASTEXITCODE)" }
+# k2lnk is embedded in k2.exe by -Dembed-linker above — no separate k2lnk.dll.
 
 # 2. The version is whatever the binary reports - the single source of truth.
 # (`k2 version` prints to stderr; route through cmd so PowerShell doesn't treat
@@ -65,11 +59,7 @@ Copy-Item (Join-Path $repo "zig-out/bin/k2.exe") (Join-Path $stage "bin")
 $k2lld = Join-Path $repo "zig-out/bin/k2lld.dll"
 if (-not (Test-Path $k2lld)) { throw "k2lld.dll missing - build must use -Din-process-lld" }
 Copy-Item $k2lld (Join-Path $stage "bin")
-
-# The self-hosted native linker (k2lnk.dll). k2 prefers it for eligible programs
-# and transparently falls back to k2lld.dll/LLD for the rest.
-if (-not (Test-Path $k2lnkDll)) { throw "k2lnk.dll missing (step 1b)" }
-Copy-Item $k2lnkDll (Join-Path $stage "bin")
+# (k2lnk is baked into k2.exe via -Dembed-linker — nothing to copy.)
 
 # LLVM-C.dll (codegen) is the only LLVM DLL the core needs. libclang (bindgen)
 # and ld.lld.exe (Linux cross-link) are separate opt-in components below.

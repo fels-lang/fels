@@ -87,9 +87,22 @@ builds itself**: the shipped `k2lnk.dll` is linked by `k2lnk`.
 
 The whole exe-integration suite links through it at `-O2`. It bails to LLD only on
 the genuinely hard cases (multiple objects, raw linker flags, a C library's
-`/DEFAULTLIB` static-CRT objects), always safely. The first DLL-capable
-`k2lnk.dll` is bootstrapped via LLD (the prior one couldn't emit a DLL); after
-that it self-hosts. `package.ps1` builds it with the just-built compiler.
+`/DEFAULTLIB` static-CRT objects), always safely.
+
+### Dev ships the DLL; release bakes it in
+
+- **Dev** (`zig build`): k2.exe + `k2lnk.dll` (separate, fast, single-stage). The
+  compiler loads it on demand.
+- **Release** (`zig build -Dembed-linker`, used by `package.ps1`): a **two-stage**
+  build compiles `linker/k2lnk.k2` to a freestanding object (`object --no-entry`)
+  *from source* and links it into k2.exe, exporting `k2_link_mem`
+  (`linker/k2lnk_embed.def`). The result is **one self-contained `k2.exe` that is
+  its own linker** — no `k2lnk.dll` in the distribution.
+
+`link.zig` is identical for both: it finds the linker with `GetProcAddress` on
+k2.exe's own module (embed case), else `LoadLibrary("k2lnk.dll")` (dev). Nothing
+prebuilt is committed — the embed object is built from source at release time, so
+there's no binary blob to trust. `k2lld.dll` still ships as the LLD fallback.
 
 ## 3. Optional components
 
