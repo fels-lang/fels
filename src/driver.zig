@@ -128,6 +128,9 @@ pub const LlvmCompileOptions = struct {
     opt_level: u2 = if (@import("builtin").mode == .Debug) 0 else 2,
     /// Target OS to generate for (cross-compilation). Defaults to the host.
     target_os: std.Target.Os.Tag = @import("builtin").os.tag,
+    /// Emit no platform entry-point wrapper (`mainCRTStartup`) or `_fltused` — a
+    /// freestanding library object to embed in another binary (k2lnk into k2.exe).
+    no_entry: bool = false,
     /// Link dynamically against the system libc (the `linux-gnu` ABI). When false
     /// (default), Linux output is a static, freestanding, no-libc ELF.
     link_libc: bool = false,
@@ -320,6 +323,7 @@ fn emitLlvmFromFrontend(
     defer be.deinit();
 
     be.setTarget(opts.target_os);
+    be.cg.no_entry = opts.no_entry;
     be.setOptLevel(opts.opt_level);
     if (opts.progress) |p| p(opts.progress_ctx, .codegen);
     const t_codegen = nowNs();

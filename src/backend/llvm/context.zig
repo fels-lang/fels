@@ -88,6 +88,9 @@ pub const ModuleCg = struct {
     /// `--target` for cross-compilation. Drives the entry point, `__chkstk`, and
     /// `_fltused`.
     target_os: std.Target.Os.Tag = @import("builtin").os.tag,
+    /// `--no-entry`: emit no platform entry-point wrapper (`mainCRTStartup`). For
+    /// compiling a library object to embed in another binary (e.g. k2lnk into k2).
+    no_entry: bool = false,
 
     /// Set when an internal lowering invariant is violated (e.g. a value's
     /// actual LLVM shape doesn't match what an instruction lowering assumed —

@@ -65,6 +65,9 @@ const Options = struct {
     quiet: bool = false,
     show_time: bool = false,
     dll: bool = false,
+    /// `--no-entry`: emit a freestanding library object (no `mainCRTStartup` /
+    /// `_fltused`), for embedding into another binary.
+    no_entry: bool = false,
     /// Codegen target OS (cross-compilation). Defaults to the host.
     target_os: std.Target.Os.Tag = @import("builtin").os.tag,
     /// The portable "link libc" switch (`--libc`, or `--target *-gnu`): the
@@ -212,6 +215,8 @@ pub fn main(init: std.process.Init) u8 {
             opts.show_time = true;
         } else if (eqAny(a, &.{ "--shared", "--dll" })) {
             opts.dll = true;
+        } else if (std.mem.eql(u8, a, "--no-entry")) {
+            opts.no_entry = true;
         } else if (eqAny(a, &.{ "--libc", "-lc" })) {
             opts.link_libc = true;
         } else {
@@ -436,6 +441,7 @@ fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source:
         .obj_path = obj_path,
         .opt_level = opts.opt_level,
         .target_os = opts.target_os,
+        .no_entry = opts.no_entry,
         .link_libc = opts.link_libc,
         .sysroot = opts.sysroot,
         .lib_paths = opts.lib_paths.items,

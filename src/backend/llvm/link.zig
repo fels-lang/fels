@@ -12,6 +12,7 @@ const builtin = @import("builtin");
 const win = struct {
     extern "kernel32" fn LoadLibraryA(lpLibFileName: [*:0]const u8) callconv(.winapi) ?*anyopaque;
     extern "kernel32" fn GetProcAddress(hModule: *anyopaque, lpProcName: [*:0]const u8) callconv(.winapi) ?*anyopaque;
+    extern "kernel32" fn GetModuleHandleA(lpModuleName: ?[*:0]const u8) callconv(.winapi) ?*anyopaque;
 };
 
 const LldLinkFn = *const fn (argc: c_int, argv: [*]const [*:0]const u8) callconv(.c) c_int;
@@ -62,12 +63,22 @@ const K2LinkMemFn = *const fn (
     is_dll: u32,
 ) callconv(.c) c_int;
 
+// When k2lnk is statically linked into k2.exe (`-Dembed-linker`), it is exported
+// from the exe itself, so we find it with GetProcAddress on our own module; else
+// we load `k2lnk.dll`. (A weak `@extern` would be cleaner but COFF weak externs
+// don't null-check reliably in Zig — they resolve to a 0 we'd call.)
+fn resolveK2lnk() ?K2LinkMemFn {
+    const self = win.GetModuleHandleA(null) orelse return null;
+    if (win.GetProcAddress(self, "k2_link_mem")) |p| return @ptrCast(p); // embedded
+    const dll = win.LoadLibraryA("k2lnk.dll") orelse return null;
+    const proc = win.GetProcAddress(dll, "k2_link_mem") orelse return null;
+    return @ptrCast(proc);
+}
+
 fn tryK2lnkMem(allocator: std.mem.Allocator, obj_bytes: []const u8, opts: WindowsLinkOptions) ?bool {
     if (builtin.os.tag != .windows) return null;
     if (!k2lnkEligible(opts)) return null;
-    const module = win.LoadLibraryA("k2lnk.dll") orelse return null;
-    const proc = win.GetProcAddress(module, "k2_link_mem") orelse return null;
-    const link_fn: K2LinkMemFn = @ptrCast(proc);
+    const link_fn = resolveK2lnk() orelse return null;
     const out_z = allocator.dupeZ(u8, opts.output) catch return false;
     defer allocator.free(out_z);
     const entry_z = allocator.dupeZ(u8, opts.entry orelse "") catch return false;
