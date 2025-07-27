@@ -1021,8 +1021,10 @@ arg_at :: fn(cl: []const u8, want: u32) -> []const u8 {
     return sub(cl, 0usize, 0usize);
 }
 
-#entry
-main :: fn() -> i32 {
+// Standalone CLI (`k2lnk <obj> <exe>`). Deliberately NOT `#entry`/named `main`,
+// so this object can be statically embedded into k2.exe without a duplicate
+// `main` (the toolchain drives k2lnk via k2_link_mem in-process, not this).
+cli_main :: fn() -> i32 {
     a := make();
     clp0 := GetCommandLineA();                 // runtime: [*]const u8
     base := unsafe (clp0 as usize);

@@ -28,6 +28,12 @@ pub fn build(b: *std.Build) void {
         "Path to the K2 modules directory containing std/",
     ) orelse b.pathFromRoot("lib");
 
+    // Statically link the self-hosted linker (k2lnk) into k2.exe for a
+    // single-binary release (no separate k2lnk.dll). Two-stage: the base k2.exe
+    // compiles linker/k2lnk.k2 to a freestanding object, which the final k2.exe
+    // links in and exports. Dev builds leave this off and ship the dll.
+    const embed_linker = b.option(bool, "embed-linker", "Bake k2lnk into k2.exe (single-binary release)") orelse false;
+
     // ── Compiler library module ───────────────────────────────────────────
     const compiler_mod = b.addModule("k2_compiler", .{
         .root_source_file = b.path("src/root.zig"),
@@ -198,7 +204,40 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{ .name = "k2", .root_module = exe_mod });
     exe.root_module.addImport("k2_compiler", compiler_mod);
     exe.root_module.addLibraryPath(.{ .cwd_relative = basalt_lib_dir });
-    b.installArtifact(exe);
+
+    if (embed_linker and llvm_path != null) {
+        // Stage 1: the base k2.exe compiles the linker to a freestanding object
+        // (no entry / _fltused). It only does codegen, so it needs LLVM-C.dll on
+        // PATH but no linker.
+        const lp = llvm_path.?;
+        const gen = b.addRunArtifact(exe);
+        gen.addArg("object");
+        gen.addFileArg(b.path("linker/k2lnk.k2"));
+        gen.addArgs(&.{ "--no-entry", "-O2", "-o" });
+        const k2lnk_obj = gen.addOutputFileArg("k2lnk.obj");
+        gen.addPathDir(b.fmt("{s}/bin", .{lp})); // so LLVM-C.dll resolves at run time
+
+        // Stage 2: the shipped k2.exe links that object in and exports k2_link_mem
+        // (link.zig finds it via GetProcAddress on its own module). One binary.
+        // A SEPARATE module so the object isn't pulled into the base exe above
+        // (which would make the generator depend on its own output — a cycle).
+        const final_mod = b.addModule("k2_embed", .{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        final_mod.addImport("k2_compiler", compiler_mod);
+        final_mod.addLibraryPath(.{ .cwd_relative = basalt_lib_dir });
+        final_mod.addObjectFile(k2lnk_obj);
+        // The embedded object carries the k2 runtime, which references ws2_32
+        // (the net module). kernel32 is already linked; add Winsock.
+        final_mod.linkSystemLibrary("ws2_32", .{});
+        const final = b.addExecutable(.{ .name = "k2", .root_module = final_mod });
+        final.win32_module_definition = b.path("linker/k2lnk_embed.def");
+        b.installArtifact(final);
+    } else {
+        b.installArtifact(exe);
+    }
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
