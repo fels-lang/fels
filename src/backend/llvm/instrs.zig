@@ -1493,6 +1493,13 @@ fn lowerCompoundLiteral(
             const total: usize = arr.len;
             const n = @min(args.len, total);
 
+            // `.{}` (empty) → a single `zeroinitializer`, which LLVM lowers a store
+            // of to a memset. Otherwise the all-const path below builds a
+            // `total`-element ConstArray2 of explicit zeros — O(total) Constants to
+            // create and emit, which made `[N]u8 = .{}` codegen pathologically slow
+            // for large N (a 4096-byte stack buffer cost ~125 ms on its own).
+            if (n == 0) return llvm.LLVMConstNull(types.lower(cg, ty));
+
             const provided = cg.allocator.alloc(llvm.LLVMValueRef, n) catch return null;
             defer cg.allocator.free(provided);
             var all_const = true;
