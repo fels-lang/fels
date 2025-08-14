@@ -5,8 +5,121 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ## Unreleased
 
+### Added
+
+- **Static aggregates.** A top-level global can now hold a struct, an array, a function
+  pointer, the address of another global, `null`, a string or a payload-less enum
+  variant, nested to any depth: `VT: Vtbl = .{ add, 7u32 };`, `A: Node = .{ 1, &B };`.
+  The initializer is data in the image — laid out by the compiler, placed by the linker —
+  and nothing runs at startup. A literal reads exactly as it does for a local; a mistake
+  (a value that does not fit, an unknown or duplicate field, a missing field, a lambda or
+  generic function, a pointer to a non-global) is a compile error pointing at the value.
+  A typed scalar global is checked the same way, where `i8 = 128` used to be accepted.
+  Before this, only a scalar fitted ("constant initializer could not be folded").
+- **`gabbro check` reports an invalid static initializer**, with the source line, instead of
+  saying "ok" and leaving the mistake for the build. A value that needs the compile-time
+  evaluator (a `#run`) is still checked at build time.
+- **A `#run` can return a whole table, struct, enum value, function pointer or string**, and it
+  becomes the global's initial value — data in the image, laid out like a literal, nothing run at
+  startup: `CRC: [256]u32 = #run make_crc_table();`, `SQUARES :: #run make_squares();` (an
+  untyped constant takes the type of the call), `W: Wrap = .{ #run origin(), #run primes(), 5 }`.
+  Before, only a number could ("a `#run` constant must evaluate to a scalar value"). A result
+  that cannot be data is refused with the place in the value that is wrong: a pointer into
+  compile-time memory, a variant with a payload, a lambda, a slice of anything but bytes, a
+  number the type cannot hold (`in [0]: the value 300 does not fit in u8`).
+- **Compile-time code reads static data.** A `#run` or `#assert` can index a table, take a
+  field, call through a function-pointer field or table, take the address of an element and
+  `match` on an enum element of any struct, array, enum or function-pointer global, as well as a
+  scalar one. It sees the initial value, built once per run, and cannot change it: a write
+  stops the build with "compile-time code cannot modify a global". A global that holds the
+  address of another and a global that a `#run` computes are not readable yet; reading one
+  stops that `#run` and names the global. See [`docs/09`](docs/09_comptime.md#data-at-compile-time).
+- **`#export` on a global** exports it as data, by its own name or `#export("name")`.
+  This is what a plugin entry point is (`clap_entry`). `examples/dll` exports one and is
+  loaded from Python. On Linux the global gets a global symbol of that name.
+- **Calling through a function-pointer expression:** `HANDLERS[i](x)`, `make()(x)`,
+  `(addr as extern fn(i32) -> i32)(x)`. A global function pointer is callable by name,
+  and a call through any function pointer — local, global, field or element — now checks
+  its argument count and types. Before, `table[0](21)` type-checked as `unknown` and
+  returned 16 instead of 42, and `f(1, 2)` on a one-parameter pointer compiled.
+- **`core::offset_of(T, "field")`, `core::align_of(T)` and `#assert(cond, "message")`** —
+  layout queries and compile-time assertions. The answers were compared with clang for
+  `x86_64-pc-windows-msvc`. See [`docs/11`](docs/11_c_interop.md#checking-a-layout).
+- **`std.bytes`** — fixed-width little- and big-endian reads and writes at an explicit
+  offset in a byte slice; an out-of-range access fails with `out_of_bounds` and touches
+  nothing.
+- **`std.com` and `std.winrt`** — COM and Windows Runtime primitives. `std.com` is the data,
+  portable to every target: `Guid` (text form, parser, `eq`), `HRESULT` helpers and `check`,
+  which turns a failure into a named error; `IUnknown`, `IInspectable` and
+  `IActivationFactory` with their vtables; `RefCount` for objects you write. `std.winrt` is the
+  Windows-only part: `co_initialize` / `ro_initialize`, `co_create_instance`,
+  `activation_factory`, and `HString` / `HStringRef` over `HSTRING`. Every layout, GUID and
+  constant was compared with the Windows SDK headers through clang, and the test fixture runs
+  against the real system: GUID text against `StringFromGUID2`, a COM object of the OS called
+  through a hand-declared vtable, a COM object written in Gabbro that the OS calls back, and
+  `Windows.Foundation.Uri` activated and read. A DLL name `combase` links through the SDK's
+  `runtimeobject.lib` (the SDK has no `combase.lib`).
+- **`std.sync`** — `Mutex`, `CondVar` (`wait`, `wait_timeout`, `signal`, `broadcast`) and a
+  bounded blocking `Queue(T)` with `close()`. They sit on the operating system's own
+  primitives — `SRWLOCK` and `CONDITION_VARIABLE` on Windows, `futex(2)` on Linux — so a
+  blocked thread sleeps instead of polling; each is one word in your own struct, all zero
+  bits is the unlocked state, and there is nothing to allocate or destroy.
+- **`std.utf16`** — UTF-8 ⇄ UTF-16 with surrogate pairs and strict validation; a malformed
+  input is an error, never silently replaced. Sizes are computed first, buffers are the
+  caller's.
+
 ### Fixed
 
+- **Wrapping arithmetic, shifts, `~` and casts did not drop bits at compile time.** The VM
+  computes in 128 bits and kept what a narrower type would have lost, so `0xFFFFFFFFu32 +% 1`
+  was `4294967296`, `300u32 as u8` was `300`, and a xorshift generator or an FNV hash run in a
+  `#run` fed the lost high bits back through the next `>>` and produced a different number than
+  the program computes — [`docs/02`](docs/02_types.md#overflow-policy) said they behave
+  identically at compile time. `+%`, `-%`, `*%`, `<<`, `~` and `as` now wrap to the operand type's width and
+  signedness; 550 casts between all ten integer types and 50 wrapping operations were compared
+  with the machine's results. A plain `+ - *` that overflows still keeps the exact result.
+- **A `#run` that read a constant another `#run` computed silently saw `null`.** With
+  `FLAG :: #run yes();` and `X :: #run pick();` where `pick` tests `FLAG`, `X` came out as the
+  value for `FLAG == false` and was baked into the program. It now stops with "global `FLAG`
+  cannot be read by compile-time code: its value is itself computed by a `#run`".
+- **Comparing two payload-less enum values (`m == Mode.slow`) in a `#run` could not be
+  evaluated.** The VM compared the two blocks instead of their tags.
+- **A function named as a value in a struct literal inside a `#run`** (`.{ 9, dbl }` for a
+  `fn` field) could not be evaluated.
+- **`&&` and `||` did not short-circuit.** Both operands were always evaluated, as
+  [`docs/01`](docs/01_syntax.md) said they were not: `side(false) && side(true)` ran `side`
+  twice, and at `-O0` the guard `i < s.len && s[i] != x` read `s[s.len]` and trapped. The right
+  operand now runs only when the left does not decide the result; a constant left operand
+  (`DEBUG && check()`) needs no branch at all. The comptime VM, which runs the same lowering,
+  behaves the same.
+- **A `catch` handler that ran to its end ran off into other code.** It was lowered as
+  `unreachable`, which happened to continue after the `catch` at `-O0` and, once optimised,
+  fell through into whatever followed: `f() catch e {};` — the usual way to ignore an error —
+  crashed at `-O2` as soon as `f` failed. A handler that ends now continues after the `catch`.
+  Because a handler produces no value, a `catch` whose value is used (`v := f() catch e { … }`)
+  must end its handler with `return`, `fail`, `break` or `continue`, and is an error otherwise;
+  a `catch` that is a statement of its own, or on a `void` call, may simply end.
+- **An error handed to another function was compared against the wrong variants** (every error
+  looked like the first one). Comparing an error with a variant is now accepted only on the name
+  the `catch` bound, and is a compile error anywhere else.
+- **`ptr_from_int(**T, …)` failed the build without a message.** The builtins that take a type
+  as their first argument now say what they expected.
+- **Reading an array field of a struct in a loop overflowed the stack.** `b.order[i]` copied the
+  whole array into a fresh stack slot on every pass — a dynamic allocation nothing released —
+  so a loop over a 4000-byte field crashed after about 250 iterations (`STATUS_STACK_OVERFLOW`).
+  It also affected the address of a slice or fallible field read from a value. The scratch
+  slots now live in the function's entry block and are reused.
+- **gabld produced DLLs that broke when not loaded at their preferred address.** gabld
+  writes no base-relocation table, so an absolute address in a DLL's data (a vtable, now
+  a static table of pointers) kept pointing into the first image loaded at that address —
+  and every gabld DLL asks for the same one. gabld now hands such a DLL to LLD, which
+  writes the table; a DLL with no absolute address is still linked by gabld. A bare
+  `#export` on a function is now in gabld's export table as well.
+- **`e == .variant` on an error value compared against nothing.** An error held in a
+  local was stored as a pointer, so the comparison read garbage, and a misspelt variant
+  was not diagnosed. It now compares the error's discriminant (its 1-based position in the
+  function's own error set) and `Enum.variant` typos are an error. The comptime VM numbers
+  errors the same way.
 - **A program could not bind a Win32 function the runtime also declares.** Declaring
   `#extern("kernel32", "CloseHandle")` under that name — or a `STD_OUTPUT_HANDLE`
   constant, or the same API in two modules — failed with `duplicate top-level

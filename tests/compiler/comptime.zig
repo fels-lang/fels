@@ -186,21 +186,178 @@ test "#run: taking the address of a scalar local folds on the VM" {
     try std.testing.expect(r1 and r2);
 }
 
-test "#run: an un-foldable constant fails with a diagnostic, not silent garbage" {
+test "#run: a struct, array or enum result becomes the data of a global" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // A `#run` constant whose result is an aggregate cannot be a scalar global;
-    // the lowering must reject it (LoweringFailed after a clear diagnostic),
-    // never silently substitute a best-effort literal.
+    // What a `#run` returns is read back out of the VM and becomes constant data, however it was
+    // declared: with no type (`PAIR ::`, the type is the call's), with one, or as a field.
+    const src =
+        \\P :: struct { x: i32, y: i32 }
+        \\Mode :: enum { fast, slow, off }
+        \\Wrap :: struct { p: P, tail: [3]u32 }
+        \\make_p :: fn() -> P { return .{ 1, 2 }; }
+        \\make_a :: fn() -> [4]u32 { return .{ 10, 20, 0, 0 }; }
+        \\make_m :: fn() -> Mode { return .off; }
+        \\PAIR :: #run make_p();
+        \\ARR: [4]u32 = #run make_a();
+        \\MODE: Mode = #run make_m();
+        \\W: Wrap = .{ #run make_p(), .{ 7, 8, 9 } };
+    ;
+    var fe = try gabbro.compile(arena.allocator(), "run_aggregate.gab", src);
+    defer fe.deinit(arena.allocator());
+    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
+    try gabbro.ir_mod.validateModule(m);
+
+    var seen: u32 = 0;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "PAIR")) {
+            seen += 1;
+            const fields = g.init.struct_init.fields;
+            try std.testing.expectEqual(@as(usize, 2), fields.len);
+            try std.testing.expectEqual(ir.Imm{ .int = 1 }, fields[0].value.imm);
+            try std.testing.expectEqual(ir.Imm{ .int = 2 }, fields[1].value.imm);
+            try std.testing.expect(!g.mutable);
+        }
+        if (std.mem.eql(u8, g.name, "ARR")) {
+            seen += 1;
+            // An array is zero past its last element, so the trailing zeros are not kept.
+            try std.testing.expectEqual(@as(usize, 2), g.init.array_init.len);
+            try std.testing.expectEqual(ir.Imm{ .int = 20 }, g.init.array_init[1].imm);
+        }
+        if (std.mem.eql(u8, g.name, "MODE")) {
+            seen += 1;
+            try std.testing.expectEqual(@as(u32, 2), g.init.variant_tag);
+        }
+        if (std.mem.eql(u8, g.name, "W")) {
+            seen += 1;
+            const fields = g.init.struct_init.fields;
+            try std.testing.expectEqual(ir.Imm{ .int = 2 }, fields[0].value.struct_init.fields[1].value.imm);
+            try std.testing.expectEqual(ir.Imm{ .int = 9 }, fields[1].value.array_init[2].imm);
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 4), seen);
+}
+
+test "#run: a result that cannot be data fails with a diagnostic, not silent garbage" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Each of these runs fine on the VM; what it returns just has no place in the image.
+    const head =
+        \\Holder :: struct { p: *i32 }
+        \\Shape :: enum { circle: i32, none }
+        \\Cbs :: struct { f: fn(i32) -> i32 }
+        \\
+    ;
+    const refused = [_][]const u8{
+        // a pointer into compile-time memory: the program will not have that memory
+        "mk :: fn() -> Holder { x := 5; return .{ &x }; }\nH: Holder = #run mk();",
+        // a variant that carries a payload (static storage does not hold one yet)
+        "mk :: fn() -> Shape { return Shape.circle(3); }\nS: Shape = #run mk();",
+        // an element the type cannot hold: a checked u8 addition that overflowed
+        "mk :: fn() -> [2]u8 { x: u8 = 200u8; y: u8 = 100u8; a: [2]u8 = .{}; a[0] = x + y; return a; }\nA: [2]u8 = #run mk();",
+        // a slice of anything but bytes
+        "mk :: fn() -> []const u32 { a: [2]u32 = .{ 1, 2 }; return a[:]; }\nS: []const u32 = #run mk();",
+        // a lambda has no plain code address, returned from a call or put in a function-pointer field
+        "pick :: fn() -> fn(i32) -> i32 { return fn(x: i32) -> i32 { return x + 3; }; }\nF: fn(i32) -> i32 = #run pick();",
+        "mk :: fn() -> Cbs { k := 3; return .{ fn(x: i32) -> i32 { return x + k; } }; }\nC: Cbs = #run mk();",
+    };
+    for (refused) |decl| {
+        const src = try std.mem.concat(arena.allocator(), u8, &.{ head, decl, "\n" });
+        var fe = gabbro.compile(arena.allocator(), "run_refused.gab", src) catch |err| {
+            std.debug.print("\nthe front end should accept (the VM is what refuses it):\n  {s}\n", .{decl});
+            return err;
+        };
+        defer fe.deinit(arena.allocator());
+        if (gabbro.lowerFrontend(arena.allocator(), fe)) |_| {
+            std.debug.print("\nthis should have been refused when lowered:\n  {s}\n", .{decl});
+            return error.TestUnexpectedResult;
+        } else |err| try std.testing.expectEqual(error.LoweringFailed, err);
+    }
+}
+
+test "#run: a global another #run computes is not readable by it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The VM that evaluates a `#run` is built before any `#run` has a value, so a global that a
+    // `#run` computes is not there to read. It stops the evaluation (and says so) rather than
+    // reading a stand-in that looks like a value.
     const src =
         \\P :: struct { x: i32, y: i32 }
         \\make_p :: fn() -> P { return .{ 1, 2 }; }
-        \\BAD :: #run make_p();
+        \\FIRST: P = #run make_p();
+        \\second_x :: fn() -> i32 { return FIRST.x + 1; }
+        \\SECOND: i32 = #run second_x();
     ;
-    var fe = try gabbro.compile(arena.allocator(), "bad_ct.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "run_chain.gab", src);
     defer fe.deinit(arena.allocator());
     try std.testing.expectError(error.LoweringFailed, gabbro.lowerFrontend(arena.allocator(), fe));
+}
+
+// The VM computes in 128 bits. A value that a narrower type would have dropped bits from must be
+// narrowed the way the machine does it: after a wrapping operation, a left shift, `~`, and a cast.
+// Without that, `x ^ (x << 13)` on a u32 keeps its high bits and the `>> 17` that follows shifts
+// them back down into the number: an in-range, wrong, silent result.
+const wrapping =
+    \\wrap_add :: fn() -> u32 { a: u32 = 0xFFFFFFFFu32; return a +% 1u32; }
+    \\wrap_sub :: fn() -> u32 { a: u32 = 0u32; return a -% 1u32; }
+    \\wrap_mul :: fn() -> u32 { a: u32 = 2166136261u32; return a *% 16777619u32; }
+    \\shl32 :: fn() -> u32 { a: u32 = 0x80000001u32; return a << 1u32; }
+    \\shl16 :: fn() -> u16 { a: u16 = 0x8001u16; return a << 1u16; }
+    \\i8wrap :: fn() -> i8 { a: i8 = 127i8; return a +% 1i8; }
+    \\not32 :: fn() -> u32 { a: u32 = 0u32; return ~a; }
+    \\not8 :: fn() -> u8 { a: u8 = 0x0Fu8; return ~a; }
+    \\cast_u8 :: fn() -> u8 { a: u32 = 300u32; return a as u8; }
+    \\cast_i32 :: fn() -> i32 { a: u32 = 0xFFFFFFFFu32; return a as i32; }
+    \\cast_u32 :: fn() -> u32 { a: i32 = -1; return a as u32; }
+    \\cast_u64 :: fn() -> u64 { a: i32 = -1; return a as u64; }
+    \\xorshift :: fn() -> u32 {
+    \\    x: u32 = 2463534242u32;
+    \\    x = x ^ (x << 13u32);
+    \\    x = x ^ (x >> 17u32);
+    \\    x = x ^ (x << 5u32);
+    \\    return x;
+    \\}
+    \\fnv :: fn() -> u32 {
+    \\    h: u32 = 2166136261u32;
+    \\    h = (h ^ 97u32) *% 16777619u32;
+    \\    h = (h ^ 98u32) *% 16777619u32;
+    \\    return h;
+    \\}
+    \\
+;
+
+test "comptime: wrapping arithmetic, shifts, ~ and casts drop what the type cannot hold" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The expected values are the ones the machine gives (and Python, for the two hashes).
+    const holds = [_][]const u8{
+        "wrap_add() == 0u32",
+        "wrap_sub() == 0xFFFFFFFFu32",
+        "wrap_mul() == 84696351u32",
+        "shl32() == 2u32",
+        "shl16() == 2u16",
+        "i8wrap() == -128i8",
+        "not32() == 0xFFFFFFFFu32",
+        "not8() == 0xF0u8",
+        "cast_u8() == 44u8",
+        "cast_i32() == -1",
+        "cast_u32() == 0xFFFFFFFFu32",
+        "cast_u64() == 0xFFFFFFFFFFFFFFFFu64",
+        "xorshift() == 723471715u32",
+        "fnv() == 1294271946u32",
+    };
+    for (holds) |cond| {
+        const src = try std.fmt.allocPrint(arena.allocator(), "{s}#assert({s}, \"narrowing\");\nmain :: fn() -> i32 {{ return 0; }}\n", .{ wrapping, cond });
+        var fe = try gabbro.compile(arena.allocator(), "wrapping.gab", src);
+        defer fe.deinit(arena.allocator());
+        _ = gabbro.lowerFrontend(arena.allocator(), fe) catch |err| {
+            std.debug.print("\nthis should hold at compile time, as it does on the machine:\n  {s}\n", .{cond});
+            return err;
+        };
+    }
 }
 
 test "#run: a comptime @panic halts the build with its message (#2)" {

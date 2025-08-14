@@ -10,6 +10,9 @@ const vm_engine = @import("vm/engine.zig");
 const vm_instructions = @import("vm/instructions.zig");
 const vm_value = @import("vm/value.zig");
 const vm_run_cache = @import("vm/run_cache.zig");
+const vm_static_data = @import("vm/static_data.zig");
+const layout_mod = @import("layout.zig");
+const Diagnostic = diag_mod.Diagnostic;
 
 pub const RegId = u32;
 pub const BlockId = u32;
@@ -57,11 +60,32 @@ pub const IrGlobal = struct {
     ty: IrType,
     init: ConstInit,
     mutable: bool,
+    /// `#export` / `#export("name")`: the global is a data export of the image. `""` (a bare
+    /// `#export`) means "under its own link name", as for a function.
+    export_sym: ?[]const u8 = null,
 };
 
 pub const ConstInit = union(enum) {
     imm: Imm,
     struct_init: StructInit,
+    /// Elements in order; an array longer than this list is zero beyond it.
+    array_init: []const ConstInit,
+    /// All-zero bytes of the global's type: `.{}`, `null`, an omitted field with no default.
+    zero,
+    /// The address of the function with this link name. As a `fn` struct field or an
+    /// `extern fn` it is the code address itself; as a plain `fn` value it is the
+    /// `{ thunk, null }` closure for that function.
+    func_ref: []const u8,
+    /// The address of the global with this link name (`&OTHER`).
+    global_addr: []const u8,
+    /// An enum value that carries no payload: its discriminant. A simple enum is that `i32`;
+    /// for an enum that also has payload variants the payload bytes are left zero.
+    variant_tag: u32,
+    /// A value only the comptime VM can compute (a `#run` result) that has not been computed. It
+    /// exists only in the module the VM itself reads — built before any evaluation can run — and in
+    /// `gabbro check`, which runs nothing. The module that is compiled has the value instead, or
+    /// the build stopped with the reason there is none, so a backend never sees this.
+    pending,
 };
 
 pub const StructInit = struct {
@@ -532,6 +556,9 @@ pub const Imm = union(enum) {
     null,
 };
 
+/// A `catch err { … }` binding in scope while its handler is lowered.
+const CaughtError = struct { name: []const u8, ty: sema.Ty };
+
 pub const LowerError = error{
     LoweringFailed,
     OutOfMemory,
@@ -549,6 +576,54 @@ pub const Pass = enum {
 
 pub fn lowerFrontend(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) LowerError!IrModule {
     return lowerModule(allocator, front_end);
+}
+
+/// A mistake in a static initializer, with the source text of the file it is in (the span is
+/// an offset into that text, not necessarily the program's main file).
+pub const StaticDataDiag = struct { diag: Diagnostic, source: []const u8 };
+
+/// Check the initializer of every typed global against its type, without running anything, and
+/// return one diagnostic for each global that is wrong: a value that does not fit, an unknown or
+/// duplicate or missing field, too many initializers, a lambda or generic function, a pointer to
+/// something that is not a top-level global, and so on. This is the part of static-storage
+/// checking that needs no evaluator, which is why `gabbro check` can report it; what needs the
+/// comptime VM (a `#run` value, a call in a constant) is checked when the module is lowered. The
+/// diagnostics are allocated with `allocator`.
+pub fn checkStaticData(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) std.mem.Allocator.Error![]const StaticDataDiag {
+    var folded_consts = foldModuleConsts(allocator, front_end) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.LoweringFailed => return &.{},
+    };
+    defer folded_consts.deinit();
+    var found: std.ArrayList(StaticDataDiag) = .empty;
+    errdefer found.deinit(allocator);
+    for (front_end.module.items) |item| switch (item) {
+        .const_decl => |decl| {
+            const declared_ref = decl.ty orelse continue;
+            const declared = lowerAstTypeWithEnv(allocator, declared_ref, front_end.types, front_end.symbols) catch continue;
+            if (!needsStaticInit(declared)) continue;
+            const builder = StaticInit{
+                .allocator = allocator,
+                .cvm = null,
+                .env = .{
+                    .allocator = allocator,
+                    .symbols = front_end.symbols,
+                    .types = front_end.types,
+                    .known = &folded_consts,
+                    .module = front_end.module,
+                },
+                .file = decl.file_name,
+                .source = decl.source,
+                .sink = &found,
+            };
+            _ = builder.build(decl.value, declared) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.LoweringFailed => {}, // already recorded in `found`
+            };
+        },
+        else => {},
+    };
+    return found.toOwnedSlice(allocator);
 }
 
 pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) LowerError!IrModule {
@@ -685,6 +760,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
     for (front_end.module.items) |item| {
         switch (item) {
             .import => {},
+            .static_assert => |decl| try checkStaticAssert(decl, cvm),
             .type_decl => |decl| switch (decl.kind) {
                 .struct_type => |strukt| try structs.append(allocator, try lowerStruct(allocator, decl, strukt, front_end.types, front_end.symbols)),
                 .errors => |error_decl| try errors.append(allocator, try lowerErrorDef(allocator, decl, error_decl)),
@@ -694,8 +770,44 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                 .distinct, .opaque_type, .interface_type, .alias => {},
             },
             .const_decl => |decl| {
+                // A typed global goes through `StaticInit`. So does `NAME :: #run f();` when `f`
+                // returns a struct, an array, an enum value or a function pointer: there is no
+                // declared type to read, so the type is the one sema gave the call.
+                const static_ty: ?IrType = if (decl.ty) |declared_ref| blk: {
+                    const declared = try lowerAstTypeWithEnv(allocator, declared_ref, front_end.types, front_end.symbols);
+                    break :blk if (needsStaticInit(declared)) declared else null;
+                } else computedConstType(allocator, front_end, decl.value);
+                if (static_ty) |declared| {
+                    const builder = StaticInit{
+                        .allocator = allocator,
+                        .cvm = cvm,
+                        .env = .{
+                            .allocator = allocator,
+                            .symbols = front_end.symbols,
+                            .types = front_end.types,
+                            .known = &folded_consts,
+                            .module = front_end.module,
+                        },
+                        .file = decl.file_name,
+                        .source = decl.source,
+                    };
+                    if (cvm) |c| c.current_file = decl.file_name;
+                    try globals.append(allocator, .{
+                        .name = linkNameFor(front_end.symbols, decl.file_name, decl.name),
+                        .ty = declared,
+                        .init = try builder.build(decl.value, declared),
+                        .mutable = decl.is_mutable,
+                        .export_sym = sema.exportSym(decl.attrs),
+                    });
+                    continue;
+                }
                 // #run expr on the right-hand side → evaluate at compile time.
-                const effective_imm = try effectiveConstImm(decl.value, cvm, decl.file_name, decl.source, front_end.symbols, &folded_consts);
+                const effective_imm = try effectiveConstImm(decl.value, cvm, decl.file_name, decl.source, .{
+                    .allocator = allocator,
+                    .symbols = front_end.symbols,
+                    .types = front_end.types,
+                    .known = &folded_consts,
+                });
                 // A mutable global (`name: T = init;`) takes its explicit type;
                 // an immutable constant derives it from the folded initializer
                 // (`X :: #run f()` has no literal to infer from).
@@ -713,11 +825,16 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                     .null => .unknown,
                 };
                 const clink = linkNameFor(front_end.symbols, decl.file_name, decl.name);
+                // With no evaluator (the cache build the VM reads) a constant that needs one comes
+                // back as a `null` placeholder; marked as such, so that a `#run` that reads it
+                // stops instead of seeing `null` (a flag that reads as `false`).
+                const placeholder = cvm == null and effective_imm == .null and decl.value.kind != .null;
                 try globals.append(allocator, .{
                     .name = clink,
                     .ty = ty,
-                    .init = .{ .imm = effective_imm },
+                    .init = if (placeholder) .pending else .{ .imm = effective_imm },
                     .mutable = decl.is_mutable,
+                    .export_sym = sema.exportSym(decl.attrs),
                 });
             },
             .function => |decl| {
@@ -1678,6 +1795,9 @@ const FunctionLowerer = struct {
     next_reg: RegId = 1,
     next_block_id: BlockId = 1,
     temp_id: u32 = 0,
+    /// Names bound by the `catch` handlers currently being lowered, with the error set each
+    /// holds (innermost last). Lets `e == .variant` resolve `.variant` against the right set.
+    catch_errors: std.ArrayList(CaughtError) = .empty,
     loop_stack: std.ArrayList(LoopContext) = .empty,
     local_types: std.StringHashMap(IrType),
     current_return_ty: IrType = .void,
@@ -3067,6 +3187,10 @@ const FunctionLowerer = struct {
             },
             .binary => |binary| blk: {
                 if (binary.op == .equal or binary.op == .not_equal) {
+                    // `err == .variant`: an error value is the 1-based position of its variant
+                    // in its error set (0 means "no error"). The bare `.variant` has no type of
+                    // its own, so the set comes from the other operand.
+                    if (try self.lowerErrorVariantCompare(binary, expr)) |cmp| break :blk cmp;
                     const optional_expr: ?ast.Expr = if (self.exprType(binary.left.*) == .optional and binary.right.kind == .null)
                         binary.left.*
                     else if (self.exprType(binary.right.*) == .optional and binary.left.kind == .null)
@@ -3138,6 +3262,7 @@ const FunctionLowerer = struct {
                         break :blk eqv;
                     }
                 }
+                if (binary.op == .and_and or binary.op == .or_or) break :blk try self.lowerShortCircuit(binary);
                 const lhs = try self.lowerExpr(binary.left.*);
                 const rhs = try self.lowerExpr(binary.right.*);
                 break :blk try self.emitAt(self.exprType(expr), .{ .binary = .{ .op = lowerBinOp(binary.op), .lhs = lhs, .rhs = rhs } }, expr.span);
@@ -3152,10 +3277,10 @@ const FunctionLowerer = struct {
             },
             .catch_expr => |catch_expr| blk: {
                 const value = try self.lowerExpr(catch_expr.value.*);
-                const error_ty: IrType = switch (self.exprType(catch_expr.value.*)) {
-                    .fallible => |fallible| fallible.err.*,
-                    else => .unknown,
-                };
+                // The caught error is the fallible's discriminant, field 1 of `{ T, i32 }`.
+                // (Typing the local as the error set itself made it a pointer-sized slot,
+                // which the comparison `e == .variant` then read as 8 bytes.)
+                const error_ty: IrType = .{ .i = 32 };
                 const is_ok = try self.emit(.bool, .{ .try_is_ok = value });
                 const ok_id = self.allocBlockId();
                 const err_id = self.allocBlockId();
@@ -3166,6 +3291,16 @@ const FunctionLowerer = struct {
                 } });
 
                 self.startBlock(err_id, "catch.err");
+                // While the handler is lowered, `e` names an error of this set, so
+                // `e == .variant` can be resolved against it.
+                const caught_set: ?sema.Ty = switch (self.types.expr_types.get(catch_expr.value.id) orelse .unknown) {
+                    .fallible => |f| f.err.*,
+                    else => null,
+                };
+                if (caught_set) |set_ty| try self.catch_errors.append(self.allocator, .{ .name = catch_expr.err_name, .ty = set_ty });
+                defer if (caught_set != null) {
+                    _ = self.catch_errors.pop();
+                };
                 const err_value = try self.emit(error_ty, .{ .try_err = value });
                 try self.emitNoResult(error_ty, .{ .store_local = .{ .name = catch_expr.err_name, .value = err_value } });
                 // Stash the error payload so `if e == .v |c|` in the handler can
@@ -3182,7 +3317,11 @@ const FunctionLowerer = struct {
                     .name = "catch_handler",
                     .args = try self.allocator.dupe(Value, &.{err_value}),
                 } });
-                try self.lowerBlock(catch_expr.handler.statements, .unreachable_term);
+                // A handler that runs to its end carries on after the `catch`, as the success path
+                // does. (Sema only lets that happen when the value is not used: a `void` success, or
+                // a catch that is a statement on its own.) It used to end in `unreachable`, which
+                // fell through by accident at -O0 and ran off into other code once optimised.
+                try self.lowerBlock(catch_expr.handler.statements, .{ .branch = ok_id });
 
                 self.startBlock(ok_id, "catch.ok");
                 break :blk try self.emit(self.exprType(expr), .{ .try_ok = value });
@@ -3372,6 +3511,21 @@ const FunctionLowerer = struct {
                     }
                 }
 
+                // A callee that is itself an expression whose type sema found to be a function
+                // pointer — `table[i](x)`, `make()(x)`, `(addr as fn(i32) -> i32)(x)`: evaluate
+                // it, then call through the value. A `fn` value is a fat `{ fn, env }` closure; an
+                // `extern fn` is a bare code address.
+                switch (call.callee.kind) {
+                    .ident, .scope_access, .field => {},
+                    else => if (self.types.expr_types.get(call.callee.id)) |callee_ty| {
+                        if (callee_ty == .fn_ptr) {
+                            const fp = callee_ty.fn_ptr;
+                            const callee_val = try self.lowerExpr(call.callee.*);
+                            break :blk try self.lowerCallThroughValue(call, expr, callee_val, fp.params, !fp.thin);
+                        }
+                    },
+                }
+
                 const callee_name = switch (call.callee.kind) {
                     .ident => |name| name,
                     // `core::panic` maps to the `@panic` intrinsic so it reuses the
@@ -3400,6 +3554,14 @@ const FunctionLowerer = struct {
                 // it reads the live module rather than lowering value args.
                 if (std.mem.eql(u8, callee_name, "compiler_decls")) {
                     break :blk try self.lowerCompilerDecls();
+                }
+                // core::align_of(T) / core::offset_of(T, "field") are static layout queries
+                // that fold to a `usize` constant right here (their arguments are a type
+                // and a name, not values, so they bypass the generic argument lowering).
+                if (call.callee.kind == .scope_access and isCoreNs(call.callee.kind.scope_access) and
+                    (std.mem.eql(u8, callee_name, "align_of") or std.mem.eql(u8, callee_name, "offset_of")))
+                {
+                    break :blk try self.lowerLayoutQuery(callee_name, call, expr);
                 }
                 // asm(...) needs structural constraint parsing — handle before generic builtin path.
                 if (std.mem.eql(u8, callee_name, "asm")) {
@@ -3642,6 +3804,11 @@ const FunctionLowerer = struct {
                         for (self.params) |p| {
                             if (std.mem.eql(u8, p.name, callee_name)) break :cv .{ .param = callee_name };
                         }
+                        // A function pointer held in a global is read from static storage.
+                        if (callee_sym) |sid| {
+                            if (self.symbols.symbol(sid).kind == .global_var)
+                                break :cv .{ .global = self.symbols.symbol(sid).link_name };
+                        }
                         break :cv .{ .local = callee_name };
                     };
                     // Only a genuine gabbro function VALUE (a fat `{ fn, env }` closure)
@@ -3831,6 +3998,40 @@ const FunctionLowerer = struct {
             .struct_literal => |inits| try self.lowerStructLiteral(inits, expected_ty, expr.span),
             else => try self.lowerExpr(expr),
         };
+    }
+
+    /// An indirect call whose callee is an already-evaluated function-pointer value: the arguments
+    /// are lowered at the pointer's parameter types, so a bare literal gets its real width.
+    fn lowerCallThroughValue(
+        self: *FunctionLowerer,
+        call: ast.CallExpr,
+        expr: ast.Expr,
+        callee_val: Value,
+        params: []const sema.Ty,
+        is_closure: bool,
+    ) LowerError!Value {
+        var args = std.ArrayList(Value).empty;
+        errdefer args.deinit(self.allocator);
+        var arg_tys = std.ArrayList(IrType).empty;
+        errdefer arg_tys.deinit(self.allocator);
+        for (call.args, 0..) |arg, i| {
+            const v = switch (arg) {
+                .positional => |e| e,
+                .named => |n| n.value,
+            };
+            const ety: ?IrType = if (i < params.len)
+                (lowerSemaTypeWithEnv(self.allocator, params[i], self.types, self.symbols) catch null)
+            else
+                null;
+            try args.append(self.allocator, if (ety) |t| try self.lowerExprAs(v, t) else try self.lowerExpr(v));
+            try arg_tys.append(self.allocator, ety orelse .unknown);
+        }
+        return self.emit(self.exprType(expr), .{ .call_indirect = .{
+            .callee = callee_val,
+            .args = try args.toOwnedSlice(self.allocator),
+            .param_tys = try arg_tys.toOwnedSlice(self.allocator),
+            .is_closure = is_closure,
+        } });
     }
 
     /// Type of the i-th element of a compound literal of aggregate type `ty`
@@ -4074,7 +4275,22 @@ const FunctionLowerer = struct {
         const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, self.exprType(expr)) };
         return switch (expr.kind) {
             .ident => |name| blk: {
-                const local: Value = .{ .local = self.curLocal(name) };
+                const cur = self.curLocal(name);
+                // Not a declared local (a param is not a global either): a top-level global
+                // is addressed in place, so a write through the address reaches it.
+                if (!self.local_types.contains(cur)) {
+                    var is_param = false;
+                    for (self.params) |p| {
+                        if (std.mem.eql(u8, p.name, name)) is_param = true;
+                    }
+                    if (!is_param) if (resolveTopLevel(self.symbols, self.file_name, name)) |id| {
+                        const sym = self.symbols.symbol(id);
+                        if (sym.kind == .global_var or sym.kind == .const_symbol) {
+                            break :blk try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = .{ .global = sym.link_name } } });
+                        }
+                    };
+                }
+                const local: Value = .{ .local = cur };
                 break :blk try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = local } });
             },
             .field => |field| blk: {
@@ -4141,6 +4357,90 @@ const FunctionLowerer = struct {
     }
 
     /// `expr ?? default` — use default value when expr is null/error.
+    /// The variants of the error set a sema type names, in declaration order.
+    fn errorSetVariantsOf(self: *FunctionLowerer, ty: sema.Ty) ?[]const sema.ErrorVariantInfo {
+        return switch (ty) {
+            .error_set => |variants| variants,
+            .named => |id| blk: {
+                const type_layout = self.types.layouts.get(id) orelse break :blk null;
+                break :blk switch (type_layout.kind) {
+                    .error_set => |variants| variants,
+                    else => null,
+                };
+            },
+            else => null,
+        };
+    }
+
+    /// The error set an operand holds: a name bound by an enclosing `catch`, else the
+    /// type sema recorded for the expression.
+    fn errorSetOfOperand(self: *FunctionLowerer, operand: ast.Expr) ?[]const sema.ErrorVariantInfo {
+        if (operand.kind == .ident) {
+            var i = self.catch_errors.items.len;
+            while (i > 0) {
+                i -= 1;
+                const caught = self.catch_errors.items[i];
+                if (std.mem.eql(u8, caught.name, operand.kind.ident)) return self.errorSetVariantsOf(caught.ty);
+            }
+        }
+        const ty = self.types.expr_types.get(operand.id) orelse return null;
+        return self.errorSetVariantsOf(ty);
+    }
+
+    /// `err == .variant` / `err != .variant` when one operand is a bare `.variant` and the
+    /// other has an error-set type: compare the error value with that variant's discriminant.
+    /// Returns null for any other comparison.
+    fn lowerErrorVariantCompare(self: *FunctionLowerer, binary: ast.BinaryExpr, outer: ast.Expr) LowerError!?Value {
+        const operands = [2]struct { variant: ast.Expr, other: ast.Expr }{
+            .{ .variant = binary.right.*, .other = binary.left.* },
+            .{ .variant = binary.left.*, .other = binary.right.* },
+        };
+        for (operands) |op| {
+            const name = bareEnumVariant(op.variant) orelse continue;
+            const variants = self.errorSetOfOperand(op.other) orelse continue;
+            for (variants, 0..) |v, index| {
+                if (!std.mem.eql(u8, v.name, name)) continue;
+                const value = try self.lowerExpr(op.other);
+                const disc: Value = .{ .imm = .{ .int = @as(i128, @intCast(index)) + 1 } };
+                return try self.emitAt(.bool, .{ .binary = .{ .op = lowerBinOp(binary.op), .lhs = value, .rhs = disc } }, outer.span);
+            }
+            diag_mod.printErrorAt("this error set has no such variant", self.file_name, self.source, op.variant.span);
+            return error.LoweringFailed;
+        }
+        return null;
+    }
+
+    /// `a && b` and `a || b`: the right operand runs only when the left does not already decide
+    /// the answer (`a` is true for `&&`, false for `||`). Both operands used to be evaluated, so a
+    /// guard such as `i < s.len && s[i] == x` indexed past the end, and a side effect on the right
+    /// happened whatever the left said. A constant left operand needs no branch at all.
+    fn lowerShortCircuit(self: *FunctionLowerer, binary: ast.BinaryExpr) LowerError!Value {
+        const is_and = binary.op == .and_and;
+        const lhs = try self.lowerExpr(binary.left.*);
+        if (lhs == .imm and lhs.imm == .bool) {
+            // `false && x` is false and `true || x` is true; otherwise the result is just `x`.
+            if (lhs.imm.bool != is_and) return lhs;
+            return try self.lowerExpr(binary.right.*);
+        }
+        self.temp_id += 1;
+        const result_name = try std.fmt.allocPrint(self.allocator, "__shortcircuit_{d}", .{self.temp_id});
+        try self.local_types.put(result_name, .bool);
+        try self.emitNoResult(.bool, .{ .store_local = .{ .name = result_name, .value = lhs } });
+        const rhs_id = self.allocBlockId();
+        const after_id = self.allocBlockId();
+        try self.terminate(.{ .cond_branch = .{
+            .cond = lhs,
+            .then_block = if (is_and) rhs_id else after_id,
+            .else_block = if (is_and) after_id else rhs_id,
+        } });
+        self.startBlock(rhs_id, if (is_and) "and.rhs" else "or.rhs");
+        const rhs = try self.lowerExpr(binary.right.*);
+        try self.emitNoResult(.bool, .{ .store_local = .{ .name = result_name, .value = rhs } });
+        try self.terminate(.{ .branch = after_id });
+        self.startBlock(after_id, if (is_and) "and.end" else "or.end");
+        return .{ .local = result_name };
+    }
+
     fn lowerNilCoalesce(self: *FunctionLowerer, nc: ast.NilCoalesceExpr, outer: ast.Expr) LowerError!Value {
         const lhs = try self.lowerExpr(nc.value.*);
         const result_ty = self.exprType(outer);
@@ -4666,6 +4966,57 @@ const FunctionLowerer = struct {
             try self.emitNoResult(.void, .{ .zone_free = .{ .zone = zone_name, .ptr = ptr } });
         }
         return .{ .imm = .null };
+    }
+
+    /// `core::align_of(T)` and `core::offset_of(T, "field")`. Both fold to a `usize`
+    /// immediate: the type and the field are static, so the layout is known here and no
+    /// instruction survives. That makes them usable wherever a constant is: a `::`
+    /// constant, `#if`, `#assert`, `#run`.
+    fn lowerLayoutQuery(self: *FunctionLowerer, name: []const u8, call: ast.CallExpr, expr: ast.Expr) LowerError!Value {
+        const is_offset = std.mem.eql(u8, name, "offset_of");
+        if (call.args.len != (if (is_offset) @as(usize, 2) else 1)) {
+            diag_mod.printErrorAt("wrong number of arguments to a layout query", self.file_name, self.source, expr.span);
+            return error.LoweringFailed;
+        }
+        const first = switch (call.args[0]) {
+            .positional => |e| e,
+            .named => |n| n.value,
+        };
+        var ty = try self.lowerTypeArg(first);
+        if (ty == .struct_type) ty = layoutQueryNamedType(self.allocator, self.types, self.symbols, self.file_name, ty.struct_type);
+        const source = SemaLayoutSource{ .allocator = self.allocator, .types = self.types, .symbols = self.symbols };
+        if (!is_offset) {
+            const l = layout_mod.ofWith(ty, source) orelse {
+                const msg = std.fmt.allocPrint(self.allocator, "cannot determine the alignment of this type ({s}): its layout is not known at compile time", .{@tagName(ty)}) catch "cannot determine the alignment of this type";
+                diag_mod.printErrorAt(msg, self.file_name, self.source, expr.span);
+                return error.LoweringFailed;
+            };
+            return .{ .imm = .{ .uint = l.alignment } };
+        }
+        const field_expr = switch (call.args[1]) {
+            .positional => |e| e,
+            .named => |n| n.value,
+        };
+        const field = switch (field_expr.kind) {
+            .string => |text| trimQuotes(text),
+            else => {
+                diag_mod.printErrorAt("the field of `core::offset_of` must be a string literal", self.file_name, self.source, field_expr.span);
+                return error.LoweringFailed;
+            },
+        };
+        const def = switch (ty) {
+            .struct_type => |struct_name| source.structDef(struct_name),
+            else => null,
+        } orelse {
+            diag_mod.printErrorAt("`core::offset_of` needs a struct type whose layout is known at compile time", self.file_name, self.source, expr.span);
+            return error.LoweringFailed;
+        };
+        const offset = layout_mod.offsetOfWith(def, field, source) orelse {
+            const msg = std.fmt.allocPrint(self.allocator, "no field `{s}` in struct `{s}`, or the layout of a field before it is not known at compile time", .{ field, def.name }) catch "no such field";
+            diag_mod.printErrorAt(msg, self.file_name, self.source, field_expr.span);
+            return error.LoweringFailed;
+        };
+        return .{ .imm = .{ .uint = offset } };
     }
 
     fn lowerTypeArg(self: *FunctionLowerer, expr: ast.Expr) LowerError!IrType {
@@ -5692,7 +6043,11 @@ pub const ComptimeVm = struct {
             return null;
         };
         if (cache_key) |k| if (self.run_cache_dir) |dir| vm_run_cache.storeResult(dir, k, result);
-        return result;
+        // A string the run built (`__str_cat`) lives in memory the VM frees on the way out.
+        return switch (result) {
+            .string => |str| .{ .string = a.dupe(u8, str) catch return null },
+            else => result,
+        };
     }
 
     fn evalToValue(self: *ComptimeVm, expr: ast.Expr) ?Value {
@@ -5702,6 +6057,42 @@ pub const ComptimeVm = struct {
 
     fn evalToImm(self: *ComptimeVm, expr: ast.Expr) ?Imm {
         return (self.evalRaw(expr) orelse return null).toImm();
+    }
+
+    /// What `evalStatic` found.
+    const StaticEval = union(enum) {
+        /// The result, read back as constant data of the requested type.
+        value: ConstInit,
+        /// The VM ran it and the result cannot be data in the image: why.
+        rejected: []const u8,
+        /// The VM could not run the expression (see `hook_error` for a comptime `@panic`).
+        failed,
+    };
+
+    /// Evaluate `expr`, which has type `ty`, and read the result back as static data: a struct,
+    /// an array, an enum value or a function pointer, however deeply nested. The VM's zones are
+    /// kept alive while the result is read (`executeKeepZones`); everything in the answer is
+    /// allocated with `out_alloc`, so it outlives the VM.
+    fn evalStatic(self: *ComptimeVm, expr: ast.Expr, ty: IrType, out_alloc: std.mem.Allocator) StaticEval {
+        const _ct = ctNow();
+        defer ctAdd(_ct);
+        const c = self.ensureCache() orelse return .failed;
+        const a = self.arena.allocator();
+        const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file) catch return .failed;
+        const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return .failed;
+        var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
+        defer vm.deinit();
+        const result = vm.executeKeepZones(bc_fn) catch |err| {
+            if (err == error.Trap) {
+                if (vm.compiler_error_msg) |m| self.hook_error = a.dupe(u8, m) catch null;
+            }
+            return .failed;
+        };
+        const decoded = vm_static_data.decode(out_alloc, &vm, c.ir_module, result, ty) catch return .failed;
+        return switch (decoded) {
+            .ok => |data| .{ .value = data },
+            .rejected => |why| .{ .rejected = why },
+        };
     }
 
     /// Evaluate `expr` on the VM and reify the resulting `AstBlock` value into
@@ -6923,28 +7314,32 @@ fn immFloat(v: Imm) ?f64 {
 fn foldConstExpr(
     expr: ast.Expr,
     file: []const u8,
-    symbols: sema.SymbolTable,
-    known: *const FoldedConsts,
+    env: FoldEnv,
 ) ?Imm {
     return switch (expr.kind) {
         .int, .float, .bool => switch (lowerImm(expr)) {
             .null => null,
             else => |imm| imm,
         },
-        .ident => |name| known.get(resolveTopLevel(symbols, file, name) orelse return null),
+        .ident => |name| env.known.get(resolveTopLevel(env.symbols, file, name) orelse return null),
         .unary => |u| switch (u.op) {
-            .neg => switch (foldConstExpr(u.expr.*, file, symbols, known) orelse return null) {
+            .neg => switch (foldConstExpr(u.expr.*, file, env) orelse return null) {
                 .int => |v| Imm{ .int = -v },
                 .float => |v| Imm{ .float = -v },
                 else => null,
             },
-            .not => switch (foldConstExpr(u.expr.*, file, symbols, known) orelse return null) {
+            .not => switch (foldConstExpr(u.expr.*, file, env) orelse return null) {
                 .bool => |v| Imm{ .bool = !v },
                 else => null,
             },
             else => null,
         },
-        .binary => |b| foldConstBinary(b, file, symbols, known),
+        .binary => |b| foldConstBinary(b, file, env),
+        .call => |call| foldLayoutCall(call, file, env),
+        // `#run e` of an expression the folder can evaluate is that value: running pure
+        // constant arithmetic and folding it agree, and `#run 3 + 4` parses as
+        // `(#run 3) + 4`, so the nested form has to fold too.
+        .run_expr => |inner| foldConstExpr(inner.*, file, env),
         else => null,
     };
 }
@@ -6952,11 +7347,10 @@ fn foldConstExpr(
 fn foldConstBinary(
     b: ast.BinaryExpr,
     file: []const u8,
-    symbols: sema.SymbolTable,
-    known: *const FoldedConsts,
+    env: FoldEnv,
 ) ?Imm {
-    const l = foldConstExpr(b.left.*, file, symbols, known) orelse return null;
-    const r = foldConstExpr(b.right.*, file, symbols, known) orelse return null;
+    const l = foldConstExpr(b.left.*, file, env) orelse return null;
+    const r = foldConstExpr(b.right.*, file, env) orelse return null;
 
     if (l == .bool and r == .bool) return switch (b.op) {
         .and_and => Imm{ .bool = l.bool and r.bool },
@@ -7026,7 +7420,8 @@ fn foldModuleConsts(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) 
                 if (decl.is_mutable) continue;
                 const id = resolveTopLevel(front_end.symbols, decl.file_name, decl.name) orelse continue;
                 if (known.contains(id)) continue;
-                if (foldConstExpr(decl.value, decl.file_name, front_end.symbols, &known)) |imm| {
+                const env = FoldEnv{ .allocator = allocator, .symbols = front_end.symbols, .types = front_end.types, .known = &known };
+                if (foldConstExpr(decl.value, decl.file_name, env)) |imm| {
                     try known.put(id, imm);
                     changed = true;
                 }
@@ -7038,13 +7433,500 @@ fn foldModuleConsts(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) 
     return known;
 }
 
+/// What constant folding needs besides the expression itself: the program's symbols and
+/// types (for `core::sizeof` and the other layout queries) and the constants folded so far.
+const FoldEnv = struct {
+    allocator: std.mem.Allocator,
+    symbols: sema.SymbolTable,
+    types: sema.TypeEnv,
+    known: *const FoldedConsts,
+    /// The program's items, for the few folds that must look a declaration up.
+    module: ast.Module = .{ .file_name = "", .items = &.{} },
+};
+
+/// The IR type a layout query names by a bare identifier: a `distinct` type is its
+/// underlying type and an alias is its target, so `core::align_of(Handle)` measures what
+/// a `Handle` is stored as. Any other name lowers as `lowerNamedType` does.
+fn layoutQueryNamedType(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, file: []const u8, name: []const u8) IrType {
+    if (resolveTopLevel(symbols, file, name)) |id| {
+        if (types.distinct_types.get(id)) |underlying|
+            return lowerSemaTypeWithEnv(allocator, underlying, types, symbols) catch lowerNamedType(name);
+        if (types.alias_refs.get(id)) |target|
+            return lowerAstTypeWithEnv(allocator, target, types, symbols) catch lowerNamedType(name);
+    }
+    return lowerNamedType(name);
+}
+
+/// A struct's definition rebuilt from its sema layout, for layout queries. Field types are
+/// lowered exactly as `lowerStruct` does, so the answer matches the emitted type.
+fn structDefFromSema(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, name: []const u8) ?StructDef {
+    const id = symbols.resolve(symbols.root_scope, name) orelse return null;
+    const type_layout = types.layouts.get(id) orelse return null;
+    const fields = switch (type_layout.kind) {
+        .struct_type => |f| f,
+        else => return null,
+    };
+    const out = allocator.alloc(FieldDef, fields.len) catch return null;
+    for (fields, 0..) |field, i| {
+        out[i] = .{
+            .name = field.name,
+            .ty = lowerSemaTypeWithEnv(allocator, field.ty, types, symbols) catch return null,
+        };
+    }
+    return .{ .name = name, .fields = out, .is_packed = type_layout.is_packed, .alignment = type_layout.alignment };
+}
+
+/// Struct definitions for `layout_mod` queries, served from the sema layouts.
+const SemaLayoutSource = struct {
+    allocator: std.mem.Allocator,
+    types: sema.TypeEnv,
+    symbols: sema.SymbolTable,
+
+    pub fn structDef(self: SemaLayoutSource, name: []const u8) ?StructDef {
+        return structDefFromSema(self.allocator, self.types, self.symbols, name);
+    }
+};
+
+/// `core::sizeof(T)`, `core::align_of(T)` and `core::offset_of(T, "field")` folded from
+/// the sema layouts. Without this a constant such as `OFF :: core::offset_of(S, "f")` would
+/// be baked as zero in the module the comptime VM reads (built with no evaluator), and any
+/// `#run` or `#assert` that named it would see the zero. Null when the call is not one of
+/// those or the layout is not modelled; the caller then leaves it to the VM.
+fn foldLayoutCall(call: ast.CallExpr, file: []const u8, env: FoldEnv) ?Imm {
+    const sa = switch (call.callee.kind) {
+        .scope_access => |s| s,
+        else => return null,
+    };
+    if (!isCoreNs(sa)) return null;
+    const eq = std.mem.eql;
+    const is_offset = eq(u8, sa.member, "offset_of");
+    const is_size = eq(u8, sa.member, "sizeof");
+    const is_align = eq(u8, sa.member, "align_of");
+    if (!is_offset and !is_size and !is_align) return null;
+    if (call.args.len != (if (is_offset) @as(usize, 2) else 1)) return null;
+
+    const first = switch (call.args[0]) {
+        .positional => |e| e,
+        .named => return null,
+    };
+    const ty: IrType = switch (first.kind) {
+        .type_ref => |t| lowerType(env.allocator, t) catch return null,
+        .ident => |name| layoutQueryNamedType(env.allocator, env.types, env.symbols, file, name),
+        else => return null,
+    };
+    const source = SemaLayoutSource{ .allocator = env.allocator, .types = env.types, .symbols = env.symbols };
+    if (is_offset) {
+        const field = switch (call.args[1]) {
+            .positional => |e| switch (e.kind) {
+                .string => |text| trimQuotes(text),
+                else => return null,
+            },
+            .named => return null,
+        };
+        const def = switch (ty) {
+            .struct_type => |struct_name| source.structDef(struct_name) orelse return null,
+            else => return null,
+        };
+        return .{ .uint = layout_mod.offsetOfWith(def, field, source) orelse return null };
+    }
+    const l = layout_mod.ofWith(ty, source) orelse return null;
+    return .{ .uint = if (is_size) l.size else l.alignment };
+}
+
+/// Builds the static-storage initializer of a global from the expression after its `=`.
+/// Every form accepted is data in the image, with nothing to run at startup: a constant
+/// (folded as any top-level constant is, so it may use other constants, `core::sizeof`,
+/// or a call the comptime VM can run), a `.{ ... }` literal of such things, the address of
+/// a top-level function, or the address of another global. It reads a literal as a local
+/// declaration does: a named literal fills omitted fields from their defaults, a
+/// positional literal that stops short does the same and zeroes the rest, `.{}` is all
+/// zero, and a short array literal is zero past its end.
+const StaticInit = struct {
+    allocator: std.mem.Allocator,
+    cvm: ?*ComptimeVm,
+    env: FoldEnv,
+    file: []const u8,
+    source: []const u8,
+    /// Where a mistake goes. Null while lowering: it is printed. `checkStaticData` collects them.
+    sink: ?*std.ArrayList(StaticDataDiag) = null,
+
+    fn fail(self: StaticInit, span: Span, comptime fmt: []const u8, args: anytype) LowerError {
+        const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch "invalid initializer for static storage";
+        if (self.sink) |sink| {
+            sink.append(self.allocator, .{ .diag = Diagnostic.err(msg, span, self.file), .source = self.source }) catch return error.OutOfMemory;
+        } else {
+            diag_mod.printErrorAt(msg, self.file, self.source, span);
+        }
+        return error.LoweringFailed;
+    }
+
+    fn label(self: StaticInit, ty: IrType) []const u8 {
+        return switch (ty) {
+            .struct_type => |n| n,
+            .i => |b| std.fmt.allocPrint(self.allocator, "i{d}", .{b}) catch "an integer",
+            .u => |b| std.fmt.allocPrint(self.allocator, "u{d}", .{b}) catch "an integer",
+            .f32 => "f32",
+            .f64 => "f64",
+            .bool => "bool",
+            .byte => "u8",
+            .usize => "usize",
+            .isize => "isize",
+            .array => "an array",
+            .fn_ptr => "a function pointer",
+            .ptr => "a pointer",
+            .optional => "an optional",
+            .slice, .text => "a slice",
+            .interface_value => "an interface value",
+            .fallible => "a fallible value",
+            .list => "a list",
+            .map => "a map",
+            .range => "a range",
+            .zone => "a zone",
+            .opaque_type => |n| n,
+            else => @tagName(ty),
+        };
+    }
+
+    fn build(self: StaticInit, expr: ast.Expr, ty: IrType) LowerError!ConstInit {
+        // A `#run` that produces a whole struct, array, enum or function is run, and what it
+        // returns is read back as the data of the slot (a scalar `#run` is folded to its value
+        // like any constant, below).
+        if (expr.kind == .run_expr and isComputedType(ty)) return self.buildRun(expr, ty);
+        return switch (ty) {
+            .struct_type => |name| self.buildStruct(expr, name),
+            .array => |arr| self.buildArray(expr, arr),
+            .fn_ptr => self.buildFunction(expr),
+            .ptr => self.buildPointer(expr),
+            .optional => |inner| if (inner.* == .ptr) self.buildPointer(expr) else self.buildNullOnly(expr, ty),
+            .slice, .text => self.buildSlice(expr),
+            else => self.buildScalar(expr, ty),
+        };
+    }
+
+    /// While the module the comptime VM reads is being built there is no evaluator, so a value
+    /// that needs one (`#run f()`) comes back as a `null` placeholder. It is checked for real,
+    /// with its value, in the final lowering. The VM must not mistake the placeholder for the
+    /// value (a `#run` flag that reads as `false`), so it is `pending`, which stops any run that
+    /// reads it.
+    fn isPlaceholder(self: StaticInit, imm: Imm) bool {
+        return self.cvm == null and imm == .null;
+    }
+
+    /// A `#run` that yields a struct, array, enum or function pointer: evaluate it and read the
+    /// result back as constant data of type `ty`. With no evaluator (the cache build that prepares
+    /// the VM, `gabbro check`) the value is `pending`: it cannot be known yet, and is not wrong.
+    fn buildRun(self: StaticInit, expr: ast.Expr, ty: IrType) LowerError!ConstInit {
+        const c = self.cvm orelse return .pending;
+        c.hook_error = null;
+        c.current_file = self.file;
+        const inner = expr.kind.run_expr.*;
+        return switch (c.evalStatic(inner, ty, self.allocator)) {
+            .value => |init| init,
+            .rejected => |why| self.fail(expr.span, "the value `#run` computed cannot be static data: {s}", .{why}),
+            .failed => blk: {
+                // A comptime `@panic("…")` recorded its message — show it verbatim.
+                if (c.hook_error) |msg| {
+                    diag_mod.printErrorAt(msg, self.file, self.source, expr.span);
+                    break :blk error.LoweringFailed;
+                }
+                break :blk self.fail(expr.span, "{s}", .{run_failed_message});
+            },
+        };
+    }
+
+    fn buildScalar(self: StaticInit, expr: ast.Expr, ty: IrType) LowerError!ConstInit {
+        const imm = try effectiveConstImm(expr, self.cvm, self.file, self.source, self.env);
+        if (self.isPlaceholder(imm)) return .pending;
+        const what: ?[]const u8 = switch (imm) {
+            .int, .uint, .rune => null,
+            .float => "a floating-point value",
+            .bool => "a bool",
+            .text => "a string",
+            .null => "null",
+        };
+        switch (ty) {
+            .i, .u, .byte, .usize, .isize, .addr => {
+                if (what) |w| {
+                    if (imm != .float or true) return self.fail(expr.span, "cannot initialise `{s}` with {s}", .{ self.label(ty), w });
+                }
+                const value: i128 = switch (imm) {
+                    .int => |v| v,
+                    .uint => |v| std.math.cast(i128, v) orelse return self.fail(expr.span, "the value does not fit in `{s}`", .{self.label(ty)}),
+                    .rune => |r| r,
+                    else => unreachable,
+                };
+                if (!intFitsType(value, ty)) return self.fail(expr.span, "the value {d} does not fit in `{s}`", .{ value, self.label(ty) });
+            },
+            .f32, .f64 => {
+                if (imm == .bool or imm == .text or imm == .null) return self.fail(expr.span, "cannot initialise `{s}` with {s}", .{ self.label(ty), what.? });
+            },
+            .bool => {
+                if (imm != .bool) return self.fail(expr.span, "cannot initialise `bool` with {s}", .{what orelse "an integer"});
+            },
+            .rune => {
+                if (what) |w| return self.fail(expr.span, "cannot initialise a character with {s}", .{w});
+            },
+            else => return self.fail(expr.span, "a value of type `{s}` cannot be initialised in static storage", .{self.label(ty)}),
+        }
+        return .{ .imm = imm };
+    }
+
+    fn buildSlice(self: StaticInit, expr: ast.Expr) LowerError!ConstInit {
+        if (expr.kind == .compound_literal and expr.kind.compound_literal.len == 0) return .zero;
+        const imm = try effectiveConstImm(expr, self.cvm, self.file, self.source, self.env);
+        if (self.isPlaceholder(imm)) return .pending;
+        if (imm != .text) return self.fail(expr.span, "a slice in static storage must be a string literal or `.{{}}`", .{});
+        return .{ .imm = imm };
+    }
+
+    fn buildNullOnly(self: StaticInit, expr: ast.Expr, ty: IrType) LowerError!ConstInit {
+        if (expr.kind == .null) return .{ .imm = .null };
+        return self.fail(expr.span, "only `null` can initialise {s} in static storage", .{self.label(ty)});
+    }
+
+    fn buildPointer(self: StaticInit, expr: ast.Expr) LowerError!ConstInit {
+        if (expr.kind == .null) return .{ .imm = .null };
+        if (expr.kind == .unary and expr.kind.unary.op == .address_of) {
+            const target = expr.kind.unary.expr.*;
+            if (target.kind == .ident) {
+                const id = resolveTopLevel(self.env.symbols, self.file, target.kind.ident) orelse
+                    return self.fail(target.span, "unknown name `{s}`", .{target.kind.ident});
+                const sym = self.env.symbols.symbol(id);
+                if (sym.kind == .global_var or sym.kind == .const_symbol) return .{ .global_addr = sym.link_name };
+            }
+            return self.fail(expr.span, "static storage can hold the address of a top-level global, not of this", .{});
+        }
+        return self.fail(expr.span, "a pointer in static storage must be `null` or the address of a global (`&NAME`)", .{});
+    }
+
+    fn buildFunction(self: StaticInit, expr: ast.Expr) LowerError!ConstInit {
+        const id: ?sema.SymbolId = switch (expr.kind) {
+            .ident => |n| resolveTopLevel(self.env.symbols, self.file, n),
+            .scope_access => |sa| switch (sa.base.kind) {
+                .ident => |alias| self.env.symbols.resolveScoped(self.file, alias, sa.member),
+                else => null,
+            },
+            else => null,
+        };
+        const symbol_id = id orelse return self.fail(expr.span, "a function pointer in static storage must name a top-level function", .{});
+        const sym = self.env.symbols.symbol(symbol_id);
+        if (sym.kind != .function) return self.fail(expr.span, "`{s}` is not a function", .{sym.name});
+        // A lambda is lifted to a function that takes a hidden environment argument, so its
+        // address is not a plain code pointer. Name the function instead.
+        if (std.mem.startsWith(u8, sym.name, "__lambda_"))
+            return self.fail(expr.span, "a lambda has no plain code address; declare a named function and use its name", .{});
+        // A generic function has no code until it is instantiated, so it has no address.
+        for (self.env.module.items) |item| switch (item) {
+            .function => |f| if (std.mem.eql(u8, f.name, sym.name) and std.mem.eql(u8, f.file_name, sym.file_name)) {
+                if (f.type_params.len > 0 or f.is_macro)
+                    return self.fail(expr.span, "`{s}` is generic or a macro and has no address", .{sym.name});
+            },
+            else => {},
+        };
+        return .{ .func_ref = sym.link_name };
+    }
+
+    fn structFields(self: StaticInit, name: []const u8) ?[]const sema.FieldInfo {
+        const id = self.env.symbols.resolve(self.env.symbols.root_scope, name) orelse return null;
+        const type_layout = self.env.types.layouts.get(id) orelse return null;
+        return switch (type_layout.kind) {
+            .struct_type => |f| f,
+            else => null,
+        };
+    }
+
+    fn fieldType(self: StaticInit, field: sema.FieldInfo, span: Span) LowerError!IrType {
+        return lowerSemaTypeWithEnv(self.allocator, field.ty, self.env.types, self.env.symbols) catch
+            return self.fail(span, "the type of field `{s}` is not known here", .{field.name});
+    }
+
+    /// The variants of enum `name`; null when `name` is not an enum. (An enum's IR type is a
+    /// `struct_type` too, so the two are told apart by the sema layout.)
+    fn enumVariants(self: StaticInit, name: []const u8) ?[]const sema.VariantInfo {
+        const id = self.env.symbols.resolve(self.env.symbols.root_scope, name) orelse return null;
+        const type_layout = self.env.types.layouts.get(id) orelse return null;
+        return switch (type_layout.kind) {
+            .variant_type => |v| v,
+            else => null,
+        };
+    }
+
+    /// An enum value is `.variant` or `Enum.variant`. A variant that carries a payload needs
+    /// a value built at that variant, which static storage does not do yet.
+    fn buildEnum(self: StaticInit, expr: ast.Expr, name: []const u8, variants: []const sema.VariantInfo) LowerError!ConstInit {
+        const callee: ast.Expr = if (expr.kind == .call) expr.kind.call.callee.* else expr;
+        const variant: []const u8 = switch (callee.kind) {
+            .ident => |n| if (n.len > 1 and n[0] == '.') n[1..] else "",
+            .field => |f| if (f.base.kind == .ident and std.mem.eql(u8, f.base.kind.ident, name)) f.name else "",
+            else => "",
+        };
+        if (variant.len == 0)
+            return self.fail(expr.span, "an enum in static storage must be written as a variant: `.name` or `{s}.name`", .{name});
+        for (variants) |v| {
+            if (!std.mem.eql(u8, v.name, variant)) continue;
+            if (v.payload != null or expr.kind == .call)
+                return self.fail(expr.span, "a variant with a payload cannot be initialised in static storage yet; `{s}.{s}` carries one", .{ name, variant });
+            return .{ .variant_tag = v.index };
+        }
+        return self.fail(expr.span, "no variant `{s}` in enum `{s}`", .{ variant, name });
+    }
+
+    fn buildStruct(self: StaticInit, expr: ast.Expr, name: []const u8) LowerError!ConstInit {
+        if (self.enumVariants(name)) |variants| return self.buildEnum(expr, name, variants);
+        const fields = self.structFields(name) orelse
+            return self.fail(expr.span, "`{s}` is not a struct whose fields are known here", .{name});
+        const values = try self.allocator.alloc(ConstFieldInit, fields.len);
+        switch (expr.kind) {
+            .compound_literal => |items| {
+                if (items.len > fields.len) {
+                    return self.fail(items[fields.len].span, "too many initialisers for `{s}`: it has {d} field(s)", .{ name, fields.len });
+                }
+                // The fields past the end of the literal take their defaults the way trailing
+                // default arguments do (as in `appendTrailingDefaults` for a local): up to the
+                // first field that has none, and zero from there on.
+                var defaulted = true;
+                for (fields, 0..) |field, i| {
+                    const fty = try self.fieldType(field, expr.span);
+                    var value: ConstInit = .zero;
+                    if (i < items.len) {
+                        value = try self.build(items[i], fty);
+                    } else if (defaulted) {
+                        if (field.default) |d| value = try self.build(d, fty) else defaulted = false;
+                    }
+                    values[i] = .{ .name = field.name, .value = value };
+                }
+            },
+            .struct_literal => |inits| {
+                for (inits, 0..) |init, i| {
+                    var known = false;
+                    for (fields) |field| {
+                        if (std.mem.eql(u8, field.name, init.name)) known = true;
+                    }
+                    if (!known) return self.fail(init.span, "no field `{s}` in struct `{s}`", .{ init.name, name });
+                    for (inits[0..i]) |earlier| {
+                        if (std.mem.eql(u8, earlier.name, init.name))
+                            return self.fail(init.span, "field `{s}` is initialised twice", .{init.name});
+                    }
+                }
+                for (fields, 0..) |field, i| {
+                    const fty = try self.fieldType(field, expr.span);
+                    var given: ?ast.Expr = null;
+                    for (inits) |init| {
+                        if (std.mem.eql(u8, init.name, field.name)) given = init.value;
+                    }
+                    const value: ConstInit = if (given) |g|
+                        try self.build(g, fty)
+                    else if (field.default) |d|
+                        try self.build(d, fty)
+                    else
+                        return self.fail(expr.span, "missing field `{s}` in the initialiser of `{s}` (it has no default value)", .{ field.name, name });
+                    values[i] = .{ .name = field.name, .value = value };
+                }
+            },
+            else => return self.fail(expr.span, "the initialiser of a `{s}` global must be a `.{{ ... }}` literal", .{name}),
+        }
+        return .{ .struct_init = .{ .ty_name = name, .fields = values } };
+    }
+
+    fn buildArray(self: StaticInit, expr: ast.Expr, arr: ArrayType) LowerError!ConstInit {
+        const items = switch (expr.kind) {
+            .compound_literal => |i| i,
+            else => return self.fail(expr.span, "the initialiser of an array global must be a `.{{ ... }}` literal", .{}),
+        };
+        if (items.len == 0) return .zero;
+        if (items.len > arr.len) {
+            return self.fail(items[@intCast(arr.len)].span, "too many initialisers for an array of {d}", .{arr.len});
+        }
+        const elems = try self.allocator.alloc(ConstInit, items.len);
+        for (items, 0..) |item, i| elems[i] = try self.build(item, arr.elem.*);
+        return .{ .array_init = elems };
+    }
+};
+
+/// Can a `#run` produce a value of this type as a whole? A struct, an array, an enum value (all
+/// `struct_type`/`array` here), a function pointer and a string can: the result is read back out
+/// of the VM as data. A number is folded to its immediate as any constant is, and a pointer
+/// computed at compile time points at memory the program does not have.
+fn isComputedType(ty: IrType) bool {
+    return switch (ty) {
+        .struct_type, .array, .fn_ptr, .slice, .text => true,
+        else => false,
+    };
+}
+
+/// Does integer `value` fit in the integer type `ty`? (`addr` and the pointer-sized types are 64
+/// bits; any other type is not an integer and never fits.)
+pub fn intFitsType(value: i128, ty: IrType) bool {
+    const bits: u16 = switch (ty) {
+        .i, .u => |b| b,
+        .byte => 8,
+        .usize, .isize, .addr => 64,
+        else => return false,
+    };
+    const signed = ty == .i or ty == .isize;
+    const lo: i128 = if (signed) -(@as(i128, 1) << @intCast(bits - 1)) else 0;
+    const hi: i128 = if (signed) (@as(i128, 1) << @intCast(bits - 1)) - 1 else (@as(i128, 1) << @intCast(bits)) - 1;
+    return value >= lo and value <= hi;
+}
+
+/// Does a global of this declared type go through `StaticInit`? Every global written with a
+/// type (`NAME: T = init;`) does, so its value is checked against `T` — a scalar must fit, a
+/// string must be a string. Only an untyped constant (`NAME :: expr;`) takes the one-immediate
+/// path, since its type comes from the value.
+fn needsStaticInit(ty: IrType) bool {
+    return switch (ty) {
+        .struct_type, .array, .fn_ptr, .ptr, .optional => true,
+        .i, .u, .f32, .f64, .bool, .byte, .usize, .isize, .addr, .rune, .slice, .text => true,
+        else => false,
+    };
+}
+
+/// `#assert(cond, "msg");` fails the build when `cond` folds to `false`. The condition
+/// is evaluated on the comptime VM like any other constant, so it can use constants,
+/// `core::sizeof` / `align_of` / `offset_of`, and `#run`-able calls. Only the final
+/// lowering has an evaluator; the cache build that prepares the VM (`cvm == null`)
+/// skips it, and `gabbro check` (type-checking only) never reaches it.
+fn checkStaticAssert(decl: ast.StaticAssertDecl, cvm: ?*ComptimeVm) LowerError!void {
+    const c = cvm orelse return;
+    c.current_file = decl.file_name;
+    c.hook_error = null;
+    const cond_text = decl.source[decl.condition.span.start..decl.condition.span.end];
+    var buf: [1024]u8 = undefined;
+    const value = c.evalRaw(decl.condition) orelse {
+        const msg = c.hook_error orelse std.fmt.bufPrint(
+            &buf,
+            "the `#assert` condition `{s}` could not be evaluated at compile time",
+            .{cond_text},
+        ) catch "the `#assert` condition could not be evaluated at compile time";
+        diag_mod.printErrorAt(msg, decl.file_name, decl.source, decl.condition.span);
+        return error.LoweringFailed;
+    };
+    const holds = switch (value) {
+        .bool => |b| b,
+        else => {
+            diag_mod.printErrorAt("an `#assert` condition must evaluate to a `bool`", decl.file_name, decl.source, decl.condition.span);
+            return error.LoweringFailed;
+        },
+    };
+    if (holds) return;
+    const msg = if (decl.message) |m|
+        std.fmt.bufPrint(&buf, "static assertion failed: {s} (`{s}`)", .{ m, cond_text })
+    else
+        std.fmt.bufPrint(&buf, "static assertion failed: `{s}`", .{cond_text});
+    diag_mod.printErrorAt(msg catch "static assertion failed", decl.file_name, decl.source, decl.condition.span);
+    return error.LoweringFailed;
+}
+
+/// Why a `#run` produced no value, when the VM said nothing more specific.
+const run_failed_message = "`#run` expression could not be evaluated at compile time " ++
+    "(the comptime VM cannot execute it — e.g. an unsupported construct or a call into runtime-only code)";
+
 fn effectiveConstImm(
     expr: ast.Expr,
     cvm: ?*ComptimeVm,
     file: []const u8,
     source: []const u8,
-    symbols: sema.SymbolTable,
-    known: *const FoldedConsts,
+    env: FoldEnv,
 ) LowerError!Imm {
     // A direct literal takes the fast path. Everything else folds on the
     // comptime VM, because there is no runtime to compute a top-level const
@@ -7062,11 +7944,15 @@ fn effectiveConstImm(
     // No evaluator: this is `buildCache` lowering the module to run the VM on,
     // so falling back to `lowerImm` here would bake a zero into the very module
     // the VM then reads constants out of. Fold from the AST instead.
+    // A `#run` of pure constant arithmetic folds to the same value as running it, so it
+    // is folded here too; anything the folder declines (a call, a nested `#run`) stays
+    // for the VM.
     const c = cvm orelse {
-        if (!is_run) if (foldConstExpr(inner, file, symbols, known)) |imm| return imm;
+        if (foldConstExpr(inner, file, env)) |imm| return imm;
         return lowerImm(inner);
     };
     c.hook_error = null;
+    c.current_file = file;
     const v = c.evalRaw(inner) orelse {
         // A comptime `@panic("…")` recorded its message — show it verbatim.
         if (c.hook_error) |msg| {
@@ -7074,10 +7960,9 @@ fn effectiveConstImm(
             return error.LoweringFailed;
         }
         // Plain constant arithmetic the VM declined: fold it directly.
-        if (!is_run) if (foldConstExpr(inner, file, symbols, known)) |imm| return imm;
+        if (!is_run) if (foldConstExpr(inner, file, env)) |imm| return imm;
         const msg: []const u8 = if (is_run)
-            "`#run` expression could not be evaluated at compile time " ++
-                "(the comptime VM cannot execute it — e.g. an unsupported construct or a call into runtime-only code)"
+            run_failed_message
         else
             "constant initializer could not be folded at compile time " ++
                 "(a top-level `X :: expr` has no runtime to compute it later; " ++
@@ -7087,11 +7972,11 @@ fn effectiveConstImm(
     };
     return v.toImm() orelse {
         const msg: []const u8 = if (is_run)
-            "a `#run` constant must evaluate to a scalar value; " ++
-                "aggregate (struct/slice/enum) results are not yet supported as top-level constants"
+            "a `#run` constant with no declared type must evaluate to a number, a bool or a string; " ++
+                "write the type (`NAME: T = #run ...`) to initialise a global with a slice the code built"
         else
-            "a constant must evaluate to a scalar value; " ++
-                "aggregate (struct/slice/enum) results are not yet supported as top-level constants";
+            "a constant with no declared type must evaluate to a number, a bool or a string; " ++
+                "write the type and a `.{ ... }` literal (`NAME: T = .{ ... }`) for a struct or an array";
         diag_mod.printErrorAt(msg, file, source, expr.span);
         return error.LoweringFailed;
     };
@@ -7313,6 +8198,19 @@ fn exprHasQuote(e: ast.Expr) bool {
 /// initializer and hides the slice from `.len`/index lowering).
 const string_elem_ty: IrType = .byte;
 const string_slice_ty: IrType = .{ .slice = &string_elem_ty };
+
+/// The type of `NAME :: #run f();` when `f` yields a struct, an array, an enum value or a function
+/// pointer (the shapes `isComputedType` accepts), else null: a scalar or a string keeps the
+/// one-immediate path, which infers its type from the value. Sema typed the expression, so it is
+/// read from there.
+fn computedConstType(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, value: ast.Expr) ?IrType {
+    if (value.kind != .run_expr) return null;
+    const sema_ty = front_end.types.expr_types.get(value.id) orelse
+        front_end.types.expr_types.get(value.kind.run_expr.id) orelse return null;
+    const ty = lowerSemaTypeWithEnv(allocator, sema_ty, front_end.types, front_end.symbols) catch return null;
+    // A string constant keeps the one-immediate path: it is typed `.text` there, as it always was.
+    return if (isComputedType(ty) and ty != .slice and ty != .text) ty else null;
+}
 
 fn inferConstType(expr: ast.Expr) IrType {
     return switch (expr.kind) {

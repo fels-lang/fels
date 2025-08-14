@@ -1,0 +1,72 @@
+// Cross-check of std.utf16 against the Windows conversion APIs (Windows only): for every
+// Unicode scalar value, std.utf16 and MultiByteToWideChar / WideCharToMultiByte must agree
+// exactly. This is a test of std.utf16, not a dependency of it: the module itself makes no
+// OS calls. Malformed input is not compared; the two treat it differently on purpose.
+// Returns 42 on success; any other value names the failed check.
+#import std.utf16 as utf16;
+
+#extern("kernel32", "MultiByteToWideChar")
+MultiByteToWideChar :: fn(cp: u32, flags: u32, s: *const u8, n: i32, out: *u16, outn: i32) -> i32;
+#extern("kernel32", "WideCharToMultiByte")
+WideCharToMultiByte :: fn(cp: u32, flags: u32, w: *const u16, n: i32, out: *u8, outn: i32, def: ?*const u8, used: ?*bool) -> i32;
+
+CP_UTF8 :: 65001u32;
+
+encode8 :: fn(cp: u32, out: []u8) -> usize {
+    if cp < 0x80u32 { out[0] = cp as u8; return 1usize; }
+    if cp < 0x800u32 {
+        out[0] = (0xC0u32 | (cp >> 6u32)) as u8;
+        out[1] = (0x80u32 | (cp & 0x3Fu32)) as u8;
+        return 2usize;
+    }
+    if cp < 0x10000u32 {
+        out[0] = (0xE0u32 | (cp >> 12u32)) as u8;
+        out[1] = (0x80u32 | ((cp >> 6u32) & 0x3Fu32)) as u8;
+        out[2] = (0x80u32 | (cp & 0x3Fu32)) as u8;
+        return 3usize;
+    }
+    out[0] = (0xF0u32 | (cp >> 18u32)) as u8;
+    out[1] = (0x80u32 | ((cp >> 12u32) & 0x3Fu32)) as u8;
+    out[2] = (0x80u32 | ((cp >> 6u32) & 0x3Fu32)) as u8;
+    out[3] = (0x80u32 | (cp & 0x3Fu32)) as u8;
+    return 4usize;
+}
+
+// std.utf16 and Windows agree on one string, both ways.
+agree :: fn(s: []const u8) -> bool {
+    mine: [64]u16 = .{};
+    theirs: [64]u16 = .{};
+    n := utf16::utf8_to_utf16(s, mine[:]) catch e { return false; };
+    m := MultiByteToWideChar(CP_UTF8, 0u32, s.ptr, s.len as i32, &theirs[0], 64i32);
+    if m < 0i32 || (m as usize) != n { return false; }
+    i := 0usize;
+    while i < n { if mine[i] != theirs[i] { return false; } i += 1usize; }
+
+    back_mine: [128]u8 = .{};
+    back_theirs: [128]u8 = .{};
+    units: []const u16 = mine[0..n];
+    bm := utf16::utf16_to_utf8(units, back_mine[:]) catch e { return false; };
+    bt := WideCharToMultiByte(CP_UTF8, 0u32, &mine[0], n as i32, &back_theirs[0], 128i32, null, null);
+    if bt < 0i32 || (bt as usize) != bm || bm != s.len { return false; }
+    i = 0usize;
+    while i < bm { if back_mine[i] != back_theirs[i] || back_mine[i] != s[i] { return false; } i += 1usize; }
+    return true;
+}
+
+#entry
+main :: fn() -> i32 {
+    if !agree("Hello, world") { return 1; }
+    if !agree("Grüße, Jürgen") { return 2; }
+    if !agree("日本語のテキスト") { return 3; }
+    if !agree("😀 emoji 𐍈 gothic 🏳") { return 4; }
+
+    raw: [4]u8 = .{};
+    cp: u32 = 1u32;                                       // Windows treats a lone U+0000 oddly
+    while cp <= 0x10FFFFu32 {
+        if cp >= 0xD800u32 && cp <= 0xDFFFu32 { cp = 0xE000u32; }
+        len8 := encode8(cp, raw[:]);
+        if !agree(raw[0..len8]) { return 10; }
+        cp += 1u32;
+    }
+    return 42;
+}

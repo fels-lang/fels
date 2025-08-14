@@ -23,6 +23,7 @@ pub const VmError = error{
     OutOfMemory,
     NoActiveZone,
     ZoneUnderflow,
+    ReadOnly,
 };
 
 /// One activation record. Registers are SSA-style temporaries (one per IR
@@ -160,6 +161,10 @@ pub const Vm = struct {
     /// diagnostic to report when the run halts. Points into `concat_strings` or a
     /// module constant, so it lives as long as the VM.
     compiler_error_msg: ?[]const u8 = null,
+    /// The static data this run has built so far, indexed like the module's `globals`: the value
+    /// (a pointer into the static zone) of each one that has been read. Built on first read, so a
+    /// run pays only for the tables it touches, and shared by every call in the run.
+    statics: []?Value = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Vm {
         return .{ .allocator = allocator, .zone_stack = zones.ZoneStack.init(allocator) };
@@ -250,6 +255,7 @@ pub const Vm = struct {
 
     pub fn deinit(self: *Vm) void {
         self.zone_stack.deinit();
+        if (self.statics.len != 0) self.allocator.free(self.statics);
         for (self.concat_strings.items) |s| self.allocator.free(s);
         self.concat_strings.deinit(self.allocator);
         for (self.compiler_removals.items) |s| self.allocator.free(s);
@@ -298,8 +304,55 @@ pub const Vm = struct {
     /// turn a comptime-built `AstBlock` back into front-end AST. All zone
     /// memory is freed by `deinit`.
     pub fn executeKeepZones(self: *Vm, function: BytecodeFunction) VmError!Value {
-        if (self.zone_stack.depth() == 0) _ = try self.zone_stack.push("__root");
+        if (self.zone_stack.depth() == 0) try self.enterRoot();
         return self.run(&function, &.{});
+    }
+
+    /// Open the zones a run starts with: the one that will hold static data, and above it the
+    /// root zone that aggregate/`new` allocations land in.
+    fn enterRoot(self: *Vm) VmError!void {
+        self.zone_stack.static_zone = try self.zone_stack.push("__static");
+        _ = try self.zone_stack.push("__root");
+    }
+
+    /// The static data built so far lives in a zone that has just been freed.
+    fn forgetStatics(self: *Vm) void {
+        @memset(self.statics, null);
+    }
+
+    /// The value of global `index`: a pointer to its block in the static zone, built on first use.
+    /// The block is built by the global's own initializer function, which allocates in the static
+    /// zone (the only time that zone can be written) and returns the root of the value.
+    fn loadStatic(self: *Vm, index: usize) VmError!Value {
+        const mod = self.module orelse return error.NoModule;
+        if (index >= mod.globals.len) return error.InvalidInstruction;
+        if (self.statics.len != mod.globals.len) {
+            if (self.statics.len != 0) self.allocator.free(self.statics);
+            self.statics = try self.allocator.alloc(?Value, mod.globals.len);
+            @memset(self.statics, null);
+        }
+        if (self.statics[index]) |built| return built;
+
+        const builder = &(mod.globals[index].init orelse return error.InvalidInstruction);
+        const zone = self.zone_stack.static_zone orelse return error.NoActiveZone;
+        self.zone_stack.static_open = true;
+        self.zone_stack.alloc_zone = zone;
+        defer {
+            self.zone_stack.static_open = false;
+            self.zone_stack.alloc_zone = null;
+        }
+        const built = try self.run(builder, &.{});
+        self.statics[index] = built;
+        return built;
+    }
+
+    /// A failed store: a write into static data is the program's mistake, so say so.
+    fn writeFailed(self: *Vm, err: zones.ZoneError) VmError {
+        if (err == error.ReadOnly) {
+            self.compiler_error_msg = "compile-time code cannot modify a global: it sees the initial value that goes into the image, and a write would not be there at run time";
+            return error.Trap;
+        }
+        return err;
     }
 
     /// Look up a function by name in the bound module and run it with `args`.
@@ -314,8 +367,11 @@ pub const Vm = struct {
     /// (Nested `call` opcodes reuse the existing zone stack and do not add one.)
     fn runTop(self: *Vm, func: *const BytecodeFunction, args: []const Value) VmError!Value {
         const root_mark = self.zone_stack.depth();
-        if (root_mark == 0) _ = try self.zone_stack.push("__root");
-        defer self.zone_stack.popTo(root_mark);
+        if (root_mark == 0) try self.enterRoot();
+        defer {
+            self.zone_stack.popTo(root_mark);
+            if (root_mark == 0) self.forgetStatics();
+        }
         return self.run(func, args);
     }
 
@@ -457,6 +513,10 @@ pub const Vm = struct {
                     const v = frame.regs[inst.b].asF64() orelse return error.TypeMismatch;
                     frame.regs[inst.a] = .{ .float = v };
                 },
+                .narrow => {
+                    const v = frame.regs[inst.b].asI128() orelse return error.TypeMismatch;
+                    frame.regs[inst.a] = .{ .int = narrowInt(v, @intCast(inst.imm & 0xff), (inst.imm & 0x100) != 0) };
+                },
                 .cast_to_int => {
                     frame.regs[inst.a] = switch (frame.regs[inst.b]) {
                         .float => |f| .{ .int = @intFromFloat(f) },
@@ -471,7 +531,8 @@ pub const Vm = struct {
                 .load_local => frame.regs[inst.a] = frame.locals[@intCast(inst.imm)],
                 .store_local => frame.locals[@intCast(inst.imm)] = frame.regs[inst.b],
 
-                .load_global, .store_global => return error.Unsupported,
+                .load_global => frame.regs[inst.a] = try self.loadStatic(@intCast(inst.imm)),
+                .store_global => return error.Unsupported,
 
                 // Control flow
                 .jmp => pc = @intCast(inst.imm),
@@ -586,7 +647,15 @@ pub const Vm = struct {
                         hostStore(hp.addr + @as(usize, @intCast(inst.imm)) * 8, hp.size, frame.regs[inst.b]);
                     } else {
                         const base = try asPtr(frame.regs[inst.a]);
-                        try self.zone_stack.setCell(base.zone, base.offset + @as(u32, @intCast(inst.imm)), frame.regs[inst.b]);
+                        self.zone_stack.setCell(base.zone, base.offset + @as(u32, @intCast(inst.imm)), frame.regs[inst.b]) catch |e| return self.writeFailed(e);
+                    }
+                },
+                .zone_fill => {
+                    const base = try asPtr(frame.regs[inst.a]);
+                    var i: u32 = 0;
+                    const n: u32 = @intCast(inst.imm);
+                    while (i < n) : (i += 1) {
+                        self.zone_stack.setCell(base.zone, base.offset + i, frame.regs[inst.b]) catch |e| return self.writeFailed(e);
                     }
                 },
                 .index_addr => {
@@ -740,6 +809,17 @@ pub const Vm = struct {
         return .void;
     }
 };
+
+/// `v` wrapped to an integer type of `bits` bits, two's complement: the value that type holds after
+/// a wrapping operation, a shift, or a cast. The VM computes in 128 bits, so without this a `u32`
+/// that wrapped would keep its high bits and a later `>>` would shift them back into the number.
+fn narrowInt(v: i128, bits: u16, signed: bool) i128 {
+    if (bits == 0 or bits >= 128) return v;
+    const shift: u7 = @intCast(128 - bits);
+    const raw: u128 = @bitCast(v);
+    const high_aligned: i128 = @bitCast(raw << shift);
+    return if (signed) high_aligned >> shift else @bitCast(@as(u128, @bitCast(high_aligned)) >> shift);
+}
 
 fn asPtr(v: Value) VmError!Value.Ptr {
     return switch (v) {

@@ -1,0 +1,344 @@
+// std.utf16: UTF-8 <-> UTF-16. Hand-picked boundary and malformed cases, the capacity and
+// "destination untouched on error" rules, the arena helpers, and an exhaustive pass over
+// every Unicode scalar value using an encoder written independently in this file.
+// Portable: no OS calls, so it also runs as a Linux binary. Returns 42 on success; any
+// other value names the failed check.
+#import std.utf16 as utf16;
+#import std.heap as heap;
+
+// 0 = converts, 1 = invalid_utf8, 2 = some other error
+kind8 :: fn(s: []const u8) -> i32 {
+    n := utf16::utf16_len(s) catch e {
+        if e == .invalid_utf8 { return 1; }
+        return 2;
+    };
+    return 0;
+}
+
+// 0 = converts, 1 = invalid_utf16, 2 = some other error
+kind16 :: fn(s: []const u16) -> i32 {
+    n := utf16::utf8_len(s) catch e {
+        if e == .invalid_utf16 { return 1; }
+        return 2;
+    };
+    return 0;
+}
+
+// A malformed input fails to convert with the given error and leaves `dst` untouched.
+bad8_convert :: fn(s: []const u8) -> bool {
+    dst: [16]u16 = .{};
+    i := 0usize;
+    while i < 16usize { dst[i] = 0xBEEFu16; i += 1usize; }
+    if conv8(s, dst[:]) != 1 { return false; }
+    i = 0usize;
+    while i < 16usize { if dst[i] != 0xBEEFu16 { return false; } i += 1usize; }
+    return true;
+}
+
+// 0 = allocated, 1 = invalid_utf8, 4 = out_of_memory, 2 = other
+alloc_kind8 :: fn(a: *heap::Arena, s: []const u8) -> i32 {
+    w := utf16::alloc_utf16(a, s) catch e {
+        if e == .invalid_utf8 { return 1; }
+        if e == .out_of_memory { return 4; }
+        return 2;
+    };
+    return 0;
+}
+
+conv8 :: fn(s: []const u8, dst: []u16) -> i32 {
+    n := utf16::utf8_to_utf16(s, dst) catch e {
+        if e == .invalid_utf8 { return 1; }
+        if e == .buffer_too_small { return 3; }
+        return 2;
+    };
+    return 0;
+}
+conv16 :: fn(s: []const u16, dst: []u8) -> i32 {
+    n := utf16::utf16_to_utf8(s, dst) catch e {
+        if e == .invalid_utf16 { return 1; }
+        if e == .buffer_too_small { return 3; }
+        return 2;
+    };
+    return 0;
+}
+
+// Build a UTF-8 input from up to four bytes.
+bad_bytes :: fn(b0: u8, b1: u8, b2: u8, b3: u8, count: usize) -> bool {
+    raw: [4]u8 = .{ b0, b1, b2, b3 };
+    s: []const u8 = raw[0..count];
+    if kind8(s) != 1 { return false; }
+    return bad8_convert(s);
+}
+
+// A well-formed input: sizes agree, the units are as expected, and the bytes come back.
+good :: fn(s: []const u8, expect: []const u16) -> bool {
+    if kind8(s) != 0 { return false; }
+    n := utf16::utf16_len(s) catch e { return false; };
+    if n != expect.len { return false; }
+    dst: [8]u16 = .{};
+    got := utf16::utf8_to_utf16(s, dst[:]) catch e { return false; };
+    if got != expect.len { return false; }
+    i := 0usize;
+    while i < got { if dst[i] != expect[i] { return false; } i += 1usize; }
+    // and back
+    m := utf16::utf8_len(expect) catch e { return false; };
+    if m != s.len { return false; }
+    out: [16]u8 = .{};
+    back := utf16::utf16_to_utf8(expect, out[:]) catch e { return false; };
+    if back != s.len { return false; }
+    i = 0usize;
+    while i < back { if out[i] != s[i] { return false; } i += 1usize; }
+    return true;
+}
+
+// Encode a scalar value as UTF-8 by hand (independent of std.utf16), into `out`.
+encode8 :: fn(cp: u32, out: []u8) -> usize {
+    if cp < 0x80u32 { out[0] = cp as u8; return 1usize; }
+    if cp < 0x800u32 {
+        out[0] = (0xC0u32 | (cp >> 6u32)) as u8;
+        out[1] = (0x80u32 | (cp & 0x3Fu32)) as u8;
+        return 2usize;
+    }
+    if cp < 0x10000u32 {
+        out[0] = (0xE0u32 | (cp >> 12u32)) as u8;
+        out[1] = (0x80u32 | ((cp >> 6u32) & 0x3Fu32)) as u8;
+        out[2] = (0x80u32 | (cp & 0x3Fu32)) as u8;
+        return 3usize;
+    }
+    out[0] = (0xF0u32 | (cp >> 18u32)) as u8;
+    out[1] = (0x80u32 | ((cp >> 12u32) & 0x3Fu32)) as u8;
+    out[2] = (0x80u32 | ((cp >> 6u32) & 0x3Fu32)) as u8;
+    out[3] = (0x80u32 | (cp & 0x3Fu32)) as u8;
+    return 4usize;
+}
+
+// Every scalar value converts to the UTF-16 the standard defines, and comes back.
+exhaustive_valid :: fn() -> i32 {
+    raw: [4]u8 = .{};
+    units: [2]u16 = .{};
+    back: [4]u8 = .{};
+    cp: u32 = 0u32;
+    while cp <= 0x10FFFFu32 {
+        if cp >= 0xD800u32 && cp <= 0xDFFFu32 { cp = 0xE000u32; }
+        len8 := encode8(cp, raw[:]);
+        s: []const u8 = raw[0..len8];
+        w := utf16::utf8_to_utf16(s, units[:]) catch e { return 1; };
+        if cp < 0x10000u32 {
+            if w != 1usize || units[0] != (cp as u16) { return 2; }
+        } else {
+            c := cp - 0x10000u32;
+            if w != 2usize { return 3; }
+            if units[0] != ((0xD800u32 + (c >> 10u32)) as u16) { return 4; }
+            if units[1] != ((0xDC00u32 + (c & 0x3FFu32)) as u16) { return 5; }
+        }
+        u: []const u16 = units[0..w];
+        b := utf16::utf16_to_utf8(u, back[:]) catch e { return 6; };
+        if b != len8 { return 7; }
+        k := 0usize;
+        while k < len8 { if back[k] != raw[k] { return 8; } k += 1usize; }
+        cp += 1u32;
+    }
+    return 0;
+}
+
+// Every surrogate encoded as a (forbidden) 3-byte sequence, every overlong 2-byte form,
+// and every 4-byte form above U+10FFFF must be rejected.
+exhaustive_invalid :: fn() -> i32 {
+    raw: [4]u8 = .{};
+    cp: u32 = 0xD800u32;
+    while cp <= 0xDFFFu32 {
+        raw[0] = (0xE0u32 | (cp >> 12u32)) as u8;
+        raw[1] = (0x80u32 | ((cp >> 6u32) & 0x3Fu32)) as u8;
+        raw[2] = (0x80u32 | (cp & 0x3Fu32)) as u8;
+        if kind8(raw[0..3]) != 1 { return 1; }
+        cp += 1u32;
+    }
+    lead: u32 = 0xC0u32;                                  // C0 and C1 lead only overlong forms
+    while lead <= 0xC1u32 {
+        second: u32 = 0x80u32;
+        while second <= 0xBFu32 {
+            raw[0] = lead as u8;
+            raw[1] = second as u8;
+            if kind8(raw[0..2]) != 1 { return 2; }
+            second += 1u32;
+        }
+        lead += 1u32;
+    }
+    cp = 0x110000u32;                                     // above Unicode, sampled
+    while cp <= 0x1FFFFFu32 {
+        raw[0] = (0xF0u32 | (cp >> 18u32)) as u8;
+        raw[1] = (0x80u32 | ((cp >> 12u32) & 0x3Fu32)) as u8;
+        raw[2] = (0x80u32 | ((cp >> 6u32) & 0x3Fu32)) as u8;
+        raw[3] = (0x80u32 | (cp & 0x3Fu32)) as u8;
+        if kind8(raw[0..4]) != 1 { return 3; }
+        cp += 4099u32;
+    }
+    return 0;
+}
+
+#entry
+main :: fn() -> i32 {
+    // ---- empty input ----
+    empty8: []const u8 = "";
+    n0 := utf16::utf16_len(empty8) catch e { return 1; };
+    if n0 != 0usize { return 2; }
+    scratch: [1]u16 = .{};
+    none: []u16 = scratch[0..0];                  // an empty destination
+    w0 := utf16::utf8_to_utf16(empty8, none) catch e { return 3; };
+    if w0 != 0usize { return 4; }
+
+    // ---- ASCII ----
+    hello: [5]u16 = .{ 0x48u16, 0x65u16, 0x6Cu16, 0x6Cu16, 0x6Fu16 };
+    if !good("Hello", hello[:]) { return 5; }
+
+    // ---- each encoded length, and the boundaries between them ----
+    z: [1]u16 = .{ 0x0000u16 };
+    b00: [1]u8 = .{ 0x00u8 };
+    if !good(b00[:], z[:]) { return 6; }                           // U+0000 is an ordinary character
+    u7f: [1]u16 = .{ 0x007Fu16 };
+    b7f: [1]u8 = .{ 0x7Fu8 };
+    if !good(b7f[:], u7f[:]) { return 7; }
+    u80: [1]u16 = .{ 0x0080u16 };
+    b80: [2]u8 = .{ 0xC2u8, 0x80u8 };
+    if !good(b80[:], u80[:]) { return 8; }
+    u7ff: [1]u16 = .{ 0x07FFu16 };
+    b7ff: [2]u8 = .{ 0xDFu8, 0xBFu8 };
+    if !good(b7ff[:], u7ff[:]) { return 9; }
+    u800: [1]u16 = .{ 0x0800u16 };
+    b800: [3]u8 = .{ 0xE0u8, 0xA0u8, 0x80u8 };
+    if !good(b800[:], u800[:]) { return 10; }
+    ud7ff: [1]u16 = .{ 0xD7FFu16 };
+    bd7ff: [3]u8 = .{ 0xEDu8, 0x9Fu8, 0xBFu8 };
+    if !good(bd7ff[:], ud7ff[:]) { return 11; }                    // last before the surrogates
+    ue000: [1]u16 = .{ 0xE000u16 };
+    be000: [3]u8 = .{ 0xEEu8, 0x80u8, 0x80u8 };
+    if !good(be000[:], ue000[:]) { return 12; }                    // first after them
+    uffff: [1]u16 = .{ 0xFFFFu16 };
+    bffff: [3]u8 = .{ 0xEFu8, 0xBFu8, 0xBFu8 };
+    if !good(bffff[:], uffff[:]) { return 13; }                    // last BMP
+    u10000: [2]u16 = .{ 0xD800u16, 0xDC00u16 };
+    b10000: [4]u8 = .{ 0xF0u8, 0x90u8, 0x80u8, 0x80u8 };
+    if !good(b10000[:], u10000[:]) { return 14; }                  // first supplementary
+    u10fff: [2]u16 = .{ 0xDBFFu16, 0xDFFFu16 };
+    b10fff: [4]u8 = .{ 0xF4u8, 0x8Fu8, 0xBFu8, 0xBFu8 };
+    if !good(b10fff[:], u10fff[:]) { return 15; }                  // last scalar value
+    u1f600: [2]u16 = .{ 0xD83Du16, 0xDE00u16 };
+    b1f600: [4]u8 = .{ 0xF0u8, 0x9Fu8, 0x98u8, 0x80u8 };
+    if !good(b1f600[:], u1f600[:]) { return 16; }
+    u10348: [2]u16 = .{ 0xD800u16, 0xDF48u16 };
+    b10348: [4]u8 = .{ 0xF0u8, 0x90u8, 0x8Du8, 0x88u8 };
+    if !good(b10348[:], u10348[:]) { return 17; }
+
+    // ---- a mixed string, from a source literal: 1+1+1+2+3+4 bytes -> 7 units ----
+    mixed := "Hi é€😀";
+    mu: [7]u16 = .{ 0x48u16, 0x69u16, 0x20u16, 0xE9u16, 0x20ACu16, 0xD83Du16, 0xDE00u16 };
+    if !good(mixed, mu[:]) { return 18; }
+
+    // ---- malformed UTF-8: each is rejected, and a failed conversion leaves dst alone ----
+    if !bad_bytes(0x80u8, 0u8, 0u8, 0u8, 1usize) { return 20; }               // stray continuation
+    if !bad_bytes(0xBFu8, 0u8, 0u8, 0u8, 1usize) { return 21; }
+    if !bad_bytes(0xC0u8, 0x80u8, 0u8, 0u8, 2usize) { return 22; }            // overlong NUL
+    if !bad_bytes(0xC1u8, 0xBFu8, 0u8, 0u8, 2usize) { return 23; }
+    if !bad_bytes(0xC2u8, 0u8, 0u8, 0u8, 1usize) { return 24; }               // truncated
+    if !bad_bytes(0xC2u8, 0x41u8, 0u8, 0u8, 2usize) { return 25; }            // not a continuation
+    if !bad_bytes(0xDFu8, 0xC0u8, 0u8, 0u8, 2usize) { return 26; }
+    if !bad_bytes(0xE0u8, 0x80u8, 0x80u8, 0u8, 3usize) { return 27; }         // overlong
+    if !bad_bytes(0xE0u8, 0x9Fu8, 0xBFu8, 0u8, 3usize) { return 28; }
+    if !bad_bytes(0xE0u8, 0xA0u8, 0u8, 0u8, 2usize) { return 29; }            // truncated
+    if !bad_bytes(0xE2u8, 0x82u8, 0x28u8, 0u8, 3usize) { return 30; }         // bad third byte
+    if !bad_bytes(0xE2u8, 0x28u8, 0xA1u8, 0u8, 3usize) { return 31; }         // bad second byte
+    if !bad_bytes(0xEDu8, 0xA0u8, 0x80u8, 0u8, 3usize) { return 32; }         // U+D800
+    if !bad_bytes(0xEDu8, 0xBFu8, 0xBFu8, 0u8, 3usize) { return 33; }         // U+DFFF
+    if !bad_bytes(0xF0u8, 0x80u8, 0x80u8, 0x80u8, 4usize) { return 34; }      // overlong
+    if !bad_bytes(0xF0u8, 0x8Fu8, 0xBFu8, 0xBFu8, 4usize) { return 35; }
+    if !bad_bytes(0xF4u8, 0x90u8, 0x80u8, 0x80u8, 4usize) { return 36; }      // > U+10FFFF
+    if !bad_bytes(0xF5u8, 0x80u8, 0x80u8, 0x80u8, 4usize) { return 37; }
+    if !bad_bytes(0xF0u8, 0x9Fu8, 0x98u8, 0u8, 3usize) { return 38; }         // truncated
+    if !bad_bytes(0xFFu8, 0u8, 0u8, 0u8, 1usize) { return 39; }
+    if !bad_bytes(0xF8u8, 0x88u8, 0x80u8, 0x80u8, 4usize) { return 40; }
+    if !bad_bytes(0x41u8, 0xC3u8, 0u8, 0u8, 2usize) { return 41; }            // valid, then cut off
+    if !bad_bytes(0x41u8, 0xFFu8, 0x42u8, 0u8, 3usize) { return 19; }   // valid, bad, valid
+
+    // ---- malformed UTF-16 ----
+    l1: [1]u16 = .{ 0xD800u16 };
+    if kind16(l1[:]) != 1 { return 50; }                                       // lone high at the end
+    l2: [1]u16 = .{ 0xDBFFu16 };
+    if kind16(l2[:]) != 1 { return 51; }
+    l3: [1]u16 = .{ 0xDC00u16 };
+    if kind16(l3[:]) != 1 { return 52; }                                       // lone low
+    l4: [1]u16 = .{ 0xDFFFu16 };
+    if kind16(l4[:]) != 1 { return 53; }
+    l5: [2]u16 = .{ 0xD800u16, 0x0041u16 };
+    if kind16(l5[:]) != 1 { return 54; }                                       // high, then not low
+    l6: [2]u16 = .{ 0xD800u16, 0xD800u16 };
+    if kind16(l6[:]) != 1 { return 55; }
+    l7: [2]u16 = .{ 0xDC00u16, 0xD800u16 };
+    if kind16(l7[:]) != 1 { return 56; }                                       // low before high
+    l8: [2]u16 = .{ 0x0041u16, 0xDC00u16 };
+    if kind16(l8[:]) != 1 { return 57; }
+    l9: [3]u16 = .{ 0xD800u16, 0xDBFFu16, 0xDC00u16 };
+    if kind16(l9[:]) != 1 { return 58; }
+    sentinel: [8]u8 = .{};
+    k := 0usize;
+    while k < 8usize { sentinel[k] = 0x5Au8; k += 1usize; }
+    if conv16(l5[:], sentinel[:]) != 1 { return 59; }
+    k = 0usize;
+    while k < 8usize { if sentinel[k] != 0x5Au8 { return 60; } k += 1usize; }
+
+    // ---- capacity: exact, one short, and roomy; failures change nothing ----
+    // "Hi é€😀" needs 7 units and 12 bytes.
+    tight: [7]u16 = .{};
+    short: [6]u16 = .{};
+    roomy: [10]u16 = .{};
+    k = 0usize;
+    while k < 6usize { short[k] = 0xBEEFu16; k += 1usize; }
+    if conv8(mixed, short[:]) != 3 { return 70; }                              // .buffer_too_small
+    k = 0usize;
+    while k < 6usize { if short[k] != 0xBEEFu16 { return 71; } k += 1usize; }
+    if conv8(mixed, tight[:]) != 0 { return 72; }
+    k = 0usize;
+    while k < 10usize { roomy[k] = 0xBEEFu16; k += 1usize; }
+    if conv8(mixed, roomy[:]) != 0 { return 73; }
+    if roomy[6] != 0xDE00u16 || roomy[7] != 0xBEEFu16 || roomy[9] != 0xBEEFu16 { return 74; }   // tail untouched
+    if conv8(mixed, none) != 3 { return 75; }                            // nonempty input, no room
+    out_tight: [12]u8 = .{};
+    out_short: [11]u8 = .{};
+    if conv16(mu[:], out_short[:]) != 3 { return 76; }
+    if conv16(mu[:], out_tight[:]) != 0 { return 77; }
+    if out_tight[11] != 0x80u8 { return 78; }                                  // last byte of U+1F600
+
+    // ---- the arena helpers ----
+    a := heap::make();
+    w := utf16::alloc_utf16(&a, mixed) catch e { return 80; };
+    if w.len != 7usize || w[4] != 0x20ACu16 || w[6] != 0xDE00u16 { return 81; }
+    wz := utf16::alloc_utf16z(&a, mixed) catch e { return 82; };
+    if wz.len != 7usize { return 83; }                                         // the length excludes the terminator
+    p := wz.ptr;
+    if p[7] != 0u16 { return 84; }                                             // but a 0 follows it
+    s8 := utf16::alloc_utf8(&a, w) catch e { return 85; };
+    if s8.len != mixed.len { return 86; }
+    k = 0usize;
+    while k < s8.len { if s8[k] != mixed[k] { return 87; } k += 1usize; }
+    ew := utf16::alloc_utf16z(&a, empty8) catch e { return 88; };
+    if ew.len != 0usize { return 89; }
+    q := ew.ptr;
+    if q[0] != 0u16 { return 90; }                                             // "" is just the terminator
+    // bad input to an allocating helper is reported, not allocated
+    bad_in: [2]u8 = .{ 0xC0u8, 0x80u8 };
+    if alloc_kind8(&a, bad_in[:]) != 1 { return 91; }
+    // a fixed arena too small for the result reports out_of_memory
+    tiny: [64]u8 = .{};
+    fa := heap::fixed(tiny[:]);
+    big: [200]u8 = .{};
+    k = 0usize;
+    while k < 200usize { big[k] = 0x61u8; k += 1usize; }
+    if alloc_kind8(&fa, big[:]) != 4 { return 92; }
+
+    // ---- every scalar value, and the forbidden encodings ----
+    ev := exhaustive_valid();
+    if ev != 0 { return 100 + ev; }
+    ei := exhaustive_invalid();
+    if ei != 0 { return 110 + ei; }
+
+    return 42;
+}

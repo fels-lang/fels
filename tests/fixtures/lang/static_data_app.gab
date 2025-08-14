@@ -1,0 +1,274 @@
+// Static storage: a top-level `NAME: T = <initialiser>;` puts structs, arrays, function
+// pointers and addresses of other globals in the image itself, with nothing run at startup.
+// Checks every shape the initialiser accepts, that each reads exactly as the same literal does
+// for a local, that the globals are ordinary mutable storage afterwards, and that the
+// addresses stored in the image are the run-time addresses (the linker relocated them).
+// Returns 42 on success; any other value names the failed check.
+
+Point :: struct { x: i32, y: i32 }
+Cfg :: struct { name: []const u8, retries: i32 = 3, verbose: bool = false, limit: u64 }
+Vtbl :: struct { add: fn(i32, i32) -> i32, mul: fn(i32, i32) -> i32, id: u32 }
+Obj :: struct { vtbl: *Vtbl, refs: u32 }
+Node :: struct { v: i32, next: *Node }
+Holder :: struct { cb: fn(i32) -> i32, n: i32 }
+Mode :: enum { fast, slow, off }
+Shape :: enum { none, circle: i32 }
+Settings :: struct { mode: Mode = .slow, shape: Shape = .none, n: i32 = 4 }
+Grid :: struct { cells: [2][3]i32, scale: f64, tag: u8, on: bool }
+#packed
+Pk :: struct { a: u8, b: u32, c: u16 }
+#align(16)
+Al :: struct { a: u32, b: u32 }
+Cell :: struct { p: ?*Point, n: i32 }
+
+// Defaults, to compare a static initialiser with the same literal on a local.
+Dflt :: struct { n: i32 = 4, m: i32 = 5, z: i32 }
+Gap :: struct { a: i32, b: i32 = 7, c: i32 = 8 }
+Wrap :: struct { c: Dflt, k: i32 = 3 }
+
+add :: fn(a: i32, b: i32) -> i32 { return a + b; }
+mul :: fn(a: i32, b: i32) -> i32 { return a * b; }
+dbl :: fn(x: i32) -> i32 { return x * 2; }
+neg :: fn(x: i32) -> i32 { return -x; }
+
+// ---- structs: positional, named, defaults, all-default ----
+ORIGIN: Point = .{ 3, 4 };
+CFG_A: Cfg = .{ .name = "build", .limit = 9u64 };
+CFG_B: Cfg = .{ "ci", 5, true, 7u64 };
+CFG_D: Cfg = .{ "short" };
+// ---- arrays: scalars, a literal that stops short, structs, nested ----
+PRIMES: [5]u32 = .{ 2u32, 3u32, 5u32, 7u32, 11u32 };
+SHORT: [4]i32 = .{ 1, 2 };
+POINTS: [3]Point = .{ .{ 1, 2 }, .{ 3, 4 }, .{ 5, 6 } };
+NESTED: [2]Cfg = .{ .{ .name = "a", .limit = 1u64 }, .{ .name = "b", .retries = 8, .limit = 2u64 } };
+BYTES: [6]u8 = .{ 1u8, 2u8, 3u8 };
+ZEROS: [64]u8 = .{};
+GRID: Grid = .{ .{ .{ 1, 2, 3 }, .{ 4, 5, 6 } }, 2.5, 7u8, true };
+// ---- function pointers: in a struct, in an array, alone, and as closures ----
+VT: Vtbl = .{ add, mul, 7u32 };
+HANDLERS: [2]extern fn(i32) -> i32 = .{ dbl, neg };
+ONE: extern fn(i32) -> i32 = dbl;
+F: fn(i32) -> i32 = dbl;
+CLOSURES: [2]fn(i32) -> i32 = .{ dbl, neg };
+HOLD: Holder = .{ neg, 5 };
+// ---- addresses of other globals, in any order, cycles included ----
+OBJ: Obj = .{ &VT, 1u32 };
+NO_OBJ: ?*Obj = null;
+SOME_OBJ: ?*Obj = &OBJ;
+NA: Node = .{ 1, &NB };
+NB: Node = .{ 2, &NA };
+TO_ORIGIN: *Point = &ORIGIN;
+CELL: Cell = .{ &ORIGIN, 3 };
+// ---- enums, floats, integers at their limits, layout attributes ----
+MODE: Mode = .off;
+MODE_Q: Mode = Mode.slow;
+SHAPE: Shape = .none;
+SET_A: Settings = .{};
+SET_B: Settings = .{ .fast, .none, 9 };
+SET_C: Settings = .{ .mode = .off };
+MODES: [3]Mode = .{ .off, .fast };
+F32: f32 = 1.5f32;
+BIG: u64 = 0xFFFFFFFFFFFFFFFFu64;
+NEG: i64 = -5i64;
+PK: Pk = .{ 1u8, 0x01020304u32, 0x0506u16 };
+AL: Al = .{ 9u32, 10u32 };
+// ---- scalars that were always allowed ----
+COUNTER: i32 = 5;
+MSG: []const u8 = "hello";
+
+// ---- initialisers that read like the local literal ----
+S_EMPTY: Dflt = .{};
+S_ONE: Dflt = .{ 1 };
+S_TWO: Dflt = .{ 1, 2 };
+S_NAMED: Dflt = .{ .z = 9 };
+G_EMPTY: Gap = .{};
+G_ONE: Gap = .{ 1 };
+G_NAMED: Gap = .{ .a = 3 };
+W_EMPTY: Wrap = .{};
+W_ONE: Wrap = .{ .{ 1, 2, 3 } };
+W_INNER_EMPTY: Wrap = .{ .{}, 6 };
+W_NAMED: Wrap = .{ .c = .{ .z = 1 }, .k = 2 };
+A_EMPTY: [2]Dflt = .{};
+A_SHORT: [3]Dflt = .{ .{ .z = 1 } };
+
+enc :: fn(c: Dflt) -> i32 { return c.n * 100 + c.m * 10 + c.z; }
+encg :: fn(g: Gap) -> i32 { return g.a * 100 + g.b * 10 + g.c; }
+encw :: fn(w: Wrap) -> i32 { return enc(w.c) * 10 + w.k; }
+
+bump :: fn(p: *Point) { p.x = p.x + 1; }
+
+is_none :: fn(s: Shape) -> bool {
+    match s { .none => { return true; } else => { return false; } }
+}
+
+dbl_addr :: fn() -> usize { return unsafe (core::fn_ptr(dbl) as usize); }
+
+// A static initialiser and the same literal on a local agree on the result.
+agree :: fn() -> i32 {
+    l_empty: Dflt = .{};
+    l_one: Dflt = .{ 1 };
+    l_two: Dflt = .{ 1, 2 };
+    l_named: Dflt = .{ .z = 9 };
+    if enc(S_EMPTY) != enc(l_empty) { return 1; }
+    if enc(S_ONE) != enc(l_one) { return 2; }
+    if enc(S_TWO) != enc(l_two) { return 3; }
+    if enc(S_NAMED) != enc(l_named) { return 4; }
+    g_empty: Gap = .{};
+    g_one: Gap = .{ 1 };
+    g_named: Gap = .{ .a = 3 };
+    if encg(G_EMPTY) != encg(g_empty) { return 5; }
+    if encg(G_ONE) != encg(g_one) { return 6; }
+    if encg(G_NAMED) != encg(g_named) { return 7; }
+    w_empty: Wrap = .{};
+    w_one: Wrap = .{ .{ 1, 2, 3 } };
+    w_inner_empty: Wrap = .{ .{}, 6 };
+    w_named: Wrap = .{ .c = .{ .z = 1 }, .k = 2 };
+    if encw(W_EMPTY) != encw(w_empty) { return 8; }
+    if encw(W_ONE) != encw(w_one) { return 9; }
+    if encw(W_INNER_EMPTY) != encw(w_inner_empty) { return 10; }
+    if encw(W_NAMED) != encw(w_named) { return 11; }
+    a_empty: [2]Dflt = .{};
+    a_short: [3]Dflt = .{ .{ .z = 1 } };
+    if enc(A_EMPTY[1]) != enc(a_empty[1]) { return 12; }
+    if enc(A_SHORT[0]) != enc(a_short[0]) { return 13; }
+    if enc(A_SHORT[2]) != enc(a_short[2]) { return 14; }
+    // and the values themselves, so the comparison above is not 0 == 0 throughout
+    if enc(S_EMPTY) != 450 { return 15; }
+    if enc(S_TWO) != 120 { return 16; }
+    if encg(G_EMPTY) != 0 { return 17; }
+    if encg(G_ONE) != 178 { return 18; }
+    if encw(W_INNER_EMPTY) != 4506 { return 19; }
+    return 0;
+}
+
+#entry
+main :: fn() -> i32 {
+    // ---- the shapes read back ----
+    if ORIGIN.x * 10 + ORIGIN.y != 34 { return 20; }
+    if CFG_A.retries != 3 { return 21; }
+    if CFG_A.verbose { return 22; }
+    if CFG_A.limit != 9u64 { return 23; }
+    if CFG_A.name.len != 5usize { return 24; }
+    if CFG_A.name[0] != 98u8 { return 25; }                       // 'b'
+    if CFG_B.retries != 5 { return 26; }
+    if !CFG_B.verbose { return 27; }
+    if CFG_D.retries != 3 { return 28; }
+    if CFG_D.limit != 0u64 { return 29; }
+    if PRIMES[4] != 11u32 { return 30; }
+    if SHORT[1] != 2 { return 31; }
+    if SHORT[3] != 0 { return 32; }
+    if POINTS[2].y != 6 { return 33; }
+    if NESTED[1].retries != 8 { return 34; }
+    if NESTED[0].retries != 3 { return 35; }
+    if BYTES[2] != 3u8 { return 36; }
+    if BYTES[5] != 0u8 { return 37; }
+    if ZEROS[63] != 0u8 { return 38; }
+    if GRID.cells[1][2] != 6 { return 39; }
+    if (GRID.scale * 2.0) as i32 != 5 { return 40; }
+    if GRID.tag != 7u8 { return 41; }
+    if !GRID.on { return 42; }
+
+    // ---- function pointers ----
+    if VT.add(2, 3) != 5 { return 43; }
+    if VT.mul(4, 5) != 20 { return 44; }
+    h0 := HANDLERS[0];
+    h1 := HANDLERS[1];
+    if h0(21) != 42 { return 45; }
+    if h1(21) != -21 { return 46; }
+    if ONE(10) != 20 { return 47; }
+    if F(21) != 42 { return 48; }
+    c0 := CLOSURES[0];
+    c1 := CLOSURES[1];
+    if c0(4) != 8 { return 49; }
+    if c1(4) != -4 { return 50; }
+    if HOLD.cb(9) != -9 { return 51; }
+    // the element of a table can be called where it stands
+    if HANDLERS[0](21) != 42 { return 148; }
+    if HANDLERS[1](21) != -21 { return 149; }
+    if CLOSURES[1](4) != -4 { return 150; }
+    pick := 1usize;
+    if HANDLERS[pick](3) != -3 { return 151; }
+
+    // ---- addresses ----
+    if OBJ.vtbl.id != 7u32 { return 52; }
+    if OBJ.vtbl.add(10, 20) != 30 { return 53; }
+    if NO_OBJ != null { return 54; }
+    some := SOME_OBJ ?? &OBJ;
+    if some.refs != 1u32 { return 55; }
+    if NA.next.v != 2 { return 56; }
+    if NA.next.next.v != 1 { return 57; }
+    if NB.next.next.next.v != 1 { return 58; }                    // NB -> NA -> NB -> NA
+    if TO_ORIGIN.y != 4 { return 59; }
+    cp := CELL.p ?? &ORIGIN;
+    if cp.x != 3 { return 60; }
+    if CELL.n != 3 { return 61; }
+
+    // ---- enums, numbers, layout ----
+    if MODE != Mode.off { return 62; }
+    if MODE_Q != Mode.slow { return 63; }
+    if !is_none(SHAPE) { return 64; }
+    if SET_A.mode != Mode.slow { return 65; }
+    if !is_none(SET_A.shape) { return 66; }
+    if SET_A.n != 4 { return 67; }
+    if SET_B.mode != Mode.fast { return 68; }
+    if SET_B.n != 9 { return 69; }
+    if SET_C.mode != Mode.off { return 70; }
+    if SET_C.n != 4 { return 71; }
+    if MODES[0] != Mode.off { return 72; }
+    if MODES[1] != Mode.fast { return 73; }
+    if MODES[2] != Mode.fast { return 74; }                       // zero is the first variant
+    if (F32 * 2.0f32) as i32 != 3 { return 75; }
+    if BIG >> 60u64 != 15u64 { return 76; }
+    if NEG != -5i64 { return 77; }
+    if PK.b != 0x01020304u32 { return 78; }
+    if PK.c != 0x0506u16 { return 79; }
+    if core::sizeof(Pk) != 7usize { return 80; }
+    if AL.b != 10u32 { return 81; }
+    if COUNTER != 5 { return 82; }
+    if MSG.len != 5usize { return 83; }
+
+    // ---- agreement with locals ----
+    r := agree();
+    if r != 0 { return 100 + r; }
+
+    // ---- ordinary mutable storage afterwards ----
+    ORIGIN.x = 99;
+    if ORIGIN.x != 99 { return 130; }
+    ORIGIN.y += 5;
+    if ORIGIN.y != 9 { return 131; }
+    if TO_ORIGIN.x != 99 { return 132; }                          // the same object seen through a pointer
+    TO_ORIGIN.x = 3;
+    if ORIGIN.x != 3 { return 133; }
+    bump(&ORIGIN);
+    if ORIGIN.x != 4 { return 134; }
+    POINTS[1].x = 8;
+    if POINTS[1].x != 8 { return 135; }
+    PRIMES[0] = 50u32;
+    if PRIMES[0] != 50u32 { return 136; }
+    PRIMES[3] += 6u32;
+    if PRIMES[3] != 13u32 { return 137; }
+    e := &PRIMES[2];
+    *e = 33u32;
+    if PRIMES[2] != 33u32 { return 138; }
+    GRID.cells[0][1] = 20;
+    if GRID.cells[0][1] != 20 { return 139; }
+    CFG_B.retries += 1;
+    if CFG_B.retries != 6 { return 140; }
+    NA.v = 10;
+    if NB.next.v != 10 { return 141; }
+    MODE = Mode.fast;
+    if MODE != Mode.fast { return 142; }
+    F = neg;                                                      // a stored function pointer can be replaced
+    if F(21) != -21 { return 143; }
+    COUNTER += 1;
+    if COUNTER != 6 { return 144; }
+
+    // ---- the addresses in the image are the run-time addresses ----
+    here := dbl_addr();
+    stored := unsafe ((HANDLERS[0]) as usize);
+    if here != stored { return 145; }
+    if unsafe ((ONE) as usize) != here { return 146; }
+    own := unsafe (TO_ORIGIN as usize);
+    if own != unsafe ((&ORIGIN) as usize) { return 147; }
+    return 42;
+}

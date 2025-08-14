@@ -176,6 +176,7 @@ pub const ModuleCg = struct {
         self.struct_alignments.deinit();
         self.fn_decls.deinit();
         self.fn_types.deinit();
+        self.closure_thunks.deinit();
         var abi_it = self.fn_abi.valueIterator();
         while (abi_it.next()) |v| v.deinit(self.allocator);
         self.fn_abi.deinit();

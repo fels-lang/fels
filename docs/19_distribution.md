@@ -64,8 +64,11 @@ directory, writes a PE32+ with the subsystem, entry, and stack from the build.
 Emits DLLs too (`.edata` from a `.skexp` map) — which is how `gabld.dll` links
 itself.
 
-Hands off to LLD on multi-object links, raw linker flags, or a static-CRT
-`/DEFAULTLIB` pull-in.
+Hands off to LLD on multi-object links, raw linker flags, a static-CRT
+`/DEFAULTLIB` pull-in, and a DLL whose data holds an absolute address (a vtable, a static
+table of function pointers). gabld writes no base-relocation table, and a DLL is rebased
+whenever its preferred address is taken, so such a DLL needs the table LLD emits. An
+executable is always loaded at gabld's fixed base and keeps the address as written.
 
 ### Dev: DLL. Release: embedded.
 

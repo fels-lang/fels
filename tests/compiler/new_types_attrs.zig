@@ -584,6 +584,28 @@ test "link: honor_defaultlibs suppresses CRT umbrellas instead of blanket /NODEF
     }
 }
 
+test "link: a DLL with no SDK import library of its own is linked through the one that has it" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    // `#extern("combase", ...)` names the DLL (which gabld writes into the import table); the
+    // Windows SDK ships those entry points in runtimeobject.lib, and there is no combase.lib.
+    const args = try gabbro.llvm_link.buildArgs(a, .{
+        .llvm_bin = "x",
+        .output = "o.exe",
+        .obj_files = &.{},
+        .libs = &.{ "ole32", "combase" },
+    });
+    defer {
+        for (args) |s| a.free(@constCast(s));
+        a.free(args);
+    }
+    try std.testing.expect(argsContain(args, "ole32.lib"));
+    try std.testing.expect(argsContain(args, "runtimeobject.lib"));
+    try std.testing.expect(!argsContain(args, "combase.lib"));
+    try std.testing.expectEqualStrings("kernel32", gabbro.llvm_link.importLibraryFor("kernel32"));
+    try std.testing.expectEqualStrings("runtimeobject", gabbro.llvm_link.importLibraryFor("COMBASE"));
+}
+
 test "msvc: discoverLibX64 finds a vcruntime-bearing lib dir (or cleanly returns null)" {
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     const a = std.testing.allocator; // also asserts the discovery routine doesn't leak

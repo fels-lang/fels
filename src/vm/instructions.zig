@@ -30,6 +30,7 @@ pub const Opcode = enum(u8) {
 
     // Casts
     cast_to_float, cast_to_int,
+    narrow, // a = dst; b = src; imm = bit width, plus 0x100 if signed → the value wrapped to that integer type
 
     // Locals & globals
     load_local, // a = dst; imm = local slot
@@ -49,6 +50,7 @@ pub const Opcode = enum(u8) {
     zone_push, // imm = const-pool index of the zone name string
     zone_pop,
     zone_alloc, // a = dst; imm = number of cells (allocated in the top zone)
+    zone_fill, // a = base ptr; b = value reg; imm = cell count → set that many cells from the base to the value
     field_addr, // a = dst; b = base ptr/ref; imm = field/element cell offset
     load_cell, // a = dst; b = base ptr; imm = cell offset to read
     store_cell, // a = base ptr; b = src value; imm = cell offset to write
@@ -187,18 +189,36 @@ pub const BytecodeFunction = struct {
     }
 };
 
+/// A top-level global that holds more than one immediate: a struct, an array, an enum value, a
+/// function pointer. The VM builds it the first time `load_global` names it, by running `init`,
+/// which allocates the value and returns it. A global that is one immediate (an integer, a
+/// string, `null`) has no `init`: its uses carry the constant itself.
+pub const BytecodeGlobal = struct {
+    name: []const u8,
+    init: ?BytecodeFunction = null,
+};
+
 /// A compiled module: the function table the VM resolves `call` against, plus
 /// the interface vtables (`vtable index → method slot → function index`) that
-/// `interface_method` dispatches through.
+/// `interface_method` dispatches through, and the static data (`globals`, indexed like the IR
+/// module's own `globals`) that `load_global` reads.
 pub const BytecodeModule = struct {
     functions: []BytecodeFunction,
     vtables: []const []const u32 = &.{},
+    globals: []const BytecodeGlobal = &.{},
+    /// Messages the module's own stop-functions carry (why a global cannot be read); the module
+    /// owns them so that `deinit` can free them.
+    owned_strings: []const []const u8 = &.{},
 
     pub fn deinit(self: *BytecodeModule, allocator: std.mem.Allocator) void {
         for (self.functions) |*f| f.deinit(allocator);
         allocator.free(self.functions);
         for (self.vtables) |vt| allocator.free(vt);
         if (self.vtables.len != 0) allocator.free(self.vtables);
+        for (self.globals) |g| if (g.init) |*f| f.deinit(allocator);
+        if (self.globals.len != 0) allocator.free(self.globals);
+        for (self.owned_strings) |s| allocator.free(s);
+        if (self.owned_strings.len != 0) allocator.free(self.owned_strings);
     }
 
     pub fn find(self: *const BytecodeModule, name: []const u8) ?*const BytecodeFunction {

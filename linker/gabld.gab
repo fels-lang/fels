@@ -926,22 +926,33 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8, opts: *LinkO
     }
 
     // Apply relocations for every kept section
+    abs_addrs := 0u32;
     s = 0u32;
     while s < ns {
         idx := (s + 1u32) as usize;
         c := cls[idx];
         if c != 0u32 { if sreln[idx] > 0u32 {
-            apply_relocs(img, &obj, srelp[idx], sreln[idx], secrva[idx] as usize, secoff[idx], secrva, imp_sym, nimp, thunk_base);
+            abs_addrs += apply_relocs(img, &obj, srelp[idx], sreln[idx], secrva[idx] as usize, secoff[idx], secrva, imp_sym, nimp, thunk_base);
         } }
         s += 1u32;
     }
+
+    // gabld writes no base-relocation table. An executable is always mapped at its fixed
+    // ImageBase, so the absolute addresses patched above (vtables, static pointer tables)
+    // are right; a DLL is rebased whenever that address is taken (two gabld DLLs in one
+    // process always collide), and without a `.reloc` the loader would leave those
+    // addresses pointing into the wrong image. A DLL holding any is left to LLD, which
+    // emits the table. (Status 3 = "hand off to LLD"; the compiler falls back on any
+    // non-zero status, silently.)
+    if opts.is_dll { if abs_addrs > 0u32 { return 3; } }
 
     if !write_file(a, out_path, img) { return 1; }
     return 0;
 }
 
 // Apply every relocation in one kept section, patching `img` in place.
-apply_relocs :: fn(img: []u8, obj: *CoffObj, reloc_ptr: u32, num: u32, sec_rva: usize, sec_off: usize, secrva: []u32, imp_sym: []u32, nimp: u32, thunk_base: usize) -> void {
+apply_relocs :: fn(img: []u8, obj: *CoffObj, reloc_ptr: u32, num: u32, sec_rva: usize, sec_off: usize, secrva: []u32, imp_sym: []u32, nimp: u32, thunk_base: usize) -> u32 {
+    abs_count := 0u32;
     j := 0u32;
     while j < num {
         rel := get_reloc(obj, reloc_ptr, j);
@@ -958,6 +969,7 @@ apply_relocs :: fn(img: []u8, obj: *CoffObj, reloc_ptr: u32, num: u32, sec_rva: 
         if rel.kind == 1u32 {                            // ADDR64
             v64 := (IMAGE_BASE as i64) + target + rd_i64(img, field_off);
             wr_u64(img, field_off, v64 as u64);
+            abs_count += 1u32;
         } else {
             if rel.kind == 3u32 {                        // ADDR32NB
                 wr_u32(img, field_off, (target + rd_i32(img, field_off)) as u32);
@@ -973,6 +985,7 @@ apply_relocs :: fn(img: []u8, obj: *CoffObj, reloc_ptr: u32, num: u32, sec_rva: 
         }
         j += 1u32;
     }
+    return abs_count;
 }
 
 // Write one 40-byte section header (no relocations in the output image).

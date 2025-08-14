@@ -159,6 +159,16 @@ pub const WindowsLinkOptions = struct {
     honor_defaultlibs: bool = false,
 };
 
+/// The import library to hand LLD for a DLL named in `#extern("dll", "symbol")`. It is the DLL's
+/// own name nearly always. The exception is `combase.dll`, which holds the Windows Runtime entry
+/// points (`RoInitialize`, `WindowsCreateString`, ...) but has no import library of its own in the
+/// Windows SDK: they are in `runtimeobject.lib`. (gabld needs no library; it writes the DLL name
+/// into the import table itself, so `combase` stays `combase.dll` there.)
+pub fn importLibraryFor(dll: []const u8) []const u8 {
+    if (std.ascii.eqlIgnoreCase(dll, "combase")) return "runtimeobject";
+    return dll;
+}
+
 /// Build the lld-link command line as a slice of argument strings (caller frees).
 pub fn buildArgs(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ![]const []const u8 {
     var args: std.ArrayList([]const u8) = .empty;
@@ -200,7 +210,7 @@ pub fn buildArgs(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ![]cons
     for (opts.lib_paths) |lp|
         try args.append(allocator, try std.fmt.allocPrint(allocator, "/LIBPATH:{s}", .{lp}));
     for (opts.libs) |lib|
-        try args.append(allocator, try std.fmt.allocPrint(allocator, "{s}.lib", .{lib}));
+        try args.append(allocator, try std.fmt.allocPrint(allocator, "{s}.lib", .{importLibraryFor(lib)}));
     for (opts.extra_flags) |f|
         try args.append(allocator, try allocator.dupe(u8, f));
 

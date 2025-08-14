@@ -1,0 +1,218 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.sync — mutual exclusion and waiting between threads: Mutex, CondVar, and a bounded
+// blocking Queue built on them. Thread calls go through the platform runtime (windows.gab →
+// SRWLOCK and CONDITION_VARIABLE; linux.gab → futex), so this file stays OS-agnostic. The
+// waiting is done by the kernel: a blocked thread sleeps rather than polling in a loop.
+//
+//     #import std.sync.{ Mutex, CondVar };
+//
+//     lock: Mutex = .{};              // all zero bits is "unlocked" — no init call, nothing to destroy
+//     ready: bool = false;            // guarded by `lock`
+//     cv: CondVar = .{};
+//
+//     // a waiter                       // a signaller
+//     lock.lock();                      lock.lock();
+//     while !ready { cv.wait(&lock); }  ready = true;
+//     lock.unlock();                    lock.unlock();
+//                                       cv.signal();
+//
+// Rules that hold for everything here:
+//   - Share by address. A Mutex, CondVar or Queue is the lock; copying one while a thread uses
+//     it copies a lock that is held, not the lock. Declare it where it will live (a local that
+//     outlives the threads, or a global) and pass `&it`.
+//   - Nothing is recursive, owner-checked or fair. Locking a Mutex the thread already holds
+//     deadlocks; unlocking one it does not hold is undefined.
+//   - A Mutex or CondVar needs no destruction. It must not be moved or freed while a thread
+//     holds the lock or sleeps on it: join the threads first.
+
+// The seam, provided by the platform runtime:
+//   os_mutex_lock(m) / os_mutex_try_lock(m) -> bool / os_mutex_unlock(m)        m: *u64
+//   os_cond_wait(c, m, ms) -> bool    release m, sleep on c, take m again; false on timeout
+//   os_cond_signal(c) / os_cond_broadcast(c)
+
+// "No timeout" for os_cond_wait.
+WAIT_FOREVER :: 0xFFFFFFFFu32;
+
+// Mutex: one thread at a time inside the code it guards ───────────────────
+pub Mutex :: struct {
+    word: u64   // OS lock state; all zero bits is the unlocked state
+
+    // Take the lock, sleeping until it is free. Pair with `defer m.unlock();` to release on
+    // every path out of a function.
+    pub lock :: fn(self: *Self) { os_mutex_lock(&self.word); }
+
+    // Take the lock if it is free right now. True means the caller holds it.
+    pub try_lock :: fn(self: *Self) -> bool { return os_mutex_try_lock(&self.word); }
+
+    // Release the lock. The caller must hold it.
+    pub unlock :: fn(self: *Self) { os_mutex_unlock(&self.word); }
+}
+
+// CondVar: sleep until another thread says something may have changed ──────
+// A condition variable carries no state of its own besides who is waiting; the "something"
+// is a condition on data guarded by a Mutex, which the waiter checks itself. wait() can
+// return without any signal (a spurious wake-up), so it is always called in a loop that
+// re-tests the condition with the lock held:
+//
+//     while !condition { cv.wait(&lock); }
+//
+// signal() and broadcast() may be called with or without the lock held. A signal sent while
+// nobody waits is forgotten, which is why the condition lives in the data, not in the signal.
+pub CondVar :: struct {
+    word: u64   // OS condition state; all zero bits is "nobody waiting"
+
+    // Release `m` and sleep until woken, then take `m` again before returning. `m` must be
+    // held by the caller, and must be the same Mutex every waiter on this CondVar uses.
+    pub wait :: fn(self: *Self, m: *Mutex) {
+        woken := os_cond_wait(&self.word, &m.word, WAIT_FOREVER);
+    }
+
+    // Like wait(), giving up after `ms` milliseconds (0xFFFFFFFF means never). The lock is
+    // held again on return either way. False means the time ran out; true means woken, by a
+    // signal or spuriously, so the condition still has to be re-tested.
+    pub wait_timeout :: fn(self: *Self, m: *Mutex, ms: u32) -> bool {
+        return os_cond_wait(&self.word, &m.word, ms);
+    }
+
+    // Wake one waiter, if any.
+    pub signal :: fn(self: *Self) { os_cond_signal(&self.word); }
+
+    // Wake every waiter. Each takes the lock in turn and re-tests its condition.
+    pub broadcast :: fn(self: *Self) { os_cond_broadcast(&self.word); }
+}
+
+// Queue(T): a bounded blocking FIFO between threads ────────────────────────
+// Any number of producers and consumers may share one. It is bounded because it owns no
+// memory: the caller supplies the storage, which fixes the capacity, so there is no hidden
+// allocation and a producer that outruns its consumers waits instead of exhausting memory.
+// An item is copied in on push and out on pop. Items leave in the order they went in.
+//
+//     buf: [64]i32 = .{};
+//     q := sync::make_queue(i32, buf[:]);
+//     q.push(7);                      // blocks while the queue is full
+//     v := q.pop() ?? -1;             // blocks while it is empty
+//
+// Shutting down: close() ends the queue. Nothing more can be pushed (push returns false, and
+// a producer blocked in push is released with false); what was already queued can still be
+// popped, and once it is drained pop returns null, which also releases every blocked consumer.
+// So the usual order is: producers finish, the owner calls close(), consumers drain and see
+// null and stop, the owner joins them, and only then does the storage go away. The Queue holds
+// no resources of its own, so there is nothing to destroy.
+//
+// A Queue made over empty storage can never hold an item: push and try_push return false, and
+// pop waits for close().
+pub Queue :: struct($T: type) {
+    mu:        Mutex
+    not_empty: CondVar
+    not_full:  CondVar
+    buf:       []T       // the caller's storage; capacity == buf.len
+    head:      usize     // index of the oldest item
+    count:     usize     // items queued
+    closed:    bool
+
+    // Add `item`, sleeping while the queue is full. False if the queue is closed (the item is
+    // not added) or has no capacity.
+    pub push :: fn(self: *Self, item: T) -> bool {
+        if self.buf.len == 0usize { return false; }
+        self.mu.lock();
+        while self.count == self.buf.len {
+            if self.closed { break; }
+            self.not_full.wait(&self.mu);
+        }
+        if self.closed {
+            self.mu.unlock();
+            return false;
+        }
+        self.buf[(self.head + self.count) % self.buf.len] = item;
+        self.count += 1usize;
+        self.mu.unlock();
+        self.not_empty.signal();
+        return true;
+    }
+
+    // Add `item` if there is room right now. False if the queue is full, closed or has no
+    // capacity.
+    pub try_push :: fn(self: *Self, item: T) -> bool {
+        if self.buf.len == 0usize { return false; }
+        self.mu.lock();
+        if self.closed || self.count == self.buf.len {
+            self.mu.unlock();
+            return false;
+        }
+        self.buf[(self.head + self.count) % self.buf.len] = item;
+        self.count += 1usize;
+        self.mu.unlock();
+        self.not_empty.signal();
+        return true;
+    }
+
+    // Remove the oldest item, sleeping while the queue is empty. Null once the queue is
+    // closed and drained.
+    pub pop :: fn(self: *Self) -> ?T {
+        self.mu.lock();
+        while self.count == 0usize {
+            if self.closed { break; }
+            self.not_empty.wait(&self.mu);
+        }
+        if self.count == 0usize {
+            self.mu.unlock();
+            return null;
+        }
+        item: T = self.buf[self.head];
+        self.head = (self.head + 1usize) % self.buf.len;
+        self.count -= 1usize;
+        self.mu.unlock();
+        self.not_full.signal();
+        return item;
+    }
+
+    // Remove the oldest item if there is one right now; null if the queue is empty.
+    pub try_pop :: fn(self: *Self) -> ?T {
+        self.mu.lock();
+        if self.count == 0usize {
+            self.mu.unlock();
+            return null;
+        }
+        item: T = self.buf[self.head];
+        self.head = (self.head + 1usize) % self.buf.len;
+        self.count -= 1usize;
+        self.mu.unlock();
+        self.not_full.signal();
+        return item;
+    }
+
+    // End the queue: wake every blocked producer and consumer. Safe to call more than once.
+    pub close :: fn(self: *Self) {
+        self.mu.lock();
+        self.closed = true;
+        self.mu.unlock();
+        self.not_empty.broadcast();
+        self.not_full.broadcast();
+    }
+
+    // Items queued now (a snapshot: it may change before the caller looks).
+    pub len :: fn(self: *Self) -> usize {
+        self.mu.lock();
+        n: usize = self.count;
+        self.mu.unlock();
+        return n;
+    }
+
+    // Most items it can hold.
+    pub capacity :: fn(self: *Self) -> usize { return self.buf.len; }
+
+    // Has close() been called?
+    pub is_closed :: fn(self: *Self) -> bool {
+        self.mu.lock();
+        c: bool = self.closed;
+        self.mu.unlock();
+        return c;
+    }
+}
+
+// A queue over `storage`; its capacity is `storage.len`. The storage must outlive every thread
+// that uses the queue, and nothing else may touch it meanwhile.
+pub make_queue :: fn($T: type, storage: []T) -> Queue(T) {
+    q: Queue(T) = .{ .{}, .{}, .{}, storage, 0usize, 0usize, false };
+    return q;
+}

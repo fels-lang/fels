@@ -269,7 +269,7 @@ fn lowerClosureEnvLoad(cg: *ModuleCg, fncg: anytype, ld: ir.ClosureEnvLoadInstr)
 /// Build (once, cached) `__thunk_<fn>(__env: ptr, args…) -> Ret { return fn(args); }`
 /// so a plain function can be called through the uniform `fn(env, args)` closure
 /// convention. The env argument is ignored.
-fn getOrCreateThunk(cg: *ModuleCg, fn_link: []const u8, target: llvm.LLVMValueRef) ?llvm.LLVMValueRef {
+pub fn getOrCreateThunk(cg: *ModuleCg, fn_link: []const u8, target: llvm.LLVMValueRef) ?llvm.LLVMValueRef {
     if (cg.closure_thunks.get(fn_link)) |t| return t;
 
     const target_ty = fnTypeOf(cg, fn_link, target);
@@ -405,6 +405,9 @@ fn lowerSliceExpr(cg: *ModuleCg, fncg: anytype, slice: ir.SliceInstr) ?llvm.LLVM
 // Unary
 
 fn lowerUnary(cg: *ModuleCg, fncg: anytype, u: ir.UnaryInstr, ty: ir.IrType, location: ir.SourceLocation) ?llvm.LLVMValueRef {
+    // Taking an address reads nothing: resolving the operand as a value would load it (a
+    // whole array, say) and coerce that to a pointer, which is not a valid instruction.
+    if (u.op == .ref) return lowerRef(cg, fncg, u.value);
     const v = resolveVal(cg, fncg, u.value, ty);
     const bl = cg.builder;
     return switch (u.op) {
@@ -425,7 +428,7 @@ fn lowerUnary(cg: *ModuleCg, fncg: anytype, u: ir.UnaryInstr, ty: ir.IrType, loc
             markPackedAccess(loaded, v);
             break :blk loaded;
         },
-        .ref => lowerRef(cg, fncg, u.value),
+        .ref => unreachable, // handled above
     };
 }
 
@@ -437,6 +440,7 @@ fn lowerRef(cg: *ModuleCg, fncg: anytype, val: ir.Value) ?llvm.LLVMValueRef {
     // adjustment that calls `__chkstk`, which the CRT-less link doesn't provide.
     return switch (val) {
         .local => |name| fncg.locals.get(name), // alloca IS the address
+        .global => |name| cg.global_decls.get(name), // so is a global's own storage
         .param => |name| blk: {
             const pv = fncg.params.get(name) orelse break :blk null;
             const pty = fncg.param_ir_types.get(name) orelse break :blk null;
@@ -903,8 +907,10 @@ fn lowerField(
             const idx: u32 = if (std.mem.eql(u8, f.name, "ptr")) 0 else 1;
             const base_val = resolveVal(cg, fncg, f.base, base_ir_ty);
             if (want_addr) {
-                // Spill to a temp alloca so we can take an address.
-                const tmp = llvm.LLVMBuildAlloca(cg.builder, cg.getSliceType(), "");
+                // Spill to a temp alloca so we can take an address. (In the entry block: an
+                // alloca anywhere else is a dynamic allocation, and in a loop it grows the
+                // stack on every iteration.)
+                const tmp = abi.entryAlloca(cg, fncg.llvm_fn, cg.getSliceType());
                 _ = llvm.LLVMBuildStore(cg.builder, base_val, tmp);
                 return llvm.LLVMBuildStructGEP2(cg.builder, cg.getSliceType(), tmp, idx, "");
             }
@@ -916,7 +922,7 @@ fn lowerField(
             const lty = types.lower(cg, base_ir_ty);
             const base_val = resolveVal(cg, fncg, f.base, base_ir_ty);
             if (want_addr) {
-                const tmp = llvm.LLVMBuildAlloca(cg.builder, lty, "");
+                const tmp = abi.entryAlloca(cg, fncg.llvm_fn, lty);
                 _ = llvm.LLVMBuildStore(cg.builder, base_val, tmp);
                 return llvm.LLVMBuildStructGEP2(cg.builder, lty, tmp, idx, "");
             }
@@ -947,7 +953,14 @@ fn lowerField(
             if (cg.opt_level == 0) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
             const field_ptr = llvm.LLVMBuildStructGEP2(cg.builder, struct_lty, base_ptr, idx, "");
             if (want_addr) return field_ptr;
-            const field_load = llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, result_ty), field_ptr, "");
+            // A `fn(...)` struct field is stored as a bare code pointer (structs.zig), whatever
+            // closure type the field has as a value, so load it as one. Loading the 16-byte
+            // closure type made `p.f(x)` through a pointer an invalid call.
+            const field_lty = if (result_ty == .fn_ptr)
+                llvm.LLVMPointerTypeInContext(cg.ctx, 0)
+            else
+                types.lower(cg, result_ty);
+            const field_load = llvm.LLVMBuildLoad2(cg.builder, field_lty, field_ptr, "");
             markPackedAccess(field_load, field_ptr);
             return field_load;
         },
@@ -992,9 +1005,14 @@ fn markPackedAccess(access: llvm.LLVMValueRef, ptr: llvm.LLVMValueRef) void {
 fn localOrAllocaPtr(cg: *ModuleCg, fncg: anytype, val: ir.Value, lty: llvm.LLVMTypeRef) ?llvm.LLVMValueRef {
     return switch (val) {
         .local => |name| fncg.locals.get(name),
+        // A global is addressed in place; spilling it would make a write to its field or
+        // element land in a temporary copy.
+        .global => |name| cg.global_decls.get(name),
         else => blk: {
             const v = resolveVal(cg, fncg, val, .unknown);
-            const tmp = llvm.LLVMBuildAlloca(cg.builder, lty, "");
+            // A scratch copy to take an address into. It lives in the entry block, so reading
+            // an array field in a loop reuses one slot instead of growing the stack each pass.
+            const tmp = abi.entryAlloca(cg, fncg.llvm_fn, lty);
             _ = llvm.LLVMBuildStore(cg.builder, v, tmp);
             break :blk tmp;
         },

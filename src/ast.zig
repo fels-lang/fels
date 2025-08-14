@@ -18,6 +18,7 @@ pub const Item = union(enum) {
     function: FunctionDecl,
     interface_impl: InterfaceImpl,
     system_library: SystemLibraryDecl,
+    static_assert: StaticAssertDecl,
 
     pub fn name(self: Item) ?[]const u8 {
         return switch (self) {
@@ -27,6 +28,7 @@ pub const Item = union(enum) {
             .function => |decl| decl.name,
             .interface_impl => null,
             .system_library => null,
+            .static_assert => null,
         };
     }
 
@@ -38,6 +40,7 @@ pub const Item = union(enum) {
             .function => |decl| decl.span,
             .interface_impl => |decl| decl.span,
             .system_library => |decl| decl.span,
+            .static_assert => |decl| decl.span,
         };
     }
 
@@ -49,6 +52,7 @@ pub const Item = union(enum) {
             .function => |decl| decl.file_name,
             .interface_impl => |decl| decl.file_name,
             .system_library => |decl| decl.file_name,
+            .static_assert => |decl| decl.file_name,
         };
     }
 
@@ -94,6 +98,19 @@ pub const SystemLibraryDecl = struct {
     /// Library name without extension, e.g. "raylib".
     name: []const u8,
     file_name: []const u8,
+    span: Span,
+};
+
+/// `#assert(condition, "message");` — a compile-time assertion. The condition must fold
+/// to a `bool` when the module is lowered; `false` fails the build, naming the assertion.
+pub const StaticAssertDecl = struct {
+    condition: Expr,
+    /// The text after the comma, or null when the assertion has none (the diagnostic
+    /// then quotes the condition itself).
+    message: ?[]const u8,
+    file_name: []const u8,
+    /// The file's source text, so the diagnostic can point at the condition.
+    source: []const u8,
     span: Span,
 };
 

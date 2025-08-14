@@ -465,6 +465,8 @@ pub const TypeEnv = struct {
     variant_values: std.AutoHashMap(SymbolId, VariantValueInfo),
     // Keeps a list of distinct types and their underlying type for later referencing, e.g. when casting
     distinct_types: std.AutoHashMap(SymbolId, Ty),
+    /// Types declared `Name :: opaque;` — incomplete by definition, so unsized.
+    opaque_types: std.AutoHashMap(SymbolId, void),
     /// Transparent type aliases: alias SymbolId → the aliased TypeRef. Resolved
     /// on demand in `typeFromRef` so the alias name is fully interchangeable.
     alias_refs: std.AutoHashMap(SymbolId, ast.TypeRef),
@@ -521,6 +523,7 @@ pub const TypeEnv = struct {
             .fn_sigs = std.AutoHashMap(SymbolId, FnSig).init(allocator),
             .variant_values = std.AutoHashMap(SymbolId, VariantValueInfo).init(allocator),
             .distinct_types = std.AutoHashMap(SymbolId, Ty).init(allocator),
+            .opaque_types = std.AutoHashMap(SymbolId, void).init(allocator),
             .alias_refs = std.AutoHashMap(SymbolId, ast.TypeRef).init(allocator),
             .expr_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .expr_symbols = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
@@ -547,6 +550,7 @@ pub const TypeEnv = struct {
         self.fn_sigs.deinit();
         self.variant_values.deinit();
         self.distinct_types.deinit();
+        self.opaque_types.deinit();
         self.alias_refs.deinit();
         self.expr_types.deinit();
         self.expr_symbols.deinit();
@@ -869,6 +873,7 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
             .function => .function,
             .interface_impl => unreachable,
             .system_library => unreachable,
+            .static_assert => unreachable,
         };
         const id = try table.insertLinked(allocator, table.root_scope, name, link, kind, item.span(), item.fileName(), item.isPublic());
         // An extern function links against its C symbol (the `#extern` 2nd arg),
@@ -1224,6 +1229,12 @@ const Checker = struct {
     /// paths without a redundant `else`.
     exhaustive_matches: std.AutoHashMap(usize, void) = undefined,
     exhaustive_matches_init: bool = false,
+    /// The `catch` expression that is a whole statement (`f() catch e { ... };`): its value is
+    /// thrown away, so its handler may run to its end.
+    discarded_catch: ?ast.NodeId = null,
+    /// The error names bound by the `catch` handlers being checked (innermost last). An error is
+    /// compared with a variant only through one of these.
+    catch_names: std.ArrayList([]const u8) = .empty,
 
     fn init(allocator: std.mem.Allocator, symbols: SymbolTable) Checker {
         return .{
@@ -1247,6 +1258,7 @@ const Checker = struct {
         self.diagnostics.deinit(self.allocator);
         if (self.constraint_decls_init) self.constraint_decls.deinit();
         if (self.exhaustive_matches_init) self.exhaustive_matches.deinit();
+        self.catch_names.deinit(self.allocator);
     }
 
     // Diagnostics
@@ -1591,6 +1603,15 @@ const Checker = struct {
             },
             .interface_impl => |impl| try self.checkInterfaceImpl(impl),
             .system_library => {},
+            // The condition is folded when the module is lowered; here it only has to
+            // type-check as a `bool`.
+            .static_assert => |decl| {
+                const ty = try self.inferExpr(decl.condition);
+                if (ty != .bool and ty != .unknown) {
+                    self.emitError(decl.condition.span, "an `#assert` condition must be a `bool`, found `{s}`", .{self.formatTy(ty)});
+                    return error.SemanticFailed;
+                }
+            },
         }
     }
 
@@ -1636,6 +1657,7 @@ const Checker = struct {
                         // Aliases are registered in the pre-pass and resolved on
                         // demand by typeFromRef — no layout of their own.
                         .alias => {},
+                        .opaque_type => try self.env.opaque_types.put(id, {}),
                         .struct_type => |strukt| {
                             if (strukt.type_params.len > 0) {
                                 // Generic struct — store as template, don't process fields yet.
@@ -1787,6 +1809,7 @@ const Checker = struct {
                 .import => {},
                 .interface_impl => unreachable,
                 .system_library => {},
+                .static_assert => {},
             }
         }
     }
@@ -2488,6 +2511,7 @@ const Checker = struct {
                     self.emitError(expr.span, "the result of `{s}` must be used (`#must_use`) — assign it or use `_ := …`", .{fname});
                     return error.SemanticFailed;
                 }
+                if (expr.kind == .catch_expr) self.discarded_catch = expr.id;
                 try self.checkExpr(expr);
             },
         }
@@ -2766,6 +2790,7 @@ const Checker = struct {
                     .wrap_sub => "-%",
                     .wrap_mul => "*%",
                 };
+                if (binary.op == .equal or binary.op == .not_equal) try self.checkErrorVariantOperand(binary, left, right);
                 const result: Ty = switch (binary.op) {
                     .equal, .not_equal => if ((left.isNumeric() and right.isNumeric()) or left == .error_ty or right == .error_ty or try self.compatible(left, right) or try self.compatible(right, left)) .bool else {
                         self.emitError(expr.span, "operator `{s}` cannot be applied to types `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
@@ -2829,8 +2854,20 @@ const Checker = struct {
                 try self.pushScope();
                 defer self.popScope();
                 try self.declareLocal(catch_expr.err_name, fallible.err.*);
+                try self.catch_names.append(self.allocator, catch_expr.err_name);
+                defer _ = self.catch_names.pop();
                 try self.checkBlock(catch_expr.handler);
-                break :blk fallible.ok.*;
+                // The handler produces no value. When the call does and the catch is used for it,
+                // falling off the end of the handler leaves the expression with nothing to be:
+                // the code after it would run on an undefined value. (A catch that is a whole
+                // statement discards the value, so its handler may simply end.)
+                const ok_ty = fallible.ok.*;
+                const value_discarded = self.discarded_catch != null and self.discarded_catch.? == expr.id;
+                if (ok_ty != .void and ok_ty != .unknown and !value_discarded and !blockDefinitelyReturns(self, catch_expr.handler)) {
+                    self.emitError(expr.span, "this `catch` handler can run to its end, but the call produces a `{s}`: end the handler with `return`, `fail`, `break` or `continue` (or use `??` for a fallback value)", .{self.formatTy(ok_ty)});
+                    return error.SemanticFailed;
+                }
+                break :blk ok_ty;
             },
             .call => |call| blk: {
                 const call_ty = try self.inferCall(call);
@@ -3040,22 +3077,7 @@ const Checker = struct {
             // `b.f(args)` where `f` is a fn-pointer struct field → an indirect
             // (thin) call through the stored function pointer.
             if (self.fieldTypeOpt(base_ty, fld.name)) |field_ty| {
-                if (field_ty == .fn_ptr) {
-                    const fp = field_ty.fn_ptr;
-                    for (call.args, 0..) |arg, i| {
-                        const arg_expr = switch (arg) {
-                            .positional => |e| e,
-                            .named => |n| n.value,
-                        };
-                        const arg_ty = try self.inferExpr(arg_expr);
-                        if (i < fp.params.len and !try self.compatible(arg_ty, fp.params[i])) {
-                            self.emitError(arg_expr.span, "argument {d}: expected `{s}`, found `{s}`", .{ i + 1, self.formatTy(fp.params[i]), self.formatTy(arg_ty) });
-                            return error.SemanticFailed;
-                        }
-                    }
-                    try self.env.expr_types.put(call.callee.id, field_ty);
-                    return fp.ret.*;
-                }
+                if (field_ty == .fn_ptr) return try self.checkFnPtrCall(call, field_ty);
             }
 
             // `zone_handle.free(ptr)` — a bump arena frees in bulk on zone exit,
@@ -3153,7 +3175,22 @@ const Checker = struct {
         const name = switch (call.callee.kind) {
             .ident => |n| n,
             .scope_access => |sa| coreRename(sa.member),
-            else => return .unknown,
+            // The `"{reg}"(value)` operands of an `asm` list are written as calls on a string;
+            // they belong to the asm lowering, not to a callee.
+            .string => return .unknown,
+            else => {
+                // A callee that is itself an expression — `table[i](x)`, `make()(x)`,
+                // `(addr as fn(i32) -> i32)(x)` — is a call through a function pointer.
+                const callee_ty = try self.inferExpr(call.callee.*);
+                return switch (callee_ty) {
+                    .fn_ptr => try self.checkFnPtrCall(call, callee_ty),
+                    .unknown => .unknown,
+                    else => {
+                        self.emitError(call.callee.span, "this expression is not a function; it has type `{s}`", .{self.formatTy(callee_ty)});
+                        return error.SemanticFailed;
+                    },
+                };
+            },
         };
 
         // Builtins live under `core::` — a bare call is an error pointing the user
@@ -3243,6 +3280,10 @@ const Checker = struct {
         };
         if (std.mem.eql(u8, name, "truncate_to")) return self.firstTypeArg(call) orelse error.SemanticFailed;
         if (std.mem.eql(u8, name, "sizeof")) return .usize;
+        if (std.mem.eql(u8, name, "align_of") or std.mem.eql(u8, name, "offset_of")) {
+            try self.checkLayoutQuery(call, name);
+            return .usize;
+        }
         // Value-returning atomics (`load` + read-modify-write + compare-exchange)
         // yield the pointee type of the first (pointer) argument.
         if (std.mem.eql(u8, name, "atomic_load") or std.mem.eql(u8, name, "atomic_add") or
@@ -3307,7 +3348,7 @@ const Checker = struct {
         // Unsafe builtins — must be called from within an `unsafe` block.
         if (std.mem.eql(u8, name, "ptr_from_int")) {
             try self.requireUnsafe(call.callee.span, name);
-            return self.firstTypeArg(call) orelse error.SemanticFailed;
+            return try self.requireTypeArg(call, name);
         }
         // slice_from_raw_parts(T, ptr: *T, len: usize) -> []T — build a slice
         // value from a raw pointer and length. The fundamental allocator
@@ -3315,7 +3356,7 @@ const Checker = struct {
         // addresses at least `len` valid, correctly-aligned `T` elements.
         if (std.mem.eql(u8, name, "slice_from_raw_parts")) {
             try self.requireUnsafe(call.callee.span, name);
-            const elem = self.firstTypeArg(call) orelse return error.SemanticFailed;
+            const elem = try self.requireTypeArg(call, name);
             return try self.sliceOf(elem);
         }
         if (std.mem.eql(u8, name, "volatile_store")) {
@@ -3324,7 +3365,7 @@ const Checker = struct {
         }
         if (std.mem.eql(u8, name, "unaligned_read")) {
             try self.requireUnsafe(call.callee.span, name);
-            return self.firstTypeArg(call) orelse error.SemanticFailed;
+            return try self.requireTypeArg(call, name);
         }
         if (std.mem.eql(u8, name, "asm")) {
             try self.requireUnsafe(call.callee.span, name);
@@ -3363,27 +3404,7 @@ const Checker = struct {
         const id = self.resolveSymbol(name) orelse {
             // Maybe it's a local function-pointer variable.
             if (self.lookupLocal(name)) |local_ty| switch (local_ty) {
-                .fn_ptr => |fp| {
-                    for (call.args, 0..) |arg, i| {
-                        const arg_expr = switch (arg) {
-                            .positional => |e| e,
-                            .named => |n| n.value,
-                        };
-                        const expected = if (i < fp.params.len) fp.params[i] else null;
-                        try self.checkNonEscapingArgument(arg_expr, expected);
-                        const arg_ty = try self.inferExpr(arg_expr);
-                        if (i < fp.params.len and !try self.compatible(arg_ty, fp.params[i])) {
-                            self.emitError(arg_expr.span, "argument {d}: expected `{s}`, found `{s}`", .{
-                                i + 1, self.formatTy(fp.params[i]), self.formatTy(arg_ty),
-                            });
-                            return error.SemanticFailed;
-                        }
-                    }
-                    // Record the callee's fn-pointer type so IR types the
-                    // (indirect) call's arguments from it.
-                    try self.env.expr_types.put(call.callee.id, local_ty);
-                    return fp.ret.*;
-                },
+                .fn_ptr => return try self.checkFnPtrCall(call, local_ty),
                 else => {},
             };
             // `@`-prefixed names are compiler/runtime builtins (`@panic`, …). The
@@ -3408,6 +3429,13 @@ const Checker = struct {
             return error.SemanticFailed;
         };
         if (self.symbols.symbol(id).kind != .function) {
+            // A global holding a function pointer is called like a local one.
+            if (self.symbols.symbol(id).kind == .global_var) {
+                if (self.env.get(id)) |global_ty| switch (global_ty) {
+                    .fn_ptr => return try self.checkFnPtrCall(call, global_ty),
+                    else => {},
+                };
+            }
             self.emitError(call.callee.span, "`{s}` is not a function", .{name});
             return error.SemanticFailed;
         }
@@ -5072,6 +5100,91 @@ const Checker = struct {
         };
     }
 
+    /// The variants of the error set `ty` names, in declaration order, or null when `ty`
+    /// is not an error set.
+    fn errorSetVariants(self: *Checker, ty: Ty) ?[]const ErrorVariantInfo {
+        return switch (ty) {
+            .error_set => |variants| variants,
+            .named => |id| blk: {
+                const type_layout = self.env.layouts.get(id) orelse break :blk null;
+                break :blk switch (type_layout.kind) {
+                    .error_set => |variants| variants,
+                    else => null,
+                };
+            },
+            else => null,
+        };
+    }
+
+    /// `err == .variant` / `err != .variant`: the bare `.variant` has no type of its own,
+    /// so it is read against the error set of the other operand and must name one of its
+    /// variants. (Without this a misspelt variant compared as garbage.)
+    fn checkErrorVariantOperand(self: *Checker, binary: ast.BinaryExpr, left: Ty, right: Ty) SemanticError!void {
+        const sides = [2]struct { variant: ast.Expr, other: Ty, other_expr: ast.Expr }{
+            .{ .variant = binary.right.*, .other = left, .other_expr = binary.left.* },
+            .{ .variant = binary.left.*, .other = right, .other_expr = binary.right.* },
+        };
+        for (sides) |side| {
+            const text = switch (side.variant.kind) {
+                .ident => |name| name,
+                else => continue,
+            };
+            if (text.len < 2 or text[0] != '.') continue;
+            const variants = self.errorSetVariants(side.other) orelse continue;
+            // The variants of an error are numbered by the function that raised it, so the
+            // comparison is only meaningful on the name `catch` bound; the same error handed
+            // on through a parameter or a copy would be read against the wrong numbering.
+            if (!self.isCaughtName(side.other_expr)) {
+                self.emitError(side.other_expr.span, "an error can be compared with a variant only through the name a `catch` gave it, where it was caught", .{});
+                return error.SemanticFailed;
+            }
+            const name = text[1..];
+            for (variants) |v| if (std.mem.eql(u8, v.name, name)) return;
+            self.emitError(side.variant.span, "`{s}` has no error variant `.{s}`", .{ self.formatTy(side.other), name });
+            return error.SemanticFailed;
+        }
+    }
+
+    /// Is `expr` the name bound by an enclosing `catch` handler?
+    fn isCaughtName(self: *Checker, expr: ast.Expr) bool {
+        const name = switch (expr.kind) {
+            .ident => |n| n,
+            else => return false,
+        };
+        for (self.catch_names.items) |bound| if (std.mem.eql(u8, bound, name)) return true;
+        return false;
+    }
+
+    /// A call through a function-pointer variable, a local or a global: check the
+    /// arguments against the pointer's parameter types, remember the pointer type so the IR
+    /// types the (indirect) call's arguments from it, and return the result type.
+    fn checkFnPtrCall(self: *Checker, call: ast.CallExpr, fn_ty: Ty) SemanticError!Ty {
+        const fp = fn_ty.fn_ptr;
+        if (call.args.len != fp.params.len) {
+            self.emitError(call.callee.span, "this function pointer takes {d} argument(s), but {d} were provided", .{
+                fp.params.len, call.args.len,
+            });
+            return error.SemanticFailed;
+        }
+        for (call.args, 0..) |arg, i| {
+            const arg_expr = switch (arg) {
+                .positional => |e| e,
+                .named => |n| n.value,
+            };
+            const expected = if (i < fp.params.len) fp.params[i] else null;
+            try self.checkNonEscapingArgument(arg_expr, expected);
+            const arg_ty = try self.inferExpr(arg_expr);
+            if (i < fp.params.len and !try self.compatible(arg_ty, fp.params[i])) {
+                self.emitError(arg_expr.span, "argument {d}: expected `{s}`, found `{s}`", .{
+                    i + 1, self.formatTy(fp.params[i]), self.formatTy(arg_ty),
+                });
+                return error.SemanticFailed;
+            }
+        }
+        try self.env.expr_types.put(call.callee.id, fn_ty);
+        return fp.ret.*;
+    }
+
     /// Is `ty` (or what it points to) a `#packed` struct?
     fn isPackedStruct(self: *Checker, ty: Ty) bool {
         const type_id = switch (ty) {
@@ -5189,6 +5302,98 @@ const Checker = struct {
                 return error.SemanticFailed;
             },
         };
+    }
+
+    /// Why a named type has no layout `core::align_of` / `core::offset_of` can report, or
+    /// null when it does (or when it is not a named type, which the caller handles). Opaque
+    /// types are incomplete by definition; enums, error sets and interfaces are not part of
+    /// the guaranteed layout (a payload enum is a tag plus a byte array, an implementation
+    /// detail that may change), so a program cannot rely on them.
+    fn unsizedReason(self: *Checker, ty: Ty) ?[]const u8 {
+        const id = switch (ty) {
+            .named => |n| n,
+            else => return null,
+        };
+        if (self.env.opaque_types.contains(id)) return "it is opaque, so it has no known size";
+        // A type not yet registered (declared later in the file, or a distinct/alias)
+        // is left to the lowering, which has the complete picture.
+        const type_layout = self.env.layouts.get(id) orelse return null;
+        return switch (type_layout.kind) {
+            .struct_type => null,
+            .variant_type => "the layout of an enum is not part of Gabbro's guaranteed layout",
+            .error_set => "an error set has no guaranteed layout",
+            else => "it has no guaranteed layout",
+        };
+    }
+
+    /// `core::align_of(T)` / `core::offset_of(T, "field")`. The type and the field name
+    /// are static, so both are validated here rather than discovered at lowering:
+    /// `align_of` takes one type, `offset_of` a struct type and a string literal naming
+    /// one of its fields.
+    fn checkLayoutQuery(self: *Checker, call: ast.CallExpr, name: []const u8) SemanticError!void {
+        const is_offset = std.mem.eql(u8, name, "offset_of");
+        const want: usize = if (is_offset) 2 else 1;
+        if (call.args.len != want) {
+            if (is_offset)
+                self.emitError(call.callee.span, "`core::offset_of` takes a struct type and a field name: `core::offset_of(T, \"field\")`", .{})
+            else
+                self.emitError(call.callee.span, "`core::align_of` takes one type: `core::align_of(T)`", .{});
+            return error.SemanticFailed;
+        }
+        if (!is_offset) {
+            if (self.firstTypeArg(call)) |ty| {
+                if (self.unsizedReason(ty)) |why| {
+                    self.emitError(call.args[0].positional.span, "cannot take the alignment of `{s}`: {s}", .{ self.formatTy(ty), why });
+                    return error.SemanticFailed;
+                }
+            }
+            return;
+        }
+        const field_expr = switch (call.args[1]) {
+            .positional => |e| e,
+            .named => |n| n.value,
+        };
+        const field_name = switch (field_expr.kind) {
+            .string => |text| trimQuotes(text),
+            else => {
+                self.emitError(field_expr.span, "the field of `core::offset_of` must be a string literal", .{});
+                return error.SemanticFailed;
+            },
+        };
+        const ty = self.firstTypeArg(call) orelse return;
+        const type_id = switch (ty) {
+            .named => |id| id,
+            .unknown => return,
+            else => {
+                self.emitError(call.args[0].positional.span, "`core::offset_of` needs a struct type, found `{s}`", .{self.formatTy(ty)});
+                return error.SemanticFailed;
+            },
+        };
+        const layout = self.env.layouts.get(type_id) orelse return;
+        switch (layout.kind) {
+            .struct_type => |fields| {
+                for (fields) |field| if (std.mem.eql(u8, field.name, field_name)) return;
+                self.emitError(field_expr.span, "no field `{s}` in struct `{s}`", .{ field_name, self.formatTy(ty) });
+                return error.SemanticFailed;
+            },
+            else => {
+                self.emitError(call.args[0].positional.span, "`core::offset_of` needs a struct type, found `{s}`", .{self.formatTy(ty)});
+                return error.SemanticFailed;
+            },
+        }
+    }
+
+    /// The type named by a builtin's first argument, or a diagnostic saying it is not one.
+    /// (Only a pointer to a single name or keyword, `*Chunk` / `*u8`, is read as a type in an
+    /// argument; anything else, such as `**Chunk`, is an expression.)
+    fn requireTypeArg(self: *Checker, call: ast.CallExpr, builtin_name: []const u8) SemanticError!Ty {
+        if (self.firstTypeArg(call)) |ty| return ty;
+        const span = if (call.args.len > 0) switch (call.args[0]) {
+            .positional => |e| e.span,
+            .named => |n| n.value.span,
+        } else call.callee.span;
+        self.emitError(span, "the first argument of `{s}` must be a type; a pointer type here is written `*T` (one level), so name a pointer-to-pointer through an alias", .{builtin_name});
+        return error.SemanticFailed;
     }
 
     fn firstTypeArg(self: *Checker, call: ast.CallExpr) ?Ty {
@@ -5848,7 +6053,7 @@ fn isCoreScalarBuiltin(name: []const u8) bool {
 /// `abort` runtime intrinsics and the compiler-internal `__str_cat`/`__build_*`.
 fn isMigratedBuiltin(name: []const u8) bool {
     inline for (.{
-        "sizeof",        "type_info",      "type_name",     "typeid_of", "type_id",
+        "sizeof",        "align_of",       "offset_of",    "type_info", "type_name", "typeid_of", "type_id",
         "truncate_to",   "narrow",         "slice_raw",     "any",
         "slice_from_raw_parts", "ptr_from_int", "unaligned_read", "volatile_store",
         "atomic_load",   "atomic_store",   "asm",           "reject",    "require",
@@ -5864,7 +6069,7 @@ fn isBuiltinValue(name: []const u8) bool {
     inline for (.{
         "truncate_to", "ptr_from_int",   "volatile_store",
         "slice_from_raw_parts",
-        "sizeof",      "unaligned_read", "asm",
+        "sizeof",      "align_of",       "offset_of",     "unaligned_read", "asm",
         "atomic_load", "atomic_store",   "volatile",
         "atomic_add",  "atomic_sub",     "atomic_and",  "atomic_or", "atomic_xor",
         "atomic_exchange", "atomic_cas", "atomic_fence", "atomic_max", "atomic_min",

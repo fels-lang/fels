@@ -1,0 +1,170 @@
+// Comparing a caught error with a variant (`e == .variant`, `e != .variant`, and
+// `if e == .variant |payload|`). The comparison used to ignore which variant it named: it
+// was true or false for every variant at once. Covers a set with several variants, two
+// sets that share a variant name at different positions, payloads, inline sets, nested
+// catches, and the same code evaluated by the comptime VM. Returns 42 on success; any
+// other value names the failed check.
+
+Wide :: errors { first, second, third, fourth }
+
+// `shared` is variant 1 here and variant 2 in Other, so the position is not the name.
+Other :: errors { local, shared, extra }
+Third :: errors { shared, another }
+
+Payload :: errors { plain, code: i32, big: i64, tail }
+
+raise_wide :: fn(k: i32) -> i32 ! Wide {
+    if k == 1 { fail .first; }
+    if k == 2 { fail .second; }
+    if k == 3 { fail .third; }
+    if k == 4 { fail .fourth; }
+    return 100 + k;
+}
+
+raise_other :: fn(k: i32) -> i32 ! Other {
+    if k == 1 { fail .local; }
+    if k == 2 { fail .shared; }
+    if k == 3 { fail .extra; }
+    return 100 + k;
+}
+
+raise_third :: fn(k: i32) -> i32 ! Third {
+    if k == 1 { fail .shared; }
+    if k == 2 { fail .another; }
+    return 100 + k;
+}
+
+raise_payload :: fn(k: i32) -> i32 ! Payload {
+    if k == 1 { fail .plain; }
+    if k == 2 { fail .code { 77 }; }
+    if k == 3 { fail .big { 123456789012 }; }
+    if k == 4 { fail .tail; }
+    return 100 + k;
+}
+
+// Which Wide variant is it? 1..4, 0 if none matched, 9 if it succeeded.
+which_wide :: fn(k: i32) -> i32 {
+    v := raise_wide(k) catch e {
+        if e == .first { return 1; }
+        if e == .second { return 2; }
+        if e == .third { return 3; }
+        if e == .fourth { return 4; }
+        return 0;
+    };
+    return 9;
+}
+
+// The same through `!=`: true for everything except the named variant.
+not_second :: fn(k: i32) -> i32 {
+    v := raise_wide(k) catch e {
+        if e != .second { return 1; }
+        return 0;
+    };
+    return 9;
+}
+
+which_other :: fn(k: i32) -> i32 {
+    v := raise_other(k) catch e {
+        if e == .local { return 1; }
+        if e == .shared { return 2; }
+        if e == .extra { return 3; }
+        return 0;
+    };
+    return 9;
+}
+
+which_third :: fn(k: i32) -> i32 {
+    v := raise_third(k) catch e {
+        if e == .shared { return 1; }
+        if e == .another { return 2; }
+        return 0;
+    };
+    return 9;
+}
+
+which_payload :: fn(k: i32) -> i32 {
+    v := raise_payload(k) catch e {
+        if e == .code |c| { return c; }                  // 77
+        if e == .big |b| { return 12; }
+        if e == .plain { return 1; }
+        if e == .tail { return 2; }
+        return 0;
+    };
+    return 9;
+}
+
+// A catch inside a catch handler: each `e` is resolved against its own set.
+nested :: fn(a: i32, b: i32) -> i32 {
+    v := raise_wide(a) catch e {
+        if e == .second {
+            w := raise_other(b) catch e {
+                if e == .shared { return 20; }
+                return 21;
+            };
+            return 22;
+        }
+        if e == .third { return 30; }
+        return 31;
+    };
+    return 9;
+}
+
+// The name `e` reused for something that is not an error: ordinary enum equality still works.
+// (Written `Dir.south`; the bare `.south` form of an enum comparison is a separate known gap.)
+Dir :: enum { north, south }
+not_an_error :: fn(d: Dir) -> i32 {
+    e := d;
+    if e == Dir.south { return 1; }
+    return 0;
+}
+
+// The same logic, evaluated at compile time by the comptime VM.
+CT_WIDE_3 :: #run which_wide(3);
+CT_WIDE_4 :: #run which_wide(4);
+CT_OTHER_2 :: #run which_other(2);
+CT_PAYLOAD :: #run which_payload(2);
+CT_THIRD_1 :: #run which_third(1);        // `shared` is variant 1 of Third, 2 of Other
+CT_THIRD_2 :: #run which_third(2);
+
+#entry
+main :: fn() -> i32 {
+    // several variants in one set
+    if which_wide(1) != 1 { return 1; }
+    if which_wide(2) != 2 { return 2; }
+    if which_wide(3) != 3 { return 3; }
+    if which_wide(4) != 4 { return 4; }
+    if which_wide(5) != 9 { return 5; }                  // no error: the handler does not run
+    if not_second(1) != 1 || not_second(3) != 1 || not_second(4) != 1 { return 6; }
+    if not_second(2) != 0 { return 7; }
+
+    // a variant name that appears in more than one set is told apart by position in ITS set
+    if which_other(1) != 1 { return 8; }
+    if which_other(2) != 2 { return 9; }
+    if which_other(3) != 3 { return 10; }
+    if which_third(1) != 1 { return 11; }
+    if which_third(2) != 2 { return 12; }
+
+    // payload variants, with and without a payload binding
+    if which_payload(1) != 1 { return 13; }
+    if which_payload(2) != 77 { return 14; }
+    if which_payload(3) != 12 { return 15; }
+    if which_payload(4) != 2 { return 16; }
+
+    // nested handlers
+    if nested(2, 2) != 20 { return 20; }
+    if nested(2, 1) != 21 { return 21; }
+    if nested(3, 2) != 30 { return 22; }
+    if nested(4, 2) != 31 { return 23; }
+    if nested(1, 1) != 31 { return 24; }
+    if not_an_error(Dir.south) != 1 { return 25; }
+    if not_an_error(Dir.north) != 0 { return 26; }
+
+    // the comptime VM agrees with the compiled code
+    if CT_WIDE_3 != 3 { return 27; }
+    if CT_WIDE_4 != 4 { return 28; }
+    if CT_OTHER_2 != 2 { return 29; }
+    if CT_PAYLOAD != 77 { return 30; }
+    if CT_THIRD_1 != 1 { return 31; }
+    if CT_THIRD_2 != 2 { return 32; }
+    return 42;
+}

@@ -388,10 +388,98 @@ flags:   u32 = 0u32;
 bump :: fn() { counter += 1; }   // read + write from anywhere
 ```
 
-The initializer must be a compile-time constant (it lives in static storage, like
-a C `static`). A global's type is written explicitly; an immutable `::` constant
+The initializer lives in static storage, like a C `static`: it is data in the image,
+laid out by the compiler and placed by the linker, and nothing runs at startup to
+put it there. A global's type is written explicitly; an immutable `::` constant
 infers its type from the initializer. Reads load the current value; `=` and the
 compound assignments (`+=`, …) store to it.
+
+#### Static aggregates
+
+A global is not limited to a scalar. Its initializer can be any of these, nested to
+any depth:
+
+| Initializer | Type of the global (or of the field / element) |
+|---|---|
+| a constant expression — a literal, other constants, `core::sizeof`, a `#run` call | any integer, `f32`/`f64`, `bool`, `[]const u8` (a string) |
+| `.{ ... }`, positional or named | a struct |
+| `.{ ... }` | an array |
+| `.{}` | anything above: a struct with every field defaulted or zero, an array of zeros, an empty slice |
+| the name of a top-level function | a function pointer — `fn(...)` field, `extern fn(...)`, or a plain `fn(...)` |
+| `&OTHER` — the address of another top-level global | a pointer `*T` or `?*T` |
+| `null` | a pointer or an optional |
+| `.variant` or `Enum.variant`, for a variant with no payload | an enum |
+| `#run call()` that returns the whole value | a struct, an array, an enum value, a function pointer, or a string — also as one field or element of a literal |
+
+```gabbro
+Point :: struct { x: i32, y: i32 }
+Vtbl  :: struct { add: fn(i32, i32) -> i32, id: u32 }
+Node  :: struct { v: i32, next: *Node }
+Mode  :: enum { fast, slow }
+
+add :: fn(a: i32, b: i32) -> i32 { return a + b; }
+dbl :: fn(x: i32) -> i32 { return x * 2; }
+
+ORIGIN:   Point                    = .{ 3, 4 };
+PRIMES:   [5]u32                   = .{ 2u32, 3u32, 5u32, 7u32, 11u32 };
+VT:       Vtbl                     = .{ add, 7u32 };
+HANDLERS: [2]extern fn(i32) -> i32 = .{ dbl, dbl };
+A:        Node                     = .{ 1, &B };      // the two refer to each other;
+B:        Node                     = .{ 2, &A };      // the order they are written in does not matter
+MODE:     Mode                     = .slow;
+
+use :: fn() -> i32 { return VT.add(1, 2) + HANDLERS[1](4); }   // calls through the tables
+```
+
+A literal is read exactly as the same literal is for a local variable. A named literal
+gives every omitted field its default and is an error if one has none. A positional (or
+empty) literal that stops short gives the fields after it their defaults, up to the first
+field that has none, and zero from there on — put defaulted fields last, as for trailing
+default arguments. An array literal is zero past its last element. The value is checked
+against the type, and a mistake is a compile error that points at the offending value: a
+number that does not fit (`300` for a `u8`), a string for an integer, a field that does not
+exist or is given twice, a field with no default left out, too many initializers, a function
+that is generic or a lambda, a pointer to anything but a top-level global. `gabbro check` reports
+these like any type error; a value that only the compile-time evaluator can compute (a `#run`) is
+checked when the program is built.
+
+Not supported yet: an enum variant that carries a payload, an optional that is not a
+pointer holding anything but `null`, the address of an element or a field (`&TABLE[2]`,
+`&OBJ.id`; take `&TABLE` or `&OBJ`), a slice of anything but a string. There is no
+uninitialised form; write `.{}` for zeros.
+
+A table can also be built by the compiler instead of typed out. `#run` runs a function at
+compile time, and what it returns is the initial value — data in the image, like a literal:
+
+```gabbro
+CRC: [256]u32 = #run make_crc_table();    // built once, by the compiler, on the comptime VM
+ORIGIN :: #run find_origin();             // `::` takes the type of the call
+```
+
+Only data can come back (a pointer into compile-time memory, a payload variant or a lambda is
+refused, with the place in the value that is wrong); see [09_comptime](09_comptime.md#data-at-compile-time).
+
+Code that runs at compile time (`#run`, `#assert`) can read static data: it sees a global's
+*initial value* — a struct, an array, an enum value, a function pointer — and can index it, take
+a field, call through it and take the address of an element. It cannot change it: a write is a
+compile error, because the image is what runs and a write would not be in it. Not readable yet is
+a global that holds the address of another global and a global that a `#run` computes; reading one
+stops that `#run` and names the global.
+
+The function-pointer forms differ in what they hold. A `fn(...)` *field of a struct*, and an
+`extern fn(...)`, is the bare code address — what a C structure of function pointers holds,
+so a `Vtbl` like the one above has the layout a C header gives it. A plain `fn(...)` global
+is a closure `{ code, environment }`; stored statically it is the function with no
+environment. Either is called where it stands: `F(x)`, `VT.add(1, 2)`, `HANDLERS[i](x)`.
+
+An address stored in a global is a number the linker fixes. An executable linked by `gabld`
+is always loaded at its own base address and holds the final value. A DLL, and an executable
+linked by LLD (which randomizes the base address), carries a base-relocation table that the
+loader applies, so the stored addresses follow the image wherever it lands; `gabld` hands any
+DLL that holds an address to LLD for that reason.
+
+Such a global is **exported** like a function with `#export` — see
+[11_c_interop](11_c_interop.md#exporting-data).
 
 ### Variables (Inferred Type)
 

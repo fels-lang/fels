@@ -1,0 +1,206 @@
+// `#run` builds a whole table, struct or enum at compile time, and what it returns is the
+// initial value of a global: data in the image, nothing computed at startup.
+//
+// `main` runs the same functions on the machine and compares them with the tables the compiler
+// built on the comptime VM. Two engines, one source: if the VM ever computes a different table
+// from the machine (a shift that does not wrap, a cast that does not truncate, a copy that
+// aliases) a check here fails. It returns 42 when every table is right.
+
+Point :: struct { x: i32, y: i32 }
+Mode  :: enum { fast, slow, off }
+Rec   :: struct { id: u32, name: []const u8, pos: Point, tags: [3]u8, mode: Mode, scale: f64, cb: fn(i32) -> i32 }
+Wrap  :: struct { p: Point, sq: [4]u32, n: i32 }
+Flags :: struct { on: bool, ratio: f32, big: u64 }
+
+dbl :: fn(x: i32) -> i32 { return x * 2; }
+
+make_squares :: fn() -> [8]u32 {
+    t: [8]u32 = .{};
+    i := 0usize;
+    while i < 8 {
+        t[i] = (i * i) as u32;
+        i += 1;
+    }
+    return t;
+}
+
+// The standard CRC-32 table.
+make_crc :: fn() -> [256]u32 {
+    t: [256]u32 = .{};
+    n := 0u32;
+    while n < 256 {
+        c := n;
+        k := 0;
+        while k < 8 {
+            if (c & 1) != 0 {
+                c = 0xEDB88320u32 ^ (c >> 1);
+            } else {
+                c = c >> 1;
+            }
+            k += 1;
+        }
+        t[n as usize] = c;
+        n += 1;
+    }
+    return t;
+}
+
+// A xorshift generator: the left shifts drop bits off the top of a u32, so a VM that kept
+// them would feed them back in through the right shift and produce different numbers.
+make_xorshift :: fn() -> [16]u32 {
+    t: [16]u32 = .{};
+    x: u32 = 2463534242u32;
+    i := 0usize;
+    while i < 16 {
+        x = x ^ (x << 13u32);
+        x = x ^ (x >> 17u32);
+        x = x ^ (x << 5u32);
+        t[i] = x;
+        i += 1;
+    }
+    return t;
+}
+
+// FNV-1a over a few bytes, with wrapping multiplication.
+make_fnv :: fn() -> [4]u32 {
+    t: [4]u32 = .{};
+    seed := 0usize;
+    while seed < 4 {
+        h: u32 = 2166136261u32;
+        j := 0usize;
+        while j < 3 {
+            h = (h ^ ((seed * 7 + j) as u32)) *% 16777619u32;
+            j += 1;
+        }
+        t[seed] = h;
+        seed += 1;
+    }
+    return t;
+}
+
+make_points :: fn() -> [3]Point {
+    p: [3]Point = .{};
+    i := 0usize;
+    while i < 3 {
+        p[i] = .{ (i * 10) as i32, (i * 10 + 1) as i32 };
+        i += 1;
+    }
+    return p;
+}
+
+make_grid :: fn() -> [3][3]i32 {
+    return .{ .{ 0, 1, 2 }, .{ 3, 4, 5 }, .{ 6, 7, 8 } };
+}
+
+make_bytes :: fn() -> [10]u8 {
+    b: [10]u8 = .{};
+    b[0] = 1u8;
+    b[1] = 2u8;
+    wide: u32 = 300u32;
+    b[2] = wide as u8; // keeps the low 8 bits: 44
+    return b;
+}
+
+make_name :: fn() -> []const u8 {
+    buf: [4]u8 = .{ 97u8, 98u8, 99u8, 100u8 };
+    return buf[:];
+}
+
+make_point :: fn() -> Point { return .{ 6, 7 }; }
+make_four :: fn() -> [4]u32 { return .{ 10, 20, 30, 40 }; }
+make_mode :: fn() -> Mode { return .off; }
+make_flags :: fn() -> Flags { return .{ true, 0.25, 0xFFFFFFFFFFu64 }; }
+make_rec :: fn() -> Rec { return .{ 9, "nine", .{ 1, 2 }, .{ 3, 4, 5 }, .slow, 0.5, dbl }; }
+pick :: fn() -> fn(i32) -> i32 { return dbl; }
+
+SQUARES: [8]u32    = #run make_squares();
+CRC:     [256]u32  = #run make_crc();
+XOR:     [16]u32   = #run make_xorshift();
+FNV:     [4]u32    = #run make_fnv();
+POINTS:  [3]Point  = #run make_points();
+GRID:    [3][3]i32 = #run make_grid();
+BYTES:   [10]u8    = #run make_bytes();
+NAME:    []const u8 = #run make_name();
+P:       Point     = #run make_point();
+M:       Mode      = #run make_mode();
+FLAGS:   Flags     = #run make_flags();
+R:       Rec       = #run make_rec();
+PICKED:  fn(i32) -> i32 = #run pick();
+W:       Wrap      = .{ #run make_point(), #run make_four(), 5 };
+SQ2 :: #run make_squares();
+P2  :: #run make_point();
+
+main :: fn() -> i32 {
+    fresh_squares := make_squares();
+    i := 0usize;
+    while i < 8 {
+        if SQUARES[i] != fresh_squares[i] { return 1; }
+        if SQ2[i] != fresh_squares[i] { return 2; }
+        i += 1;
+    }
+
+    fresh_crc := make_crc();
+    i = 0;
+    while i < 256 {
+        if CRC[i] != fresh_crc[i] { return 3; }
+        i += 1;
+    }
+    if CRC[1] != 0x77073096u32 { return 4; }
+    if CRC[255] != 0x2D02EF8Du32 { return 5; }
+
+    fresh_xor := make_xorshift();
+    i = 0;
+    while i < 16 {
+        if XOR[i] != fresh_xor[i] { return 6; }
+        i += 1;
+    }
+
+    fresh_fnv := make_fnv();
+    i = 0;
+    while i < 4 {
+        if FNV[i] != fresh_fnv[i] { return 7; }
+        i += 1;
+    }
+
+    fresh_points := make_points();
+    i = 0;
+    while i < 3 {
+        if POINTS[i].x != fresh_points[i].x || POINTS[i].y != fresh_points[i].y { return 8; }
+        i += 1;
+    }
+
+    fresh_grid := make_grid();
+    r := 0usize;
+    while r < 3 {
+        c := 0usize;
+        while c < 3 {
+            if GRID[r][c] != fresh_grid[r][c] { return 9; }
+            c += 1;
+        }
+        r += 1;
+    }
+
+    fresh_bytes := make_bytes();
+    i = 0;
+    while i < 10 {
+        if BYTES[i] != fresh_bytes[i] { return 10; }
+        i += 1;
+    }
+
+    if NAME.len != 4 || NAME[0] != 97u8 || NAME[3] != 100u8 { return 11; }
+    if P.x != 6 || P.y != 7 || P2.x != 6 || P2.y != 7 { return 12; }
+    match M {
+        .off => {},
+        else => { return 13; },
+    }
+    if !FLAGS.on || FLAGS.ratio != 0.25 || FLAGS.big != 0xFFFFFFFFFFu64 { return 14; }
+    if R.id != 9 || R.name.len != 4 || R.pos.y != 2 || R.tags[2] != 5 || R.scale != 0.5 { return 15; }
+    match R.mode {
+        .slow => {},
+        else => { return 16; },
+    }
+    if R.cb(21) != 42 { return 17; }
+    if PICKED(4) != 8 { return 18; }
+    if W.p.x != 6 || W.sq[3] != 40 || W.n != 5 { return 19; }
+    return 42;
+}

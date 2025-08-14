@@ -1,0 +1,156 @@
+// std.bytes: fixed-width integer reads and writes at an explicit offset. Checks known byte
+// patterns at aligned and odd offsets, both byte orders, the bounds rule (always checked,
+// nothing read or written on failure, no overflow for a huge offset), write isolation,
+// integer boundary values, and agreement with the unchecked `core::unaligned_read`.
+// Returns 42 on success; any other value names the failed check.
+#import std.bytes as bytes;
+#import std.bytes.{ read_u16_be };         // by name, so it also reads as a method
+
+// buf = 00 11 22 33 44 55 66 77 88 99 AA BB CC DD EE FF
+fill_pattern :: fn(b: []u8) {
+    i := 0usize;
+    while i < 16usize { b[i] = (i * 17usize) as u8; i += 1usize; }
+}
+
+// Reports whether a read at `off` is rejected. (`catch` must leave the expression, so
+// each probe is its own function.)
+rejects_u16 :: fn(s: []const u8, off: usize) -> bool {
+    v := bytes::read_u16_le(s, off) catch e { return true; };
+    return false;
+}
+rejects_u32 :: fn(s: []const u8, off: usize) -> bool {
+    v := bytes::read_u32_be(s, off) catch e { return true; };
+    return false;
+}
+rejects_u64 :: fn(s: []const u8, off: usize) -> bool {
+    v := bytes::read_u64_le(s, off) catch e { return true; };
+    return false;
+}
+rejects_write16 :: fn(s: []u8, off: usize) -> bool {
+    bytes::write_u16_be(s, off, 0xFFFFu16) catch e { return true; };
+    return false;
+}
+rejects_write64 :: fn(s: []u8, off: usize) -> bool {
+    bytes::write_u64_le(s, off, 0xFFFFFFFFFFFFFFFFu64) catch e { return true; };
+    return false;
+}
+
+#entry
+main :: fn() -> i32 {
+    buf: [16]u8 = .{};
+    fill_pattern(buf[:]);
+    s: []const u8 = buf[:];
+
+    // ---- known patterns, aligned (offset 0) ----
+    r16le := bytes::read_u16_le(s, 0usize) catch e { return 1; };
+    if r16le != 0x1100u16 { return 2; }
+    r16be := bytes::read_u16_be(s, 0usize) catch e { return 3; };
+    if r16be != 0x0011u16 { return 4; }
+    r32le := bytes::read_u32_le(s, 0usize) catch e { return 5; };
+    if r32le != 0x33221100u32 { return 6; }
+    r32be := bytes::read_u32_be(s, 0usize) catch e { return 7; };
+    if r32be != 0x00112233u32 { return 8; }
+    r64le := bytes::read_u64_le(s, 0usize) catch e { return 9; };
+    if r64le != 0x7766554433221100u64 { return 10; }
+    r64be := bytes::read_u64_be(s, 0usize) catch e { return 11; };
+    if r64be != 0x0011223344556677u64 { return 12; }
+
+    // ---- odd offsets: no alignment is assumed ----
+    o16 := bytes::read_u16_le(s, 1usize) catch e { return 13; };
+    if o16 != 0x2211u16 { return 14; }
+    o32 := bytes::read_u32_be(s, 1usize) catch e { return 15; };
+    if o32 != 0x11223344u32 { return 16; }
+    o64 := bytes::read_u64_le(s, 3usize) catch e { return 17; };
+    if o64 != 0xAA99887766554433u64 { return 18; }
+    o64be := bytes::read_u64_be(s, 3usize) catch e { return 19; };
+    if o64be != 0x33445566778899AAu64 { return 20; }
+    one := bytes::read_u8(s, 15usize) catch e { return 21; };
+    if one != 0xFFu8 { return 22; }
+
+    // ---- the last offset that fits, and the first that does not ----
+    last16 := bytes::read_u16_le(s, 14usize) catch e { return 23; };
+    if last16 != 0xFFEEu16 { return 24; }
+    last32 := bytes::read_u32_be(s, 12usize) catch e { return 25; };
+    if last32 != 0xCCDDEEFFu32 { return 26; }
+    last64 := bytes::read_u64_le(s, 8usize) catch e { return 27; };
+    if last64 != 0xFFEEDDCCBBAA9988u64 { return 28; }
+    if !rejects_u16(s, 15usize) { return 29; }
+    if !rejects_u32(s, 13usize) { return 30; }
+    if !rejects_u64(s, 9usize) { return 31; }
+    if !rejects_u16(s, 16usize) { return 32; }               // offset == len
+    if !rejects_u64(s, 16usize) { return 33; }
+    if !rejects_u16(s, 0xFFFFFFFFFFFFFFFFusize) { return 34; }   // no overflow in off + n
+    if !rejects_u64(s, 0xFFFFFFFFFFFFFFF9usize) { return 35; }
+    if !rejects_u32(s, 0xFFFFFFFFFFFFFFFEusize) { return 36; }
+
+    // ---- empty and short slices ----
+    empty: []const u8 = buf[0..0];
+    if !rejects_u16(empty, 0usize) { return 37; }
+    short: []const u8 = buf[0..3];
+    if !rejects_u32(short, 0usize) { return 38; }
+    ok3 := bytes::read_u16_le(short, 1usize) catch e { return 39; };
+    if ok3 != 0x2211u16 { return 40; }
+
+    // ---- a sub-slice: offsets are relative to ITS start ----
+    sub: []const u8 = buf[5..13];
+    sv := bytes::read_u32_le(sub, 0usize) catch e { return 41; };
+    if sv != 0x88776655u32 { return 42 + 1; }                  // bytes 55 66 77 88
+    if !rejects_u64(sub, 1usize) { return 44; }
+
+    // ---- method (UFCS) form ----
+    m := s.read_u16_be(2usize) catch e { return 45; };
+    if m != 0x2233u16 { return 46; }
+
+    // ---- writes: right bytes, neighbours untouched ----
+    w: [12]u8 = .{};
+    j := 0usize;
+    while j < 12usize { w[j] = 0xA5u8; j += 1usize; }
+    bytes::write_u32_le(w[:], 3usize, 0x01020304u32) catch e { return 47; };
+    if w[2] != 0xA5u8 || w[3] != 0x04u8 || w[4] != 0x03u8 || w[5] != 0x02u8 || w[6] != 0x01u8 || w[7] != 0xA5u8 { return 48; }
+    bytes::write_u16_be(w[:], 8usize, 0xABCDu16) catch e { return 49; };
+    if w[7] != 0xA5u8 || w[8] != 0xABu8 || w[9] != 0xCDu8 || w[10] != 0xA5u8 { return 50; }
+    bytes::write_u8(w[:], 11usize, 0x7Eu8) catch e { return 51; };
+    if w[11] != 0x7Eu8 { return 52; }
+
+    // ---- a failed write changes nothing ----
+    before: [12]u8 = .{};
+    k := 0usize;
+    while k < 12usize { before[k] = w[k]; k += 1usize; }
+    if !rejects_write16(w[:], 11usize) { return 53; }
+    if !rejects_write64(w[:], 5usize) { return 54; }
+    if !rejects_write64(w[:], 0xFFFFFFFFFFFFFFFFusize) { return 55; }
+    k = 0usize;
+    while k < 12usize { if w[k] != before[k] { return 56; } k += 1usize; }
+
+    // ---- boundary values round-trip in both orders ----
+    z: [8]u8 = .{};
+    bytes::write_u64_be(z[:], 0usize, 0x8000000000000001u64) catch e { return 57; };
+    if z[0] != 0x80u8 || z[7] != 0x01u8 { return 58; }
+    back := bytes::read_u64_be(z[:], 0usize) catch e { return 59; };
+    if back != 0x8000000000000001u64 { return 60; }
+    bytes::write_u32_le(z[:], 2usize, 0xFFFFFFFFu32) catch e { return 61; };
+    back32 := bytes::read_u32_le(z[:], 2usize) catch e { return 62; };
+    if back32 != 0xFFFFFFFFu32 { return 63; }
+    bytes::write_u16_le(z[:], 0usize, 0u16) catch e { return 64; };
+    back16 := bytes::read_u16_le(z[:], 0usize) catch e { return 65; };
+    if back16 != 0u16 { return 66; }
+    bytes::write_u64_le(z[:], 0usize, 0xFFFFFFFFFFFFFFFFu64) catch e { return 67; };
+    backmax := bytes::read_u64_le(z[:], 0usize) catch e { return 68; };
+    if backmax != 0xFFFFFFFFFFFFFFFFu64 { return 69; }
+
+    // ---- little- and big-endian are byte reversals of each other ----
+    bytes::write_u32_le(z[:], 0usize, 0x12345678u32) catch e { return 70; };
+    swapped := bytes::read_u32_be(z[:], 0usize) catch e { return 71; };
+    if swapped != 0x78563412u32 { return 72; }
+
+    // ---- a signed value is the unsigned one cast ----
+    neg := bytes::read_u16_le(s, 14usize) catch e { return 73; };
+    if (neg as i16) != -18i16 { return 74; }                   // 0xFFEE
+
+    // ---- agreement with the unchecked primitive (this target is little-endian) ----
+    raw := unsafe core::unaligned_read(u32, unsafe core::ptr_from_int([*]u8, unsafe (&buf[3]) as usize));
+    chk := bytes::read_u32_le(s, 3usize) catch e { return 75; };
+    if raw != chk { return 76; }
+
+    return 42;
+}

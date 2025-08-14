@@ -8,6 +8,7 @@ const sema = @import("sema.zig");
 const macroexpand = @import("macroexpand.zig");
 const ast_prelude = @import("ast_prelude.zig");
 const ir_mod = @import("ir.zig");
+const style = @import("style.zig");
 
 /// Node-id base for prelude nodes — high enough to never collide with a real
 /// program's ids (which start at 1 and increment per parsed node).
@@ -476,10 +477,29 @@ fn strictPass(
         cvm.current_file = file;
         defer cvm.deinit();
         const pass = try runSemaResolved(allocator, module, source, file, .strict, &cvm, whereEvalThunk, whereTypeEvalThunk);
-        return .{ .module = module, .symbols = pass.symbols, .types = pass.types, .arena = arena };
+        const fe: FrontEnd = .{ .module = module, .symbols = pass.symbols, .types = pass.types, .arena = arena };
+        try reportStaticDataErrors(allocator, fe);
+        return fe;
     }
     const pass = try runSema(allocator, module, source, file, .strict);
-    return .{ .module = module, .symbols = pass.symbols, .types = pass.types, .arena = arena };
+    const fe: FrontEnd = .{ .module = module, .symbols = pass.symbols, .types = pass.types, .arena = arena };
+    try reportStaticDataErrors(allocator, fe);
+    return fe;
+}
+
+/// The type check of the program's static data (typed globals) belongs with the other checks, so
+/// `gabbro check` and every build stop on a mistake in one before any code is generated. Only what
+/// needs no evaluator is checked here; lowering checks the rest with the comptime VM available.
+fn reportStaticDataErrors(allocator: std.mem.Allocator, fe: FrontEnd) CompileError!void {
+    const found = ir_mod.checkStaticData(allocator, fe) catch return error.OutOfMemory;
+    if (found.len == 0) return;
+    const pal = style.forStderr();
+    for (found) |f| {
+        const rendered = diag_mod.render(allocator, f.diag.file, f.source, f.diag, pal) catch continue;
+        defer allocator.free(rendered);
+        std.debug.print("{s}\n", .{rendered});
+    }
+    return error.SemanticFailed;
 }
 
 /// Adapts `ComptimeVm.evalWhere` to sema's opaque `WhereEvalFn` callback.

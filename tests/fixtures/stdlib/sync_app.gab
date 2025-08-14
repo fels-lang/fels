@@ -1,0 +1,398 @@
+// std.sync end to end, on real threads: mutual exclusion under contention, try_lock against a
+// holder, a condition-variable hand-off with strict alternation, a broadcast that releases
+// every waiter, timed waits, and the bounded Queue — its single-thread semantics, many
+// producers against many consumers (every item arrives exactly once), per-producer ordering,
+// and shutdown by close() releasing blocked threads.
+//
+// Nothing here depends on how the threads happen to be scheduled: each check holds for every
+// interleaving, and the few waits that need time (a timeout, "a waiter really sleeps") only
+// assert a bound a correct implementation cannot miss. A watchdog thread ends the process with
+// code 99 if the whole run takes two minutes, so a deadlock fails the test instead of hanging.
+// Returns 42 on success; any other value names the failed check.
+#import std.sync;
+#import std.sync.{ Mutex, CondVar, Queue };
+#import std.thread;
+#import std.atomics;
+#import std.time;
+
+// ---- a global Mutex: zero bits are a valid unlocked lock, even in static storage ----
+G_LOCK: Mutex = .{};
+g_counter: u64 = 0u64;
+
+g_worker :: fn(p: *void) -> u32 {
+    i: u32 = 0u32;
+    while i < 10000u32 {
+        G_LOCK.lock();
+        g_counter += 1u64;
+        G_LOCK.unlock();
+        i += 1u32;
+    }
+    return 0u32;
+}
+
+// ---- mutual exclusion ----
+Shared :: struct { lock: Mutex, counter: u64, inside: u32, violations: u32 }
+
+bump_worker :: fn(p: *void) -> u32 {
+    s := unsafe (p as *Shared);
+    i: u32 = 0u32;
+    while i < 20000u32 {
+        s.lock.lock();
+        s.inside += 1u32;                       // plain, non-atomic: only right under the lock
+        if s.inside != 1u32 { s.violations += 1u32; }
+        s.counter += 1u64;
+        s.inside -= 1u32;
+        s.lock.unlock();
+        i += 1u32;
+    }
+    return 0u32;
+}
+
+// returns 1 if it could take the lock, 0 if not (and releases it when it did)
+try_worker :: fn(p: *void) -> u32 {
+    m := unsafe (p as *Mutex);
+    if m.try_lock() {
+        m.unlock();
+        return 1u32;
+    }
+    return 0u32;
+}
+
+// ---- condition variable: strict alternation between two threads ----
+PingPong :: struct { lock: Mutex, cv: CondVar, turn: u32, step: u32, order: [4000]u8 }
+Player :: struct { game: *PingPong, me: u32 }
+
+player_worker :: fn(p: *void) -> u32 {
+    pl := unsafe (p as *Player);
+    g := pl.game;
+    n: u32 = 0u32;
+    while n < 2000u32 {
+        g.lock.lock();
+        while g.turn != pl.me { g.cv.wait(&g.lock); }   // re-tested: wait() may return spuriously
+        g.order[g.step as usize] = pl.me as u8;
+        g.step += 1u32;
+        g.turn = 1u32 - pl.me;
+        g.lock.unlock();
+        g.cv.broadcast();
+        n += 1u32;
+    }
+    return 0u32;
+}
+
+// ---- condition variable: one broadcast releases every waiter ----
+Gate :: struct { lock: Mutex, cv: CondVar, open: bool, released: u32, loops: u32 }
+
+gate_worker :: fn(p: *void) -> u32 {
+    g := unsafe (p as *Gate);
+    g.lock.lock();
+    while !g.open {
+        g.cv.wait(&g.lock);
+        g.loops += 1u32;                        // how many times wait() returned
+    }
+    g.released += 1u32;
+    g.lock.unlock();
+    return 0u32;
+}
+
+// ---- queue ----
+Prod :: struct { q: *Queue(i64), id: u32, count: u32, pushed: u32 }
+
+prod_worker :: fn(p: *void) -> u32 {
+    pr := unsafe (p as *Prod);
+    i: u32 = 0u32;
+    while i < pr.count {
+        v: i64 = (pr.id as i64) * 1000000i64 + (i as i64);
+        if pr.q.push(v) { pr.pushed += 1u32; }
+        i += 1u32;
+    }
+    return 0u32;
+}
+
+Cons :: struct { q: *Queue(i64), seen: *u8, got: u32, dup: u32, bad: u32 }
+
+cons_worker :: fn(p: *void) -> u32 {
+    c := unsafe (p as *Cons);
+    while true {
+        item := c.q.pop();
+        if item == null { break; }
+        v: i64 = item!!;
+        pid := v / 1000000i64;
+        seq := v % 1000000i64;
+        if pid < 0i64 || pid >= 4i64 || seq < 0i64 || seq >= 5000i64 { c.bad += 1u32; continue; }
+        slot := unsafe (core::ptr_from_int(*u8, (c.seen as usize) + ((pid * 5000i64 + seq) as usize)));
+        if atomics::swap(slot, 1u8) != 0u8 { c.dup += 1u32; }
+        c.got += 1u32;
+    }
+    return 0u32;
+}
+
+// One consumer: each producer's items must come out in the order that producer sent them.
+Ordered :: struct { q: *Queue(i64), next: [4]i64, bad: u32, got: u32 }
+
+ordered_worker :: fn(p: *void) -> u32 {
+    c := unsafe (p as *Ordered);
+    while true {
+        item := c.q.pop();
+        if item == null { break; }
+        v: i64 = item!!;
+        pid := (v / 1000000i64) as usize;
+        seq := v % 1000000i64;
+        if pid >= 4usize { c.bad += 1u32; continue; }
+        if seq != c.next[pid] { c.bad += 1u32; }
+        c.next[pid] = seq + 1i64;
+        c.got += 1u32;
+    }
+    return 0u32;
+}
+
+// blocks in pop() on an empty queue; returns 1 when it gets null (closed and drained)
+pop_blocker :: fn(p: *void) -> u32 {
+    q := unsafe (p as *Queue(i64));
+    item := q.pop();
+    if item == null { return 1u32; }
+    return 0u32;
+}
+
+// blocks in push() on a full queue; returns 1 when push reports the queue closed
+push_blocker :: fn(p: *void) -> u32 {
+    q := unsafe (p as *Queue(i64));
+    if q.push(99i64) { return 0u32; }
+    return 1u32;
+}
+
+// ---- watchdog ----
+Watch :: struct { lock: Mutex, cv: CondVar, done: bool }
+
+watch_worker :: fn(p: *void) -> u32 {
+    w := unsafe (p as *Watch);
+    seconds: u32 = 0u32;
+    w.lock.lock();
+    while !w.done {
+        if !w.cv.wait_timeout(&w.lock, 1000u32) {
+            seconds += 1u32;
+            if seconds >= 120u32 { exit(99u32); }
+        }
+    }
+    w.lock.unlock();
+    return 0u32;
+}
+
+#entry
+main :: fn() -> i32 {
+    watch: Watch = .{ .{}, .{}, false };
+    wt := thread::spawn(core::fn_ptr(watch_worker), unsafe ((&watch) as *void));
+
+    // ---- Mutex: one thread at a time ----
+    m: Mutex = .{};
+    m.lock();
+    if m.try_lock() { return 1; }               // already held (and not recursive)
+    m.unlock();
+    if !m.try_lock() { return 2; }              // free again
+    // another thread cannot take it while this one holds it
+    t0 := thread::spawn(core::fn_ptr(try_worker), unsafe ((&m) as *void));
+    if t0.join() != 0u32 { return 3; }
+    m.unlock();
+    t1 := thread::spawn(core::fn_ptr(try_worker), unsafe ((&m) as *void));
+    if t1.join() != 1u32 { return 4; }          // free: it takes it, and lets go
+
+    sh: Shared = .{ .{}, 0u64, 0u32, 0u32 };
+    g := thread::group();
+    n: usize = 0usize;
+    while n < 8usize {
+        g.spawn(core::fn_ptr(bump_worker), unsafe ((&sh) as *void));
+        n += 1usize;
+    }
+    g.join_all();
+    if sh.violations != 0u32 { return 5; }      // never two inside at once
+    if sh.counter != 160000u64 { return 6; }    // and no increment lost
+
+    gg := thread::group();
+    n = 0usize;
+    while n < 4usize {
+        gg.spawn(core::fn_ptr(g_worker), unsafe ((&m) as *void));
+        n += 1usize;
+    }
+    gg.join_all();
+    if g_counter != 40000u64 { return 7; }      // the global lock works the same way
+
+    // ---- CondVar: hand-off ----
+    game: PingPong = .{ .{}, .{}, 0u32, 0u32, .{} };
+    p0: Player = .{ &game, 0u32 };
+    p1: Player = .{ &game, 1u32 };
+    ta := thread::spawn(core::fn_ptr(player_worker), unsafe ((&p0) as *void));
+    tb := thread::spawn(core::fn_ptr(player_worker), unsafe ((&p1) as *void));
+    ta.join();
+    tb.join();
+    if game.step != 4000u32 { return 8; }
+    k: usize = 0usize;
+    while k < 4000usize {
+        if (game.order[k] as usize) != (k % 2usize) { return 9; }   // 0,1,0,1,... exactly
+        k += 1usize;
+    }
+
+    // ---- CondVar: broadcast ----
+    gate: Gate = .{ .{}, .{}, false, 0u32, 0u32 };
+    gw := thread::group();
+    n = 0usize;
+    while n < 6usize {
+        gw.spawn(core::fn_ptr(gate_worker), unsafe ((&gate) as *void));
+        n += 1usize;
+    }
+    // Give them time to reach wait(): a wait() that returned at once would spin through the
+    // loop millions of times in this interval; a sleeping one wakes once, when the gate opens.
+    thread::sleep(150u32);
+    gate.lock.lock();
+    gate.open = true;
+    gate.lock.unlock();
+    gate.cv.broadcast();
+    gw.join_all();
+    if gate.released != 6u32 { return 10; }
+    if gate.loops > 6u32 * 50u32 { return 11; }
+
+    // ---- CondVar: a timed wait ----
+    cv: CondVar = .{};
+    m.lock();
+    start := time::now();
+    timed_out := false;
+    tries: u32 = 0u32;
+    while !timed_out && tries < 200u32 {
+        timed_out = !cv.wait_timeout(&m, 30u32);      // nobody signals: only a timeout ends it
+        tries += 1u32;
+    }
+    waited := time::since_millis(start);
+    m.unlock();
+    if !timed_out { return 12; }
+    if waited < 15i64 { return 13; }                  // it did wait, in milliseconds not microseconds
+
+    // ---- Queue: single-thread semantics ----
+    sbuf: [4]i64 = .{};
+    sq := sync::make_queue(i64, sbuf[:]);
+    if sq.capacity() != 4usize { return 14; }
+    if sq.len() != 0usize { return 15; }
+    if sq.try_pop() != null { return 16; }
+    r: i64 = 0i64;
+    while r < 3i64 {                                  // wraps the 4-slot ring several times
+        a: i64 = r * 10i64;
+        if !sq.push(a + 1i64) { return 17; }
+        if !sq.push(a + 2i64) { return 18; }
+        if !sq.push(a + 3i64) { return 19; }
+        if !sq.try_push(a + 4i64) { return 20; }
+        if sq.try_push(a + 5i64) { return 21; }       // full
+        if sq.len() != 4usize { return 22; }
+        if (sq.pop() ?? -1i64) != a + 1i64 { return 23; }   // oldest first
+        if (sq.pop() ?? -1i64) != a + 2i64 { return 24; }
+        if (sq.try_pop() ?? -1i64) != a + 3i64 { return 25; }
+        if (sq.pop() ?? -1i64) != a + 4i64 { return 26; }
+        r += 1i64;
+    }
+    if sq.len() != 0usize { return 27; }
+    if !sq.push(5i64) { return 28; }
+    if !sq.push(6i64) { return 29; }
+    if sq.is_closed() { return 30; }
+    sq.close();
+    sq.close();                                       // closing again is harmless
+    if !sq.is_closed() { return 31; }
+    if sq.push(7i64) { return 32; }                   // nothing joins a closed queue
+    if sq.try_push(7i64) { return 33; }
+    if (sq.pop() ?? -1i64) != 5i64 { return 34; }     // but what was queued can still be taken
+    if (sq.try_pop() ?? -1i64) != 6i64 { return 35; }
+    if sq.pop() != null { return 36; }                // drained and closed: null, without blocking
+    if sq.try_pop() != null { return 37; }
+    nbuf: [1]i64 = .{};
+    none := sync::make_queue(i64, nbuf[0..0]);        // no storage: it can hold nothing
+    if none.push(1i64) { return 38; }
+    if none.try_push(1i64) { return 39; }
+    if none.capacity() != 0usize { return 40; }
+    none.close();
+    if none.pop() != null { return 41; }
+
+    // ---- Queue: shutdown releases blocked threads ----
+    ebuf: [2]i64 = .{};
+    eq := sync::make_queue(i64, ebuf[:]);
+    tc := thread::spawn(core::fn_ptr(pop_blocker), unsafe ((&eq) as *void));   // blocks on empty
+    eq.close();
+    if tc.join() != 1u32 { return 42; }
+    fbuf: [2]i64 = .{};
+    fq := sync::make_queue(i64, fbuf[:]);
+    ig := fq.push(1i64);
+    ig = fq.push(2i64);
+    tp := thread::spawn(core::fn_ptr(push_blocker), unsafe ((&fq) as *void)); // blocks on full
+    fq.close();
+    if tp.join() != 1u32 { return 43; }
+    if (fq.pop() ?? -1i64) != 1i64 { return 44; }     // the two that made it in are still there
+    if (fq.pop() ?? -1i64) != 2i64 { return 45; }
+    if fq.pop() != null { return 46; }
+
+    // ---- Queue: many producers, many consumers, every item exactly once ----
+    seen: [20000]u8 = .{};
+    qbuf: [8]i64 = .{};                               // tiny, so both sides block all the time
+    mq := sync::make_queue(i64, qbuf[:]);
+    prods: [4]Prod = .{};
+    pg := thread::group();
+    n = 0usize;
+    while n < 4usize {
+        prods[n] = .{ &mq, n as u32, 5000u32, 0u32 };
+        pg.spawn(core::fn_ptr(prod_worker), unsafe ((&prods[n]) as *void));
+        n += 1usize;
+    }
+    conss: [4]Cons = .{};
+    cg := thread::group();
+    n = 0usize;
+    while n < 4usize {
+        conss[n] = .{ &mq, &seen[0], 0u32, 0u32, 0u32 };
+        cg.spawn(core::fn_ptr(cons_worker), unsafe ((&conss[n]) as *void));
+        n += 1usize;
+    }
+    pg.join_all();                                    // producers done...
+    mq.close();                                       // ...so end the queue; consumers drain it
+    cg.join_all();
+    got: u32 = 0u32;
+    dup: u32 = 0u32;
+    bad: u32 = 0u32;
+    pushed: u32 = 0u32;
+    n = 0usize;
+    while n < 4usize {
+        got += conss[n].got;
+        dup += conss[n].dup;
+        bad += conss[n].bad;
+        pushed += prods[n].pushed;
+        n += 1usize;
+    }
+    if pushed != 20000u32 { return 47; }
+    if bad != 0u32 { return 48; }
+    if dup != 0u32 { return 49; }                     // nothing delivered twice
+    if got != 20000u32 { return 50; }                 // and nothing lost
+    k = 0usize;
+    while k < 20000usize {
+        if seen[k] != 1u8 { return 51; }
+        k += 1usize;
+    }
+    if mq.len() != 0usize { return 52; }
+
+    // ---- Queue: one consumer sees each producer's items in order ----
+    obuf: [3]i64 = .{};
+    oq := sync::make_queue(i64, obuf[:]);
+    oprods: [4]Prod = .{};
+    og := thread::group();
+    n = 0usize;
+    while n < 4usize {
+        oprods[n] = .{ &oq, n as u32, 3000u32, 0u32 };
+        og.spawn(core::fn_ptr(prod_worker), unsafe ((&oprods[n]) as *void));
+        n += 1usize;
+    }
+    ord: Ordered = .{ &oq, .{}, 0u32, 0u32 };
+    to := thread::spawn(core::fn_ptr(ordered_worker), unsafe ((&ord) as *void));
+    og.join_all();
+    oq.close();
+    to.join();
+    if ord.got != 12000u32 { return 53; }
+    if ord.bad != 0u32 { return 54; }
+
+    // ---- stop the watchdog ----
+    watch.lock.lock();
+    watch.done = true;
+    watch.lock.unlock();
+    watch.cv.signal();
+    if wt.join() != 0u32 { return 55; }
+    return 42;
+}

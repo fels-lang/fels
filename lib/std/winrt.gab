@@ -1,0 +1,224 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.winrt - Windows only. Talking to the operating system's COM and Windows Runtime: starting
+// them, creating objects, and HSTRING, the Windows Runtime's string. The types it works with
+// (GUID, HRESULT, IUnknown, IInspectable, ...) are std.com, which has no OS calls and is
+// available everywhere; this module is the part that exists only on Windows. A program that
+// imports it for another target fails to link, as it would for any missing Win32 function.
+//
+// It is deliberately thin. Each function that mirrors an OS call keeps the call's shape and
+// returns its HRESULT unchanged (`com::check(hr)` turns a failure into an error); the few that
+// only return a status (`co_initialize`, `ro_initialize`) or have one natural result
+// (`activation_factory`, `new_guid`) are fallible instead. Nothing here runs on its own: no
+// hidden initialisation, no thread-local state, no cache. Every function below documents who
+// owns what it returns, and the answer is always "you do, and here is how to give it back".
+//
+// Linking. The COM entry points come from ole32.dll, the Windows Runtime ones (RoInitialize,
+// WindowsCreateString, ...) from combase.dll. The Windows SDK has no combase.lib: its import
+// library for those is runtimeobject.lib, and the build maps the DLL name to it.
+//
+// Threads. COM and the Windows Runtime are per-thread: `co_initialize` / `ro_initialize` apply
+// to the calling thread, and each successful call is paired with one `co_uninitialize` /
+// `ro_uninitialize` on the same thread - including a call that returned S_FALSE ("already
+// initialised"), which still counts. Initialise as multithreaded (CO_MULTITHREADED,
+// RO_MULTITHREADED) unless the thread pumps a message loop.
+
+#import std.com.{ Guid, IUnknown, IInspectable, ComError, check, failed, S_OK, E_POINTER };
+#import std.utf16;
+
+// COM ────────────────────────────────────────────────────────────────────────
+
+#extern("ole32", "CoInitializeEx")     winrt_co_initialize_ex :: fn(reserved: ?*void, flags: u32) -> i32;
+#extern("ole32", "CoUninitialize")     winrt_co_uninitialize :: fn();
+#extern("ole32", "CoCreateInstance")   winrt_co_create_instance :: fn(clsid: *const Guid, outer: ?*void, context: u32, iid: *const Guid, out: **void) -> i32;
+#extern("ole32", "CoTaskMemFree")      winrt_co_task_mem_free :: fn(p: ?*void);
+#extern("ole32", "CoCreateGuid")       winrt_co_create_guid :: fn(out: *Guid) -> i32;
+
+// COINIT values for co_initialize.
+pub CO_MULTITHREADED     :: 0;
+pub CO_APARTMENTTHREADED :: 2;
+
+// CLSCTX_INPROC_SERVER, the usual context for create_instance.
+pub CLSCTX_INPROC_SERVER :: 1;
+
+// Initialise COM on this thread. Succeeds on S_OK and on S_FALSE (already initialised); either
+// way a matching co_uninitialize() is owed. Fails with `.changed_mode` if the thread already
+// initialised COM the other way (apartment vs multithreaded).
+pub co_initialize :: fn(mode: u32) -> void ! ComError {
+    check(winrt_co_initialize_ex(null, mode))?;
+    return;
+}
+
+// Undo one successful co_initialize on this thread.
+pub co_uninitialize :: fn() { winrt_co_uninitialize(); }
+
+// CoCreateInstance: create the object of class `clsid` and ask it for interface `iid`.
+// On success `*out` is an interface pointer with one reference to release; on failure it is
+// null. `context` is CLSCTX_INPROC_SERVER or another CLSCTX value.
+pub co_create_instance :: fn(clsid: *const Guid, context: u32, iid: *const Guid, out: **void) -> i32 {
+    return winrt_co_create_instance(clsid, null, context, iid, out);
+}
+
+// Free memory the OS allocated for you with the COM task allocator - the array that
+// IInspectable.get_iids returns, for one.
+pub co_task_mem_free :: fn(p: ?*void) { winrt_co_task_mem_free(p); }
+
+// A new GUID (CoCreateGuid): random, as RFC 4122 version 4.
+pub new_guid :: fn() -> Guid ! ComError {
+    g: Guid = .{ 0u32, 0u16, 0u16, .{} };
+    check(winrt_co_create_guid(&g))?;
+    return g;
+}
+
+// The Windows Runtime ─────────────────────────────────────────────────────────
+
+#extern("combase", "RoInitialize")             winrt_ro_initialize :: fn(kind: i32) -> i32;
+#extern("combase", "RoUninitialize")           winrt_ro_uninitialize :: fn();
+#extern("combase", "RoGetActivationFactory")   winrt_ro_get_activation_factory :: fn(class_id: usize, iid: *const Guid, out: **void) -> i32;
+#extern("combase", "RoActivateInstance")       winrt_ro_activate_instance :: fn(class_id: usize, out: **IInspectable) -> i32;
+
+// RO_INIT_TYPE values for ro_initialize.
+pub RO_SINGLETHREADED :: 0;
+pub RO_MULTITHREADED  :: 1;
+
+// Initialise the Windows Runtime on this thread. Succeeds on S_OK and S_FALSE; either way a
+// matching ro_uninitialize() is owed. Fails with `.changed_mode` if the thread is already
+// initialised the other way.
+pub ro_initialize :: fn(kind: i32) -> void ! ComError {
+    check(winrt_ro_initialize(kind))?;
+    return;
+}
+
+// Undo one successful ro_initialize on this thread.
+pub ro_uninitialize :: fn() { winrt_ro_uninitialize(); }
+
+// The activation factory of a runtime class, as interface `iid` (RoGetActivationFactory).
+// `class_id` is the class's name as an HSTRING handle (`HString.h`, or `HStringRef.h`); it
+// is only read. The result is an owned reference: release it. Cast it to the factory interface
+// you asked for. Fails with `.class_not_registered` if there is no such class.
+pub activation_factory :: fn(class_id: usize, iid: *const Guid) -> *IUnknown ! ComError {
+    out: *void = unsafe (core::ptr_from_int(*void, 0usize));
+    check(winrt_ro_get_activation_factory(class_id, iid, &out))?;
+    if unsafe (out as usize) == 0usize { fail .invalid_pointer; }
+    return unsafe (out as *IUnknown);
+}
+
+// A new instance of a runtime class by its default constructor (RoActivateInstance). The result
+// is an owned reference.
+pub activate_instance :: fn(class_id: usize) -> *IInspectable ! ComError {
+    out: *IInspectable = unsafe (core::ptr_from_int(*IInspectable, 0usize));
+    check(winrt_ro_activate_instance(class_id, &out))?;
+    if unsafe (out as usize) == 0usize { fail .invalid_pointer; }
+    return out;
+}
+
+// HSTRING ─────────────────────────────────────────────────────────────────────
+// The Windows Runtime's string: an immutable, reference-counted sequence of UTF-16 code units
+// that may hold embedded zeros. In the ABI it is one pointer-sized handle, `usize` here, and
+// the null handle (0) is a valid empty string. A function that takes an HSTRING only reads it;
+// a function that hands one out gives you a string you must delete.
+
+#extern("combase", "WindowsCreateString")           winrt_create_string :: fn(src: ?*const u16, len: u32, out: *usize) -> i32;
+#extern("combase", "WindowsCreateStringReference")  winrt_create_string_reference :: fn(src: *const u16, len: u32, header: *HStringRef, out: *usize) -> i32;
+#extern("combase", "WindowsDeleteString")           winrt_delete_string :: fn(h: usize) -> i32;
+#extern("combase", "WindowsDuplicateString")        winrt_duplicate_string :: fn(h: usize, out: *usize) -> i32;
+#extern("combase", "WindowsGetStringLen")           winrt_string_len :: fn(h: usize) -> u32;
+#extern("combase", "WindowsGetStringRawBuffer")     winrt_string_raw_buffer :: fn(h: usize, len: *u32) -> *const u16;
+#extern("combase", "WindowsCompareStringOrdinal")   winrt_compare_string_ordinal :: fn(a: usize, b: usize, result: *i32) -> i32;
+
+// An owned HSTRING. `h` is the handle to pass to the OS. You release it once (release()), or
+// hand `h` to something that takes ownership. Do not copy an HString and release both copies.
+pub HString :: struct {
+    h: usize
+
+    // Delete the string and become empty. Safe to call again, and on an empty string.
+    pub release :: fn(self: *Self) {
+        if self.h != 0usize {
+            ig := winrt_delete_string(self.h);
+            self.h = 0usize;
+        }
+    }
+
+    // Number of UTF-16 code units.
+    pub len :: fn(self: *const Self) -> usize { return winrt_string_len(self.h) as usize; }
+
+    pub is_empty :: fn(self: *const Self) -> bool { return winrt_string_len(self.h) == 0u32; }
+
+    // The code units, borrowed from the string: valid until release(). Not NUL-terminated by
+    // the slice, though the OS keeps a terminator after it.
+    pub units :: fn(self: *const Self) -> []const u16 {
+        n: u32 = 0u32;
+        p := winrt_string_raw_buffer(self.h, &n);
+        return unsafe core::slice_from_raw_parts(u16, p, n as usize);
+    }
+
+    // A second owned reference to the same text (cheap: the OS counts references). Release both.
+    pub duplicate :: fn(self: *const Self) -> HString ! ComError {
+        out: usize = 0usize;
+        check(winrt_duplicate_string(self.h, &out))?;
+        r: HString = .{ out };
+        return r;
+    }
+
+    // Do the two strings hold the same code units (case-sensitive)?
+    pub eq :: fn(self: *const Self, other: *const HString) -> bool {
+        r: i32 = 1;
+        hr := winrt_compare_string_ordinal(self.h, other.h, &r);
+        if failed(hr) { return false; }
+        return r == 0;
+    }
+
+    // Convert to UTF-8 into `out` and return the length. The string must be valid UTF-16
+    // (an HSTRING is not required to be); `.invalid_utf16` if it is not, `.buffer_too_small`
+    // if `out` cannot hold the result. `utf16::utf8_len(self.units())` gives the size.
+    pub to_utf8 :: fn(self: *const Self, out: []u8) -> usize ! utf16::Utf16Error {
+        n := utf16::utf16_to_utf8(self.units(), out)?;
+        return n;
+    }
+}
+
+// A new owned HSTRING holding a copy of `units` (WindowsCreateString). The text may be empty,
+// and may contain zeros. Fails with `.out_of_memory` if the OS could not allocate it.
+pub hstring :: fn(units: []const u16) -> HString ! ComError {
+    out: usize = 0usize;
+    check(winrt_create_string(units.ptr, units.len as u32, &out))?;
+    r: HString = .{ out };
+    return r;
+}
+
+// A new owned HSTRING from UTF-8 text. `scratch` is room for the intermediate UTF-16
+// (`utf16::utf16_len(text)` units); the OS keeps its own copy, so `scratch` is free for reuse
+// as soon as this returns. `.invalid_utf8` for malformed text, `.buffer_too_small` if `scratch`
+// is short, `.out_of_memory` if the OS could not allocate the string.
+pub hstring_from_utf8 :: fn(text: []const u8, scratch: []u16) -> HString ! utf16::Utf16Error {
+    n := utf16::utf8_to_utf16(text, scratch)?;
+    out: usize = 0usize;
+    hr := winrt_create_string(scratch.ptr, n as u32, &out);
+    if failed(hr) { fail .out_of_memory; }
+    r: HString = .{ out };
+    return r;
+}
+
+// A borrowed HSTRING over text you already hold (WindowsCreateStringReference): no allocation
+// and nothing to release - the cheap way to pass a class name or a constant. The handle `h`
+// points into this struct and into your buffer, so:
+//   - the struct must stay where it is once init() has run (do not copy or move it), and
+//   - the UTF-16 buffer must outlive every use of `h`.
+// The OS requires the text to be followed by a zero, so init() takes it with the terminator.
+pub HStringRef :: struct {
+    header: [3]u64      // HSTRING_HEADER, 24 bytes
+    h: usize            // the handle; valid after init()
+
+    // `z` is the code units plus one terminating zero (so `z.len >= 1` and `z[z.len - 1] == 0`);
+    // the string is `z[0 .. z.len - 1]`. `.invalid_arg` if that does not hold.
+    pub init :: fn(self: *Self, z: []const u16) -> void ! ComError {
+        if z.len == 0usize { fail .invalid_arg; }
+        if z[z.len - 1usize] != 0u16 { fail .invalid_arg; }
+        check(winrt_create_string_reference(z.ptr, (z.len - 1usize) as u32, self, &self.h))?;
+        return;
+    }
+}
+
+// HSTRING is one pointer; HSTRING_HEADER is 24 bytes aligned to 8 (winstring.h).
+#assert(core::sizeof(HStringRef) == 32, "HSTRING_HEADER (24) then the handle");
+#assert(core::offset_of(HStringRef, "h") == 24);
+#assert(core::sizeof(HString) == 8, "an HSTRING is one pointer");

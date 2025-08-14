@@ -156,6 +156,7 @@ Borrowed from Rust's model, adapted to gabbro's seam architecture.
 | `std.process` (all, incl. `set_env`) | ✅ ported | `getpid` + `/proc/self/{cmdline,environ}` + `fork`/`execve`(`/bin/sh -c`)/`wait4`/`kill`; `set_env`/`unset_env` via a runtime env overlay (done) |
 | `std.net` | ✅ ported | socket syscalls (41/42/43/44/45/48/49/50/51/54) + SOL_SOCKET option translation + `fcntl` (done) |
 | `std.thread` | ✅ ported | `clone` (allocated child stack, asm child-entry) + `wait4` join + `sched_getaffinity`/`sched_yield` (done) |
+| `std.sync` | ✅ ported | `futex` (syscall 202, shared `FUTEX_WAIT`/`FUTEX_WAKE`) under a three-state mutex and a sequence-number condition variable (done) |
 
 **Every `std` module runs on Linux — full parity with Windows.** The static
 `x86_64-linux-none` target has a complete stdlib: Tier 1 in full.
