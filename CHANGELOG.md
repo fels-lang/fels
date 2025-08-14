@@ -3,6 +3,15 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## 0.2.1 — 2026-10-10
+
+### Fixed
+
+- **The release binaries crashed on many CPUs.** `scripts/package.ps1` built for the CPU of the machine
+  that ran it, so `gabbro.exe` of 0.2.0 contained AVX-512 code and stopped with "illegal instruction"
+  (exit code 0xC000001D) on any CPU without it, for example on some GitHub Actions runners. The release
+  is now built for the baseline x86-64-v2 CPU. If you downloaded 0.2.0 and it does not start, replace it.
+
 ## 0.2.0 — 2026-10-10
 
 A feature release. It adds what a real Windows program needs: aggregate data in the image,
