@@ -1,0 +1,25 @@
+// std.c through its namespace: `#import std.c;` binds `c`, so the aliases are written
+// `c::c_int`, `c::c_float`, … (the bare import is the form that used to die on
+// `c_float :: f32` being read as a constant). A namespaced alias must be the type it
+// names in an annotation, a cast and a `sizeof`. Returns 42 iff all correct.
+#import std.c;
+
+mean :: fn(a: c::c_float, b: c::c_float) -> c::c_float { return (a + b) / 2.0; }
+
+#entry
+main :: fn() -> i32 {
+    if core::sizeof(c::c_int) != 4usize { return 1; }
+    if core::sizeof(c::c_double) != 8usize { return 2; }
+
+    x: c::c_int = 40;
+    y: i32 = x + 2;                       // mixes with the plain type, no cast
+    wide := y as c::c_longlong;
+    if wide != 42i64 { return 3; }
+
+    r: c::c_float = mean(40.0, 44.0);     // 42.0
+    if r != 42.0 { return 4; }
+    d: c::c_double = r as c::c_double;
+    if d != 42.0 { return 5; }
+
+    return y;
+}

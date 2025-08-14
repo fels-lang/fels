@@ -763,13 +763,16 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
             .static_assert => |decl| try checkStaticAssert(decl, cvm),
             .type_decl => |decl| switch (decl.kind) {
                 .struct_type => |strukt| try structs.append(allocator, try lowerStruct(allocator, decl, strukt, front_end.types, front_end.symbols)),
-                .errors => |error_decl| try errors.append(allocator, try lowerErrorDef(allocator, decl, error_decl)),
-                .enum_type => |enum_decl| try variants.append(allocator, try lowerEnumDef(allocator, decl, enum_decl)),
+                .errors => |error_decl| try errors.append(allocator, try lowerErrorDef(allocator, decl, error_decl, front_end.types, front_end.symbols)),
+                .enum_type => |enum_decl| try variants.append(allocator, try lowerEnumDef(allocator, decl, enum_decl, front_end.types, front_end.symbols)),
                 // Aliases are resolved away by sema (typeFromRef), so they have
                 // no lowered type definition of their own.
                 .distinct, .opaque_type, .interface_type, .alias => {},
             },
             .const_decl => |decl| {
+                // `X :: Name;` naming a type is an alias (sema marks its symbol a type),
+                // not a constant: no value, no storage, like the `type_decl` spelling.
+                if (sema.isTypeAliasConst(front_end.symbols, decl)) continue;
                 // A typed global goes through `StaticInit`. So does `NAME :: #run f();` when `f`
                 // returns a struct, an array, an enum value or a function pointer: there is no
                 // declared type to read, so the type is the one sema gave the call.
@@ -1480,26 +1483,26 @@ fn lowerStruct(allocator: std.mem.Allocator, decl: ast.TypeDecl, strukt: ast.Str
     };
 }
 
-fn lowerEnumDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, enum_decl: ast.EnumDecl) !VariantDef {
+fn lowerEnumDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, enum_decl: ast.EnumDecl, types: sema.TypeEnv, symbols: sema.SymbolTable) !VariantDef {
     var cases: std.ArrayList(VariantCase) = .empty;
     errdefer cases.deinit(allocator);
     for (enum_decl.variants) |v| {
         try cases.append(allocator, .{
             .name = v.name,
-            .payload = if (v.payload) |p| try lowerType(allocator, p) else null,
+            .payload = if (v.payload) |p| try lowerType(allocator, try dealias(allocator, p, types, symbols)) else null,
         });
     }
     return .{ .name = decl.name, .variants = try cases.toOwnedSlice(allocator) };
 }
 
-fn lowerErrorDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, error_decl: ast.ErrorDecl) !ErrorDef {
+fn lowerErrorDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, error_decl: ast.ErrorDecl, types: sema.TypeEnv, symbols: sema.SymbolTable) !ErrorDef {
     var variants: std.ArrayList(ErrorCase) = .empty;
     errdefer variants.deinit(allocator);
 
     for (error_decl.variants) |variant| {
         try variants.append(allocator, .{
             .name = variant.name,
-            .payload = if (variant.payload) |payload| try lowerType(allocator, payload) else null,
+            .payload = if (variant.payload) |payload| try lowerType(allocator, try dealias(allocator, payload, types, symbols)) else null,
         });
     }
 
@@ -1579,6 +1582,9 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
                     return lowerSemaTypeWithEnv(allocator, underlying, types, symbols) catch .unknown;
                 }
             }
+            // Transparent alias: lower what it stands for (it may name a type param).
+            if (try dealiased(allocator, ty, types, symbols, 0)) |aliased|
+                return lowerTypeWithBindingAndSymbols(allocator, aliased, binding, types, symbols);
             return lowerNamedType(named.name);
         },
         .pointer => |ptr| return .{ .ptr = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, ptr.inner.*, binding, types, symbols)) },
@@ -1737,6 +1743,9 @@ fn lowerTypeReplacingSelf(allocator: std.mem.Allocator, ty: ast.TypeRef, concret
                     break :blk lowerSemaTypeWithEnv(allocator, underlying, types, symbols) catch .unknown;
                 }
             }
+            // Transparent alias: lower what it stands for.
+            if (try dealiased(allocator, ty, types, symbols, 0)) |aliased|
+                break :blk try lowerTypeReplacingSelf(allocator, aliased, concrete_name, types, symbols);
             break :blk lowerNamedType(named.name);
         },
         .pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerTypeReplacingSelf(allocator, ptr.inner.*, concrete_name, types, symbols)) },
@@ -2496,7 +2505,7 @@ const FunctionLowerer = struct {
             if (!std.mem.eql(u8, item.fileName(), self.module.file_name)) continue;
             const v = try self.mkStruct("Decl", &.{
                 .{ .name = "name", .value = astStr(nm) },
-                .{ .name = "kind", .value = astStr(declKindName(item)) },
+                .{ .name = "kind", .value = astStr(declKindName(self.symbols, item)) },
                 .{ .name = "fields", .value = try self.lowerDeclFields(item) },
                 .{ .name = "ret", .value = try self.lowerDeclRet(item) },
                 .{ .name = "body", .value = astStr(declBodyText(item)) },
@@ -4535,10 +4544,13 @@ const FunctionLowerer = struct {
         if (subject.kind == .ident) {
             const ident_name = subject.kind.ident;
             for (self.params) |p| {
-                if (std.mem.eql(u8, p.name, ident_name)) switch (p.ty) {
+                if (!std.mem.eql(u8, p.name, ident_name)) continue;
+                // `Paint :: Color;` — a parameter declared with the alias matches as the enum.
+                const declared = dealias(self.allocator, p.ty, self.types, self.symbols) catch p.ty;
+                switch (declared) {
                     .named => |named| return named.name,
                     else => {},
-                };
+                }
             }
             if (self.local_types.get(self.curLocal(ident_name))) |lty| switch (lty) {
                 .variant_type, .struct_type => |n| return n,
@@ -5022,7 +5034,7 @@ const FunctionLowerer = struct {
 
     fn lowerTypeArg(self: *FunctionLowerer, expr: ast.Expr) LowerError!IrType {
         return switch (expr.kind) {
-            .type_ref => |ty| lowerType(self.allocator, ty),
+            .type_ref => |ty| lowerType(self.allocator, try dealias(self.allocator, ty, self.types, self.symbols)),
             // A bare ident may be a generic type parameter — resolve it to the
             // concrete type bound for this instantiation, so `sizeof(T)` etc.
             // get the real type instead of an unknown one.
@@ -5031,7 +5043,20 @@ const FunctionLowerer = struct {
                     if (std.mem.eql(u8, arg.name, name))
                         break :blk lowerSemaTypeWithEnv(self.allocator, arg.ty, self.types, self.symbols) catch .unknown;
                 }
+                // A transparent alias is the type it names: `sizeof(c_int)` is 4, not a pointer's 8.
+                if (resolveTopLevel(self.symbols, self.file_name, name)) |id| {
+                    if (self.types.alias_refs.get(id)) |aliased|
+                        break :blk lowerAstTypeWithEnv(self.allocator, aliased, self.types, self.symbols) catch .unknown;
+                }
                 break :blk lowerNamedType(name);
+            },
+            // `ns::alias` likewise (sema recorded which symbol the access names).
+            .scope_access => blk: {
+                if (self.types.expr_symbols.get(expr.id)) |id| {
+                    if (self.types.alias_refs.get(id)) |aliased|
+                        break :blk lowerAstTypeWithEnv(self.allocator, aliased, self.types, self.symbols) catch .unknown;
+                }
+                break :blk self.exprType(expr);
             },
             // `*T` the checker left a dereference: the explicit type argument of a generic
             // function (sema records its type), or an argument in a place the checker never
@@ -5236,7 +5261,8 @@ const FunctionLowerer = struct {
         if (expr.kind == .ident) {
             for (self.params) |param| {
                 if (!std.mem.eql(u8, param.name, expr.kind.ident)) continue;
-                return switch (param.ty) {
+                const declared = dealias(self.allocator, param.ty, self.types, self.symbols) catch param.ty;
+                return switch (declared) {
                     .pointer, .many_pointer => |ptr| switch (ptr.inner.*) {
                         .named => |named| named.name,
                         else => null,
@@ -5464,7 +5490,93 @@ fn mangleGenericInst(
     return try buf.toOwnedSlice(allocator);
 }
 
-fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable) !IrType {
+/// `ty` with every transparent alias in it replaced by the type it stands for
+/// (`[]node_t` becomes `[]Node`). Lowering reads the names in a type reference, and an
+/// alias is a name with no layout of its own: `Node` is a struct, `node_t` only points
+/// at one. Allocation-free when `ty` holds no alias.
+fn dealias(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable) !ast.TypeRef {
+    return (try dealiased(allocator, ty, types, symbols, 0)) orelse ty;
+}
+
+/// `dealias`'s worker: the rewritten type, or null when nothing in `ty` is an alias.
+fn dealiased(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable, depth: u32) error{OutOfMemory}!?ast.TypeRef {
+    // Sema rejects a cyclic alias, but the tolerant pass of a `#compiler` hook lets one by.
+    if (depth > 32) return null;
+    switch (ty) {
+        .named => |named| {
+            const id = symbols.resolve(symbols.root_scope, named.name) orelse return null;
+            const aliased = types.alias_refs.get(id) orelse return null;
+            return (try dealiased(allocator, aliased, types, symbols, depth + 1)) orelse aliased;
+        },
+        .pointer => |p| {
+            var out = p;
+            out.inner = (try dealiasedBox(allocator, p.inner, types, symbols, depth)) orelse return null;
+            return .{ .pointer = out };
+        },
+        .many_pointer => |p| {
+            var out = p;
+            out.inner = (try dealiasedBox(allocator, p.inner, types, symbols, depth)) orelse return null;
+            return .{ .many_pointer = out };
+        },
+        .optional => |o| {
+            var out = o;
+            out.inner = (try dealiasedBox(allocator, o.inner, types, symbols, depth)) orelse return null;
+            return .{ .optional = out };
+        },
+        .slice => |s| {
+            var out = s;
+            out.inner = (try dealiasedBox(allocator, s.inner, types, symbols, depth)) orelse return null;
+            return .{ .slice = out };
+        },
+        .array => |a| {
+            var out = a;
+            out.inner = (try dealiasedBox(allocator, a.inner, types, symbols, depth)) orelse return null;
+            return .{ .array = out };
+        },
+        .atomic => |a| {
+            var out = a;
+            out.inner = (try dealiasedBox(allocator, a.inner, types, symbols, depth)) orelse return null;
+            return .{ .atomic = out };
+        },
+        .borrow => |b| {
+            var out = b;
+            out.inner = (try dealiasedBox(allocator, b.inner, types, symbols, depth)) orelse return null;
+            return .{ .borrow = out };
+        },
+        .fn_type => |f| {
+            const ret = try dealiasedBox(allocator, f.ret, types, symbols, depth);
+            const params = try allocator.dupe(ast.TypeRef, f.params);
+            var changed = ret != null;
+            for (params) |*param| {
+                if (try dealiased(allocator, param.*, types, symbols, depth)) |rewritten| {
+                    param.* = rewritten;
+                    changed = true;
+                }
+            }
+            if (!changed) {
+                allocator.free(params);
+                return null;
+            }
+            var out = f;
+            out.params = params;
+            out.ret = ret orelse f.ret;
+            return .{ .fn_type = out };
+        },
+        else => return null,
+    }
+}
+
+/// `dealiased` for a boxed inner type: the rewritten type, boxed anew, or null.
+fn dealiasedBox(allocator: std.mem.Allocator, inner: *const ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable, depth: u32) error{OutOfMemory}!?*const ast.TypeRef {
+    const rewritten = (try dealiased(allocator, inner.*, types, symbols, depth)) orelse return null;
+    const box = try allocator.create(ast.TypeRef);
+    box.* = rewritten;
+    return box;
+}
+
+fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, written: ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable) !IrType {
+    // An alias is the type it names, wherever it sits in what was written.
+    const ty = try dealias(allocator, written, types, symbols);
     if (ty == .borrow) return lowerAstTypeWithEnv(allocator, ty.borrow.inner.*, types, symbols);
     const ptr_inner_ast: ?ast.TypeRef = switch (ty) {
         .pointer => |p| p.inner.*,
@@ -5483,10 +5595,6 @@ fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sem
         if (symbols.resolve(symbols.root_scope, ty.named.name)) |id| {
             if (types.distinct_types.get(id)) |underlying| {
                 return lowerSemaTypeWithEnv(allocator, underlying, types, symbols);
-            }
-            // Transparent alias: lower the underlying type (transitively).
-            if (types.alias_refs.get(id)) |aliased| {
-                return lowerAstTypeWithEnv(allocator, aliased, types, symbols);
             }
         }
     }
@@ -5781,10 +5889,10 @@ fn astTypeName(a: std.mem.Allocator, ty: ast.TypeRef) []const u8 {
 }
 
 /// The `Decl.kind` string for a top-level item (see ast_prelude `compiler_source`).
-fn declKindName(item: ast.Item) []const u8 {
+fn declKindName(symbols: sema.SymbolTable, item: ast.Item) []const u8 {
     return switch (item) {
         .function => "fn",
-        .const_decl => "const",
+        .const_decl => |c| if (sema.isTypeAliasConst(symbols, c)) "alias" else "const",
         .type_decl => |t| switch (t.kind) {
             .struct_type => "struct",
             .enum_type => "enum",

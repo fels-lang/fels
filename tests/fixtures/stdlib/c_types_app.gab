@@ -1,0 +1,71 @@
+// std.c: the C ABI type aliases are the Gabbro types they name (64-bit Windows, LLP64).
+// `#import std.c.{ … }` used to fail to compile at all, because `c_float :: f32` and
+// `c_double :: f64` were read as constants. Checks the aliases in every position C
+// signatures use them (parameters, returns, fields, pointers, locals), that they mix
+// with the plain types without a cast, that `sizeof` sees the true width, and a real
+// kernel32 call declared with them. Returns 42 iff all correct.
+#import std.c.{ c_char, c_short, c_int, c_uint, c_long, c_ulong, c_longlong, c_size_t, c_float, c_double, c_bool, c_string };
+
+#extern("kernel32", "lstrlenA")
+lstrlenA :: fn(s: c_string) -> c_int;
+
+#extern("kernel32", "GetCurrentThreadId")
+GetCurrentThreadId :: fn() -> c_ulong;
+
+Sample :: struct { n: c_int, ratio: c_float, wide: c_longlong, ok: c_bool }
+
+scale :: fn(x: c_float, by: c_int) -> c_float { return x * (by as c_float); }
+
+half :: fn(x: c_double) -> c_double { return x / 2.0; }
+
+bump :: fn(p: *c_int) { *p = *p + 1; }
+
+total :: fn(xs: []c_uint) -> c_size_t {
+    t: c_size_t = 0usize;
+    for x in xs { t += x as c_size_t; }
+    return t;
+}
+
+#entry
+main :: fn() -> i32 {
+    // Widths: char 1, short 2, int 4, long 4 (LLP64), long long 8, float 4, double 8, size_t 8.
+    if core::sizeof(c_char) != 1usize { return 1; }
+    if core::sizeof(c_short) != 2usize { return 2; }
+    if core::sizeof(c_int) != 4usize { return 3; }
+    if core::sizeof(c_long) != 4usize { return 4; }
+    if core::sizeof(c_longlong) != 8usize { return 5; }
+    if core::sizeof(c_float) != 4usize { return 6; }
+    if core::sizeof(c_double) != 8usize { return 7; }
+    if core::sizeof(c_size_t) != 8usize { return 8; }
+
+    // Interchangeable with the underlying type, in both directions, with no cast.
+    a: c_int = 40;
+    b: i32 = a;
+    a = b + 1;
+    f: c_float = 1.5;
+    g: f32 = f;
+    if a != 41 || g != 1.5 { return 9; }
+
+    // Parameters and returns.
+    if scale(2.5, 4) != 10.0 { return 10; }
+    if half(9.0) != 4.5 { return 11; }
+
+    // A pointer to an aliased type.
+    n: c_int = 41;
+    bump(&n);
+    if n != 42 { return 12; }
+
+    // A slice of an aliased type, accumulating into another alias.
+    vals: [3]c_uint = .{ 10u32, 20u32, 12u32 };
+    if total(vals[:]) != 42usize { return 13; }
+
+    // Struct fields.
+    s: Sample = .{ 7, 0.5, 5000000000i64, true };
+    if s.n != 7 || s.ratio != 0.5 || s.wide != 5000000000i64 || !s.ok { return 14; }
+
+    // A real C call, declared with the aliases.
+    if lstrlenA("hello".ptr) != 5 { return 15; }
+    if GetCurrentThreadId() == 0u32 { return 16; }
+
+    return 42;
+}

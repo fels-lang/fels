@@ -22,8 +22,36 @@ WindowShouldClose :: fn() -> bool;
 standalone linking directive (no symbols introduced) for a library you depend on
 but don't declare functions from directly.
 
+## C types: `std.c`
+
 `std.c` provides C-ABI type aliases (`c_int`, `c_long`, `c_size_t`, `c_string`, …)
-sized for 64-bit Windows (LLP64), so signatures can read like their C originals.
+sized for 64-bit Windows (LLP64), so signatures can read like their C originals:
+
+```gabbro
+#import std.c.{ c_int, c_string };
+
+#extern("kernel32", "lstrlenA")
+lstrlenA :: fn(s: c_string) -> c_int;       // int lstrlenA(const char *s)
+```
+
+They are [transparent aliases](02_types.md#type-aliases): a `c_int` *is* an `i32`, so
+values flow between the two with no cast, and `core::sizeof(c_int)` is 4.
+
+| alias                                 | Gabbro        | C                                    |
+|---------------------------------------|---------------|--------------------------------------|
+| `c_char`, `c_schar`, `c_uchar`        | `i8`, `i8`, `u8` | `char`, `signed char`, `unsigned char` |
+| `c_short`, `c_ushort`                 | `i16`, `u16`  | `short`, `unsigned short`            |
+| `c_int`, `c_uint`                     | `i32`, `u32`  | `int`, `unsigned int`                |
+| `c_long`, `c_ulong`                   | `i32`, `u32`  | `long`, `unsigned long` (LLP64)      |
+| `c_longlong`, `c_ulonglong`           | `i64`, `u64`  | `long long`, `unsigned long long`    |
+| `c_size_t`, `c_ssize_t`               | `usize`, `isize` | `size_t`, `ssize_t`/`ptrdiff_t`   |
+| `c_intptr`, `c_uintptr`, `c_voidptr`  | `isize`, `usize`, `usize` | `intptr_t`, `uintptr_t`, `void*` |
+| `c_float`, `c_double`                 | `f32`, `f64`  | `float`, `double`                    |
+| `c_bool`                              | `bool`        | `_Bool`                              |
+| `c_string`                            | `[*]const u8` | `const char*` (NUL-terminated)       |
+
+`c_char` is the signed `i8`, so a pointer to it does not accept a Gabbro string
+(`[*]const u8`); use `c_string` for `const char*` parameters.
 
 ### Naming a binding
 
