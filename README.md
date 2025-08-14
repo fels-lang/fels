@@ -127,7 +127,7 @@ w: *Writer = &file;   // conformance checked at compile time; dispatch via vtabl
 ```
 
 Plus distinct/newtype and opaque types, packed structs with sub-byte fields, integers
-`i8`–`i128` / `u1`–`u128`, `f32`/`f64`, and debug-mode traps for overflow,
+`i8`–`i64` / `u1`–`u64`, `f32`/`f64`, and debug-mode traps for overflow,
 divide-by-zero, bad shifts, out-of-bounds indexing, null deref, and invalid optional
 unwraps.
 
@@ -207,7 +207,7 @@ frontend is platform-independent.
 | Semantic analysis + typed IR (const-fold, branch, DCE) | done |
 | LLVM object/executable generation | Windows and Linux end-to-end; no macOS backend |
 | Structs, packed structs, enums (payloads + `match`) | done |
-| Integers `i8`–`i128`/`u1`–`u128`, floats `f32`/`f64` | done |
+| Integers `i8`–`i64`/`u1`–`u64`, floats `f32`/`f64` | done |
 | Pointers, arrays, slices, optionals (with debug checks) | done |
 | Casts, distinct/newtype, opaque types | done |
 | Functions, monomorphized generics, control flow, `match` | done |

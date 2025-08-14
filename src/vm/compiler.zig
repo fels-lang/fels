@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const ir = @import("../ir.zig");
 const instructions = @import("instructions.zig");
 const value = @import("value.zig");
+const layout = @import("../layout.zig");
 
 const Instr = instructions.Instr;
 const Opcode = instructions.Opcode;
@@ -1094,36 +1095,14 @@ const FnCompiler = struct {
         }
     }
 
-    /// Byte size of `ty` for `sizeof`, mirroring the tree-walker's `typeSize`
-    /// exactly. Returns null for types whose size this compiler can't yet
-    /// compute (enums, interfaces, …), so the caller falls back.
+    /// Byte size of `ty` for `sizeof`. Returns null for types whose layout isn't
+    /// modelled (payload enums, opaque handles, …), so the caller falls back.
     fn byteSize(self: *FnCompiler, ty: ir.IrType) ?u64 {
-        return switch (ty) {
-            .void => 0,
-            .bool, .byte => 1,
-            .i => |bits| (bits + 7) / 8,
-            .u => |bits| (bits + 7) / 8,
-            .f32 => 4,
-            .f64 => 8,
-            .usize, .isize, .addr => 8,
-            .ptr => 8,
-            .slice => 16, // ptr + len
-            .optional => |inner| if (inner.* == .ptr) 8 else blk: {
-                const s = self.byteSize(inner.*) orelse return null;
-                break :blk 1 + s;
-            },
-            .array => |arr| blk: {
-                const es = self.byteSize(arr.elem.*) orelse return null;
-                break :blk arr.len * es;
-            },
-            .struct_type => |name| blk: {
-                const def = self.structDef(name) orelse return null;
-                var total: u64 = 0;
-                for (def.fields) |f| total += self.byteSize(f.ty) orelse return null;
-                break :blk total;
-            },
-            else => null,
-        };
+        // The same layout the native backend gives the type (padding, `#packed`,
+        // `#align`), so `core::sizeof` and host buffer strides agree with the
+        // compiled program.
+        const l = layout.of(ty, self.module.structs) orelse return null;
+        return l.size;
     }
 
     /// Number of cells a value of `ty` occupies in zone memory.

@@ -86,6 +86,14 @@ pub const SymbolTable = struct {
         // generated `__fld_<S>` field navigators) sees every top-level symbol: it's
         // trusted and is generated *for* the user's types, which live in other files.
         const from_runtime = std.mem.eql(u8, file_name, "<runtime>");
+        // A user file's own declarations and imports shadow a same-named runtime
+        // symbol (a `CloseHandle` binding of its own); only then does the runtime's
+        // bare-named global apply.
+        if (!from_runtime) {
+            if (self.visible_names.get(file_name)) |visible| {
+                if (visible.get(name)) |id| return id;
+            }
+        }
         if (self.resolve(self.root_scope, name)) |id| {
             // Found by its bare name in the root scope (i.e. not collision-mangled).
             const symbol_value = self.symbol(id);
@@ -356,6 +364,8 @@ pub const FnPtrTy = struct {
 pub const TypeLayout = struct {
     kind: TypeKind,
     is_packed: bool,
+    /// `#align(N)` on a struct (0 = natural alignment).
+    alignment: u32 = 0,
 };
 
 pub const TypeKind = union(enum) {
@@ -797,17 +807,36 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
     // and the external decl would emit the same LLVM symbol and clash.
     var extern_syms = std.StringHashMap(void).init(allocator);
     defer extern_syms.deinit();
+    // Names the embedded `<runtime>` declares at the top level. The runtime keeps
+    // its bare names (the compiler and its generated code look them up that way), so
+    // a user declaration that reuses one — typically a Win32 binding such as
+    // `CloseHandle`, or a `STD_OUTPUT_HANDLE` constant — is the one that must take a
+    // module-qualified key; otherwise it fails as a duplicate of something the user
+    // never wrote and cannot see.
+    var runtime_names = std.StringHashMap(void).init(allocator);
+    defer runtime_names.deinit();
     for (module.items) |item| {
-        if (!isMangleable(item)) {
-            switch (item) {
-                .function => |f| if (externName(f.attrs)) |c_sym| {
-                    if (!std.mem.eql(u8, c_sym, f.name)) try extern_syms.put(c_sym, {});
-                },
-                else => {},
-            }
-            continue;
+        if (!isRuntimeItem(item)) continue;
+        if (item.name()) |nm| try runtime_names.put(nm, {});
+    }
+    // How many extern declarations bind each C symbol. One symbol bound more than
+    // once (a user's `CloseHandle` next to the runtime's, or a renamed alias) needs
+    // each declaration to keep its own IR name — and with it its own signature — and
+    // the backend then folds them onto the single LLVM function for the symbol.
+    var sym_claims = std.StringHashMap(u32).init(allocator);
+    defer sym_claims.deinit();
+    for (module.items) |item| {
+        switch (item) {
+            .function => |f| if (externName(f.attrs)) |c_sym| {
+                const claim = try sym_claims.getOrPut(c_sym);
+                claim.value_ptr.* = if (claim.found_existing) claim.value_ptr.* + 1 else 1;
+                if (!std.mem.eql(u8, c_sym, f.name)) try extern_syms.put(c_sym, {});
+            },
+            else => {},
         }
+        if (!isMangleable(item) and !isUserExtern(item)) continue;
         const nm = item.name() orelse continue;
+        if (runtime_names.contains(nm)) try colliding.put(nm, {});
         const gop = try first_file.getOrPut(nm);
         if (!gop.found_existing) {
             gop.value_ptr.* = item.fileName();
@@ -818,7 +847,14 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
 
     for (module.items) |item| {
         const name = item.name() orelse continue;
-        const link = if (isMangleable(item) and (colliding.contains(name) or extern_syms.contains(name)))
+        // A plain decl is also qualified when it shares the bare name of a C symbol
+        // claimed by a renamed extern; an extern only when its own name collides —
+        // its *linkage* name is its C symbol either way (set below).
+        const qualify = if (isMangleable(item))
+            colliding.contains(name) or extern_syms.contains(name)
+        else
+            isUserExtern(item) and colliding.contains(name);
+        const link = if (qualify)
             try std.fmt.allocPrint(allocator, "{s}${s}", .{ moduleSlug(allocator, item.fileName()) catch name, name })
         else
             name;
@@ -841,9 +877,12 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
         // across modules without colliding), but the *linkage* name — emitted for
         // the LLVM declaration and every call site via `linkNameFor` — becomes the
         // C symbol. When the gabbro name already equals the C name this is a no-op.
+        // The exception is a symbol bound by several declarations: each then keeps
+        // its unique root key as its IR name, and the backend declares the C symbol
+        // once (`IrFunction.extern_name`) while giving every declaration its own type.
         switch (item) {
             .function => |f| if (externName(f.attrs)) |c_sym| {
-                table.symbols.items[id].link_name = c_sym;
+                table.symbols.items[id].link_name = if ((sym_claims.get(c_sym) orelse 0) > 1) link else c_sym;
             },
             else => {},
         }
@@ -922,6 +961,23 @@ fn isMangleable(item: ast.Item) bool {
             !hasAttr(f.attrs, "export") and !hasAttr(f.attrs, "entry") and
             !std.mem.eql(u8, f.name, "main"),
         .const_decl => true,
+        else => false,
+    };
+}
+
+fn isRuntimeItem(item: ast.Item) bool {
+    return std.mem.eql(u8, item.fileName(), "<runtime>");
+}
+
+/// A user-module `#extern`/`#foreign` function. Unlike the other non-mangleable
+/// decls it may share a bare name with another module's extern (or with the
+/// runtime's), so its root-scope key can be module-qualified; its linkage name
+/// stays the C symbol.
+fn isUserExtern(item: ast.Item) bool {
+    if (isRuntimeItem(item)) return false;
+    return switch (item) {
+        .function => |f| externName(f.attrs) != null and
+            !hasAttr(f.attrs, "export") and !hasAttr(f.attrs, "entry"),
         else => false,
     };
 }
@@ -1203,6 +1259,25 @@ const Checker = struct {
             .span = span,
             .file = self.file,
         }) catch {};
+    }
+
+    /// The N of `#align(N)` on a type declaration, or 0 when it has none. N must be
+    /// an integer literal that is a power of two — anything else is rejected here
+    /// rather than silently dropped, since the layout it asks for would not exist.
+    fn alignAttrValue(self: *Checker, decl: ast.TypeDecl) SemanticError!u32 {
+        for (decl.attrs) |attr| {
+            if (!std.mem.eql(u8, attr.name, "align")) continue;
+            const n: i128 = if (attr.args.len == 1) switch (attr.args[0].kind) {
+                .int => |text| parseIntLiteral(text),
+                else => -1,
+            } else -1;
+            if (n < 1 or n > 4096 or (n & (n - 1)) != 0) {
+                self.emitError(attr.span, "`#align` takes one argument: a power-of-two alignment in bytes (1 to 4096)", .{});
+                return error.SemanticFailed;
+            }
+            return @intCast(n);
+        }
+        return 0;
     }
 
     fn emitError(self: *Checker, span: Span, comptime fmt: []const u8, args: anytype) void {
@@ -1579,6 +1654,7 @@ const Checker = struct {
                                 try self.env.layouts.put(id, .{
                                     .kind = .{ .struct_type = try fields.toOwnedSlice(self.allocator) },
                                     .is_packed = hasAttr(decl.attrs, "packed"),
+                                    .alignment = try self.alignAttrValue(decl),
                                 });
                             }
                         },
@@ -2631,7 +2707,10 @@ const Checker = struct {
                 break :blk .unknown;
             },
             .unary => |unary| switch (unary.op) {
-                .address_of => try self.ptrTo(try self.inferExpr(unary.expr.*)),
+                .address_of => blk: {
+                    try self.rejectPackedFieldAddress(unary.expr.*);
+                    break :blk try self.ptrTo(try self.inferExpr(unary.expr.*));
+                },
                 .deref => blk: {
                     const inner = try self.inferExpr(unary.expr.*);
                     break :blk switch (inner) {
@@ -4711,6 +4790,7 @@ const Checker = struct {
         try self.env.layouts.put(inst_id, .{
             .kind = .{ .struct_type = try fields.toOwnedSlice(self.allocator) },
             .is_packed = hasAttr(tmpl.attrs, "packed"),
+            .alignment = try self.alignAttrValue(tmpl),
         });
 
         return .{ .named = inst_id };
@@ -4990,6 +5070,46 @@ const Checker = struct {
             },
             else => false,
         };
+    }
+
+    /// Is `ty` (or what it points to) a `#packed` struct?
+    fn isPackedStruct(self: *Checker, ty: Ty) bool {
+        const type_id = switch (ty) {
+            .named => |id| id,
+            .pointer, .const_ptr => |inner| switch (inner.*) {
+                .named => |id| id,
+                else => return false,
+            },
+            else => return false,
+        };
+        const layout = self.env.layouts.get(type_id) orelse return false;
+        return layout.is_packed and layout.kind == .struct_type;
+    }
+
+    /// `&place` where `place` lies inside a field of a `#packed` struct. Such a field
+    /// can sit at any byte offset, and a `*T` carries no way to say "unaligned", so
+    /// loads through the pointer would assume an alignment the field does not have.
+    /// Reading or writing the field by value is fine (the compiler knows the struct
+    /// is packed), as is the address of the whole struct.
+    fn rejectPackedFieldAddress(self: *Checker, place: ast.Expr) SemanticError!void {
+        var cur = place;
+        while (true) {
+            switch (cur.kind) {
+                .field => |f| {
+                    const base_ty = try self.inferExpr(f.base.*);
+                    if (self.isPackedStruct(base_ty)) {
+                        self.emitErrorRich(place.span, "cannot take the address of field `{s}` of a packed struct", .{f.name}, .{
+                            .primary_label = "this field may be misaligned",
+                            .help = "read or write it by value, or take the address of the whole struct and use `core::unaligned_read` / `core::memcpy`",
+                        });
+                        return error.SemanticFailed;
+                    }
+                    cur = f.base.*;
+                },
+                .index => |ix| cur = ix.base.*,
+                else => return,
+            }
+        }
     }
 
     /// Field type by name, or null if `base_ty` is not a struct (or has no such

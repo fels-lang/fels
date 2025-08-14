@@ -47,12 +47,18 @@ fn lowerStructInit(cg: *ModuleCg, si: ir.StructInit) llvm.LLVMValueRef {
     const struct_ty = cg.struct_types.get(si.ty_name) orelse
         return llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(cg.ctx, 0));
 
-    const fields = cg.allocator.alloc(llvm.LLVMValueRef, si.fields.len) catch
+    // A `#align(N)` struct carries a zero-sized tail member beyond its declared
+    // fields (see structs.zig `alignTail`); a constant has to supply it too.
+    const elems: usize = @max(si.fields.len, llvm.LLVMCountStructElementTypes(struct_ty));
+    const fields = cg.allocator.alloc(llvm.LLVMValueRef, elems) catch
         return llvm.LLVMConstNull(struct_ty);
     defer cg.allocator.free(fields);
 
     for (si.fields, 0..) |f, i| {
         fields[i] = lowerConstInit(cg, f.value, .{ .struct_type = si.ty_name });
+    }
+    for (si.fields.len..elems) |i| {
+        fields[i] = llvm.LLVMConstNull(llvm.LLVMStructGetTypeAtIndex(struct_ty, @intCast(i)));
     }
     return llvm.LLVMConstNamedStruct(struct_ty, fields.ptr, @intCast(fields.len));
 }

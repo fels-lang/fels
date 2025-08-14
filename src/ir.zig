@@ -801,7 +801,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                     .name = mangled,
                     .fields = try ir_fields.toOwnedSlice(allocator),
                     .is_packed = layout.is_packed,
-                    .alignment = 0,
+                    .alignment = layout.alignment,
                 });
             },
             else => {},
@@ -4111,22 +4111,32 @@ const FunctionLowerer = struct {
     /// `expr!!` — unwrap or call the runtime panic path.
     fn lowerForceUnwrap(self: *FunctionLowerer, inner: ast.Expr, outer: ast.Expr) LowerError!Value {
         const lhs = try self.lowerExpr(inner);
-        const is_some = try self.emit(.bool, .{ .optional_is_some = lhs });
+        // `T ! E !!` traps on an error, `?T !!` on null; a fallible's flag and payload
+        // are not an optional's, so each reads its own (see `lowerNilCoalesce`).
+        const fallible = self.exprType(inner) == .fallible;
+        const has_value = if (fallible)
+            try self.emit(.bool, .{ .try_is_ok = lhs })
+        else
+            try self.emit(.bool, .{ .optional_is_some = lhs });
 
         const value_id = self.allocBlockId();
         const panic_id = self.allocBlockId();
         try self.terminate(.{ .cond_branch = .{
-            .cond = is_some,
+            .cond = has_value,
             .then_block = value_id,
             .else_block = panic_id,
         } });
 
         // All generated traps share the structured panic terminator.
         self.startBlock(panic_id, "force_unwrap.panic");
-        try self.terminatePanic("attempted to unwrap an empty optional", outer.span);
+        try self.terminatePanic(
+            if (fallible) "attempted to unwrap an error" else "attempted to unwrap an empty optional",
+            outer.span,
+        );
 
         // Happy path — extract the payload.
         self.startBlock(value_id, "force_unwrap.ok");
+        if (fallible) return try self.emit(self.exprType(outer), .{ .try_ok = lhs });
         return try self.emit(self.exprType(outer), .{ .optional_payload = lhs });
     }
 
@@ -4134,33 +4144,51 @@ const FunctionLowerer = struct {
     fn lowerNilCoalesce(self: *FunctionLowerer, nc: ast.NilCoalesceExpr, outer: ast.Expr) LowerError!Value {
         const lhs = try self.lowerExpr(nc.value.*);
         const result_ty = self.exprType(outer);
+        // `T ! E ?? d` falls back to `d` on an error; `?T ?? d` on null. The two
+        // carry their discriminant and payload differently, so each needs its own
+        // test and extraction — the optional ones read a fallible's slots wrongly.
+        const fallible = self.exprType(nc.value.*) == .fallible;
+        // Each `??` stores into its own local: a single shared name would take the
+        // type of the first one in the function and misread every later one of a
+        // different type (a slice result, then a struct result).
+        self.temp_id += 1;
+        const result_name = try std.fmt.allocPrint(self.allocator, "__coalesce_{d}", .{self.temp_id});
+        try self.local_types.put(result_name, result_ty);
 
-        const is_some = try self.emit(.bool, .{ .optional_is_some = lhs });
+        const has_value = if (fallible)
+            try self.emit(.bool, .{ .try_is_ok = lhs })
+        else
+            try self.emit(.bool, .{ .optional_is_some = lhs });
         const value_id = self.allocBlockId();
         const default_id = self.allocBlockId();
         const after_id = self.allocBlockId();
 
         try self.terminate(.{ .cond_branch = .{
-            .cond = is_some,
+            .cond = has_value,
             .then_block = value_id,
             .else_block = default_id,
         } });
 
         // Value path — extract payload.
         self.startBlock(value_id, "coalesce.value");
-        const payload = try self.emit(result_ty, .{ .optional_payload = lhs });
-        try self.emitNoResult(result_ty, .{ .store_local = .{ .name = "__coalesce", .value = payload } });
+        const payload = if (fallible)
+            try self.emit(result_ty, .{ .try_ok = lhs })
+        else
+            try self.emit(result_ty, .{ .optional_payload = lhs });
+        try self.emitNoResult(result_ty, .{ .store_local = .{ .name = result_name, .value = payload } });
         try self.terminate(.{ .branch = after_id });
 
         // Default path — evaluate the default expression.
         self.startBlock(default_id, "coalesce.default");
-        const def_val = try self.lowerExpr(nc.default.*);
-        try self.emitNoResult(result_ty, .{ .store_local = .{ .name = "__coalesce", .value = def_val } });
+        // Lower the default against the result type: an untyped literal such as
+        // `.{ 9, 9 }` or a bare integer has no type of its own to infer from.
+        const def_val = try self.lowerExprAs(nc.default.*, result_ty);
+        try self.emitNoResult(result_ty, .{ .store_local = .{ .name = result_name, .value = def_val } });
         try self.terminate(.{ .branch = after_id });
 
         // After — load the result.
         self.startBlock(after_id, "coalesce.after");
-        return .{ .local = "__coalesce" };
+        return .{ .local = result_name };
     }
 
     fn evalComptimeIf(self: *FunctionLowerer, ci: ast.ComptimeIfStmt) ?ast.Block {
