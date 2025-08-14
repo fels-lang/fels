@@ -3108,6 +3108,246 @@ test "exe: constants fold through a chain of constants" {
     try std.testing.expectEqual(@as(u32, 0), code);
 }
 
+test "exe: a dereference as a call argument loads through the pointer" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: `f(*p)` and `g(1, *p)` failed with "unknown type `p`" — the parser
+    // read `*name` in an argument list as a pointer type (which a few builtins and
+    // generics with explicit type arguments want). A variable is loaded, so it is a
+    // dereference; `v := *p; f(v)` was the workaround.
+    const code = try compileAndRun(arena.allocator(),
+        \\Point :: struct { x: i32, y: i32 }
+        \\inc :: fn(x: i32) -> i32 { return x + 1; }
+        \\add :: fn(a: i32, b: i32) -> i32 { return a + b; }
+        \\sum :: fn(p: Point) -> i32 { return p.x + p.y; }
+        \\first :: fn(q: *i32) -> i32 { return *q; }
+        \\bump :: fn(q: *i32) { *q = inc(*q); }
+        \\by_param :: fn(byte: *i32) -> i32 { return inc(*byte); }
+        \\main :: fn() -> i32 {
+        \\    v: i32 = 4;
+        \\    w: i32 = 10;
+        \\    p := &v;
+        \\    q := &w;
+        \\    pp := &p;
+        \\    pt: Point = .{ .x = 20, .y = 30 };
+        \\    sp := &pt;
+        \\    if inc(*p) != 5 { return 10; }              // one argument
+        \\    if add(1, *p) != 5 { return 20; }           // the last of two
+        \\    if add(*p, *q) != 14 { return 30; }         // both
+        \\    if inc(x: *p) != 5 { return 40; }           // a named argument
+        \\    if inc(add(1, *p)) != 6 { return 50; }      // a nested call
+        \\    if inc(**pp) != 5 { return 60; }            // through two levels
+        \\    if first(*pp) != 4 { return 70; }           // `*pp` is the `*i32` that `first` takes
+        \\    if sum(*sp) != 50 { return 80; }            // a struct, copied out through a pointer
+        \\    addr := &w;                                 // `addr` and `byte` are builtin type names;
+        \\    byte := &v;                                 // a variable of that name shadows the type
+        \\    if add(*addr, *byte) != 14 { return 90; }
+        \\    if by_param(&w) != 11 { return 100; }       // and so does a parameter
+        \\    k := fn() -> i32 { return inc(*p); };       // a captured pointer, loaded in a lambda
+        \\    if k() != 5 { return 110; }
+        \\    bump(&v);                                   // a store, then a load as an argument
+        \\    if inc(*p) != 6 { return 120; }
+        \\    if core::sizeof(*p) != 4usize { return 130; }   // `sizeof` of a variable: what it points to,
+        \\    if core::sizeof(**pp) != 4usize { return 140; } // not the pointer
+        \\    return 0;
+        \\}
+    , "exe_deref_call_arg");
+    try std.testing.expectEqual(@as(u32, 0), code);
+}
+
+test "exe: a pointer type is still a type argument (`*T`, and now `**T`)" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `*name` in an argument list is a dereference unless `name` is a type; the cases
+    // below name one — a struct, a lowercase alias, a type parameter — and must keep
+    // being read as `*T`. `**T` used to be refused: it parsed as two dereferences.
+    const code = try compileAndRun(arena.allocator(),
+        \\Node :: struct { val: i32 }
+        \\c_int :: i32;
+        \\ptr_size :: fn($T: type) -> usize { return core::sizeof(*T); }
+        \\load :: fn($T: type, addr: usize) -> T {
+        \\    p := unsafe core::ptr_from_int(*T, addr);
+        \\    return unsafe *p;
+        \\}
+        \\pick :: fn($T: type, a: T, b: T) -> T { return b; }
+        \\main :: fn() -> i32 {
+        \\    if core::sizeof(*Node) != 8usize { return 10; }
+        \\    if core::sizeof(**Node) != 8usize { return 20; }
+        \\    if core::sizeof(*c_int) != 8usize { return 30; }    // an alias spelled in lowercase
+        \\    if core::sizeof(**u8) != 8usize { return 40; }
+        \\    if ptr_size(Node) != 8usize { return 50; }          // `*T`, with `T` a type parameter
+        \\    n: Node = .{ .val = 7 };
+        \\    np := &n;
+        \\    npp := &np;
+        \\    a := unsafe (np as usize);
+        \\    back := unsafe core::ptr_from_int(*Node, a);
+        \\    if back.val != 7 { return 60; }
+        \\    aa := unsafe (npp as usize);
+        \\    back2 := unsafe core::ptr_from_int(**Node, aa);     // a `**Node` that can be loaded through
+        \\    if (*back2).val != 7 { return 70; }
+        \\    if pick(*Node, np, np).val != 7 { return 80; }      // an explicit type argument of a generic
+        \\    v: i32 = 5;
+        \\    if load(i32, unsafe ((&v) as usize)) != 5 { return 90; }
+        \\    return 0;
+        \\}
+    , "exe_pointer_type_args");
+    try std.testing.expectEqual(@as(u32, 0), code);
+}
+
+test "exe: an arena allocates pointers and pointers to pointers" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `a.new_slice(*Node, n)` is how a tree keeps its children (examples/diskscan) and is a
+    // call through UFCS with an explicit type argument; `a.new(**Node)` had no spelling.
+    const code = try compileAndRun(arena.allocator(),
+        \\Node :: struct { val: i32 }
+        \\main :: fn() -> i32 {
+        \\    zone a: Arena {
+        \\        n1 := a.new(Node);
+        \\        n1.val = 30;
+        \\        n2 := a.new(Node);
+        \\        n2.val = 12;
+        \\        ptrs := a.new_slice(*Node, 2);
+        \\        ptrs[0] = n1;
+        \\        ptrs[1] = n2;
+        \\        pp := a.new(**Node);
+        \\        *pp = &ptrs[1];
+        \\        return ptrs[0].val + (**pp).val;     // 30 + 12
+        \\    }
+        \\}
+    , "exe_arena_pointer_types");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: a macro takes a pointer type as an argument" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A macro argument is parsed like any call argument, so `*Node` arrives as a
+    // dereference. Spliced into a type position it must still be a pointer type, and
+    // spliced into a call (`sizeof`) it is resolved there.
+    const code = try compileAndRun(arena.allocator(),
+        \\Node :: struct { val: i32 }
+        \\probe :: macro(out: Expr, ty: Expr) {
+        \\    return #quote {
+        \\        p: $ty = null;                         // type-position splice
+        \\        if p == null { $out = core::sizeof($ty) as i32; }
+        \\    };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    r: i32 = 0;
+        \\    #insert probe(r, *Node);
+        \\    s: i32 = 0;
+        \\    #insert probe(s, **Node);
+        \\    return r + s;                              // 8 + 8
+        \\}
+    , "exe_macro_pointer_type");
+    try std.testing.expectEqual(@as(u32, 16), code);
+}
+
+test "exe: the id of a pointer type folds in a constant, in a #run and in a #test" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `core::type_id` takes a type, and `*Node` in its argument list is read as a load until the
+    // checker knows better. IR must see the type: lowered as a load through `Node`, the argument
+    // stops the comptime VM ("constant initializer could not be folded", "`#run` expression could
+    // not be evaluated", a trapping `#test`) and, natively, only a later pass removes it.
+    const code = try compileAndRun(arena.allocator(),
+        \\Node :: struct { val: i32 }
+        \\ID    :: core::type_id(*Node);
+        \\ID2   :: #run core::type_id(**Node);
+        \\#test
+        \\ids_agree :: fn(t: *Test) { t.eq(core::type_id(*Node) == core::type_id(*Node), true); }
+        \\again :: fn() -> usize { return core::type_id(**Node); }
+        \\main :: fn() -> i32 {
+        \\    if ID == 0usize { return 10; }
+        \\    if ID2 == 0usize { return 20; }
+        \\    if core::type_id(*Node) != ID { return 30; }
+        \\    if again() != ID2 { return 40; }
+        \\    if ID == ID2 { return 50; }          // a pointer and a pointer to a pointer differ
+        \\    return 0;
+        \\}
+    , "exe_type_id_pointer");
+    try std.testing.expectEqual(@as(u32, 0), code);
+}
+
+test "exe: a struct field's default may take the id, name and info of a pointer type" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: the checker never looks at a field's default, so the type argument written
+    // as `*Node` there stayed a load, IR could not tell it from a value, and the default was
+    // the id of an unknown type (and a `TypeInfo` that matched nothing) with no diagnostic.
+    const code = try compileAndRun(arena.allocator(),
+        \\Node :: struct { val: i32 }
+        \\Hold :: struct {
+        \\    id: usize = core::type_id(*Node),
+        \\    n: usize = core::type_name(*Node).len,
+        \\    info: TypeInfo = core::type_info(**Node),
+        \\    k: i32 = 0,
+        \\}
+        \\Boxed :: struct($T: type) { id: usize = core::type_id(*Node), v: T }
+        \\main :: fn() -> i32 {
+        \\    h: Hold = .{};
+        \\    if h.id != core::type_id(*Node) { return 10; }
+        \\    if h.n != core::type_name(*Node).len { return 20; }
+        \\    match h.info { .pointer => {} else => { return 30; } }
+        \\    b: Boxed(i32) = .{ .v = 3 };
+        \\    if b.id != core::type_id(*Node) { return 40; }
+        \\    if b.id == core::type_id(**Node) { return 50; }    // a pointer and a pointer to a pointer differ
+        \\    return 0;
+        \\}
+    , "exe_field_default_type_args");
+    try std.testing.expectEqual(@as(u32, 0), code);
+}
+
+test "exe: the Any navigation the compiler writes is not captured by a user type named like its locals" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The code behind `core::any(x)` is generated Gabbro source: `__fld_Holder(d, i)` declares
+    // `p` and says `core::type_id(*p)` for a field of type `*p`. Both are the user's struct `p`,
+    // so a variable of that name in scope must not turn the argument into a load — it gave the
+    // wrong type id for the field (and, for a struct named `i`, no program at all).
+    const walk =
+        \\Holder :: struct { link: *NAME, extra: i32 }
+        \\main :: fn() -> i32 {
+        \\    n: NAME = .{ .x = 30 };
+        \\    h: Holder = .{ &n, 12 };
+        \\    a := core::any(h);
+        \\    total: i32 = 0;
+        \\    nf := any_field_count(a);
+        \\    k: usize = 0;
+        \\    while k < nf {
+        \\        if any_field_at(a, k) |f| {
+        \\            if any_as(f, i32) |x| { total = total + x; }
+        \\            if any_deref(f) |dd| { if any_field_at(dd, 0usize) |nv| { if any_as(nv, i32) |x| { total = total + x; } } }
+        \\        }
+        \\        k = k + 1usize;
+        \\    }
+        \\    return total;
+        \\}
+    ;
+    inline for (.{ "p", "i" }) |name| {
+        const src = try std.fmt.allocPrint(arena.allocator(), "{s} :: struct {{ x: i32 }}\n{s}", .{
+            name, try std.mem.replaceOwned(u8, arena.allocator(), walk, "NAME", name),
+        });
+        const code = try compileAndRun(arena.allocator(), src, "exe_any_nav_" ++ name);
+        try std.testing.expectEqual(@as(u32, 42), code);
+    }
+}
+
 test "exe: a bare `.variant` in a struct literal keeps its variant" {
     if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

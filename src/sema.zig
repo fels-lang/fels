@@ -2741,6 +2741,14 @@ const Checker = struct {
                         .pointer, .const_ptr => |p| p.*,
                         .slice => |p| p.*,
                         else => {
+                            // `take(*Node)`, `Node` a type: a pointer type, which is an argument
+                            // only where one is asked for, never a value.
+                            if (derefChainBase(expr)) |name| if (self.lookupLocal(name) == null and self.identIsType(name)) {
+                                self.emitErrorRich(expr.span, "`{s}` is a type, so `*{s}` is a pointer type, not a value", .{ name, name }, .{
+                                    .help = "a type is an argument only where one is asked for: the first argument of `core::sizeof` and the like, or an explicit type argument of a generic function",
+                                });
+                                return error.SemanticFailed;
+                            };
                             self.emitError(expr.span, "cannot dereference value of type `{s}`", .{self.formatTy(inner)});
                             return error.SemanticFailed;
                         },
@@ -2870,6 +2878,7 @@ const Checker = struct {
                 break :blk ok_ty;
             },
             .call => |call| blk: {
+                try self.resolveTypeArgs(call);
                 const call_ty = try self.inferCall(call);
                 // `inferCall` already infers value arguments. Re-infer only those
                 // not yet typed, and skip any the callee consumed as a *type*
@@ -4111,6 +4120,54 @@ const Checker = struct {
         };
     }
 
+    /// The first argument of a `core::` builtin that takes a type, written `*name` or
+    /// `**name` (`core::sizeof(**Header)`, `core::ptr_from_int(*c_char, addr)`), is a
+    /// pointer type, but the parser reads it as a dereference: it keeps no scopes, and a
+    /// type may come from an import. Here the callee is known (`FirstArg`). A builtin that
+    /// takes only a type gets `name` as that type whatever else it is, so a variable of
+    /// the same name cannot hide it. `sizeof` and the like also take an expression:
+    /// `*name` is a type if `name` is one, a load if it is only a variable
+    /// (`core::sizeof(**pp)` is the size of what `pp` points to), and an unknown type if it
+    /// is neither. (The explicit type arguments of a generic function are read as types by
+    /// `inferTypeArg`, wherever they stand, and any other `*name` is a dereference.)
+    /// A pointer type is rewritten into the `.type_ref` the parser used to produce for it.
+    /// That is done in the tree itself: IR, the comptime VM and the `where` evaluator read
+    /// the arguments again after this pass, and would lower anything but a `.type_ref` in a
+    /// type position as a value, here a load through `Node`.
+    fn resolveTypeArgs(self: *Checker, call: ast.CallExpr) SemanticError!void {
+        const wanted = firstArgWanted(call.callee.*);
+        if (wanted == .none or call.args.len == 0) return;
+        const arg = call.args[0];
+        const expr = callArgExpr(arg);
+        const name = derefChainBase(expr) orelse return;
+        const ty = self.exprToTypeRef(expr) orelse return error.OutOfMemory;
+        if (wanted == .type_or_value and !self.identIsType(name)) {
+            if (self.identIsValue(name)) return;
+            // Neither a type nor any name: say so as the type it most likely meant ("unknown
+            // type `Nod`", "did you mean `Node`?"). The tree is left as it was, for the name
+            // may be a variable that code generated at compile time brings in later.
+            _ = try self.typeFromRef(ty);
+        }
+        const as_type: ast.Expr = .{ .id = expr.id, .kind = .{ .type_ref = ty }, .span = expr.span };
+        call.setArg(0, switch (arg) {
+            .positional => .{ .positional = as_type },
+            .named => |named| .{ .named = .{ .name = named.name, .value = as_type } },
+        });
+    }
+
+    /// Whether `name` is a type parameter, `Self`, a declared type or a builtin type, a
+    /// variable of that name notwithstanding.
+    fn identIsType(self: *Checker, name: []const u8) bool {
+        if (self.resolveTypeParam(name) != null or std.mem.eql(u8, name, "Self")) return true;
+        if (self.resolveSymbol(name)) |id| return self.symbols.symbol(id).kind == .type;
+        return fromBuiltinName(name) != null;
+    }
+
+    /// Whether `name` is a local variable or a declared name (a function, a constant, a global).
+    fn identIsValue(self: *Checker, name: []const u8) bool {
+        return self.lookupLocal(name) != null or self.resolveSymbol(name) != null;
+    }
+
     fn inferTypeArg(self: *Checker, expr: ast.Expr) SemanticError!Ty {
         // Record the resolved type under this expression's id so the argument
         // re-inference pass in `inferExpr` (`.call`) skips it instead of trying
@@ -4123,6 +4180,15 @@ const Checker = struct {
     fn inferTypeArgImpl(self: *Checker, expr: ast.Expr) SemanticError!Ty {
         return switch (expr.kind) {
             .type_ref => |ty| try self.typeFromRef(ty),
+            // `*T` / `**T`: the parser read a pointer type as a dereference, but a type
+            // argument position is never one, whatever else the name is in scope.
+            .unary => {
+                const ty = self.exprToTypeRef(expr) orelse {
+                    self.emitError(expr.span, "expected a type argument", .{});
+                    return error.SemanticFailed;
+                };
+                return try self.typeFromRef(ty);
+            },
             .ident => |name| {
                 if (self.resolveTypeParam(name)) |t| return t;
                 if (fromBuiltinName(name)) |t| return t;
@@ -4180,6 +4246,14 @@ const Checker = struct {
         return switch (expr.kind) {
             .type_ref => |t| t,
             .ident => |name| .{ .named = .{ .name = name, .span = expr.span } },
+            // `*T` in a type-argument list (`List(*Node)`) reads as a dereference.
+            .unary => |u| blk: {
+                if (u.op != .deref) break :blk null;
+                const pointee = self.exprToTypeRef(u.expr.*) orelse break :blk null;
+                const inner = self.allocator.create(ast.TypeRef) catch break :blk null;
+                inner.* = pointee;
+                break :blk .{ .pointer = .{ .inner = inner, .span = expr.span } };
+            },
             .call => |call| blk: {
                 if (call.callee.kind != .ident) break :blk null;
                 var targs: std.ArrayList(ast.TypeRef) = .empty;
@@ -5384,15 +5458,15 @@ const Checker = struct {
     }
 
     /// The type named by a builtin's first argument, or a diagnostic saying it is not one.
-    /// (Only a pointer to a single name or keyword, `*Chunk` / `*u8`, is read as a type in an
-    /// argument; anything else, such as `**Chunk`, is an expression.)
+    /// (`*Chunk` and `**Chunk` are pointer types by now: `resolveTypeArgs` made them so. What
+    /// fails here is a value, such as `5usize`, or something spelled no way a type is.)
     fn requireTypeArg(self: *Checker, call: ast.CallExpr, builtin_name: []const u8) SemanticError!Ty {
         if (self.firstTypeArg(call)) |ty| return ty;
         const span = if (call.args.len > 0) switch (call.args[0]) {
             .positional => |e| e.span,
             .named => |n| n.value.span,
         } else call.callee.span;
-        self.emitError(span, "the first argument of `{s}` must be a type; a pointer type here is written `*T` (one level), so name a pointer-to-pointer through an alias", .{builtin_name});
+        self.emitError(span, "the first argument of `{s}` must be a type", .{builtin_name});
         return error.SemanticFailed;
     }
 
@@ -6034,6 +6108,42 @@ fn coreRename(member: []const u8) []const u8 {
     if (std.mem.eql(u8, member, "narrow")) return "truncate_to";
     if (std.mem.eql(u8, member, "slice_raw")) return "slice_from_raw_parts";
     return member;
+}
+
+/// What a `core::` builtin makes of its first argument.
+const FirstArg = enum {
+    /// Not a builtin that takes a type.
+    none,
+    /// A type, or an expression whose type is meant: `core::sizeof(**pp)` is the size of what
+    /// `pp` points to.
+    type_or_value,
+    /// Only a type will do.
+    type_only,
+};
+
+fn firstArgWanted(callee: ast.Expr) FirstArg {
+    const sa = switch (callee.kind) {
+        .scope_access => |sa| sa,
+        else => return .none,
+    };
+    if (!isCoreNamespace(sa)) return .none;
+    const name = coreRename(sa.member);
+    inline for (.{ "sizeof", "type_name", "type_info", "typeid_of" }) |b|
+        if (std.mem.eql(u8, name, b)) return .type_or_value;
+    inline for (.{
+        "truncate_to", "ptr_from_int", "unaligned_read", "slice_from_raw_parts",
+        "align_of",    "offset_of",
+    }) |b|
+        if (std.mem.eql(u8, name, b)) return .type_only;
+    return .none;
+}
+
+/// The name under a run of dereferences, `p` in `*p` and `**p`, or null for anything else.
+fn derefChainBase(expr: ast.Expr) ?[]const u8 {
+    var cur = expr;
+    var depth: usize = 0;
+    while (cur.kind == .unary and cur.kind.unary.op == .deref) : (cur = cur.kind.unary.expr.*) depth += 1;
+    return if (depth > 0 and cur.kind == .ident) cur.kind.ident else null;
 }
 
 /// A `core::` math/bit builtin that returns its FIRST argument's type

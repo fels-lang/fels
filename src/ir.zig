@@ -3580,13 +3580,14 @@ const FunctionLowerer = struct {
                     };
                     break :blk try self.lowerRawFnArg(fn_arg);
                 }
-                // sizeof/type_info/type_name take a TYPE as their sole argument,
-                // not a value — it goes into `type_arg`, never lowered as a value
-                // (lowering a type parameter `T` as a value produces a bad reg
-                // and crashes a later pass).
+                // sizeof/type_info/type_name/typeid_of take a TYPE as their sole
+                // argument, not a value — it goes into `type_arg`, never lowered as
+                // a value (lowering a type parameter `T` as a value produces a bad
+                // reg and crashes a later pass).
                 const is_type_arg_builtin = std.mem.eql(u8, callee_name, "sizeof") or
                     std.mem.eql(u8, callee_name, "type_info") or
-                    std.mem.eql(u8, callee_name, "type_name");
+                    std.mem.eql(u8, callee_name, "type_name") or
+                    std.mem.eql(u8, callee_name, "typeid_of");
                 // These take a TYPE as their first argument (the rest are
                 // values). The type is not lowered as a value — it would crash
                 // on a type parameter `T` — but a placeholder keeps the value
@@ -5031,6 +5032,15 @@ const FunctionLowerer = struct {
                         break :blk lowerSemaTypeWithEnv(self.allocator, arg.ty, self.types, self.symbols) catch .unknown;
                 }
                 break :blk lowerNamedType(name);
+            },
+            // `*T` the checker left a dereference: the explicit type argument of a generic
+            // function (sema records its type), or an argument in a place the checker never
+            // looks at, such as a struct field's default value (`id: usize =
+            // core::type_id(*Node)`), where the pointer to what it names is meant.
+            .unary => |u| blk: {
+                const known = self.exprType(expr);
+                if (u.op != .deref or known != .unknown) break :blk known;
+                break :blk .{ .ptr = try boxType(self.allocator, try self.lowerTypeArg(u.expr.*)) };
             },
             // Generic instantiation (e.g. `List(i32)`) parses as a call. Sema
             // records its resolved type in `expr_types`; reuse that so the

@@ -544,7 +544,7 @@ const Expander = struct {
     fn substType(self: *Expander, ty: ast.TypeRef, env: *Env) ExpandError!ast.TypeRef {
         return switch (ty) {
             .type_param => |tp| if (env.get(tp.name)) |arg|
-                (exprToTypeRef(arg) orelse fail("macro parameter `${s}` cannot be used as a type", .{tp.name}))
+                (exprToTypeRef(self.arena, arg) orelse fail("macro parameter `${s}` cannot be used as a type", .{tp.name}))
             else
                 ty,
             .pointer => |p| .{ .pointer = .{ .is_const = p.is_const, .is_volatile = p.is_volatile, .inner = try self.dupType(try self.substType(p.inner.*, env)), .span = p.span } },
@@ -573,11 +573,19 @@ const Expander = struct {
 };
 
 /// A macro argument used in type position (`x: $t = …`) — convert the argument
-/// expr to a type. Bare type names parse as `.type_ref`; identifiers to `.named`.
-fn exprToTypeRef(e: ast.Expr) ?ast.TypeRef {
+/// expr to a type. Bare type names parse as `.type_ref`; identifiers to `.named`;
+/// `*Name` (the parser reads it as a dereference) to a pointer.
+fn exprToTypeRef(arena: std.mem.Allocator, e: ast.Expr) ?ast.TypeRef {
     return switch (e.kind) {
         .type_ref => |tr| tr,
         .ident => |name| .{ .named = .{ .name = name, .span = e.span } },
+        .unary => |u| blk: {
+            if (u.op != .deref) break :blk null;
+            const pointee = exprToTypeRef(arena, u.expr.*) orelse break :blk null;
+            const inner = arena.create(ast.TypeRef) catch break :blk null;
+            inner.* = pointee;
+            break :blk .{ .pointer = .{ .inner = inner, .span = e.span } };
+        },
         else => null,
     };
 }

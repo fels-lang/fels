@@ -602,3 +602,35 @@ test "modules: generic extension methods retain explicit type arguments" {
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(module);
 }
+
+test "modules: `*name` in an argument is a pointer type for an imported type, a dereference for a variable" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The parser cannot know that `Chunk` and `word` are types: they exist only in `lib`, and
+    // `word` is spelled in lowercase like the aliases of std.c. The checker resolves them
+    // through the import, and still reads `*p` on a local as a load.
+    const lib =
+        \\pub Chunk :: struct { next: usize, size: usize }
+        \\pub word :: usize;
+        \\pub twice :: fn(x: i32) -> i32 { return x * 2; }
+    ;
+    const app =
+        \\#import lib.{ Chunk, word, twice };
+        \\run :: fn() -> usize {
+        \\    v: i32 = 21;
+        \\    p := &v;
+        \\    if twice(*p) != 42 { return 0usize; }
+        \\    return core::sizeof(*Chunk) + core::sizeof(**Chunk) + core::sizeof(*word);
+        \\}
+    ;
+
+    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "lib.gab", .source = lib },
+        .{ .file_name = "app.gab", .source = app },
+    });
+    defer fe.deinit(arena.allocator());
+
+    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    try gabbro.ir_mod.validateModule(module);
+}
