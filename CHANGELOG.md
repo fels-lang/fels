@@ -70,6 +70,13 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- **A local array of `fn` values crashed the code generator.** `c: [2]fn(i32) -> i32 = .{ dbl, neg };`
+  stored bare function pointers into slots that are 16-byte `{ fn, env }` closures, and LLVM
+  segfaulted emitting the object, at `-O0` and `-O2` and in 0.1.1. The thin pointer a `fn`
+  struct field holds was applied to array elements too — which is also why a lambda or a
+  local as an element was refused as "a C callback argument". An element is now an ordinary
+  function value, so `c[i](x)` calls it and `f := c[i]` copies it out. A `fn` struct field
+  and an `extern fn` element are still thin pointers.
 - **Wrapping arithmetic, shifts, `~` and casts did not drop bits at compile time.** The VM
   computes in 128 bits and kept what a narrower type would have lost, so `0xFFFFFFFFu32 +% 1`
   was `4294967296`, `300u32 as u8` was `300`, and a xorshift generator or an FNV hash run in a

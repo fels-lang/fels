@@ -175,9 +175,6 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
   parameter. The same for a field (`p.x = 50`) or the whole value of a struct parameter, and
   `a[0] = 60` on an array parameter crashes (access violation). Present in 0.1.1. Until it is
   fixed, copy the parameter into a local first.
-- **A local array of `fn` values crashes the code generator.** `c: [2]fn(i32) -> i32 = .{ dbl, neg };`
-  builds thin pointers for elements that are 16-byte closures (the same fault in 0.1.1). An
-  array of `extern fn(i32) -> i32`, or a global array of `fn`, works.
 - **A bare `.variant` compared with a plain enum value is wrong.** `d == .south` for a
   payload-less `enum` is false for every value at `-O0` and true for every value at `-O2`,
   because the bare `.south` has no type to lower from. `d == Dir.south` and `match d`

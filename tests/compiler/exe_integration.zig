@@ -3979,3 +3979,89 @@ test "exe: an alias of a declared type is that type in every position" {
     , "exe_alias_positions");
     try std.testing.expectEqual(@as(u32, 0), code);
 }
+
+test "exe: a local array of `fn` values holds closures - named, lambda, capturing, or a local" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `c: [2]fn(i32) -> i32 = .{ dbl, neg }` stored bare code addresses into slots that are 16-byte
+    // `{ fn, env }` closures - the thin pointer a `fn` struct FIELD holds was applied to array
+    // elements too - and LLVM crashed emitting the object, at -O0 and -O2. With a lambda or a local
+    // as the element it was refused as "a C callback argument". An element is now an ordinary
+    // function value: called straight through the index, or copied out into a local and called.
+    // `K` runs the same literal in the comptime VM, which used to be unable to evaluate it.
+    const code = try compileAndRun(arena.allocator(),
+        \\dbl :: fn(x: i32) -> i32 { return x * 2; }
+        \\neg :: fn(x: i32) -> i32 { return -x; }
+        \\Table :: struct { n: i32, ops: [2]fn(i32) -> i32 }
+        \\fold :: fn() -> i32 {
+        \\    c: [2]fn(i32) -> i32 = .{ dbl, neg };
+        \\    return c[0](21) + c[1](0);
+        \\}
+        \\K :: #run fold();
+        \\main :: fn() -> i32 {
+        \\    c: [2]fn(i32) -> i32 = .{ dbl, neg };
+        \\    if c[0](21) != 42 { return 1; }
+        \\    if c[1](21) != -21 { return 2; }
+        \\    i := 1usize;
+        \\    if c[i](5) != -5 { return 3; }
+        \\    copy := c[1];
+        \\    if copy(3) != -3 { return 4; }
+        \\    c[1] = dbl;
+        \\    if c[1](4) != 8 { return 5; }
+        \\
+        \\    base: i32 = 100;
+        \\    m: [2]fn(i32) -> i32 = .{ fn(v: i32) -> i32 { return v + 1; }, fn(v: i32) -> i32 { return base + v; } };
+        \\    if m[0](41) != 42 { return 6; }
+        \\    if m[1](5) != 105 { return 7; }
+        \\    f := m[1];
+        \\    if f(1) != 101 { return 8; }
+        \\
+        \\    a := dbl;
+        \\    b := neg;
+        \\    held: [2]fn(i32) -> i32 = .{ a, b };
+        \\    if held[0](21) != 42 { return 9; }
+        \\    if held[1](7) != -7 { return 10; }
+        \\
+        \\    t: Table = .{ 9, .{ dbl, neg } };
+        \\    if t.ops[1](t.n) != -9 { return 11; }
+        \\    grid: [2][2]fn(i32) -> i32 = .{ .{ dbl, neg }, .{ neg, dbl } };
+        \\    if grid[1][0](4) != -4 { return 12; }
+        \\    if K != 42 { return 13; }
+        \\    return 42;
+        \\}
+    , "exe_fn_array_local");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: a `fn` struct field and an `extern fn` element stay thin pointers next to a `fn` array" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The array rule must not leak into structs: a `fn` FIELD keeps the 8-byte pointer a C struct
+    // needs, also when the struct is itself an array element, and an `extern fn` element is a bare
+    // code address wherever it sits. (A closure in `Box.op` would make `Box` 24 bytes, not 16.)
+    const code = try compileAndRun(arena.allocator(),
+        \\dbl :: fn(x: i32) -> i32 { return x * 2; }
+        \\neg :: fn(x: i32) -> i32 { return -x; }
+        \\Box :: struct { op: fn(i32) -> i32, n: i32 }
+        \\Vt :: struct { ops: [2]extern fn(i32) -> i32 }
+        \\main :: fn() -> i32 {
+        \\    if (core::sizeof(Box) as i32) != 16 { return 1; }
+        \\    bs: [2]Box = .{ .{ dbl, 21 }, .{ neg, 9 } };
+        \\    if bs[0].op(bs[0].n) != 42 { return 2; }
+        \\    if bs[1].op(bs[1].n) != -9 { return 3; }
+        \\    v: Vt = .{ .{ dbl, neg } };
+        \\    if v.ops[0](21) != 42 { return 4; }
+        \\    if v.ops[1](9) != -9 { return 5; }
+        \\    h: [2]extern fn(i32) -> i32 = .{ dbl, neg };
+        \\    if h[1](9) != -9 { return 6; }
+        \\    s: []fn(i32) -> i32 = .{ dbl, neg };
+        \\    if s[0](21) != 42 { return 7; }
+        \\    return 42;
+        \\}
+    , "exe_fn_array_thin_fields");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
