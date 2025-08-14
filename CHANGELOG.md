@@ -3,7 +3,12 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.2.0 — 2026-10-10
+
+A feature release. It adds what a real Windows program needs: aggregate data in the image,
+compile-time tables, a thread/lock/COM standard library, and layout queries; and it fixes
+several miscompilations found while building one (`?` skipping `defer`, arrays of closures,
+`f(*p)` parsing).
 
 ### Added
 
