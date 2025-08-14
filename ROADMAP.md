@@ -186,6 +186,11 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
   as `unknown`, so it can be returned or passed on but not used in arithmetic.
 - **Slicing a zero-length array panics at `-O0`.** `none: [0]u16 = .{}; none[0..0]` reports
   "index out of bounds"; an empty range of a non-empty array is fine.
+- **There is no pack-to-N.** `#packed` removes all padding; a C struct under `#pragma pack(2)` or
+  `pack(4)` (`BITMAPFILEHEADER`) has no direct spelling. `#packed(N)` was read as plain
+  `#packed` without a word, giving a different size than C; it is an error now. The size and
+  field offsets can be matched with a `#packed` struct and explicit padding fields (its
+  alignment is then 1, where C's is N).
 - **Sub-byte `#packed` fields are not bit-packed.** `u1`–`u7` fields are accepted but
   each takes a whole byte (`PixelFormat { u5, u6, u5 }` is 3 bytes), so they cannot
   describe a C bitfield. `core::offset_of` reports the byte the field's storage starts at.
