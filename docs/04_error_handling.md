@@ -237,6 +237,10 @@ process :: fn() -> void ! IoError {
 
 Multiple defers execute in reverse order (LIFO), just like Go and Zig.
 
+`?` leaves the function the way `fail` does, so everything `fail` runs, `?` runs: the defers
+registered before it (a `defer` placed after the `?` does not exist yet), `defer.err`, and the
+exit of every `zone` it leaves. It works the same in code the compiler runs (`#run`, `#assert`).
+
 ## Pattern: Fallible Function with Cleanup
 
 A common pattern in Gabbro combines `defer`, `fail`, and `?`:

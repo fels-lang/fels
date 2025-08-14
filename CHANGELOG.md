@@ -70,6 +70,14 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- **`defer` did not run when `?` propagated an error.** `?` returned from the function in the
+  code generator, past the cleanups: after `defer close(file); n := file.read(buf)?;` a failing
+  `read` left `file` open, a `defer.err` was skipped, and the exit of an enclosing `zone` was too.
+  This is the pattern [`docs/04`](docs/04_error_handling.md) shows. `?` is now lowered the way
+  `fail` is, so it runs the defers registered before it (last first), `defer.err`, and the zone
+  exits; `defer.ok` does not run. The error and its discriminant pass through unchanged. `?` also
+  works in code the compiler runs now (`#run`, `#assert`), where the function using it could not
+  be evaluated before.
 - **A local array of `fn` values crashed the code generator.** `c: [2]fn(i32) -> i32 = .{ dbl, neg };`
   stored bare function pointers into slots that are 16-byte `{ fn, env }` closures, and LLVM
   segfaulted emitting the object, at `-O0` and `-O2` and in 0.1.1. The thin pointer a `fn`

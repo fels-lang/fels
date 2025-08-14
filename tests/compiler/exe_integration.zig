@@ -103,6 +103,7 @@ test "exe: the portable fixtures cross-compile to static Linux ELF executables" 
         .{ "tests/fixtures/lang/static_data_app.gab", "elf_static_data" },
         .{ "tests/fixtures/lang/static_vm_app.gab", "elf_static_vm" },
         .{ "tests/fixtures/lang/static_run_app.gab", "elf_static_run" },
+        .{ "tests/fixtures/lang/try_defer_app.gab", "elf_try_defer" },
         .{ "tests/fixtures/stdlib/sync_app.gab", "elf_sync" },
         .{ "tests/fixtures/stdlib/com_app.gab", "elf_com" },
     }) |c| {
@@ -1744,6 +1745,7 @@ test "exe: std.path / std.time / std.crypto / std.serde run correctly cross-modu
         .{ "tests/fixtures/lang/static_data_app.gab", "exe_static_data_app" },
         .{ "tests/fixtures/lang/static_vm_app.gab", "exe_static_vm_app" },
         .{ "tests/fixtures/lang/static_run_app.gab", "exe_static_run_app" },
+        .{ "tests/fixtures/lang/try_defer_app.gab", "exe_try_defer_app" },
         .{ "tests/fixtures/stdlib/sync_app.gab", "exe_sync_app" },
         .{ "tests/fixtures/stdlib/com_app.gab", "exe_com_app" },
         .{ "tests/fixtures/stdlib/winrt_app.gab", "exe_winrt_app" },

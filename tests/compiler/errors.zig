@@ -75,9 +75,11 @@ test "gabbro errors: declarations fail propagate catch and split defer" {
 
     const fetch = findFunction(module, "fetch").?;
     try std.testing.expect(fetch.error_ty != null);
-    try std.testing.expect(hasBuiltin(fetch, "try_context"));
+    // `?` leaves through a `fail` like any other early exit, so the error-path defer is lowered
+    // there (once per `?`); the success-path defer is lowered at the `return`.
+    try std.testing.expect(hasFail(fetch));
     try std.testing.expect(hasCall(fetch, "mark_ok"));
-    try std.testing.expect(!hasCall(fetch, "close"));
+    try std.testing.expect(hasCall(fetch, "close"));
 
     const download = findFunction(module, "download").?;
     try std.testing.expect(hasBuiltin(download, "catch_handler"));

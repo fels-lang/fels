@@ -1369,42 +1369,8 @@ fn lowerBuiltin(
         return llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), disc, 0);
     }
 
-    // try_context(fallible_value) — propagate error if discriminant != 0.
-    // Inserts: if (disc != 0) { return { undef, disc }; }
-    // On the success path the builder lands at a fresh continuation BB.
-    if (std.mem.eql(u8, b.name, "try_context")) {
-        if (b.args.len < 1) return null;
-        const fallible = resolveVal(cg, fncg, b.args[0], .unknown);
-        const disc = values.extractAggregateField(cg, fallible, 1, "try_context discriminant") orelse return null;
-        const zero = llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), 0, 0);
-        const is_err = llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntNE, disc, zero, "");
-
-        const err_bb = llvm.LLVMAppendBasicBlockInContext(cg.ctx, fncg.llvm_fn, "propagate_err");
-        const ok_bb = llvm.LLVMAppendBasicBlockInContext(cg.ctx, fncg.llvm_fn, "try_ok");
-        _ = llvm.LLVMBuildCondBr(cg.builder, is_err, err_bb, ok_bb);
-
-        // Error path: re-wrap and return the error discriminant.
-        llvm.LLVMPositionBuilderAtEnd(cg.builder, err_bb);
-        if (fncg.func.error_ty != null) {
-            const ret_lty = types.fallibleReturnType(cg, fncg.func);
-            var err_ret = llvm.LLVMGetUndef(ret_lty);
-            err_ret = llvm.LLVMBuildInsertValue(cg.builder, err_ret, disc, 1, "");
-            _ = llvm.LLVMBuildRet(cg.builder, err_ret);
-        } else {
-            _ = llvm.LLVMBuildUnreachable(cg.builder);
-        }
-
-        // Continue on the ok path.
-        llvm.LLVMPositionBuilderAtEnd(cg.builder, ok_bb);
-        return fallible; // pass-through for try_ok to extract field 0
-    }
-
     // catch_handler is an IR marker; the handler CFG is emitted by IR lowering.
     if (std.mem.eql(u8, b.name, "catch_handler")) return null;
-
-    // try_context / deferred OK/ERR — ignore for now.
-    if (std.mem.eql(u8, b.name, "try_context_ok") or
-        std.mem.eql(u8, b.name, "try_context_err")) return null;
 
     return null; // unknown builtin
 }
