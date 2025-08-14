@@ -806,6 +806,36 @@ fn levenshtein(a: []const u8, b: []const u8) usize {
 }
 
 pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) SemanticError!SymbolTable {
+    return collectSymbolsInto(allocator, module, null);
+}
+
+/// Records a symbol-collection error. With a `sink` (the language server) the error becomes
+/// a diagnostic and the caller skips the offending name or item; without one it is printed
+/// to stderr and collection stops, as the compiler does.
+fn collectError(
+    allocator: std.mem.Allocator,
+    sink: ?*std.ArrayList(Diagnostic),
+    file: []const u8,
+    span: Span,
+    comptime fmt: []const u8,
+    args: anytype,
+) SemanticError!void {
+    if (sink) |list| {
+        try list.append(allocator, Diagnostic.err(try std.fmt.allocPrint(allocator, fmt, args), span, file));
+        return;
+    }
+    std.debug.print("{s}: error: " ++ fmt ++ "\n", .{file} ++ args);
+    return error.SemanticFailed;
+}
+
+/// `collectSymbols`, but when `sink` is set the errors are appended to it as diagnostics
+/// and collection goes on without the offending declaration or imported name, so a broken
+/// program still has a symbol table (the tolerant mode of the language server).
+pub fn collectSymbolsInto(
+    allocator: std.mem.Allocator,
+    module: ast.Module,
+    sink: ?*std.ArrayList(Diagnostic),
+) SemanticError!SymbolTable {
     var table = try SymbolTable.init(allocator);
     errdefer table.deinit(allocator);
 
@@ -876,8 +906,8 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
         else
             name;
         if (table.scopes.items[table.root_scope].names.get(link) != null) {
-            std.debug.print("{s}: error: duplicate top-level declaration `{s}`\n", .{ item.fileName(), name });
-            return error.SemanticFailed;
+            try collectError(allocator, sink, item.fileName(), item.span(), "duplicate top-level declaration `{s}`", .{name});
+            continue;
         }
         const kind: SymbolKind = switch (item) {
             .import => unreachable,
@@ -918,8 +948,8 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
         // resolution so it fires even on the in-memory `compile()` path.
         if (imp.namespace()) |ns| {
             if (std.mem.eql(u8, ns, "core")) {
-                std.debug.print("{s}: error: `core` is a reserved namespace (compiler builtins) — use a different alias\n", .{imp.file_name});
-                return error.SemanticFailed;
+                try collectError(allocator, sink, imp.file_name, imp.span, "`core` is a reserved namespace (compiler builtins) — use a different alias", .{});
+                continue;
             }
         }
         // `compile()` parses one in-memory source and intentionally does not
@@ -936,26 +966,26 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
             // Selective: bring just the listed names in unqualified.
             for (names) |name| {
                 const id = findSymbolInFile(table, target_file, name) orelse {
-                    std.debug.print("{s}: error: module `{s}` has no declaration named `{s}`\n", .{ imp.file_name, target_file, name });
-                    return error.SemanticFailed;
+                    try collectError(allocator, sink, imp.file_name, imp.span, "module `{s}` has no declaration named `{s}`", .{ target_file, name });
+                    continue;
                 };
                 const imported = table.symbol(id);
                 if (!imported.is_public) {
-                    std.debug.print("{s}: error: `{s}` is private to module `{s}`\n", .{ imp.file_name, name, target_file });
-                    return error.SemanticFailed;
+                    try collectError(allocator, sink, imp.file_name, imp.span, "`{s}` is private to module `{s}`", .{ name, target_file });
+                    continue;
                 }
-                try addVisibleName(visible, imp.file_name, name, id);
+                try addVisibleName(allocator, sink, visible, imp, name, id);
             }
         } else {
             // Glob (`#import a.b.*;`): bring every public name in unqualified.
             for (table.symbols.items) |imported| {
                 if (!std.mem.eql(u8, imported.file_name, target_file) or !imported.is_public) continue;
-                try addVisibleName(visible, imp.file_name, imported.name, imported.id);
+                try addVisibleName(allocator, sink, visible, imp, imported.name, imported.id);
             }
         }
     }
 
-    try promoteTypeAliases(&table, module);
+    try promoteTypeAliases(allocator, sink, &table, module);
     return table;
 }
 
@@ -981,7 +1011,12 @@ fn constAliasTarget(decl: ast.ConstDecl) ?ast.NamedType {
 /// alias, however it is spelled. Mark those symbols `.type`. The checker registers
 /// them like any other alias and IR gives them no storage. A constant naming another
 /// constant (`C :: B;`) stays one.
-fn promoteTypeAliases(table: *SymbolTable, module: ast.Module) SemanticError!void {
+fn promoteTypeAliases(
+    allocator: std.mem.Allocator,
+    sink: ?*std.ArrayList(Diagnostic),
+    table: *SymbolTable,
+    module: ast.Module,
+) SemanticError!void {
     // To a fixed point: in `A :: B; B :: Node;` B becomes a type first, then A follows.
     var changed = true;
     while (changed) {
@@ -998,8 +1033,8 @@ fn promoteTypeAliases(table: *SymbolTable, module: ast.Module) SemanticError!voi
             // a constant declared in two modules got module-qualified linkage names. Two
             // same-named types are a duplicate declaration; so are two same-named aliases.
             if (!std.mem.eql(u8, table.symbol(id).link_name, decl.name)) {
-                std.debug.print("{s}: error: duplicate top-level declaration `{s}`\n", .{ decl.file_name, decl.name });
-                return error.SemanticFailed;
+                try collectError(allocator, sink, decl.file_name, decl.span, "duplicate top-level declaration `{s}`", .{decl.name});
+                continue;
             }
             table.symbols.items[id].kind = .type;
             changed = true;
@@ -1084,11 +1119,17 @@ fn findSymbolInFile(table: SymbolTable, file_name: []const u8, name: []const u8)
     return null;
 }
 
-fn addVisibleName(visible: *std.StringHashMap(SymbolId), file_name: []const u8, name: []const u8, id: SymbolId) SemanticError!void {
+fn addVisibleName(
+    allocator: std.mem.Allocator,
+    sink: ?*std.ArrayList(Diagnostic),
+    visible: *std.StringHashMap(SymbolId),
+    imp: ast.ImportDecl,
+    name: []const u8,
+    id: SymbolId,
+) SemanticError!void {
     if (visible.get(name)) |existing| {
         if (existing != id) {
-            std.debug.print("{s}: error: import makes `{s}` ambiguous\n", .{ file_name, name });
-            return error.SemanticFailed;
+            try collectError(allocator, sink, imp.file_name, imp.span, "import makes `{s}` ambiguous", .{name});
         }
         return;
     }

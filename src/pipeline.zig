@@ -235,7 +235,16 @@ fn compileFileInternal(
         };
     }
 
-    loadFile(fe_allocator, io, path, &loaded, &all_items, &next_id, &root_source, true) catch |err| switch (err) {
+    var ctx = LoadCtx{
+        .allocator = fe_allocator,
+        .io = io,
+        .loaded = &loaded,
+        .all_items = &all_items,
+        .next_id = &next_id,
+        .root_source = &root_source,
+        .stdlib_root = stdlib_root_override orelse build_options.stdlib_root,
+    };
+    loadFile(&ctx, path, true, false) catch |err| switch (err) {
         error.ParseFailed => return error.ParseFailed,
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.IoError,
@@ -247,48 +256,270 @@ fn compileFileInternal(
 
 // Internal helpers
 
-fn loadFile(
+/// Where `loadFile` gets source text from. The compiler reads the disk; the
+/// language server answers from its open documents first.
+pub const SourceReader = struct {
+    ctx: ?*anyopaque = null,
+    /// The text of `path`, allocated on `allocator`, or null if it cannot be read.
+    readFn: *const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, path: []const u8) ?[]const u8,
+    existsFn: *const fn (ctx: ?*anyopaque, path: []const u8) bool,
+};
+
+/// State of a tolerant analysis (the language server): a broken file is
+/// recorded as diagnostics instead of aborting the load.
+const AnalysisState = struct {
+    reader: SourceReader,
+    project_root: ?[]const u8,
+    files: std.ArrayList(AnalysisFile) = .empty,
+    diags: std.ArrayList(Diagnostic) = .empty,
+};
+
+const LoadCtx = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
-    path: []const u8,
     loaded: *std.StringHashMap(void),
     all_items: *std.ArrayList(ast.Item),
     next_id: *ast.NodeId,
     root_source: *[]const u8,
-    is_root: bool,
-) !void {
-    if (loaded.contains(path)) return;
-    try loaded.put(path, {});
+    stdlib_root: ?[]const u8,
+    /// Null for the compiler (strict: print and fail); set by `analyzeFile`.
+    analysis: ?*AnalysisState = null,
+};
 
-    const source = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| {
-        std.debug.print("{s}: error: cannot read imported module: {s}\n", .{ path, @errorName(err) });
-        // A missing `std/...` module almost always means the compiler can't find
-        // its standard library — point the user at the relocation knobs.
-        if (std.mem.indexOf(u8, path, "std") != null) {
-            std.debug.print("  hint: the gabbro standard library wasn't found at this path. " ++
-                "Set GABBRO_HOME to your gabbro install dir, or pass --std-path <dir-containing-std>.\n", .{});
+fn loadFile(ctx: *LoadCtx, path: []const u8, is_root: bool, is_std: bool) anyerror!void {
+    if (ctx.loaded.contains(path)) return;
+    try ctx.loaded.put(path, {});
+    const allocator = ctx.allocator;
+
+    var items: []const ast.Item = &.{};
+    if (ctx.analysis) |an| {
+        const source = an.reader.readFn(an.reader.ctx, allocator, path) orelse return error.FileNotFound;
+        if (is_root) ctx.root_source.* = source;
+        try an.files.append(allocator, .{ .path = path, .source = source, .is_std = is_std });
+        var p = try parser.Parser.init(allocator, path, source, ctx.next_id.*);
+        defer p.deinit();
+        var ok = false;
+        if (p.parseModule()) |module| {
+            if (p.diagnostics.items.len == 0) {
+                ctx.next_id.* = p.next_id;
+                items = module.items;
+                ok = true;
+            } else {
+                try an.diags.appendSlice(allocator, p.diagnostics.items);
+            }
+        } else |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ParseFailed => try an.diags.appendSlice(allocator, p.diagnostics.items),
         }
-        return err;
-    };
-    if (is_root) root_source.* = source;
-
-    const parsed = try parser.parseSourceFrom(allocator, path, source, next_id.*);
-    next_id.* = parsed.next_id;
+        an.files.items[an.files.items.len - 1].parsed = ok;
+    } else {
+        const source = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, allocator, .unlimited) catch |err| {
+            std.debug.print("{s}: error: cannot read imported module: {s}\n", .{ path, @errorName(err) });
+            // A missing `std/...` module almost always means the compiler can't find
+            // its standard library — point the user at the relocation knobs.
+            if (std.mem.indexOf(u8, path, "std") != null) {
+                std.debug.print("  hint: the gabbro standard library wasn't found at this path. " ++
+                    "Set GABBRO_HOME to your gabbro install dir, or pass --std-path <dir-containing-std>.\n", .{});
+            }
+            return err;
+        };
+        if (is_root) ctx.root_source.* = source;
+        const parsed = try parser.parseSourceFrom(allocator, path, source, ctx.next_id.*);
+        ctx.next_id.* = parsed.next_id;
+        items = parsed.module.items;
+    }
 
     // Retain the import edge for visibility checking, then load the dependency.
     const dir = std.fs.path.dirname(path) orelse ".";
-    for (parsed.module.items) |item| {
+    for (items) |item| {
         switch (item) {
             .import => |imp| {
-                const resolved = try resolveImportPath(allocator, dir, imp.path, stdlib_root_override orelse build_options.stdlib_root);
                 var resolved_import = imp;
-                resolved_import.resolved_file = resolved;
-                try all_items.append(allocator, .{ .import = resolved_import });
-                try loadFile(allocator, io, resolved, loaded, all_items, next_id, root_source, false);
+                if (ctx.analysis) |an| {
+                    const found = try findImport(ctx, an, dir, imp);
+                    resolved_import.resolved_file = found;
+                    try ctx.all_items.append(allocator, .{ .import = resolved_import });
+                    if (found) |f| try loadFile(ctx, f, false, imp.path.len > 0 and std.mem.eql(u8, imp.path[0], "std"));
+                } else {
+                    const resolved = try resolveImportPath(allocator, dir, imp.path, ctx.stdlib_root);
+                    resolved_import.resolved_file = resolved;
+                    try ctx.all_items.append(allocator, .{ .import = resolved_import });
+                    try loadFile(ctx, resolved, false, false);
+                }
             },
-            else => try all_items.append(allocator, item),
+            else => try ctx.all_items.append(allocator, item),
         }
     }
+}
+
+/// Resolve an import for the analysis: next to the importing file first (what the
+/// compiler does), then, for a non-`std` module, under the project root. A module that
+/// cannot be found is reported on the import and leaves it unresolved.
+fn findImport(ctx: *LoadCtx, an: *AnalysisState, dir: []const u8, imp: ast.ImportDecl) error{OutOfMemory}!?[]const u8 {
+    const allocator = ctx.allocator;
+    const primary = try resolveImportPath(allocator, dir, imp.path, ctx.stdlib_root);
+    if (an.reader.existsFn(an.reader.ctx, primary)) return primary;
+    const is_std = imp.path.len > 0 and std.mem.eql(u8, imp.path[0], "std");
+    if (!is_std) if (an.project_root) |root| {
+        const alt = try resolveImportPath(allocator, root, imp.path, null);
+        if (an.reader.existsFn(an.reader.ctx, alt)) return alt;
+    };
+    const name = try std.mem.join(allocator, ".", imp.path);
+    try an.diags.append(allocator, Diagnostic.err(
+        try std.fmt.allocPrint(allocator, "cannot find module `{s}` (looked for {s})", .{ name, primary }),
+        imp.span,
+        imp.file_name,
+    ));
+    return null;
+}
+
+/// A source file the analysis loaded.
+pub const AnalysisFile = struct {
+    /// The name the parser and the diagnostics know the file by.
+    path: []const u8,
+    source: []const u8,
+    /// True for the standard library (`#import std...`).
+    is_std: bool,
+    /// False if the file did not parse (its items are missing from the analysis).
+    parsed: bool = true,
+};
+
+pub const AnalysisOptions = struct {
+    reader: SourceReader,
+    /// The directory that holds `std/`; null means the compiler's own setting.
+    std_root: ?[]const u8 = null,
+    /// Where a non-`std` import is looked for when it is not next to the importer.
+    project_root: ?[]const u8 = null,
+    /// Prepend the embedded runtime, as `gabbro check` does.
+    include_runtime: bool = true,
+};
+
+/// The result of `analyzeFile`: the tolerant front end over a file and everything it
+/// imports. Every allocation lives in `arena`.
+pub const Analysis = struct {
+    arena: *std.heap.ArenaAllocator,
+    parent: std.mem.Allocator,
+    module: ast.Module,
+    /// Null if the root file did not parse.
+    symbols: ?sema.SymbolTable,
+    /// Parse, symbol and type diagnostics of all loaded files; `file` tells which.
+    diagnostics: []const Diagnostic,
+    files: []const AnalysisFile,
+
+    pub fn deinit(self: *Analysis) void {
+        self.arena.deinit();
+        self.parent.destroy(self.arena);
+    }
+
+    pub fn fileNamed(self: *const Analysis, path: []const u8) ?AnalysisFile {
+        for (self.files) |f| if (std.mem.eql(u8, f.path, path)) return f;
+        return null;
+    }
+};
+
+/// Analyze `root_path` and the modules it imports without compiling: the loading and
+/// the checks of `gabbro check`, but tolerant. A file that does not parse, an import
+/// that cannot be found or a name that does not exist become diagnostics, never an
+/// error, and the symbols and partial types of what did check are still returned.
+/// Nothing is printed. Only running out of memory fails.
+pub fn analyzeFile(
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+    options: AnalysisOptions,
+) error{OutOfMemory}!Analysis {
+    const arena = createFrontendArena(allocator) catch return error.OutOfMemory;
+    errdefer destroyFrontendArena(allocator, arena);
+    const a = arena.allocator();
+
+    var state = AnalysisState{ .reader = options.reader, .project_root = options.project_root };
+    var loaded = std.StringHashMap(void).init(a);
+    var all_items: std.ArrayList(ast.Item) = .empty;
+    var root_source: []const u8 = "";
+    var next_id: ast.NodeId = 1;
+
+    if (options.include_runtime) {
+        if (runtime.runtimeSourceFor(@import("builtin").os.tag, false)) |rt_src| {
+            var p = try parser.Parser.init(a, "<runtime>", rt_src, next_id);
+            if (p.parseModule()) |module| {
+                next_id = p.next_id;
+                for (module.items) |item| switch (item) {
+                    .import => {},
+                    else => try all_items.append(a, item),
+                };
+            } else |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.ParseFailed => {},
+            }
+        }
+    }
+
+    var ctx = LoadCtx{
+        .allocator = a,
+        .io = undefined,
+        .loaded = &loaded,
+        .all_items = &all_items,
+        .next_id = &next_id,
+        .root_source = &root_source,
+        .stdlib_root = options.std_root orelse stdlib_root_override orelse build_options.stdlib_root,
+        .analysis = &state,
+    };
+    loadFile(&ctx, root_path, true, false) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try state.diags.append(a, Diagnostic.err("cannot read this file", Span.new(0, 0), root_path));
+        },
+    };
+
+    const raw: ast.Module = .{ .file_name = root_path, .items = try all_items.toOwnedSlice(a) };
+    const root_parsed = state.files.items.len == 0 or state.files.items[0].parsed;
+    var result = Analysis{
+        .arena = arena,
+        .parent = allocator,
+        .module = raw,
+        .symbols = null,
+        .diagnostics = &.{},
+        .files = state.files.items,
+    };
+    if (!root_parsed) {
+        result.diagnostics = state.diags.items;
+        return result;
+    }
+
+    // Hooks, preludes and macros as in the compiler. If one of them fails (it printed
+    // its reason), check the module as loaded rather than nothing.
+    var module = preparePipeline(a, raw, root_source, root_path, arena) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => blk: {
+            try state.diags.append(a, Diagnostic.warn("compile-time expansion failed, so this analysis is partial", Span.new(0, 0), root_path));
+            break :blk raw;
+        },
+    };
+    if (ir_mod.hasComputedInsert(module)) splice: {
+        var sink: std.ArrayList(Diagnostic) = .empty;
+        var symbols1 = sema.collectSymbolsInto(a, module, &sink) catch break :splice;
+        const types1 = try sema.checkTypesTolerant(a, module, &symbols1, root_source, root_path);
+        const fe1 = FrontEnd{ .module = module, .symbols = symbols1, .types = types1, .arena = arena };
+        const spliced = ir_mod.expandComputedInserts(a, fe1) catch break :splice;
+        if (spliced) |m2| module = m2;
+    }
+
+    var sink: std.ArrayList(Diagnostic) = .empty;
+    var symbols = sema.collectSymbolsInto(a, module, &sink) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.SemanticFailed => {
+            try state.diags.appendSlice(a, sink.items);
+            result.diagnostics = state.diags.items;
+            return result;
+        },
+    };
+    const types = try sema.checkTypesTolerant(a, module, &symbols, root_source, root_path);
+    try state.diags.appendSlice(a, sink.items);
+    try state.diags.appendSlice(a, types.diagnostics.items);
+
+    result.module = module;
+    result.symbols = symbols;
+    result.diagnostics = state.diags.items;
+    return result;
 }
 
 /// True when `items` already contains an `#import std.heap…` (any form), so the
@@ -343,13 +574,16 @@ fn normalizeLogicalPath(allocator: std.mem.Allocator, path: []const u8) ![]const
     return normalized;
 }
 
-fn runPipelineWithSource(
+/// Everything that happens to the loaded module before the final checks: the
+/// `#compiler` hooks, the injected preludes and macro expansion. Shared by the
+/// compiler and by the language server's analysis.
+fn preparePipeline(
     allocator: std.mem.Allocator,
     raw_module: ast.Module,
     source: []const u8,
     file: []const u8,
     arena: *std.heap.ArenaAllocator,
-) CompileError!FrontEnd {
+) CompileError!ast.Module {
     // Phase 3 message loop: run `#compiler` hooks (compile-time functions that
     // return Gabbro source for top-level declarations) and add the generated
     // declarations to the module before the rest of the pipeline sees it.
@@ -435,6 +669,17 @@ fn runPipelineWithSource(
         error.SemanticFailed => return error.SemanticFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
+    return module;
+}
+
+fn runPipelineWithSource(
+    allocator: std.mem.Allocator,
+    raw_module: ast.Module,
+    source: []const u8,
+    file: []const u8,
+    arena: *std.heap.ArenaAllocator,
+) CompileError!FrontEnd {
+    const module = try preparePipeline(allocator, raw_module, source, file, arena);
 
     // Two-pass `#insert`: a computed operand (`#insert #run gen()`) is run on
     // the VM using pass-1 results, reified into AST, and rewritten to a literal

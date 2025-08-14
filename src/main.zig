@@ -136,7 +136,21 @@ pub fn main(init: std.process.Init) u8 {
     if (std.mem.eql(u8, cmd, "bindgen")) return cmdBindgen(allocator, io, init.environ_map, args[2..]);
 
     // `gabbro lsp` starts the language server (JSON-RPC over stdio). No source file.
-    if (std.mem.eql(u8, cmd, "lsp")) return gabbro.runLsp(allocator, io);
+    if (std.mem.eql(u8, cmd, "lsp")) {
+        // The server loads `std` and the imports of the open files like the compiler does, so it
+        // needs the same relocatable standard-library root (`--std-path` is accepted here too).
+        const ra = init.arena.allocator();
+        const exe_dir: ?[]const u8 = std.process.executableDirPathAlloc(io, ra) catch null;
+        var std_flag: []const u8 = "";
+        var k: usize = 2;
+        while (k + 1 < args.len) : (k += 1) {
+            if (std.mem.eql(u8, args[k], "--std-path")) std_flag = args[k + 1];
+        }
+        if (resolveStdRoot(ra, io, init.environ_map, std_flag, exe_dir)) |root|
+            gabbro.pipeline_mod.stdlib_root_override = root;
+        gabbro.lsp_mod.timing = init.environ_map.get("GABBRO_LSP_TIMING") != null;
+        return gabbro.runLsp(allocator, io);
+    }
 
     if (args.len < 3) {
         std.debug.print("gabbro: '{s}' needs a source file\n\n", .{cmd});
