@@ -27,7 +27,7 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
 
         .store_local => |sl| blk: {
             const alloca = fncg.locals.get(sl.name) orelse break :blk null;
-            _ = llvm.LLVMBuildStore(cg.builder, resolveVal(cg, fncg, sl.value, instr.ty), alloca);
+            abi.storeValue(cg, resolveVal(cg, fncg, sl.value, instr.ty), alloca);
             break :blk null;
         },
 
@@ -40,7 +40,7 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
 
         .global_store => |gs| blk: {
             const gv = cg.global_decls.get(gs.name) orelse break :blk null;
-            _ = llvm.LLVMBuildStore(cg.builder, resolveVal(cg, fncg, gs.value, instr.ty), gv);
+            abi.storeValue(cg, resolveVal(cg, fncg, gs.value, instr.ty), gv);
             break :blk null;
         },
 
@@ -275,11 +275,16 @@ pub fn getOrCreateThunk(cg: *ModuleCg, fn_link: []const u8, target: llvm.LLVMVal
     const target_ty = fnTypeOf(cg, fn_link, target);
     const n = llvm.LLVMCountParamTypes(target_ty);
     const ptr_ty = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
+    // A target returning through `sret` (a Gabbro function, not a C one) keeps that pointer
+    // first: the thunk is `(sret, __env, args…)` and passes it on.
+    const sret_ty: ?llvm.LLVMTypeRef = if (cg.fn_abi.contains(fn_link)) null else abi.sretOf(target);
+    const s: c_uint = if (sret_ty != null) 1 else 0;
 
     const ptys = cg.allocator.alloc(llvm.LLVMTypeRef, n + 1) catch return null;
     defer cg.allocator.free(ptys);
-    ptys[0] = ptr_ty; // __env
     if (n > 0) llvm.LLVMGetParamTypes(target_ty, ptys.ptr + 1);
+    if (s == 1) ptys[0] = ptys[1]; // the sret pointer moves before __env
+    ptys[s] = ptr_ty; // __env
     const ret_ty = llvm.LLVMGetReturnType(target_ty);
     const thunk_ty = llvm.LLVMFunctionType(ret_ty, ptys.ptr, n + 1, 0);
 
@@ -296,9 +301,11 @@ pub fn getOrCreateThunk(cg: *ModuleCg, fn_link: []const u8, target: llvm.LLVMVal
     llvm.LLVMPositionBuilderAtEnd(cg.builder, entry);
     const args = cg.allocator.alloc(llvm.LLVMValueRef, n) catch return null;
     defer cg.allocator.free(args);
+    if (sret_ty) |ty| abi.markSret(cg, thunk, ty);
     var i: c_uint = 0;
-    while (i < n) : (i += 1) args[i] = llvm.LLVMGetParam(thunk, i + 1); // skip __env
+    while (i < n) : (i += 1) args[i] = llvm.LLVMGetParam(thunk, if (i < s) i else i + 1); // skip __env
     const call = llvm.LLVMBuildCall2(cg.builder, target_ty, target, args.ptr, n, "");
+    if (sret_ty) |ty| abi.markCallSret(cg, call, ty);
     if (llvm.LLVMGetTypeKind(ret_ty) == llvm.LLVMVoidTypeKind) {
         _ = llvm.LLVMBuildRetVoid(cg.builder);
     } else {
@@ -738,18 +745,27 @@ fn lowerCallIndirect(
         llvm.LLVMBuildExtractValue(cg.builder, v, 0, "clos.fn")
     else
         resolveVal(cg, fncg, ci.callee, .unknown);
-    const lead: usize = if (ci.is_closure) 1 else 0;
+    // A large return comes back through a hidden `sret` slot, passed before everything else
+    // (the env included), as the callee was defined (`types.returnsIndirect`).
+    const ret_lty = types.lower(cg, ret_ty);
+    const sret = ret_ty != .void and types.returnsIndirect(cg, ret_lty);
+    const sret_n: usize = if (sret) 1 else 0;
+    const lead: usize = sret_n + @as(usize, if (ci.is_closure) 1 else 0);
 
-    // Resolve argument values and collect their LLVM types (slot 0 = env for a closure).
+    // Resolve argument values and collect their LLVM types (then the env for a closure).
     const total = lead + ci.args.len;
     const resolved_args = cg.allocator.alloc(llvm.LLVMValueRef, total) catch return null;
     defer cg.allocator.free(resolved_args);
     const param_tys = cg.allocator.alloc(llvm.LLVMTypeRef, total) catch return null;
     defer cg.allocator.free(param_tys);
 
-    if (closure_val) |v| {
-        resolved_args[0] = llvm.LLVMBuildExtractValue(cg.builder, v, 1, "clos.env");
+    if (sret) {
+        resolved_args[0] = abi.entryAlloca(cg, fncg.llvm_fn, ret_lty);
         param_tys[0] = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
+    }
+    if (closure_val) |v| {
+        resolved_args[sret_n] = llvm.LLVMBuildExtractValue(cg.builder, v, 1, "clos.env");
+        param_tys[sret_n] = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
     }
 
     for (ci.args, 0..) |arg, i| {
@@ -772,8 +788,8 @@ fn lowerCallIndirect(
     }
 
     // Reconstruct the function type from args + return type.
-    const ret_lty = types.lower(cg, ret_ty);
-    const fn_ty = llvm.LLVMFunctionType(ret_lty, param_tys.ptr, @intCast(total), 0);
+    const call_ret = if (sret) llvm.LLVMVoidTypeInContext(cg.ctx) else ret_lty;
+    const fn_ty = llvm.LLVMFunctionType(call_ret, param_tys.ptr, @intCast(total), 0);
 
     const result = llvm.LLVMBuildCall2(
         cg.builder,
@@ -783,6 +799,10 @@ fn lowerCallIndirect(
         @intCast(total),
         "",
     );
+    if (sret) {
+        abi.markCallSret(cg, result, ret_lty);
+        return llvm.LLVMBuildLoad2(cg.builder, ret_lty, resolved_args[0], "");
+    }
     return if (ret_ty == .void) null else result;
 }
 
@@ -800,25 +820,35 @@ fn lowerCall(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrType
 
     const lv = cg.fn_decls.get(call.callee) orelse return null;
     const fn_ty = fnTypeOf(cg, call.callee, lv);
-    const n_param = llvm.LLVMCountParamTypes(fn_ty);
+    const n_all = llvm.LLVMCountParamTypes(fn_ty);
 
-    const args = cg.allocator.alloc(llvm.LLVMValueRef, call.args.len) catch return null;
+    // A large return comes back through a hidden leading `sret` slot (`types.returnsIndirect`).
+    const sret_ty = abi.sretOf(lv);
+    const lead: usize = if (sret_ty != null) 1 else 0;
+    const args = cg.allocator.alloc(llvm.LLVMValueRef, lead + call.args.len) catch return null;
     defer cg.allocator.free(args);
 
     // Get param types so we can hint resolveVal with the right type.
-    const param_tys = cg.allocator.alloc(llvm.LLVMTypeRef, n_param) catch return null;
-    defer cg.allocator.free(param_tys);
-    llvm.LLVMGetParamTypes(fn_ty, param_tys.ptr);
+    const all_tys = cg.allocator.alloc(llvm.LLVMTypeRef, n_all) catch return null;
+    defer cg.allocator.free(all_tys);
+    llvm.LLVMGetParamTypes(fn_ty, all_tys.ptr);
+    const param_tys = all_tys[lead..];
+    const n_param = param_tys.len;
 
+    if (sret_ty) |ty| args[0] = abi.entryAlloca(cg, fncg.llvm_fn, ty);
     for (call.args, 0..) |arg, i| {
         const v = if (i < n_param) switch (arg) {
             .imm => |imm| values.lowerImmAs(cg, imm, param_tys[i]),
             else => values.coerce(cg.builder, cg.ctx, resolveVal(cg, fncg, arg, .unknown), param_tys[i]),
         } else resolveVal(cg, fncg, arg, .unknown);
-        args[i] = v;
+        args[lead + i] = v;
     }
 
     const result = llvm.LLVMBuildCall2(cg.builder, fn_ty, lv, args.ptr, @intCast(args.len), "");
+    if (sret_ty) |ty| {
+        abi.markCallSret(cg, result, ty);
+        return llvm.LLVMBuildLoad2(cg.builder, ty, args[0], "");
+    }
     return if (ret_ty == .void) null else result;
 }
 

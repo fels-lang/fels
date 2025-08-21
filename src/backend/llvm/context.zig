@@ -5,6 +5,7 @@ const ir = @import("../../ir.zig");
 const llvm = @import("c_api.zig").llvm;
 const variants = @import("variants.zig");
 const abi = @import("abi.zig");
+const emit = @import("emit.zig");
 
 /// Windows x64 stack-probe stub. LLVM emits `call __chkstk` in the prologue of any
 /// function whose frame exceeds one page (4 KiB); the CRT that normally supplies
@@ -82,7 +83,7 @@ pub const ModuleCg = struct {
     string_counter: u32 = 0,
     /// Cached target data for size/alignment queries during lowering (the
     /// module's real data layout isn't stamped on until just before emit).
-    /// The empty-layout default matches x86_64 struct sizes. Lazily created.
+    /// Lazily created by `targetData`.
     target_data: ?llvm.LLVMTargetDataRef = null,
     /// Error type definitions from the IR module — used for discriminant lookup.
     error_defs: []const ir.ErrorDef = &.{},
@@ -156,12 +157,15 @@ pub const ModuleCg = struct {
         };
     }
 
-    /// Target data for size/alignment queries, created lazily and cached. The
-    /// empty layout string yields the default ABI sizes, which match x86_64 for
-    /// the struct sizes the C-ABI classifier needs. Mirrors `variants.zig`.
+    /// Target data for size/alignment queries, created lazily and cached: the layout of
+    /// the target the module is emitted for. (The empty layout string is not it: there an
+    /// `i64` is 4-aligned, so `{ i32, i64 }` measured 12 bytes instead of 16.)
     pub fn targetData(self: *ModuleCg) llvm.LLVMTargetDataRef {
         if (self.target_data) |td| return td;
-        const td = llvm.LLVMCreateTargetData("");
+        const td = if (emit.TargetMachine.initTarget(self.target_os, 0)) |tm| blk: {
+            defer tm.deinit();
+            break :blk llvm.LLVMCreateTargetDataLayout(tm.tm);
+        } else |_| llvm.LLVMCreateTargetData("");
         self.target_data = td;
         return td;
     }

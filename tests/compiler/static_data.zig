@@ -452,3 +452,52 @@ test "static data: a run that builds a table gives the image the table, once" {
     try expectIrHas(ir, "@SQ2 = constant [6 x i32] [i32 0, i32 1, i32 4, i32 9, i32 16, i32 25]");
     try expectIrLacks(ir, "@llvm.global_ctors");
 }
+
+const qpc = struct {
+    extern "kernel32" fn QueryPerformanceCounter(count: *i64) callconv(.winapi) i32;
+    extern "kernel32" fn QueryPerformanceFrequency(freq: *i64) callconv(.winapi) i32;
+};
+
+test "static data: a run that fills a big array does not leave a slow function behind" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime @import("builtin").os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `fill` is only for the `#run`. The VM stores each element in O(1), and once the table is
+    // data the function does not reach the code generator at all. (It once cost seconds there:
+    // a 10000-element array returned as a value is split into one piece per element. Such a
+    // return now goes through a hidden pointer, see `llvm_correctness.zig`.)
+    const src =
+        \\fill :: fn() -> [10000]u32 {
+        \\    t: [10000]u32 = .{};
+        \\    i: usize = 0usize;
+        \\    while i < 10000usize { t[i] = (i * 3) as u32; i += 1usize; }
+        \\    return t;
+        \\}
+        \\T: [10000]u32 = #run fill();
+        \\main :: fn() -> i32 { return (T[100] as i32) - 300; }
+    ;
+    var t0: i64 = 0;
+    var t1: i64 = 0;
+    var freq: i64 = 1;
+    _ = qpc.QueryPerformanceFrequency(&freq);
+    _ = qpc.QueryPerformanceCounter(&t0);
+
+    var fe = try gabbro.compile(arena.allocator(), "big_fill.gab", src);
+    defer fe.deinit(arena.allocator());
+    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    var backend = gabbro.LlvmBackend.init(arena.allocator(), "big_fill");
+    defer backend.deinit();
+    try backend.lower(module);
+    try backend.emitObject(".zig-cache/big_fill_test.o", 2);
+    const ir = try backend.getIrText(arena.allocator());
+
+    _ = qpc.QueryPerformanceCounter(&t1);
+    const ms = @divTrunc((t1 - t0) * 1000, freq);
+    try expectIrHas(ir, "@T = global [10000 x i32] [i32 0, i32 3, i32 6");
+    try expectIrLacks(ir, "@fill");
+    if (ms > 5000) {
+        std.debug.print("\nbuilding took {d} ms, expected well under 5000\n", .{ms});
+        return error.TestUnexpectedResult;
+    }
+}

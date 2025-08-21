@@ -144,6 +144,30 @@ pub fn verify(cg: *ModuleCg) EmitError!void {
     }
 }
 
+// Dead function removal
+
+/// Delete every internal function nothing refers to, repeating until none is left (deleting
+/// one can orphan the functions it called). The functions a `#run` evaluated at compile time
+/// end up like this: the VM ran them and their result is now plain data, but they are still
+/// in the module, and the code generator would compile them in full. A function that returns
+/// or copies a large array by value is slow to compile — x86 splits the aggregate into one
+/// piece per element, which with the host's wide vector registers took 15 s for 4096 `u32`s.
+pub fn dropDeadFunctions(cg: *ModuleCg) void {
+    var removed = true;
+    while (removed) {
+        removed = false;
+        var f = llvm.LLVMGetFirstFunction(cg.mod);
+        while (f) |fv| {
+            const next = llvm.LLVMGetNextFunction(fv);
+            if (llvm.LLVMGetLinkage(fv) == llvm.LLVMInternalLinkage and llvm.LLVMGetFirstUse(fv) == null) {
+                llvm.LLVMDeleteFunction(fv);
+                removed = true;
+            }
+            f = next;
+        }
+    }
+}
+
 // Object file emission
 
 /// Emit a native object file at `path`.

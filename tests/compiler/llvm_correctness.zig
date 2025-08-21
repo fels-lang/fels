@@ -337,8 +337,9 @@ test "LLVM debug: division by zero inserts a runtime check" {
     defer backend.deinit();
     // opt_level=0 (debug) — checks should be present.
     try backend.lower(module);
-    try backend.emitObject(".zig-cache/div_check_test.o", 0);
+    // Read the IR first: emitting drops the unused internal `divide`.
     const llvm_ir = try backend.getIrText(arena.allocator());
+    try backend.emitObject(".zig-cache/div_check_test.o", 0);
 
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "check_fail") != null);
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "check_ok") != null);
@@ -689,5 +690,112 @@ test "LLVM: access to a #packed struct's fields through a pointer is align 1" {
         "store i32 %v, ptr %1, align 1",
     }) |expected| {
         try std.testing.expect(std.mem.indexOf(u8, llvm_ir, expected) != null);
+    }
+}
+
+const qpc = struct {
+    extern "kernel32" fn QueryPerformanceCounter(count: *i64) callconv(.winapi) i32;
+    extern "kernel32" fn QueryPerformanceFrequency(freq: *i64) callconv(.winapi) i32;
+};
+
+test "LLVM: a function returning a big array by value compiles quickly" {
+    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime @import("builtin").os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Returned as an LLVM value, a `[10000]u32` is split by the x86 code generator into one
+    // piece per element, superlinear in the count: seconds to minutes per function. It goes
+    // through a hidden `sret` pointer instead, and is copied, zeroed and handed on with one
+    // `memcpy`/`memset` each, never as a whole-array load or store.
+    const src =
+        \\fill :: fn(k: u32) -> [10000]u32 {
+        \\    t: [10000]u32 = .{};
+        \\    i: usize = 0usize;
+        \\    while i < 10000usize { t[i] = (i as u32) * k; i += 1usize; }
+        \\    return t;
+        \\}
+        \\again :: fn(k: u32) -> [10000]u32 { return fill(k); }
+        \\main :: fn() -> i32 {
+        \\    t := again(3u32);
+        \\    f := fill;
+        \\    u := f(2u32);
+        \\    return (t[100] as i32) - 300 + (u[5] as i32) - 10;
+        \\}
+    ;
+    var t0: i64 = 0;
+    var t1: i64 = 0;
+    var freq: i64 = 1;
+    _ = qpc.QueryPerformanceFrequency(&freq);
+    _ = qpc.QueryPerformanceCounter(&t0);
+
+    var fe = try gabbro.compile(arena.allocator(), "big_return.gab", src);
+    defer fe.deinit(arena.allocator());
+    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    var backend = gabbro.LlvmBackend.init(arena.allocator(), "big_return");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+    try backend.emitObject(".zig-cache/big_return_test.o", 2);
+
+    _ = qpc.QueryPerformanceCounter(&t1);
+    const ms = @divTrunc((t1 - t0) * 1000, freq);
+    for ([_][]const u8{
+        "define internal void @fill(ptr noalias sret([10000 x i32]) %0, i32 %k)",
+        "call void @fill(ptr sret([10000 x i32])",
+        "call void @llvm.memset.inline.p0.i64(ptr align 4 %t, i8 0, i64 40000, i1 false)",
+        "call void @llvm.memcpy.inline.p0.p0.i64(ptr %0, ptr align 4 %t, i64 40000, i1 false)",
+    }) |expected| {
+        if (std.mem.indexOf(u8, llvm_ir, expected) == null) {
+            std.debug.print("\nexpected the LLVM IR to contain:\n  {s}\n", .{expected});
+            return error.TestExpectedEqual;
+        }
+    }
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "ret [10000 x i32]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "store [10000 x i32]") == null);
+    if (ms > 5000) {
+        std.debug.print("\nbuilding took {d} ms, expected well under 5000\n", .{ms});
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "LLVM: sizes measured during lowering use the target's layout, where i64 is 8-aligned" {
+    if (comptime !gabbro.llvm_enabled) return;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // LLVM's default data layout 4-aligns `i64`, so `{ i32, i64 }` measured 12 bytes there:
+    // a closure environment on a zone was allocated 4 bytes short, and an enum payload slot
+    // was too small for its struct (the store wrote past it).
+    const src =
+        \\call_it :: fn(f: fn(i32) -> i64, v: i32) -> i64 { return f(v); }
+        \\P :: struct { a: i32, b: i64 }
+        \\Sh :: enum { none, p: P }
+        \\main :: fn() -> i32 {
+        \\    r: i64 = 0i64;
+        \\    zone scratch: Arena {
+        \\        a: i32 = 1;
+        \\        b: i64 = 2i64;
+        \\        f := fn(x: i32) -> i64 { return (a + x) as i64 + b; };
+        \\        r = call_it(f, 3);
+        \\    }
+        \\    q: P = .{ 1, 2i64 };
+        \\    s := Sh.p(q);
+        \\    match s { .p |v| => return (r + v.b) as i32; else => return 0; }
+        \\}
+    ;
+    var fe = try gabbro.compile(arena.allocator(), "layout_sizes.gab", src);
+    defer fe.deinit(arena.allocator());
+    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    var backend = gabbro.LlvmBackend.init(arena.allocator(), "layout_sizes");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+    for ([_][]const u8{
+        "@alloc_bytes(ptr %scratch, i64 16)",
+        "%Sh.enum = type { i32, [16 x i8] }",
+    }) |expected| {
+        if (std.mem.indexOf(u8, llvm_ir, expected) == null) {
+            std.debug.print("\nexpected the LLVM IR to contain:\n  {s}\n", .{expected});
+            return error.TestExpectedEqual;
+        }
     }
 }

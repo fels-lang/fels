@@ -108,7 +108,40 @@ pub fn fnType(cg: *ModuleCg, func: ir.IrFunction) !llvm.LLVMTypeRef {
         llvm.LLVMPointerTypeInContext(cg.ctx, 0)
     else
         fallibleReturnType(cg, func);
+    if (!is_extern and returnsIndirect(cg, ret_lty)) return try sretFnType(cg, param_tys);
     return llvm.LLVMFunctionType(ret_lty, param_tys.ptr, @intCast(param_tys.len), 0);
+}
+
+/// Aggregates larger than this many bytes are returned through a hidden `sret` pointer.
+const indirect_return_bytes = 128;
+
+/// Whether a Gabbro function returning `ret_lty` takes a hidden leading `ptr sret` parameter
+/// and returns `void`. A large array or struct returned as an LLVM value is split by the x86
+/// code generator into one piece per element, and that takes time superlinear in the element
+/// count (15 s for a `[4096]u32`); returned through memory it is one copy. The machine-level
+/// convention does not change: LLVM already passes a return this big through a hidden first
+/// pointer, so `#export`ed functions keep their C ABI. The pointer comes before every other
+/// parameter, a closure's `__env` included, at definitions and at direct and indirect calls.
+pub fn returnsIndirect(cg: *ModuleCg, ret_lty: llvm.LLVMTypeRef) bool {
+    const kind = llvm.LLVMGetTypeKind(ret_lty);
+    if (kind != llvm.LLVMArrayTypeKind and kind != llvm.LLVMStructTypeKind) return false;
+    return llvm.LLVMABISizeOfType(cg.targetData(), ret_lty) > indirect_return_bytes;
+}
+
+/// The type `func` returns through its hidden `sret` pointer, or null when it returns directly.
+pub fn sretTypeOf(cg: *ModuleCg, func: ir.IrFunction) ?llvm.LLVMTypeRef {
+    if (func.extern_name != null) return null;
+    const ret_lty = fallibleReturnType(cg, func);
+    return if (returnsIndirect(cg, ret_lty)) ret_lty else null;
+}
+
+/// `void (ptr, params...)`: the type of a function whose return goes through `sret`.
+pub fn sretFnType(cg: *ModuleCg, param_tys: []const llvm.LLVMTypeRef) !llvm.LLVMTypeRef {
+    const all = try cg.allocator.alloc(llvm.LLVMTypeRef, param_tys.len + 1);
+    defer cg.allocator.free(all);
+    all[0] = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
+    @memcpy(all[1..], param_tys);
+    return llvm.LLVMFunctionType(llvm.LLVMVoidTypeInContext(cg.ctx), all.ptr, @intCast(all.len), 0);
 }
 
 /// Return the LLVM return type for a function.

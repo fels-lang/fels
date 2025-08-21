@@ -113,6 +113,7 @@ pub const LlvmBackend = struct {
         const tm = try emit.TargetMachine.initNative(opt_level);
         defer tm.deinit();
         tm.applyToModule(&self.cg);
+        emit.dropDeadFunctions(&self.cg);
         try emit.verify(&self.cg);
         try emit.emitObject(&self.cg, tm, path);
     }
@@ -123,6 +124,7 @@ pub const LlvmBackend = struct {
         const tm = try emit.TargetMachine.initTarget(self.cg.target_os, opt_level);
         defer tm.deinit();
         tm.applyToModule(&self.cg);
+        emit.dropDeadFunctions(&self.cg);
         try emit.verify(&self.cg);
         return emit.emitObjectToMemory(&self.cg, tm, allocator);
     }

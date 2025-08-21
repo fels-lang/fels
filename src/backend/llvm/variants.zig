@@ -61,10 +61,10 @@ pub fn bodyAll(cg: *ModuleCg, variant_defs: []const ir.VariantDef) !void {
         for (vd.variants) |v| {
             if (v.payload) |pt| {
                 const lty = types.lower(cg, pt);
-                // Module layout isn't stamped until emit; the default target data
-                // (64-bit ptrs, natural alignment) measures the now-bodied payload.
-                const dl = llvm.LLVMCreateTargetData("");
-                defer llvm.LLVMDisposeTargetData(dl);
+                // Module layout isn't stamped until emit; measure the now-bodied payload
+                // with the target's layout (the default one 4-aligns `i64`, so a
+                // `{ i32, i64 }` payload got 12 bytes of room for its 16).
+                const dl = cg.targetData();
                 const payload_bits = if (llvm.LLVMGetTypeKind(lty) == llvm.LLVMIntegerTypeKind)
                     @as(u64, llvm.LLVMGetIntTypeWidth(lty))
                 else

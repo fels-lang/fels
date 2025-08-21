@@ -2323,6 +2323,79 @@ test "exe: a lambda captures enclosing locals by value (closure env)" {
     try std.testing.expectEqual(@as(u32, 220), code);
 }
 
+test "exe: a big array or struct is returned through a hidden pointer on every call path" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A return over 128 bytes is written through a leading `sret` pointer: by a plain
+    // function, a forwarding one, a fallible one (ok and failed), through a `fn` value (a
+    // thunk), a capturing closure (the pointer comes before `__env`), a higher-order call and
+    // an interface method. Each check has its own exit code.
+    const code = try compileAndRun(arena.allocator(),
+        \\E :: errors { bad }
+        \\Big :: struct { a: [40]u32, tag: i64, b: [3]u8 }
+        \\Shape :: interface {
+        \\    table :: fn(self: *Self, k: u32) -> [64]u32;
+        \\}
+        \\Sq :: struct { m: u32 }
+        \\Sq as Shape {
+        \\    table :: fn(self: *Self, k: u32) -> [64]u32 { return mk(self.m + k); }
+        \\}
+        \\mk :: fn(k: u32) -> [64]u32 {
+        \\    t: [64]u32 = .{};
+        \\    i: usize = 0usize;
+        \\    while i < 64usize { t[i] = (i as u32) * k; i += 1usize; }
+        \\    return t;
+        \\}
+        \\fwd :: fn(k: u32) -> [64]u32 { return mk(k + 1u32); }
+        \\maybe :: fn(k: u32) -> [64]u32 ! E { if k == 0u32 { fail .bad; } return mk(k); }
+        \\fwd_maybe :: fn(k: u32) -> [64]u32 ! E { return maybe(k); }
+        \\big :: fn(x: i64) -> Big { r: Big = .{}; r.a[39] = 7u32; r.tag = x; r.b[2] = 9u8; return r; }
+        \\probe :: fn(k: u32) -> u32 { d := maybe(k) catch e { return 99u32; }; return d[1]; }
+        \\probe2 :: fn(k: u32) -> u32 { d := fwd_maybe(k) catch e { return 99u32; }; return d[1]; }
+        \\apply :: fn(f: fn(u32) -> [64]u32, k: u32) -> [64]u32 { return f(k); }
+        \\sum :: fn(t: [64]u32) -> u32 { s := 0u32; i: usize = 0usize; while i < 64usize { s += t[i]; i += 1usize; } return s; }
+        \\main :: fn() -> i32 {
+        \\    a := mk(2u32);
+        \\    if sum(a) != 4032u32 { return 1; }
+        \\    b := fwd(1u32);
+        \\    if b[63] != 126u32 { return 2; }
+        \\    a = a;
+        \\    if a[10] != 20u32 { return 3; }
+        \\    c := maybe(3u32) catch e { return 4; };
+        \\    if c[5] != 15u32 { return 5; }
+        \\    if probe(0u32) != 99u32 { return 6; }
+        \\    if probe2(0u32) != 99u32 { return 7; }
+        \\    h := fwd_maybe(5u32) catch e { return 8; };
+        \\    if h[2] != 10u32 { return 9; }
+        \\    s := big(-3i64);
+        \\    if s.a[39] != 7u32 || s.tag != -3i64 || s.b[2] != 9u8 { return 10; }
+        \\    f := mk;
+        \\    p := f(6u32);
+        \\    if p[3] != 18u32 { return 11; }
+        \\    base: u32 = 10u32;
+        \\    cl := fn(k: u32) -> [64]u32 { return mk(k + base); };
+        \\    q := cl(1u32);
+        \\    if q[2] != 22u32 { return 12; }
+        \\    r := apply(cl, 2u32);
+        \\    if r[2] != 24u32 { return 13; }
+        \\    r2 := apply(mk, 2u32);
+        \\    if r2[2] != 4u32 { return 14; }
+        \\    sq: Sq = .{ 3u32 };
+        \\    sh: *Shape = &sq;
+        \\    one: u32 = 1u32;
+        \\    v := sh.table(one);
+        \\    if v[2] != 8u32 { return 15; }
+        \\    w := mk(1u32);
+        \\    w = fwd(w[3]);
+        \\    if w[2] != 8u32 { return 16; }
+        \\    return 42;
+        \\}
+    , "exe_big_return");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: a capturing closure's environment lives on the enclosing zone" {
     if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

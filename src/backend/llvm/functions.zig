@@ -27,6 +27,9 @@ pub const FnCg = struct {
     local_ir_types: std.StringHashMap(ir.IrType),
     /// IrType of each parameter.
     param_ir_types: std.StringHashMap(ir.IrType),
+    /// The hidden `sret` parameter a large return is written through (see
+    /// `types.returnsIndirect`), or null when the function returns its value directly.
+    sret: llvm.LLVMValueRef = null,
 
     fn deinit(self: *FnCg) void {
         self.blocks.deinit();
@@ -94,12 +97,15 @@ fn declareOne(cg: *ModuleCg, func: ir.IrFunction) !void {
 
     // Parameter names are cosmetic; skip them for ABI-lowered externs whose
     // LLVM parameters no longer correspond 1:1 to source parameters.
+    const sret_ty = types_mod.sretTypeOf(cg, func);
+    const first: usize = if (sret_ty != null) 1 else 0;
     if (abi_sig == null) {
         for (func.params, 0..) |p, i| {
-            const pv = llvm.LLVMGetParam(lv, @intCast(i));
+            const pv = llvm.LLVMGetParam(lv, @intCast(first + i));
             llvm.LLVMSetValueName2(pv, p.name.ptr, p.name.len);
         }
     }
+    if (sret_ty) |ty| abi.markSret(cg, lv, ty);
 
     if (func.extern_name) |_| llvm.LLVMSetLinkage(lv, llvm.LLVMExternalLinkage);
     attrs.applyFunctionAttrs(cg, func, lv);
@@ -149,8 +155,10 @@ fn defineOne(cg: *ModuleCg, func: ir.IrFunction) !void {
         params.deinit();
         param_tys.deinit();
     }
+    const sret_ty = types_mod.sretTypeOf(cg, func);
+    const first: usize = if (sret_ty != null) 1 else 0;
     for (func.params, 0..) |p, i| {
-        try params.put(p.name, llvm.LLVMGetParam(llvm_fn, @intCast(i)));
+        try params.put(p.name, llvm.LLVMGetParam(llvm_fn, @intCast(first + i)));
         try param_tys.put(p.name, p.ty);
     }
 
@@ -176,6 +184,7 @@ fn defineOne(cg: *ModuleCg, func: ir.IrFunction) !void {
         .reg_ir_types = std.AutoHashMap(ir.RegId, ir.IrType).init(cg.allocator),
         .local_ir_types = local_tys,
         .param_ir_types = param_tys,
+        .sret = if (sret_ty != null) llvm.LLVMGetParam(llvm_fn, 0) else null,
     };
     defer fncg.deinit();
 
