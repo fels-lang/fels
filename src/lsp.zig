@@ -32,6 +32,7 @@ const diag = @import("diagnostic.zig");
 const pipeline = @import("pipeline.zig");
 const clock = @import("clock.zig");
 const Span = @import("lexer/span.zig").Span;
+const lsp_assist = @import("lsp_assist.zig");
 
 const json = std.json;
 
@@ -132,7 +133,7 @@ const FileDiags = struct {
     }
 };
 
-const Doc = struct {
+pub const Doc = struct {
     uri: []u8,
     path: []u8,
     key: []u8,
@@ -140,6 +141,9 @@ const Doc = struct {
     /// The folder imports are also looked up in, or null.
     project_root: ?[]u8 = null,
     analysis: ?pipeline.Analysis = null,
+    /// The last analysis whose text parsed, kept while the current text does not parse
+    /// (see lsp_assist.zig).
+    last_good: ?pipeline.Analysis = null,
     /// Diagnostics per loaded file (not `std`), including this document's own.
     file_diags: []FileDiags = &.{},
     /// Keys of every non-`std` file the last analysis loaded.
@@ -161,6 +165,7 @@ const Doc = struct {
 
     fn deinit(self: *Doc, gpa: std.mem.Allocator) void {
         self.clearAnalysis(gpa);
+        if (self.last_good) |*a| a.deinit();
         if (self.project_root) |r| gpa.free(r);
         gpa.free(self.uri);
         gpa.free(self.path);
@@ -174,7 +179,7 @@ const Doc = struct {
     }
 };
 
-const Server = struct {
+pub const Server = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
     out: *std.Io.Writer,
@@ -195,6 +200,7 @@ const Server = struct {
     /// Analyze one document. Failures leave it without an analysis; they never propagate.
     fn analyze(self: *Server, doc: *Doc) void {
         const t0 = clock.monoNs();
+        lsp_assist.keepLastGood(doc);
         doc.clearAnalysis(self.gpa);
         doc.dirty = false;
         var result = pipeline.analyzeFile(self.gpa, doc.path, .{
@@ -207,6 +213,7 @@ const Server = struct {
             return;
         };
         doc.analysis = result;
+        lsp_assist.dropLastGood(doc);
         doc.last_ms = @as(f64, @floatFromInt(clock.sinceNs(t0))) / 1_000_000.0;
         if (self.timing) std.debug.print("gabbro-lsp: analyzed {s} in {d:.1} ms\n", .{ doc.path, doc.last_ms });
     }
@@ -467,9 +474,9 @@ fn sourceExists(ctx: ?*anyopaque, path: []const u8) bool {
 
 // Position mapping (byte offset <-> LSP UTF-16 position)
 
-const Pos = struct { line: u32, char: u32 };
+pub const Pos = struct { line: u32, char: u32 };
 
-fn byteToPos(text: []const u8, offset: usize) Pos {
+pub fn byteToPos(text: []const u8, offset: usize) Pos {
     var line: u32 = 0;
     var col: u32 = 0;
     var i: usize = 0;
@@ -503,7 +510,7 @@ fn byteToPos(text: []const u8, offset: usize) Pos {
     return .{ .line = line, .char = col };
 }
 
-fn posToByte(text: []const u8, line: u32, character: u32) usize {
+pub fn posToByte(text: []const u8, line: u32, character: u32) usize {
     var i: usize = 0;
     var ln: u32 = 0;
     while (i < text.len and ln < line) : (i += 1) {
@@ -539,7 +546,7 @@ fn identAt(text: []const u8, offset: usize) []const u8 {
 }
 
 /// Byte range of the identifier around `offset`.
-fn identRangeAt(text: []const u8, offset: usize) struct { start: usize, end: usize } {
+pub fn identRangeAt(text: []const u8, offset: usize) struct { start: usize, end: usize } {
     var start = @min(offset, text.len);
     while (start > 0 and isIdentChar(text[start - 1])) start -= 1;
     var end = @min(offset, text.len);
@@ -563,7 +570,7 @@ fn nameSpan(source: []const u8, decl: Span, name: []const u8) Span {
 
 // JSON output helpers
 
-fn escapeInto(list: *std.ArrayList(u8), gpa: std.mem.Allocator, s: []const u8) void {
+pub fn escapeInto(list: *std.ArrayList(u8), gpa: std.mem.Allocator, s: []const u8) void {
     for (s) |c| switch (c) {
         '"' => list.appendSlice(gpa, "\\\"") catch {},
         '\\' => list.appendSlice(gpa, "\\\\") catch {},
@@ -595,7 +602,7 @@ fn send(self: *Server, body: []const u8) void {
     self.out.flush() catch {};
 }
 
-fn sendResult(self: *Server, id: ?json.Value, result_json: []const u8) void {
+pub fn sendResult(self: *Server, id: ?json.Value, result_json: []const u8) void {
     var b = std.ArrayList(u8).empty;
     defer b.deinit(self.gpa);
     b.appendSlice(self.gpa, "{\"jsonrpc\":\"2.0\",\"id\":") catch {};
@@ -635,20 +642,20 @@ fn appendDiagnosticJson(b: *std.ArrayList(u8), gpa: std.mem.Allocator, text: []c
 
 // JSON input helpers
 
-fn objGet(v: json.Value, key: []const u8) ?json.Value {
+pub fn objGet(v: json.Value, key: []const u8) ?json.Value {
     return switch (v) {
         .object => |o| o.get(key),
         else => null,
     };
 }
-fn getStr(v: json.Value, key: []const u8) ?[]const u8 {
+pub fn getStr(v: json.Value, key: []const u8) ?[]const u8 {
     const f = objGet(v, key) orelse return null;
     return switch (f) {
         .string => |s| s,
         else => null,
     };
 }
-fn getInt(v: json.Value, key: []const u8) ?i64 {
+pub fn getInt(v: json.Value, key: []const u8) ?i64 {
     const f = objGet(v, key) orelse return null;
     return switch (f) {
         .integer => |n| n,
@@ -711,17 +718,17 @@ fn handleInitialize(self: *Server, id: ?json.Value, params: json.Value) void {
         self.workspace_root = self.gpa.dupe(u8, p) catch null;
     }
     sendResult(self, id,
-        \\{"capabilities":{"textDocumentSync":1,"completionProvider":{"triggerCharacters":[".",":"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true},"serverInfo":{"name":"gabbro-lsp","version":"0.2.0"}}
+        \\{"capabilities":{"textDocumentSync":1,"completionProvider":{"triggerCharacters":[".",":"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","],"retriggerCharacters":[","]},"inlayHintProvider":true},"serverInfo":{"name":"gabbro-lsp","version":"0.2.0"}}
     );
 }
 
-fn docFromParams(self: *Server, params: json.Value) ?*Doc {
+pub fn docFromParams(self: *Server, params: json.Value) ?*Doc {
     const td = objGet(params, "textDocument") orelse return null;
     const uri = getStr(td, "uri") orelse return null;
     return self.docs.get(uri);
 }
 
-fn cursorOffset(doc: *Doc, params: json.Value) ?usize {
+pub fn cursorOffset(doc: *Doc, params: json.Value) ?usize {
     const position = objGet(params, "position") orelse return null;
     const line: u32 = @intCast(@max(0, getInt(position, "line") orelse return null));
     const character: u32 = @intCast(@max(0, getInt(position, "character") orelse return null));
@@ -730,18 +737,18 @@ fn cursorOffset(doc: *Doc, params: json.Value) ?usize {
 
 /// True for names that are not meant to be offered or listed: hoisted methods
 /// (`Vec.push`) and `_`-prefixed names.
-fn hiddenName(name: []const u8) bool {
+pub fn hiddenName(name: []const u8) bool {
     return name.len == 0 or name[0] == '_' or std.mem.indexOfScalar(u8, name, '.') != null;
 }
 
-fn topLevelKind(k: sema.SymbolKind) bool {
+pub fn topLevelKind(k: sema.SymbolKind) bool {
     return switch (k) {
         .function, .type, .const_symbol, .global_var => true,
         else => false,
     };
 }
 
-fn appendCompletionItem(
+pub fn appendCompletionItem(
     self: *Server,
     b: *std.ArrayList(u8),
     seen: *std.StringHashMapUnmanaged(void),
@@ -767,13 +774,15 @@ fn appendCompletionItem(
 
 /// The module name a file path stands for, for a completion detail: its file name without
 /// the extension.
-fn moduleLabel(path: []const u8) []const u8 {
+pub fn moduleLabel(path: []const u8) []const u8 {
     const base = std.fs.path.basename(path);
     return if (std.mem.endsWith(u8, base, ".gab")) base[0 .. base.len - 4] else base;
 }
 
 fn handleCompletion(self: *Server, id: ?json.Value, params: json.Value) void {
     const doc = docFromParams(self, params) orelse return sendResult(self, id, "null");
+    // After `expr.`: the members of its type (or the variants of an enum literal).
+    if (lsp_assist.completeMember(self, doc, id, params)) return;
 
     var b = std.ArrayList(u8).empty;
     defer b.deinit(self.gpa);
@@ -781,8 +790,9 @@ fn handleCompletion(self: *Server, id: ?json.Value, params: json.Value) void {
     var seen = std.StringHashMapUnmanaged(void){};
     defer seen.deinit(self.gpa);
     var first = true;
+    lsp_assist.addLocalNames(self, doc, params, &b, &seen, &first);
 
-    if (doc.analysis) |analysis| if (analysis.symbols) |syms| {
+    if (lsp_assist.namesAnalysis(doc)) |analysis| if (analysis.symbols) |syms| {
         // After `alias::` offer the public names of that module, and nothing else.
         if (cursorOffset(doc, params)) |off| {
             const word = identRangeAt(doc.text, off);
@@ -912,7 +922,7 @@ fn handleDefinition(self: *Server, id: ?json.Value, params: json.Value) void {
 
 /// The declaration line of a symbol as written in its file: for a function everything up to
 /// the body, for other declarations the first line.
-fn declarationText(analysis: pipeline.Analysis, sym: sema.Symbol, file_source: []const u8) []const u8 {
+pub fn declarationText(analysis: pipeline.Analysis, sym: sema.Symbol, file_source: []const u8) []const u8 {
     var end: usize = @min(sym.span.end, file_source.len);
     for (analysis.module.items) |item| switch (item) {
         .function => |f| {
@@ -936,6 +946,8 @@ fn declarationText(analysis: pipeline.Analysis, sym: sema.Symbol, file_source: [
 
 fn handleHover(self: *Server, id: ?json.Value, params: json.Value) void {
     const doc = docFromParams(self, params) orelse return sendResult(self, id, "null");
+    // Locals, parameters and members (`name: Type`), and everything while the text does not parse.
+    if (lsp_assist.hover(self, doc, id, params)) return;
     const analysis = doc.analysis orelse return sendResult(self, id, "null");
     const sym = symbolUnderCursor(doc, params) orelse return sendResult(self, id, "null");
 
@@ -1085,6 +1097,12 @@ fn dispatch(self: *Server, root: json.Value) void {
     } else if (std.mem.eql(u8, method, "textDocument/documentSymbol")) {
         self.flush();
         handleDocumentSymbol(self, id, params);
+    } else if (std.mem.eql(u8, method, "textDocument/signatureHelp")) {
+        self.flush();
+        lsp_assist.handleSignatureHelp(self, id, params);
+    } else if (std.mem.eql(u8, method, "textDocument/inlayHint")) {
+        self.flush();
+        lsp_assist.handleInlayHint(self, id, params);
     } else if (std.mem.eql(u8, method, "shutdown")) {
         self.flush();
         self.shutdown_requested = true;
@@ -1161,6 +1179,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) u8 {
 }
 
 // Tests
+
+test {
+    _ = lsp_assist;
+}
 
 test "lsp: byte offset ↔ UTF-16 position round-trips, incl. multibyte" {
     const t = std.testing;

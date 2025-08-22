@@ -405,6 +405,12 @@ pub const Analysis = struct {
     /// Parse, symbol and type diagnostics of all loaded files; `file` tells which.
     diagnostics: []const Diagnostic,
     files: []const AnalysisFile,
+    /// The types the checker found (partial where checking failed), with the names declared
+    /// inside function bodies. Null when `symbols` is.
+    types: ?sema.TypeEnv = null,
+    /// The module as loaded, before `#compiler` hooks and macro expansion: the macros are
+    /// still in it.
+    loaded: ast.Module = .{ .file_name = "", .items = &.{} },
 
     pub fn deinit(self: *Analysis) void {
         self.arena.deinit();
@@ -479,6 +485,7 @@ pub fn analyzeFile(
         .symbols = null,
         .diagnostics = &.{},
         .files = state.files.items,
+        .loaded = raw,
     };
     if (!root_parsed) {
         result.diagnostics = state.diags.items;
@@ -512,12 +519,13 @@ pub fn analyzeFile(
             return result;
         },
     };
-    const types = try sema.checkTypesTolerant(a, module, &symbols, root_source, root_path);
+    const types = try sema.checkTypesForAnalysis(a, module, &symbols, root_source, root_path);
     try state.diags.appendSlice(a, sink.items);
     try state.diags.appendSlice(a, types.diagnostics.items);
 
     result.module = module;
     result.symbols = symbols;
+    result.types = types;
     result.diagnostics = state.diags.items;
     return result;
 }
