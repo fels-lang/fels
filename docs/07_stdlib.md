@@ -212,7 +212,7 @@ element type is recovered from the receiver, so you never write `$T`:
 #import std.atomics;
 #import std.atomics.{Atomic};         // bring the type name into scope
 
-counter: Atomic(u32) = .{ 0u32 };     // or: counter := atomics::make(0u32);
+counter: Atomic(u32) = .{ 0u32 };     // or: counter := Atomic::make(0u32);
 old := counter.add(1u32);             // returns the previous value
 if counter.cas(1u32, 100u32) { ... }  // compare-and-swap
 n := counter.get();
@@ -545,7 +545,7 @@ net::init() catch e { return; };
 // client
 s := net::connect(addr::socket_addr(addr::localhost(), 8080u16)) catch e { return; };
 s.send_all("ping") catch e {};       // loops over short writes
-n := s.recv(buf[:]) catch e {};      // 0 = peer closed
+n := s.recv(buf[:]) catch e { return; };   // 0 = peer closed
 s.close();
 
 // server
@@ -559,7 +559,7 @@ a  := ln.accept() catch e { return; };   // a.stream + a.peer (blocks for a clie
 
 srv := udp::bind(addr::socket_addr(addr::any(), 9000u16)) catch e { return; };
 d   := srv.recv_from(buf[:]) catch e { return; };   // d.len + d.from
-ignored := srv.send_to("pong", d.from) catch e {};  // reply to sender
+ignored := srv.send_to("pong", d.from) catch e { return; };  // reply to sender
 ```
 
 - **`TcpStream`**: `send`/`send_all`, `recv`/`recv_exact`, `set_nodelay`,

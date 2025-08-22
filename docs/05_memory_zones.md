@@ -48,7 +48,7 @@ zone z: Arena {
     xs  := z.new_slice(u8, 64);     // alias for alloc(u8, 64)
     ys  := z.alloc(i32, 16);        // typed allocation
     raw := z.alloc_bytes(128);      // raw []u8
-    cp  := z.dupe(u8, xs);          // copy a slice into the arena
+    cp  := z.dupe(u8, "hello");     // copy a slice into the arena
 
     m := z.mark();                  // save a watermark …
     tmp := z.alloc_bytes(4096);     // … scratch work …

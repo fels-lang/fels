@@ -29,7 +29,7 @@ Identifiers name variables, functions, types, and other declarations.
 x := 1;
 my_variable := 2;
 _private := 3;
-Point2D :: struct { x: f64, y: f64 };
+Point2D :: struct { x: f64, y: f64 }
 ```
 
 ### Escaped Identifiers
@@ -377,12 +377,12 @@ Constants can also bind functions, types, and other compile-time constructs:
 ```gabbro
 add :: fn(a: i32, b: i32) -> i32 {
     return a + b;
-};
+}
 
 Point :: struct {
     x: f64,
     y: f64,
-};
+}
 ```
 
 ### Mutable globals
@@ -530,48 +530,56 @@ buffer: [256]u8 = .{};
 | `[ ]` | Array / slice indexing and type syntax |
 | `.{ }` | Compound literal (struct, array, or enum initialization) |
 | `#` | Directive prefix (`#import`, `#if`, `#run`, attributes) |
-| `\|x\|` | Payload capture (in `match` arms, `catch` blocks, etc.) |
+| `\|x\|` | Payload capture (in `match` arms and `if` / `while` conditions) |
 
 ## Quick Example
 
 Putting it all together — a small Gabbro program demonstrating core syntax elements:
 
 ```gabbro
-std :: #import("std");
+#import std.io.{ print, println, print_u64 };
 
 MAX_SIZE :: 1024;
 
 Buffer :: struct {
     data: [MAX_SIZE]u8,
     len: usize,
-};
+}
+
+BufferError :: errors {
+    overflow,
+}
 
 make_buffer :: fn() -> Buffer {
     return .{
         .data = .{},
         .len = 0,
     };
-};
+}
 
-append :: fn(buf: *Buffer, byte: u8) -> !void {
+append :: fn(buf: *Buffer, byte: u8) -> void ! BufferError {
     if buf.len >= MAX_SIZE {
-        fail error.Overflow;
+        fail .overflow;
     }
     buf.data[buf.len] = byte;
     buf.len += 1;
-};
+    return;
+}
 
-main :: fn() -> void {
+main :: fn() -> i32 {
     buf := make_buffer();
 
     // Fill the buffer with values
     for i in 0..10 {
-        append(&buf, i as u8) catch |err| {
-            std.debug.print("append failed: {}\n", .{err});
-            return;
+        append(&buf, i as u8) catch err {
+            println("append failed");
+            return 1;
         };
     }
 
-    std.debug.print("buffer has {} bytes\n", .{buf.len});
-};
+    print("buffer has ");
+    print_u64(buf.len as u64);
+    println(" bytes");
+    return 0;
+}
 ```

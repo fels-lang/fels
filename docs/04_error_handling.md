@@ -38,8 +38,10 @@ read_file :: fn(path: []const u8) -> []u8 ! IoError {
     // ...
 }
 
-// An inline error set, `-> i32 ! { invalid, overflow }`, is not accepted by the parser
-// yet (see the roadmap's known gaps); declare the set with `errors` as above.
+// Inline error set (each variant is written with a leading dot)
+parse :: fn(s: []const u8) -> i32 ! { .invalid, .overflow } {
+    // ...
+}
 
 // Inferred error type (bare `!`)
 combine :: fn() -> i32 ! {
@@ -246,12 +248,16 @@ exit of every `zone` it leaves. It works the same in code the compiler runs (`#r
 A common pattern in Gabbro combines `defer`, `fail`, and `?`:
 
 ```gabbro
-process_file :: fn(path: []const u8) -> usize ! IoError {
-    file := open(path)?;
-    defer close(file);
+#import std.fs.{ FsError, open, close };
+#import std.io.{ Reader, eprintln, print_u64 };
 
+process_file :: fn(path: []const u8) -> usize ! FsError {
+    file := open(path)?;
+    defer close(&file);
+
+    r: *Reader = &file;
     buf: [1024]u8 = .{};
-    n := file.read(buf[:])?;
+    n := r.read(buf[:]) catch err { fail .read_failed; };
     return n;
 }
 
@@ -272,6 +278,8 @@ main :: fn() -> i32 {
 `main` can itself be a fallible function:
 
 ```gabbro
+#import std.io.{ IoError, println };
+
 main :: fn() -> i32 ! IoError {
     println("hello")?;
     return 0;
