@@ -58,7 +58,7 @@ content-pinned and forkable. You point at the indexes you trust
 Deps are `build.gab` code, in a shape the manager extracts without trusting it:
 
 ```gabbro
-build :: fn(b: *Build) {
+build :: fn(b: Build) {
     json := b.dependency("json", .{ .hash = "be20…77" });
     img  := b.dependency("imagelib", .{ .hash = "4f9c…a1" })
               .allow(.fs_read, "assets/");

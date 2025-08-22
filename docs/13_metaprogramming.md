@@ -194,7 +194,11 @@ over a type's fields, branching on `type_info(T)`, accumulating a list of
 statements — build the AST as a first-class value and splice the result:
 
 ```gabbro
-gen :: fn() -> AstBlock { /* build statements with ast.* constructors */ }
+gen :: fn() -> AstBlock {
+    // Any compile-time logic can choose or assemble the statements here
+    // (with `#quote` pieces or the `ast.*` constructors).
+    return #quote { answer := 42; };
+}
 
 #entry
 main :: fn() -> i32 {
@@ -263,12 +267,15 @@ derives as `Decl.derives` (the space-separated `#derive(...)` names), so a hook
 filters to the structs that opted in and generates their impl:
 
 ```gabbro
+#import std.heap as heap;
+#import std.strings as str;
+
 #compiler
 derive_sum :: fn() -> []const u8 {
     a := heap::make();
     sb := str::builder(&a);
     for d in core::compiler_decls() {
-        match d.derives {                       // (string `==` isn't supported — use `match`)
+        match d.derives {                       // a string match (`d.derives == "Sum"` works too)
             "Sum" => {
                 sb.append("sum_"); sb.append(d.name);
                 sb.append(" :: fn(p: "); sb.append(d.name); sb.append(") -> i32 { return 0");

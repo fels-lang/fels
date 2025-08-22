@@ -93,16 +93,16 @@ error). Some builtins require an `unsafe` block (last column).
 | `core::atomic_exchange` | `core::atomic_exchange(ptr, v, ord) -> T` | No | Swap; returns the previous value. |
 | `core::atomic_cas` | `core::atomic_cas(ptr, expected, desired, ord) -> T` | No | Compare-and-swap; returns the value seen (`== expected` on success). |
 | `core::atomic_fence` | `core::atomic_fence(ord)` | No | Memory fence. |
-
-The trailing `ord` is an integer ordering constant — `0` relaxed, `1` acquire, `2` release,
-`3` acq_rel, `4` seq_cst — and **must be compile-time known**. Prefer the
-[`std.atomics`](07_stdlib.md#stdatomics) wrappers, which default to seq_cst.
 | `core::ptr_from_int`| `core::ptr_from_int($T: type, addr: usize) -> T` | **Yes** | Integer address → pointer `T`. |
 | `core::fn_ptr`| `core::fn_ptr(f) -> *void` | **Yes** | Raw thin pointer of a top-level function, for a C callback / thread entry (gabbro's ordinary fn value is a fat closure a C ABI can't call). |
 | `core::slice_raw`| `core::slice_raw($T, ptr, len) -> []T` | **Yes** | Build a slice from a raw pointer + length. |
 | `core::volatile_store`| `core::volatile_store(ptr: *T, val: T)` | **Yes** | Volatile memory write. |
 | `core::unaligned_read`| `core::unaligned_read($T: type, ptr) -> T` | **Yes** | Read `T` from a possibly-unaligned address. |
 | `core::asm` | `core::asm(...)` | **Yes** | Inline assembly: `core::asm(volatile, "inst", inputs: {}, outputs: {}, clobbers: {})` |
+
+The trailing `ord` is an integer ordering constant — `0` relaxed, `1` acquire, `2` release,
+`3` acq_rel, `4` seq_cst — and **must be compile-time known**. Prefer the
+[`std.atomics`](07_stdlib.md#stdatomics) wrappers, which default to seq_cst.
 
 ### Source-location & target constants
 
@@ -119,7 +119,7 @@ Compile-time constants (no parens) that fold to a literal at the use site:
 | `core::arch` | `[]const u8` | the architecture of the machine the compiler runs on (`"x86_64"`, …) |
 
 ```gabbro
-log :: fn(msg: []const u8) { print(core::file); print(core::line); print(msg); }
+log :: fn(msg: []const u8) { print(core::file); print_i64(core::line as i64); print(msg); }
 ```
 
 ### Math
@@ -218,8 +218,6 @@ header.gab:3:9: error: static assertion failed: Header is sent as-is over the wi
 - `#assert` is evaluated when the program is lowered, i.e. by `gabbro build`, `object` and
   `ir`. `gabbro check` only type-checks, so it does not run assertions.
 - Top level only. Inside a function, use `#if` with `core::trap()` or an ordinary check.
-
-### The `TARGET` Pseudo-module
 
 ### The `TARGET` Pseudo-module
 

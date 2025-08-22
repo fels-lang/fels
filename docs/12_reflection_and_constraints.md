@@ -19,6 +19,11 @@ literal, so reflection you don't use costs nothing. A generic walker recurses th
 struct fields, slice elements, and pointers — enough for reflection-driven
 serialization with no per-type code.
 
+> In code, these builtins carry their `core::` prefix: `core::type_info(T)`,
+> `core::typeid_of(T)`, `core::type_name(T)`, `core::sizeof(T)`, `core::any(x)`,
+> `core::reject(msg)` and `core::require(T, C)` (a bare name is a compile error; see
+> [08](08_attributes_builtins.md)). The design text below often leaves the prefix out.
+
 ## Design thesis
 
 Jai exposes reflection and metaprogramming through many special-purpose pieces
@@ -57,10 +62,16 @@ Today Gabbro has `type_info(T)` with ad-hoc field access (`.kind`, `.fields[i].n
 `.bits`). We replace that with a real tagged enum — the same shape as the `ast.*`
 metaprogramming surface, injected as a prelude when reflection is used.
 
+> **Implemented today:** `core::type_info(T)` returns such an enum. Its variants are
+> `void_`, `boolean`, `int`, `float`, `pointer`, `slice`, `array`, `optional`, `struct_`,
+> `enum_` and `other` (the name of any other type), with `TiInt`/`TiFloat`/… payloads;
+> `fn_`, `iface` and `distinct_` below are still design. (`void`, `bool` and `distinct`
+> are keywords, so those variants are spelled `void_`, `boolean` and `distinct_`.)
+
 ```gabbro
 TypeInfo :: enum {
-    void,
-    bool,
+    void_,
+    boolean,
     int:      IntInfo,        // { bits: u16, signed: bool }
     float:    FloatInfo,      // { bits: u16 }
     pointer:  PtrInfo,        // { elem: *TypeInfo, is_const: bool }
@@ -71,7 +82,7 @@ TypeInfo :: enum {
     struct_:  StructInfo,     // { name, fields: []FieldInfo, size, align }
     enum_:    EnumInfo,       // { name, variants: []VariantInfo, tag_bits }
     iface:    IfaceInfo,      // { name, methods: []MethodInfo }
-    distinct: DistinctInfo,   // { name, underlying: *TypeInfo }
+    distinct_: DistinctInfo,  // { name, underlying: *TypeInfo }
 }
 
 FieldInfo   :: struct { name: []const u8, ty: *TypeInfo, offset: usize, is_const: bool }
@@ -117,7 +128,7 @@ Two identical types always share one id, so identity tests are a single integer
 compare:
 
 ```gabbro
-if typeid_of(x) == typeid_of(Vector3) { … }
+if core::typeid_of(T) == core::typeid_of(Vector3) { … }
 ```
 
 > **✦ Beyond Jai.** Jai compares `*Type_Info` pointers and bakes the whole table
@@ -138,9 +149,10 @@ and the data's type metadata.
 > its real type works end to end; the type *name* is available at runtime on the
 > erased value. **Gabbro's twist on the type table:** metadata travels *inline* with
 > the value (no central `info_of(id)` table to bake/manage), and it's tree-shaken
-> automatically — only `any()`'d types' names reach the binary. (Auto-wrap of a
-> bare value into an `Any` parameter, and `.field`/`.elem`/`.deref` navigation,
-> are the next steps.)
+> automatically — only `any()`'d types' names reach the binary. A bare value passed
+> to an `Any` parameter is wrapped automatically. (`.info`/`.field`/`.elem`/`.deref`
+> navigation is the next step. The method spelling `v.as(T)` below is design only:
+> `as` is a keyword, so the downcast is the function `any_as(v, T)`.)
 
 ```gabbro
 Any :: struct { data: *const u8, id: usize, name: []const u8 }   // injected; `any(x)` builds it
@@ -152,7 +164,8 @@ spills a temporary and records its `typeid`):
 ```gabbro
 log :: fn(label: []const u8, v: Any) { … }
 log("count", 42);            // wraps i32
-log("pos", Vector3.{1,2,3}); // wraps Vector3
+pos: Vector3 = .{ 1, 2, 3 };
+log("pos", pos);             // wraps Vector3
 ```
 
 Navigation and downcasting are **safe** — they return optionals, never UB:
@@ -201,13 +214,18 @@ three structs bakes exactly those three (plus their transitive field types).
 
 ## 5. Serialization — one source, two speeds
 
+> Planned: this section is design. The `Any` navigation it uses (`.info()`, `.as()`,
+> `.field()`, `.elem()`) is not built yet, and `#for` takes an integer range `a..b`
+> today, not a type's fields. `std.serde` ([07](07_stdlib.md#stdserde)) is the
+> working serializer.
+
 Because the same `type_info` walk runs at comptime and runtime, you write a
 serializer **once** and choose where it executes:
 
 ```gabbro
 to_json :: fn(v: Any, w: *StringBuilder) {
     match v.info() {
-        .bool        => w.str(if v.as(bool)!! { "true" } else { "false" }),
+        .boolean     => w.str(if v.as(bool)!! { "true" } else { "false" }),
         .int  |i|    => w.write_i64(v.read_int()),       // read_int widens any int
         .float |f|   => w.write_f64(v.read_float()),
         .slice |e|   => {
@@ -279,10 +297,10 @@ composable. Interface conformance becomes *one kind* of constraint.
 
 ```gabbro
 Numeric :: constraint($T) {
-    match type_info(T) { .int, .float => accept; else => reject("expected a numeric type"); }
+    match core::type_info(T) { .int => {} .float => {} else => core::reject("expected a numeric type"); }
 }
 
-Ordered :: constraint($T) { require(T, Numeric); }   // constraints can require others
+Ordered :: constraint($T) { core::require(T, Numeric); }   // constraints can require others
 
 sum :: fn($T: Numeric, xs: []T) -> T {        // `$T: Numeric` is checked at the call
     total: T = 0;
@@ -316,12 +334,12 @@ serialize :: fn($T: Struct & HasField("id"), v: T) { … }   // composed
 > ```gabbro
 > // inspect + reject:
 > dbl :: fn(x: $T) -> T
-> where { match type_info(T) { .int => {} .float => {} else => reject("dbl needs a numeric type"); } }
+> where { match core::type_info(T) { .int => {} .float => {} else => core::reject("dbl needs a numeric type"); } }
 > { return x +% x; }
 >
 > // output type param computed by the where:
 > acc_of :: fn(x: $T) -> $Acc
-> where { match type_info(T) { .int |i| => if i.bits < 32 { Acc = i32; } else { Acc = T; }  else => Acc = T; } }
+> where { match core::type_info(T) { .int |i| => if i.bits < 32 { Acc = i32; } else { Acc = T; }  else => Acc = T; } }
 > { total: Acc = x as Acc; return total; }
 > ```
 >

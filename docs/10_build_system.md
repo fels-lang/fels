@@ -17,15 +17,15 @@ This is the design. The VM/metaprogramming foundation is in
 A project has a **`build.gab`** at its root. It defines a `build` procedure:
 
 ```gabbro
-#import std.build;
+#import std.build.{ Build };
 
-build :: fn(b: *Build) {
+build :: fn(b: Build) {
     exe := b.executable("hello", "src/main.gab");
     b.default(exe);
 }
 ```
 
-`gabbro build` (no file argument) finds `./build.gab` and **runs `build(&b)` inside the
+`gabbro build` (no file argument) finds `./build.gab` and **runs `build(b)` inside the
 comptime VM** — the same engine behind `#run` and `#compiler`. There is no
 separate "build binary": the build script never touches the disk to compile
 itself; it executes as compile-time Gabbro. After it returns, the compiler reads the
@@ -50,9 +50,9 @@ data — the compiler performs the effects. The build is deterministic and sandb
 because of that split.
 
 ```gabbro
-#import std.build;
+#import std.build.{ Build };
 
-build :: fn(b: *Build) {
+build :: fn(b: Build) {
     // the game
     game := b.executable("game", "src/main.gab");
     game.release();                      // or .optimize(.release_fast)
@@ -66,7 +66,7 @@ build :: fn(b: *Build) {
     rl := b.require_path("raylib", "vendor/raylib");
     game.depend(rl);
 
-    // a codegen step that feeds a second artifact
+    // a codegen step that feeds a second artifact (planned: `codegen` and `needs` are not built yet)
     bind := b.codegen("bindings", gen_raylib_bindings);  // fn(*Gen)
     tool := b.executable("packer", "tools/packer.gab");
     tool.needs(bind);                    // ordering + declared inputs
@@ -117,15 +117,19 @@ pub Artifact :: struct {
 | `b.codegen(name, fn)` · `b.custom(name, fn)` | codegen / arbitrary steps |
 | `b.require_path(name, dir)` · `b.require_git(name, url, rev)` | dependencies |
 | `b.default(artifact)` | the default target |
-| `b.option(key, default) -> []const u8` | read a `-Dkey=value` CLI override |
+| `b.option(key) -> bool` · `b.option_str(key, default) -> []const u8` | read a `-Dkey` / `-Dkey=value` CLI override |
 
 ## 3. Layer 2 — workspaces & build options (Jai parity)
 
 A workspace is an isolated compilation environment, as in Jai. Layer 1 makes one
 per artifact; in Layer 2 you drive them directly.
 
+> Planned: Layer 2 is not built yet (see the plan in section 9). Today
+> `b.workspace(name)` only names the build. `#quote { … }` holds statements, so quoting
+> a top-level declaration such as `build_id :: 0xC0FFEE;` is part of this plan too.
+
 ```gabbro
-build :: fn(b: *Build) {
+build :: fn(b: Build) {
     w := b.workspace("Main program");
     o := w.options();
     o.kind        = .executable;
@@ -194,8 +198,10 @@ This is the Jai message loop, built on Gabbro's `#compiler` hook + `compiler_dec
 as each phase finishes a unit — and **inspect or alter the program** before it
 lowers.
 
+> Planned: the Layer 3 surface below is not built yet (see the plan in section 9).
+
 ```gabbro
-build :: fn(b: *Build) {
+build :: fn(b: Build) {
     w := b.workspace("Main");
     w.add_file("main.gab");
     w.intercept();                       // begin
@@ -240,6 +246,10 @@ and adds the typed-AST/type-info handles.
 
 ## 5. The distinctive parts
 
+> Planned: this section is design. Of it, only the gating of comptime FFI is built so far
+> (see the plan in section 9); `*Caps`, `#provided`, `add_quote`, `Target` values,
+> `--watch` and `b.codegen` do not exist yet.
+
 ### 5.1 Capability-sandboxed dependency builds — the supply-chain fix
 Jai's build is arbitrary code with full host access; so is `build.rs`. **Gabbro hands
 every build hook a capability set.** A dependency's `build.gab` receives a
@@ -247,7 +257,7 @@ every build hook a capability set.** A dependency's `build.gab` receives a
 
 ```gabbro
 // vendor/raylib/build.gab  — runs sandboxed
-build :: fn(b: *Build, caps: *Caps) {
+build :: fn(b: Build, caps: *Caps) {
     lib := b.static("raylib", "src/raylib.gab");
     lib.optimize(.release_fast);
 
@@ -285,7 +295,7 @@ println(GIT_REV);
 `Target` is an ordinary value, so cross-compilation is a loop:
 
 ```gabbro
-targets := [_]Target{ Target.win_x64, Target.linux_x64, Target.macos_arm64 };
+targets: [3]Target = .{ Target.win_x64, Target.linux_x64, Target.macos_arm64 };
 for t in targets {
     e := b.executable("tool", "src/main.gab");
     e.target(t);
@@ -394,9 +404,9 @@ capability system → Layers 2–3 surface → cross-compile.
 
 ```gabbro
 // build.gab
-#import std.build;
+#import std.build.{ Build };
 
-build :: fn(b: *Build) {
+build :: fn(b: Build) {
     app := b.executable("app", "src/main.gab");
     app.release();
     app.link("user32");
