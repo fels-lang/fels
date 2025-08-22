@@ -785,3 +785,39 @@ test "diagnostics: an alias spelled like a constant is not lowered as a global" 
     }
     try std.testing.expectEqual(@as(usize, 2), constants);
 }
+
+test "diagnostics: exponent notation gets its own message, with the number written out" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `1e5` used to say "unknown type `e5`": the lexer reads it as `1` with the suffix `e5`.
+    const int_msg = (try firstError(a, "main :: fn() -> i32 { x := 1e5; return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, int_msg, "exponent notation `1e5` is not supported") != null);
+    try std.testing.expect(std.mem.indexOf(u8, int_msg, "`100000.0`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, int_msg, "unknown type") == null);
+    const float_msg = (try firstError(a, "main :: fn() -> i32 { x := 1.5e3; return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, float_msg, "exponent notation `1.5e3` is not supported") != null);
+    try std.testing.expect(std.mem.indexOf(u8, float_msg, "`1500.0`") != null);
+    // In a hex literal `e` is a digit.
+    try std.testing.expect((try firstError(a, "main :: fn() -> i32 { x := 0x1e5; return x - 485; }")) == null);
+}
+
+test "diagnostics: a problem in a top level constant is reported once" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The initializer of a top level constant is checked twice; it used to give two
+    // identical errors.
+    const src =
+        \\BIG :: 5u128;
+        \\main :: fn() -> i32 { return 0; }
+    ;
+    const mod = try gabbro.parseSource(a, "t.gab", src);
+    var syms = try gabbro.sema_mod.collectSymbols(a, mod);
+    const env = try gabbro.sema_mod.checkTypesTolerant(a, mod, &syms, src, "t.gab");
+    var errors: usize = 0;
+    for (env.diagnostics.items) |d| {
+        if (d.kind == .err) errors += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), errors);
+}

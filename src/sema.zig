@@ -1376,8 +1376,20 @@ const Checker = struct {
 
     // Diagnostics
 
+    /// The same message at the same place was already reported. Some declarations are
+    /// checked twice (a top level constant's initializer, for example), and the user
+    /// should see each problem once.
+    fn alreadyReported(self: *Checker, span: Span, msg: []const u8) bool {
+        for (self.diagnostics.items) |d| {
+            if (d.span.start == span.start and d.span.end == span.end and
+                std.mem.eql(u8, d.message, msg) and std.mem.eql(u8, d.file, self.file)) return true;
+        }
+        return false;
+    }
+
     fn emitWarning(self: *Checker, span: Span, comptime fmt: []const u8, args: anytype) void {
         const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
+        if (self.alreadyReported(span, msg)) return;
         self.diagnostics.append(self.allocator, .{
             .kind = .warning,
             .message = msg,
@@ -1415,6 +1427,7 @@ const Checker = struct {
 
     fn emitError(self: *Checker, span: Span, comptime fmt: []const u8, args: anytype) void {
         const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
+        if (self.alreadyReported(span, msg)) return;
         self.diagnostics.append(self.allocator, Diagnostic.err(msg, span, self.file)) catch {};
     }
 
@@ -1430,6 +1443,7 @@ const Checker = struct {
     /// Like `emitError`, but attaches a caret label and/or a `help:`/`note:` line.
     fn emitErrorRich(self: *Checker, span: Span, comptime fmt: []const u8, args: anytype, opts: RichOpts) void {
         const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
+        if (self.alreadyReported(span, msg)) return;
         var d = Diagnostic.err(msg, span, self.file);
         d.code = opts.code;
         d.primary_label = opts.primary_label;
@@ -2848,14 +2862,22 @@ const Checker = struct {
                 // mistake (`0u128`, `0u9`), not a polymorphic literal — flag it
                 // rather than silently dropping the suffix.
                 const suffix = intLiteralSuffix(text);
-                if (suffix.len != 0 and !isValidIntSuffix(suffix))
-                    self.reportUnknownType(suffix, expr.span);
+                if (suffix.len != 0 and !isValidIntSuffix(suffix)) {
+                    if (isExponentSuffix(text, suffix))
+                        self.reportExponent(text, suffix, expr.span)
+                    else
+                        self.reportUnknownType(suffix, expr.span);
+                }
                 break :blk intLiteralType(text);
             },
             .float => |text| blk: {
                 const suffix = floatLiteralSuffix(text);
-                if (suffix.len != 0 and !std.mem.eql(u8, suffix, "f32") and !std.mem.eql(u8, suffix, "f64"))
-                    self.emitError(expr.span, "unsupported float width `{s}`: gabbro floats are `f32` or `f64`", .{suffix});
+                if (suffix.len != 0 and !std.mem.eql(u8, suffix, "f32") and !std.mem.eql(u8, suffix, "f64")) {
+                    if (isExponentSuffix(text, suffix))
+                        self.reportExponent(text, suffix, expr.span)
+                    else
+                        self.emitError(expr.span, "unsupported float width `{s}`: gabbro floats are `f32` or `f64`", .{suffix});
+                }
                 break :blk floatLiteralType(text);
             },
             .string => try self.sliceOf(.u8),
@@ -5106,6 +5128,21 @@ const Checker = struct {
         return best;
     }
 
+    /// `1e5` or `1.5e3`: the lexer reads exponent notation as a number with the
+    /// suffix `e5`, which gabbro does not have. Say so, and offer the number
+    /// written out when that is short enough to be useful.
+    fn reportExponent(self: *Checker, text: []const u8, suffix: []const u8, span: Span) void {
+        const written = exponentWrittenOut(self.allocator, text, suffix);
+        const help = if (written) |w|
+            std.fmt.allocPrint(self.allocator, "write the number out: `{s}`", .{w}) catch null
+        else
+            null;
+        self.emitErrorRich(span, "exponent notation `{s}` is not supported", .{text}, .{
+            .primary_label = "gabbro has no exponent notation",
+            .help = help,
+        });
+    }
+
     /// Diagnose a type name that resolved to nothing: a tailored message for an
     /// unsupported integer width (`u128`), otherwise "unknown type" + a hint.
     fn reportUnknownType(self: *Checker, name: []const u8, span: Span) void {
@@ -6096,6 +6133,80 @@ fn intLiteralSuffix(text: []const u8) []const u8 {
 fn isValidIntSuffix(suffix: []const u8) bool {
     for (int_literal_suffixes) |valid| if (std.mem.eql(u8, suffix, valid)) return true;
     return false;
+}
+
+/// Is the suffix of a decimal literal the exponent of `1e5` / `1.5E3`? Hex and
+/// binary literals never qualify: in `0x1e5` the `e` is a digit.
+fn isExponentSuffix(text: []const u8, suffix: []const u8) bool {
+    if (text.len >= 2 and text[0] == '0' and (text[1] == 'x' or text[1] == 'X' or text[1] == 'b' or text[1] == 'B')) return false;
+    if (suffix.len == 0 or (suffix[0] != 'e' and suffix[0] != 'E')) return false;
+    for (suffix[1..]) |c| if (!std.ascii.isDigit(c) and c != '_') return false;
+    return true;
+}
+
+/// The literal without its exponent: `1e5` -> `100000.0`, `1.5e3` -> `1500.0`,
+/// `2.25e1` -> `22.5`. Null when there are no exponent digits or the exponent is
+/// too large to write out usefully.
+fn exponentWrittenOut(allocator: std.mem.Allocator, text: []const u8, suffix: []const u8) ?[]const u8 {
+    var exp: usize = 0;
+    var exp_digits: usize = 0;
+    for (suffix[1..]) |c| {
+        if (c == '_') continue;
+        exp = exp * 10 + (c - '0');
+        exp_digits += 1;
+        if (exp > 30) return null;
+    }
+    if (exp_digits == 0) return null;
+
+    // The mantissa's digits without `_`, and how many of them are before the point.
+    const body = text[0 .. text.len - suffix.len];
+    var digits = std.ArrayList(u8).empty;
+    var int_len: usize = 0;
+    var seen_point = false;
+    for (body) |c| {
+        if (c == '.') {
+            seen_point = true;
+            continue;
+        }
+        if (c == '_') continue;
+        digits.append(allocator, c) catch return null;
+        if (!seen_point) int_len += 1;
+    }
+    const point = int_len + exp;
+
+    var out = std.ArrayList(u8).empty;
+    if (point >= digits.items.len) {
+        out.appendSlice(allocator, digits.items) catch return null;
+        out.appendNTimes(allocator, '0', point - digits.items.len) catch return null;
+        out.appendSlice(allocator, ".0") catch return null;
+    } else {
+        out.appendSlice(allocator, digits.items[0..point]) catch return null;
+        out.append(allocator, '.') catch return null;
+        out.appendSlice(allocator, digits.items[point..]) catch return null;
+    }
+    // Drop leading zeros of the integer part, keeping one before the point.
+    var start: usize = 0;
+    while (start + 1 < out.items.len and out.items[start] == '0' and out.items[start + 1] != '.') start += 1;
+    return out.items[start..];
+}
+
+test "exponent suffixes are recognized and written out" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    try std.testing.expect(isExponentSuffix("1e5", "e5"));
+    try std.testing.expect(isExponentSuffix("1.5E3", "E3"));
+    try std.testing.expect(!isExponentSuffix("0x1e5", ""));
+    try std.testing.expect(!isExponentSuffix("1u8", "u8"));
+    try std.testing.expect(!isExponentSuffix("1ex", "ex"));
+    try std.testing.expectEqualStrings("100000.0", exponentWrittenOut(aa, "1e5", "e5").?);
+    try std.testing.expectEqualStrings("1500.0", exponentWrittenOut(aa, "1.5e3", "e3").?);
+    try std.testing.expectEqualStrings("22.5", exponentWrittenOut(aa, "2.25e1", "e1").?);
+    try std.testing.expectEqualStrings("2.5", exponentWrittenOut(aa, "0.25e1", "e1").?);
+    try std.testing.expectEqualStrings("1000000.0", exponentWrittenOut(aa, "1_000e3", "e3").?);
+    try std.testing.expect(exponentWrittenOut(aa, "1e", "e") == null);
+    try std.testing.expect(exponentWrittenOut(aa, "1e99", "e99") == null);
 }
 
 /// Split off a float literal's trailing type-suffix (possibly empty). gabbro float

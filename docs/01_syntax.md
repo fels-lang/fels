@@ -175,9 +175,8 @@ Float literals always contain a decimal point. A fractional part is required.
 > [!NOTE]
 > Bare integers like `1` are not implicitly treated as floats. You must write `1.0` when a floating-point value is intended.
 
-There is no exponent notation: write `100000.0`, not `1e5`. The compiler reads
-`1e5` as the integer `1` with an unknown suffix `e5` (the error says
-`unknown type e5`), and `1.5e3` as a float with the unsupported width `e3`.
+There is no exponent notation: write `100000.0`, not `1e5`. The compiler reports
+`exponent notation is not supported` and offers the number written out.
 
 ### String Literals
 
