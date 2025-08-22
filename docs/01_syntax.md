@@ -100,6 +100,14 @@ The following table lists every keyword in Gabbro, grouped by category.
 | `true` | Boolean true |
 | `false` | Boolean false |
 
+### Words that are not reserved
+
+Some words have a meaning only in one position and stay usable as ordinary names
+everywhere else: `macro` and `constraint` after `::` (a macro or constraint
+declaration), `where` after a signature, `ok` and `err` after `defer.`, and the
+names after `#` such as `extern`, `run` and `quote`. `macro := 5;` is a valid
+declaration.
+
 ## Primitive Type Keywords
 
 Gabbro provides a fixed set of primitive types:
@@ -161,10 +169,15 @@ Float literals always contain a decimal point. A fractional part is required.
 3.14      // f64 by default
 1.0       // decimal with fractional part required
 0.5       // leading zero
+2.5f32    // explicit f32 suffix (f32 and f64 are the only float suffixes)
 ```
 
 > [!NOTE]
 > Bare integers like `1` are not implicitly treated as floats. You must write `1.0` when a floating-point value is intended.
+
+There is no exponent notation: write `100000.0`, not `1e5`. The compiler reads
+`1e5` as the integer `1` with an unknown suffix `e5` (the error says
+`unknown type e5`), and `1.5e3` as a float with the unsupported width `e3`.
 
 ### String Literals
 
