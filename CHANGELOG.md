@@ -33,6 +33,10 @@ the major version is `0`, any minor bump may break source compatibility.
   come from the target's layout.
 - **gabld wrote a DLL that does not load when the DLL imports nothing.** Its IAT data directory had an RVA
   but size 0, which the Windows loader refuses (error 87). The directory is now left empty in that case.
+- **A literal argument to an interface method arrived as garbage.** `sh.one(1u32)` through a
+  `*Shape` passed the literal as a zero-width `i0 0`, so the method read whatever was in the
+  register; a variable argument worked. The call now takes each argument's type from the
+  interface method's signature, as a call through a `fn` pointer does. Broken in 0.2.1.
 
 ## 0.2.1 — 2026-10-10
 

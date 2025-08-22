@@ -1187,6 +1187,32 @@ test "exe: dynamic dispatch through an interface method that takes another inter
     try std.testing.expectEqual(@as(u32, 2), code);
 }
 
+test "exe: dynamic dispatch with a literal argument" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Regression: an interface method call left `param_tys` empty, so an
+    // immediate literal argument had no type and lowered as a zero-width
+    // `i0 0`; the callee read garbage for `k`.
+    const code = try compileAndRun(arena.allocator(),
+        \\Shape :: interface {
+        \\    one :: fn(self: *Self, k: u32) -> u32;
+        \\}
+        \\Sq :: struct { m: u32 }
+        \\Sq as Shape {
+        \\    one :: fn(self: *Self, k: u32) -> u32 { return self.m + k; }
+        \\}
+        \\main :: fn() -> i32 {
+        \\    sq: Sq = .{ 3u32 };
+        \\    sh: *Shape = &sq;
+        \\    return sh.one(1u32) as i32;
+        \\}
+    , "exe_iface_dispatch_literal_arg");
+    try std.testing.expectEqual(@as(u32, 4), code);
+}
+
 test "exe: nested dynamic dispatch on a parameter of an interface method" {
     if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

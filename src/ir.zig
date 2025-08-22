@@ -3413,14 +3413,30 @@ const FunctionLowerer = struct {
                             } });
                             var args = std.ArrayList(Value).empty;
                             errdefer args.deinit(self.allocator);
+                            // Record each argument's type from the method signature
+                            // (slot 0 is `self`, typed by `data` itself) so the
+                            // backend can type an untyped `.imm` literal argument.
+                            const method_params = self.interfaceMethodParams(iface_name, method_index);
+                            var arg_ts = std.ArrayList(IrType).empty;
+                            errdefer arg_ts.deinit(self.allocator);
                             try args.append(self.allocator, data);
-                            for (call.args) |arg| switch (arg) {
-                                .positional => |value| try args.append(self.allocator, try self.lowerExpr(value)),
-                                .named => |named| try args.append(self.allocator, try self.lowerExpr(named.value)),
-                            };
+                            try arg_ts.append(self.allocator, .unknown);
+                            for (call.args, 0..) |arg, i| {
+                                const v = switch (arg) {
+                                    .positional => |e| e,
+                                    .named => |n| n.value,
+                                };
+                                const ety: ?IrType = if (i + 1 < method_params.len)
+                                    (lowerSemaTypeWithEnv(self.allocator, method_params[i + 1].ty, self.types, self.symbols) catch null)
+                                else
+                                    null;
+                                try args.append(self.allocator, if (ety) |t| try self.lowerExprAs(v, t) else try self.lowerExpr(v));
+                                try arg_ts.append(self.allocator, ety orelse .unknown);
+                            }
                             break :blk try self.emit(self.exprType(expr), .{ .call_indirect = .{
                                 .callee = callee,
                                 .args = try args.toOwnedSlice(self.allocator),
+                                .param_tys = try arg_ts.toOwnedSlice(self.allocator),
                             } });
                         }
                     }
@@ -5309,6 +5325,15 @@ const FunctionLowerer = struct {
         };
         for (methods, 0..) |method, i| if (std.mem.eql(u8, method.name, method_name)) return @intCast(i);
         return null;
+    }
+
+    fn interfaceMethodParams(self: FunctionLowerer, interface_name: []const u8, index: u32) []const sema.ParamSig {
+        const id = self.symbols.resolve(self.symbols.root_scope, interface_name) orelse return &.{};
+        const layout = self.types.layouts.get(id) orelse return &.{};
+        return switch (layout.kind) {
+            .interface_type => |methods| if (index < methods.len) methods[index].params else &.{},
+            else => &.{},
+        };
     }
 
     fn allocBlockId(self: *FunctionLowerer) BlockId {
