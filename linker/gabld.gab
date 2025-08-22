@@ -64,6 +64,7 @@ rd_i16 :: fn(b: []const u8, o: usize) -> i32 {
     return v as i32;
 }
 
+
 // A sub-slice [start, start+len) of `data`, built from raw parts (avoids the
 // `&data[i]` / `data[a:b]` forms while those have rough edges).
 sub :: fn(data: []const u8, start: usize, len: usize) -> []const u8 {

@@ -3,7 +3,12 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.2.2 — 2026-10-10
+
+A release for editor support and five fixes. `gabbro lsp` now understands imports, so the language
+server in Zed and other editors no longer reports errors on files that import `std` or other
+modules. The tree-sitter grammar and a Zed extension live in their own repositories:
+`gabbro-lang/tree-sitter-gabbro` and `gabbro-lang/zed-gabbro`.
 
 ### Changed
 
