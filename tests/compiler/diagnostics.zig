@@ -949,3 +949,44 @@ test "diagnostics: a `void ! E` function may run to its end without `return;`" {
         try std.testing.expect(std.mem.indexOf(u8, msg, "may not return a value on all code paths") != null);
     }
 }
+
+test "diagnostics: a top level constant may use what is declared below it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The constants used to be typed in source order, in the walk that records the function
+    // signatures and struct layouts: a call to a function declared below was an internal
+    // compiler error, and a constant declared below had no type yet.
+    try expectNoError(a, "",
+        \\X :: seven();
+        \\R :: #run seven();
+        \\seven :: fn() -> i32 { return 7; }
+        \\main :: fn() -> i32 { return X + R; }
+    );
+    try expectNoError(a, "",
+        \\A :: B + 1;
+        \\B :: C * 2;
+        \\C :: 3;
+        \\main :: fn() -> i32 { return A; }
+    );
+    try expectNoError(a, "",
+        \\ORIGIN :: #run make();
+        \\make :: fn() -> Point { p: Point = .{ .x = 3, .y = 4 }; return p; }
+        \\Point :: struct { x: i32, y: i32 }
+        \\main :: fn() -> i32 { return ORIGIN.x + ORIGIN.y; }
+    );
+}
+
+test "diagnostics: a top level constant whose value depends on itself" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // These used to fail with whatever the half-typed constant tripped over, such as "operator
+    // `+` requires numeric operands, found `B`".
+    try std.testing.expect(std.mem.indexOf(u8,
+        (try firstError(a, "A :: A + 1;\nmain :: fn() -> i32 { return A; }")).?,
+        "the value of constant `A` depends on itself") != null);
+    try std.testing.expect(std.mem.indexOf(u8,
+        (try firstError(a, "A :: B + 1;\nB :: A + 1;\nmain :: fn() -> i32 { return A; }")).?,
+        "the value of constant `A` depends on itself") != null);
+}

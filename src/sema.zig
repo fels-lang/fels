@@ -1410,6 +1410,12 @@ const Checker = struct {
     record_locals: bool = false,
     /// The end of the block being checked: where a local declared in it stops being visible.
     block_end: usize = 0,
+    /// The top-level constants `collectTopLevelTypes` has yet to type, so an initializer that
+    /// names a constant declared further down types that one first. A constant is
+    /// `.in_progress` while its own initializer is inferred: meeting it again is a cycle.
+    top_consts: std.AutoHashMapUnmanaged(SymbolId, TopConst) = .empty,
+
+    const TopConst = union(enum) { pending: ast.ConstDecl, in_progress };
 
     fn init(allocator: std.mem.Allocator, symbols: SymbolTable) Checker {
         return .{
@@ -1434,6 +1440,7 @@ const Checker = struct {
         if (self.constraint_decls_init) self.constraint_decls.deinit();
         if (self.exhaustive_matches_init) self.exhaustive_matches.deinit();
         self.catch_names.deinit(self.allocator);
+        self.top_consts.deinit(self.allocator);
     }
 
     // Diagnostics
@@ -1866,14 +1873,9 @@ const Checker = struct {
             switch (item) {
                 .const_decl => |decl| {
                     // An alias spelled like a constant is a type like any other (it was
-                    // registered in the pre-pass); there is no value to infer.
-                    if (isTypeAliasConst(self.symbols, decl)) {
-                        try self.env.set(id, .{ .named = id });
-                    } else {
-                        // A mutable global carries an explicit type; an immutable constant
-                        // takes the type of its (comptime) initializer.
-                        try self.env.set(id, if (decl.ty) |t| try self.typeFromRef(t) else try self.inferExpr(decl.value));
-                    }
+                    // registered in the pre-pass); there is no value to infer. A value is
+                    // typed after this loop.
+                    if (isTypeAliasConst(self.symbols, decl)) try self.env.set(id, .{ .named = id });
                 },
                 .type_decl => |decl| {
                     try self.env.set(id, .{ .named = id });
@@ -2036,6 +2038,48 @@ const Checker = struct {
                 .static_assert => {},
             }
         }
+
+        // The constants come last: an initializer may call a function or name a type declared
+        // further down, so every signature and layout has to be in place first. One that names
+        // a constant declared further down types that constant on the way (`typePendingConst`).
+        for (module.items) |item| switch (item) {
+            .const_decl => |decl| {
+                if (isTypeAliasConst(self.symbols, decl)) continue;
+                const id = self.symbols.resolveVisible(decl.file_name, decl.name) orelse continue;
+                const entry = try self.top_consts.getOrPut(self.allocator, id);
+                if (!entry.found_existing) entry.value_ptr.* = .{ .pending = decl };
+            },
+            else => {},
+        };
+        for (module.items) |item| switch (item) {
+            .const_decl => |decl| {
+                const id = self.symbols.resolveVisible(decl.file_name, decl.name) orelse continue;
+                try self.typePendingConst(id, decl.span);
+            },
+            else => {},
+        };
+    }
+
+    /// Type the top-level constant `id` now if `collectTopLevelTypes` has not yet (a no-op for
+    /// any other symbol). `use` is where it is named, for the error when its initializer
+    /// depends on its own value.
+    fn typePendingConst(self: *Checker, id: SymbolId, use: Span) SemanticError!void {
+        const decl = switch (self.top_consts.get(id) orelse return) {
+            .pending => |decl| decl,
+            .in_progress => {
+                self.emitError(use, "the value of constant `{s}` depends on itself", .{self.symbols.symbol(id).name});
+                return error.SemanticFailed;
+            },
+        };
+        try self.top_consts.put(self.allocator, id, .in_progress);
+        defer _ = self.top_consts.remove(id);
+        // The initializer is resolved in the file that declares the constant.
+        const use_site = self.file;
+        self.file = decl.file_name;
+        defer self.file = use_site;
+        // A mutable global carries an explicit type; an immutable constant takes the type of
+        // its (comptime) initializer.
+        try self.env.set(id, if (decl.ty) |t| try self.typeFromRef(t) else try self.inferExpr(decl.value));
     }
 
     fn checkTypeDecl(self: *Checker, decl: ast.TypeDecl) SemanticError!void {
@@ -2808,6 +2852,8 @@ const Checker = struct {
                 if (self.resolveTypeParam(name)) |type_param_ty| return type_param_ty;
                 if (self.resolveSymbol(name)) |id| {
                     try self.env.expr_symbols.put(expr.id, id);
+                    // A top-level constant declared further down than the one being typed.
+                    if (self.env.get(id) == null) try self.typePendingConst(id, expr.span);
                     // Record the resolved type for this reference. The `.ident`
                     // arm returns early (bypassing the central `expr_types.put`
                     // below), so without this a reference to a top-level const
@@ -3195,6 +3241,7 @@ const Checker = struct {
                     return error.SemanticFailed;
                 };
                 try self.env.expr_symbols.put(expr.id, id);
+                if (self.env.get(id) == null) try self.typePendingConst(id, expr.span);
                 break :blk self.env.get(id) orelse .{ .named = id };
             },
             .index => |index| blk: {
