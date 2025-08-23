@@ -1106,8 +1106,20 @@ const Walker = struct {
             .type_param => |tp| if (w.lookupTypeParam(tp.name) == null) w.declare(tp.name, tp.span.start, .type_param, .none),
             else => {},
         }
+        // A method of a generic struct inherits the struct's type parameters by name: they
+        // are the `$T` of the struct's header.
+        const header: ?ast.TypeDecl = if (!lambda and short.len != f.name.len) blk: {
+            const sid = w.cx.syms.resolveVisible(w.file, f.name[0 .. f.name.len - short.len - 1]) orelse break :blk null;
+            break :blk w.cx.typeDecl(sid);
+        } else null;
         for (f.type_params) |tp| {
-            if (w.lookupTypeParam(tp) == null) w.declare(tp, null, .type_param, .none);
+            if (w.lookupTypeParam(tp) != null) continue;
+            var pos: ?usize = null;
+            if (header) |d| if (std.mem.eql(u8, d.file_name, w.file)) {
+                const brace = std.mem.indexOfScalarPos(u8, w.src, d.span.start, '{') orelse d.span.end;
+                pos = findWord(w.src, d.span.start + d.name.len, brace, tp);
+            };
+            w.declare(tp, pos, .type_param, .none);
         }
         for (f.type_constraints) |c| w.constraintRef(c);
         for (f.params) |p| {
@@ -2849,7 +2861,7 @@ test "nav: names in a generic function are found without the type check" {
     var files = TestFiles{
         .names = &.{"main.gab"},
         .texts = &.{
-            "Box :: struct($T: type) {\n    item: T,\n    n: i32,\n}\n" ++
+            "Box :: struct($T: type) {\n    item: T,\n    n: i32,\n    get :: fn(self: *Self) -> T { return self.item; }\n}\n" ++
                 "count :: fn($T: type, b: *Box(T)) -> i32 { k := b.n; return k; }\n" ++
                 "main :: fn() -> i32 {\n    b: Box(i32) = .{ .item = 1, .n = 2 };\n    return count(i32, &b) + b.n;\n}\n",
         },
@@ -2861,6 +2873,12 @@ test "nav: names in a generic function are found without the type check" {
     try testing.expect(n.same(p.targetAt("main.gab", "n", 1).?)); // b.n in the generic body
     const t = p.targetAt("main.gab", "T", 1).?; // `item: T`
     try testing.expectEqual(Kind.type_param, t.kind);
+    // The struct's `$T`, `item: T` and the method's `-> T`; `count` has a `T` of its own.
+    try testing.expectEqual(@as(usize, 3), p.refs(t));
+    try testing.expect(t.same(p.targetAt("main.gab", "T", 2).?));
+    try testing.expect(!t.same(p.targetAt("main.gab", "T", 3).?));
+    const item = p.targetAt("main.gab", "item", 0).?;
+    try testing.expectEqual(@as(usize, 3), p.refs(item)); // field, `self.item`, `.item = 1`
     const k = p.targetAt("main.gab", "k", 1).?;
     try testing.expectEqual(@as(usize, 2), p.refs(k));
 }
