@@ -166,9 +166,7 @@ write_all(data) catch err { failures += 1; };     // ignore the byte count; coun
 
 An error is inspected where it is caught: `err == .variant` is accepted only on the name the
 `catch` bound. A function may take an error as a parameter and pass it on, but cannot compare it
-with a variant (`fn(e: ParseError) { if e == .eof … }` is a compile error), because the variants
-of an error are numbered by the function that raised it and the callee would read them against the
-wrong numbering.
+with a variant (`fn(e: ParseError) { if e == .eof … }` is a compile error).
 
 ### Inspecting the error variant
 
@@ -182,10 +180,14 @@ result := parse_json_string(input, output) catch err {
 };
 ```
 
-`err == .variant` and `err != .variant` compare the caught error with a variant of *its own*
-error set, so the same name in two sets is told apart. Naming a variant the set does not
-have (`.secnd`) is a compile error. Comparison is the only way to inspect an error:
-`match` does not accept an error value, and it cannot be cast to an integer.
+`err == .variant` and `err != .variant` ask whether the caught error is that variant. The variant
+must be one of the error's own set: naming a variant the set does not have (`.secnd`) is a compile
+error. An inferred set (bare `!`) has no list to check against, so any name is accepted there.
+An error is identified by its variant's name and keeps it as `?` passes it on through any number
+of functions, inferred sets included: a `.timeout` raised by a function returning `IoError` is
+still `.timeout` when it is caught from an inferred-set function that called it.
+Comparison is the only way to inspect an error: `match` does not accept an error value, and it
+cannot be cast to an integer.
 
 ## Force Unwrap with `!!`
 

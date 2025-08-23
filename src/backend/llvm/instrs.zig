@@ -1388,29 +1388,10 @@ fn lowerBuiltin(
         return null;
     }
 
-    // Error builtins
-
-    // error.<VariantName> — emit the discriminant (i32) for an error variant.
-    // The variant name is resolved against the current function's error type.
-    if (std.mem.startsWith(u8, b.name, "error.")) {
-        const variant_name = b.name["error.".len..];
-        const error_type_name = errorTypeName(fncg.func.error_ty orelse .unknown);
-        const disc = cg.errorDiscriminant(error_type_name, variant_name);
-        return llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), disc, 0);
-    }
-
     // catch_handler is an IR marker; the handler CFG is emitted by IR lowering.
     if (std.mem.eql(u8, b.name, "catch_handler")) return null;
 
     return null; // unknown builtin
-}
-
-/// Extract the error type name string from an IrType (error_ty field of IrFunction).
-fn errorTypeName(err_ty: ir.IrType) []const u8 {
-    return switch (err_ty) {
-        .variant_type => |n| n,
-        else => "",
-    };
 }
 
 // Runtime safety checks

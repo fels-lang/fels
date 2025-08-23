@@ -39,9 +39,6 @@ pub const LlvmBackend = struct {
 
     /// Lower a complete IrModule to LLVM IR in memory.
     pub fn lower(self: *LlvmBackend, module: ir.IrModule) !void {
-        // Expose module metadata needed by instruction lowering.
-        self.cg.error_defs = module.errors;
-
         // Target-specific module-level stubs (Windows `__chkstk`; nothing on Linux).
         self.cg.applyTargetStubs();
 

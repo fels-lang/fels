@@ -112,7 +112,8 @@ pub fn lower(
                 );
                 payload_val = payload_lv;
             }
-            const disc_raw = values.resolveValue(cg, fncg, ft.disc, .unknown);
+            // An `i32`: the number of the error (`fail` gives an immediate, `?` a register).
+            const disc_raw = values.resolveValue(cg, fncg, ft.disc, .{ .i = 32 });
             const i32_ty = llvm.LLVMInt32TypeInContext(cg.ctx);
             const disc = values.coerce(cg.builder, cg.ctx, disc_raw, i32_ty);
             buildFallibleRet(cg, fncg, ret_lty, payload_val, disc);
