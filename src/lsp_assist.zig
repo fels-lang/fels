@@ -298,10 +298,11 @@ fn myersLines(
     const off: isize = n + m + 1;
     var v = try a.alloc(isize, width);
     @memset(v, 0);
+    // Before round `d`, the part of `v` that round reads: diagonals `-d - 1 .. d + 1`.
     var trace = std.ArrayList([]isize).empty;
     var d: isize = 0;
     const found = search: while (d <= max) : (d += 1) {
-        try trace.append(a, try a.dupe(isize, v));
+        try trace.append(a, try a.dupe(isize, v[@intCast(off - d - 1)..@intCast(off + d + 2)]));
         var kk: isize = -d;
         while (kk <= d) : (kk += 2) {
             var x: isize = if (kk == -d or (kk != d and v[@intCast(kk - 1 + off)] < v[@intCast(kk + 1 + off)]))
@@ -328,9 +329,10 @@ fn myersLines(
     var dd = d;
     while (dd >= 0) : (dd -= 1) {
         const vv = trace.items[@intCast(dd)];
+        const base = dd + 1; // diagonal `k` is at `vv[k + base]`
         const kk = x - y;
-        const prev_k = if (kk == -dd or (kk != dd and vv[@intCast(kk - 1 + off)] < vv[@intCast(kk + 1 + off)])) kk + 1 else kk - 1;
-        const prev_x = vv[@intCast(prev_k + off)];
+        const prev_k = if (kk == -dd or (kk != dd and vv[@intCast(kk - 1 + base)] < vv[@intCast(kk + 1 + base)])) kk + 1 else kk - 1;
+        const prev_x = vv[@intCast(prev_k + base)];
         const prev_y = prev_x - prev_k;
         while (x > prev_x and y > prev_y and x > 0 and y > 0) {
             x -= 1;
@@ -2502,6 +2504,61 @@ test "lsp assist: lines map across several separate edits" {
     // Identical texts map to themselves.
     const same = TextMap.build(arena.allocator(), old, old);
     try testing.expectEqual(@as(?usize, 5), same.toOld(5));
+}
+
+test "lsp assist: the line diff matches as many lines as the longest common subsequence" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+    const r = prng.random();
+    const words = [_][]const u8{ "a", "b", "c", "}", "x := 1;" };
+    var round: usize = 0;
+    while (round < 300) : (round += 1) {
+        var old_lines: [12][]const u8 = undefined;
+        var new_lines: [16][]const u8 = undefined;
+        const n = r.uintLessThan(usize, 12);
+        for (0..n) |i| old_lines[i] = words[r.uintLessThan(usize, words.len)];
+        // Edit a copy: drop, change or add lines at random.
+        var k: usize = 0;
+        for (0..n) |i| {
+            const what = r.uintLessThan(u8, 6);
+            if (what == 0) continue; // dropped
+            if (k < new_lines.len) {
+                new_lines[k] = if (what == 1) words[r.uintLessThan(usize, words.len)] else old_lines[i];
+                k += 1;
+            }
+            if (what == 2 and k < new_lines.len) {
+                new_lines[k] = words[r.uintLessThan(usize, words.len)];
+                k += 1;
+            }
+        }
+        const old = try std.mem.join(a, "\n", old_lines[0..n]);
+        const new = try std.mem.join(a, "\n", new_lines[0..k]);
+        const m = TextMap.build(a, old, new);
+        if (m.identical) continue;
+        try testing.expect(m.new_starts.len > 0);
+        // Matched lines are equal and in order.
+        var matched: usize = 0;
+        var last: i32 = -1;
+        for (m.new_to_old, 0..) |e, j| {
+            if (e < 0) continue;
+            try testing.expect(e > last);
+            last = e;
+            try testing.expectEqualStrings(TextMap.line(old, m.old_starts, @intCast(e)), TextMap.line(new, m.new_starts, j));
+            matched += 1;
+        }
+        // As many as the longest common subsequence.
+        const ol = m.old_starts.len - 1;
+        const nl = m.new_starts.len - 1;
+        var dp = try a.alloc(usize, (ol + 1) * (nl + 1));
+        @memset(dp, 0);
+        for (0..ol) |i| for (0..nl) |j| {
+            const same = std.mem.eql(u8, TextMap.line(old, m.old_starts, i), TextMap.line(new, m.new_starts, j));
+            dp[(i + 1) * (nl + 1) + j + 1] = if (same) dp[i * (nl + 1) + j] + 1 else @max(dp[i * (nl + 1) + j + 1], dp[(i + 1) * (nl + 1) + j]);
+        };
+        try testing.expectEqual(dp[ol * (nl + 1) + nl], matched);
+    }
 }
 
 test "lsp assist: where a recorded local's name is written" {
