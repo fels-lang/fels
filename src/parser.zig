@@ -1408,6 +1408,10 @@ pub const Parser = struct {
                         });
                     } else {
                         const ty = try self.parseType();
+                        // `p: *$T`, `xs: []$T`, `o: ?$T`, `l: *List($T)`: a `$T`
+                        // inside the type introduces T just as `a: $T` does.
+                        var adder: TypeParamAdder = .{ .allocator = self.allocator, .names = &type_params };
+                        try ty.eachTypeParam(&adder);
                         try params.append(self.allocator, .{
                             .name = param_name.text(self.source),
                             .ty = ty,
@@ -2338,6 +2342,18 @@ fn decodeCharLit(raw: []const u8) !u32 {
         else => error.Invalid,
     };
 }
+
+/// Adds each `$T` met in a parameter's type to the function's type params, once:
+/// `fn(a: *$T, b: *$T)` and `fn($T: Show, x: *$T)` have one `T`.
+const TypeParamAdder = struct {
+    allocator: std.mem.Allocator,
+    names: *std.ArrayList([]const u8),
+
+    pub fn visit(self: *TypeParamAdder, tp: ast.NamedType) error{OutOfMemory}!void {
+        for (self.names.items) |have| if (std.mem.eql(u8, have, tp.name)) return;
+        try self.names.append(self.allocator, tp.name);
+    }
+};
 
 const Infix = struct {
     left_bp: u8,

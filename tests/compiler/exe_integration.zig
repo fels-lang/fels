@@ -4411,3 +4411,36 @@ test "exe: a `void ! E` function that runs to its end succeeds" {
     , "exe_fallible_void_fallthrough");
     try std.testing.expectEqual(@as(u32, 42), code);
 }
+
+test "exe: a `$T` inside a param type (`*$T`, `[]$T`, `?$T`) binds T at the call" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Each of these was rejected before `T` could be inferred from inside the type.
+    const code = try compileAndRun(arena.allocator(),
+        \\bump :: fn(p: *$T) -> void { *p += 1; }
+        \\get :: fn(p: *$T) -> T { return *p; }
+        \\size_of_target :: fn(p: *$T) -> usize { return core::sizeof(T); }
+        \\first :: fn(s: []$T) -> T { return s[0]; }
+        \\or_else :: fn(o: ?$T, d: T) -> T { if (o) |v| { return v; } return d; }
+        \\main :: fn() -> i32 {
+        \\    y: i32 = 40;
+        \\    bump(&y);
+        \\    if y != 41 { return 1; }
+        \\    w: i64 = 2;
+        \\    bump(&w);
+        \\    if get(&w) != 3 { return 2; }
+        \\    if size_of_target(&w) != 8 { return 3; }
+        \\    b: u8 = 0;
+        \\    if size_of_target(&b) != 1 { return 4; }
+        \\    a: [2]i32 = .{ 5, 6 };
+        \\    if first(a[0..]) != 5 { return 5; }
+        \\    x: ?i32 = 7;
+        \\    if or_else(x, 0) != 7 { return 6; }
+        \\    if or_else(null, 9) != 9 { return 7; }
+        \\    return get(&y);
+        \\}
+    , "exe_nested_type_param");
+    try std.testing.expectEqual(@as(u32, 41), code);
+}

@@ -510,6 +510,24 @@ pub const TypeRef = union(enum) {
             .opaque_type => Span.new(0, 0),
         };
     }
+
+    /// Calls `ctx.visit(tp)` for each `$T` written in this type, left to right:
+    /// the whole type, or the `$T` of `*$T`, `[]$T`, `?$T`, `[N]$T`, `List($T)`.
+    /// In a parameter's type each one introduces a type variable. Function types
+    /// are not entered.
+    pub fn eachTypeParam(self: TypeRef, ctx: anytype) error{OutOfMemory}!void {
+        switch (self) {
+            .type_param => |tp| try ctx.visit(tp),
+            .pointer, .many_pointer => |p| try p.inner.eachTypeParam(ctx),
+            .optional => |o| try o.inner.eachTypeParam(ctx),
+            .slice => |s| try s.inner.eachTypeParam(ctx),
+            .array => |a| try a.inner.eachTypeParam(ctx),
+            .atomic => |a| try a.inner.eachTypeParam(ctx),
+            .borrow => |b| try b.inner.eachTypeParam(ctx),
+            .generic_inst => |g| for (g.args) |arg| try arg.eachTypeParam(ctx),
+            .named, .fn_type, .inline_error_set, .opaque_type => {},
+        }
+    }
 };
 
 pub const ErrorSpec = union(enum) {

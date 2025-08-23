@@ -4671,86 +4671,7 @@ const Checker = struct {
             else
                 try self.inferExpr(arg_expr);
             try arg_tys.append(self.allocator, arg_ty);
-            // Bind type variables: if param type is $T, bind T to the arg type.
-            if (param.ty == .type_param) {
-                const tp = param.ty.type_param;
-                if (!binding.contains(tp)) {
-                    try binding.put(tp, defaultLiteralType(arg_ty));
-                }
-            }
-            // If param type contains a type variable (e.g. *$T), extract the binding.
-            if (param.ty == .pointer or param.ty == .const_ptr) {
-                const inner = switch (param.ty) {
-                    .pointer, .const_ptr => |i| i,
-                    else => unreachable,
-                };
-                if (inner.* == .type_param) {
-                    const tp = inner.type_param;
-                    if (!binding.contains(tp)) {
-                        // arg_ty should be *SomeType — extract the inner
-                        const concrete: Ty = switch (arg_ty) {
-                            .pointer, .const_ptr => |inner_ty| inner_ty.*,
-                            else => arg_ty,
-                        };
-                        try binding.put(tp, concrete);
-                    }
-                }
-            }
-            // `[]$T` / `?$T` param — bind `$T` from the slice/optional element type.
-            if (param.ty == .slice and param.ty.slice.* == .type_param) {
-                const tp = param.ty.slice.type_param;
-                if (!binding.contains(tp)) {
-                    const concrete: Ty = switch (arg_ty) {
-                        .slice => |e| e.*,
-                        .array => |a| a.elem.*,
-                        else => arg_ty,
-                    };
-                    try binding.put(tp, concrete);
-                }
-            }
-            if (param.ty == .optional and param.ty.optional.* == .type_param) {
-                const tp = param.ty.optional.type_param;
-                if (!binding.contains(tp)) {
-                    const concrete: Ty = switch (arg_ty) {
-                        .optional => |e| e.*,
-                        else => arg_ty,
-                    };
-                    try binding.put(tp, concrete);
-                }
-            }
-            // `*Atomic(T)` / `Atomic(T)` param — bind `$T` from a concrete instance
-            // argument (`*Atomic(u32)` / `Atomic(u32)`). This is what lets a
-            // receiver-only generic method (`get(self: *Atomic(T))`) infer `T` from
-            // its receiver, since `T` appears only nested inside the struct.
-            {
-                const param_app: ?GenericApp = switch (param.ty) {
-                    .generic_app => |g| g,
-                    .pointer, .const_ptr => |i| if (i.* == .generic_app) i.*.generic_app else null,
-                    else => null,
-                };
-                if (param_app) |papp| {
-                    // Unwrap the argument past one pointer, then recover its
-                    // template + concrete args (either a collapsed `.named`
-                    // instance via the reverse map, or a still-`.generic_app`).
-                    const arg_inner: Ty = switch (arg_ty) {
-                        .pointer, .const_ptr => |i| i.*,
-                        else => arg_ty,
-                    };
-                    const arg_app: ?GenericApp = switch (arg_inner) {
-                        .generic_app => |g| g,
-                        .named => |id| self.env.generic_struct_instance_args.get(id),
-                        else => null,
-                    };
-                    if (arg_app) |aapp| {
-                        if (aapp.template == papp.template and aapp.args.len == papp.args.len) {
-                            for (papp.args, aapp.args) |pa, aa| {
-                                if (pa == .type_param and !binding.contains(pa.type_param))
-                                    try binding.put(pa.type_param, aa);
-                            }
-                        }
-                    }
-                }
-            }
+            try self.bindTypeVars(param.ty, arg_ty, &binding);
         }
 
         // Verify all value args are compatible with substituted param types.
@@ -4882,6 +4803,65 @@ const Checker = struct {
         return ret;
     }
 
+    /// Bind the type variables of a generic parameter type from the type of the
+    /// argument passed to it, at any depth: `$T` binds to the argument's type,
+    /// `*$T` / `[]$T` / `?$T` / `[N]$T` to what the argument points to or holds,
+    /// and `*Atomic($T)` to the argument of a concrete `Atomic(u32)` (which is how
+    /// a receiver-only generic method like `get(self: *Atomic(T))` infers `T`).
+    /// The first binding of a name wins. Where the argument has no matching shape,
+    /// the inner type is matched against the whole argument: a value receiver of
+    /// a `*Self` method, a plain value passed to `?T` (but `null` binds nothing).
+    /// The argument check after this reports any real mismatch, with the bound
+    /// types filled in.
+    fn bindTypeVars(self: *Checker, param_ty: Ty, arg_ty: Ty, binding: *std.StringHashMap(Ty)) error{OutOfMemory}!void {
+        switch (param_ty) {
+            .type_param => |tp| {
+                if (binding.contains(tp)) return;
+                try binding.put(tp, defaultLiteralType(arg_ty));
+            },
+            .pointer, .const_ptr => |inner| try self.bindTypeVars(inner.*, switch (arg_ty) {
+                .pointer, .const_ptr => |a| a.*,
+                else => arg_ty,
+            }, binding),
+            .slice => |elem| try self.bindTypeVars(elem.*, switch (arg_ty) {
+                .slice => |e| e.*,
+                .array => |a| a.elem.*,
+                else => arg_ty,
+            }, binding),
+            .optional => |inner| try self.bindTypeVars(inner.*, switch (arg_ty) {
+                .optional => |e| e.*,
+                // `null` fits any `?T` and says nothing about `T`.
+                .null_ptr => return,
+                else => arg_ty,
+            }, binding),
+            .array => |arr| try self.bindTypeVars(arr.elem.*, switch (arg_ty) {
+                .array => |a| a.elem.*,
+                else => arg_ty,
+            }, binding),
+            .borrow => |inner| try self.bindTypeVars(inner.*, switch (arg_ty) {
+                .borrow => |a| a.*,
+                else => arg_ty,
+            }, binding),
+            .generic_app => |papp| {
+                // Unwrap the argument past one pointer, then recover its template
+                // and concrete args (a collapsed `.named` instance via the reverse
+                // map, or a still-`.generic_app`).
+                const arg_inner: Ty = switch (arg_ty) {
+                    .pointer, .const_ptr => |i| i.*,
+                    else => arg_ty,
+                };
+                const aapp: GenericApp = switch (arg_inner) {
+                    .generic_app => |g| g,
+                    .named => |id| self.env.generic_struct_instance_args.get(id) orelse return,
+                    else => return,
+                };
+                if (aapp.template != papp.template or aapp.args.len != papp.args.len) return;
+                for (papp.args, aapp.args) |pa, aa| try self.bindTypeVars(pa, aa, binding);
+            },
+            else => {},
+        }
+    }
+
     fn substituteTy(self: *Checker, ty: Ty, binding: *const std.StringHashMap(Ty)) Ty {
         return switch (ty) {
             .type_param => |name| binding.get(name) orelse ty,
@@ -4919,6 +4899,11 @@ const Checker = struct {
                 const sub = self.allocator.create(Ty) catch return ty;
                 sub.* = self.substituteTy(inner.*, binding);
                 break :blk .{ .slice = sub };
+            },
+            .array => |arr| blk: {
+                const sub = self.allocator.create(Ty) catch return ty;
+                sub.* = self.substituteTy(arr.elem.*, binding);
+                break :blk .{ .array = .{ .elem = sub, .len = arr.len } };
             },
             .borrow => |inner| blk: {
                 const sub = self.allocator.create(Ty) catch return ty;
