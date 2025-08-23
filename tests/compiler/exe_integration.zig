@@ -7,6 +7,11 @@ const builtin = @import("builtin");
 
 /// Compile `src` to an executable and return its exit code.
 fn compileAndRun(allocator: std.mem.Allocator, src: []const u8, label: []const u8) !u32 {
+    return compileAndRunAt(allocator, src, label, 2);
+}
+
+/// `compileAndRun` at a chosen optimisation level (`-O0` keeps the debug checks).
+fn compileAndRunAt(allocator: std.mem.Allocator, src: []const u8, label: []const u8, opt_level: u2) !u32 {
     if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
 
@@ -27,7 +32,7 @@ fn compileAndRun(allocator: std.mem.Allocator, src: []const u8, label: []const u
         .source = src,
         .obj_path = obj_path,
         .exe_path = exe_path,
-        .opt_level = 2,
+        .opt_level = opt_level,
         .llvm_bin = gabbro.llvm_path ++ "/bin",
         .lib_paths = lib_paths,
     });
@@ -3277,6 +3282,92 @@ test "exe: a dereference as a call argument loads through the pointer" {
         \\    return 0;
         \\}
     , "exe_deref_call_arg");
+    try std.testing.expectEqual(@as(u32, 0), code);
+}
+
+test "exe: the address of a value with no storage points at a temporary holding it" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: `p := &5; return *p;` exited with 72. A literal lowers to an immediate,
+    // which has no storage, and the backend made its address `undef`; a folded `-5` or
+    // `2 + 3` was turned back into an immediate by constant folding, and `Color.blue` and an
+    // array's `len`/`ptr` were addressed as if they were stored fields. A call result and
+    // arithmetic on a variable already went to a temporary and must keep doing so.
+    const src =
+        \\Color :: enum { red, green, blue }
+        \\P :: struct { x: i32, y: i32 }
+        \\get :: fn(p: *i32) -> i32 { return *p; }
+        \\seven :: fn() -> i32 { return 7; }
+        \\mkp :: fn() -> P { return .{ 4, 6 }; }
+        \\main :: fn() -> i32 {
+        \\    p := &5;
+        \\    if *p != 5 { return 1; }
+        \\    *p = 9;                                     // the temporary is writable
+        \\    if *p != 9 { return 2; }
+        \\    a := &1;                                    // each `&` gets its own temporary
+        \\    b := &2;
+        \\    if *a * 10 + *b != 12 { return 3; }
+        \\    if *(&-5) != -5 { return 4; }               // folded to a constant: still addressed
+        \\    if *(&(2 + 3)) != 5 { return 5; }
+        \\    if get(&41) != 41 { return 6; }             // `&41` is a `*i32`
+        \\    if (*(&7i64)) as i32 != 7 { return 7; }     // a suffix sets the temporary's width
+        \\    if (*(&250u8)) as i32 != 250 { return 8; }
+        \\    if ((*(&2.5)) * 2.0) as i32 != 5 { return 9; }
+        \\    if !*(&true) { return 10; }
+        \\    if (*(&"hello")).len != 5usize { return 11; }
+        \\    if *(&Color.blue) != Color.blue { return 12; }
+        \\    arr: [3]i32 = .{ 1, 2, 3 };
+        \\    if *(&arr.len) != 3usize { return 13; }
+        \\    if (*(&arr.ptr))[2] != 3 { return 14; }
+        \\    x := 4;
+        \\    if *(&(x + 1)) != 5 { return 15; }
+        \\    if *(&seven()) != 7 { return 16; }
+        \\    if (&mkp()).y != 6 { return 17; }
+        \\    if *(&mkp().y) != 6 { return 18; }
+        \\    s := 0;
+        \\    i := 0;
+        \\    while i < 3 {
+        \\        q := &(i * 2);
+        \\        s = s + *q;
+        \\        i = i + 1;
+        \\    }
+        \\    if s != 6 { return 19; }
+        \\    ps: [2]P = .{ .{ 1, 2 }, .{ 3, 4 } };
+        \\    ps.ptr.y = 9;                               // `ps.ptr` is the pointer, not a field to address
+        \\    if ps[0].y != 9 { return 20; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_addr_temporary_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_addr_temporary_o2", 2));
+}
+
+test "exe: a local or parameter named like a type is the value in a field access" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: IR read `p.x` as the variant `x` of the type `p` whenever a type of that
+    // name existed, so with `p :: struct` a local or parameter `p` gave garbage. Sema reads
+    // the local first, and so does IR now (the address `&p.x` already did).
+    const code = try compileAndRun(arena.allocator(),
+        \\p :: struct { x: i32 }
+        \\get :: fn(p: *p) -> i32 { return p.x; }
+        \\main :: fn() -> i32 {
+        \\    v: p = .{ .x = 5 };
+        \\    if get(&v) != 5 { return 1; }
+        \\    p := &v;
+        \\    if p.x != 5 { return 2; }
+        \\    q := &p.x;
+        \\    *q = 8;
+        \\    if v.x != 8 { return 3; }
+        \\    k := fn() -> i32 { return p.x; };           // a captured `p`
+        \\    if k() != 8 { return 4; }
+        \\    return 0;
+        \\}
+    , "exe_local_named_like_type");
     try std.testing.expectEqual(@as(u32, 0), code);
 }
 

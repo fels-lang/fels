@@ -414,6 +414,15 @@ val := *ptr;           // dereference: read the value (42)
 *ptr = 100;            // dereference: write a new value
 ```
 
+`&` of a variable, a field or an element points at it in place. `&` of any other value (a literal, a call result, arithmetic, an enum variant) stores the value in a temporary and points at that. The temporary lives until the end of the enclosing block, like a local declared there, so the pointer must not be kept past it. An unsuffixed literal's temporary has the literal's default type:
+
+```gabbro
+p := &5;               // *i32, pointing at a temporary holding 5
+q := &2.5;             // *f64
+r := &5i64;            // a suffix picks another width: *i64
+s := &f();             // a temporary holding the call's result
+```
+
 - `*const T` prevents modification through the pointer. The underlying data may still be mutable through another path.
 - `*volatile T` ensures every read and write goes to memory, preventing the compiler from optimizing accesses away. Use this for memory-mapped hardware registers.
 

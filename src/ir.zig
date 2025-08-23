@@ -1071,7 +1071,11 @@ fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
         .const_value, .alloc, .alloc_slice, .zone_push, .zone_pop, .global_load => {},
         .inline_asm => |ai| for (ai.args) |v| try validateValue(function, v),
         .zone_free => |zf| try validateValue(function, zf.ptr),
-        .unary => |unary| try validateValue(function, unary.value),
+        .unary => |unary| {
+            // An immediate has no storage to point at; the backend would make it `undef`.
+            if (unary.op == .ref and unary.value == .imm) return error.InvalidIr;
+            try validateValue(function, unary.value);
+        },
         .binary => |binary| {
             try validateValue(function, binary.lhs);
             try validateValue(function, binary.rhs);
@@ -1243,6 +1247,9 @@ fn tryFoldInstr(consts: *const ConstMap, instr: Instr) Instr {
             return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .binary = .{ .op = binary.op, .lhs = lhs, .rhs = rhs } }, .location = instr.location };
         },
         .unary => |unary| {
+            // `ref` takes its operand's storage, not its value: a register that folded to a
+            // constant (`&-5`, `&(2 + 3)`) stays a register, since an immediate has no address.
+            if (unary.op == .ref) return instr;
             const value = resolveVal(consts, unary.value);
             if (value == .imm) {
                 if (foldUnaryImm(unary.op, value.imm)) |result| {
@@ -3262,7 +3269,7 @@ const FunctionLowerer = struct {
                 };
                 const value = try self.lowerExpr(unary.expr.*);
                 break :blk switch (unary.op) {
-                    .address_of => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .ref, .value = value } }, expr.span),
+                    .address_of => try self.emitRef(self.exprType(expr), value, expr.span),
                     .deref => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .deref, .value = value } }, expr.span),
                     .neg => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .neg, .value = value } }, expr.span),
                     .not => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .not, .value = value } }, expr.span),
@@ -3951,19 +3958,12 @@ const FunctionLowerer = struct {
                 break :blk try self.emit(self.exprType(expr), .{ .call = .{ .callee = call_callee, .args = arg_slice } });
             },
             .field => |field| blk: {
-                // Detect enum variant access: `Direction.north`
-                // The base is an ident that resolves to a TYPE symbol (not a value).
-                if (field.base.kind == .ident) {
-                    const base_ident = field.base.kind.ident;
-                    if (self.symbols.resolve(self.symbols.root_scope, base_ident)) |sym_id| {
-                        if (self.symbols.symbol(sym_id).kind == .type) {
-                            break :blk try self.emit(self.exprType(expr), .{ .variant_lit = .{
-                                .type_name = base_ident,
-                                .variant = field.name,
-                                .payload = null,
-                            } });
-                        }
-                    }
+                if (self.variantAccessType(field)) |type_name| {
+                    break :blk try self.emit(self.exprType(expr), .{ .variant_lit = .{
+                        .type_name = type_name,
+                        .variant = field.name,
+                        .payload = null,
+                    } });
                 }
                 const base = try self.lowerExpr(field.base.*);
                 break :blk try self.emitAt(self.exprType(expr), .{ .field = .{ .base = base, .name = field.name } }, expr.span);
@@ -4420,13 +4420,21 @@ const FunctionLowerer = struct {
                 break :blk try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = local } });
             },
             .field => |field| blk: {
+                // A computed field has no storage: its address is a temporary's.
+                if (self.isComputedField(field))
+                    break :blk try self.emitRef(ptr_ty, try self.lowerExpr(expr), expr.span);
                 // Take the base's ADDRESS when the base is itself an lvalue (a field
                 // or index access). Lowering it as a value loads a COPY, so the store
                 // would land on a throwaway temp and be silently dropped (`a.b.c = v`,
                 // `arr[i].f = v`, `s[i].f = v`). For ident/pointer bases `lowerExpr`
-                // already yields the alloca/pointer address, so keep that.
+                // already yields the alloca/pointer address, so keep that; so does a
+                // computed base (`a.ptr.f = v`), which is a value.
                 const base = switch (field.base.*.kind) {
-                    .field, .index => try self.lowerLValueAddress(field.base.*),
+                    .field => |inner| if (self.isComputedField(inner))
+                        try self.lowerExpr(field.base.*)
+                    else
+                        try self.lowerLValueAddress(field.base.*),
+                    .index => try self.lowerLValueAddress(field.base.*),
                     else => try self.lowerExpr(field.base.*),
                 };
                 break :blk try self.emitAt(ptr_ty, .{ .field_addr = .{ .base = base, .name = field.name } }, expr.span);
@@ -4442,10 +4450,51 @@ const FunctionLowerer = struct {
             },
             .unary => |unary| switch (unary.op) {
                 .deref => try self.lowerExpr(unary.expr.*),
-                else => try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = try self.lowerExpr(expr) } }),
+                else => try self.emitRef(ptr_ty, try self.lowerExpr(expr), expr.span),
             },
-            else => try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = try self.lowerExpr(expr) } }),
+            else => try self.emitRef(ptr_ty, try self.lowerExpr(expr), expr.span),
         };
+    }
+
+    /// `ref` of a lowered value. A local, param, global or register has storage the
+    /// backend can point at (a register is spilled to a slot in the frame); an immediate
+    /// has none, so it goes into a register of the pointee type first (`&5`, `&-5`).
+    fn emitRef(self: *FunctionLowerer, ptr_ty: IrType, value: Value, span: Span) LowerError!Value {
+        const target: Value = switch (value) {
+            .imm => |imm| switch (ptr_ty) {
+                .ptr => |pointee| try self.emitAt(pointee.*, .{ .const_value = imm }, span),
+                else => value,
+            },
+            else => value,
+        };
+        return self.emitAt(ptr_ty, .{ .unary = .{ .op = .ref, .value = target } }, span);
+    }
+
+    /// A field access that is computed, not stored: a variant (`Color.blue`), or an
+    /// array's `len` (its constant length) or `ptr` (the address of its first element).
+    fn isComputedField(self: *FunctionLowerer, field: ast.FieldExpr) bool {
+        if (self.variantAccessType(field) != null) return true;
+        return self.exprType(field.base.*) == .array and
+            (std.mem.eql(u8, field.name, "len") or std.mem.eql(u8, field.name, "ptr"));
+    }
+
+    /// For an enum variant access `Direction.north` (the base an ident naming a TYPE
+    /// symbol, not a value), the type's name. A local, param or capture of the type's
+    /// name is the value, as sema reads it: `p.x` with `p := &v` next to `p :: struct`.
+    fn variantAccessType(self: *FunctionLowerer, field: ast.FieldExpr) ?[]const u8 {
+        if (field.base.kind != .ident) return null;
+        const base_ident = field.base.kind.ident;
+        if (self.bindsValue(base_ident)) return null;
+        const sym_id = self.symbols.resolve(self.symbols.root_scope, base_ident) orelse return null;
+        return if (self.symbols.symbol(sym_id).kind == .type) base_ident else null;
+    }
+
+    /// Whether `name` is a capture, a param or a declared local here (what `lowerExpr`
+    /// looks up before the top level).
+    fn bindsValue(self: *FunctionLowerer, name: []const u8) bool {
+        for (self.lambda_captures) |c| if (std.mem.eql(u8, c.name, name)) return true;
+        for (self.params) |p| if (std.mem.eql(u8, p.name, name)) return true;
+        return self.local_types.contains(self.curLocal(name));
     }
 
     /// Try to evaluate a #if condition at compile time.

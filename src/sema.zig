@@ -2992,9 +2992,10 @@ const Checker = struct {
             .unary => |unary| switch (unary.op) {
                 .address_of => blk: {
                     try self.rejectPackedFieldAddress(unary.expr.*);
-                    // A local inferred from an untyped literal (`x := 42`) keeps
-                    // adapting to its context when read, but it is stored at the
-                    // literal's default type, so its address is `*i32` (`*f64`).
+                    // `&` of something with no fixed width of its own points at storage of the
+                    // literal's default type: a local inferred from an untyped literal (`x := 42`,
+                    // which still adapts to its context when read) and a temporary for a literal
+                    // (`&5`, `&f()`), so `&x` and `&5` are `*i32` and `&2.5` is `*f64`.
                     break :blk try self.ptrTo(defaultLiteralType(try self.inferExpr(unary.expr.*)));
                 },
                 .deref => blk: {

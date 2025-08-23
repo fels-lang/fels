@@ -592,6 +592,35 @@ test "diagnostics: the address of a #packed struct's field is rejected" {
     }
 }
 
+test "diagnostics: the address of an unsuffixed literal points at its default type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `&5` points at a temporary, which has one width: the literal's default, as for
+    // `x := 5`. It used to be a `*integer literal`, which no `*i32` parameter accepted.
+    const decl = "get :: fn(p: *i32) -> i32 { return *p; }\n";
+    const ok = [_][]const u8{
+        "main :: fn() -> i32 { return get(&41); }",
+        "main :: fn() -> i32 { p: *i32 = &5; q: *const i32 = &5; return *p + *q; }",
+        "main :: fn() -> i32 { p: *f64 = &2.5; q: *i64 = &5i64; r: *u8 = &5u8; return 0; }",
+        "main :: fn() -> i32 { p := &(-5); return get(p); }",
+    };
+    for (ok) |body| {
+        const src = try std.mem.concat(arena.allocator(), u8, &.{ decl, body });
+        var fe = try gabbro.compile(arena.allocator(), "addr_lit_ok.gab", src);
+        fe.deinit(arena.allocator());
+    }
+    // A different width is spelled with a suffix (`&5i64`), not taken from the context.
+    const bad = [_][]const u8{
+        "main :: fn() -> i32 { p: *i64 = &5; return 0; }",
+        "main :: fn() -> i32 { p: *f32 = &2.5; return 0; }",
+        "main :: fn() -> i32 { p: *u8 = &5; return 0; }",
+    };
+    for (bad) |body| {
+        const src = try std.mem.concat(arena.allocator(), u8, &.{ decl, body });
+        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "addr_lit_bad.gab", src));
+    }
+}
+
 test "diagnostics: comparing an error with a variant its set does not have is rejected" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
