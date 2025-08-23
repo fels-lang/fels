@@ -52,6 +52,16 @@ combine :: fn() -> i32 ! {
 The return type of a fallible function is internally a *fallible type*
 `T ! E` — a tagged union of the success value (`T`) and the error (`E`).
 
+A fallible function with a value (`-> i32 ! E`) must `return` or `fail` on every
+path. A `-> void ! E` function may also run to the end of its body, which is
+success, the same as `return;`:
+
+```gabbro
+check :: fn(n: i32) -> void ! ParseError {
+    if n < 0 { fail .invalid_input; }
+}
+```
+
 ## The `fail` Statement
 
 Use `fail` to return an error from a fallible function:

@@ -2434,8 +2434,10 @@ const Checker = struct {
             try self.checkBlock(body);
             // #noreturn functions are allowed to not have explicit returns.
             const is_noreturn = hasAttr(decl.attrs, "noreturn");
+            // A `void` function may fall off its end, fallible or not: in a
+            // `-> void ! E` function that is success, as `return;` is.
             if (!is_noreturn and
-                (self.current_return_ty != .void or self.current_error_ty != null) and
+                self.current_return_ty != .void and
                 !blockDefinitelyReturns(self, body))
             {
                 self.emitError(decl.span, "function `{s}` may not return a value on all code paths", .{decl.name});

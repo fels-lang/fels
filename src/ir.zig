@@ -1910,7 +1910,8 @@ const FunctionLowerer = struct {
     }
 
     fn lowerBody(self: *FunctionLowerer, body: ast.Block) LowerError![]const IrBlock {
-        // Void functions fall through to ret void; non-void to unreachable
+        // Void functions fall through to ret void (in a `-> void ! E` function the
+        // backends wrap that as success, like `return;`); non-void to unreachable
         // (sema already validated non-void functions have explicit returns).
         const fallthrough: Terminator = if (self.current_return_ty == .void)
             .{ .return_value = null }

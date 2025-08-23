@@ -55,7 +55,6 @@ parse :: fn(packet: []const u8) -> u32 ! bytes::BytesError {
 
 build :: fn(out: []u8, length: u16) -> void ! bytes::BytesError {
     bytes::write_u16_be(out, 0, length)?;      // bytes 0..2, most significant first
-    return;
 }
 ```
 

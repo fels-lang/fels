@@ -563,7 +563,6 @@ append :: fn(buf: *Buffer, byte: u8) -> void ! BufferError {
     }
     buf.data[buf.len] = byte;
     buf.len += 1;
-    return;
 }
 
 main :: fn() -> i32 {
