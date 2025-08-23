@@ -821,3 +821,38 @@ test "diagnostics: a problem in a top level constant is reported once" {
     }
     try std.testing.expectEqual(@as(usize, 1), errors);
 }
+
+test "diagnostics: the address of a local inferred from a literal points at the default type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `x := 42; p: *i32 = &x;` used to say "expected `*i32`, found `*integer literal`". The
+    // local is stored as an `i32` (`f64` for a float literal), so that is what `&x` points at.
+    const accepted = [_][]const u8{
+        "main :: fn() -> i32 { x := 42; p: *i32 = &x; return *p; }",
+        "take :: fn(p: *i32) -> i32 { return *p; }\nmain :: fn() -> i32 { x := 42; return take(&x); }",
+        "main :: fn() -> i32 { x := 42; y: i32 = 1; q: *i32 = &y; if &x == q { return 1; } return 0; }",
+        "main :: fn() -> i32 { x := 42; p := &x; q: *i32 = p; return *q; }",
+        "main :: fn() -> i32 { x := 42; n := unsafe ((&x) as usize); b := unsafe ((&x) as *u8); return 0; }",
+        "main :: fn() -> i32 { x := 1.5; p: *f64 = &x; return 0; }",
+        "main :: fn() -> i32 { x := 0u8; p: *u8 = &x; return 0; }",
+        "main :: fn() -> i32 { s := 0; for i in 0..10 { p: *i32 = &i; s += *p; } return s; }",
+        // Reading the local still adapts the literal to its context.
+        "main :: fn() -> i32 { x := 5; y: i64 = x; z: u8 = x; return 0; }",
+    };
+    for (accepted) |src| {
+        if (try firstError(a, src)) |msg| {
+            std.debug.print("\nthis should be accepted:\n  {s}\ngot:\n{s}\n", .{ src, msg });
+            return error.TestUnexpectedResult;
+        }
+    }
+    // A pointer of another type is still refused, and the message names the real type.
+    const wrong_width = (try firstError(a, "main :: fn() -> i32 { x := 42; p: *i64 = &x; return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, wrong_width, "found `*i32`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrong_width, "literal") == null);
+    const wrong_float = (try firstError(a, "main :: fn() -> i32 { x := 1.5; p: *f32 = &x; return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, wrong_float, "found `*f64`") != null);
+    // What the pointer reads back is an `i32`, not a literal that could widen.
+    const through_ptr = (try firstError(a, "main :: fn() -> i32 { x := 0; p := &x; y: i64 = *p; return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, through_ptr, "found `i32`") != null);
+}

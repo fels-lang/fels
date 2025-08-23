@@ -4166,3 +4166,37 @@ test "exe: a `fn` struct field and an `extern fn` element stay thin pointers nex
     , "exe_fn_array_thin_fields");
     try std.testing.expectEqual(@as(u32, 42), code);
 }
+
+test "exe: the address of a local inferred from a literal is a pointer to its default type" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `&x` for `x := 40` used to be a `*integer literal`, which no `*i32` accepted. It points at
+    // the `i32` slot the local lives in (an `f64` one for a float literal), and writes through it
+    // land in the local.
+    const code = try compileAndRun(arena.allocator(),
+        \\take :: fn(p: *i32) -> i32 { return *p; }
+        \\bump :: fn(p: *i32) -> void { *p += 1; }
+        \\half :: fn(p: *f64) -> void { *p = *p / 2.0; }
+        \\main :: fn() -> i32 {
+        \\    x := 40;
+        \\    p: *i32 = &x;
+        \\    *p += 1;
+        \\    bump(&x);
+        \\    if x != 42 { return 1; }
+        \\    if take(&x) != 42 { return 2; }
+        \\    q := &x;
+        \\    if q != p { return 3; }
+        \\    wide: i64 = x;
+        \\    if wide != 42i64 { return 4; }
+        \\    f := 5.0;
+        \\    half(&f);
+        \\    if f != 2.5 { return 5; }
+        \\    b := unsafe ((&x) as *u8);
+        \\    if *b != 42u8 { return 6; }
+        \\    return 42;
+        \\}
+    , "exe_literal_local_address");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}

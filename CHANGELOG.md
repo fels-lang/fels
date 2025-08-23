@@ -44,6 +44,11 @@ the major version is `0`, any minor bump may break source compatibility.
 - **An error in a top level constant was reported twice.** The initializer is checked twice, and
   each check added the same message. The checker now drops a message it has already reported at
   the same place.
+- **`x := 42; p: *i32 = &x;` was a type error about `*integer literal`.** A local inferred from an
+  unsuffixed literal is stored as an `i32` (`f64` for a float literal), but its address was typed
+  as a pointer to the literal, which no pointer type accepted, so `&x` could not be passed to a
+  `*i32` parameter or compared with a `*i32` either. `&x` is now a `*i32` (`*f64`). Reading `x`
+  still adapts to its context (`w: i64 = x;`), but a value read through the pointer is an `i32`.
 
 ## 0.2.2 — 2026-10-10
 
