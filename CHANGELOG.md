@@ -19,6 +19,21 @@ the major version is `0`, any minor bump may break source compatibility.
   (`p.` alone does not parse), so the server keeps the last analysis whose text parsed and
   answers completion, hover, signature help and inlay hints from it, with positions mapped
   through the edits. Diagnostics still come from the current text.
+- **`gabbro lsp` finds references, renames, highlights and searches symbols across the project.**
+  `textDocument/references` lists every place that refers to the name under the cursor, in all `.gab`
+  files of the project (the folder with `build.gab`), not only in the files the open document
+  imports: uses in expressions, type names in fields, parameters, casts and generic arguments,
+  fields in accesses and `.{ .x = … }` literals, method calls (struct methods, interface methods and
+  their implementations, functions called as methods), enum and error variants (`.red`, `Color.red`,
+  `match` arms, `fail .Bad`), the names of `#import a.{ name }` and `alias::name`. Names are told
+  apart by meaning: two locals `x` in two blocks are two names. `textDocument/rename` (with
+  `prepareRename`) edits all of them, also in files that are not open, and refuses names declared
+  in `std` or by an `#extern`, `main`, keywords and built-in names, and a new name that would change
+  what another name means. `textDocument/documentHighlight` marks the name in the current file
+  (written or read), and `workspace/symbol` searches the top level declarations of the project. The
+  server keeps a reference index per file and rebuilds it only when the file or a module it imports
+  changes: in the 55 files of `examples/` a first search takes 30 to 65 ms in a release build, a
+  repeated one about 4 ms.
 
 ### Fixed
 

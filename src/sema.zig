@@ -527,6 +527,10 @@ pub const TypeEnv = struct {
     /// Bare enum-literal (`.variant`) NodeIds resolved against an expected enum
     /// type (in argument/assignment/typed-local position). IR lowers as variant_lit.
     enum_lits: std.AutoHashMap(ast.NodeId, EnumLit),
+    /// `.{ … }` literal NodeIds whose struct type came from the context (a typed local,
+    /// an assignment, a return, an argument, an enclosing literal) -> that struct's
+    /// symbol. Only the language server reads it (references of a field).
+    literal_types: std.AutoHashMap(ast.NodeId, SymbolId),
     generic_instantiations: std.ArrayList(GenericInstantiation) = .empty,
     /// Callee expression NodeId → mangled name for generic function calls.
     generic_call_insts: std.AutoHashMap(ast.NodeId, []const u8) = undefined,
@@ -572,6 +576,7 @@ pub const TypeEnv = struct {
             .iterator_fors = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .receiver_auto_addr = std.AutoHashMap(ast.NodeId, void).init(allocator),
             .enum_lits = std.AutoHashMap(ast.NodeId, EnumLit).init(allocator),
+            .literal_types = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .generic_call_insts = std.AutoHashMap(ast.NodeId, []const u8).init(allocator),
             .generic_struct_templates = std.StringHashMap(ast.TypeDecl).init(allocator),
             .generic_struct_instances = std.StringHashMap(SymbolId).init(allocator),
@@ -599,6 +604,7 @@ pub const TypeEnv = struct {
         self.iterator_fors.deinit();
         self.receiver_auto_addr.deinit();
         self.enum_lits.deinit();
+        self.literal_types.deinit();
         self.const_ints.deinit();
         self.generic_call_insts.deinit();
         for (self.generic_instantiations.items) |*gi| {
@@ -3987,6 +3993,10 @@ const Checker = struct {
             else => return,
         };
         switch (expr.kind) {
+            .compound_literal, .struct_literal => try self.env.literal_types.put(expr.id, type_id),
+            else => {},
+        }
+        switch (expr.kind) {
             // `.{ a, b, c }` — positional, matched to fields in declaration order.
             .compound_literal => |values| for (values, 0..) |value, i| {
                 if (i >= fields.len) break;
@@ -6535,7 +6545,7 @@ fn isMigratedBuiltin(name: []const u8) bool {
     return false;
 }
 
-fn isBuiltinValue(name: []const u8) bool {
+pub fn isBuiltinValue(name: []const u8) bool {
     inline for (.{
         "truncate_to", "ptr_from_int",   "volatile_store",
         "slice_from_raw_parts",

@@ -21,13 +21,17 @@
 //!   `Type::` and enum literals, signature help, inlay hints for inferred types, and hover
 //!   on locals, parameters and fields. While the text does not parse, these answer from
 //!   the last analysis whose text parsed, with positions mapped through the edits.
+//! * Find references, rename, document highlight and workspace symbols cover every `.gab`
+//!   file of the project, open in the editor or not. They live in `lsp_nav.zig`, which
+//!   keeps a reference index per file and rebuilds it only when the file or a module it
+//!   imports changes.
 //!
 //! stdout carries only LSP messages. All front end diagnostics are captured as data.
 //!
 //! Implemented: diagnostics, completion (names in scope, locals, `alias::` and `Type::`
 //! members, members after `.`, enum literals, keywords), hover, go to definition, document
-//! symbols, signature help, inlay hints. Not implemented: rename, references, formatting,
-//! semantic tokens, code actions.
+//! symbols, signature help, inlay hints, references, rename (with prepareRename), document
+//! highlight, workspace symbols. Not implemented: formatting, semantic tokens, code actions.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -36,6 +40,7 @@ const ast = @import("ast.zig");
 const diag = @import("diagnostic.zig");
 const pipeline = @import("pipeline.zig");
 const clock = @import("clock.zig");
+const lsp_nav = @import("lsp_nav.zig");
 const Span = @import("lexer/span.zig").Span;
 const lsp_assist = @import("lsp_assist.zig");
 
@@ -56,7 +61,7 @@ fn hexVal(c: u8) ?u8 {
 
 /// The file path a `file:` URI names, with native separators. Any other URI is returned
 /// as it is, so an unsaved document still has a name to be keyed by.
-fn uriToPath(gpa: std.mem.Allocator, uri: []const u8) ![]u8 {
+pub fn uriToPath(gpa: std.mem.Allocator, uri: []const u8) ![]u8 {
     const prefix = "file://";
     if (!std.ascii.startsWithIgnoreCase(uri, prefix)) return gpa.dupe(u8, uri);
     var rest = uri[prefix.len..];
@@ -94,7 +99,7 @@ fn uriToPath(gpa: std.mem.Allocator, uri: []const u8) ![]u8 {
 }
 
 /// A `file:` URI for a path, with the characters that need it percent-encoded.
-fn pathToUri(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+pub fn pathToUri(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(gpa);
     try out.appendSlice(gpa, "file://");
@@ -112,7 +117,7 @@ fn pathToUri(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
 
 /// The form of a path that is equal for two spellings of the same file: forward slashes,
 /// and lower case on Windows.
-fn pathKey(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+pub fn pathKey(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     const key = try gpa.dupe(u8, path);
     for (key) |*c| {
         if (c.* == '\\') c.* = '/';
@@ -197,8 +202,10 @@ pub const Server = struct {
     workspace_root: ?[]u8 = null,
     shutdown_requested: bool = false,
     timing: bool = false,
+    /// The project reference indexes of references, rename and workspace symbols.
+    nav: lsp_nav.State = .{},
 
-    fn reader(self: *Server) pipeline.SourceReader {
+    pub fn reader(self: *Server) pipeline.SourceReader {
         return .{ .ctx = self, .readFn = readSource, .existsFn = sourceExists };
     }
 
@@ -426,7 +433,7 @@ pub const Server = struct {
     }
 
     /// The nearest folder above `path` with a `build.gab`, else the workspace folder.
-    fn findProjectRoot(self: *Server, path: []const u8) ?[]u8 {
+    pub fn findProjectRoot(self: *Server, path: []const u8) ?[]u8 {
         var dir = std.fs.path.dirname(path);
         while (dir) |d| {
             const probe = std.fs.path.join(self.gpa, &.{ d, "build.gab" }) catch break;
@@ -439,7 +446,7 @@ pub const Server = struct {
     }
 
     /// The URI to report for a file path: the editor's spelling if the file is open.
-    fn uriFor(self: *Server, path: []const u8) ?[]u8 {
+    pub fn uriFor(self: *Server, path: []const u8) ?[]u8 {
         const key = pathKey(self.gpa, path) catch return null;
         defer self.gpa.free(key);
         if (self.by_key.get(key)) |doc| return self.gpa.dupe(u8, doc.uri) catch null;
@@ -535,7 +542,7 @@ pub fn posToByte(text: []const u8, line: u32, character: u32) usize {
     return i;
 }
 
-fn isIdentChar(c: u8) bool {
+pub fn isIdentChar(c: u8) bool {
     return c == '_' or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9');
 }
 
@@ -560,7 +567,7 @@ pub fn identRangeAt(text: []const u8, offset: usize) struct { start: usize, end:
 }
 
 /// The span of `name` inside a declaration's span (its name token), or the whole span.
-fn nameSpan(source: []const u8, decl: Span, name: []const u8) Span {
+pub fn nameSpan(source: []const u8, decl: Span, name: []const u8) Span {
     const from = @min(decl.start, source.len);
     const to = @min(decl.end, source.len);
     var i = from;
@@ -589,7 +596,7 @@ pub fn escapeInto(list: *std.ArrayList(u8), gpa: std.mem.Allocator, s: []const u
 }
 
 /// Re-serialize a JSON-RPC id (int or string) for echoing in a response.
-fn idToBuf(list: *std.ArrayList(u8), gpa: std.mem.Allocator, id: ?json.Value) void {
+pub fn idToBuf(list: *std.ArrayList(u8), gpa: std.mem.Allocator, id: ?json.Value) void {
     if (id) |v| switch (v) {
         .integer => |n| list.print(gpa, "{d}", .{n}) catch {},
         .string => |s| {
@@ -601,7 +608,7 @@ fn idToBuf(list: *std.ArrayList(u8), gpa: std.mem.Allocator, id: ?json.Value) vo
     } else list.appendSlice(gpa, "null") catch {};
 }
 
-fn send(self: *Server, body: []const u8) void {
+pub fn send(self: *Server, body: []const u8) void {
     self.out.print("Content-Length: {d}\r\n\r\n", .{body.len}) catch {};
     self.out.writeAll(body) catch {};
     self.out.flush() catch {};
@@ -618,7 +625,7 @@ pub fn sendResult(self: *Server, id: ?json.Value, result_json: []const u8) void 
     send(self, b.items);
 }
 
-fn appendRange(b: *std.ArrayList(u8), gpa: std.mem.Allocator, text: []const u8, span: Span) void {
+pub fn appendRange(b: *std.ArrayList(u8), gpa: std.mem.Allocator, text: []const u8, span: Span) void {
     const s = byteToPos(text, span.start);
     const e = byteToPos(text, span.end);
     b.print(gpa, "{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}", .{ s.line, s.char, e.line, e.char }) catch {};
@@ -723,7 +730,7 @@ fn handleInitialize(self: *Server, id: ?json.Value, params: json.Value) void {
         self.workspace_root = self.gpa.dupe(u8, p) catch null;
     }
     sendResult(self, id,
-        \\{"capabilities":{"textDocumentSync":1,"completionProvider":{"triggerCharacters":[".",":"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","],"retriggerCharacters":[","]},"inlayHintProvider":true},"serverInfo":{"name":"gabbro-lsp","version":"0.2.0"}}
+        \\{"capabilities":{"textDocumentSync":1,"completionProvider":{"triggerCharacters":[".",":"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","],"retriggerCharacters":[","]},"inlayHintProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"documentHighlightProvider":true,"workspaceSymbolProvider":true},"serverInfo":{"name":"gabbro-lsp","version":"0.2.0"}}
     );
 }
 
@@ -1108,6 +1115,9 @@ fn dispatch(self: *Server, root: json.Value) void {
     } else if (std.mem.eql(u8, method, "textDocument/inlayHint")) {
         self.flush();
         lsp_assist.handleInlayHint(self, id, params);
+    } else if (lsp_nav.handles(method)) {
+        self.flush();
+        lsp_nav.dispatch(self, method, id, params);
     } else if (std.mem.eql(u8, method, "shutdown")) {
         self.flush();
         self.shutdown_requested = true;
@@ -1149,6 +1159,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) u8 {
         }
         server.published.deinit(gpa);
         if (server.workspace_root) |r| gpa.free(r);
+        server.nav.deinit(gpa);
     }
 
     while (!server.shutdown_requested) {

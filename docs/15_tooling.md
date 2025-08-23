@@ -1,8 +1,8 @@
 # Tooling & the language server — design
 
-`gabbro lsp` works: diagnostics, completion, hover, go-to-definition, and document
-symbols — §8 wires it into your editor. The `#test` comptime lane works too
-([docs/17](17_testing.md)). A tree-sitter grammar (`tree-sitter-gabbro`) and a Zed
+`gabbro lsp` works: diagnostics, completion, hover, go-to-definition, document symbols,
+find references, rename, document highlight and workspace symbols. §8 wires it into your
+editor. The `#test` comptime lane works too ([docs/17](17_testing.md)). A tree-sitter grammar (`tree-sitter-gabbro`) and a Zed
 extension (`zed-gabbro`) are being written in their own repositories. A formatter, doc generator, runtime
 test lane, and REPL aren't built yet.
 
@@ -62,7 +62,7 @@ utility, exercised by a property test against multibyte source).
 | `publishDiagnostics` | `TypeEnv.diagnostics` → LSP diagnostics |
 | `hover` | node under cursor → `expr_types[node]` → `formatTy`, plus the symbol's leading doc comment |
 | `definition` | `expr_symbols[node]` / `extension_calls[node]` → `Symbol.span`/`.file` |
-| `references` / `rename` | build the reverse index `SymbolId → [NodeId]` while walking; rename rewrites every span |
+| `references` / `rename` | a reference index per file (`src/lsp_nav.zig`): every name with the declaration it means, from `expr_symbols`, `extension_calls`, `impl_method_calls`, `enum_lits`, `expr_types` and the walk's own scopes for locals; rename rewrites every place |
 | `completion` | scope-visible symbols at the cursor + **member completion** (the `expr_types` of the `.`-base gives the struct → its fields/methods) + `core::`/`#attribute` builtins |
 | `signatureHelp` | the call being typed → `fn_sigs[symbol]` → params + active arg |
 | `documentSymbol` | walk the `Module` top-level + in-struct methods (the semantic cousin of `outline.scm`) |
@@ -235,14 +235,38 @@ What it does:
   Positions are mapped from that text to the current one with a line diff, so the answers
   stay correct outside the lines being edited; an inlay hint is only shown where the
   mapping is exact. Diagnostics always come from the current text.
+- **Find references across the project.** The project is the folder with `build.gab` above
+  the file (else the workspace folder, else the file's folder) and every `.gab` file under it,
+  open or not, except `std` and the `zig-out`, `.zig-cache`, `.git`, `.claude`, `dist` and
+  `out` folders; at most 400 files (the server says so when a project has more). A reference
+  is a use in an expression, a type name (field and parameter types, casts, generic
+  arguments), a field in an access or in a `.{ .x = … }` literal, a method call (struct
+  methods, interface methods and their implementations, functions called as methods), an
+  enum or error variant (`.red`, `Color.red`, a `match` arm, `fail .Bad`), a name in
+  `#import a.{ name }` and `alias::name`. Names are told apart by what they mean, not by
+  their text: two locals `x` in two blocks are two names. A name declared in `std` lists its
+  declaration there too.
+- **Rename** edits every one of those places, also in files that are not open. It refuses a
+  name declared in `std` or by an `#extern`, `main` and a plain `#export`, a new name that is
+  not an identifier or is a keyword or a built-in name, and a new name that would change what
+  another name means: one declared or imported where the symbol is used, a local that would
+  hide it or that it would hide, another field, variant or method of the same type.
+- **Document highlight** marks the name under the cursor in the file (written or read), and
+  **workspace symbols** search the top level declarations of the projects of the open files.
 - **Speed.** Analysis runs when no more input is waiting, so a burst of edits costs one run.
   A 830 line file with imports of `std.sync`, `std.utf16` and a `win32` binding module
   analyzes in about 5 ms in a release build (about 30 ms in a debug build); the standard
   library is parsed again each time, which is cheap enough that no cache is kept. Set
-  `GABBRO_LSP_TIMING=1` to see each run on stderr.
+  `GABBRO_LSP_TIMING=1` to see each run on stderr. References keep an index per file and
+  rebuild it only when the file or a module it imports changes; the index of a file comes
+  from an analysis that loaded it (one analysis of a `main.gab` that imports everything
+  covers the project), and a local or a declaration without `pub` is only looked for in its
+  own file. In the 55 files of `examples/`, the first search for a `std` function used in 10
+  to 18 of them takes 30 to 65 ms in a release build (200 to 300 ms in a debug build), a
+  repeated one about 4 ms.
   Completion and signature help answer in about 1 ms on that file while it does not parse
   and in about 6 ms (the analysis included) when it does.
-- **Not done yet:** rename, find references, semantic tokens, formatting, code actions.
+- **Not done yet:** semantic tokens, formatting, code actions.
   `#compiler` hooks and computed `#insert` run during analysis, as in a build. Locals
   inside generic functions have no recorded types (the checker types those bodies per
   instance), so they get no hover type, no inlay hint and no member completion.
@@ -284,6 +308,8 @@ VS Code support is a thin client wrapper (future).
 > Smoke-test the protocol without an editor: `python tests/lsp_smoke.py` drives an
 > `initialize`, `didOpen`, `completion`/`hover`/`definition`/`documentSymbol` exchange
 > against the built binary, on one file and on a two-file project.
+> `python tests/lsp_nav_test.py` checks references, rename, highlight and workspace symbols on
+> a small project, with edits in files that are not open.
 > `python tests/lsp_all_files.py` opens every `.gab` file of the repository through the
 > server and compares with `gabbro check`, and checks that rejected programs still give an
 > error at the right line. `python tests/lsp_perf.py <gabbro.exe> <file.gab>` times repeated
