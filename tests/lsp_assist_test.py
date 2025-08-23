@@ -205,6 +205,10 @@ def main():
          lambda r: "x: i32" in hover_text(r))
     s.at("hover on a loop capture", "textDocument/hover", "s += v", 5,
          lambda r: "v: i32" in hover_text(r))
+    s.at("hover on a method", "textDocument/hover", "q.len2()", 3,
+         lambda r: "Point.len2 :: fn(self: *Point) -> i32" in hover_text(r))
+    s.at("hover on an associated function", "textDocument/hover", "Point::origin(), .b", 8,
+         lambda r: "Point.origin :: fn() -> Point" in hover_text(r))
 
     # Inlay hints on `:=`: suffixed number, struct, slice, pointer, result type, field.
     def hints_ok(r):
@@ -252,7 +256,15 @@ def main():
     s.edit("    Color.\n", "    Point::\n")
     s.at("broken file: associated functions after Type::", "textDocument/completion", "    Point::\n", 11,
          lambda r: labels(r) == ["origin"])
-    s.edit("    Point::\n", "    make_line().b.\n")
+    s.edit("    Point::\n", "    Point.\n")
+
+    def assoc_after_dot(r):
+        item = next(i for i in r if i["label"] == "origin")
+        edit = item["additionalTextEdits"][0]
+        return item["kind"] == 3 and edit["newText"] == "::" and edit["range"]["start"]["character"] == 9
+    s.at("broken file: an associated function after Type. turns the dot into ::", "textDocument/completion",
+         "    Point.\n", 10, assoc_after_dot)
+    s.edit("    Point.\n", "    make_line().b.\n")
     s.at("broken file: members of a call result", "textDocument/completion", "make_line().b.", 14,
          lambda r: {"x", "y"} <= set(labels(r)))
     s.edit("    make_line().b.\n", "    m = .\n")

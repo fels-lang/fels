@@ -1619,12 +1619,11 @@ fn renderTy(v: *const View, o: *Out, ty: Ty, hint: ?ast.TypeRef) void {
         .args => o.s("Args"),
         .thread_pool => o.s("ThreadPool"),
         .zone, .zone_handle => o.s("Zone"),
-        .pointer => |inner| {
-            o.s("*");
-            renderTy(v, o, inner.*, refInner(hint));
-        },
-        .const_ptr => |inner| {
-            o.s("*const ");
+        .pointer, .const_ptr => |inner| {
+            // `[*]T` is a pointer to the checker; the written type keeps the spelling.
+            const many = if (hint) |h| h == .many_pointer else false;
+            o.s(if (many) "[*]" else "*");
+            if (ty == .const_ptr) o.s("const ");
             renderTy(v, o, inner.*, refInner(hint));
         },
         .optional => |inner| {
@@ -1921,6 +1920,11 @@ fn paramType(v: *const View, c: Callable, index: usize) ?Ty {
 // Requests
 
 fn itemJson(o: *Out, first: *bool, label: []const u8, kind: u8, detail: ?[]const u8, sort: ?[]const u8) void {
+    itemJsonExtra(o, first, label, kind, detail, sort, null);
+}
+
+/// A completion item; `extra` is more JSON members (`"name":value`) to add.
+fn itemJsonExtra(o: *Out, first: *bool, label: []const u8, kind: u8, detail: ?[]const u8, sort: ?[]const u8, extra: ?[]const u8) void {
     if (!first.*) o.s(",");
     first.* = false;
     o.s("{\"label\":\"");
@@ -1936,6 +1940,10 @@ fn itemJson(o: *Out, first: *bool, label: []const u8, kind: u8, detail: ?[]const
         o.esc(st);
         o.s("\"");
     }
+    if (extra) |x| {
+        o.s(",");
+        o.s(x);
+    }
     o.s("}");
 }
 
@@ -1948,16 +1956,29 @@ fn memberKind(k: MemberKind) u8 {
     };
 }
 
-fn listMembers(v: *const View, val: Val, o: *Out, first: *bool) void {
+/// The members after the `.` at `dot` (an offset in the current text).
+fn listMembers(v: *const View, val: Val, dot: usize, o: *Out, first: *bool) void {
     var list = MemberList{};
     switch (val) {
         .value => |t| collectMembers(v, t.ty, false, &list),
         .type_sym => |id| collectMembers(v, .{ .named = id }, true, &list),
         else => return,
     }
+    // An associated function is called as `Type::name(...)`: choosing one after `Type.`
+    // also turns the `.` into `::`.
+    var to_colons = Out{ .a = v.a };
+    {
+        const s = lsp.byteToPos(v.new, dot);
+        to_colons.f("\"additionalTextEdits\":[{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":\"::\"}}]", .{ s.line, s.char, s.line, s.char + 1 });
+    }
     for (list.items.items) |m| {
-        // After `Type.` only the variants: associated functions are reached with `Type::`.
-        if (val == .type_sym and m.kind != .variant) continue;
+        if (val == .type_sym and m.kind == .assoc) {
+            var key = Out{ .a = v.a };
+            key.s("2");
+            key.s(m.name);
+            itemJsonExtra(o, first, m.name, memberKind(m.kind), memberDetail(v, m), key.list.items, to_colons.list.items);
+            continue;
+        }
         // Fields first, then methods, then the rest.
         const sort: []const u8 = switch (m.kind) {
             .field, .variant => "1",
@@ -2008,7 +2029,7 @@ pub fn completeMember(self: *lsp.Server, doc: *lsp.Doc, id: ?json.Value, params:
         const dot = start - 1;
         const pos = v.map.anchor(dot);
         if (chainBefore(code.text, dot)) |chain| {
-            if (resolveChain(v, &chain, pos)) |val| listMembers(v, val, &o, &first);
+            if (resolveChain(v, &chain, pos)) |val| listMembers(v, val, dot, &o, &first);
         } else if (enumContext(code.text, dot)) |ctx| {
             if (expectedEnum(v, ctx, code.text, pos)) |eid| {
                 var list = MemberList{};
@@ -2110,11 +2131,22 @@ pub fn hover(self: *lsp.Server, doc: *lsp.Doc, id: ?json.Value, params: json.Val
     if (code.in_literal) return false;
     var o = Out{ .a = a };
 
-    // `recv.name`
+    // `recv.name`, and `Type::name`
     const k = skipSpaceBack(code.text, r.start);
-    if (k > 0 and code.text[k - 1] == '.' and !(k >= 2 and code.text[k - 2] == '.')) {
-        const chain = chainBefore(code.text, k - 1) orelse return false;
-        const val = resolveChain(v, &chain, v.map.anchor(k - 1)) orelse return false;
+    const after_dot = k > 0 and code.text[k - 1] == '.' and !(k >= 2 and code.text[k - 2] == '.');
+    const after_scope = k >= 2 and code.text[k - 1] == ':' and code.text[k - 2] == ':';
+    const type_scope: ?SymbolId = if (after_scope) blk: {
+        const chain = chainBefore(code.text, k - 2) orelse break :blk null;
+        break :blk switch (resolveChain(v, &chain, v.map.anchor(k - 2)) orelse break :blk null) {
+            .type_sym => |t| t,
+            else => null,
+        };
+    } else null;
+    if (after_dot or type_scope != null) {
+        const val: Val = if (type_scope) |t| .{ .type_sym = t } else blk: {
+            const chain = chainBefore(code.text, k - 1) orelse return false;
+            break :blk resolveChain(v, &chain, v.map.anchor(k - 1)) orelse return false;
+        };
         const m = switch (val) {
             .value => |t| memberNamed(v, t.ty, name, false),
             .type_sym => |tid| memberNamed(v, .{ .named = tid }, name, true),
@@ -2149,7 +2181,6 @@ pub fn hover(self: *lsp.Server, doc: *lsp.Doc, id: ?json.Value, params: json.Val
         lsp.sendResult(self, id, o.list.items);
         return true;
     }
-    const after_scope = k >= 2 and code.text[k - 1] == ':' and code.text[k - 2] == ':';
 
     // A local or a parameter.
     if (!after_scope) {
@@ -2264,9 +2295,16 @@ fn rangeOffsets(text: []const u8, params: json.Value) ?[2]usize {
     return .{ lsp.posToByte(text, sl, sc), lsp.posToByte(text, el, ec) };
 }
 
+/// The LSP position of `off` in `text`, given the starts of its lines.
+fn posIn(text: []const u8, starts: []const usize, off: usize) lsp.Pos {
+    const line = TextMap.lineOf(starts, off);
+    const col = lsp.byteToPos(text[starts[line]..], off - starts[line]).char;
+    return .{ .line = @intCast(line), .char = col };
+}
+
 /// Inlay hints: the type after a name declared with `:=` and after `for`, `match`, `if` and
 /// `while` capture names. Positions are in the current text; with the last good analysis
-/// only names outside the edited region get a hint.
+/// only names on lines that map exactly get a hint.
 pub fn handleInlayHint(self: *lsp.Server, id: ?json.Value, params: json.Value) void {
     const doc = lsp.docFromParams(self, params) orelse return lsp.sendResult(self, id, "[]");
     var arena = std.heap.ArenaAllocator.init(self.gpa);
@@ -2275,6 +2313,7 @@ pub fn handleInlayHint(self: *lsp.Server, id: ?json.Value, params: json.Value) v
     const range = rangeOffsets(doc.text, params) orelse [2]usize{ 0, doc.text.len };
     const view = viewOf(doc, a) orelse return lsp.sendResult(self, id, "[]");
     const v = &view;
+    const starts = if (v.map.new_starts.len > 0) v.map.new_starts else (TextMap.lineStarts(a, v.new) catch return lsp.sendResult(self, id, "[]"));
 
     var o = Out{ .a = a };
     o.s("[");
@@ -2297,7 +2336,7 @@ pub fn handleInlayHint(self: *lsp.Server, id: ?json.Value, params: json.Value) v
         if (span[1] < range[0] or span[0] > range[1]) continue;
         const gop = done.getOrPut(a, span[1]) catch continue;
         if (gop.found_existing) continue;
-        const pos = lsp.byteToPos(v.new, span[1]);
+        const pos = posIn(v.new, starts, span[1]);
         if (!first) o.s(",");
         first = false;
         o.f("{{\"position\":{{\"line\":{d},\"character\":{d}}},\"label\":\"", .{ pos.line, pos.char });
