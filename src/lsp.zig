@@ -17,7 +17,6 @@
 //!   that imports bring into scope.
 //! * A change of a document re-analyzes the open documents that import it. Analysis of
 //!   several quick changes is merged: it runs when no more input is waiting.
-//!
 //! * Help while typing lives in lsp_assist.zig: completion of members after `expr.`,
 //!   `Type::` and enum literals, signature help, inlay hints for inferred types, and hover
 //!   on locals, parameters and fields. While the text does not parse, these answer from
