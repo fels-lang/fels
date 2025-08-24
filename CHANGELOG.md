@@ -3,7 +3,20 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.3.0 — 2026-10-10
+
+Editor support and a stricter rule for integer literals.
+
+- The language server now finds references, renames across the project, highlights a name,
+  searches symbols, completes members after `.`, shows signature help and inlay hints for inferred
+  types, and keeps answering while the file being edited does not parse.
+- **Source change:** an integer literal has to fit the type it takes, and a local inferred from a
+  literal is an `i32`. `x := 5; y: i64 = x;` now needs `x as i64`; before, it compiled and read the
+  value with the wrong width. `b: u8 = 300;` and `x := 5000000000;` are errors (the second suggests
+  a suffix). A constant (`N :: 300`) still takes its type where it is used.
+- Nine more fixes, among them two that gave wrong results without a message: `err == .x` in a
+  `catch` through an inferred error set, and `&5`.
+- The code examples in the docs were checked against the compiler and corrected.
 
 ### Added
 
@@ -34,6 +47,14 @@ the major version is `0`, any minor bump may break source compatibility.
   server keeps a reference index per file and rebuilds it only when the file or a module it imports
   changes: in the 55 files of `examples/` a first search takes 30 to 65 ms in a release build, a
   repeated one about 4 ms.
+
+- **Docs: the examples match the compiler.** 25 code examples showed syntax the compiler rejects
+  (a Zig style quick example in docs/01, `Type { f = v }` literals, `if x := e |err|`, builtins
+  without `core::`, `#import std.build;` with the wrong parameter type and others). They are
+  corrected, 16 of the 20 complete programs in the docs now build, and features that are only
+  planned (`#provided`, `#for` over fields, parts of the build system) are marked as planned. The
+  docs also say now that there is no exponent notation, no `else if` after `#if`, which `match`
+  patterns exist, and that `macro` is not a reserved word.
 
 ### Fixed
 

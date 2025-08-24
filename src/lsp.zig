@@ -730,7 +730,7 @@ fn handleInitialize(self: *Server, id: ?json.Value, params: json.Value) void {
         self.workspace_root = self.gpa.dupe(u8, p) catch null;
     }
     sendResult(self, id,
-        \\{"capabilities":{"textDocumentSync":1,"completionProvider":{"triggerCharacters":[".",":"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","],"retriggerCharacters":[","]},"inlayHintProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"documentHighlightProvider":true,"workspaceSymbolProvider":true},"serverInfo":{"name":"gabbro-lsp","version":"0.2.0"}}
+        \\{"capabilities":{"textDocumentSync":1,"completionProvider":{"triggerCharacters":[".",":"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","],"retriggerCharacters":[","]},"inlayHintProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"documentHighlightProvider":true,"workspaceSymbolProvider":true},"serverInfo":{"name":"gabbro-lsp","version":"0.3.0"}}
     );
 }
 
