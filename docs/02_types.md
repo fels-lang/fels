@@ -29,7 +29,7 @@ c := 1000u64;      // u64
 d := 0usize;       // usize
 ```
 
-Without a suffix, an integer literal's type is inferred from context. If no context constrains it, the literal defaults to `i32`.
+Without a suffix, an integer literal's type is inferred from context. If no context constrains it, the literal defaults to `i32`. Either way the value has to fit: `b: u8 = 300;` is a compile error, and so is `x := 5000000000;`, which needs a suffix (`5000000000i64`).
 
 A local inferred from an unsuffixed literal is stored at that default: `x := 42` holds an `i32`, so `&x` is a `*i32` (and `&y` is a `*f64` for `y := 1.5`). Reading `x` still adapts to its context, so `w: i64 = x;` is accepted.
 

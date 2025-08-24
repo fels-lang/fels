@@ -444,7 +444,7 @@ os_cond_broadcast :: fn(c: *u64) { k_cv_wake_all(c); }
 
 STD_OUTPUT_HANDLE :: -11;
 STD_ERROR_HANDLE  :: -12;
-PANIC_EXIT_CODE   :: 0xDEAD_BEEF;
+PANIC_EXIT_CODE   :: 0xDEAD_BEEFu32;
 
 // Low-level I/O
 

@@ -90,6 +90,20 @@ the major version is `0`, any minor bump may break source compatibility.
   `*List($T)`) now introduces `T`, and the call binds it from the argument at any depth. A `null`
   passed to `?$T` binds nothing, so the next argument decides `T`. `gabbro lsp` declares such a
   `T` at its `$T`.
+- **An integer literal that did not fit its type was truncated without a word.** `b: u8 = 300;`
+  stored 44 and `y: i32 = 5000000000;` stored 705032704, although a literal coerces to an integer
+  type only when its value fits. Now it is an error that gives the range of the type, wherever a
+  literal takes its type from the context: declarations, assignments (`+=` too), arguments,
+  returns, struct fields and their defaults, array elements, `?T`, `??`, enum and error payloads,
+  `if` and `match` values, match patterns, and the other operand of an operator (`b < 256` with
+  `b: u8` compared with 0). `-128` (minus applied to `128`), hex, binary and `_` are read as
+  written, a suffixed literal has to fit its suffix (`256u8`), and a constant without a type
+  (`N :: 300;`) is checked like its literal; `300 as u8` still truncates on purpose. A literal with
+  no type to take is an `i32`, which is how it is stored: `x := 5;` makes `x` an `i32` (it stayed
+  an untyped literal, so `b: u8 = x` was accepted and wrote four bytes over the one-byte `b`), and
+  `x := 5000000000;` or `BIG :: 5000000000;` is an error that suggests a suffix (`5000000000i64`).
+  The runtime's panic exit code and `std.net`'s `INVALID_SOCKET` got the suffixes they needed, and
+  messages no longer call `byte` and `addr` `T`.
 
 ## 0.2.2 — 2026-10-10
 
