@@ -4447,3 +4447,49 @@ test "exe: a `$T` inside a param type (`*$T`, `[]$T`, `?$T`) binds T at the call
     , "exe_nested_type_param");
     try std.testing.expectEqual(@as(u32, 41), code);
 }
+
+test "exe: `p == .green` reads the bare variant as the other operand's enum, at -O0 and -O2" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The bare variant had no type, so it lowered to an undefined value: the
+    // result of each compare changed with the optimisation level.
+    const src =
+        \\Color :: enum { red, green, blue }
+        \\Shape :: enum { dot, circle: i32, square: i32 }
+        \\Holder :: struct { color: Color, n: i32 }
+        \\make :: fn() -> Color { return Color.red; }
+        \\is_green :: fn(c: Color) -> bool { return c == .green; }
+        \\#assert(is_green(Color.green), "== at compile time");
+        \\#assert(!is_green(Color.blue), "== at compile time, false");
+        \\main :: fn() -> i32 {
+        \\    p := Color.green;
+        \\    if !(p == .green) { return 1; }
+        \\    if p == .red { return 2; }
+        \\    if !(p != .blue) { return 3; }
+        \\    if p != .green { return 4; }
+        \\    if !(.green == p) { return 5; }
+        \\    if .blue == p { return 6; }
+        \\    s: Holder = .{ .color = .blue, .n = 1 };
+        \\    if !(s.color == .blue) { return 7; }
+        \\    if s.color == .green { return 8; }
+        \\    if !(make() == .red) { return 9; }
+        \\    if make() != .red { return 10; }
+        \\    m := match p {
+        \\        .red => 1,
+        \\        .green => 2,
+        \\        .blue => 3,
+        \\    };
+        \\    if m != 2 { return 11; }
+        \\    sh := Shape.circle(3);
+        \\    if !(sh == .circle) { return 12; }
+        \\    if sh == .dot { return 13; }
+        \\    if !(sh != .square) { return 14; }
+        \\    if !is_green(p) { return 15; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_enum_bare_variant_compare_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_enum_bare_variant_compare_o2", 2));
+}

@@ -3133,8 +3133,16 @@ const Checker = struct {
                 },
             },
             .binary => |binary| blk: {
-                const left = try self.inferExpr(binary.left.*);
-                const right = try self.inferExpr(binary.right.*);
+                var left = try self.inferExpr(binary.left.*);
+                var right = try self.inferExpr(binary.right.*);
+                // `p == .green`: the bare `.green` takes the enum type of the other operand.
+                if (binary.op == .equal or binary.op == .not_equal) {
+                    if (try self.coerceEnumOperand(binary.right.*, left)) {
+                        right = left;
+                    } else if (try self.coerceEnumOperand(binary.left.*, right)) {
+                        left = right;
+                    }
+                }
                 const op_sym: []const u8 = switch (binary.op) {
                     .equal => "==",
                     .not_equal => "!=",
@@ -4086,6 +4094,29 @@ const Checker = struct {
             return true;
         }
         return false;
+    }
+
+    /// One operand of `==` / `!=` that is a bare `.variant`, read against the enum type of
+    /// the other operand (`p == .green`, `.green == p`). It names a variant of that enum or
+    /// is an error. Returns false when `expr` is no bare variant or `other` is no enum, so an
+    /// error set (`err == .variant`, see `checkErrorVariantOperand`) is left alone.
+    /// (Before, nothing typed the bare variant here, and IR compared against an undefined
+    /// value.)
+    fn coerceEnumOperand(self: *Checker, expr: ast.Expr, other: Ty) SemanticError!bool {
+        if (try self.coerceEnumLiteral(expr, other)) return true;
+        const lit = switch (expr.kind) {
+            .ident => |n| n,
+            else => return false,
+        };
+        if (lit.len < 2 or lit[0] != '.') return false;
+        const type_id = switch (other) {
+            .named => |id| id,
+            else => return false,
+        };
+        const layout = self.env.layouts.get(type_id) orelse return false;
+        if (layout.kind != .variant_type) return false;
+        self.emitError(expr.span, "enum `{s}` has no variant `{s}`", .{ self.formatTy(other), lit });
+        return error.SemanticFailed;
     }
 
     /// Push an expected type down into an aggregate literal's field values.
