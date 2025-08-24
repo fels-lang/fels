@@ -4328,8 +4328,11 @@ test "exe: the address of a local inferred from a literal is a pointer to its de
         \\    if take(&x) != 42 { return 2; }
         \\    q := &x;
         \\    if q != p { return 3; }
-        \\    wide: i64 = x;
+        \\    wide: i64 = x as i64;
         \\    if wide != 42i64 { return 4; }
+        \\    neg := -5;
+        \\    wide_neg: i64 = neg as i64;
+        \\    if wide_neg != -5i64 { return 7; }
         \\    f := 5.0;
         \\    half(&f);
         \\    if f != 2.5 { return 5; }

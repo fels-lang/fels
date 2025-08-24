@@ -31,7 +31,7 @@ d := 0usize;       // usize
 
 Without a suffix, an integer literal's type is inferred from context. If no context constrains it, the literal defaults to `i32`. Either way the value has to fit: `b: u8 = 300;` is a compile error, and so is `x := 5000000000;`, which needs a suffix (`5000000000i64`).
 
-A local inferred from an unsuffixed literal is stored at that default: `x := 42` holds an `i32`, so `&x` is a `*i32` (and `&y` is a `*f64` for `y := 1.5`). Reading `x` still adapts to its context, so `w: i64 = x;` is accepted.
+A local inferred from an unsuffixed literal has that default type: `x := 42` is an `i32`, so `&x` is a `*i32` (and `&y` is a `*f64` for `y := 1.5`). Reading `x` as another integer type takes a cast, `w: i64 = x as i64;`, or give the local its type up front (`x := 42i64` or `x: i64 = 42`). A constant is different: `N :: 300;` has no width of its own and is checked like the literal wherever it is used, so `b: u8 = N;` is an error.
 
 A suffix is authoritative: it fixes the literal's width even through inference. `x := 0i64` gives `x` a 64-bit slot — the `i64` is not narrowed back to the `i32` default. This matters for values that exceed 32 bits (e.g. addresses built with `usize`/`i64`), where a narrowed slot would silently truncate the value.
 

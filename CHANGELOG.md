@@ -47,8 +47,9 @@ the major version is `0`, any minor bump may break source compatibility.
 - **`x := 42; p: *i32 = &x;` was a type error about `*integer literal`.** A local inferred from an
   unsuffixed literal is stored as an `i32` (`f64` for a float literal), but its address was typed
   as a pointer to the literal, which no pointer type accepted, so `&x` could not be passed to a
-  `*i32` parameter or compared with a `*i32` either. `&x` is now a `*i32` (`*f64`). Reading `x`
-  still adapts to its context (`w: i64 = x;`), but a value read through the pointer is an `i32`.
+  `*i32` parameter or compared with a `*i32` either. `&x` is now a `*i32` (`*f64`), and `x`
+  itself is an `i32` (see the entry on integer literals below): reading it as an `i64` takes
+  `x as i64`.
 - **A `-> void ! E` function needed an explicit `return;` at its end.** Without one it was refused
   with "may not return a value on all code paths", although there is no value to return. Running
   to the end of such a function is now success and compiles to the same code as `return;`. A
