@@ -1212,3 +1212,77 @@ test "diagnostics: a bare variant compared with an enum has to be one of its var
     try expectFirstError(a, color ++ "main :: fn() -> i32 { s := Shape.dot; if s == .square { return 1; } return 0; }", &.{"enum `Shape` has no variant `.square`"});
     try expectNoError(a, color, "main :: fn() -> i32 { p := Color.red; s := Shape.dot; if p == .green || .blue != p || s == .circle { return 1; } return 0; }");
 }
+
+const frame_prelude =
+    \\P :: struct { x: i32, y: i32 }
+    \\S :: struct { p: *i32 }
+    \\Q :: struct { arr: [4]i32, s: []i32 }
+    \\G: i32 = 1;
+    \\GA: [4]i32 = .{ 1, 2, 3, 4 };
+    \\seven :: fn() -> i32 { return 7; }
+    \\
+;
+
+test "diagnostics: returning the address of a local, a parameter or a temporary is rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const local = "the address of local `x` cannot be returned";
+
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> *i32 { x := 5; return &x; }", &.{ local, "points at `x`, which lives in this function's frame", "help:" });
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> ?*i32 { x := 5; return &x; }", &.{local});
+    try expectFirstError(a, frame_prelude ++ "f :: fn(n: i32) -> *i32 { return &n; }", &.{"the address of parameter `n` cannot be returned"});
+    // A pointer parameter is a copy in the frame too: its own address dangles.
+    try expectFirstError(a, frame_prelude ++ "f :: fn(p: *i32) -> **i32 { return &p; }", &.{"the address of parameter `p` cannot be returned"});
+    try expectFirstError(a, frame_prelude ++ "f :: fn(p: P) -> *i32 { return &p.x; }", &.{"the address of parameter `p` cannot be returned"});
+    // Temporaries.
+    const temp = "the address of a temporary cannot be returned";
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> *i32 { return &5; }", &.{temp});
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> *i32 { return &seven(); }", &.{temp});
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> *i32 { x := 5; return &(x + 1); }", &.{temp});
+    // A field or an element stored in a local.
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> *i32 { p: P = .{ 1, 2 }; return &p.y; }", &.{"the address of local `p` cannot be returned"});
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> *i32 { b: [4]i32 = .{ 1, 2, 3, 4 }; return &b[2]; }", &.{"the address of local `b` cannot be returned"});
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> *u8 { b: [4]u8 = .{ 1u8, 2u8, 3u8, 4u8 }; return b.ptr; }", &.{"the address of local `b` cannot be returned"});
+    // Through a local that holds the address, as far as declarations and plain assignments tell.
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> *i32 { x := 5; q := &x; return q; }", &.{local});
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> *i32 { x := 5; q := &x; r := q; return r; }", &.{local});
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> *i32 { x := 5; q: *i32 = &G; q = &x; return q; }", &.{local});
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> *i32 { x := 5; q := &x; if true { return q; } return &G; }", &.{local});
+    try expectFirstError(a, frame_prelude ++ "f :: fn(c: bool) -> *i32 { x := 5; return if c { &x } else { &G }; }", &.{local});
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> *i32 { b: [4]i32 = .{ 1, 2, 3, 4 }; for &e in b { return e; } return &G; }", &.{"the address of local `b` cannot be returned"});
+    // Inside an aggregate that is returned.
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> S { x := 5; return .{ .p = &x }; }", &.{local});
+    try expectFirstError(a, frame_prelude ++ "f :: fn() -> S { x := 5; s: S = .{ .p = &G }; s.p = &x; return s; }", &.{local});
+}
+
+test "diagnostics: returning an address that outlives the function is allowed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try expectNoError(a, frame_prelude, "f :: fn() -> *i32 { return &G; }");
+    try expectNoError(a, frame_prelude, "f :: fn() -> *i32 { p := &GA[1]; return p; }");
+    try expectNoError(a, frame_prelude, "f :: fn() -> []i32 { return GA[0..2]; }");
+    try expectNoError(a, frame_prelude, "f :: fn(p: *i32) -> *i32 { return p; }");
+    try expectNoError(a, frame_prelude, "f :: fn(p: *P) -> *i32 { return &p.x; }");
+    try expectNoError(a, frame_prelude, "f :: fn(p: *P) -> *i32 { return &(*p).y; }");
+    try expectNoError(a, frame_prelude, "f :: fn(p: *P) -> *i32 { q := &p.y; return q; }");
+    try expectNoError(a, frame_prelude, "f :: fn(q: *Q) -> []i32 { return q.arr[0..]; }");
+    try expectNoError(a, frame_prelude, "f :: fn(q: Q) -> []i32 { return q.s; }");
+    try expectNoError(a, frame_prelude, "f :: fn(q: Q) -> *i32 { return &q.s[0]; }");
+    try expectNoError(a, frame_prelude, "f :: fn(s: []i32) -> *i32 { return &s[1]; }");
+    try expectNoError(a, frame_prelude, "f :: fn(s: []i32) -> []i32 { return s[1..]; }");
+    try expectNoError(a, frame_prelude, "f :: fn(s: []i32) -> *i32 { for &e in s { return e; } return &G; }");
+    try expectNoError(a, frame_prelude, "f :: fn(out: **i32) -> **i32 { x := 5; return out; }");
+    // The value, not the address.
+    try expectNoError(a, frame_prelude, "f :: fn() -> i32 { x := 5; q := &x; return *q; }");
+    // A local that held a frame address and then was given another.
+    try expectNoError(a, frame_prelude, "f :: fn() -> *i32 { x := 5; q := &x; q = &G; return q; }");
+    // A store through a pointer parameter does not make the parameter a frame address.
+    try expectNoError(a, frame_prelude, "f :: fn(s: *S) -> *S { s.p = &G; return s; }");
+    // A lambda's capture lives in its environment, which the caller keeps.
+    try expectNoError(a, frame_prelude, "main :: fn() -> i32 { n := 5; g := fn() -> *i32 { return &n; }; return *g(); }");
+    // The bytes a function that `#run` calls built in a local array (docs/09_comptime.md).
+    try expectNoError(a, frame_prelude, "f :: fn() -> []const u8 { buf: [2]u8 = .{ 97u8, 98u8 }; return buf[:]; }");
+}

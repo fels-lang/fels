@@ -356,6 +356,24 @@ const ActiveZone = struct {
     scope_depth: usize,
 };
 
+/// Storage in the stack frame of the function being checked: a local, a parameter (its
+/// value is copied into the frame, a pointer parameter too) or a temporary (`&5`, `&f()`).
+/// Its address is gone once the function returns, so it must not be returned.
+const FrameAddress = struct {
+    kind: enum { local, param, temporary },
+    /// The local or parameter; empty for a temporary.
+    name: []const u8 = "",
+};
+
+/// What `frameSlot` needs to know of the function whose body is being checked.
+const FnFrame = struct {
+    /// The scope holding its parameters (and a lambda's captures).
+    scope_index: usize,
+    params: []const ast.Param,
+    /// A lambda's captured variables: they live in its environment, not its frame.
+    captures: []const Capture,
+};
+
 pub const ArrayTy = struct {
     elem: *const Ty,
     len: u64,
@@ -1346,6 +1364,11 @@ const Checker = struct {
     env: TypeEnv,
     scope_stack: std.ArrayList(std.StringHashMap(Ty)),
     zone_owner_scopes: std.ArrayList(std.StringHashMap(ZoneOwner)) = .empty,
+    /// Per scope, beside `zone_owner_scopes`: the locals that hold an address in the
+    /// current function's frame (`q := &x`), and what it points at.
+    frame_ptr_scopes: std.ArrayList(std.StringHashMap(FrameAddress)) = .empty,
+    /// The function whose body is being checked, for `frameSlot`.
+    current_frame: ?FnFrame = null,
     active_zones: std.ArrayList(ActiveZone) = .empty,
     current_return_ty: Ty = .void,
     current_error_ty: ?Ty = null,
@@ -1442,6 +1465,8 @@ const Checker = struct {
         self.scope_stack.deinit(self.allocator);
         for (self.zone_owner_scopes.items) |*s| s.deinit();
         self.zone_owner_scopes.deinit(self.allocator);
+        for (self.frame_ptr_scopes.items) |*s| s.deinit();
+        self.frame_ptr_scopes.deinit(self.allocator);
         self.active_zones.deinit(self.allocator);
         self.diagnostics.deinit(self.allocator);
         if (self.constraint_decls_init) self.constraint_decls.deinit();
@@ -1584,6 +1609,7 @@ const Checker = struct {
     fn pushScope(self: *Checker) !void {
         try self.scope_stack.append(self.allocator, std.StringHashMap(Ty).init(self.allocator));
         try self.zone_owner_scopes.append(self.allocator, std.StringHashMap(ZoneOwner).init(self.allocator));
+        try self.frame_ptr_scopes.append(self.allocator, std.StringHashMap(FrameAddress).init(self.allocator));
     }
 
     fn popScope(self: *Checker) void {
@@ -1591,6 +1617,8 @@ const Checker = struct {
         s.deinit();
         var owners = self.zone_owner_scopes.pop().?;
         owners.deinit();
+        var frame_ptrs = self.frame_ptr_scopes.pop().?;
+        frame_ptrs.deinit();
     }
 
     fn declareLocal(self: *Checker, name: []const u8, ty: Ty) !void {
@@ -1685,6 +1713,143 @@ const Checker = struct {
             if (self.zone_owner_scopes.items[i].get(name)) |owner| return owner;
         }
         return null;
+    }
+
+    /// Record (or with null forget) that local `name` holds an address in this frame.
+    fn setLocalFramePtr(self: *Checker, name: []const u8, target: ?FrameAddress) !void {
+        const scope_index = self.localScopeIndex(name) orelse return;
+        if (target) |value|
+            try self.frame_ptr_scopes.items[scope_index].put(name, value)
+        else
+            _ = self.frame_ptr_scopes.items[scope_index].remove(name);
+    }
+
+    fn lookupFramePtr(self: Checker, name: []const u8) ?FrameAddress {
+        const scope_index = self.localScopeIndex(name) orelse return null;
+        return self.frame_ptr_scopes.items[scope_index].get(name);
+    }
+
+    /// The frame storage `name` names: a local or a parameter of the function being
+    /// checked. Null for a global, a lambda's capture, or outside a function body.
+    fn frameSlot(self: Checker, name: []const u8) ?FrameAddress {
+        const frame = self.current_frame orelse return null;
+        const scope_index = self.localScopeIndex(name) orelse return null;
+        if (scope_index < frame.scope_index) return null;
+        if (scope_index == frame.scope_index) {
+            for (frame.captures) |c| if (std.mem.eql(u8, c.name, name)) return null;
+            for (frame.params) |p| if (std.mem.eql(u8, p.name, name)) return .{ .kind = .param, .name = name };
+        }
+        return .{ .kind = .local, .name = name };
+    }
+
+    /// The type sema gave `expr`. A local's name is not recorded per use, so it is
+    /// looked up.
+    fn checkedType(self: Checker, expr: ast.Expr) ?Ty {
+        if (expr.kind == .ident) if (self.lookupLocal(expr.kind.ident)) |ty| return ty;
+        return self.env.expr_types.get(expr.id);
+    }
+
+    /// Where `&expr` points when that is in this function's frame: `expr` is a local or a
+    /// parameter, a field or an element stored in one, or a temporary (`&5`, `&f()`,
+    /// `&(x + 1)`). Null when it is elsewhere (a global, through a pointer, a slice) or
+    /// cannot be told.
+    fn addressTarget(self: Checker, expr: ast.Expr) ?FrameAddress {
+        const temporary: FrameAddress = .{ .kind = .temporary };
+        return switch (expr.kind) {
+            .ident => |name| if (name.len > 1 and name[0] == '.') temporary else self.frameSlot(name),
+            .unsafe_expr => |inner| self.addressTarget(inner.*),
+            .field => |field| blk: {
+                const base_ty = self.checkedType(field.base.*) orelse break :blk null;
+                break :blk switch (base_ty) {
+                    .pointer, .const_ptr, .borrow => self.pointerTarget(field.base.*),
+                    // `.len` and `.ptr` of a slice are values, not storage.
+                    .slice => temporary,
+                    .named, .array => self.addressTarget(field.base.*),
+                    else => null,
+                };
+            },
+            .index => |index| blk: {
+                const base_ty = self.checkedType(index.base.*) orelse break :blk null;
+                break :blk switch (base_ty) {
+                    .array => self.addressTarget(index.base.*),
+                    .pointer, .const_ptr, .borrow, .slice => self.pointerTarget(index.base.*),
+                    else => null,
+                };
+            },
+            .unary => |unary| if (unary.op == .deref) self.pointerTarget(unary.expr.*) else temporary,
+            .int, .float, .string, .bool, .compound_literal, .struct_literal, .binary, .call, .as_cast, .if_expr, .match_expr => temporary,
+            else => null,
+        };
+    }
+
+    /// Where the address `expr` holds points when that is in this function's frame: `&x`,
+    /// a local that was given such an address, a slice of a local array, or an aggregate
+    /// with such an address in it. A simple flow check: a local is tracked through its
+    /// declaration and plain assignments, not through calls.
+    fn pointerTarget(self: Checker, expr: ast.Expr) ?FrameAddress {
+        return switch (expr.kind) {
+            .unary => |unary| if (unary.op == .address_of) self.addressTarget(unary.expr.*) else null,
+            .ident => |name| self.lookupFramePtr(name),
+            .unsafe_expr, .force_unwrap => |inner| self.pointerTarget(inner.*),
+            // Only a cast to another pointer keeps the address one.
+            .as_cast => |cast| switch (self.checkedType(expr) orelse .unknown) {
+                .pointer, .const_ptr, .slice, .optional => self.pointerTarget(cast.value.*),
+                else => null,
+            },
+            .nil_coalesce => |coalesce| self.pointerTarget(coalesce.value.*) orelse self.pointerTarget(coalesce.default.*),
+            .if_expr => |ie| self.pointerTarget(ie.then_value) orelse self.pointerTarget(ie.else_value),
+            .slice => |slice| blk: {
+                const base_ty = self.checkedType(slice.base.*) orelse break :blk null;
+                break :blk switch (base_ty) {
+                    // A slice of a local array is not checked: a function that `#run` calls
+                    // returns the bytes it built that way, and the VM copies them into the
+                    // image (docs/09_comptime.md). Called at run time, it would dangle.
+                    .array => null,
+                    .pointer, .const_ptr, .borrow, .slice => self.pointerTarget(slice.base.*),
+                    else => null,
+                };
+            },
+            .field => |field| blk: {
+                if (!std.mem.eql(u8, field.name, "ptr")) break :blk null;
+                const base_ty = self.checkedType(field.base.*) orelse break :blk null;
+                break :blk switch (base_ty) {
+                    .array => self.addressTarget(field.base.*),
+                    .slice => self.pointerTarget(field.base.*),
+                    else => null,
+                };
+            },
+            .compound_literal => |values| blk: {
+                for (values) |value| if (self.pointerTarget(value)) |target| break :blk target;
+                break :blk null;
+            },
+            .struct_literal => |inits| blk: {
+                for (inits) |field_init| if (self.pointerTarget(field_init.value)) |target| break :blk target;
+                break :blk null;
+            },
+            else => null,
+        };
+    }
+
+    /// `return` of an address in this function's frame: it dangles once the function
+    /// returns (the frame-storage counterpart of "cannot escape its zone").
+    fn rejectFrameAddressReturn(self: *Checker, value: ast.Expr) SemanticError!void {
+        const target = self.pointerTarget(value) orelse return;
+        const help = "the function's frame is gone once it returns; return the value itself, or put it in memory the caller owns (an allocator, a zone or a pointer the caller passes in)";
+        switch (target.kind) {
+            .local => self.emitErrorRich(value.span, "the address of local `{s}` cannot be returned", .{target.name}, .{
+                .primary_label = std.fmt.allocPrint(self.allocator, "points at `{s}`, which lives in this function's frame", .{target.name}) catch null,
+                .help = help,
+            }),
+            .param => self.emitErrorRich(value.span, "the address of parameter `{s}` cannot be returned", .{target.name}, .{
+                .primary_label = std.fmt.allocPrint(self.allocator, "points at `{s}`, a copy in this function's frame", .{target.name}) catch null,
+                .help = help,
+            }),
+            .temporary => self.emitErrorRich(value.span, "the address of a temporary cannot be returned", .{}, .{
+                .primary_label = "points at a value that lives in this function's frame",
+                .help = help,
+            }),
+        }
+        return error.SemanticFailed;
     }
 
     /// The `std.heap.Arena` struct type — the type of a `zone X: Arena {}` handle.
@@ -2458,13 +2623,18 @@ const Checker = struct {
         // A lifted lambda sees its captured variables as locals (by value), so its
         // body type-checks. Captures are resolved at the definition site; if that
         // hasn't run yet (e.g. a nested lambda) there are simply none.
+        var captures: []const Capture = &.{};
         if (std.mem.startsWith(u8, decl.name, "__lambda_")) {
             if (self.resolveSymbol(decl.name)) |id| {
                 if (self.env.lambda_captures.get(self.symbols.symbol(id).link_name)) |caps| {
                     for (caps) |c| try self.declareLocal(c.name, c.ty);
+                    captures = caps;
                 }
             }
         }
+        const saved_frame = self.current_frame;
+        defer self.current_frame = saved_frame;
+        self.current_frame = .{ .scope_index = self.scope_stack.items.len - 1, .params = decl.params, .captures = captures };
 
         // A `where { … }` clause is comptime code (inspects `type_info(T)`, may
         // `reject`, and may compute output type params). Checked with the type
@@ -2533,6 +2703,7 @@ const Checker = struct {
                 try self.declareLocal(local.name, local_ty);
                 self.noteLocal(.{ .name = local.name, .file = "", .kind = .local_val, .decl = local.span, .scope_end = self.block_end, .ty = local_ty, .value = local.value });
                 try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
+                try self.setLocalFramePtr(local.name, self.pointerTarget(local.value));
                 if (self.valueIsCapturingClosure(local.value)) try self.capturing_locals.put(local.name, {});
             },
             .local_typed => |local| {
@@ -2554,6 +2725,7 @@ const Checker = struct {
                 try self.requireIntLitFits(local.value, declared_ty);
                 try self.declareLocal(local.name, declared_ty);
                 try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
+                try self.setLocalFramePtr(local.name, self.pointerTarget(local.value));
                 if (self.valueIsCapturingClosure(local.value)) try self.capturing_locals.put(local.name, {});
             },
             .assign => |assign| {
@@ -2616,6 +2788,19 @@ const Checker = struct {
                 } else if (assign.target.kind == .ident) {
                     try self.setLocalZoneOwner(assign.target.kind.ident, null);
                 }
+                // `q = &x` makes `q` hold an address in this frame, and `q = &G` forgets it.
+                // A store into a field or element of a local aggregate (`s.p = &x`) marks the
+                // aggregate; a store through a pointer reaches memory outside the frame.
+                if (assign.op == .assign) {
+                    const target = self.pointerTarget(assign.value);
+                    if (assign.target.kind == .ident) {
+                        try self.setLocalFramePtr(assign.target.kind.ident, target);
+                    } else if (target != null) if (self.addressTarget(assign.target)) |stored_in| {
+                        if (stored_in.kind == .local or stored_in.kind == .param) {
+                            if (self.lookupFramePtr(stored_in.name) == null) try self.setLocalFramePtr(stored_in.name, target);
+                        }
+                    };
+                }
             },
             .return_stmt => |ret| {
                 // The declared return type is a coercion target, the same as a
@@ -2632,6 +2817,7 @@ const Checker = struct {
                     self.emitError(ret.span, "{s} from `{s}` cannot be returned", .{ source, owner.name });
                     return error.SemanticFailed;
                 };
+                if (ret.value) |value| try self.rejectFrameAddressReturn(value);
                 // A capturing closure's environment lives in this function, so
                 // returning it would leave the captured values dangling — unless
                 // the function passes an `*Arena` region the env can outlive on.
@@ -2770,6 +2956,12 @@ const Checker = struct {
                 try self.declareLocal(for_stmt.binding, binding_ty);
                 self.noteLocal(.{ .name = for_stmt.binding, .file = "", .kind = .for_binding, .decl = for_stmt.span, .scope_end = for_stmt.body.span.end, .ty = binding_ty });
                 if (for_stmt.by_ref) try self.setLocalZoneOwner(for_stmt.binding, self.exprZoneOwner(for_stmt.iter));
+                // `for &x in arr` over a local array: `x` points into this frame.
+                if (for_stmt.by_ref) try self.setLocalFramePtr(for_stmt.binding, switch (self.checkedType(for_stmt.iter) orelse .unknown) {
+                    .array => self.addressTarget(for_stmt.iter),
+                    .slice, .pointer, .const_ptr, .borrow => self.pointerTarget(for_stmt.iter),
+                    else => null,
+                });
                 if (for_stmt.index_binding) |name| {
                     try self.declareLocal(name, .usize);
                     self.noteLocal(.{ .name = name, .file = "", .kind = .for_binding, .decl = for_stmt.span, .scope_end = for_stmt.body.span.end, .ty = .usize });
