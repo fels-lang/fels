@@ -83,6 +83,9 @@ escape_example :: fn() -> []u8 {
 3. **Restricted Passing**: Zone-owned values can only be passed as arguments to function parameters explicitly marked with `borrow`.
 4. **Valid Freeing**: You can only `free` a value using the zone handle that owns it.
 
+The same check keeps a function's own frame in it: the address of a local, a parameter or a
+temporary cannot be returned (see [Pointer Types](02_types.md#single-pointers)).
+
 ## Borrow Parameters
 
 If you want to pass zone-allocated memory to a function, the function must declare
