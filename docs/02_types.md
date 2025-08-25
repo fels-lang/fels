@@ -331,6 +331,17 @@ r2: Robot = .{ .id = 2, .facing = .east };    // named field
 spawn :: fn() -> Robot { return .{ 3, .west }; }
 ```
 
+It can also be an element of an array or slice literal, a field's default value, or the other
+operand of `==` and `!=`, on either side. A name the enum does not have is an error.
+
+```gabbro
+route: [3]Direction = .{ .north, .north, .east };
+Turtle :: struct { facing: Direction = .north }
+
+if d == .north { /* ... */ }
+if .west != heading() { /* ... */ }
+```
+
 #### Enums with Payloads
 
 Enum variants can carry associated data:
