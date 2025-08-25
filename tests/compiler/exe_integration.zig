@@ -4554,3 +4554,140 @@ test "exe: an address the caller owns can still be returned" {
     , "exe_return_caller_address");
     try std.testing.expectEqual(@as(u32, 42), code);
 }
+
+/// An integer literal as it is written (`text`) and the value it has to give (`value`), which
+/// the test writes with the type's suffix so that it does not depend on the fix under test.
+const LitCase = struct { text: []const u8, value: []const u8 };
+const LitWidth = struct { ty: []const u8, cases: []const LitCase };
+
+/// Every integer width with a positive, a negative, the smallest and the largest value, and
+/// literal arithmetic whose result needs the full width (`1 << 40` into an `i64`).
+const lit_widths = [_]LitWidth{
+    .{ .ty = "i8", .cases = &.{
+        .{ .text = "5", .value = "5" },         .{ .text = "100", .value = "100" },
+        .{ .text = "-1", .value = "-1" },       .{ .text = "-100", .value = "-100" },
+        .{ .text = "-128", .value = "-128" },   .{ .text = "127", .value = "127" },
+        .{ .text = "1 << 6", .value = "64" },   .{ .text = "~0", .value = "-1" },
+    } },
+    .{ .ty = "i16", .cases = &.{
+        .{ .text = "5", .value = "5" },           .{ .text = "30000", .value = "30000" },
+        .{ .text = "-1", .value = "-1" },         .{ .text = "-30000", .value = "-30000" },
+        .{ .text = "-32768", .value = "-32768" }, .{ .text = "32767", .value = "32767" },
+        .{ .text = "1 << 14", .value = "16384" },
+    } },
+    .{ .ty = "i32", .cases = &.{
+        .{ .text = "5", .value = "5" },                     .{ .text = "2000000000", .value = "2000000000" },
+        .{ .text = "-1", .value = "-1" },                   .{ .text = "-2000000000", .value = "-2000000000" },
+        .{ .text = "-2147483648", .value = "-2147483648" }, .{ .text = "2147483647", .value = "2147483647" },
+        .{ .text = "1 << 30", .value = "1073741824" },
+    } },
+    .{ .ty = "i64", .cases = &.{
+        .{ .text = "5", .value = "5" },
+        .{ .text = "5000000000", .value = "5000000000" },
+        .{ .text = "-1", .value = "-1" },
+        .{ .text = "-5000000000", .value = "-5000000000" },
+        .{ .text = "-9223372036854775808", .value = "-9223372036854775808" },
+        .{ .text = "9223372036854775807", .value = "9223372036854775807" },
+        .{ .text = "1 << 40", .value = "1099511627776" },
+        .{ .text = "-(1 << 40)", .value = "-1099511627776" },
+        .{ .text = "~0", .value = "-1" },
+    } },
+    .{ .ty = "u8", .cases = &.{
+        .{ .text = "0", .value = "0" },       .{ .text = "5", .value = "5" },
+        .{ .text = "200", .value = "200" },   .{ .text = "255", .value = "255" },
+        .{ .text = "1 << 7", .value = "128" }, .{ .text = "~0", .value = "255" },
+    } },
+    .{ .ty = "u16", .cases = &.{
+        .{ .text = "0", .value = "0" },         .{ .text = "5", .value = "5" },
+        .{ .text = "40000", .value = "40000" }, .{ .text = "65535", .value = "65535" },
+        .{ .text = "1 << 15", .value = "32768" },
+    } },
+    .{ .ty = "u32", .cases = &.{
+        .{ .text = "0", .value = "0" },                   .{ .text = "5", .value = "5" },
+        .{ .text = "0x80000000", .value = "2147483648" }, .{ .text = "4294967295", .value = "4294967295" },
+        .{ .text = "1 << 31", .value = "2147483648" },
+    } },
+    .{ .ty = "u64", .cases = &.{
+        .{ .text = "0", .value = "0" },
+        .{ .text = "5", .value = "5" },
+        .{ .text = "0x8000000000000000", .value = "9223372036854775808" },
+        .{ .text = "18446744073709551615", .value = "18446744073709551615" },
+        .{ .text = "1 << 40", .value = "1099511627776" },
+        .{ .text = "1 << 63", .value = "9223372036854775808" },
+        .{ .text = "~0", .value = "18446744073709551615" },
+    } },
+};
+
+/// A program that writes each literal of `lit_widths` where a value takes a type: a typed
+/// declaration, an assignment, a positional and a named struct literal, an array literal, an
+/// array element, a call argument, a return value and both sides of a comparison. `main` returns
+/// 0, or `(width * 10 + case) * 100 + check` for the first check that fails. With `with_asserts`
+/// every check also runs on the comptime VM, as `#assert(check() == 0)`.
+fn intLiteralWidthsSource(a: std.mem.Allocator, with_asserts: bool) ![]const u8 {
+    var src: std.ArrayList(u8) = .empty;
+    var main_body: std.ArrayList(u8) = .empty;
+    for (lit_widths, 0..) |w, wi| {
+        try src.appendSlice(a, try std.fmt.allocPrint(a,
+            \\W_{[t]s} :: struct {{ lo: {[t]s}, v: {[t]s}, hi: {[t]s} }}
+            \\id_{[t]s} :: fn(x: {[t]s}) -> {[t]s} {{ return x; }}
+            \\is_{[t]s} :: fn(x: {[t]s}, want: {[t]s}) -> bool {{ return x == want; }}
+            \\
+        , .{ .t = w.ty }));
+        for (w.cases, 0..) |c, ci| {
+            const args = .{ .t = w.ty, .v = c.text, .e = c.value, .i = ci };
+            try src.appendSlice(a, try std.fmt.allocPrint(a,
+                \\r_{[t]s}_{[i]d} :: fn() -> {[t]s} {{ return {[v]s}; }}
+                \\c_{[t]s}_{[i]d} :: fn() -> i32 {{
+                \\    want: {[t]s} = {[e]s}{[t]s};
+                \\    a: {[t]s} = {[v]s};
+                \\    if a != want {{ return 1; }}
+                \\    b: {[t]s} = 0;
+                \\    b = {[v]s};
+                \\    if b != want {{ return 2; }}
+                \\    w: W_{[t]s} = .{{ 0, {[v]s}, 0 }};
+                \\    if w.v != want || w.lo != 0 || w.hi != 0 {{ return 3; }}
+                \\    n: W_{[t]s} = .{{ .lo = 0, .v = {[v]s}, .hi = 0 }};
+                \\    if n.v != want || n.lo != 0 || n.hi != 0 {{ return 4; }}
+                \\    arr: [3]{[t]s} = .{{ 0, {[v]s}, 0 }};
+                \\    if arr[1] != want || arr[0] != 0 || arr[2] != 0 {{ return 5; }}
+                \\    arr[1] = 0;
+                \\    arr[1] = {[v]s};
+                \\    if arr[1] != want || arr[0] != 0 || arr[2] != 0 {{ return 6; }}
+                \\    if !is_{[t]s}({[v]s}, want) {{ return 7; }}
+                \\    if id_{[t]s}({[v]s}) != want {{ return 8; }}
+                \\    if r_{[t]s}_{[i]d}() != want {{ return 9; }}
+                \\    if want != ({[v]s}) {{ return 10; }}
+                \\    if ({[v]s}) != want {{ return 11; }}
+                \\    if !(want == ({[v]s})) {{ return 12; }}
+                \\    return 0;
+                \\}}
+                \\
+            , args));
+            if (with_asserts) try src.appendSlice(a, try std.fmt.allocPrint(a,
+                \\#assert(c_{[t]s}_{[i]d}() == 0, "{[t]s} {[v]s}");
+                \\
+            , .{ .t = w.ty, .v = c.text, .i = ci }));
+            try main_body.appendSlice(a, try std.fmt.allocPrint(a,
+                \\    r = c_{s}_{d}();
+                \\    if r != 0 {{ return {d} + r; }}
+                \\
+            , .{ w.ty, ci, (wi * 10 + ci) * 100 }));
+        }
+    }
+    try src.appendSlice(a, "main :: fn() -> i32 {\n    r := 0;\n");
+    try src.appendSlice(a, main_body.items);
+    try src.appendSlice(a, "    return 0;\n}\n");
+    return src.items;
+}
+
+test "exe: an integer literal is stored at the width of the type it takes" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // IR lowered `-5`, `-128` and `1 << 40` as `i32` values: `k: i64 = -5` stored 4 bytes into
+    // the 8 byte slot, `e: i8 = -128` wrote 4 bytes over its neighbours, `1 << 40` gave 0.
+    const src = try intLiteralWidthsSource(arena.allocator(), false);
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_int_lit_widths_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_int_lit_widths_o2", 2));
+}

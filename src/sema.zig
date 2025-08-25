@@ -6236,6 +6236,7 @@ const Checker = struct {
             .borrow, .optional => |inner| return self.checkIntLitFits(expr, inner.*, is_default),
             else => {},
         }
+        try self.settleIntLit(expr, expected);
         switch (expr.kind) {
             .if_expr => |ie| {
                 try self.checkIntLitFits(ie.then_value, expected, is_default);
@@ -6310,6 +6311,42 @@ const Checker = struct {
             },
             else => untypedIntLit(expr),
         };
+    }
+
+    /// An integer literal takes the type it is used as: `k: i64 = -5` makes the `-5`
+    /// an `i64`, and so does `1 << 40` stored into a `u64`. Without a type to take,
+    /// IR lowers such an expression as an `i32`, then stores 4 bytes into the 8 byte
+    /// slot or computes the shift in 32 bits. This records the type in `expr_types`
+    /// for the expression and the literals it is made of (the operands of `-`, `~`
+    /// and of arithmetic, the shifted value but not the shift amount, the values of
+    /// an `if` or `match`). A struct field's default is never inferred, so a node
+    /// with no recorded type is settled too when it is only literals.
+    fn settleIntLit(self: *Checker, expr: ast.Expr, ty: Ty) SemanticError!void {
+        switch (ty) {
+            .i8, .i16, .i32, .i64, .u8, .u16, .u32, .u64, .byte, .usize, .isize, .type_param => {},
+            else => return,
+        }
+        if (self.env.expr_types.get(expr.id)) |recorded| {
+            if (recorded != .int_lit) return;
+        } else if (!isUntypedIntExpr(expr)) return;
+        try self.env.expr_types.put(expr.id, ty);
+        switch (expr.kind) {
+            .unary => |unary| if (unary.op == .neg or unary.op == .bit_not) try self.settleIntLit(unary.expr.*, ty),
+            .binary => |binary| switch (binary.op) {
+                .shl, .shr => try self.settleIntLit(binary.left.*, ty),
+                .add, .sub, .mul, .div, .rem, .wrap_add, .wrap_sub, .wrap_mul, .bit_and, .bit_or, .bit_xor => {
+                    try self.settleIntLit(binary.left.*, ty);
+                    try self.settleIntLit(binary.right.*, ty);
+                },
+                else => {},
+            },
+            .if_expr => |ie| {
+                try self.settleIntLit(ie.then_value, ty);
+                try self.settleIntLit(ie.else_value, ty);
+            },
+            .match_expr => |me| for (me.arms) |arm| try self.settleIntLit(arm.value, ty),
+            else => {},
+        }
     }
 
     /// An integer literal or a constant's name as it was written, minus signs included.
@@ -6723,6 +6760,20 @@ fn untypedIntLit(expr: ast.Expr) UntypedIntLit {
             else => |other| other,
         },
         else => .none,
+    };
+}
+
+/// An expression made only of unsuffixed integer literals: `5`, `-128`, `~0`,
+/// `1 << 40`. Its type is the one it is used as (`Checker.settleIntLit`).
+pub fn isUntypedIntExpr(expr: ast.Expr) bool {
+    return switch (expr.kind) {
+        .int => |text| intLiteralSuffix(text).len == 0,
+        .unary => |unary| (unary.op == .neg or unary.op == .bit_not) and isUntypedIntExpr(unary.expr.*),
+        .binary => |binary| switch (binary.op) {
+            .shl, .shr, .add, .sub, .mul, .div, .rem, .wrap_add, .wrap_sub, .wrap_mul, .bit_and, .bit_or, .bit_xor => isUntypedIntExpr(binary.left.*) and isUntypedIntExpr(binary.right.*),
+            else => false,
+        },
+        else => false,
     };
 }
 
