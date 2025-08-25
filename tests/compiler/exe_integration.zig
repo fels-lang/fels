@@ -4493,3 +4493,34 @@ test "exe: `p == .green` reads the bare variant as the other operand's enum, at 
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_enum_bare_variant_compare_o0", 0));
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_enum_bare_variant_compare_o2", 2));
 }
+
+test "exe: a bare variant in an array or slice literal and in a field default is that variant" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Each of these stored an undefined value in place of the variant.
+    const src =
+        \\Color :: enum { red, green, blue }
+        \\Holder :: struct { color: Color = .green, n: i32 }
+        \\Box :: struct($T: type) { v: T, c: Color = .blue }
+        \\count :: fn(xs: []Color, want: Color) -> i32 {
+        \\    n := 0;
+        \\    for x in xs { if x == want { n += 1; } }
+        \\    return n;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    arr: [3]Color = .{ .red, .green, .blue };
+        \\    if arr[0] != .red || arr[1] != .green || arr[2] != .blue { return 1; }
+        \\    xs: []Color = .{ .blue, .green, .green };
+        \\    if count(xs, .green) != 2 || count(xs, .blue) != 1 { return 2; }
+        \\    h: Holder = .{ .n = 2 };
+        \\    if h.color != .green { return 3; }
+        \\    b: Box(i32) = .{ .v = 1 };
+        \\    if b.c != .blue { return 4; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_enum_bare_variant_slot_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_enum_bare_variant_slot_o2", 2));
+}
