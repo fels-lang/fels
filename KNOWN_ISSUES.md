@@ -14,13 +14,18 @@ These compile without a message and give a wrong result.
 - ~~A local inferred from a literal, read as another integer type, has the wrong value.~~ Fixed on
   `main` (`f4c76b5`): `x := 5` is an `i32`, so `y: i64 = x;` is now a type error and takes
   `x as i64`.
-- **`p == .green` on a plain enum compares against `undef`.** Verified. With
-  `Color :: enum { red, green, blue }` and `p := Color.green`, `p == .green` is false; the result
-  changes with the optimisation level.
+- ~~`p == .green` on a plain enum compares against `undef`.~~ Fixed in `b159d1c`: the bare
+  variant takes the enum type of the other operand (either side), and a name the enum does not have
+  is an error. The same `undef` came from a bare variant in an array or slice literal and in a field
+  default (`color: Color = .green`); fixed in `1baae6b`.
 - **An array whose length comes from a `#run` constant is empty.** Verified. With
   `N :: #run four();`, `a: [N]i32 = .{ 1, 2, 3, 4 };` becomes a zero length array and the program
   panics at run time.
-- **Returning `&local` or `&5` gives a dangling pointer.** Reported. Neither is checked.
+- ~~Returning `&local` or `&5` gives a dangling pointer.~~ Fixed in `1f2583b`: returning the
+  address of a local, a parameter or a temporary is an error (docs/02, "Single Pointers"). Not
+  checked yet: a slice of a local array (`return buf[:]`, which a function that `#run` calls uses
+  to return bytes), an address passed through a call, and an address stored into a global or
+  through a pointer.
 
 ## 2. Compiler crashes and missing messages
 
@@ -55,6 +60,8 @@ These compile without a message and give a wrong result.
 - No exponent notation for floats (`1e5`); the error now says so.
 - `#extern("msvcrt", "strlen")` does not link; the docs use `lstrlenA` instead.
 - Character literals and negative numbers are not `match` patterns (docs/03 shows the workaround).
+- A bare variant does not take an optional enum type: `o: ?Color = .green;` is "expected `?Color`,
+  found `error`"; `Color.green` works.
 
 ## 5. Language server (`gabbro lsp`)
 
