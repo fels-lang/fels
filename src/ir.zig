@@ -4053,6 +4053,7 @@ const FunctionLowerer = struct {
         if (expr.kind == .match_expr) return self.lowerMatchExpr(expr, expected_ty);
         if (expr.kind == .if_expr) return self.lowerIfExpr(expr, expected_ty);
         if (try self.lowerBareVariantAs(expr, expected_ty)) |v| return v;
+        if (self.isUnsettledIntLit(expr, expected_ty)) return self.lowerIntLitAs(expr, expected_ty);
         // A value passed where an `Any` is expected auto-wraps (compiler inserts
         // `any(x)`) — unless it's already an `Any`, or a literal that *constructs*
         // the `Any` (`.{ data, id, name }`), or an unknown-typed expr.
@@ -4140,6 +4141,34 @@ const FunctionLowerer = struct {
         };
         diag_mod.printErrorAt("this enum has no such variant", self.file_name, self.source, expr.span);
         return error.LoweringFailed;
+    }
+
+    /// Sema gives an integer literal the type it is used as (`settleIntLit`), but it never
+    /// sees the default of a generic struct's field: there `-5` or `1 << 40` has no
+    /// recorded type, and lowered on its own it would be an `i32` stored into a wider field.
+    fn isUnsettledIntLit(self: *FunctionLowerer, expr: ast.Expr, expected_ty: IrType) bool {
+        switch (expected_ty) {
+            .i, .u, .byte, .usize, .isize => {},
+            else => return false,
+        }
+        if (self.types.expr_types.get(expr.id)) |recorded| if (recorded != .int_lit) return false;
+        return sema.isUntypedIntExpr(expr);
+    }
+
+    /// Lower an expression made only of integer literals at the type `ty`.
+    fn lowerIntLitAs(self: *FunctionLowerer, expr: ast.Expr, ty: IrType) LowerError!Value {
+        return switch (expr.kind) {
+            .unary => |unary| try self.emitAt(ty, .{ .unary = .{
+                .op = if (unary.op == .neg) .neg else .bit_not,
+                .value = try self.lowerIntLitAs(unary.expr.*, ty),
+            } }, expr.span),
+            .binary => |binary| try self.emitAt(ty, .{ .binary = .{
+                .op = lowerBinOp(binary.op),
+                .lhs = try self.lowerIntLitAs(binary.left.*, ty),
+                .rhs = try self.lowerIntLitAs(binary.right.*, ty),
+            } }, expr.span),
+            else => try self.lowerExpr(expr),
+        };
     }
 
     /// An indirect call whose callee is an already-evaluated function-pointer value: the arguments
