@@ -3222,6 +3222,9 @@ const Checker = struct {
                     return error.SemanticFailed;
                 }
                 if (pointer_cast or fn_ptr_cast) try self.requireUnsafe(expr.span, "pointer cast");
+                // `(1 << 40) as u64` is computed in 64 bits, and `0xFFFFFFFF as u64`
+                // is not read as the `i32` -1 first.
+                try self.settleIntLit(cast.value.*, to_ty);
                 break :blk to_ty;
             },
             .type_ref => |type_ref| try self.typeFromRef(type_ref),
