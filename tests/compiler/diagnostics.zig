@@ -1286,3 +1286,12 @@ test "diagnostics: returning an address that outlives the function is allowed" {
     // The bytes a function that `#run` calls built in a local array (docs/09_comptime.md).
     try expectNoError(a, frame_prelude, "f :: fn() -> []const u8 { buf: [2]u8 = .{ 97u8, 98u8 }; return buf[:]; }");
 }
+
+test "diagnostics: an array type is named in a message" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // It was printed as `T`.
+    const msg = (try firstError(a, "main :: fn() -> i32 { x: [2]i32 = 5u8; return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, msg, "expected `[2]i32`, found `u8`") != null);
+}

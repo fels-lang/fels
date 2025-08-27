@@ -1589,6 +1589,7 @@ const Checker = struct {
             .pointer => |inner| std.fmt.allocPrint(self.allocator, "*{s}", .{self.formatTy(inner.*)}) catch "*T",
             .const_ptr => |inner| std.fmt.allocPrint(self.allocator, "*const {s}", .{self.formatTy(inner.*)}) catch "*const T",
             .slice => |inner| std.fmt.allocPrint(self.allocator, "[]{s}", .{self.formatTy(inner.*)}) catch "[]T",
+            .array => |array| std.fmt.allocPrint(self.allocator, "[{d}]{s}", .{ array.len, self.formatTy(array.elem.*) }) catch "[N]T",
             .borrow => |inner| std.fmt.allocPrint(self.allocator, "borrow {s}", .{self.formatTy(inner.*)}) catch "borrow T",
             .named => |id| self.symbols.symbol(id).name,
             .type_param => |n| n,
