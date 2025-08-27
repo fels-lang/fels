@@ -48,7 +48,10 @@ jobs:
         with:
           name: "gabbro ${{ steps.pkg.outputs.version }}"
           prerelease: ${{ steps.tag.outputs.prerelease }}
-          files: ${{ steps.pkg.outputs.archive }}
+          files: |
+            ${{ steps.pkg.outputs.archive }}
+            ${{ steps.pkg.outputs.bindgen_archive }}
+            ${{ steps.pkg.outputs.linux_cross_archive }}
           generate_release_notes: true
           body: |
             **gabbro ${{ steps.pkg.outputs.version }}** — x86_64-windows.
