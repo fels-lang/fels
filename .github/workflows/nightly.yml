@@ -19,32 +19,18 @@ jobs:
   nightly:
     name: build + publish nightly
     runs-on: windows-latest
-    # Enable by setting the repo variable LLVM_AVAILABLE=true and the secret
-    # LLVM_URL (a downloadable LLVM prebuilt with LLVM-C + libclang).
-    if: ${{ vars.LLVM_AVAILABLE == 'true' }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # full history so the `+<git-sha>` is correct
-      - uses: mlugg/setup-zig@v1
+      - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - name: Cache LLVM
-        id: cache-llvm
-        uses: actions/cache@v4
-        with:
-          path: llvm
-          key: llvm-${{ vars.LLVM_VERSION || 'pinned' }}-windows
-      - name: Download LLVM
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri "${{ secrets.LLVM_URL }}" -OutFile llvm-archive
-          7z x llvm-archive -ollvm
+          cache-size-limit: 4096
+      - uses: ./.github/actions/setup-llvm
+        id: llvm
       - name: Build + package
         id: pkg
         shell: pwsh
-        run: ./scripts/package.ps1 -LlvmPath "${{ github.workspace }}/llvm"
+        run: ./scripts/package.ps1 -LlvmPath "${{ steps.llvm.outputs.path }}"
       - name: Drop the previous nightly (so the tag moves to this commit)
         continue-on-error: true
         shell: pwsh
