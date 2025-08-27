@@ -170,8 +170,9 @@ pub fn build(b: *std.Build) void {
                 "LLVMBinaryFormat",         "LLVMTargetParser",
                 "LLVMTableGen",             "LLVMSupportLSP",
                 "LLVMSupport",              "LLVMDemangle",
-                // Windows system libs (`llvm-config --system-libs`).
-                "xml2s",  "psapi",  "shell32", "ole32",
+                // Windows system libs (`llvm-config --system-libs`, without xml2s: the
+                // llvm.org package does not ship it and nothing here needs libxml2).
+                "psapi",  "shell32", "ole32",
                 "uuid",   "advapi32", "ws2_32", "ntdll",
             };
             for (lld_llvm_libs) |name| gabbrolld.root_module.linkSystemLibrary(name, .{});
