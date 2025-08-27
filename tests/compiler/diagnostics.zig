@@ -1295,3 +1295,19 @@ test "diagnostics: an array type is named in a message" {
     const msg = (try firstError(a, "main :: fn() -> i32 { x: [2]i32 = 5u8; return 0; }")).?;
     try std.testing.expect(std.mem.indexOf(u8, msg, "expected `[2]i32`, found `u8`") != null);
 }
+
+test "diagnostics: an array literal with more elements than its array is rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The extra elements were dropped without a word.
+    const local = (try firstError(a, "main :: fn() -> i32 { x: [3]i32 = .{ 1, 2, 3, 4 }; return x[0]; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, local, "too many elements for `[3]i32`: the literal has 4, the array holds 3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, local, "`[3]i32` ends before this element") != null);
+    const named = (try firstError(a, "N :: 2 + 1;\nS :: struct { a: [N]u8 }\nmain :: fn() -> i32 { s: S = .{ .{ 1, 2, 3, 4 } }; return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, named, "too many elements for `[3]u8`") != null);
+    const arg = (try firstError(a, "f :: fn(x: [2]i32) -> i32 { return x[0]; }\nmain :: fn() -> i32 { return f(.{ 1, 2, 3 }); }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, arg, "too many elements for `[2]i32`") != null);
+    // Fewer elements are fine: the rest is zero.
+    try expectNoError(a, "", "main :: fn() -> i32 { x: [3]i32 = .{ 1 }; y: [3]i32 = .{}; return x[2] + y[0]; }");
+}

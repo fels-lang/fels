@@ -6255,7 +6255,19 @@ const Checker = struct {
             },
             .compound_literal => |values| {
                 switch (expected) {
-                    .array => |array| for (values) |value| try self.requireIntLitFits(value, array.elem.*),
+                    .array => |array| {
+                        // An array literal is zero past its last element, but it cannot have more
+                        // elements than the array. A length sema could not compute is 0 here (the
+                        // language server's pass, before the comptime VM ran), so 0 is not checked.
+                        if (array.len != 0 and values.len > array.len) {
+                            const ty_name = self.formatTy(expected);
+                            self.emitErrorRich(values[@intCast(array.len)].span, "too many elements for `{s}`: the literal has {d}, the array holds {d}", .{ ty_name, values.len, array.len }, .{
+                                .primary_label = std.fmt.allocPrint(self.allocator, "`{s}` ends before this element", .{ty_name}) catch null,
+                            });
+                            return error.SemanticFailed;
+                        }
+                        for (values) |value| try self.requireIntLitFits(value, array.elem.*);
+                    },
                     .slice => |elem| for (values) |value| try self.requireIntLitFits(value, elem.*),
                     else => if (self.structFieldInfos(expected)) |fields| for (values, 0..) |value, i| {
                         if (i >= fields.len) break;
