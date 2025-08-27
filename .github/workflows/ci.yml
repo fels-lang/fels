@@ -35,32 +35,19 @@ jobs:
 
   # ── Full lane: LLVM codegen + exe integration ────────────────────────────────
   # Builds the real LLVM backend and runs the codegen / exe tests (which compile
-  # and run native binaries). Needs an LLVM prebuilt that ships LLVM-C + libclang
-  # + headers — the same one used locally. Provide it via the repo secret
-  # `LLVM_URL` (a downloadable archive), then flip the `if:` below to `true`.
+  # and run native binaries). LLVM is the official llvm.org release; the setup-llvm
+  # action keeps only the files the build and the tests use, and caches them.
   full:
     name: build + test (LLVM)
     runs-on: windows-latest
-    # Enable by setting repo variable LLVM_AVAILABLE=true + secret LLVM_URL.
-    if: ${{ vars.LLVM_AVAILABLE == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-      - name: Cache LLVM
-        id: cache-llvm
-        uses: actions/cache@v4
-        with:
-          path: llvm
-          key: llvm-${{ vars.LLVM_VERSION || 'pinned' }}-windows
-      - name: Download LLVM
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri "${{ secrets.LLVM_URL }}" -OutFile llvm-archive
-          # Adjust the extractor to your archive format (.7z / .zip / .tar.xz).
-          7z x llvm-archive -ollvm
+          cache-size-limit: 4096
+      - uses: ./.github/actions/setup-llvm
+        id: llvm
       - name: Discover the Windows SDK lib dir
         shell: pwsh
         run: |
@@ -70,5 +57,5 @@ jobs:
       - name: Build + test (full suite)
         run: >
           zig build test
-          -Dllvm-path="${{ github.workspace }}/llvm"
+          -Dllvm-path="${{ steps.llvm.outputs.path }}"
           -Dwindows-sdk-lib-path="${{ env.SDK_LIB }}"
