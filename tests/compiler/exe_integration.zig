@@ -4808,3 +4808,47 @@ test "exe: a literal shifted by a narrower amount keeps the shift's type" {
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_lit_shift_amount_o0", 0));
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_lit_shift_amount_o2", 2));
 }
+
+test "exe: an array whose length is computed at compile time has that length" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Sema sized `[N]i32` from a constant only when it could fold it from the tree, so with
+    // `N :: #run four();` the array had length 0 and `a[3]` panicked at run time.
+    const src =
+        \\four :: fn() -> usize { return 4usize; }
+        \\N :: #run four();
+        \\K :: four();
+        \\R :: #run 2 + 1;
+        \\P :: (#run four()) + 1;
+        \\F :: 2 + 2;
+        \\S :: struct { a: [N]i32, b: i32 }
+        \\Pair :: struct($T: type) { xs: [N]T }
+        \\G: [N]i32 = .{ 10, 20, 30, 40 };
+        \\sum :: fn(xs: [N]i32) -> i32 { s := 0; for x in xs { s += x; } return s; }
+        \\local :: fn() -> i32 { a: [N]i32 = .{ 1, 2, 3, 4 }; return a[3] + sum(a); }
+        \\#assert(local() == 14);
+        \\main :: fn() -> i32 {
+        \\    a: [N]i32 = .{ 1, 2, 3, 4 };
+        \\    if a.len != 4usize || a[3] != 4 { return 1; }
+        \\    s: S = .{ .{ 1, 2, 3, 4 }, 9 };
+        \\    if s.a[3] != 4 || s.b != 9 || core::sizeof(S) != 20usize { return 2; }
+        \\    if G[3] != 40 || G.len != 4usize { return 3; }
+        \\    k: [K]i64 = .{ 1, 2 };
+        \\    if k.len != 4usize || k[1] != 2i64 || k[3] != 0i64 { return 4; }
+        \\    r: [R]u8 = .{};
+        \\    if r.len != 3usize { return 5; }
+        \\    p: [P]u8 = .{};
+        \\    if p.len != 5usize { return 6; }
+        \\    f: [F]i32 = .{ 1, 2, 3, 4 };
+        \\    if f.len != 4usize || f[3] != 4 { return 7; }
+        \\    q: Pair(i64) = .{ .{ 5, 6, 7, 8 } };
+        \\    if q.xs[3] != 8i64 { return 8; }
+        \\    if sum(s.a) != 10 || local() != 14 { return 9; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_computed_array_len_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_computed_array_len_o2", 2));
+}

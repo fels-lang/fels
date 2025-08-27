@@ -830,10 +830,22 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                         .source = decl.source,
                     };
                     if (cvm) |c| c.current_file = decl.file_name;
+                    // Building the module the comptime VM runs (no evaluator), a mistake in a global
+                    // makes it `pending` instead of failing the whole build: a run that reads it
+                    // stops, and the final lowering reports the mistake. The build that evaluates
+                    // `N :: #run four();` for `G: [N]i32 = .{ 1, 2, 3, 4 };` sees `G` as `[0]i32`.
+                    var unreported: std.ArrayList(StaticDataDiag) = .empty;
+                    defer unreported.deinit(allocator);
+                    var silent = builder;
+                    if (cvm == null) silent.sink = &unreported;
+                    const init = silent.build(decl.value, declared) catch |err| switch (err) {
+                        error.LoweringFailed => if (cvm == null) ConstInit.pending else return err,
+                        else => return err,
+                    };
                     try globals.append(allocator, .{
                         .name = linkNameFor(front_end.symbols, decl.file_name, decl.name),
                         .ty = declared,
-                        .init = try builder.build(decl.value, declared),
+                        .init = init,
                         .mutable = decl.is_mutable,
                         .export_sym = sema.exportSym(decl.attrs),
                     });
@@ -6409,6 +6421,21 @@ pub const ComptimeVm = struct {
 
     fn evalToImm(self: *ComptimeVm, expr: ast.Expr) ?Imm {
         return (self.evalRaw(expr) orelse return null).toImm();
+    }
+
+    /// The integer value of a top-level constant's initializer (`#run four()`, `four()`,
+    /// `2 + 2`), declared in `file`; null when it does not evaluate to an integer.
+    pub fn evalConstInt(self: *ComptimeVm, expr: ast.Expr, file: []const u8) ?i128 {
+        self.current_file = file;
+        const inner = switch (expr.kind) {
+            .run_expr => |e| e.*,
+            else => expr,
+        };
+        return switch (self.evalToImm(inner) orelse return null) {
+            .int => |v| v,
+            .uint => |v| std.math.cast(i128, v),
+            else => null,
+        };
     }
 
     /// What `evalStatic` found.

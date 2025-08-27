@@ -717,6 +717,11 @@ fn runPipelineWithSource(
 /// then the strict pass runs each generic instantiation's `where` predicate on
 /// that VM *during* resolution (rejections become resolution errors, before the
 /// body is checked). Otherwise it's a single strict pass.
+///
+/// An array length that names a constant only the comptime VM can compute
+/// (`N :: #run four();`, `N :: four();`) is 0 to that pass, which notes the
+/// constant (`TypeEnv.unresolved_len_consts`). Then the VM, built from that pass,
+/// computes the constants, and the strict pass runs again with their values.
 fn strictPass(
     allocator: std.mem.Allocator,
     module: ast.Module,
@@ -724,21 +729,51 @@ fn strictPass(
     file: []const u8,
     arena: *std.heap.ArenaAllocator,
 ) CompileError!FrontEnd {
+    var where_cvm: ?ir_mod.ComptimeVm = null;
+    defer if (where_cvm) |*c| c.deinit();
     if (hasWhereClause(module)) {
         const pre = try runSema(allocator, module, source, file, .tolerant);
         const fe1 = FrontEnd{ .module = module, .symbols = pre.symbols, .types = pre.types, .arena = arena };
+        where_cvm = ir_mod.ComptimeVm.init(allocator, fe1);
+        where_cvm.?.current_file = file;
+    }
+    const where_ctx: ?*ir_mod.ComptimeVm = if (where_cvm) |*c| c else null;
+    var pass = try strictSema(allocator, module, source, file, where_ctx, null);
+    if (pass.types.unresolved_len_consts.count() != 0) {
+        const fe1 = FrontEnd{ .module = module, .symbols = pass.symbols, .types = pass.types, .arena = arena };
         var cvm = ir_mod.ComptimeVm.init(allocator, fe1);
         cvm.current_file = file;
         defer cvm.deinit();
-        const pass = try runSemaResolved(allocator, module, source, file, .strict, &cvm, whereEvalThunk, whereTypeEvalThunk);
-        const fe: FrontEnd = .{ .module = module, .symbols = pass.symbols, .types = pass.types, .arena = arena };
-        try reportStaticDataErrors(allocator, fe);
-        return fe;
+        var len_consts = std.StringHashMap(u64).init(allocator);
+        defer len_consts.deinit();
+        try evalArrayLenConsts(module, pass.types, &cvm, &len_consts);
+        pass = try strictSema(allocator, module, source, file, where_ctx, &len_consts);
     }
-    const pass = try runSema(allocator, module, source, file, .strict);
     const fe: FrontEnd = .{ .module = module, .symbols = pass.symbols, .types = pass.types, .arena = arena };
     try reportStaticDataErrors(allocator, fe);
     return fe;
+}
+
+/// One strict sema pass, with the `where` evaluator when there is one.
+fn strictSema(
+    allocator: std.mem.Allocator,
+    module: ast.Module,
+    source: []const u8,
+    file: []const u8,
+    where_cvm: ?*ir_mod.ComptimeVm,
+    len_consts: ?*const std.StringHashMap(u64),
+) CompileError!SemaResult {
+    return runSemaResolved(
+        allocator,
+        module,
+        source,
+        file,
+        .strict,
+        if (where_cvm) |c| c else null,
+        if (where_cvm != null) whereEvalThunk else null,
+        if (where_cvm != null) whereTypeEvalThunk else null,
+        len_consts,
+    );
 }
 
 /// The type check of the program's static data (typed globals) belongs with the other checks, so
@@ -783,6 +818,33 @@ fn whereTypeEvalThunk(
     const cvm: *ir_mod.ComptimeVm = @ptrCast(@alignCast(ctx));
     cvm.current_file = eval_file;
     return cvm.evalWhereType(wc, type_args, output_params, expr_types);
+}
+
+/// Evaluate on the comptime VM each constant a sema pass found in an array length
+/// without a value (`TypeEnv.unresolved_len_consts`), so the next pass sizes `[N]i32`
+/// with it instead of 0 (an empty array that panicked on the first index). A constant
+/// that does not evaluate to a length is an error at its declaration.
+fn evalArrayLenConsts(
+    module: ast.Module,
+    types: sema.TypeEnv,
+    cvm: *ir_mod.ComptimeVm,
+    out: *std.StringHashMap(u64),
+) CompileError!void {
+    for (types.unresolved_len_consts.keys()) |name| {
+        const decl = for (module.items) |item| switch (item) {
+            .const_decl => |d| if (!d.is_mutable and std.mem.eql(u8, d.name, name)) break d,
+            else => {},
+        } else continue;
+        const value = cvm.evalConstInt(decl.value, decl.file_name) orelse {
+            diag_mod.printErrorAt("this constant is the length of an array, but the compile-time evaluator could not compute it as an integer", decl.file_name, decl.source, decl.value.span);
+            return error.SemanticFailed;
+        };
+        const len = std.math.cast(u64, value) orelse {
+            diag_mod.printErrorAt("this constant is the length of an array, but its value is negative", decl.file_name, decl.source, decl.value.span);
+            return error.SemanticFailed;
+        };
+        try out.put(name, len);
+    }
 }
 
 /// True if the module needs the resolution VM: any function with a `where { … }`
@@ -1419,7 +1481,7 @@ fn runSema(
     file: []const u8,
     mode: SemaMode,
 ) CompileError!SemaResult {
-    return runSemaResolved(allocator, module, source, file, mode, null, null, null);
+    return runSemaResolved(allocator, module, source, file, mode, null, null, null, null);
 }
 
 /// `runSema` with an optional resolution-time `where`-predicate evaluator wired
@@ -1433,6 +1495,7 @@ fn runSemaResolved(
     where_ctx: ?*anyopaque,
     where_fn: ?sema.WhereEvalFn,
     where_type_fn: ?sema.WhereTypeEvalFn,
+    const_seeds: ?*const std.StringHashMap(u64),
 ) CompileError!SemaResult {
     var symbols = sema.collectSymbols(allocator, module) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
@@ -1453,7 +1516,7 @@ fn runSemaResolved(
         .tolerant => sema.checkTypesTolerant(allocator, module, &symbols, source, file) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
         },
-        .strict => sema.checkTypesWithResolution(allocator, module, &symbols, source, file, where_ctx, where_fn, where_type_fn) catch |err| switch (err) {
+        .strict => sema.checkTypesWithResolution(allocator, module, &symbols, source, file, where_ctx, where_fn, where_type_fn, const_seeds) catch |err| switch (err) {
             error.SemanticFailed => return error.SemanticFailed,
             error.OutOfMemory => return error.OutOfMemory,
         },

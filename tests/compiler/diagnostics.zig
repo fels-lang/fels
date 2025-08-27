@@ -1311,3 +1311,27 @@ test "diagnostics: an array literal with more elements than its array is rejecte
     // Fewer elements are fine: the rest is zero.
     try expectNoError(a, "", "main :: fn() -> i32 { x: [3]i32 = .{ 1 }; y: [3]i32 = .{}; return x[2] + y[0]; }");
 }
+
+test "diagnostics: an array length computed at compile time is checked against the literal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const four = "four :: fn() -> usize { return 4usize; }\n";
+    // The comptime VM computes `N` before the strict pass, which checks the literal against 4.
+    var ok = try gabbro.compile(a, "len_ok.gab", four ++ "N :: #run four();\nmain :: fn() -> i32 { x: [N]i32 = .{ 1, 2, 3, 4 }; return x[3]; }");
+    ok.deinit(a);
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_local.gab", four ++
+        "N :: #run four();\nmain :: fn() -> i32 { x: [N]i32 = .{ 1, 2, 3, 4, 5 }; return x[0]; }"));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_global.gab", four ++
+        "N :: four();\nG: [N]i32 = .{ 1, 2, 3, 4, 5 };\nmain :: fn() -> i32 { return G[0]; }"));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_field.gab", four ++
+        "N :: #run four();\nS :: struct { a: [N]u8 }\nmain :: fn() -> i32 { s: S = .{ .{ 1, 2, 3, 4, 5 } }; return 0; }"));
+    // A length that is not a non-negative integer is an error, not an empty array.
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_negative.gab",
+        "neg :: fn() -> i32 { return -1; }\nN :: #run neg();\nmain :: fn() -> i32 { x: [N]i32 = .{}; return 0; }"));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_bool.gab",
+        "yes :: fn() -> bool { return true; }\nN :: #run yes();\nmain :: fn() -> i32 { x: [N]i32 = .{}; return 0; }"));
+    // The language server's tolerant pass runs no evaluator: there `N` is unknown, which is
+    // not an error.
+    try expectNoError(a, four, "N :: #run four();\nmain :: fn() -> i32 { x: [N]i32 = .{ 1, 2, 3, 4 }; return x[3]; }");
+}
