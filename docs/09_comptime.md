@@ -89,6 +89,12 @@ Not readable yet: a global that holds the address of another (`A: Node = .{ 1, &
 global that a `#run` computes. Reading one stops that run and names the global; the program
 itself is unaffected.
 
+**A computed constant can be an array length.** With `N :: #run count();` (or `N :: count();`),
+`[N]i32` has `N` elements, as a local, a global, a parameter or a struct field. The type check
+finds that it cannot fold `N`, the VM computes it, and the check runs again with the value, so a
+literal with too many elements is an error against that length. A value that is not an integer,
+or is negative, is an error at the constant.
+
 **`#run` can return data.** Whatever type the call has, what it returns becomes the initial
 value of the global, laid out like a literal and placed in the image — nothing runs at
 startup:
