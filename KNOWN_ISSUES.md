@@ -8,9 +8,10 @@ it and it was not re-checked.
 
 These compile without a message and give a wrong result.
 
-- **An integer literal stored into a wider or narrower type uses the wrong width.** Verified.
-  `k: i64 = -5;` gives `k != -5`; `e: i8 = -128;` writes 4 bytes into a 1 byte slot;
-  `big: u64 = 1 << 40;` stores 0. The cause is in IR lowering (the literal is lowered as an `i32`).
+- ~~An integer literal stored into a wider or narrower type uses the wrong width.~~ Fixed (see
+  `## Unreleased` in CHANGELOG.md): sema records the type a literal takes, so `k: i64 = -5;`,
+  `e: i8 = -128;` and `big: u64 = 1 << 40;` are computed and stored at their type, also under
+  `as`, in a generic struct's field default, in `5 + big` and in `1 << b`.
 - ~~A local inferred from a literal, read as another integer type, has the wrong value.~~ Fixed on
   `main` (`f4c76b5`): `x := 5` is an `i32`, so `y: i64 = x;` is now a type error and takes
   `x as i64`.
@@ -26,6 +27,13 @@ These compile without a message and give a wrong result.
   checked yet: a slice of a local array (`return buf[:]`, which a function that `#run` calls uses
   to return bytes), an address passed through a call, and an address stored into a global or
   through a pointer.
+- **`p == .green` on a plain enum compares against `undef`.** Verified. With
+  `Color :: enum { red, green, blue }` and `p := Color.green`, `p == .green` is false; the result
+  changes with the optimisation level.
+- ~~An array whose length comes from a `#run` constant is empty.~~ Fixed (see `## Unreleased` in
+  CHANGELOG.md): the comptime VM computes such a constant and the type check runs again with it;
+  an array literal with more elements than its array is now an error.
+- **Returning `&local` or `&5` gives a dangling pointer.** Reported. Neither is checked.
 
 ## 2. Compiler crashes and missing messages
 
@@ -44,7 +52,8 @@ These compile without a message and give a wrong result.
   a fixed `i32`; a constant (`N :: 300`) keeps adapting and is checked where it is used.
 - **Literal range checks** (now on `main`): a hex value too large for a signed type is rejected
   (`x: i32 = 0x80004005` needs `as i32`); `n == -1` with `n: usize` is rejected; literal arithmetic
-  such as `b: u8 = 200 + 100` is not range checked.
+  such as `b: u8 = 200 + 100` is not range checked: the program stores 44 (it crashed before the
+  literal width fix), the comptime VM keeps 300.
 - **`&x as usize` parses as `&(x as usize)`**; the cast of an address needs parentheses. Reported.
   Intended or not?
 - **Type names collide across modules**: two modules cannot both declare a type of the same name.
