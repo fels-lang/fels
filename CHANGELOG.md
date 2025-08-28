@@ -3,7 +3,12 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.3.1 — 2026-10-10
+
+Fixes for programs that compiled without a message and gave a wrong result: integer literals of
+types other than `i32`, `p == .green` on an enum, and arrays sized by a `#run` constant.
+Returning the address of a local is now an error. This is the first release built by the release
+workflow on GitHub.
 
 ### Changed
 
