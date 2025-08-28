@@ -104,8 +104,8 @@ These compile without a message and give a wrong result.
 
 ## 7. Tooling, release and the editor
 
-- `release.yml` never runs: it needs the repo variable `LLVM_AVAILABLE` and the secret `LLVM_URL`.
-  Releases are built by hand with `scripts/package.ps1`.
+- ~~`release.yml` never runs.~~ Fixed: the workflows download LLVM from llvm.org themselves
+  (RELEASING.md, "LLVM in CI").
 - The released compiler has a Windows SDK library path baked in (RELEASING.md, "Known gap").
 - Many parallel Zig builds exhaust memory; the PC froze once today. Some test runs need `-j1`.
 - The Zed extension's `runnables.scm` was never tried; `injections.scm` was removed because Zed

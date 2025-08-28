@@ -31,7 +31,7 @@ What is still not automated or done:
 
 | Item | State |
 | --- | --- |
-| CI release workflow | `release.yml` never runs: it is gated on the repo variable `LLVM_AVAILABLE=true` and needs the secret `LLVM_URL`. Neither is set, so a version tag publishes nothing and releases are cut by hand. |
+| CI release workflow | Done: a version tag builds, smoke tests and publishes the release (`release.yml`), with LLVM from the official llvm.org archive (`.github/actions/setup-llvm`). |
 | Packaging prerequisites | `scripts/package.ps1` needs an LLVM install carrying the LLVM-C headers and the static `LLVM*`/`lld*` libraries. The usual Windows LLVM distributions ship only `Remarks.h` and `lto.h`; the `clang+llvm-*-x86_64-pc-windows-msvc` archive is the one that works. |
 | Repository description + topics | the repo is public but has neither, so it is close to unfindable in search |
 | Build-from-source path | Zig + LLVM, needs a clean pass and an examples sweep |
