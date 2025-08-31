@@ -97,7 +97,7 @@ pub const BuildPlan = struct {
         return .{ .arena = std.heap.ArenaAllocator.init(gpa) };
     }
 
-    fn deinit(self: *BuildPlan) void {
+    pub fn deinit(self: *BuildPlan) void {
         self.arena.deinit();
     }
 
@@ -354,9 +354,25 @@ pub const RunOptions = struct {
 
 /// Run `build_path` (a build.gab) and execute the resulting plan.
 pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: RunOptions) BuildError!void {
-    var plan = BuildPlan.init(gpa);
+    var plan = try loadPlan(gpa, io, build_path, opts.options);
     defer plan.deinit();
-    plan.options = opts.options; // visible to `b.option*` during the build hook
+
+    if (opts.list) {
+        printList(&plan);
+        return;
+    }
+
+    // 3. Execute the plan.
+    const base_dir = std.fs.path.dirname(build_path) orelse ".";
+    try executePlan(gpa, io, &plan, base_dir, opts);
+}
+
+/// Run `build_path` (a build.gab) with the `-D` `options` and return the plan it records,
+/// without building anything. The caller owns the plan (`deinit`).
+pub fn loadPlan(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, options: []const []const u8) BuildError!BuildPlan {
+    var plan = BuildPlan.init(gpa);
+    errdefer plan.deinit();
+    plan.options = options; // visible to `b.option*` during the build hook
 
     // 1. Front-end the build script (resolves std.build + the runtime prelude).
     var fe = pipeline.compileFileWithRuntime(gpa, io, build_path) catch |err| switch (err) {
@@ -390,15 +406,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: Run
     };
     if (plan.oom) return error.OutOfMemory;
     if (plan.artifacts.items.len == 0) return error.NoArtifacts;
-
-    if (opts.list) {
-        printList(&plan);
-        return;
-    }
-
-    // 3. Execute the plan.
-    const base_dir = std.fs.path.dirname(build_path) orelse ".";
-    try executePlan(gpa, io, &plan, base_dir, opts);
+    return plan;
 }
 
 fn executePlan(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, opts: RunOptions) BuildError!void {
