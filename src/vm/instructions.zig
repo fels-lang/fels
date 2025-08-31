@@ -133,6 +133,26 @@ pub const BuildOp = enum(u32) {
     runtime_file,// (id, path)                        copy a runtime dep (e.g. a .dll) next to the output
     no_default_libs,// (id)                           don't honor a C lib's /DEFAULTLIB directives
     link_libc,  // (id)                               link the host libc (Win CRT / glibc) — portable
+
+    /// The intrinsic `std.build` calls for this op is `__build_` followed by the tag name.
+    pub const prefix = "__build_";
+
+    /// The op an intrinsic name stands for, or null when it is not a build intrinsic.
+    pub fn fromIntrinsic(name: []const u8) ?BuildOp {
+        if (!std.mem.startsWith(u8, name, prefix)) return null;
+        return std.meta.stringToEnum(BuildOp, name[prefix.len..]);
+    }
+
+    pub const Result = enum { void, int, string };
+
+    /// What the intrinsic returns in `build.gab`: an id or flag is an `i32`.
+    pub fn result(op: BuildOp) Result {
+        return switch (op) {
+            .artifact, .require, .option_flag => .int,
+            .option_str => .string,
+            else => .void,
+        };
+    }
 };
 
 pub const Instr = struct {
