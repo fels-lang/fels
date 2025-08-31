@@ -524,7 +524,7 @@ test "build: the expanded std.build API runs through the build hook" {
     try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.gab", .{
         .list = true,
         .quiet = true,
-        .options = &.{ "fast", "name=cool" },
+        .options = &.{ "fast", "desc=cool" },
     });
 }
 

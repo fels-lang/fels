@@ -133,6 +133,10 @@ pub const BuildOp = enum(u32) {
     runtime_file,// (id, path)                        copy a runtime dep (e.g. a .dll) next to the output
     no_default_libs,// (id)                           don't honor a C lib's /DEFAULTLIB directives
     link_libc,  // (id)                               link the host libc (Win CRT / glibc) — portable
+    option_bool,   // (name, default:bool, help) -> bool      a declared `-Dname[=true|false]` option
+    option_int,    // (name, default:i64, help) -> i64        a declared `-Dname=<int>` option
+    option_string, // (name, default, help) -> string        a declared `-Dname=<text>` option
+    option_choice, // (name, "a|b|c", default, help) -> string  one of a fixed set of words
 
     /// The intrinsic `std.build` calls for this op is `__build_` followed by the tag name.
     pub const prefix = "__build_";
@@ -143,13 +147,15 @@ pub const BuildOp = enum(u32) {
         return std.meta.stringToEnum(BuildOp, name[prefix.len..]);
     }
 
-    pub const Result = enum { void, int, string };
+    pub const Result = enum { void, int, i64, bool, string };
 
     /// What the intrinsic returns in `build.gab`: an id or flag is an `i32`.
     pub fn result(op: BuildOp) Result {
         return switch (op) {
             .artifact, .require, .option_flag => .int,
-            .option_str => .string,
+            .option_int => .i64,
+            .option_bool => .bool,
+            .option_str, .option_string, .option_choice => .string,
             else => .void,
         };
     }
