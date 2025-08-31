@@ -7,6 +7,7 @@ const style = @import("style.zig");
 const Diagnostic = diag_mod.Diagnostic;
 const DiagKind = diag_mod.DiagKind;
 const Span = @import("lexer/span.zig").Span;
+const BuildOp = @import("vm/instructions.zig").BuildOp;
 
 pub const ScopeId = usize;
 pub const SymbolId = usize;
@@ -3936,20 +3937,13 @@ const Checker = struct {
             const id = self.resolveSymbol("Decl") orelse return error.SemanticFailed;
             return try self.sliceOf(.{ .named = id });
         }
-        // std.build intrinsics: artifact/require/option_flag return an id/flag
-        // (i32), option_str returns `[]const u8`, the rest are side-effecting void.
-        if (std.mem.eql(u8, name, "__build_artifact") or
-            std.mem.eql(u8, name, "__build_require") or
-            std.mem.eql(u8, name, "__build_optionflag"))
-        {
-            return .i32;
-        }
-        if (std.mem.eql(u8, name, "__build_optionstr")) {
-            return try self.sliceOf(.u8);
-        }
-        if (std.mem.startsWith(u8, name, "__build_")) {
-            return .void;
-        }
+        // std.build intrinsics: an id or flag is an `i32`, a string is `[]const u8`,
+        // the rest are side-effecting void.
+        if (BuildOp.fromIntrinsic(name)) |op| return switch (op.result()) {
+            .int => .i32,
+            .string => try self.sliceOf(.u8),
+            .void => .void,
+        };
         // Unsafe builtins — must be called from within an `unsafe` block.
         if (std.mem.eql(u8, name, "ptr_from_int")) {
             try self.requireUnsafe(call.callee.span, name);
@@ -7247,20 +7241,11 @@ pub fn isBuiltinValue(name: []const u8) bool {
            "typeid_of",      "any",
         // Compile-time program introspection (Phase 3 message loop)
         "compiler_decls", "__str_cat", "compiler_error", "compiler_remove",
-        // std.build host intrinsics (the build system, comptime-only)
-        "__build_artifact", "__build_opt",     "__build_link",
-        "__build_libpath",  "__build_output",  "__build_define",
-        "__build_default",  "__build_run",     "__build_test",
-        "__build_require",  "__build_depend",  "__build_subsystem",
-        "__build_entry",    "__build_stack",   "__build_linkflag",
-        "__build_outdir",   "__build_version", "__build_desc",
-        "__build_workspace", "__build_outroot", "__build_install",
-        "__build_optionflag", "__build_optionstr", "__build_summary",
-        "__build_linkmode", "__build_runtimefile", "__build_nodefaultlibs", "__build_linklibc",
         // Compile-time pseudo-modules
         "TARGET",
     }) |builtin| {
         if (std.mem.eql(u8, name, builtin)) return true;
     }
-    return false;
+    // std.build host intrinsics (the build system, comptime-only)
+    return BuildOp.fromIntrinsic(name) != null;
 }
