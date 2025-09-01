@@ -459,10 +459,34 @@ and the workspace-wide `b.out_root(dir)` (a per-artifact `out_dir` wins).
 **Dependencies**: `b.require_path(name, dir)` / `b.require_git(name, url)` → a dep id;
 `a.depend(dep_id)`.
 
-**Workspace & options**: `b.workspace(name)`, `b.summary()` (print a post-build
-summary). Build options come from the command line: `b.option(name) -> bool`
-(`gabbro build -Dname`) and `b.option_str(name, default) -> []const u8`
-(`gabbro build -Dname=value`).
+**Workspace**: `b.workspace(name)`, `b.summary()` (print a post-build summary).
+
+**Build options** come from the command line (`gabbro build -Dname` or `-Dname=value`).
+Each one is declared where the script reads it, with a default and a help text:
+
+| Call | Command line | Returns |
+| --- | --- | --- |
+| `b.option_bool(name, default, help)` | `-Dname`, `-Dname=true` or `false` (also `yes`/`no`, `on`/`off`, `1`/`0`) | `bool` |
+| `b.option_int(name, default, help)` | `-Dname=42`, also `0x`, `0o` and `0b` | `i64` |
+| `b.option_string(name, default, help)` | `-Dname=text` | `[]const u8` |
+| `b.option_choice(name, "a\|b\|c", default, help)` | `-Dname=b` | `[]const u8`, one of the words |
+
+`b.option(name) -> bool` and `b.option_str(name, default)` are the short forms without
+help text. When the same `-D` option is given twice, the last one wins.
+
+`gabbro build` stops with an error for a `-D` option the script does not declare (usually a
+typo) and for a value of the wrong kind, and lists the options the script has:
+
+```text
+$ gabbro build -Dthread=8
+gabbro build: unknown build option -Dthread
+build options of this build.gab:
+  -Dthreads=<int>              worker threads (default: 4)
+  -Dbackend=gl|vulkan|d3d      renderer (default: gl)
+```
+
+An option read only inside an `if` is declared only when that branch runs, so read options
+at the top of `build`.
 
 **Steps & default**: `b.run_step(name, artifact)`, `b.test_dir(name, dir)`,
 `b.default(artifact)`.
@@ -496,7 +520,7 @@ test fails, so it drops cleanly into CI. Tests are compiled at `-O0` for speed.
 
 `gabbro build --list` prints the resolved plan without building anything — every
 artifact with its kind, optimization level, version, install flag, and linked
-libraries, plus the declared steps and their targets:
+libraries, plus the declared steps and their targets and the build options:
 
 ```text
 workspace: my-app
@@ -507,4 +531,7 @@ artifacts:
 steps:
   run              run        game
   test             test_dir   tests
+options:
+  -Dfast                       build with optimizations (default: false)
+  -Dthreads=<int>              worker threads (default: 4)
 ```
