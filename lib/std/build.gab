@@ -78,6 +78,12 @@ pub link :: fn(self: Artifact, lib: []const u8) {
     __build_link(self.id, lib);
 }
 
+// Link a library this build makes (`b.static(...)` or `b.shared(...)`). It is built first,
+// and a shared library's DLL is copied next to the output.
+pub link_artifact :: fn(self: Artifact, lib: Artifact) {
+    __build_link_artifact(self.id, lib.id);
+}
+
 // `system_library` is a readability alias for `link` (matches the source directive).
 pub system_library :: fn(self: Artifact, name: []const u8) {
     __build_link(self.id, name);

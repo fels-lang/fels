@@ -94,3 +94,29 @@ test "build: the short option forms declare their options too" {
     try std.testing.expectEqualStrings("y", plan.artifacts.items[0].name);
     try std.testing.expectEqual(@as(usize, 2), plan.declared.items.len);
 }
+
+test "build: link_artifact records the library to link" {
+    const src =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    util := b.static("util", "util.gab");
+        \\    app := b.executable("app", "main.gab");
+        \\    app.link_artifact(util);
+        \\}
+    ;
+    var plan = try loadPlan("bs_link_artifact", src, &.{});
+    defer plan.deinit();
+    try std.testing.expectEqualSlices(usize, &.{0}, plan.artifacts.items[1].link_artifacts.items);
+}
+
+test "build: link_artifact of an executable is an error" {
+    const src =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    tool := b.executable("tool", "tool.gab");
+        \\    app := b.executable("app", "main.gab");
+        \\    app.link_artifact(tool);
+        \\}
+    ;
+    try std.testing.expectError(error.ScriptError, loadPlan("bs_link_exe", src, &.{}));
+}

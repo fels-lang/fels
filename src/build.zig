@@ -25,6 +25,7 @@ const BuildOp = instructions.BuildOp;
 pub const BuildError = error{
     CompileFailed,
     ScriptError,
+    DependencyCycle,
     NoBuildScript,
     NoBuildFn,
     BuildHookFailed,
@@ -62,7 +63,11 @@ pub const Artifact = struct {
     /// Link the host's libc (`link_libc()`): the Windows CRT (ucrt+vcruntime) on
     /// Windows, glibc on Linux. Resolved per host below.
     link_libc: bool = false,
+    /// Library artifacts of this build to link (`link_artifact`), built before this one.
+    link_artifacts: std.ArrayList(usize) = .empty,
 };
+
+const BuildState = enum { unbuilt, building, built };
 
 pub const StepKind = enum(u8) { run, test_dir };
 
@@ -110,6 +115,8 @@ pub const BuildPlan = struct {
     declared: std.ArrayList(OptionDecl) = .empty,
     /// Problems found while the script ran (a bad option value), reported after it.
     errors: std.ArrayList([]const u8) = .empty,
+    /// Per artifact, during execution: so each is built once and after what it links.
+    state: []BuildState = &.{},
     oom: bool = false,
 
     fn init(gpa: std.mem.Allocator) BuildPlan {
@@ -400,6 +407,20 @@ fn hostCall(ctx: *anyopaque, op_raw: u32, args: []const Value) Value {
             if (id < plan.artifacts.items.len) plan.artifacts.items[id].link_libc = true;
             return .void;
         },
+        .link_artifact => {
+            const id: usize = @intCast(argInt(args, 0));
+            const lib: usize = @intCast(argInt(args, 1));
+            if (id >= plan.artifacts.items.len or lib >= plan.artifacts.items.len) return .void;
+            const arts = plan.artifacts.items;
+            if (arts[lib].kind != .static_library and arts[lib].kind != .shared_library) {
+                plan.fail("`{s}`.link_artifact(`{s}`): `{s}` is not a library (b.static or b.shared)", .{ arts[id].name, arts[lib].name, arts[lib].name });
+                return .void;
+            }
+            arts[id].link_artifacts.append(plan.a(), lib) catch {
+                plan.oom = true;
+            };
+            return .void;
+        },
     }
 }
 
@@ -557,6 +578,9 @@ pub fn loadPlan(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opti
 }
 
 fn executePlan(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, opts: RunOptions) BuildError!void {
+    plan.state = plan.a().alloc(BuildState, plan.artifacts.items.len) catch return error.OutOfMemory;
+    @memset(plan.state, .unbuilt);
+
     // Resolve which artifact a run-step / target name refers to.
     var run_after: ?usize = null;
     var target_idx: ?usize = null;
@@ -614,7 +638,23 @@ fn printSummary(plan: *BuildPlan, base_dir: []const u8) void {
     }
 }
 
+/// Build artifact `idx` once, after the library artifacts it links.
 fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, idx: usize, opts: RunOptions) BuildError!void {
+    switch (plan.state[idx]) {
+        .built => return,
+        .building => {
+            std.debug.print("gabbro build: '{s}' links itself through link_artifact\n", .{plan.artifacts.items[idx].name});
+            return error.DependencyCycle;
+        },
+        .unbuilt => {},
+    }
+    plan.state[idx] = .building;
+    for (plan.artifacts.items[idx].link_artifacts.items) |dep| try buildArtifact(gpa, io, plan, base_dir, dep, opts);
+    try buildOne(gpa, io, plan, base_dir, idx, opts);
+    plan.state[idx] = .built;
+}
+
+fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, idx: usize, opts: RunOptions) BuildError!void {
     const art = plan.artifacts.items[idx];
     const a = plan.a();
 
@@ -655,10 +695,22 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
         search_dirs.append(a, joinPath(a, base_dir, lp) catch continue) catch {};
     search_dirs.append(a, base_dir) catch {};
 
+    // The libraries to link: the named ones, then the library artifacts of this build
+    // (found in their output directory, and inspected like any other library below).
+    var linked: std.ArrayList([]const u8) = .empty;
+    linked.appendSlice(a, art.libs.items) catch return error.OutOfMemory;
+    for (art.link_artifacts.items) |dep| {
+        const dep_out = try resolveOutput(plan, base_dir, plan.artifacts.items[dep]);
+        const dep_dir = std.fs.path.dirname(dep_out) orelse ".";
+        lib_paths.append(a, dep_dir) catch return error.OutOfMemory;
+        search_dirs.append(a, dep_dir) catch return error.OutOfMemory;
+        linked.append(a, std.fs.path.stem(dep_out)) catch return error.OutOfMemory;
+    }
+
     var need_libc = art.link_mode == 1 or opts.link_libc or art.link_libc;
     var has_gabbro_lib = false;
     var auto_dlls: std.ArrayList([]const u8) = .empty;
-    for (art.libs.items) |lib_name| {
+    for (linked.items) |lib_name| {
         for (search_dirs.items) |dir| {
             const lib_file = std.fmt.allocPrint(a, "{s}/{s}.lib", .{ dir, lib_name }) catch continue;
             const data = readSource(gpa, io, lib_file) orelse continue;
@@ -683,7 +735,7 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
     // Libraries to link: the artifact's own, plus the C runtime when a static C
     // library is involved (it brings code but not the CRT it depends on).
     var libs: std.ArrayList([]const u8) = .empty;
-    libs.appendSlice(a, art.libs.items) catch return error.OutOfMemory;
+    libs.appendSlice(a, linked.items) catch return error.OutOfMemory;
     // "Link libc" resolves per host: the Windows CRT (ucrt + vcruntime) here; on
     // Linux the driver's `link_libc` path links glibc instead (no Windows libs).
     if (need_libc and builtin.os.tag == .windows) {
@@ -949,9 +1001,10 @@ fn printList(plan: *BuildPlan) void {
         std.debug.print("  {s: <16} {s: <14} {s}{s}", .{ art.name, @tagName(art.kind), optName(art.opt), star });
         if (art.version) |v| std.debug.print(" v{s}", .{v});
         if (art.install) std.debug.print(" [install]", .{});
-        if (art.libs.items.len != 0) {
+        if (art.libs.items.len + art.link_artifacts.items.len != 0) {
             std.debug.print("  links:", .{});
             for (art.libs.items) |l| std.debug.print(" {s}", .{l});
+            for (art.link_artifacts.items) |dep| std.debug.print(" {s}", .{plan.artifacts.items[dep].name});
         }
         std.debug.print("\n", .{});
         if (art.description) |d| std.debug.print("    {s}\n", .{d});
