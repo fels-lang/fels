@@ -61,13 +61,13 @@ test "build: a bool option takes true and false words, the last -D wins" {
 }
 
 test "build: an undeclared -D option is an error" {
-    try std.testing.expectError(error.InvalidOption, loadPlan("bs_opt_unknown", options_script, &.{"thread=3"}));
+    try std.testing.expectError(error.ScriptError, loadPlan("bs_opt_unknown", options_script, &.{"thread=3"}));
 }
 
 test "build: an option value of the wrong kind is an error" {
-    try std.testing.expectError(error.InvalidOption, loadPlan("bs_opt_int", options_script, &.{"threads=many"}));
-    try std.testing.expectError(error.InvalidOption, loadPlan("bs_opt_bool_bad", options_script, &.{"fast=maybe"}));
-    try std.testing.expectError(error.InvalidOption, loadPlan("bs_opt_choice", options_script, &.{"backend=metal"}));
+    try std.testing.expectError(error.ScriptError, loadPlan("bs_opt_int", options_script, &.{"threads=many"}));
+    try std.testing.expectError(error.ScriptError, loadPlan("bs_opt_bool_bad", options_script, &.{"fast=maybe"}));
+    try std.testing.expectError(error.ScriptError, loadPlan("bs_opt_choice", options_script, &.{"backend=metal"}));
 }
 
 test "build: a choice default that is not one of the choices is an error" {
@@ -78,7 +78,7 @@ test "build: a choice default that is not one of the choices is an error" {
         \\    b.executable(mode, "main.gab");
         \\}
     ;
-    try std.testing.expectError(error.InvalidOption, loadPlan("bs_opt_choice_default", src, &.{}));
+    try std.testing.expectError(error.ScriptError, loadPlan("bs_opt_choice_default", src, &.{}));
 }
 
 test "build: the short option forms declare their options too" {
