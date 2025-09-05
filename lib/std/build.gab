@@ -196,7 +196,8 @@ pub description :: fn(self: Artifact, text: []const u8) {
     __build_description(self.id, text);
 }
 
-// Mark this artifact for installation (flagged in the build summary).
+// Mark this artifact for `gabbro build install`, which builds it and copies it into the
+// install prefix: programs and DLLs to bin/, static and import libraries to lib/.
 pub install :: fn(self: Artifact) {
     __build_install(self.id);
 }
@@ -228,6 +229,22 @@ pub depend :: fn(self: Artifact, dep: i32) {
 // Name the workspace (shown in the build summary).
 pub workspace :: fn(self: Build, name: []const u8) {
     __build_workspace(name);
+}
+
+// Where `gabbro build install` copies to, relative to build.gab (default "dist").
+// `gabbro build install --prefix <dir>` overrides it.
+pub install_prefix :: fn(self: Build, dir: []const u8) {
+    __build_install_prefix(dir);
+}
+
+// Copy a file into the install prefix: `b.install_file("README.md", "doc/README.md")`.
+pub install_file :: fn(self: Build, src: []const u8, dest: []const u8) {
+    __build_install_file(src, dest);
+}
+
+// Copy a folder with everything in it into the install prefix: `b.install_dir("assets", "bin/assets")`.
+pub install_dir :: fn(self: Build, src: []const u8, dest: []const u8) {
+    __build_install_dir(src, dest);
 }
 
 // Default output directory for every artifact (a per-artifact `out_dir` wins).
