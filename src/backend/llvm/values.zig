@@ -5,54 +5,6 @@ const llvm = @import("c_api.zig").llvm;
 const types = @import("types.zig");
 const ModuleCg = @import("context.zig").ModuleCg;
 
-/// Process Gabbro string escape sequences: \n \r \t \\ \" \0 \xHH
-/// The input is already quote-stripped (trimQuotes was applied in ir.zig).
-/// Returns heap-allocated buffer; caller must free.
-fn unescapeString(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    try out.ensureTotalCapacity(allocator, s.len);
-    errdefer out.deinit(allocator);
-    var i: usize = 0;
-    while (i < s.len) : (i += 1) {
-        if (s[i] != '\\' or i + 1 >= s.len) {
-            try out.append(allocator, s[i]);
-            continue;
-        }
-        i += 1;
-        switch (s[i]) {
-            'n' => try out.append(allocator, '\n'),
-            'r' => try out.append(allocator, '\r'),
-            't' => try out.append(allocator, '\t'),
-            '\\' => try out.append(allocator, '\\'),
-            '"' => try out.append(allocator, '"'),
-            '0' => try out.append(allocator, 0),
-            'x' => {
-                if (i + 2 < s.len) {
-                    const hi = s[i + 1];
-                    const lo = s[i + 2];
-                    const nibble = [2]u8{ hi, lo };
-                    const byte = std.fmt.parseInt(u8, &nibble, 16) catch {
-                        try out.append(allocator, '\\');
-                        try out.append(allocator, 'x');
-                        continue;
-                    };
-                    try out.append(allocator, byte);
-                    i += 2;
-                } else {
-                    try out.append(allocator, '\\');
-                    try out.append(allocator, s[i]);
-                }
-            },
-            else => {
-                // Unknown escape — keep as-is
-                try out.append(allocator, '\\');
-                try out.append(allocator, s[i]);
-            },
-        }
-    }
-    return out.toOwnedSlice(allocator);
-}
-
 pub fn lowerImm(cg: *ModuleCg, imm: ir.Imm, hint_ty: ir.IrType) llvm.LLVMValueRef {
     if (imm == .null) {
         // null for optional pointer → raw null pointer (not a struct)
@@ -84,9 +36,8 @@ pub fn lowerImmAs(cg: *ModuleCg, imm: ir.Imm, lty: llvm.LLVMTypeRef) llvm.LLVMVa
             const name_z = std.fmt.bufPrintZ(&name_buf, ".str.{d}", .{cg.string_counter}) catch break :blk llvm.LLVMGetUndef(cg.getSliceType());
             cg.string_counter += 1;
 
-            // Process escape sequences (\n, \t, \\, \", \0, \xHH) before emitting.
-            const bytes = unescapeString(cg.allocator, s) catch s;
-            defer if (bytes.ptr != s.ptr) cg.allocator.free(bytes);
+            // `s` holds the string's bytes; the IR resolved the escapes.
+            const bytes = s;
 
             const i8_ty = llvm.LLVMInt8TypeInContext(cg.ctx);
             const arr_ty = llvm.LLVMArrayType2(i8_ty, bytes.len);
