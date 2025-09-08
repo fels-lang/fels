@@ -141,6 +141,9 @@ pub const BuildOp = enum(u32) {
     install_prefix, // (dir)                           where `gabbro build install` copies to
     install_file,   // (src, dest)                     a file `gabbro build install` copies
     install_dir,    // (src, dest)                     a folder `gabbro build install` copies
+    define_int,     // (id, key, value:i64)            an integer constant in `build_options`
+    define_bool,    // (id, key, value:bool)           a bool constant in `build_options`
+    add_module,     // (id, name, dir)                 `#import name.x` reads <dir>/x.gab
 
     /// The intrinsic `std.build` calls for this op is `__build_` followed by the tag name.
     pub const prefix = "__build_";
