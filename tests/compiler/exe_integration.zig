@@ -704,6 +704,57 @@ test "build: install copies a program with its DLL, and a static library" {
     }
 }
 
+test "build: defines reach the program through build_options, and add_module maps a name" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const io = std.testing.io;
+
+    const dir = ".zig-cache/bt_define";
+    std.Io.Dir.cwd().createDirPath(io, dir ++ "/deps/mathlib") catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/deps/mathlib/ops.gab", .data = "pub triple :: fn(x: i32) -> i32 { return x * 3; }\n" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/deps/mathlib/mathlib.gab", .data = "pub ANSWER :: 4;\n" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.gab", .data =
+        \\#import build_options;
+        \\#import mathlib;
+        \\#import mathlib.ops;
+        \\
+        \\main :: fn() -> i32 {
+        \\    n: i32 = build_options::LEVEL as i32;
+        \\    if build_options::FAST && build_options::NAME.len == 8 {
+        \\        return ops::triple(n) + mathlib::ANSWER;
+        \\    }
+        \\    return 1;
+        \\}
+        \\
+    });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    app := b.executable("app", "app.gab");
+        \\    app.define("NAME", "say \"hi\"");
+        \\    app.define_int("LEVEL", 10);
+        \\    app.define_bool("FAST", true);
+        \\    app.add_module("mathlib", "deps/mathlib");
+        \\}
+    });
+
+    const lp = gabbro.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
+    try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.gab", .{
+        .quiet = true,
+        .llvm_bin = gabbro.llvm_path ++ "/bin",
+        .lib_paths = lib_paths,
+    });
+
+    var child = try std.process.spawn(io, .{ .argv = &.{dir ++ "/app.exe"}, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+    switch (try child.wait(io)) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 34), code),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "build: a test_dir step compiles+runs tests and fails on a failing one" {
     if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

@@ -166,3 +166,47 @@ test "build: install with nothing to install is an error" {
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data = src });
     try std.testing.expectError(error.UnknownTarget, build.run(std.testing.allocator, io, dir ++ "/build.gab", .{ .target = "install", .quiet = true }));
 }
+
+test "build: define records constants as Gabbro source, a later define wins" {
+    const src =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    app := b.executable("app", "main.gab");
+        \\    app.define("NAME", "say \"hi\"\n");
+        \\    app.define_int("LEVEL", -3);
+        \\    app.define_bool("FAST", true);
+        \\    app.define_int("LEVEL", 7);
+        \\    app.add_module("mathlib", "deps/mathlib");
+        \\}
+    ;
+    var plan = try loadPlan("bs_define", src, &.{});
+    defer plan.deinit();
+    const d = plan.artifacts.items[0].defines.items;
+    try std.testing.expectEqual(@as(usize, 3), d.len);
+    try std.testing.expectEqualStrings("\"say \\\"hi\\\"\\n\"", d[0].value);
+    try std.testing.expectEqualStrings("LEVEL", d[1].name);
+    try std.testing.expectEqualStrings("7", d[1].value);
+    try std.testing.expectEqualStrings("true", d[2].value);
+    const m = plan.artifacts.items[0].modules.items;
+    try std.testing.expectEqualStrings("mathlib", m[0].name);
+    try std.testing.expectEqualStrings("deps/mathlib", m[0].dir);
+}
+
+test "build: a define or module name that is not a name is an error" {
+    const define_src =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    app := b.executable("app", "main.gab");
+        \\    app.define("MY-NAME", "x");
+        \\}
+    ;
+    try std.testing.expectError(error.ScriptError, loadPlan("bs_define_bad", define_src, &.{}));
+    const module_src =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    app := b.executable("app", "main.gab");
+        \\    app.add_module("std", "mystd");
+        \\}
+    ;
+    try std.testing.expectError(error.ScriptError, loadPlan("bs_module_bad", module_src, &.{}));
+}
