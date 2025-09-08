@@ -429,11 +429,26 @@ The full `std.build` surface. `b` is the `Build` handle; `a` an `Artifact`.
 `b.executable(name, root)`, `b.shared(name, root)` (.dll),
 `b.static(name, root)` (.lib), `b.object(name, root)` (.o) — all return an `Artifact`.
 
+A static library is an archive of the compiled object. Only its `#export`ed functions and
+globals are visible to the program that links it; the runtime it carries stays private, so it
+does not clash with the program's own. The libraries its `#extern` functions come from travel
+with it as `/DEFAULTLIB` directives, so the program does not have to name them.
+
 **Optimization** (on `Artifact`): `a.optimize(.debug|.release_safe|.release_fast|.release_small)`,
 or the shorthands `a.debug()`, `a.release_safe()`, `a.release_fast()`, `a.release()`
 (= release_fast), `a.release_small()`.
 
-**Linking**: `a.link(lib)` (once per library), `a.system_library(name)` (alias),
+**Linking**: `a.link_artifact(lib)` links a library this build makes (`b.static` or
+`b.shared`). The library is built first, each artifact once, and a shared library's DLL is
+copied next to the program:
+
+```gabbro
+util := b.static("util", "src/util.gab");
+app := b.executable("app", "src/main.gab");
+app.link_artifact(util);
+```
+
+`a.link(lib)` (once per library), `a.system_library(name)` (alias),
 `a.lib_path(dir)`, `a.link_flag(raw)` — a raw flag passed straight to the linker,
 `a.link_libc()` — link the C runtime (for C libraries built against it),
 `a.link_mode(.dynamic|.static)` / `a.dynamic()` / `a.static_link()` — choose how C
@@ -453,8 +468,34 @@ These force the LLD path (the fast gabld linker can't apply them).
 **Output**: `a.output(path)` (explicit), `a.out_dir(dir)` (a directory, name derived),
 and the workspace-wide `b.out_root(dir)` (a per-artifact `out_dir` wins).
 
-**Metadata**: `a.version(semver)`, `a.description(text)`, `a.install()`,
-`a.define(key, val)` (a `#provided`-style comptime override — recorded).
+**Metadata**: `a.version(semver)` and `a.description(text)`, shown by `--list` and the summary.
+
+**Install**: `gabbro build install` builds every artifact marked with `a.install()` and copies
+it into the install prefix: programs and DLLs (with the DLLs copied next to them) to `bin/`,
+static and import libraries to `lib/`. `b.install_file(src, dest)` and
+`b.install_dir(src, dest)` add files and folders, with `dest` relative to the prefix.
+`b.install_prefix(dir)` sets the prefix (default `dist`, relative to build.gab), and
+`gabbro build install --prefix <dir>` overrides it. A step or artifact the script names
+`install` takes the place of the built-in step.
+
+**Constants for the program**: `a.define(name, text)`, `a.define_int(name, value)` and
+`a.define_bool(name, value)` write a `build_options` module the program imports:
+
+```gabbro
+// build.gab
+app.define("GIT_REV", b.option_string("rev", "dev", "the commit"));
+app.define_int("MAX_PLAYERS", 8);
+
+// src/main.gab
+#import build_options;
+limit := build_options::MAX_PLAYERS;
+```
+
+`#import build_options` works for every artifact; without a define the module is empty.
+
+**Modules**: `a.add_module(name, dir)` maps an import name to a folder. With
+`app.add_module("mathlib", "deps/mathlib")`, `#import mathlib.ops` reads
+`deps/mathlib/ops.gab` and a bare `#import mathlib` reads `deps/mathlib/mathlib.gab`.
 
 **Dependencies**: `b.require_path(name, dir)` / `b.require_git(name, url)` → a dep id;
 `a.depend(dep_id)`.
