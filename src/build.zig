@@ -33,6 +33,7 @@ pub const BuildError = error{
     NoArtifacts,
     UnknownTarget,
     RunFailed,
+    StepFailed,
     OutOfMemory,
 };
 
@@ -66,6 +67,8 @@ pub const Artifact = struct {
     link_libc: bool = false,
     /// Library artifacts of this build to link (`link_artifact`), built before this one.
     link_artifacts: std.ArrayList(usize) = .empty,
+    /// Steps run before this artifact is built (`after`), e.g. code generation.
+    after_steps: std.ArrayList(usize) = .empty,
     /// The files the build copied next to the output (runtime files, DLLs), which
     /// `gabbro build install` copies along.
     copied: std.ArrayList([]const u8) = .empty,
@@ -92,13 +95,54 @@ pub const InstallItem = struct {
 
 const BuildState = enum { unbuilt, building, built };
 
-pub const StepKind = enum(u8) { run, test_dir };
+pub const StepKind = enum(u8) { run, test_dir, custom };
 
 pub const Step = struct {
     name: []const u8,
     kind: StepKind,
+    /// `.run`: the artifact it runs.
     target: usize = 0,
+    /// `.test_dir`: the folder of the tests.
     dir: []const u8 = "",
+    description: []const u8 = "",
+    /// Artifacts built and steps run before the actions.
+    artifacts: std.ArrayList(usize) = .empty,
+    after: std.ArrayList(usize) = .empty,
+    actions: std.ArrayList(Action) = .empty,
+};
+
+/// Two paths, or a path and a text.
+pub const Pair = struct { a: []const u8, b: []const u8 };
+
+/// What a step does, in order. Paths are relative to build.gab.
+pub const Action = union(enum) {
+    /// An index into `BuildPlan.commands`.
+    command: usize,
+    copy_file: Pair,
+    copy_dir: Pair,
+    /// Path and contents.
+    write_file: Pair,
+    remove: []const u8,
+    print: []const u8,
+};
+
+pub const Arg = union(enum) {
+    text: []const u8,
+    /// The output path of an artifact.
+    output: usize,
+};
+
+pub const Command = struct {
+    /// A program name (found on PATH) or path, or the output of `program_artifact`.
+    program: []const u8 = "",
+    program_artifact: ?usize = null,
+    args: std.ArrayList(Arg) = .empty,
+    /// Relative to build.gab; build.gab's folder when null.
+    cwd: ?[]const u8 = null,
+    env: std.ArrayList(Pair) = .empty,
+    /// A run step's command: it also gets the arguments after `--`, and an exit code other
+    /// than 0 is reported instead of failing the build.
+    is_run: bool = false,
 };
 
 pub const OptionKind = enum { bool, int, string, choice };
@@ -140,6 +184,13 @@ pub const BuildPlan = struct {
     errors: std.ArrayList([]const u8) = .empty,
     /// Per artifact, during execution: so each is built once and after what it links.
     state: []BuildState = &.{},
+    /// Per step, during execution.
+    step_state: []BuildState = &.{},
+    commands: std.ArrayList(Command) = .empty,
+    /// What a bare `gabbro build` runs (`b.default_step`), over `default_idx`.
+    default_step: ?usize = null,
+    /// The process's working directory, for absolute paths in commands.
+    cwd_abs: []const u8 = "",
     /// Where `gabbro build install` copies to (`b.install_prefix`), relative to build.gab.
     install_prefix: ?[]const u8 = null,
     install_items: std.ArrayList(InstallItem) = .empty,
@@ -172,6 +223,19 @@ pub const BuildPlan = struct {
         self.errors.append(self.a(), msg) catch {
             self.oom = true;
         };
+    }
+
+    /// Add a step; a second step of the same name is an error (and is not added).
+    fn addStep(self: *BuildPlan, name: []const u8, kind: StepKind, description: []const u8) ?*Step {
+        for (self.steps.items) |st| if (std.mem.eql(u8, st.name, name)) {
+            self.fail("there are two steps named `{s}`", .{name});
+            return null;
+        };
+        self.steps.append(self.a(), .{ .name = self.dupe(name), .kind = kind, .description = self.dupe(description) }) catch {
+            self.oom = true;
+            return null;
+        };
+        return &self.steps.items[self.steps.items.len - 1];
     }
 
     /// Record an option declaration; the first declaration of a name wins.
@@ -301,23 +365,111 @@ fn hostCall(ctx: *anyopaque, op_raw: u32, args: []const Value) Value {
             return .void;
         },
         .run_step => {
-            plan.steps.append(plan.a(), .{
-                .name = plan.dupe(argStr(args, 0)),
-                .kind = .run,
-                .target = @intCast(argInt(args, 1)),
-            }) catch {
+            const target: usize = @intCast(argInt(args, 1));
+            if (target >= plan.artifacts.items.len) return .{ .int = 0 };
+            const cmd = plan.commands.items.len;
+            plan.commands.append(plan.a(), .{ .program_artifact = target, .is_run = true }) catch {
+                plan.oom = true;
+                return .{ .int = 0 };
+            };
+            const step = plan.addStep(argStr(args, 0), .run, "") orelse return .{ .int = @intCast(cmd) };
+            step.target = target;
+            step.artifacts.append(plan.a(), target) catch {
+                plan.oom = true;
+            };
+            step.actions.append(plan.a(), .{ .command = cmd }) catch {
+                plan.oom = true;
+            };
+            return .{ .int = @intCast(cmd) };
+        },
+        .step => {
+            _ = plan.addStep(argStr(args, 0), .custom, argStr(args, 1));
+            return .{ .int = @intCast(plan.steps.items.len - 1) };
+        },
+        .step_depends_on, .step_after, .artifact_after => {
+            const a0: usize = @intCast(argInt(args, 0));
+            const a1: usize = @intCast(argInt(args, 1));
+            const list, const ok = switch (op) {
+                .step_depends_on => .{ if (a0 < plan.steps.items.len) &plan.steps.items[a0].artifacts else null, a1 < plan.artifacts.items.len },
+                .step_after => .{ if (a0 < plan.steps.items.len) &plan.steps.items[a0].after else null, a1 < plan.steps.items.len },
+                else => .{ if (a0 < plan.artifacts.items.len) &plan.artifacts.items[a0].after_steps else null, a1 < plan.steps.items.len },
+            };
+            if (list != null and ok) list.?.append(plan.a(), a1) catch {
                 plan.oom = true;
             };
             return .void;
         },
-        .test_dir => {
-            plan.steps.append(plan.a(), .{
-                .name = plan.dupe(argStr(args, 0)),
-                .kind = .test_dir,
-                .dir = plan.dupe(argStr(args, 1)),
-            }) catch {
+        .step_command => {
+            const step: usize = @intCast(argInt(args, 0));
+            const cmd = plan.commands.items.len;
+            plan.commands.append(plan.a(), .{ .program = plan.dupe(argStr(args, 1)) }) catch {
+                plan.oom = true;
+                return .{ .int = 0 };
+            };
+            if (step < plan.steps.items.len) plan.steps.items[step].actions.append(plan.a(), .{ .command = cmd }) catch {
                 plan.oom = true;
             };
+            return .{ .int = @intCast(cmd) };
+        },
+        .step_run => {
+            const step: usize = @intCast(argInt(args, 0));
+            const art: usize = @intCast(argInt(args, 1));
+            if (step >= plan.steps.items.len or art >= plan.artifacts.items.len) return .{ .int = 0 };
+            const cmd = plan.commands.items.len;
+            plan.commands.append(plan.a(), .{ .program_artifact = art }) catch {
+                plan.oom = true;
+                return .{ .int = 0 };
+            };
+            const st = &plan.steps.items[step];
+            st.artifacts.append(plan.a(), art) catch {
+                plan.oom = true;
+            };
+            st.actions.append(plan.a(), .{ .command = cmd }) catch {
+                plan.oom = true;
+            };
+            return .{ .int = @intCast(cmd) };
+        },
+        .command_arg, .command_arg_output, .command_cwd, .command_env => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id >= plan.commands.items.len) return .void;
+            const cmd = &plan.commands.items[id];
+            switch (op) {
+                .command_arg => cmd.args.append(plan.a(), .{ .text = plan.dupe(argStr(args, 1)) }) catch {
+                    plan.oom = true;
+                },
+                .command_arg_output => cmd.args.append(plan.a(), .{ .output = @intCast(argInt(args, 1)) }) catch {
+                    plan.oom = true;
+                },
+                .command_cwd => cmd.cwd = plan.dupe(argStr(args, 1)),
+                else => cmd.env.append(plan.a(), .{ .a = plan.dupe(argStr(args, 1)), .b = plan.dupe(argStr(args, 2)) }) catch {
+                    plan.oom = true;
+                },
+            }
+            return .void;
+        },
+        .step_copy_file, .step_copy_dir, .step_write_file, .step_remove, .step_print => {
+            const step: usize = @intCast(argInt(args, 0));
+            if (step >= plan.steps.items.len) return .void;
+            const pair: Pair = .{ .a = plan.dupe(argStr(args, 1)), .b = plan.dupe(argStr(args, 2)) };
+            const action: Action = switch (op) {
+                .step_copy_file => .{ .copy_file = pair },
+                .step_copy_dir => .{ .copy_dir = pair },
+                .step_write_file => .{ .write_file = pair },
+                .step_remove => .{ .remove = pair.a },
+                else => .{ .print = pair.a },
+            };
+            plan.steps.items[step].actions.append(plan.a(), action) catch {
+                plan.oom = true;
+            };
+            return .void;
+        },
+        .default_step => {
+            const step: usize = @intCast(argInt(args, 0));
+            if (step < plan.steps.items.len) plan.default_step = step;
+            return .void;
+        },
+        .test_dir => {
+            if (plan.addStep(argStr(args, 0), .test_dir, "")) |step| step.dir = plan.dupe(argStr(args, 1));
             return .void;
         },
         .require => {
@@ -643,6 +795,8 @@ pub const RunOptions = struct {
     options: []const []const u8 = &.{},
     /// `--prefix <dir>`: where `gabbro build install` copies to, over `b.install_prefix`.
     prefix: ?[]const u8 = null,
+    /// The environment `gabbro build` runs in; a command's `env` adds to it.
+    environ: ?*const std.process.Environ.Map = null,
 };
 
 /// Run `build_path` (a build.gab) and execute the resulting plan.
@@ -706,50 +860,140 @@ pub fn loadPlan(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opti
 fn executePlan(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, opts: RunOptions) BuildError!void {
     plan.state = plan.a().alloc(BuildState, plan.artifacts.items.len) catch return error.OutOfMemory;
     @memset(plan.state, .unbuilt);
-
-    // Resolve which artifact a run-step / target name refers to.
-    var run_after: ?usize = null;
-    var target_idx: ?usize = null;
+    plan.step_state = plan.a().alloc(BuildState, plan.steps.items.len) catch return error.OutOfMemory;
+    @memset(plan.step_state, .unbuilt);
+    plan.cwd_abs = std.process.currentPathAlloc(io, plan.a()) catch ".";
 
     if (opts.target) |name| {
         // `install` is a built-in step, unless the script names a step or artifact so.
         if (std.mem.eql(u8, name, "install") and !hasTarget(plan, name))
             return runInstall(gpa, io, plan, base_dir, opts);
-        // A step name?
-        for (plan.steps.items) |st| {
-            if (!std.mem.eql(u8, st.name, name)) continue;
-            switch (st.kind) {
-                .run => {
-                    target_idx = st.target;
-                    run_after = st.target;
-                },
-                .test_dir => return runTestDir(gpa, io, plan, base_dir, st.dir, opts),
-            }
-        }
-        // An artifact name?
-        if (target_idx == null) {
-            for (plan.artifacts.items, 0..) |art, i| {
-                if (std.mem.eql(u8, art.name, name)) target_idx = i;
-            }
-        }
-        if (target_idx == null) {
+        const step = for (plan.steps.items, 0..) |st, i| {
+            if (std.mem.eql(u8, st.name, name)) break i;
+        } else null;
+        const artifact = for (plan.artifacts.items, 0..) |art, i| {
+            if (std.mem.eql(u8, art.name, name)) break i;
+        } else null;
+        if (step) |s| {
+            try runStep(gpa, io, plan, base_dir, s, opts);
+        } else if (artifact) |i| {
+            try buildArtifact(gpa, io, plan, base_dir, i, opts);
+        } else {
             std.debug.print("gabbro build: no artifact or step named '{s}'\n", .{name});
             return error.UnknownTarget;
         }
-    }
-
-    // Which artifacts to build: the requested/default one, else all.
-    if (target_idx) |idx| {
-        try buildArtifact(gpa, io, plan, base_dir, idx, opts);
+    } else if (plan.default_step) |s| {
+        try runStep(gpa, io, plan, base_dir, s, opts);
     } else if (plan.default_idx) |idx| {
         try buildArtifact(gpa, io, plan, base_dir, idx, opts);
     } else {
         for (0..plan.artifacts.items.len) |i| try buildArtifact(gpa, io, plan, base_dir, i, opts);
     }
 
-    if (run_after) |idx| try runArtifact(gpa, io, plan, base_dir, idx, opts);
-
     if (plan.want_summary and !opts.quiet) printSummary(plan, base_dir);
+}
+
+/// Run step `idx` once: build its artifacts, run the steps it comes after, then its actions.
+fn runStep(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, idx: usize, opts: RunOptions) BuildError!void {
+    switch (plan.step_state[idx]) {
+        .built => return,
+        .building => {
+            std.debug.print("gabbro build: step '{s}' comes after itself\n", .{plan.steps.items[idx].name});
+            return error.DependencyCycle;
+        },
+        .unbuilt => {},
+    }
+    plan.step_state[idx] = .building;
+    const step = plan.steps.items[idx];
+    for (step.artifacts.items) |art| try buildArtifact(gpa, io, plan, base_dir, art, opts);
+    for (step.after.items) |other| try runStep(gpa, io, plan, base_dir, other, opts);
+    if (step.kind == .test_dir) try runTestDir(gpa, io, plan, base_dir, step.dir, opts);
+    for (step.actions.items) |action| try runAction(gpa, io, plan, base_dir, action, opts);
+    plan.step_state[idx] = .built;
+}
+
+fn runAction(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, action: Action, opts: RunOptions) BuildError!void {
+    const a = plan.a();
+    switch (action) {
+        .command => |c| try runCommand(gpa, io, plan, base_dir, plan.commands.items[c], opts),
+        .copy_file => |p| try copyFile(gpa, io, joinPath(a, base_dir, p.a) catch return error.OutOfMemory, joinPath(a, base_dir, p.b) catch return error.OutOfMemory, opts),
+        .copy_dir => |p| _ = try copyDir(gpa, io, joinPath(a, base_dir, p.a) catch return error.OutOfMemory, joinPath(a, base_dir, p.b) catch return error.OutOfMemory, opts),
+        .write_file => |p| {
+            const path = joinPath(a, base_dir, p.a) catch return error.OutOfMemory;
+            if (std.fs.path.dirname(path)) |d| std.Io.Dir.cwd().createDirPath(io, d) catch {};
+            std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = p.b }) catch {
+                std.debug.print("gabbro build: cannot write {s}\n", .{path});
+                return error.StepFailed;
+            };
+            if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{path});
+        },
+        .remove => |rel| {
+            const path = joinPath(a, base_dir, rel) catch return error.OutOfMemory;
+            std.Io.Dir.cwd().deleteTree(io, path) catch {
+                std.debug.print("gabbro build: cannot remove {s}\n", .{path});
+                return error.StepFailed;
+            };
+            if (!opts.quiet) std.debug.print("  removed {s}\n", .{path});
+        },
+        .print => |text| std.debug.print("{s}\n", .{text}),
+    }
+}
+
+/// `path` (relative to the process's working directory) as an absolute path.
+fn absPath(plan: *BuildPlan, path: []const u8) BuildError![]const u8 {
+    return std.fs.path.resolve(plan.a(), &.{ plan.cwd_abs, path }) catch return error.OutOfMemory;
+}
+
+fn runCommand(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, cmd: Command, opts: RunOptions) BuildError!void {
+    const a = plan.a();
+    var argv: std.ArrayList([]const u8) = .empty;
+    // The program: an artifact's output, a path relative to build.gab, or a name on PATH.
+    const program = if (cmd.program_artifact) |art|
+        try absPath(plan, try resolveOutput(plan, base_dir, plan.artifacts.items[art]))
+    else if (std.mem.indexOfAny(u8, cmd.program, "/\\") != null and !std.fs.path.isAbsolute(cmd.program))
+        try absPath(plan, joinPath(a, base_dir, cmd.program) catch return error.OutOfMemory)
+    else
+        cmd.program;
+    argv.append(a, program) catch return error.OutOfMemory;
+    for (cmd.args.items) |arg| argv.append(a, switch (arg) {
+        .text => |t| t,
+        .output => |art| try absPath(plan, try resolveOutput(plan, base_dir, plan.artifacts.items[art])),
+    }) catch return error.OutOfMemory;
+    if (cmd.is_run) argv.appendSlice(a, opts.run_args) catch return error.OutOfMemory;
+
+    const cwd = try absPath(plan, if (cmd.cwd) |d| joinPath(a, base_dir, d) catch return error.OutOfMemory else base_dir);
+
+    // The environment: the build's own, with the command's variables on top.
+    var env: ?std.process.Environ.Map = null;
+    defer if (env) |*e| e.deinit();
+    if (cmd.env.items.len != 0) {
+        env = if (opts.environ) |parent| parent.clone(gpa) catch return error.OutOfMemory else std.process.Environ.Map.init(gpa);
+        for (cmd.env.items) |kv| env.?.put(kv.a, kv.b) catch return error.OutOfMemory;
+    }
+
+    if (!opts.quiet) std.debug.print("  running {s}\n", .{program});
+    var child = std.process.spawn(io, .{
+        .argv = argv.items,
+        .cwd = .{ .path = cwd },
+        .environ_map = if (env) |*e| e else null,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch |err| {
+        std.debug.print("gabbro build: cannot run {s}: {s}\n", .{ program, @errorName(err) });
+        return if (cmd.is_run) error.RunFailed else error.StepFailed;
+    };
+    const term = child.wait(io) catch return error.StepFailed;
+    switch (term) {
+        .exited => |code| if (code != 0) {
+            std.debug.print("  {s} exited with code {d}\n", .{ std.fs.path.basename(program), code });
+            if (!cmd.is_run) return error.StepFailed;
+        },
+        else => {
+            std.debug.print("  {s} did not exit normally\n", .{std.fs.path.basename(program)});
+            return if (cmd.is_run) error.RunFailed else error.StepFailed;
+        },
+    }
 }
 
 /// A post-build summary of every artifact (kind, output path, opt level).
@@ -778,6 +1022,7 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
         .unbuilt => {},
     }
     plan.state[idx] = .building;
+    for (plan.artifacts.items[idx].after_steps.items) |step| try runStep(gpa, io, plan, base_dir, step, opts);
     for (plan.artifacts.items[idx].link_artifacts.items) |dep| try buildArtifact(gpa, io, plan, base_dir, dep, opts);
     try buildOne(gpa, io, plan, base_dir, idx, opts);
     plan.state[idx] = .built;
@@ -1070,31 +1315,6 @@ fn writeStaticLibrary(gpa: std.mem.Allocator, io: std.Io, obj_path: []const u8, 
     };
 }
 
-fn runArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, idx: usize, opts: RunOptions) BuildError!void {
-    const art = plan.artifacts.items[idx];
-    const out_path = try resolveOutput(plan, base_dir, art);
-
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(gpa);
-    argv.append(gpa, out_path) catch return error.OutOfMemory;
-    argv.appendSlice(gpa, opts.run_args) catch return error.OutOfMemory;
-
-    if (!opts.quiet) std.debug.print("  running {s}\n", .{out_path});
-    var child = std.process.spawn(io, .{
-        .argv = argv.items,
-        .stdin = .inherit,
-        .stdout = .inherit,
-        .stderr = .inherit,
-    }) catch return error.RunFailed;
-    const term = child.wait(io) catch return error.RunFailed;
-    switch (term) {
-        .exited => |code| if (code != 0) {
-            std.debug.print("  {s} exited with code {d}\n", .{ art.name, code });
-        },
-        else => return error.RunFailed,
-    }
-}
-
 /// Run a `test_dir` step: compile + run every `*.gab` file directly under `dir`
 /// as a standalone program. A test passes when it exits 0. Reports each result
 /// and a pass/fail tally; fails the step if any test fails.
@@ -1265,12 +1485,15 @@ fn printList(plan: *BuildPlan) void {
     }
     if (plan.steps.items.len != 0) {
         std.debug.print("steps:\n", .{});
-        for (plan.steps.items) |st| {
+        for (plan.steps.items, 0..) |st, i| {
             const detail: []const u8 = switch (st.kind) {
                 .run => if (st.target < plan.artifacts.items.len) plan.artifacts.items[st.target].name else "",
                 .test_dir => st.dir,
+                .custom => st.description,
             };
-            std.debug.print("  {s: <16} {s: <10} {s}\n", .{ st.name, @tagName(st.kind), detail });
+            const kind: []const u8 = if (st.kind == .custom) "step" else @tagName(st.kind);
+            const star: []const u8 = if (plan.default_step == i) " (default)" else "";
+            std.debug.print("  {s: <16} {s: <10} {s}{s}\n", .{ st.name, kind, detail, star });
         }
     }
     if (plan.declared.items.len != 0) {

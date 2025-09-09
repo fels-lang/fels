@@ -128,7 +128,7 @@ pub fn main(init: std.process.Init) u8 {
             const exe_dir: ?[]const u8 = std.process.executableDirPathAlloc(io, ra) catch null;
             if (resolveStdRoot(ra, io, init.environ_map, "", exe_dir)) |root|
                 gabbro.pipeline_mod.stdlib_root_override = root;
-            return cmdBuildDir(allocator, io, args[2..]);
+            return cmdBuildDir(allocator, io, init.environ_map, args[2..]);
         }
     }
 
@@ -517,7 +517,7 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
 
 // Build system (`gabbro build` with a build.gab)
 
-fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, rest: []const []const u8) u8 {
+fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, rest: []const []const u8) u8 {
     if (!gabbro.llvm_enabled) return noLlvm();
 
     var opts = gabbro.build_driver.RunOptions{};
@@ -591,6 +591,7 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, rest: []const []const u
     opts.lib_paths = lib_paths.items;
     opts.run_args = run_args.items;
     opts.options = options.items;
+    opts.environ = environ;
 
     const build_path = "build.gab";
     if (!fileExists(io, build_path)) {
