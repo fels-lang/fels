@@ -755,6 +755,61 @@ test "build: defines reach the program through build_options, and add_module map
     }
 }
 
+test "build: a step generates code before the artifact that comes after it" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const io = std.testing.io;
+
+    const dir = ".zig-cache/bt_step_gen";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    // The generator is a program of the same build; it writes the module the app imports.
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/gen.gab", .data =
+        \\#import std.fs;
+        \\#import std.io.{ Writer };
+        \\main :: fn() -> i32 {
+        \\    f := fs::create("generated.gab") catch err { return 1; };
+        \\    w: *Writer = &f;
+        \\    w.write_all("pub VALUE :: 42;\n") catch err { return 2; };
+        \\    (&f).close();
+        \\    return 0;
+        \\}
+        \\
+    });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.gab", .data =
+        \\#import generated;
+        \\main :: fn() -> i32 { return generated::VALUE; }
+        \\
+    });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    tool := b.executable("gen", "gen.gab");
+        \\    gen := b.step("gen", "write generated.gab");
+        \\    gen.run(tool);
+        \\    app := b.executable("app", "app.gab");
+        \\    app.after(gen);
+        \\    b.default(app);
+        \\}
+    });
+
+    const lp = gabbro.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
+    try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.gab", .{
+        .quiet = true,
+        .llvm_bin = gabbro.llvm_path ++ "/bin",
+        .lib_paths = lib_paths,
+    });
+
+    var child = try std.process.spawn(io, .{ .argv = &.{dir ++ "/app.exe"}, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+    switch (try child.wait(io)) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 42), code),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "build: a test_dir step compiles+runs tests and fails on a failing one" {
     if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
