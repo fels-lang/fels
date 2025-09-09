@@ -20,6 +20,11 @@ the major version is `0`, any minor bump may break source compatibility.
   `build_options` module (`#import build_options;`). `define` was recorded and then ignored.
 - **`a.add_module(name, dir)`** maps an import name to a folder, so `#import name.x` reads
   `<dir>/x.gab`.
+- **Build steps.** `b.step(name, description)` runs the artifacts and steps it depends on, then
+  its actions: `command` and `run` (with `arg`, `arg_output`, `cwd` and `env`), `copy_file`,
+  `copy_dir`, `write_file`, `remove` and `print`. `a.after(step)` generates code before an
+  artifact compiles, `b.default_step` picks what a bare `gabbro build` runs, and `run_step`
+  returns its command for arguments, a working directory and environment variables.
 
 ### Fixed
 
