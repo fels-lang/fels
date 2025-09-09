@@ -529,10 +529,64 @@ build options of this build.gab:
 An option read only inside an `if` is declared only when that branch runs, so read options
 at the top of `build`.
 
-**Steps & default**: `b.run_step(name, artifact)`, `b.test_dir(name, dir)`,
-`b.default(artifact)`.
+**Steps & default**: `b.run_step(name, artifact)`, `b.test_dir(name, dir)`, `b.step(name,
+description)`, `b.command(name, program)`, `b.default(artifact)` and `b.default_step(step)`.
+See [Steps](#steps) below.
 
 See `examples/build_showcase/` for a build.gab exercising most of these.
+
+## Steps
+
+A step is a named piece of work: `gabbro build <name>` builds the artifacts it depends on, runs
+the steps it comes after, then its actions in order. Paths are relative to build.gab.
+
+```gabbro
+gen_tool := b.executable("gen", "tools/gen.gab");
+
+gen := b.step("gen", "generate the tables");
+gen.run(gen_tool);                     // build the tool, then run it
+game := b.executable("game", "src/main.gab");
+game.after(gen);                       // the tables exist before the game compiles
+
+assets := b.step("assets", "copy the assets next to the game");
+assets.copy_dir("assets", "bin/assets");
+assets.copy_file("config.ini", "bin/config.ini");
+assets.write_file("bin/version.txt", "1.0");
+assets.print("assets copied");
+
+clean := b.step("clean", "remove the output");
+clean.remove("bin");
+
+all := b.step("all", "the game and its assets");
+all.depends_on(game);
+all.after(assets);
+b.default_step(all);                   // a bare `gabbro build` runs `all`
+```
+
+| On a `Step` | Does |
+| --- | --- |
+| `s.depends_on(artifact)` | build the artifact first |
+| `s.after(other)` | run the other step first |
+| `s.command(program) -> Command` | run a program: a name found on PATH, or a path relative to build.gab |
+| `s.run(artifact) -> Command` | build an artifact of this build and run it |
+| `s.copy_file(src, dest)` · `s.copy_dir(src, dest)` | copy a file, or a folder with everything in it |
+| `s.write_file(path, text)` | write a file, creating its folders |
+| `s.remove(path)` | remove a file or a folder |
+| `s.print(text)` | print a line (a build script cannot print with `std.io` yet) |
+
+A `Command` takes `c.arg(text)`, `c.arg_output(artifact)` (the absolute path of an
+artifact's output), `c.cwd(dir)` (default: build.gab's folder) and `c.env(key, value)` (added
+to the environment `gabbro build` runs in). A command that exits with a code other than 0 stops
+the build. `b.command(name, program)` is a step with one command.
+
+`a.after(step)` runs the step before the artifact is built, for generated code. Each artifact
+is built once and each step runs once per `gabbro build`, and a step that comes after itself
+is an error.
+
+`b.run_step(name, artifact)` returns its `Command` too, so a run gets arguments, a working
+directory and environment variables. It also gets the arguments after `--`
+(`gabbro build run -- --verbose`), and an exit code other than 0 is reported without failing
+the build.
 
 ## Test steps
 
