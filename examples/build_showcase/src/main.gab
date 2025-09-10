@@ -1,3 +1,15 @@
+#import build_options;
+#import std.io.{ println };
+
+#extern("mathutil", "mathutil_square")
+square :: fn(x: i32) -> i32;
+
 main :: fn() -> i32 {
-    return 0;
+    println(build_options::GREETING);
+    if build_options::TRACE {
+        println("trace: on");
+    }
+    threads: i32 = build_options::THREADS as i32;
+    // 0 when the static library linked and answers.
+    return square(threads) - threads * threads;
 }
