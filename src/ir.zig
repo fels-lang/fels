@@ -8,6 +8,7 @@ const diag_mod = @import("diagnostic.zig");
 const vm_compiler = @import("vm/compiler.zig");
 const vm_engine = @import("vm/engine.zig");
 const vm_instructions = @import("vm/instructions.zig");
+const strlit = @import("strlit.zig");
 const vm_value = @import("vm/value.zig");
 const vm_run_cache = @import("vm/run_cache.zig");
 const vm_static_data = @import("vm/static_data.zig");
@@ -3262,7 +3263,7 @@ const FunctionLowerer = struct {
                 } }),
             .int => |text| .{ .imm = .{ .int = parseIntLiteral(text) } },
             .float => |text| .{ .imm = .{ .float = parseFloatLiteral(text) } },
-            .string => |text| .{ .imm = .{ .text = stringBytes(self.allocator, text) } },
+            .string => |text| .{ .imm = .{ .text = strlit.bytes(self.allocator, text) } },
             .bool => |value| .{ .imm = .{ .bool = value } },
             .null => .{ .imm = .null },
             .compound_literal => |values| blk: {
@@ -3328,7 +3329,7 @@ const FunctionLowerer = struct {
                     if (left_str and right_str) {
                         // Two literals fold to a constant (no indexing needed).
                         if (binary.left.kind == .string and binary.right.kind == .string) {
-                            const equal = std.mem.eql(u8, stringBytes(self.allocator, binary.left.kind.string), stringBytes(self.allocator, binary.right.kind.string));
+                            const equal = std.mem.eql(u8, strlit.bytes(self.allocator, binary.left.kind.string), strlit.bytes(self.allocator, binary.right.kind.string));
                             break :blk .{ .imm = .{ .bool = if (binary.op == .equal) equal else !equal } };
                         }
                         const eqv = if (binary.right.kind == .string)
@@ -4859,7 +4860,7 @@ const FunctionLowerer = struct {
     /// a shorter subject is never read out of bounds (Gabbro's `&&` is eager).
     fn lowerStringEq(self: *FunctionLowerer, subject_in: Value, literal_raw: []const u8) LowerError!Value {
         const subject = try self.materializeStrOperand(subject_in);
-        const lit = stringBytes(self.allocator, literal_raw);
+        const lit = strlit.bytes(self.allocator, literal_raw);
         const res_name = try std.fmt.allocPrint(self.allocator, "__streq_{d}", .{self.next_block_id});
         try self.local_types.put(res_name, .bool);
         try self.emitNoResult(.bool, .{ .store_local = .{ .name = res_name, .value = .{ .imm = .{ .bool = false } } } });
@@ -8620,7 +8621,7 @@ fn lowerImm(allocator: std.mem.Allocator, expr: ast.Expr) Imm {
             else => .null,
         },
         .bool => |value| .{ .bool = value },
-        .string => |text| .{ .text = stringBytes(allocator, text) },
+        .string => |text| .{ .text = strlit.bytes(allocator, text) },
         .null => .null,
         else => .null,
     };
@@ -8733,51 +8734,6 @@ fn addExternLib(allocator: std.mem.Allocator, extern_libs: *std.ArrayList([]cons
         if (std.mem.eql(u8, existing, lib)) return;
     }
     try extern_libs.append(allocator, lib);
-}
-
-/// The bytes a string literal stands for: the quotes removed and the escapes
-/// (\n \r \t \\ \" \0 \xHH) resolved. `Imm.text` always holds these bytes, so the comptime
-/// VM, static data and the LLVM backend see the same string.
-fn stringBytes(allocator: std.mem.Allocator, literal: []const u8) []const u8 {
-    const text = trimQuotes(literal);
-    if (std.mem.indexOfScalar(u8, text, '\\') == null) return text;
-    return unescapeString(allocator, text) catch text;
-}
-
-fn unescapeString(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    try out.ensureTotalCapacity(allocator, s.len);
-    errdefer out.deinit(allocator);
-    var i: usize = 0;
-    while (i < s.len) : (i += 1) {
-        if (s[i] != '\\' or i + 1 >= s.len) {
-            try out.append(allocator, s[i]);
-            continue;
-        }
-        i += 1;
-        switch (s[i]) {
-            'n' => try out.append(allocator, '\n'),
-            'r' => try out.append(allocator, '\r'),
-            't' => try out.append(allocator, '\t'),
-            '\\' => try out.append(allocator, '\\'),
-            '"' => try out.append(allocator, '"'),
-            '0' => try out.append(allocator, 0),
-            'x' => {
-                const byte = if (i + 2 < s.len) std.fmt.parseInt(u8, s[i + 1 .. i + 3], 16) catch null else null;
-                if (byte) |b| {
-                    try out.append(allocator, b);
-                    i += 2;
-                } else {
-                    try out.appendSlice(allocator, "\\x");
-                }
-            },
-            else => {
-                try out.append(allocator, '\\');
-                try out.append(allocator, s[i]);
-            },
-        }
-    }
-    return out.toOwnedSlice(allocator);
 }
 
 fn trimQuotes(text: []const u8) []const u8 {
