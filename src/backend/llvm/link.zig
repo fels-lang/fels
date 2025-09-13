@@ -361,7 +361,7 @@ fn lldFallbackReason(opts: WindowsLinkOptions, obj_bytes: ?[]const u8) ?[]const 
     if (opts.obj_files.len != 1) return "multiple object files (gabld links one object)";
     if (opts.extra_flags.len != 0) return "extra raw linker flags gabld can't apply";
     if (opts.honor_defaultlibs)
-        return "honoring a C library's /DEFAULTLIB directives (gabld can't parse them)";
+        return "honoring a static library's /DEFAULTLIB directives (gabld can't parse them)";
     _ = obj_bytes;
     return null;
 }
