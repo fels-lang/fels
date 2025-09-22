@@ -180,3 +180,4 @@ pub const vm_zones = @import("vm/zones.zig");
 pub const build_driver = @import("build.zig");
 pub const coff_archive = @import("coff_archive.zig");
 pub const strlit = @import("strlit.zig");
+pub const pkg = @import("pkg.zig");
