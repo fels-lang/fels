@@ -6292,6 +6292,52 @@ fn isCoreOnlyBuiltin(name: []const u8) bool {
 /// Every entry point is best-effort: it returns null when an expression cannot
 /// be folded to a constant, letting the caller lower the operand for runtime
 /// instead (there is no AST tree-walker fallback).
+/// The capabilities of the compile-time code in one package's folder: what its `#use` line
+/// granted (`gabbro build` sets these from gabbro.pkg). Code outside every package folder runs
+/// pure.
+pub const FolderCaps = struct {
+    dir: []const u8,
+    caps: vm_engine.Caps,
+};
+
+pub var package_caps: []const FolderCaps = &.{};
+
+/// The capabilities a `#run` in `file` gets: those of the package folder it is in.
+fn capsForFile(file: []const u8) vm_engine.Caps {
+    var best: ?FolderCaps = null;
+    for (package_caps) |pc| {
+        if (!inFolder(file, pc.dir)) continue;
+        if (best == null or pc.dir.len > best.?.dir.len) best = pc;
+    }
+    return if (best) |b| b.caps else .{};
+}
+
+/// Whether `file` is below `dir`, comparing `/` and `\` alike and letters without case.
+fn inFolder(file: []const u8, dir: []const u8) bool {
+    if (file.len <= dir.len) return false;
+    for (dir, file[0..dir.len]) |d, f| {
+        const dn = if (d == '\\') '/' else std.ascii.toLower(d);
+        const fn_ = if (f == '\\') '/' else std.ascii.toLower(f);
+        if (dn != fn_) return false;
+    }
+    const sep = file[dir.len];
+    return sep == '/' or sep == '\\' or dir[dir.len - 1] == '/' or dir[dir.len - 1] == '\\';
+}
+
+test "a file's package folder decides its capabilities" {
+    const gl = [_][]const u8{"opengl32"};
+    const saved = package_caps;
+    defer package_caps = saved;
+    package_caps = &.{
+        .{ .dir = "C:\\cache\\raylib-abc", .caps = .{ .ffi = .{ .libs = &gl } } },
+        .{ .dir = "C:\\cache\\raylib-abc\\vendor\\inner", .caps = .{} },
+    };
+    try std.testing.expect(capsForFile("c:/cache/raylib-abc/src/core.gab").ffi == .libs);
+    try std.testing.expect(capsForFile("C:\\cache\\raylib-abc\\vendor\\inner\\x.gab").ffi == .none);
+    try std.testing.expect(capsForFile("C:\\cache\\raylib-abcd\\x.gab").ffi == .none);
+    try std.testing.expect(capsForFile("main.gab").ffi == .none);
+}
+
 pub const ComptimeVm = struct {
     /// General-purpose allocator for the VM's transient per-call frames.
     gpa: std.mem.Allocator,
@@ -6380,6 +6426,7 @@ pub const ComptimeVm = struct {
         } else null;
 
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
+        vm.caps = capsForFile(self.current_file);
         defer vm.deinit();
         // `execute` enters the implicit root zone so aggregate `#run` exprs
         // (struct/enum/optional construction) have an arena to allocate in.
@@ -6446,6 +6493,7 @@ pub const ComptimeVm = struct {
         const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file, &self.error_codes) catch return .failed;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return .failed;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
+        vm.caps = capsForFile(self.current_file);
         defer vm.deinit();
         const result = vm.executeKeepZones(bc_fn) catch |err| {
             if (err == error.Trap) {
@@ -6477,6 +6525,7 @@ pub const ComptimeVm = struct {
         const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file, &self.error_codes) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
+        vm.caps = capsForFile(self.current_file);
         defer vm.deinit();
         const result = vm.executeKeepZones(bc_fn) catch return null;
         var r = Reifier{ .allocator = out_alloc, .vm = &vm, .module = c.ir_module, .next_id = next_id, .span = span };
@@ -6493,6 +6542,7 @@ pub const ComptimeVm = struct {
         const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file, &self.error_codes) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
+        vm.caps = capsForFile(self.current_file);
         defer vm.deinit();
         const result = vm.executeKeepZones(bc_fn) catch {
             // A `compiler_error("...")` halt — carry the diagnostic out.
@@ -6551,6 +6601,7 @@ pub const ComptimeVm = struct {
         const irfn = lowerWhereToFunction(a, inst_fe, where_block, type_args, output_params, self.current_file, &self.error_codes) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
+        vm.caps = capsForFile(self.current_file);
         defer vm.deinit();
         const result = vm.executeKeepZones(bc_fn) catch return null;
         return switch (result) {
@@ -6572,6 +6623,7 @@ pub const ComptimeVm = struct {
         const irfn = lowerWhereTypeToFunction(a, inst_fe, where_block, type_args, output_params, self.current_file, &self.error_codes) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
+        vm.caps = capsForFile(self.current_file);
         defer vm.deinit();
         const result = vm.executeKeepZones(bc_fn) catch return null;
         return switch (result) {
