@@ -132,6 +132,15 @@ pub fn main(init: std.process.Init) u8 {
         }
     }
 
+    // The package manager: gabbro.pkg and gabbro.lock in the current directory.
+    if (eqAny(cmd, &.{ "add", "fetch", "update" })) {
+        const ra = init.arena.allocator();
+        const rest = args[2..];
+        if (std.mem.eql(u8, cmd, "add")) return gabbro.pkg.project.cmdAdd(ra, io, init.environ_map, rest);
+        if (std.mem.eql(u8, cmd, "fetch")) return gabbro.pkg.project.cmdFetch(ra, io, init.environ_map, rest);
+        return gabbro.pkg.project.cmdUpdate(ra, io, init.environ_map, rest);
+    }
+
     // `gabbro bindgen <header.h>` generates Gabbro FFI bindings from a C header.
     if (std.mem.eql(u8, cmd, "bindgen")) return cmdBindgen(allocator, io, init.environ_map, args[2..]);
 
@@ -600,8 +609,8 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
     }
 
     gabbro.build_driver.run(allocator, io, build_path, opts) catch |err| {
-        // The messages from the script run already say what is wrong.
-        if (err != error.ScriptError) std.debug.print("gabbro build: {s}\n", .{@errorName(err)});
+        // The messages from the script run or the packages already say what is wrong.
+        if (err != error.ScriptError and err != error.PackageError) std.debug.print("gabbro build: {s}\n", .{@errorName(err)});
         return 1;
     };
     return 0;
@@ -728,6 +737,9 @@ fn printUsage() void {
         \\  object   <file.gab>     compile to an object file (.o)
         \\  ir       <file.gab>     print LLVM IR to stdout
         \\  bindgen  <header.h>    generate Gabbro FFI bindings from a C header
+        \\  add      <name> <src>  use a package: add it to gabbro.pkg and fetch it
+        \\  fetch                  get the packages gabbro.pkg uses (--verify checks hashes)
+        \\  update   [name...]     move packages to the newest version gabbro.pkg allows
         \\  version                print the compiler version
         \\  help                   show this message
         \\
