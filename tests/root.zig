@@ -32,4 +32,5 @@ comptime {
     _ = @import("compiler/metaprogramming.zig");
     _ = @import("compiler/compiler_hook.zig");
     _ = @import("compiler/build_system.zig");
+    _ = @import("compiler/packages.zig");
 }
