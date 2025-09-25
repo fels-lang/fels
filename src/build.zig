@@ -724,7 +724,7 @@ fn moduleRootsFor(io: std.Io, plan: *BuildPlan, base_dir: []const u8, art: Artif
     }
     const dir = std.fmt.allocPrint(a, "{s}/.gabbro-cache/build/{s}", .{ base_dir, art.name }) catch return error.OutOfMemory;
     std.Io.Dir.cwd().createDirPath(io, dir) catch {};
-    const file = std.fmt.allocPrint(a, "{s}/build_options.gab", .{dir}) catch return error.OutOfMemory;
+    const file = std.fmt.allocPrint(a, "{s}/build_options.fels", .{dir}) catch return error.OutOfMemory;
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = src.items }) catch {
         std.debug.print("gabbro build: cannot write {s}\n", .{file});
         return error.CompileFailed;
@@ -1350,7 +1350,7 @@ fn writeStaticLibrary(gpa: std.mem.Allocator, io: std.Io, obj_path: []const u8, 
     };
 }
 
-/// Run a `test_dir` step: compile + run every `*.gab` file directly under `dir`
+/// Run a `test_dir` step: compile + run every `*.fels` file directly under `dir`
 /// as a standalone program. A test passes when it exits 0. Reports each result
 /// and a pass/fail tally; fails the step if any test fails.
 fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, dir_rel: []const u8, opts: RunOptions) BuildError!void {
@@ -1370,7 +1370,7 @@ fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
     var it = dir.iterate();
     while (it.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".gab")) continue;
+        if (!pipeline.isSourceFile(entry.name)) continue;
         // `entry.name` is only valid until the next iteration — copy it.
         const name = a.dupe(u8, entry.name) catch continue;
         const src_path = joinPath(a, dir_abs, name) catch continue;

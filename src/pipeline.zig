@@ -68,6 +68,41 @@ pub const CompileError = error{
 /// lands. Set once at startup; the compiler is single-threaded per build.
 pub var stdlib_root_override: ?[]const u8 = null;
 
+/// Fels source files end in `.fels`. `.gab`, the extension from when the language was
+/// called Gabbro, is still read, with a note to rename the files.
+pub const source_ext = ".fels";
+pub const old_ext = ".gab";
+
+pub fn isSourceFile(name: []const u8) bool {
+    return std.mem.endsWith(u8, name, source_ext) or std.mem.endsWith(u8, name, old_ext);
+}
+
+/// `name` without its `.fels` or `.gab`.
+pub fn withoutExt(name: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, name, source_ext)) return name[0 .. name.len - source_ext.len];
+    if (std.mem.endsWith(u8, name, old_ext)) return name[0 .. name.len - old_ext.len];
+    return name;
+}
+
+/// `path`, which ends in `.fels`, with the old extension instead.
+pub fn oldExtPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return std.mem.concat(allocator, u8, &.{ withoutExt(path), old_ext });
+}
+
+var noted_old_ext = false;
+
+/// Once per run: the project still has `.gab` files.
+pub fn noteOldExt(path: []const u8) void {
+    if (noted_old_ext) return;
+    noted_old_ext = true;
+    std.debug.print("note: {s}: Fels files end in `.fels` now; rename the `.gab` files (they are read until 0.5.0)\n", .{path});
+}
+
+fn fileExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
+}
+
 /// A name an import can start with that stands for a folder: `#import name.a.b` reads
 /// `<dir>/a/b.gab`, and a bare `#import name` reads `<dir>/<name>.gab`.
 pub const ModuleRoot = struct {
@@ -161,7 +196,11 @@ pub fn compileMulti(allocator: std.mem.Allocator, files: []const SourceFile) Com
         for (parsed_module.items) |item| switch (item) {
             .import => |imp| {
                 const resolved = resolveImportPath(fe_allocator, dir, imp.path, null) catch return error.IoError;
-                const normalized = normalizeLogicalPath(fe_allocator, resolved) catch return error.OutOfMemory;
+                var normalized = normalizeLogicalPath(fe_allocator, resolved) catch return error.OutOfMemory;
+                if (!available.contains(normalized)) {
+                    const old = oldExtPath(fe_allocator, normalized) catch return error.OutOfMemory;
+                    if (available.contains(old)) normalized = old;
+                }
                 if (!available.contains(normalized)) {
                     std.debug.print("{s}: error: imported module `{s}` was not provided\n", .{ imp.file_name, normalized });
                     return error.IoError;
@@ -352,7 +391,14 @@ fn loadFile(ctx: *LoadCtx, path: []const u8, is_root: bool, is_std: bool) anyerr
                     try ctx.all_items.append(allocator, .{ .import = resolved_import });
                     if (found) |f| try loadFile(ctx, f, false, imp.path.len > 0 and std.mem.eql(u8, imp.path[0], "std"));
                 } else {
-                    const resolved = try resolveImportPath(allocator, dir, imp.path, ctx.stdlib_root);
+                    var resolved = try resolveImportPath(allocator, dir, imp.path, ctx.stdlib_root);
+                    if (!fileExists(ctx.io, resolved)) {
+                        const old = try oldExtPath(allocator, resolved);
+                        if (fileExists(ctx.io, old)) {
+                            if (!(imp.path.len > 0 and std.mem.eql(u8, imp.path[0], "std"))) noteOldExt(old);
+                            resolved = old;
+                        }
+                    }
                     resolved_import.resolved_file = resolved;
                     try ctx.all_items.append(allocator, .{ .import = resolved_import });
                     try loadFile(ctx, resolved, false, false);
@@ -370,10 +416,14 @@ fn findImport(ctx: *LoadCtx, an: *AnalysisState, dir: []const u8, imp: ast.Impor
     const allocator = ctx.allocator;
     const primary = try resolveImportPath(allocator, dir, imp.path, ctx.stdlib_root);
     if (an.reader.existsFn(an.reader.ctx, primary)) return primary;
+    const primary_old = try oldExtPath(allocator, primary);
+    if (an.reader.existsFn(an.reader.ctx, primary_old)) return primary_old;
     const is_std = imp.path.len > 0 and std.mem.eql(u8, imp.path[0], "std");
     if (!is_std) if (an.project_root) |root| {
         const alt = try resolveImportPath(allocator, root, imp.path, null);
         if (an.reader.existsFn(an.reader.ctx, alt)) return alt;
+        const alt_old = try oldExtPath(allocator, alt);
+        if (an.reader.existsFn(an.reader.ctx, alt_old)) return alt_old;
     };
     const name = try std.mem.join(allocator, ".", imp.path);
     try an.diags.append(allocator, Diagnostic.err(
@@ -554,7 +604,7 @@ fn moduleImportsStdHeap(items: []const ast.Item) bool {
     return false;
 }
 
-/// Turn an import path like ["utils", "math"] into "utils/math.gab"
+/// Turn an import path like ["utils", "math"] into "utils/math.fels"
 /// relative to `base_dir`.
 fn resolveImportPath(
     allocator: std.mem.Allocator,
@@ -573,7 +623,7 @@ fn resolveImportPath(
             try buf.append(allocator, std.fs.path.sep);
             try buf.appendSlice(allocator, part);
         }
-        try buf.appendSlice(allocator, ".gab");
+        try buf.appendSlice(allocator, source_ext);
         return buf.toOwnedSlice(allocator);
     };
 
@@ -589,7 +639,7 @@ fn resolveImportPath(
         if (i > 0) try buf.append(allocator, std.fs.path.sep);
         try buf.appendSlice(allocator, part);
     }
-    try buf.appendSlice(allocator, ".gab");
+    try buf.appendSlice(allocator, source_ext);
     return buf.toOwnedSlice(allocator);
 }
 
