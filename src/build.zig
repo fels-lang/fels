@@ -15,6 +15,7 @@ const ir = @import("ir.zig");
 const driver = @import("driver.zig");
 const diagnostic = @import("diagnostic.zig");
 const coff_archive = @import("coff_archive.zig");
+const pkg = @import("pkg.zig");
 const vm_engine = @import("vm/engine.zig");
 const vm_value = @import("vm/value.zig");
 const instructions = @import("vm/instructions.zig");
@@ -26,6 +27,7 @@ pub const BuildError = error{
     CompileFailed,
     ScriptError,
     InstallFailed,
+    PackageError,
     DependencyCycle,
     NoBuildScript,
     NoBuildFn,
@@ -191,6 +193,8 @@ pub const BuildPlan = struct {
     default_step: ?usize = null,
     /// The process's working directory, for absolute paths in commands.
     cwd_abs: []const u8 = "",
+    /// The packages gabbro.pkg uses (with the ones they use).
+    packages: []const pkg.resolve.Package = &.{},
     /// Where `gabbro build install` copies to (`b.install_prefix`), relative to build.gab.
     install_prefix: ?[]const u8 = null,
     install_items: std.ArrayList(InstallItem) = .empty,
@@ -681,8 +685,26 @@ fn stringLiteral(a: std.mem.Allocator, text: []const u8) ![]const u8 {
     return out.toOwnedSlice(a);
 }
 
+/// The VM capabilities of each package's folder, from what gabbro.pkg granted it.
+fn packageCaps(plan: *BuildPlan) BuildError![]const ir.FolderCaps {
+    const a = plan.a();
+    var out: std.ArrayList(ir.FolderCaps) = .empty;
+    for (plan.packages) |p| {
+        var libs: std.ArrayList([]const u8) = .empty;
+        var any = false;
+        for (p.caps) |c| {
+            if (!std.mem.eql(u8, c.name, "ffi")) continue;
+            if (c.args.len == 0) any = true;
+            libs.appendSlice(a, c.args) catch return error.OutOfMemory;
+        }
+        const ffi: @import("vm/engine.zig").Caps.Ffi = if (any) .all else if (libs.items.len != 0) .{ .libs = libs.items } else .none;
+        out.append(a, .{ .dir = p.dir, .caps = .{ .ffi = ffi } }) catch return error.OutOfMemory;
+    }
+    return out.items;
+}
+
 /// Write the artifact's `build_options` module and return the module roots its compile
-/// uses: the `add_module` ones and `build_options`.
+/// uses: the `add_module` ones, the packages and `build_options`.
 fn moduleRootsFor(io: std.Io, plan: *BuildPlan, base_dir: []const u8, art: Artifact) BuildError![]const pipeline.ModuleRoot {
     const a = plan.a();
     var roots: std.ArrayList(pipeline.ModuleRoot) = .empty;
@@ -690,6 +712,8 @@ fn moduleRootsFor(io: std.Io, plan: *BuildPlan, base_dir: []const u8, art: Artif
         const dir = if (std.fs.path.isAbsolute(m.dir)) m.dir else joinPath(a, base_dir, m.dir) catch return error.OutOfMemory;
         roots.append(a, .{ .name = m.name, .dir = dir }) catch return error.OutOfMemory;
     }
+    // After the `add_module` ones, so a build can point a package name somewhere else.
+    for (plan.packages) |p| roots.append(a, .{ .name = p.name, .dir = p.import_dir }) catch return error.OutOfMemory;
 
     // `#import build_options;` always works; it is empty without a define.
     var src: std.ArrayList(u8) = .empty;
@@ -803,6 +827,17 @@ pub const RunOptions = struct {
 pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: RunOptions) BuildError!void {
     var plan = try loadPlan(gpa, io, build_path, opts.options);
     defer plan.deinit();
+
+    // The packages of gabbro.pkg next to build.gab: import roots for every artifact, and the
+    // capabilities of their compile-time code.
+    const base = std.fs.path.dirname(build_path) orelse ".";
+    const loaded = pkg.project.load(plan.a(), io, base, opts.environ, .{}) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.PackageError => error.PackageError,
+    };
+    if (loaded) |r| plan.packages = r.packages;
+    ir.package_caps = try packageCaps(&plan);
+    defer ir.package_caps = &.{};
 
     if (opts.list) {
         printList(&plan);
@@ -1499,5 +1534,9 @@ fn printList(plan: *BuildPlan) void {
     if (plan.declared.items.len != 0) {
         std.debug.print("options:\n", .{});
         printOptions(plan);
+    }
+    if (plan.packages.len != 0) {
+        std.debug.print("packages:\n", .{});
+        pkg.project.printPackages(plan.a(), plan.packages);
     }
 }
