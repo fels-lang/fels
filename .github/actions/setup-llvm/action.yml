@@ -1,6 +1,6 @@
 name: Set up LLVM
 description: >
-  Download the official LLVM release for Windows, keep only the files gabbro needs, and cache
+  Download the official LLVM release for Windows, keep only the files fels needs, and cache
   them. The first run downloads about 820 MB; later runs restore a much smaller cache.
 
 inputs:
@@ -58,7 +58,7 @@ runs:
         #             with it), ld.lld.exe (the Linux cross link), clang.exe (a DLL test
         #             compiles its C host with it)
         #   include/  the LLVM-C, clang-c and LLD headers
-        #   lib/      the LLVM and LLD static libraries (gabbrolld.dll links them),
+        #   lib/      the LLVM and LLD static libraries (felslld.dll links them),
         #             LLVM-C.lib, and lib/clang (the clang headers for bindgen)
         # The other clang tools and the clang static libraries are most of the 4 GB and are not used.
         $dst = $env:LLVM_DIR

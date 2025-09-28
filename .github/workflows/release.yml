@@ -1,7 +1,7 @@
 name: Release
 
 # A version tag builds the release archives and publishes a GitHub release:
-#   v0.3.1         stable release "gabbro 0.3.1"
+#   v0.3.1         stable release "fels 0.3.1"
 #   v0.4.0-rc.1    pre-release (any tag with a "-")
 # The release notes are the matching section of CHANGELOG.md ("## 0.3.1 ..."). A pre-release
 # without its own section uses "## Unreleased".
@@ -73,19 +73,19 @@ jobs:
           $ErrorActionPreference = "Stop"
           $dir = Join-Path $env:RUNNER_TEMP "smoke"
           Expand-Archive "${{ steps.pkg.outputs.archive }}" $dir
-          $gabbro = Get-ChildItem -Recurse $dir -Filter gabbro.exe | Select-Object -First 1
-          & cmd /c "`"$($gabbro.FullName)`" version 2>&1"
+          $fels = Get-ChildItem -Recurse $dir -Filter fels.exe | Select-Object -First 1
+          & cmd /c "`"$($fels.FullName)`" version 2>&1"
           @'
           #import std.io.{ println };
 
           main :: fn() -> i32 {
-              println("hello from Gabbro");
+              println("hello from Fels");
               return 5;
           }
           '@ | Out-File -Encoding utf8 (Join-Path $dir "hello.fels")
           Push-Location $dir
-          & $gabbro.FullName build hello.fels
-          if ($LASTEXITCODE -ne 0) { throw "gabbro build failed ($LASTEXITCODE)" }
+          & $fels.FullName build hello.fels
+          if ($LASTEXITCODE -ne 0) { throw "fels build failed ($LASTEXITCODE)" }
           & .\hello.exe
           if ($LASTEXITCODE -ne 5) { throw "hello.exe returned $LASTEXITCODE, expected 5" }
 
@@ -99,8 +99,8 @@ jobs:
               b.default(exe);
           }
           '@ | Out-File -Encoding utf8 build.fels
-          & $gabbro.FullName build
-          if ($LASTEXITCODE -ne 0) { throw "gabbro build (build.fels) failed ($LASTEXITCODE)" }
+          & $fels.FullName build
+          if ($LASTEXITCODE -ne 0) { throw "fels build (build.fels) failed ($LASTEXITCODE)" }
           & .\hello.exe
           if ($LASTEXITCODE -ne 5) { throw "hello.exe from build.fels returned $LASTEXITCODE, expected 5" }
           Pop-Location
@@ -109,7 +109,7 @@ jobs:
       - name: Keep the archives
         uses: actions/upload-artifact@v4
         with:
-          name: gabbro-${{ steps.pkg.outputs.file_version }}
+          name: fels-${{ steps.pkg.outputs.file_version }}
           path: |
             ${{ steps.pkg.outputs.archive }}
             ${{ steps.pkg.outputs.bindgen_archive }}
@@ -120,7 +120,7 @@ jobs:
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          name: gabbro ${{ steps.tag.outputs.version }}
+          name: fels ${{ steps.tag.outputs.version }}
           prerelease: ${{ steps.tag.outputs.prerelease }}
           body_path: notes.md
           files: |
