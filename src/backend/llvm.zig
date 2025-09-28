@@ -1,7 +1,7 @@
 /// LLVM codegen backend. Usage: init a LlvmBackend, lower(ir_module), then
 /// emitObject(...) or linkWindows(...). The Windows entry point (mainCRTStartup) is
 /// generated automatically when the module has an entry fn (main or #entry) — it
-/// calls Gabbro main, then ExitProcess.
+/// calls Fels main, then ExitProcess.
 const std = @import("std");
 const ir = @import("../ir.zig");
 const ctx_mod = @import("llvm/context.zig");
@@ -73,10 +73,10 @@ pub const LlvmBackend = struct {
                 llvm_c.LLVMSetLinkage(fltused, llvm_c.LLVMExternalLinkage);
             }
 
-            // The gabld import map (a `.skimp` section). Lets the self-hosted
+            // The felsld import map (a `.skimp` section). Lets the self-hosted
             // linker resolve each import's DLL without parsing any `.lib`.
             try emitImportMap(&self.cg, module);
-            // The export map (`.skexp`) — `#export`ed symbol names, so gabld can
+            // The export map (`.skexp`) — `#export`ed symbol names, so felsld can
             // build a DLL's export table (.edata) without /EXPORT: directives.
             try emitExportMap(&self.cg, module);
         }
@@ -143,7 +143,7 @@ pub const LlvmBackend = struct {
         return link.linkLinux(allocator, io, obj_path, obj_bytes, opts);
     }
 
-    /// Link straight from in-memory object bytes (no .obj on disk) — gabld fast
+    /// Link straight from in-memory object bytes (no .obj on disk) — felsld fast
     /// path; spills to disk only for the LLD fallback.
     pub fn linkWindowsMem(self: *LlvmBackend, allocator: std.mem.Allocator, io: std.Io, obj_bytes: []const u8, opts: link.WindowsLinkOptions) !void {
         _ = self;
@@ -166,15 +166,15 @@ pub const linkWindows = link.windows;
 
 // Windows entry point generator
 //
-// When the Gabbro module has an `entry` function, automatically emit:
+// When the Fels module has an `entry` function, automatically emit:
 //
 //   void mainCRTStartup() {
 //       ExitProcess((u32)main());
 //   }
 //
-// This replaces gabbrort — no separate object file to compile or distribute.
+// This replaces felsrt — no separate object file to compile or distribute.
 
-/// Emit the gabld import map as a `.skimp` COFF section: a flat list of
+/// Emit the felsld import map as a `.skimp` COFF section: a flat list of
 /// `symbol\0dll\0` records, one per `#extern("dll","symbol")` import. The
 /// self-hosted linker reads this to know each undefined symbol's DLL directly —
 /// no `.lib` archive parsing (LLD's biggest cost). LLD ignores the section.
@@ -190,20 +190,20 @@ fn emitImportMap(cg: *ctx_mod.ModuleCg, module: ir.IrModule) !void {
         try buf.appendSlice(cg.allocator, lib);
         try buf.append(cg.allocator, 0);
     }
-    if (buf.items.len == 0) return; // no DLL imports — nothing for gabld to map
+    if (buf.items.len == 0) return; // no DLL imports — nothing for felsld to map
 
     const i8_ty = llvm_c.LLVMInt8TypeInContext(cg.ctx);
     const arr_ty = llvm_c.LLVMArrayType(i8_ty, @intCast(buf.items.len));
     const init = llvm_c.LLVMConstStringInContext(cg.ctx, buf.items.ptr, @intCast(buf.items.len), 1);
-    const g = llvm_c.LLVMAddGlobal(cg.mod, arr_ty, "__gabbro_import_map");
+    const g = llvm_c.LLVMAddGlobal(cg.mod, arr_ty, "__fels_import_map");
     llvm_c.LLVMSetInitializer(g, init);
     llvm_c.LLVMSetLinkage(g, llvm_c.LLVMExternalLinkage);
     llvm_c.LLVMSetGlobalConstant(g, 1);
     llvm_c.LLVMSetSection(g, ".skimp");
 }
 
-/// Emit the gabld export map as a `.skexp` section: a flat list of `name\0`
-/// records, one per `#export`ed function or global. gabld reads it to build a DLL's export
+/// Emit the felsld export map as a `.skexp` section: a flat list of `name\0`
+/// records, one per `#export`ed function or global. felsld reads it to build a DLL's export
 /// directory (.edata) — no `/EXPORT:` linker directives, no .drectve parsing.
 fn emitExportMap(cg: *ctx_mod.ModuleCg, module: ir.IrModule) !void {
     var buf: std.ArrayList(u8) = .empty;
@@ -221,7 +221,7 @@ fn emitExportMap(cg: *ctx_mod.ModuleCg, module: ir.IrModule) !void {
     const i8_ty = llvm_c.LLVMInt8TypeInContext(cg.ctx);
     const arr_ty = llvm_c.LLVMArrayType(i8_ty, @intCast(buf.items.len));
     const init = llvm_c.LLVMConstStringInContext(cg.ctx, buf.items.ptr, @intCast(buf.items.len), 1);
-    const g = llvm_c.LLVMAddGlobal(cg.mod, arr_ty, "__gabbro_export_map");
+    const g = llvm_c.LLVMAddGlobal(cg.mod, arr_ty, "__fels_export_map");
     llvm_c.LLVMSetInitializer(g, init);
     llvm_c.LLVMSetLinkage(g, llvm_c.LLVMExternalLinkage);
     llvm_c.LLVMSetGlobalConstant(g, 1);
@@ -294,7 +294,7 @@ fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {
     const bb = llvm_c.LLVMAppendBasicBlockInContext(cg.ctx, crt_fn, "entry");
     llvm_c.LLVMPositionBuilderAtEnd(cg.builder, bb);
 
-    // Call Gabbro main.
+    // Call Fels main.
     const main_fn = cg.fn_decls.get(main.name) orelse return;
     const main_fn_ty = llvm_c.LLVMGlobalGetValueType(main_fn);
     const main_ret = llvm_c.LLVMBuildCall2(cg.builder, main_fn_ty, main_fn, null, 0, "ret");

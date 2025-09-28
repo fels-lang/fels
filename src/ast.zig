@@ -606,7 +606,7 @@ pub const FnType = struct {
     ret: *const TypeRef,
     error_ty: ?ErrorSpec,
     /// `extern fn(...)` — a THIN, C-ABI function pointer (a bare address), as
-    /// opposed to gabbro's fat `{fn, env}` closure. Directly callable; what a
+    /// opposed to fels's fat `{fn, env}` closure. Directly callable; what a
     /// dynamically-loaded symbol (`wglGetProcAddress`, a COM vtable slot) becomes
     /// when reinterpreted, and what a C callback parameter accepts.
     is_extern: bool = false,

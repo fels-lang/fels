@@ -2,7 +2,7 @@
 // std.com - the types of COM and WinRT, as data: GUID, HRESULT, IUnknown and IInspectable
 // with their vtables, and a reference counter for implementing your own objects.
 //
-// Pure Gabbro, no OS calls, so it compiles on every target (and the layouts can be tested
+// Pure Fels, no OS calls, so it compiles on every target (and the layouts can be tested
 // anywhere). Calling the operating system - initialising COM or WinRT, creating objects,
 // HSTRINGs - is std.winrt, which is Windows only.
 //

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Check that `gabbro lsp` agrees with `gabbro check` on every .fels file.
+"""Check that `fels lsp` agrees with `fels check` on every .fels file.
 
-A: each file that `gabbro check` accepts must give zero diagnostics through the server.
+A: each file that `fels check` accepts must give zero diagnostics through the server.
 B: a few programs the compiler rejects must still give an error at the right line.
 
-    python tests/lsp_all_files.py [path-to-gabbro.exe] [extra dir or file ...]
+    python tests/lsp_all_files.py [path-to-fels.exe] [extra dir or file ...]
 
 Prints the files that differ and an X/Y total. Exit code 0 if all agree.
 """
@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 args = [a for a in sys.argv[1:]]
-EXE = args.pop(0) if args and args[0].endswith(".exe") else os.path.join(REPO, "zig-out", "bin", "gabbro.exe")
+EXE = args.pop(0) if args and args[0].endswith(".exe") else os.path.join(REPO, "zig-out", "bin", "fels.exe")
 EXTRA = args
 
 
@@ -56,7 +56,7 @@ def lsp_diagnostics(path, text=None):
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"capabilities": {}}},
         {"jsonrpc": "2.0", "method": "initialized", "params": {}},
         {"jsonrpc": "2.0", "method": "textDocument/didOpen",
-         "params": {"textDocument": {"uri": uri_of(path), "languageId": "gabbro", "version": 1, "text": text}}},
+         "params": {"textDocument": {"uri": uri_of(path), "languageId": "fels", "version": 1, "text": text}}},
         {"jsonrpc": "2.0", "id": 2, "method": "shutdown"},
         {"jsonrpc": "2.0", "method": "exit"},
     ]

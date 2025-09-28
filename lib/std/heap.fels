@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.heap — dynamic memory for Gabbro: a bump arena. Allocation is a pointer bump
+// std.heap — dynamic memory for Fels: a bump arena. Allocation is a pointer bump
 // in the current region, so the OS only gets hit once per chunk (a VirtualAlloc
 // syscall), never per alloc. reset/restore reuse the memory, so steady state is
 // syscall-free.
@@ -38,7 +38,7 @@ DEFAULT_CHUNK :: 65536usize;
 // area that follows is aligned.
 CHUNK_HEADER :: 32usize;
 
-// Every allocation is aligned to 16 bytes — the strictest alignment any Gabbro
+// Every allocation is aligned to 16 bytes — the strictest alignment any Fels
 // scalar/pointer needs.
 ALIGN :: 16usize;
 

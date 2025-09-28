@@ -1,14 +1,14 @@
-// gabld — the Gabbro native linker.
+// felsld — the Fels native linker.
 //
-// A small, fast PE/COFF linker written in Gabbro. It links Gabbro's own object files
+// A small, fast PE/COFF linker written in Fels. It links Fels's own object files
 // into Windows executables and DLLs, synthesizing import tables directly from
 // the imports the compiler already knows (so it never parses an import library
 // the way LLD does — the single biggest cost in a general linker).
 //
-// Build:  gabbro build linker/gabld.fels -o gabld.exe
-// Use:    gabld <input.obj> <output.exe>
+// Build:  fels build linker/felsld.fels -o felsld.exe
+// Use:    felsld <input.obj> <output.exe>
 //
-// Single-object linker: the Gabbro backend emits a whole program (plus its runtime)
+// Single-object linker: the Fels backend emits a whole program (plus its runtime)
 // into ONE COFF object, so every defined symbol is local — only kernel32
 // functions are undefined. The pipeline:
 //   1. read the AMD64 COFF object (header, sections, symbols + string-table long
@@ -27,7 +27,7 @@
 
 // Win32 file I/O
 // CreateFileA / ReadFile / WriteFile / CloseHandle / GetCommandLineA are already
-// declared by the auto-imported Gabbro runtime (windows.fels) on this flat global
+// declared by the auto-imported Fels runtime (windows.fels) on this flat global
 // symbol table, so we reuse them — redeclaring is a duplicate-symbol error. Only
 // GetFileSizeEx isn't in the runtime, so it's declared here.
 
@@ -241,7 +241,7 @@ get_reloc :: fn(obj: *CoffObj, reloc_ptr: u32, i: u32) -> Reloc {
 
 // Image building
 //
-// Single-object linker: Gabbro emits the whole program (and its runtime) into one
+// Single-object linker: Fels emits the whole program (and its runtime) into one
 // COFF object, so every defined symbol is local — only kernel32 functions are
 // undefined. We keep .text/.rdata/.data, drop .pdata/.xdata (unwind tables),
 // synthesize a thunk + IAT slot per import, apply REL32 relocations, and write
@@ -326,7 +326,7 @@ starts_with :: fn(s: []const u8, pre: []const u8) -> bool {
 //   1=.text  2=.rdata (+.xdata unwind info)  3=.data  4=.pdata  5=.bss
 //   0=skip (.drectve / .debug* / .skimp / anything else).
 // `.rdata$…`, `.data$…`, `.text$…` COMDAT/group variants all fold into their base
-// class — this is what lets gabld merge the float constant pool (a 2nd `.rdata`).
+// class — this is what lets felsld merge the float constant pool (a 2nd `.rdata`).
 sec_class :: fn(name: []const u8) -> u32 {
     if starts_with(name, ".text")  { return 1u32; }
     if starts_with(name, ".rdata") { return 2u32; }
@@ -381,7 +381,7 @@ ph :: fn(n: u64) {
 
 dump :: fn(obj: *CoffObj) -> i32 {
     if !obj.ok {
-        p("gabld: not a COFF object\n");
+        p("felsld: not a COFF object\n");
         return 1;
     }
     p("machine:   0x"); ph(obj.machine as u64); p("\n");
@@ -445,7 +445,7 @@ link :: fn(a: *Arena, obj_path: []const u8, out_path: []const u8, opts: *LinkOpt
 
 // The ".skimp" section bytes — the compiler's import map: flat `name\0dll\0`
 // records, one per `#extern("dll","name")`. Empty if absent. This is what lets
-// gabld resolve each import's DLL without ever parsing a .lib archive.
+// felsld resolve each import's DLL without ever parsing a .lib archive.
 skimp_bytes :: fn(obj: *CoffObj) -> []const u8 {
     s := 0u32;
     while s < obj.num_sections {
@@ -585,7 +585,7 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8, opts: *LinkO
     data_in := crun[3usize];
     pdata_in := crun[4usize];
     bss_in := crun[5usize];
-    if text_in == 0usize { p("gabld: no .text section\n"); return 1; }
+    if text_in == 0usize { p("felsld: no .text section\n"); return 1; }
 
     // Collect imports (undefined externals) + group them by DLL via the map
     map := skimp_bytes(&obj);
@@ -942,9 +942,9 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8, opts: *LinkO
         s += 1u32;
     }
 
-    // gabld writes no base-relocation table. An executable is always mapped at its fixed
+    // felsld writes no base-relocation table. An executable is always mapped at its fixed
     // ImageBase, so the absolute addresses patched above (vtables, static pointer tables)
-    // are right; a DLL is rebased whenever that address is taken (two gabld DLLs in one
+    // are right; a DLL is rebased whenever that address is taken (two felsld DLLs in one
     // process always collide), and without a `.reloc` the loader would leave those
     // addresses pointing into the wrong image. A DLL holding any is left to LLD, which
     // emits the table. (Status 3 = "hand off to LLD"; the compiler falls back on any
@@ -1039,9 +1039,9 @@ arg_at :: fn(cl: []const u8, want: u32) -> []const u8 {
     return sub(cl, 0usize, 0usize);
 }
 
-// Standalone CLI (`gabld <obj> <exe>`). Deliberately NOT `#entry`/named `main`,
-// so this object can be statically embedded into gabbro.exe without a duplicate
-// `main` (the toolchain drives gabld via gabbro_link_mem in-process, not this).
+// Standalone CLI (`felsld <obj> <exe>`). Deliberately NOT `#entry`/named `main`,
+// so this object can be statically embedded into fels.exe without a duplicate
+// `main` (the toolchain drives felsld via fels_link_mem in-process, not this).
 cli_main :: fn() -> i32 {
     a := make();
     clp0 := GetCommandLineA();                 // runtime: [*]const u8
@@ -1050,13 +1050,13 @@ cli_main :: fn() -> i32 {
     in_path := arg_at(cl, 1u32);
     out_path := arg_at(cl, 2u32);
     if in_path.len == 0usize {
-        p("usage: gabld <input.obj> <output.exe>\n");
+        p("usage: felsld <input.obj> <output.exe>\n");
         (&a).deinit();
         return 2;
     }
     o := default_opts();
     r := link(&a, in_path, out_path, &o);
-    if r == 0i32 { p("gabld: wrote "); p(out_path); p("\n"); }
+    if r == 0i32 { p("felsld: wrote "); p(out_path); p("\n"); }
     (&a).deinit();
     return r;
 }
@@ -1067,11 +1067,11 @@ from_cstr :: fn(cp: *const u8) -> []const u8 {
     return unsafe core::slice_from_raw_parts(u8, unsafe core::ptr_from_int(*u8, base), cstr_len(base));
 }
 
-// In-process entry point exported by gabld.dll. The compiler loads this DLL and
+// In-process entry point exported by felsld.dll. The compiler loads this DLL and
 // calls it to link `in_cstr` (one COFF object file) into `out_cstr` (a PE32+
 // exe), in-process — no spawn, no shell. Returns 0 on success.
-#export("gabbro_link")
-gabbro_link :: fn(in_cstr: *const u8, out_cstr: *const u8) -> i32 {
+#export("fels_link")
+fels_link :: fn(in_cstr: *const u8, out_cstr: *const u8) -> i32 {
     a := make();
     o := default_opts();
     r := link(&a, from_cstr(in_cstr), from_cstr(out_cstr), &o);
@@ -1083,8 +1083,8 @@ gabbro_link :: fn(in_cstr: *const u8, out_cstr: *const u8) -> i32 {
 // (`obj_ptr`/`obj_len`) — no .obj file is ever written or read — plus the PE
 // settings (subsystem / entry / stack / DLL) it knows from the build options.
 // `entry_cstr` is "" for the default; `is_dll` is 0/1. This is the fast path.
-#export("gabbro_link_mem")
-gabbro_link_mem :: fn(obj_ptr: *const u8, obj_len: usize, out_cstr: *const u8,
+#export("fels_link_mem")
+fels_link_mem :: fn(obj_ptr: *const u8, obj_len: usize, out_cstr: *const u8,
                   subsystem: u32, entry_cstr: *const u8, stack_reserve: u64, is_dll: u32) -> i32 {
     a := make();
     base := unsafe (obj_ptr as usize);

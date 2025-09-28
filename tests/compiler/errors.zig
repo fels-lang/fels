@@ -1,7 +1,7 @@
 const std = @import("std");
-const gabbro = @import("gabbro_compiler");
+const fels = @import("fels_compiler");
 
-test "gabbro errors: declarations fail propagate catch and split defer" {
+test "fels errors: declarations fail propagate catch and split defer" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -59,11 +59,11 @@ test "gabbro errors: declarations fail propagate catch and split defer" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "errors.fels", src);
+    var fe = try fels.compile(arena.allocator(), "errors.fels", src);
     defer fe.deinit(arena.allocator());
 
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(module);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
 
     try std.testing.expectEqual(@as(usize, 1), module.errors.len);
     try std.testing.expectEqualStrings("NetError", module.errors[0].name);
@@ -85,11 +85,11 @@ test "gabbro errors: declarations fail propagate catch and split defer" {
     try std.testing.expect(hasBuiltin(download, "catch_handler"));
 
     var opt = module;
-    try gabbro.ir_mod.runDefaultPasses(arena.allocator(), &opt);
-    try gabbro.ir_mod.validateModule(opt);
+    try fels.ir_mod.runDefaultPasses(arena.allocator(), &opt);
+    try fels.ir_mod.validateModule(opt);
 }
 
-test "gabbro errors: fail payload type is checked" {
+test "fels errors: fail payload type is checked" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -100,10 +100,10 @@ test "gabbro errors: fail payload type is checked" {
         \\}
     ;
 
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_error_payload.fels", bad));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "bad_error_payload.fels", bad));
 }
 
-test "gabbro errors: anonymous inline error sets are checked" {
+test "fels errors: anonymous inline error sets are checked" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -120,13 +120,13 @@ test "gabbro errors: anonymous inline error sets are checked" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "anon_errors.fels", src);
+    var fe = try fels.compile(arena.allocator(), "anon_errors.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(module);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
 }
 
-test "gabbro errors: unknown variants in inline error sets fail" {
+test "fels errors: unknown variants in inline error sets fail" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -136,10 +136,10 @@ test "gabbro errors: unknown variants in inline error sets fail" {
         \\}
     ;
 
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_error_variant.fels", bad));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "bad_error_variant.fels", bad));
 }
 
-test "gabbro errors: postfix try outside fallible function fails" {
+test "fels errors: postfix try outside fallible function fails" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -150,17 +150,17 @@ test "gabbro errors: postfix try outside fallible function fails" {
         \\}
     ;
 
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_try.fels", bad));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "bad_try.fels", bad));
 }
 
-fn findFunction(module: gabbro.IrModule, name: []const u8) ?gabbro.ir_mod.IrFunction {
+fn findFunction(module: fels.IrModule, name: []const u8) ?fels.ir_mod.IrFunction {
     for (module.functions) |function| {
         if (std.mem.eql(u8, function.name, name)) return function;
     }
     return null;
 }
 
-fn hasFail(function: gabbro.ir_mod.IrFunction) bool {
+fn hasFail(function: fels.ir_mod.IrFunction) bool {
     for (function.blocks) |block| {
         if (block.terminator) |term| switch (term) {
             .fail => return true,
@@ -170,7 +170,7 @@ fn hasFail(function: gabbro.ir_mod.IrFunction) bool {
     return false;
 }
 
-fn hasCall(function: gabbro.ir_mod.IrFunction, name: []const u8) bool {
+fn hasCall(function: fels.ir_mod.IrFunction, name: []const u8) bool {
     for (function.blocks) |block| {
         for (block.instrs) |instr| switch (instr.kind) {
             .call => |call| if (std.mem.eql(u8, call.callee, name)) return true,
@@ -180,7 +180,7 @@ fn hasCall(function: gabbro.ir_mod.IrFunction, name: []const u8) bool {
     return false;
 }
 
-fn hasBuiltin(function: gabbro.ir_mod.IrFunction, name: []const u8) bool {
+fn hasBuiltin(function: fels.ir_mod.IrFunction, name: []const u8) bool {
     for (function.blocks) |block| {
         for (block.instrs) |instr| switch (instr.kind) {
             .builtin => |builtin| if (std.mem.eql(u8, builtin.name, name)) return true,

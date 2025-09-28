@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-/// Gabbro Windows runtime — compiled automatically into every Windows Gabbro program.
+/// Fels Windows runtime — compiled automatically into every Windows Fels program.
 /// Provides: @panic, assert, write_stdout, write_stderr
 /// No libc. Uses kernel32.dll only (always available on Windows).
 
@@ -21,7 +21,7 @@ WriteFile :: fn(
 ExitProcess :: fn(code: u32);
 
 // Closes an open object handle (files, processes, threads, ...). Declared
-// here — rather than in std.fs / std.process — because gabbro's symbol table is
+// here — rather than in std.fs / std.process — because fels's symbol table is
 // flat and global; multiple stdlib modules need this primitive, and `#extern`
 // functions must keep their real Win32 export name (it doubles as the link
 // symbol), so there's no way to give each module its own private copy.

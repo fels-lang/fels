@@ -5,7 +5,7 @@
 // constants, the sockaddr_in wire struct, the shared NetError, and the conversions
 // between std.net.addr types and the wire format. socket.fels/tcp.fels/udp.fels wrap it
 // into typed handles — reach for this layer directly only for options the higher
-// layers don't expose. Each binding's gabbro name is decoupled from the C symbol (the
+// layers don't expose. Each binding's fels name is decoupled from the C symbol (the
 // #extern 2nd arg is the real link name), so raw calls keep a sys_ prefix.
 
 #import std.net.addr as addr;

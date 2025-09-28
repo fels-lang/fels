@@ -11,7 +11,7 @@
 //   ignored := s.send_all("ping") catch e {};
 //   net::shutdown();
 //
-// Types live in their submodule (gabbro doesn't re-export types across modules), so
+// Types live in their submodule (fels doesn't re-export types across modules), so
 // you only need the submodule import for annotations.
 
 #import std.net.os as os;

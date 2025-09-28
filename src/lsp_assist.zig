@@ -1,4 +1,4 @@
-//! Help while typing for `gabbro lsp`: member completion after `.`, signature help, inlay
+//! Help while typing for `fels lsp`: member completion after `.`, signature help, inlay
 //! hints, hover on locals, parameters and fields, and the last good analysis.
 //!
 //! Code is broken most of the time while it is typed: `p.` alone does not parse. So a
@@ -1404,7 +1404,7 @@ fn exprHint(v: *const View, e: ast.Expr, depth: u8) ?ast.TypeRef {
     }
 }
 
-// Rendering types the way Gabbro source writes them
+// Rendering types the way Fels source writes them
 
 const Out = struct {
     a: std.mem.Allocator,
@@ -1601,7 +1601,7 @@ fn renderNamed(v: *const View, o: *Out, id: SymbolId) void {
     o.s(v.syms.symbol(id).name);
 }
 
-/// A checker type the way Gabbro source writes it. `hint`, the type as written where the
+/// A checker type the way Fels source writes it. `hint`, the type as written where the
 /// value came from, adds what the checker does not keep (`const` on a slice, alias names).
 fn renderTy(v: *const View, o: *Out, ty: Ty, hint: ?ast.TypeRef) void {
     if (hint) |h| if (isAliasRef(v, h, ty)) return renderRef(o, h);
@@ -2123,7 +2123,7 @@ pub fn addLocalNames(
 }
 
 fn hoverJson(o: *Out, code_text: []const u8, note: ?[]const u8) void {
-    o.s("{\"contents\":{\"kind\":\"markdown\",\"value\":\"```gabbro\\n");
+    o.s("{\"contents\":{\"kind\":\"markdown\",\"value\":\"```fels\\n");
     o.esc(code_text);
     o.s("\\n```");
     if (note) |n| {

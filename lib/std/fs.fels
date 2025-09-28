@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.fs — minimal synchronous file I/O for Gabbro. OS calls go through the platform
+// std.fs — minimal synchronous file I/O for Fels. OS calls go through the platform
 // runtime (windows.fels → kernel32; linux.fels → openat/read/write/..), so this file is
 // OS-agnostic. File implements std.io.Reader and Writer; there's open/create/append,
 // exists/is_dir/delete, read_all, and DirIter for directory walking, all sharing FsError.

@@ -116,7 +116,7 @@ pub const Timings = struct {
 pub const LlvmCompileOptions = struct {
     /// Source file path (for diagnostics).
     file_name: []const u8,
-    /// Gabbro source text.
+    /// Fels source text.
     source: []const u8,
     /// Where to write the object file.
     obj_path: []const u8,
@@ -129,7 +129,7 @@ pub const LlvmCompileOptions = struct {
     /// Target OS to generate for (cross-compilation). Defaults to the host.
     target_os: std.Target.Os.Tag = @import("builtin").os.tag,
     /// Emit no platform entry-point wrapper (`mainCRTStartup`) or `_fltused` — a
-    /// freestanding library object to embed in another binary (gabld into gabbro.exe).
+    /// freestanding library object to embed in another binary (felsld into fels.exe).
     no_entry: bool = false,
     /// The object of a static library (`b.static` in build.fels): no entry point, and every
     /// symbol except the `#export`ed ones is internal, so the runtime it carries does not
@@ -390,7 +390,7 @@ fn emitLlvmFromFrontend(
         }) catch return error.LinkFailed;
         if (opts.timings) |tm| tm.link_ns = sinceNs(t_link);
     } else {
-        // Object-only output (`gabbro object`): write the .obj file.
+        // Object-only output (`fels object`): write the .obj file.
         const obj_z = try allocator.dupeZ(u8, opts.obj_path);
         defer allocator.free(obj_z);
         if (opts.progress) |p| p(opts.progress_ctx, .emit);

@@ -389,7 +389,7 @@ pub const FnPtrTy = struct {
     params: []const Ty,
     ret: *const Ty,
     /// `extern fn(...)` — a thin C-ABI function pointer (a bare address), directly
-    /// callable, as opposed to gabbro's fat `{fn, env}` closure. See ast.FnType.
+    /// callable, as opposed to fels's fat `{fn, env}` closure. See ast.FnType.
     thin: bool = false,
 };
 
@@ -905,8 +905,8 @@ pub fn collectSymbolsInto(
     defer first_file.deinit();
     var colliding = std.StringHashMap(void).init(allocator);
     defer colliding.deinit();
-    // C symbols claimed by a *renamed* extern (its gabbro name differs from the C
-    // symbol). A plain gabbro decl that happens to share that bare name (e.g. a
+    // C symbols claimed by a *renamed* extern (its fels name differs from the C
+    // symbol). A plain fels decl that happens to share that bare name (e.g. a
     // `connect` wrapper over a `sys_connect :: #extern(.., "connect")` binding)
     // must take a module-qualified link name too — otherwise its internal body
     // and the external decl would emit the same LLVM symbol and clash.
@@ -978,11 +978,11 @@ pub fn collectSymbolsInto(
         };
         const id = try table.insertLinked(allocator, table.root_scope, name, link, kind, item.span(), item.fileName(), item.isPublic());
         // An extern function links against its C symbol (the `#extern` 2nd arg),
-        // not its gabbro declaration name. The root-scope key stays the bare/collision
+        // not its fels declaration name. The root-scope key stays the bare/collision
         // name (so resolution is unchanged and two externs may share one C symbol
         // across modules without colliding), but the *linkage* name — emitted for
         // the LLVM declaration and every call site via `linkNameFor` — becomes the
-        // C symbol. When the gabbro name already equals the C name this is a no-op.
+        // C symbol. When the fels name already equals the C name this is a no-op.
         // The exception is a symbol bound by several declarations: each then keeps
         // its unique root key as its IR name, and the backend declares the C symbol
         // once (`IrFunction.extern_name`) while giving every declaration its own type.
@@ -3280,7 +3280,7 @@ const Checker = struct {
                     if (isExponentSuffix(text, suffix))
                         self.reportExponent(text, suffix, expr.span)
                     else
-                        self.emitError(expr.span, "unsupported float width `{s}`: gabbro floats are `f32` or `f64`", .{suffix});
+                        self.emitError(expr.span, "unsupported float width `{s}`: fels floats are `f32` or `f64`", .{suffix});
                 }
                 break :blk floatLiteralType(text);
             },
@@ -3817,7 +3817,7 @@ const Checker = struct {
             return .void;
         }
         // core::fn_ptr(f) — the raw thin function pointer of a top-level function,
-        // typed `*void` so it can be handed to a C callback / thread entry (gabbro's
+        // typed `*void` so it can be handed to a C callback / thread entry (fels's
         // ordinary fn value is a fat `{fn, env}` closure a C ABI cannot call). The
         // argument must be a plain function reference; it is resolved in IR.
         if (is_core and std.mem.eql(u8, name, "fn_ptr")) {
@@ -5577,7 +5577,7 @@ const Checker = struct {
     }
 
     /// `1e5` or `1.5e3`: the lexer reads exponent notation as a number with the
-    /// suffix `e5`, which gabbro does not have. Say so, and offer the number
+    /// suffix `e5`, which fels does not have. Say so, and offer the number
     /// written out when that is short enough to be useful.
     fn reportExponent(self: *Checker, text: []const u8, suffix: []const u8, span: Span) void {
         const written = exponentWrittenOut(self.allocator, text, suffix);
@@ -5586,7 +5586,7 @@ const Checker = struct {
         else
             null;
         self.emitErrorRich(span, "exponent notation `{s}` is not supported", .{text}, .{
-            .primary_label = "gabbro has no exponent notation",
+            .primary_label = "fels has no exponent notation",
             .help = help,
         });
     }
@@ -5597,9 +5597,9 @@ const Checker = struct {
         if (intWidthName(name)) |w| {
             const p: []const u8 = if (w.signed) "i" else "u";
             if (w.bits > 64) {
-                self.emitError(span, "unsupported integer width `{s}`: gabbro integers are at most 64-bit — use `{s}64` or `{s}size`", .{ name, p, p });
+                self.emitError(span, "unsupported integer width `{s}`: fels integers are at most 64-bit — use `{s}64` or `{s}size`", .{ name, p, p });
             } else {
-                self.emitError(span, "unsupported integer width `{s}`: gabbro has `{s}8`, `{s}16`, `{s}32`, `{s}64` (and `{s}size`), plus sub-byte `{s}1`–`{s}7`", .{ name, p, p, p, p, p, p, p });
+                self.emitError(span, "unsupported integer width `{s}`: fels has `{s}8`, `{s}16`, `{s}32`, `{s}64` (and `{s}size`), plus sub-byte `{s}1`–`{s}7`", .{ name, p, p, p, p, p, p, p });
             }
             return;
         }
@@ -6031,7 +6031,7 @@ const Checker = struct {
         const type_layout = self.env.layouts.get(id) orelse return null;
         return switch (type_layout.kind) {
             .struct_type => null,
-            .variant_type => "the layout of an enum is not part of Gabbro's guaranteed layout",
+            .variant_type => "the layout of an enum is not part of Fels's guaranteed layout",
             .error_set => "an error set has no guaranteed layout",
             else => "it has no guaranteed layout",
         };
@@ -6317,7 +6317,7 @@ const Checker = struct {
         } else {
             // On its own a literal is an `i32`; the fix is the suffix of the type it was meant to have.
             const help: ?[]const u8 = switch (value) {
-                .too_large => "gabbro integers are at most 64 bits wide",
+                .too_large => "fels integers are at most 64 bits wide",
                 .value => |v| if (!is_default) null else std.fmt.allocPrint(self.allocator, "an integer literal with no type to take is an `i32`: give it the type it needs with a suffix, as in `{s}{s}`", .{
                     written, suggestedIntSuffix(written, v),
                 }) catch null,
@@ -6869,7 +6869,7 @@ fn defaultLiteralType(ty: Ty) Ty {
     };
 }
 
-/// The integer-literal suffixes gabbro accepts (mirrors `intLiteralType`).
+/// The integer-literal suffixes fels accepts (mirrors `intLiteralType`).
 const int_literal_suffixes = [_][]const u8{
     "usize", "isize", "u64", "u32", "u16", "u8",
     "i64",   "i32",   "i16", "i8",  "byte",
@@ -6981,7 +6981,7 @@ test "exponent suffixes are recognized and written out" {
     try std.testing.expect(exponentWrittenOut(aa, "1e99", "e99") == null);
 }
 
-/// Split off a float literal's trailing type-suffix (possibly empty). gabbro float
+/// Split off a float literal's trailing type-suffix (possibly empty). fels float
 /// literals are `<digits>.<digits>` so the suffix is whatever follows the
 /// fractional digits — only `f32`/`f64` are valid.
 fn floatLiteralSuffix(text: []const u8) []const u8 {

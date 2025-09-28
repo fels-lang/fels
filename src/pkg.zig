@@ -1,4 +1,4 @@
-//! The package manager: gabbro.pkg, gabbro.lock, fetching and resolving packages.
+//! The package manager: fels.pkg, fels.lock, fetching and resolving packages.
 
 pub const directives = @import("pkg/directives.zig");
 pub const manifest = @import("pkg/manifest.zig");

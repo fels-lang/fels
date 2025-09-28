@@ -1,5 +1,5 @@
 const std = @import("std");
-const gabbro = @import("gabbro_compiler");
+const fels = @import("fels_compiler");
 
 // `core::align_of`, `core::offset_of` and `#assert`. The expected numbers below were
 // checked against clang's layout for x86_64-pc-windows-msvc (`_Alignof`,
@@ -7,9 +7,9 @@ const gabbro = @import("gabbro_compiler");
 
 /// Compile and lower `src` (type-check, then fold constants and evaluate `#assert`s).
 fn lower(allocator: std.mem.Allocator, src: []const u8) !void {
-    var fe = try gabbro.compile(allocator, "layout.fels", src);
+    var fe = try fels.compile(allocator, "layout.fels", src);
     defer fe.deinit(allocator);
-    _ = try gabbro.lowerFrontend(allocator, fe);
+    _ = try fels.lowerFrontend(allocator, fe);
 }
 
 const structs =
@@ -110,7 +110,7 @@ test "layout: #assert needs a bool and a compile-time value" {
     // A non-bool condition is a type error, caught while type-checking.
     {
         const src = try std.mem.concat(arena.allocator(), u8, &.{ structs, "#assert(core::sizeof(Plain));\n" });
-        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "layout.fels", src));
+        try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "layout.fels", src));
     }
     // A condition that needs the host (here a call into kernel32) cannot be folded: a
     // pure compile-time evaluation has no host access.
@@ -139,6 +139,6 @@ test "layout: invalid layout queries are diagnosed" {
     };
     for (invalid) |decl| {
         const src = try std.mem.concat(arena.allocator(), u8, &.{ structs, decl, "\n" });
-        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "layout.fels", src));
+        try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "layout.fels", src));
     }
 }

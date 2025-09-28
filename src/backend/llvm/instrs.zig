@@ -275,7 +275,7 @@ pub fn getOrCreateThunk(cg: *ModuleCg, fn_link: []const u8, target: llvm.LLVMVal
     const target_ty = fnTypeOf(cg, fn_link, target);
     const n = llvm.LLVMCountParamTypes(target_ty);
     const ptr_ty = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
-    // A target returning through `sret` (a Gabbro function, not a C one) keeps that pointer
+    // A target returning through `sret` (a Fels function, not a C one) keeps that pointer
     // first: the thunk is `(sret, __env, args…)` and passes it on.
     const sret_ty: ?llvm.LLVMTypeRef = if (cg.fn_abi.contains(fn_link)) null else abi.sretOf(target);
     const s: c_uint = if (sret_ty != null) 1 else 0;
@@ -740,7 +740,7 @@ fn lowerCallIndirect(
     ci: ir.CallIndirectInstr,
     ret_ty: ir.IrType,
 ) ?llvm.LLVMValueRef {
-    // For a gabbro function value the callee is a fat closure `{ fn, env }`: extract
+    // For a fels function value the callee is a fat closure `{ fn, env }`: extract
     // the `fn` field to call, and pass the `env` as a hidden leading argument so
     // every closure is invoked uniformly as `fn(env, args)`.
     const closure_val = if (ci.is_closure) resolveVal(cg, fncg, ci.callee, .unknown) else null;
@@ -1595,7 +1595,7 @@ fn lowerStructLit(
 
 // Atomic helpers
 
-/// Map a gabbro ordering constant (0=relaxed … 4=seq_cst) to an LLVM atomic ordering.
+/// Map a fels ordering constant (0=relaxed … 4=seq_cst) to an LLVM atomic ordering.
 fn atomicOrdering(arg: ir.Value) c_uint {
     const n: i64 = switch (arg) {
         .imm => |im| switch (im) {

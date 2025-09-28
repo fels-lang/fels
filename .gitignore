@@ -7,8 +7,8 @@
 **/zig-out/
 *.o
 
-# Comptime #run cache (GABBRO_CACHE=1)
-**/.gabbro-cache/
+# Comptime #run cache (FELS_CACHE=1)
+**/.fels-cache/
 
 # Release archives (scripts/package.ps1)
 dist/

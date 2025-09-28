@@ -1,4 +1,4 @@
-//! Reading a file of `#` directives (gabbro.pkg, gabbro.lock) with the Gabbro lexer: each
+//! Reading a file of `#` directives (fels.pkg, fels.lock) with the Fels lexer: each
 //! directive is `#name` followed by words and string literals, ended by `;`.
 
 const std = @import("std");

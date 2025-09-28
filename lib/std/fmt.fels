@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // std.fmt — formatting on top of std.io.Writer: padding/alignment, width-justified
-// numbers, joining. Gabbro has no varargs or format strings, so you compose *Writer
+// numbers, joining. Fels has no varargs or format strings, so you compose *Writer
 // calls directly and reach for these helpers for the fiddly parts (padding to a
 // column, right-justifying a number, joining with a separator). Width-aware padding
 // measures the value with a NullWriter first, then pads — allocation-free.

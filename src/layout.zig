@@ -1,4 +1,4 @@
-//! Size, alignment and field offsets of Gabbro types, worked out from IR types alone.
+//! Size, alignment and field offsets of Fels types, worked out from IR types alone.
 //!
 //! The LLVM backend lowers a type and asks LLVM for its layout; the comptime VM has no
 //! LLVM, yet `core::sizeof` must give the same answer in a `#run` as in the compiled

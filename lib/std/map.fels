@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.map — hash maps with a gabbro flavour. Both are open-addressed (linear probing)
-// and region-bound like the rest of gabbro's containers: the tables live in an Arena,
+// std.map — hash maps with a fels flavour. Both are open-addressed (linear probing)
+// and region-bound like the rest of fels's containers: the tables live in an Arena,
 // so there are no per-entry frees — reset/deinit the region to reclaim the whole map.
 //
 //   AutoHashMap(K, V)  keys any value type, hashing the key's raw bytes (no Hash/Eq,

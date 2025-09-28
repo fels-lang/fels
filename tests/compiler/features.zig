@@ -1,5 +1,5 @@
 const std = @import("std");
-const gabbro = @import("gabbro_compiler");
+const fels = @import("fels_compiler");
 
 test "arithmetic and bitwise operators" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -12,13 +12,13 @@ test "arithmetic and bitwise operators" {
         \\shifts  :: fn(a: u32) -> u32 { return (a << 2) >> 1; }
         \\rem     :: fn(a: i32, b: i32) -> i32 { return a % b; }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "arith.fels", src);
+    var fe = try fels.compile(arena.allocator(), "arith.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
     var opt = m;
-    try gabbro.ir_mod.runDefaultPasses(arena.allocator(), &opt);
-    try gabbro.ir_mod.validateModule(opt);
+    try fels.ir_mod.runDefaultPasses(arena.allocator(), &opt);
+    try fels.ir_mod.validateModule(opt);
 }
 
 test "comparison and logical operators" {
@@ -29,10 +29,10 @@ test "comparison and logical operators" {
         \\cmp :: fn(a: i32, b: i32) -> bool { return a <= b && b > 0 || a >= 0; }
         \\neg :: fn(x: bool) -> bool { return !x; }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "cmp.fels", src);
+    var fe = try fels.compile(arena.allocator(), "cmp.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "compound assignment operators" {
@@ -51,10 +51,10 @@ test "compound assignment operators" {
         \\    return x;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "compound.fels", src);
+    var fe = try fels.compile(arena.allocator(), "compound.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "break and continue in while loop" {
@@ -76,10 +76,10 @@ test "break and continue in while loop" {
         \\    return result;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "break.fels", src);
+    var fe = try fels.compile(arena.allocator(), "break.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "CFG analysis rejects missing return on non-void function" {
@@ -91,7 +91,7 @@ test "CFG analysis rejects missing return on non-void function" {
     ;
     try std.testing.expectError(
         error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "bad.fels", bad),
+        fels.compile(arena.allocator(), "bad.fels", bad),
     );
 }
 
@@ -104,7 +104,7 @@ test "break outside loop fails" {
     ;
     try std.testing.expectError(
         error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "bad_break.fels", bad),
+        fels.compile(arena.allocator(), "bad_break.fels", bad),
     );
 }
 
@@ -120,11 +120,11 @@ test "constant folding folds binary ops in function body" {
         \\    return x;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "fold.fels", src);
+    var fe = try fels.compile(arena.allocator(), "fold.fels", src);
     defer fe.deinit(arena.allocator());
-    var m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.runDefaultPasses(arena.allocator(), &m);
-    try gabbro.ir_mod.validateModule(m);
+    var m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.runDefaultPasses(arena.allocator(), &m);
+    try fels.ir_mod.validateModule(m);
     // Verify the function exists and its IR is valid
     try std.testing.expectEqual(@as(usize, 1), m.functions.len);
 }
@@ -145,10 +145,10 @@ test "zone block desugars to std.heap.Arena make/new/deinit" {
         \\    return true;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "zone.fels", src);
+    var fe = try fels.compile(arena.allocator(), "zone.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // The handle is a real std.heap.Arena: entering the zone calls `make`, the
     // body's `new`/`new_slice` lower as ordinary calls, and the zone exit calls
@@ -194,10 +194,10 @@ test "zone RAII: return inside zone deinits the arena first" {
         \\    return 0;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "raii.fels", src);
+    var fe = try fels.compile(arena.allocator(), "raii.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // A `return` inside the zone must tear the arena down first: the instruction
     // right before that `return` terminator is the `deinit` call.
@@ -231,7 +231,7 @@ test "zone ownership: allocations cannot escape" {
         \\    }
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "zone_return.fels", returned));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "zone_return.fels", returned));
 
     const outer_assignment =
         \\bad :: fn() {
@@ -241,7 +241,7 @@ test "zone ownership: allocations cannot escape" {
         \\    }
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "zone_outer.fels", outer_assignment));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "zone_outer.fels", outer_assignment));
 
     const passed_to_function =
         \\consume :: fn(value: *i32) {}
@@ -251,7 +251,7 @@ test "zone ownership: allocations cannot escape" {
         \\    }
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "zone_call.fels", passed_to_function));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "zone_call.fels", passed_to_function));
 }
 
 test "zone borrowing: borrowed parameters may use and forward zone-owned values" {
@@ -273,10 +273,10 @@ test "zone borrowing: borrowed parameters may use and forward zone-owned values"
         \\    }
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "zone_borrow.fels", src);
+    var fe = try fels.compile(arena.allocator(), "zone_borrow.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(module);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
 }
 
 test "zone borrowing: borrowed values cannot be retained or returned" {
@@ -288,36 +288,36 @@ test "zone borrowing: borrowed values cannot be retained or returned" {
         \\    return data;
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "borrow_return.fels", returned));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "borrow_return.fels", returned));
 
     const ordinary_call =
         \\retain :: fn(data: []u8) {}
         \\bad :: fn(data: borrow []u8) { retain(data); }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "borrow_call.fels", ordinary_call));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "borrow_call.fels", ordinary_call));
 
     const stored =
         \\bad :: fn(data: borrow []u8, out: *[]u8) {
         \\    *out = data;
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "borrow_store.fels", stored));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "borrow_store.fels", stored));
 }
 
 test "zone borrowing: qualifier is restricted to checked pointer and slice parameters" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "borrow_scalar.fels",
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "borrow_scalar.fels",
         \\bad :: fn(value: borrow i32) {}
     ));
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "borrow_return_type.fels",
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "borrow_return_type.fels",
         \\bad :: fn() -> borrow []u8;
     ));
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "borrow_extern.fels",
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "borrow_extern.fels",
         \\bad :: fn(value: borrow []u8);
     ));
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "borrow_field.fels",
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "borrow_field.fels",
         \\Bad :: struct { value: borrow []u8, }
     ));
 }
@@ -331,7 +331,7 @@ test "zone ownership: only Arena is currently supported" {
         \\    zone scratch: Pool {}
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "zone_kind.fels", src));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "zone_kind.fels", src));
 }
 
 test "zone ownership: scalar reads may be passed and returned" {
@@ -347,7 +347,7 @@ test "zone ownership: scalar reads may be passed and returned" {
         \\    }
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "zone_scalar.fels", src);
+    var fe = try fels.compile(arena.allocator(), "zone_scalar.fels", src);
     defer fe.deinit(arena.allocator());
 }
 
@@ -362,10 +362,10 @@ test "defer: basic expression deferred to block end" {
         \\    return true;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "defer.fels", src);
+    var fe = try fels.compile(arena.allocator(), "defer.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const func = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "work")) break f;
@@ -402,10 +402,10 @@ test "defer: LIFO order — last defer runs first" {
         \\    defer b();
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "defer_order.fels", src);
+    var fe = try fels.compile(arena.allocator(), "defer_order.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const func = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "work")) break f;
@@ -441,10 +441,10 @@ test "defer inside zone block" {
         \\    return true;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "defer_zone.fels", src);
+    var fe = try fels.compile(arena.allocator(), "defer_zone.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const work = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "work")) break f;
@@ -477,10 +477,10 @@ test "zone RAII: fail deinits the arena before propagation" {
         \\    }
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "zone_fail.fels", src);
+    var fe = try fels.compile(arena.allocator(), "zone_fail.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const work = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "work")) break f;
@@ -507,10 +507,10 @@ test "unsafe_expr: unsafe prefix on expression is transparent" {
         \\    return unsafe core::unaligned_read(u8, ptr);
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "unsafe_expr.fels", src);
+    var fe = try fels.compile(arena.allocator(), "unsafe_expr.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "asm: zero-input volatile instruction (pause)" {
@@ -523,10 +523,10 @@ test "asm: zero-input volatile instruction (pause)" {
         \\    }
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "asm_pause.fels", src);
+    var fe = try fels.compile(arena.allocator(), "asm_pause.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "asm: input operands and typed output (syscall pattern)" {
@@ -544,10 +544,10 @@ test "asm: input operands and typed output (syscall pattern)" {
         \\    );
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "asm_syscall.fels", src);
+    var fe = try fels.compile(arena.allocator(), "asm_syscall.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // Verify the asm produces an inline_asm instruction with correct structure.
     const fn_ = for (m.functions) |f| {
@@ -577,7 +577,7 @@ test "asm: unsafe required — bare asm fails outside unsafe" {
     const bad =
         \\bad :: fn() { core::asm(volatile, "pause", inputs: {}, outputs: {}, clobbers: {}); }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_asm.fels", bad));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "bad_asm.fels", bad));
 }
 
 test "?? nil-coalesce: unwrap or default" {
@@ -594,10 +594,10 @@ test "?? nil-coalesce: unwrap or default" {
         \\    return find(ok) ?? -1;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "nil_coalesce.fels", src);
+    var fe = try fels.compile(arena.allocator(), "nil_coalesce.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // with_default should have a conditional branch (for the ?? check)
     const fn_ = for (m.functions) |f| {
@@ -624,17 +624,17 @@ test "!! force-unwrap: unwrap or panic" {
         \\    return find()!!;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "force_unwrap.fels", src);
+    var fe = try fels.compile(arena.allocator(), "force_unwrap.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // unwrap should have a null check and a structured panic terminator with
     // the source location of the force-unwrap expression.
     const fn_ = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "unwrap")) break f;
     } else return error.FunctionNotFound;
-    var panic: ?gabbro.ir_mod.Panic = null;
+    var panic: ?fels.ir_mod.Panic = null;
     for (fn_.blocks) |block| {
         if (block.terminator) |t| switch (t) {
             .panic => |p| panic = p,
@@ -662,13 +662,13 @@ test "generated panic locations retain their defining source file" {
         \\main :: fn() -> i32 { return 0; }
     ;
 
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "helper.fels", .source = helper_src },
         .{ .file_name = "app.fels", .source = app_src },
     });
     defer fe.deinit(arena.allocator());
-    var module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.runDefaultPasses(arena.allocator(), &module);
+    var module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.runDefaultPasses(arena.allocator(), &module);
 
     const helper = for (module.functions) |function| {
         if (std.mem.eql(u8, function.name, "unwrap_helper")) break function;
@@ -693,7 +693,7 @@ test "?? type mismatch fails sema" {
     const bad =
         \\bad :: fn(v: ?i32) -> i32 { return v ?? "wrong"; }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad.fels", bad));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "bad.fels", bad));
 }
 
 test "!! on non-optional fails sema" {
@@ -703,7 +703,7 @@ test "!! on non-optional fails sema" {
     const bad =
         \\bad :: fn(v: i32) -> i32 { return v!!; }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad.fels", bad));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "bad.fels", bad));
 }
 
 test "if-else with both branches returning" {
@@ -719,10 +719,10 @@ test "if-else with both branches returning" {
         \\    }
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "abs.fels", src);
+    var fe = try fels.compile(arena.allocator(), "abs.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "@panic runtime parses, checks, and lowers" {
@@ -743,10 +743,10 @@ test "@panic runtime parses, checks, and lowers" {
         \\    if !cond { core::panic("assertion failed\n"); }
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "runtime/windows.fels", src);
+    var fe = try fels.compile(arena.allocator(), "runtime/windows.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const panic_fn = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "@panic")) break f;
@@ -768,10 +768,10 @@ test "postfix as casts lower to cast instructions" {
         \\    return widened + (back as i64) + (roundtrip as i64);
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "casts.fels", src);
+    var fe = try fels.compile(arena.allocator(), "casts.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const func = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "casts")) break f;
@@ -790,7 +790,7 @@ test "pointer as cast requires unsafe" {
     const bad =
         \\bad :: fn(addr: usize) -> *u32 { return addr as *u32; }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_cast.fels", bad));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "bad_cast.fels", bad));
 }
 
 test "for range and slice loops lower with continue-safe increment blocks" {
@@ -821,10 +821,10 @@ test "for range and slice loops lower with continue-safe increment blocks" {
         \\    }
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "for.fels", src);
+    var fe = try fels.compile(arena.allocator(), "for.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const range_fn = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "sum_range")) break f;
@@ -858,10 +858,10 @@ test "const: *const T is accepted as a parameter type" {
         \\    _ := sum(&pair);
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "const_ptr.fels", src);
+    var fe = try fels.compile(arena.allocator(), "const_ptr.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "const: *T is implicitly promoted to *const T" {
@@ -876,9 +876,9 @@ test "const: *T is implicitly promoted to *const T" {
         \\    return consume(p);
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "const_promote.fels", src);
+    var fe = try fels.compile(arena.allocator(), "const_promote.fels", src);
     defer fe.deinit(arena.allocator());
-    try gabbro.ir_mod.validateModule(try gabbro.lowerFrontend(arena.allocator(), fe));
+    try fels.ir_mod.validateModule(try fels.lowerFrontend(arena.allocator(), fe));
 }
 
 test "const: writing to field through *const T is rejected" {
@@ -891,7 +891,7 @@ test "const: writing to field through *const T is rejected" {
     ;
     try std.testing.expectError(
         error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "const_write.fels", bad),
+        fels.compile(arena.allocator(), "const_write.fels", bad),
     );
 }
 
@@ -904,7 +904,7 @@ test "const: field write through *const T is rejected" {
     ;
     try std.testing.expectError(
         error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "const_field_write.fels", bad),
+        fels.compile(arena.allocator(), "const_field_write.fels", bad),
     );
 }
 
@@ -927,9 +927,9 @@ test "static constraints: $T: Interface accepts conforming type" {
         \\process :: fn($T: Printer, item: *T) {}
         \\use :: fn(c: *Console) { process(c); }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "constraint_ok.fels", src);
+    var fe = try fels.compile(arena.allocator(), "constraint_ok.fels", src);
     defer fe.deinit(arena.allocator());
-    try gabbro.ir_mod.validateModule(try gabbro.lowerFrontend(arena.allocator(), fe));
+    try fels.ir_mod.validateModule(try fels.lowerFrontend(arena.allocator(), fe));
 }
 
 test "static constraints: $T: Interface rejects non-conforming type" {
@@ -945,7 +945,7 @@ test "static constraints: $T: Interface rejects non-conforming type" {
     ;
     try std.testing.expectError(
         error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "constraint_bad.fels", bad),
+        fels.compile(arena.allocator(), "constraint_bad.fels", bad),
     );
 }
 
@@ -964,11 +964,11 @@ test "the checker leaves a builtin's type argument as a type in the tree, and a 
         \\shadowed :: fn(Node: i32) -> usize { return core::sizeof(*Node); }
         \\pointee :: fn(p: *i32) -> usize { return core::sizeof(*p); }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "type_arg_tree.fels", src);
+    var fe = try fels.compile(arena.allocator(), "type_arg_tree.fels", src);
     defer fe.deinit(arena.allocator());
 
     const Names = struct {
-        fn firstArg(module: gabbro.Module, name: []const u8) !gabbro.ast_mod.Expr {
+        fn firstArg(module: fels.Module, name: []const u8) !fels.ast_mod.Expr {
             for (module.items) |item| switch (item) {
                 .function => |f| if (std.mem.eql(u8, f.name, name))
                     return f.body.?.statements[0].return_stmt.value.?.kind.call.args[0].positional,
@@ -1010,10 +1010,10 @@ test "a pointer type passed as a type argument is a placeholder in IR, never a l
         \\Hold :: struct { id: usize = core::type_id(**Node), n: usize = core::sizeof(*Node) }
         \\m :: fn() -> usize { hd: Hold = .{}; return hd.id + hd.n; }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "type_arg_ir.fels", src);
+    var fe = try fels.compile(arena.allocator(), "type_arg_ir.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     var lowered: usize = 0;
     for (m.functions) |func| {

@@ -11,7 +11,7 @@
 //! depends on `std.ptr.align_up`.
 
 /// `lib/std/heap.fels` — the bump arena (Arena, make/reserve/fixed, alloc*, new*).
-pub const heap_src = @embedFile("std_heap_gabbro");
+pub const heap_src = @embedFile("std_heap_fels");
 
 /// `lib/std/ptr.fels` — pointer helpers; `heap` uses `align_up`.
-pub const ptr_src = @embedFile("std_ptr_gabbro");
+pub const ptr_src = @embedFile("std_ptr_fels");

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Test the navigation requests of `gabbro lsp` on a small project of several files:
+"""Test the navigation requests of `fels lsp` on a small project of several files:
 textDocument/references, prepareRename, rename, documentHighlight and workspace/symbol.
 
-    python tests/lsp_nav_test.py [path-to-gabbro.exe]
+    python tests/lsp_nav_test.py [path-to-fels.exe]
 
 Builds the project in a temporary folder, drives the server over stdio and prints PASS
 or the failed checks.
@@ -14,7 +14,7 @@ import sys
 import tempfile
 
 EXE = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-    os.path.dirname(__file__), "..", "zig-out", "bin", "gabbro.exe"))
+    os.path.dirname(__file__), "..", "zig-out", "bin", "fels.exe"))
 
 UTIL = """\
 pub Point :: struct {
@@ -137,7 +137,7 @@ def main():
             {"jsonrpc": "2.0", "method": "initialized", "params": {}},
             # Only main.fels is open: util.fels and other.fels are read from disk.
             {"jsonrpc": "2.0", "method": "textDocument/didOpen",
-             "params": {"textDocument": {"uri": main_uri, "languageId": "gabbro", "version": 1, "text": MAIN}}},
+             "params": {"textDocument": {"uri": main_uri, "languageId": "fels", "version": 1, "text": MAIN}}},
         ]
         names = {}
 
@@ -205,12 +205,12 @@ def main():
         # Open other.fels with one more call of `add`: the open text wins over the disk.
         other2 = OTHER + "thrice :: fn(n: i32) -> i32 { return add(add(n, n), n); }\n"
         msgs.append({"jsonrpc": "2.0", "method": "textDocument/didOpen",
-                     "params": {"textDocument": {"uri": other_uri, "languageId": "gabbro", "version": 1, "text": other2}}})
+                     "params": {"textDocument": {"uri": other_uri, "languageId": "fels", "version": 1, "text": other2}}})
         refs("refs add after edit", "add(p.x", delta=1)
         msgs.append({"jsonrpc": "2.0", "id": 99, "method": "shutdown", "params": None})
         msgs.append({"jsonrpc": "2.0", "method": "exit", "params": None})
 
-        env = dict(os.environ, GABBRO_LSP_TIMING="1")
+        env = dict(os.environ, FELS_LSP_TIMING="1")
         p = subprocess.run([EXE, "lsp"], input=b"".join(frame(m) for m in msgs),
                            capture_output=True, timeout=300, env=env)
         out = {}
@@ -222,7 +222,7 @@ def main():
                 out[names[r["id"]]] = r
         stderr = p.stderr.decode(errors="replace")
         for line in stderr.splitlines():
-            if "gabbro-lsp:" in line and ("references" in line or "rename" in line or "symbol" in line or "Highlight" in line):
+            if "fels-lsp:" in line and ("references" in line or "rename" in line or "symbol" in line or "Highlight" in line):
                 print("  " + line.strip())
 
         check(diags.get("main.fels") == [], "main.fels has no diagnostics: %s" % diags.get("main.fels"))

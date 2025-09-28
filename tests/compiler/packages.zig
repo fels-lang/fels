@@ -1,9 +1,9 @@
-/// The package manager: gabbro.pkg, gabbro.lock, git packages from a local repository, path
+/// The package manager: fels.pkg, fels.lock, git packages from a local repository, path
 /// packages, capabilities. Needs git; the test that builds a program needs LLVM too.
 const std = @import("std");
 const builtin = @import("builtin");
-const gabbro = @import("gabbro_compiler");
-const project = gabbro.pkg.project;
+const fels = @import("fels_compiler");
+const project = fels.pkg.project;
 
 const io = std.testing.io;
 
@@ -40,7 +40,7 @@ const Setup = struct {
         const base = ".zig-cache/" ++ name;
         std.Io.Dir.cwd().deleteTree(io, base) catch {};
         const repo = base ++ "/mathlib";
-        try write(repo, "gabbro.pkg", "#package mathlib \"1.0.0\";\n");
+        try write(repo, "fels.pkg", "#package mathlib \"1.0.0\";\n");
         try write(repo, "src/mathlib.fels", "pub ANSWER :: 4;\n");
         try write(repo, "src/ops.fels", "pub triple :: fn(x: i32) -> i32 { return x * 3; }\n");
         if (!git(a, repo, &.{ "init", "-q" })) return null; // no git: skip
@@ -56,7 +56,7 @@ const Setup = struct {
             c.* = '/';
         };
         var env = std.process.Environ.Map.init(a);
-        try env.put("GABBRO_PKG_DIR", try std.fs.path.join(a, &.{ cwd, base, "cache" }));
+        try env.put("FELS_PKG_DIR", try std.fs.path.join(a, &.{ cwd, base, "cache" }));
         const proj = base ++ "/app";
         try std.Io.Dir.cwd().createDirPath(io, proj);
         return .{
@@ -76,10 +76,10 @@ const Setup = struct {
         return self.arena.allocator();
     }
 
-    /// Write the project's gabbro.pkg: `#package app`, then `lines` with `URL` replaced.
+    /// Write the project's fels.pkg: `#package app`, then `lines` with `URL` replaced.
     fn pkg(self: *Setup, lines: []const u8) !void {
         const text = try std.mem.replaceOwned(u8, self.mem(), lines, "URL", self.url);
-        try write(self.project, "gabbro.pkg", try std.fmt.allocPrint(self.mem(), "#package app \"0.1.0\";\n{s}", .{text}));
+        try write(self.project, "fels.pkg", try std.fmt.allocPrint(self.mem(), "#package app \"0.1.0\";\n{s}", .{text}));
     }
 
     fn load(self: *Setup, opts: project.Options) !project.Result {
@@ -93,7 +93,7 @@ const Setup = struct {
     }
 };
 
-test "packages: a git package at the newest version its range allows, recorded in gabbro.lock" {
+test "packages: a git package at the newest version its range allows, recorded in fels.lock" {
     var s = (try Setup.init("pk_newest")) orelse return error.SkipZigTest;
     defer s.deinit();
     try s.pkg("#use mathlib from \"URL\" version \"^1.0\";\n");
@@ -103,11 +103,11 @@ test "packages: a git package at the newest version its range allows, recorded i
     try std.testing.expect(std.mem.endsWith(u8, m.import_dir, "src"));
     const answer = try std.Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(s.mem(), &.{ m.import_dir, "mathlib.fels" }), s.mem(), .unlimited);
     try std.testing.expectEqualStrings("pub ANSWER :: 5;\n", answer);
-    const lock = try std.Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(s.mem(), "{s}/gabbro.lock", .{s.project}), s.mem(), .unlimited);
+    const lock = try std.Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(s.mem(), "{s}/fels.lock", .{s.project}), s.mem(), .unlimited);
     try std.testing.expect(std.mem.indexOf(u8, lock, "version \"1.1.0\"") != null);
 }
 
-test "packages: gabbro.lock keeps a version until update, or until the range no longer allows it" {
+test "packages: fels.lock keeps a version until update, or until the range no longer allows it" {
     var s = (try Setup.init("pk_lock")) orelse return error.SkipZigTest;
     defer s.deinit();
     try s.pkg("#use mathlib from \"URL\" version \"^1.0\";\n");
@@ -123,7 +123,7 @@ test "packages: a path package and what it uses come along, one version of each"
     var s = (try Setup.init("pk_path")) orelse return error.SkipZigTest;
     defer s.deinit();
     const helpers = try std.fmt.allocPrint(s.mem(), "{s}/helpers", .{s.base});
-    try write(helpers, "gabbro.pkg", try std.fmt.allocPrint(s.mem(), "#package helpers \"0.1.0\";\n#use mathlib from \"{s}\" version \"^1.0\";\n", .{s.url}));
+    try write(helpers, "fels.pkg", try std.fmt.allocPrint(s.mem(), "#package helpers \"0.1.0\";\n#use mathlib from \"{s}\" version \"^1.0\";\n", .{s.url}));
     try write(helpers, "helpers.fels", "pub twice :: fn(x: i32) -> i32 { return x * 2; }\n");
     try s.pkg("#use helpers from \"../helpers\";\n");
     const r = try s.load(.{});
@@ -140,7 +140,7 @@ test "packages: what a package needs at compile time must be granted, and can on
     var s = (try Setup.init("pk_caps")) orelse return error.SkipZigTest;
     defer s.deinit();
     const repo = try std.fmt.allocPrint(s.mem(), "{s}/mathlib", .{s.base});
-    try write(repo, "gabbro.pkg", "#package mathlib \"1.4.0\";\n#needs ffi(\"user32\");\n");
+    try write(repo, "fels.pkg", "#package mathlib \"1.4.0\";\n#needs ffi(\"user32\");\n");
     try s.tag("1.4.0", "pub ANSWER :: 8;\n");
 
     try s.pkg("#use mathlib from \"URL\" version \"^1.4\";\n");
@@ -153,7 +153,7 @@ test "packages: what a package needs at compile time must be granted, and can on
 
     // Through a path package that was granted less, it is not enough.
     const helpers = try std.fmt.allocPrint(s.mem(), "{s}/helpers", .{s.base});
-    try write(helpers, "gabbro.pkg", try std.fmt.allocPrint(s.mem(), "#use mathlib from \"{s}\" version \"^1.4\" may ffi(\"user32\");\n", .{s.url}));
+    try write(helpers, "fels.pkg", try std.fmt.allocPrint(s.mem(), "#use mathlib from \"{s}\" version \"^1.4\" may ffi(\"user32\");\n", .{s.url}));
     try s.pkg("#use helpers from \"../helpers\" may ffi(\"gdi32\");\n");
     try std.testing.expectError(error.PackageError, s.load(.{}));
 }
@@ -168,23 +168,23 @@ test "packages: a changed file in the cache is found" {
     try std.testing.expectError(error.PackageError, s.load(.{ .verify = true }));
 }
 
-test "packages: gabbro add writes gabbro.pkg, and leaves it as it was when that fails" {
+test "packages: fels add writes fels.pkg, and leaves it as it was when that fails" {
     var s = (try Setup.init("pk_add")) orelse return error.SkipZigTest;
     defer s.deinit();
     const p = try project.add(s.mem(), io, &s.env, s.project, "mathlib", s.url, "~1.0", null);
     try std.testing.expectEqualStrings("1.0.0", p.version); // ~1.0 allows only 1.0.x
-    const pkg_path = try std.fmt.allocPrint(s.mem(), "{s}/gabbro.pkg", .{s.project});
+    const pkg_path = try std.fmt.allocPrint(s.mem(), "{s}/fels.pkg", .{s.project});
     const text = try std.Io.Dir.cwd().readFileAlloc(io, pkg_path, s.mem(), .unlimited);
     try std.testing.expect(std.mem.startsWith(u8, text, "#package app \"0.1.0\";"));
     try std.testing.expect(std.mem.indexOf(u8, text, "version \"~1.0\";") != null);
 
-    // A version that does not exist: gabbro.pkg stays as it was.
+    // A version that does not exist: fels.pkg stays as it was.
     try std.testing.expectError(error.PackageError, project.add(s.mem(), io, &s.env, s.project, "other", s.url, "^9.0", null));
     try std.testing.expectEqualStrings(text, try std.Io.Dir.cwd().readFileAlloc(io, pkg_path, s.mem(), .unlimited));
 }
 
-test "packages: a package's #run gets the capability gabbro.pkg grants, and no more" {
-    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+test "packages: a package's #run gets the capability fels.pkg grants, and no more" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -192,7 +192,7 @@ test "packages: a package's #run gets the capability gabbro.pkg grants, and no m
     const base = ".zig-cache/pk_vm_caps";
     std.Io.Dir.cwd().deleteTree(io, base) catch {};
     // A path package whose compile-time code calls into user32.
-    try write(base ++ "/screen", "gabbro.pkg", "#package screen \"0.1.0\";\n#needs ffi(\"user32\");\n");
+    try write(base ++ "/screen", "fels.pkg", "#package screen \"0.1.0\";\n#needs ffi(\"user32\");\n");
     try write(base ++ "/screen", "screen.fels",
         \\#extern("user32", "GetSystemMetrics")
         \\metrics :: fn(index: i32) -> i32;
@@ -202,13 +202,13 @@ test "packages: a package's #run gets the capability gabbro.pkg grants, and no m
     );
     try write(base ++ "/app", "main.fels", "#import screen;\nmain :: fn() -> i32 { return screen::known(); }\n");
     try write(base ++ "/app", "build.fels", "#import std.build.{ Build };\nbuild :: fn(b: Build) {\n    b.executable(\"app\", \"main.fels\");\n}\n");
-    const lp = gabbro.windows_sdk_lib_path;
+    const lp = fels.windows_sdk_lib_path;
     const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
-    const opts: gabbro.build_driver.RunOptions = .{ .quiet = true, .llvm_bin = gabbro.llvm_path ++ "/bin", .lib_paths = lib_paths };
+    const opts: fels.build_driver.RunOptions = .{ .quiet = true, .llvm_bin = fels.llvm_path ++ "/bin", .lib_paths = lib_paths };
 
     // Granted: the #run reaches user32.
-    try write(base ++ "/app", "gabbro.pkg", "#use screen from \"../screen\" may ffi(\"user32\");\n");
-    try gabbro.build_driver.run(a, io, base ++ "/app/build.fels", opts);
+    try write(base ++ "/app", "fels.pkg", "#use screen from \"../screen\" may ffi(\"user32\");\n");
+    try fels.build_driver.run(a, io, base ++ "/app/build.fels", opts);
     var child = try std.process.spawn(io, .{ .argv = &.{base ++ "/app/app.exe"}, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
     switch (try child.wait(io)) {
         .exited => |code| try std.testing.expectEqual(@as(u8, 7), code),
@@ -216,7 +216,7 @@ test "packages: a package's #run gets the capability gabbro.pkg grants, and no m
     }
 
     // Not declared in #needs, so not checked up front: the VM still refuses the call.
-    try write(base ++ "/screen", "gabbro.pkg", "#package screen \"0.1.0\";\n");
-    try write(base ++ "/app", "gabbro.pkg", "#use screen from \"../screen\";\n");
-    try std.testing.expectError(error.CompileFailed, gabbro.build_driver.run(a, io, base ++ "/app/build.fels", opts));
+    try write(base ++ "/screen", "fels.pkg", "#package screen \"0.1.0\";\n");
+    try write(base ++ "/app", "fels.pkg", "#use screen from \"../screen\";\n");
+    try std.testing.expectError(error.CompileFailed, fels.build_driver.run(a, io, base ++ "/app/build.fels", opts));
 }

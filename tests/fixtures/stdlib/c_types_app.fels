@@ -1,4 +1,4 @@
-// std.c: the C ABI type aliases are the Gabbro types they name (64-bit Windows, LLP64).
+// std.c: the C ABI type aliases are the Fels types they name (64-bit Windows, LLP64).
 // `#import std.c.{ … }` used to fail to compile at all, because `c_float :: f32` and
 // `c_double :: f64` were read as constants. Checks the aliases in every position C
 // signatures use them (parameters, returns, fields, pointers, locals), that they mix

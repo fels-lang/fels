@@ -1,5 +1,5 @@
 const std = @import("std");
-const gabbro = @import("gabbro_compiler");
+const fels = @import("fels_compiler");
 
 // Multi-file tests use compileMulti with pre-loaded sources, so they exercise
 // module resolution without filesystem access.
@@ -21,7 +21,7 @@ test "modules: compileMulti with two source files" {
         \\}
     ;
 
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "math.fels", .source = math_src },
         .{ .file_name = "main.fels", .source = main_src },
     });
@@ -29,8 +29,8 @@ test "modules: compileMulti with two source files" {
 
     try std.testing.expectEqual(@as(usize, 4), fe.module.items.len);
 
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
     try std.testing.expectEqual(@as(usize, 3), m.functions.len);
 }
 
@@ -47,14 +47,14 @@ test "modules: public symbols from imported file are visible" {
         \\check :: fn(v: i32) -> bool { return utils::clamp(v); }
     ;
 
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "utils.fels", .source = utils },
         .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
 
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "modules: namespace import forms — as alias and .* glob" {
@@ -74,19 +74,19 @@ test "modules: namespace import forms — as alias and .* glob" {
         \\go :: fn() -> i32 { return twice(21); }
     ;
 
-    var fe1 = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe1 = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "lib.fels", .source = lib },
         .{ .file_name = "aliased.fels", .source = aliased },
     });
     defer fe1.deinit(arena.allocator());
-    try gabbro.ir_mod.validateModule(try gabbro.lowerFrontend(arena.allocator(), fe1));
+    try fels.ir_mod.validateModule(try fels.lowerFrontend(arena.allocator(), fe1));
 
-    var fe2 = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe2 = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "lib.fels", .source = lib },
         .{ .file_name = "globbed.fels", .source = globbed },
     });
     defer fe2.deinit(arena.allocator());
-    try gabbro.ir_mod.validateModule(try gabbro.lowerFrontend(arena.allocator(), fe2));
+    try fels.ir_mod.validateModule(try fels.lowerFrontend(arena.allocator(), fe2));
 }
 
 test "modules: two modules may define the same name (collision mangling)" {
@@ -102,15 +102,15 @@ test "modules: two modules may define the same name (collision mangling)" {
         \\#import b;
         \\main :: fn() -> i32 { return a::greet() + b::greet() * 10; }
     ;
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "a.fels", .source = a },
         .{ .file_name = "b.fels", .source = b },
         .{ .file_name = "main.fels", .source = main },
     });
     defer fe.deinit(arena.allocator());
 
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // Two distinct `greet` functions must exist (mangled apart), plus `main`.
     var greets: usize = 0;
@@ -145,15 +145,15 @@ test "modules: two modules may bind one C symbol under the same name" {
         \\    return 0;
         \\}
     ;
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "a.fels", .source = a },
         .{ .file_name = "b.fels", .source = b },
         .{ .file_name = "main.fels", .source = main },
     });
     defer fe.deinit(arena.allocator());
 
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // Two extern declarations of one C symbol: distinct IR names, same `extern_name`.
     var first: ?[]const u8 = null;
@@ -187,11 +187,11 @@ test "modules: a user #extern and constant may reuse names the runtime declares"
         \\    return CloseHandle(h);
         \\}
     ;
-    var fe = try gabbro.compileWithRuntime(arena.allocator(), "user.fels", src);
+    var fe = try fels.compileWithRuntime(arena.allocator(), "user.fels", src);
     defer fe.deinit(arena.allocator());
 
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // The runtime's `CloseHandle` and the user's are two declarations of one symbol.
     var bound: usize = 0;
@@ -216,12 +216,12 @@ test "modules: cross-module UFCS finds a method in the type's module" {
         \\#import lib.{ Box };
         \\run :: fn(b: Box) -> i32 { return b.get(); }
     ;
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "lib.fels", .source = lib },
         .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
-    try gabbro.ir_mod.validateModule(try gabbro.lowerFrontend(arena.allocator(), fe));
+    try fels.ir_mod.validateModule(try fels.lowerFrontend(arena.allocator(), fe));
 }
 
 test "modules: #run of a namespace call folds at comptime" {
@@ -233,14 +233,14 @@ test "modules: #run of a namespace call folds at comptime" {
         \\#import lib;
         \\main :: fn() -> i32 { return #run lib::twice(21); }
     ;
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "lib.fels", .source = lib },
         .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
 
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // `#run lib::twice(21)` must fold to a constant — `main` should contain no
     // runtime call instruction.
@@ -265,7 +265,7 @@ test "modules: bare import is namespace-only (no unqualified access)" {
         \\#import lib;
         \\run :: fn() -> i32 { return helper(); }
     ;
-    const result = gabbro.compileMulti(arena.allocator(), &.{
+    const result = fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "lib.fels", .source = lib },
         .{ .file_name = "app.fels", .source = app },
     });
@@ -280,7 +280,7 @@ test "modules: compile parses imports without resolving them" {
         \\#import std.io;
         \\hello :: fn() -> i32 { return 42; }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "hello.fels", src);
+    var fe = try fels.compile(arena.allocator(), "hello.fels", src);
     defer fe.deinit(arena.allocator());
     try std.testing.expectEqual(@as(usize, 2), fe.module.items.len);
 }
@@ -298,7 +298,7 @@ test "modules: selective import exposes only selected public names" {
         \\run :: fn() -> i32 { return add(1, 2); }
     ;
 
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "math.fels", .source = math_src },
         .{ .file_name = "app.fels", .source = app_src },
     });
@@ -323,11 +323,11 @@ test "modules: unselected and private names are not visible" {
         \\run :: fn() -> i32 { return other_value(); }
     ;
 
-    try std.testing.expectError(error.SemanticFailed, gabbro.compileMulti(arena.allocator(), &.{
+    try std.testing.expectError(error.SemanticFailed, fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "dependency.fels", .source = dependency },
         .{ .file_name = "private_use.fels", .source = private_use },
     }));
-    try std.testing.expectError(error.SemanticFailed, gabbro.compileMulti(arena.allocator(), &.{
+    try std.testing.expectError(error.SemanticFailed, fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "dependency.fels", .source = dependency },
         .{ .file_name = "unselected_use.fels", .source = unselected_use },
     }));
@@ -342,11 +342,11 @@ test "modules: selective imports reject missing and private declarations" {
         \\pub #inline shown :: fn() -> i32 { return hidden(); }
     ;
 
-    try std.testing.expectError(error.SemanticFailed, gabbro.compileMulti(arena.allocator(), &.{
+    try std.testing.expectError(error.SemanticFailed, fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "dependency.fels", .source = dependency },
         .{ .file_name = "private.fels", .source = "#import dependency.{hidden};" },
     }));
-    try std.testing.expectError(error.SemanticFailed, gabbro.compileMulti(arena.allocator(), &.{
+    try std.testing.expectError(error.SemanticFailed, fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "dependency.fels", .source = dependency },
         .{ .file_name = "missing.fels", .source = "#import dependency.{missing};" },
     }));
@@ -356,7 +356,7 @@ test "modules: missing modules are errors" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    try std.testing.expectError(error.IoError, gabbro.compileMulti(arena.allocator(), &.{
+    try std.testing.expectError(error.IoError, fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "app.fels", .source = "#import missing;" },
     }));
 }
@@ -365,7 +365,7 @@ test "modules: std root resolves independently of importing directory" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "std/io.fels", .source = "pub write_stdout :: fn() {}" },
         .{ .file_name = "app/main.fels", .source = "#import std.io.{write_stdout}; run :: fn() { write_stdout(); }" },
     });
@@ -387,7 +387,7 @@ test "modules: public constants and types respect visibility" {
         \\read :: fn(value: *Value) -> i32 { return value.item; }
     ;
 
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "dependency.fels", .source = dependency },
         .{ .file_name = "app.fels", .source = app },
     });
@@ -398,22 +398,22 @@ test "modules: compileFile resolves local imports from disk" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var fe = try gabbro.compileFile(
+    var fe = try fels.compileFile(
         arena.allocator(),
         std.testing.io,
         "tests/fixtures/modules/main.fels",
     );
     defer fe.deinit(arena.allocator());
 
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(module);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
 }
 
 test "modules: compileMulti normalizes logical module paths" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = ".\\app\\dependency.fels", .source = "pub answer :: fn() -> i32 { return 42; }" },
         .{ .file_name = "./app/main.fels", .source = "#import dependency.{answer}; run :: fn() -> i32 { return answer(); }" },
     });
@@ -424,45 +424,45 @@ test "modules: configured std root loads std.mem" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var fe = try gabbro.compileFile(
+    var fe = try fels.compileFile(
         arena.allocator(),
         std.testing.io,
         "tests/fixtures/stdlib/mem_app.fels",
     );
     defer fe.deinit(arena.allocator());
 
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(module);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
 }
 
 test "modules: configured std root loads std.io" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var fe = try gabbro.compileFileWithRuntime(
+    var fe = try fels.compileFileWithRuntime(
         arena.allocator(),
         std.testing.io,
         "tests/fixtures/stdlib/io_app.fels",
     );
     defer fe.deinit(arena.allocator());
 
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(module);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
 }
 
 test "modules: game stdlib (std.math + std.rand + std.color) resolves and lowers" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var fe = try gabbro.compileFileWithRuntime(
+    var fe = try fels.compileFileWithRuntime(
         arena.allocator(),
         std.testing.io,
         "tests/fixtures/stdlib/game_app.fels",
     );
     defer fe.deinit(arena.allocator());
 
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(module);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
 }
 
 test "modules: general stdlib (std.path + std.time + std.crypto) resolves and lowers" {
@@ -473,10 +473,10 @@ test "modules: general stdlib (std.path + std.time + std.crypto) resolves and lo
         "tests/fixtures/stdlib/time_app.fels",
         "tests/fixtures/stdlib/crypto_app.fels",
     }) |fixture| {
-        var fe = try gabbro.compileFileWithRuntime(arena.allocator(), std.testing.io, fixture);
+        var fe = try fels.compileFileWithRuntime(arena.allocator(), std.testing.io, fixture);
         defer fe.deinit(arena.allocator());
-        const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-        try gabbro.ir_mod.validateModule(module);
+        const module = try fels.lowerFrontend(arena.allocator(), fe);
+        try fels.ir_mod.validateModule(module);
     }
 }
 
@@ -484,15 +484,15 @@ test "modules: configured std root loads std.heap" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var fe = try gabbro.compileFileWithRuntime(
+    var fe = try fels.compileFileWithRuntime(
         arena.allocator(),
         std.testing.io,
         "tests/fixtures/stdlib/heap_app.fels",
     );
     defer fe.deinit(arena.allocator());
 
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(module);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
 }
 
 test "modules: imported self functions are extension methods" {
@@ -508,14 +508,14 @@ test "modules: imported self functions are extension methods" {
         \\run :: fn() -> i32 { return 20.doubled().add(2); }
     ;
 
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "helpers.fels", .source = helpers },
         .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
 
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(module);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
 }
 
 test "parser: namespace-qualified generic type in a typed local (ns::Name(args))" {
@@ -530,7 +530,7 @@ test "parser: namespace-qualified generic type in a typed local (ns::Name(args))
         \\    return 0;
         \\}
     ;
-    const module = try gabbro.parseSource(arena.allocator(), "q.fels", src);
+    const module = try fels.parseSource(arena.allocator(), "q.fels", src);
     const ty = module.items[0].function.body.?.statements[0].local_typed.ty;
     try std.testing.expect(ty == .generic_inst);
     try std.testing.expectEqualStrings("Atomic", ty.generic_inst.name);
@@ -555,14 +555,14 @@ test "modules: namespace-qualified generic type resolves + lowers (ns::Name(args
         \\    return p.a + p.b;
         \\}
     ;
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "lib.fels", .source = lib },
         .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
 
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(module);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
 }
 
 test "modules: a type alias is imported like any other public name" {
@@ -603,13 +603,13 @@ test "modules: a type alias is imported like any other public name" {
         \\run :: fn() -> i32 { p: Pair = make(3, 4); r: Scalar = 2.5; return p.a + p.b + (r as i32); }
     ;
     inline for (.{ selective, namespaced, globbed }) |app| {
-        var fe = try gabbro.compileMulti(arena.allocator(), &.{
+        var fe = try fels.compileMulti(arena.allocator(), &.{
             .{ .file_name = "lib.fels", .source = lib },
             .{ .file_name = "app.fels", .source = app },
         });
         defer fe.deinit(arena.allocator());
-        const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-        try gabbro.ir_mod.validateModule(module);
+        const module = try fels.lowerFrontend(arena.allocator(), fe);
+        try fels.ir_mod.validateModule(module);
         // The aliases emit no storage.
         for (module.globals) |g| {
             try std.testing.expect(!std.mem.eql(u8, g.name, "Scalar"));
@@ -641,12 +641,12 @@ test "modules: a local alias of an imported type" {
         \\run :: fn() -> i32 { p: Pos = .{ 1.5, 2.5 }; n: Num = 4.0; return (p.x + p.y + n) as i32; }
     ;
     inline for (.{ selective, namespaced }) |app| {
-        var fe = try gabbro.compileMulti(arena.allocator(), &.{
+        var fe = try fels.compileMulti(arena.allocator(), &.{
             .{ .file_name = "lib.fels", .source = lib },
             .{ .file_name = "app.fels", .source = app },
         });
         defer fe.deinit(arena.allocator());
-        try gabbro.ir_mod.validateModule(try gabbro.lowerFrontend(arena.allocator(), fe));
+        try fels.ir_mod.validateModule(try fels.lowerFrontend(arena.allocator(), fe));
     }
 }
 
@@ -661,13 +661,13 @@ test "modules: an imported constant naming a constant stays a constant" {
         \\#import lib.{ MAX };
         \\run :: fn() -> i32 { return MAX; }
     ;
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "lib.fels", .source = lib },
         .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(module);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
 
     // Both are constants, so both have storage — `MAX` is not read as an alias of `LIMIT`.
     var found: usize = 0;
@@ -682,7 +682,7 @@ test "modules: two modules declaring the same alias name collide, as two types d
     defer arena.deinit();
     // A same-named constant in two modules is mangled apart, but a type (and so an alias)
     // keeps its bare name — `real :: f32;` is a type, so this is a duplicate declaration.
-    try std.testing.expectError(error.SemanticFailed, gabbro.compileMulti(arena.allocator(), &.{
+    try std.testing.expectError(error.SemanticFailed, fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "a.fels", .source = "pub real :: f32;" },
         .{ .file_name = "b.fels", .source = "pub real :: f32;" },
         .{ .file_name = "main.fels", .source = "#import a;\n#import b;\nrun :: fn() -> i32 { x: a::real = 1.5; return 0; }" },
@@ -698,10 +698,10 @@ test "modules: std.c resolves and lowers (selective and namespaced imports)" {
         "tests/fixtures/stdlib/c_types_app.fels",
         "tests/fixtures/stdlib/c_namespace_app.fels",
     }) |fixture| {
-        var fe = try gabbro.compileFileWithRuntime(arena.allocator(), std.testing.io, fixture);
+        var fe = try fels.compileFileWithRuntime(arena.allocator(), std.testing.io, fixture);
         defer fe.deinit(arena.allocator());
-        const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-        try gabbro.ir_mod.validateModule(module);
+        const module = try fels.lowerFrontend(arena.allocator(), fe);
+        try fels.ir_mod.validateModule(module);
     }
 }
 
@@ -709,7 +709,7 @@ test "modules: unimported self functions are not extension methods" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    try std.testing.expectError(error.SemanticFailed, gabbro.compileMulti(arena.allocator(), &.{
+    try std.testing.expectError(error.SemanticFailed, fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "helpers.fels", .source = "pub doubled :: fn(self: i32) -> i32 { return self * 2; }" },
         .{ .file_name = "app.fels", .source = "run :: fn() -> i32 { return 20.doubled(); }" },
     }));
@@ -733,14 +733,14 @@ test "modules: generic extension methods retain explicit type arguments" {
         \\}
     ;
 
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "helpers.fels", .source = helpers },
         .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
 
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(module);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
 }
 
 test "modules: `*name` in an argument is a pointer type for an imported type, a dereference for a variable" {
@@ -765,14 +765,14 @@ test "modules: `*name` in an argument is a pointer type for an imported type, a 
         \\}
     ;
 
-    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "lib.fels", .source = lib },
         .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
 
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(module);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
 }
 
 test "modules: an import still finds a file with the old .gab extension" {
@@ -781,7 +781,7 @@ test "modules: an import still finds a file with the old .gab extension" {
     const a = arena.allocator();
 
     // From memory, as the language server and these tests load files.
-    var fe = try gabbro.compileMulti(a, &.{
+    var fe = try fels.compileMulti(a, &.{
         .{ .file_name = "util.gab", .source = "pub add :: fn(x: i32, y: i32) -> i32 { return x + y; }\n" },
         .{ .file_name = "main.fels", .source = "#import util;\nrun :: fn() -> i32 { return util::add(1, 2); }\n" },
     });
@@ -793,7 +793,7 @@ test "modules: an import still finds a file with the old .gab extension" {
     std.Io.Dir.cwd().createDirPath(io, dir) catch {};
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/util.gab", .data = "pub add :: fn(x: i32, y: i32) -> i32 { return x + y; }\n" });
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/main.fels", .data = "#import util;\nrun :: fn() -> i32 { return util::add(1, 2); }\n" });
-    var disk = try gabbro.compileFile(a, io, dir ++ "/main.fels");
+    var disk = try fels.compileFile(a, io, dir ++ "/main.fels");
     defer disk.deinit(a);
     try std.testing.expectEqual(@as(usize, 0), disk.diagnostics().len);
 }

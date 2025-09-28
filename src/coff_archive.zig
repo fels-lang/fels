@@ -12,10 +12,10 @@ pub const Member = struct {
 
 const header_len = 60;
 
-/// An index entry that marks an archive written by `gabbro build`. No object defines it, so it
-/// never pulls a member in; the build reads it to tell a Gabbro library from a C library (which
+/// An index entry that marks an archive written by `fels build`. No object defines it, so it
+/// never pulls a member in; the build reads it to tell a Fels library from a C library (which
 /// needs the C runtime).
-pub const gabbro_marker = "__gabbro_static_library";
+pub const fels_marker = "__fels_static_library";
 
 /// The external symbols an object defines (what another object can link against).
 pub fn definedSymbols(arena: std.mem.Allocator, obj: []const u8) ![]const []const u8 {
@@ -80,7 +80,7 @@ pub fn write(gpa: std.mem.Allocator, members: []const Member) ![]u8 {
     for (members, syms, 0..) |m, *s, i| {
         const defined = try definedSymbols(arena, m.data);
         // The marker goes with the first member.
-        s.* = if (i == 0) try std.mem.concat(arena, []const u8, &.{ &.{gabbro_marker}, defined }) else defined;
+        s.* = if (i == 0) try std.mem.concat(arena, []const u8, &.{ &.{fels_marker}, defined }) else defined;
         sym_total += s.len;
         for (s.*) |n| names_len += n.len + 1;
     }
@@ -152,7 +152,7 @@ test "an archive lists the defined external symbols of its object" {
     const member_at = std.mem.readInt(u32, table[4..8], .big);
     try std.testing.expectEqual(member_at, std.mem.readInt(u32, table[8..12], .big));
     try std.testing.expectEqual(member_at, std.mem.readInt(u32, table[12..16], .big));
-    const names = gabbro_marker ++ "\x00add\x00a_rather_long_symbol\x00";
+    const names = fels_marker ++ "\x00add\x00a_rather_long_symbol\x00";
     try std.testing.expectEqualStrings(names, table[16 .. 16 + names.len]);
     try std.testing.expectEqualStrings("util.o/ ", lib[member_at..][0..8]);
     try std.testing.expectEqualSlices(u8, &obj, lib[member_at + header_len ..][0..obj.len]);

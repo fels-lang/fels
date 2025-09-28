@@ -1,5 +1,5 @@
 const std = @import("std");
-const gabbro = @import("gabbro_compiler");
+const fels = @import("fels_compiler");
 
 // Phase 2, slice 1: literal `#quote` + `#insert`. The operand of `#insert`
 // must be a `#quote { ... }` block; its statements are spliced into the
@@ -20,10 +20,10 @@ test "metaprogram: #insert literal #quote lowers to valid IR" {
         \\    return x;
         \\}
     ;
-    var fe = try gabbro.compile(a, "mp1.fels", src);
+    var fe = try fels.compile(a, "mp1.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 
     // The spliced statements land in `run` — there must be exactly one function
     // and it must have lowered (non-empty) blocks.
@@ -48,10 +48,10 @@ test "metaprogram: spliced locals are visible to following statements" {
         \\    return total + 1;
         \\}
     ;
-    var fe = try gabbro.compile(a, "mp2.fels", src);
+    var fe = try fels.compile(a, "mp2.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "metaprogram: block macro expands and lowers to valid IR" {
@@ -69,10 +69,10 @@ test "metaprogram: block macro expands and lowers to valid IR" {
         \\    return n;
         \\}
     ;
-    var fe = try gabbro.compile(a, "mac1.fels", src);
+    var fe = try fels.compile(a, "mac1.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 
     // The macro decl must NOT survive into the lowered module.
     for (m.functions) |f| {
@@ -94,10 +94,10 @@ test "metaprogram: #for unrolls and lowers to valid IR" {
         \\    return total;
         \\}
     ;
-    var fe = try gabbro.compile(a, "for1.fels", src);
+    var fe = try fels.compile(a, "for1.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "metaprogram: #for with non-constant bounds is rejected" {
@@ -114,7 +114,7 @@ test "metaprogram: #for with non-constant bounds is rejected" {
         \\    return total;
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "for2.fels", src));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(a, "for2.fels", src));
 }
 
 test "metaprogram: macro with wrong argument count is rejected" {
@@ -128,7 +128,7 @@ test "metaprogram: macro with wrong argument count is rejected" {
         \\    #insert one(#quote(1), #quote(2));
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "mac2.fels", src));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(a, "mac2.fels", src));
 }
 
 test "metaprogram: stray $ splice outside a macro is rejected" {
@@ -141,7 +141,7 @@ test "metaprogram: stray $ splice outside a macro is rejected" {
         \\    return $x;
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "mac3.fels", src));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(a, "mac3.fels", src));
 }
 
 test "metaprogram: ast.* types resolve and match in a metaprogramming module" {
@@ -165,10 +165,10 @@ test "metaprogram: ast.* types resolve and match in a metaprogramming module" {
         \\    return 0;
         \\}
     ;
-    var fe = try gabbro.compile(a, "astuse.fels", src);
+    var fe = try fels.compile(a, "astuse.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "metaprogram: #quote(expr) materializes an AstExpr value at comptime" {
@@ -198,21 +198,21 @@ test "metaprogram: #quote(expr) materializes an AstExpr value at comptime" {
         \\SEVEN :: #run peek_int();
         \\KIND  :: #run peek_kind();
     ;
-    var fe = try gabbro.compile(a, "mat.fels", src);
+    var fe = try fels.compile(a, "mat.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 
     var seven: bool = false;
     var kind: bool = false;
     for (m.globals) |g| {
         if (std.mem.eql(u8, g.name, "SEVEN")) {
             seven = true;
-            try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = 7 }, g.init.imm);
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 7 }, g.init.imm);
         }
         if (std.mem.eql(u8, g.name, "KIND")) {
             kind = true;
-            try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = 2 }, g.init.imm);
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 2 }, g.init.imm);
         }
     }
     try std.testing.expect(seven and kind);
@@ -235,16 +235,16 @@ test "metaprogram: #quote block materializes an AstBlock with its statements" {
         \\}
         \\LEN :: #run blocklen();
     ;
-    var fe = try gabbro.compile(a, "blk.fels", src);
+    var fe = try fels.compile(a, "blk.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 
     var found = false;
     for (m.globals) |g| {
         if (std.mem.eql(u8, g.name, "LEN")) {
             found = true;
-            try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = 2 }, g.init.imm);
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 2 }, g.init.imm);
         }
     }
     try std.testing.expect(found);
@@ -272,17 +272,17 @@ test "metaprogram: #insert #run gen() splices VM-computed code (two-pass)" {
         \\}
         \\ANSWER :: #run run();
     ;
-    var fe = try gabbro.compile(a, "gen.fels", src);
+    var fe = try fels.compile(a, "gen.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 
     var answer = false;
     var has_run = false;
     for (m.globals) |g| {
         if (std.mem.eql(u8, g.name, "ANSWER")) {
             answer = true;
-            try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = 42 }, g.init.imm);
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 42 }, g.init.imm);
         }
     }
     for (m.functions) |f| {
@@ -316,16 +316,16 @@ test "metaprogram: generative control flow picks different blocks" {
         \\}
         \\ANSWER :: #run run();
     ;
-    var fe = try gabbro.compile(a, "pick.fels", src);
+    var fe = try fels.compile(a, "pick.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 
     var found = false;
     for (m.globals) |g| {
         if (std.mem.eql(u8, g.name, "ANSWER")) {
             found = true;
-            try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = 109 }, g.init.imm);
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 109 }, g.init.imm);
         }
     }
     try std.testing.expect(found);
@@ -358,16 +358,16 @@ test "metaprogram: generated control flow (while + if) round-trips" {
         \\}
         \\ANSWER :: #run run();
     ;
-    var fe = try gabbro.compile(a, "wide.fels", src);
+    var fe = try fels.compile(a, "wide.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 
     var found = false;
     for (m.globals) |g| {
         if (std.mem.eql(u8, g.name, "ANSWER")) {
             found = true;
-            try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = 10 }, g.init.imm);
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 10 }, g.init.imm);
         }
     }
     try std.testing.expect(found);
@@ -393,16 +393,16 @@ test "metaprogram: generated calls, unary, and negatives round-trip" {
         \\}
         \\ANSWER :: #run run();
     ;
-    var fe = try gabbro.compile(a, "calls.fels", src);
+    var fe = try fels.compile(a, "calls.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 
     var found = false;
     for (m.globals) |g| {
         if (std.mem.eql(u8, g.name, "ANSWER")) {
             found = true;
-            try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = 5 }, g.init.imm);
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 5 }, g.init.imm);
         }
     }
     try std.testing.expect(found);
@@ -432,24 +432,24 @@ test "metaprogram: ast.* exposes the widened node kinds for inspection" {
         \\K_INDEX :: #run classify(#quote(arr[0]));
         \\K_STR   :: #run classify(#quote("hi"));
     ;
-    var fe = try gabbro.compile(a, "classify.fels", src);
+    var fe = try fels.compile(a, "classify.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 
     var seen: usize = 0;
     for (m.globals) |g| {
         if (std.mem.eql(u8, g.name, "K_CALL")) {
             seen += 1;
-            try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = 1 }, g.init.imm);
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 1 }, g.init.imm);
         }
         if (std.mem.eql(u8, g.name, "K_INDEX")) {
             seen += 1;
-            try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = 2 }, g.init.imm);
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 2 }, g.init.imm);
         }
         if (std.mem.eql(u8, g.name, "K_STR")) {
             seen += 1;
-            try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = 5 }, g.init.imm);
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 5 }, g.init.imm);
         }
     }
     try std.testing.expectEqual(@as(usize, 3), seen);
@@ -470,16 +470,16 @@ test "metaprogram: generated declared locals are visible after #insert" {
         \\}
         \\ANSWER :: #run run();
     ;
-    var fe = try gabbro.compile(a, "decl.fels", src);
+    var fe = try fels.compile(a, "decl.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 
     var found = false;
     for (m.globals) |g| {
         if (std.mem.eql(u8, g.name, "ANSWER")) {
             found = true;
-            try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = 42 }, g.init.imm);
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 42 }, g.init.imm);
         }
     }
     try std.testing.expect(found);
@@ -506,10 +506,10 @@ test "metaprogram: wide inspection covers types, slices, optionals, control flow
         \\K_COAL  :: #run classify(#quote(opt ?? 9));
         \\K_UNWRAP :: #run classify(#quote(opt!!));
     ;
-    var fe = try gabbro.compile(a, "wideinspect.fels", src);
+    var fe = try fels.compile(a, "wideinspect.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 
     const expected = [_]struct { name: []const u8, val: i128 }{
         .{ .name = "K_CAST", .val = 1 },
@@ -522,7 +522,7 @@ test "metaprogram: wide inspection covers types, slices, optionals, control flow
         for (expected) |e| {
             if (std.mem.eql(u8, g.name, e.name)) {
                 seen += 1;
-                try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = e.val }, g.init.imm);
+                try std.testing.expectEqual(fels.ir_mod.Imm{ .int = e.val }, g.init.imm);
             }
         }
     }
@@ -550,16 +550,16 @@ test "metaprogram: generated compound literal + call round-trips" {
         \\}
         \\ANSWER :: #run run();
     ;
-    var fe = try gabbro.compile(a, "compound.fels", src);
+    var fe = try fels.compile(a, "compound.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 
     var found = false;
     for (m.globals) |g| {
         if (std.mem.eql(u8, g.name, "ANSWER")) {
             found = true;
-            try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = 42 }, g.init.imm);
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 42 }, g.init.imm);
         }
     }
     try std.testing.expect(found);
@@ -580,16 +580,16 @@ test "metaprogram: #parse turns a comptime string into spliced code" {
         \\}
         \\ANSWER :: #run run();
     ;
-    var fe = try gabbro.compile(a, "parse.fels", src);
+    var fe = try fels.compile(a, "parse.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 
     var found = false;
     for (m.globals) |g| {
         if (std.mem.eql(u8, g.name, "ANSWER")) {
             found = true;
-            try std.testing.expectEqual(gabbro.ir_mod.Imm{ .int = 42 }, g.init.imm);
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 42 }, g.init.imm);
         }
     }
     try std.testing.expect(found);
@@ -605,7 +605,7 @@ test "metaprogram: typed macro param rejects a mismatched argument" {
         \\wrap :: macro(body: AstBlock) -> AstBlock { return #quote { $body; }; }
         \\main :: fn() { #insert wrap(#quote(1 + 2)); }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "tmacro.fels", src));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(a, "tmacro.fels", src));
 }
 
 test "metaprogram: ast.* types are absent without metaprogramming" {
@@ -618,7 +618,7 @@ test "metaprogram: ast.* types are absent without metaprogramming" {
     const src =
         \\describe :: fn(e: AstExpr) -> i64 { return 0; }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "nometa.fels", src));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(a, "nometa.fels", src));
 }
 
 test "metaprogram: non-quote #insert operand is rejected" {
@@ -633,5 +633,5 @@ test "metaprogram: non-quote #insert operand is rejected" {
         \\}
     ;
     // Sema must reject: the operand is not a #quote block.
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "mp3.fels", src));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(a, "mp3.fels", src));
 }

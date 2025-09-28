@@ -63,13 +63,13 @@ pub const CompileError = error{
 
 /// Runtime override for the standard-library root (the directory containing
 /// `std/`). `null` → use the build-baked `build_options.stdlib_root`. The CLI
-/// resolves this from an installed/dev layout (`--std-path`, `$GABBRO_STD`,
-/// `$GABBRO_HOME/lib`, or exe-relative) so one binary finds its stdlib wherever it
+/// resolves this from an installed/dev layout (`--std-path`, `$FELS_STD`,
+/// `$FELS_HOME/lib`, or exe-relative) so one binary finds its stdlib wherever it
 /// lands. Set once at startup; the compiler is single-threaded per build.
 pub var stdlib_root_override: ?[]const u8 = null;
 
 /// Fels source files end in `.fels`. `.gab`, the extension from when the language was
-/// called Gabbro, is still read, with a note to rename the files.
+/// called Fels, is still read, with a note to rename the files.
 pub const source_ext = ".fels";
 pub const old_ext = ".gab";
 
@@ -110,7 +110,7 @@ pub const ModuleRoot = struct {
     dir: []const u8,
 };
 
-/// The named module roots of the current compile. `gabbro build` sets them per artifact
+/// The named module roots of the current compile. `fels build` sets them per artifact
 /// (`add_module`, and the generated `build_options`).
 pub var module_roots: []const ModuleRoot = &.{};
 
@@ -368,8 +368,8 @@ fn loadFile(ctx: *LoadCtx, path: []const u8, is_root: bool, is_std: bool) anyerr
             // A missing `std/...` module almost always means the compiler can't find
             // its standard library — point the user at the relocation knobs.
             if (std.mem.indexOf(u8, path, "std") != null) {
-                std.debug.print("  hint: the gabbro standard library wasn't found at this path. " ++
-                    "Set GABBRO_HOME to your gabbro install dir, or pass --std-path <dir-containing-std>.\n", .{});
+                std.debug.print("  hint: the fels standard library wasn't found at this path. " ++
+                    "Set FELS_HOME to your fels install dir, or pass --std-path <dir-containing-std>.\n", .{});
             }
             return err;
         };
@@ -451,7 +451,7 @@ pub const AnalysisOptions = struct {
     std_root: ?[]const u8 = null,
     /// Where a non-`std` import is looked for when it is not next to the importer.
     project_root: ?[]const u8 = null,
-    /// Prepend the embedded runtime, as `gabbro check` does.
+    /// Prepend the embedded runtime, as `fels check` does.
     include_runtime: bool = true,
 };
 
@@ -486,7 +486,7 @@ pub const Analysis = struct {
 };
 
 /// Analyze `root_path` and the modules it imports without compiling: the loading and
-/// the checks of `gabbro check`, but tolerant. A file that does not parse, an import
+/// the checks of `fels check`, but tolerant. A file that does not parse, an import
 /// that cannot be found or a name that does not exist become diagnostics, never an
 /// error, and the symbols and partial types of what did check are still returned.
 /// Nothing is printed. Only running out of memory fails.
@@ -667,7 +667,7 @@ fn preparePipeline(
     arena: *std.heap.ArenaAllocator,
 ) CompileError!ast.Module {
     // Phase 3 message loop: run `#compiler` hooks (compile-time functions that
-    // return Gabbro source for top-level declarations) and add the generated
+    // return Fels source for top-level declarations) and add the generated
     // declarations to the module before the rest of the pipeline sees it.
     const base_module = if (ir_mod.hasCompilerHook(raw_module))
         try runCompilerHookPass(allocator, raw_module, source, file, arena)
@@ -697,7 +697,7 @@ fn preparePipeline(
     else
         with_prelude;
 
-    // `Any` (type-erased value + safe downcast) is mostly ordinary generic Gabbro —
+    // `Any` (type-erased value + safe downcast) is mostly ordinary generic Fels —
     // inject it when the module uses `Any`/`any(`/`any_*` (and doesn't define its
     // own `Any`). Detected over the combined AST (not the source string, which in
     // a multi-module compile is only the first file). The wrap `any(x)` is the
@@ -850,7 +850,7 @@ fn strictSema(
 }
 
 /// The type check of the program's static data (typed globals) belongs with the other checks, so
-/// `gabbro check` and every build stop on a mistake in one before any code is generated. Only what
+/// `fels check` and every build stop on a mistake in one before any code is generated. Only what
 /// needs no evaluator is checked here; lowering checks the rest with the comptime VM available.
 fn reportStaticDataErrors(allocator: std.mem.Allocator, fe: FrontEnd) CompileError!void {
     const found = ir_mod.checkStaticData(allocator, fe) catch return error.OutOfMemory;
@@ -1026,7 +1026,7 @@ fn applyHookOutput(
 }
 
 /// Inject the `std.compiler` `Decl` type so `#compiler` hooks can call
-/// `compiler_decls()`. Parsed under the user's file name (Gabbro symbols are
+/// `compiler_decls()`. Parsed under the user's file name (Fels symbols are
 /// file-private — a separate name would hide `Decl` from the hook), with a
 /// distinct high id base so its nodes never collide with the user's.
 fn prependCompilerPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
@@ -1039,7 +1039,7 @@ fn prependCompilerPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
 
 /// Prepend the embedded std.heap bump arena (and std.ptr, which it uses) to the
 /// user's module so a `zone` block's `Arena` handle and allocator are in scope.
-/// Parsed under the USER's file name (Gabbro symbols are file-private) with a high
+/// Parsed under the USER's file name (Fels symbols are file-private) with a high
 /// id base; `ptr` is parsed first and `heap` chains off its next id. The
 /// embedded `heap` imports `std.ptr` — stripped here, since ptr is inlined.
 fn prependHeapPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
@@ -1674,7 +1674,7 @@ fn exprUsesMeta(expr: ast.Expr) bool {
 /// the user's. The prelude is pure type declarations, so it carries no imports.
 fn prependAstPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
     // Parse under the USER's file name so the prelude types share the user's
-    // module — Gabbro symbols are file-private, so a separate file name would make
+    // module — Fels symbols are file-private, so a separate file name would make
     // the ast.* types invisible to user code.
     const parsed = try parser.parseSourceFrom(allocator, user.file_name, ast_prelude.source, prelude_id_base);
     var items: std.ArrayList(ast.Item) = .empty;

@@ -1,14 +1,14 @@
-//! gabbro language server, `gabbro lsp`.
+//! fels language server, `fels lsp`.
 //!
 //! A small LSP server over stdio (JSON-RPC). It is a thin layer over the compiler front
 //! end: every open document is analyzed with `pipeline.analyzeFile`, which loads the file
 //! and everything it imports (the standard library and sibling `.fels` files) with the same
-//! rules as `gabbro check`, but tolerantly, so a broken file still gives diagnostics,
+//! rules as `fels check`, but tolerantly, so a broken file still gives diagnostics,
 //! symbols and partial types.
 //!
 //! * Open documents override files on disk: an imported module that is open in the editor
 //!   is read from the editor's text.
-//! * `std` is found as the compiler finds it (`--std-path`, `GABBRO_STD`, `GABBRO_HOME`,
+//! * `std` is found as the compiler finds it (`--std-path`, `FELS_STD`, `FELS_HOME`,
 //!   next to the executable). Other imports are looked up next to the importing file and
 //!   then under the project root (the folder with `build.fels`, or the workspace folder).
 //! * Diagnostics are published per file: the errors of an imported module go to that
@@ -159,7 +159,7 @@ pub const Doc = struct {
     /// Keys of every non-`std` file the last analysis loaded.
     deps: [][]u8 = &.{},
     dirty: bool = false,
-    /// Milliseconds the last analysis took (reported by `GABBRO_LSP_TIMING`).
+    /// Milliseconds the last analysis took (reported by `FELS_LSP_TIMING`).
     last_ms: f64 = 0,
 
     fn clearAnalysis(self: *Doc, gpa: std.mem.Allocator) void {
@@ -227,7 +227,7 @@ pub const Server = struct {
         doc.analysis = result;
         lsp_assist.dropLastGood(doc);
         doc.last_ms = @as(f64, @floatFromInt(clock.sinceNs(t0))) / 1_000_000.0;
-        if (self.timing) std.debug.print("gabbro-lsp: analyzed {s} in {d:.1} ms\n", .{ doc.path, doc.last_ms });
+        if (self.timing) std.debug.print("fels-lsp: analyzed {s} in {d:.1} ms\n", .{ doc.path, doc.last_ms });
     }
 
     /// Render the diagnostics of every loaded file (except `std`) and note the dependencies.
@@ -644,7 +644,7 @@ fn appendDiagnosticJson(b: *std.ArrayList(u8), gpa: std.mem.Allocator, text: []c
     };
     try b.appendSlice(gpa, "{\"range\":");
     appendRange(b, gpa, text, d.span);
-    try b.print(gpa, ",\"severity\":{d},\"source\":\"gabbro\",", .{severity});
+    try b.print(gpa, ",\"severity\":{d},\"source\":\"fels\",", .{severity});
     if (d.code) |c| {
         try b.appendSlice(gpa, "\"code\":\"");
         escapeInto(b, gpa, c);
@@ -733,7 +733,7 @@ fn handleInitialize(self: *Server, id: ?json.Value, params: json.Value) void {
         self.workspace_root = self.gpa.dupe(u8, p) catch null;
     }
     sendResult(self, id,
-        \\{"capabilities":{"textDocumentSync":1,"completionProvider":{"triggerCharacters":[".",":"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","],"retriggerCharacters":[","]},"inlayHintProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"documentHighlightProvider":true,"workspaceSymbolProvider":true},"serverInfo":{"name":"gabbro-lsp","version":"
+        \\{"capabilities":{"textDocumentSync":1,"completionProvider":{"triggerCharacters":[".",":"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","],"retriggerCharacters":[","]},"inlayHintProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"documentHighlightProvider":true,"workspaceSymbolProvider":true},"serverInfo":{"name":"fels-lsp","version":"
     ++ @import("build_options").version ++ "\"}}");
 }
 
@@ -968,7 +968,7 @@ fn handleHover(self: *Server, id: ?json.Value, params: json.Value) void {
 
     var b = std.ArrayList(u8).empty;
     defer b.deinit(self.gpa);
-    b.appendSlice(self.gpa, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"```gabbro\\n") catch {};
+    b.appendSlice(self.gpa, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"```fels\\n") catch {};
     const decl: ?[]const u8 = if (topLevelKind(sym.kind) or sym.kind == .field or sym.kind == .variant)
         (if (analysis.fileNamed(sym.file_name)) |f| declarationText(analysis, sym, f.source) else null)
     else
@@ -1136,7 +1136,7 @@ fn dispatch(self: *Server, root: json.Value) void {
 
 // The stdio loop
 
-/// Print the time of each analysis to stderr (set from `GABBRO_LSP_TIMING`).
+/// Print the time of each analysis to stderr (set from `FELS_LSP_TIMING`).
 pub var timing: bool = false;
 
 pub fn run(gpa: std.mem.Allocator, io: std.Io) u8 {

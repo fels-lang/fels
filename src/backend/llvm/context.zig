@@ -9,7 +9,7 @@ const emit = @import("emit.zig");
 
 /// Windows x64 stack-probe stub. LLVM emits `call __chkstk` in the prologue of any
 /// function whose frame exceeds one page (4 KiB); the CRT that normally supplies
-/// `__chkstk` isn't linked in Gabbro's minimal-runtime setup, so we provide it. This is
+/// `__chkstk` isn't linked in Fels's minimal-runtime setup, so we provide it. This is
 /// the standard probe-only routine (AT&T): it touches each page of the frame to
 /// grow the guard page correctly, preserves RAX/RCX, and lets the caller do the
 /// actual `sub rsp, rax`. Emitted weak so future multi-object links don't collide.
@@ -48,7 +48,7 @@ pub const ModuleCg = struct {
     mod: llvm.LLVMModuleRef,
     builder: llvm.LLVMBuilderRef,
 
-    /// Named LLVM struct types keyed by Gabbro struct name.
+    /// Named LLVM struct types keyed by Fels struct name.
     struct_types: std.StringHashMap(llvm.LLVMTypeRef),
     /// Field name/type lists for each named struct.  Used for field-index lookup.
     struct_fields: std.StringHashMap([]StructField),
@@ -92,7 +92,7 @@ pub const ModuleCg = struct {
     /// `_fltused`.
     target_os: std.Target.Os.Tag = @import("builtin").os.tag,
     /// `--no-entry`: emit no platform entry-point wrapper (`mainCRTStartup`). For
-    /// compiling a library object to embed in another binary (e.g. gabld into gabbro).
+    /// compiling a library object to embed in another binary (e.g. felsld into fels).
     no_entry: bool = false,
     /// The object of a static library: only `#export`ed symbols stay visible, so the
     /// runtime it carries does not clash with the program that links it.
@@ -121,7 +121,7 @@ pub const ModuleCg = struct {
         comptime src: std.builtin.SourceLocation,
     ) void {
         if (!self.lowering_failed) {
-            std.debug.print("gabbro: internal compiler error: " ++ fmt ++ "\n", args);
+            std.debug.print("fels: internal compiler error: " ++ fmt ++ "\n", args);
             std.debug.print("    [at {s}:{d} in {s}]\n", .{ src.file, src.line, src.fn_name });
         }
         self.lowering_failed = true;
@@ -201,7 +201,7 @@ pub const ModuleCg = struct {
         llvm.LLVMContextDispose(self.ctx);
     }
 
-    /// Return (and cache) the `{ ptr, usize }` LLVM struct used for all Gabbro slices.
+    /// Return (and cache) the `{ ptr, usize }` LLVM struct used for all Fels slices.
     pub fn getSliceType(self: *ModuleCg) llvm.LLVMTypeRef {
         if (self.slice_type) |st| return st;
         var fields = [_]llvm.LLVMTypeRef{

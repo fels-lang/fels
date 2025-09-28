@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Test the help while typing of `gabbro lsp`: member completion after `.`, signature help,
+"""Test the help while typing of `fels lsp`: member completion after `.`, signature help,
 inlay hints, hover on locals and fields, and answers from the last good analysis while the
 text does not parse.
 
-    python tests/lsp_assist_test.py [path-to-gabbro.exe]
+    python tests/lsp_assist_test.py [path-to-fels.exe]
 
 Prints each check and PASS, or the checks that failed.
 """
@@ -14,7 +14,7 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-EXE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "zig-out", "bin", "gabbro.exe")
+EXE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "zig-out", "bin", "fels.exe")
 
 SRC = """\
 Color :: enum { red, green, blue }
@@ -98,7 +98,7 @@ class Session:
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"capabilities": {}}},
             {"jsonrpc": "2.0", "method": "initialized", "params": {}},
             {"jsonrpc": "2.0", "method": "textDocument/didOpen",
-             "params": {"textDocument": {"uri": self.uri, "languageId": "gabbro", "version": 1, "text": SRC}}},
+             "params": {"textDocument": {"uri": self.uri, "languageId": "fels", "version": 1, "text": SRC}}},
         ]
         self.checks = {}  # id -> (name, check function)
         self.next_id = 10

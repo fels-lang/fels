@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // std.utf16 - convert between UTF-8 and UTF-16.
 //
-// Pure Gabbro: no OS calls, so it behaves the same on every target. (On Windows,
+// Pure Fels: no OS calls, so it behaves the same on every target. (On Windows,
 // MultiByteToWideChar / WideCharToMultiByte do a related job, but they are a separate API
 // with their own treatment of malformed input; nothing here depends on them.)
 //
-// Representations. UTF-8 text is a `[]const u8`, as everywhere in Gabbro; nothing
+// Representations. UTF-8 text is a `[]const u8`, as everywhere in Fels; nothing
 // guarantees a string is valid UTF-8, which is why every conversion here validates.
 // UTF-16 text is a `[]const u16` of code units in the machine's own order: no byte-order
 // mark, no serialisation. A supplementary character (above U+FFFF) is a surrogate pair.

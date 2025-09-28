@@ -1,8 +1,8 @@
 const std = @import("std");
-const gabbro = @import("gabbro_compiler");
+const fels = @import("fels_compiler");
 
 test "LLVM lowering selects signed, unsigned, and floating-point operations" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -26,11 +26,11 @@ test "LLVM lowering selects signed, unsigned, and floating-point operations" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "llvm_ops.fels", src);
+    var fe = try fels.compile(arena.allocator(), "llvm_ops.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "llvm_ops");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "llvm_ops");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -56,7 +56,7 @@ test "LLVM lowering selects signed, unsigned, and floating-point operations" {
 }
 
 test "LLVM lowering accepts full-width u64 constants" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -67,11 +67,11 @@ test "LLVM lowering accepts full-width u64 constants" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "full_width_u64.fels", src);
+    var fe = try fels.compile(arena.allocator(), "full_width_u64.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "full_width_u64");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "full_width_u64");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -80,7 +80,7 @@ test "LLVM lowering accepts full-width u64 constants" {
 }
 
 test "inferred local takes its width from a suffixed integer literal" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -88,7 +88,7 @@ test "inferred local takes its width from a suffixed integer literal" {
     // `target := 0i64` must give `target` an i64 slot. A regression here typed
     // it i32 (only `u32`/`usize` suffixes were recognized), so the later
     // `store i64 …` smashed 8 bytes into a 4-byte alloca — truncating the value
-    // and corrupting the adjacent local. (Surfaced as the gabld relocation bug.)
+    // and corrupting the adjacent local. (Surfaced as the felsld relocation bug.)
     const src =
         \\widen :: fn() -> i64 {
         \\    target := 0i64;
@@ -97,11 +97,11 @@ test "inferred local takes its width from a suffixed integer literal" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "inferred_i64.fels", src);
+    var fe = try fels.compile(arena.allocator(), "inferred_i64.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "inferred_i64");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "inferred_i64");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -112,7 +112,7 @@ test "inferred local takes its width from a suffixed integer literal" {
 }
 
 test "LLVM lowering applies #align to struct allocas" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -130,11 +130,11 @@ test "LLVM lowering applies #align to struct allocas" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "align_struct.fels", src);
+    var fe = try fels.compile(arena.allocator(), "align_struct.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "align_struct");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "align_struct");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -145,7 +145,7 @@ test "LLVM lowering applies #align to struct allocas" {
 }
 
 test "LLVM force unwrap calls the embedded runtime panic" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -156,11 +156,11 @@ test "LLVM force unwrap calls the embedded runtime panic" {
         \\}
     ;
 
-    var fe = try gabbro.compileWithRuntime(arena.allocator(), "force_unwrap.fels", src);
+    var fe = try fels.compileWithRuntime(arena.allocator(), "force_unwrap.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "force_unwrap");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "force_unwrap");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -171,7 +171,7 @@ test "LLVM force unwrap calls the embedded runtime panic" {
 }
 
 test "LLVM optional equality compares presence instead of aggregate values" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -181,11 +181,11 @@ test "LLVM optional equality compares presence instead of aggregate values" {
         \\is_empty :: fn(value: ?i32) -> bool { return null == value; }
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "optional_equality.fels", src);
+    var fe = try fels.compile(arena.allocator(), "optional_equality.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "optional_equality");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "optional_equality");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -194,7 +194,7 @@ test "LLVM optional equality compares presence instead of aggregate values" {
 }
 
 test "LLVM optional payload is coerced to its declared integer width" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -207,11 +207,11 @@ test "LLVM optional payload is coerced to its declared integer width" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "optional_payload_width.fels", src);
+    var fe = try fels.compile(arena.allocator(), "optional_payload_width.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "optional_payload_width");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "optional_payload_width");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -225,7 +225,7 @@ test "LLVM optional payload is coerced to its declared integer width" {
 }
 
 test "LLVM panic lowering synthesizes the runtime declaration when absent" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -236,11 +236,11 @@ test "LLVM panic lowering synthesizes the runtime declaration when absent" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "standalone_unwrap.fels", src);
+    var fe = try fels.compile(arena.allocator(), "standalone_unwrap.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "standalone_unwrap");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "standalone_unwrap");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -251,7 +251,7 @@ test "LLVM panic lowering synthesizes the runtime declaration when absent" {
 }
 
 test "LLVM error/fallible ABI: fail and return lower to { ok, i32 } struct" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -272,11 +272,11 @@ test "LLVM error/fallible ABI: fail and return lower to { ok, i32 } struct" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "fallible.fels", src);
+    var fe = try fels.compile(arena.allocator(), "fallible.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "fallible");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "fallible");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -294,7 +294,7 @@ test "LLVM error/fallible ABI: fail and return lower to { ok, i32 } struct" {
 }
 
 test "LLVM fallible return coerces to its declared integer width" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -307,11 +307,11 @@ test "LLVM fallible return coerces to its declared integer width" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "fallible_width.fels", src);
+    var fe = try fels.compile(arena.allocator(), "fallible_width.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "fallible_width");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "fallible_width");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -320,7 +320,7 @@ test "LLVM fallible return coerces to its declared integer width" {
 }
 
 test "LLVM debug: division by zero inserts a runtime check" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -329,11 +329,11 @@ test "LLVM debug: division by zero inserts a runtime check" {
         \\divide :: fn(a: i32, b: i32) -> i32 { return a / b; }
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "div_check.fels", src);
+    var fe = try fels.compile(arena.allocator(), "div_check.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "div_check");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "div_check");
     defer backend.deinit();
     // opt_level=0 (debug) — checks should be present.
     try backend.lower(module);
@@ -348,7 +348,7 @@ test "LLVM debug: division by zero inserts a runtime check" {
 }
 
 test "LLVM debug: integer overflow inserts a located runtime check" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -358,11 +358,11 @@ test "LLVM debug: integer overflow inserts a located runtime check" {
         \\multiply :: fn(a: u32, b: u32) -> u32 { return a * b; }
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "overflow.fels", src);
+    var fe = try fels.compile(arena.allocator(), "overflow.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "overflow");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "overflow");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -373,7 +373,7 @@ test "LLVM debug: integer overflow inserts a located runtime check" {
 }
 
 test "LLVM release: division omits debug runtime check" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -382,11 +382,11 @@ test "LLVM release: division omits debug runtime check" {
         \\divide :: fn(a: i32, b: i32) -> i32 { return a / b; }
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "div_release.fels", src);
+    var fe = try fels.compile(arena.allocator(), "div_release.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "div_release");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "div_release");
     defer backend.deinit();
     backend.setOptLevel(2);
     try backend.lower(module);
@@ -396,7 +396,7 @@ test "LLVM release: division omits debug runtime check" {
 }
 
 test "LLVM debug: shift overflow inserts a runtime check" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -405,11 +405,11 @@ test "LLVM debug: shift overflow inserts a runtime check" {
         \\shift_it :: fn(a: u32, b: u32) -> u32 { return a << b; }
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "shift_check.fels", src);
+    var fe = try fels.compile(arena.allocator(), "shift_check.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "shift_check");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "shift_check");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -419,7 +419,7 @@ test "LLVM debug: shift overflow inserts a runtime check" {
 }
 
 test "LLVM debug: slice bounds check inserts a runtime check" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -428,11 +428,11 @@ test "LLVM debug: slice bounds check inserts a runtime check" {
         \\get :: fn(data: []const u8, i: usize) -> u8 { return data[i]; }
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "bounds.fels", src);
+    var fe = try fels.compile(arena.allocator(), "bounds.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "bounds");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "bounds");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -442,7 +442,7 @@ test "LLVM debug: slice bounds check inserts a runtime check" {
 }
 
 test "LLVM debug: array bounds check uses static array length" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -451,11 +451,11 @@ test "LLVM debug: array bounds check uses static array length" {
         \\get :: fn(data: [4]u8, i: usize) -> u8 { return data[i]; }
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "array_bounds.fels", src);
+    var fe = try fels.compile(arena.allocator(), "array_bounds.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "array_bounds");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "array_bounds");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -464,7 +464,7 @@ test "LLVM debug: array bounds check uses static array length" {
 }
 
 test "LLVM float casts emit correct instructions" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -479,11 +479,11 @@ test "LLVM float casts emit correct instructions" {
         \\widen_u :: fn(x: u8) -> u32 { return x as u32; }
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "float_casts.fels", src);
+    var fe = try fels.compile(arena.allocator(), "float_casts.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "float_casts");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "float_casts");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -498,7 +498,7 @@ test "LLVM float casts emit correct instructions" {
 }
 
 test "LLVM lowering reads and writes fields through struct pointers" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -516,11 +516,11 @@ test "LLVM lowering reads and writes fields through struct pointers" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "pointer_fields.fels", src);
+    var fe = try fels.compile(arena.allocator(), "pointer_fields.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "pointer_fields");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "pointer_fields");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -531,7 +531,7 @@ test "LLVM lowering reads and writes fields through struct pointers" {
 }
 
 test "LLVM zones are backed by std.heap (make/deinit over VirtualAlloc)" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -546,11 +546,11 @@ test "LLVM zones are backed by std.heap (make/deinit over VirtualAlloc)" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "zones.fels", src);
+    var fe = try fels.compile(arena.allocator(), "zones.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "zones");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "zones");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -564,7 +564,7 @@ test "LLVM zones are backed by std.heap (make/deinit over VirtualAlloc)" {
 }
 
 test "LLVM borrow parameters erase to their underlying ABI type" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -572,11 +572,11 @@ test "LLVM borrow parameters erase to their underlying ABI type" {
     const src =
         \\touch :: fn(data: borrow []u8) { data[0] = 1u8; }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "borrow_abi.fels", src);
+    var fe = try fels.compile(arena.allocator(), "borrow_abi.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "borrow_abi");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "borrow_abi");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -587,7 +587,7 @@ test "LLVM borrow parameters erase to their underlying ABI type" {
 }
 
 test "LLVM lowering applies #cold / #section / #weak / #link_name (Phase 3)" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -604,11 +604,11 @@ test "LLVM lowering applies #cold / #section / #weak / #link_name (Phase 3)" {
         \\main :: fn() -> i32 { return rare() + sec() + wk() + rn(); }
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "attrs.fels", src);
+    var fe = try fels.compile(arena.allocator(), "attrs.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "attrs");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "attrs");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -624,7 +624,7 @@ test "LLVM lowering applies #cold / #section / #weak / #link_name (Phase 3)" {
 }
 
 test "LLVM: bindings of one C symbol share its function but keep their own signatures" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -638,11 +638,11 @@ test "LLVM: bindings of one C symbol share its function but keep their own signa
         \\CloseHandle :: fn(h: usize) -> i32;
         \\main :: fn() -> i32 { return CloseHandle(0usize); }
     ;
-    var fe = try gabbro.compileWithRuntime(arena.allocator(), "extern_sigs.fels", src);
+    var fe = try fels.compileWithRuntime(arena.allocator(), "extern_sigs.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "extern_sigs");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "extern_sigs");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -661,7 +661,7 @@ test "LLVM: bindings of one C symbol share its function but keep their own signa
 }
 
 test "LLVM: access to a #packed struct's fields through a pointer is align 1" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -675,11 +675,11 @@ test "LLVM: access to a #packed struct's fields through a pointer is align 1" {
         \\rd64 :: fn(p: *Pk) -> u64 { return p.c; }
         \\wr :: fn(p: *Pk, v: u32) { p.b = v; }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "packed_access.fels", src);
+    var fe = try fels.compile(arena.allocator(), "packed_access.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "packed_access");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "packed_access");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -699,7 +699,7 @@ const qpc = struct {
 };
 
 test "LLVM: a function returning a big array by value compiles quickly" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
     if (comptime @import("builtin").os.tag != .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -728,10 +728,10 @@ test "LLVM: a function returning a big array by value compiles quickly" {
     _ = qpc.QueryPerformanceFrequency(&freq);
     _ = qpc.QueryPerformanceCounter(&t0);
 
-    var fe = try gabbro.compile(arena.allocator(), "big_return.fels", src);
+    var fe = try fels.compile(arena.allocator(), "big_return.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "big_return");
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    var backend = fels.LlvmBackend.init(arena.allocator(), "big_return");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -759,7 +759,7 @@ test "LLVM: a function returning a big array by value compiles quickly" {
 }
 
 test "LLVM: sizes measured during lowering use the target's layout, where i64 is 8-aligned" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     // LLVM's default data layout 4-aligns `i64`, so `{ i32, i64 }` measured 12 bytes there:
@@ -782,10 +782,10 @@ test "LLVM: sizes measured during lowering use the target's layout, where i64 is
         \\    match s { .p |v| => return (r + v.b) as i32; else => return 0; }
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "layout_sizes.fels", src);
+    var fe = try fels.compile(arena.allocator(), "layout_sizes.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "layout_sizes");
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    var backend = fels.LlvmBackend.init(arena.allocator(), "layout_sizes");
     defer backend.deinit();
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());

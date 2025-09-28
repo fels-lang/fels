@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // std.slice — higher-order helpers over `[]T` (find, count_where, any, all, …).
 //
-// gabbro has no closures yet, but it does pass function pointers, so these take a
+// fels has no closures yet, but it does pass function pointers, so these take a
 // plain `fn(T) -> …`. They replace the hand-written `while i < s.len { … }`
 // scan loops that otherwise pile up:
 //
