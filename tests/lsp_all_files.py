@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that `gabbro lsp` agrees with `gabbro check` on every .gab file.
+"""Check that `gabbro lsp` agrees with `gabbro check` on every .fels file.
 
 A: each file that `gabbro check` accepts must give zero diagnostics through the server.
 B: a few programs the compiler rejects must still give an error at the right line.
@@ -77,12 +77,12 @@ def check_accepts(path):
 def collect():
     files = []
     for sub in ("examples", "lib", os.path.join("tests", "fixtures"), "tests"):
-        pat = os.path.join(REPO, sub, "**", "*.gab") if sub != "tests" else os.path.join(REPO, sub, "*.gab")
+        pat = os.path.join(REPO, sub, "**", "*.fels") if sub != "tests" else os.path.join(REPO, sub, "*.fels")
         files += glob.glob(pat, recursive=True)
-    files += glob.glob(r"C:\dev\codebridge\src\*.gab")
+    files += glob.glob(r"C:\dev\codebridge\src\*.fels")
     for e in EXTRA:
         if os.path.isdir(e):
-            files += glob.glob(os.path.join(e, "**", "*.gab"), recursive=True)
+            files += glob.glob(os.path.join(e, "**", "*.fels"), recursive=True)
         else:
             files.append(e)
     return sorted(set(os.path.normpath(f) for f in files))
@@ -98,15 +98,15 @@ def run_one(path):
 
 # B: programs the compiler rejects. (source, 1-based line of the error)
 ERROR_CASES = {
-    "return_type.gab": ("f :: fn() -> i32 {\n    return true;\n}\n", 2),
-    "unknown_name.gab": ("main :: fn() -> i32 {\n    return missing_name;\n}\n", 2),
-    "arg_count.gab": ("add :: fn(a: i32, b: i32) -> i32 { return a + b; }\nmain :: fn() -> i32 {\n    return add(1);\n}\n", 3),
-    "unknown_type.gab": ("main :: fn() -> i32 {\n    p: Poin = 0;\n    return 0;\n}\n", 2),
-    "arg_type.gab": ("take :: fn(a: i32) {}\nmain :: fn() {\n    take(true);\n}\n", 3),
-    "bad_fail.gab": ("NetError :: errors { http: u16, }\nbad :: fn() -> u32 ! NetError {\n    fail .http { \"nope\" };\n}\n", 3),
-    "syntax.gab": ("main :: fn() -> i32 {\n    return 1\n}\n", 3),
-    "bad_import.gab": ("#import nothing_here.{ x };\nmain :: fn() {}\n", 1),
-    "u128.gab": ("main :: fn() -> i32 {\n    v: u128 = 0u64;\n    return 0;\n}\n", 2),
+    "return_type.fels": ("f :: fn() -> i32 {\n    return true;\n}\n", 2),
+    "unknown_name.fels": ("main :: fn() -> i32 {\n    return missing_name;\n}\n", 2),
+    "arg_count.fels": ("add :: fn(a: i32, b: i32) -> i32 { return a + b; }\nmain :: fn() -> i32 {\n    return add(1);\n}\n", 3),
+    "unknown_type.fels": ("main :: fn() -> i32 {\n    p: Poin = 0;\n    return 0;\n}\n", 2),
+    "arg_type.fels": ("take :: fn(a: i32) {}\nmain :: fn() {\n    take(true);\n}\n", 3),
+    "bad_fail.fels": ("NetError :: errors { http: u16, }\nbad :: fn() -> u32 ! NetError {\n    fail .http { \"nope\" };\n}\n", 3),
+    "syntax.fels": ("main :: fn() -> i32 {\n    return 1\n}\n", 3),
+    "bad_import.fels": ("#import nothing_here.{ x };\nmain :: fn() {}\n", 1),
+    "u128.fels": ("main :: fn() -> i32 {\n    v: u128 = 0u64;\n    return 0;\n}\n", 2),
 }
 
 

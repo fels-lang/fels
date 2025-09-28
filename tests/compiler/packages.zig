@@ -41,13 +41,13 @@ const Setup = struct {
         std.Io.Dir.cwd().deleteTree(io, base) catch {};
         const repo = base ++ "/mathlib";
         try write(repo, "gabbro.pkg", "#package mathlib \"1.0.0\";\n");
-        try write(repo, "src/mathlib.gab", "pub ANSWER :: 4;\n");
-        try write(repo, "src/ops.gab", "pub triple :: fn(x: i32) -> i32 { return x * 3; }\n");
+        try write(repo, "src/mathlib.fels", "pub ANSWER :: 4;\n");
+        try write(repo, "src/ops.fels", "pub triple :: fn(x: i32) -> i32 { return x * 3; }\n");
         if (!git(a, repo, &.{ "init", "-q" })) return null; // no git: skip
         if (!git(a, repo, &.{ "add", "-A" }) or !git(a, repo, &.{ "commit", "-qm", "1.0" }) or !git(a, repo, &.{ "tag", "v1.0.0" })) return error.GitFailed;
-        try write(repo, "src/mathlib.gab", "pub ANSWER :: 5;\n");
+        try write(repo, "src/mathlib.fels", "pub ANSWER :: 5;\n");
         if (!git(a, repo, &.{ "commit", "-qam", "1.1" }) or !git(a, repo, &.{ "tag", "-a", "v1.1.0", "-m", "1.1" })) return error.GitFailed;
-        try write(repo, "src/mathlib.gab", "pub ANSWER :: 6;\n");
+        try write(repo, "src/mathlib.fels", "pub ANSWER :: 6;\n");
         if (!git(a, repo, &.{ "commit", "-qam", "2.0" }) or !git(a, repo, &.{ "tag", "v2.0.0" })) return error.GitFailed;
 
         const cwd = try std.process.currentPathAlloc(io, a);
@@ -88,7 +88,7 @@ const Setup = struct {
 
     fn tag(self: *Setup, comptime v: []const u8, answer: []const u8) !void {
         const repo = try std.fmt.allocPrint(self.mem(), "{s}/mathlib", .{self.base});
-        try write(repo, "src/mathlib.gab", answer);
+        try write(repo, "src/mathlib.fels", answer);
         if (!git(self.mem(), repo, &.{ "commit", "-qam", v }) or !git(self.mem(), repo, &.{ "tag", "v" ++ v })) return error.GitFailed;
     }
 };
@@ -101,7 +101,7 @@ test "packages: a git package at the newest version its range allows, recorded i
     const m = r.find("mathlib").?;
     try std.testing.expectEqualStrings("1.1.0", m.version);
     try std.testing.expect(std.mem.endsWith(u8, m.import_dir, "src"));
-    const answer = try std.Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(s.mem(), &.{ m.import_dir, "mathlib.gab" }), s.mem(), .unlimited);
+    const answer = try std.Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(s.mem(), &.{ m.import_dir, "mathlib.fels" }), s.mem(), .unlimited);
     try std.testing.expectEqualStrings("pub ANSWER :: 5;\n", answer);
     const lock = try std.Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(s.mem(), "{s}/gabbro.lock", .{s.project}), s.mem(), .unlimited);
     try std.testing.expect(std.mem.indexOf(u8, lock, "version \"1.1.0\"") != null);
@@ -124,7 +124,7 @@ test "packages: a path package and what it uses come along, one version of each"
     defer s.deinit();
     const helpers = try std.fmt.allocPrint(s.mem(), "{s}/helpers", .{s.base});
     try write(helpers, "gabbro.pkg", try std.fmt.allocPrint(s.mem(), "#package helpers \"0.1.0\";\n#use mathlib from \"{s}\" version \"^1.0\";\n", .{s.url}));
-    try write(helpers, "helpers.gab", "pub twice :: fn(x: i32) -> i32 { return x * 2; }\n");
+    try write(helpers, "helpers.fels", "pub twice :: fn(x: i32) -> i32 { return x * 2; }\n");
     try s.pkg("#use helpers from \"../helpers\";\n");
     const r = try s.load(.{});
     try std.testing.expectEqual(@as(usize, 2), r.packages.len);
@@ -163,7 +163,7 @@ test "packages: a changed file in the cache is found" {
     defer s.deinit();
     try s.pkg("#use mathlib from \"URL\" version \"=1.0.0\";\n");
     const m = (try s.load(.{})).find("mathlib").?;
-    try write(m.import_dir, "mathlib.gab", "pub ANSWER :: 99;\n");
+    try write(m.import_dir, "mathlib.fels", "pub ANSWER :: 99;\n");
     _ = try s.load(.{}); // a build does not hash every time
     try std.testing.expectError(error.PackageError, s.load(.{ .verify = true }));
 }
@@ -193,22 +193,22 @@ test "packages: a package's #run gets the capability gabbro.pkg grants, and no m
     std.Io.Dir.cwd().deleteTree(io, base) catch {};
     // A path package whose compile-time code calls into user32.
     try write(base ++ "/screen", "gabbro.pkg", "#package screen \"0.1.0\";\n#needs ffi(\"user32\");\n");
-    try write(base ++ "/screen", "screen.gab",
+    try write(base ++ "/screen", "screen.fels",
         \\#extern("user32", "GetSystemMetrics")
         \\metrics :: fn(index: i32) -> i32;
         \\WIDTH :: #run metrics(0);
         \\pub known :: fn() -> i32 { if WIDTH > 0 { return 7; } return 1; }
         \\
     );
-    try write(base ++ "/app", "main.gab", "#import screen;\nmain :: fn() -> i32 { return screen::known(); }\n");
-    try write(base ++ "/app", "build.gab", "#import std.build.{ Build };\nbuild :: fn(b: Build) {\n    b.executable(\"app\", \"main.gab\");\n}\n");
+    try write(base ++ "/app", "main.fels", "#import screen;\nmain :: fn() -> i32 { return screen::known(); }\n");
+    try write(base ++ "/app", "build.fels", "#import std.build.{ Build };\nbuild :: fn(b: Build) {\n    b.executable(\"app\", \"main.fels\");\n}\n");
     const lp = gabbro.windows_sdk_lib_path;
     const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
     const opts: gabbro.build_driver.RunOptions = .{ .quiet = true, .llvm_bin = gabbro.llvm_path ++ "/bin", .lib_paths = lib_paths };
 
     // Granted: the #run reaches user32.
     try write(base ++ "/app", "gabbro.pkg", "#use screen from \"../screen\" may ffi(\"user32\");\n");
-    try gabbro.build_driver.run(a, io, base ++ "/app/build.gab", opts);
+    try gabbro.build_driver.run(a, io, base ++ "/app/build.fels", opts);
     var child = try std.process.spawn(io, .{ .argv = &.{base ++ "/app/app.exe"}, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
     switch (try child.wait(io)) {
         .exited => |code| try std.testing.expectEqual(@as(u8, 7), code),
@@ -218,5 +218,5 @@ test "packages: a package's #run gets the capability gabbro.pkg grants, and no m
     // Not declared in #needs, so not checked up front: the VM still refuses the call.
     try write(base ++ "/screen", "gabbro.pkg", "#package screen \"0.1.0\";\n");
     try write(base ++ "/app", "gabbro.pkg", "#use screen from \"../screen\";\n");
-    try std.testing.expectError(error.CompileFailed, gabbro.build_driver.run(a, io, base ++ "/app/build.gab", opts));
+    try std.testing.expectError(error.CompileFailed, gabbro.build_driver.run(a, io, base ++ "/app/build.fels", opts));
 }

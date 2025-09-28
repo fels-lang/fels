@@ -38,7 +38,7 @@ affect the next. When an assertion fails it calls `core::compiler_error(...)`,
 the VM halts that run, and the driver turns it into a real diagnostic:
 
 ```
-$ gabbro build app.gab -o app.exe
+$ gabbro build app.fels -o app.exe
 comptime test 'arithmetic_is_broken' failed: t.eq: values are not equal
 
 1 passed, 1 failed (comptime)

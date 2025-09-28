@@ -105,13 +105,13 @@ test "exe: the portable fixtures cross-compile to static Linux ELF executables" 
     // These use no Windows API, so they must keep building for Linux (running them needs a
     // Linux machine; they are run under WSL when the toolchain is checked by hand).
     inline for (.{
-        .{ "tests/fixtures/lang/static_data_app.gab", "elf_static_data" },
-        .{ "tests/fixtures/lang/static_vm_app.gab", "elf_static_vm" },
-        .{ "tests/fixtures/lang/static_run_app.gab", "elf_static_run" },
-        .{ "tests/fixtures/lang/try_defer_app.gab", "elf_try_defer" },
-        .{ "tests/fixtures/lang/inferred_error_set_app.gab", "elf_inferred_error_set" },
-        .{ "tests/fixtures/stdlib/sync_app.gab", "elf_sync" },
-        .{ "tests/fixtures/stdlib/com_app.gab", "elf_com" },
+        .{ "tests/fixtures/lang/static_data_app.fels", "elf_static_data" },
+        .{ "tests/fixtures/lang/static_vm_app.fels", "elf_static_vm" },
+        .{ "tests/fixtures/lang/static_run_app.fels", "elf_static_run" },
+        .{ "tests/fixtures/lang/try_defer_app.fels", "elf_try_defer" },
+        .{ "tests/fixtures/lang/inferred_error_set_app.fels", "elf_inferred_error_set" },
+        .{ "tests/fixtures/stdlib/sync_app.fels", "elf_sync" },
+        .{ "tests/fixtures/stdlib/com_app.fels", "elf_com" },
     }) |c| {
         const obj_path = try std.fmt.allocPrint(a, ".zig-cache/{s}.o", .{c[1]});
         const elf_path = try std.fmt.allocPrint(a, ".zig-cache/{s}.elf", .{c[1]});
@@ -495,7 +495,7 @@ test "build: the expanded std.build API runs through the build hook" {
         \\build :: fn(b: Build) {
         \\    b.workspace("t");
         \\    b.out_root("bin");
-        \\    app := b.executable("app", "src/main.gab");
+        \\    app := b.executable("app", "src/main.fels");
         \\    app.optimize(.release_fast);
         \\    app.windowed();
         \\    app.entry("mainCRTStartup");
@@ -519,9 +519,9 @@ test "build: the expanded std.build API runs through the build hook" {
         \\    b.summary();
         \\}
     ;
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data = build_src });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data = build_src });
 
-    try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.gab", .{
+    try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.fels", .{
         .list = true,
         .quiet = true,
         .options = &.{ "fast", "desc=cool" },
@@ -538,7 +538,7 @@ test "build: a static library links into a program, with the libraries it needs"
     const dir = ".zig-cache/bt_static";
     std.Io.Dir.cwd().createDirPath(io, dir) catch {};
     // The library uses user32 itself; the program does not name it.
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/util.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/util.fels", .data =
         \\#extern("user32", "GetSystemMetrics")
         \\metrics :: fn(index: i32) -> i32;
         \\
@@ -546,18 +546,18 @@ test "build: a static library links into a program, with the libraries it needs"
         \\add :: fn(a: i32, b: i32) -> i32 { return a + b + metrics(0) * 0; }
         \\
     });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.fels", .data =
         \\#extern("util", "util_add")
         \\util_add :: fn(a: i32, b: i32) -> i32;
         \\
         \\main :: fn() -> i32 { return util_add(2, 3); }
         \\
     });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    b.static("util", "util.gab");
-        \\    app := b.executable("app", "app.gab");
+        \\    b.static("util", "util.fels");
+        \\    app := b.executable("app", "app.fels");
         \\    app.link("util");
         \\}
     });
@@ -565,7 +565,7 @@ test "build: a static library links into a program, with the libraries it needs"
     const lp = gabbro.windows_sdk_lib_path;
     const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
     for ([_][]const u8{ "util", "app" }) |target| {
-        try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.gab", .{
+        try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.fels", .{
             .target = target,
             .quiet = true,
             .llvm_bin = gabbro.llvm_path ++ "/bin",
@@ -593,17 +593,17 @@ test "build: link_artifact builds the libraries first and links them" {
 
     const dir = ".zig-cache/bt_link_artifact";
     std.Io.Dir.cwd().createDirPath(io, dir) catch {};
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/util.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/util.fels", .data =
         \\#export("util_add")
         \\add :: fn(a: i32, b: i32) -> i32 { return a + b; }
         \\
     });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/dyn.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/dyn.fels", .data =
         \\#export("dyn_mul")
         \\mul :: fn(a: i32, b: i32) -> i32 { return a * b; }
         \\
     });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.fels", .data =
         \\#extern("util", "util_add")
         \\util_add :: fn(a: i32, b: i32) -> i32;
         \\#extern("dyn", "dyn_mul")
@@ -613,14 +613,14 @@ test "build: link_artifact builds the libraries first and links them" {
         \\
     });
     // The DLL goes to its own folder; the build copies it next to the program.
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
         \\    b.out_root("out");
-        \\    util := b.static("util", "util.gab");
-        \\    dyn := b.shared("dyn", "dyn.gab");
+        \\    util := b.static("util", "util.fels");
+        \\    dyn := b.shared("dyn", "dyn.fels");
         \\    dyn.out_dir("libs");
-        \\    app := b.executable("app", "app.gab");
+        \\    app := b.executable("app", "app.fels");
         \\    app.link_artifact(util);
         \\    app.link_artifact(dyn);
         \\    b.default(app);
@@ -629,7 +629,7 @@ test "build: link_artifact builds the libraries first and links them" {
 
     const lp = gabbro.windows_sdk_lib_path;
     const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
-    try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.gab", .{
+    try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.fels", .{
         .quiet = true,
         .llvm_bin = gabbro.llvm_path ++ "/bin",
         .lib_paths = lib_paths,
@@ -652,17 +652,17 @@ test "build: install copies a program with its DLL, and a static library" {
     const dir = ".zig-cache/bt_install";
     std.Io.Dir.cwd().deleteTree(io, dir) catch {};
     std.Io.Dir.cwd().createDirPath(io, dir) catch {};
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/util.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/util.fels", .data =
         \\#export("util_add")
         \\add :: fn(a: i32, b: i32) -> i32 { return a + b; }
         \\
     });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/dyn.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/dyn.fels", .data =
         \\#export("dyn_mul")
         \\mul :: fn(a: i32, b: i32) -> i32 { return a * b; }
         \\
     });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.fels", .data =
         \\#extern("util", "util_add")
         \\util_add :: fn(a: i32, b: i32) -> i32;
         \\#extern("dyn", "dyn_mul")
@@ -671,14 +671,14 @@ test "build: install copies a program with its DLL, and a static library" {
         \\main :: fn() -> i32 { return util_add(2, 3) + dyn_mul(2, 10); }
         \\
     });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
         \\    b.out_root("out");
-        \\    util := b.static("util", "util.gab");
+        \\    util := b.static("util", "util.fels");
         \\    util.install();
-        \\    dyn := b.shared("dyn", "dyn.gab");
-        \\    app := b.executable("app", "app.gab");
+        \\    dyn := b.shared("dyn", "dyn.fels");
+        \\    app := b.executable("app", "app.fels");
         \\    app.link_artifact(util);
         \\    app.link_artifact(dyn);
         \\    app.install();
@@ -687,7 +687,7 @@ test "build: install copies a program with its DLL, and a static library" {
 
     const lp = gabbro.windows_sdk_lib_path;
     const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
-    try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.gab", .{
+    try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.fels", .{
         .target = "install",
         .quiet = true,
         .llvm_bin = gabbro.llvm_path ++ "/bin",
@@ -713,9 +713,9 @@ test "build: defines reach the program through build_options, and add_module map
 
     const dir = ".zig-cache/bt_define";
     std.Io.Dir.cwd().createDirPath(io, dir ++ "/deps/mathlib") catch {};
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/deps/mathlib/ops.gab", .data = "pub triple :: fn(x: i32) -> i32 { return x * 3; }\n" });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/deps/mathlib/mathlib.gab", .data = "pub ANSWER :: 4;\n" });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/deps/mathlib/ops.fels", .data = "pub triple :: fn(x: i32) -> i32 { return x * 3; }\n" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/deps/mathlib/mathlib.fels", .data = "pub ANSWER :: 4;\n" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.fels", .data =
         \\#import build_options;
         \\#import mathlib;
         \\#import mathlib.ops;
@@ -729,10 +729,10 @@ test "build: defines reach the program through build_options, and add_module map
         \\}
         \\
     });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    app := b.executable("app", "app.gab");
+        \\    app := b.executable("app", "app.fels");
         \\    app.define("NAME", "say \"hi\"");
         \\    app.define_int("LEVEL", 10);
         \\    app.define_bool("FAST", true);
@@ -742,7 +742,7 @@ test "build: defines reach the program through build_options, and add_module map
 
     const lp = gabbro.windows_sdk_lib_path;
     const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
-    try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.gab", .{
+    try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.fels", .{
         .quiet = true,
         .llvm_bin = gabbro.llvm_path ++ "/bin",
         .lib_paths = lib_paths,
@@ -766,11 +766,11 @@ test "build: a step generates code before the artifact that comes after it" {
     std.Io.Dir.cwd().deleteTree(io, dir) catch {};
     std.Io.Dir.cwd().createDirPath(io, dir) catch {};
     // The generator is a program of the same build; it writes the module the app imports.
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/gen.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/gen.fels", .data =
         \\#import std.fs;
         \\#import std.io.{ Writer };
         \\main :: fn() -> i32 {
-        \\    f := fs::create("generated.gab") catch err { return 1; };
+        \\    f := fs::create("generated.fels") catch err { return 1; };
         \\    w: *Writer = &f;
         \\    w.write_all("pub VALUE :: 42;\n") catch err { return 2; };
         \\    (&f).close();
@@ -778,18 +778,18 @@ test "build: a step generates code before the artifact that comes after it" {
         \\}
         \\
     });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.fels", .data =
         \\#import generated;
         \\main :: fn() -> i32 { return generated::VALUE; }
         \\
     });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data =
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    tool := b.executable("gen", "gen.gab");
-        \\    gen := b.step("gen", "write generated.gab");
+        \\    tool := b.executable("gen", "gen.fels");
+        \\    gen := b.step("gen", "write generated.fels");
         \\    gen.run(tool);
-        \\    app := b.executable("app", "app.gab");
+        \\    app := b.executable("app", "app.fels");
         \\    app.after(gen);
         \\    b.default(app);
         \\}
@@ -797,7 +797,7 @@ test "build: a step generates code before the artifact that comes after it" {
 
     const lp = gabbro.windows_sdk_lib_path;
     const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
-    try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.gab", .{
+    try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.fels", .{
         .quiet = true,
         .llvm_bin = gabbro.llvm_path ++ "/bin",
         .lib_paths = lib_paths,
@@ -819,23 +819,23 @@ test "build: a test_dir step compiles+runs tests and fails on a failing one" {
 
     const dir = ".zig-cache/bt_test";
     std.Io.Dir.cwd().createDirPath(io, dir ++ "/tests") catch {};
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/tests/p1.gab", .data = "main :: fn() -> i32 { return 0; }\n" });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/tests/p2.gab", .data = "main :: fn() -> i32 { return 0; }\n" });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/tests/f1.gab", .data = "main :: fn() -> i32 { return 3; }\n" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/tests/p1.fels", .data = "main :: fn() -> i32 { return 0; }\n" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/tests/p2.fels", .data = "main :: fn() -> i32 { return 0; }\n" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/tests/f1.fels", .data = "main :: fn() -> i32 { return 3; }\n" });
     const build_src =
         \\#import std.build.{ Build, Artifact };
         \\build :: fn(b: Build) {
-        \\    app := b.executable("app", "tests/p1.gab");
+        \\    app := b.executable("app", "tests/p1.fels");
         \\    b.test_dir("test", "tests");
         \\    b.default(app);
         \\}
     ;
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data = build_src });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data = build_src });
 
     const lp = gabbro.windows_sdk_lib_path;
     const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
     // One test exits non-zero, so the test step must fail.
-    try std.testing.expectError(error.RunFailed, gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.gab", .{
+    try std.testing.expectError(error.RunFailed, gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.fels", .{
         .target = "test",
         .quiet = true,
         .llvm_bin = gabbro.llvm_path ++ "/bin",
@@ -1122,7 +1122,7 @@ test "exe: comptime FFI from a pure #run is rejected (capability)" {
     defer arena.deinit();
     // A bare `#run` carries no `ffi` capability, so reaching kernel32!MulDiv at
     // compile time must be denied — this is the build.rs surface, closed. (Only
-    // `build.gab` is granted FFI.)
+    // `build.fels` is granted FFI.)
     if (compileAndRun(arena.allocator(),
         \\#extern("kernel32", "MulDiv")
         \\mul_div :: fn(a: i32, b: i32, c: i32) -> i32;
@@ -2081,36 +2081,36 @@ test "exe: std.path / std.time / std.crypto / std.serde run correctly cross-modu
     // (path: query/join; time: UTC calendar + live clocks; crypto: crc32/fnv;
     // serde: reflection-driven JSON for scalars/strings/nested structs/all widths).
     inline for (.{
-        .{ "tests/fixtures/stdlib/path_app.gab", "exe_path_app" },
-        .{ "tests/fixtures/stdlib/time_app.gab", "exe_time_app" },
-        .{ "tests/fixtures/stdlib/crypto_app.gab", "exe_crypto_app" },
-        .{ "tests/fixtures/stdlib/serde_app.gab", "exe_serde_app" },
-        .{ "tests/fixtures/stdlib/slice_app.gab", "exe_slice_app" },
-        .{ "tests/fixtures/stdlib/atomics_app.gab", "exe_atomics_app" },
-        .{ "tests/fixtures/stdlib/atomics_thread_app.gab", "exe_atomics_thread_app" },
-        .{ "tests/fixtures/stdlib/atomic_cell_app.gab", "exe_atomic_cell_app" },
-        .{ "tests/fixtures/stdlib/atomic_qualified_app.gab", "exe_atomic_qualified_app" },
-        .{ "tests/fixtures/lang/struct_methods_app.gab", "exe_struct_methods_app" },
-        .{ "tests/fixtures/lang/extern_fnptr_app.gab", "exe_extern_fnptr_app" },
-        .{ "tests/fixtures/lang/derive_eq_app.gab", "exe_derive_eq_app" },
-        .{ "tests/fixtures/lang/user_derive_app.gab", "exe_user_derive_app" },
-        .{ "tests/fixtures/stdlib/thread_app.gab", "exe_thread_app" },
-        .{ "tests/fixtures/stdlib/net_addr_app.gab", "exe_net_addr_app" },
-        .{ "tests/fixtures/stdlib/vec_app.gab", "exe_vec_app" },
-        .{ "tests/fixtures/stdlib/map_app.gab", "exe_map_app" },
-        .{ "tests/fixtures/stdlib/env_app.gab", "exe_env_app" },
-        .{ "tests/fixtures/stdlib/bytes_app.gab", "exe_bytes_app" },
-        .{ "tests/fixtures/stdlib/utf16_app.gab", "exe_utf16_app" },
-        .{ "tests/fixtures/stdlib/utf16_win_app.gab", "exe_utf16_win_app" },
-        .{ "tests/fixtures/lang/error_variant_eq_app.gab", "exe_error_variant_eq_app" },
-        .{ "tests/fixtures/lang/inferred_error_set_app.gab", "exe_inferred_error_set_app" },
-        .{ "tests/fixtures/lang/static_data_app.gab", "exe_static_data_app" },
-        .{ "tests/fixtures/lang/static_vm_app.gab", "exe_static_vm_app" },
-        .{ "tests/fixtures/lang/static_run_app.gab", "exe_static_run_app" },
-        .{ "tests/fixtures/lang/try_defer_app.gab", "exe_try_defer_app" },
-        .{ "tests/fixtures/stdlib/sync_app.gab", "exe_sync_app" },
-        .{ "tests/fixtures/stdlib/com_app.gab", "exe_com_app" },
-        .{ "tests/fixtures/stdlib/winrt_app.gab", "exe_winrt_app" },
+        .{ "tests/fixtures/stdlib/path_app.fels", "exe_path_app" },
+        .{ "tests/fixtures/stdlib/time_app.fels", "exe_time_app" },
+        .{ "tests/fixtures/stdlib/crypto_app.fels", "exe_crypto_app" },
+        .{ "tests/fixtures/stdlib/serde_app.fels", "exe_serde_app" },
+        .{ "tests/fixtures/stdlib/slice_app.fels", "exe_slice_app" },
+        .{ "tests/fixtures/stdlib/atomics_app.fels", "exe_atomics_app" },
+        .{ "tests/fixtures/stdlib/atomics_thread_app.fels", "exe_atomics_thread_app" },
+        .{ "tests/fixtures/stdlib/atomic_cell_app.fels", "exe_atomic_cell_app" },
+        .{ "tests/fixtures/stdlib/atomic_qualified_app.fels", "exe_atomic_qualified_app" },
+        .{ "tests/fixtures/lang/struct_methods_app.fels", "exe_struct_methods_app" },
+        .{ "tests/fixtures/lang/extern_fnptr_app.fels", "exe_extern_fnptr_app" },
+        .{ "tests/fixtures/lang/derive_eq_app.fels", "exe_derive_eq_app" },
+        .{ "tests/fixtures/lang/user_derive_app.fels", "exe_user_derive_app" },
+        .{ "tests/fixtures/stdlib/thread_app.fels", "exe_thread_app" },
+        .{ "tests/fixtures/stdlib/net_addr_app.fels", "exe_net_addr_app" },
+        .{ "tests/fixtures/stdlib/vec_app.fels", "exe_vec_app" },
+        .{ "tests/fixtures/stdlib/map_app.fels", "exe_map_app" },
+        .{ "tests/fixtures/stdlib/env_app.fels", "exe_env_app" },
+        .{ "tests/fixtures/stdlib/bytes_app.fels", "exe_bytes_app" },
+        .{ "tests/fixtures/stdlib/utf16_app.fels", "exe_utf16_app" },
+        .{ "tests/fixtures/stdlib/utf16_win_app.fels", "exe_utf16_win_app" },
+        .{ "tests/fixtures/lang/error_variant_eq_app.fels", "exe_error_variant_eq_app" },
+        .{ "tests/fixtures/lang/inferred_error_set_app.fels", "exe_inferred_error_set_app" },
+        .{ "tests/fixtures/lang/static_data_app.fels", "exe_static_data_app" },
+        .{ "tests/fixtures/lang/static_vm_app.fels", "exe_static_vm_app" },
+        .{ "tests/fixtures/lang/static_run_app.fels", "exe_static_run_app" },
+        .{ "tests/fixtures/lang/try_defer_app.fels", "exe_try_defer_app" },
+        .{ "tests/fixtures/stdlib/sync_app.fels", "exe_sync_app" },
+        .{ "tests/fixtures/stdlib/com_app.fels", "exe_com_app" },
+        .{ "tests/fixtures/stdlib/winrt_app.fels", "exe_winrt_app" },
     }) |c| {
         const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);
         try std.testing.expectEqual(@as(u32, 42), code);
@@ -2176,7 +2176,7 @@ test "exe: fallible tail-forward + qualified `! ns::Error` return type" {
     // qualifies an error type from another module without a dual-import. (A fixture
     // because both features need a real cross-module import.)
     const code = try compileFileAndRun(arena.allocator(),
-        "tests/fixtures/lang/fallible_forward_app.gab", "exe_fallible_forward_qualerr");
+        "tests/fixtures/lang/fallible_forward_app.fels", "exe_fallible_forward_qualerr");
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
@@ -2242,8 +2242,8 @@ test "exe: std.net layered TCP + UDP loopback round-trips (os/socket/tcp/udp)" {
     //   udp: bind / recv_from / send_to / connected connect+send+recv
     // Each returns 42 iff the bytes echoed back intact.
     inline for (.{
-        .{ "tests/fixtures/stdlib/net_echo_app.gab", "exe_net_echo_app" },
-        .{ "tests/fixtures/stdlib/net_udp_app.gab", "exe_net_udp_app" },
+        .{ "tests/fixtures/stdlib/net_echo_app.fels", "exe_net_echo_app" },
+        .{ "tests/fixtures/stdlib/net_udp_app.fels", "exe_net_udp_app" },
     }) |c| {
         const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);
         try std.testing.expectEqual(@as(u32, 42), code);
@@ -2967,7 +2967,7 @@ test "exe: std.list works cross-module (issue #6 + generic collision/realloc fix
     // module that defines `List`.
     const code = try compileFileAndRun(
         arena.allocator(),
-        "tests/fixtures/stdlib/list_app.gab",
+        "tests/fixtures/stdlib/list_app.fels",
         "exe_list_app",
     );
     try std.testing.expectEqual(@as(u32, 42), code);
@@ -4183,7 +4183,7 @@ test "gabld: a DLL holding an absolute address is handed back to LLD" {
     const gabld_obj = ".zig-cache/gabld_for_test.o";
     const gabld_dll = ".zig-cache/gabld_for_test.dll";
     try gabbro.compileFileWithLlvm(a, io, .{
-        .file_name = "linker/gabld.gab",
+        .file_name = "linker/gabld.fels",
         .source = "",
         .obj_path = gabld_obj,
         .exe_path = gabld_dll,
@@ -4435,8 +4435,8 @@ test "exe: std.c aliases compile and behave as the types they name" {
     // slices and a real kernel32 call (plus `sizeof` seeing the LLP64 widths); the bare
     // import reaches them through the namespace (`c::c_int`).
     inline for (.{
-        .{ "tests/fixtures/stdlib/c_types_app.gab", "exe_c_types_app" },
-        .{ "tests/fixtures/stdlib/c_namespace_app.gab", "exe_c_namespace_app" },
+        .{ "tests/fixtures/stdlib/c_types_app.fels", "exe_c_types_app" },
+        .{ "tests/fixtures/stdlib/c_namespace_app.fels", "exe_c_namespace_app" },
     }) |c| {
         const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);
         try std.testing.expectEqual(@as(u32, 42), code);

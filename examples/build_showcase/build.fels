@@ -1,0 +1,67 @@
+// A tour of the std.build API. Run from this directory:
+//
+//   gabbro build                     # the default step `all`: the app, its libraries, the assets
+//   gabbro build run                 # build, then run the app
+//   gabbro build --list              # artifacts, steps and options
+//   gabbro build -Dtrace -Dthreads=8 -Dgreeting=Hi
+//   gabbro build -Dmode=fast         # optimize the app for speed
+//   gabbro build install             # copy the app, its DLL and the assets to dist/
+//   gabbro build clean               # remove what the build made
+//
+#import std.build.{ Build };
+
+build :: fn(b: Build) {
+    b.workspace("showcase");
+    b.out_root("bin");                 // every artifact goes in bin/
+
+    // Typed options, read at the top so --list shows all of them.
+    trace := b.option_bool("trace", false, "print a trace line");
+    threads := b.option_int("threads", 4, "worker threads");
+    greeting := b.option_string("greeting", "hello from the showcase", "the first line the app prints");
+    mode := b.option_choice("mode", "debug|fast|small", "debug", "how to optimize the app");
+
+    // A static library the app links. It is built first.
+    mathutil := b.static("mathutil", "src/mathutil.fels");
+
+    // A companion DLL, installed next to the app.
+    plugin := b.shared("plugin", "src/plugin.fels");
+    plugin.release_small();
+    plugin.install();
+
+    app := b.executable("app", "src/main.fels");
+    if mode == "fast" { app.release_fast(); }
+    if mode == "small" { app.release_small(); }
+    app.stack_size(8 * 1024 * 1024);  // 8 MiB stack
+    app.version("1.0.0");
+    app.description("the showcase app");
+    app.link_artifact(mathutil);
+    app.link("user32");                // a system library, one call each
+
+    // Constants the app reads with `#import build_options;`.
+    app.define("GREETING", greeting);
+    app.define_bool("TRACE", trace);
+    app.define_int("THREADS", threads);
+    app.install();
+
+    // Steps
+    assets := b.step("assets", "copy the assets next to the app");
+    assets.copy_dir("assets", "bin/assets");
+
+    all := b.step("all", "the app, the plugin and the assets");
+    all.depends_on(app);
+    all.depends_on(plugin);
+    all.after(assets);
+    b.default_step(all);
+
+    run := b.run_step("run", app);
+    run.cwd("bin");                    // so the app finds assets/ next to it
+
+    clean := b.step("clean", "remove what the build made");
+    clean.remove("bin");
+    clean.remove("dist");
+    clean.remove(".gabbro-cache");
+
+    // What `gabbro build install` copies besides the installed artifacts.
+    b.install_dir("assets", "bin/assets");
+    b.summary();                       // print a summary when done
+}

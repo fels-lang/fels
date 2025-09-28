@@ -39,7 +39,7 @@ test "interfaces: explicit conformance and dynamic dispatch lower end to end" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "interfaces.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "interfaces.fels", src);
     defer fe.deinit(arena.allocator());
     const m = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(m);
@@ -101,7 +101,7 @@ test "interfaces: missing required method fails sema" {
         \\    flush :: fn(self: *Self) {}
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "missing_method.gab", bad));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "missing_method.fels", bad));
 }
 
 test "interfaces: dynamic coercion requires explicit conformance" {
@@ -117,5 +117,5 @@ test "interfaces: dynamic coercion requires explicit conformance" {
         \\    writer: *Writer = file;
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "missing_impl.gab", bad));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "missing_impl.fels", bad));
 }

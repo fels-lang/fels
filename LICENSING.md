@@ -27,7 +27,7 @@ compiled program is licensed under the Apache License, version 2.0. See
 `LICENSE-APACHE-2.0.txt` and `NOTICE`. This covers:
 
   * `lib/`               — the gabbro standard library
-  * `src/runtime/`       — the embedded platform runtime (`windows.gab`, `linux.gab`)
+  * `src/runtime/`       — the embedded platform runtime (`windows.fels`, `linux.fels`)
   * the compiler-injected prelude sources (heap, ptr, reflection, `Any`, the
     `Test` testing context, …), including those embedded as string data inside
     `src/std_prelude.zig` and `src/ast_prelude.zig`

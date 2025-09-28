@@ -1,7 +1,0 @@
-#import std.build.{ Build, shared, release, default };
-
-build :: fn(b: Build) {
-    lib := b.shared("gabdll", "main.gab");
-    lib.release();
-    b.default(lib);
-}

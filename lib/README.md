@@ -8,7 +8,7 @@ The compiler resolves:
 #import std.mem;
 ```
 
-to `std/mem.gab` beneath its configured modules root. The compiler defaults to
+to `std/mem.fels` beneath its configured modules root. The compiler defaults to
 this sibling `gabbro-modules` directory; use `-Dstdlib-root=<path>` when building the
 compiler to choose another location.
 

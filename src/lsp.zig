@@ -2,7 +2,7 @@
 //!
 //! A small LSP server over stdio (JSON-RPC). It is a thin layer over the compiler front
 //! end: every open document is analyzed with `pipeline.analyzeFile`, which loads the file
-//! and everything it imports (the standard library and sibling `.gab` files) with the same
+//! and everything it imports (the standard library and sibling `.fels` files) with the same
 //! rules as `gabbro check`, but tolerantly, so a broken file still gives diagnostics,
 //! symbols and partial types.
 //!
@@ -10,7 +10,7 @@
 //!   is read from the editor's text.
 //! * `std` is found as the compiler finds it (`--std-path`, `GABBRO_STD`, `GABBRO_HOME`,
 //!   next to the executable). Other imports are looked up next to the importing file and
-//!   then under the project root (the folder with `build.gab`, or the workspace folder).
+//!   then under the project root (the folder with `build.fels`, or the workspace folder).
 //! * Diagnostics are published per file: the errors of an imported module go to that
 //!   module's own URI, never to the importer. Errors inside `std` are not shown.
 //! * Definition and hover work across files. Completion and the outline include the names
@@ -21,7 +21,7 @@
 //!   `Type::` and enum literals, signature help, inlay hints for inferred types, and hover
 //!   on locals, parameters and fields. While the text does not parse, these answer from
 //!   the last analysis whose text parsed, with positions mapped through the edits.
-//! * Find references, rename, document highlight and workspace symbols cover every `.gab`
+//! * Find references, rename, document highlight and workspace symbols cover every `.fels`
 //!   file of the project, open in the editor or not. They live in `lsp_nav.zig`, which
 //!   keeps a reference index per file and rebuilds it only when the file or a module it
 //!   imports changes.
@@ -714,7 +714,7 @@ const keywords = [_][]const u8{
 // Request handlers
 
 fn handleInitialize(self: *Server, id: ?json.Value, params: json.Value) void {
-    // The workspace folder, used as the project root for files without a `build.gab`.
+    // The workspace folder, used as the project root for files without a `build.fels`.
     var root_uri: ?[]const u8 = getStr(params, "rootUri");
     if (root_uri == null) {
         if (objGet(params, "workspaceFolders")) |wf| switch (wf) {
@@ -1273,70 +1273,70 @@ fn countFor(a: pipeline.Analysis, file: []const u8) usize {
 
 test "lsp: a sibling module is loaded and its names are in scope" {
     var mem = MemFiles{
-        .names = &.{ "util.gab", "main.gab" },
+        .names = &.{ "util.fels", "main.fels" },
         .texts = &.{
             "pub add :: fn(a: i32, b: i32) -> i32 { return a + b; }\n",
             "#import util.{ add };\nmain :: fn() -> i32 { return add(1, 2); }\n",
         },
     };
-    var a = try mem.analyze("main.gab", false);
+    var a = try mem.analyze("main.fels", false);
     defer a.deinit();
     try std.testing.expectEqual(@as(usize, 0), a.diagnostics.len);
     try std.testing.expect(a.symbols != null);
-    try std.testing.expect(a.symbols.?.resolveVisible("main.gab", "add") != null);
+    try std.testing.expect(a.symbols.?.resolveVisible("main.fels", "add") != null);
 }
 
 test "lsp: a name missing from an imported module is an error on the import" {
     var mem = MemFiles{
-        .names = &.{ "util.gab", "main.gab" },
+        .names = &.{ "util.fels", "main.fels" },
         .texts = &.{
             "pub plus :: fn(a: i32, b: i32) -> i32 { return a + b; }\n",
             "#import util.{ add };\nmain :: fn() -> i32 { return add(1, 2); }\n",
         },
     };
-    var a = try mem.analyze("main.gab", false);
+    var a = try mem.analyze("main.fels", false);
     defer a.deinit();
-    try std.testing.expect(countFor(a, "main.gab") >= 1);
-    try std.testing.expectEqual(@as(usize, 0), countFor(a, "util.gab"));
+    try std.testing.expect(countFor(a, "main.fels") >= 1);
+    try std.testing.expectEqual(@as(usize, 0), countFor(a, "util.fels"));
     try std.testing.expect(a.symbols != null);
 }
 
 test "lsp: a file with a syntax error gives its diagnostics and no symbols" {
-    var mem = MemFiles{ .names = &.{"main.gab"}, .texts = &.{"main :: fn() -> i32 {\n    return 1\n}\n"} };
-    var a = try mem.analyze("main.gab", false);
+    var mem = MemFiles{ .names = &.{"main.fels"}, .texts = &.{"main :: fn() -> i32 {\n    return 1\n}\n"} };
+    var a = try mem.analyze("main.fels", false);
     defer a.deinit();
-    try std.testing.expect(countFor(a, "main.gab") >= 1);
+    try std.testing.expect(countFor(a, "main.fels") >= 1);
     try std.testing.expect(a.symbols == null);
 }
 
 test "lsp: an import that cannot be found is reported on the import" {
-    var mem = MemFiles{ .names = &.{"main.gab"}, .texts = &.{"#import nowhere.{ x };\nmain :: fn() {}\n"} };
-    var a = try mem.analyze("main.gab", false);
+    var mem = MemFiles{ .names = &.{"main.fels"}, .texts = &.{"#import nowhere.{ x };\nmain :: fn() {}\n"} };
+    var a = try mem.analyze("main.fels", false);
     defer a.deinit();
-    try std.testing.expectEqual(@as(usize, 1), countFor(a, "main.gab"));
+    try std.testing.expectEqual(@as(usize, 1), countFor(a, "main.fels"));
     try std.testing.expectEqual(@as(usize, 0), a.diagnostics[0].span.start);
 }
 
 test "lsp: an error in an imported module belongs to that module" {
     var mem = MemFiles{
-        .names = &.{ "util.gab", "main.gab" },
+        .names = &.{ "util.fels", "main.fels" },
         .texts = &.{
             "pub bad :: fn() -> i32 { return true; }\n",
             "#import util.{ bad };\nmain :: fn() -> i32 { return bad(); }\n",
         },
     };
-    var a = try mem.analyze("main.gab", false);
+    var a = try mem.analyze("main.fels", false);
     defer a.deinit();
-    try std.testing.expectEqual(@as(usize, 0), countFor(a, "main.gab"));
-    try std.testing.expect(countFor(a, "util.gab") >= 1);
+    try std.testing.expectEqual(@as(usize, 0), countFor(a, "main.fels"));
+    try std.testing.expect(countFor(a, "util.fels") >= 1);
 }
 
 test "lsp: std is loaded and marked, and Mutex is known" {
     var mem = MemFiles{
-        .names = &.{"main.gab"},
+        .names = &.{"main.fels"},
         .texts = &.{"#import std.sync.{ Mutex };\nmain :: fn() { m: Mutex = Mutex.new(); }\n"},
     };
-    var a = try mem.analyze("main.gab", true);
+    var a = try mem.analyze("main.fels", true);
     defer a.deinit();
     var std_files: usize = 0;
     for (a.files) |f| {
@@ -1350,14 +1350,14 @@ test "lsp: std is loaded and marked, and Mutex is known" {
 
 test "lsp: file URIs and paths convert both ways" {
     const gpa = std.testing.allocator;
-    const p = try uriToPath(gpa, "file:///c%3A/dev/my%20proj/a.gab");
+    const p = try uriToPath(gpa, "file:///c%3A/dev/my%20proj/a.fels");
     defer gpa.free(p);
     if (is_windows) {
-        try std.testing.expectEqualStrings("c:\\dev\\my proj\\a.gab", p);
+        try std.testing.expectEqualStrings("c:\\dev\\my proj\\a.fels", p);
     } else {
-        try std.testing.expectEqualStrings("/c:/dev/my proj/a.gab", p);
+        try std.testing.expectEqualStrings("/c:/dev/my proj/a.fels", p);
     }
-    const u = try pathToUri(gpa, "C:\\dev\\my proj\\a.gab");
+    const u = try pathToUri(gpa, "C:\\dev\\my proj\\a.fels");
     defer gpa.free(u);
-    try std.testing.expectEqualStrings("file:///C:/dev/my%20proj/a.gab", u);
+    try std.testing.expectEqualStrings("file:///C:/dev/my%20proj/a.fels", u);
 }

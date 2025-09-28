@@ -28,7 +28,7 @@ standard library. There are four forms:
 #import std.io.*;
 ... println("hi");
 
-// Local modules work the same (sibling file math.gab):
+// Local modules work the same (sibling file math.fels):
 #import math;            math::add(1, 2);
 #import math.{ add };    add(1, 2);
 ```

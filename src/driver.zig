@@ -131,7 +131,7 @@ pub const LlvmCompileOptions = struct {
     /// Emit no platform entry-point wrapper (`mainCRTStartup`) or `_fltused` — a
     /// freestanding library object to embed in another binary (gabld into gabbro.exe).
     no_entry: bool = false,
-    /// The object of a static library (`b.static` in build.gab): no entry point, and every
+    /// The object of a static library (`b.static` in build.fels): no entry point, and every
     /// symbol except the `#export`ed ones is internal, so the runtime it carries does not
     /// clash with the program's own.
     library_object: bool = false,
@@ -249,7 +249,7 @@ pub fn compileWithLlvm(
     try emitLlvmFromFrontend(allocator, io, fe, opts);
 }
 
-/// Full file pipeline: .gab path + imports -> IR -> LLVM IR -> .o -> (optional) .exe
+/// Full file pipeline: .fels path + imports -> IR -> LLVM IR -> .o -> (optional) .exe
 pub fn compileFileWithLlvm(
     allocator: std.mem.Allocator,
     io: std.Io,

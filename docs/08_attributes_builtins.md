@@ -111,7 +111,7 @@ Compile-time constants (no parens) that fold to a literal at the use site:
 | Constant | Type | Value |
 |---|---|---|
 | `core::file` | `[]const u8` | the current source file path |
-| `core::module` | `[]const u8` | the module name (file basename, no `.gab`) |
+| `core::module` | `[]const u8` | the module name (file basename, no `.fels`) |
 | `core::func` | `[]const u8` | the enclosing function's name |
 | `core::line` | `i32` | the line of the `core::line` reference |
 | `core::column` | `i32` | the column |
@@ -210,7 +210,7 @@ Header :: struct { kind: u8, len: u32, id: u64 }
 A failing assertion reports the message and the condition as written:
 
 ```
-header.gab:3:9: error: static assertion failed: Header is sent as-is over the wire (`core::sizeof(Header) == 16`)
+header.fels:3:9: error: static assertion failed: Header is sent as-is over the wire (`core::sizeof(Header) == 16`)
 ```
 
 - The condition must be a `bool` (a type error otherwise) and must fold at compile time;

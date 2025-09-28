@@ -19,7 +19,7 @@ the major version is `0`, any minor bump may break source compatibility.
 - **`define`, `define_int` and `define_bool`** pass constants to the program through a generated
   `build_options` module (`#import build_options;`). `define` was recorded and then ignored.
 - **`a.add_module(name, dir)`** maps an import name to a folder, so `#import name.x` reads
-  `<dir>/x.gab`.
+  `<dir>/x.fels`.
 - **Build steps.** `b.step(name, description)` runs the artifacts and steps it depends on, then
   its actions: `command` and `run` (with `arg`, `arg_output`, `cwd` and `env`), `copy_file`,
   `copy_dir`, `write_file`, `remove` and `print`. `a.after(step)` generates code before an

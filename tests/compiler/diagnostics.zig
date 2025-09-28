@@ -8,7 +8,7 @@ test "diagnostics: return type mismatch shows types" {
     const bad =
         \\bad :: fn() -> i32 { return true; }
     ;
-    const result = gabbro.compile(arena.allocator(), "bad.gab", bad);
+    const result = gabbro.compile(arena.allocator(), "bad.fels", bad);
     try std.testing.expectError(error.SemanticFailed, result);
 }
 
@@ -20,7 +20,7 @@ test "diagnostics: returning a capturing closure is rejected (would dangle)" {
     const bad =
         \\make :: fn(n: i32) -> fn(i32) -> i32 { return fn(x: i32) -> i32 { return x + n; }; }
     ;
-    const result = gabbro.compile(arena.allocator(), "escape.gab", bad);
+    const result = gabbro.compile(arena.allocator(), "escape.fels", bad);
     try std.testing.expectError(error.SemanticFailed, result);
 }
 
@@ -31,7 +31,7 @@ test "diagnostics: returning a capturing closure held in a local is rejected" {
     const bad =
         \\make :: fn(n: i32) -> fn(i32) -> i32 { f := fn(x: i32) -> i32 { return x + n; }; return f; }
     ;
-    const result = gabbro.compile(arena.allocator(), "escape2.gab", bad);
+    const result = gabbro.compile(arena.allocator(), "escape2.fels", bad);
     try std.testing.expectError(error.SemanticFailed, result);
 }
 
@@ -43,7 +43,7 @@ test "diagnostics: returning a non-capturing function value is allowed" {
         \\dbl :: fn(x: i32) -> i32 { return x * 2; }
         \\get :: fn() -> fn(i32) -> i32 { return dbl; }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "ok.gab", ok);
+    var fe = try gabbro.compile(arena.allocator(), "ok.fels", ok);
     fe.deinit(arena.allocator());
 }
 
@@ -54,7 +54,7 @@ test "diagnostics: unknown name shows identifier" {
     const bad =
         \\bad :: fn() -> i32 { return foo; }
     ;
-    const result = gabbro.compile(arena.allocator(), "bad.gab", bad);
+    const result = gabbro.compile(arena.allocator(), "bad.fels", bad);
     try std.testing.expectError(error.SemanticFailed, result);
 }
 
@@ -66,7 +66,7 @@ test "diagnostics: wrong arg count shows expected vs actual" {
         \\add :: fn(a: i32, b: i32) -> i32 { return a + b; }
         \\bad :: fn() -> i32 { return add(1); }
     ;
-    const result = gabbro.compile(arena.allocator(), "bad.gab", bad);
+    const result = gabbro.compile(arena.allocator(), "bad.fels", bad);
     try std.testing.expectError(error.SemanticFailed, result);
 }
 
@@ -78,7 +78,7 @@ test "diagnostics: arg type mismatch shows types" {
         \\add :: fn(a: i32, b: i32) -> i32 { return a + b; }
         \\bad :: fn() -> i32 { return add(1, true); }
     ;
-    const result = gabbro.compile(arena.allocator(), "bad.gab", bad);
+    const result = gabbro.compile(arena.allocator(), "bad.fels", bad);
     try std.testing.expectError(error.SemanticFailed, result);
 }
 
@@ -90,7 +90,7 @@ test "diagnostics: sema errors are stored in TypeEnv" {
     const src =
         \\add :: fn(a: i32, b: i32) -> i32 { return a + b; }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "ok.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "ok.fels", src);
     defer fe.deinit(arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), fe.types.diagnostics.items.len);
 }
@@ -104,7 +104,7 @@ test "diagnostics: fail outside error function is caught" {
         \\bad :: fn() -> i32 { fail .timeout; return 0; }
     ;
     try std.testing.expectError(error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "bad.gab", bad));
+        gabbro.compile(arena.allocator(), "bad.fels", bad));
 }
 
 test "diagnostics: renderDiagnostic produces correct format" {
@@ -119,16 +119,16 @@ test "diagnostics: renderDiagnostic produces correct format" {
     ;
     // Just verify compile fails — rendering is tested via existence
     try std.testing.expectError(error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "test.gab", bad));
+        gabbro.compile(arena.allocator(), "test.fels", bad));
 
     // Verify Diagnostic.err constructor works
     const d = gabbro.Diagnostic.err("test message",
-        gabbro.Span.new(0, 3), "test.gab");
+        gabbro.Span.new(0, 3), "test.fels");
     try std.testing.expectEqual(gabbro.DiagKind.err, d.kind);
 
-    const rendered = try gabbro.renderDiagnostic(arena.allocator(), "test.gab", src, d);
+    const rendered = try gabbro.renderDiagnostic(arena.allocator(), "test.fels", src, d);
     // Should contain file:line:col: error: message
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "test.gab") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "test.fels") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "error:") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "test message") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "^^^") != null);
@@ -139,12 +139,12 @@ test "diagnostics: rich render carries caret label, help and note; color only wh
     defer arena.deinit();
     const a = arena.allocator();
     const src = "main :: fn() -> i32 { return x; }";
-    var d = gabbro.Diagnostic.err("undefined name `x`", gabbro.Span.new(28, 29), "t.gab");
+    var d = gabbro.Diagnostic.err("undefined name `x`", gabbro.Span.new(28, 29), "t.fels");
     d.primary_label = "not found in this scope";
     d.helps = &.{"declare it first: `x := 0;`"};
     d.notes = &.{"names are resolved top to bottom"};
 
-    const plain = try gabbro.renderDiagnostic(a, "t.gab", src, d);
+    const plain = try gabbro.renderDiagnostic(a, "t.fels", src, d);
     try std.testing.expect(std.mem.indexOf(u8, plain, "not found in this scope") != null);
     try std.testing.expect(std.mem.indexOf(u8, plain, "help: declare it first") != null);
     try std.testing.expect(std.mem.indexOf(u8, plain, "note: names are resolved") != null);
@@ -152,7 +152,7 @@ test "diagnostics: rich render carries caret label, help and note; color only wh
     try std.testing.expect(std.mem.indexOfScalar(u8, plain, 0x1b) == null);
 
     // An explicit colored palette does carry them.
-    const colored = try gabbro.renderDiagnosticColored(a, "t.gab", src, d, .{ .on = true });
+    const colored = try gabbro.renderDiagnosticColored(a, "t.fels", src, d, .{ .on = true });
     try std.testing.expect(std.mem.indexOfScalar(u8, colored, 0x1b) != null);
 }
 
@@ -160,9 +160,9 @@ test "diagnostics: rich render carries caret label, help and note; color only wh
 /// tolerant mode so the diagnostics survive even though checking fails. Lets the
 /// tests below assert the *text* of an error, not just that one occurred.
 fn firstError(arena: std.mem.Allocator, src: []const u8) !?[]const u8 {
-    const mod = try gabbro.parseSource(arena, "t.gab", src);
+    const mod = try gabbro.parseSource(arena, "t.fels", src);
     var syms = try gabbro.sema_mod.collectSymbols(arena, mod);
-    const env = try gabbro.sema_mod.checkTypesTolerant(arena, mod, &syms, src, "t.gab");
+    const env = try gabbro.sema_mod.checkTypesTolerant(arena, mod, &syms, src, "t.fels");
     for (env.diagnostics.items) |d| {
         // Render so the assertions see the whole diagnostic (message + caret label +
         // `help:`/`note:` lines), matching what a user reads.
@@ -415,7 +415,7 @@ test "diagnostics: where and constraint predicates see the id of a pointer type"
         \\{ return core::sizeof(T); }
         \\use :: fn() -> usize { return never(5); }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "where_ptr_id.gab", rejected));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "where_ptr_id.fels", rejected));
 
     // The same for a `constraint`: when its predicate cannot run, `$T: Same` falls back to being
     // read as an interface and an `i64` is refused ("must be a named struct").
@@ -425,7 +425,7 @@ test "diagnostics: where and constraint predicates see the id of a pointer type"
         \\only :: fn($T: Same, x: T) -> usize { return core::sizeof(T); }
         \\use :: fn() -> usize { o: i64 = 1; return only(o); }
     ;
-    var fe = try gabbro.compile(a, "constraint_ptr_id.gab", accepted);
+    var fe = try gabbro.compile(a, "constraint_ptr_id.fels", accepted);
     fe.deinit(a);
 }
 
@@ -436,7 +436,7 @@ test "diagnostics: sizeof of a variable that code generated at compile time brin
     // `#insert #run gen()` declares `q` only after the first, tolerant pass has gone over `main`.
     // That pass finds no `q`, and must neither take `*q` for a type for good (the tree is shared
     // with the strict pass) nor stop at it: by the strict pass `q` is a variable.
-    var fe = try gabbro.compile(a, "late_local.gab",
+    var fe = try gabbro.compile(a, "late_local.fels",
         \\gen :: fn() -> AstBlock { return #quote { v: i32 = 41; q := &v; }; }
         \\main :: fn() -> usize {
         \\    #insert #run gen();
@@ -473,7 +473,7 @@ test "parser: `*name` in an argument list is a dereference; only a type keyword 
         \\    f(*p + 1);
         \\}
     ;
-    const module = try gabbro.parseSource(arena.allocator(), "ast.gab", src);
+    const module = try gabbro.parseSource(arena.allocator(), "ast.fels", src);
     const statements = module.items[0].function.body.?.statements;
     const Kind = enum { deref, deref_deref, type_ref };
     const expected = [_]Kind{ .deref, .deref_deref, .deref, .type_ref, .type_ref, .type_ref };
@@ -539,9 +539,9 @@ test "diagnostics: #align must be a power-of-two integer literal" {
         "#align(8192)\nS :: struct { a: u32 }",
     };
     for (bad) |src| {
-        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_align.gab", src));
+        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_align.fels", src));
     }
-    var ok = try gabbro.compile(arena.allocator(), "ok_align.gab", "#align(64)\nS :: struct { a: u32 }");
+    var ok = try gabbro.compile(arena.allocator(), "ok_align.fels", "#align(64)\nS :: struct { a: u32 }");
     ok.deinit(arena.allocator());
 }
 
@@ -557,9 +557,9 @@ test "diagnostics: #packed takes no argument" {
         "#packed(4)\nBox :: struct($T: type) { a: u8, b: T }\nmain :: fn() -> i32 { x: Box(u32) = .{ 1, 2 }; return 0; }",
     };
     for (bad) |src| {
-        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_packed.gab", src));
+        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_packed.fels", src));
     }
-    var ok = try gabbro.compile(arena.allocator(), "ok_packed.gab", "#packed\nS :: struct { a: u8, b: u32 }");
+    var ok = try gabbro.compile(arena.allocator(), "ok_packed.fels", "#packed\nS :: struct { a: u8, b: u32 }");
     ok.deinit(arena.allocator());
 }
 
@@ -577,7 +577,7 @@ test "diagnostics: the address of a #packed struct's field is rejected" {
     };
     for (bad) |body| {
         const src = try std.mem.concat(arena.allocator(), u8, &.{ decl, body });
-        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "packed_addr.gab", src));
+        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "packed_addr.fels", src));
     }
     // The whole struct's address, by-value field access, and a plain struct's field
     // address are all fine.
@@ -587,7 +587,7 @@ test "diagnostics: the address of a #packed struct's field is rejected" {
     };
     for (ok) |body| {
         const src = try std.mem.concat(arena.allocator(), u8, &.{ decl, body });
-        var fe = try gabbro.compile(arena.allocator(), "packed_ok.gab", src);
+        var fe = try gabbro.compile(arena.allocator(), "packed_ok.fels", src);
         fe.deinit(arena.allocator());
     }
 }
@@ -606,7 +606,7 @@ test "diagnostics: the address of an unsuffixed literal points at its default ty
     };
     for (ok) |body| {
         const src = try std.mem.concat(arena.allocator(), u8, &.{ decl, body });
-        var fe = try gabbro.compile(arena.allocator(), "addr_lit_ok.gab", src);
+        var fe = try gabbro.compile(arena.allocator(), "addr_lit_ok.fels", src);
         fe.deinit(arena.allocator());
     }
     // A different width is spelled with a suffix (`&5i64`), not taken from the context.
@@ -617,7 +617,7 @@ test "diagnostics: the address of an unsuffixed literal points at its default ty
     };
     for (bad) |body| {
         const src = try std.mem.concat(arena.allocator(), u8, &.{ decl, body });
-        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "addr_lit_bad.gab", src));
+        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "addr_lit_bad.fels", src));
     }
 }
 
@@ -631,13 +631,13 @@ test "diagnostics: comparing an error with a variant its set does not have is re
         \\f :: fn() -> i32 ! E { fail .first; }
         \\g :: fn() -> i32 { v := f() catch e { if e == .secnd { return 1; } return 0; }; return 9; }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_variant.gab", bad));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_variant.fels", bad));
     const good =
         \\E :: errors { first, second }
         \\f :: fn() -> i32 ! E { fail .first; }
         \\g :: fn() -> i32 { v := f() catch e { if e == .second { return 1; } return 0; }; return 9; }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "good_variant.gab", good);
+    var fe = try gabbro.compile(arena.allocator(), "good_variant.fels", good);
     fe.deinit(arena.allocator());
 }
 
@@ -660,7 +660,7 @@ test "diagnostics: a catch handler may only run to its end when the value is not
     };
     for (refused) |body| {
         const src = try std.mem.concat(arena.allocator(), u8, &.{ decls, body });
-        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "catch_refused.gab", src));
+        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "catch_refused.fels", src));
     }
     // Fine: the handler always leaves the expression, the call has no value, or the whole
     // `catch` is a statement and its value is thrown away.
@@ -675,7 +675,7 @@ test "diagnostics: a catch handler may only run to its end when the value is not
     };
     for (accepted) |body| {
         const src = try std.mem.concat(arena.allocator(), u8, &.{ decls, body });
-        var fe = gabbro.compile(arena.allocator(), "catch_ok.gab", src) catch |err| {
+        var fe = gabbro.compile(arena.allocator(), "catch_ok.fels", src) catch |err| {
             std.debug.print("\nthis catch should be accepted:\n  {s}\n", .{body});
             return err;
         };
@@ -696,7 +696,7 @@ test "diagnostics: a builtin whose first argument is not a type says so" {
         \\    return 0;
         \\}
     ;
-    var fe = try gabbro.compile(a, "ptr.gab", good);
+    var fe = try gabbro.compile(a, "ptr.fels", good);
     fe.deinit(a);
     // A value there used to fail the build without saying why.
     try std.testing.expect(std.mem.indexOf(u8,
@@ -715,7 +715,7 @@ test "diagnostics: an error is compared with a variant only where it was caught"
         "Oops :: errors { a, b }\nh :: fn(e: Oops) -> bool { return .a != e; }",
     };
     for (bad) |src| {
-        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "err_param.gab", src));
+        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "err_param.fels", src));
     }
     // A function may still take an error and pass it on; it just cannot look inside it.
     const passes =
@@ -724,7 +724,7 @@ test "diagnostics: an error is compared with a variant only where it was caught"
         \\fails :: fn() -> void ! Oops { fail .b; return; }
         \\g :: fn() { fails() catch e { show(e); }; }
     ;
-    var passed = try gabbro.compile(arena.allocator(), "err_passes.gab", passes);
+    var passed = try gabbro.compile(arena.allocator(), "err_passes.fels", passes);
     passed.deinit(arena.allocator());
     // Inspecting the error where it is caught is the supported way.
     const good =
@@ -732,7 +732,7 @@ test "diagnostics: an error is compared with a variant only where it was caught"
         \\fails :: fn() -> void ! Oops { fail .b; return; }
         \\code :: fn() -> i32 { r: i32 = 1; fails() catch e { if e == .b { r = 2; } }; return r; }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "err_caught.gab", good);
+    var fe = try gabbro.compile(arena.allocator(), "err_caught.fels", good);
     fe.deinit(arena.allocator());
 }
 
@@ -830,7 +830,7 @@ test "diagnostics: an alias spelled like a constant is not lowered as a global" 
         \\M :: N;
         \\main :: fn() -> i32 { return M; }
     ;
-    var fe = try gabbro.compile(a, "t.gab", src);
+    var fe = try gabbro.compile(a, "t.fels", src);
     defer fe.deinit(a);
     const module = try gabbro.lowerFrontend(a, fe);
     try gabbro.ir_mod.validateModule(module);
@@ -871,9 +871,9 @@ test "diagnostics: a problem in a top level constant is reported once" {
         \\BIG :: 5u128;
         \\main :: fn() -> i32 { return 0; }
     ;
-    const mod = try gabbro.parseSource(a, "t.gab", src);
+    const mod = try gabbro.parseSource(a, "t.fels", src);
     var syms = try gabbro.sema_mod.collectSymbols(a, mod);
-    const env = try gabbro.sema_mod.checkTypesTolerant(a, mod, &syms, src, "t.gab");
+    const env = try gabbro.sema_mod.checkTypesTolerant(a, mod, &syms, src, "t.fels");
     var errors: usize = 0;
     for (env.diagnostics.items) |d| {
         if (d.kind == .err) errors += 1;
@@ -1318,18 +1318,18 @@ test "diagnostics: an array length computed at compile time is checked against t
     const a = arena.allocator();
     const four = "four :: fn() -> usize { return 4usize; }\n";
     // The comptime VM computes `N` before the strict pass, which checks the literal against 4.
-    var ok = try gabbro.compile(a, "len_ok.gab", four ++ "N :: #run four();\nmain :: fn() -> i32 { x: [N]i32 = .{ 1, 2, 3, 4 }; return x[3]; }");
+    var ok = try gabbro.compile(a, "len_ok.fels", four ++ "N :: #run four();\nmain :: fn() -> i32 { x: [N]i32 = .{ 1, 2, 3, 4 }; return x[3]; }");
     ok.deinit(a);
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_local.gab", four ++
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_local.fels", four ++
         "N :: #run four();\nmain :: fn() -> i32 { x: [N]i32 = .{ 1, 2, 3, 4, 5 }; return x[0]; }"));
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_global.gab", four ++
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_global.fels", four ++
         "N :: four();\nG: [N]i32 = .{ 1, 2, 3, 4, 5 };\nmain :: fn() -> i32 { return G[0]; }"));
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_field.gab", four ++
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_field.fels", four ++
         "N :: #run four();\nS :: struct { a: [N]u8 }\nmain :: fn() -> i32 { s: S = .{ .{ 1, 2, 3, 4, 5 } }; return 0; }"));
     // A length that is not a non-negative integer is an error, not an empty array.
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_negative.gab",
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_negative.fels",
         "neg :: fn() -> i32 { return -1; }\nN :: #run neg();\nmain :: fn() -> i32 { x: [N]i32 = .{}; return 0; }"));
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_bool.gab",
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(a, "len_bool.fels",
         "yes :: fn() -> bool { return true; }\nN :: #run yes();\nmain :: fn() -> i32 { x: [N]i32 = .{}; return 0; }"));
     // The language server's tolerant pass runs no evaluator: there `N` is unknown, which is
     // not an error.

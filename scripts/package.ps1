@@ -107,7 +107,7 @@ gabbro bindgen component (libclang $ver).
 Extract the 'bindgen' folder into the directory that contains gabbro.exe (gabbro's bin/).
 Then C-header binding generation is available:
 
-    gabbro bindgen <header.h> [-o out.gab]
+    gabbro bindgen <header.h> [-o out.fels]
 
 gabbro finds libclang here on demand; the core compiler never loads it.
 "@ | Out-File -Encoding ascii (Join-Path $bgDir "README.txt")
@@ -137,8 +137,8 @@ gabbro linux cross-compile component (ld.lld).
 Put ld.lld.exe into gabbro's bin/ (next to gabbro.exe). Then you can cross-compile to
 Linux from Windows:
 
-    gabbro build <file.gab> --target linux              # static, no-libc ELF
-    gabbro build <file.gab> --target linux-gnu --sysroot <dir>   # glibc ELF
+    gabbro build <file.fels> --target linux              # static, no-libc ELF
+    gabbro build <file.fels> --target linux-gnu --sysroot <dir>   # glibc ELF
 "@ | Out-File -Encoding ascii (Join-Path $xRoot "README.txt")
     $xZip = Join-Path $OutDir "gabbro-linux-cross-$fileVer-x86_64-windows.zip"
     if (Test-Path $xZip) { Remove-Item -Force $xZip }

@@ -58,7 +58,7 @@ cfg := read_config("gabbro.toml") catch e { return default_config(); };
 Most of the size of a systems toolchain is the linker and the build glue. Gabbro owns
 both.
 
-**A native linker, written in Gabbro.** `gabld` (`linker/gabld.gab`) is a full
+**A native linker, written in Gabbro.** `gabld` (`linker/gabld.fels`) is a full
 single-object PE/COFF linker — section merge at the right alignment, REL32/ADDR64
 relocations, multi-DLL import tables, `.pdata`/`.xdata` + the exception directory,
 PE32+ output with the subsystem/entry/stack you asked for, and DLL output. It links
@@ -70,14 +70,14 @@ It's fast because it skips LLD's largest cost: it never parses `.lib` import arc
 The compiler already knows every `#extern("dll","sym")` import and emits a `.skimp`
 section; gabld reads that and writes the import descriptors directly.
 
-**The build system is Gabbro.** `build.gab` runs inside the compiler's comptime VM. No
+**The build system is Gabbro.** `build.fels` runs inside the compiler's comptime VM. No
 Makefile, no second language. It populates a build plan; the compiler executes it.
 
 ```gabbro
 #import std.build.{ Build };
 
 build :: fn(b: Build) {
-    exe := b.executable("hello", "src/main.gab");
+    exe := b.executable("hello", "src/main.fels");
     b.default(exe);
 }
 ```
@@ -201,7 +201,7 @@ In the in-tree [`lib/std/`](lib/std/) directory.
 | `std.fs` | `File` implementing `Reader` + `Writer`; `open`/`create`/`append`/`delete`/`exists`. |
 | `std.process` | PID, command line, env vars, child spawn/wait/kill. |
 | `std.c` | C ABI types for `#extern` FFI. |
-| `std.build` | The `build.gab` API — runs in the comptime VM. |
+| `std.build` | The `build.fels` API — runs in the comptime VM. |
 
 ## Project status
 
@@ -226,7 +226,7 @@ frontend is platform-independent.
 | Generics: `$T:` constraints, `where {}` predicates, named constraints | done |
 | Reflection (`type_info`, `typeid`, `Any`) + reflection-driven serde | done |
 | C interop (`#extern`, by-value struct ABI, `gabbro bindgen`) | done |
-| Build system (`build.gab` in the comptime VM → real exes/DLLs) | done |
+| Build system (`build.fels` in the comptime VM → real exes/DLLs) | done |
 | Native linker (`gabld`, single-object PE/COFF, self-hosting) | done |
 | Interfaces (dynamic + interface-through-interface dispatch, `$T: Iface` bounds) | done |
 | Standard library (30 modules) | done |

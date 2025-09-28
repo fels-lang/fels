@@ -190,13 +190,13 @@ test "fetch: the hash of a folder depends on its files, not on the order they we
     for ([_][]const u8{ "one", "two" }) |side| {
         const d = try std.fmt.allocPrint(a, "{s}/{s}", .{ base, side });
         try cwd.createDirPath(io, try std.fmt.allocPrint(a, "{s}/src", .{d}));
-        const order: []const []const u8 = if (std.mem.eql(u8, side, "one")) &.{ "a.gab", "src/b.gab" } else &.{ "src/b.gab", "a.gab" };
+        const order: []const []const u8 = if (std.mem.eql(u8, side, "one")) &.{ "a.fels", "src/b.fels" } else &.{ "src/b.fels", "a.fels" };
         for (order) |f| try cwd.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "{s}/{s}", .{ d, f }), .data = f });
     }
     const h1 = try hashTree(a, io, base ++ "/one");
     const h2 = try hashTree(a, io, base ++ "/two");
     try std.testing.expectEqualStrings(h1, h2);
     try std.testing.expect(std.mem.startsWith(u8, h1, "sha256-"));
-    try cwd.writeFile(io, .{ .sub_path = base ++ "/two/a.gab", .data = "changed" });
+    try cwd.writeFile(io, .{ .sub_path = base ++ "/two/a.fels", .data = "changed" });
     try std.testing.expect(!std.mem.eql(u8, h1, try hashTree(a, io, base ++ "/two")));
 }

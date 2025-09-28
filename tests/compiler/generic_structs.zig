@@ -21,7 +21,7 @@ test "generic struct: declaration and basic instantiation" {
         \\    return p.first + p.second;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "pair.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "pair.fels", src);
     defer fe.deinit(arena.allocator());
     const m = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(m);
@@ -56,7 +56,7 @@ test "generic struct: ArrayList-style container" {
         \\    return list.len;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "list.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "list.fels", src);
     defer fe.deinit(arena.allocator());
     const m = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(m);
@@ -85,7 +85,7 @@ test "generic struct: two type params" {
         \\    return 0;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "map.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "map.fels", src);
     defer fe.deinit(arena.allocator());
     const m = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(m);
@@ -110,7 +110,7 @@ test "generic struct: same type used twice gives one instantiation" {
         \\a :: fn(b: *Box(i32)) -> i32 { return b.value; }
         \\c :: fn(b: *Box(i32)) -> i32 { return b.value + 1; }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "box.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "box.fels", src);
     defer fe.deinit(arena.allocator());
     const m = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(m);

@@ -13,13 +13,13 @@ gabbro build clean               # remove what the build made
 gabbro build plugin              # build one artifact (the shared library)
 ```
 
-[build.gab](build.gab) shows:
+[build.fels](build.fels) shows:
 
 - typed build options (`option_bool`, `option_int`, `option_string`, `option_choice`)
 - a static library the app links with `link_artifact`, built first
 - a shared library, installed next to the app
 - constants for the program (`define`, `define_bool`, `define_int`), which
-  [src/main.gab](src/main.gab) reads with `#import build_options;`
+  [src/main.fels](src/main.fels) reads with `#import build_options;`
 - steps: copying the assets, an `all` step as the default, a run step with a working
   directory, and a clean step
 - `gabbro build install` with `install()` and `install_dir`

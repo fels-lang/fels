@@ -2,7 +2,7 @@
 # install.sh — install gabbro from an extracted release archive (Linux / macOS).
 #
 # Run from inside the extracted archive (this script sits next to bin/ and lib/):
-#   ./install.sh                 # -> ~/.gab, adds bin to PATH via your shell rc
+#   ./install.sh                 # -> ~/.fels, adds bin to PATH via your shell rc
 #   GABBRO_PREFIX=/opt/gabbro ./install.sh
 #   GABBRO_NO_PATH=1 ./install.sh    # copy only, don't touch PATH
 #
@@ -10,7 +10,7 @@
 # install is just bin/ + lib/ kept together; GABBRO_HOME is set as a robust fallback.
 set -eu
 
-prefix="${GABBRO_PREFIX:-$HOME/.gab}"
+prefix="${GABBRO_PREFIX:-$HOME/.fels}"
 src="$(cd "$(dirname "$0")" && pwd)"
 
 if [ ! -x "$src/bin/gabbro" ] && [ ! -f "$src/bin/gabbro" ]; then

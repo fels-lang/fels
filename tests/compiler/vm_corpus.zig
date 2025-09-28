@@ -233,7 +233,7 @@ test "vm corpus: wide #run coverage" {
         \\C_math :: #run mathfold();
     ;
 
-    var fe = try gabbro.compile(a, "corpus.gab", src);
+    var fe = try gabbro.compile(a, "corpus.fels", src);
     defer fe.deinit(a);
 
     const stats = ir.evalCorpus(a, fe);

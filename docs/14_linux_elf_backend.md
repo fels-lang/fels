@@ -14,10 +14,10 @@ diverges.
 Use `--target linux` to cross-compile from a Windows host:
 
 ```
-gabbro build hello.gab -o hello --target linux --llvm-path Y:/SDK/LLVM
+gabbro build hello.fels -o hello --target linux --llvm-path Y:/SDK/LLVM
 # → a static, non-PIE ELF; runs under Linux/WSL with no shared-library deps
 
-gabbro build app.gab -o app --target linux --libc --sysroot <dir-with-libc.so.6> --llvm-path Y:/SDK/LLVM
+gabbro build app.fels -o app --target linux --libc --sysroot <dir-with-libc.so.6> --llvm-path Y:/SDK/LLVM
 # → a normal dynamically-linked glibc ELF (ldd → libc.so.6); _start hands off to
 #   __libc_start_main, which initializes glibc. `#extern("c", …)` now resolves
 #   against libc.so.6 (verified: getpid, and puts via glibc stdio). The whole gabbro
@@ -25,7 +25,7 @@ gabbro build app.gab -o app --target linux --libc --sysroot <dir-with-libc.so.6>
 #   `--target linux-gnu` is sugar for `--target linux --libc`.
 ```
 
-`--libc` (or build.gab `app.link_libc()`) is the **portable "I need libc" switch**:
+`--libc` (or build.fels `app.link_libc()`) is the **portable "I need libc" switch**:
 the Windows CRT on Windows, glibc on Linux. The entire `std` library (io, heap,
 time, fs, process — incl. `set_env`, net, thread) runs on Linux — **full parity
 with Windows**. Both the static (`linux`, default) and glibc (`linux --libc`)
@@ -46,7 +46,7 @@ What works end-to-end (verified under WSL):
 
 All of `std` is ported. `std.fs`, `std.time`, `std.process`, `std.net` and
 `std.thread` sit behind the same runtime/stdlib seam the allocator uses, backed by
-the syscall wrappers in [`src/runtime/linux.gab`](../src/runtime/linux.gab). The
+the syscall wrappers in [`src/runtime/linux.fels`](../src/runtime/linux.fels). The
 per-module table is in [18_targets_and_tiers.md](18_targets_and_tiers.md) §6.
 
 Key implementation notes / gotchas:
@@ -210,7 +210,7 @@ The pattern: split each into a thin **os shim** the way `std.net` already layers
    Heavier; defer past first boot.
 
 `std.net` is the nicest payoff: the layered `os/socket/tcp/udp` split means only
-`net/os.gab` changes — `socket.gab`/`tcp.gab`/`udp.gab` are already written against
+`net/os.fels` changes — `socket.fels`/`tcp.fels`/`udp.fels` are already written against
 the shim and need no edits. (BSD sockets even drop `WSAStartup`/`WSACleanup`, so
 `net::init` becomes a no-op on Linux.)
 

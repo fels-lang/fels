@@ -27,7 +27,7 @@ pub fn build(b: *std.Build) void {
     ) orelse b.pathFromRoot("lib");
 
     // Bake gabld into gabbro.exe for a one-file release. The base exe compiles
-    // gabld.gab to an object; the final exe links it in. Off = ship the dll instead.
+    // gabld.fels to an object; the final exe links it in. Off = ship the dll instead.
     const embed_linker = b.option(bool, "embed-linker", "Bake gabld into gabbro.exe (single-binary release)") orelse false;
 
     // the compiler, as a reusable library
@@ -57,8 +57,8 @@ pub fn build(b: *std.Build) void {
     // `std.heap.Arena`) works in every compile path — including the inline
     // `compile(source)` path that never touches disk. `@embedFile` resolves
     // these import names; the files remain the single source of truth in lib/.
-    compiler_mod.addAnonymousImport("std_heap_gabbro", .{ .root_source_file = b.path("lib/std/heap.gab") });
-    compiler_mod.addAnonymousImport("std_ptr_gabbro", .{ .root_source_file = b.path("lib/std/ptr.gab") });
+    compiler_mod.addAnonymousImport("std_heap_gabbro", .{ .root_source_file = b.path("lib/std/heap.fels") });
+    compiler_mod.addAnonymousImport("std_ptr_gabbro", .{ .root_source_file = b.path("lib/std/ptr.fels") });
 
     // Wire LLVM into the compiler library when a path is provided.
     if (llvm_path) |lp| {
@@ -205,7 +205,7 @@ pub fn build(b: *std.Build) void {
         const lp = llvm_path.?;
         const gen = b.addRunArtifact(exe);
         gen.addArg("object");
-        gen.addFileArg(b.path("linker/gabld.gab"));
+        gen.addFileArg(b.path("linker/gabld.fels"));
         gen.addArgs(&.{ "--no-entry", "-O2", "-o" });
         const gabld_obj = gen.addOutputFileArg("gabld.obj");
         gen.addPathDir(b.fmt("{s}/bin", .{lp})); // so LLVM-C.dll resolves at run time

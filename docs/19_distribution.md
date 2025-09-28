@@ -49,7 +49,7 @@ in-process; `lld-link.exe` is never spawned. Spawn path stays as a fallback.
 
 ## gabld — the native linker
 
-`gabld.dll` is a PE/COFF linker written in Gabbro (`linker/gabld.gab`). Default
+`gabld.dll` is a PE/COFF linker written in Gabbro (`linker/gabld.fels`). Default
 for programs it can handle, LLD for the rest.
 
 Why it's fast: no `.lib` import-archive parsing, which is LLD's dominant cost. The
@@ -73,7 +73,7 @@ executable is always loaded at gabld's fixed base and keeps the address as writt
 ### Dev: DLL. Release: embedded.
 
 - `zig build` → `gabbro.exe` + `gabld.dll`, loaded on demand.
-- `zig build -Dembed-linker` → two-stage. `gabld.gab` compiles to a freestanding
+- `zig build -Dembed-linker` → two-stage. `gabld.fels` compiles to a freestanding
   object, links into `gabbro.exe`, which exports `gabbro_link_mem`. One binary that
   is its own linker.
 
@@ -119,7 +119,7 @@ Per-archive installer, idempotent. Copies the tree to a prefix, wires `PATH` and
 `GABBRO_HOME`.
 
 - `install.ps1` → `%LOCALAPPDATA%\gabbro`
-- `install.sh` → `~/.gab`
+- `install.sh` → `~/.fels`
 
 Both take a custom prefix and a no-PATH mode.
 

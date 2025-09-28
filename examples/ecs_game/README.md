@@ -19,19 +19,19 @@ gabbro build run        # build and run
 ## Layout
 
 ```
-build.gab            the build script (std.build)
+build.fels            the build script (std.build)
 src/
-  main.gab           game setup + the tick loop + the report
-  vec.gab            Vec2 and 2D math (add/sub/scale/len/dist2/norm)
-  components.gab     entity Kind enum + field/world dimensions
-  world.gab          the ECS core: struct-of-arrays component store
-  systems.gab        movement, lifetime, fire, collisions, spawner
-  render.gab         ASCII rasterizer
+  main.fels           game setup + the tick loop + the report
+  vec.fels            Vec2 and 2D math (add/sub/scale/len/dist2/norm)
+  components.fels     entity Kind enum + field/world dimensions
+  world.fels          the ECS core: struct-of-arrays component store
+  systems.fels        movement, lifetime, fire, collisions, spawner
+  render.fels         ASCII rasterizer
 ```
 
 ## The ECS
 
-`world.gab` defines a single `World` with **parallel component arrays** indexed by
+`world.fels` defines a single `World` with **parallel component arrays** indexed by
 entity id:
 
 ```gabbro

@@ -1,13 +1,13 @@
 # Package management (design)
 
-Not built yet. The build system (doc 10) already runs `build.gab` in the comptime
+Not built yet. The build system (doc 10) already runs `build.fels` in the comptime
 VM, hands each build hook a capability set, and models a content-hashed build graph.
 This is the other half — declaring, fetching, resolving, caching, and granting
 authority to dependencies.
 
 Content-addressed and decentralized, the Zig fundamentals: a dependency is a URL
 (git or tarball) plus a content hash, fetched once into a shared global cache,
-reproducible offline. Two things differ here. The manifest is `build.gab`, not a
+reproducible offline. Two things differ here. The manifest is `build.fels`, not a
 side-car data file — read by running it in the VM under a deny-all capability set
 that only records `b.dependency(...)` calls. And a dependency's build code runs with
 no ambient authority. It gets exactly the capabilities the root build grants, and
@@ -15,7 +15,7 @@ the VM enforces that.
 
 ## Capabilities are the package boundary
 
-Every dependency's `build.gab` receives a `*Caps` it can't forge or widen (doc 10
+Every dependency's `build.fels` receives a `*Caps` it can't forge or widen (doc 10
 §5.1). You see the contract at add time:
 
 ```text
@@ -51,11 +51,11 @@ A package is `(name, content-hash)`:
 
 Names resolve through an index, itself a Gabbro file mapping names to sources,
 content-pinned and forkable. You point at the indexes you trust
-(`b.index("git.gab.dev/registry@<hash>")`). Direct URL deps skip the index entirely.
+(`b.index("git.fels.dev/registry@<hash>")`). Direct URL deps skip the index entirely.
 
 ## The manifest
 
-Deps are `build.gab` code, in a shape the manager extracts without trusting it:
+Deps are `build.fels` code, in a shape the manager extracts without trusting it:
 
 ```gabbro
 build :: fn(b: Build) {
@@ -63,7 +63,7 @@ build :: fn(b: Build) {
     img  := b.dependency("imagelib", .{ .hash = "4f9c…a1" })
               .allow(.fs_read, "assets/");
 
-    app := b.executable("app", "src/main.gab");
+    app := b.executable("app", "src/main.fels");
     app.use(json);          // json's modules in scope as json::…
     app.use(img);
     b.default(app);
@@ -80,7 +80,7 @@ touched.
 Online at `add`/`update` time, then frozen:
 
 1. `gabbro add <name|url>` resolves through your indexes (or takes the URL), fetches,
-   hashes, writes the pin into `build.gab` and the lockfile.
+   hashes, writes the pin into `build.fels` and the lockfile.
 2. Transitive deps resolve the same way, each hash-pinned.
 3. Builds never resolve. They fetch by hash from the lockfile — cache hit, offline.
    `--frozen` fails if the lockfile would change.
@@ -94,7 +94,7 @@ The lockfile is readable Gabbro, diffable in review:
 
 ```gabbro
 lock :: .{
-    .{ .name = "json",     .hash = "be20…77", .src = "git.gab.dev/std-json",   .caps = .{} },
+    .{ .name = "json",     .hash = "be20…77", .src = "git.fels.dev/std-json",   .caps = .{} },
     .{ .name = "imagelib", .hash = "4f9c…a1", .src = "github.com/ana/imagelib",
        .caps = .{ .{ .fs_read, "assets/" } } },
 };
@@ -102,7 +102,7 @@ lock :: .{
 
 ## The cache
 
-Fetched packages live in `~/.gab/pkg/<hash>/`, shared by every project, immutable
+Fetched packages live in `~/.fels/pkg/<hash>/`, shared by every project, immutable
 once written. One copy of `json@be20…77` machine-wide. A path is its hash, so
 tampering shows up on use. A dep is a content-hashed build-graph node (doc 10 §5.2),
 so an unchanged dep's compiled artifacts cache too — re-adding a dep you've built
@@ -113,7 +113,7 @@ before is nearly free.
 ## CLI
 
 ```text
-gabbro add <name|url> [@version]   resolve, fetch, pin into build.gab + lock; prompt for caps
+gabbro add <name|url> [@version]   resolve, fetch, pin into build.fels + lock; prompt for caps
 gabbro update [name]               re-resolve to newer compatible versions, re-freeze
 gabbro remove <name>               drop a dependency
 gabbro why <name>                  who pulls a dep in, and its grants

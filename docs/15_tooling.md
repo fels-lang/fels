@@ -102,7 +102,7 @@ frontend can:
 - **Region/lifetime hints.** Inlay hints showing which `*Arena` a `Vec`/`Map` is
   bound to, or flagging a value that escapes its region — gabbro's memory model made
   visible inline.
-- **Capability hints in `build.gab`.** Show, inline, which capabilities a
+- **Capability hints in `build.fels`.** Show, inline, which capabilities a
   dependency requests (ties into the package manager, doc 16).
 
 ### 1.6 Scope
@@ -190,15 +190,15 @@ language five times.
 ## 8. Using `gabbro lsp` today
 
 `gabbro lsp` is built into the `gabbro` binary and speaks LSP over stdio. Point any
-LSP-capable editor at `gabbro lsp`. Gabbro source files end in `.gab`.
+LSP-capable editor at `gabbro lsp`. Gabbro source files end in `.fels`.
 
 What it does:
 
 - **Project aware.** Each open file is analyzed together with the modules it imports, using
   the compiler's own loader: `std` (found as the compiler finds it: `--std-path`,
-  `GABBRO_STD`, `GABBRO_HOME`, next to the executable) and sibling `.gab` files (next to
+  `GABBRO_STD`, `GABBRO_HOME`, next to the executable) and sibling `.fels` files (next to
   the importing file, then under the project root, which is the nearest folder above the
-  file with a `build.gab`, else the workspace folder). A file that `gabbro check` accepts
+  file with a `build.fels`, else the workspace folder). A file that `gabbro check` accepts
   gives no diagnostics.
 - **Open documents win over disk.** If an imported module is open in the editor, its
   unsaved text is used. Editing a module re-analyzes the open files that import it.
@@ -235,8 +235,8 @@ What it does:
   Positions are mapped from that text to the current one with a line diff, so the answers
   stay correct outside the lines being edited; an inlay hint is only shown where the
   mapping is exact. Diagnostics always come from the current text.
-- **Find references across the project.** The project is the folder with `build.gab` above
-  the file (else the workspace folder, else the file's folder) and every `.gab` file under it,
+- **Find references across the project.** The project is the folder with `build.fels` above
+  the file (else the workspace folder, else the file's folder) and every `.fels` file under it,
   open or not, except `std` and the `zig-out`, `.zig-cache`, `.git`, `.claude`, `dist` and
   `out` folders; at most 400 files (the server says so when a project has more). A reference
   is a use in an expression, a type name (field and parameter types, casts, generic
@@ -259,7 +259,7 @@ What it does:
   library is parsed again each time, which is cheap enough that no cache is kept. Set
   `GABBRO_LSP_TIMING=1` to see each run on stderr. References keep an index per file and
   rebuild it only when the file or a module it imports changes; the index of a file comes
-  from an analysis that loaded it (one analysis of a `main.gab` that imports everything
+  from an analysis that loaded it (one analysis of a `main.fels` that imports everything
   covers the project), and a local or a declaration without `pub` is only looked for in its
   own file. In the 55 files of `examples/`, the first search for a `std` function used in 10
   to 18 of them takes 30 to 65 ms in a release build (200 to 300 ms in a debug build), a
@@ -280,9 +280,9 @@ args = ["lsp"]
 
 [[language]]
 name = "gabbro"
-scope = "source.gab"
+scope = "source.fels"
 file-types = ["gab"]
-roots = ["build.gab"]
+roots = ["build.fels"]
 language-servers = ["gabbro"]
 comment-tokens = ["//"]
 ```
@@ -295,7 +295,7 @@ vim.api.nvim_create_autocmd("FileType", {
   pattern = "gabbro",
   callback = function()
     vim.lsp.start({ name = "gabbro", cmd = { "gabbro", "lsp" },
-      root_dir = vim.fs.root(0, { "build.gab", ".git" }) })
+      root_dir = vim.fs.root(0, { "build.fels", ".git" }) })
   end,
 })
 ```
@@ -310,9 +310,9 @@ VS Code support is a thin client wrapper (future).
 > against the built binary, on one file and on a two-file project.
 > `python tests/lsp_nav_test.py` checks references, rename, highlight and workspace symbols on
 > a small project, with edits in files that are not open.
-> `python tests/lsp_all_files.py` opens every `.gab` file of the repository through the
+> `python tests/lsp_all_files.py` opens every `.fels` file of the repository through the
 > server and compares with `gabbro check`, and checks that rejected programs still give an
-> error at the right line. `python tests/lsp_perf.py <gabbro.exe> <file.gab>` times repeated
+> error at the right line. `python tests/lsp_perf.py <gabbro.exe> <file.fels>` times repeated
 > edits. `python tests/lsp_assist_test.py` checks member completion, signature help, inlay
 > hints and hover, also while the file does not parse.
 
@@ -323,7 +323,7 @@ underlined, then any `note:`/`help:` lines:
 
 ```text
 error: unknown type `Poin`
-  --> demo.gab:4:8
+  --> demo.fels:4:8
   │
 4 │     p: Poin = .{ .x = 1, .y = 2 };
   │        ^^^^ not a known type

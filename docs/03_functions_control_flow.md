@@ -69,7 +69,7 @@ pub doubled :: fn(self: i32) -> i32 {
 Any top-level function whose first parameter is named `self` can be called using **dot-call syntax**:
 
 ```gabbro
-// In module point.gab:
+// In module point.fels:
 pub distance :: fn(self: *Point) -> f64 { ... }
 
 // Calling:

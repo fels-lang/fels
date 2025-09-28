@@ -33,7 +33,7 @@ These compile without a message and give a wrong result.
 - **`"xyz"[1]` stops the compiler without a message.** Verified.
 - **`core::ptr_from_int(*p, 16usize)` with a variable `p` stops the compiler without a message.**
   Verified. With a type argument it works.
-- **`gabbro ir file.gab | head` panics** ("reached unreachable code"; earlier also "wrong File
+- **`gabbro ir file.fels | head` panics** ("reached unreachable code"; earlier also "wrong File
   nonblocking flag") when the output pipe closes early. Verified. In `src/main.zig` `cmdIr`.
 - **An error inside an imported module or the runtime is shown at line 1, column 1** with an empty
   source line. Reported.

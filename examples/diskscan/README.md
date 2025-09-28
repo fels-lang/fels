@@ -13,7 +13,7 @@ out/diskscan-gui  [dir]     browse the tree, recycle what you don't want (window
 
 ## Build
 
-Built entirely with the gabbro build system (`build.gab`):
+Built entirely with the gabbro build system (`build.fels`):
 
 ```
 gabbro build            # build both exes into ./out (release)
@@ -46,17 +46,17 @@ The file size comes *free* with each directory record, so there is no second
 ## Layout
 
 ```
-build.gab              two artifacts (console CLI + windowed GUI), versioned
+build.fels              two artifacts (console CLI + windowed GUI), versioned
 src/
-  win32.gab            kernel32 bindings: bulk reads, threads, CPU count
-  node.gab             the directory tree (lazy-sorted children, tombstone delete)
-  scan.gab             the scanner — both levers, builds the tree
-  fmt.gab              human-readable sizes (1.5 GB, 870.4 KB, 42 B)
-  cli.gab              CLI entry: scan + sorted report + throughput
-  gui.gab             GUI entry: Win32 window, GDI drawing, navigation, delete
+  win32.fels            kernel32 bindings: bulk reads, threads, CPU count
+  node.fels             the directory tree (lazy-sorted children, tombstone delete)
+  scan.fels             the scanner — both levers, builds the tree
+  fmt.fels              human-readable sizes (1.5 GB, 870.4 KB, 42 B)
+  cli.fels              CLI entry: scan + sorted report + throughput
+  gui.fels             GUI entry: Win32 window, GDI drawing, navigation, delete
 ```
 
-`cli.gab` and `gui.gab` are two `#entry` points over the **same** scanner and tree
+`cli.fels` and `gui.fels` are two `#entry` points over the **same** scanner and tree
 — the build system compiles each into its own executable.
 
 ## The GUI

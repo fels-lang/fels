@@ -104,7 +104,7 @@ fn fileExists(io: std.Io, path: []const u8) bool {
 }
 
 /// A name an import can start with that stands for a folder: `#import name.a.b` reads
-/// `<dir>/a/b.gab`, and a bare `#import name` reads `<dir>/<name>.gab`.
+/// `<dir>/a/b.fels`, and a bare `#import name` reads `<dir>/<name>.fels`.
 pub const ModuleRoot = struct {
     name: []const u8,
     dir: []const u8,
@@ -221,7 +221,7 @@ pub fn compileMulti(allocator: std.mem.Allocator, files: []const SourceFile) Com
     return runPipelineWithSource(fe_allocator, .{ .file_name = modules.items[root].file_name, .items = items }, files[root].source, modules.items[root].file_name, arena);
 }
 
-/// Compile a .gab file from disk, resolving `#import` declarations recursively.
+/// Compile a .fels file from disk, resolving `#import` declarations recursively.
 /// Requires an `std.Io` instance (Zig 0.16 explicit I/O).
 pub fn compileFile(
     allocator: std.mem.Allocator,
@@ -231,7 +231,7 @@ pub fn compileFile(
     return compileFileInternal(allocator, io, path, false, @import("builtin").os.tag, false);
 }
 
-/// Compile a .gab file and its imports with the embedded platform runtime.
+/// Compile a .fels file and its imports with the embedded platform runtime.
 pub fn compileFileWithRuntime(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -1048,7 +1048,7 @@ fn prependHeapPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Modul
 
     var items: std.ArrayList(ast.Item) = .empty;
 
-    // heap.gab calls the platform runtime's page primitives (`os_reserve`, …).
+    // heap.fels calls the platform runtime's page primitives (`os_reserve`, …).
     // The runtime-free `compile` path has no runtime, so supply a host shim
     // (VirtualAlloc-backed) — but only when no runtime already defines them, so
     // real builds (which prepend a runtime) don't see a duplicate declaration.
@@ -1082,7 +1082,7 @@ fn moduleDeclaresFunction(module: ast.Module, name: []const u8) bool {
 }
 
 /// Host (Windows) page-memory shim for the runtime-free `compile` path. Mirrors
-/// the `os_*` surface that windows.gab provides at runtime; injected by
+/// the `os_*` surface that windows.fels provides at runtime; injected by
 /// `prependHeapPrelude` only when no runtime is present (so it never collides).
 const os_host_shim_src =
     \\#extern("kernel32", "VirtualAlloc")

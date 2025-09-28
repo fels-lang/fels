@@ -42,7 +42,7 @@ program.
 
 Comptime code can call host DLLs, given the capability (below): `src/vm/ffi.zig` does
 `LoadLibraryA`/`GetProcAddress` and marshals `Value` against the C ABI. `gabbro build`
-is the same machinery — `build.gab` runs in the VM, lowering builder calls to
+is the same machinery — `build.fels` runs in the VM, lowering builder calls to
 `__build_*` intrinsics that produce the build plan. See
 [10_build_system.md](10_build_system.md).
 
@@ -54,7 +54,7 @@ into a host function halts the build:
     comptime FFI to `MulDiv` (in `kernel32`) is not allowed here: this ran as a
     pure `#run`, which has no `ffi` capability.
 
-`build.gab` runs with `ffi` granted; it's the script you wrote, the trusted root. The
+`build.fels` runs with `ffi` granted; it's the script you wrote, the trusted root. The
 two primitives the comptime heap reserves pages through, `VirtualAlloc` and
 `VirtualFree`, stay open to everyone — they hand back memory and nothing else.
 

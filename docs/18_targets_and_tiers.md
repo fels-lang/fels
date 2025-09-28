@@ -45,7 +45,7 @@ place the OS appears.
       write/alloc/clock/open/socket/…
         ┌───────────┼───────────┐
         ▼           ▼           ▼
-   windows.gab    linux.gab   (linux_gnu)     ← one impl per (os[,arch,env])
+   windows.fels    linux.fels   (linux_gnu)     ← one impl per (os[,arch,env])
    kernel32     syscalls      libc
 ```
 

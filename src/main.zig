@@ -1,10 +1,10 @@
 //! gabbro compiler CLI
 //!
 //! Usage:
-//!   gabbro check  <file.gab>                    — parse + type-check only
-//!   gabbro build  <file.gab> [-o out.exe]       — compile to native exe (Windows)
-//!   gabbro ir     <file.gab>                    — dump LLVM IR to stdout
-//!   gabbro object <file.gab> [-o out.o]         — emit object file only
+//!   gabbro check  <file.fels>                    — parse + type-check only
+//!   gabbro build  <file.fels> [-o out.exe]       — compile to native exe (Windows)
+//!   gabbro ir     <file.fels>                    — dump LLVM IR to stdout
+//!   gabbro object <file.fels> [-o out.o]         — emit object file only
 //!
 //! Build with LLVM:  zig build -Dllvm-path=Y:/SDK/clang+llvm-22.1.6-x86_64-pc-windows-msvc
 
@@ -112,7 +112,7 @@ pub fn main(init: std.process.Init) u8 {
     }
 
     // `gabbro build` with no source file (or a step/target name, or flags) runs the
-    // project's build.gab in the build system. Only `gabbro build <file>.gab` for an
+    // project's build.fels in the build system. Only `gabbro build <file>.fels` for an
     // existing file is a direct single-file build (handled below).
     if (std.mem.eql(u8, cmd, "build")) {
         const arg2: ?[]const u8 = if (args.len >= 3) args[2] else null;
@@ -316,14 +316,14 @@ pub fn main(init: std.process.Init) u8 {
 
 // Commands
 
-/// `gabbro bindgen <header.h> [--lib <name>] [-o <out.gab>] [-I... -D...] [-- <clang args>]`
+/// `gabbro bindgen <header.h> [--lib <name>] [-o <out.fels>] [-I... -D...] [-- <clang args>]`
 fn cmdBindgen(allocator: std.mem.Allocator, io: std.Io, env: anytype, args: []const []const u8) u8 {
     if (!gabbro.llvm_enabled) {
         std.debug.print("gabbro bindgen: requires an LLVM-enabled build (libclang).\n    Rebuild: zig build -Dllvm-path=<path>\n", .{});
         return 1;
     }
     if (args.len == 0) {
-        std.debug.print("gabbro bindgen: needs a header file\n    usage: gabbro bindgen <header.h> [--lib <name>] [-o <out.gab>] [-- <clang args>]\n", .{});
+        std.debug.print("gabbro bindgen: needs a header file\n    usage: gabbro bindgen <header.h> [--lib <name>] [-o <out.fels>] [-- <clang args>]\n", .{});
         return 1;
     }
     const header = args[0];
@@ -524,7 +524,7 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
     return 0;
 }
 
-// Build system (`gabbro build` with a build.gab)
+// Build system (`gabbro build` with a build.fels)
 
 fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, rest: []const []const u8) u8 {
     if (!gabbro.llvm_enabled) return noLlvm();
@@ -544,7 +544,7 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
     var discovered_msvc: ?[]const u8 = null;
     defer if (discovered_msvc) |p| allocator.free(p);
     if (gabbro.windows_sdk_lib_path.len != 0) lib_paths.append(allocator, gabbro.windows_sdk_lib_path) catch return 1;
-    // CRT search paths so a build.gab `app.link_libc()` resolves (harmless otherwise).
+    // CRT search paths so a build.fels `app.link_libc()` resolves (harmless otherwise).
     if (gabbro.ucrt_lib_path.len != 0) lib_paths.append(allocator, gabbro.ucrt_lib_path) catch return 1;
     if (gabbro.msvc_lib_path.len != 0) {
         lib_paths.append(allocator, gabbro.msvc_lib_path) catch return 1;
@@ -735,15 +735,15 @@ fn printUsage() void {
     std.debug.print(
         \\gabbro {s} — a systems language with compile-time metaprogramming
         \\
-        \\usage:  gabbro <command> <file.gab> [options]
+        \\usage:  gabbro <command> <file.fels> [options]
         \\
         \\commands:
-        \\  build                  run ./build.gab (the build system) — see below
+        \\  build                  run ./build.fels (the build system) — see below
         \\  build    <name>        build a named artifact, or `run`/a step
-        \\  build    <file.gab>     compile and link a single file directly
-        \\  check    <file.gab>     parse and type-check only
-        \\  object   <file.gab>     compile to an object file (.o)
-        \\  ir       <file.gab>     print LLVM IR to stdout
+        \\  build    <file.fels>     compile and link a single file directly
+        \\  check    <file.fels>     parse and type-check only
+        \\  object   <file.fels>     compile to an object file (.o)
+        \\  ir       <file.fels>     print LLVM IR to stdout
         \\  bindgen  <header.h>    generate Gabbro FFI bindings from a C header
         \\  add      <name> <src>  use a package: add it to gabbro.pkg and fetch it
         \\  fetch                  get the packages gabbro.pkg uses (--verify checks hashes)
@@ -752,11 +752,11 @@ fn printUsage() void {
         \\  help                   show this message
         \\
         \\C bindings (gabbro bindgen, requires an LLVM-enabled build):
-        \\  gabbro bindgen <h> --lib <name> -o <out.gab>   generate bindings for a C library
+        \\  gabbro bindgen <h> --lib <name> -o <out.fels>   generate bindings for a C library
         \\  gabbro bindgen <h> -I<dir> -D<sym>            pass include dirs / defines to clang
         \\  gabbro bindgen <h> -- <clang args...>         forward arbitrary args to clang
         \\
-        \\build system (gabbro build, with a build.gab in the current directory):
+        \\build system (gabbro build, with a build.fels in the current directory):
         \\  gabbro build               build the default artifact (or all of them)
         \\  gabbro build run [-- args] build the default exe, then run it
         \\  gabbro build <name>        build a named artifact or run a named step

@@ -23,7 +23,7 @@ test "compiler-hook: a hook builds source with the REAL StringBuilder (host memo
     // pointers). A `#compiler` hook runs at compile time and cannot fall back to
     // runtime, so this only works because the comptime VM now models real host
     // memory. The hook emits a `sum_<T>` for every user struct.
-    var fe = try gabbro.compileFileWithRuntime(a, std.testing.io, "tests/fixtures/hostmem/derive_sb.gab");
+    var fe = try gabbro.compileFileWithRuntime(a, std.testing.io, "tests/fixtures/hostmem/derive_sb.fels");
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try gabbro.ir_mod.validateModule(m);
@@ -59,7 +59,7 @@ test "compiler-hook: a hook reads a declaration's BODY text (R1b-A)" {
         \\}
         \\main :: fn() -> i32 { return answer(); }
     ;
-    var fe = try gabbro.compile(a, "body.gab", src);
+    var fe = try gabbro.compile(a, "body.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try gabbro.ir_mod.validateModule(m);
@@ -84,7 +84,7 @@ test "compiler-hook: `compiler_remove` drops an existing declaration (R1b-B)" {
         \\}
         \\main :: fn() -> i32 { return 0; }
     ;
-    var fe = try gabbro.compile(a, "remove.gab", src);
+    var fe = try gabbro.compile(a, "remove.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try gabbro.ir_mod.validateModule(m);
@@ -113,7 +113,7 @@ test "compiler-hook: a `#compiler(final)` hook runs AFTER generation and sees ge
         \\}
         \\main :: fn() -> i32 { return answer(); }
     ;
-    var fe = try gabbro.compile(a, "final_phase.gab", src);
+    var fe = try gabbro.compile(a, "final_phase.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try gabbro.ir_mod.validateModule(m);
@@ -137,7 +137,7 @@ test "compiler-hook: a `#compiler(final)` hook can halt the build (whole-program
         \\}
         \\main :: fn() -> i32 { return 0; }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "final_policy.gab", bad));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "final_policy.fels", bad));
 }
 
 test "compiler-hook: `compiler_error` halts the build with a custom diagnostic (R1b)" {
@@ -155,7 +155,7 @@ test "compiler-hook: `compiler_error` halts the build with a custom diagnostic (
         \\}
         \\main :: fn() -> i32 { return 0; }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "policy.gab", bad));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "policy.fels", bad));
 }
 
 test "compiler-hook: a hook that does NOT call compiler_error compiles normally" {
@@ -166,7 +166,7 @@ test "compiler-hook: a hook that does NOT call compiler_error compiles normally"
         \\#compiler ok :: fn() -> []const u8 { return "gen :: fn() -> i32 { return 1; }"; }
         \\main :: fn() -> i32 { return gen(); }
     ;
-    var fe = try gabbro.compile(a, "ok.gab", src);
+    var fe = try gabbro.compile(a, "ok.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try gabbro.ir_mod.validateModule(m);
@@ -202,7 +202,7 @@ test "compiler-hook: rich introspection — reads struct fields and enum variant
         \\}
         \\main :: fn() -> i32 { return answer(); }
     ;
-    var fe = try gabbro.compile(a, "hook_introspect.gab", src);
+    var fe = try gabbro.compile(a, "hook_introspect.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try gabbro.ir_mod.validateModule(m);
@@ -222,7 +222,7 @@ test "compiler-hook: generated top-level declaration is added to the module" {
         \\}
         \\main :: fn() -> i32 { return doubled(21); }
     ;
-    var fe = try gabbro.compile(a, "hook_gen.gab", src);
+    var fe = try gabbro.compile(a, "hook_gen.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try gabbro.ir_mod.validateModule(m);
@@ -261,7 +261,7 @@ test "compiler-hook: core::compiler_decls() inspection drives conditional genera
         \\}
         \\main :: fn() -> i32 { return answer(); }
     ;
-    var fe = try gabbro.compile(a, "hook_inspect.gab", src);
+    var fe = try gabbro.compile(a, "hook_inspect.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try gabbro.ir_mod.validateModule(m);
@@ -301,7 +301,7 @@ test "compiler-hook: an alias spelled like a constant is reported as an alias" {
         \\}
         \\main :: fn() -> i32 { return LIMIT; }
     ;
-    var fe = try gabbro.compile(a, "hook_alias.gab", src);
+    var fe = try gabbro.compile(a, "hook_alias.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try gabbro.ir_mod.validateModule(m);
@@ -318,7 +318,7 @@ test "compiler-hook: no hook means no compiler-prelude injection" {
     const src =
         \\main :: fn() -> i32 { return 7; }
     ;
-    var fe = try gabbro.compile(a, "no_hook.gab", src);
+    var fe = try gabbro.compile(a, "no_hook.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try gabbro.ir_mod.validateModule(m);

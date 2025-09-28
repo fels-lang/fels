@@ -1,16 +1,16 @@
-/// The `gabbro build` build system: runs build.gab scripts on the comptime VM and checks the
+/// The `gabbro build` build system: runs build.fels scripts on the comptime VM and checks the
 /// plan they record. Nothing is compiled or linked, so these run without LLVM.
 const std = @import("std");
 const gabbro = @import("gabbro_compiler");
 const builtin = @import("builtin");
 const build = gabbro.build_driver;
 
-/// Write `src` as `<dir>/build.gab` and load its plan with the `-D` `options`.
+/// Write `src` as `<dir>/build.fels` and load its plan with the `-D` `options`.
 fn loadPlan(comptime dir: []const u8, src: []const u8, options: []const []const u8) !build.BuildPlan {
     const io = std.testing.io;
     std.Io.Dir.cwd().createDirPath(io, ".zig-cache/" ++ dir) catch {};
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ".zig-cache/" ++ dir ++ "/build.gab", .data = src });
-    return build.loadPlan(std.testing.allocator, io, ".zig-cache/" ++ dir ++ "/build.gab", options);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ".zig-cache/" ++ dir ++ "/build.fels", .data = src });
+    return build.loadPlan(std.testing.allocator, io, ".zig-cache/" ++ dir ++ "/build.fels", options);
 }
 
 const options_script =
@@ -20,7 +20,7 @@ const options_script =
     \\    threads := b.option_int("threads", 4, "worker threads");
     \\    name := b.option_string("name", "hello", "output name");
     \\    backend := b.option_choice("backend", "gl|vulkan|d3d", "gl", "renderer");
-    \\    exe := b.executable(name, "main.gab");
+    \\    exe := b.executable(name, "main.fels");
     \\    if fast { exe.release_fast(); }
     \\    if threads == 16 { exe.output(backend); }
     \\}
@@ -76,7 +76,7 @@ test "build: a choice default that is not one of the choices is an error" {
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
         \\    mode := b.option_choice("mode", "a|b", "c", "");
-        \\    b.executable(mode, "main.gab");
+        \\    b.executable(mode, "main.fels");
         \\}
     ;
     try std.testing.expectError(error.ScriptError, loadPlan("bs_opt_choice_default", src, &.{}));
@@ -86,7 +86,7 @@ test "build: the short option forms declare their options too" {
     const src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    exe := b.executable(b.option_str("name", "x"), "main.gab");
+        \\    exe := b.executable(b.option_str("name", "x"), "main.fels");
         \\    if b.option("fast") { exe.release_fast(); }
         \\}
     ;
@@ -100,8 +100,8 @@ test "build: link_artifact records the library to link" {
     const src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    util := b.static("util", "util.gab");
-        \\    app := b.executable("app", "main.gab");
+        \\    util := b.static("util", "util.fels");
+        \\    app := b.executable("app", "main.fels");
         \\    app.link_artifact(util);
         \\}
     ;
@@ -114,8 +114,8 @@ test "build: link_artifact of an executable is an error" {
     const src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    tool := b.executable("tool", "tool.gab");
-        \\    app := b.executable("app", "main.gab");
+        \\    tool := b.executable("tool", "tool.fels");
+        \\    app := b.executable("app", "main.fels");
         \\    app.link_artifact(tool);
         \\}
     ;
@@ -133,14 +133,14 @@ test "build: install copies files and folders into the prefix" {
     const src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    b.executable("app", "main.gab");
+        \\    b.executable("app", "main.fels");
         \\    b.install_prefix("pkg");
         \\    b.install_file("README.md", "doc/README.md");
         \\    b.install_dir("assets", "share/assets");
         \\}
     ;
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data = src });
-    try build.run(std.testing.allocator, io, dir ++ "/build.gab", .{ .target = "install", .quiet = true });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data = src });
+    try build.run(std.testing.allocator, io, dir ++ "/build.fels", .{ .target = "install", .quiet = true });
 
     const gpa = std.testing.allocator;
     for ([_][2][]const u8{
@@ -161,18 +161,18 @@ test "build: install with nothing to install is an error" {
     const src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    b.executable("app", "main.gab");
+        \\    b.executable("app", "main.fels");
         \\}
     ;
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data = src });
-    try std.testing.expectError(error.UnknownTarget, build.run(std.testing.allocator, io, dir ++ "/build.gab", .{ .target = "install", .quiet = true }));
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data = src });
+    try std.testing.expectError(error.UnknownTarget, build.run(std.testing.allocator, io, dir ++ "/build.fels", .{ .target = "install", .quiet = true }));
 }
 
 test "build: define records constants as Gabbro source, a later define wins" {
     const src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    app := b.executable("app", "main.gab");
+        \\    app := b.executable("app", "main.fels");
         \\    app.define("NAME", "say \"hi\"\n");
         \\    app.define_int("LEVEL", -3);
         \\    app.define_bool("FAST", true);
@@ -197,7 +197,7 @@ test "build: a define or module name that is not a name is an error" {
     const define_src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    app := b.executable("app", "main.gab");
+        \\    app := b.executable("app", "main.fels");
         \\    app.define("MY-NAME", "x");
         \\}
     ;
@@ -205,21 +205,21 @@ test "build: a define or module name that is not a name is an error" {
     const module_src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    app := b.executable("app", "main.gab");
+        \\    app := b.executable("app", "main.fels");
         \\    app.add_module("std", "mystd");
         \\}
     ;
     try std.testing.expectError(error.ScriptError, loadPlan("bs_module_bad", module_src, &.{}));
 }
 
-/// Write `src` as `<dir>/build.gab` (after clearing `dir`) and run `target` with it.
+/// Write `src` as `<dir>/build.fels` (after clearing `dir`) and run `target` with it.
 fn runTarget(comptime dir: []const u8, src: []const u8, target: []const u8) !void {
     const io = std.testing.io;
     const path = ".zig-cache/" ++ dir;
     std.Io.Dir.cwd().deleteTree(io, path) catch {};
     std.Io.Dir.cwd().createDirPath(io, path) catch {};
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path ++ "/build.gab", .data = src });
-    return build.run(std.testing.allocator, io, path ++ "/build.gab", .{ .target = target, .quiet = true });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path ++ "/build.fels", .data = src });
+    return build.run(std.testing.allocator, io, path ++ "/build.fels", .{ .target = target, .quiet = true });
 }
 
 fn expectFile(path: []const u8, want: []const u8) !void {
@@ -233,7 +233,7 @@ test "build: a step runs the steps it comes after, then its file actions in orde
     const src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    b.executable("app", "main.gab");
+        \\    b.executable("app", "main.fels");
         \\    gen := b.step("gen", "write the inputs");
         \\    gen.write_file("in/a.txt", "a");
         \\    gen.write_file("in/sub/b.txt", "b");
@@ -256,7 +256,7 @@ test "build: a command gets its arguments, working directory and environment" {
     const src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    b.executable("app", "main.gab");
+        \\    b.executable("app", "main.fels");
         \\    prep := b.step("prep", "");
         \\    prep.write_file("work/keep.txt", "");
         \\    cmd := b.command("say", "cmd");
@@ -269,7 +269,7 @@ test "build: a command gets its arguments, working directory and environment" {
     // `say` runs in work/, which `prep` creates; run it first.
     const io = std.testing.io;
     try runTarget("bs_step_cmd", src, "prep");
-    try build.run(std.testing.allocator, io, ".zig-cache/bs_step_cmd/build.gab", .{ .target = "say", .quiet = true });
+    try build.run(std.testing.allocator, io, ".zig-cache/bs_step_cmd/build.fels", .{ .target = "say", .quiet = true });
     try expectFile(".zig-cache/bs_step_cmd/work/said.txt", "hello\r\n");
 }
 
@@ -278,7 +278,7 @@ test "build: a command that fails stops the build" {
     const src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    b.executable("app", "main.gab");
+        \\    b.executable("app", "main.fels");
         \\    bad := b.command("fail", "cmd");
         \\    bad.arg("/c");
         \\    bad.arg("exit 3");
@@ -291,7 +291,7 @@ test "build: the default step runs for a bare gabbro build" {
     const src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    b.executable("app", "main.gab");
+        \\    b.executable("app", "main.fels");
         \\    notes := b.step("notes", "");
         \\    notes.write_file("notes.txt", "ran");
         \\    b.default_step(notes);
@@ -301,8 +301,8 @@ test "build: the default step runs for a bare gabbro build" {
     const dir = ".zig-cache/bs_step_default";
     std.Io.Dir.cwd().deleteTree(io, dir) catch {};
     std.Io.Dir.cwd().createDirPath(io, dir) catch {};
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data = src });
-    try build.run(std.testing.allocator, io, dir ++ "/build.gab", .{ .quiet = true });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data = src });
+    try build.run(std.testing.allocator, io, dir ++ "/build.fels", .{ .quiet = true });
     try expectFile(dir ++ "/notes.txt", "ran");
 }
 
@@ -310,7 +310,7 @@ test "build: two steps of the same name are an error, a step after itself too" {
     const twice =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    b.executable("app", "main.gab");
+        \\    b.executable("app", "main.fels");
         \\    b.step("gen", "");
         \\    b.step("gen", "");
         \\}
@@ -319,7 +319,7 @@ test "build: two steps of the same name are an error, a step after itself too" {
     const cycle =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
-        \\    b.executable("app", "main.gab");
+        \\    b.executable("app", "main.fels");
         \\    a := b.step("a", "");
         \\    c := b.step("c", "");
         \\    a.after(c);

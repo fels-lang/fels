@@ -241,8 +241,8 @@ is a struct with the vtable pointer first and a static vtable (see "Static aggre
 The library named in `#extern`/`#system_library` is resolved at link time. Point
 the linker at it:
 
-- **CLI:** `gabbro build app.gab -o app.exe --lib-path <dir> [--lib <name>]`
-- **build.gab:** `app.link("raylib"); app.lib_path("vendor/raylib/lib");`
+- **CLI:** `gabbro build app.fels -o app.exe --lib-path <dir> [--lib <name>]`
+- **build.fels:** `app.link("raylib"); app.lib_path("vendor/raylib/lib");`
 
 Linking a non-system import library currently routes through LLD (the self-hosted
 `gabld` doesn't read `.lib` archives yet); `gabbro` configures `lld-link` for you.
@@ -258,8 +258,8 @@ fails with `undefined symbol: malloc` and friends.
 
 Link the C runtime to fix it:
 
-- **CLI:** `gabbro build app.gab --libc` (or `-lc`)
-- **build.gab:** `app.link_libc();`
+- **CLI:** `gabbro build app.fels --libc` (or `-lc`)
+- **build.fels:** `app.link_libc();`
 
 `link_libc` pulls in the UCRT (`ucrt.lib` — malloc/free/…) and the VC runtime
 (`vcruntime.lib` — `__chkstk`, security checks). Both search paths are found for
@@ -276,10 +276,10 @@ one object), so they never clash with the CRT's `exit`/`abort`/etc. when you lin
 libc. A complete static-raylib build is just:
 
 ```sh
-gabbro build game.gab --libc --lib-path <raylib-lib-dir>
+gabbro build game.fels --libc --lib-path <raylib-lib-dir>
 ```
 
-(or `app.link_libc()` in a build.gab — the MSVC path is discovered automatically).
+(or `app.link_libc()` in a build.fels — the MSVC path is discovered automatically).
 
 > A static library also needs *its own* system dependencies. Static raylib, for
 > example, also wants `gdi32`, `user32`, `winmm`, `shell32`, and `opengl32` —
@@ -292,7 +292,7 @@ gabbro build game.gab --libc --lib-path <raylib-lib-dir>
 You don't rename or swap library files to switch link mode, and in the common case
 you don't even say which mode you want. **The build peeks inside each `.lib` you
 link** (in the artifact's own `lib_path`s *and* the directory containing
-`build.gab`, so a `raylib.lib` sitting next to your build script is detected even
+`build.fels`, so a `raylib.lib` sitting next to your build script is detected even
 with no `lib_path` call) and reacts to what it finds:
 
 - an **import library** (it carries an `__IMPORT_DESCRIPTOR_<dll>` symbol) → the
@@ -303,7 +303,7 @@ So this is usually all you write:
 
 ```gabbro
 build :: fn(b: Build) {
-    game := b.executable("game", "src/main.gab");
+    game := b.executable("game", "src/main.fels");
     game.link("raylib");
     game.lib_path("vendor/raylib/lib");   // whichever raylib.lib is here decides the mode
     b.default(game);
@@ -335,7 +335,7 @@ like a C compiler does, so its system dependencies flow in automatically:
 
 ```gabbro
 build :: fn(b: Build) {
-    game := b.executable("game", "src/main.gab");
+    game := b.executable("game", "src/main.fels");
     game.link("raylib");
     game.lib_path("vendor/raylib/lib-static");   // raylib.lib (static archive)
     b.default(game);                              // opengl32/gdi32/winmm pulled in for you
@@ -357,7 +357,7 @@ static auto-detection already links.
 > GUI/GL libraries glfw uses, so a complete static-raylib build is:
 >
 > ```gabbro
-> app := b.executable("app", "main.gab");
+> app := b.executable("app", "main.fels");
 > app.link("raylib");                 // raylib.lib detected → CRT auto-linked
 > app.link("opengl32"); app.link("gdi32"); app.link("user32");
 > app.link("shell32"); app.link("winmm");   // raylib's GUI deps it doesn't declare
@@ -408,10 +408,10 @@ be DYNAMIC`) instead of silently shipping a dynamic build.
 
 ### Cross-platform
 
-That API is deliberately platform-agnostic, so the same `build.gab` will work
+That API is deliberately platform-agnostic, so the same `build.fels` will work
 unchanged once Gabbro grows other targets. The intended mapping:
 
-| build.gab | Windows (today) | Linux (planned) | macOS (planned) |
+| build.fels | Windows (today) | Linux (planned) | macOS (planned) |
 |---|---|---|---|
 | `link("raylib")` | `raylib.lib` | `-lraylib` → `libraylib.so`/`.a` | `-lraylib` → `libraylib.dylib`/`.a` |
 | `link_mode(.dynamic)` | import lib + ship `.dll` | `.so` + rpath | `.dylib` + rpath |
@@ -428,9 +428,9 @@ ABI in `backend/llvm/abi.zig`, PE output). Reaching Linux/macOS needs, in order:
 3. **The SysV / AArch64 aggregate ABI** — the largest piece; SysV's by-value
    struct classification (eightbyte SSE/INTEGER) is more involved than Win64's
    size-based rule, so it's a second ABI backend alongside `abi.zig`.
-4. Per-platform runtime + entry conventions (`runtime/linux.gab` exists already).
+4. Per-platform runtime + entry conventions (`runtime/linux.fels` exists already).
 
-None of that requires changing a `build.gab` — the link-mode/`runtime_file`/named-
+None of that requires changing a `build.fels` — the link-mode/`runtime_file`/named-
 library design above absorbs it.
 
 ## Generating bindings from a C header
@@ -438,7 +438,7 @@ library design above absorbs it.
 `gabbro bindgen` parses an arbitrary C header with libclang and emits a Gabbro module:
 
 ```sh
-gabbro bindgen raylib.h --lib raylib -o raylib.gab
+gabbro bindgen raylib.h --lib raylib -o raylib.fels
 ```
 
 It maps:

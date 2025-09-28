@@ -143,7 +143,7 @@ pub const BuildOp = enum(u32) {
     install_dir,    // (src, dest)                     a folder `gabbro build install` copies
     define_int,     // (id, key, value:i64)            an integer constant in `build_options`
     define_bool,    // (id, key, value:bool)           a bool constant in `build_options`
-    add_module,     // (id, name, dir)                 `#import name.x` reads <dir>/x.gab
+    add_module,     // (id, name, dir)                 `#import name.x` reads <dir>/x.fels
     step,           // (name, description) -> step     a named step with actions
     step_depends_on, // (step, id)                     build the artifact before the step
     step_after,     // (step, other)                   run the other step before this one
@@ -172,7 +172,7 @@ pub const BuildOp = enum(u32) {
 
     pub const Result = enum { void, int, i64, bool, string };
 
-    /// What the intrinsic returns in `build.gab`: an id or flag is an `i32`.
+    /// What the intrinsic returns in `build.fels`: an id or flag is an `i32`.
     pub fn result(op: BuildOp) Result {
         return switch (op) {
             .artifact, .require, .option_flag, .step, .step_command, .step_run, .run_step => .int,
