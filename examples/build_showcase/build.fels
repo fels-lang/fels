@@ -1,12 +1,12 @@
 // A tour of the std.build API. Run from this directory:
 //
-//   gabbro build                     # the default step `all`: the app, its libraries, the assets
-//   gabbro build run                 # build, then run the app
-//   gabbro build --list              # artifacts, steps and options
-//   gabbro build -Dtrace -Dthreads=8 -Dgreeting=Hi
-//   gabbro build -Dmode=fast         # optimize the app for speed
-//   gabbro build install             # copy the app, its DLL and the assets to dist/
-//   gabbro build clean               # remove what the build made
+//   fels build                     # the default step `all`: the app, its libraries, the assets
+//   fels build run                 # build, then run the app
+//   fels build --list              # artifacts, steps and options
+//   fels build -Dtrace -Dthreads=8 -Dgreeting=Hi
+//   fels build -Dmode=fast         # optimize the app for speed
+//   fels build install             # copy the app, its DLL and the assets to dist/
+//   fels build clean               # remove what the build made
 //
 #import std.build.{ Build };
 
@@ -59,9 +59,9 @@ build :: fn(b: Build) {
     clean := b.step("clean", "remove what the build made");
     clean.remove("bin");
     clean.remove("dist");
-    clean.remove(".gabbro-cache");
+    clean.remove(".fels-cache");
 
-    // What `gabbro build install` copies besides the installed artifacts.
+    // What `fels build install` copies besides the installed artifacts.
     b.install_dir("assets", "bin/assets");
     b.summary();                       // print a summary when done
 }

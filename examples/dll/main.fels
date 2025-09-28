@@ -1,4 +1,4 @@
-// The smallest shared library Gabbro can produce. No `#entry`, no `main` — a DLL
+// The smallest shared library Fels can produce. No `#entry`, no `main` — a DLL
 // is a bag of exported symbols, and a host resolves them by name.
 //
 // This exists to prove the plumbing a native plugin needs: `b.shared` emits a real DLL,

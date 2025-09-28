@@ -1,6 +1,6 @@
 # ecs_game — a headless ECS asteroids simulation
 
-A bigger, multi-module Gabbro program that exercises the language end to end: local
+A bigger, multi-module Fels program that exercises the language end to end: local
 modules, a struct-of-arrays ECS, generics-free data-oriented systems, enums,
 fixed-capacity arrays sized by constants, float math, and a deterministic RNG.
 
@@ -12,8 +12,8 @@ renders an ASCII snapshot every 30 ticks, and prints a final report.
 ## Run it
 
 ```
-gabbro build            # build into ./ecs_game.exe
-gabbro build run        # build and run
+fels build            # build into ./ecs_game.exe
+fels build run        # build and run
 ```
 
 ## Layout
@@ -34,7 +34,7 @@ src/
 `world.fels` defines a single `World` with **parallel component arrays** indexed by
 entity id:
 
-```gabbro
+```fels
 World :: struct {
     pos:    [MAX_ENTITIES]Vec2,
     vel:    [MAX_ENTITIES]Vec2,

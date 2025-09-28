@@ -1,11 +1,11 @@
-// Calling a C library from Gabbro with by-value structs (the raylib pattern).
+// Calling a C library from Fels with by-value structs (the raylib pattern).
 //
-// The structs are declared on the Gabbro side to match the C layout; `#extern`
+// The structs are declared on the Fels side to match the C layout; `#extern`
 // binds each C function and pulls `cabi.lib` into the link. On Win64 the
 // compiler coerces small structs (Vector2, Color) into registers and passes
 // large ones (Rectangle) by pointer — automatically, matching the C ABI.
 //
-//   gabbro build main.fels -o demo.exe --lib-path .
+//   fels build main.fels -o demo.exe --lib-path .
 //   ./demo.exe   # exit code 132
 //
 // See README.md for the full build (compiling cabi.c first).

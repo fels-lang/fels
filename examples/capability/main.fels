@@ -2,10 +2,10 @@
 // build — read an environment variable, phone home, drop a file. This is the
 // `build.rs` surface, and it is how supply-chain attacks actually land.
 //
-// In Gabbro it cannot. A bare `#run` is pure: it holds no capabilities, so the
+// In Fels it cannot. A bare `#run` is pure: it holds no capabilities, so the
 // compiler refuses to let it reach the host at all.
 //
-// Uncomment the `PID` line below and run `gabbro build` again:
+// Uncomment the `PID` line below and run `fels build` again:
 //
 //   error: comptime FFI to `GetCurrentProcessId` (in `kernel32`) is not allowed
 //   here: this ran as a pure `#run`, which has no host access — only `build.fels`
