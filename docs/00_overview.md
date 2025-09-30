@@ -184,6 +184,6 @@ main :: fn() -> i32 {
 - [13_metaprogramming.md](13_metaprogramming.md) - Metaprogramming (`#quote`/`#insert`/macros)
 - [14_linux_elf_backend.md](14_linux_elf_backend.md) - Linux/ELF Backend (core implemented)
 - [15_tooling.md](15_tooling.md) - Tooling & LSP
-- [16_packages.md](16_packages.md) - Packages (design)
+- [16_packages.md](16_packages.md) - Packages: fels.pkg, fels.lock and capabilities
 - [17_testing.md](17_testing.md) - Testing & `#test`
 - [18_targets_and_tiers.md](18_targets_and_tiers.md) - Targets, ABIs & support tiers
