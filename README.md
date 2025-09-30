@@ -1,5 +1,7 @@
 # Fels
 
+Fels was called Gabbro until version 0.3.1.
+
 An experimental systems language. No GC, no hidden allocations, manual memory through
 lexical arenas. It carries its own toolchain — including a PE/COFF linker written in
 Fels itself — so a release is a single `fels.exe`.
