@@ -38,6 +38,12 @@ pub const Options = struct {
     update_all: bool = false,
     /// Hash every git package's files and compare with fels.lock (`fels fetch --verify`).
     verify: bool = false,
+    /// Never run git: a git package must be in fels.lock and in the cache (`--offline`, and
+    /// the language server).
+    offline: bool = false,
+    /// A package that cannot be had (offline, not fetched yet; a missing folder) is left out
+    /// and named in `Result.missing` instead of stopping (the language server).
+    skip_missing: bool = false,
 };
 
 pub const Result = struct {
@@ -46,6 +52,8 @@ pub const Result = struct {
     lock: lock_mod.Lock,
     /// Whether that differs from the fels.lock that was read.
     lock_changed: bool,
+    /// Packages left out with `skip_missing`.
+    missing: []const []const u8 = &.{},
 
     pub fn find(self: Result, name: []const u8) ?Package {
         for (self.packages) |p| if (std.mem.eql(u8, p.name, name)) return p;
@@ -126,7 +134,7 @@ fn pickCommit(
     from: Consumer,
     old: ?lock_mod.Entry,
     opts: Options,
-) ResolveError!struct { version: []const u8, commit: []const u8 } {
+) (ResolveError || error{NotLocked})!struct { version: []const u8, commit: []const u8 } {
     const range: ?semver.Range = if (use.version) |v| semver.Range.parse(v) else semver.Range.parse("*");
     if (old) |e| keep: {
         if (wantsUpdate(opts, use.name) or !std.mem.eql(u8, e.source, use.source)) break :keep;
@@ -137,6 +145,7 @@ fn pickCommit(
         } else if (!std.mem.eql(u8, e.version, use.version.?)) break :keep;
         return .{ .version = e.version, .commit = e.commit };
     }
+    if (opts.offline) return error.NotLocked;
 
     const url = fetch.gitUrl(a, use.source) catch return error.OutOfMemory;
     if (range) |r| {
@@ -168,6 +177,7 @@ pub fn resolve(
     opts: Options,
 ) ResolveError!Result {
     var packages: std.ArrayList(Package) = .empty;
+    var missing: std.ArrayList([]const u8) = .empty;
     var lock: lock_mod.Lock = .{};
     var queue: std.ArrayList(Pending) = .empty;
     const project: Consumer = .{ .pkg_path = root_pkg_path, .pkg_source = root_source, .dir = root_dir, .caps = null };
@@ -202,13 +212,35 @@ pub fn resolve(
         var pkg: Package = .{ .name = use.name, .source = use.source, .version = "path", .dir = undefined, .import_dir = undefined, .caps = granted, .manifest = .{} };
         if (use.isPath()) {
             pkg.dir = std.fs.path.resolve(a, &.{ from.dir, use.source }) catch return error.OutOfMemory;
-            if (!fetch.exists(io, pkg.dir)) return report(from, use, "the folder of `{s}` does not exist: {s}", .{ use.name, pkg.dir });
+            if (!fetch.exists(io, pkg.dir)) {
+                if (opts.skip_missing) {
+                    missing.append(a, use.name) catch return error.OutOfMemory;
+                    continue;
+                }
+                return report(from, use, "the folder of `{s}` does not exist: {s}", .{ use.name, pkg.dir });
+            }
         } else {
             const old = old_lock.find(use.name);
-            const picked = try pickCommit(a, io, use, from, old, opts);
+            const picked = pickCommit(a, io, use, from, old, opts) catch |err| switch (err) {
+                error.NotLocked => {
+                    if (opts.skip_missing) {
+                        missing.append(a, use.name) catch return error.OutOfMemory;
+                        continue;
+                    }
+                    return report(from, use, "`{s}` is not in fels.lock, and this build may not fetch; run `fels fetch` first", .{use.name});
+                },
+                else => |e| return e,
+            };
             pkg.version = picked.version;
             pkg.dir = fetch.packageDir(a, opts.cache, use.name, picked.commit) catch return error.OutOfMemory;
             const fresh = !fetch.exists(io, pkg.dir);
+            if (fresh and opts.offline) {
+                if (opts.skip_missing) {
+                    missing.append(a, use.name) catch return error.OutOfMemory;
+                    continue;
+                }
+                return report(from, use, "`{s}` {s} is not in the package cache, and this build may not fetch; run `fels fetch` first", .{ use.name, picked.version });
+            }
             if (fresh) {
                 std.debug.print("  fetching {s} {s}\n", .{ use.name, picked.version });
                 const url = fetch.gitUrl(a, use.source) catch return error.OutOfMemory;
@@ -250,7 +282,9 @@ pub fn resolve(
         }
     }
 
-    return .{ .packages = packages.items, .lock = lock, .lock_changed = !sameLock(old_lock, lock) };
+    // Left-out packages keep their fels.lock line.
+    for (missing.items) |name| if (old_lock.find(name)) |e| lock.put(a, e) catch return error.OutOfMemory;
+    return .{ .packages = packages.items, .lock = lock, .lock_changed = !sameLock(old_lock, lock), .missing = missing.items };
 }
 
 fn sameLock(x: lock_mod.Lock, y: lock_mod.Lock) bool {
