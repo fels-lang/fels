@@ -5,15 +5,32 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ## Unreleased
 
+**Gabbro is now called Fels.** The compiler is `fels.exe`, source files end in `.fels`, the
+build script is `build.fels`, the environment variables are `FELS_*` (`FELS_HOME`, `FELS_STD`,
+`FELS_LLVM`, ...) and the repository is `github.com/fels-lang/fels`. Files ending in `.gab`
+and a `build.gab` are still read, with a note to rename them, until 0.5.0.
+
+Fels gets a package manager, and the build system gets most of its API.
+
+### Changed
+
+- **The name.** See above. The entries below 0.4.0 keep the old name.
+
 ### Added
 
+- **Packages.** `fels.pkg` lists the packages a project uses (`#use name from "source"
+  version "^1.2"`), from a folder or a git repository; `fels add`, `fels fetch` and
+  `fels update` manage them, and `fels.lock` records the exact commit and a content hash of
+  each. A package's compile-time code may only call into host libraries that `fels.pkg` grants
+  it (`may ffi("user32")`), a package that needs more stops the update, and the VM enforces
+  the grant. See docs/16_packages.md.
 - **Typed build options.** `b.option_bool`, `option_int`, `option_string` and `option_choice`
-  declare an option with a default and a help text. `gabbro build --list` shows them, and a `-D`
+  declare an option with a default and a help text. `fels build --list` shows them, and a `-D`
   option the script does not declare, or a value of the wrong kind, stops the build with a
   message that lists the options.
 - **`a.link_artifact(lib)`** links a static or shared library the same build makes. The library
   is built first, each artifact once, and a DLL is copied next to the program.
-- **`gabbro build install`** copies the artifacts marked with `install()` into an install prefix
+- **`fels build install`** copies the artifacts marked with `install()` into an install prefix
   (`bin/` and `lib/`), with `b.install_file`, `b.install_dir`, `b.install_prefix` and
   `--prefix`.
 - **`define`, `define_int` and `define_bool`** pass constants to the program through a generated
@@ -23,7 +40,7 @@ the major version is `0`, any minor bump may break source compatibility.
 - **Build steps.** `b.step(name, description)` runs the artifacts and steps it depends on, then
   its actions: `command` and `run` (with `arg`, `arg_output`, `cwd` and `env`), `copy_file`,
   `copy_dir`, `write_file`, `remove` and `print`. `a.after(step)` generates code before an
-  artifact compiles, `b.default_step` picks what a bare `gabbro build` runs, and `run_step`
+  artifact compiles, `b.default_step` picks what a bare `fels build` runs, and `run_step`
   returns its command for arguments, a working directory and environment variables.
 
 ### Fixed
