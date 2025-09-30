@@ -41,7 +41,7 @@ program.
 ## Comptime FFI and build
 
 Comptime code can call host DLLs, given the capability (below): `src/vm/ffi.zig` does
-`LoadLibraryA`/`GetProcAddress` and marshals `Value` against the C ABI. `gabbro build`
+`LoadLibraryA`/`GetProcAddress` and marshals `Value` against the C ABI. `fels build`
 is the same machinery — `build.fels` runs in the VM, lowering builder calls to
 `__build_*` intrinsics that produce the build plan. See
 [10_build_system.md](10_build_system.md).
@@ -99,7 +99,7 @@ or is negative, is an error at the constant.
 value of the global, laid out like a literal and placed in the image — nothing runs at
 startup:
 
-```gabbro
+```fels
 CRC: [256]u32 = #run make_crc_table();       // the standard CRC-32 table, built by the compiler
 SQUARES :: #run make_squares();              // an untyped constant takes the type of the call
 CFG: Config = #run load_defaults();          // a struct, with strings, arrays, enum values inside
@@ -121,7 +121,7 @@ bytes, a number the type cannot hold
 
 Purity pays off here. A pure `#run` is a deterministic function of its bytecode, so
 its result is content-addressable: hash the thunk plus its call closure, name a file
-by that hash, skip the run when the file already exists. `GABBRO_CACHE=1` turns it on
+by that hash, skip the run when the file already exists. `FELS_CACHE=1` turns it on
 (opt-in while it's young).
 
     grind(5_000_000) at comptime:  ~600 ms cold  →  ~6 ms warm
@@ -134,7 +134,7 @@ read isn't possible, because whatever changed is part of the key.
 When the closure can't be pinned from bytecode alone — it reaches FFI, a global, an
 indirect call, a print — there's no key and the `#run` just runs. Slice 1 stores
 scalar results; aggregates (tables, structs) wait on `Value` serialization, and a
-`#run` that returns one is always evaluated. Entries live under `.gabbro-cache/`.
+`#run` that returns one is always evaluated. Entries live under `.fels-cache/`.
 Code: `src/vm/run_cache.zig`.
 
 ## Limits

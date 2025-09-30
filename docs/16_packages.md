@@ -19,7 +19,7 @@ Every dependency's `build.fels` receives a `*Caps` it can't forge or widen (doc 
 §5.1). You see the contract at add time:
 
 ```text
-$ gabbro add github.com/ana/imagelib
+$ fels add github.com/ana/imagelib
   fetching … 4f9c…a1 (312 KiB)
   imagelib requests capabilities:
       fs.read   "assets/"        — read its bundled lookup tables
@@ -31,7 +31,7 @@ $ gabbro add github.com/ana/imagelib
 The package declares the authority it needs, the root build grants it, the VM
 enforces it.
 
-```gabbro
+```fels
 dep := b.dependency("imagelib", .{ .hash = "4f9c…a1" });
 dep.allow(.fs_read, "assets/");        // nothing else reaches the OS
 ```
@@ -49,7 +49,7 @@ A package is `(name, content-hash)`:
 - `source` — where to fetch (git ref or tarball URL). A hint. If the bytes don't
   hash to the pin, the fetch is rejected.
 
-Names resolve through an index, itself a Gabbro file mapping names to sources,
+Names resolve through an index, itself a Fels file mapping names to sources,
 content-pinned and forkable. You point at the indexes you trust
 (`b.index("git.fels.dev/registry@<hash>")`). Direct URL deps skip the index entirely.
 
@@ -57,7 +57,7 @@ content-pinned and forkable. You point at the indexes you trust
 
 Deps are `build.fels` code, in a shape the manager extracts without trusting it:
 
-```gabbro
+```fels
 build :: fn(b: Build) {
     json := b.dependency("json", .{ .hash = "be20…77" });
     img  := b.dependency("imagelib", .{ .hash = "4f9c…a1" })
@@ -70,7 +70,7 @@ build :: fn(b: Build) {
 }
 ```
 
-Query mode: to read the graph, `gabbro` runs `build` on the VM with a deny-all `Caps`
+Query mode: to read the graph, `fels` runs `build` on the VM with a deny-all `Caps`
 and a `Build` that records side effects instead of performing them. The
 `b.dependency(...)` / `.allow(...)` calls land as data — nothing fetches, no file is
 touched.
@@ -79,7 +79,7 @@ touched.
 
 Online at `add`/`update` time, then frozen:
 
-1. `gabbro add <name|url>` resolves through your indexes (or takes the URL), fetches,
+1. `fels add <name|url>` resolves through your indexes (or takes the URL), fetches,
    hashes, writes the pin into `build.fels` and the lockfile.
 2. Transitive deps resolve the same way, each hash-pinned.
 3. Builds never resolve. They fetch by hash from the lockfile — cache hit, offline.
@@ -88,11 +88,11 @@ Online at `add`/`update` time, then frozen:
 Two deps pinning different hashes of the same name is not a conflict. They're
 distinct content, each in its own namespace, the way monomorphization keeps
 `Pair(i32)` and `Pair(f64)` apart — nothing for a solver to do. Want them unified?
-`gabbro update` does a one-shot minimum-version pick at add time, frozen after.
+`fels update` does a one-shot minimum-version pick at add time, frozen after.
 
-The lockfile is readable Gabbro, diffable in review:
+The lockfile is readable Fels, diffable in review:
 
-```gabbro
+```fels
 lock :: .{
     .{ .name = "json",     .hash = "be20…77", .src = "git.fels.dev/std-json",   .caps = .{} },
     .{ .name = "imagelib", .hash = "4f9c…a1", .src = "github.com/ana/imagelib",
@@ -108,22 +108,22 @@ tampering shows up on use. A dep is a content-hashed build-graph node (doc 10 §
 so an unchanged dep's compiled artifacts cache too — re-adding a dep you've built
 before is nearly free.
 
-`gabbro vendor` copies the resolved tree into `vendor/` for air-gapped builds.
+`fels vendor` copies the resolved tree into `vendor/` for air-gapped builds.
 
 ## CLI
 
 ```text
-gabbro add <name|url> [@version]   resolve, fetch, pin into build.fels + lock; prompt for caps
-gabbro update [name]               re-resolve to newer compatible versions, re-freeze
-gabbro remove <name>               drop a dependency
-gabbro why <name>                  who pulls a dep in, and its grants
-gabbro vendor                      copy resolved deps into ./vendor
-gabbro verify                      re-hash cache/lock; fail on drift
-gabbro caps                        the granted-capability set across the dep tree
+fels add <name|url> [@version]   resolve, fetch, pin into build.fels + lock; prompt for caps
+fels update [name]               re-resolve to newer compatible versions, re-freeze
+fels remove <name>               drop a dependency
+fels why <name>                  who pulls a dep in, and its grants
+fels vendor                      copy resolved deps into ./vendor
+fels verify                      re-hash cache/lock; fail on drift
+fels caps                        the granted-capability set across the dep tree
 ```
 
-`add`/`update` are the only online commands. `gabbro build` is offline and
-hash-pinned. `gabbro caps` puts the whole authority surface of the dep tree on one
+`add`/`update` are the only online commands. `fels build` is offline and
+hash-pinned. `fels caps` puts the whole authority surface of the dep tree on one
 screen.
 
 ## Trust model
@@ -131,10 +131,10 @@ screen.
 - Identity by content — you depend on bytes pinned by hash, not a mutable tag a
   maintainer can repoint.
 - Authority by grant — a dep gets exactly the capabilities you hand it; new asks
-  appear in `gabbro caps` / `gabbro why`.
+  appear in `fels caps` / `fels why`.
 - Reproducibility by lock — `--frozen` plus the content-addressed store make a build
   bit-identical and offline.
-- Federation — indexes are forkable Gabbro files, no central registry.
+- Federation — indexes are forkable Fels files, no central registry.
 - Optional signing — an index entry or package may carry a maintainer signature;
   `b.index(..).require_signed()` rejects unsigned resolves.
 

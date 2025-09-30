@@ -1,22 +1,22 @@
-gabbro-lang — licensing
+fels-lang — licensing
 ===================
 
 Copyright (c) 2026 Christian Brendlin.
 
-gabbro-lang is licensed per component. Which license applies to a given file is
+fels-lang is licensed per component. Which license applies to a given file is
 recorded in that file's `SPDX-License-Identifier` header; this document explains
-the split and, most importantly, what it means for programs you compile with gabbro.
+the split and, most importantly, what it means for programs you compile with fels.
 
 The compiler — GPLv3
 --------------------
 
-The gabbro compiler itself — the Zig sources under `src/` (lexer, parser, semantic
-analysis, IR, comptime VM, and the LLVM/gabld backends) — is licensed under the
+The fels compiler itself — the Zig sources under `src/` (lexer, parser, semantic
+analysis, IR, comptime VM, and the LLVM/felsld backends) — is licensed under the
 GNU General Public License, version 3. See `LICENSE-GPLv3.txt`.
 
   SPDX-License-Identifier: GPL-3.0-or-later
 
-If you distribute a modified gabbro *compiler*, the GPLv3 applies: you must make your
+If you distribute a modified fels *compiler*, the GPLv3 applies: you must make your
 changes to the compiler available under the same terms.
 
 The runtime, standard library, and everything emitted into your program — Apache-2.0
@@ -26,7 +26,7 @@ Every component that the compiler injects into, links into, or generates inside 
 compiled program is licensed under the Apache License, version 2.0. See
 `LICENSE-APACHE-2.0.txt` and `NOTICE`. This covers:
 
-  * `lib/`               — the gabbro standard library
+  * `lib/`               — the fels standard library
   * `src/runtime/`       — the embedded platform runtime (`windows.fels`, `linux.fels`)
   * the compiler-injected prelude sources (heap, ptr, reflection, `Any`, the
     `Test` testing context, …), including those embedded as string data inside
@@ -39,10 +39,10 @@ compiled program is licensed under the Apache License, version 2.0. See
 What this means for your programs
 ---------------------------------
 
-**Programs you compile with gabbro are NOT covered by the GPL.** A compiled gabbro program
+**Programs you compile with fels are NOT covered by the GPL.** A compiled fels program
 contains your own source plus the Apache-2.0 runtime and standard library — it is
 not a derivative work of the GPL-licensed compiler, and it carries no GPL
-obligation. You may license and distribute your gabbro programs however you wish,
+obligation. You may license and distribute your fels programs however you wish,
 including as proprietary software.
 
 This is the same outcome GCC provides through its "runtime library exception,"
@@ -56,7 +56,7 @@ Notes
     runtime/stdlib sources, and Apache-2.0 is compatible with GPLv3 but not with
     GPLv2. The compiler also links LLVM/LLD (Apache-2.0-with-LLVM-exception),
     which is likewise GPLv3-compatible.
-  * The tree-sitter grammar (`tree-sitter-gabbro`) and the Zed extension (`zed-gabbro`)
+  * The tree-sitter grammar (`tree-sitter-fels`) and the Zed extension (`zed-fels`)
     live in separate repositories under their own licenses and are not covered
     here.
   * When in doubt about a single file, the `SPDX-License-Identifier` header in

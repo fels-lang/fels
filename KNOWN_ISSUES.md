@@ -33,7 +33,7 @@ These compile without a message and give a wrong result.
 - **`"xyz"[1]` stops the compiler without a message.** Verified.
 - **`core::ptr_from_int(*p, 16usize)` with a variable `p` stops the compiler without a message.**
   Verified. With a type argument it works.
-- **`gabbro ir file.fels | head` panics** ("reached unreachable code"; earlier also "wrong File
+- **`fels ir file.fels | head` panics** ("reached unreachable code"; earlier also "wrong File
   nonblocking flag") when the output pipe closes early. Verified. In `src/main.zig` `cmdIr`.
 - **An error inside an imported module or the runtime is shown at line 1, column 1** with an empty
   source line. Reported.
@@ -65,7 +65,7 @@ These compile without a message and give a wrong result.
 - A bare variant does not take an optional enum type: `o: ?Color = .green;` is "expected `?Color`,
   found `error`"; `Color.green` works.
 
-## 5. Language server (`gabbro lsp`)
+## 5. Language server (`fels lsp`)
 
 - Locals inside generic functions (also methods of generic structs such as `Vec`) have no types:
   no hover type, inlay hint or member completion.
@@ -79,11 +79,11 @@ These compile without a message and give a wrong result.
 - A file that does not parse has an empty reference index.
 - A hard crash inside sema still ends the server.
 - The outline of a file that uses `#quote` lists the injected `Ast*` prelude types as its own.
-- The project root fallback for imports can accept an import that `gabbro build` rejects.
-- The static data check of `gabbro check` is not part of the server analysis.
+- The project root fallback for imports can accept an import that `fels build` rejects.
+- The static data check of `fels check` is not part of the server analysis.
 - A broken imported module replaces the importer's last good analysis.
 
-## 6. Grammar (`tree-sitter-gabbro`)
+## 6. Grammar (`tree-sitter-fels`)
 
 - Looser than the parser: attributes on `Type as Iface` impl blocks; `unsafe a ?? b` binds a little
   differently; an inline error set `{ .a }` versus a body after a bare `!` is told apart only by the dot.

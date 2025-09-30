@@ -1,6 +1,6 @@
 # Standard Library
 
-Gabbro's standard library (`std`): minimal, and allocation-free where it can be. 
+Fels's standard library (`std`): minimal, and allocation-free where it can be. 
 
 Here are the primary modules:
 
@@ -45,7 +45,7 @@ Byte-specialized aliases are provided: `eql_bytes`, `copy_bytes`, `zero`.
 Read and write fixed-width integers at an explicit offset in a byte slice, for wire
 formats and file headers where the integers sit at known offsets in a stated byte order.
 
-```gabbro
+```fels
 #import std.bytes as bytes;
 
 parse :: fn(packet: []const u8) -> u32 ! bytes::BytesError {
@@ -79,12 +79,12 @@ build :: fn(out: []u8, length: u16) -> void ! bytes::BytesError {
 See `tests/fixtures/stdlib/bytes_app.fels`.
 
 ## `std.utf16`
-UTF-8 ⇄ UTF-16 conversion, in plain Gabbro with no OS calls, so it behaves the same on
+UTF-8 ⇄ UTF-16 conversion, in plain Fels with no OS calls, so it behaves the same on
 every target. (Windows' `MultiByteToWideChar` / `WideCharToMultiByte` do a related job;
 nothing here depends on them, and the test suite checks the two agree on every Unicode
 scalar value.)
 
-```gabbro
+```fels
 #import std.utf16 as utf16;
 #import std.heap as heap;
 
@@ -173,7 +173,7 @@ the element type** (no explicit `$T`). Read-modify-write helpers return the
 ordering; for finer control call the `core::atomic_*` builtins with an ordering
 constant (`Relaxed`/`Acquire`/`Release`/`AcqRel`/`SeqCst`).
 
-```gabbro
+```fels
 #import std.atomics;
 
 counter: u32 = 0u32;
@@ -207,7 +207,7 @@ The free functions act on a raw `*T`. `Atomic(T)` instead *wraps* the value, so 
 type itself documents that it's shared, and the operations read as methods. The
 element type is recovered from the receiver, so you never write `$T`:
 
-```gabbro
+```fels
 #import std.atomics;
 #import std.atomics.{Atomic};         // bring the type name into scope
 
@@ -226,17 +226,17 @@ each carrying the same compile-time contract as its free-function counterpart.
 > and `atomic_cell_app.fels` for the `Atomic(T)` method API.
 
 ## `std.thread`
-Native OS threads and structured helpers. gabbro favours *real threads* over async/await
+Native OS threads and structured helpers. fels favours *real threads* over async/await
 — no function colouring, no hidden executor, no heap-allocated coroutine frames; a
 thread is a stack plus an entry point. An entry has the shape `fn(*void) -> u32`: it
 receives a single context pointer and returns an exit code.
 
-Because gabbro's ordinary function value is a fat `{fn, env}` closure that a C ABI can't
+Because fels's ordinary function value is a fat `{fn, env}` closure that a C ABI can't
 call, hand the entry over as **`core::fn_ptr(worker)`** — the raw thin function
 pointer. The context pointer you pass must outlive the thread (join before its data
 leaves scope, or put the data on a long-lived arena).
 
-```gabbro
+```fels
 #import std.thread;
 #import std.atomics;
 
@@ -259,7 +259,7 @@ code := t.join();                // blocks; returns the worker's exit code
   `join_all()` blocks until the whole batch finishes (the batch can't outlive the
   call site). `thread::group()` makes an empty one.
 
-```gabbro
+```fels
 g := thread::group();
 i: usize = 0usize;
 while i < thread::cpu_count() as usize { g.spawn(core::fn_ptr(worker), cp); i += 1usize; }
@@ -278,7 +278,7 @@ there is no allocation, no initialisation call and nothing to destroy: **all zer
 unlocked state**, which makes `m: Mutex = .{};` correct as a local, as a struct field and as a
 global in static storage.
 
-```gabbro
+```fels
 #import std.sync.{ Mutex, CondVar };
 
 lock: Mutex = .{};
@@ -320,7 +320,7 @@ cv.signal();
 so nothing is allocated behind your back, a producer that outruns its consumers waits instead
 of exhausting memory, and there is no allocator to share between threads.
 
-```gabbro
+```fels
 #import std.sync;
 
 buf: [64]i32 = .{};
@@ -379,7 +379,7 @@ and each constant; `#assert`s in the module pin the layouts, so a wrong offset i
 - **From an error back to an HRESULT** is written where the error is caught, because an error is
   not yet a value another function can take:
 
-  ```gabbro
+  ```fels
   read_header(self) catch e {
       if e == .no_interface { return E_NOINTERFACE; }
       return E_FAIL;
@@ -390,7 +390,7 @@ and each constant; `#assert`s in the module pin the layouts, so a wrong offset i
   methods on the struct; **`IInspectable`** (the base of every Windows Runtime interface) adds
   `get_iids`, `get_runtime_class_name` and `get_trust_level`; **`IActivationFactory`** adds
   `activate_instance`. A COM method is called through the table with the interface pointer first —
-  `p.vtbl.release(p)` — and on x86-64 Windows there is one calling convention, so any Gabbro
+  `p.vtbl.release(p)` — and on x86-64 Windows there is one calling convention, so any Fels
   function with matching parameter and result types fits a table slot.
 - **`RefCount`** — one atomic 32-bit counter for an object you implement: `new_refcount()` starts
   at 1 (the creator's reference), `add()` and `release()` return the new count, and a `release()`
@@ -407,7 +407,7 @@ asserting the offsets against the header. **Implementing one** is a struct whose
 vtable pointer, plus a vtable that is static data — a global initialised with the functions, no
 table built at run time:
 
-```gabbro
+```fels
 #import std.com;
 #import std.com.{ Guid, IUnknown, IUnknownVtbl, RefCount };
 
@@ -447,7 +447,7 @@ have one natural result (`activation_factory`, `new_guid`) are fallible, and not
 own: no hidden initialisation, no thread-local state. A program that imports it for another target
 fails to link, as for any missing Win32 function. The COM entry points come from `ole32.dll` and
 the Runtime ones from `combase.dll`; the Windows SDK has no `combase.lib` (it ships those in
-`runtimeobject.lib`), so the linker driver hands LLD that library, and `gabld` imports the DLL
+`runtimeobject.lib`), so the linker driver hands LLD that library, and `felsld` imports the DLL
 directly.
 
 - **Apartments.** `co_initialize(mode)` / `ro_initialize(kind)` apply to the calling thread and each
@@ -472,7 +472,7 @@ directly.
   release), the cheap way to pass a class name. `init(z)` takes the UTF-16 *with its terminating
   zero*; the struct must not move after `init`, and the buffer must outlive every use of `.h`.
 
-```gabbro
+```fels
 #import std.com;
 #import std.com.{ Guid, IInspectable };
 #import std.winrt;
@@ -501,7 +501,7 @@ main :: fn() -> i32 {
 `tests/fixtures/stdlib/winrt_app.fels` goes further against the real system: GUID text and parsing
 compared with `StringFromGUID2` / `IIDFromString`; an HSTRING through every operation; the OS's
 in-memory `IStream` called through a vtable declared from `objidl.h`; a COM object written in
-Gabbro that the OS calls back (`IStream::CopyTo` writes into it); and `Windows.Foundation.Uri`
+Fels that the OS calls back (`IStream::CopyTo` writes into it); and `Windows.Foundation.Uri`
 activated and read through its interfaces, with the reference counts checked.
 
 What it does not do: no events, delegates or async, no generated projection of a runtime class (you
@@ -526,7 +526,7 @@ and `!`-fallible returns. Every layer fails with the one shared `os::NetError`.
 
 **Addresses** (`std.net.addr`) — `IpV4` (`#derive(Eq)` + a hand-written `format`
 rendering a dotted quad) and `SocketAddr` (whose derived `Eq` recurses into `IpV4.eq`):
-```gabbro
+```fels
 #import std.net.addr as addr;
 ip  := addr::parse("127.0.0.1") catch e { ... };   // fallible
 sa  := addr::socket_addr(addr::localhost(), 8080u16);
@@ -534,7 +534,7 @@ sa.format(&sb);                                      // "127.0.0.1:8080"
 ```
 
 **TCP** — `init()` once, then `connect(addr)` / `listen(addr)`:
-```gabbro
+```fels
 #import std.net as net;
 #import std.net.addr as addr;
 #import std.net.tcp as tcp;          // for the TcpStream / TcpListener types
@@ -553,7 +553,7 @@ a  := ln.accept() catch e { return; };   // a.stream + a.peer (blocks for a clie
 ```
 
 **UDP** — connectionless datagrams, or `connect` to pin a default peer:
-```gabbro
+```fels
 #import std.net.udp as udp;
 
 srv := udp::bind(addr::socket_addr(addr::any(), 9000u16)) catch e { return; };
@@ -570,7 +570,7 @@ ignored := srv.send_to("pong", d.from) catch e { return; };  // reply to sender
   language doesn't re-export a type across modules; the facade hands those types
   back, so you only need the submodule import for a type annotation.
 - The raw Winsock bindings keep a `sys_` prefix; the `#extern` 2nd arg is the real
-  link symbol, so the gabbro name is free to differ from the C name.
+  link symbol, so the fels name is free to differ from the C name.
 
 > Loopback round-trips combining net + thread + addr are in
 > `tests/fixtures/stdlib/net_echo_app.fels` (TCP echo) and `net_udp_app.fels` (UDP echo).
@@ -609,7 +609,7 @@ A generic `List(T)` dynamic array backed by an `Arena` — the intended collecti
 type for entities/projectiles. The arena owns every element; there are no per-element
 frees. Pass the element type explicitly to each op (`list::push(Bullet, &xs, b)`).
 
-```gabbro
+```fels
 #import std.heap as heap;
 #import std.list as list;
 
@@ -635,14 +635,14 @@ The container library has one defining trait: every container is **region-bound*
 It carries a borrowed `*Arena` and grows by bump-allocating from it — there are no
 per-element frees and no destructors. When the region is `reset`/`deinit`-ed, every
 container that lived in it is gone at once. That's the whole memory story, and it's
-what makes gabbro's containers different from Rust's owning collections or Zig's
+what makes fels's containers different from Rust's owning collections or Zig's
 allocator-injected ones.
 
 ### `std.vec` — `Vec(T)`
 
 A growable array with in-struct methods (UFCS), the successor to `std.list`:
 
-```gabbro
+```fels
 #import std.heap as heap;
 #import std.vec as vec;
 
@@ -672,7 +672,7 @@ with `vec::from(T, a, u.items())`.
 
 Open-addressed (linear-probing) hash maps, also region-bound.
 
-```gabbro
+```fels
 #import std.map as map;
 
 m := map::auto(i32, i32, &a);       // keys: ANY value type
@@ -694,7 +694,7 @@ sm.get("alpha");                    // hashes + compares the string bytes
   (and copying each key into the region so the map owns its keys).
 - Both: `put`, `get` (→ `?V`), `contains`, `remove`, `clear`, `len`, `cap`, `is_empty`.
 
-> gabbro's hashing identity: a struct that `#derive(Hash, Eq)`s gets `hash()`/`eq()` for
+> fels's hashing identity: a struct that `#derive(Hash, Eq)`s gets `hash()`/`eq()` for
 > free — but `AutoHashMap` doesn't even need that, because byte-hashing covers every
 > POD key with zero ceremony. Drop a value in and it's a key.
 
@@ -706,7 +706,7 @@ Filesystem path strings — pure manipulation, no I/O. Both `/` and `\` are acce
 as separators; `join` writes the platform `SEP`. Query functions return sub-slices
 (no allocation); builders take an `*Arena`.
 
-```gabbro
+```fels
 path::basename("a/b/c.txt")            // "c.txt"
 path::dirname ("a/b/c.txt")            // "a/b"   ("." when no separator)
 path::extension("c.txt")               // ".txt"  (with the dot; "" if none)
@@ -724,7 +724,7 @@ Invariant: `basename(p)` == `stem(p)` ++ `extension(p)`.
 Wall-clock time, a monotonic clock, sleeping, and a UTC calendar breakdown
 (Windows backend, kernel32).
 
-```gabbro
+```fels
 secs := time::unix_seconds();          // i64 seconds since 1970-01-01 UTC
 ms   := time::unix_millis();
 dt   := time::utc(secs);               // DateTime { year, month, day, hour, minute, second, weekday }
@@ -742,7 +742,7 @@ is `0`=Sunday … `6`=Saturday.
 
 Hashing and checksums — pure computation.
 
-```gabbro
+```fels
 d := crypto::sha256("abc");                     // FIPS 180-4 SHA-256 → Digest
 h := crypto::to_hex(&a, d);                      // "ba7816bf8f01cfea…"
 
@@ -762,7 +762,7 @@ Reflection-driven JSON, both directions, with **no per-type code**. One generic 
 and one generic parser walk the type's `core::type_info` for its *shape* and an `core::any`
 for the field *values/slots*, recursing through nested structs and slices automatically.
 
-```gabbro
+```fels
 #import std.heap as heap;
 #import std.serde as serde;
 

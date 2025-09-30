@@ -1,13 +1,13 @@
-# The Gabbro Build System (`build.fels`)
+# The Fels Build System (`build.fels`)
 
-Your build is a Gabbro program that runs inside the compiler. No Makefiles, no CMake,
+Your build is a Fels program that runs inside the compiler. No Makefiles, no CMake,
 no second language. The two pieces are already there: the comptime VM that executes
 the compiler's IR, and the `#compiler` message loop that inspects and generates the
 program. The build system sits on top.
 
 Planned on the same base: capability-sandboxed dependency builds (the structural fix
 for the `build.rs` problem), a content-hashed parallel build graph, typed-AST codegen,
-targets as values, and `--watch` on the `gabld` linker.
+targets as values, and `--watch` on the `felsld` linker.
 
 This is the design. The VM/metaprogramming foundation is in
 [09_comptime.md](09_comptime.md).
@@ -16,7 +16,7 @@ This is the design. The VM/metaprogramming foundation is in
 
 A project has a **`build.fels`** at its root. It defines a `build` procedure:
 
-```gabbro
+```fels
 #import std.build.{ Build };
 
 build :: fn(b: Build) {
@@ -25,20 +25,20 @@ build :: fn(b: Build) {
 }
 ```
 
-`gabbro build` (no file argument) finds `./build.fels` and **runs `build(b)` inside the
+`fels build` (no file argument) finds `./build.fels` and **runs `build(b)` inside the
 comptime VM** — the same engine behind `#run` and `#compiler`. There is no
 separate "build binary": the build script never touches the disk to compile
-itself; it executes as compile-time Gabbro. After it returns, the compiler reads the
+itself; it executes as compile-time Fels. After it returns, the compiler reads the
 populated `Build` value back out of VM memory and executes the plan.
 
 This is Jai's model (`#run build()`), minus the boilerplate. For Jai familiarity
-`#run build();` is also accepted, but bare `gabbro build` is the idiom.
+`#run build();` is also accepted, but bare `fels build` is the idiom.
 
 **Three layers:**
 
 | Layer | Audience | Surface |
 | --- | --- | --- |
-| **0 — default** | `gabbro build main.fels` | No `build.fels`; CLI flags → options. (Exists today.) |
+| **0 — default** | `fels build main.fels` | No `build.fels`; CLI flags → options. (Exists today.) |
 | **1 — declarative builder** | 90% of projects | `Build`/`Artifact`/`Step` + methods. Pure data. |
 | **2 — workspaces & options** | power users | Jai-parity `Workspace`, full `Options` struct, `add_file`/`add_source`/`add_quote`. |
 | **3 — compiler intercept** | tooling, codegen | the message loop: `wait_message`, typed `Message`, `set_status`. |
@@ -49,7 +49,7 @@ The everyday API. Methods on `*Build` and `*Artifact` (UFCS), which only populat
 data — the compiler performs the effects. The build is deterministic and sandboxable
 because of that split.
 
-```gabbro
+```fels
 #import std.build.{ Build };
 
 build :: fn(b: Build) {
@@ -72,19 +72,19 @@ build :: fn(b: Build) {
     tool.needs(bind);                    // ordering + declared inputs
 
     // run / test steps
-    b.run_step("run", game);             // `gabbro build run [-- args]`
-    b.test_dir("test", "tests/");        // `gabbro build test`
+    b.run_step("run", game);             // `fels build run [-- args]`
+    b.test_dir("test", "tests/");        // `fels build test`
 
-    b.default(game);                     // what bare `gabbro build` produces
+    b.default(game);                     // what bare `fels build` produces
 }
 ```
 
 ### Core types
 
-```gabbro
+```fels
 pub Optimize   :: enum { debug, release_safe, release_fast, release_small }
 pub OutputKind :: enum { executable, shared_library, static_library, object, none }
-pub Backend    :: enum { llvm, native }   // native = gabbro's own backend (future)
+pub Backend    :: enum { llvm, native }   // native = fels's own backend (future)
 
 pub Artifact :: struct {
     name:    []const u8,
@@ -128,7 +128,7 @@ per artifact; in Layer 2 you drive them directly.
 > `b.workspace(name)` only names the build. `#quote { … }` holds statements, so quoting
 > a top-level declaration such as `build_id :: 0xC0FFEE;` is part of this plan too.
 
-```gabbro
+```fels
 build :: fn(b: Build) {
     w := b.workspace("Main program");
     o := w.options();
@@ -153,7 +153,7 @@ build :: fn(b: Build) {
 
 ### `Options` — the full knob set (Jai's `Build_Options`, modernized)
 
-```gabbro
+```fels
 pub Options :: struct {
     kind:            OutputKind,   // executable | shared_library | static_library | object | none
     output_name:     []const u8,
@@ -165,7 +165,7 @@ pub Options :: struct {
     bounds_check:    Check,
     cast_check:      Check,
     null_check:      Check,
-    overflow_check:  Check,        // Gabbro's overflow policy lives here
+    overflow_check:  Check,        // Fels's overflow policy lives here
 
     // codegen / artifacts
     emit_debug_info: bool,         // .pdb / DWARF
@@ -193,14 +193,14 @@ block at once, like Jai's `set_optimization`.
 
 ## 4. Layer 3 — the compiler intercept (message loop)
 
-This is the Jai message loop, built on Gabbro's `#compiler` hook + `compiler_decls()`
+This is the Jai message loop, built on Fels's `#compiler` hook + `compiler_decls()`
 (already implemented). Register interest in a workspace, then pull typed messages
 as each phase finishes a unit — and **inspect or alter the program** before it
 lowers.
 
 > Planned: the Layer 3 surface below is not built yet (see the plan in section 9).
 
-```gabbro
+```fels
 build :: fn(b: Build) {
     w := b.workspace("Main");
     w.add_file("main.fels");
@@ -213,7 +213,7 @@ build :: fn(b: Build) {
             .file_parsed => {}
             .typechecked => {
                 // m carries the typed declaration: name, kind, type info,
-                // and (Gabbro extension) the decl's AST for rewriting.
+                // and (Fels extension) the decl's AST for rewriting.
                 if !check_decl(b, m) { had_error = true; }
             }
             .phase => {}
@@ -227,13 +227,13 @@ build :: fn(b: Build) {
 }
 ```
 
-```gabbro
+```fels
 pub MessageKind :: enum { file_parsed, typechecked, phase, complete, error }
 
 pub Message :: struct {
     kind:      MessageKind,
     workspace: u32,
-    // typechecked payload (Jai gives you syntax trees + types here; Gabbro too):
+    // typechecked payload (Jai gives you syntax trees + types here; Fels too):
     decl_name: []const u8,
     decl_kind: []const u8,   // "fn" | "struct" | ...  (from compiler_decls())
     // …typed AST handle + type_info handle (Layer-3 extensions)
@@ -251,11 +251,11 @@ and adds the typed-AST/type-info handles.
 > `--watch` and `b.codegen` do not exist yet.
 
 ### 5.1 Capability-sandboxed dependency builds — the supply-chain fix
-Jai's build is arbitrary code with full host access; so is `build.rs`. **Gabbro hands
+Jai's build is arbitrary code with full host access; so is `build.rs`. **Fels hands
 every build hook a capability set.** A dependency's `build.fels` receives a
 `*Caps` it cannot forge or widen:
 
-```gabbro
+```fels
 // vendor/raylib/build.fels  — runs sandboxed
 build :: fn(b: Build, caps: *Caps) {
     lib := b.static("raylib", "src/raylib.fels");
@@ -276,16 +276,16 @@ to the build-script supply-chain hole.
 ### 5.2 Content-hashed, parallel build graph
 Steps and artifacts form a DAG. Each step declares inputs/outputs and is
 **content-hashed**: unchanged steps are skipped, independent steps run in
-parallel. Jai's build is largely linear; Gabbro's is incremental by construction.
-`gabbro build --explain` prints the graph and why each step ran or was cached.
+parallel. Jai's build is largely linear; Fels's is incremental by construction.
+`fels build --explain` prints the graph and why each step ran or was cached.
 
 ### 5.3 Typed-AST codegen + `#provided`
 Generated code goes in as **typed AST** (`w.add_quote(#quote { … })`), validated
 at the generation site — not a raw string that fails at splice time. The
-`#provided NAME;` directive is Gabbro's typed `#placeholder`: it promises a symbol the
+`#provided NAME;` directive is Fels's typed `#placeholder`: it promises a symbol the
 build will generate, and the type-checker trusts it until the build supplies it.
 
-```gabbro
+```fels
 // main.fels
 #provided GIT_REV: []const u8;       // build will define this
 println(GIT_REV);
@@ -294,7 +294,7 @@ println(GIT_REV);
 ### 5.4 Targets as values → build matrices
 `Target` is an ordinary value, so cross-compilation is a loop:
 
-```gabbro
+```fels
 targets: [3]Target = .{ Target.win_x64, Target.linux_x64, Target.macos_arm64 };
 for t in targets {
     e := b.executable("tool", "src/main.fels");
@@ -304,32 +304,32 @@ for t in targets {
 ```
 
 ### 5.5 `--watch`, hermetic builds, asset pipelines
-- **`gabbro build --watch`** re-runs only affected steps on file change; the
-  microsecond-class `gabld` linker makes the loop feel instant.
+- **`fels build --watch`** re-runs only affected steps on file change; the
+  microsecond-class `felsld` linker makes the loop feel instant.
 - **Hermetic/reproducible:** pin the toolchain, record input hashes, `--frozen`
   fails on lockfile drift.
 - **Asset/codegen steps** (shader compile, embed-file, bindings) are first-class
   graph nodes with declared inputs/outputs, so they cache and parallelize too.
 
 ### 5.6 Bindings generation, on typed AST
-A `b.codegen` step can read C/C++ headers (or, natively, introspect Gabbro via
+A `b.codegen` step can read C/C++ headers (or, natively, introspect Fels via
 `compiler_decls()`/`type_info`) and emit **typed AST** bindings into a workspace —
 the safer, faster cousin of Jai's `generate_bindings`.
 
 ## 6. CLI surface
 
 ```text
-gabbro build                  run ./build.fels, build the default artifact
-gabbro build <name>           build a named artifact or step
-gabbro build run [-- args]    build the default exe, then run it
-gabbro build test             build + run the test step
-gabbro build --list           list artifacts and steps
-gabbro build --release        shorthand override (debug → release_fast)
-gabbro build -D key=value     set an option the script reads via b.option(...)
-gabbro build --watch          rebuild affected steps on change
-gabbro build --explain        print the build graph + cache decisions
-gabbro build --frozen         fail if the lockfile would change
-gabbro build <file.fels>        direct single-file build (back-compat, today's behavior)
+fels build                  run ./build.fels, build the default artifact
+fels build <name>           build a named artifact or step
+fels build run [-- args]    build the default exe, then run it
+fels build test             build + run the test step
+fels build --list           list artifacts and steps
+fels build --release        shorthand override (debug → release_fast)
+fels build -D key=value     set an option the script reads via b.option(...)
+fels build --watch          rebuild affected steps on change
+fels build --explain        print the build graph + cache decisions
+fels build --frozen         fail if the lockfile would change
+fels build <file.fels>        direct single-file build (back-compat, today's behavior)
 ```
 
 Like Jai (`-- meta Build`) and the Default_Metaprogram, the no-`build.fels` path is
@@ -349,11 +349,11 @@ For asserts, logging, and codegen:
 
 Paths always use `/`, even on Windows.
 
-## 8. Jai → Gabbro mapping (and the extensions)
+## 8. Jai → Fels mapping (and the extensions)
 
-| Jai | Gabbro |
+| Jai | Fels |
 | --- | --- |
-| `build.jai` / `first.jai`, `#run build()` | `build.fels`, bare `gabbro build` (or `#run build()`) |
+| `build.jai` / `first.jai`, `#run build()` | `build.fels`, bare `fels build` (or `#run build()`) |
 | module `Compiler`, `#compiler` proc | `std.build`, `#compiler` hook (built) |
 | `compiler_create_workspace()` | `b.workspace(name)` |
 | `get_build_options` / `set_build_options` | `w.options()` / `w.set_options(o)` |
@@ -363,7 +363,7 @@ Paths always use `/`, even on Windows.
 | `compiler_begin_intercept` / `wait_for_message` / `end_intercept` | `w.intercept()` / `w.wait_message()` / `w.end_intercept()` |
 | `compiler_set_workspace_status(.FAILED)` | `w.set_status(.failed)` |
 | `set_build_options_dc(.{do_output=false})` | implicit — the build script never self-compiles to an exe |
-| Default_Metaprogram | `gabbro build` with no `build.fels` |
+| Default_Metaprogram | `fels build` with no `build.fels` |
 | `generate_bindings` | `b.codegen` step emitting typed AST |
 | — | **capabilities/sandbox, content-hashed parallel graph, `--watch`, target matrix, hermetic/`--frozen`** |
 
@@ -375,12 +375,12 @@ What the build system needs, against what already exists:
 | --- | --- |
 | Comptime VM that runs IR | ✅ done |
 | `#compiler` hook + `compiler_decls()` (program introspection) | ✅ done |
-| Driver `compileFileWithLlvm` (exe/dll/obj) + `gabld` linker | ✅ done |
-| **`gabbro build` dir-mode**: find `build.fels`, run `build(b)` in the VM | ✅ done |
+| Driver `compileFileWithLlvm` (exe/dll/obj) + `felsld` linker | ✅ done |
+| **`fels build` dir-mode**: find `build.fels`, run `build(b)` in the VM | ✅ done |
 | **Config capture**: `host_call` opcode → `__build_*` intrinsics → host `BuildPlan` | ✅ done |
 | **Plan executor**: per-artifact `compileFileWithLlvm`, wired outputs/libs/opt | ✅ done |
 | Layer 1 surface: `executable`/`shared`/`static`/`object`, `link`/`lib_path`/`output`/`optimize`/`define`, `require_*`/`depend`, `run_step`/`test_dir`/`default` | ✅ done |
-| CLI: `gabbro build` / `run` / `<name>` / `--list` / `--release` / `-q` | ✅ done |
+| CLI: `fels build` / `run` / `<name>` / `--list` / `--release` / `-q` | ✅ done |
 | `test_dir` step execution | ✅ done |
 | Build graph: deps/steps DAG, topo order, parallel | later |
 | Content hashing + incremental + `--watch` | later |
@@ -402,7 +402,7 @@ capability system → Layers 2–3 surface → cross-compile.
 
 ## 10. Minimal end-to-end (the target for v1)
 
-```gabbro
+```fels
 // build.fels
 #import std.build.{ Build };
 
@@ -416,9 +416,9 @@ build :: fn(b: Build) {
 ```
 
 ```text
-$ gabbro build            # → bin/app.exe via gabld
-$ gabbro build run        # → builds, then runs app.exe
-$ gabbro build --release  # → release_fast override
+$ fels build            # → bin/app.exe via felsld
+$ fels build run        # → builds, then runs app.exe
+$ fels build --release  # → release_fast override
 ```
 
 ## API reference (expanded)
@@ -442,7 +442,7 @@ or the shorthands `a.debug()`, `a.release_safe()`, `a.release_fast()`, `a.releas
 `b.shared`). The library is built first, each artifact once, and a shared library's DLL is
 copied next to the program:
 
-```gabbro
+```fels
 util := b.static("util", "src/util.fels");
 app := b.executable("app", "src/main.fels");
 app.link_artifact(util);
@@ -463,25 +463,25 @@ static-vs-dynamic workflow and cross-platform linking.
 
 **Executable settings**: `a.subsystem(.console|.windows)`, `a.console()`,
 `a.windowed()` (GUI — no console window), `a.entry(symbol)`, `a.stack_size(bytes)`.
-These force the LLD path (the fast gabld linker can't apply them).
+These force the LLD path (the fast felsld linker can't apply them).
 
 **Output**: `a.output(path)` (explicit), `a.out_dir(dir)` (a directory, name derived),
 and the workspace-wide `b.out_root(dir)` (a per-artifact `out_dir` wins).
 
 **Metadata**: `a.version(semver)` and `a.description(text)`, shown by `--list` and the summary.
 
-**Install**: `gabbro build install` builds every artifact marked with `a.install()` and copies
+**Install**: `fels build install` builds every artifact marked with `a.install()` and copies
 it into the install prefix: programs and DLLs (with the DLLs copied next to them) to `bin/`,
 static and import libraries to `lib/`. `b.install_file(src, dest)` and
 `b.install_dir(src, dest)` add files and folders, with `dest` relative to the prefix.
 `b.install_prefix(dir)` sets the prefix (default `dist`, relative to build.fels), and
-`gabbro build install --prefix <dir>` overrides it. A step or artifact the script names
+`fels build install --prefix <dir>` overrides it. A step or artifact the script names
 `install` takes the place of the built-in step.
 
 **Constants for the program**: `a.define(name, text)`, `a.define_int(name, value)` and
 `a.define_bool(name, value)` write a `build_options` module the program imports:
 
-```gabbro
+```fels
 // build.fels
 app.define("GIT_REV", b.option_string("rev", "dev", "the commit"));
 app.define_int("MAX_PLAYERS", 8);
@@ -502,7 +502,7 @@ limit := build_options::MAX_PLAYERS;
 
 **Workspace**: `b.workspace(name)`, `b.summary()` (print a post-build summary).
 
-**Build options** come from the command line (`gabbro build -Dname` or `-Dname=value`).
+**Build options** come from the command line (`fels build -Dname` or `-Dname=value`).
 Each one is declared where the script reads it, with a default and a help text:
 
 | Call | Command line | Returns |
@@ -515,12 +515,12 @@ Each one is declared where the script reads it, with a default and a help text:
 `b.option(name) -> bool` and `b.option_str(name, default)` are the short forms without
 help text. When the same `-D` option is given twice, the last one wins.
 
-`gabbro build` stops with an error for a `-D` option the script does not declare (usually a
+`fels build` stops with an error for a `-D` option the script does not declare (usually a
 typo) and for a value of the wrong kind, and lists the options the script has:
 
 ```text
-$ gabbro build -Dthread=8
-gabbro build: unknown build option -Dthread
+$ fels build -Dthread=8
+fels build: unknown build option -Dthread
 build options of this build.fels:
   -Dthreads=<int>              worker threads (default: 4)
   -Dbackend=gl|vulkan|d3d      renderer (default: gl)
@@ -537,10 +537,10 @@ See `examples/build_showcase/` for a build.fels exercising most of these.
 
 ## Steps
 
-A step is a named piece of work: `gabbro build <name>` builds the artifacts it depends on, runs
+A step is a named piece of work: `fels build <name>` builds the artifacts it depends on, runs
 the steps it comes after, then its actions in order. Paths are relative to build.fels.
 
-```gabbro
+```fels
 gen_tool := b.executable("gen", "tools/gen.fels");
 
 gen := b.step("gen", "generate the tables");
@@ -560,7 +560,7 @@ clean.remove("bin");
 all := b.step("all", "the game and its assets");
 all.depends_on(game);
 all.after(assets);
-b.default_step(all);                   // a bare `gabbro build` runs `all`
+b.default_step(all);                   // a bare `fels build` runs `all`
 ```
 
 | On a `Step` | Does |
@@ -576,16 +576,16 @@ b.default_step(all);                   // a bare `gabbro build` runs `all`
 
 A `Command` takes `c.arg(text)`, `c.arg_output(artifact)` (the absolute path of an
 artifact's output), `c.cwd(dir)` (default: build.fels's folder) and `c.env(key, value)` (added
-to the environment `gabbro build` runs in). A command that exits with a code other than 0 stops
+to the environment `fels build` runs in). A command that exits with a code other than 0 stops
 the build. `b.command(name, program)` is a step with one command.
 
 `a.after(step)` runs the step before the artifact is built, for generated code. Each artifact
-is built once and each step runs once per `gabbro build`, and a step that comes after itself
+is built once and each step runs once per `fels build`, and a step that comes after itself
 is an error.
 
 `b.run_step(name, artifact)` returns its `Command` too, so a run gets arguments, a working
 directory and environment variables. It also gets the arguments after `--`
-(`gabbro build run -- --verbose`), and an exit code other than 0 is reported without failing
+(`fels build run -- --verbose`), and an exit code other than 0 is reported without failing
 the build.
 
 ## Test steps
@@ -595,7 +595,7 @@ the build.
 it exits 0**:
 
 ```sh
-gabbro build test          # the step named "test"
+fels build test          # the step named "test"
 ```
 
 ```text
@@ -608,12 +608,12 @@ running tests in tests/
 ```
 
 A test is just a `.fels` with a `main :: fn() -> i32` that returns `0` on success
-and non-zero on failure. The step itself fails (non-zero `gabbro build` exit) if any
+and non-zero on failure. The step itself fails (non-zero `fels build` exit) if any
 test fails, so it drops cleanly into CI. Tests are compiled at `-O0` for speed.
 
 ## Inspecting the plan
 
-`gabbro build --list` prints the resolved plan without building anything — every
+`fels build --list` prints the resolved plan without building anything — every
 artifact with its kind, optimization level, version, install flag, and linked
 libraries, plus the declared steps and their targets and the build options:
 

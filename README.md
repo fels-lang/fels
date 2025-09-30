@@ -1,19 +1,19 @@
-# Gabbro
+# Fels
 
 An experimental systems language. No GC, no hidden allocations, manual memory through
 lexical arenas. It carries its own toolchain — including a PE/COFF linker written in
-Gabbro itself — so a release is a single `gabbro.exe`.
+Fels itself — so a release is a single `fels.exe`.
 
 Experimental, not production-ready. The frontend, type system, LLVM backend, comptime
 VM, and metaprogramming all work and run under a ~380-test suite, but the language is
 still moving, and some accepted constructs have incomplete backend semantics. The
-mature options in this space are Zig, Jai, and Rust; Gabbro is a younger, narrower take.
+mature options in this space are Zig, Jai, and Rust; Fels is a younger, narrower take.
 
-```gabbro
+```fels
 #import std.io.{ println };
 
 main :: fn() -> i32 {
-    println("hello from Gabbro");
+    println("hello from Fels");
     return 0;
 }
 ```
@@ -23,7 +23,7 @@ main :: fn() -> i32 {
 Allocation goes through lexical `Arena` zones. A zone frees when its block exits.
 Deterministic, no collector, no per-object free.
 
-```gabbro
+```fels
 work :: fn() {
     zone scratch: Arena {
         buf := scratch.new_slice(u8, 64);   // zero-initialized
@@ -43,37 +43,37 @@ compile time, which is what keeps code-generation memory bounded.
 A fallible function returns `T ! E`. `?` propagates, `catch` handles, `fail` raises.
 An error is a small integer tag, not a stack unwind.
 
-```gabbro
+```fels
 read_config :: fn(path: []const u8) -> Config ! IoError {
     file := open(path)?;
     if file.empty() { fail .empty; }
     return parse(file);
 }
 
-cfg := read_config("gabbro.toml") catch e { return default_config(); };
+cfg := read_config("fels.toml") catch e { return default_config(); };
 ```
 
 ## The toolchain is its own
 
-Most of the size of a systems toolchain is the linker and the build glue. Gabbro owns
+Most of the size of a systems toolchain is the linker and the build glue. Fels owns
 both.
 
-**A native linker, written in Gabbro.** `gabld` (`linker/gabld.fels`) is a full
+**A native linker, written in Fels.** `felsld` (`linker/felsld.fels`) is a full
 single-object PE/COFF linker — section merge at the right alignment, REL32/ADDR64
 relocations, multi-DLL import tables, `.pdata`/`.xdata` + the exception directory,
 PE32+ output with the subsystem/entry/stack you asked for, and DLL output. It links
-itself. The release bakes it into `gabbro.exe`, so the compiler links without spawning
+itself. The release bakes it into `fels.exe`, so the compiler links without spawning
 a 65 MB LLD. LLD is the fallback for the hard cases (multi-object, raw linker flags, a
 static-CRT pull-in).
 
 It's fast because it skips LLD's largest cost: it never parses `.lib` import archives.
 The compiler already knows every `#extern("dll","sym")` import and emits a `.skimp`
-section; gabld reads that and writes the import descriptors directly.
+section; felsld reads that and writes the import descriptors directly.
 
-**The build system is Gabbro.** `build.fels` runs inside the compiler's comptime VM. No
+**The build system is Fels.** `build.fels` runs inside the compiler's comptime VM. No
 Makefile, no second language. It populates a build plan; the compiler executes it.
 
-```gabbro
+```fels
 #import std.build.{ Build };
 
 build :: fn(b: Build) {
@@ -88,7 +88,7 @@ build :: fn(b: Build) {
 enums, errors, interface dispatch — and folds it to a constant. It runs on a bytecode
 VM over the same IR the native backend lowers, so comptime and runtime share semantics.
 
-```gabbro
+```fels
 FIB_10 :: #run fib(10);               // 55, computed at build time
 TABLE  :: #run generate_srgb_table(); // baked into the binary
 ```
@@ -98,7 +98,7 @@ splices it back and re-type-checks the result, `macro` is a hygienic template, `
 unrolls. The AST is an ordinary tagged union, so a metaprogram can `match` on code as
 data. No string pasting, no separate macro language.
 
-```gabbro
+```fels
 twice :: macro(body: Code) -> Code { return #quote { $body; $body; }; }
 
 main :: fn() -> i32 {
@@ -115,7 +115,7 @@ Code-generating helpers run only at compile time; they're not in the shipped bin
 Dynamic dispatch is explicit, through `*Interface` values. Generics are monomorphized.
 Conformance is checked at compile time.
 
-```gabbro
+```fels
 Writer :: interface { write :: fn(self: *Self, data: []const u8) -> usize ! IoError; }
 
 FileHandle :: struct { fd: i32 }
@@ -153,10 +153,10 @@ The stdlib root defaults to the in-tree `lib/` (which holds `std/`); override wi
 `-Dstdlib-root=/path/to/dir-containing-std`.
 
 ```text
-gabbro check  <file>    parse and type-check
-gabbro ir     <file>    print Gabbro IR
-gabbro object <file>    emit an object file
-gabbro build  <file>    build an executable (Windows)
+fels check  <file>    parse and type-check
+fels ir     <file>    print Fels IR
+fels object <file>    emit an object file
+fels build  <file>    build an executable (Windows)
 ```
 
 Worked programs live in [`examples/`](examples/) — among them `dll`, a shared library
@@ -205,7 +205,7 @@ In the in-tree [`lib/std/`](lib/std/) directory.
 
 ## Project status
 
-Gabbro works end-to-end on Windows: parse → check → IR → LLVM → executable. The
+Fels works end-to-end on Windows: parse → check → IR → LLVM → executable. The
 frontend is platform-independent.
 
 | Area | Status |
@@ -225,21 +225,21 @@ frontend is platform-independent.
 | Modules, imports, `::` namespacing, visibility, UFCS | done; no external packages yet |
 | Generics: `$T:` constraints, `where {}` predicates, named constraints | done |
 | Reflection (`type_info`, `typeid`, `Any`) + reflection-driven serde | done |
-| C interop (`#extern`, by-value struct ABI, `gabbro bindgen`) | done |
+| C interop (`#extern`, by-value struct ABI, `fels bindgen`) | done |
 | Build system (`build.fels` in the comptime VM → real exes/DLLs) | done |
-| Native linker (`gabld`, single-object PE/COFF, self-hosting) | done |
+| Native linker (`felsld`, single-object PE/COFF, self-hosting) | done |
 | Interfaces (dynamic + interface-through-interface dispatch, `$T: Iface` bounds) | done |
 | Standard library (30 modules) | done |
 | Atomics + concurrency | done |
 | Testing | `#test` comptime lane (a failed assertion fails the build); runtime lane planned |
-| Tooling | `check`/`ir`/`object`/`build`, `gabbro lsp`, tree-sitter grammar + Zed extension, `gabbro bindgen`. No formatter, doc gen, REPL, or package manager yet |
+| Tooling | `check`/`ir`/`object`/`build`, `fels lsp`, tree-sitter grammar + Zed extension, `fels bindgen`. No formatter, doc gen, REPL, or package manager yet |
 | Platform | Windows x86-64 and Linux x86-64, both end-to-end with the full standard library. Linux cross-compiles from Windows, static by default and glibc via `--libc`. No macOS backend. |
 
 See [`docs/`](docs/) for the language reference.
 
 ## Contributing
 
-Gabbro is early and the design is still open. New features should come with parser,
+Fels is early and the design is still open. New features should come with parser,
 semantic, IR, and (where it applies) LLVM tests; safety work should include an
 executable test that proves the debug trap fires. The compiler is Zig — start with
 [`docs/00_overview.md`](docs/00_overview.md) and the `src/` tree.
@@ -253,7 +253,7 @@ Dual-licensed by component:
   generates into your program** (`lib/`, `src/runtime/`, `#derive`/serde/test output) —
   [Apache 2.0](LICENSE-APACHE-2.0.txt).
 
-Programs you compile with Gabbro are not GPL-encumbered — they contain your own code
+Programs you compile with Fels are not GPL-encumbered — they contain your own code
 plus the Apache-2.0 runtime and standard library, so license and ship them as you wish.
 See [LICENSING.md](LICENSING.md) for the file-by-file boundary (also in the
 `SPDX-License-Identifier` headers).

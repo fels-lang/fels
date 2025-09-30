@@ -1,6 +1,6 @@
-# Gabbro Language Overview
+# Fels Language Overview
 
-Gabbro is an experimental systems programming language written in Zig. Key design principles:
+Fels is an experimental systems programming language written in Zig. Key design principles:
 - No hidden allocations
 - Explicit dynamic dispatch through `*Interface` values
 - Static polymorphism via monomorphized generics
@@ -22,26 +22,26 @@ zig build -Dllvm-path=Y:/SDK/LLVM
 
 Compiler commands:
 ```text
-gabbro check <file>     Parse and type-check
-gabbro ir <file>        Print Gabbro IR
-gabbro object <file>    Emit object file
-gabbro build <file>     Build executable (Windows)
+fels check <file>     Parse and type-check
+fels ir <file>        Print Fels IR
+fels object <file>    Emit object file
+fels build <file>     Build executable (Windows)
 ```
 
 ## Hello World
 
-```gabbro
+```fels
 #import std.io.{ println };
 
 main :: fn() -> i32 {
-    println("hello from Gabbro");
+    println("hello from Fels");
     return 0;
 }
 ```
 
 ## Language at a Glance
 
-```gabbro
+```fels
 #import std.io.{ IoError, println, print_u64 };
 #import std.mem.{ copy, eql_bytes };
 
@@ -96,7 +96,7 @@ parse :: fn(input: []const u8) -> i32 ! AppError {
 main :: fn() -> i32 {
     // Type-inferred locals
     x := 42;
-    name := "Gabbro";
+    name := "Fels";
     
     // Typed locals  
     count: i32 = 10;

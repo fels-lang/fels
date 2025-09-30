@@ -1,6 +1,6 @@
 # Error Handling
 
-Gabbro uses an explicit error-handling model inspired by Zig and Rust. Functions
+Fels uses an explicit error-handling model inspired by Zig and Rust. Functions
 that can fail declare it in their signature, and callers must always handle
 the possibility of failure — there are no hidden exceptions.
 
@@ -9,7 +9,7 @@ the possibility of failure — there are no hidden exceptions.
 Error types are declared with the `errors` keyword. Each variant is a named
 error condition, optionally carrying a payload:
 
-```gabbro
+```fels
 IoError :: errors {
     not_found,
     permission_denied,
@@ -30,7 +30,7 @@ Error variants are referenced with a dot prefix: `.not_found`, `.overflow`, etc.
 A function that can fail annotates its return type with `!` followed by the
 error type:
 
-```gabbro
+```fels
 // Named error type
 read_file :: fn(path: []const u8) -> []u8 ! IoError {
     // ...
@@ -56,7 +56,7 @@ A fallible function with a value (`-> i32 ! E`) must `return` or `fail` on every
 path. A `-> void ! E` function may also run to the end of its body, which is
 success, the same as `return;`:
 
-```gabbro
+```fels
 check :: fn(n: i32) -> void ! ParseError {
     if n < 0 { fail .invalid_input; }
 }
@@ -66,7 +66,7 @@ check :: fn(n: i32) -> void ! ParseError {
 
 Use `fail` to return an error from a fallible function:
 
-```gabbro
+```fels
 validate :: fn(input: []const u8) -> bool ! ParseError {
     if input.len == 0 {
         fail .invalid_input;
@@ -87,7 +87,7 @@ must match the variant's declared payload type.
 The `?` operator propagates errors upward to the caller, similar to Rust's `?`
 or Zig's `try`:
 
-```gabbro
+```fels
 outer :: fn() -> i32 ! IoError {
     data := read_file("config.txt")?;   // on error, immediately returns the error
     return process(data)?;
@@ -100,7 +100,7 @@ the success value.
 
 ### Chaining `?`
 
-```gabbro
+```fels
 pub writer_append :: fn(self: *Byte_Writer, values: []const u8) -> usize ! String_Error {
     i := 0usize;
     while i < values.len {
@@ -118,7 +118,7 @@ compatible error type, `return inner();` forwards the entire `{ok, err}` result 
 no `?` needed. On success it returns the ok value; on failure the error flows out
 unchanged:
 
-```gabbro
+```fels
 connect :: fn(sa: SocketAddr) -> TcpStream ! NetError {
     return tcp::connect(sa);     // forwards ok or error, both
 }
@@ -132,7 +132,7 @@ the current function), while a tail-`return` *passes the result through*.
 A `!` error type may be qualified with the module it comes from, just like any
 other type:
 
-```gabbro
+```fels
 #import std.heap as heap;
 build :: fn(into: *heap::Arena, n: usize) -> []u8 ! heap::MemError {
     return into.try_alloc_bytes(n);
@@ -143,7 +143,7 @@ build :: fn(into: *heap::Arena, n: usize) -> []u8 ! heap::MemError {
 
 Use `catch` to handle an error locally instead of propagating it:
 
-```gabbro
+```fels
 result := parse("42") catch err {
     // `err` is bound to the error value
     println("parse failed");
@@ -160,7 +160,7 @@ can run to its end is a compile error. When the `catch` is a statement of its ow
 the call returns `void`, there is no value to produce and the handler may simply end;
 execution then carries on after the `catch`:
 
-```gabbro
+```fels
 write_all(data) catch err { failures += 1; };     // ignore the byte count; count the failure and go on
 ```
 
@@ -170,7 +170,7 @@ with a variant (`fn(e: ParseError) { if e == .eof … }` is a compile error).
 
 ### Inspecting the error variant
 
-```gabbro
+```fels
 result := parse_json_string(input, output) catch err {
     if err == .buffer_full { return 30; }
     if err == .unexpected_end { return 31; }
@@ -194,7 +194,7 @@ cannot be cast to an integer.
 The `!!` operator unwraps a fallible (or optional) value, panicking at runtime
 if it contains an error (or null):
 
-```gabbro
+```fels
 // Panics with a runtime error if parse() fails
 value := parse("42")!!;
 
@@ -210,7 +210,7 @@ unexpected and should abort the program.
 The `??` operator provides a default value when the left side is an error or
 null:
 
-```gabbro
+```fels
 // Returns 0 if parse fails
 value := parse("?") ?? 0;
 
@@ -220,9 +220,9 @@ name := get_name() ?? "unknown";
 
 ## Defer Modes
 
-Gabbro supports conditional defers that run only on success or failure:
+Fels supports conditional defers that run only on success or failure:
 
-```gabbro
+```fels
 process :: fn() -> void ! IoError {
     handle := open_file("data.txt")?;
 
@@ -257,9 +257,9 @@ exit of every `zone` it leaves. It works the same in code the compiler runs (`#r
 
 ## Pattern: Fallible Function with Cleanup
 
-A common pattern in Gabbro combines `defer`, `fail`, and `?`:
+A common pattern in Fels combines `defer`, `fail`, and `?`:
 
-```gabbro
+```fels
 #import std.fs.{ FsError, open, close };
 #import std.io.{ Reader, eprintln, print_u64 };
 
@@ -289,7 +289,7 @@ main :: fn() -> i32 {
 
 `main` can itself be a fallible function:
 
-```gabbro
+```fels
 #import std.io.{ IoError, println };
 
 main :: fn() -> i32 ! IoError {

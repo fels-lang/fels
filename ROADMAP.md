@@ -1,6 +1,6 @@
 # Roadmap
 
-Where Gabbro is headed. For component-by-component status see the table in
+Where Fels is headed. For component-by-component status see the table in
 [README.md](README.md#project-status); for the design of any single subsystem see the
 chapter it links to in [`docs/`](docs/).
 
@@ -10,8 +10,8 @@ This file tracks what is *not* done. Everything else is in the docs.
 
 ## Where it stands
 
-Gabbro compiles end-to-end on two targets. Windows x86-64 is the original host: parse →
-check → IR → LLVM → object → executable, linked by `gabld` without spawning LLD.
+Fels compiles end-to-end on two targets. Windows x86-64 is the original host: parse →
+check → IR → LLVM → object → executable, linked by `felsld` without spawning LLD.
 `x86_64-linux-none` (static) cross-compiles from Windows and has a complete standard
 library — all 25 modules, backed by 103 runtime functions in
 [`src/runtime/linux.fels`](src/runtime/linux.fels) covering file I/O, time, process
@@ -35,7 +35,7 @@ What is still not automated or done:
 | Packaging prerequisites | `scripts/package.ps1` needs an LLVM install carrying the LLVM-C headers and the static `LLVM*`/`lld*` libraries. The usual Windows LLVM distributions ship only `Remarks.h` and `lto.h`; the `clang+llvm-*-x86_64-pc-windows-msvc` archive is the one that works. |
 | Repository description + topics | the repo is public but has neither, so it is close to unfindable in search |
 | Build-from-source path | Zig + LLVM, needs a clean pass and an examples sweep |
-| Release testing | 0.1.0 shipped with a broken build system because only `gabbro build <file>.fels` was tested, not `gabbro build`. Any release check must extract the archive somewhere neutral and run both. |
+| Release testing | 0.1.0 shipped with a broken build system because only `fels build <file>.fels` was tested, not `fels build`. Any release check must extract the archive somewhere neutral and run both. |
 
 ---
 
@@ -58,7 +58,7 @@ What remains:
 
 - The `*Caps` surface in `build.fels`, so a build script declares the libraries it
   needs and the driver grants exactly those instead of `.all`. This is the first
-  slice that changes the Gabbro-side API rather than compiler internals.
+  slice that changes the Fels-side API rather than compiler internals.
 - Capabilities beyond FFI — filesystem, network, environment, process spawn — each
   gated at its call site. Comptime code reaches the host only through FFI today, so
   these arrive alongside the operations that need them.
@@ -68,19 +68,19 @@ What remains:
 
 ### Tooling
 
-None of these exist as subcommands today; `gabbro help` lists what does.
+None of these exist as subcommands today; `fels help` lists what does.
 
-- `gabbro test` — the runtime test lane. Per-test zones with leak checks, TTY/TAP/JSON
+- `fels test` — the runtime test lane. Per-test zones with leak checks, TTY/TAP/JSON
   reporters. The `#test` comptime lane already fails the build on a failed assertion;
   this is the other half. See [`docs/17`](docs/17_testing.md) §5.
 - Reflection-driven structural diffs on assertion failure, which also unlocks struct
   equality.
 - Property testing and snapshots.
-- `gabbro fmt` — canonical formatter.
-- `gabbro doc` — reflection-driven documentation generation.
-- `gabbro repl`.
+- `fels fmt` — canonical formatter.
+- `fels doc` — reflection-driven documentation generation.
+- `fels repl`.
 - LSP v2/v3 — rename, semantic tokens, code actions. v1 (diagnostics, completion, hover,
-  go-to-definition, document symbols) ships behind `gabbro lsp`.
+  go-to-definition, document symbols) ships behind `fels lsp`.
 
 ### Build system
 
@@ -104,7 +104,7 @@ Current tiers are in [`docs/18`](docs/18_targets_and_tiers.md).
 | `wasm32-wasi` | 3 | LLVM-ready; runtime/seam unwritten |
 | `*-macos` | 3 | Mach-O + Apple ABI; the large one |
 
-An ELF `gabld` is explicitly a much later item. LLD stays the correctness path on Linux.
+An ELF `felsld` is explicitly a much later item. LLD stays the correctness path on Linux.
 
 ### Language reach
 
@@ -144,7 +144,7 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
   address of an element or field (`&TABLE[2]`), a slice of anything but a string, and an
   uninitialised global (write `.{}`). A data export is checked by resolving it by name at run
   time and, for a DLL linked by LLD, by a C program that uses it through the import library
-  (`__declspec(dllimport)`); a DLL linked by `gabld` has no import library.
+  (`__declspec(dllimport)`); a DLL linked by `felsld` has no import library.
 - **Compile-time code reads static data, with two exceptions.** A `#run` or `#assert` reads a
   struct, array, enum or function-pointer global (read-only; [`docs/09`](docs/09_comptime.md)).
   It cannot read a global that holds the address of another global, nor a global that another
@@ -165,7 +165,7 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
 - **Compile-time `+`, `-`, `*` keep the exact result on overflow.** A debug build traps and a
   release build wraps ([`docs/02`](docs/02_types.md#overflow-policy)); `+%`, `-%`, `*%`, `<<`,
   `~` and `as` do match the machine at compile time.
-- **`gabbro check` cannot judge a static value only the comptime VM can compute.** A value that
+- **`fels check` cannot judge a static value only the comptime VM can compute.** A value that
   does not fit, a missing field, a pointer to something that is not a global are reported by
   `check` and by every build. A `#run` result or a call inside a constant is checked when the
   module is lowered (`build`, `object`, `ir`), as is a failing `#assert`. The language server

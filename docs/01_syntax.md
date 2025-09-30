@@ -1,20 +1,20 @@
 # Syntax Reference
 
-Every lexical element of Gabbro: comments, identifiers, literals, operators, and punctuation.
+Every lexical element of Fels: comments, identifiers, literals, operators, and punctuation.
 
 ## Comments
 
-Gabbro supports **line comments only**. There are no block comments.
+Fels supports **line comments only**. There are no block comments.
 
 A line comment begins with `//` and extends to the end of the line:
 
-```gabbro
+```fels
 // This is a comment
 x := 42; // inline comment
 ```
 
 > [!NOTE]
-> Block comments (`/* ... */`) are intentionally omitted from Gabbro. Use multiple line comments instead.
+> Block comments (`/* ... */`) are intentionally omitted from Fels. Use multiple line comments instead.
 
 ## Identifiers
 
@@ -25,7 +25,7 @@ Identifiers name variables, functions, types, and other declarations.
 - May continue with letters, digits (`0`–`9`), or underscores
 - Are **case-sensitive** — `foo`, `Foo`, and `FOO` are three distinct identifiers
 
-```gabbro
+```fels
 x := 1;
 my_variable := 2;
 _private := 3;
@@ -36,14 +36,14 @@ Point2D :: struct { x: f64, y: f64 }
 
 Prefix an identifier with `@` to use a keyword as a regular identifier, or to define special names (like the runtime's `@panic`) without clashing with user names:
 
-```gabbro
+```fels
 @if := 42;          // uses the keyword 'if' as a variable name
 @panic("oh no");    // standard library panic function
 ```
 
 ## Keywords
 
-The following table lists every keyword in Gabbro, grouped by category.
+The following table lists every keyword in Fels, grouped by category.
 
 ### Declaration Keywords
 
@@ -110,7 +110,7 @@ declaration.
 
 ## Primitive Type Keywords
 
-Gabbro provides a fixed set of primitive types:
+Fels provides a fixed set of primitive types:
 
 | Type | Description |
 |------|-------------|
@@ -138,7 +138,7 @@ Gabbro provides a fixed set of primitive types:
 
 Integer literals can be written in decimal, hexadecimal, or binary. Underscores may be used anywhere within the digit sequence for readability.
 
-```gabbro
+```fels
 42            // decimal, type inferred
 42i32         // explicit i32 suffix
 255u8         // explicit u8 suffix
@@ -165,7 +165,7 @@ An integer literal may end with a type suffix to specify its exact type: `i8`, `
 
 Float literals always contain a decimal point. A fractional part is required.
 
-```gabbro
+```fels
 3.14      // f64 by default
 1.0       // decimal with fractional part required
 0.5       // leading zero
@@ -182,7 +182,7 @@ There is no exponent notation: write `100000.0`, not `1e5`. The compiler reports
 
 String literals are enclosed in double quotes. The type of a string literal is `[]const u8`.
 
-```gabbro
+```fels
 "hello world"      // simple string
 "line1\nline2"     // escape sequences
 "tab\there"        // tab character
@@ -207,7 +207,7 @@ A character literal is written in single quotes and is **sugar for its integer
 code point** — an untyped integer literal (like `65`) that coerces to `u8`,
 `i32`, a `rune`, etc. from context. There is no dedicated `char` type.
 
-```gabbro
+```fels
 'A'        // 65
 '.'        // 46
 '\n'       // 10  — same escapes as strings
@@ -218,7 +218,7 @@ code point** — an untyped integer literal (like `65`) that coerces to `u8`,
 
 Because it is just an integer literal, it works anywhere a number does:
 
-```gabbro
+```fels
 nl: u8 = '\n';
 if name[i] == '.' { dots = dots + 1; }   // coerces to u8 in the comparison
 ```
@@ -227,7 +227,7 @@ A bare multi-byte UTF-8 character (e.g. `'é'`) decodes to its Unicode code poin
 
 ### Boolean Literals
 
-```gabbro
+```fels
 true
 false
 ```
@@ -236,7 +236,7 @@ false
 
 The `null` literal is used with optional types:
 
-```gabbro
+```fels
 null  // for optionals
 ```
 
@@ -351,7 +351,7 @@ Operators are listed from **highest** to **lowest** precedence:
 
 Constants are bound with `::` and must be computable at compile time. By convention, constant names use `UPPER_SNAKE_CASE`:
 
-```gabbro
+```fels
 MAX :: 100;
 PI :: 3.14159;
 GREETING :: "hello";
@@ -360,7 +360,7 @@ GREETING :: "hello";
 The initializer does not have to be a literal. Arithmetic over constants already
 declared is folded to a value at build time, and constants compose to any depth:
 
-```gabbro
+```fels
 W      :: 800;
 STRIDE :: W * 3;         // 2400, folded during the build
 SIZE   :: STRIDE * 450;  // 1080000, folded through STRIDE
@@ -374,7 +374,7 @@ field and index access work on any top-level constant, not just locals.)
 
 Constants can also bind functions, types, and other compile-time constructs:
 
-```gabbro
+```fels
 add :: fn(a: i32, b: i32) -> i32 {
     return a + b;
 }
@@ -393,7 +393,7 @@ is the whole distinction: `::` is an immutable compile-time constant; `: T =`
 (like a local's `=`) is a runtime-mutable variable. No `mut`/`var`/`static`
 keyword.
 
-```gabbro
+```fels
 counter: i64 = 0;          // mutable global, explicit type required
 flags:   u32 = 0u32;
 
@@ -423,7 +423,7 @@ any depth:
 | `.variant` or `Enum.variant`, for a variant with no payload | an enum |
 | `#run call()` that returns the whole value | a struct, an array, an enum value, a function pointer, or a string — also as one field or element of a literal |
 
-```gabbro
+```fels
 Point :: struct { x: i32, y: i32 }
 Vtbl  :: struct { add: fn(i32, i32) -> i32, id: u32 }
 Node  :: struct { v: i32, next: *Node }
@@ -451,7 +451,7 @@ default arguments. An array literal is zero past its last element. The value is 
 against the type, and a mistake is a compile error that points at the offending value: a
 number that does not fit (`300` for a `u8`), a string for an integer, a field that does not
 exist or is given twice, a field with no default left out, too many initializers, a function
-that is generic or a lambda, a pointer to anything but a top-level global. `gabbro check` reports
+that is generic or a lambda, a pointer to anything but a top-level global. `fels check` reports
 these like any type error; a value that only the compile-time evaluator can compute (a `#run`) is
 checked when the program is built.
 
@@ -463,7 +463,7 @@ uninitialised form; write `.{}` for zeros.
 A table can also be built by the compiler instead of typed out. `#run` runs a function at
 compile time, and what it returns is the initial value — data in the image, like a literal:
 
-```gabbro
+```fels
 CRC: [256]u32 = #run make_crc_table();    // built once, by the compiler, on the comptime VM
 ORIGIN :: #run find_origin();             // `::` takes the type of the call
 ```
@@ -484,10 +484,10 @@ so a `Vtbl` like the one above has the layout a C header gives it. A plain `fn(.
 is a closure `{ code, environment }`; stored statically it is the function with no
 environment. Either is called where it stands: `F(x)`, `VT.add(1, 2)`, `HANDLERS[i](x)`.
 
-An address stored in a global is a number the linker fixes. An executable linked by `gabld`
+An address stored in a global is a number the linker fixes. An executable linked by `felsld`
 is always loaded at its own base address and holds the final value. A DLL, and an executable
 linked by LLD (which randomizes the base address), carries a base-relocation table that the
-loader applies, so the stored addresses follow the image wherever it lands; `gabld` hands any
+loader applies, so the stored addresses follow the image wherever it lands; `felsld` hands any
 DLL that holds an address to LLD for that reason.
 
 Such a global is **exported** like a function with `#export` — see
@@ -497,9 +497,9 @@ Such a global is **exported** like a function with `#export` — see
 
 Variables are declared with `:=`. The type is inferred from the right-hand side:
 
-```gabbro
+```fels
 x := 42;          // inferred as integer
-name := "Gabbro";     // inferred as []const u8
+name := "Fels";     // inferred as []const u8
 flag := true;     // inferred as bool
 ```
 
@@ -507,7 +507,7 @@ flag := true;     // inferred as bool
 
 When you need to specify the type explicitly, use `: Type =` syntax:
 
-```gabbro
+```fels
 count: i32 = 0;
 data: [4]u8 = .{ 1u8, 2u8, 3u8, 4u8 };
 buffer: [256]u8 = .{};
@@ -534,9 +534,9 @@ buffer: [256]u8 = .{};
 
 ## Quick Example
 
-Putting it all together — a small Gabbro program demonstrating core syntax elements:
+Putting it all together — a small Fels program demonstrating core syntax elements:
 
-```gabbro
+```fels
 #import std.io.{ print, println, print_u64 };
 
 MAX_SIZE :: 1024;
