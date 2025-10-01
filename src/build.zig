@@ -821,6 +821,10 @@ pub const RunOptions = struct {
     prefix: ?[]const u8 = null,
     /// The environment `fels build` runs in; a command's `env` adds to it.
     environ: ?*const std.process.Environ.Map = null,
+    /// `--offline`: packages come from fels.lock and the cache only, git is never run.
+    offline: bool = false,
+    /// `--frozen`: stop when fels.lock would change.
+    frozen: bool = false,
 };
 
 /// Run `build_path` (a build.fels) and execute the resulting plan.
@@ -831,7 +835,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: Run
     // The packages of fels.pkg next to build.fels: import roots for every artifact, and the
     // capabilities of their compile-time code.
     const base = std.fs.path.dirname(build_path) orelse ".";
-    const loaded = pkg.project.load(plan.a(), io, base, opts.environ, .{}) catch |err| return switch (err) {
+    const loaded = pkg.project.load(plan.a(), io, base, opts.environ, .{ .offline = opts.offline, .frozen = opts.frozen }) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.PackageError => error.PackageError,
     };
