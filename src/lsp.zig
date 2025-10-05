@@ -39,6 +39,7 @@ const sema = @import("sema.zig");
 const ast = @import("ast.zig");
 const diag = @import("diagnostic.zig");
 const pipeline = @import("pipeline.zig");
+const pkg = @import("pkg.zig");
 const clock = @import("clock.zig");
 const lsp_nav = @import("lsp_nav.zig");
 const Span = @import("lexer/span.zig").Span;
@@ -204,6 +205,79 @@ pub const Server = struct {
     timing: bool = false,
     /// The project reference indexes of references, rename and workspace symbols.
     nav: lsp_nav.State = .{},
+    /// The environment the server runs in (where the package cache is).
+    environ: ?*const std.process.Environ.Map = null,
+    /// The packages of each project folder, from its fels.pkg and fels.lock.
+    projects: std.StringHashMapUnmanaged(*ProjectPackages) = .{},
+
+    pub const ProjectPackages = struct {
+        arena: std.heap.ArenaAllocator,
+        /// A hash of fels.pkg and fels.lock as they were read; another value means they changed.
+        stamp: u64,
+        roots: []const pipeline.ModuleRoot = &.{},
+        missing: []const []const u8 = &.{},
+    };
+
+    /// The packages of the project in `root`: resolved from fels.pkg, fels.lock and the package
+    /// cache without running git, and again when one of the two files changed. A project
+    /// without fels.pkg has none.
+    pub fn packagesFor(self: *Server, root: ?[]const u8) ?*const ProjectPackages {
+        const dir = root orelse return null;
+        var stamp = std.hash.Wyhash.init(0);
+        var any = false;
+        for ([_][]const u8{ "fels.pkg", "fels.lock" }) |name| {
+            const path = std.fs.path.join(self.gpa, &.{ dir, name }) catch return null;
+            defer self.gpa.free(path);
+            const text = std.Io.Dir.cwd().readFileAlloc(self.io, path, self.gpa, .unlimited) catch continue;
+            defer self.gpa.free(text);
+            if (std.mem.eql(u8, name, "fels.pkg")) any = true;
+            stamp.update(name);
+            stamp.update(text);
+        }
+        if (!any) return null;
+        const value = stamp.final();
+        if (self.projects.get(dir)) |known| if (known.stamp == value) return known;
+
+        const entry = self.gpa.create(ProjectPackages) catch return null;
+        entry.* = .{ .arena = std.heap.ArenaAllocator.init(self.gpa), .stamp = value };
+        const a = entry.arena.allocator();
+        if (pkg.project.load(a, self.io, dir, self.environ, .{ .skip_missing = true })) |result| {
+            if (result) |r| {
+                var roots: std.ArrayList(pipeline.ModuleRoot) = .empty;
+                for (r.packages) |p| roots.append(a, .{ .name = p.name, .dir = p.import_dir }) catch {};
+                entry.roots = roots.items;
+                entry.missing = r.missing;
+            }
+        } else |_| {} // fels.pkg has a mistake: `fels build` reports it; imports of packages fail
+        if (self.projects.fetchRemove(dir)) |old| {
+            self.gpa.free(old.key);
+            old.value.arena.deinit();
+            self.gpa.destroy(old.value);
+        }
+        const key = self.gpa.dupe(u8, dir) catch {
+            entry.arena.deinit();
+            self.gpa.destroy(entry);
+            return null;
+        };
+        self.projects.put(self.gpa, key, entry) catch {
+            self.gpa.free(key);
+            entry.arena.deinit();
+            self.gpa.destroy(entry);
+            return null;
+        };
+        return entry;
+    }
+
+    /// Analysis options for a document of the project in `root`, with its packages.
+    pub fn analysisOptions(self: *Server, root: ?[]const u8) pipeline.AnalysisOptions {
+        const pkgs = self.packagesFor(root);
+        return .{
+            .reader = self.reader(),
+            .project_root = root,
+            .module_roots = if (pkgs) |p| p.roots else &.{},
+            .missing_packages = if (pkgs) |p| p.missing else &.{},
+        };
+    }
 
     pub fn reader(self: *Server) pipeline.SourceReader {
         return .{ .ctx = self, .readFn = readSource, .existsFn = sourceExists };
@@ -215,10 +289,7 @@ pub const Server = struct {
         lsp_assist.keepLastGood(doc);
         doc.clearAnalysis(self.gpa);
         doc.dirty = false;
-        var result = pipeline.analyzeFile(self.gpa, doc.path, .{
-            .reader = self.reader(),
-            .project_root = doc.project_root,
-        }) catch return;
+        var result = pipeline.analyzeFile(self.gpa, doc.path, self.analysisOptions(doc.project_root)) catch return;
         self.collectFileDiags(doc, &result) catch {
             result.deinit();
             doc.clearAnalysis(self.gpa);
@@ -1139,13 +1210,13 @@ fn dispatch(self: *Server, root: json.Value) void {
 /// Print the time of each analysis to stderr (set from `FELS_LSP_TIMING`).
 pub var timing: bool = false;
 
-pub fn run(gpa: std.mem.Allocator, io: std.Io) u8 {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, environ: ?*const std.process.Environ.Map) u8 {
     var in_buf: [1 << 16]u8 = undefined;
     var out_buf: [1 << 16]u8 = undefined;
     var reader = std.Io.File.stdin().reader(io, &in_buf);
     var writer = std.Io.File.stdout().writer(io, &out_buf);
 
-    var server = Server{ .gpa = gpa, .io = io, .out = &writer.interface };
+    var server = Server{ .gpa = gpa, .io = io, .out = &writer.interface, .environ = environ };
     server.timing = timing;
     defer {
         var it = server.docs.valueIterator();
@@ -1163,6 +1234,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io) u8 {
         server.published.deinit(gpa);
         if (server.workspace_root) |r| gpa.free(r);
         server.nav.deinit(gpa);
+        var projects = server.projects.iterator();
+        while (projects.next()) |e| {
+            gpa.free(e.key_ptr.*);
+            e.value_ptr.*.arena.deinit();
+            gpa.destroy(e.value_ptr.*);
+        }
+        server.projects.deinit(gpa);
     }
 
     while (!server.shutdown_requested) {

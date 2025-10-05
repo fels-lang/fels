@@ -158,7 +158,7 @@ pub fn main(init: std.process.Init) u8 {
         if (resolveStdRoot(ra, io, init.environ_map, std_flag, exe_dir)) |root|
             fels.pipeline_mod.stdlib_root_override = root;
         fels.lsp_mod.timing = init.environ_map.get("FELS_LSP_TIMING") != null;
-        return fels.runLsp(allocator, io);
+        return fels.runLsp(allocator, io, init.environ_map);
     }
 
     if (args.len < 3) {
