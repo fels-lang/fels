@@ -320,6 +320,7 @@ pub const SourceReader = struct {
 const AnalysisState = struct {
     reader: SourceReader,
     project_root: ?[]const u8,
+    missing_packages: []const []const u8 = &.{},
     files: std.ArrayList(AnalysisFile) = .empty,
     diags: std.ArrayList(Diagnostic) = .empty,
 };
@@ -426,6 +427,14 @@ fn findImport(ctx: *LoadCtx, an: *AnalysisState, dir: []const u8, imp: ast.Impor
         if (an.reader.existsFn(an.reader.ctx, alt_old)) return alt_old;
     };
     const name = try std.mem.join(allocator, ".", imp.path);
+    for (an.missing_packages) |pkg| if (imp.path.len > 0 and std.mem.eql(u8, imp.path[0], pkg)) {
+        try an.diags.append(allocator, Diagnostic.err(
+            try std.fmt.allocPrint(allocator, "the package `{s}` is in fels.pkg but not fetched yet; run `fels fetch`", .{pkg}),
+            imp.span,
+            imp.file_name,
+        ));
+        return null;
+    };
     try an.diags.append(allocator, Diagnostic.err(
         try std.fmt.allocPrint(allocator, "cannot find module `{s}` (looked for {s})", .{ name, primary }),
         imp.span,
@@ -453,6 +462,10 @@ pub const AnalysisOptions = struct {
     project_root: ?[]const u8 = null,
     /// Prepend the embedded runtime, as `fels check` does.
     include_runtime: bool = true,
+    /// Named import roots: the packages of the project's fels.pkg.
+    module_roots: []const ModuleRoot = &.{},
+    /// Packages fels.pkg uses that are not fetched yet; an import of one says so.
+    missing_packages: []const []const u8 = &.{},
 };
 
 /// The result of `analyzeFile`: the tolerant front end over a file and everything it
@@ -499,7 +512,10 @@ pub fn analyzeFile(
     errdefer destroyFrontendArena(allocator, arena);
     const a = arena.allocator();
 
-    var state = AnalysisState{ .reader = options.reader, .project_root = options.project_root };
+    var state = AnalysisState{ .reader = options.reader, .project_root = options.project_root, .missing_packages = options.missing_packages };
+    const saved_roots = module_roots;
+    module_roots = options.module_roots;
+    defer module_roots = saved_roots;
     var loaded = std.StringHashMap(void).init(a);
     var all_items: std.ArrayList(ast.Item) = .empty;
     var root_source: []const u8 = "";
