@@ -220,3 +220,70 @@ test "packages: a package's #run gets the capability fels.pkg grants, and no mor
     try write(base ++ "/app", "fels.pkg", "#use screen from \"../screen\";\n");
     try std.testing.expectError(error.CompileFailed, fels.build_driver.run(a, io, base ++ "/app/build.fels", opts));
 }
+
+test "packages: the language server resolves fels.pkg, and says when a package is not fetched" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const base = ".zig-cache/pk_lsp";
+    std.Io.Dir.cwd().deleteTree(io, base) catch {};
+    try write(base ++ "/helpers", "helpers.fels", "pub twice :: fn(x: i32) -> i32 { return x * 2; }\n");
+    try write(base ++ "/app", "build.fels", "#import std.build.{ Build };\nbuild :: fn(b: Build) {\n    b.executable(\"app\", \"main.fels\");\n}\n");
+    // `remote` is a git package that was never fetched: no fels.lock, an empty cache.
+    try write(base ++ "/app", "fels.pkg",
+        \\#use helpers from "../helpers";
+        \\#use remote from "github.com/nobody/remote" version "^1.0";
+        \\
+    );
+    try write(base ++ "/app", "main.fels", "#import helpers;\n#import remote;\nmain :: fn() -> i32 { return helpers::twice(2); }\n");
+
+    var env = std.process.Environ.Map.init(a);
+    try env.put("FELS_PKG_DIR", base ++ "/cache");
+    var buf: [64]u8 = undefined;
+    var out = std.Io.Writer.Discarding.init(&buf);
+    var server: fels.lsp_mod.Server = .{ .gpa = std.testing.allocator, .io = io, .out = &out.writer, .environ = &env };
+    defer {
+        var it = server.projects.iterator();
+        while (it.next()) |e| {
+            std.testing.allocator.free(e.key_ptr.*);
+            e.value_ptr.*.arena.deinit();
+            std.testing.allocator.destroy(e.value_ptr.*);
+        }
+        server.projects.deinit(std.testing.allocator);
+    }
+
+    const pkgs = server.packagesFor(base ++ "/app").?;
+    try std.testing.expectEqual(@as(usize, 1), pkgs.roots.len);
+    try std.testing.expectEqualStrings("remote", pkgs.missing[0]);
+    // Asked again with unchanged files: the same entry, resolved once.
+    try std.testing.expectEqual(pkgs, server.packagesFor(base ++ "/app").?);
+
+    var an = try fels.pipeline_mod.analyzeFile(std.testing.allocator, base ++ "/app/main.fels", server.analysisOptions(base ++ "/app"));
+    defer an.deinit();
+    var not_fetched: usize = 0;
+    for (an.diagnostics) |d| {
+        if (std.mem.indexOf(u8, d.message, "not fetched yet; run `fels fetch`") != null) {
+            not_fetched += 1;
+        } else {
+            std.debug.print("unexpected: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), not_fetched);
+}
+
+test "packages: offline takes fels.lock and the cache, frozen stops when fels.lock would change" {
+    var s = (try Setup.init("pk_offline")) orelse return error.SkipZigTest;
+    defer s.deinit();
+    try s.pkg("#use mathlib from \"URL\" version \"^1.0\";\n");
+    _ = try s.load(.{});
+    try std.testing.expectEqualStrings("1.1.0", (try s.load(.{ .offline = true })).find("mathlib").?.version);
+    try std.testing.expectEqualStrings("1.1.0", (try s.load(.{ .frozen = true })).find("mathlib").?.version);
+
+    // fels.pkg now asks for a version fels.lock does not have.
+    try s.pkg("#use mathlib from \"URL\" version \"^2.0\";\n");
+    try std.testing.expectError(error.PackageError, s.load(.{ .offline = true }));
+    try std.testing.expectError(error.PackageError, s.load(.{ .frozen = true }));
+    try std.testing.expectEqualStrings("2.0.0", (try s.load(.{})).find("mathlib").?.version);
+    try std.testing.expectEqualStrings("2.0.0", (try s.load(.{ .frozen = true })).find("mathlib").?.version);
+}
