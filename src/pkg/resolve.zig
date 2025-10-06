@@ -27,6 +27,18 @@ pub const Package = struct {
     /// What its compile-time code may do.
     caps: []const Cap,
     manifest: Manifest,
+    /// Who uses it, with what they asked for (`fels why`).
+    used_by: []const Via = &.{},
+    /// Taken from the project's `vendor/` folder.
+    vendored: bool = false,
+};
+
+/// One `#use` of a package: by whom, and what it asked for.
+pub const Via = struct {
+    /// `this project`, or the name of the package that uses it.
+    by: []const u8,
+    version: ?[]const u8,
+    may: []const Cap,
 };
 
 pub const Options = struct {
@@ -44,6 +56,8 @@ pub const Options = struct {
     /// A package that cannot be had (offline, not fetched yet; a missing folder) is left out
     /// and named in `Result.missing` instead of stopping (the language server).
     skip_missing: bool = false,
+    /// The project's `vendor/` folder: a git package found there is used from there.
+    vendor_dir: ?[]const u8 = null,
 };
 
 pub const Result = struct {
@@ -69,6 +83,8 @@ const Consumer = struct {
     dir: []const u8,
     /// Null for the project itself, which may grant anything.
     caps: ?[]const Cap,
+    /// `this project` or the package's name, for `fels why`.
+    label: []const u8,
 };
 
 const Pending = struct { use: Use, from: Consumer };
@@ -180,7 +196,7 @@ pub fn resolve(
     var missing: std.ArrayList([]const u8) = .empty;
     var lock: lock_mod.Lock = .{};
     var queue: std.ArrayList(Pending) = .empty;
-    const project: Consumer = .{ .pkg_path = root_pkg_path, .pkg_source = root_source, .dir = root_dir, .caps = null };
+    const project: Consumer = .{ .pkg_path = root_pkg_path, .pkg_source = root_source, .dir = root_dir, .caps = null, .label = "this project" };
     for (root.uses) |u| queue.append(a, .{ .use = u, .from = project }) catch return error.OutOfMemory;
 
     var qi: usize = 0;
@@ -206,11 +222,31 @@ pub fn resolve(
             };
             // Each grant counts: the package's code runs once, for everyone that uses it.
             p.caps = std.mem.concat(a, Cap, &.{ p.caps, granted }) catch return error.OutOfMemory;
+            p.used_by = std.mem.concat(a, Via, &.{ p.used_by, &.{.{ .by = from.label, .version = use.version, .may = use.may }} }) catch return error.OutOfMemory;
             continue;
         }
 
         var pkg: Package = .{ .name = use.name, .source = use.source, .version = "path", .dir = undefined, .import_dir = undefined, .caps = granted, .manifest = .{} };
-        if (use.isPath()) {
+        pkg.used_by = a.dupe(Via, &.{.{ .by = from.label, .version = use.version, .may = use.may }}) catch return error.OutOfMemory;
+        const vendored: ?[]const u8 = if (use.isPath()) null else if (opts.vendor_dir) |vd| blk: {
+            const d = std.fs.path.join(a, &.{ vd, use.name }) catch return error.OutOfMemory;
+            break :blk if (fetch.exists(io, d)) d else null;
+        } else null;
+        if (vendored) |d| {
+            // From vendor/: no git, no cache. fels.lock keeps its line; --verify checks the files.
+            pkg.dir = d;
+            pkg.vendored = true;
+            const old = old_lock.find(use.name);
+            pkg.version = if (old) |e| e.version else "vendor";
+            if (old) |e| {
+                lock.put(a, e) catch return error.OutOfMemory;
+                if (opts.verify) {
+                    const got = fetch.hashTree(a, io, d) catch return report(from, use, "cannot read the files of `{s}` in {s}", .{ use.name, d });
+                    if (!std.mem.eql(u8, got, e.hash))
+                        return report(from, use, "the files of `{s}` in {s} do not match fels.lock; run `fels vendor` again", .{ use.name, d });
+                }
+            }
+        } else if (use.isPath()) {
             pkg.dir = std.fs.path.resolve(a, &.{ from.dir, use.source }) catch return error.OutOfMemory;
             if (!fetch.exists(io, pkg.dir)) {
                 if (opts.skip_missing) {
@@ -277,7 +313,7 @@ pub fn resolve(
         packages.append(a, pkg) catch return error.OutOfMemory;
 
         if (read) |r| {
-            const consumer: Consumer = .{ .pkg_path = r.path, .pkg_source = r.source, .dir = pkg.dir, .caps = granted };
+            const consumer: Consumer = .{ .pkg_path = r.path, .pkg_source = r.source, .dir = pkg.dir, .caps = granted, .label = pkg.name };
             for (r.m.uses) |u| queue.append(a, .{ .use = u, .from = consumer }) catch return error.OutOfMemory;
         }
     }

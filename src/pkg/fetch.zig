@@ -132,6 +132,29 @@ pub fn checkout(a: std.mem.Allocator, io: std.Io, url: []const u8, commit: []con
     cwd.rename(tmp, cwd, dest, io) catch return error.CacheFailed;
 }
 
+/// Copy the folder `src` to `dest` with everything in it (`dest` is replaced).
+pub fn copyTree(a: std.mem.Allocator, io: std.Io, src: []const u8, dest: []const u8) FetchError!void {
+    const cwd = std.Io.Dir.cwd();
+    cwd.deleteTree(io, dest) catch {};
+    cwd.createDirPath(io, dest) catch return error.CacheFailed;
+    var dir = cwd.openDir(io, src, .{ .iterate = true }) catch return error.NotFound;
+    defer dir.close(io);
+    var walker = dir.walk(a) catch return error.OutOfMemory;
+    defer walker.deinit();
+    while (walker.next(io) catch return error.CacheFailed) |entry| {
+        const to = std.fs.path.join(a, &.{ dest, entry.path }) catch return error.OutOfMemory;
+        switch (entry.kind) {
+            .directory => cwd.createDirPath(io, to) catch return error.CacheFailed,
+            .file => {
+                const data = dir.readFileAlloc(io, entry.path, a, .unlimited) catch return error.CacheFailed;
+                defer a.free(data);
+                cwd.writeFile(io, .{ .sub_path = to, .data = data }) catch return error.CacheFailed;
+            },
+            else => {},
+        }
+    }
+}
+
 /// `sha256-<hex>` over every file below `dir`: their paths (with `/`) in sorted order, and
 /// their bytes. The same files give the same hash on every machine.
 pub fn hashTree(a: std.mem.Allocator, io: std.Io, dir_path: []const u8) FetchError![]const u8 {
