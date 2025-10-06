@@ -34,6 +34,8 @@ pub const Cursor = struct {
     lexer: tokens.Lexer,
     peeked: ?Token = null,
     problem: *Problem,
+    /// Where the `#` of the last directive is.
+    hash_at: u32 = 0,
 
     pub fn init(arena: std.mem.Allocator, source: []const u8, problem: *Problem) Cursor {
         return .{ .arena = arena, .source = source, .lexer = tokens.Lexer.init(source), .problem = problem };
@@ -90,6 +92,7 @@ pub const Cursor = struct {
         const t = self.next();
         if (t.kind == .eof) return null;
         if (t.kind != .hash) return self.fail(t, "expected a `#` directive, found `{s}`", .{self.text(t)});
+        self.hash_at = t.start;
         const n = self.next();
         if (n.kind == .eof or n.kind == .string_lit) return self.fail(n, "expected a directive name after `#`", .{});
         return n;
