@@ -133,10 +133,13 @@ pub fn main(init: std.process.Init) u8 {
     }
 
     // The package manager: fels.pkg and fels.lock in the current directory.
-    if (eqAny(cmd, &.{ "add", "fetch", "update" })) {
+    if (eqAny(cmd, &.{ "add", "fetch", "update", "remove", "why", "vendor" })) {
         const ra = init.arena.allocator();
         const rest = args[2..];
         if (std.mem.eql(u8, cmd, "add")) return fels.pkg.project.cmdAdd(ra, io, init.environ_map, rest);
+        if (std.mem.eql(u8, cmd, "remove")) return fels.pkg.project.cmdRemove(ra, io, init.environ_map, rest);
+        if (std.mem.eql(u8, cmd, "why")) return fels.pkg.project.cmdWhy(ra, io, init.environ_map, rest);
+        if (std.mem.eql(u8, cmd, "vendor")) return fels.pkg.project.cmdVendor(ra, io, init.environ_map, rest);
         if (std.mem.eql(u8, cmd, "fetch")) return fels.pkg.project.cmdFetch(ra, io, init.environ_map, rest);
         return fels.pkg.project.cmdUpdate(ra, io, init.environ_map, rest);
     }
@@ -752,6 +755,9 @@ fn printUsage() void {
         \\  add      <name> <src>  use a package: add it to fels.pkg and fetch it
         \\  fetch                  get the packages fels.pkg uses (--verify checks hashes)
         \\  update   [name...]     move packages to the newest version fels.pkg allows
+        \\  remove   <name...>     stop using packages: out of fels.pkg and fels.lock
+        \\  why      <name>        where a package comes from, who uses it, what it may do
+        \\  vendor                 copy the git packages into vendor/; builds use them from there
         \\  version                print the compiler version
         \\  help                   show this message
         \\
