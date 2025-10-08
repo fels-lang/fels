@@ -307,6 +307,35 @@ pub depend :: fn(self: Artifact, dep: i32) {
     __build_depend(self.id, dep);
 }
 
+// For the users of a package
+//
+// When this build.fels belongs to a package that another project uses (fels.pkg), its
+// artifacts and steps are not built there. What it provides is: library folders, libraries
+// and runtime files for every artifact of that project. A package that wraps a C library:
+//
+//   build :: fn(b: Build) {
+//       b.provide_lib_path("lib/windows");     // where raylib.lib is
+//       b.provide_link("winmm");               // what raylib itself needs
+//       b.provide_runtime_file("lib/windows/raylib.dll");
+//   }
+//
+// The script runs with the capabilities fels.pkg grants the package, not with host access.
+
+// A folder, relative to this build.fels, where the users' linker looks for libraries.
+pub provide_lib_path :: fn(self: Build, dir: []const u8) {
+    __build_provide_lib_path(dir);
+}
+
+// A library every artifact of the users links (no extension: "winmm").
+pub provide_link :: fn(self: Build, lib: []const u8) {
+    __build_provide_link(lib);
+}
+
+// A file, relative to this build.fels, copied next to the users' output (a DLL).
+pub provide_runtime_file :: fn(self: Build, path: []const u8) {
+    __build_provide_runtime_file(path);
+}
+
 // Workspace
 
 // Name the workspace (shown in the build summary).
