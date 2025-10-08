@@ -443,9 +443,37 @@ pub after :: fn(self: Artifact, step: Step) {
     __build_artifact_after(self.id, step.id);
 }
 
-// A test step: build + run every test under `dir`.
-pub test_dir :: fn(self: Build, name: []const u8, dir: []const u8) {
-    __build_test_dir(name, dir);
+// A test step: `fels build <name>` compiles and runs every `.fels` file in `dir` as a program
+// of its own; a test passes when it exits with 0. `fels build <name> -- <text>` runs only the
+// files whose path contains the text.
+pub test_dir :: fn(self: Build, name: []const u8, dir: []const u8) -> Tests {
+    return .{ __build_test_dir(name, dir) };
+}
+
+pub Tests :: struct {
+    id: i32,
+
+    // Also the tests in the folders below.
+    pub recursive :: fn(self: Tests) { __build_test_recursive(self.id); }
+
+    // Only the test files whose path contains `text` (call it more than once for several).
+    pub filter :: fn(self: Tests, text: []const u8) { __build_test_filter(self.id, text); }
+
+    // The optimization level of the tests (default: debug, which keeps the checks).
+    pub optimize :: fn(self: Tests, level: Optimize) {
+        match level {
+            .debug         => { __build_test_optimize(self.id, 0); }
+            .release_safe  => { __build_test_optimize(self.id, 1); }
+            .release_fast  => { __build_test_optimize(self.id, 2); }
+            .release_small => { __build_test_optimize(self.id, 3); }
+        }
+    }
+
+    // A library the tests link.
+    pub link :: fn(self: Tests, lib: []const u8) { __build_test_link(self.id, lib); }
+
+    // A library this build makes; it is built before the tests run.
+    pub link_artifact :: fn(self: Tests, lib: Artifact) { __build_test_link_artifact(self.id, lib.id); }
 }
 
 // Set which artifact bare `fels build` produces.
