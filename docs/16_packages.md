@@ -97,6 +97,9 @@ fetched and by `fels fetch --verify`, and a mismatch stops the build.
 fels add <name> <source> [version] [--may <caps>]   add a #use line and fetch the package
 fels fetch [--verify]                                 fetch what fels.pkg uses; check the hashes
 fels update [name...]                                 newest versions fels.pkg allows, into fels.lock
+fels remove <name...>                                 take packages out of fels.pkg and fels.lock
+fels why <name>                                       where a package comes from, who uses it, what it may do
+fels vendor                                           copy the git packages into vendor/
 ```
 
 ```text
@@ -108,6 +111,21 @@ added raylib 5.5.0
 `fels add` creates `fels.pkg` when there is none, and leaves it as it was when the package cannot
 be used. `fels build` fetches missing packages by itself, and `fels build --list` shows the
 packages with their versions and grants.
+
+```text
+$ fels why mathlib
+mathlib 1.2.0  github.com/ana/mathlib
+  in C:\Users\ana\AppData\Local\fels\pkg\mathlib-ae10245599c0
+  used by this project: version "^1.0", may ffi("user32")
+  used by helpers: version "~1.2"
+  its compile-time code may: ffi("user32")
+```
+
+**Builds that must not fetch:** `fels build --offline` takes packages from `fels.lock` and the
+cache only and never runs git; `fels build --frozen` stops when `fels.lock` would change, which
+is what CI wants. `fels vendor` copies every git package into `vendor/<name>`; a build then uses
+them from there, without git and without the cache, so a project can carry its packages along
+(commit `vendor/`). `fels fetch --verify` also checks the files in `vendor/`.
 
 ## How packages are resolved
 
@@ -122,15 +140,31 @@ packages with their versions and grants.
   `~/.cache/fels/pkg` elsewhere, one folder per package and commit, without `.git`.
   `FELS_PKG_DIR` sets another folder. Fetching needs `git` on the PATH.
 
+## A package's build.fels
+
+A package is its Fels sources. When it also has a `build.fels`, `fels build` runs it for the
+project that uses the package, with the capabilities `fels.pkg` grants the package (not with the
+host access the project's own `build.fels` has). Its artifacts and steps are not built there;
+what counts is what it provides to every artifact of the project:
+
+```fels
+// the build.fels of a package that wraps a C library
+build :: fn(b: Build) {
+    b.provide_lib_path("lib/windows");               // where raylib.lib is
+    b.provide_link("winmm");                         // what the library itself needs
+    b.provide_runtime_file("lib/windows/raylib.dll"); // copied next to the users' programs
+}
+```
+
+## In the editor
+
+The language server reads `fels.pkg` too: imports of packages resolve in the editor as they do in
+`fels build`. It never runs git; a package that is in `fels.pkg` but not fetched yet shows at its
+import with "run `fels fetch`".
+
 ## Not built yet
 
 - A registry or index of package names; today a package is used by its location.
-- `fels remove`, `fels why` (who uses a package) and `fels vendor` (copy the packages into the
-  project).
-- `--offline` and `--frozen` for builds that must not fetch or change `fels.lock`.
-- The language server does not read `fels.pkg` yet, so imports of packages are not resolved in
-  the editor.
 - More capabilities than `ffi` (reading files, the network, running programs) arrive with
   compile-time features that need them.
-- A package's own `build.fels` (for C libraries it links) does not run yet; a package is its
-  Fels sources.
+- Building a package's C sources; a package brings its C libraries prebuilt.
