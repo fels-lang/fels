@@ -26,7 +26,8 @@ fn write(dir: []const u8, rel: []const u8, data: []const u8) !void {
 /// A test setup: a folder with a git repository `mathlib` (tags v1.0.0, v1.1.0 as an annotated
 /// tag, v2.0.0), a package cache, and a project folder.
 const Setup = struct {
-    arena: std.heap.ArenaAllocator,
+    /// On the heap: the environment map keeps a pointer to it.
+    arena: *std.heap.ArenaAllocator,
     base: []const u8,
     /// `file:///.../mathlib`.
     url: []const u8,
@@ -34,8 +35,12 @@ const Setup = struct {
     env: std.process.Environ.Map,
 
     fn init(comptime name: []const u8) !?Setup {
-        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-        errdefer arena.deinit();
+        const arena = try std.testing.allocator.create(std.heap.ArenaAllocator);
+        arena.* = .init(std.testing.allocator);
+        errdefer {
+            arena.deinit();
+            std.testing.allocator.destroy(arena);
+        }
         const a = arena.allocator();
         const base = ".zig-cache/" ++ name;
         std.Io.Dir.cwd().deleteTree(io, base) catch {};
@@ -70,6 +75,7 @@ const Setup = struct {
 
     fn deinit(self: *Setup) void {
         self.arena.deinit();
+        std.testing.allocator.destroy(self.arena);
     }
 
     fn mem(self: *Setup) std.mem.Allocator {
@@ -286,4 +292,81 @@ test "packages: offline takes fels.lock and the cache, frozen stops when fels.lo
     try std.testing.expectError(error.PackageError, s.load(.{ .frozen = true }));
     try std.testing.expectEqualStrings("2.0.0", (try s.load(.{})).find("mathlib").?.version);
     try std.testing.expectEqualStrings("2.0.0", (try s.load(.{ .frozen = true })).find("mathlib").?.version);
+}
+
+test "packages: remove takes a package out of fels.pkg and fels.lock" {
+    var s = (try Setup.init("pk_remove")) orelse return error.SkipZigTest;
+    defer s.deinit();
+    try s.pkg("#use mathlib from \"URL\" version \"^1.0\";\n// keep this comment\n");
+    _ = try s.load(.{});
+    try project.remove(s.mem(), io, &s.env, s.project, &.{"mathlib"});
+    const pkg_text = try std.Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(s.mem(), "{s}/fels.pkg", .{s.project}), s.mem(), .unlimited);
+    try std.testing.expectEqualStrings("#package app \"0.1.0\";\n// keep this comment\n", pkg_text);
+    // Nothing is locked any more, so fels.lock is gone.
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, try std.fmt.allocPrint(s.mem(), "{s}/fels.lock", .{s.project}), .{}));
+    try std.testing.expectError(error.PackageError, project.remove(s.mem(), io, &s.env, s.project, &.{"mathlib"}));
+}
+
+test "packages: every use of a package is recorded, with what it asked for" {
+    var s = (try Setup.init("pk_why")) orelse return error.SkipZigTest;
+    defer s.deinit();
+    const helpers = try std.fmt.allocPrint(s.mem(), "{s}/helpers", .{s.base});
+    try write(helpers, "fels.pkg", try std.fmt.allocPrint(s.mem(), "#use mathlib from \"{s}\" version \"~1.1\";\n", .{s.url}));
+    try s.pkg("#use mathlib from \"URL\" version \"^1.0\" may ffi(\"user32\");\n#use helpers from \"../helpers\";\n");
+    const m = (try s.load(.{})).find("mathlib").?;
+    try std.testing.expectEqual(@as(usize, 2), m.used_by.len);
+    try std.testing.expectEqualStrings("this project", m.used_by[0].by);
+    try std.testing.expectEqualStrings("user32", m.used_by[0].may[0].args[0]);
+    try std.testing.expectEqualStrings("helpers", m.used_by[1].by);
+    try std.testing.expectEqualStrings("~1.1", m.used_by[1].version.?);
+}
+
+test "packages: vendor copies the git packages, and builds take them from there" {
+    var s = (try Setup.init("pk_vendor")) orelse return error.SkipZigTest;
+    defer s.deinit();
+    try s.pkg("#use mathlib from \"URL\" version \"^1.0\";\n");
+    try std.testing.expectEqual(@as(usize, 1), try project.vendor(s.mem(), io, &s.env, s.project));
+    // A new, empty cache and no git: the package still resolves, from vendor/.
+    try s.env.put("FELS_PKG_DIR", try std.fmt.allocPrint(s.mem(), "{s}/empty-cache", .{s.base}));
+    const m = (try s.load(.{ .offline = true, .verify = true })).find("mathlib").?;
+    try std.testing.expect(m.vendored);
+    try std.testing.expectEqualStrings("1.1.0", m.version);
+    try std.testing.expect(std.mem.indexOf(u8, m.import_dir, "vendor") != null);
+}
+
+test "packages: a package's build.fels provides the library its bindings link" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const base = ".zig-cache/pk_provides";
+    std.Io.Dir.cwd().deleteTree(io, base) catch {};
+    const lp = fels.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
+    const opts: fels.build_driver.RunOptions = .{ .quiet = true, .llvm_bin = fels.llvm_path ++ "/bin", .lib_paths = lib_paths };
+
+    // A static library, built once and shipped inside the package as lib/mylib.lib.
+    try write(base ++ "/make", "mylib_impl.fels", "#export(\"mylib_add\")\nadd :: fn(x: i32, y: i32) -> i32 { return x + y; }\n");
+    try write(base ++ "/make", "build.fels", "#import std.build.{ Build };\nbuild :: fn(b: Build) {\n    lib := b.static(\"mylib\", \"mylib_impl.fels\");\n    lib.out_dir(\"../mylib/lib\");\n}\n");
+    try fels.build_driver.run(a, io, base ++ "/make/build.fels", opts);
+
+    // The package: bindings, and a build.fels that tells its users where the library is.
+    try write(base ++ "/mylib", "fels.pkg", "#package mylib \"1.0.0\";\n");
+    try write(base ++ "/mylib", "mylib.fels", "#extern(\"mylib\", \"mylib_add\")\npub add :: fn(x: i32, y: i32) -> i32;\n");
+    try write(base ++ "/mylib", "build.fels", "#import std.build.{ Build };\nbuild :: fn(b: Build) {\n    b.provide_lib_path(\"lib\");\n}\n");
+
+    try write(base ++ "/app", "fels.pkg", "#use mylib from \"../mylib\";\n");
+    try write(base ++ "/app", "main.fels", "#import mylib;\nmain :: fn() -> i32 { return mylib::add(20, 22); }\n");
+    try write(base ++ "/app", "build.fels", "#import std.build.{ Build };\nbuild :: fn(b: Build) {\n    b.executable(\"app\", \"main.fels\");\n}\n");
+    try fels.build_driver.run(a, io, base ++ "/app/build.fels", opts);
+    var child = try std.process.spawn(io, .{ .argv = &.{base ++ "/app/app.exe"}, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+    switch (try child.wait(io)) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 42), code),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // Without the provided folder the library is not found.
+    try write(base ++ "/mylib", "build.fels", "#import std.build.{ Build };\nbuild :: fn(b: Build) {\n}\n");
+    try std.testing.expectError(error.CompileFailed, fels.build_driver.run(a, io, base ++ "/app/build.fels", opts));
 }
