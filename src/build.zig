@@ -71,6 +71,12 @@ pub const Artifact = struct {
     link_artifacts: std.ArrayList(usize) = .empty,
     /// Steps run before this artifact is built (`after`), e.g. code generation.
     after_steps: std.ArrayList(usize) = .empty,
+    /// The OS the artifact is for (`target`); the host by default.
+    target_os: std.Target.Os.Tag = builtin.os.tag,
+    /// A Linux target with glibc (`.linux_gnu`) instead of a static, libc-free ELF.
+    target_gnu: bool = false,
+    sysroot: []const u8 = "",
+    strip: bool = false,
     /// The files the build copied next to the output (runtime files, DLLs), which
     /// `fels build install` copies along.
     copied: std.ArrayList([]const u8) = .empty,
@@ -495,6 +501,38 @@ fn hostCall(ctx: *anyopaque, op_raw: u32, args: []const Value) Value {
             };
             return .void;
         },
+        .target => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id >= plan.artifacts.items.len) return .void;
+            const art = &plan.artifacts.items[id];
+            switch (argInt(args, 1)) {
+                0 => art.target_os = .windows,
+                1, 2 => {
+                    art.target_os = .linux;
+                    art.target_gnu = argInt(args, 1) == 2;
+                    if (art.kind == .static_library or art.kind == .shared_library)
+                        plan.fail("`{s}`: libraries for Linux are not supported yet (executables and objects are)", .{art.name});
+                },
+                else => {},
+            }
+            return .void;
+        },
+        .sysroot => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len) plan.artifacts.items[id].sysroot = plan.dupe(argStr(args, 1));
+            return .void;
+        },
+        .strip => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id < plan.artifacts.items.len) plan.artifacts.items[id].strip = true;
+            return .void;
+        },
+        .host_os => return .{ .int = switch (builtin.os.tag) {
+            .windows => 0,
+            .linux => 1,
+            .macos => 2,
+            else => 3,
+        } },
         .default_step => {
             const step: usize = @intCast(argInt(args, 0));
             if (step < plan.steps.items.len) plan.default_step = step;
@@ -1189,6 +1227,10 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
 
     const opt_level: u2 = if (opts.release and art.opt == 0) 2 else art.opt;
     const is_lib = art.kind == .shared_library;
+    // `strip`: ld.lld leaves out the symbol table. A Windows output has none to begin with.
+    var link_flags: std.ArrayList([]const u8) = .empty;
+    link_flags.appendSlice(a, art.link_flags.items) catch return error.OutOfMemory;
+    if (art.strip and art.target_os == .linux) link_flags.append(a, "--strip-all") catch return error.OutOfMemory;
     // A static library is the object packed into an archive after compiling.
     const stop_at_obj = art.kind == .object or art.kind == .static_library;
 
@@ -1249,7 +1291,7 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
     libs.appendSlice(a, linked.items) catch return error.OutOfMemory;
     // "Link libc" resolves per host: the Windows CRT (ucrt + vcruntime) here; on
     // Linux the driver's `link_libc` path links glibc instead (no Windows libs).
-    if (need_libc and builtin.os.tag == .windows) {
+    if (need_libc and art.target_os == .windows) {
         libs.append(a, "ucrt") catch return error.OutOfMemory;
         libs.append(a, "vcruntime") catch return error.OutOfMemory;
     }
@@ -1280,10 +1322,12 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
         .subsystem = if (art.subsystem == 1) .windows else .console,
         .entry = art.entry,
         .stack_reserve = art.stack,
-        .link_flags = art.link_flags.items,
+        .link_flags = link_flags.items,
         .honor_defaultlibs = honor_defaultlibs,
-        .link_libc = need_libc,
+        .link_libc = need_libc or art.target_gnu,
         .library_object = art.kind == .static_library,
+        .target_os = art.target_os,
+        .sysroot = if (art.sysroot.len != 0) joinPath(a, base_dir, art.sysroot) catch return error.OutOfMemory else "",
     }) catch |err| {
         std.debug.print("fels build: failed to build '{s}': {s}\n", .{ art.name, @errorName(err) });
         return error.CompileFailed;
@@ -1613,10 +1657,11 @@ fn inspectLib(arena: std.mem.Allocator, bytes: []const u8) LibKind {
 fn resolveOutput(plan: *BuildPlan, base_dir: []const u8, art: Artifact) BuildError![]const u8 {
     const a = plan.a();
     if (art.out_path) |p| return joinPath(a, base_dir, p) catch return error.OutOfMemory;
+    const linux = art.target_os == .linux;
     const ext = switch (art.kind) {
-        .executable => ".exe",
-        .shared_library => ".dll",
-        .static_library => ".lib",
+        .executable => if (linux) "" else ".exe",
+        .shared_library => if (linux) ".so" else ".dll",
+        .static_library => if (linux) ".a" else ".lib",
         .object => ".o",
     };
     const name = std.fmt.allocPrint(a, "{s}{s}", .{ art.name, ext }) catch return error.OutOfMemory;

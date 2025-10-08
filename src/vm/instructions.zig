@@ -168,6 +168,10 @@ pub const BuildOp = enum(u32) {
     test_optimize,    // (step, level:i32)             the optimization level of the tests
     test_link,        // (step, lib)                   a library the tests link
     test_link_artifact, // (step, id)                  a library artifact the tests link, built first
+    target,           // (id, os:i32)                  0 windows, 1 linux (static, no libc), 2 linux with glibc
+    sysroot,          // (id, dir)                     where glibc is, for a linux-gnu target
+    strip,            // (id)                          leave the symbols out of the output
+    host_os,          // () -> i32                     0 windows, 1 linux, 2 macos, 3 other
 
     /// The intrinsic `std.build` calls for this op is `__build_` followed by the tag name.
     pub const prefix = "__build_";
@@ -183,7 +187,7 @@ pub const BuildOp = enum(u32) {
     /// What the intrinsic returns in `build.fels`: an id or flag is an `i32`.
     pub fn result(op: BuildOp) Result {
         return switch (op) {
-            .artifact, .require, .option_flag, .step, .step_command, .step_run, .run_step, .test_dir => .int,
+            .artifact, .require, .option_flag, .step, .step_command, .step_run, .run_step, .test_dir, .host_os => .int,
             .option_int => .i64,
             .option_bool => .bool,
             .option_str, .option_string, .option_choice => .string,

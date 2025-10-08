@@ -232,6 +232,42 @@ pub stack_size :: fn(self: Artifact, bytes: u64) {
     __build_stack(self.id, bytes as i64);
 }
 
+// Target
+
+// What the artifact is built for. `.linux` is a static ELF without libc; `.linux_gnu`
+// links glibc dynamically (`sysroot` says where it is). Building for Linux works from
+// Windows; libraries for Linux are not supported yet.
+pub Target :: enum { windows, linux, linux_gnu }
+
+pub target :: fn(self: Artifact, t: Target) {
+    match t {
+        .windows   => { __build_target(self.id, 0); }
+        .linux     => { __build_target(self.id, 1); }
+        .linux_gnu => { __build_target(self.id, 2); }
+    }
+}
+
+// The folder with `libc.so.6` and the dynamic linker, for a `.linux_gnu` target.
+pub sysroot :: fn(self: Artifact, dir: []const u8) {
+    __build_sysroot(self.id, dir);
+}
+
+// Leave the symbol table out of the output (Linux; a Windows output has none).
+pub strip :: fn(self: Artifact) {
+    __build_strip(self.id);
+}
+
+pub Os :: enum { windows, linux, macos, other }
+
+// The OS `fels build` runs on, so a build.fels can choose per platform.
+pub host_os :: fn(self: Build) -> Os {
+    n := __build_host_os();
+    if n == 0 { return .windows; }
+    if n == 1 { return .linux; }
+    if n == 2 { return .macos; }
+    return .other;
+}
+
 // Output
 
 // Set the output path explicitly (default: derived from the name).
