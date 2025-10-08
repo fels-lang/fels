@@ -810,6 +810,42 @@ test "build: a step generates code before the artifact that comes after it" {
     }
 }
 
+test "build: a test step finds tests in sub-folders, filters them and links a library" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const io = std.testing.io;
+
+    const dir = ".zig-cache/bt_tests_step";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    std.Io.Dir.cwd().createDirPath(io, dir ++ "/tests/deep") catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/util.fels", .data = "#export(\"util_add\")\nadd :: fn(a: i32, b: i32) -> i32 { return a + b; }\n" });
+    // Needs the library.
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/tests/add_test.fels", .data = "#extern(\"util\", \"util_add\")\nutil_add :: fn(a: i32, b: i32) -> i32;\nmain :: fn() -> i32 { if util_add(2, 3) == 5 { return 0; } return 1; }\n" });
+    // Only found when the step is recursive, and it fails.
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/tests/deep/broken_test.fels", .data = "main :: fn() -> i32 { return 3; }\n" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    util := b.static("util", "util.fels");
+        \\    t := b.test_dir("test", "tests");
+        \\    t.recursive();
+        \\    t.link_artifact(util);
+        \\}
+    });
+
+    const lp = fels.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
+    const base: fels.build_driver.RunOptions = .{ .target = "test", .quiet = true, .llvm_bin = fels.llvm_path ++ "/bin", .lib_paths = lib_paths };
+    // The broken test in the sub-folder is found, so the step fails.
+    try std.testing.expectError(error.RunFailed, fels.build_driver.run(arena.allocator(), io, dir ++ "/build.fels", base));
+    // Filtered to the test that links the library: it passes.
+    var only_add = base;
+    only_add.run_args = &.{"add"};
+    try fels.build_driver.run(arena.allocator(), io, dir ++ "/build.fels", only_add);
+}
+
 test "build: a test_dir step compiles+runs tests and fails on a failing one" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
