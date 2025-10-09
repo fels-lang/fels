@@ -166,6 +166,7 @@ pub fn compileMulti(allocator: std.mem.Allocator, files: []const SourceFile) Com
     const arena = try createFrontendArena(allocator);
     errdefer destroyFrontendArena(allocator, arena);
     const fe_allocator = arena.allocator();
+    diag_mod.forgetSources();
 
     if (files.len == 0) return runPipelineWithSource(fe_allocator, ast.Module.empty(""), "", "", arena);
 
@@ -179,6 +180,7 @@ pub fn compileMulti(allocator: std.mem.Allocator, files: []const SourceFile) Com
     var next_id: ast.NodeId = 1;
     for (files) |file| {
         const normalized_name = normalizeLogicalPath(fe_allocator, file.file_name) catch return error.OutOfMemory;
+        diag_mod.rememberSource(normalized_name, file.source);
         if (available.contains(normalized_name)) {
             std.debug.print("{s}: error: module was provided more than once\n", .{normalized_name});
             return error.IoError;
@@ -262,6 +264,7 @@ fn compileFileInternal(
     const arena = try createFrontendArena(allocator);
     errdefer destroyFrontendArena(allocator, arena);
     const fe_allocator = arena.allocator();
+    diag_mod.forgetSources();
 
     var loaded = std.StringHashMap(void).init(fe_allocator);
     defer loaded.deinit();
@@ -375,6 +378,7 @@ fn loadFile(ctx: *LoadCtx, path: []const u8, is_root: bool, is_std: bool) anyerr
             return err;
         };
         if (is_root) ctx.root_source.* = source;
+        diag_mod.rememberSource(path, source);
         const parsed = try parser.parseSourceFrom(allocator, path, source, ctx.next_id.*);
         ctx.next_id.* = parsed.next_id;
         items = parsed.module.items;
@@ -1706,6 +1710,8 @@ fn createFrontendArena(allocator: std.mem.Allocator) CompileError!*std.heap.Aren
 }
 
 fn destroyFrontendArena(allocator: std.mem.Allocator, arena: *std.heap.ArenaAllocator) void {
+    // The sources the messages were located in live in this arena.
+    diag_mod.forgetSources();
     arena.deinit();
     allocator.destroy(arena);
 }

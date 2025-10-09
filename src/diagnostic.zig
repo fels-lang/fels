@@ -87,13 +87,33 @@ pub fn printIce(message: []const u8, comptime src: std.builtin.SourceLocation) v
 /// Print a user-facing error tied to a Fels source location (not an ICE — this is
 /// for genuine user errors discovered during lowering, e.g. a `#run` expression
 /// the comptime VM cannot evaluate).
+/// The text of every file the current compile loaded, filled by the pipeline. A message about
+/// an imported file is located in that file's text; with only the main file's text it showed
+/// at 1:1 with an empty line.
+var file_sources: std.StringHashMapUnmanaged([]const u8) = .{};
+
+/// Note the text of a file the compile loaded (it must live as long as the compile).
+pub fn rememberSource(file: []const u8, source: []const u8) void {
+    file_sources.put(std.heap.page_allocator, file, source) catch {};
+}
+
+/// A new compile starts: forget the files of the last one.
+pub fn forgetSources() void {
+    file_sources.clearRetainingCapacity();
+}
+
+/// The text of `file` as the compile loaded it, else `fallback`.
+pub fn sourceOf(file: []const u8, fallback: []const u8) []const u8 {
+    return file_sources.get(file) orelse fallback;
+}
+
 pub fn printErrorAt(
     message: []const u8,
     fels_file: []const u8,
     fels_source: []const u8,
     span: Span,
 ) void {
-    const location = span.line_col(fels_source);
+    const location = span.line_col(sourceOf(fels_file, fels_source));
     std.debug.print(
         "{s}:{d}:{d}: error: {s}\n",
         .{ fels_file, location.line, location.col, message },
@@ -182,10 +202,11 @@ fn emitSnippet(
 pub fn render(
     allocator: std.mem.Allocator,
     path: []const u8,
-    source: []const u8,
+    given_source: []const u8,
     diagnostic: Diagnostic,
     pal: Palette,
 ) ![]u8 {
+    const source = sourceOf(path, given_source);
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
@@ -279,4 +300,17 @@ fn getLine(source: []const u8, line_number: usize) ?[]const u8 {
 fn trimCR(line: []const u8) []const u8 {
     if (line.len > 0 and line[line.len - 1] == '\r') return line[0 .. line.len - 1];
     return line;
+}
+
+test "a message about another file is located in that file's text" {
+    const util = "// helper\n\npub broken :: fn() -> i32 {\n    return \"text\";\n}\n";
+    rememberSource("util.fels", util);
+    defer forgetSources();
+    const at = std.mem.indexOf(u8, util, "return").?;
+    const d = Diagnostic.err("return type mismatch", .{ .start = at, .end = at + 6 }, "util.fels");
+    // The caller only has the main file's text, as the compiler's message loop does.
+    const out = try renderDiagnostic(std.testing.allocator, "util.fels", "", d);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "util.fels:4:5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "return \"text\";") != null);
 }
