@@ -33,8 +33,12 @@ pub const FrontEnd = struct {
     symbols: sema.SymbolTable,
     types: sema.TypeEnv,
     arena: *std.heap.ArenaAllocator,
+    /// The files a compile from disk loaded: the root and everything it imports (`std` too).
+    files: []const []const u8 = &.{},
 
     pub fn deinit(self: *FrontEnd, allocator: std.mem.Allocator) void {
+        // The sources the messages were located in live in the arena.
+        diag_mod.forgetSources();
         const arena_allocator = self.arena.allocator();
         self.symbols.deinit(arena_allocator);
         self.types.deinit(arena_allocator);
@@ -304,7 +308,12 @@ fn compileFileInternal(
     };
 
     const items = try all_items.toOwnedSlice(fe_allocator);
-    return runPipelineWithSource(fe_allocator, .{ .file_name = path, .items = items }, root_source, path, arena);
+    var files: std.ArrayList([]const u8) = .empty;
+    var it = loaded.keyIterator();
+    while (it.next()) |k| try files.append(fe_allocator, k.*);
+    var fe = try runPipelineWithSource(fe_allocator, .{ .file_name = path, .items = items }, root_source, path, arena);
+    fe.files = files.items;
+    return fe;
 }
 
 // Internal helpers
