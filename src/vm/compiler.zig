@@ -1223,6 +1223,13 @@ const FnCompiler = struct {
             if (std.mem.eql(u8, ci.callee, "@panic")) try self.emitTrapOrHalt(ci.args) else try self.emit(Instr.with_imm(.trap, -1));
             return;
         }
+        // The runtime's output functions call the host through pointers into VM memory; at compile
+        // time the VM writes the bytes itself (print and println in build.fels and #run).
+        if ((std.mem.eql(u8, ci.callee, "write_stdout") or std.mem.eql(u8, ci.callee, "write_stderr")) and ci.args.len == 1) {
+            const data = try self.resolveReg(ci.args[0]);
+            try self.emit(.{ .op = .sys_write, .a = target, .b = data });
+            return;
+        }
         const map = self.func_map orelse return error.Unsupported;
         const fidx = map.get(ci.callee) orelse return error.Unsupported;
 
