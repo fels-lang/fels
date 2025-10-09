@@ -179,6 +179,33 @@ test "#run: a string's escapes are resolved, as at run time" {
     try std.testing.expectEqual(@as(usize, 3), got);
 }
 
+test "#run: print and println write at compile time and return the byte count" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The runtime's write_stdout reached the host through pointers into VM memory and stopped
+    // the VM; now the VM writes the bytes itself.
+    const src =
+        \\#import std.io.{ print, println };
+        \\count :: fn() -> i32 {
+        \\    a := print("abc") catch err { return -1; };
+        \\    b := println("de") catch err { return -1; };
+        \\    return (a + b) as i32;
+        \\}
+        \\N :: #run count();            // 3 + "de\n"
+    ;
+    const io = std.testing.io;
+    std.Io.Dir.cwd().createDirPath(io, ".zig-cache/vmprint") catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ".zig-cache/vmprint/vmprint.fels", .data = src });
+    var fe = try fels.compileFileWithRuntime(arena.allocator(), io, ".zig-cache/vmprint/vmprint.fels");
+    defer fe.deinit(arena.allocator());
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "N")) return std.testing.expectEqual(ir.Imm{ .int = 6 }, g.init.imm);
+    }
+    return error.TestUnexpectedResult;
+}
+
 test "#run: taking the address of a scalar local folds on the VM" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
