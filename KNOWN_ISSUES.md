@@ -35,8 +35,8 @@ These compile without a message and give a wrong result.
   Verified. With a type argument it works.
 - **`fels ir file.fels | head` panics** ("reached unreachable code"; earlier also "wrong File
   nonblocking flag") when the output pipe closes early. Verified. In `src/main.zig` `cmdIr`.
-- **An error inside an imported module or the runtime is shown at line 1, column 1** with an empty
-  source line. Reported.
+- ~~An error inside an imported module or the runtime is shown at line 1, column 1.~~ Fixed: every
+  message is located in its own file's text.
 - **Macro errors go to stderr only**; the language server does not show them. Reported.
 
 ## 3. Decisions to make
@@ -54,6 +54,10 @@ These compile without a message and give a wrong result.
 - **`heap.dupe` takes no `borrow` parameter**, so a zone owned slice cannot be duplicated. Reported.
 
 ## 4. Missing features and limits
+
+- No debug information: the LLVM backend emits no DWARF or CodeView, so a debugger shows no
+  source lines and `fels build` has no `debug_info()`.
+- Libraries (`b.static`, `b.shared`) cannot target Linux yet; the archive writer reads COFF objects.
 
 - At compile time (`#run`, `#assert`), `&5` and `&(x + 1)` are refused as "could not be evaluated".
 - A constant computed by a call or `#run` cannot be read by other compile time code
