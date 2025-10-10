@@ -135,6 +135,10 @@ pub const LlvmCompileOptions = struct {
     /// symbol except the `#export`ed ones is internal, so the runtime it carries does not
     /// clash with the program's own.
     library_object: bool = false,
+    /// Receives the paths of the files the compile loaded (copied with `inputs_allocator`), for
+    /// `fels build`'s up-to-date check.
+    inputs: ?*std.ArrayList([]const u8) = null,
+    inputs_allocator: ?std.mem.Allocator = null,
     /// Link dynamically against the system libc (the `linux-gnu` ABI). When false
     /// (default), Linux output is a static, freestanding, no-libc ELF.
     link_libc: bool = false,
@@ -247,6 +251,10 @@ pub fn compileWithLlvm(
 
     try runComptimeTestLane(allocator, &fe, opts.file_name);
     try emitLlvmFromFrontend(allocator, io, fe, opts);
+    if (opts.inputs) |list| {
+        const ia = opts.inputs_allocator orelse allocator;
+        for (fe.files) |f| list.append(ia, ia.dupe(u8, f) catch return error.OutOfMemory) catch return error.OutOfMemory;
+    }
 }
 
 /// Full file pipeline: .fels path + imports -> IR -> LLVM IR -> .o -> (optional) .exe
@@ -274,6 +282,10 @@ pub fn compileFileWithLlvm(
 
     try runComptimeTestLane(allocator, &fe, opts.file_name);
     try emitLlvmFromFrontend(allocator, io, fe, opts);
+    if (opts.inputs) |list| {
+        const ia = opts.inputs_allocator orelse allocator;
+        for (fe.files) |f| list.append(ia, ia.dupe(u8, f) catch return error.OutOfMemory) catch return error.OutOfMemory;
+    }
 
     if (opts.timings) |tm| {
         tm.comptime_ns = ir.comptime_ns - ct0;
