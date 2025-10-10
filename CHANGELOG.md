@@ -3,6 +3,31 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Added
+
+- **The editor knows the packages.** The language server reads `fels.pkg` (without running
+  git), so imports of packages resolve in the editor; a package that is not fetched yet says
+  to run `fels fetch` at its import.
+- **`fels remove`, `fels why` and `fels vendor`.** `vendor` copies the git packages into
+  `vendor/`, and builds then take them from there.
+- **`fels build --offline` and `--frozen`.** Offline never runs git; frozen stops when
+  `fels.lock` would change.
+- **A package's build.fels provides libraries to its users** with `b.provide_lib_path`,
+  `provide_link` and `provide_runtime_file`, running with the capabilities `fels.pkg` grants.
+- **Test steps** find tests in sub-folders (`recursive`), filter them (`filter`, or
+  `fels build test -- <text>`), choose the optimization and link libraries; a failing test
+  shows its exit code and output, and tests see the project's packages.
+- **`a.target(.linux | .linux_gnu)`, `a.sysroot`, `a.strip()` and `b.host_os()`** in build.fels.
+- **Up-to-date artifacts are not built again**, and `fels build --rebuild` builds anyway.
+- **`print` and `println` work at compile time**, in build.fels and in `#run`.
+
+### Fixed
+
+- **An error in an imported file was shown at 1:1** with an empty line; it shows the file's own
+  line now.
+
 ## 0.4.0 — 2026-10-10
 
 **Gabbro is now called Fels.** The compiler is `fels.exe`, source files end in `.fels`, the
