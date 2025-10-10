@@ -922,6 +922,8 @@ pub const RunOptions = struct {
     offline: bool = false,
     /// `--frozen`: stop when fels.lock would change.
     frozen: bool = false,
+    /// `--rebuild`: build every artifact, even one that is up to date.
+    rebuild: bool = false,
 };
 
 /// Run `build_path` (a build.fels) and execute the resulting plan.
@@ -1262,12 +1264,15 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
 
     var need_libc = art.link_mode == 1 or opts.link_libc or art.link_libc;
     var has_fels_lib = false;
+    // The library files this artifact links, for the up-to-date check.
+    var lib_files: std.ArrayList([]const u8) = .empty;
     var auto_dlls: std.ArrayList([]const u8) = .empty;
     for (linked.items) |lib_name| {
         for (search_dirs.items) |dir| {
             const lib_file = std.fmt.allocPrint(a, "{s}/{s}.lib", .{ dir, lib_name }) catch continue;
             const data = readSource(gpa, io, lib_file) orelse continue;
             defer gpa.free(data);
+            lib_files.append(a, lib_file) catch return error.OutOfMemory;
             switch (inspectLib(a, data)) {
                 .static => need_libc = true,
                 .fels_static => has_fels_lib = true,
@@ -1304,12 +1309,29 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
     const src = readSource(gpa, io, root_path);
     defer if (src) |s| gpa.free(s);
 
-    if (!opts.quiet) std.debug.print("  building {s} ({s})\n", .{ art.name, root_path });
-
     pipeline.module_roots = try moduleRootsFor(io, plan, base_dir, art);
     defer pipeline.module_roots = &.{};
 
-    driver.compileFileWithLlvm(gpa, io, .{
+    // Up to date: the same settings, the same compiler, and the same text in every file the
+    // last build read (sources, std, build_options, the libraries it linked).
+    const key = try settingsKey(io, plan, art, .{
+        .opt_level = opt_level,
+        .lib_paths = lib_paths.items,
+        .libs = libs.items,
+        .link_flags = link_flags.items,
+        .need_libc = need_libc,
+        .honor_defaultlibs = honor_defaultlibs,
+    });
+    const stamp = std.fmt.allocPrint(a, "{s}/.fels-cache/build/{s}/inputs", .{ base_dir, art.name }) catch return error.OutOfMemory;
+    const fresh = !opts.rebuild and fileExists(io, out_path) and upToDate(gpa, io, stamp, key);
+    if (fresh) {
+        if (!opts.quiet) std.debug.print("  up to date: {s}\n", .{art.name});
+    } else if (!opts.quiet) std.debug.print("  building {s} ({s})\n", .{ art.name, root_path });
+    var inputs: std.ArrayList([]const u8) = .empty;
+
+    if (!fresh) driver.compileFileWithLlvm(gpa, io, .{
+        .inputs = &inputs,
+        .inputs_allocator = a,
         .file_name = root_path,
         .source = src orelse "",
         .obj_path = obj_path,
@@ -1332,9 +1354,12 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
         std.debug.print("fels build: failed to build '{s}': {s}\n", .{ art.name, @errorName(err) });
         return error.CompileFailed;
     };
-    if (art.kind == .static_library) try writeStaticLibrary(gpa, io, obj_path, out_path);
-
-    if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{out_path});
+    if (!fresh) {
+        if (art.kind == .static_library) try writeStaticLibrary(gpa, io, obj_path, out_path);
+        inputs.appendSlice(a, lib_files.items) catch return error.OutOfMemory;
+        writeStamp(gpa, io, stamp, key, inputs.items);
+        if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{out_path});
+    }
 
     // Copy runtime dependencies next to the output — both the explicit
     // `runtime_file`s and the DLLs auto-detected from import libraries — so a
@@ -1477,6 +1502,104 @@ fn copyDir(gpa: std.mem.Allocator, io: std.Io, src: []const u8, dest: []const u8
         }
     }
     return count;
+}
+
+const KeyParts = struct {
+    opt_level: u2,
+    lib_paths: []const []const u8,
+    libs: []const []const u8,
+    link_flags: []const []const u8,
+    need_libc: bool,
+    honor_defaultlibs: bool,
+};
+
+/// A hash of everything about an artifact's build that is not a file's text: its settings,
+/// the import roots, and the compiler that builds it.
+fn settingsKey(io: std.Io, plan: *BuildPlan, art: Artifact, parts: KeyParts) BuildError!u64 {
+    var h = std.hash.Wyhash.init(0x5fe15);
+    const str = struct {
+        fn add(hh: *std.hash.Wyhash, s: []const u8) void {
+            hh.update(s);
+            hh.update(&.{0});
+        }
+    }.add;
+    str(&h, build_options.version);
+    if (std.process.executablePathAlloc(io, plan.a())) |exe| {
+        str(&h, exe);
+        if (std.Io.Dir.cwd().statFile(io, exe, .{})) |st| {
+            h.update(std.mem.asBytes(&st.size));
+            h.update(std.mem.asBytes(&st.mtime));
+        } else |_| {}
+    } else |_| {}
+    str(&h, art.name);
+    str(&h, art.root);
+    str(&h, @tagName(art.kind));
+    str(&h, @tagName(art.target_os));
+    h.update(&.{ parts.opt_level, art.subsystem, @intFromBool(art.target_gnu), @intFromBool(art.strip), @intFromBool(parts.need_libc), @intFromBool(parts.honor_defaultlibs) });
+    h.update(std.mem.asBytes(&art.stack));
+    str(&h, art.sysroot);
+    str(&h, art.entry orelse "");
+    str(&h, art.out_path orelse "");
+    for (parts.lib_paths) |s| str(&h, s);
+    str(&h, "|");
+    for (parts.libs) |s| str(&h, s);
+    str(&h, "|");
+    for (parts.link_flags) |s| str(&h, s);
+    str(&h, "|");
+    for (pipeline.module_roots) |m| {
+        str(&h, m.name);
+        str(&h, m.dir);
+    }
+    // What each package's compile-time code may do (fels.pkg): it decides what a #run can.
+    for (ir.package_caps) |pc| {
+        str(&h, pc.dir);
+        switch (pc.caps.ffi) {
+            .none => str(&h, "none"),
+            .all => str(&h, "all"),
+            .libs => |libs| for (libs) |l| str(&h, l),
+        }
+    }
+    return h.final();
+}
+
+fn hashFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?u64 {
+    const data = readSource(gpa, io, path) orelse return null;
+    defer gpa.free(data);
+    return std.hash.Wyhash.hash(0, data);
+}
+
+/// Whether the stamp of the last build says the artifact is up to date: the same settings
+/// key, and every file it lists still has the text it had.
+fn upToDate(gpa: std.mem.Allocator, io: std.Io, stamp: []const u8, key: u64) bool {
+    const text = readSource(gpa, io, stamp) orelse return false;
+    defer gpa.free(text);
+    var lines = std.mem.tokenizeAny(u8, text, "\r\n");
+    const first = lines.next() orelse return false;
+    if (!std.mem.startsWith(u8, first, "key ")) return false;
+    if ((std.fmt.parseInt(u64, first[4..], 16) catch return false) != key) return false;
+    while (lines.next()) |line| {
+        // file <hash> <path>
+        if (!std.mem.startsWith(u8, line, "file ")) return false;
+        const rest = line[5..];
+        const sp = std.mem.indexOfScalar(u8, rest, ' ') orelse return false;
+        const want = std.fmt.parseInt(u64, rest[0..sp], 16) catch return false;
+        const got = hashFile(gpa, io, rest[sp + 1 ..]) orelse return false;
+        if (got != want) return false;
+    }
+    return true;
+}
+
+/// Write the stamp of a build: the settings key and the hash of every file it read.
+fn writeStamp(gpa: std.mem.Allocator, io: std.Io, stamp: []const u8, key: u64, files: []const []const u8) void {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    out.print(gpa, "key {x}\n", .{key}) catch return;
+    for (files) |f| {
+        const h = hashFile(gpa, io, f) orelse continue;
+        out.print(gpa, "file {x} {s}\n", .{ h, f }) catch return;
+    }
+    if (std.fs.path.dirname(stamp)) |d| std.Io.Dir.cwd().createDirPath(io, d) catch {};
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = stamp, .data = out.items }) catch {};
 }
 
 /// Pack the compiled object into the static library `out_path`.
