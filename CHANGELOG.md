@@ -3,7 +3,15 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.5.0 — 2026-10-11
+
+The editor knows the packages, the package manager gets its remaining commands, and the build
+system gets test steps, targets and up-to-date builds.
+
+### Changed
+
+- **`.gab` files are no longer read**, as 0.4.0 announced. An import that only finds a `.gab`
+  file, and a folder with only a `build.gab`, say to rename the file to `.fels`.
 
 ### Added
 
