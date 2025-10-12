@@ -503,12 +503,11 @@ pub const Server = struct {
         }
     }
 
-    /// The nearest folder above `path` with a `build.fels` (or `build.gab`), else the
-    /// workspace folder.
+    /// The nearest folder above `path` with a `build.fels`, else the workspace folder.
     pub fn findProjectRoot(self: *Server, path: []const u8) ?[]u8 {
         var dir = std.fs.path.dirname(path);
         while (dir) |d| {
-            for ([_][]const u8{ "build.fels", "build.gab" }) |name| {
+            for ([_][]const u8{"build.fels"}) |name| {
                 const probe = std.fs.path.join(self.gpa, &.{ d, name }) catch break;
                 defer self.gpa.free(probe);
                 if (sourceExists(self, probe)) return self.gpa.dupe(u8, d) catch null;

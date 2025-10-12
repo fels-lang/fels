@@ -2136,7 +2136,7 @@ const Req = struct {
             const stem = r.a().alloc(u8, module.len) catch return;
             for (module, 0..) |c, i| stem[i] = if (c == '.') std.fs.path.sep else c;
             const bases = [_]?[]const u8{ std.fs.path.dirname(f.path), r.root };
-            for ([_][]const u8{ pipeline.source_ext, pipeline.old_ext }) |ext| {
+            for ([_][]const u8{pipeline.source_ext}) |ext| {
                 const rel = std.mem.concat(r.a(), u8, &.{ stem, ext }) catch return;
                 for (bases) |base| {
                     const b = base orelse continue;
