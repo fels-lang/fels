@@ -7227,10 +7227,19 @@ pub const TestFailure = struct {
     message: []const u8,
 };
 
+/// One `#test` function and how it went.
+pub const TestResult = struct {
+    name: []const u8,
+    /// Why it failed; null when it passed.
+    failure: ?[]const u8 = null,
+};
+
 pub const TestReport = struct {
     passed: u32,
     failed: u32,
     failures: []const TestFailure,
+    /// Every test that ran, in the order of the module, passed ones too.
+    results: []const TestResult = &.{},
 };
 
 fn isTestFn(f: ast.FunctionDecl) bool {
@@ -7262,6 +7271,7 @@ pub fn runComptimeTests(allocator: std.mem.Allocator, front_end: pipeline.FrontE
     const c = cvm.ensureCache() orelse return error.SemanticFailed;
 
     var failures = std.ArrayList(TestFailure).empty;
+    var results = std.ArrayList(TestResult).empty;
     var passed: u32 = 0;
     for (front_end.module.items) |item| {
         const f = switch (item) {
@@ -7269,9 +7279,12 @@ pub fn runComptimeTests(allocator: std.mem.Allocator, front_end: pipeline.FrontE
             else => continue,
         };
         if (!isTestFn(f)) continue;
+        const name = out.dupe(u8, f.name) catch f.name;
         // Only invocable tests for now: a single `*Test` parameter, no generics.
         if (f.type_params.len != 0 or f.params.len != 1) {
-            try failures.append(out, .{ .name = out.dupe(u8, f.name) catch f.name, .message = "a #test function must take exactly one parameter `t: *Test`" });
+            const why = "a #test function must take exactly one parameter `t: *Test`";
+            try failures.append(out, .{ .name = name, .message = why });
+            try results.append(out, .{ .name = name, .failure = why });
             continue;
         }
 
@@ -7286,16 +7299,23 @@ pub fn runComptimeTests(allocator: std.mem.Allocator, front_end: pipeline.FrontE
 
         if (vm.call(f.name, &.{t_arg})) |_| {
             passed += 1;
+            try results.append(out, .{ .name = name });
         } else |err| {
             const msg = if (vm.compiler_error_msg) |m|
                 out.dupe(u8, m) catch "assertion failed"
             else
                 out.dupe(u8, @errorName(err)) catch "comptime evaluation error";
-            try failures.append(out, .{ .name = out.dupe(u8, f.name) catch f.name, .message = msg });
+            try failures.append(out, .{ .name = name, .message = msg });
+            try results.append(out, .{ .name = name, .failure = msg });
         }
     }
 
-    return .{ .passed = passed, .failed = @intCast(failures.items.len), .failures = try failures.toOwnedSlice(out) };
+    return .{
+        .passed = passed,
+        .failed = @intCast(failures.items.len),
+        .failures = try failures.toOwnedSlice(out),
+        .results = try results.toOwnedSlice(out),
+    };
 }
 
 /// Drop every `#test` function from the module so the runtime backend never sees
