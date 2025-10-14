@@ -213,6 +213,8 @@ pub const BuildPlan = struct {
     cwd_abs: []const u8 = "",
     /// The packages fels.pkg uses (with the ones they use).
     packages: []const pkg.resolve.Package = &.{},
+    /// The project's own package name and import folder, when fels.pkg has `#package`.
+    self_root: ?pipeline.ModuleRoot = null,
     /// What this build.fels provides to the users of its package (`b.provide_*`), relative to
     /// build.fels.
     provided: Provided = .{},
@@ -801,7 +803,7 @@ fn packageCaps(plan: *BuildPlan) BuildError![]const ir.FolderCaps {
 }
 
 /// Write the artifact's `build_options` module and return the module roots its compile
-/// uses: the `add_module` ones, the packages and `build_options`.
+/// uses: the `add_module` ones, the project's own package, the packages and `build_options`.
 fn moduleRootsFor(io: std.Io, plan: *BuildPlan, base_dir: []const u8, art: Artifact) BuildError![]const pipeline.ModuleRoot {
     const a = plan.a();
     var roots: std.ArrayList(pipeline.ModuleRoot) = .empty;
@@ -810,6 +812,7 @@ fn moduleRootsFor(io: std.Io, plan: *BuildPlan, base_dir: []const u8, art: Artif
         roots.append(a, .{ .name = m.name, .dir = dir }) catch return error.OutOfMemory;
     }
     // After the `add_module` ones, so a build can point a package name somewhere else.
+    if (plan.self_root) |s| roots.append(a, s) catch return error.OutOfMemory;
     for (plan.packages) |p| roots.append(a, .{ .name = p.name, .dir = p.import_dir }) catch return error.OutOfMemory;
 
     // `#import build_options;` always works; it is empty without a define.
@@ -938,7 +941,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: Run
         error.OutOfMemory => error.OutOfMemory,
         error.PackageError => error.PackageError,
     };
-    if (loaded) |r| plan.packages = r.packages;
+    if (loaded) |r| {
+        plan.packages = r.packages;
+        plan.self_root = r.self_root;
+    }
     const folder_caps = try packageCaps(&plan);
     try runPackageBuilds(gpa, io, &plan, folder_caps);
     ir.package_caps = folder_caps;
