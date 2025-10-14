@@ -201,7 +201,11 @@ pub fn resolve(
     var lock: lock_mod.Lock = .{};
     var queue: std.ArrayList(Pending) = .empty;
     const project: Consumer = .{ .pkg_path = root_pkg_path, .pkg_source = root_source, .dir = root_dir, .caps = null, .label = "this project" };
-    for (root.uses) |u| queue.append(a, .{ .use = u, .from = project }) catch return error.OutOfMemory;
+    for (root.uses) |u| {
+        if (root.name) |own| if (std.mem.eql(u8, u.name, own))
+            return report(project, u, "`{s}` is the name of this project (#package {s}); inside the project `#import {s}` already reads its own sources, so remove this #use", .{ own, own, own });
+        queue.append(a, .{ .use = u, .from = project }) catch return error.OutOfMemory;
+    }
 
     var qi: usize = 0;
     while (qi < queue.items.len) : (qi += 1) {
