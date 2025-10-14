@@ -7259,12 +7259,42 @@ pub fn hasTestDecl(module: ast.Module) bool {
     return false;
 }
 
+/// Which `#test` functions `runComptimeTestsWith` runs.
+pub const TestOptions = struct {
+    /// Only the tests declared in this file (as the compile names it); null runs every test
+    /// of the module, those of the imported files too.
+    only_file: ?[]const u8 = null,
+};
+
+fn testSelected(f: ast.FunctionDecl, opts: TestOptions) bool {
+    if (!isTestFn(f)) return false;
+    const file = opts.only_file orelse return true;
+    return std.mem.eql(u8, f.file_name, file);
+}
+
+/// How many `#test` functions `runComptimeTestsWith` would run with `opts`.
+pub fn countTestDecls(module: ast.Module, opts: TestOptions) u32 {
+    var n: u32 = 0;
+    for (module.items) |item| switch (item) {
+        .function => |f| if (testSelected(f, opts)) {
+            n += 1;
+        },
+        else => {},
+    };
+    return n;
+}
+
 /// Run every `#test` function on the comptime VM. A test *passes* when its call
 /// completes; it *fails* when an assertion calls `core::compiler_error(...)` (the
 /// VM traps and stashes the diagnostic) or when the VM otherwise can't run it.
 /// Each test gets a fresh VM over the shared bytecode module, so one failure
 /// can't corrupt the next. Report strings are duped onto the front end's arena.
 pub fn runComptimeTests(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) InsertExpandError!TestReport {
+    return runComptimeTestsWith(allocator, front_end, .{});
+}
+
+/// `runComptimeTests` for the tests `opts` selects (`fels test` runs one file's own).
+pub fn runComptimeTestsWith(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, opts: TestOptions) InsertExpandError!TestReport {
     const out = front_end.arena.allocator();
     var cvm = ComptimeVm.init(allocator, front_end);
     defer cvm.deinit();
@@ -7278,7 +7308,7 @@ pub fn runComptimeTests(allocator: std.mem.Allocator, front_end: pipeline.FrontE
             .function => |fd| fd,
             else => continue,
         };
-        if (!isTestFn(f)) continue;
+        if (!testSelected(f, opts)) continue;
         const name = out.dupe(u8, f.name) catch f.name;
         // Only invocable tests for now: a single `*Test` parameter, no generics.
         if (f.type_params.len != 0 or f.params.len != 1) {
