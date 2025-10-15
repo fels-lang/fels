@@ -784,20 +784,20 @@ fn stringLiteral(a: std.mem.Allocator, text: []const u8) ![]const u8 {
     return out.toOwnedSlice(a);
 }
 
-/// The VM capabilities of each package's folder, from what fels.pkg granted it.
-fn packageCaps(plan: *BuildPlan) BuildError![]const ir.FolderCaps {
-    const a = plan.a();
+/// The VM capabilities of each package's folder, from what fels.pkg granted it. `fels build`
+/// and `fels test` put them in `ir.package_caps`.
+pub fn folderCaps(a: std.mem.Allocator, packages: []const pkg.resolve.Package) error{OutOfMemory}![]const ir.FolderCaps {
     var out: std.ArrayList(ir.FolderCaps) = .empty;
-    for (plan.packages) |p| {
+    for (packages) |p| {
         var libs: std.ArrayList([]const u8) = .empty;
         var any = false;
         for (p.caps) |c| {
             if (!std.mem.eql(u8, c.name, "ffi")) continue;
             if (c.args.len == 0) any = true;
-            libs.appendSlice(a, c.args) catch return error.OutOfMemory;
+            try libs.appendSlice(a, c.args);
         }
         const ffi: @import("vm/engine.zig").Caps.Ffi = if (any) .all else if (libs.items.len != 0) .{ .libs = libs.items } else .none;
-        out.append(a, .{ .dir = p.dir, .caps = .{ .ffi = ffi } }) catch return error.OutOfMemory;
+        try out.append(a, .{ .dir = p.dir, .caps = .{ .ffi = ffi } });
     }
     return out.items;
 }
@@ -945,7 +945,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: Run
         plan.packages = r.packages;
         plan.self_root = r.self_root;
     }
-    const folder_caps = try packageCaps(&plan);
+    const folder_caps = try folderCaps(plan.a(), plan.packages);
     try runPackageBuilds(gpa, io, &plan, folder_caps);
     ir.package_caps = folder_caps;
     defer ir.package_caps = &.{};
