@@ -1628,8 +1628,8 @@ fn writeStaticLibrary(gpa: std.mem.Allocator, io: std.Io, obj_path: []const u8, 
 
 /// Run a `test_dir` step: compile and run every `*.fels` file in its folder (and the folders
 /// below, with `recursive`) as a program of its own. A test passes when it exits with 0; a
-/// failing one shows its exit code and output. The tests see the project's packages and link
-/// what the step names. `fels build <step> -- <text>` runs only the files whose path has the text.
+/// failing one shows its exit code and output. The tests see the project's packages (its own
+/// package too) and link what the step names. `fels build <step> -- <text>` runs only the files whose path has the text.
 fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, step: Step, opts: RunOptions) BuildError!void {
     const a = plan.a();
     const dir_abs = joinPath(a, base_dir, step.dir) catch return error.OutOfMemory;
@@ -1675,8 +1675,9 @@ fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
         lib_paths.append(a, std.fs.path.dirname(out) orelse ".") catch return error.OutOfMemory;
         libs.append(a, std.fs.path.stem(out)) catch return error.OutOfMemory;
     }
-    // The packages' import roots, as for an artifact.
+    // The import roots of the project's own package and of the packages, as for an artifact.
     var roots: std.ArrayList(pipeline.ModuleRoot) = .empty;
+    if (plan.self_root) |s| roots.append(a, s) catch return error.OutOfMemory;
     for (plan.packages) |p| roots.append(a, .{ .name = p.name, .dir = p.import_dir }) catch return error.OutOfMemory;
     pipeline.module_roots = roots.items;
     defer pipeline.module_roots = &.{};
