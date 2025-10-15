@@ -214,6 +214,7 @@ pub const Server = struct {
         arena: std.heap.ArenaAllocator,
         /// A hash of fels.pkg and fels.lock as they were read; another value means they changed.
         stamp: u64,
+        /// The import roots: the project's own package (with `#package`), then the packages.
         roots: []const pipeline.ModuleRoot = &.{},
         missing: []const []const u8 = &.{},
     };
@@ -243,7 +244,9 @@ pub const Server = struct {
         const a = entry.arena.allocator();
         if (pkg.project.load(a, self.io, dir, self.environ, .{ .skip_missing = true })) |result| {
             if (result) |r| {
+                // The project's own package first, as `fels build` has it.
                 var roots: std.ArrayList(pipeline.ModuleRoot) = .empty;
+                if (r.self_root) |s| roots.append(a, s) catch {};
                 for (r.packages) |p| roots.append(a, .{ .name = p.name, .dir = p.import_dir }) catch {};
                 entry.roots = roots.items;
                 entry.missing = r.missing;
