@@ -278,6 +278,70 @@ test "packages: the language server resolves fels.pkg, and says when a package i
     try std.testing.expectEqual(@as(usize, 1), not_fetched);
 }
 
+test "packages: a project with #package imports its own package by name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const base = ".zig-cache/pk_self";
+    std.Io.Dir.cwd().deleteTree(io, base) catch {};
+
+    // src/ is the import folder, as for a package.
+    try write(base ++ "/mathx", "fels.pkg", "#package mathx \"0.1.0\";\n");
+    try write(base ++ "/mathx", "src/mathx.fels", "pub ONE :: 1;\n");
+    const self = (try project.load(a, io, base ++ "/mathx", null, .{})).?.self_root.?;
+    try std.testing.expectEqualStrings("mathx", self.name);
+    try std.testing.expect(std.mem.endsWith(u8, self.dir, "src"));
+
+    // #root names it.
+    try write(base ++ "/rooted", "fels.pkg", "#package rooted \"0.1.0\";\n#root \"lib\";\n");
+    try std.testing.expect(std.mem.endsWith(u8, (try project.load(a, io, base ++ "/rooted", null, .{})).?.self_root.?.dir, "lib"));
+
+    // Without #package: nothing new.
+    try write(base ++ "/app", "fels.pkg", "#use mathx from \"../mathx\";\n");
+    const app = (try project.load(a, io, base ++ "/app", null, .{})).?;
+    try std.testing.expect(app.self_root == null);
+    try std.testing.expectEqual(@as(usize, 1), app.packages.len);
+
+    // A #use of the project's own name is a mistake.
+    try write(base ++ "/twice", "fels.pkg", "#package mathx \"0.2.0\";\n#use mathx from \"../mathx\";\n");
+    try std.testing.expectError(error.PackageError, project.load(a, io, base ++ "/twice", null, .{}));
+}
+
+test "packages: the language server resolves a library's own package name" {
+    const base = ".zig-cache/pk_lsp_self";
+    std.Io.Dir.cwd().deleteTree(io, base) catch {};
+    // A library: fels.pkg and no build.fels.
+    try write(base ++ "/mathx", "fels.pkg", "#package mathx \"0.1.0\";\n");
+    try write(base ++ "/mathx", "src/mathx.fels", "pub clamp :: fn(x: i32, hi: i32) -> i32 { if x > hi { return hi; } return x; }\n");
+    try write(base ++ "/mathx", "src/consts.fels", "pub LIMIT :: 9;\n");
+    try write(base ++ "/mathx", "examples/demo.fels", "#import mathx;\n#import mathx.consts;\nmain :: fn() -> i32 { return mathx::clamp(12, consts::LIMIT); }\n");
+
+    var buf: [64]u8 = undefined;
+    var out = std.Io.Writer.Discarding.init(&buf);
+    var server: fels.lsp_mod.Server = .{ .gpa = std.testing.allocator, .io = io, .out = &out.writer };
+    defer {
+        var it = server.projects.iterator();
+        while (it.next()) |e| {
+            std.testing.allocator.free(e.key_ptr.*);
+            e.value_ptr.*.arena.deinit();
+            std.testing.allocator.destroy(e.value_ptr.*);
+        }
+        server.projects.deinit(std.testing.allocator);
+    }
+
+    // fels.pkg marks the project folder.
+    const root = server.findProjectRoot(base ++ "/mathx/examples/demo.fels").?;
+    defer std.testing.allocator.free(root);
+    try std.testing.expectEqualStrings(base ++ "/mathx", root);
+    const pkgs = server.packagesFor(root).?;
+    try std.testing.expectEqualStrings("mathx", pkgs.roots[0].name);
+
+    var an = try fels.pipeline_mod.analyzeFile(std.testing.allocator, base ++ "/mathx/examples/demo.fels", server.analysisOptions(root));
+    defer an.deinit();
+    for (an.diagnostics) |d| std.debug.print("unexpected: {s}\n", .{d.message});
+    try std.testing.expectEqual(@as(usize, 0), an.diagnostics.len);
+}
+
 test "packages: offline takes fels.lock and the cache, frozen stops when fels.lock would change" {
     var s = (try Setup.init("pk_offline")) orelse return error.SkipZigTest;
     defer s.deinit();
