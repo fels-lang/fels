@@ -960,6 +960,68 @@ test "build: a test_dir step compiles+runs tests and fails on a failing one" {
     }));
 }
 
+test "build: a library's example and tests import the library by its package name" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const io = std.testing.io;
+    const cwd = std.Io.Dir.cwd();
+
+    const dir = ".zig-cache/bt_self_import/mathx";
+    cwd.deleteTree(io, ".zig-cache/bt_self_import") catch {};
+    cwd.createDirPath(io, dir ++ "/src") catch {};
+    cwd.createDirPath(io, dir ++ "/examples") catch {};
+    cwd.createDirPath(io, dir ++ "/tests") catch {};
+    try cwd.writeFile(io, .{ .sub_path = dir ++ "/fels.pkg", .data = "#package mathx \"0.1.0\";\n" });
+    try cwd.writeFile(io, .{ .sub_path = dir ++ "/src/mathx.fels", .data =
+        \\pub clamp :: fn(x: i32, lo: i32, hi: i32) -> i32 {
+        \\    if x < lo { return lo; }
+        \\    if x > hi { return hi; }
+        \\    return x;
+        \\}
+        \\
+        \\#test
+        \\clamp_works :: fn(t: *Test) {
+        \\    t.eq(clamp(50, 0, 10), 10);
+        \\}
+        \\
+    });
+    try cwd.writeFile(io, .{ .sub_path = dir ++ "/src/limits.fels", .data = "pub HIGH :: 42;\n" });
+    try cwd.writeFile(io, .{ .sub_path = dir ++ "/examples/demo.fels", .data =
+        \\#import mathx;
+        \\#import mathx.limits;
+        \\main :: fn() -> i32 { return mathx::clamp(70, 0, limits::HIGH); }
+        \\
+    });
+    try cwd.writeFile(io, .{ .sub_path = dir ++ "/tests/clamp_test.fels", .data =
+        \\#import mathx;
+        \\main :: fn() -> i32 { if mathx::clamp(-3, 0, 5) == 0 { return 0; } return 1; }
+        \\
+    });
+    try cwd.writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    b.executable("demo", "examples/demo.fels");
+        \\    b.test_dir("test", "tests");
+        \\}
+    });
+
+    const lp = fels.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
+    const opts: fels.build_driver.RunOptions = .{ .quiet = true, .llvm_bin = fels.llvm_path ++ "/bin", .lib_paths = lib_paths };
+    try fels.build_driver.run(arena.allocator(), io, dir ++ "/build.fels", opts);
+    var child = try std.process.spawn(io, .{ .argv = &.{dir ++ "/demo.exe"}, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+    switch (try child.wait(io)) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 42), code),
+        else => return error.TestUnexpectedResult,
+    }
+
+    var test_step = opts;
+    test_step.target = "test";
+    try fels.build_driver.run(arena.allocator(), io, dir ++ "/build.fels", test_step);
+}
+
 test "exe: error payload recovered via catch binding" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
