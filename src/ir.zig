@@ -7232,11 +7232,16 @@ pub const TestResult = struct {
     name: []const u8,
     /// Why it failed; null when it passed.
     failure: ?[]const u8 = null,
+    /// Why the comptime VM could not run it (a host call, a write to a global, an
+    /// instruction it lacks); null when it ran. Such a test is neither passed nor failed: a
+    /// native test program (`fels test`) runs it.
+    skipped: ?[]const u8 = null,
 };
 
 pub const TestReport = struct {
     passed: u32,
     failed: u32,
+    skipped: u32 = 0,
     failures: []const TestFailure,
     /// Every test that ran, in the order of the module, passed ones too.
     results: []const TestResult = &.{},
@@ -7303,6 +7308,7 @@ pub fn runComptimeTestsWith(allocator: std.mem.Allocator, front_end: pipeline.Fr
     var failures = std.ArrayList(TestFailure).empty;
     var results = std.ArrayList(TestResult).empty;
     var passed: u32 = 0;
+    var skipped: u32 = 0;
     for (front_end.module.items) |item| {
         const f = switch (item) {
             .function => |fd| fd,
@@ -7335,6 +7341,13 @@ pub fn runComptimeTestsWith(allocator: std.mem.Allocator, front_end: pipeline.Fr
                 out.dupe(u8, m) catch "assertion failed"
             else
                 out.dupe(u8, @errorName(err)) catch "comptime evaluation error";
+            if (vm.needs_runtime or vmCannotRun(err)) {
+                // The first clause says what it reached; the rest is advice for a `#run`.
+                const what = if (std.mem.indexOf(u8, msg, ": ")) |i| msg[0..i] else msg;
+                skipped += 1;
+                try results.append(out, .{ .name = name, .skipped = what });
+                continue;
+            }
             try failures.append(out, .{ .name = name, .message = msg });
             try results.append(out, .{ .name = name, .failure = msg });
         }
@@ -7343,8 +7356,18 @@ pub fn runComptimeTestsWith(allocator: std.mem.Allocator, front_end: pipeline.Fr
     return .{
         .passed = passed,
         .failed = @intCast(failures.items.len),
+        .skipped = skipped,
         .failures = try failures.toOwnedSlice(out),
         .results = try results.toOwnedSlice(out),
+    };
+}
+
+/// Whether a VM error says the comptime VM cannot run the code (an instruction or a call it
+/// lacks, or too many steps), not that the code is wrong.
+fn vmCannotRun(err: anyerror) bool {
+    return switch (err) {
+        error.Unsupported, error.InvalidInstruction, error.NoModule, error.StepLimitExceeded => true,
+        else => false,
     };
 }
 
