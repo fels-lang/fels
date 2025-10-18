@@ -31,6 +31,8 @@ pub const Options = struct {
 pub const Summary = struct {
     passed: u32 = 0,
     failed: u32 = 0,
+    /// Tests the comptime VM cannot run (the VM lane only).
+    skipped: u32 = 0,
     /// Files that do not compile, or whose tests the comptime VM cannot run.
     broken: u32 = 0,
 
@@ -107,10 +109,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
         try out.flush();
     }
 
-    if (summary.passed + summary.failed == 0)
+    if (summary.passed + summary.failed + summary.skipped == 0)
         try out.writeAll("no #test functions found")
     else
         try out.print("{d} passed, {d} failed", .{ summary.passed, summary.failed });
+    if (summary.skipped != 0) try out.print(", {d} skipped", .{summary.skipped});
     if (summary.broken != 0)
         try out.print(", {d} {s}", .{ summary.broken, if (summary.broken == 1) "file has errors" else "files have errors" });
     try out.writeAll("\n");
@@ -166,11 +169,14 @@ fn testFile(
     for (report.results) |r| {
         if (r.failure) |why|
             try out.print("  \u{2717} {s}: {s}\n", .{ r.name, why })
+        else if (r.skipped) |why|
+            try out.print("  - {s}: skipped ({s})\n", .{ r.name, why })
         else
             try out.print("  \u{2713} {s}\n", .{r.name});
     }
     summary.passed += report.passed;
     summary.failed += report.failed;
+    summary.skipped += report.skipped;
 }
 
 /// The files to test, in order, each once.
