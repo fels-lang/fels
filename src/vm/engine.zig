@@ -183,11 +183,11 @@ pub const Vm = struct {
     /// that names both the symbol and which grant refused it.
     fn callExtern(self: *Vm, ec: ffi.ExternCall, args: []const Value) error{Trap}!Value {
         if (!self.caps.allowsFfi(ec.lib, ec.symbol)) {
-            self.compiler_error_msg = std.fmt.allocPrint(
-                self.allocator,
+            self.setErrorMsg(
                 "comptime FFI to `{s}` (in `{s}`) is not allowed here: {s}.",
                 .{ ec.symbol, ec.lib, self.caps.denialReason() },
-            ) catch "comptime FFI is not permitted by this run's capabilities";
+                "comptime FFI is not permitted by this run's capabilities",
+            );
             return error.Trap;
         }
 
@@ -227,11 +227,11 @@ pub const Vm = struct {
                 error.UnsupportedArity => "too many arguments",
                 error.OutOfMemory => "out of memory",
             };
-            self.compiler_error_msg = std.fmt.allocPrint(
-                self.allocator,
+            self.setErrorMsg(
                 "comptime FFI to `{s}` (in `{s}`) failed: {s}.",
                 .{ ec.symbol, ec.lib, detail },
-            ) catch "a comptime FFI call failed";
+                "a comptime FFI call failed",
+            );
             return error.Trap;
         };
 
@@ -251,6 +251,18 @@ pub const Vm = struct {
             self.zone_stack.setCell(p.zone, p.offset, back) catch return error.Trap;
         }
         return result;
+    }
+
+    /// Set `compiler_error_msg` to a formatted message, kept in `concat_strings` so `deinit`
+    /// frees it; `fallback` when there is no memory for it.
+    fn setErrorMsg(self: *Vm, comptime fmt: []const u8, args: anytype, fallback: []const u8) void {
+        self.compiler_error_msg = fallback;
+        const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
+        self.concat_strings.append(self.allocator, msg) catch {
+            self.allocator.free(msg);
+            return;
+        };
+        self.compiler_error_msg = msg;
     }
 
     pub fn deinit(self: *Vm) void {
