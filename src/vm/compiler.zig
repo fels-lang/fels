@@ -175,7 +175,7 @@ pub fn cellCountOf(module: ir.IrModule, ty: ir.IrType) usize {
 
 fn stubFunction(allocator: std.mem.Allocator, name: []const u8) CompileError!BytecodeFunction {
     const instrs = try allocator.alloc(Instr, 1);
-    instrs[0] = Instr.with_imm(.trap, -1);
+    instrs[0] = Instr.with_imm(.trap, instructions.unrunnable_trap);
     return .{ .name = name, .instrs = instrs, .num_regs = 1, .num_locals = 0 };
 }
 
