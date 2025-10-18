@@ -227,3 +227,93 @@ pub const testing_source =
     \\    }
     \\}
 ;
+
+/// `Test` for a native test program (`fels test` builds one per file and runs it). The
+/// methods have the names and messages of `testing_source`, but a failed check prints its
+/// message and the test goes on; `fatal` ends the program. The `__fels_test_*` helpers are
+/// what the generated `main` calls. Everything is written to stdout as lines that start with
+/// `@@fels-test `, each after a newline, so the lines stay apart from what the test prints:
+///
+///   RUN <name>   a test starts
+///   MSG <text>   a check failed
+///   PASS, FAIL   the test ended
+///   END          every test ran
+///
+/// A number at the end of the command line is the index of the first test to run, so after
+/// a crash `fels test` starts the program again behind the test that crashed.
+pub const runtime_testing_source =
+    \\Test :: struct {
+    \\    failures: u32,
+    \\
+    \\    pub fatal :: fn(self: *Self, msg: []const u8) {
+    \\        __fels_test_note(msg);
+    \\        write_stdout("\n@@fels-test FAIL\n");
+    \\        exit(1u32);
+    \\    }
+    \\
+    \\    pub expect :: fn(self: *Self, cond: bool) {
+    \\        if cond == false {
+    \\            self.failures += 1u32;
+    \\            __fels_test_note("t.expect: condition was false");
+    \\        }
+    \\    }
+    \\
+    \\    pub eq :: fn(self: *Self, a: $V, b: $V) {
+    \\        if a != b {
+    \\            self.failures += 1u32;
+    \\            __fels_test_note("t.eq: values are not equal");
+    \\        }
+    \\    }
+    \\
+    \\    pub ne :: fn(self: *Self, a: $V, b: $V) {
+    \\        if a == b {
+    \\            self.failures += 1u32;
+    \\            __fels_test_note("t.ne: values are unexpectedly equal");
+    \\        }
+    \\    }
+    \\}
+    \\
+    \\__fels_test_note :: fn(msg: []const u8) {
+    \\    write_stdout("\n@@fels-test MSG ");
+    \\    write_stdout(msg);
+    \\    write_stdout("\n");
+    \\}
+    \\
+    \\__fels_test_begin :: fn(name: []const u8) {
+    \\    write_stdout("\n@@fels-test RUN ");
+    \\    write_stdout(name);
+    \\    write_stdout("\n");
+    \\}
+    \\
+    \\__fels_test_end :: fn(t: *Test) -> i32 {
+    \\    if t.failures == 0u32 {
+    \\        write_stdout("\n@@fels-test PASS\n");
+    \\        return 0;
+    \\    }
+    \\    write_stdout("\n@@fels-test FAIL\n");
+    \\    return 1;
+    \\}
+    \\
+    \\__fels_test_done :: fn() {
+    \\    write_stdout("\n@@fels-test END\n");
+    \\}
+    \\
+    \\__fels_test_from :: fn() -> i32 {
+    \\    buf: [4096]u8 = .{};
+    \\    n := os_cmdline(buf[:]);
+    \\    if n <= 0i64 { return 0; }
+    \\    end := n as usize;
+    \\    while end > 0usize && buf[end - 1usize] == 32u8 { end -= 1usize; }
+    \\    start := end;
+    \\    while start > 0usize && buf[start - 1usize] >= 48u8 && buf[start - 1usize] <= 57u8 { start -= 1usize; }
+    \\    if start == end || start == 0usize { return 0; }
+    \\    if buf[start - 1usize] != 32u8 { return 0; }
+    \\    v: i32 = 0;
+    \\    i := start;
+    \\    while i < end {
+    \\        v = v * 10 + ((buf[i] - 48u8) as i32);
+    \\        i += 1usize;
+    \\    }
+    \\    return v;
+    \\}
+;
