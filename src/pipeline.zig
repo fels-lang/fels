@@ -27,6 +27,8 @@ const any_prelude_id_base: ast.NodeId = 400_000;
 const fieldnav_prelude_id_base: ast.NodeId = 300_000;
 /// Node-id base for the injected `Test` testing prelude (distinct range).
 const testing_prelude_id_base: ast.NodeId = 200_000;
+/// Node-id base for the generated test runner (`test_runner`).
+const test_runner_id_base: ast.NodeId = 250_000;
 
 pub const FrontEnd = struct {
     module: ast.Module,
@@ -112,6 +114,12 @@ pub const ModuleRoot = struct {
 /// The named module roots of the current compile. `fels build` sets them per artifact
 /// (`add_module`, and the generated `build_options`).
 pub var module_roots: []const ModuleRoot = &.{};
+
+/// Set by `fels test` for a native test program: `#test` functions get the `Test` of
+/// `ast_prelude.runtime_testing_source`, and a generated `main` runs the root file's tests
+/// one after the other. The root file's own `main` is left out and its `#entry` marks are
+/// dropped, so the generated one is the program's entry.
+pub var test_runner: bool = false;
 
 // Public entry points
 
@@ -772,9 +780,17 @@ fn preparePipeline(
     else
         with_heap;
 
+    const with_runner = if (test_runner)
+        addTestRunner(allocator, with_testing) catch |err| switch (err) {
+            error.ParseFailed => return error.ParseFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+        }
+    else
+        with_testing;
+
     // Expand macros before any sema sees the tree: `#insert macrocall(...)`
     // becomes a literal `#insert #quote { ... }`, and macro decls are dropped.
-    const module = macroexpand.expand(allocator, with_testing) catch |err| switch (err) {
+    const module = macroexpand.expand(allocator, with_runner) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
@@ -1139,11 +1155,73 @@ fn prependReflectionPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast
 /// module that declares a test. Only injected when the module has a `#test` decl
 /// and doesn't already define its own `Test`.
 fn prependTestingPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
-    const parsed = try parser.parseSourceFrom(allocator, "<runtime>", ast_prelude.testing_source, testing_prelude_id_base);
+    const source = if (test_runner) ast_prelude.runtime_testing_source else ast_prelude.testing_source;
+    const parsed = try parser.parseSourceFrom(allocator, "<runtime>", source, testing_prelude_id_base);
     var items: std.ArrayList(ast.Item) = .empty;
     try items.appendSlice(allocator, parsed.module.items);
     try items.appendSlice(allocator, user.items);
     return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
+/// The program `fels test` runs for one file (`test_runner`): a `main` that calls a case
+/// function per `#test` function of the root file, in order, from the index the command
+/// line gives on. The root file's `main` is left out and its `#entry` marks are dropped.
+fn addTestRunner(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
+    // `src` must outlive the parse: the tree's names point into it (the front-end arena).
+    var src: std.ArrayList(u8) = .empty;
+    var items: std.ArrayList(ast.Item) = .empty;
+    var main_body: std.ArrayList(u8) = .empty;
+    defer main_body.deinit(allocator);
+    var index: u32 = 0;
+    for (user.items) |item| {
+        const f = switch (item) {
+            .function => |f| f,
+            else => {
+                try items.append(allocator, item);
+                continue;
+            },
+        };
+        if (!std.mem.eql(u8, f.file_name, user.file_name)) {
+            try items.append(allocator, item);
+            continue;
+        }
+        if (std.mem.eql(u8, f.name, "main")) continue;
+        var copy = f;
+        if (hasAttribute(f.attrs, "entry")) {
+            var attrs: std.ArrayList(ast.Attribute) = .empty;
+            for (f.attrs) |a| if (!std.mem.eql(u8, a.name, "entry")) try attrs.append(allocator, a);
+            copy.attrs = try attrs.toOwnedSlice(allocator);
+        }
+        try items.append(allocator, .{ .function = copy });
+        if (!ir_mod.isTestFn(f)) continue;
+
+        try src.print(allocator, "__fels_test_case_{d} :: fn() -> i32 {{\n    __fels_test_begin(\"{s}\");\n", .{ index, f.name });
+        if (f.type_params.len != 0 or f.params.len != 1) {
+            try src.appendSlice(allocator,
+                \\    __fels_test_note("a #test function must take exactly one parameter `t: *Test`");
+                \\    write_stdout("\n@@fels-test FAIL\n");
+                \\    return 1;
+                \\}
+                \\
+            );
+        } else {
+            try src.print(allocator, "    t: Test = .{{ .failures = 0u32 }};\n    {s}(&t);\n    return __fels_test_end(&t);\n}}\n", .{f.name});
+        }
+        try main_body.print(allocator, "    if from <= {d} {{ failed += __fels_test_case_{d}(); }}\n", .{ index, index });
+        index += 1;
+    }
+    try src.appendSlice(allocator, "main :: fn() -> i32 {\n    from := __fels_test_from();\n    failed: i32 = 0;\n");
+    try src.appendSlice(allocator, main_body.items);
+    try src.appendSlice(allocator, "    __fels_test_done();\n    if failed != 0 { return 1; }\n    return 0;\n}\n");
+
+    const parsed = try parser.parseSourceFrom(allocator, user.file_name, src.items, test_runner_id_base);
+    try items.appendSlice(allocator, parsed.module.items);
+    return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
+fn hasAttribute(attrs: []const ast.Attribute, name: []const u8) bool {
+    for (attrs) |a| if (std.mem.eql(u8, a.name, name)) return true;
+    return false;
 }
 
 /// Generate `any_field_at(v, i)` / `any_field_name(v, i)` over the module's
