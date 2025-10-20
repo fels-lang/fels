@@ -964,21 +964,39 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: Run
 /// the package, and collect what it provides to its users. Its artifacts and steps are its own
 /// business and are not built.
 fn runPackageBuilds(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, folder_caps: []const ir.FolderCaps) BuildError!void {
-    const a = plan.a();
-    for (plan.packages, folder_caps) |p, fc| {
+    try packageProvides(gpa, io, plan.a(), plan.packages, folder_caps, &plan.from_packages);
+}
+
+/// Run the build.fels of every package in `packages` that has one, with the capabilities of
+/// its folder (`folder_caps`, in the same order), and add what it provides to `into`, the
+/// paths joined to the package's folder. `fels test` links its test programs with this too.
+pub fn packageProvides(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    a: std.mem.Allocator,
+    packages: []const pkg.resolve.Package,
+    folder_caps: []const ir.FolderCaps,
+    into: *Provided,
+) BuildError!void {
+    for (packages, folder_caps) |p, fc| {
         const script = for ([_][]const u8{"build.fels"}) |name| {
             const path = std.fs.path.join(a, &.{ p.dir, name }) catch return error.OutOfMemory;
             if (fileExists(io, path)) break path;
         } else continue;
         var sub = loadPlanWith(gpa, io, script, &.{}, fc.caps, false) catch |err| {
-            std.debug.print("fels build: the build.fels of the package `{s}` failed ({s})\n", .{ p.name, @errorName(err) });
+            std.debug.print("fels: the build.fels of the package `{s}` failed ({s})\n", .{ p.name, @errorName(err) });
             return error.PackageError;
         };
         defer sub.deinit();
-        for (sub.provided.lib_paths.items) |d| plan.from_packages.lib_paths.append(a, joinPath(a, p.dir, d) catch return error.OutOfMemory) catch return error.OutOfMemory;
-        for (sub.provided.links.items) |l| plan.from_packages.links.append(a, plan.dupe(l)) catch return error.OutOfMemory;
-        for (sub.provided.runtime_files.items) |f| plan.from_packages.runtime_files.append(a, joinPath(a, p.dir, f) catch return error.OutOfMemory) catch return error.OutOfMemory;
+        try addProvided(a, p.dir, sub.provided, into);
     }
+}
+
+/// Add `from` to `into`, with its paths joined to `dir`.
+fn addProvided(a: std.mem.Allocator, dir: []const u8, from: Provided, into: *Provided) error{OutOfMemory}!void {
+    for (from.lib_paths.items) |d| try into.lib_paths.append(a, try joinPath(a, dir, d));
+    for (from.links.items) |l| try into.links.append(a, try a.dupe(u8, l));
+    for (from.runtime_files.items) |f| try into.runtime_files.append(a, try joinPath(a, dir, f));
 }
 
 /// Run `build_path` (a build.fels) with the `-D` `options` and return the plan it records,
