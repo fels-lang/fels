@@ -992,6 +992,35 @@ pub fn packageProvides(
     }
 }
 
+/// What a test program of the project links with (`fels test`): what the packages provide,
+/// and the library folders, libraries and runtime files the project's build.fels names, in
+/// its `provide_*` calls and for its artifacts. The project folder is a library folder too,
+/// as for an artifact.
+pub fn testLinkInputs(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    a: std.mem.Allocator,
+    project_dir: []const u8,
+    packages: []const pkg.resolve.Package,
+    folder_caps: []const ir.FolderCaps,
+) BuildError!Provided {
+    var out: Provided = .{};
+    try packageProvides(gpa, io, a, packages, folder_caps, &out);
+    const script = try joinPath(a, project_dir, "build.fels");
+    if (fileExists(io, script)) {
+        var plan = try loadPlanWith(gpa, io, script, &.{}, .{ .ffi = .all }, false);
+        defer plan.deinit();
+        try addProvided(a, project_dir, plan.provided, &out);
+        for (plan.artifacts.items) |art| {
+            for (art.lib_paths.items) |d| try out.lib_paths.append(a, try joinPath(a, project_dir, d));
+            for (art.libs.items) |l| try out.links.append(a, try a.dupe(u8, l));
+            for (art.runtime_files.items) |f| try out.runtime_files.append(a, try joinPath(a, project_dir, f));
+        }
+    }
+    try out.lib_paths.append(a, try a.dupe(u8, project_dir));
+    return out;
+}
+
 /// Add `from` to `into`, with its paths joined to `dir`.
 fn addProvided(a: std.mem.Allocator, dir: []const u8, from: Provided, into: *Provided) error{OutOfMemory}!void {
     for (from.lib_paths.items) |d| try into.lib_paths.append(a, try joinPath(a, dir, d));
