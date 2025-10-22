@@ -2,9 +2,9 @@
 
 `fels lsp` works: diagnostics, completion, hover, go-to-definition, document symbols,
 find references, rename, document highlight and workspace symbols. §8 wires it into your
-editor. The `#test` comptime lane works too ([docs/17](17_testing.md)). A tree-sitter grammar (`tree-sitter-fels`) and a Zed
-extension (`zed-fels`) are being written in their own repositories. A formatter, doc generator, runtime
-test lane, and REPL aren't built yet.
+editor. `fels test` and the `#test` comptime lane work too ([docs/17](17_testing.md)). A tree-sitter grammar (`tree-sitter-fels`) and a Zed
+extension (`zed-fels`) are being written in their own repositories. A formatter, doc generator and
+REPL aren't built yet.
 
 ## 0. The principle: the compiler is a library
 
@@ -138,18 +138,17 @@ leading doc comments and emits HTML/Markdown.
 - Output is a static site (or Markdown for embedding). A `b.doc` build step makes
   it a first-class, cacheable node in the build graph (doc 10 §5).
 
-## 4. `fels test` — the test runner
+## 4. `fels test`, the test runner
 
-Design a `#test` attribute: functions marked `#test` are discovered, compiled into
-a harness, and run with pass/fail + timing. The vm-corpus harness already proves
-the shape (`tests/compiler/vm_corpus.zig`).
+Built; [docs/17](17_testing.md) describes it. Functions marked `#test` run in two ways:
 
-- **Two execution modes, fels's twist:** a pure `#test` with no I/O can run **at
-  compile time on the comptime VM** (instant, hermetic), while tests needing the
-  OS run as a built executable. The attribute can hint (`#test(comptime)`), or the
-  runner tries comptime first and falls back.
-- `fels test` (and the `b.test` build step) discover, build, and report. Filters
-  (`fels test --filter substr`), and a TAP/JSON reporter for CI.
+- `fels test` builds a program per file that runs the file's tests and reports each one,
+  so a test can do I/O and call C. A crash ends only its own test.
+- `fels build` runs them **at compile time on the comptime VM** (instant, hermetic), and
+  a failed one fails the build. A test that needs the running program is skipped there.
+
+Still to come: a filter (`fels test --filter substr`), a time limit, and a TAP or JSON
+report for CI.
 
 ## 5. `fels repl` — interactive evaluation
 

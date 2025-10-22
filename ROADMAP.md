@@ -70,9 +70,8 @@ What remains:
 
 None of these exist as subcommands today; `fels help` lists what does.
 
-- `fels test` — the runtime test lane. Per-test zones with leak checks, TTY/TAP/JSON
-  reporters. The `#test` comptime lane already fails the build on a failed assertion;
-  this is the other half. See [`docs/17`](docs/17_testing.md) §5.
+- More for `fels test`: per-test zones with leak checks, a time limit, a filter, TAP or
+  JSON reports. `fels test` itself works. See [`docs/17`](docs/17_testing.md) §6.
 - Reflection-driven structural diffs on assertion failure, which also unlocks struct
   equality.
 - Property testing and snapshots.

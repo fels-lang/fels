@@ -233,7 +233,7 @@ frontend is platform-independent.
 | Interfaces (dynamic + interface-through-interface dispatch, `$T: Iface` bounds) | done |
 | Standard library (30 modules) | done |
 | Atomics + concurrency | done |
-| Testing | `#test` comptime lane (a failed assertion fails the build); runtime lane planned |
+| Testing | `fels test` runs `#test` functions as native programs; `fels build` runs them at compile time |
 | Tooling | `check`/`ir`/`object`/`build`, `fels lsp`, tree-sitter grammar + Zed extension, `fels bindgen`. No formatter, doc gen, REPL, or package manager yet |
 | Platform | Windows x86-64 and Linux x86-64, both end-to-end with the full standard library. Linux cross-compiles from Windows, static by default and glibc via `--libc`. No macOS backend. |
 
