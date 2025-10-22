@@ -117,7 +117,7 @@ something the VM cannot do yet. The VM cannot run them, and that is no fault of 
 so the build skips them with a note and goes on:
 
 ```
-note: 1 #test function of src/main.fels cannot run at compile time; `fels test` runs it
+note: building src/main.fels, 1 #test function cannot run at compile time; `fels test` runs it
 ```
 
 ## 4. The `Test` context

@@ -229,7 +229,7 @@ fn runComptimeTestLane(allocator: std.mem.Allocator, fe: *pipeline.FrontEnd, fil
         return error.CompileFailed;
     }
     if (report.skipped != 0) std.debug.print(
-        "note: {d} #test {s} of {s} cannot run at compile time; `fels test` runs {s}\n",
+        "note: building {2s}, {0d} #test {1s} cannot run at compile time; `fels test` runs {3s}\n",
         .{ report.skipped, if (report.skipped == 1) "function" else "functions", file_name, if (report.skipped == 1) "it" else "them" },
     );
     // All green — drop the test functions so they never reach the backend.
