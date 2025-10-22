@@ -1,6 +1,7 @@
-/// `fels test`: the #test functions of a project's files run on the comptime VM, file by file.
-/// Nothing is generated or linked, so these run without LLVM.
+/// `fels test`: the #test functions of a project's files run, file by file. The tests of the
+/// comptime VM lane (`comptime_only`) need no LLVM; the native ones build and run programs.
 const std = @import("std");
+const builtin = @import("builtin");
 const fels = @import("fels_compiler");
 const test_cmd = fels.test_cmd;
 
@@ -50,8 +51,25 @@ fn libDir(comptime name: []const u8) []const u8 {
     return ".zig-cache/" ++ name ++ "/mathx";
 }
 
-/// Run `fels test` and return its summary and report (on the testing allocator).
-fn runTests(opts: test_cmd.Options) !struct { summary: test_cmd.Summary, text: []u8 } {
+const Result = struct { summary: test_cmd.Summary, text: []u8 };
+
+/// Run `fels test` on the comptime VM and return its summary and report (on the testing
+/// allocator).
+fn runTests(opts: test_cmd.Options) !Result {
+    var vm_opts = opts;
+    vm_opts.comptime_only = true;
+    return runWith(vm_opts);
+}
+
+/// Run `fels test` with native test programs.
+fn runNative(opts: test_cmd.Options) !Result {
+    var native = opts;
+    native.llvm_bin = fels.llvm_path ++ "/bin";
+    native.lib_paths = if (fels.windows_sdk_lib_path.len != 0) &.{fels.windows_sdk_lib_path} else &.{};
+    return runWith(native);
+}
+
+fn runWith(opts: test_cmd.Options) !Result {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     const summary = try test_cmd.run(std.testing.allocator, io, &out.writer, opts);
@@ -146,7 +164,7 @@ test "fels test: given files and folders, without the folders a walk skips" {
 
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try std.testing.expectError(error.BadPath, test_cmd.run(std.testing.allocator, io, &out.writer, .{ .project_dir = dir, .paths = &.{dir ++ "/nosuch.fels"} }));
+    try std.testing.expectError(error.BadPath, test_cmd.run(std.testing.allocator, io, &out.writer, .{ .project_dir = dir, .paths = &.{dir ++ "/nosuch.fels"}, .comptime_only = true }));
     try expectHas(out.written(), "cannot find");
 }
 
@@ -161,3 +179,37 @@ test "fels test: without src/ the project folder is tested, and a project withou
     try std.testing.expect(r.summary.ok());
     try expectHas(r.text, "/util_test.fels\n  \u{2713} twice_doubles\n");
 }
+
+test "fels test: on the comptime VM, a test that needs the running program is skipped" {
+    const dir = ".zig-cache/tc_skip";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "src/app.fels",
+        \\counter: i32 = 0;
+        \\
+        \\#test
+        \\asks_the_os :: fn(t: *Test) {
+        \\    t.expect(os_pid() > 0i64);
+        \\}
+        \\
+        \\#test
+        \\counts :: fn(t: *Test) {
+        \\    counter += 1;
+        \\    t.eq(counter, 1);
+        \\}
+        \\
+        \\#test
+        \\adds :: fn(t: *Test) {
+        \\    t.eq(1 + 1, 2);
+        \\}
+        \\
+    );
+    const r = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(r.text);
+    try std.testing.expectEqual(@as(u32, 1), r.summary.passed);
+    try std.testing.expectEqual(@as(u32, 2), r.summary.skipped);
+    try std.testing.expect(r.summary.ok());
+    try expectHas(r.text, "  - asks_the_os: skipped (comptime FFI to `");
+    try expectHas(r.text, "  - counts: skipped (the comptime VM cannot run `counts`)\n");
+    try std.testing.expect(std.mem.endsWith(u8, r.text, "\n1 passed, 0 failed, 2 skipped\n"));
+}
+
