@@ -3,6 +3,28 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Added
+
+- **`fels test`** runs the `#test` functions of a project: of `src/`, or of the files and
+  folders you name. Each file's tests are built into a program and run, so a test can read and
+  write files and call C. A failed test shows each check that failed and what it printed; a
+  crash or a panic ends only its own test. The test programs link with what the packages and
+  the project's build.fels provide. `fels test --comptime` runs the tests on the comptime VM
+  instead, as a fels without LLVM does. See docs/17_testing.md.
+- **A project imports its own package by name.** A library with `#package mathx` can write
+  `#import mathx;` in its examples and tests, in `fels build`, `fels test` and the editor.
+
+### Changed
+
+- **`fels build` skips a `#test` the comptime VM cannot run** (it calls the OS, writes a
+  global, ...) with a note, instead of failing the build. `fels test` runs it.
+
+### Fixed
+
+- **A denied or failed compile-time FFI call leaked its message.**
+
 ## 0.5.0 — 2026-10-11
 
 The editor knows the packages, the package manager gets its remaining commands, and the build
