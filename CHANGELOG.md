@@ -3,7 +3,10 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.6.0 — 2026-10-11
+
+`fels test` runs the tests of a project as programs, so they can read files and call C, and
+`fels new` starts a project from a template.
 
 ### Added
 
