@@ -176,6 +176,10 @@ pub fn main(init: std.process.Init) u8 {
         });
     }
 
+    // `fels new <name>` and `fels init` start a project from a template.
+    if (std.mem.eql(u8, cmd, "new") or std.mem.eql(u8, cmd, "init"))
+        return fels.new_cmd.cmd(init.arena.allocator(), io, std.mem.eql(u8, cmd, "init"), args[2..]);
+
     // `fels bindgen <header.h>` generates Fels FFI bindings from a C header.
     if (std.mem.eql(u8, cmd, "bindgen")) return cmdBindgen(allocator, io, init.environ_map, args[2..]);
 
@@ -791,6 +795,8 @@ fn printUsage() void {
         \\usage:  fels <command> <file.fels> [options]
         \\
         \\commands:
+        \\  new      <name>        start a project in a new folder (--lib, --cbind; --list)
+        \\  init                   start a project in this folder
         \\  build                  run ./build.fels (the build system) — see below
         \\  build    <name>        build a named artifact, or `run`/a step
         \\  build    <file.fels>     compile and link a single file directly
