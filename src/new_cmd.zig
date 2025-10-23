@@ -95,7 +95,8 @@ pub fn create(a: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Optio
     if (opts.license != .none) {
         const text = switch (opts.license) {
             .mit => mit_license,
-            .apache => apache_license,
+            // A checkout with CRLF line ends embeds them; the project gets LF like its other files.
+            .apache => try std.mem.replaceOwned(u8, a, apache_license, "\r\n", "\n"),
             .none => unreachable,
         };
         try writeFile(a, io, out, opts, .{ .path = "LICENSE", .text = text }, &written, &kept);
