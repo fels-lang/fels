@@ -7,6 +7,11 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **`fels new` and `fels init`** start a project from a template: a program (`--app`, the
+  default), a library (`--lib`) or bindings to a C library (`--cbind`). Each comes with
+  tests that pass, a build.fels, a README, a .gitignore and a license (MIT, Apache-2.0 or
+  none), and `fels new` runs `git init`. `fels init` fills the current folder and keeps the
+  files that are there. See docs/15_tooling.md §9.
 - **`fels test`** runs the `#test` functions of a project: of `src/`, or of the files and
   folders you name. Each file's tests are built into a program and run, so a test can read and
   write files and call C. A failed test shows each check that failed and what it printed; a
