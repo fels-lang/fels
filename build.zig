@@ -59,6 +59,8 @@ pub fn build(b: *std.Build) void {
     // these import names; the files remain the single source of truth in lib/.
     compiler_mod.addAnonymousImport("std_heap_fels", .{ .root_source_file = b.path("lib/std/heap.fels") });
     compiler_mod.addAnonymousImport("std_ptr_fels", .{ .root_source_file = b.path("lib/std/ptr.fels") });
+    // The Apache license text `fels new --license Apache-2.0` writes into a project.
+    compiler_mod.addAnonymousImport("license_apache", .{ .root_source_file = b.path("LICENSE-APACHE-2.0.txt") });
 
     // Wire LLVM into the compiler library when a path is provided.
     if (llvm_path) |lp| {
