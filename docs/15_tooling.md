@@ -2,7 +2,8 @@
 
 `fels lsp` works: diagnostics, completion, hover, go-to-definition, document symbols,
 find references, rename, document highlight and workspace symbols. §8 wires it into your
-editor. `fels test` and the `#test` comptime lane work too ([docs/17](17_testing.md)). A tree-sitter grammar (`tree-sitter-fels`) and a Zed
+editor. `fels test` and the `#test` comptime lane work too ([docs/17](17_testing.md)), and
+`fels new` starts a project from a template (§9). A tree-sitter grammar (`tree-sitter-fels`) and a Zed
 extension (`zed-fels`) are being written in their own repositories. A formatter, doc generator and
 REPL aren't built yet.
 
@@ -314,6 +315,44 @@ VS Code support is a thin client wrapper (future).
 > error at the right line. `python tests/lsp_perf.py <fels.exe> <file.fels>` times repeated
 > edits. `python tests/lsp_assist_test.py` checks member completion, signature help, inlay
 > hints and hover, also while the file does not parse.
+
+## 9. Starting a project: `fels new` and `fels init`
+
+```text
+fels new hello                  a program in the new folder hello/
+fels new mathx --lib            a library others use with `fels add`
+fels new rl --cbind             Fels bindings to a C library
+fels init                       the same in the current folder (--lib, --cbind)
+fels new --list                 the templates
+```
+
+| Template | What it makes |
+| --- | --- |
+| `--app` (the default) | `src/main.fels` with `main`, a function and a `#test`; `build.fels` with the program and a `run` step |
+| `--lib` | `src/<name>.fels` with `pub` functions and tests, `examples/demo.fels` that imports the library by its name, a README that shows `fels add` |
+| `--cbind` | `src/<name>.fels` with `#extern` bindings, a `lib/` folder for the C library, `build.fels` that provides `lib/` to the package's users, an example |
+
+Every template also writes `fels.pkg`, a `README.md`, a `.gitignore` and a `LICENSE`, and
+puts what `fels build` makes into `bin/`. Right after `fels new`, `fels test` passes and
+`fels build run` runs the program or the example. The cbind template binds two kernel32
+functions, so it builds and its tests run before your library is there; replace them with
+your library's functions.
+
+- **The name.** The folder's name is the package name. It has to work as a Fels name:
+  `-`, `.` and spaces become `_` (`fels new my-lib` makes the package `my_lib`, with a
+  note), and a name that starts with a digit is refused.
+- **The license.** MIT by default, with this year and `git config user.name`.
+  `--license Apache-2.0` writes the Apache license, `--license none` writes none and leaves
+  `#license` out of fels.pkg.
+- **git.** `fels new` runs `git init` when git is there and the folder is not inside a
+  repository already. `--no-git` skips it.
+- **Nothing is written over.** `fels new` wants a folder that does not exist or is empty.
+  `fels init` keeps every file that is there (it lists them) and stops when the folder has
+  a fels.pkg.
+
+The templates are part of fels.exe ([src/new_cmd.zig](../src/new_cmd.zig)); in them
+`{{name}}`, `{{year}}` and `{{author}}` are filled in. Still to come: templates from a git
+repository, and a game template.
 
 ## Diagnostics in the terminal
 
