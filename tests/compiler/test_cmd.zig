@@ -269,6 +269,26 @@ test "fels test: natively, an app's tests write files, and a failing one shows w
     try std.testing.expect(std.mem.endsWith(u8, r.text, "\n2 passed, 1 failed\n"));
 }
 
+test "fels test: natively, a file without tests compiles as it is and is not an error" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const dir = ".zig-cache/tc_native_none";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package mathx \"0.1.0\";\n");
+    try write(dir, "src/mathx.fels", "pub clamp :: fn(x: i32, lo: i32, hi: i32) -> i32 {\n    if x < lo { return lo; }\n    if x > hi { return hi; }\n    return x;\n}\n");
+    const r = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(r.text);
+    try std.testing.expect(r.summary.ok());
+    try std.testing.expectEqualStrings("no #test functions found\n", r.text);
+
+    // Next to a file with tests.
+    try write(dir, "src/more.fels", "#import mathx;\n#test\nclamps :: fn(t: *Test) { t.eq(mathx::clamp(9, 0, 5), 5); }\n");
+    const m = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(m.text);
+    try std.testing.expectEqual(@as(u32, 1), m.summary.passed);
+    try std.testing.expect(m.summary.ok());
+}
+
 test "fels test: natively, a crash and t.fatal end only their own test" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
