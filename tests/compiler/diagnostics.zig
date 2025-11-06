@@ -207,6 +207,48 @@ test "diagnostics: unknown type is reported, never 'no further details'" {
         "unknown error type `Ooops`") != null);
 }
 
+/// `firstError` for `t.fels` when every import in it loads `lib.fels`, whose source is
+/// `lib_src`. The import keeps the path written in `src`, so a help can quote it.
+fn firstErrorWithLib(arena: std.mem.Allocator, lib_src: []const u8, src: []const u8) !?[]const u8 {
+    const lib = try fels.parseSourceFrom(arena, "lib.fels", lib_src, 1);
+    const main = try fels.parseSourceFrom(arena, "t.fels", src, lib.next_id);
+    var items: std.ArrayList(fels.ast_mod.Item) = .empty;
+    try items.appendSlice(arena, lib.module.items);
+    for (main.module.items) |item| switch (item) {
+        .import => |imp| {
+            var resolved = imp;
+            resolved.resolved_file = "lib.fels";
+            try items.append(arena, .{ .import = resolved });
+        },
+        else => try items.append(arena, item),
+    };
+    const mod: fels.Module = .{ .file_name = "t.fels", .items = items.items };
+    var syms = try fels.sema_mod.collectSymbols(arena, mod);
+    const env = try fels.sema_mod.checkTypesTolerant(arena, mod, &syms, src, "t.fels");
+    for (env.diagnostics.items) |d| {
+        if (d.kind == .err and std.mem.eql(u8, d.file, "t.fels")) return try fels.renderDiagnostic(arena, d.file, src, d);
+    }
+    return null;
+}
+
+test "diagnostics: a type from a module imported whole says how to reach it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const lib = "pub Build :: struct { id: i32 }\n";
+
+    // `#import std.build;` reaches `Build` only as `build::Build`. The help used to be
+    // "did you mean `Build`?", the very name that was not found.
+    const bare = (try firstErrorWithLib(a, lib, "#import std.build;\nrun :: fn(b: Build) {}")).?;
+    try std.testing.expect(std.mem.indexOf(u8, bare, "unknown type `Build`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bare, "help: write `build::Build`, or import it with `#import std.build.{ Build };`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bare, "did you mean") == null);
+
+    // Under an alias the namespace is the alias; the braced import keeps the path.
+    const aliased = (try firstErrorWithLib(a, lib, "#import std.build as tools;\nrun :: fn(b: Build) {}")).?;
+    try std.testing.expect(std.mem.indexOf(u8, aliased, "help: write `tools::Build`, or import it with `#import std.build.{ Build };`") != null);
+}
+
 /// Fail, printing the program and the diagnostic, unless `prelude` + `body` type-checks
 /// without an error.
 fn expectNoError(arena: std.mem.Allocator, prelude: []const u8, body: []const u8) !void {
