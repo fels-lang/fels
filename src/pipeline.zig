@@ -772,7 +772,8 @@ fn preparePipeline(
     // `#test` functions take a `*Test` context; inject the `Test` type (and its
     // assertion methods) when the module declares any test, so tests compile with
     // no import. The tests themselves run in the driver (comptime lane), not here.
-    const with_testing = if (ir_mod.hasTestDecl(with_heap) and !moduleDefinesType(with_heap, "Test"))
+    const adds_testing = ir_mod.hasTestDecl(with_heap) and !moduleDefinesType(with_heap, "Test");
+    const with_testing = if (adds_testing)
         prependTestingPrelude(allocator, with_heap) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,
@@ -780,7 +781,9 @@ fn preparePipeline(
     else
         with_heap;
 
-    const with_runner = if (test_runner)
+    // The runner calls the helpers of that prelude, so it needs it: a file without tests
+    // compiles as it is.
+    const with_runner = if (test_runner and adds_testing)
         addTestRunner(allocator, with_testing) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,
