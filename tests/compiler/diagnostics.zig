@@ -249,6 +249,25 @@ test "diagnostics: a type from a module imported whole says how to reach it" {
     try std.testing.expect(std.mem.indexOf(u8, aliased, "help: write `tools::Build`, or import it with `#import std.build.{ Build };`") != null);
 }
 
+test "diagnostics: a type suggestion is a name the file can write" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const lib = "pub Build :: struct { id: i32 }\n";
+
+    // `Build` is in the program but not reachable by that name, so it is no answer to a typo.
+    const typo_whole = (try firstErrorWithLib(a, lib, "#import std.build;\nrun :: fn(b: Buld) {}")).?;
+    try std.testing.expect(std.mem.indexOf(u8, typo_whole, "unknown type `Buld`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, typo_whole, "did you mean") == null);
+    const not_imported = (try firstErrorWithLib(a, lib, "run :: fn(b: Build) {}")).?;
+    try std.testing.expect(std.mem.indexOf(u8, not_imported, "unknown type `Build`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, not_imported, "did you mean") == null);
+
+    // Imported by name it is one.
+    const typo_braced = (try firstErrorWithLib(a, lib, "#import std.build.{ Build };\nrun :: fn(b: Buld) {}")).?;
+    try std.testing.expect(std.mem.indexOf(u8, typo_braced, "did you mean `Build`?") != null);
+}
+
 /// Fail, printing the program and the diagnostic, unless `prelude` + `body` type-checks
 /// without an error.
 fn expectNoError(arena: std.mem.Allocator, prelude: []const u8, body: []const u8) !void {
