@@ -279,6 +279,20 @@ test "diagnostics: a built-in type after `!` is not an error type" {
     try std.testing.expect(std.mem.indexOf(u8, builtin, "did you mean") == null);
 }
 
+test "diagnostics: an unknown error type gets the help of an unknown type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const whole = (try firstErrorWithLib(a, "pub Oops :: errors { bad }\n", "#import std.build;\nf :: fn() -> i32 ! Oops { return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, whole, "unknown error type `Oops`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, whole, "help: write `build::Oops`, or import it with `#import std.build.{ Oops };`") != null);
+
+    const typo = (try firstError(a, "Oops :: errors { bad }\nf :: fn() -> i32 ! Oopz { return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, typo, "unknown error type `Oopz`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, typo, "help: did you mean `Oops`?") != null);
+}
+
 /// Fail, printing the program and the diagnostic, unless `prelude` + `body` type-checks
 /// without an error.
 fn expectNoError(arena: std.mem.Allocator, prelude: []const u8, body: []const u8) !void {
