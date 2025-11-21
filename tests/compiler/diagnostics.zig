@@ -293,6 +293,24 @@ test "diagnostics: an unknown error type gets the help of an unknown type" {
     try std.testing.expect(std.mem.indexOf(u8, typo, "help: did you mean `Oops`?") != null);
 }
 
+test "diagnostics: a function or constant from a module imported whole says how to reach it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const lib = "pub PI :: 3;\npub lerp :: fn(x: i32) -> i32 { return x; }\n";
+
+    // Both used to get "did you mean" with their own name.
+    const call = (try firstErrorWithLib(a, lib, "#import std.math;\nrun :: fn() -> i32 { return lerp(1); }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, call, "unknown function `lerp`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, call, "help: write `math::lerp`, or import it with `#import std.math.{ lerp };`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, call, "did you mean") == null);
+
+    const name = (try firstErrorWithLib(a, lib, "#import std.math;\nrun :: fn() -> i32 { return PI; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, name, "unknown name `PI`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, name, "help: write `math::PI`, or import it with `#import std.math.{ PI };`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, name, "did you mean") == null);
+}
+
 /// Fail, printing the program and the diagnostic, unless `prelude` + `body` type-checks
 /// without an error.
 fn expectNoError(arena: std.mem.Allocator, prelude: []const u8, body: []const u8) !void {
