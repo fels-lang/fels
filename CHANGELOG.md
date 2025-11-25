@@ -3,7 +3,10 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.6.1 — 2026-10-11
+
+Fixes: `fels test` works on a project with files that have no tests, and a
+"did you mean" hint no longer offers the name that was not found.
 
 ### Fixed
 
@@ -13,6 +16,8 @@ the major version is `0`, any minor bump may break source compatibility.
   imported whole declares (`#import std.build;`) now gets the way to reach it:
   `` write `build::Build`, or import it with `#import std.build.{ Build };` ``. A suggestion is
   only a name the file can write, and a built-in type after `!` says it is not an error type.
+- **`fels new --license Apache-2.0` wrote the LICENSE with Windows line ends**; it has LF like
+  the other files now.
 
 ## 0.6.0 — 2026-10-11
 
