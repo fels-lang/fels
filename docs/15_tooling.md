@@ -372,8 +372,10 @@ error: unknown type `Poin`
 plus label, secondary `labels` (other underlines, or the frames of a trace),
 `notes`, and `helps`. `sema` attaches them through `emitErrorRich`: a type mismatch
 underlines the value and names the expected type; an unknown name, function, or type
-gets a `help: did you mean …?` (a Levenshtein search over the locals in scope,
-top-level functions and consts, and the type names).
+gets a `help: did you mean …?` (a Levenshtein search over the locals in scope and
+the functions, consts and types the file can write by name, never the unknown name
+itself). A name that a module imported whole declares gets the way to reach it
+instead: `` help: write `build::Build`, or import it with `#import std.build.{ Build };` ``.
 
 Color is on when stderr is a console, off when it's a pipe or file, so captured
 output stays plain. `NO_COLOR` forces it off, `FELS_COLOR=1` forces it on (handy
