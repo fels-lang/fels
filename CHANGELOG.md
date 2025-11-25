@@ -7,6 +7,8 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- **`fels test` failed on a file without tests** ("unknown function `__fels_test_from`"), so a
+  project with such a file had errors. A file without tests compiles as it is again.
 - **"did you mean `Build`?" offered the name that was not found.** A name that a module
   imported whole declares (`#import std.build;`) now gets the way to reach it:
   `` write `build::Build`, or import it with `#import std.build.{ Build };` ``. A suggestion is
