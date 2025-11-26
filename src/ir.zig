@@ -4519,12 +4519,15 @@ const FunctionLowerer = struct {
                     for (self.params) |p| {
                         if (std.mem.eql(u8, p.name, name)) is_param = true;
                     }
-                    if (!is_param) if (resolveTopLevel(self.symbols, self.file_name, name)) |id| {
+                    // A param has no local slot: the backend points at a copy of it (the
+                    // receiver of a `*Self` method called on a by-value param, `p.get()`).
+                    if (is_param) break :blk try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = .{ .param = name } } });
+                    if (resolveTopLevel(self.symbols, self.file_name, name)) |id| {
                         const sym = self.symbols.symbol(id);
                         if (sym.kind == .global_var or sym.kind == .const_symbol) {
                             break :blk try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = .{ .global = sym.link_name } } });
                         }
-                    };
+                    }
                 }
                 const local: Value = .{ .local = cur };
                 break :blk try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = local } });
