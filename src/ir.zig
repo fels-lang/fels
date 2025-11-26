@@ -3372,7 +3372,7 @@ const FunctionLowerer = struct {
                     // `a == b` / `a != b` on an aggregate (struct, array, or
                     // non-byte slice) compares element/field-wise — the backend
                     // can't `icmp` an aggregate. (Byte slices were handled above.)
-                    if (lty == .struct_type or lty == .array or lty == .slice) {
+                    if (lty == .struct_type or lty == .array or lty == .slice or (lty == .optional and rty == .optional)) {
                         const eqv = try self.lowerValueEq(try self.lowerExpr(binary.left.*), try self.lowerExpr(binary.right.*), lty);
                         if (binary.op == .not_equal) break :blk try self.emit(.bool, .{ .unary = .{ .op = .not, .value = eqv } });
                         break :blk eqv;
@@ -4390,6 +4390,8 @@ const FunctionLowerer = struct {
     /// enums, pointers). All of these are aggregates LLVM can't `icmp` directly.
     fn lowerValueEq(self: *FunctionLowerer, a: Value, b: Value, ty: IrType) LowerError!Value {
         if (ty == .struct_type) return self.lowerStructEq(a, b, ty);
+        // An optional pointer is the pointer itself, null or not: it compares as one.
+        if (ty == .optional and ty.optional.* != .ptr) return self.lowerOptionalEq(a, b, ty.optional.*);
         if (isByteSliceTy(ty)) return self.lowerStringEqDynamic(a, b);
         if (ty == .slice) return self.lowerSliceEqDynamic(a, b, ty.slice.*);
         if (ty == .array) {
@@ -4405,6 +4407,33 @@ const FunctionLowerer = struct {
             return acc orelse .{ .imm = .{ .bool = true } };
         }
         return self.emit(.bool, .{ .binary = .{ .op = .eq, .lhs = a, .rhs = b } });
+    }
+
+    /// `a == b` on two optionals: both null, or both set and their values equal. The values are
+    /// compared only when both are set; a null optional has none.
+    fn lowerOptionalEq(self: *FunctionLowerer, a: Value, b: Value, payload_ty: IrType) LowerError!Value {
+        const res_name = try std.fmt.allocPrint(self.allocator, "__opteq_{d}", .{self.next_block_id});
+        try self.local_types.put(res_name, .bool);
+        const a_some = try self.emit(.bool, .{ .optional_is_some = a });
+        const b_some = try self.emit(.bool, .{ .optional_is_some = b });
+        // Both null is equal, one null is not; both set depends on the values.
+        const same = try self.emit(.bool, .{ .binary = .{ .op = .eq, .lhs = a_some, .rhs = b_some } });
+        try self.emitNoResult(.bool, .{ .store_local = .{ .name = res_name, .value = same } });
+        const both = try self.emit(.bool, .{ .binary = .{ .op = .and_op, .lhs = a_some, .rhs = b_some } });
+
+        const values_id = self.allocBlockId();
+        const done_id = self.allocBlockId();
+        try self.terminate(.{ .cond_branch = .{ .cond = both, .then_block = values_id, .else_block = done_id } });
+
+        self.startBlock(values_id, "opteq.values");
+        const pa = try self.emit(payload_ty, .{ .optional_payload = a });
+        const pb = try self.emit(payload_ty, .{ .optional_payload = b });
+        const eqv = try self.lowerValueEq(pa, pb, payload_ty);
+        try self.emitNoResult(.bool, .{ .store_local = .{ .name = res_name, .value = eqv } });
+        try self.terminate(.{ .branch = done_id });
+
+        self.startBlock(done_id, "opteq.done");
+        return .{ .local = res_name };
     }
 
     /// `a == b` on a slice of any element type: equal length, then element by
