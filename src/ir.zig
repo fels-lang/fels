@@ -3,6 +3,7 @@ const ast = @import("ast.zig");
 const pipeline = @import("pipeline.zig");
 const parser = @import("parser.zig");
 const sema = @import("sema.zig");
+const param_writes = @import("param_writes.zig");
 const Span = @import("lexer/span.zig").Span;
 const diag_mod = @import("diagnostic.zig");
 const vm_compiler = @import("vm/compiler.zig");
@@ -1629,6 +1630,7 @@ fn lowerFunctionInstantiation(
     const blocks = if (decl.body) |body| blk: {
         var lowerer = FunctionLowerer.init(allocator, types, symbols, decl, error_codes);
         lowerer.cvm = cvm;
+        lowerer.ir_params = params.items;
         lowerer.type_binding = type_args;
         // Without this the body lowers returns against `.void` and never wraps a
         // fallible return — generic `fn(...) -> T ! Err` then miscompiles.
@@ -1726,6 +1728,7 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
         var lowerer = FunctionLowerer.init(allocator, types, symbols, decl, error_codes);
         lowerer.module = module;
         lowerer.cvm = cvm;
+        lowerer.ir_params = params.items;
         lowerer.current_return_ty = return_ty;
         break :blk try lowerer.lowerBody(body);
     } else &.{};
@@ -1791,6 +1794,7 @@ fn lowerInterfaceMethod(
         var lowerer = FunctionLowerer.init(allocator, types, symbols, decl, error_codes);
         lowerer.module = module;
         lowerer.cvm = cvm;
+        lowerer.ir_params = params.items;
         lowerer.current_return_ty = return_ty;
         break :blk try lowerer.lowerBody(body);
     } else &.{};
@@ -1885,6 +1889,9 @@ const FunctionLowerer = struct {
     types: sema.TypeEnv,
     symbols: sema.SymbolTable,
     params: []const ast.Param,
+    /// The params with their IR types, as the function declares them. `lowerBody` gives each
+    /// one a local slot.
+    ir_params: []const IrParam = &.{},
     file_name: []const u8,
     source: []const u8,
     /// Name of the function being lowered, for `core::func`. "" when unknown
@@ -2014,8 +2021,27 @@ const FunctionLowerer = struct {
             .{ .return_value = null }
         else
             .unreachable_term;
+        try self.spillParams(body);
         try self.lowerBlock(body.statements, fallthrough);
         return self.blocks.toOwnedSlice(self.allocator);
+    }
+
+    /// Give a param the body changes or points at a local slot of its own name, filled with the
+    /// param's value, so the body can assign it (`x = 5`), change it through a field
+    /// (`p.v = 5`) or a `*Self` method (`p.bump()`), and read the new value back. Reads find the
+    /// slot before the param. A param the body only reads stays a plain value.
+    fn spillParams(self: *FunctionLowerer, body: ast.Block) LowerError!void {
+        if (self.ir_params.len == 0) return;
+        const written = param_writes.find(self.allocator, self.params, body, &self.types.receiver_auto_addr) catch return error.OutOfMemory;
+        for (self.ir_params) |p| {
+            if (p.ty == .unknown or p.ty == .void) continue;
+            const changed = for (written) |w| {
+                if (std.mem.eql(u8, w, p.name)) break true;
+            } else false;
+            if (!changed) continue;
+            try self.local_types.put(p.name, p.ty);
+            try self.emitNoResult(p.ty, .{ .store_local = .{ .name = p.name, .value = .{ .param = p.name } } });
+        }
     }
 
     // `zone X: Arena {}` desugar
@@ -3180,14 +3206,15 @@ const FunctionLowerer = struct {
                         } });
                     }
                 }
+                // A param's own slot (`spillParams`) or a local that shadows it.
+                const cur = self.curLocal(name);
+                if (self.local_types.contains(cur)) break :blk Value{ .local = cur };
                 for (self.params) |p| {
                     if (std.mem.eql(u8, p.name, name)) break :blk Value{ .param = name };
                 }
                 // A declared local shadows a top-level function/const of the same
                 // name (matching sema's `lookupLocal`-first resolution). Without
                 // this, `foo := 10` next to a `foo :: fn()` lowered to `@foo`.
-                const cur = self.curLocal(name);
-                if (self.local_types.contains(cur)) break :blk Value{ .local = cur };
                 if (resolveTopLevel(self.symbols, self.file_name, name)) |id| {
                     const kind = self.symbols.symbol(id).kind;
                     const link = self.symbols.symbol(id).link_name;
