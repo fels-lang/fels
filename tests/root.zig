@@ -35,4 +35,5 @@ comptime {
     _ = @import("compiler/packages.zig");
     _ = @import("compiler/test_cmd.zig");
     _ = @import("compiler/new_cmd.zig");
+    _ = @import("compiler/std_tests.zig");
 }
