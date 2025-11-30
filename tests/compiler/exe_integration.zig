@@ -5445,3 +5445,28 @@ test "exe: a param can be assigned, changed through a field and through a *Self 
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_param_slots_o0", 0));
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_param_slots_o2", 2));
 }
+
+test "exe: a constant made of typed values has their type" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `MIN :: -9223372036854775807i64 - 1i64;` was a 32-bit global: the program read 0 (the
+    // comptime VM was right). Only untyped literals take the i32 default.
+    const src =
+        \\MIN :: -9223372036854775807i64 - 1i64;
+        \\BIG :: 3000000000u64 * 2u64;
+        \\HALF :: 1.5f32 * 2.0f32;
+        \\SMALL :: 2 + 3;
+        \\#assert(MIN < 0i64);
+        \\main :: fn() -> i32 {
+        \\    if MIN != -9223372036854775807i64 - 1i64 { return 1; }
+        \\    if BIG != 6000000000u64 { return 2; }
+        \\    if HALF != 3.0f32 { return 3; }
+        \\    if SMALL != 5 { return 4; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_typed_const_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_typed_const_o2", 2));
+}
