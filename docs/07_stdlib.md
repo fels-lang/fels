@@ -738,6 +738,23 @@ boot := time::monotonic_millis();      // GetTickCount64, coarse monotonic
 `utc` is exact for any time ≥ the epoch (Howard Hinnant's civil-from-days). `weekday`
 is `0`=Sunday … `6`=Saturday.
 
+**Calendar dates.** A `Date` is a day of the Gregorian calendar, kept as the number of days
+since 1970-01-01, so dates compare and subtract as numbers:
+
+```fels
+d := time::date(2024i64, 1i64, 31i64) ?? time::today_utc();  // null for a day that does not exist
+p := d.parts();                        // DateParts { year, month, day }
+w := d.weekday();                      // 0=Sunday … 6=Saturday
+e := d.add_months(1i64);               // 2024-02-29: the day stays inside the month
+f := d.add_days(-1i64);                // also add_years
+n := d.days_until(e);                  // 29
+iso := time::parse_date("2024-03-15"); // ?Date
+buf: [10]u8 = .{};
+text := time::format_date(e, buf[:]);  // "2024-02-29"
+```
+
+`is_leap_year(year)` and `days_in_month(year, month)` answer the calendar questions.
+
 ### `std.crypto`
 
 Hashing and checksums — pure computation.
