@@ -867,6 +867,17 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                     try lowerAstTypeWithEnv(allocator, t, front_end.types, front_end.symbols)
                 else
                     inferConstType(decl.value);
+                // An expression of typed values (`-9223372036854775807i64 - 1i64`, `A * B`) has
+                // the type sema gave it; only untyped literals fall back to the defaults below.
+                if (ty == .unknown) if (front_end.types.expr_types.get(decl.value.id)) |vt| {
+                    const lowered = lowerSemaTypeWithEnv(allocator, vt, front_end.types, front_end.symbols) catch IrType.unknown;
+                    switch (lowered) {
+                        .i, .u, .usize, .isize, .byte, .f32, .f64, .bool => if (vt != .int_lit and vt != .float_lit) {
+                            ty = lowered;
+                        },
+                        else => {},
+                    }
+                };
                 if (ty == .unknown) ty = switch (effective_imm) {
                     .int => .{ .i = 32 },
                     .uint => .{ .u = 64 },
