@@ -1019,8 +1019,12 @@ pub const Parser = struct {
 
         while (!self.check(.r_brace) and !self.check(.eof)) {
             const arm_start = self.peek();
-            const pattern = try self.parseMatchPattern();
+            const patterns = try self.parseMatchPatterns();
             const binding = try self.parseMatchBinding();
+            if (patterns.len > 1 and binding != null) {
+                try self.errorAt(arm_start, "a binding `|x|` needs an arm of one variant");
+                return error.ParseFailed;
+            }
             const guard = try self.parseMatchGuard();
 
             _ = try self.expect(.fat_arrow, "expected => after match pattern");
@@ -1043,7 +1047,7 @@ pub const Parser = struct {
                 };
             };
 
-            try arms.append(self.allocator, .{
+            for (patterns) |pattern| try arms.append(self.allocator, .{
                 .pattern = pattern,
                 .binding = binding,
                 .guard = guard,
@@ -1064,6 +1068,22 @@ pub const Parser = struct {
     ///   `else` · integers (`1`, grouped `1, 2, 3`) · ranges (`1..5`, `1..=5`) ·
     ///   strings (`"a"`, grouped `"a", "b"`) · enum variants (`.name`) ·
     ///   a bare identifier (a named catch-all binding).
+    /// The patterns of one arm: one, or several variants that share it (`.buy, .sell => …`).
+    /// Each becomes an arm of its own with the same body.
+    fn parseMatchPatterns(self: *Parser) ParseError![]const ast.MatchPattern {
+        var patterns: std.ArrayList(ast.MatchPattern) = .empty;
+        errdefer patterns.deinit(self.allocator);
+        const first = try self.parseMatchPattern();
+        try patterns.append(self.allocator, first);
+        if (first == .enum_variant) while (self.check(.comma) and self.peekKind(1) == .dot) {
+            _ = self.advance(); // comma
+            _ = self.advance(); // dot
+            const vname = try self.expect(.ident, "expected variant name");
+            try patterns.append(self.allocator, .{ .enum_variant = vname.text(self.source) });
+        };
+        return patterns.toOwnedSlice(self.allocator);
+    }
+
     fn parseMatchPattern(self: *Parser) ParseError!ast.MatchPattern {
         if (self.match(.keyword_else)) return .else_arm;
 
@@ -1131,13 +1151,17 @@ pub const Parser = struct {
 
         while (!self.check(.r_brace) and !self.check(.eof)) {
             const arm_start = self.peek();
-            const pattern = try self.parseMatchPattern();
+            const patterns = try self.parseMatchPatterns();
             const binding = try self.parseMatchBinding();
+            if (patterns.len > 1 and binding != null) {
+                try self.errorAt(arm_start, "a binding `|x|` needs an arm of one variant");
+                return error.ParseFailed;
+            }
             const guard = try self.parseMatchGuard();
             _ = try self.expect(.fat_arrow, "expected => after match pattern");
             const value = try self.parseExpr(0);
             _ = self.match(.comma);
-            try arms.append(self.allocator, .{
+            for (patterns) |pattern| try arms.append(self.allocator, .{
                 .pattern = pattern,
                 .binding = binding,
                 .guard = guard,
