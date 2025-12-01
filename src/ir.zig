@@ -430,6 +430,9 @@ pub const FieldInstr = struct {
 pub const IndexInstr = struct {
     base: Value,
     index: Value,
+    /// Whether a debug build checks `index < len`. The start of a slice may be the length
+    /// (`s[len..len]` is empty): the slice lowering checks `start <= end <= len` itself.
+    checked: bool = true,
 };
 
 pub const SliceInstr = struct {
@@ -4072,8 +4075,20 @@ const FunctionLowerer = struct {
                         try self.lowerLValueAddress(slice.base.*)
                     else
                         try self.lowerExpr(slice.base.*);
+                    // `start <= end <= len`; an empty part at the end (`s[len..len]`) is a
+                    // slice too.
+                    const start_ok = try self.emit(.bool, .{ .binary = .{ .op = .le, .lhs = start_val, .rhs = end_val } });
+                    const end_ok = try self.emit(.bool, .{ .binary = .{ .op = .le, .lhs = end_val, .rhs = base_len } });
+                    const in_bounds = try self.emit(.bool, .{ .binary = .{ .op = .and_op, .lhs = start_ok, .rhs = end_ok } });
+                    const ok_id = self.allocBlockId();
+                    const panic_id = self.allocBlockId();
+                    try self.terminate(.{ .cond_branch = .{ .cond = in_bounds, .then_block = ok_id, .else_block = panic_id } });
+                    self.startBlock(panic_id, "slice.out_of_bounds");
+                    try self.terminatePanic("slice out of bounds", expr.span);
+                    self.startBlock(ok_id, "slice.ok");
+
                     const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, elem_ty) };
-                    const offset_ptr = try self.emitAt(ptr_ty, .{ .index_addr = .{ .base = base_addr, .index = start_val } }, expr.span);
+                    const offset_ptr = try self.emitAt(ptr_ty, .{ .index_addr = .{ .base = base_addr, .index = start_val, .checked = false } }, expr.span);
                     const len = try self.emit(.usize, .{ .binary = .{ .op = .sub, .lhs = end_val, .rhs = start_val } });
                     break :blk try self.emit(self.exprType(expr), .{ .slice_expr = .{ .ptr = offset_ptr, .len = len } });
                 }
