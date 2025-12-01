@@ -5499,3 +5499,30 @@ test "exe: a match arm can name several enum variants" {
     ;
     try std.testing.expectEqual(@as(u32, 0), try compileAndRun(arena.allocator(), src, "exe_match_grouped_variants"));
 }
+
+test "exe: the variable of a for loop over strings compares as text" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The loop variable had no type the lowering knew, so `t == tag` became an `icmp` of the
+    // `{ ptr, len }` pair, which LLVM refused. The index variable is declared the same way.
+    const src =
+        \\has :: fn(tags: []const []const u8, tag: []const u8) -> bool {
+        \\    for t in tags { if t == tag { return true; } }
+        \\    return false;
+        \\}
+        \\position :: fn(tags: []const []const u8, tag: []const u8) -> i32 {
+        \\    for t, i in tags { if t == tag { return i as i32; } }
+        \\    return -1;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    words: [3][]const u8 = .{ "bank", "dividend", "etf" };
+        \\    if !has(words[:], "etf") { return 1; }
+        \\    if has(words[:], "tech") { return 2; }
+        \\    if position(words[:], "dividend") != 1 { return 3; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRun(arena.allocator(), src, "exe_for_string_binding"));
+}
