@@ -481,7 +481,13 @@ match direction {
     .west  => { println("going west"); }
 }
 
-// Enum with payload capture
+// Several variants that share an arm
+match kind {
+    .buy, .sell => { /* moves shares */ }
+    else        => { /* the rest */ }
+}
+
+// Enum with payload capture (an arm of one variant)
 match shape {
     .circle    |radius| => { /* use radius */ }
     .rectangle |corner| => { /* use corner */ }
