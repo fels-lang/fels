@@ -23,6 +23,9 @@ the major version is `0`, any minor bump may break source compatibility.
   `self`: garbage values or a crash.
 - **A constant made of typed values was 32 bits wide.** `MIN :: -9223372036854775807i64 - 1i64;`
   read as 0 in a compiled program; it now has the type of its values, as on the comptime VM.
+- **Comparing the variable of a `for` loop over strings** (`for t in tags { if t == tag … }`)
+  stopped the compiler with an internal error. The loop variable is now declared like any
+  other local.
 - **`==` and `!=` on two optionals** (`a == b` with `a, b: ?i64`, or optional structs) did not
   compile, and failed on the comptime VM. Both null is equal, one null is not, both set
   compares the values.
