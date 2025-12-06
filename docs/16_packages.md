@@ -109,7 +109,8 @@ added raylib 5.5.0
 ```
 
 `fels add` creates `fels.pkg` when there is none, and leaves it as it was when the package cannot
-be used. `fels build` fetches missing packages by itself, and `fels build --list` shows the
+be used. Without a version it writes the range of the version it found (`version "^5.5"` for
+5.5.0), so a later `fels update` stays within versions that should not break the project. `fels build` fetches missing packages by itself, and `fels build --list` shows the
 packages with their versions and grants.
 
 ```text
