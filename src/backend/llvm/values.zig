@@ -40,11 +40,12 @@ pub fn lowerImmAs(cg: *ModuleCg, imm: ir.Imm, lty: llvm.LLVMTypeRef) llvm.LLVMVa
             const bytes = s;
 
             const i8_ty = llvm.LLVMInt8TypeInContext(cg.ctx);
-            const arr_ty = llvm.LLVMArrayType2(i8_ty, bytes.len);
+            const arr_ty = llvm.LLVMArrayType2(i8_ty, bytes.len + 1);
 
             const gv = llvm.LLVMAddGlobal(cg.mod, arr_ty, name_z);
-            // dont_null_terminate=1: we store the raw string, no NUL
-            llvm.LLVMSetInitializer(gv, llvm.LLVMConstStringInContext(cg.ctx, bytes.ptr, @intCast(bytes.len), 1));
+            // A NUL after the bytes, outside the slice's length: `"text".ptr` is a C string,
+            // so a literal can go to a `const char*` parameter as it is.
+            llvm.LLVMSetInitializer(gv, llvm.LLVMConstStringInContext(cg.ctx, bytes.ptr, @intCast(bytes.len), 0));
             llvm.LLVMSetGlobalConstant(gv, 1);
             llvm.LLVMSetLinkage(gv, llvm.LLVMPrivateLinkage);
             llvm.LLVMSetUnnamedAddress(gv, llvm.LLVMGlobalUnnamedAddr);
