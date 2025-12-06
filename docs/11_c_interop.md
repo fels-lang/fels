@@ -53,6 +53,11 @@ values flow between the two with no cast, and `core::sizeof(c_int)` is 4.
 `c_char` is the signed `i8`, so a pointer to it does not accept a Fels string
 (`[*]const u8`); use `c_string` for `const char*` parameters.
 
+A string literal ends in a NUL that its length leaves out, so `"title".ptr` is a C string and
+can be passed as it is. Other text is not: a slice of a literal, text read from a file or built
+at run time has no NUL after it. Copy such text into a buffer and add the NUL before you give
+it to C.
+
 ### Naming a binding
 
 The Fels name of a binding is yours. It may be the name of a function the runtime or
