@@ -783,6 +783,13 @@ const FnCompiler = struct {
 
             .cast => |cst| {
                 const vr = try self.resolveReg(cst.value);
+                // `p as *T`: still a pointer, now to a `T` (loads and stores through it are
+                // that wide). A pointer into a zone stays as it is.
+                if (inst.ty == .ptr) {
+                    const size: u32 = @intCast(self.byteSize(inst.ty.ptr.*) orelse 8);
+                    try self.emit(Instr.r_r_imm(.host_ptr_make, target, vr, @intCast(size)));
+                    return;
+                }
                 const op: Opcode = if (isFloat(inst.ty)) .cast_to_float else .cast_to_int;
                 try self.emit(Instr.r_r_imm(op, target, vr, 0));
                 // `x as u8` keeps the low 8 bits, `-1 as u32` is 0xFFFFFFFF.
