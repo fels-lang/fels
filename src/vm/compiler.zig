@@ -502,6 +502,19 @@ const FnCompiler = struct {
         }
     }
 
+    /// A value read from host memory (an arena's bytes) comes as bytes: a slice as its address
+    /// and length, made a slice again; a signed integer as its bits, given its sign again. A
+    /// value from a zone is left as it is.
+    fn emitLoadedValue(self: *FnCompiler, target: Reg, ty: ir.IrType) CompileError!void {
+        if (ty == .slice) {
+            const stride: u32 = @intCast(self.byteSize(ty.slice.*) orelse 1);
+            try self.emit(Instr.r_r_imm(.bits_to_slice, target, target, @intCast(stride)));
+            return;
+        }
+        const shape = intShape(ty) orelse return;
+        if (shape.signed) try self.emitNarrow(target, ty);
+    }
+
     /// Wrap the integer in `reg` to the width and signedness of `ty`, when `ty` is an integer
     /// type narrower than the VM's 128 bits (anything else is left as it is).
     fn emitNarrow(self: *FnCompiler, reg: Reg, ty: ir.IrType) CompileError!void {
@@ -1008,6 +1021,7 @@ const FnCompiler = struct {
                 const base = try self.resolveReg(ix.base);
                 const idxr = try self.resolveReg(ix.index);
                 try self.emit(.{ .op = .index_load, .a = target, .b = base, .c = idxr, .imm = @intCast(self.cellCount(inst.ty)) });
+                try self.emitLoadedValue(target, inst.ty);
             },
             .index_addr => |ix| {
                 const elem_ty: ir.IrType = switch (inst.ty) {
@@ -1030,6 +1044,7 @@ const FnCompiler = struct {
             .at => |a| {
                 const ptr = try self.resolveReg(a.value);
                 try self.emit(Instr.r_r_imm(.load_cell, target, ptr, 0));
+                try self.emitLoadedValue(target, inst.ty);
             },
 
             // Variants / enums

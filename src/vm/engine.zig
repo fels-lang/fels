@@ -788,6 +788,14 @@ pub const Vm = struct {
                         .size = @intCast(inst.imm),
                     } },
                 },
+                .bits_to_slice => frame.regs[inst.a] = switch (frame.regs[inst.b]) {
+                    .uint => |bits| .{ .host_buf = .{
+                        .addr = @truncate(bits),
+                        .len = @truncate(bits >> 64),
+                        .stride = @intCast(inst.imm),
+                    } },
+                    else => frame.regs[inst.b],
+                },
                 .host_buf_make => frame.regs[inst.a] = .{ .host_buf = .{
                     .addr = asAddr(frame.regs[inst.b]) orelse return error.TypeMismatch,
                     .len = @intCast(frame.regs[inst.c].asI128() orelse return error.TypeMismatch),
@@ -963,6 +971,9 @@ fn hostStore(addr: usize, size: u32, val: Value) void {
         .int => |x| @bitCast(x),
         .host_ptr => |hp| hp.addr,
         .bool => |b| @intFromBool(b),
+        // a slice is its address and its length, as in compiled code
+        .string => |s| @as(u128, @intFromPtr(s.ptr)) | (@as(u128, s.len) << 64),
+        .host_buf => |hb| @as(u128, hb.addr) | (@as(u128, hb.len) << 64),
         else => 0,
     };
     var i: u32 = 0;
