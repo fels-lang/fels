@@ -3695,7 +3695,9 @@ const FunctionLowerer = struct {
                             }
                         }
 
-                        const callee_name = self.types.generic_call_insts.get(call.callee.id) orelse symbol.name;
+                        // The method's own (link) name: a free function of the same name in
+                        // another file is a different function.
+                        const callee_name = self.types.generic_call_insts.get(call.callee.id) orelse symbol.link_name;
                         break :blk try self.emit(self.exprType(expr), .{ .call = .{
                             .callee = callee_name,
                             .args = try args.toOwnedSlice(self.allocator),

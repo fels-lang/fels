@@ -4068,9 +4068,23 @@ const Checker = struct {
         // name. Then a visible (own/imported-unqualified) free function; then a
         // `self`-first method defined in the receiver type's own module (cross-
         // module UFCS).
-        const id = self.assocMethodSymbol(name, base_ty) orelse
-            self.resolveSymbol(name) orelse
-            self.methodFromTypeModule(name, base_ty) orelse return null;
+        // A candidate that cannot take the receiver (a free `alloc_bytes(n: i32)` of the
+        // caller's file) does not hide the next one (`std.heap`'s `alloc_bytes(self: *Arena,
+        // ...)` for `a.alloc_bytes(4)`).
+        const candidates = [_]?SymbolId{
+            self.assocMethodSymbol(name, base_ty),
+            self.resolveSymbol(name),
+            self.methodFromTypeModule(name, base_ty),
+        };
+        for (candidates) |candidate| {
+            const id = candidate orelse continue;
+            if (self.selfMethod(id)) |method| return method;
+        }
+        return null;
+    }
+
+    /// `id` as a method: a function whose first value parameter is `self`.
+    fn selfMethod(self: *Checker, id: SymbolId) ?ExtensionMethod {
         if (self.symbols.symbol(id).kind != .function) return null;
         const sig = self.env.fn_sigs.get(id) orelse return null;
         for (sig.params) |param| {
