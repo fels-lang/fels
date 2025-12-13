@@ -28,14 +28,18 @@ pub const FfiError = error{
 pub const max_args = 6;
 
 /// Resolve `ec.symbol` in `ec.lib`, marshal `args`, call it, and return the
-/// result as a VM value. Allocations made for marshaling (null-terminated
-/// strings, library handles) are intentionally leaked — the compile is short.
+/// result as a VM value. What marshaling allocates (the NUL-terminated names and
+/// strings) lives until the call returns, as a C `const char*` parameter expects;
+/// the library stays loaded for the rest of the compile.
 pub fn call(allocator: std.mem.Allocator, ec: ExternCall, args: []const Value) FfiError!Value {
     if (args.len > max_args) return error.UnsupportedArity;
-    const proc = try resolveProc(allocator, ec.lib, ec.symbol);
+    var arena: std.heap.ArenaAllocator = .init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const proc = try resolveProc(scratch, ec.lib, ec.symbol);
 
     var raw: [max_args]usize = .{0} ** max_args;
-    for (args, 0..) |a, i| raw[i] = try marshal(allocator, a);
+    for (args, 0..) |a, i| raw[i] = try marshal(scratch, a);
 
     const result = callRaw(proc, raw[0..args.len]);
     if (!ec.returns_value) return .void;
@@ -56,7 +60,7 @@ fn resolveProc(allocator: std.mem.Allocator, lib: []const u8, symbol: []const u8
         (try allocator.dupeZ(u8, lib)).ptr
     else
         (try std.fmt.allocPrintSentinel(allocator, "{s}.dll", .{lib}, 0)).ptr;
-    // (handles/strings leaked; the module stays loaded for the rest of the compile.)
+    // (the module stays loaded for the rest of the compile)
     const module = win.LoadLibraryA(lib_z) orelse return error.LibNotFound;
     const sym_z = try allocator.dupeZ(u8, symbol);
     return win.GetProcAddress(module, sym_z) orelse error.SymbolNotFound;
