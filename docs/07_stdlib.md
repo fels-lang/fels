@@ -755,6 +755,28 @@ text := time::format_date(e, buf[:]);  // "2024-02-29"
 
 `is_leap_year(year)` and `days_in_month(year, month)` answer the calendar questions.
 
+### `std.csv`
+
+Reading CSV text: records of fields between separators, with fields in quotes as RFC 4180 has
+them (a quoted field may hold the separator, line breaks and doubled quotes).
+
+```fels
+#import std.csv as csv;
+
+sep := csv::guess_separator(text);     // ';' for "Datum;Kurs", ',' for "date,close", or a tab
+r := csv::reader(text, sep);
+while !r.done() {
+    row := r.next(&a) catch err { ... };   // CsvError.unterminated_quote, at line r.line
+    // row[0], row[1], ...
+}
+rows := csv::records(text, 59u8, &a) catch err { ... };   // every record at once
+```
+
+The fields are slices of the text, except a quoted field with doubled quotes, which is copied
+into the arena with single ones. Lines end in LF or CRLF; empty lines are skipped, and so is a
+UTF-8 byte order mark at the start, as Excel writes one. `r.line` is the line the last record
+started on, for messages about a row.
+
 ### `std.crypto`
 
 Hashing and checksums — pure computation.
