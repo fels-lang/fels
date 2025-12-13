@@ -7,6 +7,11 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **`std.csv` reads CSV text**: records of fields between a comma, a semicolon (as German
+  spreadsheets write it) or a tab, with fields in quotes as RFC 4180 has them. `reader`, `next`
+  and `done` go record by record, `records` reads them all, `guess_separator` looks at the first
+  line. Empty lines and a byte order mark are skipped; an open quote is
+  `CsvError.unterminated_quote`.
 - **Calendar dates in `std.time`.** `Date` is a day as the number of days since 1970-01-01:
   `time::date(y, m, d)` (null for a day that does not exist), `parts`, `weekday`, `add_days`,
   `add_months` (the day stays inside the month), `add_years`, `days_until`, `parse_date` and
@@ -20,6 +25,11 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- **Arena memory at compile time.** On the comptime VM (`#run`, `fels test --comptime`)
+  slicing a string (`s[1..3]`) failed with "TypeMismatch", and so did `heap::alloc(T, ...)`, a
+  `Vec` of slices, a pointer cast (`p as *T`, `p as usize`) and a negative number read back from
+  an arena. They now work as in a compiled program.
+- **The comptime VM leaked** the names and strings of every `#extern` call it made.
 - **Assigning a param did nothing in a compiled program.** `x = 5; return x;` returned the
   value passed in, and so did a change through a field of a struct param (`p.v = 5`). Every
   param now has a slot of its own. (The comptime VM was right.)
