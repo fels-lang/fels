@@ -106,6 +106,25 @@ test "fels test: the tests of each file run, a failing one says why" {
     try std.testing.expect(std.mem.endsWith(u8, r.text, "\n2 passed, 1 failed\n"));
 }
 
+test "fels test: on the comptime VM, a test named like a function of another file runs" {
+    const dir = try library("tc_same_name");
+    try write(dir, "src/mathx.fels", "pub helper :: fn() -> i32 { return 1; }\n");
+    try write(dir, "src/more.fels",
+        \\#import mathx;
+        \\
+        \\#test
+        \\helper :: fn(t: *Test) {
+        \\    t.eq(mathx::helper(), 1);
+        \\}
+        \\
+    );
+    const r = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(r.text);
+    try expectHas(r.text, "/src/more.fels\n  \u{2713} helper\n");
+    try std.testing.expectEqual(@as(u32, 1), r.summary.passed);
+    try std.testing.expectEqual(@as(u32, 0), r.summary.skipped);
+}
+
 test "fels test: a file that does not compile is reported and counts as failed" {
     const dir = try library("tc_broken");
     try write(dir, "src/mathx.fels",
