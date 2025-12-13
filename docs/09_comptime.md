@@ -9,6 +9,10 @@ Memory is the zone/arena model, at compile time: host-backed bump arenas that fr
 as zones exit. A `zone` block's memory is gone when the block ends, so comptime RAM
 stays bounded instead of growing until the build finishes.
 
+A `std.heap` arena's memory is real memory at compile time too, so code that uses it runs as
+in a compiled program: slices of it and of string constants, a `Vec` of slices, a pointer cast
+(`p as *T`) and a pointer as a number (`p as usize`).
+
 ## The surface
 
 - `#run expr` — evaluate at compile time, fold to a constant.
