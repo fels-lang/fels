@@ -1,0 +1,83 @@
+// std.csv, as `#test` functions: `fels test` runs them natively and on the comptime VM
+// (tests/compiler/std_tests.zig).
+#import std.heap as heap;
+#import std.csv as csv;
+
+#test
+fields_between_commas :: fn(t: *Test) {
+    a := heap::make();
+    rows := csv::records("name,price\nMSCI World,92.54\n", 44u8, &a) catch err { t.fatal("csv"); return; };
+    t.eq(rows.len, 2usize);
+    t.eq(rows[0].len, 2usize);
+    t.eq(rows[0][0], "name");
+    t.eq(rows[1][0], "MSCI World");
+    t.eq(rows[1][1], "92.54");
+    a.deinit();
+}
+
+#test
+semicolons_as_german_spreadsheets_write_them :: fn(t: *Test) {
+    a := heap::make();
+    rows := csv::records("Datum;Kurs\r\n15.01.2024;1.234,56\r\n", 59u8, &a) catch err { t.fatal("csv"); return; };
+    t.eq(rows.len, 2usize);
+    t.eq(rows[1][0], "15.01.2024");
+    t.eq(rows[1][1], "1.234,56");
+    a.deinit();
+}
+
+#test
+quotes_hold_separators_quotes_and_line_breaks :: fn(t: *Test) {
+    a := heap::make();
+    text := "a,\"b, c\",\"say \"\"hi\"\"\"\n\"two\nlines\",x\n";
+    r := csv::reader(text, 44u8);
+    first := r.next(&a) catch err { t.fatal("first"); return; };
+    t.eq(first.len, 3usize);
+    t.eq(first[1], "b, c");
+    t.eq(first[2], "say \"hi\"");
+    t.eq(r.line, 1usize);
+    second := r.next(&a) catch err { t.fatal("second"); return; };
+    t.eq(second[0], "two\nlines");
+    t.eq(second[1], "x");
+    t.eq(r.line, 2usize);
+    t.expect(r.done());
+    a.deinit();
+}
+
+#test
+empty_fields_lines_and_a_byte_order_mark :: fn(t: *Test) {
+    a := heap::make();
+    text := "\xEF\xBB\xBFa,,c,\n\n\nd\n";
+    r := csv::reader(text, 44u8);
+    first := r.next(&a) catch err { t.fatal("first"); return; };
+    t.eq(first.len, 4usize);
+    t.eq(first[0], "a");
+    t.eq(first[1], "");
+    t.eq(first[3], "");
+    second := r.next(&a) catch err { t.fatal("second"); return; };
+    t.eq(second.len, 1usize);
+    t.eq(second[0], "d");
+    t.eq(r.line, 4usize);
+    t.expect(r.done());
+    t.eq((r.next(&a) catch err { t.fatal("end"); return; }).len, 0usize);
+    a.deinit();
+}
+
+#test
+a_quote_that_never_ends_is_an_error :: fn(t: *Test) {
+    a := heap::make();
+    rows := csv::records("a,b\n\"open,c\n", 44u8, &a) catch err {
+        t.expect(err == .unterminated_quote);
+        a.deinit();
+        return;
+    };
+    t.fatal("an open quote was read");
+}
+
+#test
+the_separator_is_guessed_from_the_first_line :: fn(t: *Test) {
+    t.eq(csv::guess_separator("Datum;Kurs\n01.02.2024;12,5\n"), 59u8);
+    t.eq(csv::guess_separator("date,close\n2024-02-01,12.5\n"), 44u8);
+    t.eq(csv::guess_separator("date\tclose\n"), 9u8);
+    t.eq(csv::guess_separator("\"Name, lang\";Kurs\n"), 59u8);
+    t.eq(csv::guess_separator("one field\n"), 44u8);
+}
