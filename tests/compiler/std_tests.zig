@@ -8,6 +8,7 @@ const io = std.testing.io;
 
 const files = [_][]const u8{
     "tests/fixtures/stdlib/date_tests.fels",
+    "tests/fixtures/stdlib/heap_tests.fels",
 };
 
 fn runAll(comptime_only: bool) !void {

@@ -1,0 +1,54 @@
+// std.heap and std.vec, as `#test` functions: `fels test` runs them natively and on the comptime
+// VM (tests/compiler/std_tests.zig), where arena memory is real host memory.
+#import std.heap as heap;
+#import std.vec as vec;
+
+#test
+a_string_is_sliced :: fn(t: *Test) {
+    s := "abcd";
+    t.eq(s[1usize..3usize], "bc");
+    t.eq(s[1usize..3usize].len, 2usize);
+    t.eq(s[4usize..4usize].len, 0usize);
+}
+
+#test
+typed_memory_from_an_arena :: fn(t: *Test) {
+    a := heap::make();
+    xs := heap::alloc(i64, &a, 3usize);
+    xs[0] = -1i64;
+    xs[2] = 9000000000i64;
+    t.eq(xs[0], -1i64);
+    t.eq(xs[2], 9000000000i64);
+    t.eq(xs[0usize..2usize].len, 2usize);
+    a.deinit();
+}
+
+#test
+a_vec_keeps_slices_as_it_grows :: fn(t: *Test) {
+    a := heap::make();
+    letters := "abcdefghijklmnopqrstuvwxyz";
+    v := vec::make([]const u8, &a);
+    i: usize = 0usize;
+    while i < 26usize {
+        v.push(letters[i..i + 1usize]);
+        i += 1usize;
+    }
+    items := v.items();
+    t.eq(items.len, 26usize);
+    t.eq(items[0], "a");
+    t.eq(items[25], "z");
+    t.eq(items[3usize..5usize][1], "e");
+    a.deinit();
+}
+
+#test
+a_pointer_into_an_arena_is_an_address :: fn(t: *Test) {
+    a := heap::make();
+    p := heap::alloc_one(i64, &a);
+    q := heap::alloc_one(i64, &a);
+    pa := unsafe p as usize;
+    qa := unsafe q as usize;
+    t.expect(pa != 0usize);
+    t.expect(qa != pa);
+    a.deinit();
+}
