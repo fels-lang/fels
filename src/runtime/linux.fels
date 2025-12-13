@@ -177,6 +177,18 @@ sys_unlink :: fn(path: *const u8) -> i32 {
         outputs: { "={rax}"(i32) },
         clobbers: { "rcx", "r11", "memory" });
 }
+sys_mkdir :: fn(path: *const u8, mode: i32) -> i32 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(83), "{rdi}"(path), "{rsi}"(mode) },
+        outputs: { "={rax}"(i32) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+sys_rmdir :: fn(path: *const u8) -> i32 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(84), "{rdi}"(path) },
+        outputs: { "={rax}"(i32) },
+        clobbers: { "rcx", "r11", "memory" });
+}
 sys_getdents64 :: fn(fd: i64, buf: *u8, len: usize) -> i64 {
     return unsafe core::asm(volatile, "syscall",
         inputs:  { "{rax}"(217), "{rdi}"(fd), "{rsi}"(buf), "{rdx}"(len) },
@@ -229,6 +241,14 @@ os_path_kind :: fn(path: *const u8) -> i32 {
 }
 os_unlink :: fn(path: *const u8) -> i32 {
     if sys_unlink(path) < 0 { return -1; }
+    return 0;
+}
+os_mkdir :: fn(path: *const u8) -> i32 {
+    if sys_mkdir(path, 493) < 0 { return -1; }   // 0o755
+    return 0;
+}
+os_rmdir :: fn(path: *const u8) -> i32 {
+    if sys_rmdir(path) < 0 { return -1; }
     return 0;
 }
 
