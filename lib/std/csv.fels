@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.csv — reading CSV text: records of fields between separators (a comma, or a semicolon as
+// German spreadsheets write it, or a tab), with fields in quotes as RFC 4180 has them.
+//
+//   r := csv::reader(text, csv::guess_separator(text));
+//   while !r.done() {
+//       row := r.next(&a) catch err { ... };   // CsvError.unterminated_quote, at line r.line
+//       // row[0], row[1], ...
+//   }
+//
+// A field in quotes may hold the separator, line breaks and doubled quotes (""). The fields are
+// slices of the text, except a quoted field with doubled quotes, which is copied into the arena
+// with single ones. Lines end in LF or CRLF. Empty lines are skipped, and so is a UTF-8 byte
+// order mark at the start (Excel writes one).
+
+#import std.heap.{ Arena, alloc };
+#import std.vec as vec;
+
+pub CsvError :: errors {
+    unterminated_quote,   // a field in quotes runs to the end of the text
+}
+
+QUOTE :: 34u8;
+CR :: 13u8;
+LF :: 10u8;
+
+pub Reader :: struct {
+    text: []const u8,
+    at: usize,            // where the next record starts
+    sep: u8,
+    line: usize,          // the line the last record started on, from 1
+    breaks: usize,        // the line breaks read so far
+
+    // Whether every record has been read.
+    pub done :: fn(self: *Self) -> bool {
+        self.skip_empty_lines();
+        return self.at >= self.text.len;
+    }
+
+    // The fields of the next record, in `a`; an empty slice when every record has been read.
+    pub next :: fn(self: *Self, a: *Arena) -> [][]const u8 ! CsvError {
+        self.skip_empty_lines();
+        fields := vec::make([]const u8, a);
+        if self.at >= self.text.len { return fields.items(); }
+        self.line = self.breaks + 1usize;
+        while true {
+            f := self.field(a)?;
+            fields.push(f);
+            if self.at < self.text.len && self.text[self.at] == self.sep {
+                self.at += 1usize;
+                continue;
+            }
+            break;
+        }
+        if self.at < self.text.len && self.text[self.at] == CR { self.at += 1usize; }
+        if self.at < self.text.len && self.text[self.at] == LF {
+            self.at += 1usize;
+            self.breaks += 1usize;
+        }
+        return fields.items();
+    }
+
+    skip_empty_lines :: fn(self: *Self) {
+        while self.at < self.text.len && (self.text[self.at] == LF || self.text[self.at] == CR) {
+            if self.text[self.at] == LF { self.breaks += 1usize; }
+            self.at += 1usize;
+        }
+    }
+
+    // One field, up to the separator or the end of the line.
+    field :: fn(self: *Self, a: *Arena) -> []const u8 ! CsvError {
+        t := self.text;
+        if self.at < t.len && t[self.at] == QUOTE {
+            start := self.at + 1usize;
+            i := start;
+            doubled := false;
+            while true {
+                if i >= t.len { fail .unterminated_quote; }
+                if t[i] == QUOTE {
+                    if i + 1usize < t.len && t[i + 1usize] == QUOTE {
+                        doubled = true;
+                        i += 2usize;
+                        continue;
+                    }
+                    break;
+                }
+                if t[i] == LF { self.breaks += 1usize; }
+                i += 1usize;
+            }
+            raw := t[start..i];
+            // after the closing quote: anything before the separator is left out
+            self.at = i + 1usize;
+            self.skip_to_end_of_field();
+            if !doubled { return raw; }
+            return undouble(raw, a);
+        }
+        start := self.at;
+        self.skip_to_end_of_field();
+        return t[start..self.at];
+    }
+
+    skip_to_end_of_field :: fn(self: *Self) {
+        t := self.text;
+        while self.at < t.len && t[self.at] != self.sep && t[self.at] != CR && t[self.at] != LF {
+            self.at += 1usize;
+        }
+    }
+}
+
+// A reader of the records of `text`, with fields between `sep` (44u8 for ',', 59u8 for ';',
+// 9u8 for a tab).
+pub reader :: fn(text: []const u8, sep: u8) -> Reader {
+    at: usize = 0usize;
+    if text.len >= 3usize && text[0] == 0xEFu8 && text[1] == 0xBBu8 && text[2] == 0xBFu8 { at = 3usize; }
+    r: Reader = .{ text, at, sep, 0usize, 0usize };
+    return r;
+}
+
+// Every record of `text`, its fields in `a`.
+pub records :: fn(text: []const u8, sep: u8, a: *Arena) -> [][][]const u8 ! CsvError {
+    out := vec::make([][]const u8, a);
+    r := reader(text, sep);
+    while !r.done() {
+        row := r.next(a)?;
+        out.push(row);
+    }
+    return out.items();
+}
+
+// The separator the first line of `text` uses most, outside quotes: ';', a tab or ','. A comma
+// when the line has none of them.
+pub guess_separator :: fn(text: []const u8) -> u8 {
+    semicolons: usize = 0usize;
+    tabs: usize = 0usize;
+    commas: usize = 0usize;
+    quoted := false;
+    started := false;
+    for c in text {
+        if !quoted && (c == LF || c == CR) {
+            if started { break; }
+            continue;
+        }
+        started = true;
+        if c == QUOTE { quoted = !quoted; }
+        if !quoted {
+            if c == 59u8 { semicolons += 1usize; }
+            if c == 9u8 { tabs += 1usize; }
+            if c == 44u8 { commas += 1usize; }
+        }
+    }
+    if semicolons > 0usize && semicolons >= tabs && semicolons >= commas { return 59u8; }
+    if tabs > 0usize && tabs >= commas { return 9u8; }
+    return 44u8;
+}
+
+// `raw` with each doubled quote made single, in `a`.
+undouble :: fn(raw: []const u8, a: *Arena) -> []const u8 {
+    out := alloc(u8, a, raw.len);
+    n: usize = 0usize;
+    i: usize = 0usize;
+    while i < raw.len {
+        out[n] = raw[i];
+        n += 1usize;
+        if raw[i] == QUOTE && i + 1usize < raw.len && raw[i + 1usize] == QUOTE { i += 1usize; }
+        i += 1usize;
+    }
+    return out[0usize..n];
+}
