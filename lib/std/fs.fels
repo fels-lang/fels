@@ -2,7 +2,8 @@
 // std.fs — minimal synchronous file I/O for Fels. OS calls go through the platform
 // runtime (windows.fels → kernel32; linux.fels → openat/read/write/..), so this file is
 // OS-agnostic. File implements std.io.Reader and Writer; there's open/create/append,
-// exists/is_dir/delete, read_all, and DirIter for directory walking, all sharing FsError.
+// exists/is_dir/delete, read_all, make_dir/make_dirs/remove_dir, and DirIter for directory
+// walking, all sharing FsError.
 //
 // Paths are plain []const u8, copied into a small stack buffer and NUL-terminated for
 // the OS; anything too long fails with path_too_long.
@@ -23,6 +24,7 @@
 //   os_file_seek(h, off, whence) -> i64   whence 0=set, 1=cur, 2=end; new pos or -1
 //   os_path_kind(path) -> i32         0=missing, 1=file, 2=directory
 //   os_unlink(path) -> i32            0 = ok
+//   os_mkdir(path) / os_rmdir(path) -> i32    0 = ok
 //   os_dir_open(path) -> i64          opaque iterator handle, or -1
 //   os_dir_next(h, name) -> i64       entry-name length copied into `name`, or -1 at end
 //   os_dir_is_dir(h)/os_dir_is_reparse(h) -> bool, os_dir_size(h) -> u64   (last entry)
@@ -39,7 +41,7 @@ pub FsError :: errors {
     read_failed,     // a read returned an error
     write_failed,    // a write returned an error
     seek_failed,     // a seek returned an error
-    delete_failed,   // delete failed
+    delete_failed,   // delete failed (a file, or a folder that is not empty)
     path_too_long,   // path (plus NUL terminator) doesn't fit in the internal buffer
 }
 
@@ -147,6 +149,38 @@ pub delete :: fn(path: []const u8) -> void ! FsError {
     path_buf: [260]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
     if os_unlink(cpath) != 0 { fail .delete_failed; }
+    return;
+}
+
+// Make the folder `path`. A folder that is there already is fine; `create_failed` when it
+// cannot be made (the folder above it is missing, or a file has the name).
+pub make_dir :: fn(path: []const u8) -> void ! FsError {
+    path_buf: [260]u8 = .{};
+    cpath := fs_to_cstr(path, path_buf[:])?;
+    if os_mkdir(cpath) != 0 && os_path_kind(cpath) != 2 { fail .create_failed; }
+    return;
+}
+
+// Make the folder `path` and every folder above it that is missing (`a/b/c`, with `/` or `\`).
+pub make_dirs :: fn(path: []const u8) -> void ! FsError {
+    i: usize = 1usize;
+    while i < path.len {
+        c := path[i];
+        // the folder up to here, unless that is a drive (`C:`)
+        if (c == 47u8 || c == 92u8) && path[i - 1usize] != 58u8 && !is_dir(path[0usize..i]) {
+            make_dir(path[0usize..i])?;
+        }
+        i += 1usize;
+    }
+    make_dir(path)?;
+    return;
+}
+
+// Remove the folder `path`, which must be empty. Fails with `delete_failed`.
+pub remove_dir :: fn(path: []const u8) -> void ! FsError {
+    path_buf: [260]u8 = .{};
+    cpath := fs_to_cstr(path, path_buf[:])?;
+    if os_rmdir(cpath) != 0 { fail .delete_failed; }
     return;
 }
 
