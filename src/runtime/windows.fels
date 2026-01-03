@@ -293,6 +293,9 @@ os_cmdline :: fn(out: []u8) -> i64 {
     }
     return i as i64;
 }
+// Windows has one command-line text, which std.process splits itself.
+os_args_raw :: fn(out: []u8) -> i64 { return -1i64; }
+
 os_get_env :: fn(name: *const u8, out: []u8) -> i64 {
     n := GetEnvironmentVariableA(name, out.ptr, out.len as u32);
     if n == 0u32 { return -1i64; }

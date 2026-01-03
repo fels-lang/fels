@@ -401,6 +401,9 @@ os_cmdline :: fn(out: []u8) -> i64 {
     return n;
 }
 
+// The arguments as the kernel passed them, each ended by a NUL.
+os_args_raw :: fn(out: []u8) -> i64 { return proc_read("/proc/self/cmdline", out); }
+
 // Length of a NUL-terminated C string.
 cstrlen :: fn(s: *const u8) -> usize {
     n := 0usize;
