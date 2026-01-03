@@ -1,0 +1,58 @@
+// What std.fs and std.process ask of the OS, as `#test` functions: `fels test` runs them
+// natively only (tests/compiler/std_tests.zig), since compile-time code may not make folders or
+// read the environment. The folders are made in the temp folder.
+#import std.heap as heap;
+#import std.fs as fs;
+#import std.process as process;
+#import std.strings as strings;
+
+// `<temp>\fels_fs_tests\<leaf>`, in `a`.
+under_temp :: fn(a: *heap::Arena, leaf: []const u8) -> []const u8 {
+    buf: [200]u8 = .{};
+    temp := process::get_env("TEMP", buf[:]) ?? ".";
+    sb := strings::builder(a);
+    sb.append(temp);
+    sb.append("\\fels_fs_tests");
+    if leaf.len > 0usize {
+        sb.append("\\");
+        sb.append(leaf);
+    }
+    return sb.str();
+}
+
+#test
+folders_are_made_and_removed :: fn(t: *Test) {
+    a := heap::make();
+    deep := under_temp(&a, "one\\two\\three");
+    fs::make_dirs(deep) catch err { t.fatal("make_dirs"); return; };
+    t.expect(fs::is_dir(deep));
+    // made again: nothing to do
+    fs::make_dir(deep) catch err { t.fatal("make_dir of a folder that is there"); };
+    fs::make_dirs(deep) catch err { t.fatal("make_dirs of folders that are there"); };
+    // a folder that is not empty stays
+    removed := true;
+    fs::remove_dir(under_temp(&a, "one")) catch err { removed = false; };
+    t.expect(!removed);
+    fs::remove_dir(deep) catch err { t.fatal("remove three"); };
+    fs::remove_dir(under_temp(&a, "one\\two")) catch err { t.fatal("remove two"); };
+    fs::remove_dir(under_temp(&a, "one")) catch err { t.fatal("remove one"); };
+    fs::remove_dir(under_temp(&a, "")) catch err { t.fatal("remove the test folder"); };
+    t.expect(!fs::exists(under_temp(&a, "")));
+    a.deinit();
+}
+
+#test
+a_folder_needs_the_one_above_it :: fn(t: *Test) {
+    a := heap::make();
+    made := true;
+    fs::make_dir(under_temp(&a, "missing\\child")) catch err { made = false; };
+    t.expect(!made);
+    a.deinit();
+}
+
+#test
+the_running_program_has_arguments :: fn(t: *Test) {
+    a := heap::make();
+    t.expect(process::args(&a).len >= 1usize);
+    a.deinit();
+}
