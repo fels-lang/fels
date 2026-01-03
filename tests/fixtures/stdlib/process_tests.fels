@@ -1,0 +1,51 @@
+// std.process, as `#test` functions: `fels test` runs them natively and on the comptime VM
+// (tests/compiler/std_tests.zig).
+#import std.heap as heap;
+#import std.process as process;
+
+#test
+words_split_at_spaces_and_tabs :: fn(t: *Test) {
+    a := heap::make();
+    args := process::split_command_line("app.exe  one\ttwo   three ", &a);
+    t.eq(args.len, 4usize);
+    t.eq(args[0], "app.exe");
+    t.eq(args[1], "one");
+    t.eq(args[2], "two");
+    t.eq(args[3], "three");
+    a.deinit();
+}
+
+#test
+quotes_keep_spaces :: fn(t: *Test) {
+    a := heap::make();
+    args := process::split_command_line("\"C:\\Program Files\\app.exe\" \"two words\" x\"y z\" \"\"", &a);
+    t.eq(args.len, 4usize);
+    t.eq(args[0], "C:\\Program Files\\app.exe");
+    t.eq(args[1], "two words");
+    t.eq(args[2], "xy z");
+    t.eq(args[3], "");
+    a.deinit();
+}
+
+#test
+backslashes_count_only_before_a_quote :: fn(t: *Test) {
+    a := heap::make();
+    // a\\b stays; \" is a quote; \\" is a backslash and a closing quote; "" inside quotes is a quote
+    args := process::split_command_line("p a\\\\b \"c\\\"d\" \"e\\\\\" \"f\"\"g\"", &a);
+    t.eq(args.len, 5usize);
+    t.eq(args[1], "a\\\\b");
+    t.eq(args[2], "c\"d");
+    t.eq(args[3], "e\\");
+    t.eq(args[4], "f\"g");
+    a.deinit();
+}
+
+#test
+the_program_has_no_backslash_rules :: fn(t: *Test) {
+    a := heap::make();
+    args := process::split_command_line("\"C:\\dir\\\" next", &a);
+    t.eq(args.len, 2usize);
+    t.eq(args[0], "C:\\dir\\");
+    t.eq(args[1], "next");
+    a.deinit();
+}
