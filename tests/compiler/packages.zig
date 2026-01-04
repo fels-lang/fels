@@ -125,6 +125,25 @@ test "packages: fels.lock keeps a version until update, or until the range no lo
     try std.testing.expectEqualStrings("2.0.0", (try s.load(.{})).find("mathlib").?.version);
 }
 
+test "packages: fels update tells what changed against fels.lock as it was" {
+    var s = (try Setup.init("pk_update_changes")) orelse return error.SkipZigTest;
+    defer s.deinit();
+    try s.pkg("#use mathlib from \"URL\" version \"^1.0\";\n");
+    _ = try s.load(.{});
+    const locked = project.readLock(s.mem(), io, s.project);
+    try std.testing.expectEqualStrings("1.1.0", locked.find("mathlib").?.version);
+    // A changed range: any load takes the version it allows, so the change is seen against
+    // fels.lock as it was before (once said "everything is at the newest version").
+    try s.pkg("#use mathlib from \"URL\" version \"^2.0\";\n");
+    _ = try s.load(.{});
+    const changed = try project.changes(s.mem(), locked, try s.load(.{ .update_all = true }));
+    try std.testing.expectEqual(@as(usize, 1), changed.len);
+    try std.testing.expectEqualStrings("mathlib", changed[0].name);
+    try std.testing.expectEqualStrings("1.1.0", changed[0].from);
+    try std.testing.expectEqualStrings("2.0.0", changed[0].to);
+    try std.testing.expectEqual(@as(usize, 0), (try project.changes(s.mem(), project.readLock(s.mem(), io, s.project), try s.load(.{ .update_all = true }))).len);
+}
+
 test "packages: a path package and what it uses come along, one version of each" {
     var s = (try Setup.init("pk_path")) orelse return error.SkipZigTest;
     defer s.deinit();
