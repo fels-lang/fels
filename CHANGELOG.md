@@ -12,6 +12,11 @@ the major version is `0`, any minor bump may break source compatibility.
   and `done` go record by record, `records` reads them all, `guess_separator` looks at the first
   line. Empty lines and a byte order mark are skipped; an open quote is
   `CsvError.unterminated_quote`.
+- **Folders in `std.fs`**: `make_dir` (a folder that is there already is fine), `make_dirs`
+  (the folders above it too) and `remove_dir` (an empty folder).
+- **The arguments of a program**: `process::args(&a)`, the program first. On Windows the
+  command line is split as the C runtime splits it, and `split_command_line` does that for
+  any line.
 - **Calendar dates in `std.time`.** `Date` is a day as the number of days since 1970-01-01:
   `time::date(y, m, d)` (null for a day that does not exist), `parts`, `weekday`, `add_days`,
   `add_months` (the day stays inside the month), `add_years`, `days_until`, `parse_date` and
@@ -35,6 +40,9 @@ the major version is `0`, any minor bump may break source compatibility.
   `Arena`) was "no visible method", and where it was found, the call could go to the free
   function. A candidate that cannot take the receiver is now passed over, and the call goes to
   the method that was chosen.
+- **`fels update` said "everything is at the newest version"** right after it took a new
+  one, when a range in fels.pkg had changed. It now tells the change against fels.lock as it
+  was (`imgui: 0.2.0 -> 0.3.0`).
 - **`fels test --comptime` skipped a test named like a function of another file** (a test
   `helper` next to `mathx::helper`) with "InvalidInstruction"; it runs now.
 - **Assigning a param did nothing in a compiled program.** `x = 5; return x;` returned the
