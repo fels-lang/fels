@@ -12,7 +12,7 @@ the major version is `0`, any minor bump may break source compatibility.
   and `done` go record by record, `records` reads them all, `guess_separator` looks at the first
   line. Empty lines and a byte order mark are skipped; an open quote is
   `CsvError.unterminated_quote`. The reader's type is `CsvReader`.
-- **`exp`, `ln` and `pow` for `f64` in `std.math`**, written in Fels, so a program needs no
+- **`std.float`: `exp`, `ln` and `pow` for `f64`**, written in Fels, so a program needs no
   math library for them (`core::pow` becomes a call of the C library's `pow`, which a Fels
   program does not link).
 - **Folders in `std.fs`**: `make_dir` (a folder that is there already is fine), `make_dirs`
