@@ -231,6 +231,10 @@ test "vm corpus: wide #run coverage" {
         \\// ── Phase 2 math/bit builtins fold at comptime ──
         \\mathfold :: fn() -> i32 { return core::max(core::min(100, 50), core::count_ones(7)); }
         \\C_math :: #run mathfold();
+        \\// ── a float local whose type the VM does not track compares with a float literal as
+        \\// floats (it compared as integers: "TypeMismatch") ──
+        \\at_least_one :: fn(want: f64) -> f64 { size := want + 0.0; if size < 1.0 { size = 1.0; } return size; }
+        \\C_float_cmp :: #run at_least_one(0.5);
     ;
 
     var fe = try fels.compile(a, "corpus.fels", src);

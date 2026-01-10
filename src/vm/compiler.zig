@@ -411,9 +411,15 @@ const FnCompiler = struct {
             .param, .local => |n| self.name_types.get(n) orelse .unknown,
             // A string literal lowers to a `.text` immediate; recovering that
             // type lets a `s := "…"` local answer `.len` (and other text ops).
-            // Numeric widths stay `.unknown` (the instruction's result type
-            // carries them), so this doesn't perturb arithmetic.
-            .imm => |imm| if (imm == .text) .text else .unknown,
+            // A float literal is a float, so `x < 1.0` compares as floats even when
+            // `x`'s type is not known here. Integer widths stay `.unknown` (the
+            // instruction's result type carries them), so this doesn't perturb
+            // arithmetic.
+            .imm => |imm| switch (imm) {
+                .text => .text,
+                .float => .f64,
+                else => .unknown,
+            },
             // A global's declared type, so a field, an index or a comparison on it lowers like
             // the same operation on a local (an aggregate global needs it to find its fields).
             .global => |name| if (self.globalIndex(name)) |gi| self.module.globals[gi].ty else .unknown,
