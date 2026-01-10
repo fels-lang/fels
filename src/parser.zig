@@ -1789,6 +1789,7 @@ pub const Parser = struct {
         var parts: std.ArrayList([]const u8) = .empty;
         errdefer parts.deinit(self.allocator);
 
+        try self.refuseKeywordSegment(0);
         try parts.append(self.allocator, (try self.expect(.ident, "expected path segment")).text(self.source));
         // Only consume `.ident` segments; leave a trailing `.{` (selective) or
         // `.*` (glob) for the import parser.
@@ -1796,7 +1797,18 @@ pub const Parser = struct {
             _ = self.advance(); // dot
             try parts.append(self.allocator, (try self.expect(.ident, "expected path segment")).text(self.source));
         }
+        if (self.peekKind(0) == .dot) try self.refuseKeywordSegment(1);
         return parts.toOwnedSlice(self.allocator);
+    }
+
+    /// A keyword where a path segment goes (`#import app.import.prices`): say that the file or
+    /// folder needs another name, not just that a `;` is missing.
+    fn refuseKeywordSegment(self: *Parser, offset: usize) ParseError!void {
+        if (!std.mem.startsWith(u8, @tagName(self.peekKind(offset)), "keyword_")) return;
+        const tok = self.tokens[@min(self.index + offset, self.tokens.len - 1)];
+        const msg = std.fmt.allocPrint(self.allocator, "`{s}` is a keyword, so a file or folder of that name cannot be imported; rename it", .{tok.text(self.source)}) catch return error.OutOfMemory;
+        try self.errorAt(tok, msg);
+        return error.ParseFailed;
     }
 
     fn parseType(self: *Parser) ParseError!ast.TypeRef {
