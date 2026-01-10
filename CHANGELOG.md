@@ -40,6 +40,8 @@ the major version is `0`, any minor bump may break source compatibility.
   `Arena`) was "no visible method", and where it was found, the call could go to the free
   function. A candidate that cannot take the receiver is now passed over, and the call goes to
   the method that was chosen.
+- **A type of another module as a type argument** (`vec::make(money::Currency, &a)`,
+  `first(shapes::Point, xs)`) was "expected a type argument".
 - **An enum literal where an optional enum is expected** (`return .sell;` from a
   `-> ?Kind`, `k: ?Kind = .sell;`) was read as an error value and did not compile.
 - **A keyword in an import path** (`#import app.import.prices;`, for a folder `import`) said
