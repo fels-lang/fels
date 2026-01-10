@@ -5588,3 +5588,29 @@ test "exe: a string literal is also a C string" {
     ;
     try std.testing.expectEqual(@as(u32, 0), try compileAndRun(arena.allocator(), src, "exe_literal_c_string"));
 }
+
+test "exe: an enum literal where an optional enum is expected" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `return .sell;` from a `-> ?Kind` was read as an error value ("expected `?Kind`, found
+    // `error`").
+    const src =
+        \\Kind :: enum { buy, sell }
+        \\kind_of :: fn(t: i32) -> ?Kind {
+        \\    if t == 1 { return .buy; }
+        \\    if t == 2 { return .sell; }
+        \\    return null;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    k: ?Kind = .sell;
+        \\    if kind_of(1)!! != .buy { return 1; }
+        \\    if kind_of(2)!! != .sell { return 2; }
+        \\    if kind_of(3) != null { return 3; }
+        \\    if k!! != .sell { return 4; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRun(arena.allocator(), src, "exe_optional_enum_literal"));
+}

@@ -4296,8 +4296,9 @@ const Checker = struct {
     }
 
     /// If `expr` is a bare enum literal `.variant` and `expected` is an enum type
-    /// that has that variant, type the expr as the enum and record it for IR
-    /// (returns true). Otherwise returns false and leaves checking to the caller.
+    /// (or an optional one: `return .sell;` from a `-> ?Kind`) that has that variant,
+    /// type the expr as the enum and record it for IR (returns true). Otherwise
+    /// returns false and leaves checking to the caller.
     fn coerceEnumLiteral(self: *Checker, expr: ast.Expr, expected: Ty) SemanticError!bool {
         const lit = switch (expr.kind) {
             .ident => |n| n,
@@ -4306,6 +4307,7 @@ const Checker = struct {
         if (lit.len < 2 or lit[0] != '.') return false;
         const type_id = switch (expected) {
             .named => |id| id,
+            .optional => |inner| return self.coerceEnumLiteral(expr, inner.*),
             else => return false,
         };
         const layout = self.env.layouts.get(type_id) orelse return false;
