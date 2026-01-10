@@ -1131,6 +1131,9 @@ fn isMangleable(item: ast.Item) bool {
             !hasAttr(f.attrs, "export") and !hasAttr(f.attrs, "entry") and
             !std.mem.eql(u8, f.name, "main"),
         .const_decl => true,
+        // A type too: two modules may each have a `Point` (or a private `State`). Only a name
+        // that two files declare is qualified, and after sema a type is known by its link name.
+        .type_decl => true,
         else => false,
     };
 }
@@ -2330,7 +2333,7 @@ const Checker = struct {
                 }
             },
             .interface_type => |interface_decl| {
-                const id = self.symbols.resolve(self.symbols.root_scope, decl.name) orelse {
+                const id = self.symbols.resolveVisible(decl.file_name, decl.name) orelse self.symbols.resolve(self.symbols.root_scope, decl.name) orelse {
                     diag_mod.printIce("interface symbol missing from table after registration", @src());
                     return error.SemanticFailed;
                 };
@@ -4134,9 +4137,10 @@ const Checker = struct {
                 }
                 try self.requireIntLitFits(arg_expr, method.params[i + 1].ty);
             }
+            // The IR knows the type and the interface by their link names.
             try self.env.impl_method_calls.put(call.callee.id, .{
-                .type_name = type_name,
-                .interface_name = impl.interface_name,
+                .type_name = if (typeSymbolOf(base_ty)) |tid| self.symbols.symbol(tid).link_name else type_name,
+                .interface_name = self.symbols.symbol(interface_id).link_name,
                 .method_name = fld.name,
             });
             // A value receiver (`g.val()`, not `gp.val()`) is implicitly `&`-d.
@@ -4320,7 +4324,7 @@ const Checker = struct {
             if (!std.mem.eql(u8, v.name, variant_name)) continue;
             try self.env.expr_types.put(expr.id, .{ .named = type_id });
             try self.env.enum_lits.put(expr.id, .{
-                .type_name = self.symbols.symbol(type_id).name,
+                .type_name = self.symbols.symbol(type_id).link_name,
                 .variant = variant_name,
             });
             return true;
@@ -4441,7 +4445,7 @@ const Checker = struct {
         }
 
         try self.env.enum_lits.put(call.callee.id, .{
-            .type_name = self.symbols.symbol(type_id).name,
+            .type_name = self.symbols.symbol(type_id).link_name,
             .variant = fld.name,
         });
         return Ty{ .named = type_id };
@@ -5273,7 +5277,7 @@ const Checker = struct {
     /// collapse into a single instantiation (sharing one type's body).
     fn appendTyMangle(self: *Checker, buf: *std.ArrayList(u8), ty: Ty) error{OutOfMemory}!void {
         switch (ty) {
-            .named => |id| try buf.appendSlice(self.allocator, self.symbols.symbol(id).name),
+            .named => |id| try buf.appendSlice(self.allocator, self.symbols.symbol(id).link_name),
             .pointer => |inner| {
                 try buf.appendSlice(self.allocator, "ptr_");
                 try self.appendTyMangle(buf, inner.*);

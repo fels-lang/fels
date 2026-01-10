@@ -352,6 +352,106 @@ test "fels test: a type of another module is a type argument" {
     try expectHas(native.text, "  \u{2713} a_qualified_type_as_an_argument\n");
 }
 
+// Two modules that each declare a `Point` (with a method), a private `State` and a `Kind`.
+fn sameNameModules(comptime dir: []const u8) !void {
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/a.fels",
+        \\pub Point :: struct {
+        \\    x: i32,
+        \\    y: i32,
+        \\    pub sum :: fn(self: Self) -> i32 { return self.x + self.y; }
+        \\}
+        \\State :: struct { n: i32 }
+        \\pub Kind :: enum { one, two }
+        \\pub make :: fn() -> Point { s: State = .{ 3 }; p: Point = .{ s.n, 4 }; return p; }
+        \\pub kind :: fn() -> Kind { return .two; }
+        \\
+    );
+    try write(dir, "src/b.fels",
+        \\pub Point :: struct {
+        \\    x: f64,
+        \\    pub twice :: fn(self: Self) -> f64 { return self.x * 2.0; }
+        \\}
+        \\State :: struct { name: []const u8, n: i64 }
+        \\pub Kind :: enum { red, green, blue }
+        \\pub make :: fn() -> Point { s: State = .{ "b", 5i64 }; p: Point = .{ s.n as f64 }; return p; }
+        \\
+    );
+}
+
+test "fels test: types of the same name in different modules" {
+    // Each was "duplicate top-level declaration": types of all modules shared one namespace.
+    const dir = ".zig-cache/tc_same_type_name";
+    try sameNameModules(dir);
+    try write(dir, "src/main.fels",
+        \\#import app.a;
+        \\#import app.b;
+        \\
+        \\#test
+        \\points_states_and_kinds :: fn(t: *Test) {
+        \\    t.eq(a::make().sum(), 7);
+        \\    t.expect(b::make().twice() == 10.0);
+        \\    t.expect(a::kind() == a::Kind.two);
+        \\    k: b::Kind = .blue;
+        \\    t.expect(k == .blue);
+        \\}
+        \\
+    );
+    // The comptime VM compiles the modules (it cannot run the test: methods on a returned
+    // struct are beyond it), so nothing fails or breaks there.
+    const vm = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(vm.text);
+    try std.testing.expectEqual(@as(u32, 0), vm.summary.failed);
+    try std.testing.expectEqual(@as(u32, 0), vm.summary.broken);
+    if (comptime !fels.llvm_enabled) return;
+    if (comptime builtin.os.tag != .windows) return;
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try expectHas(native.text, "  \u{2713} points_states_and_kinds\n");
+}
+
+test "fels test: natively, a generic of each module's type, and a type named like one of std" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const dir = ".zig-cache/tc_same_type_name_native";
+    try sameNameModules(dir);
+    // `Reader` is an interface of std.io, which std.fs imports.
+    try write(dir, "src/main.fels",
+        \\#import app.a;
+        \\#import app.b;
+        \\#import std.vec as vec;
+        \\#import std.heap as heap;
+        \\#import std.fs as fs;
+        \\
+        \\Reader :: struct { n: i32 }
+        \\
+        \\#test
+        \\a_vec_of_each_point :: fn(t: *Test) {
+        \\    h := heap::make();
+        \\    v := vec::make(a::Point, &h);
+        \\    v.push(a::make());
+        \\    w := vec::make(b::Point, &h);
+        \\    w.push(b::make());
+        \\    t.eq(v.items()[0].y, 4);
+        \\    t.expect(w.items()[0].x == 5.0);
+        \\    h.deinit();
+        \\}
+        \\
+        \\#test
+        \\a_reader_of_our_own :: fn(t: *Test) {
+        \\    r: Reader = .{ 3 };
+        \\    t.expect(!fs::exists("no such file"));
+        \\    t.eq(r.n, 3);
+        \\}
+        \\
+    );
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try expectHas(native.text, "  \u{2713} a_vec_of_each_point\n");
+    try expectHas(native.text, "  \u{2713} a_reader_of_our_own\n");
+}
+
 test "fels test: natively, a file without tests compiles as it is and is not an error" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
