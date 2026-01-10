@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.float — exp, ln and pow for f64, written in Fels so that a program needs no math library
+// for them (`core::pow` becomes a call of the C library's `pow`, which a Fels program does not
+// link). Good to about 1e-15 relative, which is what money and rates of return need. A module of
+// its own, with no types, so that it meets no other module's `Vec2`.
+//
+//   y := float::pow(1.07, 2.5);           // 1.1843...
+//   x := float::exp(float::ln(2.0) * 3.0); // 8
+
+LN2 :: 0.6931471805599453094;
+
+// e to the power of `x`: 0 below about -745, and infinity above about 709.
+pub exp :: fn(x: f64) -> f64 {
+    if x < -745.2 { return 0.0; }
+    // x = k ln 2 + r, with |r| at most half of ln 2
+    k := core::round(x / LN2);
+    r := x - k * LN2;
+    // e^r by its series
+    term := 1.0;
+    sum := 1.0;
+    n := 1.0;
+    while n < 30.0 {
+        term = term * r / n;
+        sum += term;
+        n += 1.0;
+    }
+    return scale2(sum, k as i64);
+}
+
+// The natural logarithm of `x`; minus infinity for 0 and below.
+pub ln :: fn(x: f64) -> f64 {
+    if x <= 0.0 {
+        zero := 0.0;
+        return -1.0 / zero;
+    }
+    // x = m 2^e, with m between the square root of 1/2 and that of 2
+    m := x;
+    e: i64 = 0i64;
+    while m > 1.4142135623730951 {
+        m = m / 2.0;
+        e += 1i64;
+    }
+    while m < 0.7071067811865476 {
+        m = m * 2.0;
+        e -= 1i64;
+    }
+    // ln m = 2 atanh(s), s = (m - 1) / (m + 1), at most 0.172
+    s := (m - 1.0) / (m + 1.0);
+    s2 := s * s;
+    term := s;
+    sum := 0.0;
+    n := 1.0;
+    while n < 60.0 {
+        sum += term / n;
+        term = term * s2;
+        n += 2.0;
+    }
+    return 2.0 * sum + (e as f64) * LN2;
+}
+
+// `x` to the power of `y`. For a negative `x`, `y` must be a whole number (else this returns 0).
+pub pow :: fn(x: f64, y: f64) -> f64 {
+    if y == 0.0 { return 1.0; }
+    if x == 0.0 { return 0.0; }
+    if x > 0.0 { return exp(y * ln(x)); }
+    if core::floor(y) != y { return 0.0; }
+    v := exp(y * ln(-x));
+    // an odd power keeps the sign
+    half := y / 2.0;
+    if core::floor(half) != half { return -v; }
+    return v;
+}
+
+// `v` times 2 to the power of `k`.
+scale2 :: fn(v: f64, k: i64) -> f64 {
+    out := v;
+    n := k;
+    while n > 0i64 {
+        out = out * 2.0;
+        n -= 1i64;
+    }
+    while n < 0i64 {
+        out = out / 2.0;
+        n += 1i64;
+    }
+    return out;
+}

@@ -9,8 +9,8 @@ const io = std.testing.io;
 const files = [_][]const u8{
     "tests/fixtures/stdlib/csv_tests.fels",
     "tests/fixtures/stdlib/date_tests.fels",
+    "tests/fixtures/stdlib/float_tests.fels",
     "tests/fixtures/stdlib/heap_tests.fels",
-    "tests/fixtures/stdlib/math_tests.fels",
     "tests/fixtures/stdlib/process_tests.fels",
 };
 
