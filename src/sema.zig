@@ -4837,6 +4837,14 @@ const Checker = struct {
                 };
                 return try self.typeFromRef(ty);
             },
+            // `ns::Name`, a type of an imported module (`vec::make(money::Currency, &a)`).
+            .scope_access => {
+                const ty = self.exprToTypeRef(expr) orelse {
+                    self.emitError(expr.span, "expected a type argument", .{});
+                    return error.SemanticFailed;
+                };
+                return try self.typeFromRef(ty);
+            },
             .ident => |name| {
                 if (self.resolveTypeParam(name)) |t| return t;
                 if (fromBuiltinName(name)) |t| return t;
@@ -4897,6 +4905,10 @@ const Checker = struct {
         return switch (expr.kind) {
             .type_ref => |t| t,
             .ident => |name| .{ .named = .{ .name = name, .span = expr.span } },
+            .scope_access => |sa| switch (sa.base.kind) {
+                .ident => |ns| .{ .named = .{ .name = sa.member, .namespace = ns, .span = expr.span } },
+                else => null,
+            },
             // `*T` in a type-argument list (`List(*Node)`) reads as a dereference.
             .unary => |u| blk: {
                 if (u.op != .deref) break :blk null;
