@@ -12,6 +12,9 @@ the major version is `0`, any minor bump may break source compatibility.
   and `done` go record by record, `records` reads them all, `guess_separator` looks at the first
   line. Empty lines and a byte order mark are skipped; an open quote is
   `CsvError.unterminated_quote`. The reader's type is `CsvReader`.
+- **`exp`, `ln` and `pow` for `f64` in `std.math`**, written in Fels, so a program needs no
+  math library for them (`core::pow` becomes a call of the C library's `pow`, which a Fels
+  program does not link).
 - **Folders in `std.fs`**: `make_dir` (a folder that is there already is fine), `make_dirs`
   (the folders above it too) and `remove_dir` (an empty folder).
 - **The arguments of a program**: `process::args(&a)`, the program first. On Windows the
@@ -34,6 +37,8 @@ the major version is `0`, any minor bump may break source compatibility.
   slicing a string (`s[1..3]`) failed with "TypeMismatch", and so did `heap::alloc(T, ...)`, a
   `Vec` of slices, a pointer cast (`p as *T`, `p as usize`) and a negative number read back from
   an arena. They now work as in a compiled program.
+- **A float compared with a float literal as integers on the comptime VM** when the VM did
+  not know the type of the other side (`size := want + 0.0; if size < 1.0 …`): "TypeMismatch".
 - **The comptime VM leaked** the names and strings of every `#extern` call it made.
 - **A free function hid a method of the same name from another module.** With
   `alloc_bytes :: fn(n: i32) -> i32` in a program, `a.alloc_bytes(4)` (std.heap's method on
