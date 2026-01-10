@@ -592,6 +592,8 @@ Vectors (`f32`), rectangles, and scalar helpers. Component math wraps the `core:
 math builtins; `sin`/`cos`/`tan` use a fast polynomial (no libm dependency).
 
 - **Scalars:** `lerp`, `approach`, `signf`, `deg2rad`, `rad2deg`, `wrapf`, `sin`, `cos`, `tan`. Constants `PI`, `TAU`, `DEG2RAD`, `RAD2DEG`.
+- **`f64`:** `exp`, `ln` and `pow`, written in Fels and good to about 1e-15 relative: a program
+  needs no math library for them, as it does for `core::pow` (a call of the C library's `pow`).
 - **`Vec2`:** `v2`, `v2_zero`, `v2_splat`, `v2_add/sub/mul/scale/neg`, `v2_dot`, `v2_len`, `v2_len2`, `v2_dist`, `v2_dist2`, `v2_normalize`, `v2_lerp`, `v2_perp`, `v2_rotate`, `v2_from_angle`.
 - **`Vec3`:** `v3`, `v3_add/sub/scale`, `v3_dot`, `v3_cross`, `v3_len`, `v3_normalize`.
 - **`Rect`:** `rect`, `rect_contains`, `rect_overlaps` (AABB), `rect_center`.
