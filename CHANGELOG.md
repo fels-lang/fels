@@ -46,6 +46,8 @@ the major version is `0`, any minor bump may break source compatibility.
 - **A float compared with a float literal as integers on the comptime VM** when the VM did
   not know the type of the other side (`size := want + 0.0; if size < 1.0 …`): "TypeMismatch".
 - **The comptime VM leaked** the names and strings of every `#extern` call it made.
+- **A local named like a builtin** (`any`, `narrow`) was declared, but using it said "expected
+  `void`": the name was read as the builtin first. The local comes first now.
 - **A free function hid a method of the same name from another module.** With
   `alloc_bytes :: fn(n: i32) -> i32` in a program, `a.alloc_bytes(4)` (std.heap's method on
   `Arena`) was "no visible method", and where it was found, the call could go to the free
