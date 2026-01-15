@@ -4885,8 +4885,10 @@ const FunctionLowerer = struct {
     /// instructions. Tries, in order: sema `expr_types`, a param's annotated type,
     /// the lowerer-tracked local type; "" if none (the match still lowers).
     fn matchEnumName(self: *FunctionLowerer, subject: ast.Expr) []const u8 {
+        // By its link name, as the IR knows its variants (qualified when another module has a
+        // type of the name).
         if (self.types.expr_types.get(subject.id)) |sema_ty| switch (sema_ty) {
-            .named => |id| return self.symbols.symbol(id).name,
+            .named => |id| return self.symbols.symbol(id).link_name,
             else => {},
         };
         if (subject.kind == .ident) {
@@ -4896,7 +4898,7 @@ const FunctionLowerer = struct {
                 // `Paint :: Color;` — a parameter declared with the alias matches as the enum.
                 const declared = dealias(self.allocator, p.ty, self.types, self.symbols) catch p.ty;
                 switch (declared) {
-                    .named => |named| return named.name,
+                    .named => |named| return typeLinkName(named.name, named.namespace),
                     else => {},
                 }
             }

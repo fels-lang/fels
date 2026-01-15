@@ -501,6 +501,61 @@ test "fels test: natively, a struct holding a generic of its module's type named
     try expectHas(native.text, "  \u{2713} both_items\n");
 }
 
+test "fels test: a match on an enum named like a type of another module" {
+    // Strata: an enum `Mark` next to std.heap's struct `Mark`. The match named the enum by its
+    // bare name, not by the qualified one the IR knows it by, and took no arm (`unreachable`).
+    const dir = ".zig-cache/tc_same_name_enum_match";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/a.fels",
+        \\pub Mark :: enum { unknown, point, comma }
+        \\
+        \\pub after :: fn(m: Mark, c: u8) -> Mark {
+        \\    if m != .unknown { return m; }
+        \\    if c == 44u8 { return .comma; }
+        \\    if c == 46u8 { return .point; }
+        \\    return .unknown;
+        \\}
+        \\
+        \\pub code :: fn(m: Mark) -> i32 {
+        \\    match m {
+        \\        .comma => { return 2; }
+        \\        .point => { return 1; }
+        \\        .unknown => { return 0; }
+        \\    }
+        \\}
+        \\
+    );
+    try write(dir, "src/b.fels",
+        \\pub Mark :: struct { at: usize }
+        \\pub make :: fn() -> Mark { out: Mark = .{ 4usize }; return out; }
+        \\
+    );
+    try write(dir, "src/use_tests.fels",
+        \\#import app.a;
+        \\#import app.b;
+        \\
+        \\#test
+        \\marks :: fn(t: *Test) {
+        \\    m: a::Mark = .unknown;
+        \\    m = a::after(m, 46u8);
+        \\    t.expect(m == .point);
+        \\    t.eq(a::code(m), 1);
+        \\    t.eq(a::code(.comma), 2);
+        \\    t.eq(b::make().at, 4usize);
+        \\}
+        \\
+    );
+    const vm = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(vm.text);
+    try expectHas(vm.text, "  \u{2713} marks\n");
+    if (comptime !fels.llvm_enabled) return;
+    if (comptime builtin.os.tag != .windows) return;
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try expectHas(native.text, "  \u{2713} marks\n");
+}
+
 test "fels test: natively, a file without tests compiles as it is and is not an error" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
