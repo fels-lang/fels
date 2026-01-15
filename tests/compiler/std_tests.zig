@@ -17,6 +17,8 @@ const files = [_][]const u8{
 /// Files whose tests reach the OS (folders, the environment, the command line), which
 /// compile-time code may not: they run natively only.
 const native_files = [_][]const u8{
+    // JSON values are structs in an arena, which the comptime VM cannot build yet
+    "tests/fixtures/stdlib/json_tests.fels",
     "tests/fixtures/stdlib/os_tests.fels",
 };
 

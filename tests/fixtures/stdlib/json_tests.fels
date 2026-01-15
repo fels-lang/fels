@@ -1,0 +1,98 @@
+#import std.heap as heap;
+#import std.json as json;
+
+#test
+scalars :: fn(t: *Test) {
+    a := heap::make();
+    v := json::parse(" true ", &a) catch err { t.fatal("true"); return; };
+    t.expect(v.as_bool() ?? false);
+    v = json::parse("null", &a) catch err { t.fatal("null"); return; };
+    t.expect(v.is_null());
+    v = json::parse("-12.5e1", &a) catch err { t.fatal("number"); return; };
+    t.expect((v.as_f64() ?? 0.0) == -125.0);
+    t.eq(v.text, "-12.5e1");
+    t.eq(v.as_i64() ?? 0i64, -125i64);
+    v = json::parse("0.1", &a) catch err { t.fatal("0.1"); return; };
+    t.expect((v.as_f64() ?? 0.0) == 0.1);
+    t.expect(v.as_i64() == null);
+    v = json::parse("1789023600", &a) catch err { t.fatal("time"); return; };
+    t.eq(v.as_i64() ?? 0i64, 1789023600i64);
+    v = json::parse("125.44999694824219", &a) catch err { t.fatal("price"); return; };
+    t.expect((v.as_f64() ?? 0.0) > 125.4499 && (v.as_f64() ?? 0.0) < 125.4501);
+    t.expect(v.as_text() == null);
+    a.deinit();
+}
+
+#test
+strings_are_unescaped :: fn(t: *Test) {
+    a := heap::make();
+    v := json::parse("\"plain\"", &a) catch err { t.fatal("plain"); return; };
+    t.eq(v.as_text() ?? "", "plain");
+    v = json::parse("\"a\\\"b\\\\c\\/d\\n\\u00e4\\ud83d\\ude00\"", &a) catch err { t.fatal("escapes"); return; };
+    t.eq(v.as_text() ?? "", "a\"b\\c/d\n\xC3\xA4\xF0\x9F\x98\x80");
+    a.deinit();
+}
+
+#test
+objects_and_arrays_are_looked_into :: fn(t: *Test) {
+    a := heap::make();
+    text := "{\"chart\":{\"result\":[{\"timestamp\":[1789023600,1789110000],\"indicators\":{\"quote\":[{\"close\":[125.45,null]}]}}],\"error\":null}}";
+    doc := json::parse(text, &a) catch err { t.fatal("parse"); return; };
+    r := doc.get("chart").get("result").at(0);
+    t.eq(r.get("timestamp").len(), 2usize);
+    t.eq(r.get("timestamp").at(1).as_i64() ?? 0i64, 1789110000i64);
+    close := r.get("indicators").get("quote").at(0).get("close");
+    t.expect((close.at(0).as_f64() ?? 0.0) == 125.45);
+    t.expect(close.at(1).is_null());
+    // what is not there is null, all the way down
+    t.expect(doc.get("chart").get("nothing").at(3).get("x").is_null());
+    t.expect(doc.get("chart").get("error").is_null());
+    t.eq(doc.len(), 1usize);
+    t.eq(doc.keys[0], "chart");
+    empty := json::parse("{ } ", &a) catch err { t.fatal("empty"); return; };
+    t.eq(empty.len(), 0usize);
+    none := json::parse("[]", &a) catch err { t.fatal("none"); return; };
+    t.eq(none.len(), 0usize);
+    a.deinit();
+}
+
+// Why `text` is refused: 1 it ends early, 2 an unexpected byte, 3 a bad number, 4 a bad string,
+// 5 too deep, 6 text after the value; 0 when it is read.
+why :: fn(text: []const u8) -> i32 {
+    a := heap::make();
+    v := json::parse(text, &a) catch err {
+        a.deinit();
+        if err == .unexpected_end { return 1; }
+        if err == .unexpected_byte { return 2; }
+        if err == .bad_number { return 3; }
+        if err == .bad_string { return 4; }
+        if err == .too_deep { return 5; }
+        return 6;
+    };
+    a.deinit();
+    return 0;
+}
+
+#test
+what_is_not_json_is_refused :: fn(t: *Test) {
+    t.eq(why("{\"a\":1"), 1);
+    t.eq(why("[1,]"), 2);
+    t.eq(why("{a:1}"), 2);
+    t.eq(why("01"), 6);
+    t.eq(why("1."), 3);
+    t.eq(why("-"), 3);
+    t.eq(why("\"a\x01\""), 4);
+    t.eq(why("\"\\x\""), 4);
+    t.eq(why("\"\\udc00\""), 4);
+    t.eq(why("1 2"), 6);
+    t.eq(why("tru"), 1);
+    t.eq(why(""), 1);
+    deep: [600]u8 = .{};
+    i: usize = 0usize;
+    while i < 600usize {
+        deep[i] = 91u8;
+        i += 1usize;
+    }
+    t.eq(why(deep[:]), 5);
+    t.eq(why("\xEF\xBB\xBF[1]"), 0);
+}
