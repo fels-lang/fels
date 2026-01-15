@@ -5814,8 +5814,10 @@ fn appendGenericArgMangle(
             if (resolveTypeName(symbols, n.name)) |id|
                 if (types.alias_refs.get(id)) |aliased|
                     return appendGenericArgMangle(allocator, buf, aliased, binding, types, symbols);
-            // …or a builtin scalar / user struct, both of which mangle to the name.
-            try buf.appendSlice(allocator, n.name);
+            // …or a builtin scalar, which mangles to its name, or a user type, which mangles
+            // to its link name as in sema (qualified when another module has a type of the
+            // name).
+            try buf.appendSlice(allocator, typeLinkName(n.name, n.namespace));
         },
         .pointer => |p| {
             try buf.appendSlice(allocator, if (p.is_const) "cptr_" else "ptr_");

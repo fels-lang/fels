@@ -452,6 +452,55 @@ test "fels test: natively, a generic of each module's type, and a type named lik
     try expectHas(native.text, "  \u{2713} a_reader_of_our_own\n");
 }
 
+test "fels test: natively, a struct holding a generic of its module's type named like another's" {
+    // Strata: `Vec(Holding)` in a struct of one module and a `pub Holding` in another. The
+    // field's type was the instance of the bare name while the value was the instance of the
+    // qualified one: an invalid insertvalue in LLVM.
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const dir = ".zig-cache/tc_same_type_name_field";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/a.fels",
+        \\#import std.heap.{ Arena };
+        \\#import std.vec as vec;
+        \\#import std.vec.{ Vec };
+        \\
+        \\Item :: struct { x: i32 }
+        \\State :: struct { items: Vec(Item), done: bool }
+        \\
+        \\pub count :: fn(a: *Arena) -> i32 {
+        \\    st: State = .{ vec::make(Item, a), false };
+        \\    it: Item = .{ 3 };
+        \\    st.items.push(it);
+        \\    return st.items.items()[0].x;
+        \\}
+        \\
+    );
+    try write(dir, "src/b.fels",
+        \\pub Item :: struct { y: i64, z: i64 }
+        \\pub make :: fn() -> Item { out: Item = .{ 5i64, 6i64 }; return out; }
+        \\
+    );
+    try write(dir, "src/use_tests.fels",
+        \\#import std.heap as heap;
+        \\#import app.a;
+        \\#import app.b;
+        \\
+        \\#test
+        \\both_items :: fn(t: *Test) {
+        \\    h := heap::make();
+        \\    t.eq(a::count(&h), 3);
+        \\    t.eq(b::make().y, 5i64);
+        \\    h.deinit();
+        \\}
+        \\
+    );
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try expectHas(native.text, "  \u{2713} both_items\n");
+}
+
 test "fels test: natively, a file without tests compiles as it is and is not an error" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
