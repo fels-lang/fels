@@ -788,6 +788,34 @@ into the arena with single ones. Lines end in LF or CRLF; empty lines are skippe
 UTF-8 byte order mark at the start, as Excel writes one. `r.line` is the line the last record
 started on, for messages about a row.
 
+### `std.json`
+
+Reading JSON of any shape: the text becomes a tree of values in an arena, to look into. (For
+JSON that fits a struct of your own, `std.serde` maps it in one call.)
+
+```fels
+#import std.json as json;
+
+doc := json::parse(text, &a) catch err { ... };   // JsonError: unexpected_end, unexpected_byte,
+                                                  // bad_number, bad_string, too_deep, trailing_text
+quote := doc.get("chart").get("result").at(0);
+for t in quote.get("timestamp").items {
+    day := t.as_i64() ?? 0i64;
+}
+close := quote.get("indicators").get("quote").at(0).get("close").at(5).as_f64();   // ?f64
+```
+
+A `Value` has a `kind` (`null_value`, `boolean`, `number`, `string`, `array`, `object`);
+`get(key)` reads a member of an object, `at(i)` an element of an array and `len()` counts them;
+`items` and `keys` are the elements and the members (in the order of the text). A lookup that
+finds nothing gives a null value, so a chain needs no checks on the way, and `as_f64`,
+`as_i64`, `as_text` and `as_bool` give null for a value of another kind. A number keeps the
+text it was written as next to its `f64` (exact for up to 15 digits), for a decimal type or
+for digits an `f64` cannot hold; `as_i64` is exact for whole numbers of up to 18 digits.
+Strings are unescaped, a `\u` escape (also a surrogate pair) as UTF-8; one without escapes is a
+slice of the text. A byte order mark at the start is skipped; nesting deeper than 512 is
+refused. The comptime VM cannot build the values yet (they are structs in an arena).
+
 ### `std.crypto`
 
 Hashing and checksums — pure computation.
