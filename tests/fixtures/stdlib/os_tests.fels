@@ -5,6 +5,7 @@
 #import std.fs as fs;
 #import std.process as process;
 #import std.strings as strings;
+#import std.io.{ Writer };
 
 // `<temp>\fels_fs_tests\<leaf>`, in `a`.
 under_temp :: fn(a: *heap::Arena, leaf: []const u8) -> []const u8 {
@@ -54,5 +55,42 @@ a_folder_needs_the_one_above_it :: fn(t: *Test) {
 the_running_program_has_arguments :: fn(t: *Test) {
     a := heap::make();
     t.expect(process::args(&a).len >= 1usize);
+    a.deinit();
+}
+
+#test
+names_outside_ascii :: fn(t: *Test) {
+    a := heap::make();
+    dir := under_temp(&a, "Grüße €");
+    fs::make_dirs(dir) catch err { t.fatal("make_dirs"); return; };
+    t.expect(fs::is_dir(dir));
+    sb := strings::builder(&a);
+    sb.append(dir);
+    sb.append("\\Datei ä.txt");
+    file := sb.str();
+    f := fs::create(file) catch err { t.fatal("create"); return; };
+    w: *Writer = &f;
+    w.write_all("Inhalt ö") catch err { t.fatal("write"); };
+    (&f).close();
+    t.expect(fs::exists(file));
+    text := fs::read_all(file, &a) catch err { t.fatal("read"); return; };
+    t.eq(text, "Inhalt ö");
+    // the folder lists the file by its name in UTF-8
+    it := fs::open_dir(dir) catch err { t.fatal("open_dir"); return; };
+    found := false;
+    while true {
+        name := (&it).dir_next();
+        if name == null { break; }
+        if name!! == "Datei ä.txt" { found = true; }
+    }
+    (&it).dir_close();
+    t.expect(found);
+    fs::delete(file) catch err { t.fatal("delete"); };
+    fs::remove_dir(dir) catch err { t.fatal("remove_dir"); };
+    fs::remove_dir(under_temp(&a, "")) catch err {};
+    // the environment too
+    t.expect(process::set_env("FELS_TEST_WORD", "Grüße"));
+    buf: [64]u8 = .{};
+    t.eq(process::get_env("FELS_TEST_WORD", buf[:]) ?? "", "Grüße");
     a.deinit();
 }
