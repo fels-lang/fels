@@ -139,6 +139,8 @@ Minimal synchronous file I/O (Windows-only currently).
 - `make_dir(path)`: Make a folder (one that is there already is fine); `make_dirs(path)` makes
   the folders above it too; `remove_dir(path)` removes an empty folder
 - Returns a `File` struct which implements both `Reader` and `Writer`.
+- Paths are UTF-8, as all Fels text (on Windows the runtime turns them into the UTF-16 of the
+  `*W` functions), up to 1023 bytes; `dir_next` gives names in UTF-8 too.
 
 ## `std.process`
 Process management (Windows-only currently).

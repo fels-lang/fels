@@ -37,6 +37,12 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- **Paths, the environment and the command line outside ASCII on Windows.** `std.fs` handed its
+  UTF-8 paths to the ANSI functions of Windows, so a path with an umlaut (a OneDrive folder
+  "Persönlich", one from a file dialog) was misread, and so were the values of `get_env` and
+  the arguments. The runtime now speaks UTF-16 to Windows and UTF-8 to Fels; folder entries come
+  back in UTF-8, and a path may be 1023 bytes long.
+
 - **Types of different modules may have the same name.** Two modules that each declared a
   `Point` (or a private `State`), or a program with a `Reader` next to `#import std.fs` (std.io
   has a `Reader`), or std.math with a binding that has its own `Vec2`, stopped with "duplicate
