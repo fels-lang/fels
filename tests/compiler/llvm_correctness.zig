@@ -647,8 +647,9 @@ test "LLVM: bindings of one C symbol share its function but keep their own signa
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
 
-    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "declare i1 @CloseHandle(i64)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "call i1 @CloseHandle(") != null); // the runtime's own use
+    // a bool is `zeroext`, as Clang has C's `bool`
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "declare zeroext i1 @CloseHandle(i64)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "call zeroext i1 @CloseHandle(") != null); // the runtime's own use
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "call i32 @CloseHandle(i64 0)") != null); // the program's
     // exactly one declaration of the symbol
     var declares: usize = 0;

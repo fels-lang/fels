@@ -167,6 +167,44 @@ pub fn applyAbiAttrs(cg: *ModuleCg, lv: llvm.LLVMValueRef, sig: FnAbi) void {
     };
 }
 
+/// Mark every `bool` (`i1`) parameter and a `bool` return of the function `lv` `zeroext`, as
+/// Clang does for C's `bool`. Without it only bit 0 of the register is defined, and C code
+/// reads the whole byte: `!f()` passed to Dear ImGui's `BeginDisabled(bool)` arrived as 0xFE,
+/// which its compiled code took as neither true nor false.
+pub fn markBoolExt(cg: *ModuleCg, lv: llvm.LLVMValueRef) void {
+    const kind = llvm.LLVMGetEnumAttributeKindForName("zeroext", 7);
+    const fn_ty = llvm.LLVMGlobalGetValueType(lv);
+    if (isBool(llvm.LLVMGetReturnType(fn_ty)))
+        llvm.LLVMAddAttributeAtIndex(lv, 0, llvm.LLVMCreateEnumAttribute(cg.ctx, kind, 0));
+    const n = llvm.LLVMCountParams(lv);
+    var i: c_uint = 0;
+    while (i < n) : (i += 1) {
+        if (isBool(llvm.LLVMTypeOf(llvm.LLVMGetParam(lv, i))))
+            llvm.LLVMAddAttributeAtIndex(lv, i + 1, llvm.LLVMCreateEnumAttribute(cg.ctx, kind, 0));
+    }
+}
+
+/// The same `zeroext` on the `bool` arguments and the `bool` result of a call of type `fn_ty`,
+/// so a call through a pointer agrees with its callee too.
+pub fn markCallBoolExt(cg: *ModuleCg, call: llvm.LLVMValueRef, fn_ty: llvm.LLVMTypeRef) void {
+    const kind = llvm.LLVMGetEnumAttributeKindForName("zeroext", 7);
+    if (isBool(llvm.LLVMGetReturnType(fn_ty)))
+        llvm.LLVMAddCallSiteAttribute(call, 0, llvm.LLVMCreateEnumAttribute(cg.ctx, kind, 0));
+    const n = llvm.LLVMCountParamTypes(fn_ty);
+    if (n == 0) return;
+    var buf: [64]llvm.LLVMTypeRef = undefined;
+    if (n > buf.len) return;
+    llvm.LLVMGetParamTypes(fn_ty, &buf);
+    var i: c_uint = 0;
+    while (i < n) : (i += 1) {
+        if (isBool(buf[i])) llvm.LLVMAddCallSiteAttribute(call, i + 1, llvm.LLVMCreateEnumAttribute(cg.ctx, kind, 0));
+    }
+}
+
+fn isBool(ty: llvm.LLVMTypeRef) bool {
+    return llvm.LLVMGetTypeKind(ty) == llvm.LLVMIntegerTypeKind and llvm.LLVMGetIntTypeWidth(ty) == 1;
+}
+
 /// Mark parameter 0 of a Fels function that returns through memory as `sret(ty) noalias`
 /// (see `types.returnsIndirect`).
 pub fn markSret(cg: *ModuleCg, lv: llvm.LLVMValueRef, ty: llvm.LLVMTypeRef) void {
