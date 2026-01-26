@@ -11,6 +11,9 @@ the major version is `0`, any minor bump may break source compatibility.
   bit was set: `!f()` passed to Dear ImGui's `BeginDisabled(bool)` arrived as 0xFE, and ImGui
   made every item after it transparent. Every `bool` parameter and result is `zeroext` now,
   as Clang has C's `bool`, at declarations and at call sites.
+- **An index that is a dereference**, `text[*at]`, did not parse ("expected {" in a `while`
+  condition): the lexer reads `[*` as the start of a many-pointer type `[*]T`. After an
+  operand it is now `[` and a dereference.
 
 ## 0.7.0 — 2026-10-11
 
