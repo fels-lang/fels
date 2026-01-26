@@ -1,270 +1,167 @@
 # Fels
 
-Fels was called Gabbro until version 0.3.1.
+Fels is a systems programming language. It compiles to native code through LLVM. It has no garbage
+collector. It brings its own linker, build system, test runner and package manager.
 
-An experimental systems language. No GC, no hidden allocations, manual memory through
-lexical arenas. It carries its own toolchain — including a PE/COFF linker written in
-Fels itself — so a release is a single `fels.exe`.
+<p align="center">
+  <img src="docs/images/waves.png" width="760" alt="A window with two moving waves, drawn by a Fels program">
+</p>
+<p align="center"><sub>A window with a live chart, in about 40 lines of Fels.
+The code is <a href="https://github.com/fels-lang/imgui/blob/main/examples/waves.fels">here</a>.</sub></p>
 
-Experimental, not production-ready. The frontend, type system, LLVM backend, comptime
-VM, and metaprogramming all work and run under a ~380-test suite, but the language is
-still moving, and some accepted constructs have incomplete backend semantics. The
-mature options in this space are Zig, Jai, and Rust; Fels is a younger, narrower take.
+## Why I made it
+
+I wanted a systems language that stays small and clear. So Fels has:
+
+- memory in zones, freed when a block ends
+- errors as values, not exceptions
+- code that runs while the program compiles
+- one tool for building, testing and packages
+
+Fels is young. The language still changes. But I use it for real programs. The biggest one is
+Strata, a portfolio app. Writing it showed me a lot of bugs in the compiler. I fixed them.
+
+## Install
+
+Fels runs on 64-bit Windows. It builds programs for Windows and Linux.
+
+1. Download `fels-0.7.0-x86_64-windows.zip` from the
+   [latest release](https://github.com/fels-lang/fels/releases/latest).
+2. Unpack it. Run `install.ps1` in the folder. It copies Fels to `%LOCALAPPDATA%\fels` and adds
+   it to your PATH.
+3. Open a new terminal and type `fels version`.
+
+## Your first program
+
+```text
+fels new hello
+cd hello
+fels build run
+```
 
 ```fels
 #import std.io.{ println };
 
 main :: fn() -> i32 {
-    println("hello from Fels");
+    println("Hello from Fels");
     return 0;
 }
 ```
 
-## Memory: zones, not a GC
+## Memory in zones
 
-Allocation goes through lexical `Arena` zones. A zone frees when its block exits.
-Deterministic, no collector, no per-object free.
+A zone is an arena. Everything you allocate in it lives until its block ends. Then the zone is
+freed in one step. You never call free, and there is no garbage collector.
 
-```fels
-work :: fn() {
-    zone scratch: Arena {
-        buf := scratch.new_slice(u8, 64);   // zero-initialized
-        fill(buf);
-        // the whole arena is freed here
-    }
-}
-```
+<p align="center"><img src="docs/images/zones.png" width="560" alt="A function that counts the different bytes of a text, with a table in a zone"></p>
 
-Zone-owned values can't outlive their zone — the compiler enforces it. `borrow`
-parameters may take a zone-owned value but can't store, return, or forward it.
-`defer`/`return`/`fail`/`break`/`continue` all trigger cleanup. The same model runs at
-compile time, which is what keeps code-generation memory bounded.
+The compiler checks that nothing leaves its zone. This does not compile:
+
+<p align="center"><img src="docs/images/escape-error.png" width="620" alt="The error: zone-owned value from scratch cannot be returned"></p>
 
 ## Errors are values
 
-A fallible function returns `T ! E`. `?` propagates, `catch` handles, `fail` raises.
-An error is a small integer tag, not a stack unwind.
+A function that can fail returns `T ! E`. `fail` raises an error. `?` passes it up. `catch`
+handles it. An error is a small number. Nothing unwinds the stack.
 
-```fels
-read_config :: fn(path: []const u8) -> Config ! IoError {
-    file := open(path)?;
-    if file.empty() { fail .empty; }
-    return parse(file);
-}
+<p align="center"><img src="docs/images/errors.png" width="660" alt="A parser of digits with an error type, ? and catch"></p>
 
-cfg := read_config("fels.toml") catch e { return default_config(); };
-```
+## Code that runs while it compiles
 
-## The toolchain is its own
+`#run` calls a function while the program compiles. The result goes into the binary as a
+constant. A macro writes code from a template, and the compiler checks it like code you typed.
 
-Most of the size of a systems toolchain is the linker and the build glue. Fels owns
-both.
+<p align="center"><img src="docs/images/comptime.png" width="620" alt="fib(30) computed at compile time, and a macro that repeats a block"></p>
 
-**A native linker, written in Fels.** `felsld` (`linker/felsld.fels`) is a full
-single-object PE/COFF linker — section merge at the right alignment, REL32/ADDR64
-relocations, multi-DLL import tables, `.pdata`/`.xdata` + the exception directory,
-PE32+ output with the subsystem/entry/stack you asked for, and DLL output. It links
-itself. The release bakes it into `fels.exe`, so the compiler links without spawning
-a 65 MB LLD. LLD is the fallback for the hard cases (multi-object, raw linker flags, a
-static-CRT pull-in).
+Compile time code runs on a virtual machine over the same IR as the native code. So it behaves
+the same way. The build file and the tests can run there too.
 
-It's fast because it skips LLD's largest cost: it never parses `.lib` import archives.
-The compiler already knows every `#extern("dll","sym")` import and emits a `.skimp`
-section; felsld reads that and writes the import descriptors directly.
+## One tool
 
-**The build system is Fels.** `build.fels` runs inside the compiler's comptime VM. No
-Makefile, no second language. It populates a build plan; the compiler executes it.
+The build file is a Fels program. The compiler runs it at compile time.
 
-```fels
-#import std.build.{ Build };
+<p align="center"><img src="docs/images/build.png" width="560" alt="A build.fels that makes a windowed executable"></p>
 
-build :: fn(b: Build) {
-    exe := b.executable("hello", "src/main.fels");
-    b.default(exe);
-}
-```
+- `fels build` builds, `fels build run` runs.
+- `fels test` runs every `#test` function.
+- `fels add imgui github.com/fels-lang/imgui` adds a package from a Git repository. A lock file
+  keeps its version.
+- `fels lsp` gives your editor errors, completion, hover and go to definition. There is an extension
+  for [Zed](https://github.com/fels-lang/zed-fels) and a
+  [tree-sitter grammar](https://github.com/fels-lang/tree-sitter-fels).
+- `fels bindgen` turns a C header into Fels bindings.
 
-## Compile-time execution
+The linker is mine too. `felsld` is written in Fels and writes Windows executables and DLLs.
+It links itself. The release has it built into `fels.exe`, so a link needs no LLD.
 
-`#run` evaluates an expression at compile time — recursion, loops, structs, slices,
-enums, errors, interface dispatch — and folds it to a constant. It runs on a bytecode
-VM over the same IR the native backend lowers, so comptime and runtime share semantics.
+## A GUI in Fels
 
-```fels
-FIB_10 :: #run fib(10);               // 55, computed at build time
-TABLE  :: #run generate_srgb_table(); // baked into the binary
-```
+The [imgui package](https://github.com/fels-lang/imgui) brings Dear ImGui with docking and ImPlot
+for charts. This is the code of the window at the top:
 
-Metaprogramming sits on top. `#quote` captures code as a typed AST value, `#insert`
-splices it back and re-type-checks the result, `macro` is a hygienic template, `#for`
-unrolls. The AST is an ordinary tagged union, so a metaprogram can `match` on code as
-data. No string pasting, no separate macro language.
+<p align="center"><img src="docs/images/waves-code.png" width="720" alt="The code of the waves example"></p>
 
-```fels
-twice :: macro(body: Code) -> Code { return #quote { $body; $body; }; }
+## What I build with it
 
-main :: fn() -> i32 {
-    n := 0;
-    #insert twice(#quote { n = n + 1; });
-    return n;   // 2
-}
-```
+**Strata** is a desktop app for my investments. It keeps accounts, depots and transactions in
+SQLite. It shows performance, risk, allocation and reports, imports bank exports and loads
+prices from the web. It is written in Fels with the imgui, sqlite, http and decimal packages.
+It is not public yet. The screen is in German for now.
 
-Code-generating helpers run only at compile time; they're not in the shipped binary.
+<p align="center"><img src="docs/images/strata.png" width="860" alt="Strata showing the return of a portfolio over time"></p>
 
-## Interfaces and generics
+The [examples](examples/) folder has more:
 
-Dynamic dispatch is explicit, through `*Interface` values. Generics are monomorphized.
-Conformance is checked at compile time.
+- `raytracer` renders spheres with glass and metal into a BMP file
+- `mandel` draws a Mandelbrot set, all of it computed at compile time
+- `raycaster` walks a 3D maze in the terminal
+- `diskscan` is a disk analyzer with a Win32 GUI and threads
+- `ecs_game`, `bf` (a Brainfuck interpreter), `dll`, `capability` and more
 
-```fels
-Writer :: interface { write :: fn(self: *Self, data: []const u8) -> usize ! IoError; }
+<p align="center"><img src="docs/images/raytracer.png" width="560" alt="Three spheres of glass, plastic and gold, rendered by the raytracer example"></p>
 
-FileHandle :: struct { fd: i32 }
-FileHandle as Writer {
-    write :: fn(self: *FileHandle, data: []const u8) -> usize ! IoError {
-        return sys_write(self.fd, data);
-    }
-}
+## Packages
 
-w: *Writer = &file;   // conformance checked at compile time; dispatch via vtable
-```
+| Package | What it does |
+| --- | --- |
+| [imgui](https://github.com/fels-lang/imgui) | Dear ImGui with docking, a ready window and ImPlot charts |
+| [sqlite](https://github.com/fels-lang/sqlite) | SQLite 3 |
+| [http](https://github.com/fels-lang/http) | HTTP and HTTPS through WinHTTP |
+| [decimal](https://github.com/fels-lang/decimal) | Exact decimal numbers for money |
 
-Plus distinct/newtype and opaque types, packed structs with sub-byte fields, integers
-`i8`–`i64` / `u1`–`u64`, `f32`/`f64`, and debug-mode traps for overflow,
-divide-by-zero, bad shifts, out-of-bounds indexing, null deref, and invalid optional
-unwraps.
+The standard library is in [`lib/std`](lib/std/). It has collections, files, processes, threads,
+sockets, JSON, CSV, dates and more. [docs/07_stdlib.md](docs/07_stdlib.md) lists it.
 
-## Building
+## Status
 
-The frontend builds and tests without LLVM:
+- Windows x64 works end to end.
+- Linux x64 works as a target. I build Linux programs from Windows.
+- There is no macOS support yet.
+- There is no formatter yet.
+- The compiler has 661 tests.
 
-```powershell
-zig build
-zig build test
-```
+## Documentation
 
-Object files and Windows executables need an LLVM install:
+The language reference is in [docs](docs/). Good places to start:
 
-```powershell
-zig build -Dllvm-path=/path/to/llvm
-zig build test -Dllvm-path=/path/to/llvm
-```
+- [Overview](docs/00_overview.md)
+- [Syntax](docs/01_syntax.md)
+- [Memory and zones](docs/05_memory_zones.md)
+- [Compile time](docs/09_comptime.md) and [metaprogramming](docs/13_metaprogramming.md)
+- [Packages](docs/16_packages.md)
 
-The stdlib root defaults to the in-tree `lib/` (which holds `std/`); override with
-`-Dstdlib-root=/path/to/dir-containing-std`.
+## Building Fels
+
+The compiler is written in Zig 0.16. You need an LLVM with its C headers.
 
 ```text
-fels check  <file>    parse and type-check
-fels ir     <file>    print Fels IR
-fels object <file>    emit an object file
-fels build  <file>    build an executable (Windows)
+zig build -Dllvm-path=path/to/llvm
+zig build test -Dllvm-path=path/to/llvm
 ```
-
-Start a project with `fels new` ([docs/15](docs/15_tooling.md) §9):
-
-```text
-fels new hello        a program in hello/ (--lib for a library, --cbind for C bindings)
-cd hello
-fels build run        build it and run it
-fels test             run its tests
-```
-
-Worked programs live in [`examples/`](examples/) — among them `dll`, a shared library
-whose exports a foreign process can resolve and call, `capability`, where a dependency
-is refused host access at compile time, `mandel`, a Mandelbrot set drawn entirely by
-the comptime VM, `raycaster`, a 3D maze walked in the terminal, a Brainfuck
-interpreter, an ECS game, a path tracer that writes a BMP, and `diskscan`, a
-WinDirStat-style disk analyzer with a Win32 GUI and threads.
-
-## Standard library
-
-In the in-tree [`lib/std/`](lib/std/) directory.
-
-| Module | Provides |
-| --- | --- |
-| `std.io` | `Writer`/`Reader` interfaces; `Stdout`, `Stderr`, `FixedBuf`; numeric formatters; `print`/`println`. |
-| `std.fmt` | Width-justified output, padding, integer columns, joined slices. |
-| `std.mem` | Typed-slice helpers: `eql`, `copy`, `fill`, `index_of`, `contains`; byte search. |
-| `std.bytes` | Fixed-width little- and big-endian reads and writes at an explicit offset, bounds-checked. |
-| `std.strings` | Arena-backed growable `StringBuilder` + byte utilities. |
-| `std.utf16` | UTF-8 ⇄ UTF-16 with surrogate pairs and strict validation; sizes first, caller's buffers. |
-| `std.slice` | Higher-order helpers: `map`, `filter`, `any`, `all`, `find`/`rfind`. |
-| `std.vec` | Growable `Vec(T)` and `VecUnmanaged(T)` (region-bound). |
-| `std.map` | `AutoHashMap` (byte-hash any key) and `StrMap` (content-keyed). |
-| `std.list` | Linked-list container. |
-| `std.heap` | Bump-allocating `Arena` (the backing for `zone … : Arena`). |
-| `std.math` | `Vec2`/`Vec3`/`Rect` and scalar math (no libm). |
-| `std.rand` | Pseudo-random number generation. |
-| `std.color` | Color types and conversions. |
-| `std.bits` | popcount, clz/ctz, rotate, power-of-two test (u32/u64). |
-| `std.ptr` | Pointer/address conversions and alignment arithmetic. |
-| `std.path` | Path manipulation. |
-| `std.time` | Clocks and timestamps (kernel32). |
-| `std.crypto` | `crc32`, FNV, SHA-256. |
-| `std.serde` | Reflection-driven JSON serialize/deserialize — no per-type code. |
-| `std.net` | TCP + UDP over Winsock, layered (`os`/`socket`/`tcp`/`udp`). |
-| `std.atomics` | Atomic load/store/swap/`compare_exchange`/fetch-ops; `Atomic(T)` cell. |
-| `std.thread` | OS thread `spawn`/`join`. |
-| `std.sync` | `Mutex`, `CondVar` and a bounded blocking `Queue(T)` on the OS's own lock and futex primitives. |
-| `std.com` | The data types of COM and the Windows Runtime: `Guid`, `HRESULT`, `IUnknown`/`IInspectable` and their vtables, a reference counter. No OS calls, so portable. |
-| `std.winrt` | Windows only: start COM / the Windows Runtime, create objects, activate runtime classes, `HSTRING`. |
-| `std.fs` | `File` implementing `Reader` + `Writer`; `open`/`create`/`append`/`delete`/`exists`. |
-| `std.process` | PID, command line, env vars, child spawn/wait/kill. |
-| `std.c` | C ABI types for `#extern` FFI. |
-| `std.build` | The `build.fels` API — runs in the comptime VM. |
-
-## Project status
-
-Fels works end-to-end on Windows: parse → check → IR → LLVM → executable. The
-frontend is platform-independent.
-
-| Area | Status |
-| --- | --- |
-| Lexer, parser, AST, diagnostics | done |
-| Semantic analysis + typed IR (const-fold, branch, DCE) | done |
-| LLVM object/executable generation | Windows and Linux end-to-end; no macOS backend |
-| Structs, packed structs, enums (payloads + `match`) | done |
-| Integers `i8`–`i64`/`u1`–`u64`, floats `f32`/`f64` | done |
-| Pointers, arrays, slices, optionals (with debug checks) | done |
-| Casts, distinct/newtype, opaque types | done |
-| Functions, monomorphized generics, control flow, `match` | done |
-| Errors / fallible functions (`T!E`, `fail`, `?`, `catch`) | done |
-| Zones (`Arena`, non-escape checking, deterministic cleanup) | done |
-| Comptime VM (`#run`, `#if`, reflection, full data types) | done |
-| Metaprogramming (`#quote`, `#insert`, `macro`, `#for`, generative `#insert #run`) | done; node-kind coverage still growing |
-| Modules, imports, `::` namespacing, visibility, UFCS | done; no external packages yet |
-| Generics: `$T:` constraints, `where {}` predicates, named constraints | done |
-| Reflection (`type_info`, `typeid`, `Any`) + reflection-driven serde | done |
-| C interop (`#extern`, by-value struct ABI, `fels bindgen`) | done |
-| Build system (`build.fels` in the comptime VM → real exes/DLLs) | done |
-| Native linker (`felsld`, single-object PE/COFF, self-hosting) | done |
-| Interfaces (dynamic + interface-through-interface dispatch, `$T: Iface` bounds) | done |
-| Standard library (30 modules) | done |
-| Atomics + concurrency | done |
-| Testing | `fels test` runs `#test` functions as native programs; `fels build` runs them at compile time |
-| Tooling | `check`/`ir`/`object`/`build`, `fels lsp`, tree-sitter grammar + Zed extension, `fels bindgen`. No formatter, doc gen, REPL, or package manager yet |
-| Platform | Windows x86-64 and Linux x86-64, both end-to-end with the full standard library. Linux cross-compiles from Windows, static by default and glibc via `--libc`. No macOS backend. |
-
-See [`docs/`](docs/) for the language reference.
-
-## Contributing
-
-Fels is early and the design is still open. New features should come with parser,
-semantic, IR, and (where it applies) LLVM tests; safety work should include an
-executable test that proves the debug trap fires. The compiler is Zig — start with
-[`docs/00_overview.md`](docs/00_overview.md) and the `src/` tree.
 
 ## License
 
-Dual-licensed by component:
-
-- **The compiler** (`src/`) — [GNU GPL v3](LICENSE-GPLv3.txt).
-- **The runtime, standard library, compiler-injected preludes, and code the compiler
-  generates into your program** (`lib/`, `src/runtime/`, `#derive`/serde/test output) —
-  [Apache 2.0](LICENSE-APACHE-2.0.txt).
-
-Programs you compile with Fels are not GPL-encumbered — they contain your own code
-plus the Apache-2.0 runtime and standard library, so license and ship them as you wish.
-See [LICENSING.md](LICENSING.md) for the file-by-file boundary (also in the
-`SPDX-License-Identifier` headers).
+The compiler is under the [GPL v3](LICENSE-GPLv3.txt). The runtime and the standard library are
+under [Apache 2.0](LICENSE-APACHE-2.0.txt). Your programs contain only the second part, so they
+are yours. You can license and ship them as you like. [LICENSING.md](LICENSING.md) has the
+details.
