@@ -3,6 +3,15 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Fixed
+
+- **A `bool` passed to a C function** was an LLVM `i1` without `zeroext`, so only its lowest
+  bit was set: `!f()` passed to Dear ImGui's `BeginDisabled(bool)` arrived as 0xFE, and ImGui
+  made every item after it transparent. Every `bool` parameter and result is `zeroext` now,
+  as Clang has C's `bool`, at declarations and at call sites.
+
 ## 0.7.0 — 2026-10-11
 
 What a desktop program needed (Strata, a portfolio program written in Fels): JSON and CSV
