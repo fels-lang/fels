@@ -20,6 +20,9 @@ the major version is `0`, any minor bump may break source compatibility.
   found `bool`"), and a positional literal with more values than fields is an error instead of
   dropping the rest. A literal that stops short is still fine: the fields after it take their
   defaults, then zero.
+- **A local inferred from a float literal** stayed a "float literal" that any float type
+  accepted, so `x := 1.5; y: f32 = x;` compiled and stored the `f64`'s bits into the `f32`.
+  The local is an `f64` (as an integer one is an `i32`), and `y: f32 = x as f32;` narrows it.
 
 ## 0.7.0 — 2026-10-11
 
