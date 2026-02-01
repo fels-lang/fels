@@ -14,6 +14,12 @@ the major version is `0`, any minor bump may break source compatibility.
 - **An index that is a dereference**, `text[*at]`, did not parse ("expected {" in a `while`
   condition): the lexer reads `[*` as the start of a many-pointer type `[*]T`. After an
   operand it is now `[` and a dereference.
+- **A struct literal value of the wrong type**, `.{ 1, true }` where the second field is a
+  struct, passed `fels check` and crashed LLVM in `fels build`. Each value of a positional or
+  named literal is now checked against its field ("field `s` of `Pair`: expected `Inner`,
+  found `bool`"), and a positional literal with more values than fields is an error instead of
+  dropping the rest. A literal that stops short is still fine: the fields after it take their
+  defaults, then zero.
 
 ## 0.7.0 — 2026-10-11
 
