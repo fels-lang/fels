@@ -88,7 +88,7 @@ pub RawSockaddr :: struct { family: u16, port: u16, addr: u32, zero: u64 }
 
 // Build the wire form from a friendly `SocketAddr` (host order → network order).
 pub raw_from :: fn(sa: addr::SocketAddr) -> RawSockaddr {
-    return .{ AF_INET as u16, sys_htons(sa.port), sa.ip.to_net(), 0u64 };
+    return .{ AF_INET as u16, sys_htons(sa.port), sa.ip.to_net(), 0 };
 }
 
 // Decode the wire form back to a friendly `SocketAddr` (network → host order).
@@ -100,7 +100,7 @@ pub addr_from_raw :: fn(r: RawSockaddr) -> addr::SocketAddr {
 // Initialise Winsock — must be called once before any socket call in a process.
 pub init :: fn() -> void ! NetError {
     data: [512]u8 = .{};                 // WSADATA
-    if sys_wsa_startup(0x0202u16, &data[0]) != 0 { fail .startup_failed; }
+    if sys_wsa_startup(0x0202, &data[0]) != 0 { fail .startup_failed; }
     return;
 }
 
