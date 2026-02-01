@@ -44,28 +44,28 @@ pub CsvReader :: struct {
         self.skip_empty_lines();
         fields := vec::make([]const u8, a);
         if self.at >= self.text.len { return fields.items(); }
-        self.line = self.breaks + 1usize;
+        self.line = self.breaks + 1;
         while true {
             f := self.field(a)?;
             fields.push(f);
             if self.at < self.text.len && self.text[self.at] == self.sep {
-                self.at += 1usize;
+                self.at += 1;
                 continue;
             }
             break;
         }
-        if self.at < self.text.len && self.text[self.at] == CR { self.at += 1usize; }
+        if self.at < self.text.len && self.text[self.at] == CR { self.at += 1; }
         if self.at < self.text.len && self.text[self.at] == LF {
-            self.at += 1usize;
-            self.breaks += 1usize;
+            self.at += 1;
+            self.breaks += 1;
         }
         return fields.items();
     }
 
     skip_empty_lines :: fn(self: *Self) {
         while self.at < self.text.len && (self.text[self.at] == LF || self.text[self.at] == CR) {
-            if self.text[self.at] == LF { self.breaks += 1usize; }
-            self.at += 1usize;
+            if self.text[self.at] == LF { self.breaks += 1; }
+            self.at += 1;
         }
     }
 
@@ -73,25 +73,25 @@ pub CsvReader :: struct {
     field :: fn(self: *Self, a: *Arena) -> []const u8 ! CsvError {
         t := self.text;
         if self.at < t.len && t[self.at] == QUOTE {
-            start := self.at + 1usize;
+            start := self.at + 1;
             i := start;
             doubled := false;
             while true {
                 if i >= t.len { fail .unterminated_quote; }
                 if t[i] == QUOTE {
-                    if i + 1usize < t.len && t[i + 1usize] == QUOTE {
+                    if i + 1 < t.len && t[i + 1] == QUOTE {
                         doubled = true;
-                        i += 2usize;
+                        i += 2;
                         continue;
                     }
                     break;
                 }
-                if t[i] == LF { self.breaks += 1usize; }
-                i += 1usize;
+                if t[i] == LF { self.breaks += 1; }
+                i += 1;
             }
             raw := t[start..i];
             // after the closing quote: anything before the separator is left out
-            self.at = i + 1usize;
+            self.at = i + 1;
             self.skip_to_end_of_field();
             if !doubled { return raw; }
             return undouble(raw, a);
@@ -104,7 +104,7 @@ pub CsvReader :: struct {
     skip_to_end_of_field :: fn(self: *Self) {
         t := self.text;
         while self.at < t.len && t[self.at] != self.sep && t[self.at] != CR && t[self.at] != LF {
-            self.at += 1usize;
+            self.at += 1;
         }
     }
 }
@@ -112,9 +112,9 @@ pub CsvReader :: struct {
 // A reader of the records of `text`, with fields between `sep` (44u8 for ',', 59u8 for ';',
 // 9u8 for a tab).
 pub reader :: fn(text: []const u8, sep: u8) -> CsvReader {
-    at: usize = 0usize;
-    if text.len >= 3usize && text[0] == 0xEFu8 && text[1] == 0xBBu8 && text[2] == 0xBFu8 { at = 3usize; }
-    r: CsvReader = .{ text, at, sep, 0usize, 0usize };
+    at: usize = 0;
+    if text.len >= 3 && text[0] == 0xEF && text[1] == 0xBB && text[2] == 0xBF { at = 3; }
+    r: CsvReader = .{ text, at, sep, 0, 0 };
     return r;
 }
 
@@ -132,9 +132,9 @@ pub records :: fn(text: []const u8, sep: u8, a: *Arena) -> [][][]const u8 ! CsvE
 // The separator the first line of `text` uses most, outside quotes: ';', a tab or ','. A comma
 // when the line has none of them.
 pub guess_separator :: fn(text: []const u8) -> u8 {
-    semicolons: usize = 0usize;
-    tabs: usize = 0usize;
-    commas: usize = 0usize;
+    semicolons: usize = 0;
+    tabs: usize = 0;
+    commas: usize = 0;
     quoted := false;
     started := false;
     for c in text {
@@ -145,26 +145,26 @@ pub guess_separator :: fn(text: []const u8) -> u8 {
         started = true;
         if c == QUOTE { quoted = !quoted; }
         if !quoted {
-            if c == 59u8 { semicolons += 1usize; }
-            if c == 9u8 { tabs += 1usize; }
-            if c == 44u8 { commas += 1usize; }
+            if c == 59 { semicolons += 1; }
+            if c == 9 { tabs += 1; }
+            if c == 44 { commas += 1; }
         }
     }
-    if semicolons > 0usize && semicolons >= tabs && semicolons >= commas { return 59u8; }
-    if tabs > 0usize && tabs >= commas { return 9u8; }
-    return 44u8;
+    if semicolons > 0 && semicolons >= tabs && semicolons >= commas { return 59; }
+    if tabs > 0 && tabs >= commas { return 9; }
+    return 44;
 }
 
 // `raw` with each doubled quote made single, in `a`.
 undouble :: fn(raw: []const u8, a: *Arena) -> []const u8 {
     out := alloc(u8, a, raw.len);
-    n: usize = 0usize;
-    i: usize = 0usize;
+    n: usize = 0;
+    i: usize = 0;
     while i < raw.len {
         out[n] = raw[i];
-        n += 1usize;
-        if raw[i] == QUOTE && i + 1usize < raw.len && raw[i + 1usize] == QUOTE { i += 1usize; }
-        i += 1usize;
+        n += 1;
+        if raw[i] == QUOTE && i + 1 < raw.len && raw[i + 1] == QUOTE { i += 1; }
+        i += 1;
     }
-    return out[0usize..n];
+    return out[0..n];
 }
