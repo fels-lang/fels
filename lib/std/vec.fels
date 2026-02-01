@@ -41,50 +41,50 @@ pub Vec :: struct($T: type) {
     // Ensure capacity for at least `want` elements (×2 growth, never shrinks).
     pub reserve :: fn(self: *Self, want: usize) {
         if want <= self.data.len { return; }
-        new_cap: usize = self.data.len * 2usize;
-        if new_cap < 4usize { new_cap = 4usize; }
+        new_cap: usize = self.data.len * 2;
+        if new_cap < 4 { new_cap = 4; }
         if new_cap < want { new_cap = want; }
         nbuf: []T = alloc(T, self.region, new_cap);
-        i: usize = 0usize;
-        while i < self.count { nbuf[i] = self.data[i]; i += 1usize; }
+        i: usize = 0;
+        while i < self.count { nbuf[i] = self.data[i]; i += 1; }
         self.data = nbuf;
     }
 
     // Mutation
     pub push :: fn(self: *Self, item: T) {
-        self.reserve(self.count + 1usize);
+        self.reserve(self.count + 1);
         self.data[self.count] = item;
-        self.count += 1usize;
+        self.count += 1;
     }
 
     // Append every element of `src`.
     pub extend :: fn(self: *Self, src: []const T) {
         self.reserve(self.count + src.len);
-        i: usize = 0usize;
-        while i < src.len { self.data[self.count] = src[i]; self.count += 1usize; i += 1usize; }
+        i: usize = 0;
+        while i < src.len { self.data[self.count] = src[i]; self.count += 1; i += 1; }
     }
 
     // Remove and return the last element (assumes non-empty).
     pub pop :: fn(self: *Self) -> T {
-        self.count -= 1usize;
+        self.count -= 1;
         return self.data[self.count];
     }
 
     // Insert `item` at `i`, shifting the tail right (O(n)).
     pub insert :: fn(self: *Self, i: usize, item: T) {
-        self.reserve(self.count + 1usize);
+        self.reserve(self.count + 1);
         j: usize = self.count;
-        while j > i { self.data[j] = self.data[j - 1usize]; j -= 1usize; }
+        while j > i { self.data[j] = self.data[j - 1]; j -= 1; }
         self.data[i] = item;
-        self.count += 1usize;
+        self.count += 1;
     }
 
     // Remove element `i`, shifting the tail left — order preserved (O(n)).
     pub remove :: fn(self: *Self, i: usize) -> T {
         gone: T = self.data[i];
         j: usize = i;
-        while j + 1usize < self.count { self.data[j] = self.data[j + 1usize]; j += 1usize; }
-        self.count -= 1usize;
+        while j + 1 < self.count { self.data[j] = self.data[j + 1]; j += 1; }
+        self.count -= 1;
         return gone;
     }
 
@@ -92,7 +92,7 @@ pub Vec :: struct($T: type) {
     // NOT preserved — ideal for "remove this dead entity" in a hot loop.
     pub remove_swap :: fn(self: *Self, i: usize) -> T {
         gone: T = self.data[i];
-        self.count -= 1usize;
+        self.count -= 1;
         if i < self.count { self.data[i] = self.data[self.count]; }
         return gone;
     }
@@ -104,10 +104,10 @@ pub Vec :: struct($T: type) {
     // this Vec's region — the fels way to let data escape a scratch arena).
     pub clone_into :: fn(self: *Self, into: *Arena) -> Vec(T) {
         n: usize = self.count;
-        if n < 1usize { n = 1usize; }
+        if n < 1 { n = 1; }
         nbuf: []T = alloc(T, into, n);
-        i: usize = 0usize;
-        while i < self.count { nbuf[i] = self.data[i]; i += 1usize; }
+        i: usize = 0;
+        while i < self.count { nbuf[i] = self.data[i]; i += 1; }
         out: Vec(T) = .{ into, nbuf, self.count };
         return out;
     }
@@ -117,15 +117,15 @@ pub Vec :: struct($T: type) {
 
 // A new empty Vec bound to region `a`, with a small initial capacity.
 pub make :: fn($T: type, a: *Arena) -> Vec(T) {
-    r: Vec(T) = .{ a, alloc(T, a, 4usize), 0usize };
+    r: Vec(T) = .{ a, alloc(T, a, 4), 0 };
     return r;
 }
 
 // A new empty Vec with at least `cap` elements reserved up front.
 pub with_cap :: fn($T: type, a: *Arena, cap: usize) -> Vec(T) {
     want: usize = cap;
-    if want < 1usize { want = 1usize; }
-    r: Vec(T) = .{ a, alloc(T, a, want), 0usize };
+    if want < 1 { want = 1; }
+    r: Vec(T) = .{ a, alloc(T, a, want), 0 };
     return r;
 }
 
@@ -161,23 +161,23 @@ pub VecUnmanaged :: struct($T: type) {
 
     pub reserve :: fn(self: *Self, a: *Arena, want: usize) {
         if want <= self.data.len { return; }
-        new_cap: usize = self.data.len * 2usize;
-        if new_cap < 4usize { new_cap = 4usize; }
+        new_cap: usize = self.data.len * 2;
+        if new_cap < 4 { new_cap = 4; }
         if new_cap < want { new_cap = want; }
         nbuf: []T = alloc(T, a, new_cap);
-        i: usize = 0usize;
-        while i < self.count { nbuf[i] = self.data[i]; i += 1usize; }
+        i: usize = 0;
+        while i < self.count { nbuf[i] = self.data[i]; i += 1; }
         self.data = nbuf;
     }
 
     pub push :: fn(self: *Self, a: *Arena, item: T) {
-        self.reserve(a, self.count + 1usize);
+        self.reserve(a, self.count + 1);
         self.data[self.count] = item;
-        self.count += 1usize;
+        self.count += 1;
     }
 
     pub pop :: fn(self: *Self) -> T {
-        self.count -= 1usize;
+        self.count -= 1;
         return self.data[self.count];
     }
 }
@@ -186,11 +186,11 @@ pub VecUnmanaged :: struct($T: type) {
 
 // An empty unmanaged vector with no storage yet (the first `push` allocates).
 pub empty :: fn($T: type) -> VecUnmanaged(T) {
-    e: VecUnmanaged(T) = .{ alloc_none(T), 0usize };
+    e: VecUnmanaged(T) = .{ alloc_none(T), 0 };
     return e;
 }
 
 // A zero-length `[]T` (a null backing slice) — `reserve`/`push` replace it.
 alloc_none :: fn($T: type) -> []T {
-    return unsafe core::slice_raw(T, core::ptr_from_int(*T, 0usize), 0usize);
+    return unsafe core::slice_raw(T, core::ptr_from_int(*T, 0), 0);
 }
