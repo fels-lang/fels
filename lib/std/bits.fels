@@ -14,9 +14,9 @@
 pub count_ones_u32 :: fn(value: u32) -> u32 {
     v := value;
     count := 0u32;
-    while v != 0u32 {
-        v = v & (v - 1u32);
-        count += 1u32;
+    while v != 0 {
+        v = v & (v - 1);
+        count += 1;
     }
     return count;
 }
@@ -24,9 +24,9 @@ pub count_ones_u32 :: fn(value: u32) -> u32 {
 pub count_ones_u64 :: fn(value: u64) -> u32 {
     v := value;
     count := 0u32;
-    while v != 0u64 {
-        v = v & (v - 1u64);
-        count += 1u32;
+    while v != 0 {
+        v = v & (v - 1);
+        count += 1;
     }
     return count;
 }
@@ -34,45 +34,45 @@ pub count_ones_u64 :: fn(value: u64) -> u32 {
 // Leading / trailing zero counts
 
 pub leading_zeros_u32 :: fn(value: u32) -> u32 {
-    if value == 0u32 { return 32u32; }
+    if value == 0 { return 32; }
     v := value;
     n := 0u32;
-    while (v & 0x8000_0000u32) == 0u32 {
-        v = v << 1u32;
-        n += 1u32;
+    while (v & 0x8000_0000) == 0 {
+        v = v << 1;
+        n += 1;
     }
     return n;
 }
 
 pub leading_zeros_u64 :: fn(value: u64) -> u32 {
-    if value == 0u64 { return 64u32; }
+    if value == 0 { return 64; }
     v := value;
     n := 0u32;
-    while (v & 0x8000_0000_0000_0000u64) == 0u64 {
-        v = v << 1u64;
-        n += 1u32;
+    while (v & 0x8000_0000_0000_0000) == 0 {
+        v = v << 1;
+        n += 1;
     }
     return n;
 }
 
 pub trailing_zeros_u32 :: fn(value: u32) -> u32 {
-    if value == 0u32 { return 32u32; }
+    if value == 0 { return 32; }
     v := value;
     n := 0u32;
-    while (v & 1u32) == 0u32 {
-        v = v >> 1u32;
-        n += 1u32;
+    while (v & 1) == 0 {
+        v = v >> 1;
+        n += 1;
     }
     return n;
 }
 
 pub trailing_zeros_u64 :: fn(value: u64) -> u32 {
-    if value == 0u64 { return 64u32; }
+    if value == 0 { return 64; }
     v := value;
     n := 0u32;
-    while (v & 1u64) == 0u64 {
-        v = v >> 1u64;
-        n += 1u32;
+    while (v & 1) == 0 {
+        v = v >> 1;
+        n += 1;
     }
     return n;
 }
@@ -80,39 +80,39 @@ pub trailing_zeros_u64 :: fn(value: u64) -> u32 {
 // Rotation
 
 pub rotate_left_u32 :: fn(value: u32, amount: u32) -> u32 {
-    n := amount & 31u32;
-    if n == 0u32 { return value; }
-    return (value << n) | (value >> (32u32 - n));
+    n := amount & 31;
+    if n == 0 { return value; }
+    return (value << n) | (value >> (32 - n));
 }
 
 pub rotate_right_u32 :: fn(value: u32, amount: u32) -> u32 {
-    n := amount & 31u32;
-    if n == 0u32 { return value; }
-    return (value >> n) | (value << (32u32 - n));
+    n := amount & 31;
+    if n == 0 { return value; }
+    return (value >> n) | (value << (32 - n));
 }
 
 pub rotate_left_u64 :: fn(value: u64, amount: u32) -> u64 {
-    n := (amount & 63u32) as u64;
-    if n == 0u64 { return value; }
-    return (value << n) | (value >> (64u64 - n));
+    n := (amount & 63) as u64;
+    if n == 0 { return value; }
+    return (value << n) | (value >> (64 - n));
 }
 
 pub rotate_right_u64 :: fn(value: u64, amount: u32) -> u64 {
-    n := (amount & 63u32) as u64;
-    if n == 0u64 { return value; }
-    return (value >> n) | (value << (64u64 - n));
+    n := (amount & 63) as u64;
+    if n == 0 { return value; }
+    return (value >> n) | (value << (64 - n));
 }
 
 // Power of two
 
 pub is_power_of_two_u32 :: fn(value: u32) -> bool {
-    if value == 0u32 { return false; }
-    return (value & (value - 1u32)) == 0u32;
+    if value == 0 { return false; }
+    return (value & (value - 1)) == 0;
 }
 
 pub is_power_of_two_u64 :: fn(value: u64) -> bool {
-    if value == 0u64 { return false; }
-    return (value & (value - 1u64)) == 0u64;
+    if value == 0 { return false; }
+    return (value & (value - 1)) == 0;
 }
 
 // Single-bit access
@@ -120,18 +120,18 @@ pub is_power_of_two_u64 :: fn(value: u64) -> bool {
 // `index` is taken modulo the bit width, so it always names a real bit.
 
 pub bit_u32 :: fn(value: u32, index: u32) -> bool {
-    shifted := value >> (index & 31u32);
-    return (shifted & 1u32) != 0u32;
+    shifted := value >> (index & 31);
+    return (shifted & 1) != 0;
 }
 
 pub set_bit_u32 :: fn(value: u32, index: u32) -> u32 {
-    return value | (1u32 << (index & 31u32));
+    return value | (1 << (index & 31));
 }
 
 pub clear_bit_u32 :: fn(value: u32, index: u32) -> u32 {
-    return value & ~(1u32 << (index & 31u32));
+    return value & ~(1 << (index & 31));
 }
 
 pub toggle_bit_u32 :: fn(value: u32, index: u32) -> u32 {
-    return value ^ (1u32 << (index & 31u32));
+    return value ^ (1 << (index & 31));
 }
