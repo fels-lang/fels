@@ -1041,6 +1041,11 @@ test "diagnostics: the address of a local inferred from a literal points at the 
     // to be accepted and read with the wrong width (`x := -5; y: i64 = x;` gave `y != -5`).
     const widened = (try firstError(a, "main :: fn() -> i32 { x := 5; y: i64 = x; return 0; }")).?;
     try std.testing.expect(std.mem.indexOf(u8, widened, "found `i32`") != null);
+    // A float literal's local is an `f64`: narrowing it takes a cast. `y: f32 = x;` used to be
+    // accepted and stored the `f64`'s bits into the `f32`.
+    const narrowed = (try firstError(a, "main :: fn() -> i32 { x := 1.5; y: f32 = x; return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, narrowed, "found `f64`") != null);
+    try std.testing.expect((try firstError(a, "main :: fn() -> i32 { x := 1.5; y: f32 = x as f32; z: f64 = x; return 0; }")) == null);
 }
 
 test "diagnostics: a `void ! E` function may run to its end without `return;`" {
