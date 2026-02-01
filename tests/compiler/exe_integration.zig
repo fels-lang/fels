@@ -3455,6 +3455,30 @@ test "exe: default fields fill .{} and trailing positions" {
     try std.testing.expectEqual(@as(u32, 55), code);
 }
 
+test "exe: a short positional literal zeroes the fields past it, and a value of the wrong type fails the build" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\Inner :: struct { x: i32, y: i32 }
+        \\Pair :: struct { a: i32, s: Inner, b: bool }
+        \\main :: fn() -> i32 {
+        \\    p: Pair = .{ 7 };
+        \\    q: Pair = .{ 1, .{ 2 } };
+        \\    if p.b || q.b { return 100; }
+        \\    return p.a + p.s.x + p.s.y + q.s.x * 10 + q.s.y;
+        \\}
+    , "exe_short_positional");
+    try std.testing.expectEqual(@as(u32, 27), code);
+    // `true` where an `Inner` stands: LLVM crashed in the build.
+    try std.testing.expectError(error.CompileFailed, compileAndRun(arena.allocator(),
+        \\Inner :: struct { x: i32, y: i32 }
+        \\Pair :: struct { a: i32, s: Inner, b: bool }
+        \\main :: fn() -> i32 { p: Pair = .{ 1, true }; if p.b { return 1; } return p.a; }
+    , "exe_positional_wrong_type"));
+}
+
 test "exe: unknown field in a struct literal fails the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
