@@ -33,7 +33,7 @@ pub UdpSocket :: struct {
     // Receive one datagram into `buf`; returns its length and the sender address.
     // A datagram longer than `buf` is truncated (UDP semantics).
     pub recv_from :: fn(self: *Self, buf: []u8) -> Datagram ! NetError {
-        raw: os::RawSockaddr = .{ 0u16, 0u16, 0u32, 0u64 };
+        raw: os::RawSockaddr = .{ 0, 0, 0, 0 };
         len: i32 = os::SOCKADDR_LEN as i32;
         n := os::sys_recvfrom(self.sock.fd, buf.ptr, buf.len as i32, 0,
                              unsafe ((&raw) as *u8), &len);
