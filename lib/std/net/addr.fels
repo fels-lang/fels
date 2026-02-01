@@ -19,7 +19,7 @@ pub IpV4 :: struct {
 
     // The packed 32-bit value in NETWORK byte order, as stored in `sockaddr_in`.
     pub to_net :: fn(self: *Self) -> u32 {
-        return (self.a as u32) | ((self.b as u32) << 8u32) | ((self.c as u32) << 16u32) | ((self.d as u32) << 24u32);
+        return (self.a as u32) | ((self.b as u32) << 8) | ((self.c as u32) << 16) | ((self.d as u32) << 24);
     }
 
     // True for 127.x.x.x (the loopback block).
@@ -27,7 +27,7 @@ pub IpV4 :: struct {
 
     // True for 0.0.0.0 (the unspecified / "any interface" address).
     pub is_unspecified :: fn(self: *Self) -> bool {
-        return self.a == 0u8 && self.b == 0u8 && self.c == 0u8 && self.d == 0u8;
+        return self.a == 0 && self.b == 0 && self.c == 0 && self.d == 0;
     }
 
     // Render as a dotted quad into a StringBuilder: `a.format(&sb)` → "127.0.0.1".
@@ -55,34 +55,34 @@ pub broadcast :: fn() -> IpV4 { return .{ 255u8, 255u8, 255u8, 255u8 }; }
 // into octets — the inverse of `to_net`. Used to decode peer addresses.
 pub from_net :: fn(n: u32) -> IpV4 {
     return .{
-        (n & 0xFFu32) as u8,
-        ((n >> 8u32) & 0xFFu32) as u8,
-        ((n >> 16u32) & 0xFFu32) as u8,
-        ((n >> 24u32) & 0xFFu32) as u8,
+        (n & 0xFF) as u8,
+        ((n >> 8) & 0xFF) as u8,
+        ((n >> 16) & 0xFF) as u8,
+        ((n >> 24) & 0xFF) as u8,
     };
 }
 
 // Parse a dotted-quad string (`"127.0.0.1"`) into an `IpV4`.
 pub parse :: fn(s: []const u8) -> IpV4 ! AddrError {
-    octets: [4]u32 = .{ 0u32, 0u32, 0u32, 0u32 };
-    idx: usize = 0usize;       // which octet
+    octets: [4]u32 = .{ 0, 0, 0, 0 };
+    idx: usize = 0;       // which octet
     seen: bool = false;        // saw a digit for this octet
-    i: usize = 0usize;
+    i: usize = 0;
     while i < s.len {
         c := s[i];
-        if c == 46u8 {                       // '.'
-            if !seen || idx >= 3usize { fail .bad_format; }
-            idx += 1usize;
+        if c == 46 {                       // '.'
+            if !seen || idx >= 3 { fail .bad_format; }
+            idx += 1;
             seen = false;
         } else {
-            if c < 48u8 || c > 57u8 { fail .bad_format; }   // not 0-9
-            octets[idx] = octets[idx] * 10u32 + ((c - 48u8) as u32);
-            if octets[idx] > 255u32 { fail .octet_range; }
+            if c < 48 || c > 57 { fail .bad_format; }   // not 0-9
+            octets[idx] = octets[idx] * 10 + ((c - 48) as u32);
+            if octets[idx] > 255 { fail .octet_range; }
             seen = true;
         }
-        i += 1usize;
+        i += 1;
     }
-    if idx != 3usize || !seen { fail .bad_format; }
+    if idx != 3 || !seen { fail .bad_format; }
     return .{ octets[0] as u8, octets[1] as u8, octets[2] as u8, octets[3] as u8 };
 }
 
