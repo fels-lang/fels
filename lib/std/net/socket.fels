@@ -74,8 +74,8 @@ pub Socket :: struct {
     // non-blocking mode a call with no data ready fails with `would_block` rather
     // than waiting (check with `os::is_would_block()`).
     pub set_nonblocking :: fn(self: *Self, on: bool) -> void ! NetError {
-        mode: u32 = 0u32;
-        if on { mode = 1u32; }
+        mode: u32 = 0;
+        if on { mode = 1; }
         if os::sys_ioctlsocket(self.fd, os::FIONBIO, &mode) != 0 { fail .option_failed; }
         return;
     }
@@ -92,7 +92,7 @@ pub Socket :: struct {
     // The address actually bound to this socket (resolves an OS-chosen ephemeral
     // port after `bind` to port 0).
     pub local_addr :: fn(self: *Self) -> addr::SocketAddr ! NetError {
-        raw: os::RawSockaddr = .{ 0u16, 0u16, 0u32, 0u64 };
+        raw: os::RawSockaddr = .{ 0, 0, 0, 0 };
         len: i32 = os::SOCKADDR_LEN as i32;
         if os::sys_getsockname(self.fd, unsafe ((&raw) as *u8), &len) != 0 { fail .addr_failed; }
         return os::addr_from_raw(raw);
