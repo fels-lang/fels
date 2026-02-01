@@ -113,7 +113,7 @@ pub Queue :: struct($T: type) {
     // Add `item`, sleeping while the queue is full. False if the queue is closed (the item is
     // not added) or has no capacity.
     pub push :: fn(self: *Self, item: T) -> bool {
-        if self.buf.len == 0usize { return false; }
+        if self.buf.len == 0 { return false; }
         self.mu.lock();
         while self.count == self.buf.len {
             if self.closed { break; }
@@ -124,7 +124,7 @@ pub Queue :: struct($T: type) {
             return false;
         }
         self.buf[(self.head + self.count) % self.buf.len] = item;
-        self.count += 1usize;
+        self.count += 1;
         self.mu.unlock();
         self.not_empty.signal();
         return true;
@@ -133,14 +133,14 @@ pub Queue :: struct($T: type) {
     // Add `item` if there is room right now. False if the queue is full, closed or has no
     // capacity.
     pub try_push :: fn(self: *Self, item: T) -> bool {
-        if self.buf.len == 0usize { return false; }
+        if self.buf.len == 0 { return false; }
         self.mu.lock();
         if self.closed || self.count == self.buf.len {
             self.mu.unlock();
             return false;
         }
         self.buf[(self.head + self.count) % self.buf.len] = item;
-        self.count += 1usize;
+        self.count += 1;
         self.mu.unlock();
         self.not_empty.signal();
         return true;
@@ -150,17 +150,17 @@ pub Queue :: struct($T: type) {
     // closed and drained.
     pub pop :: fn(self: *Self) -> ?T {
         self.mu.lock();
-        while self.count == 0usize {
+        while self.count == 0 {
             if self.closed { break; }
             self.not_empty.wait(&self.mu);
         }
-        if self.count == 0usize {
+        if self.count == 0 {
             self.mu.unlock();
             return null;
         }
         item: T = self.buf[self.head];
-        self.head = (self.head + 1usize) % self.buf.len;
-        self.count -= 1usize;
+        self.head = (self.head + 1) % self.buf.len;
+        self.count -= 1;
         self.mu.unlock();
         self.not_full.signal();
         return item;
@@ -169,13 +169,13 @@ pub Queue :: struct($T: type) {
     // Remove the oldest item if there is one right now; null if the queue is empty.
     pub try_pop :: fn(self: *Self) -> ?T {
         self.mu.lock();
-        if self.count == 0usize {
+        if self.count == 0 {
             self.mu.unlock();
             return null;
         }
         item: T = self.buf[self.head];
-        self.head = (self.head + 1usize) % self.buf.len;
-        self.count -= 1usize;
+        self.head = (self.head + 1) % self.buf.len;
+        self.count -= 1;
         self.mu.unlock();
         self.not_full.signal();
         return item;
@@ -213,6 +213,6 @@ pub Queue :: struct($T: type) {
 // A queue over `storage`; its capacity is `storage.len`. The storage must outlive every thread
 // that uses the queue, and nothing else may touch it meanwhile.
 pub make_queue :: fn($T: type, storage: []T) -> Queue(T) {
-    q: Queue(T) = .{ .{}, .{}, .{}, storage, 0usize, 0usize, false };
+    q: Queue(T) = .{ .{}, .{}, .{}, storage, 0, 0, false };
     return q;
 }
