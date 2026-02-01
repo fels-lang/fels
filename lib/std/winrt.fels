@@ -64,7 +64,7 @@ pub co_task_mem_free :: fn(p: ?*void) { winrt_co_task_mem_free(p); }
 
 // A new GUID (CoCreateGuid): random, as RFC 4122 version 4.
 pub new_guid :: fn() -> Guid ! ComError {
-    g: Guid = .{ 0u32, 0u16, 0u16, .{} };
+    g: Guid = .{ 0, 0, 0, .{} };
     check(winrt_co_create_guid(&g))?;
     return g;
 }
@@ -96,18 +96,18 @@ pub ro_uninitialize :: fn() { winrt_ro_uninitialize(); }
 // is only read. The result is an owned reference: release it. Cast it to the factory interface
 // you asked for. Fails with `.class_not_registered` if there is no such class.
 pub activation_factory :: fn(class_id: usize, iid: *const Guid) -> *IUnknown ! ComError {
-    out: *void = unsafe (core::ptr_from_int(*void, 0usize));
+    out: *void = unsafe (core::ptr_from_int(*void, 0));
     check(winrt_ro_get_activation_factory(class_id, iid, &out))?;
-    if unsafe (out as usize) == 0usize { fail .invalid_pointer; }
+    if unsafe (out as usize) == 0 { fail .invalid_pointer; }
     return unsafe (out as *IUnknown);
 }
 
 // A new instance of a runtime class by its default constructor (RoActivateInstance). The result
 // is an owned reference.
 pub activate_instance :: fn(class_id: usize) -> *IInspectable ! ComError {
-    out: *IInspectable = unsafe (core::ptr_from_int(*IInspectable, 0usize));
+    out: *IInspectable = unsafe (core::ptr_from_int(*IInspectable, 0));
     check(winrt_ro_activate_instance(class_id, &out))?;
-    if unsafe (out as usize) == 0usize { fail .invalid_pointer; }
+    if unsafe (out as usize) == 0 { fail .invalid_pointer; }
     return out;
 }
 
@@ -132,9 +132,9 @@ pub HString :: struct {
 
     // Delete the string and become empty. Safe to call again, and on an empty string.
     pub release :: fn(self: *Self) {
-        if self.h != 0usize {
+        if self.h != 0 {
             ig := winrt_delete_string(self.h);
-            self.h = 0usize;
+            self.h = 0;
         }
     }
 
@@ -146,14 +146,14 @@ pub HString :: struct {
     // The code units, borrowed from the string: valid until release(). Not NUL-terminated by
     // the slice, though the OS keeps a terminator after it.
     pub units :: fn(self: *const Self) -> []const u16 {
-        n: u32 = 0u32;
+        n: u32 = 0;
         p := winrt_string_raw_buffer(self.h, &n);
         return unsafe core::slice_from_raw_parts(u16, p, n as usize);
     }
 
     // A second owned reference to the same text (cheap: the OS counts references). Release both.
     pub duplicate :: fn(self: *const Self) -> HString ! ComError {
-        out: usize = 0usize;
+        out: usize = 0;
         check(winrt_duplicate_string(self.h, &out))?;
         r: HString = .{ out };
         return r;
@@ -179,7 +179,7 @@ pub HString :: struct {
 // A new owned HSTRING holding a copy of `units` (WindowsCreateString). The text may be empty,
 // and may contain zeros. Fails with `.out_of_memory` if the OS could not allocate it.
 pub hstring :: fn(units: []const u16) -> HString ! ComError {
-    out: usize = 0usize;
+    out: usize = 0;
     check(winrt_create_string(units.ptr, units.len as u32, &out))?;
     r: HString = .{ out };
     return r;
@@ -191,7 +191,7 @@ pub hstring :: fn(units: []const u16) -> HString ! ComError {
 // is short, `.out_of_memory` if the OS could not allocate the string.
 pub hstring_from_utf8 :: fn(text: []const u8, scratch: []u16) -> HString ! utf16::Utf16Error {
     n := utf16::utf8_to_utf16(text, scratch)?;
-    out: usize = 0usize;
+    out: usize = 0;
     hr := winrt_create_string(scratch.ptr, n as u32, &out);
     if failed(hr) { fail .out_of_memory; }
     r: HString = .{ out };
@@ -211,9 +211,9 @@ pub HStringRef :: struct {
     // `z` is the code units plus one terminating zero (so `z.len >= 1` and `z[z.len - 1] == 0`);
     // the string is `z[0 .. z.len - 1]`. `.invalid_arg` if that does not hold.
     pub init :: fn(self: *Self, z: []const u16) -> void ! ComError {
-        if z.len == 0usize { fail .invalid_arg; }
-        if z[z.len - 1usize] != 0u16 { fail .invalid_arg; }
-        check(winrt_create_string_reference(z.ptr, (z.len - 1usize) as u32, self, &self.h))?;
+        if z.len == 0 { fail .invalid_arg; }
+        if z[z.len - 1] != 0 { fail .invalid_arg; }
+        check(winrt_create_string_reference(z.ptr, (z.len - 1) as u32, self, &self.h))?;
         return;
     }
 }
