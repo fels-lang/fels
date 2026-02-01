@@ -40,10 +40,10 @@ pub Value :: struct {
     // a value that is no object.
     pub get :: fn(self: Self, key: []const u8) -> Value {
         if self.kind == .object {
-            i: usize = 0usize;
+            i: usize = 0;
             while i < self.keys.len {
                 if self.keys[i] == key { return self.items[i]; }
-                i += 1usize;
+                i += 1;
             }
         }
         return null_value();
@@ -58,7 +58,7 @@ pub Value :: struct {
     // How many elements an array has, or members an object; 0 for any other value.
     pub len :: fn(self: Self) -> usize {
         if self.kind == .array || self.kind == .object { return self.items.len; }
-        return 0usize;
+        return 0;
     }
 
     pub is_null :: fn(self: Self) -> bool { return self.kind == .null_value; }
@@ -101,8 +101,8 @@ pub null_value :: fn() -> Value {
 
 // The value `text` holds, in `a`. A UTF-8 byte order mark at the start is skipped.
 pub parse :: fn(text: []const u8, a: *Arena) -> Value ! JsonError {
-    p: Parser = .{ text, 0usize, a, 0u32 };
-    if text.len >= 3usize && text[0] == 0xEFu8 && text[1] == 0xBBu8 && text[2] == 0xBFu8 { p.at = 3usize; }
+    p: Parser = .{ text, 0, a, 0 };
+    if text.len >= 3 && text[0] == 0xEF && text[1] == 0xBB && text[2] == 0xBF { p.at = 3; }
     v := value(&p)?;
     skip_space(&p);
     if p.at < p.text.len { fail .trailing_text; }
@@ -126,8 +126,8 @@ value :: fn(p: *Parser) -> Value ! JsonError {
     skip_space(p);
     if p.at >= p.text.len { fail .unexpected_end; }
     c := p.text[p.at];
-    if c == 123u8 { return object(p); }
-    if c == 91u8 { return array(p); }
+    if c == 123 { return object(p); }
+    if c == 91 { return array(p); }
     if c == QUOTE {
         s := string(p)?;
         out := null_value();
@@ -135,36 +135,36 @@ value :: fn(p: *Parser) -> Value ! JsonError {
         out.text = s;
         return out;
     }
-    if c == 116u8 {
+    if c == 116 {
         word(p, "true")?;
         out := null_value();
         out.kind = .boolean;
         out.flag = true;
         return out;
     }
-    if c == 102u8 {
+    if c == 102 {
         word(p, "false")?;
         out := null_value();
         out.kind = .boolean;
         return out;
     }
-    if c == 110u8 {
+    if c == 110 {
         word(p, "null")?;
         return null_value();
     }
-    if c == 45u8 || is_digit(c) { return number(p); }
+    if c == 45 || is_digit(c) { return number(p); }
     fail .unexpected_byte;
 }
 
 object :: fn(p: *Parser) -> Value ! JsonError {
-    p.depth += 1u32;
+    p.depth += 1;
     if p.depth > MAX_DEPTH { fail .too_deep; }
-    p.at += 1usize;
+    p.at += 1;
     keys := vec::make([]const u8, p.a);
     items := vec::make(Value, p.a);
     skip_space(p);
-    if p.at < p.text.len && p.text[p.at] == 125u8 {
-        p.at += 1usize;
+    if p.at < p.text.len && p.text[p.at] == 125 {
+        p.at += 1;
     } else {
         while true {
             skip_space(p);
@@ -173,15 +173,15 @@ object :: fn(p: *Parser) -> Value ! JsonError {
             k := string(p)?;
             skip_space(p);
             if p.at >= p.text.len { fail .unexpected_end; }
-            if p.text[p.at] != 58u8 { fail .unexpected_byte; }
-            p.at += 1usize;
+            if p.text[p.at] != 58 { fail .unexpected_byte; }
+            p.at += 1;
             v := value(p)?;
             keys.push(k);
             items.push(v);
-            if end_of(p, 125u8)? { break; }
+            if end_of(p, 125)? { break; }
         }
     }
-    p.depth -= 1u32;
+    p.depth -= 1;
     out := null_value();
     out.kind = .object;
     out.items = items.items();
@@ -190,21 +190,21 @@ object :: fn(p: *Parser) -> Value ! JsonError {
 }
 
 array :: fn(p: *Parser) -> Value ! JsonError {
-    p.depth += 1u32;
+    p.depth += 1;
     if p.depth > MAX_DEPTH { fail .too_deep; }
-    p.at += 1usize;
+    p.at += 1;
     items := vec::make(Value, p.a);
     skip_space(p);
-    if p.at < p.text.len && p.text[p.at] == 93u8 {
-        p.at += 1usize;
+    if p.at < p.text.len && p.text[p.at] == 93 {
+        p.at += 1;
     } else {
         while true {
             v := value(p)?;
             items.push(v);
-            if end_of(p, 93u8)? { break; }
+            if end_of(p, 93)? { break; }
         }
     }
-    p.depth -= 1u32;
+    p.depth -= 1;
     out := null_value();
     out.kind = .array;
     out.items = items.items();
@@ -216,27 +216,27 @@ end_of :: fn(p: *Parser, close: u8) -> bool ! JsonError {
     skip_space(p);
     if p.at >= p.text.len { fail .unexpected_end; }
     c := p.text[p.at];
-    p.at += 1usize;
+    p.at += 1;
     if c == close { return true; }
-    if c == 44u8 { return false; }
+    if c == 44 { return false; }
     fail .unexpected_byte;
 }
 
 // The string that starts at the quote at `p.at`, unescaped: a slice of the text when it has no
 // escapes, else a copy in the arena.
 string :: fn(p: *Parser) -> []const u8 ! JsonError {
-    p.at += 1usize;
+    p.at += 1;
     start := p.at;
     while p.at < p.text.len {
         c := p.text[p.at];
         if c == QUOTE {
             plain := p.text[start..p.at];
-            p.at += 1usize;
+            p.at += 1;
             return plain;
         }
         if c == BACKSLASH { break; }
-        if c < 32u8 { fail .bad_string; }
-        p.at += 1usize;
+        if c < 32 { fail .bad_string; }
+        p.at += 1;
     }
     if p.at >= p.text.len { fail .unexpected_end; }
     out := vec::make(u8, p.a);
@@ -244,40 +244,40 @@ string :: fn(p: *Parser) -> []const u8 ! JsonError {
     while p.at < p.text.len {
         c := p.text[p.at];
         if c == QUOTE {
-            p.at += 1usize;
+            p.at += 1;
             return out.items();
         }
-        if c < 32u8 { fail .bad_string; }
-        p.at += 1usize;
+        if c < 32 { fail .bad_string; }
+        p.at += 1;
         if c != BACKSLASH {
             out.push(c);
             continue;
         }
         if p.at >= p.text.len { fail .unexpected_end; }
         e := p.text[p.at];
-        p.at += 1usize;
-        if e == QUOTE || e == BACKSLASH || e == 47u8 {
+        p.at += 1;
+        if e == QUOTE || e == BACKSLASH || e == 47 {
             out.push(e);
-        } else if e == 98u8 {
-            out.push(8u8);
-        } else if e == 102u8 {
-            out.push(12u8);
-        } else if e == 110u8 {
-            out.push(10u8);
-        } else if e == 114u8 {
-            out.push(13u8);
-        } else if e == 116u8 {
-            out.push(9u8);
-        } else if e == 117u8 {
+        } else if e == 98 {
+            out.push(8);
+        } else if e == 102 {
+            out.push(12);
+        } else if e == 110 {
+            out.push(10);
+        } else if e == 114 {
+            out.push(13);
+        } else if e == 116 {
+            out.push(9);
+        } else if e == 117 {
             cp := hex4(p)?;
-            if cp >= 0xDC00u32 && cp < 0xE000u32 { fail .bad_string; }
-            if cp >= 0xD800u32 && cp < 0xDC00u32 {
+            if cp >= 0xDC00 && cp < 0xE000 { fail .bad_string; }
+            if cp >= 0xD800 && cp < 0xDC00 {
                 // a surrogate pair: the low half must follow
-                if p.at + 2usize > p.text.len || p.text[p.at] != BACKSLASH || p.text[p.at + 1usize] != 117u8 { fail .bad_string; }
-                p.at += 2usize;
+                if p.at + 2 > p.text.len || p.text[p.at] != BACKSLASH || p.text[p.at + 1] != 117 { fail .bad_string; }
+                p.at += 2;
                 low := hex4(p)?;
-                if low < 0xDC00u32 || low >= 0xE000u32 { fail .bad_string; }
-                cp = 0x10000u32 + ((cp - 0xD800u32) << 10u32) + (low - 0xDC00u32);
+                if low < 0xDC00 || low >= 0xE000 { fail .bad_string; }
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
             }
             utf8(&out, cp);
         } else {
@@ -289,67 +289,67 @@ string :: fn(p: *Parser) -> []const u8 ! JsonError {
 
 // The four hex digits at `p.at`.
 hex4 :: fn(p: *Parser) -> u32 ! JsonError {
-    if p.at + 4usize > p.text.len { fail .unexpected_end; }
-    v: u32 = 0u32;
-    i: usize = 0usize;
-    while i < 4usize {
+    if p.at + 4 > p.text.len { fail .unexpected_end; }
+    v: u32 = 0;
+    i: usize = 0;
+    while i < 4 {
         c := p.text[p.at + i];
-        d: u32 = 0u32;
+        d: u32 = 0;
         if is_digit(c) {
-            d = (c - 48u8) as u32;
-        } else if c >= 97u8 && c <= 102u8 {
-            d = ((c - 97u8) as u32) + 10u32;
-        } else if c >= 65u8 && c <= 70u8 {
-            d = ((c - 65u8) as u32) + 10u32;
+            d = (c - 48) as u32;
+        } else if c >= 97 && c <= 102 {
+            d = ((c - 97) as u32) + 10;
+        } else if c >= 65 && c <= 70 {
+            d = ((c - 65) as u32) + 10;
         } else {
             fail .bad_string;
         }
-        v = v * 16u32 + d;
-        i += 1usize;
+        v = v * 16 + d;
+        i += 1;
     }
-    p.at += 4usize;
+    p.at += 4;
     return v;
 }
 
 // `cp` as UTF-8 at the end of `out`.
 utf8 :: fn(out: *Vec(u8), cp: u32) {
-    if cp < 0x80u32 {
+    if cp < 0x80 {
         out.push(cp as u8);
-    } else if cp < 0x800u32 {
-        out.push(0xC0u8 | ((cp >> 6u32) as u8));
-        out.push(0x80u8 | ((cp & 0x3Fu32) as u8));
-    } else if cp < 0x10000u32 {
-        out.push(0xE0u8 | ((cp >> 12u32) as u8));
-        out.push(0x80u8 | (((cp >> 6u32) & 0x3Fu32) as u8));
-        out.push(0x80u8 | ((cp & 0x3Fu32) as u8));
+    } else if cp < 0x800 {
+        out.push(0xC0 | ((cp >> 6) as u8));
+        out.push(0x80 | ((cp & 0x3F) as u8));
+    } else if cp < 0x10000 {
+        out.push(0xE0 | ((cp >> 12) as u8));
+        out.push(0x80 | (((cp >> 6) & 0x3F) as u8));
+        out.push(0x80 | ((cp & 0x3F) as u8));
     } else {
-        out.push(0xF0u8 | ((cp >> 18u32) as u8));
-        out.push(0x80u8 | (((cp >> 12u32) & 0x3Fu32) as u8));
-        out.push(0x80u8 | (((cp >> 6u32) & 0x3Fu32) as u8));
-        out.push(0x80u8 | ((cp & 0x3Fu32) as u8));
+        out.push(0xF0 | ((cp >> 18) as u8));
+        out.push(0x80 | (((cp >> 12) & 0x3F) as u8));
+        out.push(0x80 | (((cp >> 6) & 0x3F) as u8));
+        out.push(0x80 | ((cp & 0x3F) as u8));
     }
 }
 
 // The number at `p.at`: a minus, the whole part (no leading zero), a fraction, an exponent.
 number :: fn(p: *Parser) -> Value ! JsonError {
     start := p.at;
-    if p.text[p.at] == 45u8 { p.at += 1usize; }
+    if p.text[p.at] == 45 { p.at += 1; }
     if p.at >= p.text.len { fail .bad_number; }
-    if p.text[p.at] == 48u8 {
-        p.at += 1usize;
+    if p.text[p.at] == 48 {
+        p.at += 1;
     } else if is_digit(p.text[p.at]) {
         digits(p);
     } else {
         fail .bad_number;
     }
-    if p.at < p.text.len && p.text[p.at] == 46u8 {
-        p.at += 1usize;
+    if p.at < p.text.len && p.text[p.at] == 46 {
+        p.at += 1;
         if p.at >= p.text.len || !is_digit(p.text[p.at]) { fail .bad_number; }
         digits(p);
     }
-    if p.at < p.text.len && (p.text[p.at] == 101u8 || p.text[p.at] == 69u8) {
-        p.at += 1usize;
-        if p.at < p.text.len && (p.text[p.at] == 43u8 || p.text[p.at] == 45u8) { p.at += 1usize; }
+    if p.at < p.text.len && (p.text[p.at] == 101 || p.text[p.at] == 69) {
+        p.at += 1;
+        if p.at < p.text.len && (p.text[p.at] == 43 || p.text[p.at] == 45) { p.at += 1; }
         if p.at >= p.text.len || !is_digit(p.text[p.at]) { fail .bad_number; }
         digits(p);
     }
@@ -361,73 +361,73 @@ number :: fn(p: *Parser) -> Value ! JsonError {
 }
 
 digits :: fn(p: *Parser) {
-    while p.at < p.text.len && is_digit(p.text[p.at]) { p.at += 1usize; }
+    while p.at < p.text.len && is_digit(p.text[p.at]) { p.at += 1; }
 }
 
 // The value of a number written as JSON writes it (checked before): its first 19 digits as a
 // whole number, times a power of ten.
 to_f64 :: fn(text: []const u8) -> f64 {
-    i: usize = 0usize;
+    i: usize = 0;
     negative := false;
-    if text[0] == 45u8 {
+    if text[0] == 45 {
         negative = true;
-        i = 1usize;
+        i = 1;
     }
-    mantissa: u64 = 0u64;
-    kept: u32 = 0u32;
-    exp: i64 = 0i64;
+    mantissa: u64 = 0;
+    kept: u32 = 0;
+    exp: i64 = 0;
     while i < text.len && is_digit(text[i]) {
-        if kept < 19u32 {
-            mantissa = mantissa * 10u64 + ((text[i] - 48u8) as u64);
-            if mantissa != 0u64 { kept += 1u32; }
+        if kept < 19 {
+            mantissa = mantissa * 10 + ((text[i] - 48) as u64);
+            if mantissa != 0 { kept += 1; }
         } else {
-            exp += 1i64;
+            exp += 1;
         }
-        i += 1usize;
+        i += 1;
     }
-    if i < text.len && text[i] == 46u8 {
-        i += 1usize;
+    if i < text.len && text[i] == 46 {
+        i += 1;
         while i < text.len && is_digit(text[i]) {
-            if kept < 19u32 {
-                mantissa = mantissa * 10u64 + ((text[i] - 48u8) as u64);
-                if mantissa != 0u64 { kept += 1u32; }
-                exp -= 1i64;
+            if kept < 19 {
+                mantissa = mantissa * 10 + ((text[i] - 48) as u64);
+                if mantissa != 0 { kept += 1; }
+                exp -= 1;
             }
-            i += 1usize;
+            i += 1;
         }
     }
     if i < text.len {
-        i += 1usize;
-        sign: i64 = 1i64;
-        if text[i] == 45u8 {
-            sign = -1i64;
-            i += 1usize;
-        } else if text[i] == 43u8 {
-            i += 1usize;
+        i += 1;
+        sign: i64 = 1;
+        if text[i] == 45 {
+            sign = -1;
+            i += 1;
+        } else if text[i] == 43 {
+            i += 1;
         }
-        e: i64 = 0i64;
+        e: i64 = 0;
         while i < text.len {
             // beyond this an f64 is infinite or 0 anyway
-            if e < 1000i64 { e = e * 10i64 + ((text[i] - 48u8) as i64); }
-            i += 1usize;
+            if e < 1000 { e = e * 10 + ((text[i] - 48) as i64); }
+            i += 1;
         }
         exp += sign * e;
     }
     v := mantissa as f64;
-    if mantissa != 0u64 {
+    if mantissa != 0 {
         // powers of ten up to 10^22 are exact, so a number of up to 15 digits is too
-        while exp > 22i64 {
+        while exp > 22 {
             v *= TEN_22;
-            exp -= 22i64;
+            exp -= 22;
         }
-        while exp < -22i64 {
+        while exp < -22 {
             v /= TEN_22;
-            exp += 22i64;
+            exp += 22;
         }
-        if exp > 0i64 {
+        if exp > 0 {
             v *= power(exp);
-        } else if exp < 0i64 {
-            v /= power(0i64 - exp);
+        } else if exp < 0 {
+            v /= power(0 - exp);
         }
     }
     if negative { return 0.0 - v; }
@@ -437,35 +437,35 @@ to_f64 :: fn(text: []const u8) -> f64 {
 // 10^n for n up to 22, exact.
 power :: fn(n: i64) -> f64 {
     v: f64 = 1.0;
-    i: i64 = 0i64;
+    i: i64 = 0;
     while i < n {
         v *= 10.0;
-        i += 1i64;
+        i += 1;
     }
     return v;
 }
 
 // The whole number `text` writes, when it is one of up to 18 digits.
 whole :: fn(text: []const u8) -> ?i64 {
-    i: usize = 0usize;
-    negative := text.len > 0usize && text[0] == 45u8;
-    if negative { i = 1usize; }
-    if text.len - i == 0usize || text.len - i > 18usize { return null; }
-    n: i64 = 0i64;
+    i: usize = 0;
+    negative := text.len > 0 && text[0] == 45;
+    if negative { i = 1; }
+    if text.len - i == 0 || text.len - i > 18 { return null; }
+    n: i64 = 0;
     while i < text.len {
         if !is_digit(text[i]) { return null; }
-        n = n * 10i64 + ((text[i] - 48u8) as i64);
-        i += 1usize;
+        n = n * 10 + ((text[i] - 48) as i64);
+        i += 1;
     }
-    if negative { return 0i64 - n; }
+    if negative { return 0 - n; }
     return n;
 }
 
 skip_space :: fn(p: *Parser) {
     while p.at < p.text.len {
         c := p.text[p.at];
-        if c != 32u8 && c != 9u8 && c != 10u8 && c != 13u8 { return; }
-        p.at += 1usize;
+        if c != 32 && c != 9 && c != 10 && c != 13 { return; }
+        p.at += 1;
     }
 }
 
