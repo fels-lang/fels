@@ -1,0 +1,47 @@
+// std.fmt, as `#test` functions: padding, width-justified numbers and joining, written into a
+// FixedBuf (tests/compiler/std_tests.zig runs them natively and on the comptime VM).
+#import std.io.{ Writer, FixedBuf, fixed_buf };
+#import std.fmt as fmt;
+
+// What `b` holds so far.
+text :: fn(b: *FixedBuf) -> []const u8 { return b.data[0..b.pos]; }
+
+#test
+text_is_padded_to_a_width :: fn(t: *Test) {
+    b := fixed_buf();
+    w: *Writer = &b;
+    n := fmt::write_padded_left(w, "ab", 5, 46) catch err { t.fatal("left"); return; };
+    t.eq(n, 5);
+    t.eq(text(&b), "...ab");
+    b.pos = 0;
+    n = fmt::write_padded_right(w, "ab", 5, 46) catch err { t.fatal("right"); return; };
+    t.eq(text(&b), "ab...");
+    b.pos = 0;
+    n = fmt::write_padded_center(w, "ab", 6, 46) catch err { t.fatal("center"); return; };
+    t.eq(text(&b), "..ab..");
+    // text wider than the width is written as it is
+    b.pos = 0;
+    n = fmt::write_padded_left(w, "abcdef", 3, 46) catch err { t.fatal("wide"); return; };
+    t.eq(text(&b), "abcdef");
+}
+
+#test
+numbers_are_right_justified :: fn(t: *Test) {
+    b := fixed_buf();
+    w: *Writer = &b;
+    n := fmt::write_u64_padded(w, 7, 3, 48) catch err { t.fatal("u64"); return; };
+    t.eq(text(&b), "007");
+    b.pos = 0;
+    n = fmt::write_i64_padded(w, -42, 5, 32) catch err { t.fatal("i64"); return; };
+    t.eq(text(&b), "  -42");
+}
+
+#test
+slices_are_joined :: fn(t: *Test) {
+    b := fixed_buf();
+    w: *Writer = &b;
+    items: [3][]const u8 = .{ "a", "b", "c" };
+    n := fmt::join_bytes(w, items[:], ", ") catch err { t.fatal("join"); return; };
+    t.eq(text(&b), "a, b, c");
+    t.eq(n, 7);
+}

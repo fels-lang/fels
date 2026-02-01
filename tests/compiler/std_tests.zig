@@ -19,6 +19,8 @@ const files = [_][]const u8{
 const native_files = [_][]const u8{
     // JSON values are structs in an arena, which the comptime VM cannot build yet
     "tests/fixtures/stdlib/json_tests.fels",
+    // a write through `*Writer` into a FixedBuf stops the comptime VM with OutOfBounds
+    "tests/fixtures/stdlib/fmt_tests.fels",
     "tests/fixtures/stdlib/os_tests.fels",
 };
 
