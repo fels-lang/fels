@@ -1241,6 +1241,36 @@ test "exe: generated for-range loop + typed local compiles and runs" {
     try std.testing.expectEqual(@as(u32, 10), code);
 }
 
+test "exe: a range with one literal bound counts in the other bound's type" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `0..n` with `n: usize` used to count in an `i32`, the start's type, and IR stored the
+    // 8-byte end into a 4-byte slot: the count came out wrong or the stack was overwritten.
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    n: usize = 4294967301;
+        \\    c: usize = 0;
+        \\    for i in 0..n {
+        \\        c += 1;
+        \\        if c > 10 { break; }
+        \\    }
+        \\    if c != 11 { return 1; }
+        \\    big: i64 = 2147483650;
+        \\    last: i64 = 0;
+        \\    for j in 2147483645..big { last = j; }
+        \\    if last != 2147483649 { return 2; }
+        \\    xs: []const u8 = "abcd";
+        \\    t: usize = 0;
+        \\    for k in 0..xs.len { t += k; }
+        \\    if t != 6 { return 3; }
+        \\    return 42;
+        \\}
+    , "exe_range_literal_bound");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: generated match + cast compiles and runs" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

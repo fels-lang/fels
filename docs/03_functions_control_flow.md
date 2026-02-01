@@ -414,6 +414,10 @@ for i in 0..=10 {
 | `0..10`    | Exclusive end    | 0, 1, 2, …, 9        |
 | `0..=10`   | Inclusive end     | 0, 1, 2, …, 10       |
 
+The index has the type of the bounds. A literal bound takes the other one's type, so
+`for i in 0..xs.len` counts in `usize` and `i` indexes `xs` as it is; with two literals,
+as in `0..10`, it is an `i32`.
+
 ### For Slice Loop
 
 ```fels

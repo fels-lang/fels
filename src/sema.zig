@@ -2948,10 +2948,22 @@ const Checker = struct {
                     self.emitError(for_stmt.span, "range bounds must have compatible integer types", .{});
                     return error.SemanticFailed;
                 }
+                // The index has the bounds' type: a literal bound takes the other one's
+                // (`0..xs.len` counts in `usize`), and two literals make an `i32`, as `x := 5`
+                // does. It used to take the start's type alone, so `0..xs.len` counted in an
+                // `i32` and the 8-byte end was stored into the 4-byte slot IR made for it.
+                const loop_ty: Ty = if (start_ty != .int_lit) start_ty else if (end_ty != .int_lit) end_ty else .i32;
+                if (start_ty == .int_lit and end_ty == .int_lit) {
+                    try self.requireDefaultIntFits(for_stmt.start);
+                    try self.requireDefaultIntFits(for_stmt.end);
+                } else {
+                    try self.requireIntLitFits(for_stmt.start, loop_ty);
+                    try self.requireIntLitFits(for_stmt.end, loop_ty);
+                }
                 try self.pushScope();
                 defer self.popScope();
-                try self.declareLocal(for_stmt.binding, start_ty);
-                self.noteLocal(.{ .name = for_stmt.binding, .file = "", .kind = .for_binding, .decl = for_stmt.span, .scope_end = for_stmt.body.span.end, .ty = start_ty });
+                try self.declareLocal(for_stmt.binding, loop_ty);
+                self.noteLocal(.{ .name = for_stmt.binding, .file = "", .kind = .for_binding, .decl = for_stmt.span, .scope_end = for_stmt.body.span.end, .ty = loop_ty });
                 self.loop_depth += 1;
                 defer self.loop_depth -= 1;
                 try self.checkBlock(for_stmt.body);

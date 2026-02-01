@@ -1048,6 +1048,24 @@ test "diagnostics: the address of a local inferred from a literal points at the 
     try std.testing.expect((try firstError(a, "main :: fn() -> i32 { x := 1.5; y: f32 = x as f32; z: f64 = x; return 0; }")) == null);
 }
 
+test "diagnostics: a range's index has the type of its bounds" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // A literal bound takes the other bound's type; the index used to have the start's type,
+    // a literal that adapted to anything (and that IR counted in as an `i32`).
+    try std.testing.expect((try firstError(a,
+        "main :: fn() -> i32 { xs: []const u8 = \"ab\"; for i in 0..xs.len { y: usize = i; p: *usize = &i; } return 0; }")) == null);
+    try std.testing.expect((try firstError(a,
+        "main :: fn() -> i32 { n: i64 = 3; for i in 0..n { y: i64 = i; } for j in n..10 { z: i64 = j; } return 0; }")) == null);
+    // Two literals make an `i32`, as `x := 5` does.
+    const both = (try firstError(a, "main :: fn() -> i32 { for i in 0..10 { y: usize = i; } return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, both, "found `i32`") != null);
+    // A literal bound that does not fit the other bound's type is refused.
+    const negative = (try firstError(a, "main :: fn() -> i32 { n: usize = 3; for i in -1..n { } return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, negative, "does not fit") != null);
+}
+
 test "diagnostics: a `void ! E` function may run to its end without `return;`" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
