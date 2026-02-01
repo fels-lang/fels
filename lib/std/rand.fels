@@ -13,7 +13,7 @@ pub Rng :: struct { state: u64 }
 // Create a generator from a 64-bit seed (zero is remapped so the state is valid).
 pub seed :: fn(s: u64) -> Rng {
     st: u64 = s;
-    if st == 0u64 { st = 0x9E3779B97F4A7C15u64; }
+    if st == 0 { st = 0x9E3779B97F4A7C15; }
     r: Rng = .{ st };
     return r;
 }
@@ -21,18 +21,18 @@ pub seed :: fn(s: u64) -> Rng {
 // The next raw 64-bit value (advances the state).
 pub next_u64 :: fn(self: *Rng) -> u64 {
     x: u64 = self.state;
-    x = x ^ (x >> 12u64);
-    x = x ^ (x << 25u64);
-    x = x ^ (x >> 27u64);
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
     self.state = x;
-    return x *% 0x2545F4914F6CDD1Du64;
+    return x *% 0x2545F4914F6CDD1D;
 }
 
 pub next_u32 :: fn(self: *Rng) -> u32 { return (next_u64(self) >> 32u64) as u32; }
 
 // A float in [0, 1) with 24 bits of mantissa.
 pub next_f32 :: fn(self: *Rng) -> f32 {
-    bits: u32 = (next_u64(self) >> 40u64) as u32;   // top 24 bits
+    bits: u32 = (next_u64(self) >> 40) as u32;   // top 24 bits
     return (bits as f32) / 16777216.0f32;            // / 2^24
 }
 
@@ -53,6 +53,6 @@ pub chance :: fn(self: *Rng, p: f32) -> bool { return next_f32(self) < p; }
 
 // A random sign: -1 or +1.
 pub sign :: fn(self: *Rng) -> f32 {
-    if (next_u64(self) & 1u64) == 0u64 { return -1.0f32; }
+    if (next_u64(self) & 1) == 0 { return -1.0f32; }
     return 1.0f32;
 }
