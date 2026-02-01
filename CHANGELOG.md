@@ -23,6 +23,8 @@ the major version is `0`, any minor bump may break source compatibility.
 - **A local inferred from a float literal** stayed a "float literal" that any float type
   accepted, so `x := 1.5; y: f32 = x;` compiled and stored the `f64`'s bits into the `f32`.
   The local is an `f64` (as an integer one is an `i32`), and `y: f32 = x as f32;` narrows it.
+- **`std.fmt` did not type-check** ("unknown error type `IoError`"): it used `Writer`, `IoError`
+  and `null_writer` from `std.io` without importing them by name. It does now, and has tests.
 
 ## 0.7.0 — 2026-10-11
 
