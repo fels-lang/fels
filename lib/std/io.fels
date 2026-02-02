@@ -94,11 +94,9 @@ FixedBuf as Writer {
         available := 256usize - self.pos;
         count := data.len;
         if data.len > available { count = available; }
-        i := 0usize;
-        while i < count {
+        for i in 0..count {
             self.data[self.pos] = data[i];
             self.pos += 1;
-            i += 1;
         }
         if count < data.len { fail .buffer_full; }
         return count;
@@ -218,11 +216,9 @@ pub write_repeat :: fn(self: *Writer, ch: u8, count: usize) -> usize ! IoError {
     tmp: [1]u8 = .{};
     tmp[0] = ch;
     written := 0usize;
-    i := 0usize;
-    while i < count {
+    for i in 0..count {
         n := self.write_all(tmp[:])?;
         written += n;
-        i += 1;
     }
     return written;
 }
