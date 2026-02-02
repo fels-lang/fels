@@ -58,10 +58,8 @@ pub sb_grow :: fn(self: *StringBuilder, extra: usize) {
     if new_cap < MIN_CAP { new_cap = MIN_CAP; }
     if new_cap < need { new_cap = need; }
     nbuf: []u8 = alloc_bytes(self.arena, new_cap);
-    i: usize = 0;
-    while i < self.n {
+    for i in 0..self.n {
         nbuf[i] = self.buf[i];
-        i += 1;
     }
     self.buf = nbuf;
 }
@@ -70,11 +68,9 @@ pub sb_grow :: fn(self: *StringBuilder, extra: usize) {
 
 pub append :: fn(self: *StringBuilder, s: []const u8) {
     sb_grow(self, s.len);
-    i: usize = 0;
-    while i < s.len {
+    for i in 0..s.len {
         self.buf[self.n] = s[i];
         self.n += 1;
-        i += 1;
     }
 }
 
@@ -87,11 +83,9 @@ pub append_byte :: fn(self: *StringBuilder, c: u8) {
 // Append `n` copies of byte `c` (padding, rules).
 pub append_repeat :: fn(self: *StringBuilder, c: u8, n: usize) {
     sb_grow(self, n);
-    i: usize = 0;
-    while i < n {
+    for i in 0..n {
         self.buf[self.n] = c;
         self.n += 1;
-        i += 1;
     }
 }
 
@@ -277,10 +271,8 @@ pub append_f64_prec :: fn(self: *StringBuilder, v: f64, prec: usize) {
     append_byte(self, 46);              // '.'
     frac: f64 = x - (ip as f64);
     scale: f64 = 1.0;
-    i: usize = 0;
-    while i < prec {
+    for i in 0..prec {
         scale = scale * 10.0;
-        i += 1;
     }
     fd: u64 = (frac * scale) as u64;
     append_u64_pad(self, fd, prec, 48);  // zero-padded fractional digits
@@ -292,10 +284,8 @@ pub append_f64_min :: fn(self: *StringBuilder, v: f64) {
     start: usize = self.n;
     append_f64_prec(self, v, 6);
     has_dot: bool = false;
-    i: usize = start;
-    while i < self.n {
+    for i in start..self.n {
         if self.buf[i] == 46 { has_dot = true; }
-        i += 1;
     }
     if !has_dot { return; }
     while self.n > start {
@@ -319,20 +309,16 @@ substr :: fn(s: []const u8, start: usize, end: usize) -> []const u8 {
 
 pub str_eq :: fn(a: []const u8, b: []const u8) -> bool {
     if a.len != b.len { return false; }
-    i: usize = 0;
-    while i < a.len {
+    for i in 0..a.len {
         if a[i] != b[i] { return false; }
-        i += 1;
     }
     return true;
 }
 
 pub str_starts_with :: fn(s: []const u8, prefix: []const u8) -> bool {
     if prefix.len > s.len { return false; }
-    i: usize = 0;
-    while i < prefix.len {
+    for i in 0..prefix.len {
         if s[i] != prefix[i] { return false; }
-        i += 1;
     }
     return true;
 }
@@ -340,10 +326,8 @@ pub str_starts_with :: fn(s: []const u8, prefix: []const u8) -> bool {
 pub str_ends_with :: fn(s: []const u8, suffix: []const u8) -> bool {
     if suffix.len > s.len { return false; }
     off: usize = s.len - suffix.len;
-    i: usize = 0;
-    while i < suffix.len {
+    for i in 0..suffix.len {
         if s[off + i] != suffix[i] { return false; }
-        i += 1;
     }
     return true;
 }
@@ -353,8 +337,7 @@ pub str_index_of :: fn(s: []const u8, needle: []const u8) -> ?usize {
     if needle.len == 0 { return 0; }
     if needle.len > s.len { return null; }
     last: usize = s.len - needle.len;
-    i: usize = 0;
-    while i <= last {
+    for i in 0..=last {
         j: usize = 0;
         hit: bool = true;
         while j < needle.len {
@@ -362,7 +345,6 @@ pub str_index_of :: fn(s: []const u8, needle: []const u8) -> ?usize {
             j += 1;
         }
         if hit { return i; }
-        i += 1;
     }
     return null;
 }
@@ -374,10 +356,8 @@ pub str_contains :: fn(s: []const u8, needle: []const u8) -> bool {
 // Count occurrences of byte `c`.
 pub str_count_byte :: fn(s: []const u8, c: u8) -> usize {
     total: usize = 0;
-    i: usize = 0;
-    while i < s.len {
+    for i in 0..s.len {
         if s[i] == c { total += 1; }
-        i += 1;
     }
     return total;
 }
@@ -397,10 +377,8 @@ pub to_lower_byte :: fn(c: u8) -> u8 { if is_upper(c) { return c + 32u8; } retur
 // Trimming (returns subslices; no allocation)
 
 pub str_trim_left :: fn(s: []const u8) -> []const u8 {
-    i: usize = 0;
-    while i < s.len {
+    for i in 0..s.len {
         if !is_space(s[i]) { return substr(s, i, s.len); }
-        i += 1;
     }
     return substr(s, s.len, s.len);
 }
@@ -420,10 +398,8 @@ pub str_trim :: fn(s: []const u8) -> []const u8 {
 
 pub str_eq_ignore_case :: fn(a: []const u8, b: []const u8) -> bool {
     if a.len != b.len { return false; }
-    i: usize = 0;
-    while i < a.len {
+    for i in 0..a.len {
         if to_lower_byte(a[i]) != to_lower_byte(b[i]) { return false; }
-        i += 1;
     }
     return true;
 }
