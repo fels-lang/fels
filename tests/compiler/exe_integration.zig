@@ -1241,6 +1241,81 @@ test "exe: generated for-range loop + typed local compiles and runs" {
     try std.testing.expectEqual(@as(u32, 10), code);
 }
 
+test "exe: a local from a literal is stored at the type its uses ask for" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Values past 32 bits come out whole only if the local really is 64 bits wide.
+    const code = try compileAndRun(arena.allocator(),
+        \\count :: fn(s: []const u8) -> usize { n := 0; for c in s { if c == 88 { n += 1; } } return n; }
+        \\main :: fn() -> i32 {
+        \\    xs: [2]i64 = .{ 3000000000, 3000000000 };
+        \\    total := 0;
+        \\    for x in xs { total += x; }
+        \\    if total != 6000000000 { return 1; }
+        \\    if count("aXbX") != 2 { return 2; }
+        \\    big := 0;
+        \\    p: *i64 = &big;
+        \\    *p = 5000000000;
+        \\    if big != 5000000000 { return 3; }
+        \\    a := -1;
+        \\    b := a;
+        \\    w: i64 = b;
+        \\    w = w * 4000000000;
+        \\    if w != -4000000000 { return 4; }
+        \\    if a * 4000000000 != -4000000000 { return 5; }
+        \\    // a float one: an `f32` where a use asks for it, else an `f64`
+        \\    q := 2.5;
+        \\    r: *f32 = &q;
+        \\    *r = *r * 2.0;
+        \\    if q != 5.0 { return 6; }
+        \\    n := 0.0 - 0.25;
+        \\    s: S = .{ n };
+        \\    if s.w != -0.25 { return 7; }
+        \\    exact := 16777217.0;
+        \\    e: f64 = exact;
+        \\    if e != 16777217.0 { return 8; }
+        \\    return 42;
+        \\}
+        \\S :: struct { w: f32 }
+    , "exe_literal_local_inferred");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: a local from a literal that only meets typed operands stays an i32" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Typed operands used to give the local their type: `n > b` made `n` a `u8` that `n + 10`
+    // overflowed, `i < xs.len` made `i` a `usize` that counted down past zero, and the second
+    // `k` (a `u8`) gave the first one its type.
+    const code = try compileAndRun(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    n := 250;
+        \\    b: u8 = 1;
+        \\    if n > b { n = n + 10; }
+        \\    if n != 260 { return 1; }
+        \\    xs: []const u8 = "abc";
+        \\    i := 2;
+        \\    while i >= 0 {
+        \\        if i < xs.len { }
+        \\        i = i - 1;
+        \\    }
+        \\    if i != -1 { return 2; }
+        \\    k := 200;
+        \\    x := k + 100;
+        \\    c: u8 = 7;
+        \\    k := c;
+        \\    d: u8 = k;
+        \\    if x != 300 { return 3; }
+        \\    return 42;
+        \\}
+    , "exe_literal_local_operands");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: a range with one literal bound counts in the other bound's type" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

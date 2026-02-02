@@ -1028,22 +1028,22 @@ test "diagnostics: the address of a local inferred from a literal points at the 
             return error.TestUnexpectedResult;
         }
     }
-    // A pointer of another type is still refused, and the message names the real type.
-    const wrong_width = (try firstError(a, "main :: fn() -> i32 { x := 42; p: *i64 = &x; return 0; }")).?;
+    // A pointer of another type than the local's is refused, and the message names the real type.
+    const wrong_width = (try firstError(a, "main :: fn() -> i32 { x := 42; y: i32 = x; p: *i64 = &x; return 0; }")).?;
     try std.testing.expect(std.mem.indexOf(u8, wrong_width, "found `*i32`") != null);
     try std.testing.expect(std.mem.indexOf(u8, wrong_width, "literal") == null);
-    const wrong_float = (try firstError(a, "main :: fn() -> i32 { x := 1.5; p: *f32 = &x; return 0; }")).?;
+    const wrong_float = (try firstError(a, "main :: fn() -> i32 { x := 1.5; z: f64 = x; p: *f32 = &x; return 0; }")).?;
     try std.testing.expect(std.mem.indexOf(u8, wrong_float, "found `*f64`") != null);
     // What the pointer reads back is an `i32`, not a literal that could widen.
     const through_ptr = (try firstError(a, "main :: fn() -> i32 { x := 0; p := &x; y: i64 = *p; return 0; }")).?;
     try std.testing.expect(std.mem.indexOf(u8, through_ptr, "found `i32`") != null);
-    // The local itself is an `i32` too: reading it as another integer type is refused. It used
-    // to be accepted and read with the wrong width (`x := -5; y: i64 = x;` gave `y != -5`).
-    const widened = (try firstError(a, "main :: fn() -> i32 { x := 5; y: i64 = x; return 0; }")).?;
+    // Once a use has given the local its type, reading it as another integer type is refused.
+    // It used to be accepted and read with the wrong width (`x := -5; y: i64 = x;` gave `y != -5`).
+    const widened = (try firstError(a, "main :: fn() -> i32 { x := 5; z: i32 = x; y: i64 = x; return 0; }")).?;
     try std.testing.expect(std.mem.indexOf(u8, widened, "found `i32`") != null);
-    // A float literal's local is an `f64`: narrowing it takes a cast. `y: f32 = x;` used to be
-    // accepted and stored the `f64`'s bits into the `f32`.
-    const narrowed = (try firstError(a, "main :: fn() -> i32 { x := 1.5; y: f32 = x; return 0; }")).?;
+    // A float literal's local that a use made an `f64` takes a cast to be narrowed. `y: f32 = x;`
+    // used to be accepted for an `f64` local and stored its bits into the `f32`.
+    const narrowed = (try firstError(a, "main :: fn() -> i32 { x := 1.5; z: f64 = x; y: f32 = x; return 0; }")).?;
     try std.testing.expect(std.mem.indexOf(u8, narrowed, "found `f64`") != null);
     try std.testing.expect((try firstError(a, "main :: fn() -> i32 { x := 1.5; y: f32 = x as f32; z: f64 = x; return 0; }")) == null);
 }
@@ -1058,9 +1058,10 @@ test "diagnostics: a range's index has the type of its bounds" {
         "main :: fn() -> i32 { xs: []const u8 = \"ab\"; for i in 0..xs.len { y: usize = i; p: *usize = &i; } return 0; }")) == null);
     try std.testing.expect((try firstError(a,
         "main :: fn() -> i32 { n: i64 = 3; for i in 0..n { y: i64 = i; } for j in n..10 { z: i64 = j; } return 0; }")) == null);
-    // Two literals make an `i32`, as `x := 5` does.
-    const both = (try firstError(a, "main :: fn() -> i32 { for i in 0..10 { y: usize = i; } return 0; }")).?;
-    try std.testing.expect(std.mem.indexOf(u8, both, "found `i32`") != null);
+    // Between two literals the index has the type its uses ask for, as `x := 5` has.
+    try std.testing.expect((try firstError(a, "main :: fn() -> i32 { for i in 0..10 { y: usize = i; } return 0; }")) == null);
+    const both = (try firstError(a, "main :: fn() -> i32 { for i in 0..10 { y: usize = i; z: i64 = i; } return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, both, "expected `i64`, found `usize`") != null);
     // A literal bound that does not fit the other bound's type is refused.
     const negative = (try firstError(a, "main :: fn() -> i32 { n: usize = 3; for i in -1..n { } return 0; }")).?;
     try std.testing.expect(std.mem.indexOf(u8, negative, "does not fit") != null);
@@ -1318,9 +1319,10 @@ test "diagnostics: an integer literal with no type to take is an i32" {
     const a = arena.allocator();
 
     // `x` used to stay an untyped literal and be accepted for any integer type, while IR
-    // stored it as an `i32`: four bytes into the `u8`, which overwrote the next local.
-    try expectFirstError(a, "main :: fn() -> i32 { x := 5; b: u8 = x; return 0; }", &.{"type mismatch: expected `u8`, found `i32`"});
-    try expectFirstError(a, "main :: fn() -> i32 { x := 0; n: usize = 5; x = n; return 0; }", &.{"expected `i32`, found `usize`"});
+    // stored it as an `i32`: four bytes into the `u8`, which overwrote the next local. It has
+    // the type of its first use that asks for one, so a second use asking for another is an error.
+    try expectFirstError(a, "main :: fn() -> i32 { x := 5; b: u8 = x; c: i64 = x; return 0; }", &.{"type mismatch: expected `i64`, found `u8`"});
+    try expectFirstError(a, "main :: fn() -> i32 { x := 0; y: i32 = x; n: usize = 5; x = n; return 0; }", &.{"expected `i32`, found `usize`"});
     try expectFirstError(a, "main :: fn() -> i32 { x := 5000000000; return 0; }", &.{
         "integer literal `5000000000` does not fit in `i32`", "as in `5000000000i64`",
     });
@@ -1328,6 +1330,75 @@ test "diagnostics: an integer literal with no type to take is an i32" {
     try expectFirstError(a, "main :: fn() -> i32 { x := 0xFFFF_FFFF; return 0; }", &.{"as in `0xFFFF_FFFFu32`"});
     try expectFirstError(a, "main :: fn() -> i32 { c := true; x := if c { 1 } else { 3000000000 }; return 0; }", &.{"`3000000000` does not fit in `i32`"});
     try expectNoError(a, "", "main :: fn() -> i32 { x := -2147483648; y := 2147483647; z: i64 = x as i64; w := 5000000000i64; return y; }");
+}
+
+test "diagnostics: a local from a literal has the type its first use asks for" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const accepted = [_][]const u8{
+        // `+=` a typed value, `return`, a typed operand, an assignment, an argument
+        "main :: fn() -> i32 { xs: [3]i64 = .{ 1, 2, 3 }; total := 0; for x in xs { total += x; } return 0; }",
+        "count :: fn(s: []const u8) -> usize { n := 0; for c in s { if c == 88 { n += 1; } } return n; }\nmain :: fn() -> i32 { return 0; }",
+        "main :: fn() -> i32 { xs: [3]u32 = .{ 4, 9, 2 }; best := 0; for x in xs { if x > best { best = x; } } return 0; }",
+        "main :: fn() -> i32 { xs: []const u8 = \"ab\"; n := 0; n = xs.len; return 0; }",
+        "get :: fn(i: usize) -> i64 { return 1; }\nmain :: fn() -> i32 { i := 0; s: i64 = 0; while i < 3 { s += get(i); i += 1; } return 0; }",
+        // a field, and a pointer it is read through
+        "P :: struct { v: usize }\nmain :: fn() -> i32 { n := 3; p: P = .{ n }; return 0; }",
+        "main :: fn() -> i32 { x := 42; p: *i64 = &x; return 0; }",
+        // `b := a;` ties the two: both are `u64`
+        "main :: fn() -> i32 { a := 0; b := a; c: u64 = b; d: u64 = a; return 0; }",
+        // an inner local of the same name has a type of its own
+        "main :: fn() -> i32 { n := 0; if true { n := 5; y: u8 = n; } z: i64 = n; return 0; }",
+        // with no use asking for a type it is an `i32`, which still indexes
+        "main :: fn() -> i32 { xs: []const u8 = \"ab\"; i := 0; c := xs[i]; return i; }",
+        // a local from a float literal takes `f32` the same ways
+        "half :: fn(x: f32) -> f32 { return x / 2.0; }\nmain :: fn() -> i32 { h := 3.0; y := half(h); return 0; }",
+        "main :: fn() -> i32 { ws: [2]f32 = .{ 1.5, 2.5 }; w := 0.0; for v in ws { if v > w { w = v; } } return 0; }",
+        "P :: struct { w: f32 }\nmain :: fn() -> i32 { n := -0.25; p: P = .{ n }; q := 2.5; r: *f32 = &q; return 0; }",
+    };
+    for (accepted) |src| {
+        if (try firstError(a, src)) |msg| {
+            std.debug.print("\nthis should be accepted:\n  {s}\ngot:\n{s}\n", .{ src, msg });
+            return error.TestUnexpectedResult;
+        }
+    }
+    // The literal has to fit the type its use gives it.
+    try expectFirstError(a, "main :: fn() -> i32 { x := 300; b: u8 = x; return 0; }", &.{"`300` does not fit in `u8`"});
+    // A second use asking for another type is refused.
+    try expectFirstError(a, "main :: fn() -> i32 { n := 0; a: u8 = n; b: u16 = n; return 0; }", &.{"expected `u16`, found `u8`"});
+    try expectFirstError(a, "main :: fn() -> i32 { w := 0.5; a: f32 = w; b: f64 = w; return 0; }", &.{"expected `f64`, found `f32`"});
+    // A float type does not go to a local from an integer literal, nor the other way round.
+    try expectFirstError(a, "main :: fn() -> i32 { n := 0; x: f32 = n; return 0; }", &.{"expected `f32`, found `i32`"});
+}
+
+test "diagnostics: a local from a literal leaves alone what compiled before" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const accepted = [_][]const u8{
+        // An operand next to a typed one gives no type: the operators take mixed widths, and
+        // `i < xs.len` made `i` a `usize` that `return i` then refused.
+        "main :: fn() -> i32 { xs: []const u8 = \"ab\"; i := 0; while i < xs.len { i += 1; } return i; }",
+        "main :: fn() -> i32 { n := 1; m: u8 = 5; m = m + n; return n; }",
+        // through `p := &n`, and a range to such a local
+        "main :: fn() -> i32 { n := 0; k := 0; p := &n; *p = 3; big: i64 = 5000000000; k += big; return 0; }",
+        "main :: fn() -> i32 { n := 3; total := 0; for i in 0..n { total += i; } m: u64 = n; return 0; }",
+        // a constant without a type starts a local like its literal
+        "K :: 7;\nmain :: fn() -> i32 { m := K; b: u8 = m; return 42; }",
+    };
+    for (accepted) |src| {
+        if (try firstError(a, src)) |msg| {
+            std.debug.print("\nthis should be accepted:\n  {s}\ngot:\n{s}\n", .{ src, msg });
+            return error.TestUnexpectedResult;
+        }
+    }
+    // A shift amount is no value of the shifted one's type.
+    try expectFirstError(a, "main :: fn() -> i32 { n := 1; s: u8 = 10; n <<= s; return n; }", &.{"expected `i32`, found `u8`"});
+    // An error the first pass met outside the body (a generic struct it instantiated first) stays.
+    try expectFirstError(a, "Box :: struct($T: type) { v: T, w: Nope }\nmain :: fn() -> i32 { n := 0; p: ?*Box(i32) = null; return n; }", &.{"unknown type `Nope`"});
 }
 
 test "diagnostics: a constant without a type is checked like its literal" {
