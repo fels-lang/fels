@@ -5,6 +5,15 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ## Unreleased
 
+### Changed
+
+- **A local from a literal has the type its first use asks for.** `total := 0; for p in prices
+  { total += p; }` makes `total` an `i64` for `i64` prices, `n := 0; … return n;` a `usize` in a
+  function returning one, `w := 0.0; w = size.x;` an `f32`: an assignment, a typed local or field,
+  an argument, a `return` or a pointer gives the type, the first one counts, and a local nothing
+  asks of stays an `i32` (an `f64`). `x := 0i64` and `0usize` are no longer needed for that. An
+  operand next to a typed one gives no type, so programs that compiled do what they did.
+
 ### Fixed
 
 - **A `bool` passed to a C function** was an LLVM `i1` without `zeroext`, so only its lowest
