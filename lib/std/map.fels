@@ -26,19 +26,15 @@ INIT_CAP :: 8usize;   // always a power of two so `hash & (cap-1)` indexes a slo
 // Raw byte hashing (FNV-1a)
 fnv_bytes :: fn(p: *const u8, n: usize) -> u64 {
     h: u64 = 14695981039346656037;
-    i: usize = 0;
-    while i < n {
+    for i in 0..n {
         h = (h ^ (p[i] as u64)) *% 1099511628211;
-        i += 1;
     }
     return h;
 }
 
 eq_bytes :: fn(a: *const u8, b: *const u8, n: usize) -> bool {
-    i: usize = 0;
-    while i < n {
+    for i in 0..n {
         if a[i] != b[i] { return false; }
-        i += 1;
     }
     return true;
 }
@@ -111,10 +107,8 @@ pub AutoHashMap :: struct($K: type, $V: type) {
         while c < new_cap { self.states[c] = EMPTY; c += 1; }
         self.count = 0;
         self.tombs = 0;
-        j: usize = 0;
-        while j < old_states.len {
+        for j in 0..old_states.len {
             if old_states[j] == USED { self.place(old_keys[j], old_vals[j]); }
-            j += 1;
         }
     }
 
@@ -235,13 +229,11 @@ pub StrMap :: struct($V: type) {
         while c < new_cap { self.states[c] = EMPTY; c += 1; }
         self.count = 0;
         self.tombs = 0;
-        j: usize = 0;
-        while j < old_states.len {
+        for j in 0..old_states.len {
             if old_states[j] == USED {
                 // re-place without re-duping: insert the already-owned key.
                 self.place_owned(old_keys[j], old_vals[j]);
             }
-            j += 1;
         }
     }
 
@@ -273,15 +265,13 @@ pub StrMap :: struct($V: type) {
     find :: fn(self: *Self, k: []const u8) -> usize {
         mask: usize = self.states.len - 1;
         i: usize = (fnv_bytes(k.ptr, k.len) as usize) & mask;
-        steps: usize = 0;
-        while steps <= self.states.len {
+        for steps in 0..=self.states.len {
             st: u8 = self.states[i];
             if st == EMPTY { return self.states.len; }
             if st == USED {
                 if self.keys[i] == k { return i; }
             }
             i = (i + 1) & mask;
-            steps += 1;
         }
         return self.states.len;
     }
