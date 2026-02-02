@@ -214,12 +214,10 @@ pub today_utc :: fn() -> Date {
 // The number made of the `n` digits of `text` from `at`, or -1 when one of them is no digit.
 digits_at :: fn(text: []const u8, at: usize, n: usize) -> i64 {
     v: i64 = 0;
-    i: usize = at;
-    while i < at + n {
+    for i in at..at + n {
         c := text[i];
         if c < 48 || c > 57 { return -1; }
         v = v * 10 + ((c - 48) as i64);
-        i += 1;
     }
     return v;
 }
