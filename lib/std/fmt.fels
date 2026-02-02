@@ -97,13 +97,11 @@ pub write_hex_u64_padded :: fn(w: *Writer, value: u64, width: usize, fill: u8) -
 //   join_bytes(w, .{"a", "b", "c"}[:], ", ")  ->  "a, b, c"
 pub join_bytes :: fn(w: *Writer, items: []const []const u8, sep: []const u8) -> usize ! IoError {
     written := 0usize;
-    i := 0usize;
-    while i < items.len {
+    for i in 0..items.len {
         if i > 0 {
             written += w.write_all(sep)?;
         }
         written += w.write_all(items[i])?;
-        i += 1;
     }
     return written;
 }
