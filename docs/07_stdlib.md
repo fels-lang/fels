@@ -129,7 +129,7 @@ See `tests/fixtures/stdlib/utf16_app.fels` (hand-picked and exhaustive cases) an
 `utf16_win_app.fels` (agreement with the Windows APIs).
 
 ## `std.fs`
-Minimal synchronous file I/O (Windows-only currently).
+Minimal synchronous file I/O, on Windows and Linux.
 
 - `open(path)`: Open existing file for reading
 - `create(path)`: Create/truncate file for writing
@@ -143,7 +143,7 @@ Minimal synchronous file I/O (Windows-only currently).
   `*W` functions), up to 1023 bytes; `dir_next` gives names in UTF-8 too.
 
 ## `std.process`
-Process management (Windows-only currently).
+Process management, on Windows and Linux.
 
 - `spawn(cmd)`: Spawn a child process (returns `Child`)
 - `wait(child)`, `try_wait(child)`, `kill(child)`, `release(child)`
