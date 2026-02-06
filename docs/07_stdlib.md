@@ -725,7 +725,7 @@ path::dirname ("a/b/c.txt")            // "a/b"   ("." when no separator)
 path::extension("c.txt")               // ".txt"  (with the dot; "" if none)
 path::stem("c.txt")                    // "c"
 path::is_absolute("/x")                // true (also "C:\…" and "\unc")
-path::has_extension("c.fels", "sk")      // true (leading dot optional)
+path::has_extension("c.fels", "fels")    // true (leading dot optional)
 path::join(&a, "a/b", "c.txt")         // "a/b\c.txt"
 path::with_extension(&a, "c.txt", "md")// "c.md"
 ```
