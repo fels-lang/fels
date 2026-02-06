@@ -424,19 +424,14 @@ unchanged once Fels grows other targets. The intended mapping:
 | `runtime_file(x)` | copy next to exe | (rpath usually suffices) | (rpath) |
 | `link_libc()` | ucrt + vcruntime | the system libc/crt | libSystem |
 
-**Fels only emits and links Windows today** (COFF objects, `lld-link`, a Win64-only
-ABI in `backend/llvm/abi.zig`, PE output). Reaching Linux/macOS needs, in order:
-
-1. **Target selection** (`-target x86_64-linux-gnu`, …) — LLVM emits ELF/Mach-O
-   for free once the triple is chosen.
-2. **ELF / Mach-O linking** via `ld.lld` / `ld64.lld` (lld already ships both).
-3. **The SysV / AArch64 aggregate ABI** — the largest piece; SysV's by-value
-   struct classification (eightbyte SSE/INTEGER) is more involved than Win64's
-   size-based rule, so it's a second ABI backend alongside `abi.zig`.
-4. Per-platform runtime + entry conventions (`runtime/linux.fels` exists already).
-
-None of that requires changing a `build.fels` — the link-mode/`runtime_file`/named-
-library design above absorbs it.
+**Fels emits and links Windows and Linux on x86-64**: PE through felsld or `lld-link` with
+the Win64 ABI, and ELF through `ld.lld` with the SysV ABI, either static without libc
+(`--target linux`, `a.target(.linux)`) or against glibc (`--target linux-gnu`,
+`a.target(.linux_gnu)`); see [the Linux backend](14_linux_elf_backend.md) and
+[targets and tiers](18_targets_and_tiers.md). macOS is not there yet: it needs Mach-O
+linking (`ld64.lld`), the AArch64 aggregate ABI and its own runtime and entry. None of
+that requires changing a `build.fels` — the link-mode/`runtime_file`/named-library design
+above absorbs it.
 
 ## Generating bindings from a C header
 
