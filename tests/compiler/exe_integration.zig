@@ -4581,6 +4581,59 @@ test "felsld: a DLL holding an absolute address is handed back to LLD" {
     try std.testing.expectEqual(@as(i32, 0), link_mem(with_ptrs.ptr, with_ptrs.len, ".zig-cache/felsld_ptrs_as_exe.exe", 3, "", 0, 0));
 }
 
+test "felsld: a section with more than 65,535 relocations is linked whole" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+
+    const felsld_obj = ".zig-cache/felsld_for_relocs.o";
+    const felsld_dll = ".zig-cache/felsld_for_relocs.dll";
+    try fels.compileFileWithLlvm(a, io, .{
+        .file_name = "linker/felsld.fels",
+        .source = "",
+        .obj_path = felsld_obj,
+        .exe_path = felsld_dll,
+        .dll = true,
+        .opt_level = 2,
+        .llvm_bin = fels.llvm_path ++ "/bin",
+        .lib_paths = if (fels.windows_sdk_lib_path.len > 0) &.{fels.windows_sdk_lib_path} else &.{},
+    });
+    const lib = win_dll.LoadLibraryA(felsld_dll) orelse return error.DllLoadFailed;
+    defer _ = win_dll.FreeLibrary(lib);
+    const link_mem = try procAddress(lib, GabldLinkMem, "fels_link_mem");
+
+    // Past 0xFFFF relocations a COFF section's 16-bit count says 0xFFFF and the first record
+    // holds the real one. felsld took the 16-bit count, so the calls after the 65,535th stayed
+    // unpatched (`call +0`): Strata's .text had 73,861 and its entry point ran into padding.
+    var src: std.ArrayList(u8) = .empty;
+    try src.appendSlice(a, "count: i32 = 0;\n#noinline\nbump :: fn() { count += 1; }\nmain :: fn() -> i32 {\n");
+    for (0..70000) |_| try src.appendSlice(a, "    bump();\n");
+    try src.appendSlice(a, "    if count != 70000 { return 1; }\n    return 42;\n}\n");
+    const obj_path = ".zig-cache/felsld_many_relocs.o";
+    try fels.compileWithLlvm(a, io, .{
+        .file_name = "felsld_many_relocs",
+        .source = src.items,
+        .obj_path = obj_path,
+        .exe_path = null,
+        .opt_level = 0,
+        .llvm_bin = fels.llvm_path ++ "/bin",
+    });
+    const obj = try std.Io.Dir.cwd().readFileAlloc(io, obj_path, a, .unlimited);
+    const exe_path = ".zig-cache/felsld_many_relocs.exe";
+    try std.testing.expectEqual(@as(i32, 0), link_mem(obj.ptr, obj.len, exe_path, 3, "", 0, 0));
+
+    const argv = [_][]const u8{exe_path};
+    var child = try std.process.spawn(io, .{ .argv = &argv, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+    const term = try child.wait(io);
+    try std.testing.expectEqual(@as(u32, 42), switch (term) {
+        .exited => |code| @as(u32, @intCast(code)),
+        else => 0,
+    });
+}
+
 test "exe: && and || skip the right operand when the left decides" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
