@@ -38,6 +38,9 @@ These compile without a message and give a wrong result.
 - ~~An error inside an imported module or the runtime is shown at line 1, column 1.~~ Fixed: every
   message is located in its own file's text.
 - **Macro errors go to stderr only**; the language server does not show them. Reported.
+- **`core::atomic_*` without its ordering argument compiles**: `core::atomic_load(&x)` and
+  `core::atomic_store(&x, 5)` give wrong values instead of an error about the missing argument.
+  Verified 2026-10-17.
 - **`std.json` and `std.serde` cannot be imported together**: both declare a `Parser`, and the
   field tables the runtime gets for reflection are named after the type alone ("`<runtime>`:
   duplicate top-level declaration `__fld_Parser`"). Verified 2026-10-17.
@@ -63,6 +66,8 @@ These compile without a message and give a wrong result.
 - Libraries (`b.static`, `b.shared`) cannot target Linux yet; the archive writer reads COFF objects.
 
 - At compile time (`#run`, `#assert`), `&5` and `&(x + 1)` are refused as "could not be evaluated".
+- The `atomic` field qualifier is not checked: a plain read or write of such a field compiles,
+  and the qualifier is accepted on a local too.
 - At compile time a write through `*Writer` into a `std.io.FixedBuf` stops with `OutOfBounds`, so
   `tests/fixtures/stdlib/fmt_tests.fels` runs natively only.
 - A constant computed by a call or `#run` cannot be read by other compile time code
