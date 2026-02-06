@@ -580,7 +580,7 @@ b.default_step(all);                   // a bare `fels build` runs `all`
 | `s.copy_file(src, dest)` · `s.copy_dir(src, dest)` | copy a file, or a folder with everything in it |
 | `s.write_file(path, text)` | write a file, creating its folders |
 | `s.remove(path)` | remove a file or a folder |
-| `s.print(text)` | print a line (a build script cannot print with `std.io` yet) |
+| `s.print(text)` | print a line when the step runs (`print` from `std.io` prints while the script runs) |
 
 A `Command` takes `c.arg(text)`, `c.arg_output(artifact)` (the absolute path of an
 artifact's output), `c.cwd(dir)` (default: build.fels's folder) and `c.env(key, value)` (added
