@@ -26,21 +26,21 @@ in a compiled program: slices of it and of string constants, a `Vec` of slices, 
   [13_metaprogramming.md](13_metaprogramming.md).
 - First-class `ast.*` values — build a program in the VM, then `#insert #run gen()`.
 
-Reflection — `type_info(T)`, `typeid_of`, `type_name`, constraints, runtime `Any` —
+Reflection — `core::type_info(T)`, `core::type_id`, `core::type_name`, constraints, runtime `Any` —
 lives in [12_reflection_and_constraints.md](12_reflection_and_constraints.md).
 
 ## #compiler hooks
 
 A `#compiler` function runs at comptime. It reads the program through
-`compiler_decls()` — each `Decl` carries its shape: a struct's fields, an enum's
+`core::compiler_decls()` — each `Decl` carries its shape: a struct's fields, an enum's
 variants, a fn's params and return, and the decl's body source. It returns new
 top-level declarations as source, which get spliced and re-checked. A generated
-decl whose name matches an existing one replaces it. `compiler_remove(name)` drops
-one. `compiler_error("msg")` halts the build with a diagnostic. Bare `#compiler`
+decl whose name matches an existing one replaces it. `core::compiler_remove(name)` drops
+one. `core::compiler_error("msg")` halts the build with a diagnostic. Bare `#compiler`
 runs before typecheck; `#compiler(final)` runs after generation, over the augmented
 program.
 
-`#derive`-style codegen is built on this — walk `type_info(T)`, emit the impl.
+`#derive`-style codegen is built on this — walk `core::type_info(T)`, emit the impl.
 
 ## Comptime FFI and build
 

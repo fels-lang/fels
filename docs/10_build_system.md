@@ -193,7 +193,7 @@ block at once, like Jai's `set_optimization`.
 
 ## 4. Layer 3 — the compiler intercept (message loop)
 
-This is the Jai message loop, built on Fels's `#compiler` hook + `compiler_decls()`
+This is the Jai message loop, built on Fels's `#compiler` hook + `core::compiler_decls()`
 (already implemented). Register interest in a workspace, then pull typed messages
 as each phase finishes a unit — and **inspect or alter the program** before it
 lowers.
@@ -235,12 +235,12 @@ pub Message :: struct {
     workspace: u32,
     // typechecked payload (Jai gives you syntax trees + types here; Fels too):
     decl_name: []const u8,
-    decl_kind: []const u8,   // "fn" | "struct" | ...  (from compiler_decls())
+    decl_kind: []const u8,   // "fn" | "struct" | ...  (from core::compiler_decls())
     // …typed AST handle + type_info handle (Layer-3 extensions)
 }
 ```
 
-Today `compiler_decls()` already gives a hook the program's declarations (name +
+Today `core::compiler_decls()` already gives a hook the program's declarations (name +
 kind) at compile time; Layer 3 generalizes that into the streamed message form
 and adds the typed-AST/type-info handles.
 
@@ -313,7 +313,7 @@ for t in targets {
 
 ### 5.6 Bindings generation, on typed AST
 A `b.codegen` step can read C/C++ headers (or, natively, introspect Fels via
-`compiler_decls()`/`type_info`) and emit **typed AST** bindings into a workspace —
+`core::compiler_decls()`/`core::type_info`) and emit **typed AST** bindings into a workspace —
 the safer, faster cousin of Jai's `generate_bindings`.
 
 ## 6. CLI surface
@@ -374,7 +374,7 @@ What the build system needs, against what already exists:
 | Piece | Status |
 | --- | --- |
 | Comptime VM that runs IR | ✅ done |
-| `#compiler` hook + `compiler_decls()` (program introspection) | ✅ done |
+| `#compiler` hook + `core::compiler_decls()` (program introspection) | ✅ done |
 | Driver `compileFileWithLlvm` (exe/dll/obj) + `felsld` linker | ✅ done |
 | **`fels build` dir-mode**: find `build.fels`, run `build(b)` in the VM | ✅ done |
 | **Config capture**: `host_call` opcode → `__build_*` intrinsics → host `BuildPlan` | ✅ done |

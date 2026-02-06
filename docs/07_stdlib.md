@@ -872,7 +872,7 @@ Deserialization constructs the value reflectively: it zero-inits a `result: T`, 
 address that `any_field_at` hands back. Arrays/strings are allocated in the arena.
 
 How it works (the "one serializer, two speeds" design from docs/12): the *structure* comes
-from `type_info` (a struct's `id` sizes/tags slice + optional-payload elements; alignment is
+from `core::type_info` (a struct's `id` sizes/tags slice + optional-payload elements; alignment is
 derived recursively from field types) and the *bytes* come from `Any`, so adding a new type
 needs zero serializer/parser changes.
 

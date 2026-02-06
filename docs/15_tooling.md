@@ -127,7 +127,7 @@ no bikeshedding. Idempotent: `fmt(fmt(x)) == fmt(x)`.
 
 ## 3. `fels doc` — reflection-driven documentation
 
-fels's reflection is the unfair advantage here. `compiler_decls()` and `type_info`
+fels's reflection is the unfair advantage here. `core::compiler_decls()` and `core::type_info`
 already expose every declaration's shape; doc generation reads those plus the
 leading doc comments and emits HTML/Markdown.
 
@@ -157,7 +157,7 @@ The comptime VM (`src/vm/`) already evaluates fels to real values over a modeled
 host memory. A REPL is an interactive driver over it: enter a decl or expression,
 the VM evaluates it, the result prints. Distinctive because it's the *same engine*
 that runs `#run`/`#compiler` — the REPL is comptime fels, live. Good for exploring
-`std`, prototyping a generic, or inspecting `type_info`.
+`std`, prototyping a generic, or inspecting `core::type_info`.
 
 ## 6. Editor integrations — one grammar, one server
 

@@ -190,7 +190,7 @@ genuinely have code as a string.
 ## 7. Programmatic generation (when templates aren't enough)
 
 When the *shape* of the generated code depends on compile-time logic — iterating
-over a type's fields, branching on `type_info(T)`, accumulating a list of
+over a type's fields, branching on `core::type_info(T)`, accumulating a list of
 statements — build the AST as a first-class value and splice the result:
 
 ```fels
@@ -211,7 +211,7 @@ The comptime VM exposes the AST as matchable `ast.*` values (see
 [09](09_comptime.md)). This path can construct *any* form (full
 control flow, compound literals, declarations) and underpins reflection-driven
 code generation and `#compiler` hooks. Reflection helpers that pair well with it
-(`type_info`, `typeid_of`, `Any`, field navigation) are documented in
+(`core::type_info`, `core::type_id`, `Any`, field navigation) are documented in
 [12](12_reflection_and_constraints.md).
 
 ## 8. `#derive` — generated impls from a type's shape
@@ -262,7 +262,7 @@ enhancement.
 
 The built-ins above are not special — `#derive` is **open**. A `#derive(Name)` the
 compiler doesn't recognize is *not an error*: it's left on the declaration for a
-`#compiler` hook to handle. `compiler_decls()` exposes each declaration's requested
+`#compiler` hook to handle. `core::compiler_decls()` exposes each declaration's requested
 derives as `Decl.derives` (the space-separated `#derive(...)` names), so a hook
 filters to the structs that opted in and generates their impl:
 
