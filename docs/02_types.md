@@ -711,7 +711,7 @@ Opaque types are useful for:
 
 ## Atomic Types
 
-The `atomic` qualifier is applied to struct fields to enable atomic memory operations:
+The `atomic` qualifier marks a struct field that threads share:
 
 ```fels
 Counter :: struct {
@@ -719,16 +719,25 @@ Counter :: struct {
 }
 ```
 
-Atomic fields must be accessed through the `core::atomic_load` and `core::atomic_store` builtins rather than through regular field access:
+The qualifier documents the intent; it does not change how the field may be used. Access it
+atomically through [`std.atomics`](07_stdlib.md#stdatomics), whose operations are sequentially
+consistent:
 
 ```fels
+#import std.atomics as atomics;
+
 c: Counter = .{ .value = 0 };
-current := core::atomic_load(&c.value);
-core::atomic_store(&c.value, current + 1);
+old := atomics::fetch_add(&c.value, 1);   // returns the previous value
+now := atomics::load(&c.value);
 ```
 
+The `core::atomic_*` builtins under them take the memory ordering as their last argument
+(`core::atomic_load(&c.value, 4)`; see [Builtins](08_attributes_builtins.md)). The atomic
+wrapper type `Atomic(T)` in `std.atomics` keeps the value inside it instead.
+
 > [!NOTE]
-> The `atomic` qualifier is only valid on struct fields. See the [Builtins](08_attributes_builtins.md) chapter for the full set of atomic operations available.
+> The compiler does not yet check how an `atomic` field is used: a plain `c.value = 3` compiles,
+> and so does the qualifier on a local. Use `std.atomics` for every access.
 
 ## Borrow Types
 
