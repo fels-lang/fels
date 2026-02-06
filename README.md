@@ -25,7 +25,7 @@ Strata, a portfolio app. Writing it showed me a lot of bugs in the compiler. I f
 
 Fels runs on 64-bit Windows. It builds programs for Windows and Linux.
 
-1. Download `fels-0.7.0-x86_64-windows.zip` from the
+1. Download `fels-0.8.0-x86_64-windows.zip` from the
    [latest release](https://github.com/fels-lang/fels/releases/latest).
 2. Unpack it. Run `install.ps1` in the folder. It copies Fels to `%LOCALAPPDATA%\fels` and adds
    it to your PATH.

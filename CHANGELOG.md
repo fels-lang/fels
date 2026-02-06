@@ -3,10 +3,17 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.8.0 — 2026-10-17
+
+Less to write and fewer surprises: a local from a literal takes the type its uses ask for, so
+`0i64` and `0usize` are rarely needed, and the standard library reads that way too; and two
+loops and a float local that compiled to wrong code, a `bool` for C, and felsld for big
+programs.
 
 ### Changed
 
+- **The standard library** is written without the integer suffixes its context gives (the
+  compiled code is the same) and with range loops for its counters.
 - **A local from a literal has the type its first use asks for.** `total := 0; for p in prices
   { total += p; }` makes `total` an `i64` for `i64` prices, `n := 0; … return n;` a `usize` in a
   function returning one, `w := 0.0; w = size.x;` an `f32`: an assignment, a typed local or field,
