@@ -140,6 +140,7 @@ const LlvmBackendStub = struct {
     }
     pub fn deinit(_: *LlvmBackendStub) void {}
     pub fn setOptLevel(_: *LlvmBackendStub, _: u2) void {}
+    pub fn setSafety(_: *LlvmBackendStub, _: bool) void {}
     pub fn lower(_: *LlvmBackendStub, _: ir.IrModule) Error!void {
         return error.LlvmNotEnabled;
     }

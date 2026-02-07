@@ -126,6 +126,9 @@ pub const LlvmCompileOptions = struct {
     dll: bool = false,
     /// LLVM opt level (0–3).
     opt_level: u2 = if (@import("builtin").mode == .Debug) 0 else 2,
+    /// The runtime safety checks (bounds, null, overflow, division by zero, shift amounts), at
+    /// any opt level. Off only when asked for: `release_fast`, `--release-fast`, `--unchecked`.
+    safety: bool = true,
     /// Target OS to generate for (cross-compilation). Defaults to the host.
     target_os: std.Target.Os.Tag = @import("builtin").os.tag,
     /// Emit no platform entry-point wrapper (`mainCRTStartup`) or `_fltused` — a
@@ -351,6 +354,7 @@ pub fn emitLlvmFromFrontend(
     be.cg.no_entry = opts.no_entry or opts.library_object;
     be.cg.library_object = opts.library_object;
     be.setOptLevel(opts.opt_level);
+    be.setSafety(opts.safety);
     if (opts.progress) |p| p(opts.progress_ctx, .codegen);
     const t_codegen = nowNs();
     be.lower(module) catch {

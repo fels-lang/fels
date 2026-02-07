@@ -10,8 +10,13 @@ fn compileAndRun(allocator: std.mem.Allocator, src: []const u8, label: []const u
     return compileAndRunAt(allocator, src, label, 2);
 }
 
-/// `compileAndRun` at a chosen optimisation level (`-O0` keeps the debug checks).
+/// `compileAndRun` at a chosen optimisation level, with the runtime safety checks.
 fn compileAndRunAt(allocator: std.mem.Allocator, src: []const u8, label: []const u8, opt_level: u2) !u32 {
+    return compileAndRunChecked(allocator, src, label, opt_level, true);
+}
+
+/// `compileAndRunAt`, with the runtime safety checks or without them (`--unchecked`).
+fn compileAndRunChecked(allocator: std.mem.Allocator, src: []const u8, label: []const u8, opt_level: u2, safety: bool) !u32 {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
 
@@ -33,6 +38,7 @@ fn compileAndRunAt(allocator: std.mem.Allocator, src: []const u8, label: []const
         .obj_path = obj_path,
         .exe_path = exe_path,
         .opt_level = opt_level,
+        .safety = safety,
         .llvm_bin = fels.llvm_path ++ "/bin",
         .lib_paths = lib_paths,
     });
@@ -1281,6 +1287,33 @@ test "exe: a local from a literal is stored at the type its uses ask for" {
         \\S :: struct { w: f32 }
     , "exe_literal_local_inferred");
     try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: an optimized build keeps the runtime safety checks" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The checks used to come with -O0 alone: at -O2 an index past the end read the next
+    // memory, an overflow wrapped, and a division by zero was undefined. A panic exits with
+    // 0xDEADBEEF; the test sees its low byte. `idx` keeps the values from the optimizer.
+    const pre = "#noinline\nidx :: fn(n: usize) -> usize { return n; }\n";
+    const faults = [_][]const u8{
+        "main :: fn() -> i32 { xs: [4]i32 = .{ 1, 2, 3, 4 }; s: []const i32 = xs[:]; return s[idx(9)]; }",
+        "main :: fn() -> i32 { xs: [4]i32 = .{ 1, 2, 3, 4 }; return xs[idx(9)]; }",
+        "main :: fn() -> i32 { a: i32 = 2147483600 + (idx(1) as i32); return a + 100; }",
+        "main :: fn() -> i32 { d: i32 = idx(0) as i32; return 10 / d; }",
+        "main :: fn() -> i32 { s: u32 = idx(40) as u32; x: u32 = 1; return (x << s) as i32; }",
+    };
+    for (faults, 0..) |body, i| {
+        const src = try std.mem.concat(a, u8, &.{ pre, body });
+        const label = try std.fmt.allocPrint(a, "exe_safety_o2_{d}", .{i});
+        try std.testing.expectEqual(@as(u32, 0xEF), try compileAndRunAt(a, src, label, 2));
+    }
+    // Without the checks (`release_fast`, `--unchecked`) the index reads past the end instead.
+    const unchecked_src = try std.mem.concat(a, u8, &.{ pre, "main :: fn() -> i32 { xs: [4]i32 = .{ 1, 2, 3, 4 }; s: []const i32 = xs[:]; v := s[idx(5)]; return 7; }" });
+    try std.testing.expectEqual(@as(u32, 7), try compileAndRunChecked(a, unchecked_src, "exe_safety_unchecked", 2, false));
 }
 
 test "exe: a local from a literal that only meets typed operands stays an i32" {
