@@ -76,7 +76,7 @@ operand's type would have done: `+%`, `-%`, `*%`, `<<`, `~` and `as` drop the bi
 cannot hold. `0xFFFFFFFFu32 +% 1` is `0`, `300u32 as u8` is `44`, and the usual
 `x ^= x << 13; x ^= x >> 17; x ^= x << 5` gives the numbers the machine gives — a hash or a
 generator run at compile time and at run time agree. A plain `+`, `-`, `*` that overflows
-traps in a debug build and wraps in a release build ([02_types](02_types.md#overflow-policy)),
+traps in most builds and wraps in a `release_fast` one ([02_types](02_types.md#overflow-policy)),
 so there is no single answer to match; the VM keeps the exact result, and a `#run` result the
 type cannot hold is refused (below).
 

@@ -5,7 +5,8 @@ Fels is an experimental systems programming language written in Zig. Key design 
 - Explicit dynamic dispatch through `*Interface` values
 - Static polymorphism via monomorphized generics
 - Allocation zones for lexical ownership without GC
-- Debug builds trap undefined behavior close to its source
+- Runtime checks trap out-of-bounds indexing, null pointers and overflow close to their
+  source, in release builds too (`release_fast` is the opt-out)
 
 ## Getting Started
 
@@ -163,7 +164,7 @@ main :: fn() -> i32 {
 
 - **Systems language**: no GC, manual memory via zones
 - **Everything explicit**: no hidden allocations, explicit dispatch
-- **Safety by default**: debug builds catch UB at runtime
+- **Safety by default**: every build but `release_fast` catches these faults at runtime
 - **Simple module system**: file = module, pub for visibility
 - **Growing incrementally**: complete semantics before more syntax
 
