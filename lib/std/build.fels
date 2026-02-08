@@ -84,6 +84,12 @@ pub Command :: struct {
 
 // Enums (public API)
 
+// How an artifact is built. Every mode but `release_fast` keeps the runtime safety checks (index
+// bounds, null pointers, integer overflow, division by zero, shift amounts): `debug` is
+// unoptimized, `release_safe` (what `release()` and `fels build --release` give) and
+// `release_small` are optimized. `release_fast` is optimized without them: an index past the end,
+// a null pointer, a division by zero or a shift past the width is then undefined, and overflow
+// wraps.
 pub Optimize  :: enum { debug, release_safe, release_fast, release_small }
 pub Subsystem :: enum { console, windows }
 
@@ -127,7 +133,7 @@ pub optimize :: fn(self: Artifact, level: Optimize) {
 pub debug         :: fn(self: Artifact) { __build_opt(self.id, 0); }
 pub release_safe  :: fn(self: Artifact) { __build_opt(self.id, 1); }
 pub release_fast  :: fn(self: Artifact) { __build_opt(self.id, 2); }
-pub release       :: fn(self: Artifact) { __build_opt(self.id, 2); } // alias for release_fast
+pub release       :: fn(self: Artifact) { __build_opt(self.id, 1); } // release_safe: optimized, checks kept
 pub release_small :: fn(self: Artifact) { __build_opt(self.id, 3); }
 
 // Linking
