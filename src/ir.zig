@@ -1897,6 +1897,36 @@ const LoopContext = struct {
     defer_floor: usize,
 };
 
+/// A `catch` handler with a `yield` in it: the local the value goes to, and the block after
+/// the `catch` that reads it.
+const YieldContext = struct {
+    result_name: []const u8,
+    result_ty: IrType,
+    after_id: BlockId,
+    zone_depth: usize,
+    defer_floor: usize,
+};
+
+/// A `yield` among these statements, not counting one in a `catch` nested in an expression,
+/// which belongs to that `catch`.
+fn blockYields(stmts: []const ast.Stmt) bool {
+    for (stmts) |stmt| switch (stmt) {
+        .yield_stmt => return true,
+        .if_stmt => |s| if (blockYields(s.then_block.statements) or
+            (if (s.else_block) |e| blockYields(e.statements) else false)) return true,
+        .comptime_if => |s| if (blockYields(s.then_block.statements) or
+            (if (s.else_block) |e| blockYields(e.statements) else false)) return true,
+        .while_stmt => |s| if (blockYields(s.body.statements)) return true,
+        .for_range => |s| if (blockYields(s.body.statements)) return true,
+        .for_slice => |s| if (blockYields(s.body.statements)) return true,
+        .match_stmt => |s| for (s.arms) |arm| if (blockYields(arm.body.statements)) return true,
+        .zone_block => |s| if (blockYields(s.body.statements)) return true,
+        .unsafe_block, .comptime_run => |b| if (blockYields(b.statements)) return true,
+        else => {},
+    };
+    return false;
+}
+
 const DeferPath = enum {
     ok,
     err,
@@ -1937,6 +1967,7 @@ const FunctionLowerer = struct {
     /// The numbers `fail .name` and `e == .name` give error variants (shared program-wide).
     error_codes: *ErrorCodes,
     loop_stack: std.ArrayList(LoopContext) = .empty,
+    yield_stack: std.ArrayList(YieldContext) = .empty,
     local_types: std.StringHashMap(IrType),
     current_return_ty: IrType = .void,
     active_zones: std.ArrayList([]const u8) = .empty,
@@ -2238,6 +2269,18 @@ const FunctionLowerer = struct {
             },
             .defer_stmt => |ds| try self.defers.append(self.allocator, ds),
             .unsafe_block => |block| try self.lowerBlock(block.statements, null),
+            .yield_stmt => |y| {
+                const ctx = self.yield_stack.items[self.yield_stack.items.len - 1];
+                const value = try self.lowerExprAs(y.value, ctx.result_ty);
+                try self.emitNoResult(ctx.result_ty, .{ .store_local = .{ .name = ctx.result_name, .value = value } });
+                try self.emitDefersDown(ctx.defer_floor, .ok);
+                var i = self.active_zones.items.len;
+                while (i > ctx.zone_depth) {
+                    i -= 1;
+                    try self.lowerZoneExit(self.active_zones.items[i]);
+                }
+                try self.terminate(.{ .branch = ctx.after_id });
+            },
             .break_stmt => {
                 const ctx = self.loop_stack.items[self.loop_stack.items.len - 1];
                 try self.emitDefersDown(ctx.defer_floor, .ok);
@@ -3505,14 +3548,38 @@ const FunctionLowerer = struct {
                     .name = "catch_handler",
                     .args = try self.allocator.dupe(Value, &.{err_value}),
                 } });
+                // A `yield` stores the handler's value in a local of its own, which the success
+                // path stores the call's value in too; the block after the `catch` reads it.
+                const result_ty = self.exprType(expr);
+                const yields = blockYields(catch_expr.handler.statements);
+                const after_id = if (yields) self.allocBlockId() else ok_id;
+                var result_name: []const u8 = "";
+                if (yields) {
+                    self.temp_id += 1;
+                    result_name = try std.fmt.allocPrint(self.allocator, "__catch_{d}", .{self.temp_id});
+                    try self.local_types.put(result_name, result_ty);
+                    try self.yield_stack.append(self.allocator, .{
+                        .result_name = result_name,
+                        .result_ty = result_ty,
+                        .after_id = after_id,
+                        .zone_depth = self.active_zones.items.len,
+                        .defer_floor = self.defers.items.len,
+                    });
+                }
                 // A handler that runs to its end carries on after the `catch`, as the success path
                 // does. (Sema only lets that happen when the value is not used: a `void` success, or
                 // a catch that is a statement on its own.) It used to end in `unreachable`, which
                 // fell through by accident at -O0 and ran off into other code once optimised.
                 try self.lowerBlock(catch_expr.handler.statements, .{ .branch = ok_id });
+                if (yields) _ = self.yield_stack.pop();
 
                 self.startBlock(ok_id, "catch.ok");
-                break :blk try self.emit(self.exprType(expr), .{ .try_ok = value });
+                const ok_value = try self.emit(result_ty, .{ .try_ok = value });
+                if (!yields) break :blk ok_value;
+                try self.emitNoResult(result_ty, .{ .store_local = .{ .name = result_name, .value = ok_value } });
+                try self.terminate(.{ .branch = after_id });
+                self.startBlock(after_id, "catch.after");
+                break :blk .{ .local = result_name };
             },
             .call => |call| blk: {
                 // `EnumType.variant(payload)` construction: sema recorded it under
@@ -8791,6 +8858,7 @@ fn stmtHasQuoteValue(stmt: ast.Stmt) bool {
         .local_typed => |l| exprHasQuote(l.value),
         .assign => |a| exprHasQuote(a.target) or exprHasQuote(a.value),
         .return_stmt => |r| if (r.value) |v| exprHasQuote(v) else false,
+        .yield_stmt => |y| exprHasQuote(y.value),
         .fail_stmt => |f| blk: {
             for (f.payload) |p| if (exprHasQuote(p)) break :blk true;
             break :blk false;

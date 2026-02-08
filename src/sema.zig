@@ -1411,6 +1411,14 @@ const LiteralInference = struct {
     const Name = struct { name: []const u8, depth: usize, index: u32 };
 };
 
+/// A `catch` handler being checked, which a `yield` in it gives a value, or a `defer` body,
+/// which a `yield` cannot leave.
+const YieldTarget = struct {
+    /// The success type of the call: what the `catch` expression is.
+    ty: Ty,
+    kind: enum { value, no_value, discarded, defer_body },
+};
+
 const Checker = struct {
     allocator: std.mem.Allocator,
     symbols: SymbolTable,
@@ -1484,6 +1492,8 @@ const Checker = struct {
     /// The error names bound by the `catch` handlers being checked (innermost last). An error is
     /// compared with a variant only through one of these.
     catch_names: std.ArrayList([]const u8) = .empty,
+    /// What a `yield` gives a value to: the `catch` handlers being checked (innermost last).
+    yield_targets: std.ArrayList(YieldTarget) = .empty,
     /// Record the names declared in function bodies (`TypeEnv.local_bindings`), for the
     /// language server.
     record_locals: bool = false,
@@ -1534,6 +1544,7 @@ const Checker = struct {
         if (self.constraint_decls_init) self.constraint_decls.deinit();
         if (self.exhaustive_matches_init) self.exhaustive_matches.deinit();
         self.catch_names.deinit(self.allocator);
+        self.yield_targets.deinit(self.allocator);
         self.top_consts.deinit(self.allocator);
         self.const_values.deinit(self.allocator);
         self.const_exprs.deinit(self.allocator);
@@ -2948,6 +2959,7 @@ const Checker = struct {
                 if (ret.value) |value| try self.requireIntLitFits(value, self.current_return_ty);
             },
             .fail_stmt => |fail| try self.checkFail(fail),
+            .yield_stmt => |y| try self.checkYield(y),
             .if_stmt => |iff| {
                 if (iff.binding) |binding| {
                     const bound_ty = try self.inferExpr(binding.value);
@@ -3137,7 +3149,11 @@ const Checker = struct {
                 defer _ = self.active_zones.pop();
                 try self.checkBlock(zb.body);
             },
-            .defer_stmt => |ds| try self.checkBlock(ds.body),
+            .defer_stmt => |ds| {
+                try self.yield_targets.append(self.allocator, .{ .ty = .void, .kind = .defer_body });
+                defer _ = self.yield_targets.pop();
+                try self.checkBlock(ds.body);
+            },
             .match_stmt => |m| try self.checkMatch(m),
             .comptime_if => |ci| try self.checkComptimeIf(ci),
             .comptime_run => |block| {
@@ -3601,15 +3617,21 @@ const Checker = struct {
                 self.noteLocal(.{ .name = catch_expr.err_name, .file = "", .kind = .try_error, .decl = expr.span, .scope_end = catch_expr.handler.span.end, .ty = fallible.err.* });
                 try self.catch_names.append(self.allocator, catch_expr.err_name);
                 defer _ = self.catch_names.pop();
-                try self.checkBlock(catch_expr.handler);
-                // The handler produces no value. When the call does and the catch is used for it,
-                // falling off the end of the handler leaves the expression with nothing to be:
-                // the code after it would run on an undefined value. (A catch that is a whole
-                // statement discards the value, so its handler may simply end.)
                 const ok_ty = fallible.ok.*;
                 const value_discarded = self.discarded_catch != null and self.discarded_catch.? == expr.id;
+                try self.yield_targets.append(self.allocator, .{
+                    .ty = ok_ty,
+                    .kind = if (ok_ty == .void) .no_value else if (value_discarded) .discarded else .value,
+                });
+                defer _ = self.yield_targets.pop();
+                try self.checkBlock(catch_expr.handler);
+                // The handler gives the expression its value with `yield`. When the call has a
+                // value and the catch is used for it, falling off the end of the handler leaves
+                // the expression with nothing to be: the code after it would run on an undefined
+                // value. (A catch that is a whole statement discards the value, so its handler
+                // may simply end.)
                 if (ok_ty != .void and ok_ty != .unknown and !value_discarded and !blockDefinitelyReturns(self, catch_expr.handler)) {
-                    self.emitError(expr.span, "this `catch` handler can run to its end, but the call produces a `{s}`: end the handler with `return`, `fail`, `break` or `continue` (or use `??` for a fallback value)", .{self.formatTy(ok_ty)});
+                    self.emitError(expr.span, "this `catch` handler can run to its end, but the call produces a `{s}`: end the handler with `yield` and the value to use, or leave with `return`, `fail`, `break` or `continue`", .{self.formatTy(ok_ty)});
                     return error.SemanticFailed;
                 }
                 break :blk ok_ty;
@@ -5975,6 +5997,40 @@ const Checker = struct {
         return infos.toOwnedSlice(self.allocator);
     }
 
+    /// `yield value;` ends a `catch` handler with the value the `catch` expression takes, the
+    /// call's success type. It belongs to the innermost handler.
+    fn checkYield(self: *Checker, y: ast.YieldStmt) SemanticError!void {
+        if (self.yield_targets.items.len == 0) {
+            self.emitError(y.span, "`yield` outside a `catch` handler: it gives a `catch` the value to use in place of the call's", .{});
+            return error.SemanticFailed;
+        }
+        const target = self.yield_targets.items[self.yield_targets.items.len - 1];
+        switch (target.kind) {
+            .value => {},
+            .no_value => {
+                self.emitError(y.span, "nothing to `yield`: the call this `catch` handles produces no value", .{});
+                return error.SemanticFailed;
+            },
+            .discarded => {
+                self.emitError(y.span, "this `catch` is a statement on its own, so the value it yields would be thrown away", .{});
+                return error.SemanticFailed;
+            },
+            .defer_body => {
+                self.emitError(y.span, "`yield` in a `defer` body: the body runs as its scope ends, which a `yield` cannot leave", .{});
+                return error.SemanticFailed;
+            },
+        }
+        if (try self.coerceEnumLiteral(y.value, target.ty)) return;
+        try self.coerceLiteralFields(y.value, target.ty);
+        const actual_ty = try self.inferExprExpecting(y.value, target.ty);
+        if (target.ty == .unknown) return;
+        if (!try self.compatible(actual_ty, target.ty)) {
+            self.emitError(y.span, "`yield` type mismatch: the call produces `{s}`, found `{s}`", .{ self.formatTy(target.ty), self.formatTy(actual_ty) });
+            return error.SemanticFailed;
+        }
+        try self.requireIntLitFits(y.value, target.ty);
+    }
+
     fn checkFail(self: *Checker, fail: ast.FailStmt) SemanticError!void {
         const err_ty = self.current_error_ty orelse {
             self.emitError(fail.span, "`fail` used in a function without a `!` error return type", .{});
@@ -6486,6 +6542,7 @@ const Checker = struct {
         const scopes_len = self.scope_stack.items.len;
         const zones_len = self.active_zones.items.len;
         const catch_names_len = self.catch_names.items.len;
+        const yield_targets_len = self.yield_targets.items.len;
         const saved_record = self.record_locals;
         const saved_loop = self.loop_depth;
         const saved_unsafe = self.unsafe_depth;
@@ -6505,6 +6562,7 @@ const Checker = struct {
         while (self.scope_stack.items.len > scopes_len) self.popScope();
         self.active_zones.shrinkRetainingCapacity(zones_len);
         self.catch_names.shrinkRetainingCapacity(catch_names_len);
+        self.yield_targets.shrinkRetainingCapacity(yield_targets_len);
         self.record_locals = saved_record;
         self.loop_depth = saved_loop;
         self.unsafe_depth = saved_unsafe;
@@ -6972,7 +7030,7 @@ fn blockDefinitelyReturns(self: *Checker, block: ast.Block) bool {
 
 fn stmtDefinitelyReturns(self: *Checker, stmt: ast.Stmt) bool {
     return switch (stmt) {
-        .return_stmt, .fail_stmt => true,
+        .return_stmt, .fail_stmt, .yield_stmt => true,
         .expr => |e| switch (e.kind) {
             // `expr!!` panics on null/error — counts as exit on that path.
             .force_unwrap => true,

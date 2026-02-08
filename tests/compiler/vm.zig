@@ -464,6 +464,30 @@ test "e2e: #run fallible with catch" {
     try std.testing.expectEqual(@as(i128, -1), try globalInt(m, "BADV"));
 }
 
+test "e2e: #run a catch that yields a value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\Oops :: errors { a, b }
+        \\num :: fn(n: i32) -> i32 ! Oops { if n < 0 { fail .a; } if n > 100 { fail .b; } return n * 2; }
+        \\calc :: fn() -> i32 {
+        \\    v := num(-1) catch e { yield 7; };
+        \\    u := num(500) catch e { if e == .a { yield 1; } else { yield 2; } };
+        \\    w := num(3) catch e { yield 0; };
+        \\    s := 0;
+        \\    for i in 0..3 { s += num(i - 1) catch e { for j in 0..10 { if j == 4 { yield j; } } yield 50; }; }
+        \\    return v * 1000 + u * 100 + w * 10 + s;
+        \\}
+        \\X :: #run calc();
+    ;
+    var fe = try fels.compile(a, "yield_vm.fels", src);
+    defer fe.deinit(a);
+    const m = try fels.lowerFrontend(a, fe);
+    try std.testing.expectEqual(@as(i128, 7266), try globalInt(m, "X"));
+}
+
 test "e2e: float arithmetic" {
     const src =
         \\favg :: fn(a: f64, b: f64) -> f64 {

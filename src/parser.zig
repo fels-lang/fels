@@ -1537,6 +1537,12 @@ pub const Parser = struct {
             return .{ .return_stmt = .{ .value = value, .span = spanFrom(start, semi) } };
         }
         if (self.match(.keyword_fail)) return .{ .fail_stmt = try self.parseFail(self.previous()) };
+        if (self.match(.keyword_yield)) {
+            const start = self.previous();
+            const value = try self.parseExpr(0);
+            const semi = try self.expect(.semicolon, "expected ; after yield");
+            return .{ .yield_stmt = .{ .value = value, .span = spanFrom(start, semi) } };
+        }
         if (self.match(.keyword_break)) {
             const tok = self.previous();
             const semi = try self.expect(.semicolon, "expected ; after break");

@@ -278,6 +278,8 @@ pub const Stmt = union(enum) {
     assign: AssignStmt,
     return_stmt: ReturnStmt,
     fail_stmt: FailStmt,
+    /// `yield value;` in a `catch` handler: the value the `catch` expression takes.
+    yield_stmt: YieldStmt,
     if_stmt: IfStmt,
     while_stmt: WhileStmt,
     for_range: ForRangeStmt,
@@ -709,6 +711,11 @@ pub const TryExpr = struct {
 pub const NilCoalesceExpr = struct {
     value: *const Expr, // lhs — optional or fallible
     default: *const Expr, // rhs — used when lhs is null/error
+};
+
+pub const YieldStmt = struct {
+    value: Expr,
+    span: Span,
 };
 
 pub const CatchExpr = struct {

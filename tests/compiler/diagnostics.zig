@@ -806,6 +806,51 @@ test "diagnostics: a catch handler may only run to its end when the value is not
     }
 }
 
+test "diagnostics: `yield` gives a used catch its value, and nothing else" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const decls =
+        \\E :: errors { first, second }
+        \\Color :: enum { red, green }
+        \\num :: fn() -> i32 ! E { fail .first; }
+        \\small :: fn() -> u8 ! E { fail .first; }
+        \\color :: fn() -> Color ! E { fail .first; }
+        \\nothing :: fn() -> void ! E { fail .first; return; }
+        \\
+    ;
+    const cases = [_]struct { body: []const u8, needle: []const u8 }{
+        .{ .body = "g :: fn() -> i32 { yield 1; }", .needle = "`yield` outside a `catch` handler" },
+        .{ .body = "g :: fn() -> i32 { nothing() catch e { yield 1; }; return 0; }", .needle = "produces no value" },
+        .{ .body = "g :: fn() -> i32 { num() catch e { yield 1; }; return 0; }", .needle = "would be thrown away" },
+        .{ .body = "g :: fn() -> i32 { v := num() catch e { defer { yield 2; } yield 1; }; return v; }", .needle = "`yield` in a `defer` body" },
+        .{ .body = "g :: fn() -> i32 { v := num() catch e { yield \"x\"; }; return v; }", .needle = "`yield` type mismatch: the call produces `i32`" },
+        .{ .body = "g :: fn() -> u8 { v := small() catch e { yield 300; }; return v; }", .needle = "integer literal `300` does not fit in `u8`" },
+        // A handler that yields on one path only can still run to its end.
+        .{ .body = "g :: fn() -> i32 { v := num() catch e { if e == .first { yield 1; } }; return v; }", .needle = "end the handler with `yield`" },
+    };
+    for (cases) |case| {
+        const src = try std.mem.concat(a, u8, &.{ decls, case.body, "\n" });
+        try expectFirstError(a, src, &.{case.needle});
+    }
+    const accepted = [_][]const u8{
+        "g :: fn() -> i32 { v := num() catch e { yield 1; }; return v; }",
+        "g :: fn() -> i32 { v := num() catch e { if e == .first { yield 1; } else { yield 2; } }; return v; }",
+        "g :: fn() -> i32 { return num() catch e { yield 3; }; }",
+        "g :: fn() -> u8 { v := small() catch e { yield 255; }; return v; }",
+        // The literal local takes the call's type, `u8`, from the `yield`.
+        "g :: fn() -> u8 { n := 7; v := small() catch e { yield n; }; return v; }",
+        "g :: fn() -> Color { c := color() catch e { yield .green; }; return c; }",
+        // A `yield` in a loop in the handler leaves the loop and the handler.
+        "g :: fn() -> i32 { v := num() catch e { for i in 0..9 { if i == 4 { yield i; } } yield 0; }; return v; }",
+        // Each `yield` belongs to the innermost handler.
+        "g :: fn() -> i32 { v := num() catch e { yield (num() catch e2 { yield 2; }) + 1; }; return v; }",
+        // A `catch` in a `defer` body yields to its own handler.
+        "g :: fn() -> i32 { n := 0; v := num() catch e { defer { n = num() catch e2 { yield 5; }; } yield 1; }; return v + n; }",
+    };
+    for (accepted) |body| try expectNoError(a, decls, body);
+}
+
 test "diagnostics: a builtin whose first argument is not a type says so" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
