@@ -1046,6 +1046,31 @@ test "exe: error payload recovered via catch binding" {
     try std.testing.expectEqual(@as(u32, 77), code);
 }
 
+test "exe: each catch stashes its payload in a slot of its own" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The catches of a function shared one stash, a one-byte slot after the first catch here,
+    // and the second wrote its 32-byte array over the locals beside it: a crash at -O0, and
+    // `b` and `c` overwritten at -O2.
+    const src =
+        \\E :: errors { first }
+        \\small :: fn(x: u8) -> u8 ! E { if x == 0u8 { fail .first; } return x; }
+        \\wide :: fn(x: i64) -> [4]i64 ! E { if x == 0 { fail .first; } return .{ x, x, x, x }; }
+        \\main :: fn() -> i32 {
+        \\    a := 1u8;
+        \\    if a == 5u8 { v := small(0u8) catch e { return 0; }; }
+        \\    b := 7u8;
+        \\    c := 9u8;
+        \\    w := wide(0) catch e { if b != 7u8 || c != 9u8 { return 1; } return 42; };
+        \\    return 3;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_catch_stash", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_catch_stash_o2", 2, true));
+}
+
 test "exe: #insert literal #quote splices and runs" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
