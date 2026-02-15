@@ -1073,6 +1073,28 @@ test "exe: an error is a value in a local, a parameter, a field and a return" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_value_o2", 2, true));
 }
 
+test "exe: the name a catch binds is a local of the handler" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The error was stored under its name without being declared: into the outer `e` here,
+    // over the low half of its `i64`, and a copy of it (`k := e`) had no type, so a pointer slot.
+    const src =
+        \\E :: errors { first, second }
+        \\num :: fn(n: i32) -> i32 ! E { if n < 0 { fail .second; } return n; }
+        \\main :: fn() -> i32 {
+        \\    e := 5000000000i64;
+        \\    v := num(-1) catch e { k := e; if e == .second { yield 1; } yield 2; };
+        \\    if e != 5000000000i64 { return 1; }
+        \\    if v != 1 { return 2; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_catch_local", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_catch_local_o2", 2, true));
+}
+
 test "exe: each catch stashes its payload in a slot of its own" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

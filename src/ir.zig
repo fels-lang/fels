@@ -3541,7 +3541,12 @@ const FunctionLowerer = struct {
                 try self.catch_errors.append(self.allocator, .{ .name = catch_expr.err_name, .ty = caught_set, .payload = payload_name });
                 defer _ = self.catch_errors.pop();
                 const err_value = try self.emit(error_ty, .{ .try_err = value });
-                try self.emitNoResult(error_ty, .{ .store_local = .{ .name = catch_expr.err_name, .value = err_value } });
+                // The error's name is a local of the handler: a copy of it (`k := e`) takes its
+                // type, and a local of the same name outside keeps a slot of its own.
+                const handler_scope = try self.enterScope();
+                defer self.leaveScope(handler_scope);
+                const err_local = try self.declareLocal(catch_expr.err_name, error_ty);
+                try self.emitNoResult(error_ty, .{ .store_local = .{ .name = err_local, .value = err_value } });
                 // Stash the error payload so `if e == .v |c|` in the handler can
                 // recover it (the binding loads the stash). The payload
                 // shares the fallible's value slot, so its type is the ok type.
