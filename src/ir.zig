@@ -639,7 +639,7 @@ pub fn checkStaticData(allocator: std.mem.Allocator, front_end: pipeline.FrontEn
     defer type_scope = outer_scope;
     for (front_end.module.items) |item| switch (item) {
         .const_decl => |decl| {
-            _ = enterTypeScope(front_end.symbols, decl.file_name);
+            _ = enterTypeScope(front_end.symbols, front_end.types, decl.file_name);
             const declared_ref = decl.ty orelse continue;
             const declared = lowerAstTypeWithEnv(allocator, declared_ref, front_end.types, front_end.symbols) catch continue;
             if (!needsStaticInit(declared)) continue;
@@ -804,7 +804,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
     const outer_scope = type_scope;
     defer type_scope = outer_scope;
     for (front_end.module.items) |item| {
-        _ = enterTypeScope(front_end.symbols, item.fileName());
+        _ = enterTypeScope(front_end.symbols, front_end.types, item.fileName());
         switch (item) {
             .import => {},
             .static_assert => |decl| try checkStaticAssert(decl, cvm),
@@ -1636,7 +1636,7 @@ fn lowerFunctionInstantiation(
     cvm: ?*ComptimeVm,
     error_codes: *ErrorCodes,
 ) !IrFunction {
-    const outer_scope = enterTypeScope(symbols, decl.file_name);
+    const outer_scope = enterTypeScope(symbols, types, decl.file_name);
     defer type_scope = outer_scope;
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
@@ -1728,7 +1728,7 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
 }
 
 fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, module: ast.Module, decl: ast.FunctionDecl, cvm: ?*ComptimeVm, error_codes: *ErrorCodes) !IrFunction {
-    const outer_scope = enterTypeScope(symbols, decl.file_name);
+    const outer_scope = enterTypeScope(symbols, types, decl.file_name);
     defer type_scope = outer_scope;
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
@@ -1808,7 +1808,7 @@ fn lowerInterfaceMethod(
     cvm: ?*ComptimeVm,
     error_codes: *ErrorCodes,
 ) !IrFunction {
-    const outer_scope = enterTypeScope(symbols, decl.file_name);
+    const outer_scope = enterTypeScope(symbols, types, decl.file_name);
     defer type_scope = outer_scope;
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
@@ -3269,6 +3269,8 @@ const FunctionLowerer = struct {
                         .payload = null,
                     } });
                 }
+                // Any other `.variant` is an error (sema types it so): its number.
+                if (name.len > 1 and name[0] == '.') break :blk .{ .imm = .{ .int = try self.error_codes.code(name[1..]) } };
                 // Inside a lambda body, a captured variable reads from `__env`.
                 for (self.lambda_captures, 0..) |c, idx| {
                     if (std.mem.eql(u8, c.name, name)) {
@@ -5817,15 +5819,38 @@ fn linkNameFor(symbols: sema.SymbolTable, file: []const u8, name: []const u8) []
 
 /// The file whose type names the `lower*Type` functions read, with the symbols to read them: a
 /// type named like one of another module has a qualified link name (as a function has), and the
-/// IR knows every type by its link name. Set while an item of that file is lowered.
-const TypeScope = struct { symbols: sema.SymbolTable, file: []const u8 };
+/// IR knows every type by its link name. Set while an item of that file is lowered. The layouts
+/// tell an error set, which is no struct, from the types that are.
+const TypeScope = struct {
+    symbols: sema.SymbolTable,
+    layouts: std.AutoHashMap(sema.SymbolId, sema.TypeLayout),
+    file: []const u8,
+};
 threadlocal var type_scope: ?TypeScope = null;
 
 /// Make `file` the one whose type names are read; returns the scope to put back.
-fn enterTypeScope(symbols: sema.SymbolTable, file: []const u8) ?TypeScope {
+fn enterTypeScope(symbols: sema.SymbolTable, types: sema.TypeEnv, file: []const u8) ?TypeScope {
     const before = type_scope;
-    type_scope = .{ .symbols = symbols, .file = file };
+    type_scope = .{ .symbols = symbols, .layouts = types.layouts, .file = file };
     return before;
+}
+
+/// The IR type of the named type `id`, whose link name is `link_name`. An error value is the
+/// number of its variant (see `ErrorCodes`), so a set of errors is an `i32`; anything else is
+/// known by its link name.
+fn namedIrType(id: ?sema.SymbolId, link_name: []const u8) IrType {
+    const scope = type_scope orelse return .{ .struct_type = link_name };
+    if (id) |sym| if (scope.layouts.get(sym)) |layout| if (layout.kind == .error_set) return .{ .i = 32 };
+    return .{ .struct_type = link_name };
+}
+
+/// The symbol of the type `name` of the source (reached through `namespace` when set), in the
+/// file being lowered.
+fn typeSymbol(name: []const u8, namespace: ?[]const u8) ?sema.SymbolId {
+    const scope = type_scope orelse return null;
+    const id = (if (namespace) |ns| scope.symbols.resolveScoped(scope.file, ns, name) else resolveTopLevel(scope.symbols, scope.file, name)) orelse return null;
+    if (scope.symbols.symbol(id).kind != .type) return null;
+    return id;
 }
 
 /// The symbol a type name of the source means: in the file being lowered, or else at the top.
@@ -5837,18 +5862,15 @@ fn resolveTypeName(symbols: sema.SymbolTable, name: []const u8) ?sema.SymbolId {
 /// The IR name of the type `name` of the source (reached through `namespace` when set): its
 /// link name in the file being lowered, or `name` itself.
 fn typeLinkName(name: []const u8, namespace: ?[]const u8) []const u8 {
-    const scope = type_scope orelse return name;
-    const id = (if (namespace) |ns| scope.symbols.resolveScoped(scope.file, ns, name) else resolveTopLevel(scope.symbols, scope.file, name)) orelse return name;
-    const sym = scope.symbols.symbol(id);
-    if (sym.kind != .type) return name;
-    return sym.link_name;
+    const id = typeSymbol(name, namespace) orelse return name;
+    return type_scope.?.symbols.symbol(id).link_name;
 }
 
 fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
     return switch (ty) {
         .type_param => .unknown,
         .generic_inst => |gi| .{ .struct_type = gi.name },
-        .named => |named| if (named.namespace) |ns| .{ .struct_type = typeLinkName(named.name, ns) } else lowerNamedType(named.name),
+        .named => |named| if (named.namespace) |ns| namedIrType(typeSymbol(named.name, ns), typeLinkName(named.name, ns)) else lowerNamedType(named.name),
         .pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },
         .many_pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },
         .optional => |optional| .{ .optional = try boxType(allocator, try lowerType(allocator, optional.inner.*)) },
@@ -6135,7 +6157,7 @@ fn lowerErrorSpec(allocator: std.mem.Allocator, spec: ast.ErrorSpec) !IrType {
 fn lowerInlineErrorSet(allocator: std.mem.Allocator, set: ast.InlineErrorSet) !IrType {
     _ = allocator;
     _ = set;
-    return .{ .variant_type = "<anonymous-error-set>" };
+    return .{ .i = 32 };
 }
 
 fn lowerNamedType(name: []const u8) IrType {
@@ -6168,7 +6190,7 @@ fn lowerNamedType(name: []const u8) IrType {
     if (std.mem.eql(u8, name, "void")) return .void;
     if (std.mem.eql(u8, name, "usize")) return .usize;
     if (std.mem.eql(u8, name, "isize")) return .isize;
-    return .{ .struct_type = typeLinkName(name, null) };
+    return namedIrType(typeSymbol(name, null), typeLinkName(name, null));
 }
 
 fn resolveTypeParamInTy(ty: sema.Ty, binding: []const sema.TypeArg) sema.Ty {
@@ -6207,8 +6229,8 @@ fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.Symbol
             .elem = try boxType(allocator, try lowerSemaType(allocator, array.elem.*, symbols)),
             .len = array.len,
         } },
-        .named => |id| .{ .struct_type = symbols.symbol(id).link_name },
-        .error_set => .{ .variant_type = "<anonymous-error-set>" },
+        .named => |id| namedIrType(id, symbols.symbol(id).link_name),
+        .error_set, .error_ty => .{ .i = 32 },
         .fallible => |fallible| .{ .fallible = .{
             .ok = try boxType(allocator, try lowerSemaType(allocator, fallible.ok.*, symbols)),
             .err = try boxType(allocator, try lowerSemaType(allocator, fallible.err.*, symbols)),
@@ -6227,7 +6249,7 @@ fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.Symbol
                 .thin = fp.thin,
             } };
         },
-        .unknown, .error_ty => .unknown,
+        .unknown => .unknown,
         else => .unknown,
     };
 }
