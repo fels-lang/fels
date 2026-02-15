@@ -1073,6 +1073,44 @@ test "exe: an error is a value in a local, a parameter, a field and a return" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_value_o2", 2, true));
 }
 
+test "exe: an error is compared with a variant wherever it is" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\E :: errors { first, second, third }
+        \\Box :: struct { err: E, n: i32 }
+        \\num :: fn(n: i32) -> i32 ! E { if n < 0 { fail .second; } if n > 9 { fail .third; } return n; }
+        \\loose :: fn(n: i32) -> i32 ! { return num(n)?; }
+        \\code :: fn(e: E) -> i32 {
+        \\    if e == .first { return 1; }
+        \\    if e == .second { return 2; }
+        \\    if e != .third { return 9; }
+        \\    return 3;
+        \\}
+        \\give :: fn(n: i32) -> E { if n == 0 { return .first; } return .third; }
+        \\pass :: fn(e: E) -> E { return e; }
+        \\main :: fn() -> i32 {
+        \\    if code(give(0)) != 1 || code(give(1)) != 3 { return 1; }
+        \\    if give(0) != .first || give(5) == .first { return 2; }
+        \\    v := num(-1) catch e {
+        \\        b: Box = .{ pass(e), 3 };
+        \\        if b.err != .second { return 3; }
+        \\        k := b.err;
+        \\        if k == .first { return 4; }
+        \\        if code(k) != 2 { return 5; }
+        \\        yield 0;
+        \\    };
+        \\    w := loose(20) catch e { k := e; if k == .third { yield 7; } yield 8; };
+        \\    if w != 7 { return 6; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_compare", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_compare_o2", 2, true));
+}
+
 test "exe: the name a catch binds is a local of the handler" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

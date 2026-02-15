@@ -488,6 +488,29 @@ test "e2e: #run a catch that yields a value" {
     try std.testing.expectEqual(@as(i128, 7266), try globalInt(m, "X"));
 }
 
+test "e2e: #run compares errors held in parameters, fields and copies" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\E :: errors { first, second, third }
+        \\Box :: struct { err: E, n: i32 }
+        \\num :: fn(n: i32) -> i32 ! E { if n < 0 { fail .second; } if n > 9 { fail .third; } return n; }
+        \\code :: fn(e: E) -> i32 { if e == .first { return 1; } if e == .second { return 2; } return 3; }
+        \\give :: fn(n: i32) -> E { if n == 0 { return .first; } return .third; }
+        \\calc :: fn() -> i32 {
+        \\    v := num(-1) catch e { b: Box = .{ e, 3 }; k := b.err; yield code(k) * 100; };
+        \\    return v + code(give(0)) * 10 + code(give(1));
+        \\}
+        \\X :: #run calc();
+    ;
+    var fe = try fels.compile(a, "error_compare_vm.fels", src);
+    defer fe.deinit(a);
+    const m = try fels.lowerFrontend(a, fe);
+    try std.testing.expectEqual(@as(i128, 213), try globalInt(m, "X"));
+}
+
 test "e2e: float arithmetic" {
     const src =
         \\favg :: fn(a: f64, b: f64) -> f64 {
