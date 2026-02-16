@@ -5035,10 +5035,16 @@ const FunctionLowerer = struct {
 
     /// The boolean test for `pattern` against `subject`, or null when the pattern
     /// always matches (`else` / a bare `name` binding).
-    fn lowerPatternCheck(self: *FunctionLowerer, subject: Value, enum_name: []const u8, pattern: ast.MatchPattern) LowerError!?Value {
+    /// The test of one arm's pattern against the subject; null for an arm that takes any value.
+    /// The subject is an error when `is_error`: an arm `.name` compares its number.
+    fn lowerPatternCheck(self: *FunctionLowerer, subject: Value, enum_name: []const u8, is_error: bool, pattern: ast.MatchPattern) LowerError!?Value {
         switch (pattern) {
             .else_arm, .binding => return null,
-            .enum_variant => |variant| return try self.emit(.bool, .{ .variant_is = .{
+            .enum_variant => |variant| if (is_error) return try self.emit(.bool, .{ .binary = .{
+                .op = .eq,
+                .lhs = subject,
+                .rhs = .{ .imm = .{ .int = try self.error_codes.code(variant) } },
+            } }) else return try self.emit(.bool, .{ .variant_is = .{
                 .value = subject,
                 .type_name = enum_name,
                 .variant = variant,
@@ -5197,10 +5203,11 @@ const FunctionLowerer = struct {
         const subject = try self.lowerExpr(m.subject);
         const subject_ty = self.exprType(m.subject);
         const enum_name = self.matchEnumName(m.subject);
+        const is_error = self.errorOperand(m.subject) != null;
         const after_id = self.allocBlockId();
 
         for (m.arms) |arm| {
-            const check = try self.lowerPatternCheck(subject, enum_name, arm.pattern);
+            const check = try self.lowerPatternCheck(subject, enum_name, is_error, arm.pattern);
             const arm_id = self.allocBlockId();
             const needs_next = check != null or arm.guard != null;
             const next_id = if (needs_next) self.allocBlockId() else after_id;
@@ -5252,10 +5259,11 @@ const FunctionLowerer = struct {
         const subject = try self.lowerExpr(me.subject.*);
         const subject_ty = self.exprType(me.subject.*);
         const enum_name = self.matchEnumName(me.subject.*);
+        const is_error = self.errorOperand(me.subject.*) != null;
         const after_id = self.allocBlockId();
 
         for (me.arms) |arm| {
-            const check = try self.lowerPatternCheck(subject, enum_name, arm.pattern);
+            const check = try self.lowerPatternCheck(subject, enum_name, is_error, arm.pattern);
             const arm_id = self.allocBlockId();
             const needs_next = check != null or arm.guard != null;
             const next_id = if (needs_next) self.allocBlockId() else after_id;
