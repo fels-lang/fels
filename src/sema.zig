@@ -5993,7 +5993,7 @@ const Checker = struct {
                     .thin = func.is_extern,
                 } };
             },
-            .inline_error_set => |set| return .{ .error_set = try self.errorVariantsFromDecl(set.variants) },
+            .inline_error_set => |set| return .{ .error_set = try self.inlineErrorVariants(set) },
             .generic_inst => |gi| return try self.instantiateGenericStruct(gi),
             .opaque_type => return .void,
         }
@@ -6028,7 +6028,7 @@ const Checker = struct {
                 }
                 break :blk .{ .named = id };
             },
-            .inline_set => |set| .{ .error_set = try self.errorVariantsFromDecl(set.variants) },
+            .inline_set => |set| .{ .error_set = try self.inlineErrorVariants(set) },
         };
     }
 
@@ -6044,6 +6044,17 @@ const Checker = struct {
         }
 
         return infos.toOwnedSlice(self.allocator);
+    }
+
+    /// The variants of an inline set (`-> T ! { .a, .b }`). An error of one is the number of its
+    /// variant and nothing more, so a payload would be lost on the way: a variant that carries
+    /// one belongs to a declared set.
+    fn inlineErrorVariants(self: *Checker, set: ast.InlineErrorSet) SemanticError![]const ErrorVariantInfo {
+        for (set.variants) |variant| if (variant.payload != null) {
+            self.emitError(variant.span, "the error `.{s}` of an inline set cannot carry a payload: declare the set (`E :: errors {{ {s}: … }}`) to give it one", .{ variant.name, variant.name });
+            return error.SemanticFailed;
+        };
+        return self.errorVariantsFromDecl(set.variants);
     }
 
     /// `yield value;` ends a `catch` handler with the value the `catch` expression takes, the
