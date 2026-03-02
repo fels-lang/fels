@@ -178,11 +178,24 @@ after the `catch`:
 write_all(data) catch err { failures += 1; };     // ignore the byte count; count the failure and go on
 ```
 
-An error is inspected where it is caught: `err == .variant` is accepted only on the name the
-`catch` bound. A function may take an error as a parameter and pass it on, but cannot compare it
-with a variant (`fn(e: ParseError) { if e == .eof … }` is a compile error).
+### Errors are values
+
+An error is a value of its set's type. It can be kept in a local, passed to a function, stored in
+a struct field or returned, and a bare `.variant` is one where its set's type is expected:
+
+```fels
+last_error: ParseError = .invalid_input;
+
+describe_kind :: fn(e: ParseError) -> []const u8 {
+    if e == .buffer_full { return "buffer full"; }
+    return "bad input";
+}
+```
 
 ### Inspecting the error variant
+
+`err == .variant` and `err != .variant` ask whether an error is that variant, wherever the error
+is: the name a `catch` bound, a parameter, a field, a call's result.
 
 ```fels
 result := parse_json_string(input, output) catch err {
@@ -194,14 +207,29 @@ result := parse_json_string(input, output) catch err {
 };
 ```
 
-`err == .variant` and `err != .variant` ask whether the caught error is that variant. The variant
-must be one of the error's own set: naming a variant the set does not have (`.secnd`) is a compile
-error. An inferred set (bare `!`) has no list to check against, so any name is accepted there.
-An error is identified by its variant's name and keeps it as `?` passes it on through any number
-of functions, inferred sets included: a `.timeout` raised by a function returning `IoError` is
-still `.timeout` when it is caught from an inferred-set function that called it.
-Comparison is the only way to inspect an error: `match` does not accept an error value, and it
-cannot be cast to an integer.
+The variant must be one of the error's own set: naming a variant the set does not have (`.secnd`)
+is a compile error. An inferred set (bare `!`) has no list to check against, so any name is
+accepted there. An error is identified by its variant's name and keeps it as `?` passes it on
+through any number of functions, inferred sets included: a `.timeout` raised by a function
+returning `IoError` is still `.timeout` when it is caught from an inferred-set function that
+called it.
+
+`match` takes an error too, as a statement or as a value:
+
+```fels
+code := parse(text) catch err {
+    yield match err {
+        .invalid_input => 1,
+        .overflow => 2,
+        .buffer_full => 3,
+    };
+};
+```
+
+A match on an error of a declared or inline set covers each of its variants or has an `else`
+arm, as a match on an enum does. An error of an inferred set can be any error, so a match on it
+takes any variant name and always needs an `else`. Two errors of a set without payloads compare
+with `==`. An error cannot be cast to an integer.
 
 ## Force Unwrap with `!!`
 
