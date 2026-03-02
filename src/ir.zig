@@ -887,6 +887,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                         },
                         .file = decl.file_name,
                         .source = decl.source,
+                        .error_codes = error_codes,
                     };
                     if (cvm) |c| c.current_file = decl.file_name;
                     // Building the module the comptime VM runs (no evaluator), a mistake in a global
@@ -8451,6 +8452,9 @@ const StaticInit = struct {
     source: []const u8,
     /// Where a mistake goes. Null while lowering: it is printed. `checkStaticData` collects them.
     sink: ?*std.ArrayList(StaticDataDiag) = null,
+    /// The numbers of the errors, for a global that holds one of a set with payloads. Null where
+    /// the data is only checked (`checkStaticData`).
+    error_codes: ?*ErrorCodes = null,
 
     fn fail(self: StaticInit, span: Span, comptime fmt: []const u8, args: anytype) LowerError {
         const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch "invalid initializer for static storage";
@@ -8673,8 +8677,28 @@ const StaticInit = struct {
         return self.fail(expr.span, "no variant `{s}` in enum `{s}`", .{ variant, name });
     }
 
+    /// An error of a set whose errors carry payloads, written `.name`: its tag is the number of
+    /// the variant. A payload, as for an enum, is not built in static storage yet.
+    fn buildError(self: StaticInit, expr: ast.Expr, set: TaggedErrorSet) LowerError!ConstInit {
+        const variant: []const u8 = switch (expr.kind) {
+            .ident => |n| if (n.len > 1 and n[0] == '.') n[1..] else "",
+            else => "",
+        };
+        if (variant.len == 0)
+            return self.fail(expr.span, "an error in static storage must be written as a variant: `.name`", .{});
+        for (set.variants) |v| {
+            if (!std.mem.eql(u8, v.name, variant)) continue;
+            if (v.payload != null)
+                return self.fail(expr.span, "an error with a payload cannot be initialised in static storage yet; `.{s}` carries one", .{variant});
+            const codes = self.error_codes orelse return .{ .variant_tag = 0 };
+            return .{ .variant_tag = @intCast(try codes.code(variant)) };
+        }
+        return self.fail(expr.span, "`{s}` has no error variant `.{s}`", .{ set.link_name, variant });
+    }
+
     fn buildStruct(self: StaticInit, expr: ast.Expr, name: []const u8) LowerError!ConstInit {
         if (self.enumVariants(name)) |variants| return self.buildEnum(expr, name, variants);
+        if (taggedErrorSetNamed(self.env.types, self.env.symbols, name)) |set| return self.buildError(expr, set);
         const fields = self.structFields(name) orelse
             return self.fail(expr.span, "`{s}` is not a struct whose fields are known here", .{name});
         const values = try self.allocator.alloc(ConstFieldInit, fields.len);
