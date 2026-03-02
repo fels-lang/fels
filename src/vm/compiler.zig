@@ -1104,9 +1104,19 @@ const FnCompiler = struct {
             },
             .try_err => |v| {
                 const r = try self.resolveReg(v);
-                try self.emit(Instr.r_r_imm(.load_cell, target, r, 1)); // discriminant
+                if (isAggregate(inst.ty)) {
+                    // An error of a set whose errors carry payloads is a tagged value, a block
+                    // [number, payload] as an enum's; the fallible holds the payload in cell 0.
+                    try self.emit(Instr.r_imm(.zone_alloc, target, 2));
+                    const disc = self.newReg();
+                    try self.emit(Instr.r_r_imm(.load_cell, disc, r, 1));
+                    try self.emit(Instr.r_r_imm(.store_cell, target, disc, 0));
+                    const payload = self.newReg();
+                    try self.emit(Instr.r_r_imm(.load_cell, payload, r, 0));
+                    try self.emit(Instr.r_r_imm(.store_cell, target, payload, 1));
+                } else try self.emit(Instr.r_r_imm(.load_cell, target, r, 1)); // discriminant
             },
-            .try_ok, .try_payload => |v| {
+            .try_ok => |v| {
                 const r = try self.resolveReg(v);
                 try self.emit(Instr.r_r_imm(.load_cell, target, r, 0)); // value / payload
             },
@@ -1287,9 +1297,15 @@ const FnCompiler = struct {
                 } else try self.emit(Instr.with_imm(.ret_void, 0));
             },
             .fail => |ft| {
-                // err: [payload, disc]; the payload shares the value slot.
+                // err: [payload, disc]; the payload shares the value slot. A tagged error is a
+                // block [number, payload].
                 const disc = try self.resolveReg(ft.disc);
-                const payload = if (ft.payload) |p| try self.resolveReg(p) else try self.constReg(0);
+                const payload = if (ft.err) |e| p: {
+                    const er = try self.resolveReg(e);
+                    const pr = self.newReg();
+                    try self.emit(Instr.r_r_imm(.load_cell, pr, er, 1));
+                    break :p pr;
+                } else try self.constReg(0);
                 const wrapped = try self.emitFallible(payload, disc);
                 try self.emit(Instr.r_imm(.ret, wrapped, 0));
             },
@@ -1355,12 +1371,13 @@ const FnCompiler = struct {
         return null;
     }
 
-    /// Discriminant (position) of `variant` within enum `type_name`.
+    /// Discriminant of `variant` within enum `type_name`: its position, or the tag it names
+    /// (an error set's are the numbers of its variants).
     fn variantIndex(self: *FnCompiler, type_name: []const u8, variant: []const u8) ?u32 {
         for (self.module.variants) |v| {
             if (!std.mem.eql(u8, v.name, type_name)) continue;
             for (v.variants, 0..) |case, i| {
-                if (std.mem.eql(u8, case.name, variant)) return @intCast(i);
+                if (std.mem.eql(u8, case.name, variant)) return case.disc orelse @intCast(i);
             }
         }
         return null;

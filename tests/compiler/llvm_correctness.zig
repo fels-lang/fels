@@ -250,7 +250,7 @@ test "LLVM panic lowering synthesizes the runtime declaration when absent" {
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "standalone_unwrap.fels:2:12") != null);
 }
 
-test "LLVM error/fallible ABI: fail and return lower to { ok, i32 } struct" {
+test "LLVM error/fallible ABI: fail and return lower to { ok, i32 } struct, with the payload bytes" {
     if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -281,16 +281,17 @@ test "LLVM error/fallible ABI: fail and return lower to { ok, i32 } struct" {
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
 
-    // Return type must be { i32, i32 } — ok-value + discriminant.
-    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "{ i32, i32 }") != null);
+    // Return type must be { i32, i32, [2 x i8] }: the ok value, the number of the error, and
+    // room for the largest payload of the set (`http: u16`).
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "{ i32, i32, [2 x i8] }") != null);
     // Successful return wraps with insertvalue index 1 = 0.
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "insertvalue") != null);
     // fail emits a non-zero discriminant and returns.
-    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "ret { i32, i32 }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "ret { i32, i32, [2 x i8] }") != null);
     // `?` branches on the discriminant and returns the error from its own block: connect has two
     // returns, caller has two (the propagated error and the normal one).
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "br i1") != null);
-    try std.testing.expect(std.mem.count(u8, llvm_ir, "ret { i32, i32 }") >= 4);
+    try std.testing.expect(std.mem.count(u8, llvm_ir, "ret { i32, i32, [2 x i8] }") >= 4);
 }
 
 test "LLVM fallible return coerces to its declared integer width" {

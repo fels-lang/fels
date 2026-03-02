@@ -895,6 +895,42 @@ test "diagnostics: an error is compared with a variant wherever it is" {
     try expectFirstError(a, "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> bool { return e == .c; }", &.{"`Oops` has no error variant `.c`"});
 }
 
+test "diagnostics: an error's payload is bound where its variant carries one" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const decls =
+        \\PE :: errors { plain, big: i64 }
+        \\E :: errors { first, second }
+        \\num :: fn() -> i32 ! PE { fail .big { 5i64 }; }
+        \\loose :: fn() -> i32 ! { return num()?; }
+        \\
+    ;
+    const cases = [_]struct { body: []const u8, needle: []const u8 }{
+        // An inferred set keeps an error's number, not its payload.
+        .{ .body = "g :: fn() -> i64 { v := loose() catch e { if e == .big |n| { return n; } yield 0; }; return 0i64; }", .needle = "an error of an inferred set (`!`) carries no payload" },
+        .{ .body = "g :: fn() -> i64 { v := loose() catch e { match e { .big |n| => { return n; }, else => { return 0i64; } } }; return 0i64; }", .needle = "an error of an inferred set (`!`) carries no payload" },
+        .{ .body = "g :: fn() -> i64 { v := num() catch e { if e == .plain |n| { return 1i64; } yield 0; }; return 0i64; }", .needle = "the error `.plain` carries no payload to bind" },
+        .{ .body = "g :: fn(e: PE) -> i64 { match e { .plain |n| => { return 1i64; }, else => { return 0i64; } } }", .needle = "the error `.plain` carries no payload to bind" },
+        .{ .body = "g :: fn(e: E) -> i32 { if e == .first |p| { return 1; } return 0; }", .needle = "the error `.first` carries no payload to bind" },
+        .{ .body = "g :: fn(x: i32) -> i32 { if x > 3 |c| { return 1; } return 0; }", .needle = "`|c|` binds the value of an optional, or the payload of an error" },
+        // Which is equal, the variant or the payload too? Each is compared with a variant.
+        .{ .body = "g :: fn(a: PE, b: PE) -> bool { return a == b; }", .needle = "two errors of `PE` cannot be compared" },
+        .{ .body = "g :: fn() -> PE { return .nope; }", .needle = "`PE` has no error variant `.nope`" },
+    };
+    for (cases) |case| {
+        const src = try std.mem.concat(a, u8, &.{ decls, case.body, "\n" });
+        try expectFirstError(a, src, &.{case.needle});
+    }
+    const accepted = [_][]const u8{
+        "g :: fn() -> i64 { v := num() catch e { if e == .big |n| { return n; } yield 0; }; return 0i64; }",
+        "g :: fn(e: PE) -> i64 { return match e { .big |n| => n, .plain => 0i64 }; }",
+        "g :: fn(a: E, b: E) -> bool { return a == b; }",
+        "g :: fn() -> PE { return .plain; }",
+    };
+    for (accepted) |body| try expectNoError(a, decls, body);
+}
+
 test "diagnostics: an inline error set carries no payload" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -256,6 +256,9 @@ pub const ErrorCodes = struct {
 pub const VariantCase = struct {
     name: []const u8,
     payload: ?IrType,
+    /// The tag of the case when it is not its position: an error set's are the numbers of its
+    /// variants (`ErrorCodes`).
+    disc: ?u32 = null,
 };
 
 pub const Instr = struct {
@@ -288,7 +291,6 @@ pub const InstrKind = union(enum) {
     try_is_ok: Value,
     try_ok: Value,
     try_err: Value,
-    try_payload: Value,
     iter_init: Value,
     iter_has_next: Value,
     iter_next: Value,
@@ -512,11 +514,12 @@ pub const Terminator = union(enum) {
 };
 
 pub const FailTerm = struct {
-    /// The error discriminant (the `error.<variant>` value).
+    /// The number of the error (see `ErrorCodes`).
     disc: Value,
-    /// The error variant's payload, stored into the fallible's value slot
-    /// (field 0) so a `catch e { ... |c| ... }` can recover it. Null = no payload.
-    payload: ?Value = null,
+    /// The whole error, its number and its payload, when the function's set carries payloads
+    /// (see `namedIrType`). Null for a set of plain numbers, and for an error that came from
+    /// another set (through `?` from an inferred one), whose payload there is no room for.
+    err: ?Value = null,
 };
 
 pub const Panic = struct {
@@ -594,8 +597,52 @@ pub const Imm = union(enum) {
 };
 
 /// A `catch err { … }` binding in scope while its handler is lowered.
-/// An error a `catch` handler names, and the local its payload is stashed in.
-const CaughtError = struct { name: []const u8, ty: sema.Ty, payload: []const u8 };
+/// An error a `catch` handler names.
+const CaughtError = struct { name: []const u8, ty: sema.Ty };
+
+/// An error set whose errors carry payloads: the IR gives it a type of its own, a tagged value
+/// like a payload enum's whose tags are the numbers of its variants (see `namedIrType`).
+const TaggedErrorSet = struct {
+    link_name: []const u8,
+    variants: []const sema.ErrorVariantInfo,
+
+    fn irType(self: TaggedErrorSet) IrType {
+        return .{ .struct_type = self.link_name };
+    }
+
+    /// The IR type of the payload of `variant`, or null when it carries none.
+    fn payloadIrType(self: TaggedErrorSet, allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, variant: []const u8) ?IrType {
+        for (self.variants) |v| if (std.mem.eql(u8, v.name, variant)) {
+            const pty = v.payload orelse return null;
+            return lowerSemaTypeWithEnv(allocator, pty, types, symbols) catch .unknown;
+        };
+        return null;
+    }
+};
+
+/// The tagged error set the symbol `id` declares, or null when it is no error set or its
+/// errors carry no payloads (they are plain numbers then).
+fn taggedErrorSetOf(types: sema.TypeEnv, symbols: sema.SymbolTable, id: sema.SymbolId) ?TaggedErrorSet {
+    const layout = types.layouts.get(id) orelse return null;
+    const variants = switch (layout.kind) {
+        .error_set => |v| v,
+        else => return null,
+    };
+    if (!sema.errorSetHasPayloads(variants)) return null;
+    return .{ .link_name = symbols.symbol(id).link_name, .variants = variants };
+}
+
+/// The tagged error set whose link name is `name`: found by its bare name, or else among all
+/// the types (a set named like one of another module has a qualified link name).
+fn taggedErrorSetNamed(types: sema.TypeEnv, symbols: sema.SymbolTable, name: []const u8) ?TaggedErrorSet {
+    if (symbols.resolve(symbols.root_scope, name)) |id| {
+        if (std.mem.eql(u8, symbols.symbol(id).link_name, name)) return taggedErrorSetOf(types, symbols, id);
+    }
+    for (symbols.symbols.items) |sym| {
+        if (sym.kind == .type and std.mem.eql(u8, sym.link_name, name)) return taggedErrorSetOf(types, symbols, sym.id);
+    }
+    return null;
+}
 
 pub const LowerError = error{
     LoweringFailed,
@@ -1041,6 +1088,19 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
         }
     }
 
+    // An error set whose errors carry payloads is a tagged value, as a payload enum is, whose
+    // tags are the numbers of its variants.
+    for (errors.items) |def| {
+        const tagged = for (def.variants) |v| {
+            if (v.payload != null) break true;
+        } else false;
+        if (!tagged) continue;
+        var cases: std.ArrayList(VariantCase) = .empty;
+        errdefer cases.deinit(allocator);
+        for (def.variants) |v| try cases.append(allocator, .{ .name = v.name, .payload = v.payload, .disc = @intCast(try error_codes.code(v.name)) });
+        try variants.append(allocator, .{ .name = def.name, .variants = try cases.toOwnedSlice(allocator) });
+    }
+
     return .{
         .file_name = front_end.module.file_name,
         .structs = try structs.toOwnedSlice(allocator),
@@ -1134,7 +1194,7 @@ fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
             try validateValue(function, slice.len);
         },
         .variant_is, .variant_payload => |variant| try validateValue(function, variant.value),
-        .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .try_payload, .iter_init, .iter_has_next, .iter_next => |value| try validateValue(function, value),
+        .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| try validateValue(function, value),
         .at => |at| try validateValue(function, at.value),
         .raw_pointer => |ptr| try validateValue(function, ptr.address),
         .interface_make => |make| try validateValue(function, make.data),
@@ -1160,7 +1220,7 @@ fn validateTerminator(function: IrFunction, terminator: Terminator) ValidationEr
         .return_value => |value| if (value) |ret| try validateValue(function, ret),
         .fail => |ft| {
             try validateValue(function, ft.disc);
-            if (ft.payload) |p| try validateValue(function, p);
+            if (ft.err) |e| try validateValue(function, e);
         },
         .panic => {},
         .branch => |target| if (!hasBlock(function, target)) return error.InvalidIr,
@@ -1309,7 +1369,7 @@ fn foldTerminator(consts: *const ConstMap, terminator: ?Terminator) ?Terminator 
             return .{ .cond_branch = .{ .cond = cond, .then_block = branch.then_block, .else_block = branch.else_block } };
         },
         .return_value => |v| if (v) |val| .{ .return_value = resolveVal(consts, val) } else term,
-        .fail => |ft| .{ .fail = .{ .disc = resolveVal(consts, ft.disc), .payload = if (ft.payload) |p| resolveVal(consts, p) else null } },
+        .fail => |ft| .{ .fail = .{ .disc = resolveVal(consts, ft.disc), .err = if (ft.err) |e| resolveVal(consts, e) else null } },
         .panic => |panic| .{ .panic = panic },
         else => term,
     };
@@ -1501,7 +1561,7 @@ fn instrUsesReg(instr: Instr, id: RegId) bool {
         .index, .index_addr => |index| valueUsesReg(index.base, id) or valueUsesReg(index.index, id),
         .slice_expr => |slice| valueUsesReg(slice.ptr, id) or valueUsesReg(slice.len, id),
         .variant_is, .variant_payload => |variant| valueUsesReg(variant.value, id),
-        .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .try_payload, .iter_init, .iter_has_next, .iter_next => |value| valueUsesReg(value, id),
+        .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| valueUsesReg(value, id),
         .at => |at| valueUsesReg(at.value, id),
         .raw_pointer => |ptr| valueUsesReg(ptr.address, id),
         .interface_make => |make| valueUsesReg(make.data, id),
@@ -1523,7 +1583,7 @@ fn instrUsesReg(instr: Instr, id: RegId) bool {
 fn terminatorUsesReg(terminator: Terminator, id: RegId) bool {
     return switch (terminator) {
         .return_value => |value| value != null and valueUsesReg(value.?, id),
-        .fail => |ft| valueUsesReg(ft.disc, id) or (ft.payload != null and valueUsesReg(ft.payload.?, id)),
+        .fail => |ft| valueUsesReg(ft.disc, id) or (ft.err != null and valueUsesReg(ft.err.?, id)),
         .panic, .branch, .unreachable_term => false,
         .cond_branch => |branch| valueUsesReg(branch.cond, id),
     };
@@ -1965,6 +2025,11 @@ const FunctionLowerer = struct {
     /// Names bound by the `catch` handlers currently being lowered, with the error set each
     /// holds (innermost last). Lets `e == .variant` check `.variant` against the right set.
     catch_errors: std.ArrayList(CaughtError) = .empty,
+    /// The error set of the function, for `fail` and `?`.
+    error_spec: ?ast.ErrorSpec = null,
+    /// The last `e == .variant` lowered on an error of a tagged set, for `if e == .v |p|`, which
+    /// binds that error's payload.
+    last_error_compare: ?ErrorCompare = null,
     /// The numbers `fail .name` and `e == .name` give error variants (shared program-wide).
     error_codes: *ErrorCodes,
     loop_stack: std.ArrayList(LoopContext) = .empty,
@@ -2017,6 +2082,7 @@ const FunctionLowerer = struct {
             .local_alias = std.StringHashMap([]const u8).init(allocator),
             .lambda_captures = captures,
             .error_codes = error_codes,
+            .error_spec = decl.error_ty,
         };
     }
 
@@ -2208,11 +2274,22 @@ const FunctionLowerer = struct {
                 try self.terminate(.{ .return_value = ret_val });
             },
             .fail_stmt => |fail| {
-                var payload_values = std.ArrayList(Value).empty;
-                errdefer payload_values.deinit(self.allocator);
-                for (fail.payload) |payload| try payload_values.append(self.allocator, try self.lowerExpr(payload));
-                const payloads = try payload_values.toOwnedSlice(self.allocator);
-                // The error is the number of its variant's name, the same in every set.
+                // The error is the number of its variant's name, the same in every set. A set
+                // whose errors carry payloads takes the whole error, built as an enum value is.
+                var err: ?Value = null;
+                if (self.ownTaggedErrorSet()) |set| {
+                    const payload: ?Value = if (fail.payload.len > 0) p: {
+                        const pty = set.payloadIrType(self.allocator, self.types, self.symbols, fail.variant) orelse .unknown;
+                        // A bare immediate goes into a typed register, as for an enum's payload:
+                        // the backend reads a variant's payload against no type.
+                        const raw = try self.lowerExprAs(fail.payload[0], pty);
+                        break :p switch (raw) {
+                            .imm => |im| try self.emitAt(pty, .{ .const_value = im }, fail.span),
+                            else => raw,
+                        };
+                    } else null;
+                    err = try self.emit(set.irType(), .{ .variant_lit = .{ .type_name = set.link_name, .variant = fail.variant, .payload = payload } });
+                }
                 const error_value: Value = .{ .imm = .{ .int = try self.error_codes.code(fail.variant) } };
                 try self.emitDefersDown(0, .err);
                 var i = self.active_zones.items.len;
@@ -2220,8 +2297,7 @@ const FunctionLowerer = struct {
                     i -= 1;
                     try self.lowerZoneExit(self.active_zones.items[i]);
                 }
-                // Carry the first payload (if any) so a `catch` can recover it.
-                try self.terminate(.{ .fail = .{ .disc = error_value, .payload = if (payloads.len > 0) payloads[0] else null } });
+                try self.terminate(.{ .fail = .{ .disc = error_value, .err = err } });
             },
             .if_stmt => |iff| try self.lowerIf(iff),
             .while_stmt => |while_stmt| try self.lowerWhile(while_stmt),
@@ -2310,8 +2386,9 @@ const FunctionLowerer = struct {
         var optional_binding_name: ?[]const u8 = null;
         var optional_binding_value: ?Value = null;
         var optional_payload_ty: ?IrType = null;
-        // `if e == .variant |c|` inside a catch: bind c to the stashed payload.
+        // `if e == .variant |c|`: c is the payload of that error.
         var error_payload_binding: ?[]const u8 = null;
+        var error_compare: ?ErrorCompare = null;
 
         const cond = if (iff.binding) |binding| blk: {
             const value = try self.lowerExpr(binding.value);
@@ -2330,7 +2407,9 @@ const FunctionLowerer = struct {
                 },
             }
         } else blk: {
+            self.last_error_compare = null;
             const value = try self.lowerExpr(iff.condition);
+            error_compare = self.last_error_compare;
             const value_ty = self.exprType(iff.condition);
             if (iff.payload_binding) |payload_name| switch (value_ty) {
                 .optional => |inner| {
@@ -2339,9 +2418,9 @@ const FunctionLowerer = struct {
                     optional_payload_ty = inner.*;
                     break :blk try self.emit(.bool, .{ .optional_is_some = value });
                 },
-                // `if e == .variant |c|`: the condition is the discriminant
-                // comparison (bool); bind c to the payload stashed by `catch`.
-                else => if (iff.condition.kind == .binary and iff.condition.kind.binary.op == .equal) {
+                // `if e == .variant |c|`: the condition tests the error's tag (a bool), and `c`
+                // reads the payload in the then-block, where it is that variant's.
+                else => if (error_compare != null) {
                     error_payload_binding = payload_name;
                 },
             };
@@ -2369,11 +2448,12 @@ const FunctionLowerer = struct {
             const ir_name = try self.declareLocal(name, payload_ty);
             try self.emitNoResult(payload_ty, .{ .store_local = .{ .name = ir_name, .value = payload } });
         }
-        if (error_payload_binding) |name| if (self.caughtPayload(iff.condition)) |stash| {
-            const pty = self.local_types.get(stash) orelse .unknown;
-            const ir_name = try self.declareLocal(name, pty);
-            try self.emitNoResult(pty, .{ .store_local = .{ .name = ir_name, .value = .{ .local = stash } } });
-        };
+        if (error_payload_binding) |name| {
+            const cmp = error_compare.?;
+            const payload = try self.emit(cmp.payload_ty, .{ .variant_payload = .{ .value = cmp.value, .type_name = cmp.set, .variant = cmp.variant } });
+            const ir_name = try self.declareLocal(name, cmp.payload_ty);
+            try self.emitNoResult(cmp.payload_ty, .{ .store_local = .{ .name = ir_name, .value = payload } });
+        }
         try self.lowerBlock(iff.then_block.statements, .{ .branch = after_id });
         self.leaveScope(then_scope);
 
@@ -3500,23 +3580,35 @@ const FunctionLowerer = struct {
 
                 self.startBlock(err_id, "try.err");
                 const disc = try self.emit(.{ .i = 32 }, .{ .try_err = value });
+                // Within one tagged set the whole error goes on, payload and all; into any other
+                // set only its number does.
+                const err: ?Value = if (self.ownTaggedErrorSet()) |own| e: {
+                    const src_err = switch (self.exprType(try_expr.value.*)) {
+                        .fallible => |f| f.err.*,
+                        else => break :e null,
+                    };
+                    if (src_err != .struct_type or !std.mem.eql(u8, src_err.struct_type, own.link_name)) break :e null;
+                    break :e try self.emit(src_err, .{ .try_err = value });
+                } else null;
                 try self.emitDefersDown(0, .err);
                 var zi = self.active_zones.items.len;
                 while (zi > 0) {
                     zi -= 1;
                     try self.lowerZoneExit(self.active_zones.items[zi]);
                 }
-                try self.terminate(.{ .fail = .{ .disc = disc, .payload = null } });
+                try self.terminate(.{ .fail = .{ .disc = disc, .err = err } });
 
                 self.startBlock(ok_id, "try.ok");
                 break :blk try self.emit(self.exprType(expr), .{ .try_ok = value });
             },
             .catch_expr => |catch_expr| blk: {
                 const value = try self.lowerExpr(catch_expr.value.*);
-                // The caught error is the fallible's discriminant, field 1 of `{ T, i32 }`.
-                // (Typing the local as the error set itself made it a pointer-sized slot,
-                // which the comparison `e == .variant` then read as 8 bytes.)
-                const error_ty: IrType = .{ .i = 32 };
+                // The caught error: the number of its variant, field 1 of the fallible, or for a
+                // set whose errors carry payloads the tagged value of that number and payload.
+                const error_ty: IrType = switch (self.exprType(catch_expr.value.*)) {
+                    .fallible => |f| if (self.taggedErrorSetOfType(f.err.*) != null) f.err.* else .{ .i = 32 },
+                    else => .{ .i = 32 },
+                };
                 const is_ok = try self.emit(.bool, .{ .try_is_ok = value });
                 const ok_id = self.allocBlockId();
                 const err_id = self.allocBlockId();
@@ -3533,12 +3625,7 @@ const FunctionLowerer = struct {
                     .fallible => |f| f.err.*,
                     else => .unknown,
                 };
-                // Each catch stashes its payload in a local of its own: the slot of a single shared
-                // one took the type of the first catch in the function, and a later catch with a
-                // wider success type wrote past it, over the locals beside it.
-                self.temp_id += 1;
-                const payload_name = try std.fmt.allocPrint(self.allocator, "__errpayload_{d}", .{self.temp_id});
-                try self.catch_errors.append(self.allocator, .{ .name = catch_expr.err_name, .ty = caught_set, .payload = payload_name });
+                try self.catch_errors.append(self.allocator, .{ .name = catch_expr.err_name, .ty = caught_set });
                 defer _ = self.catch_errors.pop();
                 const err_value = try self.emit(error_ty, .{ .try_err = value });
                 // The error's name is a local of the handler: a copy of it (`k := e`) takes its
@@ -3547,16 +3634,6 @@ const FunctionLowerer = struct {
                 defer self.leaveScope(handler_scope);
                 const err_local = try self.declareLocal(catch_expr.err_name, error_ty);
                 try self.emitNoResult(error_ty, .{ .store_local = .{ .name = err_local, .value = err_value } });
-                // Stash the error payload so `if e == .v |c|` in the handler can
-                // recover it (the binding loads the stash). The payload
-                // shares the fallible's value slot, so its type is the ok type.
-                const ok_ty: IrType = switch (self.exprType(catch_expr.value.*)) {
-                    .fallible => |fallible| fallible.ok.*,
-                    else => .unknown,
-                };
-                const payload_value = try self.emit(ok_ty, .{ .try_payload = value });
-                try self.emitNoResult(ok_ty, .{ .store_local = .{ .name = payload_name, .value = payload_value } });
-                try self.local_types.put(payload_name, ok_ty);
                 _ = try self.emit(.void, .{ .builtin = .{
                     .name = "catch_handler",
                     .args = try self.allocator.dupe(Value, &.{err_value}),
@@ -4303,6 +4380,14 @@ const FunctionLowerer = struct {
         const name = bareEnumVariant(expr) orelse return null;
         if (self.types.enum_lits.contains(expr.id)) return null;
         if (expected_ty != .struct_type) return null;
+        // An error of a set whose errors carry payloads is built as an enum value is.
+        if (taggedErrorSetNamed(self.types, self.symbols, expected_ty.struct_type)) |set| {
+            for (set.variants) |v| if (std.mem.eql(u8, v.name, name)) {
+                return try self.emit(expected_ty, .{ .variant_lit = .{ .type_name = set.link_name, .variant = name, .payload = null } });
+            };
+            diag_mod.printErrorAt("this error set has no such variant", self.file_name, self.source, expr.span);
+            return error.LoweringFailed;
+        }
         const id = self.symbols.resolve(self.symbols.root_scope, expected_ty.struct_type) orelse return null;
         const layout = self.types.layouts.get(id) orelse return null;
         const variants = switch (layout.kind) {
@@ -4828,25 +4913,31 @@ const FunctionLowerer = struct {
         return errorSetVariantsIn(self.types, ty);
     }
 
-    /// The payload stash of the catch whose error `e == .variant` compares: the innermost one
-    /// that names it, or the innermost catch when neither operand is a caught name.
-    fn caughtPayload(self: *FunctionLowerer, cond: ast.Expr) ?[]const u8 {
-        if (self.catch_errors.items.len == 0) return null;
-        const bin = cond.kind.binary;
-        for ([_]ast.Expr{ bin.left.*, bin.right.* }) |operand| if (operand.kind == .ident) {
-            var i = self.catch_errors.items.len;
-            while (i > 0) {
-                i -= 1;
-                const caught = self.catch_errors.items[i];
-                if (std.mem.eql(u8, caught.name, operand.kind.ident)) return caught.payload;
-            }
+    /// The tagged error set of the function's errors, or null when they are plain numbers.
+    fn ownTaggedErrorSet(self: *FunctionLowerer) ?TaggedErrorSet {
+        const named = switch (self.error_spec orelse return null) {
+            .named => |n| n,
+            else => return null,
         };
-        return self.catch_errors.items[self.catch_errors.items.len - 1].payload;
+        const id = typeSymbol(named.name, named.namespace) orelse return null;
+        return taggedErrorSetOf(self.types, self.symbols, id);
+    }
+
+    /// The tagged error set a value of IR type `ty` is an error of, if any.
+    fn taggedErrorSetOfType(self: *FunctionLowerer, ty: IrType) ?TaggedErrorSet {
+        return switch (ty) {
+            .struct_type => |name| taggedErrorSetNamed(self.types, self.symbols, name),
+            else => null,
+        };
     }
 
     /// An operand that holds an error: its set's variants, or null for a set that has no list
     /// of its own (inferred, `-> T !`).
     const ErrorOperand = struct { variants: ?[]const sema.ErrorVariantInfo };
+
+    /// An `e == .variant` on an error of a tagged set: the error, its set's link name, and the
+    /// type of the variant's payload (`void` for none).
+    const ErrorCompare = struct { value: Value, set: []const u8, variant: []const u8, payload_ty: IrType };
 
     /// Whether an operand holds an error, and of which set: a name bound by an enclosing
     /// `catch` always does; any other expression does when sema typed it as an error.
@@ -4874,6 +4965,26 @@ const FunctionLowerer = struct {
         };
         for (operands) |op| {
             const name = bareEnumVariant(op.variant) orelse continue;
+            // An error of a tagged set: its tag is the number of its variant.
+            if (self.taggedErrorSetOfType(self.exprType(op.other))) |set| {
+                const known = for (set.variants) |v| {
+                    if (std.mem.eql(u8, v.name, name)) break true;
+                } else false;
+                if (!known) {
+                    diag_mod.printErrorAt("this error set has no such variant", self.file_name, self.source, op.variant.span);
+                    return error.LoweringFailed;
+                }
+                const value = try self.lowerExpr(op.other);
+                self.last_error_compare = .{
+                    .value = value,
+                    .set = set.link_name,
+                    .variant = name,
+                    .payload_ty = set.payloadIrType(self.allocator, self.types, self.symbols, name) orelse .void,
+                };
+                const is = try self.emitAt(.bool, .{ .variant_is = .{ .value = value, .type_name = set.link_name, .variant = name } }, outer.span);
+                if (binary.op == .not_equal) return try self.emit(.bool, .{ .unary = .{ .op = .not, .value = is } });
+                return is;
+            }
             const err = self.errorOperand(op.other) orelse continue;
             if (err.variants) |variants| {
                 const known = for (variants) |v| {
@@ -4990,6 +5101,8 @@ const FunctionLowerer = struct {
     /// `match … |v|` binding. Returns `.unknown` only when the enum/variant can't
     /// be resolved (no payload → `.unknown` is also fine, the binding is unused).
     fn variantPayloadIrType(self: *FunctionLowerer, enum_name: []const u8, variant_name: []const u8) IrType {
+        if (taggedErrorSetNamed(self.types, self.symbols, enum_name)) |set|
+            return set.payloadIrType(self.allocator, self.types, self.symbols, variant_name) orelse .unknown;
         const id = self.symbols.resolve(self.symbols.root_scope, enum_name) orelse return .unknown;
         const layout = self.types.layouts.get(id) orelse return .unknown;
         const variants = switch (layout.kind) {
@@ -5203,7 +5316,7 @@ const FunctionLowerer = struct {
         const subject = try self.lowerExpr(m.subject);
         const subject_ty = self.exprType(m.subject);
         const enum_name = self.matchEnumName(m.subject);
-        const is_error = self.errorOperand(m.subject) != null;
+        const is_error = self.errorOperand(m.subject) != null and self.taggedErrorSetOfType(subject_ty) == null;
         const after_id = self.allocBlockId();
 
         for (m.arms) |arm| {
@@ -5259,7 +5372,7 @@ const FunctionLowerer = struct {
         const subject = try self.lowerExpr(me.subject.*);
         const subject_ty = self.exprType(me.subject.*);
         const enum_name = self.matchEnumName(me.subject.*);
-        const is_error = self.errorOperand(me.subject.*) != null;
+        const is_error = self.errorOperand(me.subject.*) != null and self.taggedErrorSetOfType(subject_ty) == null;
         const after_id = self.allocBlockId();
 
         for (me.arms) |arm| {
@@ -5849,11 +5962,15 @@ fn enterTypeScope(symbols: sema.SymbolTable, types: sema.TypeEnv, file: []const 
 }
 
 /// The IR type of the named type `id`, whose link name is `link_name`. An error value is the
-/// number of its variant (see `ErrorCodes`), so a set of errors is an `i32`; anything else is
-/// known by its link name.
+/// number of its variant (see `ErrorCodes`), so a set of errors is an `i32`, unless its errors
+/// carry payloads: then it is a tagged value like a payload enum's, known by its link name as
+/// anything else is.
 fn namedIrType(id: ?sema.SymbolId, link_name: []const u8) IrType {
     const scope = type_scope orelse return .{ .struct_type = link_name };
-    if (id) |sym| if (scope.layouts.get(sym)) |layout| if (layout.kind == .error_set) return .{ .i = 32 };
+    if (id) |sym| if (scope.layouts.get(sym)) |layout| switch (layout.kind) {
+        .error_set => |variants| if (!sema.errorSetHasPayloads(variants)) return .{ .i = 32 },
+        else => {},
+    };
     return .{ .struct_type = link_name };
 }
 
@@ -6159,10 +6276,12 @@ fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, written: ast.TypeRef, types
     return lowerType(allocator, ty);
 }
 
+/// The type of a function's errors, as `lowerSemaType` gives the set: the number of the
+/// variant, or a tagged value for a set whose errors carry payloads.
 fn lowerErrorSpec(allocator: std.mem.Allocator, spec: ast.ErrorSpec) !IrType {
     return switch (spec) {
-        .inferred => .{ .variant_type = "<error>" },
-        .named => |named| .{ .variant_type = named.name },
+        .inferred => .{ .i = 32 },
+        .named => |named| namedIrType(typeSymbol(named.name, named.namespace), typeLinkName(named.name, named.namespace)),
         .inline_set => |set| try lowerInlineErrorSet(allocator, set),
     };
 }

@@ -433,6 +433,13 @@ pub const ErrorVariantInfo = struct {
     payload: ?Ty,
 };
 
+/// Whether a variant of the set carries a payload. The errors of such a set are tagged values,
+/// their number and their payload; those of any other set are plain numbers (`ir.ErrorCodes`).
+pub fn errorSetHasPayloads(variants: []const ErrorVariantInfo) bool {
+    for (variants) |v| if (v.payload != null) return true;
+    return false;
+}
+
 pub const VariantValueInfo = struct {
     parent_ty: SymbolId,
     payload: ?Ty,
@@ -2989,8 +2996,11 @@ const Checker = struct {
                     try self.pushScope();
                     defer self.popScope();
                     if (iff.payload_binding) |payload_name| {
-                        try self.declareLocal(payload_name, payload_ty orelse .unknown);
-                        self.noteLocal(.{ .name = payload_name, .file = "", .kind = .case_binding, .decl = iff.span, .scope_end = iff.then_block.span.end, .ty = payload_ty orelse .unknown });
+                        // `if e == .name |p|` binds the payload of that error; an optional binds
+                        // its value.
+                        const bound_ty = payload_ty orelse try self.errorComparePayload(iff.condition, payload_name, iff.span);
+                        try self.declareLocal(payload_name, bound_ty);
+                        self.noteLocal(.{ .name = payload_name, .file = "", .kind = .case_binding, .decl = iff.span, .scope_end = iff.then_block.span.end, .ty = bound_ty });
                         try self.setLocalZoneOwner(payload_name, self.exprZoneOwner(iff.condition));
                     }
                     try self.checkBlock(iff.then_block);
@@ -3531,7 +3541,10 @@ const Checker = struct {
                     .wrap_sub => "-%",
                     .wrap_mul => "*%",
                 };
-                if (binary.op == .equal or binary.op == .not_equal) try self.checkErrorVariantOperand(binary, left, right);
+                if (binary.op == .equal or binary.op == .not_equal) {
+                    try self.checkErrorVariantOperand(binary, left, right);
+                    try self.refuseTaggedErrorEquality(binary, left, right, expr.span);
+                }
                 const result: Ty = switch (binary.op) {
                     .equal, .not_equal => if ((left.isNumeric() and right.isNumeric()) or left == .error_ty or right == .error_ty or try self.compatible(left, right) or try self.compatible(right, left)) .bool else {
                         self.emitError(expr.span, "operator `{s}` cannot be applied to types `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
@@ -4472,6 +4485,7 @@ const Checker = struct {
         const layout = self.env.layouts.get(type_id) orelse return false;
         const variants = switch (layout.kind) {
             .variant_type => |v| v,
+            .error_set => |errs| return self.coerceErrorLiteral(expr, lit[1..], type_id, errs),
             else => return false,
         };
         const variant_name = lit[1..];
@@ -4485,6 +4499,23 @@ const Checker = struct {
             return true;
         }
         return false;
+    }
+
+    /// A bare `.variant` where an error of the set `set_id` goes (`return .eof;` from `-> T ! E`
+    /// with `E` its type, `e: E = .eof`): one of the set's variants. An error of a set whose
+    /// errors carry payloads is a tagged value, built as an enum's is, with no payload.
+    fn coerceErrorLiteral(self: *Checker, expr: ast.Expr, variant_name: []const u8, set_id: SymbolId, variants: []const ErrorVariantInfo) SemanticError!bool {
+        for (variants) |v| {
+            if (!std.mem.eql(u8, v.name, variant_name)) continue;
+            try self.env.expr_types.put(expr.id, .{ .named = set_id });
+            if (errorSetHasPayloads(variants)) try self.env.enum_lits.put(expr.id, .{
+                .type_name = self.symbols.symbol(set_id).link_name,
+                .variant = variant_name,
+            });
+            return true;
+        }
+        self.emitError(expr.span, "`{s}` has no error variant `.{s}`", .{ self.symbols.symbol(set_id).name, variant_name });
+        return error.SemanticFailed;
     }
 
     /// One operand of `==` / `!=` that is a bare `.variant`, read against the enum type of
@@ -4799,6 +4830,52 @@ const Checker = struct {
         }
     }
 
+    /// The payload of `.name` in `if e == .name |p|`, which `p` binds. The error must be of a
+    /// declared set whose `.name` carries one.
+    fn errorComparePayload(self: *Checker, cond: ast.Expr, binding: []const u8, span: Span) SemanticError!Ty {
+        if (cond.kind == .binary and cond.kind.binary.op == .equal) {
+            const bin = cond.kind.binary;
+            const sides = [2]struct { variant: ast.Expr, other: ast.Expr }{
+                .{ .variant = bin.right.*, .other = bin.left.* },
+                .{ .variant = bin.left.*, .other = bin.right.* },
+            };
+            for (sides) |side| {
+                const lit = switch (side.variant.kind) {
+                    .ident => |n| n,
+                    else => continue,
+                };
+                if (lit.len < 2 or lit[0] != '.') continue;
+                const other_ty = self.env.expr_types.get(side.other.id) orelse switch (side.other.kind) {
+                    .ident => |n| self.lookupLocal(n) orelse continue,
+                    else => continue,
+                };
+                return self.errorPayloadType(other_ty, lit[1..], span);
+            }
+        }
+        self.emitError(span, "`|{s}|` binds the value of an optional, or the payload of an error compared with a variant (`if e == .name |p|`)", .{binding});
+        return error.SemanticFailed;
+    }
+
+    /// The payload of the error `.name` of the set `set_ty`, for a binding that reads it.
+    fn errorPayloadType(self: *Checker, set_ty: Ty, name: []const u8, span: Span) SemanticError!Ty {
+        if (set_ty == .error_ty) {
+            self.emitError(span, "an error of an inferred set (`!`) carries no payload: name the set (`-> T ! E`) to read `.{s}`'s", .{name});
+            return error.SemanticFailed;
+        }
+        const variants = self.errorSetVariants(set_ty) orelse {
+            self.emitError(span, "only an error has a payload to bind here, not a `{s}`", .{self.formatTy(set_ty)});
+            return error.SemanticFailed;
+        };
+        for (variants) |v| if (std.mem.eql(u8, v.name, name)) {
+            return v.payload orelse {
+                self.emitError(span, "the error `.{s}` carries no payload to bind", .{name});
+                return error.SemanticFailed;
+            };
+        };
+        self.emitError(span, "`{s}` has no error variant `.{s}`", .{ self.formatTy(set_ty), name });
+        return error.SemanticFailed;
+    }
+
     /// An arm `.name` of a match on an error: a variant of the error's set, any name for an
     /// inferred set.
     fn checkErrorMatchPattern(self: *Checker, cls: MatchClass, arm: anytype, vname: []const u8, covered: []bool) SemanticError!?ArmBind {
@@ -4816,11 +4893,19 @@ const Checker = struct {
             }
             if (!guarded) covered[index] = true;
         }
-        if (arm.binding != null) {
-            self.emitError(arm.span, "an error's payload cannot be bound in a `match` yet", .{});
+        const binding = arm.binding orelse return null;
+        if (cls.open) {
+            self.emitError(arm.span, "an error of an inferred set (`!`) carries no payload: name the set (`-> T ! E`) to read `.{s}`'s", .{vname});
             return error.SemanticFailed;
         }
-        return null;
+        for (cls.error_variants) |v| if (std.mem.eql(u8, v.name, vname)) {
+            const payload = v.payload orelse {
+                self.emitError(arm.span, "the error `.{s}` carries no payload to bind", .{vname});
+                return error.SemanticFailed;
+            };
+            return .{ .name = binding, .ty = payload };
+        };
+        unreachable; // the variant was found above
     }
 
     fn checkMatchGuard(self: *Checker, guard: ?ast.Expr) SemanticError!void {
@@ -6171,6 +6256,20 @@ const Checker = struct {
             },
             else => null,
         };
+    }
+
+    /// `a == b` on two errors of a set whose errors carry payloads: which is "equal", the same
+    /// variant or the same payload too? Neither is asked for: each is compared with a variant.
+    fn refuseTaggedErrorEquality(self: *Checker, binary: ast.BinaryExpr, left: Ty, right: Ty, span: Span) SemanticError!void {
+        for ([_]ast.Expr{ binary.left.*, binary.right.* }) |operand| switch (operand.kind) {
+            .ident => |n| if (n.len > 1 and n[0] == '.') return,
+            else => {},
+        };
+        const lv = self.errorSetVariants(left) orelse return;
+        const rv = self.errorSetVariants(right) orelse return;
+        if (!errorSetHasPayloads(lv) and !errorSetHasPayloads(rv)) return;
+        self.emitError(span, "two errors of `{s}` cannot be compared: its errors carry payloads, so compare each with a variant (`e == .name`) or `match` it", .{self.formatTy(left)});
+        return error.SemanticFailed;
     }
 
     /// `err == .variant` / `err != .variant`: the bare `.variant` has no type of its own,

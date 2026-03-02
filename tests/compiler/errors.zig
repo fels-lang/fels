@@ -34,7 +34,7 @@ test "fels errors: declarations fail propagate catch and split defer" {
         \\    return "ok";
         \\}
         \\
-        \\fetch :: fn(host: []const u8) -> []const u8 ! {
+        \\fetch :: fn(host: []const u8) -> []const u8 ! NetError {
         \\    defer.err close();
         \\    defer.ok mark_ok();
         \\    conn := connect(host, 0u32)?;

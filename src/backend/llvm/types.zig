@@ -34,14 +34,7 @@ pub fn lower(cg: *ModuleCg, ty: ir.IrType) llvm.LLVMTypeRef {
 
         // Fallible types: !T — represented as { T, i32 } where i32=0 means ok.
         // Void ok-type uses i8 placeholder (can't have void in a struct).
-        .fallible => |f| blk: {
-            const ok_lty = if (f.ok.* == .void)
-                llvm.LLVMInt8TypeInContext(ctx)
-            else
-                lower(cg, f.ok.*);
-            var fields = [_]llvm.LLVMTypeRef{ ok_lty, llvm.LLVMInt32TypeInContext(ctx) };
-            break :blk llvm.LLVMStructTypeInContext(ctx, &fields, 2, 0);
-        },
+        .fallible => |f| fallibleType(cg, f.ok.*, f.err.*),
 
         // Tagged enums lower to their registered type: `{ i32, [N x i8] }` for
         // payloaded enums (e.g. `TypeInfo`), plain `i32` for simple/error-discriminant
@@ -147,11 +140,31 @@ pub fn sretFnType(cg: *ModuleCg, param_tys: []const llvm.LLVMTypeRef) !llvm.LLVM
 /// Return the LLVM return type for a function.
 /// Fallible: { ok_lty, i32 }.  Non-fallible: lower(return_ty).
 pub fn fallibleReturnType(cg: *ModuleCg, func: ir.IrFunction) llvm.LLVMTypeRef {
-    if (func.error_ty == null) return lower(cg, func.return_ty);
-    const ok_lty = if (func.return_ty == .void)
-        llvm.LLVMInt8TypeInContext(cg.ctx) // void ok → i8 placeholder
-    else
-        lower(cg, func.return_ty);
+    const err = func.error_ty orelse return lower(cg, func.return_ty);
+    return fallibleType(cg, func.return_ty, err);
+}
+
+/// `{ ok, i32 }`: the success value (an `i8` placeholder for `void`) and the number of the error,
+/// 0 for success. A set whose errors carry payloads adds the bytes of the payload, as its tagged
+/// value holds them (`{ i32, [N x i8] }`), so `{ ok, i32, [N x i8] }`.
+pub fn fallibleType(cg: *ModuleCg, ok: ir.IrType, err: ir.IrType) llvm.LLVMTypeRef {
+    const ok_lty = if (ok == .void) llvm.LLVMInt8TypeInContext(cg.ctx) else lower(cg, ok);
+    if (errorPayloadBytes(cg, err)) |data| {
+        var fields = [_]llvm.LLVMTypeRef{ ok_lty, llvm.LLVMInt32TypeInContext(cg.ctx), data };
+        return llvm.LLVMStructTypeInContext(cg.ctx, &fields, 3, 0);
+    }
     var fields = [_]llvm.LLVMTypeRef{ ok_lty, llvm.LLVMInt32TypeInContext(cg.ctx) };
     return llvm.LLVMStructTypeInContext(cg.ctx, &fields, 2, 0);
+}
+
+/// The payload bytes of an error of `err`, a set whose errors carry payloads: the second field
+/// of its tagged value. Null for a set of plain numbers.
+pub fn errorPayloadBytes(cg: *ModuleCg, err: ir.IrType) ?llvm.LLVMTypeRef {
+    const name = switch (err) {
+        .struct_type => |n| n,
+        else => return null,
+    };
+    const meta = cg.enum_meta.get(name) orelse return null;
+    if (meta.is_simple) return null;
+    return llvm.LLVMStructGetTypeAtIndex(meta.llvm_ty, 1);
 }
