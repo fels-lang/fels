@@ -91,6 +91,7 @@ The following table lists every keyword in Fels, grouped by category.
 | `type` | Type keyword (used in generic parameters: `$T: type`) |
 | `fail` | Fail with error |
 | `catch` | Catch errors |
+| `yield` | End a `catch` handler with the value to use in place of the call's |
 
 ### Literal Keywords
 
