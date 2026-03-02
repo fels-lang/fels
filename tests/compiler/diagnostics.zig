@@ -895,6 +895,40 @@ test "diagnostics: an error is compared with a variant wherever it is" {
     try expectFirstError(a, "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> bool { return e == .c; }", &.{"`Oops` has no error variant `.c`"});
 }
 
+test "diagnostics: a constant is not written to" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `M = 3;` for `M :: 7;` compiled and did nothing; writing a field of a constant aggregate
+    // wrote read-only memory.
+    const decls =
+        \\Point :: struct { x: i32, y: i32 }
+        \\M :: 7;
+        \\ORIGIN : Point : .{ 3, 4 };
+        \\TABLE : [3]u8 : .{ 1, 2, 3 };
+        \\poke :: fn(p: *Point) { p.x = 1; }
+        \\
+    ;
+    const cases = [_]struct { body: []const u8, needle: []const u8 }{
+        .{ .body = "main :: fn() -> i32 { M = 3; return M; }", .needle = "`M` is a constant" },
+        .{ .body = "main :: fn() -> i32 { M += 1; return M; }", .needle = "`M` is a constant" },
+        .{ .body = "main :: fn() -> i32 { ORIGIN.x = 5; return 0; }", .needle = "`ORIGIN` is a constant" },
+        .{ .body = "main :: fn() -> i32 { ORIGIN = .{ 1, 2 }; return 0; }", .needle = "`ORIGIN` is a constant" },
+        .{ .body = "main :: fn() -> i32 { TABLE[1] = 9u8; return 0; }", .needle = "`TABLE` is a constant" },
+        // `&` of a constant points at read-only data.
+        .{ .body = "main :: fn() -> i32 { p := &ORIGIN; p.x = 1; return 0; }", .needle = "cannot assign to field through `*const` pointer" },
+        .{ .body = "main :: fn() -> i32 { poke(&ORIGIN); return 0; }", .needle = "expected `*Point`, found `*const Point`" },
+    };
+    for (cases) |case| {
+        const src = try std.mem.concat(a, u8, &.{ decls, case.body, "\n" });
+        try expectFirstError(a, src, &.{case.needle});
+    }
+    // A local of the name is no constant, and a write through a pointer a constant holds is
+    // allowed.
+    try expectNoError(a, decls, "main :: fn() -> i32 { M := 1; M = 3; return M; }");
+    try expectNoError(a, "Point :: struct { x: i32, y: i32 }\ng: Point = .{ 1, 2 };\nP :: &g;\n", "main :: fn() -> i32 { P.x = 5; return g.x; }");
+}
+
 test "diagnostics: an error's payload is bound where its variant carries one" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
