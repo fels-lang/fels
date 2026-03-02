@@ -279,7 +279,24 @@ pub const Parser = struct {
         // local variable. `::` is one token, so a bare `:` is unambiguous here.
         if (self.match(.colon)) {
             const ty = try self.parseType();
-            _ = try self.expect(.eq, "expected `=` in global variable declaration");
+            // `name : T : value;` — a constant with its type written, as `name :: value` is one
+            // without: read-only data (`&name` is a `*const T`), where `name: T = value` is a
+            // variable.
+            if (self.match(.colon)) {
+                const value = try self.parseExpr(0);
+                const semi = try self.expect(.semicolon, "expected ; after constant declaration");
+                return .{ .const_decl = .{
+                    .attrs = attrs,
+                    .name = name.text(self.source),
+                    .file_name = self.file_name,
+                    .source = self.source,
+                    .is_public = is_public,
+                    .value = value,
+                    .ty = ty,
+                    .span = spanFrom(name, semi),
+                } };
+            }
+            _ = try self.expect(.eq, "expected `=` in global variable declaration (or `:` for a constant)");
             const value = try self.parseExpr(0);
             const semi = try self.expect(.semicolon, "expected ; after global variable declaration");
             return .{ .const_decl = .{
