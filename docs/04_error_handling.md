@@ -152,13 +152,27 @@ result := parse("42") catch err {
 // `result` holds the success value
 ```
 
-The `catch` block receives the error value bound to the name you provide.
-The block does not produce a value; for a fallback value use `??` (below).
-When the call has a value (`result := parse("42") catch err { … }`) the block must
-leave the expression — `return`, `fail`, `break` or `continue` — and a handler that
-can run to its end is a compile error. When the `catch` is a statement of its own, or
-the call returns `void`, there is no value to produce and the handler may simply end;
-execution then carries on after the `catch`:
+The `catch` block receives the error value bound to the name you provide. When the call has a
+value (`result := parse("42") catch err { … }`), the block gives the expression one: `yield` ends
+the handler with the value to use in place of the call's, or the block leaves the expression with
+`return`, `fail`, `break` or `continue`. A handler that can run to its end is a compile error
+there:
+
+```fels
+count := parse(text) catch err {
+    log_error(err);
+    yield 0;            // `count` is 0 when parse fails
+};
+```
+
+`yield` belongs to the innermost `catch` handler. It leaves the loops inside the handler, runs the
+handler's `defer`s, and its value is checked against the call's success type, as a `return` value
+is against the function's return type. It is refused outside a handler and in a `defer` body. For
+a fallback that does not look at the error, `value ?? default` (below) is shorter.
+
+When the `catch` is a statement of its own, or the call returns `void`, there is no value to
+produce (a `yield` there is refused) and the handler may simply end; execution then carries on
+after the `catch`:
 
 ```fels
 write_all(data) catch err { failures += 1; };     // ignore the byte count; count the failure and go on
