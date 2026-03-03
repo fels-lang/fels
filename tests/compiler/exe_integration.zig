@@ -1211,6 +1211,61 @@ test "exe: an error's payload is read back, whatever its type" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_payload_kinds_o2", 2, true));
 }
 
+test "exe: a top-level #if chooses the declarations of the build" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `#if` was a statement only, so an `#extern`, a constant or a struct layout could not
+    // differ between platforms.
+    const src =
+        \\#if TARGET.os == .windows {
+        \\    SEP :: 92;
+        \\    #extern("kernel32", "GetCurrentProcessId") pid :: fn() -> u32;
+        \\    Stat :: struct { size: u64, attrs: u32 }
+        \\} else #if TARGET.os == .linux {
+        \\    SEP :: 47;
+        \\    #extern("c", "getpid") pid :: fn() -> i32;
+        \\    Stat :: struct { size: u64 }
+        \\} else {
+        \\    SEP :: 0;
+        \\}
+        \\#if TARGET.arch == .x86_64 && !TARGET.debug {
+        \\    MODE :: 2;
+        \\} else {
+        \\    #if TARGET.debug { MODE :: 1; } else { MODE :: 3; }
+        \\}
+        \\#if false {
+        \\    unused :: fn() -> i32 { f := fn(x: i32) -> i32 { return x; }; return f(1); }
+        \\}
+        \\main :: fn() -> i32 {
+        \\    s: Stat = .{};
+        \\    p := pid();
+        \\    return SEP + MODE + core::sizeof(Stat) as i32;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 92 + 1 + 16), try compileAndRunChecked(a, src, "exe_toplevel_if_debug", 0, true));
+    try std.testing.expectEqual(@as(u32, 92 + 2 + 16), try compileAndRunChecked(a, src, "exe_toplevel_if_release", 2, true));
+
+    // For Linux the other branch is the program.
+    const saved = fels.pipeline_mod.build_target.current;
+    defer fels.pipeline_mod.build_target.current = saved;
+    fels.pipeline_mod.build_target.current = .{ .os = .linux, .debug = false };
+    var fe = try fels.compile(a, "toplevel_if_linux.fels",
+        \\#if TARGET.os == .windows { SEP :: 92; } else { SEP :: 47; }
+        \\#if TARGET.os == .linux && !TARGET.debug { Stat :: struct { size: u64 } } else { Stat :: struct { size: u64, attrs: u32 } }
+        \\S :: #run SEP;
+        \\Z :: #run core::sizeof(Stat);
+    );
+    defer fe.deinit(a);
+    const module = try fels.lowerFrontend(a, fe);
+    for (module.globals) |g| {
+        if (std.mem.eql(u8, g.name, "S")) try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 47 }, g.init.imm);
+        if (std.mem.eql(u8, g.name, "Z")) try std.testing.expectEqual(fels.ir_mod.Imm{ .uint = 8 }, g.init.imm);
+    }
+}
+
 test "exe: TARGET is the platform and mode the program is built for" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
@@ -1235,9 +1290,9 @@ test "exe: TARGET is the platform and mode the program is built for" {
     try std.testing.expectEqual(@as(u32, 133), try compileAndRunChecked(arena.allocator(), src, "exe_target_release", 2, true));
 
     // A build for Linux sees Linux, wherever it is made.
-    const saved = fels.pipeline_mod.build_target;
-    defer fels.pipeline_mod.build_target = saved;
-    fels.pipeline_mod.build_target = .{ .os = .linux, .debug = false };
+    const saved = fels.pipeline_mod.build_target.current;
+    defer fels.pipeline_mod.build_target.current = saved;
+    fels.pipeline_mod.build_target.current = .{ .os = .linux, .debug = false };
     var fe = try fels.compile(arena.allocator(), "target_linux.fels",
         \\pick :: fn() -> i32 { #if TARGET.os == .linux { return 7; } else { return 9; } }
         \\P :: #run pick();

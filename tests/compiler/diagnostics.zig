@@ -895,6 +895,23 @@ test "diagnostics: an error is compared with a variant wherever it is" {
     try expectFirstError(a, "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> bool { return e == .c; }", &.{"`Oops` has no error variant `.c`"});
 }
 
+test "diagnostics: a top-level #if asks about the build only" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Decided as the file is read, before any constant has a value: "`TARGET.os` has no
+    // value `.windos`", "a top-level `#if` asks about the build: …", "expected } to close a
+    // branch of a top-level #if".
+    const bad = [_][]const u8{
+        "#if TARGET.os == .windos { X :: 1; }\nmain :: fn() -> i32 { return 0; }",
+        "N :: 3;\n#if N == 3 { X :: 1; }\nmain :: fn() -> i32 { return 0; }",
+        "#if TARGET.os == .windows { X :: 1;\nmain :: fn() -> i32 { return 0; }",
+    };
+    for (bad) |src| try std.testing.expectError(error.ParseFailed, fels.compile(a, "toplevel_if_bad.fels", src));
+    // A declaration of the branch not taken is not there.
+    try std.testing.expectError(error.SemanticFailed, fels.compile(a, "toplevel_if_dropped.fels", "#if false { X :: 1; }\nmain :: fn() -> i32 { return X; }"));
+}
+
 test "diagnostics: TARGET's fields are enums, so a misspelt platform is an error" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
