@@ -373,6 +373,20 @@ A string constant is a real `[]const u8` slice, so slice operations work on it
 directly — `GREETING.len` is `5`, `GREETING[0]` is the first byte. (More generally,
 field and index access work on any top-level constant, not just locals.)
 
+A constant can have its type written between two colons, `NAME : T : value`, as a
+variable can (`name: T = value`). Then the value takes that type, and it can be a struct
+or an array, a table the program reads but cannot change:
+
+```fels
+LIMIT  : i64      : 5000000000;
+ORIGIN : Point    : .{ 0.0, 0.0 };
+DIGITS : [10]u8   : .{ 48, 49, 50, 51, 52, 53, 54, 55, 56, 57 };
+```
+
+A constant is read-only data. Assigning to it, to one of its fields or to one of its
+elements is a compile error, and `&ORIGIN` is a `*const Point`, so nothing can write it
+through a pointer either. (A pointer a constant holds may point at something writable.)
+
 Constants can also bind functions, types, and other compile-time constructs:
 
 ```fels
@@ -404,8 +418,8 @@ bump :: fn() { counter += 1; }   // read + write from anywhere
 The initializer lives in static storage, like a C `static`: it is data in the image,
 laid out by the compiler and placed by the linker, and nothing runs at startup to
 put it there. A global's type is written explicitly; an immutable `::` constant
-infers its type from the initializer. Reads load the current value; `=` and the
-compound assignments (`+=`, …) store to it.
+infers its type from the initializer (or has it written, `NAME : T : value`). Reads load
+the current value; `=` and the compound assignments (`+=`, …) store to it.
 
 #### Static aggregates
 
