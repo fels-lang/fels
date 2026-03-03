@@ -1211,6 +1211,54 @@ test "exe: an error's payload is read back, whatever its type" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_payload_kinds_o2", 2, true));
 }
 
+test "exe: TARGET is the platform and mode the program is built for" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `TARGET.os == .x` compiled to a branch on an undefined value (every one was taken at
+    // -O0), and `core::os` named the machine of the compiler, not the build's.
+    const src =
+        \\main :: fn() -> i32 {
+        \\    r := 0;
+        \\    if TARGET.os == .linux { r += 1; }
+        \\    if TARGET.os == .windows { r += 10; }
+        \\    #if TARGET.os == .windows { r += 20; }
+        \\    #if TARGET.os == .linux { r += 2; }
+        \\    if TARGET.arch == .x86_64 { r += 100; }
+        \\    if TARGET.debug { r += 50; }
+        \\    if core::os.len == 7 { r += 3; }
+        \\    return r;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 183), try compileAndRunChecked(arena.allocator(), src, "exe_target_debug", 0, true));
+    try std.testing.expectEqual(@as(u32, 133), try compileAndRunChecked(arena.allocator(), src, "exe_target_release", 2, true));
+
+    // A build for Linux sees Linux, wherever it is made.
+    const saved = fels.pipeline_mod.build_target;
+    defer fels.pipeline_mod.build_target = saved;
+    fels.pipeline_mod.build_target = .{ .os = .linux, .debug = false };
+    var fe = try fels.compile(arena.allocator(), "target_linux.fels",
+        \\pick :: fn() -> i32 { #if TARGET.os == .linux { return 7; } else { return 9; } }
+        \\P :: #run pick();
+        \\OS :: #run core::os.len;
+    );
+    defer fe.deinit(arena.allocator());
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    var found: u32 = 0;
+    for (module.globals) |g| {
+        if (std.mem.eql(u8, g.name, "P")) {
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 7 }, g.init.imm);
+            found += 1;
+        }
+        if (std.mem.eql(u8, g.name, "OS")) {
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .uint = 5 }, g.init.imm);
+            found += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 2), found);
+}
+
 test "exe: a constant with its type written is read-only data" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

@@ -3218,8 +3218,6 @@ const Checker = struct {
     fn inferExpr(self: *Checker, expr: ast.Expr) SemanticError!Ty {
         const ty: Ty = switch (expr.kind) {
             .ident => |name| {
-                // Compile-time pseudo-modules return unknown so field access works.
-                if (std.mem.eql(u8, name, "TARGET")) return .unknown;
                 // A local named like a builtin (`any`, `narrow`) is the local.
                 if (self.lookupLocal(name)) |local_ty| return local_ty;
                 if (isBuiltinValue(name)) return .void;
@@ -7987,8 +7985,6 @@ pub fn isBuiltinValue(name: []const u8) bool {
            "typeid_of",      "any",
         // Compile-time program introspection (Phase 3 message loop)
         "compiler_decls", "__str_cat", "compiler_error", "compiler_remove",
-        // Compile-time pseudo-modules
-        "TARGET",
     }) |builtin| {
         if (std.mem.eql(u8, name, builtin)) return true;
     }

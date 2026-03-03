@@ -3413,8 +3413,9 @@ const FunctionLowerer = struct {
                     if (eq(u8, m, "file")) break :blk astStr(self.file_name);
                     if (eq(u8, m, "func")) break :blk astStr(self.fn_name);
                     if (eq(u8, m, "module")) break :blk astStr(moduleNameOf(self.file_name));
-                    if (eq(u8, m, "os")) break :blk astStr(@tagName(@import("builtin").os.tag));
-                    if (eq(u8, m, "arch")) break :blk astStr(@tagName(@import("builtin").cpu.arch));
+                    // The platform the program is built for, as `TARGET` says.
+                    if (eq(u8, m, "os")) break :blk astStr(pipeline.build_target.osName());
+                    if (eq(u8, m, "arch")) break :blk astStr(pipeline.build_target.archName());
                     const lc = expr.span.line_col(self.source);
                     if (eq(u8, m, "line")) break :blk Value{ .imm = .{ .int = @intCast(lc.line) } };
                     if (eq(u8, m, "column")) break :blk Value{ .imm = .{ .int = @intCast(lc.col) } };
