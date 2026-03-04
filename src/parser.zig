@@ -1035,7 +1035,16 @@ pub const Parser = struct {
             const start = self.previous();
             const cond = try self.parseExpr(0);
             const then_block = try self.parseBlock();
-            const else_block = if (self.match(.keyword_else)) try self.parseBlock() else null;
+            // `else #if cond { … }`: the next test of the chain, as a block of its own.
+            const else_block: ?ast.Block = if (!self.match(.keyword_else))
+                null
+            else if (self.check(.hash) and self.peekKind(1) == .keyword_if) blk: {
+                const next_hash = self.advance();
+                const nested = try self.parseComptimeDirective(next_hash);
+                const stmts = try self.allocator.alloc(ast.Stmt, 1);
+                stmts[0] = nested;
+                break :blk .{ .statements = stmts, .span = nested.comptime_if.span };
+            } else try self.parseBlock();
             const end = if (else_block) |b| b.span else then_block.span;
             return .{ .comptime_if = .{
                 .condition = cond,
