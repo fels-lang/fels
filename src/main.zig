@@ -341,7 +341,7 @@ pub fn main(init: std.process.Init) u8 {
     defer allocator.free(source);
 
     if (std.mem.eql(u8, cmd, "check")) return cmdCheck(allocator, io, src_path, source);
-    if (std.mem.eql(u8, cmd, "ir")) return cmdIr(allocator, io, src_path, source);
+    if (std.mem.eql(u8, cmd, "ir")) return cmdIr(allocator, io, src_path, source, &opts);
     if (std.mem.eql(u8, cmd, "object")) {
         const out = opts.out_path orelse deriveOut(allocator, src_path, ".o");
         defer if (opts.out_path == null) allocator.free(out);
@@ -491,15 +491,21 @@ fn cmdCheck(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
     return 0;
 }
 
-fn cmdIr(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8) u8 {
+/// The LLVM IR of a file, for the target and optimisation level a build of it would have.
+fn cmdIr(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8, opts: *Options) u8 {
     if (!fels.llvm_enabled) return noLlvm();
-    var fe = fels.compileFileWithRuntime(allocator, io, path) catch return 1;
+    const saved_target = fels.pipeline_mod.build_target.current;
+    fels.pipeline_mod.build_target.current = .{ .os = opts.target_os, .debug = opts.opt_level == 0 };
+    defer fels.pipeline_mod.build_target.current = saved_target;
+    var fe = fels.pipeline_mod.compileFileWithRuntimeTarget(allocator, io, path, opts.target_os, opts.link_libc) catch return 1;
     defer fe.deinit(allocator);
     printDiags(allocator, fe.diagnostics(), path, source);
     var module = fels.lowerFrontend(allocator, fe) catch return 1;
     fels.ir_mod.runDefaultPasses(allocator, &module) catch return 1;
     var be = fels.LlvmBackend.init(allocator, "sk");
     defer be.deinit();
+    be.setTarget(opts.target_os);
+    be.setSafety(opts.safety);
     be.lower(module) catch return 1;
     const text = be.getIrText(allocator) catch return 1;
     defer allocator.free(text);
