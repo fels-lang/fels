@@ -65,9 +65,9 @@ Key implementation notes / gotchas:
   statement separator). A literal `$` in an LLVM asm string is an operand
   reference, so AT&T immediates are escaped as `$$-16` / `$$60`. Integer asm
   args are coerced to `i64` to match the asm function type.
-- **The platform allocator is a runtime seam, not `#if`.** fels has no conditional
-  compilation, so `std.heap` stays OS-agnostic and the *runtime* (selected per
-  target) provides `os_*`. The runtime-free `compile` path injects a host shim
+- **The platform allocator is a runtime seam, not `#if`.** `std.heap` stays OS-agnostic
+  and the *runtime* (selected per target) provides `os_*`, so the standard library has
+  no platform branches of its own (a program can still use a top-level `#if`). The runtime-free `compile` path injects a host shim
   so the prelude still type-checks (`pipeline.prependHeapPrelude`).
 
 ## 1. What is already portable
