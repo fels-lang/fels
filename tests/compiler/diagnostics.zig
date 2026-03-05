@@ -895,6 +895,14 @@ test "diagnostics: an error is compared with a variant wherever it is" {
     try expectFirstError(a, "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> bool { return e == .c; }", &.{"`Oops` has no error variant `.c`"});
 }
 
+test "diagnostics: a match pattern must fit the subject's type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFirstError(a, "f :: fn(c: u8) -> i32 { match c { -1 => { return 1; }, else => { return 0; } } }\nmain :: fn() -> i32 { return 0; }", &.{"integer literal `-1` does not fit in `u8`"});
+    try expectNoError(a, "", "f :: fn(c: u8) -> i32 { match c { 'a', 'b' => { return 1; }, else => { return 0; } } }\nmain :: fn() -> i32 { return 0; }");
+}
+
 test "diagnostics: a top-level #if asks about the build only" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
