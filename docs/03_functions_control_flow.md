@@ -559,17 +559,14 @@ return match code { 0 => 200, 1, 2, 3 => 400, else => 500 };
 
 > [!NOTE]
 > **Patterns**: enum variants (`.name`, optionally with a `|payload|` capture),
-> integer values (single or grouped `1, 2, 3`), integer **ranges** (`1..5`
-> exclusive, `1..=5` inclusive), **string** literals (single or grouped), a bare
-> **name** (binds the subject — a catch-all), and `else`. Any arm may carry a
+> integer values (single or grouped `1, 2, 3`, negative `-1`, or characters `'a'`),
+> integer **ranges** (`1..5` exclusive, `'a'..='z'` inclusive), values and ranges
+> mixed in one arm (`'0'..='9', '_'`), **string** literals (single or grouped), a
+> bare **name** (binds the subject — a catch-all), and `else`. Any arm may carry a
 > **guard** `if <bool>` (evaluated after the binding; a failing guard falls
 > through to the next arm). A guarded arm does not count toward exhaustiveness.
 > String compares are length-gated, so a shorter subject is never read out of
 > bounds.
->
-> Character literals and negative numbers are not patterns (`'a' =>` and `-1 =>`
-> are errors). Match the code instead (`97 =>` for `'a'`) or bind a name and use
-> a guard: `k if k == -1 => ...`.
 
 ### Break and Continue
 
