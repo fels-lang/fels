@@ -1211,6 +1211,41 @@ test "exe: an error's payload is read back, whatever its type" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_payload_kinds_o2", 2, true));
 }
 
+test "exe: core::has_padding says whether a type has bytes no value sets" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\Tight :: struct { a: u32, b: u32 }
+        \\Gap :: struct { a: u8, b: u32 }
+        \\Tail :: struct { a: u32, b: u8 }
+        \\Nested :: struct { t: Tight, g: Gap }
+        \\#packed
+        \\Packed :: struct { a: u8, b: u32 }
+        \\Color :: enum { red, green }
+        \\Shape :: enum { dot, circle: f64 }
+        \\WithEnum :: struct { c: Color, n: i32 }
+        \\code :: fn() -> i32 {
+        \\    r := 0;
+        \\    if !core::has_padding(Tight) { r += 1; }
+        \\    if core::has_padding(Gap) { r += 2; }
+        \\    if core::has_padding(Tail) { r += 4; }
+        \\    if core::has_padding(Nested) { r += 8; }
+        \\    if !core::has_padding(Packed) { r += 16; }
+        \\    if !core::has_padding(WithEnum) { r += 32; }
+        \\    if core::has_padding(Shape) { r += 64; }
+        \\    if core::has_padding(?i32) { r += 128; }
+        \\    if !core::has_padding([4]u16) { r += 256; }
+        \\    if !core::has_padding(*Gap) { r += 512; }
+        \\    return r;
+        \\}
+        \\X :: #run code();
+        \\main :: fn() -> i32 { if code() != 1023 { return code() / 4; } if X != 1023 { return 1; } return 42; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_has_padding", 0, true));
+}
+
 test "exe: negative numbers and characters are match patterns" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
