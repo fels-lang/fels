@@ -895,6 +895,21 @@ test "diagnostics: an error is compared with a variant wherever it is" {
     try expectFirstError(a, "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> bool { return e == .c; }", &.{"`Oops` has no error variant `.c`"});
 }
 
+test "diagnostics: a type parameter left out must be inferable" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const decls =
+        \\make :: fn($T: type) -> T { r: T = 5; return r; }
+        \\both :: fn($T: type, $U: Numeric, a: T, b: U) -> i64 { return (a as i64) + (b as i64); }
+        \\
+    ;
+    try expectFirstError(a, decls ++ "main :: fn() -> i32 { x: i32 = make(); return x; }", &.{"`make` cannot infer its type parameter `T` from these arguments: pass the type arguments first"});
+    // Neither the values alone, nor with the `$T: type` ones, nor with all type arguments.
+    try expectFirstError(a, decls ++ "main :: fn() -> i32 { return both(i32, u8, 9, 1, 2u8) as i32; }", &.{"`both` expects 3 argument(s), but 5 were provided"});
+    try expectNoError(a, decls, "main :: fn() -> i32 { return both(1, 2u8) as i32 + both(i32, 1, 2u8) as i32 + both(i32, u8, 1, 2u8) as i32; }");
+}
+
 test "diagnostics: a match pattern must fit the subject's type" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
