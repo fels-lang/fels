@@ -2576,11 +2576,15 @@ const Checker = struct {
         const saved_tp = self.current_type_params;
         const saved_op = self.current_output_params;
         const saved_bind = self.current_type_binding;
+        // The body names what its own module declares, wherever the constraint is used.
+        const saved_file = self.file;
         defer {
             self.current_type_params = saved_tp;
             self.current_output_params = saved_op;
             self.current_type_binding = saved_bind;
+            self.file = saved_file;
         }
+        self.file = decl.file_name;
         self.current_type_params = decl.type_params;
         self.current_output_params = &.{};
         self.current_type_binding = &bargs;

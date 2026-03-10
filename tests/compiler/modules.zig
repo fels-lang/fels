@@ -394,6 +394,29 @@ test "modules: public constants and types respect visibility" {
     defer fe.deinit(arena.allocator());
 }
 
+test "modules: a constraint names what its own module declares" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The body of a constraint was type-checked in the file of the call it was used for, so a
+    // helper of its own module was an unknown function there.
+    const keys_src =
+        \\whole :: fn(ti: TypeInfo) -> bool { match ti { .int => { return true; }, else => { return false; } } }
+        \\Whole :: constraint($K) { if !whole(core::type_info(K)) { core::reject("not an integer"); } }
+        \\pub take :: fn($K: Whole, k: K) -> i32 { return 1; }
+    ;
+    var fe = try fels.compileMulti(a, &.{
+        .{ .file_name = "keys.fels", .source = keys_src },
+        .{ .file_name = "main.fels", .source = "#import keys;\nrun :: fn() -> i32 { return keys::take(5); }" },
+    });
+    defer fe.deinit(a);
+    try std.testing.expectError(error.SemanticFailed, fels.compileMulti(a, &.{
+        .{ .file_name = "keys.fels", .source = keys_src },
+        .{ .file_name = "main.fels", .source = "#import keys;\nrun :: fn() -> i32 { return keys::take(1.5); }" },
+    }));
+}
+
 test "modules: compileFile resolves local imports from disk" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
