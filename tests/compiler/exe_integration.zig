@@ -1211,6 +1211,20 @@ test "exe: an error's payload is read back, whatever its type" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_payload_kinds_o2", 2, true));
 }
 
+test "exe: a warning does not stop the build" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A call of a `#deprecated` function warned and then failed the build: any diagnostic did.
+    const src =
+        \\#deprecated("use g")
+        \\f :: fn() -> i32 { return 40; }
+        \\main :: fn() -> i32 { return f() + 2; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_warning_builds", 0, true));
+}
+
 test "exe: a type argument is given or inferred, whichever the parameter is" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

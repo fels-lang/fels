@@ -486,7 +486,7 @@ fn cmdCheck(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
     };
     defer fe.deinit(allocator);
     printDiags(allocator, fe.diagnostics(), path, source);
-    if (fe.diagnostics().len != 0) return 1;
+    if (fels.diagnostic_mod.Diagnostic.anyError(fe.diagnostics())) return 1;
     std.debug.print("ok — no errors\n", .{});
     return 0;
 }
