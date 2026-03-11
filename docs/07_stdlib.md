@@ -688,7 +688,7 @@ Open-addressed (linear-probing) hash maps, also region-bound.
 ```fels
 #import std.map as map;
 
-m := map::auto(i32, i32, &a);       // keys: ANY value type
+m := map::auto(i32, i32, &a);       // keys: a value type whose bytes are its value
 m.put(7, 100); m.put(7, 101);       // overwrite → still one entry
 if m.get(7) |v| { ... }             // v == 101 ; get returns ?V
 m.contains(7); m.remove(7);
@@ -698,18 +698,22 @@ sm.put("alpha", 1);
 sm.get("alpha");                    // hashes + compares the string bytes
 ```
 
-- **`AutoHashMap(K, V)`** keys *any value type* — no `Hash`/`Eq` impl, no derive,
-  no context object. The map hashes the key's **raw bytes** and compares them
-  byte-for-byte. Ideal for integers, enums, points, small POD structs. It is *not*
-  for keys containing pointers/slices (a string, a `Vec`) or structs with
-  uninitialised padding — use `StrMap` or a hand-rolled map there.
+- **`AutoHashMap(K, V)`** keys a value type whose bytes are its value — no
+  `Hash`/`Eq` impl, no derive, no context object. The map hashes the key's **raw
+  bytes** and compares them byte-for-byte: integers, plain enums, pointers, and
+  structs and arrays of those without padding. The key type must satisfy the
+  `map::ByteKey` constraint, so a key that cannot be compared that way is a compile
+  error saying why: a float (`-0.0` and `0.0` are equal and differ in their bytes, a
+  NaN equals nothing), a slice (a string compares its address, not its contents — key
+  strings with `StrMap`), or a type with bytes no value sets (padding, an optional's
+  flag, an enum payload; see `core::has_padding`).
 - **`StrMap(V)`** keys `[]const u8`, hashing and comparing the string **contents**
   (and copying each key into the region so the map owns its keys).
 - Both: `put`, `get` (→ `?V`), `contains`, `remove`, `clear`, `len`, `cap`, `is_empty`.
 
 > fels's hashing identity: a struct that `#derive(Hash, Eq)`s gets `hash()`/`eq()` for
 > free — but `AutoHashMap` doesn't even need that, because byte-hashing covers every
-> POD key with zero ceremony. Drop a value in and it's a key.
+> key whose bytes are its value with zero ceremony, and the compiler refuses the others.
 
 ## General-purpose modules
 
