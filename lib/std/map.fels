@@ -11,8 +11,8 @@
 //   m := map::auto(i32, i32, &a);
 //   m.put(7, 100); m.put(7, 101);   // overwrites → one entry; m.get(7) is 101
 //
-// Caveat: AutoHashMap only suits keys whose identity IS their bytes. Don't use it for
-// keys holding pointers/slices (e.g. strings) or structs with padding — use StrMap.
+// AutoHashMap takes only keys whose bytes are their value (`ByteKey`): a float, a slice or a
+// type with padding is refused when the map type is made. Key strings with StrMap.
 
 #import std.heap.{ Arena, alloc, dupe };
 
@@ -39,8 +39,35 @@ eq_bytes :: fn(a: *const u8, b: *const u8, n: usize) -> bool {
     return true;
 }
 
+// A key AutoHashMap can hash and compare by its bytes: one whose bytes are its value. No
+// float (`-0.0` and `0.0` are equal and differ in their bytes, a NaN is equal to nothing), no
+// slice (it would compare an address and a length, not the contents), and no bytes that no
+// value sets (padding, an optional's flag, the bytes a smaller enum payload leaves), which
+// differ between equal keys.
+pub ByteKey :: constraint($K) {
+    if core::has_padding(K) { core::reject("it has bytes no value sets (padding, an optional's flag or an enum payload), which differ between equal keys"); }
+    why := byte_key_problem(core::type_info(K));
+    if why.len != 0 { core::reject(why); }
+}
+
+byte_key_problem :: fn(ti: TypeInfo) -> []const u8 {
+    match ti {
+        .float => { return "a float key is compared by its bytes, where `-0.0` and `0.0` differ and a NaN equals nothing"; },
+        .slice => { return "a slice key is compared by its address and length, not its contents: key strings with `StrMap`"; },
+        .array |a| => { return byte_key_problem(*a.elem); },
+        .struct_ |st| => {
+            for f in st.fields {
+                why := byte_key_problem(*f.ty);
+                if why.len != 0 { return why; }
+            }
+            return "";
+        },
+        else => { return ""; },
+    }
+}
+
 // AutoHashMap(K, V) — byte-hashed, any value-type key
-pub AutoHashMap :: struct($K: type, $V: type) {
+pub AutoHashMap :: struct($K: ByteKey, $V: type) {
     region: *Arena,
     states: []u8,
     keys:   []K,
@@ -169,7 +196,7 @@ pub AutoHashMap :: struct($K: type, $V: type) {
 }
 
 // A fresh empty `AutoHashMap` bound to region `a`.
-pub auto :: fn($K: type, $V: type, a: *Arena) -> AutoHashMap(K, V) {
+pub auto :: fn($K: ByteKey, $V: type, a: *Arena) -> AutoHashMap(K, V) {
     states: []u8 = alloc(u8, a, INIT_CAP);
     i: usize = 0;
     while i < INIT_CAP { states[i] = EMPTY; i += 1; }
