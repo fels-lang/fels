@@ -1273,6 +1273,23 @@ test "exe: fail e passes an error on, payload and all" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_fail_value_o2", 2, true));
 }
 
+test "exe: a generic instance takes an instance as its argument" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `Pair(Pair(i32))` lowered as the template `Pair` (fields of pointers), so a field of it crashed
+    // the code generator and the comptime VM could not run it.
+    const src =
+        \\Pair :: struct($T: type) { a: T, b: T }
+        \\calc :: fn() -> i32 { x: Pair(i32) = .{ 3, 4 }; n: Pair(Pair(i32)) = .{ .{ 1, 2 }, .{ 3, 4 } }; return x.a + n.b.a; }
+        \\X :: #run calc();
+        \\main :: fn() -> i32 { if calc() != 6 { return 1; } if X != 6 { return 2; } return 42; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_nested_instance", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_nested_instance_o2", 2, true));
+}
+
 test "exe: a warning does not stop the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

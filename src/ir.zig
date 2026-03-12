@@ -6165,6 +6165,12 @@ fn appendGenericArgMangle(
             try buf.appendSlice(allocator, "slice_");
             try appendGenericArgMangle(allocator, buf, s.inner.*, binding, types, symbols);
         },
+        // An instance as the argument (`Pair(Pair(i32))`): the instance's own name, as sema
+        // gives it.
+        .generic_inst => |inner| {
+            const name = try mangleGenericInst(allocator, inner, binding, types, symbols) orelse return error.UnsupportedGenericArg;
+            try buf.appendSlice(allocator, name);
+        },
         else => return error.UnsupportedGenericArg,
     }
 }
