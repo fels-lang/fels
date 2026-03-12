@@ -675,6 +675,9 @@ Node  :: struct { v: i32 }
 Point :: Node;          // an alias of a struct (declared before or after `Node`)
 Money :: Real;          // an alias of an alias
 
+Pair    :: struct($T: type) { a: T, b: T }
+IntPair :: Pair(i32);   // an alias of a generic type's instance
+
 LIMIT :: 8;
 MAX   :: LIMIT;         // names a constant, so a constant — not an alias
 ```
@@ -683,10 +686,9 @@ An alias is accepted wherever its type can be written: annotations, parameters,
 returns, fields, pointers, slices, casts, generic type arguments and `core::sizeof`. A
 `pub` alias can be imported without importing the type it names.
 
-Two things are not supported yet. A generic instantiation on the right-hand side
-(`IntPair :: Pair(i32);`) is not an alias, and an alias cannot stand where the type's
-*name* is used as a path rather than written as a type — `Point::new(…)`, `Color.red`
-through an enum alias, `Point as Shape { … }`, `! ErrorAlias`. Use the original name there.
+An alias cannot stand yet where the type's *name* is used as a path rather than written
+as a type — `Point::new(…)`, `Color.red` through an enum alias, `Point as Shape { … }`,
+`! ErrorAlias`. Use the original name there.
 
 The standard library uses aliases for C ABI types — see [`std.c`](11_c_interop.md):
 
