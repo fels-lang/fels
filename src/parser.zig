@@ -1817,22 +1817,26 @@ pub const Parser = struct {
     fn parseFail(self: *Parser, start: Token) ParseError!ast.FailStmt {
         _ = try self.expect(.dot, "expected .variant after fail");
         const variant = try self.expect(.ident, "expected error variant after fail .");
+        // The payload in parentheses, as an enum variant is built (`Shape.circle(r)`), or in
+        // braces, as it was written before.
         var payload: []const ast.Expr = &.{};
-        if (self.match(.l_brace)) {
+        const brace = self.check(.l_brace);
+        if (self.match(.l_paren) or self.match(.l_brace)) {
+            const close: TokenKind = if (brace) .r_brace else .r_paren;
             var values: std.ArrayList(ast.Expr) = .empty;
             errdefer values.deinit(self.allocator);
-            if (!self.check(.r_brace)) {
+            if (!self.check(close)) {
                 while (true) {
                     try values.append(self.allocator, try self.parseExpr(0));
                     if (!self.match(.comma)) break;
-                    if (self.check(.r_brace)) break;
+                    if (self.check(close)) break;
                 }
             }
-            _ = try self.expect(.r_brace, "expected } after error payload");
+            _ = try self.expect(close, if (brace) "expected } after error payload" else "expected ) after error payload");
             payload = try values.toOwnedSlice(self.allocator);
         }
         const semi = try self.expect(.semicolon, "expected ; after fail");
-        return .{ .variant = variant.text(self.source), .payload = payload, .span = spanFrom(start, semi) };
+        return .{ .variant = variant.text(self.source), .payload = payload, .brace_payload = brace, .span = spanFrom(start, semi) };
     }
 
     fn parseZoneBlock(self: *Parser, start: Token) ParseError!ast.ZoneBlock {

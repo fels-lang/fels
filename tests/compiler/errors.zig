@@ -22,7 +22,7 @@ test "fels errors: declarations fail propagate catch and split defer" {
         \\
         \\connect :: fn(host: []const u8, mode: u32) -> Socket ! NetError {
         \\    if mode == 1u32 {
-        \\        fail .dns_failed { host };
+        \\        fail .dns_failed(host);
         \\    }
         \\    if mode == 2u32 {
         \\        fail .timeout;
@@ -96,7 +96,7 @@ test "fels errors: fail payload type is checked" {
     const bad =
         \\NetError :: errors { http: u16, }
         \\bad :: fn() -> u32 ! NetError {
-        \\    fail .http { "nope" };
+        \\    fail .http("nope");
         \\}
     ;
 

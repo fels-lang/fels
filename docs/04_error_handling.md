@@ -72,7 +72,7 @@ validate :: fn(input: []const u8) -> bool ! ParseError {
         fail .invalid_input;
     }
     if input.len > 1000 {
-        fail .overflow { input.len as i64 };  // with payload
+        fail .overflow(input.len as i64);  // with payload
     }
     return true;
 }
@@ -80,7 +80,9 @@ validate :: fn(input: []const u8) -> bool ! ParseError {
 
 `fail .variant` is only allowed inside functions with a `!` error return type.
 The variant must exist in the function's declared error type, and any payload
-must match the variant's declared payload type.
+must match the variant's declared payload type. The payload goes in parentheses, as an
+enum variant's does (`Shape.circle(r)`); the older `fail .overflow { n }` still compiles,
+with a warning.
 
 ## Error Propagation with `?`
 
@@ -234,7 +236,7 @@ with `==`. An error cannot be cast to an integer.
 ### Reading a payload
 
 A variant declared with a payload (`overflow: i64`) carries a value of that type, given with
-`fail .overflow { n }`. A `match` arm binds it, and so does `if err == .variant |name|`:
+`fail .overflow(n)`. A `match` arm binds it, and so does `if err == .variant |name|`:
 
 ```fels
 describe :: fn(e: ParseError) -> i64 {
@@ -380,7 +382,7 @@ message.
 |--------|---------|
 | `-> T ! E` | Function returns `T` on success, `E` on error |
 | `fail .variant` | Return an error |
-| `fail .variant { payload }` | Return an error with payload |
+| `fail .variant(payload)` | Return an error with payload |
 | `expr?` | Propagate error, unwrap success |
 | `expr catch err { ... }` | Handle error locally |
 | `yield value;` | End a `catch` handler with the value of the expression |

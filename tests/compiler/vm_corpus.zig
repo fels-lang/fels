@@ -107,7 +107,7 @@ test "vm corpus: wide #run coverage" {
         \\forsum :: fn() -> i32 { arr: [3]i32 = .{ 4, 5, 6 }; total := 0; for x in arr { total = total + x; } return total; }
         \\frange :: fn() -> i32 { total := 0; for i in 0..5 { total = total + i; } return total; }
         \\EP :: errors { code: i32 }
-        \\fp :: fn(x: i32) -> i32 ! EP { if x < 0 { fail .code { 77 }; } return x; }
+        \\fp :: fn(x: i32) -> i32 ! EP { if x < 0 { fail .code(77); } return x; }
         \\gp :: fn() -> i32 { return fp(-1) catch e { if e == .code |c| { return c; } return -1; }; }
         \\
         \\// ── const #run cases ──

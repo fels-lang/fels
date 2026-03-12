@@ -1035,7 +1035,7 @@ test "exe: error payload recovered via catch binding" {
     defer arena.deinit();
     const code = try compileAndRun(arena.allocator(),
         \\EP :: errors { code: i32 }
-        \\risky :: fn(x: i32) -> i32 ! EP { if x < 0 { fail .code { 77 }; } return x; }
+        \\risky :: fn(x: i32) -> i32 ! EP { if x < 0 { fail .code(77); } return x; }
         \\main :: fn() -> i32 {
         \\    return risky(-1) catch e {
         \\        if e == .code |c| { return c; }
@@ -1163,10 +1163,10 @@ test "exe: an error's payload is read back, whatever its type" {
         \\ParseError :: errors { empty, overflow: i64, bad_char: u8, at: Pos, name: []const u8 }
         \\parse :: fn(k: i32) -> i32 ! ParseError {
         \\    if k == 0 { fail .empty; }
-        \\    if k == 1 { fail .overflow { 5000000000i64 }; }
-        \\    if k == 2 { fail .bad_char { 33u8 }; }
-        \\    if k == 3 { fail .at { .{ 7, 9 } }; }
-        \\    if k == 4 { fail .name { "bogus" }; }
+        \\    if k == 1 { fail .overflow(5000000000i64); }
+        \\    if k == 2 { fail .bad_char(33u8); }
+        \\    if k == 3 { fail .at(.{ 7, 9 }); }
+        \\    if k == 4 { fail .name("bogus"); }
         \\    return k * 10;
         \\}
         \\twice :: fn(k: i32) -> i32 ! ParseError { v := parse(k)?; return v * 2; }
@@ -1471,7 +1471,7 @@ test "exe: a global holds an error of a set with payloads" {
         \\ParseError :: errors { invalid_input, overflow: i64, buffer_full }
         \\last_error: ParseError = .invalid_input;
         \\first: ParseError = .buffer_full;
-        \\parse :: fn(k: i32) -> i32 ! ParseError { if k == 1 { fail .overflow { 12i64 }; } fail .buffer_full; }
+        \\parse :: fn(k: i32) -> i32 ! ParseError { if k == 1 { fail .overflow(12i64); } fail .buffer_full; }
         \\size :: fn(e: ParseError) -> i64 { return match e { .overflow |n| => n, .invalid_input => 100i64, .buffer_full => 1000i64 }; }
         \\FIRST :: #run size(first);
         \\main :: fn() -> i32 {
@@ -1498,12 +1498,12 @@ test "exe: errors with payloads through void, large, generic and forwarding func
     const src =
         \\PE :: errors { plain, big: i64, word: []const u8 }
         \\Holder :: struct { tag: i32, err: PE }
-        \\nothing :: fn(k: i32) -> void ! PE { if k == 1 { fail .big { 77i64 }; } if k == 2 { fail .plain; } }
-        \\wide :: fn(k: i32) -> [40]i64 ! PE { if k == 1 { fail .word { "abc" }; } r: [40]i64 = .{}; r[39] = 5i64; return r; }
-        \\inner :: fn(k: i32) -> i32 ! PE { if k == 1 { fail .big { 9i64 }; } return k; }
+        \\nothing :: fn(k: i32) -> void ! PE { if k == 1 { fail .big(77i64); } if k == 2 { fail .plain; } }
+        \\wide :: fn(k: i32) -> [40]i64 ! PE { if k == 1 { fail .word("abc"); } r: [40]i64 = .{}; r[39] = 5i64; return r; }
+        \\inner :: fn(k: i32) -> i32 ! PE { if k == 1 { fail .big(9i64); } return k; }
         \\forward :: fn(k: i32) -> i32 ! PE { return inner(k); }
         \\forward_loose :: fn(k: i32) -> i32 ! { return inner(k); }
-        \\gen :: fn($T: type, x: T, k: i32) -> T ! PE { if k == 1 { fail .big { 123i64 }; } return x; }
+        \\gen :: fn($T: type, x: T, k: i32) -> T ! PE { if k == 1 { fail .big(123i64); } return x; }
         \\make :: fn(k: i32) -> PE { if k == 0 { return .plain; } return .plain; }
         \\big_of :: fn(e: PE) -> i64 { match e { .big |n| => { return n; }, else => { return -1i64; } } }
         \\main :: fn() -> i32 {

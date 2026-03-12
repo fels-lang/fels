@@ -540,8 +540,8 @@ test "e2e: #run reads an error's payload" {
     const src =
         \\PE :: errors { plain, big: i64, word: []const u8 }
         \\Holder :: struct { tag: i32, err: PE }
-        \\nothing :: fn(k: i32) -> void ! PE { if k == 1 { fail .big { 77i64 }; } }
-        \\inner :: fn(k: i32) -> i32 ! PE { if k == 1 { fail .word { "abcd" }; } if k == 2 { fail .big { 9i64 }; } return k; }
+        \\nothing :: fn(k: i32) -> void ! PE { if k == 1 { fail .big(77i64); } }
+        \\inner :: fn(k: i32) -> i32 ! PE { if k == 1 { fail .word("abcd"); } if k == 2 { fail .big(9i64); } return k; }
         \\twice :: fn(k: i32) -> i32 ! PE { v := inner(k)?; return v * 2; }
         \\size :: fn(e: PE) -> i64 { return match e { .big |n| => n, .word |s| => s.len as i64, .plain => 0i64 }; }
         \\calc :: fn() -> i64 {

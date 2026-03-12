@@ -36,8 +36,8 @@ raise_third :: fn(k: i32) -> i32 ! Third {
 
 raise_payload :: fn(k: i32) -> i32 ! Payload {
     if k == 1 { fail .plain; }
-    if k == 2 { fail .code { 77 }; }
-    if k == 3 { fail .big { 123456789012 }; }
+    if k == 2 { fail .code(77); }
+    if k == 3 { fail .big(123456789012); }
     if k == 4 { fail .tail; }
     return 100 + k;
 }
