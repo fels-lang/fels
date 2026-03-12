@@ -735,16 +735,70 @@ test "modules: an imported constant naming a constant stays a constant" {
     try std.testing.expectEqual(@as(usize, 2), found);
 }
 
-test "modules: two modules declaring the same alias name collide, as two types do" {
+test "modules: two modules may each declare an alias of a name, as two types may" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // A same-named constant in two modules is mangled apart, but a type (and so an alias)
-    // keeps its bare name — `real :: f32;` is a type, so this is a duplicate declaration.
-    try std.testing.expectError(error.SemanticFailed, fels.compileMulti(arena.allocator(), &.{
+    // An alias kept its bare name for the IR to find it by, so two of one name were a
+    // duplicate declaration; it is now lowered as what it stands for.
+    var fe = try fels.compileMulti(arena.allocator(), &.{
         .{ .file_name = "a.fels", .source = "pub real :: f32;" },
-        .{ .file_name = "b.fels", .source = "pub real :: f32;" },
-        .{ .file_name = "main.fels", .source = "#import a;\n#import b;\nrun :: fn() -> i32 { x: a::real = 1.5; return 0; }" },
-    }));
+        .{ .file_name = "b.fels", .source = "pub real :: f64;" },
+        .{ .file_name = "main.fels", .source = "#import a;\n#import b;\nrun :: fn() -> i32 { x: a::real = 1.5; y: b::real = 2.5; return (x as f64 + y) as i32; }" },
+    });
+    defer fe.deinit(arena.allocator());
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
+}
+
+test "modules: a pub alias re-exports a type of another module" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `std.net` had to say "import a submodule for its types": an alias of the same name was a
+    // duplicate declaration, `! ErrorAlias` was "not an error type", and `alias::Type::fn`,
+    // `alias::Enum.variant` did not resolve.
+    const inner =
+        \\pub Stream :: struct { fd: i32
+        \\    pub open :: fn(fd: i32) -> Stream { return .{ fd }; }
+        \\    pub id :: fn(self: *Self) -> i32 { return self.fd; }
+        \\}
+        \\pub Kind :: enum { tcp, udp }
+        \\pub NetError :: errors { refused, reset: i32 }
+        \\pub dial :: fn(fd: i32) -> Stream ! NetError { if fd < 0 { fail .reset(fd); } return .{ fd }; }
+    ;
+    const facade =
+        \\#import inner;
+        \\pub Stream :: inner::Stream;
+        \\pub Kind :: inner::Kind;
+        \\pub NetError :: inner::NetError;
+        \\pub connect :: fn(fd: i32) -> Stream ! NetError { return inner::dial(fd); }
+    ;
+    const main =
+        \\#import facade;
+        \\fails :: fn() -> i32 ! facade::NetError { fail .refused; }
+        \\run :: fn() -> i32 {
+        \\    s: facade::Stream = facade::connect(3) catch e { return 1; };
+        \\    t := facade::Stream::open(4);
+        \\    k: facade::Kind = facade::Kind.udp;
+        \\    v := fails() catch e { yield if e == .refused { 6 } else { 0 }; };
+        \\    if k != .udp { return 2; }
+        \\    return s.id() + t.id() + v;
+        \\}
+        \\R :: #run run();
+    ;
+    var fe = try fels.compileMulti(a, &.{
+        .{ .file_name = "inner.fels", .source = inner },
+        .{ .file_name = "facade.fels", .source = facade },
+        .{ .file_name = "main.fels", .source = main },
+    });
+    defer fe.deinit(a);
+    const module = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(module);
+    for (module.globals) |g| if (std.mem.eql(u8, g.name, "R")) {
+        try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 13 }, g.init.imm);
+        return;
+    };
+    return error.TestUnexpectedResult;
 }
 
 test "modules: std.c resolves and lowers (selective and namespaced imports)" {
