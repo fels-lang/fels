@@ -1082,7 +1082,8 @@ pub fn collectSymbolsInto(
 }
 
 /// The type name a constant `X :: Name;` / `X :: ns::Name;` would alias, when its
-/// value is nothing but a (possibly namespace-qualified) identifier.
+/// value is nothing but a (possibly namespace-qualified) identifier, or `X :: Name(…);`
+/// (a generic type's instance), when it is a call of one.
 fn constAliasTarget(decl: ast.ConstDecl) ?ast.NamedType {
     if (decl.is_mutable or decl.ty != null) return null;
     return switch (decl.value.kind) {
@@ -1091,8 +1092,20 @@ fn constAliasTarget(decl: ast.ConstDecl) ?ast.NamedType {
             .ident => |ns| .{ .name = sa.member, .namespace = ns, .span = decl.value.span },
             else => null,
         },
+        .call => |call| switch (call.callee.kind) {
+            .ident => |name| .{ .name = name, .span = call.callee.span },
+            else => null,
+        },
         else => null,
     };
+}
+
+/// The type a constant that `promoteTypeAliases` made an alias stands for: the name, or the
+/// instance `Name(T, …)` of a generic type. Null when an argument is no type.
+fn constAliasType(allocator: std.mem.Allocator, decl: ast.ConstDecl) ?ast.TypeRef {
+    const target = constAliasTarget(decl) orelse return null;
+    if (decl.value.kind != .call) return .{ .named = target };
+    return exprToTypeRefWith(allocator, decl.value);
 }
 
 /// The parser reads `X :: i32;` as a type alias but `X :: f32;`, `X :: Node;` and
@@ -1132,6 +1145,53 @@ fn promoteTypeAliases(
             changed = true;
         }
     }
+}
+
+/// Convert an expression appearing in type-argument position into a TypeRef.
+/// Handles type names (`i32`, `MyStruct`), explicit type refs (`[]const u8`,
+/// `*T`), and nested generic instantiations (`List(i32)`). Returns null for
+/// anything that is not a type.
+fn exprToTypeRefWith(allocator: std.mem.Allocator, expr: ast.Expr) ?ast.TypeRef {
+    return switch (expr.kind) {
+        .type_ref => |t| t,
+        .ident => |name| .{ .named = .{ .name = name, .span = expr.span } },
+        .scope_access => |sa| switch (sa.base.kind) {
+            .ident => |ns| .{ .named = .{ .name = sa.member, .namespace = ns, .span = expr.span } },
+            else => null,
+        },
+        // `*T` in a type-argument list (`List(*Node)`) reads as a dereference.
+        .unary => |u| blk: {
+            if (u.op != .deref) break :blk null;
+            const pointee = exprToTypeRefWith(allocator, u.expr.*) orelse break :blk null;
+            const inner = allocator.create(ast.TypeRef) catch break :blk null;
+            inner.* = pointee;
+            break :blk .{ .pointer = .{ .inner = inner, .span = expr.span } };
+        },
+        .call => |call| blk: {
+            if (call.callee.kind != .ident) break :blk null;
+            var targs: std.ArrayList(ast.TypeRef) = .empty;
+            for (call.args) |ca| {
+                const ae = switch (ca) {
+                    .positional => |e| e,
+                    .named => |n| n.value,
+                };
+                const tr = exprToTypeRefWith(allocator, ae) orelse {
+                    targs.deinit(allocator);
+                    break :blk null;
+                };
+                targs.append(allocator, tr) catch {
+                    targs.deinit(allocator);
+                    break :blk null;
+                };
+            }
+            break :blk .{ .generic_inst = .{
+                .name = call.callee.kind.ident,
+                .args = targs.toOwnedSlice(allocator) catch break :blk null,
+                .span = expr.span,
+            } };
+        },
+        else => null,
+    };
 }
 
 /// Whether `decl` is a constant that `collectSymbols` resolved to a type alias (see
@@ -2094,7 +2154,7 @@ const Checker = struct {
                 // An alias spelled like a constant: validate it as `checkTypeDecl` does
                 // the other spelling (the name resolves, and is not cyclic).
                 if (isTypeAliasConst(self.symbols, decl)) {
-                    _ = try self.typeFromRef(.{ .named = constAliasTarget(decl).? });
+                    _ = try self.typeFromRef(constAliasType(self.allocator, decl) orelse .{ .named = constAliasTarget(decl).? });
                 } else {
                     const value_ty = try self.inferExpr(decl.value);
                     if (decl.ty) |ty| {
@@ -2138,7 +2198,7 @@ const Checker = struct {
                 },
                 // `X :: Name;` that `collectSymbols` found to name a type: the same
                 // alias, spelled like a constant.
-                .const_decl => |d| if (isTypeAliasConst(self.symbols, d)) .{ .named = constAliasTarget(d).? } else continue,
+                .const_decl => |d| if (isTypeAliasConst(self.symbols, d)) constAliasType(self.allocator, d) orelse continue else continue,
                 else => continue,
             };
             const id = self.symbols.resolveVisible(item.fileName(), item.name() orelse continue) orelse continue;
@@ -5261,46 +5321,7 @@ const Checker = struct {
     /// `*T`), and nested generic instantiations (`List(i32)`). Returns null for
     /// anything that is not a type.
     fn exprToTypeRef(self: *Checker, expr: ast.Expr) ?ast.TypeRef {
-        return switch (expr.kind) {
-            .type_ref => |t| t,
-            .ident => |name| .{ .named = .{ .name = name, .span = expr.span } },
-            .scope_access => |sa| switch (sa.base.kind) {
-                .ident => |ns| .{ .named = .{ .name = sa.member, .namespace = ns, .span = expr.span } },
-                else => null,
-            },
-            // `*T` in a type-argument list (`List(*Node)`) reads as a dereference.
-            .unary => |u| blk: {
-                if (u.op != .deref) break :blk null;
-                const pointee = self.exprToTypeRef(u.expr.*) orelse break :blk null;
-                const inner = self.allocator.create(ast.TypeRef) catch break :blk null;
-                inner.* = pointee;
-                break :blk .{ .pointer = .{ .inner = inner, .span = expr.span } };
-            },
-            .call => |call| blk: {
-                if (call.callee.kind != .ident) break :blk null;
-                var targs: std.ArrayList(ast.TypeRef) = .empty;
-                for (call.args) |ca| {
-                    const ae = switch (ca) {
-                        .positional => |e| e,
-                        .named => |n| n.value,
-                    };
-                    const tr = self.exprToTypeRef(ae) orelse {
-                        targs.deinit(self.allocator);
-                        break :blk null;
-                    };
-                    targs.append(self.allocator, tr) catch {
-                        targs.deinit(self.allocator);
-                        break :blk null;
-                    };
-                }
-                break :blk .{ .generic_inst = .{
-                    .name = call.callee.kind.ident,
-                    .args = targs.toOwnedSlice(self.allocator) catch break :blk null,
-                    .span = expr.span,
-                } };
-            },
-            else => null,
-        };
+        return exprToTypeRefWith(self.allocator, expr);
     }
 
     fn inferGenericCall(self: *Checker, sym_id: SymbolId, fn_name: []const u8, sig: FnSig, call: ast.CallExpr) SemanticError!Ty {

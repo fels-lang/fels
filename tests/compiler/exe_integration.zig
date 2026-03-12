@@ -1290,6 +1290,31 @@ test "exe: a generic instance takes an instance as its argument" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_nested_instance_o2", 2, true));
 }
 
+test "exe: a constant naming a generic instance is an alias of it" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `IntPair :: Pair(i32);` was refused (`Pair` is not a function): only a plain name was an alias.
+    const src =
+        \\Pair :: struct($T: type) { a: T, b: T }
+        \\IntPair :: Pair(i32);
+        \\Nested :: Pair(Pair(i32));
+        \\Holder :: struct { p: IntPair }
+        \\sum :: fn(p: IntPair) -> i32 { return p.a + p.b; }
+        \\calc :: fn() -> i32 {
+        \\    x: IntPair = .{ 3, 4 };
+        \\    h: Holder = .{ .{ 10, 20 } };
+        \\    n: Nested = .{ .{ 1, 2 }, .{ 3, 4 } };
+        \\    return sum(x) + sum(h.p) + n.b.a;
+        \\}
+        \\X :: #run calc();
+        \\main :: fn() -> i32 { if calc() != 40 { return 1; } if X != 40 { return 2; } return 42; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_generic_alias", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_generic_alias_o2", 2, true));
+}
+
 test "exe: a warning does not stop the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
