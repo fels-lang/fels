@@ -286,6 +286,8 @@ pub const InstrKind = union(enum) {
     slice_expr: SliceInstr,
     variant_is: VariantCheckInstr,
     variant_payload: VariantCheckInstr,
+    /// The tag of an enum value (`variant` unused): the number of an error of a tagged set.
+    variant_tag: VariantCheckInstr,
     optional_is_some: Value,
     optional_payload: Value,
     try_is_ok: Value,
@@ -1194,7 +1196,7 @@ fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
             try validateValue(function, slice.ptr);
             try validateValue(function, slice.len);
         },
-        .variant_is, .variant_payload => |variant| try validateValue(function, variant.value),
+        .variant_is, .variant_payload, .variant_tag => |variant| try validateValue(function, variant.value),
         .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| try validateValue(function, value),
         .at => |at| try validateValue(function, at.value),
         .raw_pointer => |ptr| try validateValue(function, ptr.address),
@@ -1561,7 +1563,7 @@ fn instrUsesReg(instr: Instr, id: RegId) bool {
         .field, .field_addr => |field| valueUsesReg(field.base, id),
         .index, .index_addr => |index| valueUsesReg(index.base, id) or valueUsesReg(index.index, id),
         .slice_expr => |slice| valueUsesReg(slice.ptr, id) or valueUsesReg(slice.len, id),
-        .variant_is, .variant_payload => |variant| valueUsesReg(variant.value, id),
+        .variant_is, .variant_payload, .variant_tag => |variant| valueUsesReg(variant.value, id),
         .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| valueUsesReg(value, id),
         .at => |at| valueUsesReg(at.value, id),
         .raw_pointer => |ptr| valueUsesReg(ptr.address, id),
@@ -2274,7 +2276,25 @@ const FunctionLowerer = struct {
                 }
                 try self.terminate(.{ .return_value = ret_val });
             },
-            .fail_stmt => |fail| {
+            .fail_stmt => |fail| if (fail.value) |error_expr| {
+                // `fail e;`: the number of the error, and the whole error within a tagged set.
+                const v = try self.lowerExpr(error_expr);
+                var disc = v;
+                var err: ?Value = null;
+                if (self.taggedErrorSetOfType(self.exprType(error_expr))) |set| {
+                    disc = try self.emit(.{ .i = 32 }, .{ .variant_tag = .{ .value = v, .type_name = set.link_name, .variant = "" } });
+                    if (self.ownTaggedErrorSet()) |own| if (std.mem.eql(u8, own.link_name, set.link_name)) {
+                        err = v;
+                    };
+                }
+                try self.emitDefersDown(0, .err);
+                var i = self.active_zones.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    try self.lowerZoneExit(self.active_zones.items[i]);
+                }
+                try self.terminate(.{ .fail = .{ .disc = disc, .err = err } });
+            } else {
                 // The error is the number of its variant's name, the same in every set. A set
                 // whose errors carry payloads takes the whole error, built as an enum value is.
                 var err: ?Value = null;
@@ -3260,6 +3280,8 @@ const FunctionLowerer = struct {
                 return self.mkVariant("AstStmt", "defer_s", payload);
             },
             .fail_stmt => |f| {
+                // `fail e;` has no `AstFail` form (it names a variant).
+                if (f.value != null) return error.LoweringFailed;
                 var pvals = std.ArrayList(Value).empty;
                 defer pvals.deinit(self.allocator);
                 for (f.payload) |p| try pvals.append(self.allocator, try self.materializeExpr(p));

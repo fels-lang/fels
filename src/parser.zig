@@ -1815,6 +1815,12 @@ pub const Parser = struct {
     }
 
     fn parseFail(self: *Parser, start: Token) ParseError!ast.FailStmt {
+        // `fail e;` — an error value, passed on as it is.
+        if (!self.check(.dot)) {
+            const value = try self.parseExpr(0);
+            const semi = try self.expect(.semicolon, "expected ; after fail");
+            return .{ .variant = "", .payload = &.{}, .value = value, .span = spanFrom(start, semi) };
+        }
         _ = try self.expect(.dot, "expected .variant after fail");
         const variant = try self.expect(.ident, "expected error variant after fail .");
         // The payload in parentheses, as an enum variant is built (`Shape.circle(r)`), or in

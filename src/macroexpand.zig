@@ -327,7 +327,13 @@ const Expander = struct {
             .fail_stmt => |s| {
                 var payload: std.ArrayList(ast.Expr) = .empty;
                 for (s.payload) |e| try payload.append(self.arena, try self.substExpr(e, env, hyg));
-                try out.append(self.arena, .{ .fail_stmt = .{ .variant = s.variant, .payload = try payload.toOwnedSlice(self.arena), .span = s.span } });
+                try out.append(self.arena, .{ .fail_stmt = .{
+                    .variant = s.variant,
+                    .payload = try payload.toOwnedSlice(self.arena),
+                    .value = if (s.value) |v| try self.substExpr(v, env, hyg) else null,
+                    .brace_payload = s.brace_payload,
+                    .span = s.span,
+                } });
             },
             .if_stmt => |s| try out.append(self.arena, .{ .if_stmt = .{
                 .binding = if (s.binding) |b| ast.IfBinding{ .name = self.rename(b.name, hyg), .value = try self.substExpr(b.value, env, hyg) } else null,

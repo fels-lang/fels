@@ -433,8 +433,11 @@ pub const ReturnStmt = struct {
 };
 
 pub const FailStmt = struct {
+    /// The variant failed with (`fail .name`); "" for `fail value;`.
     variant: []const u8,
     payload: []const Expr,
+    /// `fail value;`: an error passed on whole, one a `catch` bound or a parameter holds.
+    value: ?Expr = null,
     /// The payload was written `{ … }`, the form before `( … )`.
     brace_payload: bool = false,
     span: Span,

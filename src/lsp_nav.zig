@@ -1192,6 +1192,7 @@ const Walker = struct {
             .yield_stmt => |y| w.walkExpr(y.value, .read, null),
             .fail_stmt => |fs| {
                 for (fs.payload) |p| w.walkExpr(p, .read, null);
+                if (fs.value) |v| w.walkExpr(v, .read, null);
                 w.failVariant(fs);
             },
             .if_stmt => |i| w.walkIf(i),

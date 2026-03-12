@@ -895,6 +895,22 @@ test "diagnostics: an error is compared with a variant wherever it is" {
     try expectFirstError(a, "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> bool { return e == .c; }", &.{"`Oops` has no error variant `.c`"});
 }
 
+test "diagnostics: fail e takes an error the function's set holds" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const decls =
+        \\E :: errors { a }
+        \\F :: errors { b, c: i64 }
+        \\
+    ;
+    try expectFirstError(a, decls ++ "g :: fn(e: F) -> i32 ! E { fail e; }\n", &.{"this error is a `F`, and the function fails with `E`"});
+    try expectFirstError(a, decls ++ "g :: fn() -> i32 ! E { fail 5; }\n", &.{"`fail` takes an error, `.name`, `.name(payload)` or an error value"});
+    try expectFirstError(a, decls ++ "g :: fn(e: E) -> i32 { fail e; }\n", &.{"`fail` used in a function without a `!` error return type"});
+    try expectFirstError(a, decls ++ "g :: fn() -> F { return F.d; }\n", &.{"`F` has no error variant `.d`"});
+    try expectNoError(a, decls, "g :: fn(e: F) -> i32 ! F { fail e; }\nh :: fn(e: F) -> i32 ! { fail e; }\nk :: fn() -> F { return F.c(3i64); }");
+}
+
 test "diagnostics: a payload in braces warns, and the build goes on" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

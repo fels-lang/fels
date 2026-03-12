@@ -1236,6 +1236,43 @@ test "exe: E.v and E.v(payload) build an error" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_construct_o2", 2, true));
 }
 
+test "exe: fail e passes an error on, payload and all" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A caught error could not be raised again: `fail` took only a variant, so the payload was lost.
+    const src =
+        \\PE :: errors { plain, big: i64, word: []const u8 }
+        \\Plain :: errors { a, b }
+        \\inner :: fn(k: i32) -> i32 ! PE { if k == 1 { fail .big(9i64); } if k == 2 { fail .word("hello"); } return k; }
+        \\retry :: fn(k: i32) -> i32 ! PE {
+        \\    v := inner(k) catch e {
+        \\        if e == .word { yield 100; }   // handled here
+        \\        fail e;                         // passed on whole, payload too
+        \\    };
+        \\    return v;
+        \\}
+        \\loose :: fn(k: i32) -> i32 ! { v := inner(k) catch e { fail e; }; return v; }
+        \\plain_inner :: fn() -> i32 ! Plain { fail .b; }
+        \\plain_retry :: fn() -> i32 ! Plain { v := plain_inner() catch e { fail e; }; return v; }
+        \\keep :: fn(e: PE) -> i32 ! PE { fail e; }
+        \\size :: fn(e: PE) -> i64 { return match e { .big |n| => n, .word |s| => s.len as i64, .plain => 1i64 }; }
+        \\calc :: fn() -> i64 {
+        \\    a := retry(1) catch e { yield size(e) as i32; };          // 9
+        \\    b := retry(2) catch e { yield -1; };                      // 100
+        \\    c := loose(1) catch e { yield if e == .big { 30 } else { 0 }; };   // 30
+        \\    d := plain_retry() catch e { yield if e == .b { 400 } else { 0 }; };  // 400
+        \\    f := keep(PE.word("abc")) catch e { yield size(e) as i32; };  // 3
+        \\    return (a + b + c + d + f) as i64;
+        \\}
+        \\X :: #run calc();
+        \\main :: fn() -> i32 { if calc() != 542i64 { return 1; } if X != 542i64 { return 2; } return 42; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_fail_value", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_fail_value_o2", 2, true));
+}
+
 test "exe: a warning does not stop the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

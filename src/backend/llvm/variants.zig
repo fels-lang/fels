@@ -132,6 +132,14 @@ pub fn buildVariantIs(
     return llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntEQ, actual_disc, disc_val, "");
 }
 
+/// The tag of an enum value: the value of a simple enum, field 0 of one with payloads.
+pub fn buildVariantTag(cg: *ModuleCg, value: llvm.LLVMValueRef, type_name: []const u8) llvm.LLVMValueRef {
+    const meta = cg.enum_meta.get(type_name) orelse return value;
+    if (meta.is_simple) return value;
+    return values.extractAggregateField(cg, value, 0, "variant tag") orelse
+        llvm.LLVMGetUndef(llvm.LLVMInt32TypeInContext(cg.ctx));
+}
+
 /// Extract the payload from a tagged enum value, as the requested type.
 pub fn buildVariantPayload(
     cg:        *ModuleCg,
