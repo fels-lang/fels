@@ -895,6 +895,20 @@ test "diagnostics: an error is compared with a variant wherever it is" {
     try expectFirstError(a, "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> bool { return e == .c; }", &.{"`Oops` has no error variant `.c`"});
 }
 
+test "diagnostics: an interface is implemented on the type, not on an alias of it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `P as Show` registered the implementation for `P`, so `Point` did not implement `Show`.
+    try expectFirstError(a,
+        \\Show :: interface { show :: fn(self: *Self) -> i32; }
+        \\Point :: struct { v: i32 }
+        \\P :: Point;
+        \\P as Show { show :: fn(self: *Self) -> i32 { return self.v; } }
+        \\main :: fn() -> i32 { return 0; }
+    , &.{"`P` is an alias of `Point`: implement `Show` on `Point` itself"});
+}
+
 test "diagnostics: fail e takes an error the function's set holds" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

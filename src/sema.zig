@@ -2510,6 +2510,11 @@ const Checker = struct {
             self.emitError(impl.span, "unknown type `{s}` in interface implementation", .{impl.type_name});
             return error.SemanticFailed;
         };
+        // An implementation belongs to the type; an alias is only another name for it.
+        if (self.env.alias_types.get(concrete_id)) |aliased| {
+            self.emitError(impl.span, "`{s}` is an alias of `{s}`: implement `{s}` on `{s}` itself", .{ impl.type_name, self.formatTy(aliased), impl.interface_name, self.formatTy(aliased) });
+            return error.SemanticFailed;
+        }
         const interface_id = self.resolveSymbol(impl.interface_name) orelse {
             self.emitError(impl.span, "unknown interface `{s}` in interface implementation", .{impl.interface_name});
             return error.SemanticFailed;
