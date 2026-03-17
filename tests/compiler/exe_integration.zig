@@ -3944,19 +3944,19 @@ test "exe: a large stack frame links and runs (provides __chkstk)" {
     try std.testing.expectEqual(@as(u32, 41), code);
 }
 
-test "exe: std.list works cross-module (issue #6 + generic collision/realloc fixes)" {
+test "exe: std.vec works cross-module (issue #6 + generic collision/realloc fixes)" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // The fixture self-checks every list op and returns 42 iff all are correct.
+    // The fixture self-checks every vec op and returns 42 iff all are correct.
     // Exercises: a generic struct instantiated across a module boundary (#6),
-    // `list::make` colliding with `heap::make`, and field types resolving in the
-    // module that defines `List`.
+    // `vec::make` colliding with `heap::make`, and field types resolving in the
+    // module that defines `Vec`. (It was std.list's, which Vec replaced.)
     const code = try compileFileAndRun(
         arena.allocator(),
-        "tests/fixtures/stdlib/list_app.fels",
-        "exe_list_app",
+        "tests/fixtures/stdlib/vec_cross_module_app.fels",
+        "exe_vec_cross_module_app",
     );
     try std.testing.expectEqual(@as(u32, 42), code);
 }

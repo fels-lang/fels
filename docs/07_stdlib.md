@@ -614,32 +614,6 @@ Deterministic xorshift64\* PRNG — same seed, same sequence (replays, procedura
 
 - `rgb`, `rgba`, `with_alpha`, `gray`, named colors (`white`/`black`/`red`/`green`/`blue`/`yellow`/`orange`/`purple`/`clear`), `lerp`, `to_u32`/`from_u32` (0xRRGGBBAA).
 
-### `std.list`
-
-A generic `List(T)` dynamic array backed by an `Arena` — the intended collection
-type for entities/projectiles. The arena owns every element; there are no per-element
-frees. Pass the element type explicitly to each op (`list::push(Bullet, &xs, b)`).
-
-```fels
-#import std.heap as heap;
-#import std.list as list;
-
-a  := heap::make();
-xs := list::make(i32, &a);          // or with_cap(i32, &a, n)
-list::push(i32, &xs, 7);            // grows ×2 when full
-v  := list::get(i32, &xs, 0usize);
-list::set(i32, &xs, 0usize, 9);
-list::remove_swap(i32, &xs, i);     // O(1) unordered removal
-last := list::pop(i32, &xs);
-for_each := list::items(i32, &xs);  // []T view, valid until the next push/grow
-```
-
-- Constructors: `make`, `with_cap`. Access: `get`, `set`, `last`, `items`.
-- Mutation: `push`, `pop`, `remove_swap`, `clear`. Queries: `len`, `is_empty`.
-
-> `list::make` deliberately shares the name `make` with `heap::make`; calling both
-> from the same file is fine (the module system keeps them distinct).
-
 ## Containers — `std.vec` and `std.map`
 
 The container library has one defining trait: every container is **region-bound**.
@@ -651,7 +625,7 @@ allocator-injected ones.
 
 ### `std.vec` — `Vec(T)`
 
-A growable array with in-struct methods (UFCS), the successor to `std.list`:
+A growable array with in-struct methods (UFCS):
 
 ```fels
 #import std.heap as heap;
