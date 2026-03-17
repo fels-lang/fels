@@ -324,18 +324,16 @@ if flag {
     do_something();
 }
 
-// With binding (if-let style): try_parse returns an optional
-if result := try_parse(input) {
-    // result is the unwrapped value here
-}
-
-// With payload capture
+// Unwrapping an optional: try_parse returns one
 if try_parse(input) |value| {
     // value is the unwrapped payload
 } else {
     // try_parse returned null
 }
 ```
+
+The name goes after the optional, as `while opt |x|` and `match … |p|` bind it. (`if x :=
+opt { … }`, the older spelling, still compiles, with a warning.)
 
 `else if` chains are supported and desugar to a nested `if` inside the `else`:
 

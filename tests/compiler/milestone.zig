@@ -113,7 +113,7 @@ const sample =
     \\        0, 0, 0, 0, 0, 0, 0, 0,
     \\    };
     \\
-    \\    if h := read_header(buf[:]) {
+    \\    if read_header(buf[:]) |h| {
     \\        if h.flags & 1 != 0 {
     \\            write_stdout("packet flag set\n");
     \\        }
