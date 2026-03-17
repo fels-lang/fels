@@ -138,10 +138,10 @@ main :: fn() -> i32 {
     // Match
     color := Color.red;
     match color {
-        .red => { println("red"); }
-        .green => { println("green"); }
-        .blue => { println("blue"); }
-        .custom |value| => { print_u64(value as u64); }
+        .red => { println("red"); },
+        .green => { println("green"); },
+        .blue => { println("blue"); },
+        .custom |value| => { print_u64(value as u64); },
     }
     
     // Error handling

@@ -372,9 +372,9 @@ matching:
 ```fels
 area :: fn(s: Shape) -> f64 {
     match s {
-        .circle |r|    => return 3.14159 * r * r;
-        .rectangle |b| => return b.width * b.height;
-        else           => return 0.0;
+        .circle |r|    => { return 3.14159 * r * r; },
+        .rectangle |b| => { return b.width * b.height; },
+        else           => { return 0.0; },
     }
 }
 ```

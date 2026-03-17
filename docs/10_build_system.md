@@ -210,15 +210,15 @@ build :: fn(b: Build) {
     while true {
         m := w.wait_message();
         match m.kind {
-            .file_parsed => {}
+            .file_parsed => {},
             .typechecked => {
                 // m carries the typed declaration: name, kind, type info,
                 // and (Fels extension) the decl's AST for rewriting.
                 if !check_decl(b, m) { had_error = true; }
-            }
-            .phase => {}
-            .complete => break;
-            else => {}
+            },
+            .phase => {},
+            .complete => { break; },
+            else => {},
         }
     }
 

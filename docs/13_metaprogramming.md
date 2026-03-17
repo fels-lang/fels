@@ -105,8 +105,8 @@ build :: macro(out: Expr, ty: Expr, sel: Expr, lo: Expr, hi: Expr) {
         acc: $ty = 0;                          // type-position splice
         for k in p.a..p.b { acc = acc + k; }   // runtime for body
         match $sel {                           // splice as the match subject
-            1 => { $out = acc + p.a; }
-            else => { $out = acc; }
+            1 => { $out = acc + p.a; },
+            else => { $out = acc; },
         }
     };
 }
@@ -281,8 +281,8 @@ derive_sum :: fn() -> []const u8 {
                 sb.append(" :: fn(p: "); sb.append(d.name); sb.append(") -> i32 { return 0");
                 for f in d.fields { sb.append(" + p."); sb.append(f.name); }
                 sb.append("; } ");
-            }
-            else => {}
+            },
+            else => {},
         }
     }
     return sb.str();
