@@ -82,9 +82,9 @@ fn ofDepth(ty: ir.IrType, source: anytype, depth: u32) ?Layout {
     };
 }
 
-/// A struct member: a `fn(...)` field is always a thin pointer in a struct.
+/// A struct member: laid out as the same type anywhere else (a `fn(...)` closure is two
+/// words, an `extern fn(...)` one).
 fn memberLayout(ty: ir.IrType, source: anytype, depth: u32) ?Layout {
-    if (ty == .fn_ptr) return scalar(8);
     return ofDepth(ty, source, depth);
 }
 

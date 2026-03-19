@@ -63,7 +63,7 @@
 
 WNDCLASSEXA :: struct {
     cbSize: u32, style: u32,
-    wndproc: fn(usize, u32, usize, isize) -> isize,
+    wndproc: extern fn(usize, u32, usize, isize) -> isize,
     cbClsExtra: i32, cbWndExtra: i32,
     hInstance: usize, hIcon: usize, hCursor: usize, hbrBackground: usize,
     menuName: ?*const u8, className: *const u8, hIconSm: usize,

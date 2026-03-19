@@ -35,7 +35,7 @@ fn expectIrLacks(ir: []const u8, unexpected: []const u8) !void {
 const decls =
     \\Point :: struct { x: i32, y: i32 }
     \\Cfg :: struct { name: []const u8, retries: i32 = 3, verbose: bool = false, limit: u64 }
-    \\Vtbl :: struct { add: fn(i32, i32) -> i32, id: u32 }
+    \\Vtbl :: struct { add: extern fn(i32, i32) -> i32, id: u32 }
     \\Mode :: enum { fast, slow, off }
     \\Shape :: enum { circle: i32, none }
     \\Settings :: struct { mode: Mode = .slow, n: i32 = 4 }
@@ -297,7 +297,7 @@ const readable =
     \\Point :: struct { x: i32, y: i32 }
     \\Rec :: struct { id: u32, name: []const u8, pos: Point, tags: [3]u8, on: bool, scale: f64 }
     \\Mode :: enum { fast, slow, off }
-    \\Vtbl :: struct { add: fn(i32, i32) -> i32, id: u32 }
+    \\Vtbl :: struct { add: extern fn(i32, i32) -> i32, id: u32 }
     \\add :: fn(a: i32, b: i32) -> i32 { return a + b; }
     \\dbl :: fn(x: i32) -> i32 { return x * 2; }
     \\SQUARES: [4]u32 = .{ 0, 1, 4, 9 };

@@ -24,20 +24,20 @@ os_create_stream :: fn(hglobal: usize, delete_on_release: i32, out: **IStream) -
 // Slots 0-2 IUnknown, 3 Read, 4 Write (ISequentialStream), then Seek, SetSize, CopyTo, Commit,
 // Revert, LockRegion, UnlockRegion, Stat, Clone.
 IStreamVtbl :: struct {
-    query_interface: fn(*IStream, *const Guid, **void) -> i32
-    add_ref:         fn(*IStream) -> u32
-    release:         fn(*IStream) -> u32
-    read:            fn(*IStream, *void, u32, *u32) -> i32
-    write:           fn(*IStream, *const void, u32, *u32) -> i32
-    seek:            fn(*IStream, i64, u32, *u64) -> i32              // LARGE_INTEGER, DWORD, ULARGE_INTEGER*
-    set_size:        fn(*IStream, u64) -> i32
-    copy_to:         fn(*IStream, *IStream, u64, *u64, *u64) -> i32
-    commit:          fn(*IStream, u32) -> i32
-    revert:          fn(*IStream) -> i32
-    lock_region:     fn(*IStream, u64, u64, u32) -> i32
-    unlock_region:   fn(*IStream, u64, u64, u32) -> i32
-    stat:            fn(*IStream, *void, u32) -> i32                  // STATSTG*, not used here
-    clone:           fn(*IStream, **IStream) -> i32
+    query_interface: extern fn(*IStream, *const Guid, **void) -> i32
+    add_ref:         extern fn(*IStream) -> u32
+    release:         extern fn(*IStream) -> u32
+    read:            extern fn(*IStream, *void, u32, *u32) -> i32
+    write:           extern fn(*IStream, *const void, u32, *u32) -> i32
+    seek:            extern fn(*IStream, i64, u32, *u64) -> i32              // LARGE_INTEGER, DWORD, ULARGE_INTEGER*
+    set_size:        extern fn(*IStream, u64) -> i32
+    copy_to:         extern fn(*IStream, *IStream, u64, *u64, *u64) -> i32
+    commit:          extern fn(*IStream, u32) -> i32
+    revert:          extern fn(*IStream) -> i32
+    lock_region:     extern fn(*IStream, u64, u64, u32) -> i32
+    unlock_region:   extern fn(*IStream, u64, u64, u32) -> i32
+    stat:            extern fn(*IStream, *void, u32) -> i32                  // STATSTG*, not used here
+    clone:           extern fn(*IStream, **IStream) -> i32
 }
 IStream :: struct {
     vtbl: *IStreamVtbl
@@ -62,41 +62,41 @@ IID_IStream: Guid = .{ 0x0000000Cu32, 0x0000u16, 0x0000u16, .{ 0xC0u8, 0x00u8, 0
 
 // ---- Windows.Foundation.Uri (windows.foundation.h) ----
 IUriFactoryVtbl :: struct {
-    query_interface: fn(*IUriFactory, *const Guid, **void) -> i32
-    add_ref:         fn(*IUriFactory) -> u32
-    release:         fn(*IUriFactory) -> u32
-    get_iids:        fn(*IUriFactory, *u32, **Guid) -> i32
-    get_runtime_class_name: fn(*IUriFactory, *usize) -> i32
-    get_trust_level: fn(*IUriFactory, *i32) -> i32
-    create_uri:      fn(*IUriFactory, usize, **IUri) -> i32               // (HSTRING uri, IUriRuntimeClass** instance)
-    create_with_relative_uri: fn(*IUriFactory, usize, usize, **IUri) -> i32
+    query_interface: extern fn(*IUriFactory, *const Guid, **void) -> i32
+    add_ref:         extern fn(*IUriFactory) -> u32
+    release:         extern fn(*IUriFactory) -> u32
+    get_iids:        extern fn(*IUriFactory, *u32, **Guid) -> i32
+    get_runtime_class_name: extern fn(*IUriFactory, *usize) -> i32
+    get_trust_level: extern fn(*IUriFactory, *i32) -> i32
+    create_uri:      extern fn(*IUriFactory, usize, **IUri) -> i32               // (HSTRING uri, IUriRuntimeClass** instance)
+    create_with_relative_uri: extern fn(*IUriFactory, usize, usize, **IUri) -> i32
 }
 IUriFactory :: struct { vtbl: *IUriFactoryVtbl }
 
 IUriVtbl :: struct {
-    query_interface: fn(*IUri, *const Guid, **void) -> i32
-    add_ref:         fn(*IUri) -> u32
-    release:         fn(*IUri) -> u32
-    get_iids:        fn(*IUri, *u32, **Guid) -> i32
-    get_runtime_class_name: fn(*IUri, *usize) -> i32
-    get_trust_level: fn(*IUri, *i32) -> i32
-    get_absolute_uri: fn(*IUri, *usize) -> i32
-    get_display_uri:  fn(*IUri, *usize) -> i32
-    get_domain:       fn(*IUri, *usize) -> i32
-    get_extension:    fn(*IUri, *usize) -> i32
-    get_fragment:     fn(*IUri, *usize) -> i32
-    get_host:         fn(*IUri, *usize) -> i32
-    get_password:     fn(*IUri, *usize) -> i32
-    get_path:         fn(*IUri, *usize) -> i32
-    get_query:        fn(*IUri, *usize) -> i32
-    get_query_parsed: fn(*IUri, **void) -> i32                            // IWwwFormUrlDecoderRuntimeClass**
-    get_raw_uri:      fn(*IUri, *usize) -> i32
-    get_scheme_name:  fn(*IUri, *usize) -> i32
-    get_user_name:    fn(*IUri, *usize) -> i32
-    get_port:         fn(*IUri, *i32) -> i32
-    get_suspicious:   fn(*IUri, *u8) -> i32                               // boolean* (one byte)
-    equals:           fn(*IUri, *IUri, *u8) -> i32
-    combine_uri:      fn(*IUri, usize, **IUri) -> i32
+    query_interface: extern fn(*IUri, *const Guid, **void) -> i32
+    add_ref:         extern fn(*IUri) -> u32
+    release:         extern fn(*IUri) -> u32
+    get_iids:        extern fn(*IUri, *u32, **Guid) -> i32
+    get_runtime_class_name: extern fn(*IUri, *usize) -> i32
+    get_trust_level: extern fn(*IUri, *i32) -> i32
+    get_absolute_uri: extern fn(*IUri, *usize) -> i32
+    get_display_uri:  extern fn(*IUri, *usize) -> i32
+    get_domain:       extern fn(*IUri, *usize) -> i32
+    get_extension:    extern fn(*IUri, *usize) -> i32
+    get_fragment:     extern fn(*IUri, *usize) -> i32
+    get_host:         extern fn(*IUri, *usize) -> i32
+    get_password:     extern fn(*IUri, *usize) -> i32
+    get_path:         extern fn(*IUri, *usize) -> i32
+    get_query:        extern fn(*IUri, *usize) -> i32
+    get_query_parsed: extern fn(*IUri, **void) -> i32                            // IWwwFormUrlDecoderRuntimeClass**
+    get_raw_uri:      extern fn(*IUri, *usize) -> i32
+    get_scheme_name:  extern fn(*IUri, *usize) -> i32
+    get_user_name:    extern fn(*IUri, *usize) -> i32
+    get_port:         extern fn(*IUri, *i32) -> i32
+    get_suspicious:   extern fn(*IUri, *u8) -> i32                               // boolean* (one byte)
+    equals:           extern fn(*IUri, *IUri, *u8) -> i32
+    combine_uri:      extern fn(*IUri, usize, **IUri) -> i32
 }
 IUri :: struct {
     vtbl: *IUriVtbl

@@ -24,9 +24,9 @@ Version :: struct { major: u32, minor: u32, revision: u32 }
 
 PluginEntry :: struct {
     version: Version,
-    init:    fn(u32) -> u32,
-    scale:   fn(i32) -> i32,
-    deinit:  fn(),
+    init:    extern fn(u32) -> u32,
+    scale:   extern fn(i32) -> i32,
+    deinit:  extern fn(),
 }
 
 plugin_init :: fn(host_api: u32) -> u32 { calls += 1; return host_api + 1u32; }

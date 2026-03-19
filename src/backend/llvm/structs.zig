@@ -27,13 +27,9 @@ pub fn lowerAll(cg: *ModuleCg, structs: []const ir.StructDef) !void {
 
         const field_entries = try cg.allocator.alloc(ctx_mod.StructField, s.fields.len);
         for (s.fields, 0..) |f, i| {
-            // A `fn(...)` struct field is a THIN function pointer, not the fat
-            // `{fn, env}` closure — so the layout matches C structs (e.g. a Win32
-            // `WNDCLASSEXA.lpfnWndProc`) and holds a raw callback pointer.
-            field_tys[i] = if (f.ty == .fn_ptr)
-                llvm.LLVMPointerTypeInContext(cg.ctx, 0)
-            else
-                types.lower(cg, f.ty);
+            // A `fn(...)` field is a `{fn, env}` closure, as anywhere; an `extern fn(...)` one
+            // is the thin C pointer a C struct holds (a Win32 `WNDCLASSEXA.lpfnWndProc`).
+            field_tys[i] = types.lower(cg, f.ty);
             field_entries[i] = .{ .name = f.name, .ir_ty = f.ty };
         }
 
@@ -87,10 +83,7 @@ fn alignTail(cg: *ModuleCg, s: ir.StructDef, structs: []const ir.StructDef) ?llv
 fn packedSize(s: ir.StructDef, structs: []const ir.StructDef) ?u64 {
     var total: u64 = 0;
     for (s.fields) |f| {
-        const member = if (f.ty == .fn_ptr)
-            layout.Layout{ .size = 8, .alignment = 8 }
-        else
-            layout.of(f.ty, structs) orelse return null;
+        const member = layout.of(f.ty, structs) orelse return null;
         total += member.size;
     }
     return total;

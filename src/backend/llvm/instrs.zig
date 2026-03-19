@@ -747,7 +747,7 @@ fn lowerCallIndirect(
     // every closure is invoked uniformly as `fn(env, args)`.
     const closure_val = if (ci.is_closure) resolveVal(cg, fncg, ci.callee, .unknown) else null;
     const callee_ptr = if (closure_val) |v|
-        llvm.LLVMBuildExtractValue(cg.builder, v, 0, "clos.fn")
+        values.extractAggregateField(cg, v, 0, "closure function") orelse return null
     else
         resolveVal(cg, fncg, ci.callee, .unknown);
     // A large return comes back through a hidden `sret` slot, passed before everything else
@@ -991,13 +991,9 @@ fn lowerField(
             if (cg.safety) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
             const field_ptr = llvm.LLVMBuildStructGEP2(cg.builder, struct_lty, base_ptr, idx, "");
             if (want_addr) return field_ptr;
-            // A `fn(...)` struct field is stored as a bare code pointer (structs.zig), whatever
-            // closure type the field has as a value, so load it as one. Loading the 16-byte
-            // closure type made `p.f(x)` through a pointer an invalid call.
-            const field_lty = if (result_ty == .fn_ptr)
-                llvm.LLVMPointerTypeInContext(cg.ctx, 0)
-            else
-                types.lower(cg, result_ty);
+            // A field is loaded as its type: a `fn(...)` field holds a `{fn, env}` closure, an
+            // `extern fn(...)` one a bare code pointer (structs.zig).
+            const field_lty = types.lower(cg, result_ty);
             const field_load = llvm.LLVMBuildLoad2(cg.builder, field_lty, field_ptr, "");
             markPackedAccess(field_load, field_ptr);
             return field_load;
