@@ -619,6 +619,16 @@ double :: fn(n: i32) -> i32 { return n * 2; }
 result := apply(double, 21);    // 42
 ```
 
+A `fn(...)` value is a closure, `{ fn, env }`, wherever it is: a local, a parameter, an array
+element or a struct field, so a lambda that captures can be stored in any of them. A C
+function pointer, one bare code address, is `extern fn(...)`: a C struct's callback field, a
+COM vtable's methods, an argument of a C function.
+
+```fels
+Button :: struct { on_click: fn(i32) -> i32 }           // a closure
+WNDCLASS :: struct { style: u32, proc: extern fn(usize, u32, usize, isize) -> isize }  // C
+```
+
 ## Distinct Types
 
 Distinct types create **newtypes** — types that share the underlying representation but are treated as separate types by the compiler:

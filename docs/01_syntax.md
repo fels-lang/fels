@@ -432,7 +432,7 @@ any depth:
 | `.{ ... }`, positional or named | a struct |
 | `.{ ... }` | an array |
 | `.{}` | anything above: a struct with every field defaulted or zero, an array of zeros, an empty slice |
-| the name of a top-level function | a function pointer — `fn(...)` field, `extern fn(...)`, or a plain `fn(...)` |
+| the name of a top-level function | a function value — a `fn(...)` closure, or an `extern fn(...)` C pointer |
 | `&OTHER` — the address of another top-level global | a pointer `*T` or `?*T` |
 | `null` | a pointer or an optional |
 | `.variant` or `Enum.variant`, for a variant with no payload | an enum |
