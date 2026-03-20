@@ -1019,6 +1019,39 @@ test "diagnostics: TARGET's fields are enums, so a misspelt platform is an error
     fe.deinit(a);
 }
 
+test "diagnostics: a union's field is read in `unsafe`, written anywhere" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // A union's field reads its bytes as that field, whichever was written: a reinterpretation,
+    // as a pointer cast is. Only the place of a plain `=` is written.
+    const decls =
+        \\Halves :: struct { low: u32, high: u32 }
+        \\Large :: union { quad: u64, parts: Halves }
+        \\P :: struct { x: i32 }
+        \\PU :: union { p: *P, n: usize }
+        \\
+    ;
+    const read = "reading `.quad` of the union `Large` reads its bytes as that field, whichever was written: do it in `unsafe`";
+    const cases = [_]struct { body: []const u8, needle: []const u8 }{
+        .{ .body = "main :: fn() -> i32 { u: Large = .{ 1 }; return u.quad as i32; }", .needle = read },
+        .{ .body = "main :: fn() -> i32 { u: Large = .{ 1 }; u.quad += 1; return 0; }", .needle = read },
+        .{ .body = "main :: fn() -> i32 { u: Large = .{ 1 }; buf: [4]u8 = .{}; buf[u.quad] = 1; return 0; }", .needle = read },
+        .{ .body = "f :: fn(l: *Large) -> i32 { return l.quad as i32; }", .needle = read },
+        .{ .body = "main :: fn() -> i32 { u: Large = .{ 1 }; p := &u.quad; return 0; }", .needle = read },
+        // `u.p.x = 5` writes through the pointer it reads from `u.p`.
+        .{ .body = "main :: fn() -> i32 { v: P = .{ 1 }; u: PU = .{ &v }; u.p.x = 5; return 0; }", .needle = "reading `.p` of the union `PU`" },
+        .{ .body = "main :: fn() -> i32 { u: Large = .{ 1, 2 }; return 0; }", .needle = "a union literal sets one field" },
+        .{ .body = "main :: fn() -> i32 { u: Large = .{ .quad = 1, .parts = .{ 1, 2 } }; return 0; }", .needle = "a union literal sets one field" },
+    };
+    for (cases) |case| {
+        const src = try std.mem.concat(a, u8, &.{ decls, case.body, "\n" });
+        try expectFirstError(a, src, &.{case.needle});
+    }
+    try expectNoError(a, decls, "main :: fn() -> i32 { u: Large = .{ 1 }; u.parts.low = 3; u.parts = .{ 1, 2 }; u.quad = 4; return unsafe (u.parts.high) as i32; }");
+    try expectNoError(a, decls, "f :: fn(l: *Large) -> i32 { l.quad = 2; unsafe { l.quad = l.quad + 1; } return 0; }");
+}
+
 test "diagnostics: a constant is not written to" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

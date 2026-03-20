@@ -458,7 +458,7 @@ const not_receivers = [_][]const u8{
     "return", "if",    "else",   "while",  "for",    "in",        "match",    "fn",
     "defer",  "catch", "fail",   "as",     "pub",    "const",     "unsafe",   "zone",
     "break",  "true",  "false",  "null",   "struct", "enum",      "errors",   "interface",
-    "type",   "macro", "opaque", "atomic", "borrow", "continue", "yield",
+    "type",   "macro", "opaque", "atomic", "borrow", "continue", "yield", "union",
 };
 
 /// The chain that ends at `end` (exclusive), as in the text before a `.` or `(`.

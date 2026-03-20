@@ -49,6 +49,11 @@ pub fn ofWith(ty: ir.IrType, source: anytype) ?Layout {
 /// immediately after the previous one; otherwise at its natural alignment. Sub-byte
 /// fields (`u1`–`u7`) are not bit-packed: each occupies a whole byte.
 pub fn offsetOfWith(def: ir.StructDef, field: []const u8, source: anytype) ?u64 {
+    // A union's fields all start at its start.
+    if (def.is_union) {
+        for (def.fields) |f| if (std.mem.eql(u8, f.name, field)) return 0;
+        return null;
+    }
     var offset: u64 = 0;
     for (def.fields) |f| {
         const member = memberLayout(f.ty, source, 1) orelse return null;
@@ -133,6 +138,7 @@ fn structLayout(name: []const u8, source: anytype, depth: u32) ?Layout {
     for (def.fields, 0..) |field, i| {
         members[i] = memberLayout(field.ty, source, depth + 1) orelse return null;
     }
+    if (def.is_union) return applyAlign(unionRecord(members[0..def.fields.len]), def);
     return applyAlign(record(members[0..def.fields.len], def.is_packed), def);
 }
 
@@ -161,6 +167,17 @@ fn record(members: []const Layout, packed_: bool) Layout {
         offset += m.size;
     }
     return .{ .size = alignUp(offset, alignment), .alignment = alignment };
+}
+
+/// A union of `members`: the size of the largest, rounded up to the strictest alignment.
+fn unionRecord(members: []const Layout) Layout {
+    var size: u64 = 0;
+    var alignment: u64 = 1;
+    for (members) |m| {
+        size = @max(size, m.size);
+        alignment = @max(alignment, m.alignment);
+    }
+    return .{ .size = alignUp(size, alignment), .alignment = alignment };
 }
 
 fn alignUp(value: u64, alignment: u64) u64 {

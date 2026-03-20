@@ -194,6 +194,8 @@ pub const StructDecl = struct {
     /// the struct's type params inherited) so the existing generic/UFCS machinery
     /// handles them; this list is kept for reference/introspection.
     methods: []const FunctionDecl = &.{},
+    /// `union { … }`: every field at offset 0, the size of the largest.
+    is_union: bool = false,
 };
 
 pub const ErrorDecl = struct {

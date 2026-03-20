@@ -111,6 +111,7 @@ pub const TokenKind = enum {
     keyword_fail,
     keyword_catch,
     keyword_yield,
+    keyword_union,
 
     // Primitive type keywords
     keyword_bool,

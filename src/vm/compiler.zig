@@ -1397,6 +1397,8 @@ const FnCompiler = struct {
     fn fieldOffset(self: *FnCompiler, base_ty: ir.IrType, field_name: []const u8) CompileError!i64 {
         const sname = structName(base_ty) orelse return error.Unsupported;
         const def = self.structDef(sname) orelse return error.Unsupported;
+        // A union reads one field's bytes as another's, which cells do not hold.
+        if (def.is_union) return error.Unsupported;
         return fieldIndex(def, field_name) orelse error.Unsupported;
     }
 

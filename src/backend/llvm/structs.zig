@@ -26,6 +26,37 @@ pub fn lowerAll(cg: *ModuleCg, structs: []const ir.StructDef) !void {
         defer cg.allocator.free(field_tys);
 
         const field_entries = try cg.allocator.alloc(ctx_mod.StructField, s.fields.len);
+        if (s.is_union) {
+            // Every field at offset 0: the body is the most aligned member and the bytes that
+            // make up the size of the largest. A field is reached at the union's own address.
+            var widest: ?ir.FieldDef = null;
+            var widest_align: u64 = 0;
+            for (s.fields, 0..) |f, i| {
+                field_entries[i] = .{ .name = f.name, .ir_ty = f.ty };
+                const l = layout.of(f.ty, structs) orelse continue;
+                if (l.alignment > widest_align or widest == null) {
+                    widest = f;
+                    widest_align = l.alignment;
+                }
+            }
+            const whole = layout.of(.{ .struct_type = s.name }, structs);
+            var body: [2]llvm.LLVMTypeRef = undefined;
+            var body_len: c_uint = 0;
+            if (widest) |w| {
+                body[0] = types.lower(cg, w.ty);
+                body_len = 1;
+                const member = layout.of(w.ty, structs);
+                if (whole != null and member != null and whole.?.size > member.?.size) {
+                    body[1] = llvm.LLVMArrayType2(llvm.LLVMInt8TypeInContext(cg.ctx), whole.?.size - member.?.size);
+                    body_len = 2;
+                }
+            }
+            llvm.LLVMStructSetBody(lty, &body, body_len, 0);
+            try cg.struct_fields.put(s.name, field_entries);
+            try cg.struct_unions.put(s.name, {});
+            if (s.alignment > 0) try cg.struct_alignments.put(s.name, s.alignment);
+            continue;
+        }
         for (s.fields, 0..) |f, i| {
             // A `fn(...)` field is a `{fn, env}` closure, as anywhere; an `extern fn(...)` one
             // is the thin C pointer a C struct holds (a Win32 `WNDCLASSEXA.lpfnWndProc`).

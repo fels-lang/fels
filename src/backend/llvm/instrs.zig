@@ -968,6 +968,19 @@ fn lowerField(
         },
 
         .struct_type => |name| {
+            // A union's field is its bytes at its own address, read as the field's type.
+            if (cg.isUnion(name)) {
+                const struct_lty = cg.struct_types.get(name) orelse return null;
+                const base_ptr = if (want_addr)
+                    localOrAllocaPtr(cg, fncg, f.base, struct_lty) orelse return null
+                else blk: {
+                    const tmp = abi.entryAlloca(cg, fncg.llvm_fn, struct_lty);
+                    _ = llvm.LLVMBuildStore(cg.builder, resolveVal(cg, fncg, f.base, base_ir_ty), tmp);
+                    break :blk tmp;
+                };
+                if (want_addr) return base_ptr;
+                return llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, result_ty), base_ptr, "");
+            }
             // Struct value (e.g. a local of named type loaded from alloca).
             const idx = cg.fieldIndex(name, f.name) orelse return null;
             const struct_lty = cg.struct_types.get(name) orelse return null;
@@ -985,11 +998,14 @@ fn lowerField(
                 .struct_type => |name| name,
                 else => return null,
             };
-            const idx = cg.fieldIndex(name, f.name) orelse return null;
             const struct_lty = cg.struct_types.get(name) orelse return null;
             const base_ptr = resolveVal(cg, fncg, f.base, base_ir_ty);
             if (cg.safety) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
-            const field_ptr = llvm.LLVMBuildStructGEP2(cg.builder, struct_lty, base_ptr, idx, "");
+            // A union's fields are all at its own address.
+            const field_ptr = if (cg.isUnion(name))
+                base_ptr
+            else
+                llvm.LLVMBuildStructGEP2(cg.builder, struct_lty, base_ptr, cg.fieldIndex(name, f.name) orelse return null, "");
             if (want_addr) return field_ptr;
             // A field is loaded as its type: a `fn(...)` field holds a `{fn, env}` closure, an
             // `extern fn(...)` one a bare code pointer (structs.zig).
@@ -1245,6 +1261,32 @@ fn lowerBuiltin(
     // compound_literal([args...]) — array or struct aggregate constant.
     if (std.mem.eql(u8, b.name, "compound_literal")) {
         return lowerCompoundLiteral(cg, fncg, b.args, ty);
+    }
+
+    // union_literal([field index, value]): the union's bytes zero, then the one field written.
+    if (std.mem.eql(u8, b.name, "union_literal")) {
+        const name = switch (ty) {
+            .struct_type => |n| n,
+            else => return null,
+        };
+        const union_lty = cg.struct_types.get(name) orelse return null;
+        const tmp = abi.entryAlloca(cg, fncg.llvm_fn, union_lty);
+        _ = llvm.LLVMBuildStore(cg.builder, llvm.LLVMConstNull(union_lty), tmp);
+        if (b.args.len == 2) {
+            const fields = cg.struct_fields.get(name) orelse return null;
+            const index: usize = switch (b.args[0]) {
+                .imm => |im| switch (im) {
+                    .uint => |u| @intCast(u),
+                    .int => |i| @intCast(i),
+                    else => return null,
+                },
+                else => return null,
+            };
+            if (index >= fields.len) return null;
+            const v = resolveVal(cg, fncg, b.args[1], fields[index].ir_ty);
+            _ = llvm.LLVMBuildStore(cg.builder, v, tmp);
+        }
+        return llvm.LLVMBuildLoad2(cg.builder, union_lty, tmp, "");
     }
 
     // slice([base]) — take the base ptr and zero len; used for [:] expressions.
