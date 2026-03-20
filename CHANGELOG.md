@@ -20,8 +20,51 @@ the major version is `0`, any minor bump may break source compatibility.
   read but `if e == .v |c|` in the handler, and only when it had the success type.
   `match e { .overflow |n| => … }` and `if e == .overflow |n|` now bind it as the variant's type,
   wherever the error is, and `?` passes it on within one set.
+- **Errors are built as enum values are.** `fail .overflow(n)` gives the payload in
+  parentheses (the braces still compile, with a warning), `ParseError.overflow(n)` and `Plain.b`
+  are the error as a value, to keep or pass before it is raised, and `fail e;` raises a caught
+  error again, payload and all.
+- **Unions.** `LargeInteger :: union { quad: u64, parts: Halves }` puts every field at offset 0,
+  the size of the largest, which is C's union. Reading a field reinterprets the bytes, so it is
+  done in `unsafe`; writing one is not. A literal sets one field and zeroes the rest; a static
+  union starts as `.{}`. bindgen turns a C union into one (a union with a bitfield stays a byte
+  blob), and `core::type_info` reports one as `.union_`.
+- **Typed constants: `NAME : T : value;`**, for a struct or a table that is read-only data. A
+  constant, typed or not, is not written to: `M = 3;`, `ORIGIN.x = 5` and `TABLE[1] = 9` are
+  errors, and `&` of a constant is a `*const` pointer.
+- **`TARGET` describes the build.** `TARGET.os == .windows`, `TARGET.arch` and `TARGET.debug` are
+  the target and level being built, checked as enum comparisons; `core::os` and `core::arch` say
+  the same. A top-level `#if` keeps the declarations of the branch whose condition holds, so an
+  `#extern`, a constant or a struct can differ by platform, and `#if` takes `else #if`, in a
+  function too.
+- **Match patterns:** negative numbers and character literals (`-1 =>`, `'a' =>`), and ranges and
+  values in one arm (`'0'..='9', '_' =>`).
+- **`core::has_padding(T)`**: whether a value of `T` has bytes that no value sets, folded at
+  compile time.
+- **A type argument is passed or inferred.** A call passes the `$T: type` arguments, all type
+  arguments or none; each one not passed is inferred from the values, and one that cannot be is
+  an error that says to pass it.
+- **Aliases name generic instances and re-export types.** `IntPair :: Pair(i32);` is an alias,
+  and `pub Name :: other::Name;` offers another module's type,
+  with its error set, associated functions (`ns::Type::fn`) and variants (`ns::Enum.v`). std.net
+  re-exports its submodules' types.
+- **`fels ir` takes `--target` and `-O`** and prints the IR of that build.
 
 ### Changed
+
+- **A `fn(...)` struct field is a closure**, as `fn(...)` is everywhere else, so a capturing
+  lambda can be stored in a struct. A C function pointer, in a field as anywhere, is
+  `extern fn(...)`: a struct that mirrors a C struct, a COM vtable or a DLL table must say so,
+  or it is 8 bytes larger per field. std.com, the examples and bindgen use `extern fn`.
+- **AutoHashMap takes only a key whose bytes are its value** (`map::ByteKey`): a float, a slice,
+  an optional, a union or a struct with padding is refused when the map type is made, with the
+  reason. Such keys hashed and compared their bytes and failed to find what was put in.
+- **A warning no longer stops a build.** A `#deprecated` call was reported and then failed the
+  build, and `fels check` called a warning an error.
+- **`if opt |x|` is the way to unwrap an optional in an `if`**; `if x := opt` compiles with a
+  warning.
+- **`std.list` is gone**; `std.vec` is the growable array.
+- **`union` is a keyword.**
 
 - **The runtime safety checks stay in release builds.** Index bounds, null pointers, integer
   overflow, division by zero and shift amounts were checked only at `-O0`, so every optimized
@@ -53,6 +96,17 @@ the major version is `0`, any minor bump may break source compatibility.
   an error field failed LLVM's verifier.
 - **The comptime VM wrapped `return inner();`** as the success value, so a `#run` through a
   function that forwards a fallible could not be evaluated.
+- **`TARGET` was never lowered**: `TARGET.os == .windows` branched on an undefined value (at
+  `-O0` every such branch was taken, Linux and Windows alike), and `TARGET.debug` and `core::os`
+  described the compiler, not the build.
+- **`Pair(Pair(i32))` lowered as the template `Pair`**, its fields pointers: a field access
+  crashed the code generator, and the comptime VM could not run the function.
+- **A constraint's body was type-checked in the file of the call**, so a helper of the
+  constraint's own module was unknown at every use from another module; and a type that failed
+  a constraint was reported at the declaration's offset, shown on whatever line of the caller's
+  file had it. It is reported at the call.
+- **An interface implemented on an alias** (`P as Show { … }` for `P :: Point;`) was registered
+  for the name `P`, so `Point` did not implement it. It is an error that names the type.
 
 ## 0.8.0 — 2026-10-17
 
