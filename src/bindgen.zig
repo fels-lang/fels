@@ -12,7 +12,7 @@
 //!
 //! v1 maps the common scalar/pointer/struct/enum/array shapes. Not yet handled
 //! (emitted best-effort, refined later): preprocessor `#define` constants,
-//! C unions (emitted as an opaque byte blob of the right size), function-pointer
+//! C unions with bitfields (emitted as an opaque byte blob of the right size), function-pointer
 //! typedefs (mapped to a raw pointer), bitfields, and variadics.
 
 const std = @import("std");
@@ -362,9 +362,9 @@ const Generator = struct {
 
         const fields = try directChildren(self.arena, cursor);
 
-        // Unions and bitfield structs can't be field-mapped without breaking the
-        // ABI (overlapping / packed storage). Emit a size+align-correct opaque
-        // blob instead, so by-value passing stays correct (poke via casts).
+        // Bitfields can't be field-mapped without breaking the ABI (packed storage): a struct
+        // or union with one is a size+align-correct opaque blob instead, so by-value passing
+        // stays correct (poke via casts). A union without them is a Fels `union`.
         const is_union = cl.clang_getCursorKind(cursor) == c.CXCursor_UnionDecl;
         var has_bitfield = false;
         for (fields) |f| {
@@ -373,11 +373,11 @@ const Generator = struct {
                 break;
             }
         }
-        if (is_union or has_bitfield)
-            return self.emitSizedBlob(name, cl.clang_getCursorType(cursor), if (is_union) "C union" else "C struct with bitfields");
+        if (has_bitfield)
+            return self.emitSizedBlob(name, cl.clang_getCursorType(cursor), if (is_union) "C union with bitfields" else "C struct with bitfields");
 
         if (try self.markEmitted(name)) return;
-        try self.out.print(self.arena, "pub {s} :: struct {{\n", .{try self.ident(name)});
+        try self.out.print(self.arena, "pub {s} :: {s} {{\n", .{ try self.ident(name), if (is_union) "union" else "struct" });
         var any = false;
         for (fields) |f| {
             if (cl.clang_getCursorKind(f) != c.CXCursor_FieldDecl) continue;
