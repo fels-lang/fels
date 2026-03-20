@@ -231,6 +231,18 @@ fn firstErrorWithLib(arena: std.mem.Allocator, lib_src: []const u8, src: []const
     return null;
 }
 
+test "diagnostics: a type that fails a constraint is reported at the call" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The error was placed at the `$T: Numeric` of the declaration, a position in the other
+    // file, and shown on whatever line of this one had that offset.
+    const lib = "pub dbl :: fn($T: Numeric, x: T) -> T { return x; }\n";
+    const msg = (try firstErrorWithLib(a, lib, "#import std.build;\nP :: struct { a: i32 }\nuse :: fn() -> i32 { p: P = .{ 0 }; _ := build::dbl(p); return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, msg, "does not satisfy `Numeric`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "t.fels:3:") != null);
+}
+
 test "diagnostics: a type from a module imported whole says how to reach it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
