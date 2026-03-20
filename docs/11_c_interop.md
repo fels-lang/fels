@@ -148,6 +148,7 @@ What is **guaranteed**, on the supported targets (Windows and Linux, x86-64):
 | `[]T`, `string` | 16 bytes: pointer then length. |
 | `extern fn(...)` | A thin 8-byte code pointer, a C function pointer, in a field as anywhere. A plain `fn(...)` is a 16-byte `{fn, env}` closure, in a field too. |
 | `?*T` | An 8-byte nullable pointer. |
+| `union` | Every field at offset 0; the size of the largest field, rounded up to the strictest field alignment. |
 
 What is **not** guaranteed, and so is not offered:
 
@@ -163,24 +164,27 @@ What is **not** guaranteed, and so is not offered:
 top-level field; for a nested one, add the offsets (`offset_of(Outer, "inner") +
 offset_of(Inner, "x")`).
 
-Fels has no `union`. A payload enum is a *tagged* union — a 4-byte tag in front of the
-payload — so it cannot overlay C's untagged bytes. For a union that sits inside a C
-struct, declare the member as the union's largest, most strictly aligned variant and view
-the others through an `unsafe` pointer cast:
+A C union is a Fels `union` (see [02_types](02_types.md)): every field at offset 0, the
+size of the largest rounded up to the strictest alignment, which is C's rule. Reading a
+field is `unsafe`, as it reinterprets the bytes; writing one is not.
 
 ```fels
 // typedef union { struct { DWORD LowPart; LONG HighPart; }; LONGLONG QuadPart; } LARGE_INTEGER;
-LargeInteger :: struct { quad: i64 }
 LowHigh      :: struct { low: u32, high: i32 }
+LargeInteger :: union { quad: i64, parts: LowHigh }
 
 li: LargeInteger = .{ -2i64 };
-parts := unsafe ((&li) as *LowHigh);          // parts.low == 4294967294, parts.high == -1
+low := unsafe (li.parts.low);                 // 4294967294; li.parts.high is -1
+
+// typedef struct { DWORD type; union { MOUSEINPUT mi; KEYBDINPUT ki; HARDWAREINPUT hi; }; } INPUT;
+InputData :: union { mi: MouseInput, ki: KeybdInput, hi: HardwareInput }
+Input :: struct { kind: u32, u: InputData }   // 40 bytes, the union at offset 8
+
+key: Input = .{ 1, .{ .ki = .{ vk, 0, 0, 0, 0 } } };
 ```
 
-The carrier decides the union's size and alignment, so it must be at least as large and as
-strictly aligned as every variant. `Input :: struct { kind: u32, u: MouseInput }` is the
-Win32 `INPUT` (40 bytes, union at offset 8) because `MouseInput` is its largest variant;
-the keyboard variant is a `*KeybdInput` view of `u`.
+A payload enum is a *tagged* union, a tag in front of the payload, so it does not overlay
+C's bytes; use it for Fels's own sum types.
 
 ## Exporting data
 
@@ -483,10 +487,11 @@ bindgen handles the awkward parts of real headers too:
 
 - **Function pointers / callbacks** become a real Fels function type, expanded
   inline at the use site (Fels has no `Name :: fn(...)` type-alias form):
-  `void set_logger(LogCallback)` → `pub set_logger :: fn(cb: fn(i32, [*]const u8) -> void);`.
+  `void set_logger(LogCallback)` → `pub set_logger :: fn(cb: extern fn(i32, [*]const u8) -> void);`.
   You can pass a Fels function as the callback and C will call back into it.
-- **Unions** and **bitfield structs** become a size- and alignment-correct opaque
-  blob (`#align(A) struct { _bytes: [N]u8 }`) so by-value passing stays ABI-correct
+- **Unions** become a Fels `union` with the same fields.
+- **Bitfield structs** (and unions with a bitfield) become a size- and alignment-correct
+  opaque blob (`#align(A) struct { _bytes: [N]u8 }`) so by-value passing stays ABI-correct
   (you read the contents via casts).
 - **Opaque / forward-declared types** (`typedef struct Foo Foo;` handles) become
   `pub Foo :: opaque;`, so `*Foo` resolves and the module always compiles.
