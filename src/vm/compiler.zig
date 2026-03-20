@@ -1419,7 +1419,7 @@ const FnCompiler = struct {
             .optional => "optional",
             .array => "array",
             .struct_type, .variant_type => |n| blk: {
-                if (self.structDef(n) != null) break :blk "struct";
+                if (self.structDef(n)) |def| break :blk if (def.is_union) "union" else "struct";
                 for (self.module.variants) |v| {
                     if (std.mem.eql(u8, v.name, n)) break :blk "enum";
                 }

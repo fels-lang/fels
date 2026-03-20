@@ -2985,7 +2985,8 @@ const FunctionLowerer = struct {
             // and look its size up via `type_size_of`.
             .{ .name = "id", .value = .{ .imm = .{ .uint = typeIdHash(.{ .struct_type = name }) } } },
         });
-        return self.mkVariant("TypeInfo", "struct_", payload);
+        // A union's fields overlap: it is no struct to a reader that walks them all.
+        return self.mkVariant("TypeInfo", if (self.isUnionType(.{ .struct_type = name })) "union_" else "struct_", payload);
     }
 
     fn tiEnum(self: *FunctionLowerer, name: []const u8, visiting: *std.StringHashMap(void)) LowerError!Value {
@@ -6683,7 +6684,7 @@ fn declKindName(symbols: sema.SymbolTable, item: ast.Item) []const u8 {
         .function => "fn",
         .const_decl => |c| if (sema.isTypeAliasConst(symbols, c)) "alias" else "const",
         .type_decl => |t| switch (t.kind) {
-            .struct_type => "struct",
+            .struct_type => |s| if (s.is_union) "union" else "struct",
             .enum_type => "enum",
             .errors => "errors",
             .interface_type => "interface",

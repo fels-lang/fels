@@ -4310,6 +4310,45 @@ test "exe: a union's fields share its bytes" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_union_o2", 2, true));
 }
 
+test "exe: a generic union, a union by value, and type_info telling a union from a struct" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `type_info` reports a union as `.union_`, so a reader walking `.struct_` fields does not
+    // take every overlapping field for a value of its own.
+    const src =
+        \\Pair :: union($T: type) { one: T, two: [2]u32 }
+        \\P64 :: Pair(u64);
+        \\P8 :: Pair(u8);
+        \\Halves :: struct { low: u32, high: u32 }
+        \\Large :: union { quad: u64, parts: Halves }
+        \\kind :: fn($T: type) -> i32 {
+        \\    match core::type_info(T) {
+        \\        .union_ |u| => { return u.fields.len as i32; }
+        \\        .struct_ => { return 100; }
+        \\        else => { return 200; }
+        \\    }
+        \\}
+        \\swap :: fn(l: Large) -> Large {
+        \\    r: Large = .{};
+        \\    unsafe { r.parts = .{ l.parts.high, l.parts.low }; }
+        \\    return r;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    p: Pair(u64) = .{ .two = .{ 1, 1 } };
+        \\    if unsafe (p.one) != 0x100000001 { return 1; }
+        \\    if core::sizeof(P64) != 8 || core::sizeof(P8) != 8 { return 2; }
+        \\    if kind(Large) != 2 || kind(Halves) != 100 { return 3; }
+        \\    s := swap(.{ 0x0000000300000004 });
+        \\    if unsafe (s.quad) != 0x0000000400000003 { return 4; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_union_generic", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_union_generic_o2", 2, true));
+}
+
 test "exe: a union in static storage starts as zero" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
