@@ -41,10 +41,14 @@ fn declareOne(cg: *ModuleCg, g: ir.IrGlobal) !void {
 }
 
 fn initOne(cg: *ModuleCg, g: ir.IrGlobal) !void {
-    const gval = cg.global_decls.get(g.name).?;
+    var gval = cg.global_decls.get(g.name).?;
     const lty = types.lower(cg, g.ty);
 
-    llvm.LLVMSetInitializer(gval, lowerConstInit(cg, g.init, g.ty, lty));
+    const init = lowerConstInit(cg, g.init, g.ty, lty);
+    // A constant with a payload in it is a packed struct of the type's layout (see
+    // `lowerVariantInit`): the global takes that type, at the alignment of its own.
+    if (llvm.LLVMTypeOf(init) != lty) gval = try retypeGlobal(cg, g.name, gval, llvm.LLVMTypeOf(init), lty);
+    llvm.LLVMSetInitializer(gval, init);
     if (!g.mutable) llvm.LLVMSetGlobalConstant(gval, 1);
 
     // Apply struct alignment if the global is of a named struct type with #align.
@@ -58,9 +62,29 @@ fn initOne(cg: *ModuleCg, g: ir.IrGlobal) !void {
     }
 }
 
+/// The global `gval` again, its value of type `init_ty` (the bytes of `lty`, laid out as
+/// a packed struct). Every use of the old declaration, in code and in other initializers,
+/// is the new one.
+fn retypeGlobal(cg: *ModuleCg, name: []const u8, gval: llvm.LLVMValueRef, init_ty: llvm.LLVMTypeRef, lty: llvm.LLVMTypeRef) !llvm.LLVMValueRef {
+    const fresh = llvm.LLVMAddGlobal(cg.mod, init_ty, "");
+    llvm.LLVMSetLinkage(fresh, llvm.LLVMGetLinkage(gval));
+    llvm.LLVMSetDLLStorageClass(fresh, llvm.LLVMGetDLLStorageClass(gval));
+    llvm.LLVMSetAlignment(fresh, llvm.LLVMABIAlignmentOfType(cg.targetData(), lty));
+    var len: usize = 0;
+    const symbol = llvm.LLVMGetValueName2(gval, &len);
+    const symbol_copy = try cg.allocator.dupe(u8, symbol[0..len]);
+    defer cg.allocator.free(symbol_copy);
+    llvm.LLVMReplaceAllUsesWith(gval, fresh);
+    llvm.LLVMDeleteGlobal(gval);
+    llvm.LLVMSetValueName2(fresh, symbol_copy.ptr, symbol_copy.len);
+    try cg.global_decls.put(name, fresh);
+    return fresh;
+}
+
 /// `ty` is the value's IR type (to read an immediate against); `lty` is the LLVM type the
 /// slot has — they differ for a `fn` struct field, whose IR type is a closure but which is
-/// stored as a bare code pointer.
+/// stored as a bare code pointer. The constant has type `lty`, except one that holds a
+/// payload (`lowerVariantInit`), which is a packed struct of the same size and layout.
 fn lowerConstInit(cg: *ModuleCg, init: ir.ConstInit, ty: ir.IrType, lty: llvm.LLVMTypeRef) llvm.LLVMValueRef {
     return switch (init) {
         .imm => |imm| values.lowerImm(cg, imm, ty),
@@ -73,6 +97,7 @@ fn lowerConstInit(cg: *ModuleCg, init: ir.ConstInit, ty: ir.IrType, lty: llvm.LL
             break :blk llvm.LLVMConstNull(lty);
         },
         .variant_tag => |tag| lowerVariantTag(tag, lty),
+        .variant => |v| lowerVariantInit(cg, v, lty),
         // Only the module the comptime VM reads holds a value that was never computed; the
         // lowering of the program itself either has the value or stopped with the reason.
         .pending => blk: {
@@ -96,6 +121,80 @@ fn lowerVariantTag(tag: u32, lty: llvm.LLVMTypeRef) llvm.LLVMValueRef {
     return llvm.LLVMConstNamedStruct(lty, &elems, 2);
 }
 
+/// An enum value or an error with a payload. Its type, `{ i32 tag, [N x i8] data }`, holds
+/// the payload as bytes, and a constant of it cannot have a payload with an address in it
+/// (a string, a pointer) there; so the constant is `<{ i32 tag, payload, [rest x i8] }>`,
+/// the same bytes at the same offsets.
+fn lowerVariantInit(cg: *ModuleCg, v: ir.VariantInit, lty: llvm.LLVMTypeRef) llvm.LLVMValueRef {
+    if (llvm.LLVMGetTypeKind(lty) != llvm.LLVMStructTypeKind or llvm.LLVMCountStructElementTypes(lty) != 2)
+        return llvm.LLVMConstNull(lty);
+    const dl = cg.targetData();
+    const payload_lty = types.lower(cg, v.payload_ty);
+    var payload = lowerConstInit(cg, v.payload.*, v.payload_ty, payload_lty);
+    // An integer whose width is no whole number of bytes (`u24`) is placed as its bytes: in a
+    // packed struct it would take the 4 bytes of its alignment, past the data it has room in.
+    if (llvm.LLVMGetTypeKind(llvm.LLVMTypeOf(payload)) == llvm.LLVMIntegerTypeKind and
+        llvm.LLVMABISizeOfType(dl, payload_lty) != llvm.LLVMStoreSizeOfType(dl, payload_lty))
+        payload = intBytes(cg, payload, llvm.LLVMStoreSizeOfType(dl, payload_lty));
+
+    var parts: [4]llvm.LLVMValueRef = undefined;
+    var n: usize = 0;
+    const tag_lty = llvm.LLVMStructGetTypeAtIndex(lty, 0);
+    parts[n] = llvm.LLVMConstInt(tag_lty, v.tag, 0);
+    n += 1;
+    const data_at = llvm.LLVMOffsetOfElement(dl, lty, 1);
+    const tag_end = llvm.LLVMABISizeOfType(dl, tag_lty);
+    if (data_at > tag_end) {
+        parts[n] = zeroBytes(cg, data_at - tag_end);
+        n += 1;
+    }
+    parts[n] = payload;
+    n += 1;
+    const used = data_at + llvm.LLVMABISizeOfType(dl, llvm.LLVMTypeOf(payload));
+    const total = llvm.LLVMABISizeOfType(dl, lty);
+    if (used > total) {
+        cg.recordLoweringError("internal error: a static payload is larger than the room its enum has for it", .{}, @src());
+        return llvm.LLVMConstNull(lty);
+    }
+    if (total > used) {
+        parts[n] = zeroBytes(cg, total - used);
+        n += 1;
+    }
+    return llvm.LLVMConstStructInContext(cg.ctx, &parts, @intCast(n), 1);
+}
+
+fn zeroBytes(cg: *ModuleCg, len: u64) llvm.LLVMValueRef {
+    return llvm.LLVMConstNull(llvm.LLVMArrayType2(llvm.LLVMInt8TypeInContext(cg.ctx), len));
+}
+
+/// The `len` little-endian bytes of the integer constant `value`, as an `[len x i8]`.
+fn intBytes(cg: *ModuleCg, value: llvm.LLVMValueRef, len: u64) llvm.LLVMValueRef {
+    const i8_ty = llvm.LLVMInt8TypeInContext(cg.ctx);
+    const bits = llvm.LLVMConstIntGetZExtValue(value);
+    var bytes: [8]llvm.LLVMValueRef = undefined;
+    const n: usize = @intCast(@min(len, 8));
+    for (bytes[0..n], 0..) |*b, i| b.* = llvm.LLVMConstInt(i8_ty, (bits >> @intCast(i * 8)) & 0xff, 0);
+    return llvm.LLVMConstArray2(i8_ty, &bytes, n);
+}
+
+/// The aggregate of `parts` laid out as `lty` lays out its members, as a packed struct: what
+/// an aggregate constant is when one of its parts has a type of its own (`lowerVariantInit`).
+/// `offsets[i]` is where part `i` starts.
+fn packedLike(cg: *ModuleCg, lty: llvm.LLVMTypeRef, parts: []const llvm.LLVMValueRef, offsets: []const u64) llvm.LLVMValueRef {
+    const dl = cg.targetData();
+    var out: std.ArrayList(llvm.LLVMValueRef) = .empty;
+    defer out.deinit(cg.allocator);
+    var at: u64 = 0;
+    for (parts, offsets) |part, offset| {
+        if (offset > at) out.append(cg.allocator, zeroBytes(cg, offset - at)) catch return llvm.LLVMConstNull(lty);
+        out.append(cg.allocator, part) catch return llvm.LLVMConstNull(lty);
+        at = offset + llvm.LLVMABISizeOfType(dl, llvm.LLVMTypeOf(part));
+    }
+    const total = llvm.LLVMABISizeOfType(dl, lty);
+    if (total > at) out.append(cg.allocator, zeroBytes(cg, total - at)) catch return llvm.LLVMConstNull(lty);
+    return llvm.LLVMConstStructInContext(cg.ctx, out.items.ptr, @intCast(out.items.len), 1);
+}
+
 fn lowerStructInit(cg: *ModuleCg, si: ir.StructInit) llvm.LLVMValueRef {
     const struct_ty = cg.struct_types.get(si.ty_name) orelse
         return llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(cg.ctx, 0));
@@ -116,6 +215,14 @@ fn lowerStructInit(cg: *ModuleCg, si: ir.StructInit) llvm.LLVMValueRef {
     for (si.fields.len..elems) |i| {
         fields[i] = llvm.LLVMConstNull(llvm.LLVMStructGetTypeAtIndex(struct_ty, @intCast(i)));
     }
+    for (fields, 0..) |f, i| {
+        if (llvm.LLVMTypeOf(f) == llvm.LLVMStructGetTypeAtIndex(struct_ty, @intCast(i))) continue;
+        // A field holds a payload: the struct is its bytes, as a packed struct.
+        const offsets = cg.allocator.alloc(u64, fields.len) catch return llvm.LLVMConstNull(struct_ty);
+        defer cg.allocator.free(offsets);
+        for (offsets, 0..) |*o, k| o.* = llvm.LLVMOffsetOfElement(cg.targetData(), struct_ty, @intCast(k));
+        return packedLike(cg, struct_ty, fields, offsets);
+    }
     return llvm.LLVMConstNamedStruct(struct_ty, fields.ptr, @intCast(fields.len));
 }
 
@@ -133,6 +240,15 @@ fn lowerArrayInit(cg: *ModuleCg, elems: []const ir.ConstInit, ty: ir.IrType, lty
             lowerConstInit(cg, elems[i], arr.elem.*, elem_lty)
         else
             llvm.LLVMConstNull(elem_lty);
+    }
+    for (out) |v| {
+        if (llvm.LLVMTypeOf(v) == elem_lty) continue;
+        // An element holds a payload: the array is its bytes, as a packed struct.
+        const stride = llvm.LLVMABISizeOfType(cg.targetData(), elem_lty);
+        const offsets = cg.allocator.alloc(u64, total) catch return llvm.LLVMConstNull(lty);
+        defer cg.allocator.free(offsets);
+        for (offsets, 0..) |*o, k| o.* = k * stride;
+        return packedLike(cg, lty, out, offsets);
     }
     return llvm.LLVMConstArray2(elem_lty, out.ptr, total);
 }
