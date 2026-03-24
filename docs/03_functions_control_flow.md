@@ -245,7 +245,7 @@ Functions that can fail use `!` after the return type to declare an error channe
 read :: fn(buf: []u8) -> usize ! IoError { ... }
 
 // Inline error set
-parse :: fn(s: []const u8) -> i32 ! { .invalid, .overflow } { ... }
+parse :: fn(s: []const u8) -> i32 ! { invalid, overflow } { ... }
 
 // Inferred error type
 combine :: fn() -> i32 ! { ... }

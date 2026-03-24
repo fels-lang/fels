@@ -108,14 +108,14 @@ test "fels errors: anonymous inline error sets are checked" {
     defer arena.deinit();
 
     const src =
-        \\parse :: fn(src: []const u8) -> u32 ! { .empty, .invalid_token } {
+        \\parse :: fn(src: []const u8) -> u32 ! { empty, invalid_token } {
         \\    if src.len == 0 {
         \\        fail .empty;
         \\    }
         \\    return 1u32;
         \\}
         \\
-        \\use_parse :: fn(src: []const u8) -> u32 ! { .empty, .invalid_token } {
+        \\use_parse :: fn(src: []const u8) -> u32 ! { empty, invalid_token } {
         \\    return parse(src)?;
         \\}
     ;
@@ -131,7 +131,7 @@ test "fels errors: unknown variants in inline error sets fail" {
     defer arena.deinit();
 
     const bad =
-        \\bad :: fn() -> u32 ! { .known } {
+        \\bad :: fn() -> u32 ! { known } {
         \\    fail .missing;
         \\}
     ;

@@ -1372,7 +1372,7 @@ pub const Parser = struct {
 
         while (!self.check(end_kind) and !self.check(.eof)) {
             const start = self.peek();
-            _ = self.match(.dot);
+            const dotted = self.match(.dot);
             const variant_name = try self.expect(.ident, "expected error variant name");
             const payload = if (self.match(.colon)) try self.parseType() else null;
             const end = if (self.match(.comma)) self.previous() else variant_name;
@@ -1380,6 +1380,7 @@ pub const Parser = struct {
                 .name = variant_name.text(self.source),
                 .payload = payload,
                 .span = spanFrom(start, end),
+                .dotted = dotted,
             });
         }
 
@@ -1387,7 +1388,12 @@ pub const Parser = struct {
     }
 
     fn parseErrorSpec(self: *Parser, bang: Token) ParseError!ast.ErrorSpec {
-        if (self.check(.l_brace) and self.peekKind(1) == .dot) {
+        // `! { a, b }` is an inline set, written as a declared one is (`! { .a, .b }` is the
+        // older spelling). No block starts with a name and a `,` or a `}`, so a body that
+        // follows a bare `!` is not taken for one.
+        const inline_set = self.check(.l_brace) and (self.peekKind(1) == .dot or
+            (self.peekKind(1) == .ident and (self.peekKind(2) == .comma or self.peekKind(2) == .r_brace)));
+        if (inline_set) {
             _ = self.advance();
             const variants = try self.parseErrorVariants(.r_brace);
             const close = try self.expect(.r_brace, "expected } after inline error set");

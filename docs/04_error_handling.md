@@ -39,7 +39,7 @@ read_file :: fn(path: []const u8) -> []u8 ! IoError {
 }
 
 // Inline error set (each variant is written with a leading dot)
-parse :: fn(s: []const u8) -> i32 ! { .invalid, .overflow } {
+parse :: fn(s: []const u8) -> i32 ! { invalid, overflow } {
     // ...
 }
 
@@ -273,7 +273,7 @@ an error kept in a local, a field or a global. Three limits:
 
 - An inferred set (`-> T !`) keeps an error's variant but not its payload, so a payload cannot be
   bound through one: give the function the named set (`-> T ! ParseError`) to pass payloads on.
-- An inline set (`-> T ! { .a, .b }`) carries no payloads; a variant with one belongs to a
+- An inline set (`-> T ! { a, b }`, named as a declared set's errors are) carries no payloads; a variant with one belongs to a
   declared set.
 - Two errors of a set with payloads do not compare with `==` (the same variant, or the same
   payload too?): compare each with a variant, or `match` it.

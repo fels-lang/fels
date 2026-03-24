@@ -2503,6 +2503,7 @@ const Checker = struct {
                 }
             },
             .errors => |errors_decl| {
+                try self.warnDottedErrors(errors_decl.variants);
                 for (errors_decl.variants) |variant| {
                     if (variant.payload) |payload| {
                         try self.rejectBorrowTypeRefOutsideParam(payload);
@@ -6364,11 +6365,21 @@ const Checker = struct {
     /// variant and nothing more, so a payload would be lost on the way: a variant that carries
     /// one belongs to a declared set.
     fn inlineErrorVariants(self: *Checker, set: ast.InlineErrorSet) SemanticError![]const ErrorVariantInfo {
+        try self.warnDottedErrors(set.variants);
         for (set.variants) |variant| if (variant.payload != null) {
             self.emitError(variant.span, "the error `.{s}` of an inline set cannot carry a payload: declare the set (`E :: errors {{ {s}: … }}`) to give it one", .{ variant.name, variant.name });
             return error.SemanticFailed;
         };
         return self.errorVariantsFromDecl(set.variants);
+    }
+
+    /// A set names its errors as `name`, inline as declared; `.name` is how one is used. The
+    /// dotted spelling still compiles, with a warning on its first error.
+    fn warnDottedErrors(self: *Checker, variants: []const ast.ErrorVariantDecl) SemanticError!void {
+        for (variants) |v| if (v.dotted) {
+            self.emitWarning(v.span, "a set names its errors without the dot, `{s}` (as `errors {{ {s}, … }}` does); `.{s}` is how one is used: the dotted form will go", .{ v.name, v.name, v.name });
+            return;
+        };
     }
 
     /// `fail e;`: an error value passed on, which the function's set must take as `?` does.
