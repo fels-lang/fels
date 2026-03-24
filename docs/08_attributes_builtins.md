@@ -6,7 +6,7 @@ Attributes modify the behavior or layout of declarations. They are prefixed with
 
 ### Layout Attributes
 
-- `#packed`: applied to a `struct`. Packs the fields tightly without padding (alignment 1). Sub-byte fields (`u1`–`u7`) still take a whole byte each: there is no bit packing yet (see [Packed structs](02_types.md#packed-structs)).
+- `#packed`: applied to a `struct`. Packs the fields tightly without padding (alignment 1). Sub-byte fields (`u1`–`u7`, `i1`–`i7`) take their bits, and so does every integer field after them; any other field starts at a whole byte (see [Packed structs](02_types.md#packed-structs)).
 - `#align(N)`: C's `alignas(N)` for a `struct`. `N` is an integer literal and a power of
   two (1 to 4096). The struct is aligned to at least `N` and its size is rounded up to a
   multiple of `N`, wherever it lives: as a local or global, as a field of another struct

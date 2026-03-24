@@ -1045,7 +1045,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                 for (fields) |f| {
                     try ir_fields.append(allocator, .{
                         .name = f.name,
-                        .ty = try lowerSemaTypeWithEnv(allocator, f.ty, front_end.types, front_end.symbols),
+                        .ty = try fieldIrType(allocator, f, front_end.types, front_end.symbols),
                     });
                 }
                 try structs.append(allocator, .{
@@ -1628,13 +1628,34 @@ fn lowerStruct(allocator: std.mem.Allocator, decl: ast.TypeDecl, strukt: ast.Str
         });
     }
 
-    return .{
+    const def: StructDef = .{
         .name = linkNameFor(symbols, decl.file_name, decl.name),
         .fields = try fields.toOwnedSlice(allocator),
         .is_packed = hasAttr(decl.attrs, "packed"),
         .is_union = strukt.is_union,
         .alignment = alignAttr(decl.attrs),
     };
+    try checkBitPlaces(allocator, decl, strukt, def);
+    return def;
+}
+
+/// In a bit-packed struct an integer field may start at any bit, any other field (a
+/// `bool`, a float, a pointer, a struct) only at a whole byte: it is read and written as
+/// its bytes. Bytes-sized fields keep the bit position within a byte, so only the widths
+/// of the integers before a field decide where in a byte it starts.
+fn checkBitPlaces(allocator: std.mem.Allocator, decl: ast.TypeDecl, strukt: ast.StructDecl, def: StructDef) !void {
+    if (!layout_mod.isBitPacked(def)) return;
+    var bit: u64 = 0;
+    for (def.fields, strukt.fields) |f, field| {
+        if (layout_mod.intBits(f.ty)) |bits| {
+            bit += bits;
+            continue;
+        }
+        if (bit % 8 == 0) continue;
+        const msg = std.fmt.allocPrint(allocator, "field `{s}` of the #packed struct `{s}` starts at bit {d} of a byte, and a field that is no integer starts at a whole byte: add {d} bits of integer fields before it (`reserved: u{d}`), or move it", .{ field.name, decl.name, bit % 8, 8 - bit % 8, 8 - bit % 8 }) catch "a field that is no integer starts at a whole byte of a #packed struct";
+        diag_mod.printErrorAt(msg, decl.file_name, diag_mod.sourceOf(decl.file_name, ""), field.span);
+        return error.LoweringFailed;
+    }
 }
 
 fn lowerEnumDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, enum_decl: ast.EnumDecl, types: sema.TypeEnv, symbols: sema.SymbolTable) !VariantDef {
@@ -8510,10 +8531,17 @@ fn structDefFromSema(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols:
     for (fields, 0..) |field, i| {
         out[i] = .{
             .name = field.name,
-            .ty = lowerSemaTypeWithEnv(allocator, field.ty, types, symbols) catch return null,
+            .ty = fieldIrType(allocator, field, types, symbols) catch return null,
         };
     }
     return .{ .name = name, .fields = out, .is_packed = type_layout.is_packed, .is_union = type_layout.is_union, .alignment = type_layout.alignment };
+}
+
+/// The IR type of a struct field sema describes: a sub-byte integer at its own width (sema's
+/// `ty` for one is a `u8` or an `i8`).
+fn fieldIrType(allocator: std.mem.Allocator, field: sema.FieldInfo, types: sema.TypeEnv, symbols: sema.SymbolTable) !IrType {
+    if (field.bits != 0) return if (field.ty == .i8) IrType{ .i = field.bits } else IrType{ .u = field.bits };
+    return lowerSemaTypeWithEnv(allocator, field.ty, types, symbols);
 }
 
 /// Whether a value of `ty` has bytes no value sets: padding between or after the fields of a
@@ -8523,7 +8551,9 @@ fn structDefFromSema(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols:
 fn typeHasPadding(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, ty: IrType, depth: u32) ?bool {
     if (depth > 32) return null;
     return switch (ty) {
-        .void, .bool, .byte, .i, .u, .rune, .f32, .f64, .usize, .isize, .addr, .ptr, .zone => false,
+        .void, .bool, .byte, .rune, .f32, .f64, .usize, .isize, .addr, .ptr, .zone => false,
+        // A `u3` is stored in a byte, five bits of which no value sets.
+        .i, .u => |bits| bits % 8 != 0,
         .slice, .text, .interface_value, .fn_ptr => false,
         .optional => |inner| inner.* != .ptr,
         .fallible => true,
@@ -8543,6 +8573,18 @@ fn typeHasPadding(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: se
                 else => break :blk null,
             }
             const def = structDefFromSema(allocator, types, symbols, name) orelse break :blk null;
+            // Bit by bit: the fields' own bits are set; the bits that round them up to a byte are not.
+            if (layout_mod.isBitPacked(def)) {
+                for (def.fields) |field| {
+                    if (layout_mod.intBits(field.ty) != null) continue;
+                    if (typeHasPadding(allocator, types, symbols, field.ty, depth + 1) orelse break :blk null) break :blk true;
+                }
+                const source = SemaLayoutSource{ .allocator = allocator, .types = types, .symbols = symbols };
+                var places: [64]layout_mod.BitPlace = undefined;
+                const all = layout_mod.bitPlaces(def, source, &places) orelse break :blk null;
+                const whole = layout_mod.ofWith(.{ .struct_type = name }, source) orelse break :blk null;
+                break :blk whole.size * 8 != layout_mod.bitsUsed(all);
+            }
             var offset: u64 = 0;
             var max_align: u64 = 1;
             for (def.fields) |field| {

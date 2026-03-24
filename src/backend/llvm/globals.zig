@@ -5,6 +5,8 @@
 /// the relocations an address needs) in `.data`, or in `.rdata` for an immutable global.
 /// Nothing is computed at startup.
 const std = @import("std");
+const ctx_mod = @import("context.zig");
+const layout_mod = @import("../../layout.zig");
 const ir = @import("../../ir.zig");
 const llvm = @import("c_api.zig").llvm;
 const types = @import("types.zig");
@@ -199,6 +201,7 @@ fn lowerStructInit(cg: *ModuleCg, si: ir.StructInit) llvm.LLVMValueRef {
     const struct_ty = cg.struct_types.get(si.ty_name) orelse
         return llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(cg.ctx, 0));
     const declared = cg.struct_fields.get(si.ty_name) orelse return llvm.LLVMConstNull(struct_ty);
+    if (cg.bitPlaces(si.ty_name)) |places| return lowerBitStructInit(cg, si, struct_ty, declared, places);
 
     // A `#align(N)` struct carries a zero-sized tail member beyond its declared
     // fields (see structs.zig `alignTail`); a constant has to supply it too.
@@ -224,6 +227,73 @@ fn lowerStructInit(cg: *ModuleCg, si: ir.StructInit) llvm.LLVMValueRef {
         return packedLike(cg, struct_ty, fields, offsets);
     }
     return llvm.LLVMConstNamedStruct(struct_ty, fields.ptr, @intCast(fields.len));
+}
+
+/// A bit-packed struct: its integer fields set bits of its bytes; any other field is its own
+/// constant at its byte offset, between the bytes around it.
+fn lowerBitStructInit(cg: *ModuleCg, si: ir.StructInit, struct_ty: llvm.LLVMTypeRef, declared: []const ctx_mod.StructField, places: []const layout_mod.BitPlace) llvm.LLVMValueRef {
+    const dl = cg.targetData();
+    const size: usize = @intCast(llvm.LLVMABISizeOfType(dl, struct_ty));
+    const bytes = cg.allocator.alloc(u8, size) catch return llvm.LLVMConstNull(struct_ty);
+    defer cg.allocator.free(bytes);
+    @memset(bytes, 0);
+    var parts: std.ArrayList(llvm.LLVMValueRef) = .empty;
+    defer parts.deinit(cg.allocator);
+    var offsets: std.ArrayList(u64) = .empty;
+    defer offsets.deinit(cg.allocator);
+    var covered: u64 = 0;
+    for (declared, places) |field, place| {
+        const given: ir.ConstInit = for (si.fields) |f| {
+            if (std.mem.eql(u8, f.name, field.name)) break f.value;
+        } else .zero;
+        if (place.int) {
+            const raw: u128 = switch (given) {
+                .zero => 0,
+                .imm => |imm| switch (imm) {
+                    .int => |v| @bitCast(v),
+                    .uint => |v| v,
+                    .rune => |r| r,
+                    .bool => |b| @intFromBool(b),
+                    else => 0,
+                },
+                else => blk: {
+                    cg.recordLoweringError("internal error: the integer field `{s}` of a bit-packed static has no constant value", .{field.name}, @src());
+                    break :blk 0;
+                },
+            };
+            const ones: u128 = if (place.bits >= 128) ~@as(u128, 0) else (@as(u128, 1) << @intCast(place.bits)) - 1;
+            const value = raw & ones;
+            var b: u64 = 0;
+            while (b < place.bits) : (b += 1) {
+                if ((value >> @intCast(b)) & 1 == 0) continue;
+                const at = place.bit + b;
+                bytes[@intCast(at / 8)] |= @as(u8, 1) << @intCast(at % 8);
+            }
+            continue;
+        }
+        const at = place.bit / 8;
+        if (at > covered) {
+            parts.append(cg.allocator, byteArray(cg, bytes[@intCast(covered)..@intCast(at)])) catch return llvm.LLVMConstNull(struct_ty);
+            offsets.append(cg.allocator, covered) catch return llvm.LLVMConstNull(struct_ty);
+        }
+        const lty = types.lower(cg, field.ir_ty);
+        parts.append(cg.allocator, lowerConstInit(cg, given, field.ir_ty, lty)) catch return llvm.LLVMConstNull(struct_ty);
+        offsets.append(cg.allocator, at) catch return llvm.LLVMConstNull(struct_ty);
+        covered = at + place.bits / 8;
+    }
+    if (parts.items.len == 0) {
+        var body = [_]llvm.LLVMValueRef{byteArray(cg, bytes)};
+        return llvm.LLVMConstNamedStruct(struct_ty, &body, 1);
+    }
+    if (covered < size) {
+        parts.append(cg.allocator, byteArray(cg, bytes[@intCast(covered)..])) catch return llvm.LLVMConstNull(struct_ty);
+        offsets.append(cg.allocator, covered) catch return llvm.LLVMConstNull(struct_ty);
+    }
+    return packedLike(cg, struct_ty, parts.items, offsets.items);
+}
+
+fn byteArray(cg: *ModuleCg, bytes: []const u8) llvm.LLVMValueRef {
+    return llvm.LLVMConstStringInContext2(cg.ctx, bytes.ptr, bytes.len, 1);
 }
 
 fn lowerArrayInit(cg: *ModuleCg, elems: []const ir.ConstInit, ty: ir.IrType, lty: llvm.LLVMTypeRef) llvm.LLVMValueRef {

@@ -46,12 +46,18 @@ pub fn ofWith(ty: ir.IrType, source: anytype) ?Layout {
 
 /// Byte offset of `field` within the struct `def`, or null when the field does not exist
 /// or an earlier field's layout is not modelled. A field of a `#packed` struct sits
-/// immediately after the previous one; otherwise at its natural alignment. Sub-byte
-/// fields (`u1`–`u7`) are not bit-packed: each occupies a whole byte.
+/// immediately after the previous one; otherwise at its natural alignment. In a bit-packed
+/// struct (`isBitPacked`) it is the byte the field's first bit is in.
 pub fn offsetOfWith(def: ir.StructDef, field: []const u8, source: anytype) ?u64 {
     // A union's fields all start at its start.
     if (def.is_union) {
         for (def.fields) |f| if (std.mem.eql(u8, f.name, field)) return 0;
+        return null;
+    }
+    if (isBitPacked(def)) {
+        var places: [64]BitPlace = undefined;
+        const all = bitPlaces(def, source, &places) orelse return null;
+        for (def.fields, all) |f, place| if (std.mem.eql(u8, f.name, field)) return place.bit / 8;
         return null;
     }
     var offset: u64 = 0;
@@ -130,8 +136,68 @@ fn fallible(f: ir.FallibleType, source: anytype, depth: u32) ?Layout {
     return record(&.{ ok, .{ .size = 4, .alignment = 4 } }, false);
 }
 
+/// Where a field of a bit-packed struct sits: its first bit and how many bits it takes. An
+/// integer takes its width; any other field its whole bytes, from a whole byte.
+pub const BitPlace = struct {
+    bit: u64,
+    bits: u64,
+    /// An integer, read and written by its bits; otherwise a field of whole bytes.
+    int: bool,
+};
+
+/// The width of an integer field type in bits, or null when `ty` is no integer.
+pub fn intBits(ty: ir.IrType) ?u64 {
+    return switch (ty) {
+        .i, .u => |bits| bits,
+        .byte => 8,
+        .usize, .isize => 64,
+        else => null,
+    };
+}
+
+/// Whether `def` is laid out bit by bit: a `#packed` struct with an integer field whose
+/// width is no whole number of bytes (`u1`–`u7`, `i3`). Every other `#packed` struct lies
+/// byte by byte, as before.
+pub fn isBitPacked(def: ir.StructDef) bool {
+    if (!def.is_packed or def.is_union) return false;
+    for (def.fields) |f| if (intBits(f.ty)) |bits| if (bits % 8 != 0) return true;
+    return false;
+}
+
+/// The place of each field of the bit-packed struct `def`, in `out`; null when a field's
+/// layout is not modelled, or a field that is no integer starts inside a byte (the IR
+/// refuses that struct when it is declared).
+pub fn bitPlaces(def: ir.StructDef, source: anytype, out: []BitPlace) ?[]BitPlace {
+    if (def.fields.len > out.len) return null;
+    var bit: u64 = 0;
+    for (def.fields, 0..) |f, i| {
+        if (intBits(f.ty)) |bits| {
+            out[i] = .{ .bit = bit, .bits = bits, .int = true };
+            bit += bits;
+            continue;
+        }
+        if (bit % 8 != 0) return null;
+        const member = memberLayout(f.ty, source, 1) orelse return null;
+        out[i] = .{ .bit = bit, .bits = member.size * 8, .int = false };
+        bit += member.size * 8;
+    }
+    return out[0..def.fields.len];
+}
+
+/// The bits the fields of a bit-packed struct take, together.
+pub fn bitsUsed(places: []const BitPlace) u64 {
+    var end: u64 = 0;
+    for (places) |p| end = @max(end, p.bit + p.bits);
+    return end;
+}
+
 fn structLayout(name: []const u8, source: anytype, depth: u32) ?Layout {
     const def = source.structDef(name) orelse return null;
+    if (isBitPacked(def)) {
+        var places: [64]BitPlace = undefined;
+        const all = bitPlaces(def, source, &places) orelse return null;
+        return applyAlign(.{ .size = (bitsUsed(all) + 7) / 8, .alignment = 1 }, def);
+    }
     var members: [64]Layout = undefined;
     // Larger than any plausible C struct; refuse rather than guess.
     if (def.fields.len > members.len) return null;
@@ -215,6 +281,25 @@ test "layout: natural struct padding matches C" {
     try std.testing.expectEqual(@as(u64, 15), p.size);
     try std.testing.expectEqual(@as(u64, 1), p.alignment);
     try std.testing.expectEqual(@as(?u64, 13), offsetOfWith(packed_defs[0], "d", SliceSource{ .structs = &packed_defs }));
+}
+
+test "layout: a #packed struct with sub-byte fields is laid out bit by bit" {
+    const fields = [_]ir.FieldDef{
+        .{ .name = "enable", .ty = .{ .u = 1 } },
+        .{ .name = "mode", .ty = .{ .u = 3 } },
+        .{ .name = "level", .ty = .{ .u = 8 } },
+        .{ .name = "rest", .ty = .{ .u = 4 } },
+        .{ .name = "tail", .ty = .{ .u = 16 } },
+    };
+    const defs = [_]ir.StructDef{.{ .name = "R", .fields = &fields, .is_packed = true }};
+    const l = of(.{ .struct_type = "R" }, &defs).?;
+    try std.testing.expectEqual(@as(u64, 4), l.size); // 32 bits
+    try std.testing.expectEqual(@as(u64, 1), l.alignment);
+    try std.testing.expectEqual(@as(?u64, 0), offsetOfWith(defs[0], "level", SliceSource{ .structs = &defs }));
+    try std.testing.expectEqual(@as(?u64, 2), offsetOfWith(defs[0], "tail", SliceSource{ .structs = &defs }));
+    // Without `#packed`, or with no sub-byte field, nothing changes.
+    const plain = [_]ir.StructDef{.{ .name = "R", .fields = &fields, .is_packed = false }};
+    try std.testing.expectEqual(@as(u64, 6), of(.{ .struct_type = "R" }, &plain).?.size);
 }
 
 test "layout: #align rounds size and raises alignment" {

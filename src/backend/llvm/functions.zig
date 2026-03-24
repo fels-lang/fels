@@ -1,5 +1,6 @@
 /// Function declaration + definition.
 const std = @import("std");
+const ctx_mod = @import("context.zig");
 const ir = @import("../../ir.zig");
 const llvm = @import("c_api.zig").llvm;
 const types_mod = @import("types.zig");
@@ -30,8 +31,14 @@ pub const FnCg = struct {
     /// The hidden `sret` parameter a large return is written through (see
     /// `types.returnsIndirect`), or null when the function returns its value directly.
     sret: llvm.LLVMValueRef = null,
+    /// The `field_addr` registers that address a field of a bit-packed struct, and where its
+    /// bits are: a `store` or a `deref` through one goes by them.
+    bit_refs: std.AutoHashMap(ir.RegId, ctx_mod.BitRef),
+    /// Set by the `field_addr` being lowered when it is one of those.
+    pending_bits: ?ctx_mod.BitRef = null,
 
     fn deinit(self: *FnCg) void {
+        self.bit_refs.deinit();
         self.blocks.deinit();
         self.regs.deinit();
         self.locals.deinit();
@@ -186,6 +193,7 @@ fn defineOne(cg: *ModuleCg, func: ir.IrFunction) !void {
         .local_ir_types = local_tys,
         .param_ir_types = param_tys,
         .sret = if (sret_ty != null) llvm.LLVMGetParam(llvm_fn, 0) else null,
+        .bit_refs = std.AutoHashMap(ir.RegId, ctx_mod.BitRef).init(cg.allocator),
     };
     defer fncg.deinit();
 
