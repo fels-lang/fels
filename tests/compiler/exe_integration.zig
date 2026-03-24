@@ -4410,6 +4410,59 @@ test "exe: an enum value and an error with a payload are static data" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_static_payload_o2", 2, true));
 }
 
+test "exe: .variant(payload) where the enum or error type is known" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A typed local, an assignment, an argument, a return, struct and array literals, a global
+    // and a table, an error of a set and `fail`, an optional: `.circle(r)` as `.none` is.
+    const src =
+        \\Rect :: struct { width: f64, height: f64 }
+        \\Shape :: enum { circle: f64, rectangle: Rect, none }
+        \\HttpError :: errors { not_found, status: u16, message: []const u8 }
+        \\Entry :: struct { id: u8, shape: Shape }
+        \\G: Shape = .circle(2.0);
+        \\TABLE: [2]Shape = .{ .rectangle(.{ 2.0, 3.0 }), .none };
+        \\area :: fn(s: Shape) -> f64 {
+        \\    match s {
+        \\        .circle |r| => { return r * r; }
+        \\        .rectangle |q| => { return q.width * q.height; }
+        \\        .none => { return 0.0; }
+        \\    }
+        \\}
+        \\unit :: fn() -> Shape { return .circle(1.0); }
+        \\fetch :: fn(code: u16) -> i32 ! HttpError {
+        \\    if code == 404 { fail .status(404); }
+        \\    return 1;
+        \\}
+        \\last :: fn() -> HttpError { return .message("gone"); }
+        \\main :: fn() -> i32 {
+        \\    s: Shape = .circle(3.0);
+        \\    if area(s) != 9.0 { return 1; }
+        \\    s = .rectangle(.{ 4.0, 5.0 });
+        \\    if area(s) != 20.0 { return 2; }
+        \\    if area(.circle(2.0)) != 4.0 { return 3; }
+        \\    if area(unit()) != 1.0 { return 4; }
+        \\    e: Entry = .{ 1, .circle(5.0) };
+        \\    n: Entry = .{ .id = 2, .shape = .rectangle(.{ 1.0, 2.0 }) };
+        \\    if area(e.shape) != 25.0 || area(n.shape) != 2.0 { return 5; }
+        \\    xs: [2]Shape = .{ .circle(1.0), .none };
+        \\    if area(xs[0]) != 1.0 || area(G) != 4.0 || area(TABLE[0]) != 6.0 { return 6; }
+        \\    err: HttpError = .status(500);
+        \\    if err == .status |c| { if c != 500 { return 7; } } else { return 8; }
+        \\    if last() == .message |m| { if m != "gone" { return 9; } } else { return 10; }
+        \\    r := fetch(404) catch x { if x == .status |c| { yield c as i32; } yield 0; };
+        \\    if r != 404 { return 11; }
+        \\    o: ?Shape = .circle(6.0);
+        \\    if o |v| { if area(v) != 36.0 { return 12; } } else { return 13; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_dot_payload", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_dot_payload_o2", 2, true));
+}
+
 test "exe: unknown field in a struct literal fails the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

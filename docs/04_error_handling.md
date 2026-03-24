@@ -195,7 +195,8 @@ describe_kind :: fn(e: ParseError) -> []const u8 {
 ```
 
 `ParseError.buffer_full` and `ParseError.overflow(n)` build one, as `Shape.circle(r)` builds
-an enum value. `fail e;` raises an error value: one a `catch` bound, a parameter, any error
+an enum value, and where the set is known `.overflow(n)` does (`e: ParseError = .overflow(n)`,
+`return .overflow(n);` from `-> ParseError`). `fail e;` raises an error value: one a `catch` bound, a parameter, any error
 the function's set takes (the rule of `?`). Within one set it goes on whole, payload and all:
 
 ```fels
@@ -397,7 +398,7 @@ message.
 | `fail .variant` | Return an error |
 | `fail .variant(payload)` | Return an error with payload |
 | `fail err;` | Return an error value (a caught one, a parameter) |
-| `ParseError.overflow(n)` | An error value, built as an enum value is |
+| `ParseError.overflow(n)` | An error value, built as an enum value is; `.overflow(n)` where the set is known |
 | `expr?` | Propagate error, unwrap success |
 | `expr catch err { ... }` | Handle error locally |
 | `yield value;` | End a `catch` handler with the value of the expression |

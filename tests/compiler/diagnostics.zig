@@ -1064,6 +1064,32 @@ test "diagnostics: a union's field is read in `unsafe`, written anywhere" {
     try expectNoError(a, decls, "f :: fn(l: *Large) -> i32 { l.quad = 2; unsafe { l.quad = l.quad + 1; } return 0; }");
 }
 
+test "diagnostics: `.variant(payload)` is read against the type it goes to" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const decls =
+        \\Shape :: enum { circle: f64, none }
+        \\HttpError :: errors { not_found, status: u16 }
+        \\
+    ;
+    const cases = [_]struct { body: []const u8, needle: []const u8 }{
+        .{ .body = "main :: fn() -> i32 { x := .circle(1.0); return 0; }", .needle = "`.circle(…)` names a variant of no known type here: write `Type.circle(…)`" },
+        .{ .body = "main :: fn() -> i32 { s: Shape = .none(1.0); return 0; }", .needle = "variant `.none` has no payload; write `.none`" },
+        .{ .body = "main :: fn() -> i32 { s: Shape = .circle(\"a\"); return 0; }", .needle = "variant `.circle` payload: expected `f64`" },
+        .{ .body = "main :: fn() -> i32 { s: Shape = .circle(); return 0; }", .needle = "variant `.circle` takes one payload argument" },
+        .{ .body = "main :: fn() -> i32 { s: Shape = .square(1.0); return 0; }", .needle = "`Shape` has no variant `.square`" },
+        .{ .body = "main :: fn() -> i32 { xs: [2]Shape = .{ .none, .squar }; return 0; }", .needle = "`Shape` has no variant `.squar`" },
+        .{ .body = "main :: fn() -> i32 { e: HttpError = .teapot(1); return 0; }", .needle = "`HttpError` has no error variant `.teapot`" },
+        .{ .body = "G: Shape = .circl(1.0);\nmain :: fn() -> i32 { return 0; }", .needle = "`Shape` has no variant `.circl`" },
+    };
+    for (cases) |case| {
+        const src = try std.mem.concat(a, u8, &.{ decls, case.body, "\n" });
+        try expectFirstError(a, src, &.{case.needle});
+    }
+    try expectNoError(a, decls, "f :: fn(s: Shape) -> Shape { return s; }\nmain :: fn() -> i32 { s: Shape = .circle(1.0); s = f(.circle(2.0)); e: HttpError = .status(3); return 0; }");
+}
+
 test "diagnostics: a constant is not written to" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -2173,11 +2173,18 @@ const Checker = struct {
                 // the other spelling (the name resolves, and is not cyclic).
                 if (isTypeAliasConst(self.symbols, decl)) {
                     _ = try self.typeFromRef(constAliasType(self.allocator, decl) orelse .{ .named = constAliasTarget(decl).? });
+                } else if (decl.ty) |ty| {
+                    // `G: Shape = .circle(2.0)`, `T: [2]Mode = .{ .on, .off }`: read against
+                    // the type written, as a local's value is.
+                    const declared = try self.typeFromRef(ty);
+                    if (!try self.coerceEnumLiteral(decl.value, declared)) {
+                        try self.coerceLiteralFields(decl.value, declared);
+                        _ = try self.inferExpr(decl.value);
+                    }
+                    try self.requireIntLitFits(decl.value, declared);
                 } else {
                     const value_ty = try self.inferExpr(decl.value);
-                    if (decl.ty) |ty| {
-                        try self.requireIntLitFits(decl.value, try self.typeFromRef(ty));
-                    } else if (value_ty == .int_lit) {
+                    if (value_ty == .int_lit) {
                         // Its uses take any integer type, but it is stored as an `i32`.
                         try self.requireDefaultIntFits(decl.value);
                     }
@@ -3781,6 +3788,11 @@ const Checker = struct {
                 break :blk ok_ty;
             },
             .call => |call| blk: {
+                // `.circle(r)` read against its type already (`coerceVariantCall`): an element
+                // of an array literal is inferred again with the literal.
+                if (call.callee.kind == .ident and std.mem.startsWith(u8, call.callee.kind.ident, ".") and
+                    self.env.enum_lits.contains(call.callee.id))
+                    if (self.env.expr_types.get(expr.id)) |ty| return ty;
                 try self.resolveTypeArgs(call);
                 const call_ty = try self.inferCall(call);
                 // `inferCall` already infers value arguments. Re-infer only those
@@ -4355,6 +4367,11 @@ const Checker = struct {
                 }
                 return .void;
             }
+            // `.circle(r)` with no enum type to read it against.
+            if (name.len > 1 and name[0] == '.') {
+                self.emitError(call.callee.span, "`{s}(…)` names a variant of no known type here: write `Type{s}(…)`", .{ name, name });
+                return error.SemanticFailed;
+            }
             self.emitErrorRich(call.callee.span, "unknown function `{s}`", .{name}, .{
                 .primary_label = "no such function in scope",
                 .help = self.valueNameHelp(name),
@@ -4629,6 +4646,7 @@ const Checker = struct {
     /// type the expr as the enum and record it for IR (returns true). Otherwise
     /// returns false and leaves checking to the caller.
     fn coerceEnumLiteral(self: *Checker, expr: ast.Expr, expected: Ty) SemanticError!bool {
+        if (expr.kind == .call) return self.coerceVariantCall(expr, expected);
         const lit = switch (expr.kind) {
             .ident => |n| n,
             else => return false,
@@ -4655,7 +4673,79 @@ const Checker = struct {
             });
             return true;
         }
-        return false;
+        self.emitError(expr.span, "enum `{s}` has no variant `.{s}`", .{ self.symbols.symbol(type_id).name, variant_name });
+        return error.SemanticFailed;
+    }
+
+    /// `.variant(payload)` where an enum value or an error of a set goes, read against that
+    /// type as a bare `.variant` is: `s: Shape = .circle(2.0)`, `return .status(404);`.
+    fn coerceVariantCall(self: *Checker, expr: ast.Expr, expected: Ty) SemanticError!bool {
+        const call = expr.kind.call;
+        const lit = switch (call.callee.kind) {
+            .ident => |n| n,
+            else => return false,
+        };
+        if (lit.len < 2 or lit[0] != '.') return false;
+        const type_id = switch (expected) {
+            .named => |id| id,
+            .optional => |inner| return self.coerceVariantCall(expr, inner.*),
+            else => return false,
+        };
+        const layout = self.env.layouts.get(type_id) orelse return false;
+        const name = lit[1..];
+        const payload_ty: ?Ty = switch (layout.kind) {
+            .variant_type => |variants| for (variants) |v| {
+                if (std.mem.eql(u8, v.name, name)) break v.payload;
+            } else {
+                self.emitError(call.callee.span, "enum `{s}` has no variant `.{s}`", .{ self.symbols.symbol(type_id).name, name });
+                return error.SemanticFailed;
+            },
+            .error_set => |variants| for (variants) |v| {
+                if (std.mem.eql(u8, v.name, name)) break v.payload;
+            } else {
+                self.emitError(call.callee.span, "`{s}` has no error variant `.{s}`", .{ self.symbols.symbol(type_id).name, name });
+                return error.SemanticFailed;
+            },
+            else => return false,
+        };
+        if (payload_ty == null) {
+            self.emitError(call.callee.span, "variant `.{s}` has no payload; write `.{s}`", .{ name, name });
+            return error.SemanticFailed;
+        }
+        try self.checkVariantPayload(call, name, payload_ty, "");
+        try self.env.enum_lits.put(call.callee.id, .{
+            .type_name = self.symbols.symbol(type_id).link_name,
+            .variant = name,
+        });
+        try self.env.expr_types.put(expr.id, .{ .named = type_id });
+        return true;
+    }
+
+    /// The arguments of the variant construction `call` against the variant's payload: one
+    /// of the payload's type, or none for a variant without one (`written` is how to write it).
+    fn checkVariantPayload(self: *Checker, call: ast.CallExpr, variant: []const u8, payload_ty: ?Ty, written: []const u8) SemanticError!void {
+        if (payload_ty) |pty| {
+            if (call.args.len != 1) {
+                self.emitError(call.callee.span, "variant `.{s}` takes one payload argument", .{variant});
+                return error.SemanticFailed;
+            }
+            const arg_expr = switch (call.args[0]) {
+                .positional => |e| e,
+                .named => |n| n.value,
+            };
+            if (!try self.coerceEnumLiteral(arg_expr, pty)) {
+                try self.coerceLiteralFields(arg_expr, pty);
+                const arg_ty = try self.inferExpr(arg_expr);
+                if (!try self.compatible(arg_ty, pty)) {
+                    self.emitError(arg_expr.span, "variant `.{s}` payload: expected `{s}`, found `{s}`", .{ variant, self.formatTy(pty), self.formatTy(arg_ty) });
+                    return error.SemanticFailed;
+                }
+                try self.requireIntLitFits(arg_expr, pty);
+            }
+        } else if (call.args.len != 0) {
+            self.emitError(call.callee.span, "variant `.{s}` has no payload; write `{s}`", .{ variant, written });
+            return error.SemanticFailed;
+        }
     }
 
     /// A bare `.variant` where an error of the set `set_id` goes (`return .eof;` from `-> T ! E`
@@ -4711,6 +4801,14 @@ const Checker = struct {
         _ = self.env.literal_types.remove(expr.id);
         const type_id = switch (expected) {
             .named => |id| id,
+            // `.{ .circle(1.0), .none }` for a `[2]Shape`: each element against the element type.
+            .array => |arr| {
+                if (expr.kind == .compound_literal) for (expr.kind.compound_literal) |value| {
+                    _ = try self.coerceEnumLiteral(value, arr.elem.*);
+                    try self.coerceLiteralFields(value, arr.elem.*);
+                };
+                return;
+            },
             else => return,
         };
         const layout = self.env.layouts.get(type_id) orelse return;
@@ -4787,28 +4885,8 @@ const Checker = struct {
         };
         if (!found) return null;
 
-        if (payload_ty) |pty| {
-            if (call.args.len != 1) {
-                self.emitError(call.callee.span, "variant `.{s}` takes one payload argument", .{fld.name});
-                return error.SemanticFailed;
-            }
-            const arg_expr = switch (call.args[0]) {
-                .positional => |e| e,
-                .named => |n| n.value,
-            };
-            if (!try self.coerceEnumLiteral(arg_expr, pty)) {
-                try self.coerceLiteralFields(arg_expr, pty);
-                const arg_ty = try self.inferExpr(arg_expr);
-                if (!try self.compatible(arg_ty, pty)) {
-                    self.emitError(arg_expr.span, "variant `.{s}` payload: expected `{s}`, found `{s}`", .{ fld.name, self.formatTy(pty), self.formatTy(arg_ty) });
-                    return error.SemanticFailed;
-                }
-                try self.requireIntLitFits(arg_expr, pty);
-            }
-        } else if (call.args.len != 0) {
-            self.emitError(call.callee.span, "variant `.{s}` has no payload; write `{s}.{s}`", .{ fld.name, fld.base.kind.ident, fld.name });
-            return error.SemanticFailed;
-        }
+        const written = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ fld.base.kind.ident, fld.name });
+        try self.checkVariantPayload(call, fld.name, payload_ty, written);
 
         try self.env.enum_lits.put(call.callee.id, .{
             .type_name = self.symbols.symbol(type_id).link_name,
