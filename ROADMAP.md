@@ -134,14 +134,12 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
 - **`==` on non-scalar enum payloads** — comparing two enum values whose variant carries
   a struct, string or array payload is a clear error; use `match`. Scalar payloads,
   `.variant` comparison, and every other `==` work.
-- **Struct/aggregate equality** is not lowered ([`src/ast_prelude.zig`](src/ast_prelude.zig)).
-  Reflection-driven structural diffs would unlock it.
 - **Static storage covers the common shapes, not every one.** A top-level global can hold
-  structs, arrays, function pointers, addresses of other globals, `null`, strings and
-  payload-less enum variants, and can be exported ([`docs/01`](docs/01_syntax.md)). Not yet:
-  an enum variant with a payload, an optional that is not a pointer holding a value, the
-  address of an element or field (`&TABLE[2]`), a slice of anything but a string, and an
-  uninitialised global (write `.{}`). A data export is checked by resolving it by name at run
+  structs, arrays, function pointers, addresses of other globals, `null`, strings, enum
+  values and errors (with their payloads), and can be exported ([`docs/01`](docs/01_syntax.md)).
+  Not yet: an optional that is not a pointer holding a value, the address of an element or
+  field (`&TABLE[2]`), a slice of anything but a string, a union holding anything but zeros,
+  and an uninitialised global (write `.{}`). A data export is checked by resolving it by name at run
   time and, for a DLL linked by LLD, by a C program that uses it through the import library
   (`__declspec(dllimport)`); a DLL linked by `felsld` has no import library.
 - **Compile-time code reads static data, with two exceptions.** A `#run` or `#assert` reads a
@@ -150,8 +148,8 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
   `#run` computes: the VM is built before any `#run` has a value, so `#assert(TABLE[3] == 9)` on
   `TABLE: [8]u32 = #run make();` stops with "global `TABLE` cannot be read by compile-time code".
 - **What a `#run` can return is data only.** A struct, array, enum value, function pointer,
-  string or number becomes the global's initial value. A pointer into compile-time memory, a
-  payload variant, a lambda and a slice of anything but bytes are refused with a message
+  string or number becomes the global's initial value, a payload variant too. A pointer into
+  compile-time memory, a lambda and a slice of anything but bytes are refused with a message
   ([`docs/09`](docs/09_comptime.md#data-at-compile-time)).
 - **Compile-time aggregates alias when copied.** `b := a; b.x = 9;` changes `a` at compile time
   and not at run time, and the same for an array, a field copied out of a struct and a value
@@ -169,39 +167,15 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
   `check` and by every build. A `#run` result or a call inside a constant is checked when the
   module is lowered (`build`, `object`, `ir`), as is a failing `#assert`. The language server
   analyses one document without its imports and does not run this check yet.
-- **Assigning to a function parameter has no effect.** `f :: fn(x: i32) -> i32 { x = 5; return x; }`
-  returns its argument: the write goes to a new local that shadows `x`, and every read takes the
-  parameter. The same for a field (`p.x = 50`) or the whole value of a struct parameter, and
-  `a[0] = 60` on an array parameter crashes (access violation). Present in 0.1.1. Until it is
-  fixed, copy the parameter into a local first.
-- **A bare `.variant` compared with a plain enum value is wrong.** `d == .south` for a
-  payload-less `enum` is false for every value at `-O0` and true for every value at `-O2`,
-  because the bare `.south` has no type to lower from. `d == Dir.south` and `match d`
-  work. (The same comparison on a caught *error* is handled; see the changelog.)
-- **An inline error set needs a leading dot on each variant.** `-> i32 ! { .invalid, .overflow }`
-  works ([`docs/04`](docs/04_error_handling.md)); `-> i32 ! { invalid, overflow }` is rejected
-  with "expected ; after expression". A bare `!` (inferred set) and a named `errors` set work.
-- **The payload of a caught error has no static type.** `if e == .code |c|` binds `c`
-  as `unknown`, so it can be returned or passed on but not used in arithmetic.
-- **Slicing a zero-length array panics at `-O0`.** `none: [0]u16 = .{}; none[0..0]` reports
-  "index out of bounds"; an empty range of a non-empty array is fine.
 - **There is no pack-to-N.** `#packed` removes all padding; a C struct under `#pragma pack(2)` or
   `pack(4)` (`BITMAPFILEHEADER`) has no direct spelling. `#packed(N)` was read as plain
   `#packed` without a word, giving a different size than C; it is an error now. The size and
   field offsets can be matched with a `#packed` struct and explicit padding fields (its
   alignment is then 1, where C's is N).
-- **Sub-byte `#packed` fields are not bit-packed.** `u1`–`u7` fields are accepted but
-  each takes a whole byte (`PixelFormat { u5, u6, u5 }` is 3 bytes), so they cannot
-  describe a C bitfield. `core::offset_of` reports the byte the field's storage starts at.
-- **`TARGET.os`, `TARGET.arch` and `TARGET.debug` do not work as documented.** Comparisons
-  with `TARGET.os` / `TARGET.arch` are never true, `TARGET.debug` reflects how the compiler
-  was built, and `core::os` / `core::arch` describe the host rather than the build target
-  ([`docs/08`](docs/08_attributes_builtins.md)).
-- **Errors are not first-class values.** An error is inspected where it is caught
-  (`catch e { if e == .variant … }`) and only on the name `catch` bound: a callee that is
-  handed the error can hold it but not compare it (that is a compile error), it cannot be
-  returned or stored, and its payload has no static type. Mapping one back to an HRESULT or a
-  status code is therefore written at each `catch`.
+- **A `#packed` bit field is not a C bitfield.** Sub-byte fields are bit-packed from the
+  lowest bit with no units, where C groups bitfields into units of their declared type and
+  aligns the struct to them; a C bitfield struct is matched with explicit filler fields, and
+  bindgen still maps one as a byte blob.
 - **The test suite does not run Linux executables.** It cross-compiles and links the portable
   fixtures for Linux and checks the ELF, but running them takes a Linux machine; the Linux paths
   (the futex mutex and condition variable, static data and relocation, `std.com`) were run
@@ -223,17 +197,8 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
   This is the only `TODO` in the compiler ([`src/ir.zig`](src/ir.zig)).
 - **Overload resolution** — a rejected instantiation is not yet an error
   ([`docs/12`](docs/12_reflection_and_constraints.md)).
-- **`bindgen` v1** maps the common scalar/pointer/struct/enum/array shapes; the rest is
-  unhandled ([`src/bindgen.zig`](src/bindgen.zig)).
-- **No external packages** — projects are single-tree until the package manager lands.
-- **A build script cannot print.** `println` in a `build.fels` still stops the hook,
-  but only one piece is left: `core::narrow` lowers to the `truncate_to` builtin,
-  and the comptime VM does not implement it (nor the other type-first builtins
-  `ptr_from_int`, `unaligned_read`, `slice_from_raw_parts`). `write_stdout` calls it
-  on the buffer length. Everything underneath now works — a build script can call
-  `WriteFile` directly, string pointers and scalar out-parameters both cross the FFI
-  boundary — so implementing `truncate_to` in `src/vm/compiler.zig` is the whole
-  remaining distance.
+- **`bindgen` v1** maps the common scalar/pointer/struct/union/enum/array shapes; a struct
+  with bitfields is a byte blob, and the rest is unhandled ([`src/bindgen.zig`](src/bindgen.zig)).
 - **The comptime VM's step limit surfaces as the wrong error.** Exhausting
   `step_limit` inside a `#run` feeding `#parse` reports "`#parse` operand did not
   evaluate to a string at compile time", which points at the metaprogram instead of
