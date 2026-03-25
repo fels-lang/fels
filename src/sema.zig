@@ -5360,7 +5360,12 @@ const Checker = struct {
         if (wanted == .none or call.args.len == 0) return;
         const arg = call.args[0];
         const expr = callArgExpr(arg);
-        const name = derefChainBase(expr) orelse return;
+        // `core::sizeof(Box(u64))`: an instance of a generic type is a type as its name is.
+        const name = derefChainBase(expr) orelse blk: {
+            const base = genericInstanceBase(expr) orelse return;
+            if (!self.identIsType(base)) return;
+            break :blk base;
+        };
         const ty = self.exprToTypeRef(expr) orelse return error.OutOfMemory;
         if (wanted == .type_or_value and !self.identIsType(name)) {
             if (self.identIsValue(name)) return;
@@ -8237,6 +8242,16 @@ fn firstArgWanted(callee: ast.Expr) FirstArg {
 }
 
 /// The name under a run of dereferences, `p` in `*p` and `**p`, or null for anything else.
+/// The name `Box` of `Box(u64)` (or `*Box(u64)`), which a builtin taking a type reads as
+/// the instance when `Box` names a type.
+fn genericInstanceBase(expr: ast.Expr) ?[]const u8 {
+    var cur = expr;
+    while (cur.kind == .unary and cur.kind.unary.op == .deref) cur = cur.kind.unary.expr.*;
+    if (cur.kind != .call) return null;
+    const callee = cur.kind.call.callee.*;
+    return if (callee.kind == .ident) callee.kind.ident else null;
+}
+
 fn derefChainBase(expr: ast.Expr) ?[]const u8 {
     var cur = expr;
     var depth: usize = 0;
