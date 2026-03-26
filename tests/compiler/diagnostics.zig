@@ -243,6 +243,18 @@ test "diagnostics: a type that fails a constraint is reported at the call" {
     try std.testing.expect(std.mem.indexOf(u8, msg, "t.fels:3:") != null);
 }
 
+test "diagnostics: a pub constant naming a function re-exports it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `pub double :: twice;` offers the function under another name, as `pub T :: other::T;`
+    // does a type; a constant naming one of another module's functions is that function.
+    const lib = "pub twice :: fn(x: i32) -> i32 { return x * 2; }\npub double :: twice;\n";
+    try std.testing.expectEqual(@as(?[]const u8, null), try firstErrorWithLib(a, lib, "#import std.build;\nDbl :: build::twice;\nuse :: fn() -> i32 { return build::double(5) + Dbl(1); }"));
+    const wrong = (try firstErrorWithLib(a, lib, "#import std.build;\nuse :: fn() -> i32 { return build::double(\"x\"); }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, wrong, "expected `i32`") != null);
+}
+
 test "diagnostics: a type from a module imported whole says how to reach it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

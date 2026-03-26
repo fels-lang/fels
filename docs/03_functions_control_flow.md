@@ -29,6 +29,15 @@ process :: fn(data: []const u8) -> void {
 > [!NOTE]
 > Functions without an explicit return type implicitly return `void`. Writing `-> void` is optional but permitted for clarity.
 
+A constant whose value names a function is that function under another name, as `X :: Name;`
+is the type it names: calling it calls the function directly, and its value is the function's.
+
+```fels
+seven :: fn() -> i32 { return 7; }
+F :: seven;                 // F() is seven(); `h := F;` holds seven
+Print :: io::println;       // a function of another module, by a shorter name
+```
+
 ## Parameters
 
 ```fels

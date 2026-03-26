@@ -4625,6 +4625,36 @@ test "exe: a string literal is indexed as the slice it is" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_string_literal_index_o2", 2, true));
 }
 
+test "exe: a constant naming a function is that function" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `F :: seven; F()` was "`F` is not a function". Called, through another such constant, as a
+    // value, generic, in a #run and in a static table, it is `seven`.
+    const src =
+        \\seven :: fn() -> i32 { return 7; }
+        \\biggest :: fn($T: type, a: T, b: T) -> T { if a > b { return a; } return b; }
+        \\F :: seven;
+        \\G :: F;
+        \\Big :: biggest;
+        \\X :: #run F();
+        \\apply :: fn(f: fn() -> i32) -> i32 { return f(); }
+        \\T: [2]extern fn() -> i32 = .{ F, seven };
+        \\main :: fn() -> i32 {
+        \\    if F() != 7 || G() != 7 || X != 7 { return 1; }
+        \\    if apply(F) != 7 { return 2; }
+        \\    h := G;
+        \\    if h() != 7 { return 3; }
+        \\    if Big(i32, 3, 9) != 9 { return 4; }
+        \\    if T[0]() != 7 { return 5; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_fn_alias", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_fn_alias_o2", 2, true));
+}
+
 test "exe: unknown field in a struct literal fails the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
