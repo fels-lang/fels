@@ -4605,6 +4605,26 @@ test "exe: a struct that holds borrowed data is borrowed, and passed as a borrow
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_borrow_struct_o2", 2, true));
 }
 
+test "exe: a string literal is indexed as the slice it is" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `"xyz"[1]` failed LLVM verification ("Load operand must be a pointer"): a folded string
+    // has no recorded type, so the index took it for a pointer.
+    const src =
+        \\main :: fn() -> i32 {
+        \\    c := "xyz"[1];
+        \\    if c != 121 { return 1; }
+        \\    n: usize = 2;
+        \\    if "xyz"[n] != 122 { return 2; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_string_literal_index", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_string_literal_index_o2", 2, true));
+}
+
 test "exe: unknown field in a struct literal fails the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
