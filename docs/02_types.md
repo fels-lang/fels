@@ -832,9 +832,10 @@ print_name :: fn(name: borrow []const u8) -> void {
 
 | Allowed | Not Allowed |
 |---------|-------------|
-| Read through the reference | Store in a struct field |
+| Read through the reference | Store through a pointer or into a global |
 | Pass to another `borrow` parameter | Return from a function |
 | Use in expressions | Forward to a non-`borrow` parameter |
+| Hold in a local struct or array, which is then borrowed too | |
 
 > [!IMPORTANT]
 > Borrowed references are a compile-time safety mechanism. They guarantee that zone-owned data is not accidentally captured beyond its intended scope. See the [Memory Management](05_memory_zones.md) chapter for details on zones and ownership.

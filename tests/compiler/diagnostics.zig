@@ -1114,6 +1114,31 @@ test "diagnostics: `.variant(payload)` is read against the type it goes to" {
     try expectNoError(a, decls, "f :: fn(s: Shape) -> Shape { return s; }\nmain :: fn() -> i32 { s: Shape = .circle(1.0); s = f(.circle(2.0)); e: HttpError = .status(3); return 0; }");
 }
 
+test "diagnostics: a value made from borrowed data does not outlive the borrow" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const decls =
+        \\Parser :: struct { src: []const u8, pos: usize }
+        \\G: Parser = .{ "", 0 };
+        \\take :: fn(p: Parser) -> usize { return p.pos; }
+        \\
+    ;
+    const through = "cannot be stored through a pointer or into a global: a field of a local may hold it, which makes the local borrowed";
+    const cases = [_]struct { body: []const u8, needle: []const u8 }{
+        .{ .body = "f :: fn(src: borrow []const u8) -> Parser { p: Parser = .{ \"\", 0 }; p.src = src; return p; }", .needle = "borrowed value from `src` cannot be returned" },
+        .{ .body = "f :: fn(src: borrow []const u8) { p: Parser = .{ \"\", 0 }; q := &p; q.src = src; }", .needle = through },
+        .{ .body = "f :: fn(src: borrow []const u8) { G.src = src; }", .needle = through },
+        .{ .body = "f :: fn(p: borrow Parser) -> Parser { return p; }", .needle = "borrowed value from `p` cannot be returned" },
+        .{ .body = "f :: fn(src: borrow []const u8) -> usize { p: Parser = .{ \"\", 0 }; p.src = src; return take(p); }", .needle = "borrowed value from `src` can only be passed to a `borrow` parameter" },
+        .{ .body = "f :: fn(n: borrow i32) -> i32 { return n; }", .needle = "`borrow i32` borrows nothing" },
+    };
+    for (cases) |case| {
+        const src = try std.mem.concat(a, u8, &.{ decls, case.body, "\n" });
+        try expectFirstError(a, src, &.{case.needle});
+    }
+}
+
 test "diagnostics: a constant is not written to" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

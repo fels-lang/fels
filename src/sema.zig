@@ -2073,13 +2073,33 @@ const Checker = struct {
             self.emitError(span, "nested `borrow` qualifiers are not allowed", .{});
             return error.SemanticFailed;
         }
+        // A struct (an optional, an array) that holds borrowed data is passed as a borrow by
+        // value, as a pointer or a slice is: `peek :: fn(p: borrow Parser)`.
         switch (ty.borrow.*) {
-            .pointer, .const_ptr, .slice => {},
+            .pointer, .const_ptr, .slice, .named, .optional, .array => {},
             else => {
-                self.emitError(span, "`borrow` parameters must be pointers or slices", .{});
+                self.emitError(span, "`borrow {s}` borrows nothing: a borrow parameter is a pointer, a slice, or a value that holds one (a struct, an optional, an array)", .{self.formatTy(ty.borrow.*)});
                 return error.SemanticFailed;
             },
         }
+    }
+
+    /// The local whose own storage `place` is in, through fields and elements of values, never
+    /// through a pointer: `p.src`, `cells[2].text`. Null for anything else (a pointer's
+    /// target, a global).
+    fn localPlaceRoot(self: *Checker, place: ast.Expr) ?[]const u8 {
+        return switch (place.kind) {
+            .ident => |name| if (self.lookupLocal(name) != null) name else null,
+            .field => |field| switch (self.checkedType(field.base.*) orelse return null) {
+                .named, .array => self.localPlaceRoot(field.base.*),
+                else => null,
+            },
+            .index => |index| switch (self.checkedType(index.base.*) orelse return null) {
+                .array => self.localPlaceRoot(index.base.*),
+                else => null,
+            },
+            else => null,
+        };
     }
 
     fn rejectBorrowOutsideParam(self: *Checker, ty: Ty, span: Span) SemanticError!void {
@@ -3020,12 +3040,15 @@ const Checker = struct {
                 // A shift amount is not a value of the target's type.
                 if (assign.op != .shl and assign.op != .shr) try self.requireIntLitFits(assign.value, target_ty);
                 if (self.exprZoneOwner(assign.value)) |owner| {
-                    // Borrowed values still may not be retained inside an
-                    // aggregate or through a pointer — that would outlive the
-                    // borrow. (Plain `name = borrowed` is handled below.)
+                    // A field or element of a local aggregate may hold a borrowed value: the local is
+                    // then borrowed as the value is, as a literal holding it makes it (below).
+                    // Through a pointer, or into a global, it would outlive the borrow.
+                    // (Plain `name = borrowed` is handled below.)
                     if (assign.target.kind != .ident and owner.kind == .borrow) {
-                        self.emitError(assign.span, "borrowed value from `{s}` cannot be stored into an aggregate or pointer", .{owner.name});
-                        return error.SemanticFailed;
+                        if (self.localPlaceRoot(assign.target) == null) {
+                            self.emitError(assign.span, "borrowed value from `{s}` cannot be stored through a pointer or into a global: a field of a local may hold it, which makes the local borrowed", .{owner.name});
+                            return error.SemanticFailed;
+                        }
                     }
                     // Find the variable the store ultimately mutates. Storing a
                     // zone-owned value into `list.data` makes `list` transitively

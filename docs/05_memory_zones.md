@@ -109,12 +109,33 @@ main :: fn() {
 ```
 
 **Borrowing Rules:**
-1. `borrow` is only valid as the **outermost** qualifier of a function parameter (e.g., `borrow *T` or `borrow []T`).
+1. `borrow` is only valid as the **outermost** qualifier of a function parameter: `borrow *T`,
+   `borrow []T`, or a value that holds one, `borrow Parser` for a struct (an optional, an array).
 2. You cannot nest `borrow` qualifiers (e.g., `borrow borrow *T` is invalid).
 3. `borrow` is **not valid** on return types, local variables, struct fields, or const declarations.
-4. Borrowed values **cannot be stored** into aggregates (structs/arrays) or through pointers.
+4. **A value made from borrowed data is borrowed.** A struct or array local that holds a
+   borrowed value (built with it, or with a field or element set to it) is borrowed in turn: it
+   can be read, changed and passed to a `borrow` parameter, and it cannot be returned or passed
+   on to a parameter that does not borrow. A borrowed value cannot be stored through a pointer or
+   into a global, which would outlive the borrow.
 5. Borrowed values cannot be explicitly freed.
 6. A borrowed value is transparent to type-checking inside the function — you interact with it just like a normal pointer or slice.
+
+A parser over a borrowed buffer is a plain struct:
+
+```fels
+Parser :: struct { src: []const u8, pos: usize }
+
+next :: fn(p: borrow *Parser) -> u8 { b := p.src[p.pos]; p.pos += 1; return b; }
+peek :: fn(p: borrow Parser) -> u8 { return p.src[p.pos]; }
+
+count_a :: fn(text: borrow []const u8) -> i32 {
+    p: Parser = .{ text, 0 };          // `p` borrows `text`
+    n: i32 = 0;
+    while p.pos < p.src.len { if next(&p) == 'a' { n += 1; } }
+    return n;                          // `return p;` would be an error
+}
+```
 
 ## Example: Building a Temporary String
 
