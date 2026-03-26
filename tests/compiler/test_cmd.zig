@@ -228,7 +228,7 @@ test "fels test: on the comptime VM, a test that needs the running program is sk
     try std.testing.expectEqual(@as(u32, 2), r.summary.skipped);
     try std.testing.expect(r.summary.ok());
     try expectHas(r.text, "  - asks_the_os: skipped (comptime FFI to `");
-    try expectHas(r.text, "  - counts: skipped (the comptime VM cannot run `counts`)\n");
+    try expectHas(r.text, "  - counts: skipped (compile-time code cannot modify a global)\n");
     try std.testing.expect(std.mem.endsWith(u8, r.text, "\n1 passed, 0 failed, 2 skipped\n"));
 }
 

@@ -86,8 +86,9 @@ use: `TABLE[i]`, `ORIGIN.x`, `VT.add(1, 2)`, `&TABLE[2]`, `match MODES[i] { … 
 into a local. What the code sees is the global's *initial value* — the image is what runs, not
 this. It is built the first time a run reads it, once per run however often it is read, and
 it is **read-only**: a write through an element, a field, a pointer, or a copy that still
-points at the table stops the build with "compile-time code cannot modify a global". A scalar
-global is not assignable at compile time either.
+points at the table stops the build with "compile-time code cannot modify a global", and so
+does an assignment to a scalar global (`counter = counter + 1` in a `#run`). `fels test` runs
+such a test at run time instead.
 
 Not readable yet: a global that holds the address of another (`A: Node = .{ 1, &B }`) and a
 global that a `#run` computes. Reading one stops that run and names the global; the program

@@ -836,6 +836,10 @@ const FnCompiler = struct {
                 }
             },
 
+            // A global holds the initial value the image starts with: compile-time code reads
+            // it, and a write would not be there at run time (as for a field of one, `engine`).
+            .global_store => try self.emit(Instr.with_imm(.trap, instructions.global_write_trap)),
+
             .call => |ci| try self.lowerCall(target, ci),
 
             .call_indirect => |ci| {
