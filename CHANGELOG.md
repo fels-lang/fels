@@ -38,6 +38,9 @@ the major version is `0`, any minor bump may break source compatibility.
 - **A struct local may hold borrowed data**, and is then borrowed itself: `p.src = src` works as
   `.{ src, 0 }` did, and `borrow Parser` passes such a struct by value. A store through a pointer
   or into a global is still refused.
+- **A constant naming a function is that function**: `F :: seven; F()` calls `seven`, `h := F`
+  holds it, and `pub read :: files::read_all;` re-exports a function as a `pub` alias does a type.
+  It was "`F` is not a function".
 - **`core::sizeof(Box(u64))`**, and `align_of`, `offset_of` and `type_name`, take a generic
   type's instance; it was "`Box` is not a function".
 - **`.variant(payload)` where the type is known**, as `.variant` is: `s: Shape = .circle(2.0)`,
