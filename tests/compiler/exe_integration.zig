@@ -4655,6 +4655,17 @@ test "exe: a constant naming a function is that function" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_fn_alias_o2", 2, true));
 }
 
+test "exe: a program without main does not build" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // It linked, and the executable jumped to nothing at start (an access violation).
+    try std.testing.expectError(error.LoweringFailed, compileAndRun(arena.allocator(),
+        \\helper :: fn() -> i32 { return 1; }
+    , "exe_no_main"));
+}
+
 test "exe: unknown field in a struct literal fails the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
