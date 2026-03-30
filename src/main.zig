@@ -509,12 +509,34 @@ fn cmdIr(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []c
     be.lower(module) catch return 1;
     const text = be.getIrText(allocator) catch return 1;
     defer allocator.free(text);
-    var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
-    stdout_writer.interface.writeAll(text) catch return 1;
-    stdout_writer.interface.flush() catch return 1;
+    writeStdout(io, text) catch return 1;
     return 0;
 }
+
+/// Write `bytes` to stdout. When the reader has gone (`fels ir x.fels | head`), stop without
+/// a word: on Windows Zig's file writer takes the closing pipe for a programming error and
+/// panics, so the bytes go through `WriteFile` there.
+fn writeStdout(io: std.Io, bytes: []const u8) !void {
+    if (builtin.os.tag == .windows) {
+        const handle = std.Io.File.stdout().handle;
+        var done: usize = 0;
+        while (done < bytes.len) {
+            var written: u32 = 0;
+            const chunk: u32 = @intCast(@min(bytes.len - done, 1 << 20));
+            if (win_out.WriteFile(handle, bytes.ptr + done, chunk, &written, null) == 0 or written == 0) return;
+            done += written;
+        }
+        return;
+    }
+    var buffer: [4096]u8 = undefined;
+    var writer = std.Io.File.stdout().writerStreaming(io, &buffer);
+    writer.interface.writeAll(bytes) catch return;
+    writer.interface.flush() catch return;
+}
+
+const win_out = struct {
+    extern "kernel32" fn WriteFile(h: std.os.windows.HANDLE, buf: [*]const u8, to_write: u32, written: *u32, ov: ?*anyopaque) callconv(.winapi) i32;
+};
 
 fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8, obj_path: []const u8, opts: *Options) u8 {
     if (!fels.llvm_enabled) return noLlvm();
