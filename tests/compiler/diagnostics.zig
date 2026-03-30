@@ -1151,6 +1151,17 @@ test "diagnostics: a value made from borrowed data does not outlive the borrow" 
     }
 }
 
+test "diagnostics: an atomic takes its ordering" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Without the ordering the call read the wrong arguments and gave wrong values.
+    try expectFirstError(a, "main :: fn() -> i32 { x: u32 = 5; core::atomic_store(&x, 7); return 0; }", &.{"`core::atomic_store` takes 3 arguments, the ordering last: `core::atomic_store(ptr, value, ord)`"});
+    try expectFirstError(a, "main :: fn() -> i32 { x: u32 = 5; return core::atomic_load(&x) as i32; }", &.{"`core::atomic_load` takes 2 arguments"});
+    try expectFirstError(a, "main :: fn() -> i32 { x: u32 = 5; return core::atomic_cas(&x, 5, 6) as i32; }", &.{"`core::atomic_cas` takes 4 arguments"});
+    try expectNoError(a, "", "main :: fn() -> i32 { x: u32 = 5; core::atomic_store(&x, 7, 4); core::atomic_fence(4); return core::atomic_load(&x, 4) as i32; }");
+}
+
 test "diagnostics: a constant is not written to" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
