@@ -171,13 +171,13 @@ Float literals always contain a decimal point. A fractional part is required.
 1.0       // decimal with fractional part required
 0.5       // leading zero
 2.5f32    // explicit f32 suffix (f32 and f64 are the only float suffixes)
+1e5       // 100000.0: an exponent makes a float, with or without the point
+1.5e-3    // 0.0015
+6.02E23f32
 ```
 
 > [!NOTE]
-> Bare integers like `1` are not implicitly treated as floats. You must write `1.0` when a floating-point value is intended.
-
-There is no exponent notation: write `100000.0`, not `1e5`. The compiler reports
-`exponent notation is not supported` and offers the number written out.
+> Bare integers like `1` are not implicitly treated as floats. You must write `1.0` (or `1e0`) when a floating-point value is intended.
 
 ### String Literals
 

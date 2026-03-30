@@ -352,6 +352,7 @@ pub const Lexer = struct {
                 self.index += 1;
             }
             // Check for float literal: digits.digits
+            var is_float = false;
             if (self.index < self.source.len and self.source[self.index] == '.') {
                 const dot_pos = self.index;
                 self.index += 1;
@@ -359,14 +360,23 @@ pub const Lexer = struct {
                     while (self.index < self.source.len and (std.ascii.isDigit(self.source[self.index]) or self.source[self.index] == '_')) {
                         self.index += 1;
                     }
-                    // Consume any trailing identifier characters (type suffixes)
-                    while (self.index < self.source.len and isIdentContinue(self.source[self.index])) {
-                        self.index += 1;
-                    }
-                    return token(.float_lit, start, self.index);
+                    is_float = true;
+                } else {
+                    // Not a float literal (e.g. `4.` or `4.xyz`) — rewind to before the dot
+                    self.index = dot_pos;
                 }
-                // Not a float literal (e.g. `4.` or `4.xyz`) — rewind to before the dot
-                self.index = dot_pos;
+            }
+            // An exponent, `1e5`, `1.5e-3`, `2E10`: a float, with or without the point.
+            if (self.exponentLength() > 0) {
+                self.index += self.exponentLength();
+                is_float = true;
+            }
+            if (is_float) {
+                // Consume any trailing identifier characters (type suffixes)
+                while (self.index < self.source.len and isIdentContinue(self.source[self.index])) {
+                    self.index += 1;
+                }
+                return token(.float_lit, start, self.index);
             }
         }
 
@@ -375,6 +385,18 @@ pub const Lexer = struct {
         }
 
         return token(.int_lit, start, self.index);
+    }
+
+    /// The length of the exponent at the current position (`e5`, `E-3`, `e+10`), or 0 when
+    /// there is none: an `e` or `E`, an optional sign, then a digit.
+    fn exponentLength(self: *Lexer) usize {
+        var i = self.index;
+        if (i >= self.source.len or (self.source[i] != 'e' and self.source[i] != 'E')) return 0;
+        i += 1;
+        if (i < self.source.len and (self.source[i] == '+' or self.source[i] == '-')) i += 1;
+        if (i >= self.source.len or !std.ascii.isDigit(self.source[i])) return 0;
+        while (i < self.source.len and (std.ascii.isDigit(self.source[i]) or self.source[i] == '_')) i += 1;
+        return i - self.index;
     }
 
     fn string(self: *Lexer, start: usize) Token {
