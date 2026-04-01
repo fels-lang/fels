@@ -321,6 +321,8 @@ it finds. It looks in the artifact's own `lib_path`s *and* in the directory cont
 So this is usually all you write:
 
 ```fels
+#import std.build.{ Build };
+
 build :: fn(b: Build) {
     game := b.executable("game", "src/main.fels");
     game.link("raylib");
@@ -353,6 +355,8 @@ honors that library's own embedded `/DEFAULTLIB` directives, exactly like a C co
 its system dependencies flow in automatically:
 
 ```fels
+#import std.build.{ Build };
+
 build :: fn(b: Build) {
     game := b.executable("game", "src/main.fels");
     game.link("raylib");
