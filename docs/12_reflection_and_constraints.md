@@ -1,72 +1,70 @@
 # Reflection, Any, and constraints
 
 
-Reflection in Fels is comptime and runtime, and it threads through generics.
+Reflection in Fels works at comptime and at runtime, and it threads through generics.
 
-At comptime, `core::type_info(T)` is a matchable value — you `match` on a type's structure
-(struct fields, enum variants, scalar kind). Constraints build on it: built-in
+At comptime, `core::type_info(T)` is a matchable value, so you can `match` on a type's structure:
+its struct fields, enum variants or scalar kind. Constraints build on it. There are built-in
 predicates (`$T: Numeric`/`Int`/`Float`/`Struct`/`Enum`/`Ptr`/…), named
 `constraint Name($T) { … }` declarations, and `where { … }` blocks that inspect
 `core::type_info(T)` and can `core::reject("msg")`. The predicate runs during generic resolution,
-so a bad type fails at the call site before the body is checked. A `where` can also
-compute an output type param (`-> $Acc`).
+so a bad type fails at the call site before the body is checked. A `where` can also compute an
+output type param (`-> $Acc`).
 
-At runtime, `core::type_id(T)` is a stable type identity — a content hash, comparable
+At runtime, `core::type_id(T)` is a stable type identity. It is a content hash and is comparable
 across compilation units. `core::type_name(T)` and `core::sizeof(T)` fold to real runtime values.
-`Any` is a type-erased value: `any(x)` wraps it, `any_as(v, T) -> ?T` is a safe
-downcast. The metadata travels inline with the value, baked as a tree-shaken string
-literal, so reflection you don't use costs nothing. A generic walker recurses through
-struct fields, slice elements, and pointers — enough for reflection-driven
-serialization with no per-type code.
+`Any` is a type-erased value: `any(x)` wraps a value, and `any_as(v, T) -> ?T` is a safe
+downcast. The metadata travels inline with the value, baked as a tree-shaken string literal, so
+reflection you don't use costs nothing. A generic walker recurses through struct fields, slice
+elements and pointers. That is enough for reflection-driven serialization with no per-type code.
 
 > In code, these builtins carry their `core::` prefix: `core::type_info(T)`,
 > `core::type_id(T)`, `core::type_name(T)`, `core::sizeof(T)`, `core::any(x)`,
-> `core::reject(msg)` and `core::require(T, C)` (a bare name is a compile error; see
+> `core::reject(msg)` and `core::require(T, C)`. A bare name is a compile error (see
 > [08](08_attributes_builtins.md)). The design text below often leaves the prefix out.
 
 ## Design thesis
 
-Jai exposes reflection and metaprogramming through many special-purpose pieces
-that don't compose: `#modify` (a code block bolted onto a signature), the
-`Type_Info` / `Type_Info_Integer` / `Type_Info_Struct` cast hierarchy,
-`get_type_table`, `for_expansion`, `#insert -> string`. Each does its job; together
-they're a grab-bag.
+Jai exposes reflection and metaprogramming through many special-purpose pieces that don't
+compose. There is `#modify` (a code block bolted onto a signature), the
+`Type_Info` / `Type_Info_Integer` / `Type_Info_Struct` cast hierarchy, `get_type_table`,
+`for_expansion` and `#insert -> string`. Each does its job, but together they're a grab-bag.
 
-Fels already has a structural advantage Jai lacks: **the comptime VM executes the
-same IR as the runtime backend**, so comptime and runtime behave identically (an
-`#run` FNV-1a hash equals its runtime value bit-for-bit). We lean on that to make
-*one* reflection surface serve both phases.
+Fels already has a structural advantage that Jai lacks: **the comptime VM executes the same IR
+as the runtime backend**. Comptime and runtime therefore behave identically, and an `#run`
+FNV-1a hash equals its runtime value bit-for-bit. We lean on that to make *one* reflection
+surface serve both phases.
 
-Five orthogonal primitives, each type-safe, each composing with the rest:
+The design rests on five orthogonal primitives. Each is type-safe, and each composes with the
+rest:
 
-1. **`TypeInfo`** — a matchable tagged enum describing a type. Same value at
+1. **`TypeInfo`**: a matchable tagged enum that describes a type. It is the same value at
    comptime and runtime.
-2. **`typeid`** — a cheap, stable runtime identity for a type (an index, not a
-   pointer).
-3. **`Any`** — a `(pointer, typeid)` pair with *safe* navigation and downcasting.
-4. **`constraint`** — a comptime predicate over `TypeInfo`; `$T: C` and interface
-   conformance are the same mechanism.
-5. **`where`** — either a per-instantiation block that can inspect, *rewrite*, and
-   *reject* the type bindings (with overload fallback), **or** interface bounds:
-   `fn($T, x: *T) where T: Show` is equivalent to the inline `fn($T: Show, …)`
-   (comma-separate several, `where T: A, U: B`). A bound type is checked for
-   conformance, and the interface's methods are callable on it directly
-   (`x.val()`), not only via a `*Iface` value.
+2. **`typeid`**: a cheap, stable runtime identity for a type (an index, not a pointer).
+3. **`Any`**: a `(pointer, typeid)` pair with *safe* navigation and downcasting.
+4. **`constraint`**: a comptime predicate over `TypeInfo`. `$T: C` and interface conformance
+   are the same mechanism.
+5. **`where`**: either a per-instantiation block that can inspect, *rewrite* and *reject* the
+   type bindings (with overload fallback), **or** interface bounds. In the second form,
+   `fn($T, x: *T) where T: Show` is equivalent to the inline `fn($T: Show, …)`, and you
+   comma-separate several bounds (`where T: A, U: B`). A bound type is checked for conformance,
+   and the interface's methods are callable on it directly (`x.val()`), not only via a
+   `*Iface` value.
 
-Reflection-driven serialization, custom iteration, and code generation all fall
-out of these — no new directives.
+Reflection-driven serialization, custom iteration and code generation all fall out of these,
+with no new directives.
 
 ## 1. `TypeInfo` — reflection as a matchable value
 
 Today Fels has `core::type_info(T)` with ad-hoc field access (`.kind`, `.fields[i].name`,
-`.bits`). We replace that with a real tagged enum — the same shape as the `ast.*`
-metaprogramming surface, injected as a prelude when reflection is used.
+`.bits`). We replace that with a real tagged enum. It has the same shape as the `ast.*`
+metaprogramming surface and is injected as a prelude when reflection is used.
 
 > **Implemented today:** `core::type_info(T)` returns such an enum. Its variants are
 > `void_`, `boolean`, `int`, `float`, `pointer`, `slice`, `array`, `optional`, `struct_`,
-> `enum_` and `other` (the name of any other type), with `TiInt`/`TiFloat`/… payloads;
-> `fn_`, `iface` and `distinct_` below are still design. (`void`, `bool` and `distinct`
-> are keywords, so those variants are spelled `void_`, `boolean` and `distinct_`.)
+> `enum_` and `other` (the name of any other type), with `TiInt`/`TiFloat`/… payloads. The
+> `fn_`, `iface` and `distinct_` variants below are still design. (`void`, `bool` and
+> `distinct` are keywords, so those variants are spelled `void_`, `boolean` and `distinct_`.)
 
 ```fels
 TypeInfo :: enum {
@@ -89,8 +87,8 @@ FieldInfo   :: struct { name: []const u8, ty: *TypeInfo, offset: usize, is_const
 VariantInfo :: struct { name: []const u8, payload: ?*TypeInfo, tag: u32 }
 ```
 
-`core::type_info(T) -> TypeInfo` folds at comptime *and* is available at runtime (see
-§4). Because it's a tagged enum, you inspect it by `match`, not by casting:
+`core::type_info(T) -> TypeInfo` folds at comptime *and* is available at runtime (see §4).
+Because it's a tagged enum, you inspect it with `match`, not by casting:
 
 ```fels
 describe :: fn(info: TypeInfo) -> []const u8 {
@@ -103,20 +101,20 @@ describe :: fn(info: TypeInfo) -> []const u8 {
 }
 ```
 
-> **✦ Beyond Jai.** Jai forces `if t.type == .INTEGER { info := cast(*Type_Info_Integer) t; … }`
-> — a tag check followed by an unchecked pointer cast. Fels's `match info { .int |i| => … }`
-> is exhaustive, payload-bound, and impossible to mis-cast. The compiler also
-> checks you handled (or `else`'d) every kind.
+> **✦ Beyond Jai.** Jai forces `if t.type == .INTEGER { info := cast(*Type_Info_Integer) t; … }`,
+> which is a tag check followed by an unchecked pointer cast. Fels's `match info { .int |i| => … }`
+> is exhaustive, payload-bound and impossible to mis-cast. The compiler also checks that you
+> handled (or `else`'d) every kind.
 
 ## 2. `typeid` — cheap runtime identity
 
-> **Implemented today:** `core::type_id(T) -> usize` — a stable runtime id for a type.
-> It folds at IR lowering to an **FNV-1a content hash** of the type's canonical
-> spelling, so identical types always share an id, distinct types (incl. `*i32`
-> vs `i32`, `[]i32` vs `i32`, two structurally-identical structs) differ, and the
-> id is **stable across compilation units** (no global numbering). In a generic,
-> `core::type_id(T)` folds per instantiation. Identity tests are a single `usize`
-> compare. `info_of(id)` (the dynamic table lookup) is still design (needs §4).
+> **Implemented today:** `core::type_id(T) -> usize`, a stable runtime id for a type. It folds
+> at IR lowering to an **FNV-1a content hash** of the type's canonical spelling. Identical types
+> therefore always share an id, and distinct types differ, including `*i32` vs `i32`, `[]i32` vs
+> `i32` and two structurally-identical structs. The id is also **stable across compilation
+> units**, because there is no global numbering. In a generic, `core::type_id(T)` folds per
+> instantiation. Identity tests are a single `usize` compare. `info_of(id)` (the dynamic table
+> lookup) is still design and needs §4.
 
 ```fels
 core::type_id(T) -> usize        // a stable id (content hash); IMPLEMENTED
@@ -124,42 +122,40 @@ core::type_id(any_value) -> usize   // value form — design (needs Any)
 info_of(id) -> *TypeInfo        // table lookup — design (§4)
 ```
 
-Two identical types always share one id, so identity tests are a single integer
-compare:
+Two identical types always share one id, so an identity test is a single integer compare:
 
 ```fels
 if core::typeid_of(T) == core::typeid_of(Vector3) { … }
 ```
 
 > **✦ Beyond Jai.** Jai compares `*Type_Info` pointers and bakes the whole table
-> unconditionally. A `typeid` is cheaper to compare, stable across compilation
-> units, and (with §4's tree-shaking) only costs a table slot when actually used.
+> unconditionally. A `typeid` is cheaper to compare and stable across compilation units. With
+> §4's tree-shaking, it also costs a table slot only when it is actually used.
 
 ## 3. `Any` — safe dynamic values
 
-`Any` is the runtime-reflection workhorse: a fat value carrying a pointer to data
+`Any` is the workhorse of runtime reflection. It is a fat value that carries a pointer to data
 and the data's type metadata.
 
-> **Implemented today.** `Any :: struct { data: *const u8, id: usize, name:
-> []const u8 }` (an injected prelude). `any(x)` wraps any value — it spills `x` to
-> a temporary, points at it, and records `core::type_id(T)` and the type's name. The
-> rest is ordinary generic Fels (so it's all type-safe):
-> `any_as(v, T) -> ?T` (safe downcast, null on mismatch), `any_is(v, T) -> bool`,
-> `any_id(v)`, `any_name(v)`. A value passed to an `Any` parameter and recovered by
-> its real type works end to end; the type *name* is available at runtime on the
-> erased value. **Fels's twist on the type table:** metadata travels *inline* with
-> the value (no central `info_of(id)` table to bake/manage), and it's tree-shaken
-> automatically — only `any()`'d types' names reach the binary. A bare value passed
-> to an `Any` parameter is wrapped automatically. (`.info`/`.field`/`.elem`/`.deref`
-> navigation is the next step. The method spelling `v.as(T)` below is design only:
-> `as` is a keyword, so the downcast is the function `any_as(v, T)`.)
+> **Implemented today.** `Any :: struct { data: *const u8, id: usize, name: []const u8 }`
+> comes from an injected prelude. `any(x)` wraps any value: it spills `x` to a temporary, points
+> at it, and records `core::type_id(T)` and the type's name. The rest is ordinary generic Fels,
+> so it's all type-safe: `any_as(v, T) -> ?T` (safe downcast, null on mismatch),
+> `any_is(v, T) -> bool`, `any_id(v)`, `any_name(v)`. A value passed to an `Any` parameter and
+> recovered by its real type works end to end, and the type *name* is available at runtime on
+> the erased value. **Fels's twist on the type table:** metadata travels *inline* with the
+> value, so there is no central `info_of(id)` table to bake or manage. It is also tree-shaken
+> automatically, and only the names of `any()`'d types reach the binary. A bare value passed to
+> an `Any` parameter is wrapped automatically. (`.info`/`.field`/`.elem`/`.deref` navigation is
+> the next step. The method spelling `v.as(T)` below is design only. `as` is a keyword, so the
+> downcast is the function `any_as(v, T)`.)
 
 ```fels
 Any :: struct { data: *const u8, id: usize, name: []const u8 }   // injected; `any(x)` builds it
 ```
 
-Assigning any value to an `Any` parameter wraps it automatically (the compiler
-spills a temporary and records its `typeid`):
+Assigning any value to an `Any` parameter wraps it automatically. The compiler spills a
+temporary and records its `typeid`:
 
 ```fels
 log :: fn(label: []const u8, v: Any) { … }
@@ -168,7 +164,7 @@ pos: Vector3 = .{ 1, 2, 3 };
 log("pos", pos);             // wraps Vector3
 ```
 
-Navigation and downcasting are **safe** — they return optionals, never UB:
+Navigation and downcasting are **safe**. They return optionals, never UB:
 
 ```fels
 v.info() -> TypeInfo                 // the type, as a matchable value
@@ -185,42 +181,40 @@ sum_field :: fn(v: Any) -> i32 {
 }
 ```
 
-> **✦ Beyond Jai.** Jai's `Any` is `{ value_pointer, type }` and you cast it
-> yourself (unchecked). Fels's `.as(T)` is an `?T`, `.field`/`.elem` are bounds- and
-> name-checked, and you pattern-match `.info()`. You cannot read an `Any` as the
-> wrong type without the compiler handing you a `null` to deal with.
+> **✦ Beyond Jai.** Jai's `Any` is `{ value_pointer, type }`, and you cast it yourself,
+> unchecked. In Fels, `.as(T)` is an `?T`, `.field`/`.elem` are bounds- and name-checked, and
+> you pattern-match `.info()`. You cannot read an `Any` as the wrong type without the compiler
+> handing you a `null` to deal with.
 
 ## 4. The type table — opt-in, tree-shaken
 
-Runtime reflection needs `TypeInfo` baked into the binary's data segment. Jai
-bakes **everything** (then offers `runtime_storageless_type_info` to turn it off).
-Fels inverts the default: a type's info reaches the binary **only if it can be
-reached at runtime** — i.e. some runtime code calls `core::type_info(T)`, takes
-`typeid(T)`, or wraps a `T` into an `Any`. The compiler already tracks the
-comptime/runtime split (the VM vs the LLVM backend), so this is a reachability
-pass over those roots.
+Runtime reflection needs `TypeInfo` baked into the binary's data segment. Jai bakes
+**everything** and then offers `runtime_storageless_type_info` to turn it off. Fels inverts the
+default: a type's info reaches the binary **only if it can be reached at runtime**. That means
+some runtime code calls `core::type_info(T)`, takes `typeid(T)`, or wraps a `T` into an `Any`.
+The compiler already tracks the comptime/runtime split (the VM vs the LLVM backend), so this is
+a reachability pass over those roots.
 
 ```fels
 type_table() -> []TypeInfo     // every type that was baked (debuggers, tooling)
 ```
 
-Result: a hello-world binary bakes **zero** type info; a program that serializes
-three structs bakes exactly those three (plus their transitive field types).
+The result is that a hello-world binary bakes **zero** type info. A program that serializes
+three structs bakes exactly those three, plus their transitive field types.
 
-> **✦ Beyond Jai.** Smaller binaries by default, with no global switch to
-> remember. Reflection you don't use costs nothing — the opposite of Jai's
-> bake-all-then-strip model. A capability (§7) can additionally gate *who* may read
-> the table, so a sandboxed plugin can't enumerate the host's types.
+> **✦ Beyond Jai.** You get smaller binaries by default, with no global switch to remember.
+> Reflection you don't use costs nothing, which is the opposite of Jai's bake-all-then-strip
+> model. A capability (§7) can also gate *who* may read the table, so a sandboxed plugin can't
+> enumerate the host's types.
 
 ## 5. Serialization — one source, two speeds
 
 > Planned: this section is design. The `Any` navigation it uses (`.info()`, `.as()`,
-> `.field()`, `.elem()`) is not built yet, and `#for` takes an integer range `a..b`
-> today, not a type's fields. `std.serde` ([07](07_stdlib.md#stdserde)) is the
-> working serializer.
+> `.field()`, `.elem()`) is not built yet, and today `#for` takes an integer range `a..b`, not
+> a type's fields. The working serializer is `std.serde` ([07](07_stdlib.md#stdserde)).
 
-Because the same `core::type_info` walk runs at comptime and runtime, you write a
-serializer **once** and choose where it executes:
+Because the same `core::type_info` walk runs at comptime and runtime, you write a serializer
+**once** and choose where it executes:
 
 ```fels
 to_json :: fn(v: Any, w: *StringBuilder) {
@@ -247,11 +241,11 @@ to_json :: fn(v: Any, w: *StringBuilder) {
 }
 ```
 
-- **Runtime, dynamic:** call `to_json(some_any, w)` — walks `TypeInfo` at runtime.
-  Handles values whose type isn't known until runtime.
-- **Comptime, specialized:** the *same* function under `#run`/`#for` monomorphizes
-  to straight-line field stores with **no runtime reflection cost** — the VM folds
-  the `match` and the `for` because `core::type_info(T)` is constant.
+- **Runtime, dynamic:** call `to_json(some_any, w)`, and it walks `TypeInfo` at runtime. This
+  handles values whose type isn't known until runtime.
+- **Comptime, specialized:** under `#run`/`#for`, the *same* function monomorphizes to
+  straight-line field stores with **no runtime reflection cost**. The VM folds the `match` and
+  the `for`, because `core::type_info(T)` is constant.
 
 ```fels
 // zero-reflection, fully specialized serializer for a known type:
@@ -263,37 +257,35 @@ to_json_of :: fn($T: type, v: T, w: *StringBuilder) {
 }
 ```
 
-> **✦ Beyond Jai.** Jai makes you pick *up front*: write a string-codegen
-> serializer (`#insert -> string` + `String_Builder`, see its `for_each_member`),
-> **or** walk `Type_Info` at runtime. They're different code. Fels's single
-> `match`-on-`TypeInfo` function *is* both — comptime folds it to specialized code,
-> runtime executes it dynamically, guaranteed identical by the shared IR.
+> **✦ Beyond Jai.** Jai makes you pick *up front*. You either write a string-codegen serializer
+> (`#insert -> string` + `String_Builder`, see its `for_each_member`), **or** you walk
+> `Type_Info` at runtime, and those are different code. Fels's single `match`-on-`TypeInfo`
+> function *is* both. Comptime folds it to specialized code, runtime executes it dynamically,
+> and the shared IR guarantees that the two are identical.
 
 ## 6. `constraint` and `where` — resolve-time generics
 
-This replaces Jai's `#modify`. Two layers: **named constraints** (the common,
-composable case) and a **`where` block** (the escape hatch that can rewrite and
-reject).
+This replaces Jai's `#modify`. It comes in two layers: **named constraints** for the common,
+composable case, and a **`where` block** as the escape hatch that can rewrite and reject.
 
 ### 6.1 Named constraints
 
-> **Implemented today:** both **built-in** constraints (`$T: Numeric`, `Int`,
-> `Float`, `Signed`, `Unsigned`, `Bool`, `Struct`, `Enum`, `Ptr` — checked by type
-> kind) **and user-defined `constraint Name($T) { … }` declarations**. A
-> non-satisfying type is rejected with a clear message at the `$T: Name` site
-> (`type `P` does not satisfy `MyNum`: expected a numeric type`). A user
-> `constraint` is a named, reusable comptime predicate (a where-style block over
-> `core::type_info(T)` that may `core::reject`); it runs on the resolution VM at each `$T: Name`
-> use, via the same two-pass rail. Built-ins take precedence over a same-named
-> user constraint. **`core::require(T, Other)` composition works**: a top-level `core::require`
-> guard recursively enforces another constraint (with cycle detection),
-> propagating its rejection message; the constraint's own checks run after the
-> guards. (Generic inference also binds `$T` from `[]$T`/`?$T`, not just `*$T`.)
-> **Still design:** the `&` combinator below; `core::require` is a *top-level* guard
-> (not evaluated inside conditional control flow).
+> **Implemented today:** both **built-in** constraints and **user-defined
+> `constraint Name($T) { … }` declarations**. The built-ins are `$T: Numeric`, `Int`, `Float`,
+> `Signed`, `Unsigned`, `Bool`, `Struct`, `Enum` and `Ptr`, and they are checked by type kind.
+> A non-satisfying type is rejected with a clear message at the `$T: Name` site
+> (`type `P` does not satisfy `MyNum`: expected a numeric type`). A user `constraint` is a
+> named, reusable comptime predicate: a where-style block over `core::type_info(T)` that may
+> `core::reject`. It runs on the resolution VM at each `$T: Name` use, via the same two-pass
+> rail. Built-ins take precedence over a same-named user constraint.
+> **`core::require(T, Other)` composition works**: a top-level `core::require` guard
+> recursively enforces another constraint (with cycle detection) and propagates its rejection
+> message. The constraint's own checks run after the guards. (Generic inference also binds `$T`
+> from `[]$T`/`?$T`, not just `*$T`.) **Still design:** the `&` combinator below. Also,
+> `core::require` is a *top-level* guard and is not evaluated inside conditional control flow.
 
-A `constraint` is a comptime predicate over a type — first-class, named, and
-composable. Interface conformance becomes *one kind* of constraint.
+A `constraint` is a comptime predicate over a type. It is first-class, named and composable,
+and interface conformance becomes *one kind* of constraint.
 
 ```fels
 Numeric :: constraint($T) {
@@ -309,27 +301,26 @@ sum :: fn($T: Numeric, xs: []T) -> T {        // `$T: Numeric` is checked at the
 }
 ```
 
-Constraints compose with `&`, and `$T: Writer` (an interface) and `$T: Numeric`
-(a predicate) use the *same* `$T: C` syntax:
+Constraints compose with `&`, and `$T: Writer` (an interface) and `$T: Numeric` (a predicate)
+use the *same* `$T: C` syntax:
 
 ```fels
 serialize :: fn($T: Struct & HasField("id"), v: T) { … }   // composed
 ```
 
-> **✦ Beyond Jai.** Jai's `#modify` is an anonymous code block (or a proc returning
-> `bool`) glued to one signature — not nameable, not composable, and orthogonal to
-> interface constraints. Fels makes the predicate a named, reusable, composable
-> value, and *unifies* interface conformance with arbitrary predicates. One
-> concept (`$T: C`) instead of two (`#modify` + interface `/Type`).
+> **✦ Beyond Jai.** Jai's `#modify` is an anonymous code block (or a proc returning `bool`)
+> glued to one signature. You can't name it or compose it, and it is orthogonal to interface
+> constraints. Fels makes the predicate a named, reusable, composable value, and *unifies*
+> interface conformance with arbitrary predicates. That leaves one concept (`$T: C`) instead of
+> two (`#modify` + interface `/Type`).
 
 ### 6.2 The `where` block — inspect, rewrite, reject
 
-> **Implemented today (inspect + reject + output types).** A `where { … }` block
-> after a generic function signature is an arbitrary comptime predicate. It runs
-> **once per instantiation, during resolution**, on a resolution `ComptimeVm`,
-> with the type parameters bound. It may `core::reject("msg")` to fail the instantiation
-> with a custom message, and it may compute **output type params** (`-> $Acc`).
-> Both work end to end:
+> **Implemented today (inspect + reject + output types).** A `where { … }` block after a
+> generic function signature is an arbitrary comptime predicate. It runs **once per
+> instantiation, during resolution**, on a resolution `ComptimeVm`, with the type parameters
+> bound. It may `core::reject("msg")` to fail the instantiation with a custom message, and it
+> may compute **output type params** (`-> $Acc`). Both work end to end:
 >
 > ```fels
 > // inspect + reject:
@@ -343,13 +334,13 @@ serialize :: fn($T: Struct & HasField("id"), v: T) { … }   // composed
 > { total: Acc = x as Acc; return total; }
 > ```
 >
-> A satisfying type compiles; a rejected one fails at the call site with
-> `` `dbl` rejected for this type: dbl needs a numeric type``. The *binding
-> rewrite* (`T = u32`) and *overload fallback* parts remain design (see `§6.3`).
+> A satisfying type compiles, and a rejected one fails at the call site with
+> `` `dbl` rejected for this type: dbl needs a numeric type``. The *binding rewrite*
+> (`T = u32`) and *overload fallback* parts remain design (see `§6.3`).
 
-When you need to *change* the bindings (Jai's `T = s64`) or compute an output
-type, attach a `where` block. It runs once per instantiation, after type matching,
-with the type parameters as mutable comptime values.
+When you need to *change* the bindings (Jai's `T = s64`) or compute an output type, attach a
+`where` block. It runs once per instantiation, after type matching, with the type parameters as
+mutable comptime values.
 
 ```fels
 // Sum into a wider accumulator so u8 arrays don't overflow:
@@ -367,13 +358,13 @@ where {
 }
 ```
 
-- `$Acc` is an **output type parameter** — declared in the return position,
-  *computed* by `where`. (Jai bolts this on with a separate `$R` and assigns it
-  inside `#modify`; here it reads as "the return type is whatever `where` decided.")
-- `core::reject("…")` takes an interpolated message and, crucially, participates in
-  **overload resolution**: a rejected instantiation is *not yet* an error — the
-  compiler tries the next overload. Only when every candidate rejects does it
-  report, listing each reason.
+- `$Acc` is an **output type parameter**. It is declared in the return position and *computed*
+  by `where`. (Jai bolts this on with a separate `$R` and assigns it inside `#modify`. Here it
+  reads as "the return type is whatever `where` decided.")
+- `core::reject("…")` takes an interpolated message, and, more importantly, it participates in
+  **overload resolution**. A rejected instantiation is *not yet* an error, and the compiler
+  tries the next overload. Only when every candidate rejects does it report, listing each
+  reason.
 
 ```fels
 // Two overloads; `where` disambiguates instead of erroring on ambiguity:
@@ -381,62 +372,63 @@ push :: fn($T: type, xs: *List(T), v: T)        where { … }   { … }
 push :: fn($T: type, xs: *List(T), vs: []T)     where { … }   { … }
 ```
 
-> **✦ Beyond Jai.** Three improvements: (1) `core::reject` with a real interpolated
-> message and **overload fallback** instead of a hard error (Jai's `#modify`
-> returning false is fatal); (2) output types are *declared where they belong*
-> (`-> $Acc`) and computed in `where`, instead of a magic `$R` mutated in a side
-> block; (3) the `where` body uses matchable `TypeInfo`, not `cast(*Type_Info_*)`.
+> **✦ Beyond Jai.** There are three improvements. (1) `core::reject` comes with a real
+> interpolated message and **overload fallback** instead of a hard error, while Jai's `#modify`
+> returning false is fatal. (2) Output types are *declared where they belong* (`-> $Acc`) and
+> computed in `where`, instead of a magic `$R` mutated in a side block. (3) The `where` body
+> uses matchable `TypeInfo`, not `cast(*Type_Info_*)`.
 
 ### 6.3 How `where` is wired — the two-pass resolution rail
 
-The predicate runs **during generic resolution**, not after. This dissolves the
-"run comptime code during resolution, but the VM only exists post-sema"
-chicken-and-egg by reusing the same two-pass pipeline Fels already has for computed
-`#insert #run` (`pipeline.zig`'s `strictPass`):
+The predicate runs **during generic resolution**, not after. That sounds like a chicken-and-egg
+problem: "run comptime code during resolution, but the VM only exists post-sema". Fels dissolves
+it by reusing the same two-pass pipeline it already has for computed `#insert #run`
+(`pipeline.zig`'s `strictPass`):
 
 1. **Tolerant pass-1 sema** type-checks everything (the `where` blocks included)
    and yields a complete-enough `FrontEnd`.
 2. A **resolution `ComptimeVm`** is built from that `FrontEnd`.
-3. **Strict pass-2 sema** re-checks with the VM wired into the `Checker` (via an
-   opaque ctx + function-pointer callback, so sema never imports `ir` — see
-   `WhereEvalFn` / `WhereTypeEvalFn`). At each generic call/instantiation the
-   predicate runs on the VM with the type params bound.
+3. **Strict pass-2 sema** re-checks with the VM wired into the `Checker`. The wiring is an
+   opaque ctx + function-pointer callback, so sema never imports `ir` (see `WhereEvalFn` /
+   `WhereTypeEvalFn`). At each generic call/instantiation the predicate runs on the VM with
+   the type params bound.
 
-**Reject** (`§6.2`): in `checkFunction`, right after the `where` block is checked
-and *before* the body, the callback runs `ComptimeVm.evalWhere` — the block lowers
-to `__where() -> []const u8` (`core::reject(msg)` → `return msg`, fall-through → `""`).
-A non-empty result is a resolution error at the **call site** (`origin_span` on the
-instantiation) that suppresses the spurious body errors a post-body check couldn't.
+**Reject** (`§6.2`): in `checkFunction`, right after the `where` block is checked and *before*
+the body, the callback runs `ComptimeVm.evalWhere`. The block lowers to
+`__where() -> []const u8`, with `core::reject(msg)` → `return msg` and fall-through → `""`. A
+non-empty result is a resolution error at the **call site** (`origin_span` on the
+instantiation). Because it comes before the body, it suppresses the spurious body errors that a
+post-body check couldn't.
 
-**Output type params** `-> $Acc`: parsed as an output type param
-(`output_type_params`), computed at the call site in `inferGenericCallImpl` via
-`computeOutputParamsAtCall` → `ComptimeVm.evalWhereType`. The `where` lowers so
-each `Acc = <type>` returns the **node id** of its right-hand type expression; sema
-resolves that expression (`resolveExprAsType`, with `T` bound) and binds `Acc`, so
-the call's return type *and* the instantiation body both see the computed type.
-(Types flow back as node ids rather than first-class `type_val`s — the latter is a
-heavier `Any`/Phase-4 concern; node ids need zero new VM value machinery.)
+**Output type params** `-> $Acc`: this is parsed as an output type param
+(`output_type_params`) and computed at the call site in `inferGenericCallImpl`, via
+`computeOutputParamsAtCall` → `ComptimeVm.evalWhereType`. The `where` lowers so that each
+`Acc = <type>` returns the **node id** of its right-hand type expression. Sema resolves that
+expression (`resolveExprAsType`, with `T` bound) and binds `Acc`, so the call's return type
+*and* the instantiation body both see the computed type. (Types flow back as node ids rather
+than first-class `type_val`s. Those are a heavier `Any`/Phase-4 concern, while node ids need
+zero new VM value machinery.)
 
-**Still design:** **binding rewrite** (`T = u32`) and **overload fallback** (try
-the next candidate on reject). Fallback is moot until Fels grows same-name
-overloading; rewrite is a small extension of the same `evalWhereType` mechanism.
+**Still design:** **binding rewrite** (`T = u32`) and **overload fallback** (try the next
+candidate on reject). Fallback is moot until Fels grows same-name overloading. Rewrite is a
+small extension of the same `evalWhereType` mechanism.
 
 ## 7. Where it all pays off (broad feature parity, Fels-style)
 
-The same five primitives subsume the rest of Jai's metaprogramming toolkit —
-without new directives:
+The same five primitives subsume the rest of Jai's metaprogramming toolkit, without new
+directives:
 
 | Jai feature | Fels realization | Improvement |
 |---|---|---|
-| `for_expansion` (custom iterators) | An `Iter` **interface**: `Iter :: interface { next :: fn(self: *Self) -> ?Elem; }`. `for x in c` desugars to `next()`. | Works at runtime *and* comptime; composes with dynamic dispatch; not a macro you reimplement per container. A `#for_expansion` macro stays available for zero-cost unrolling when you want it. |
-| `#insert -> string` building **struct fields** (SOA, `Matrix(N)`) | `#for f in core::type_info(T).fields { #emit_field … }` inside a struct body — typed field emission, not string concatenation. | Generated fields are type-checked at the generation site; no `.added_strings.jai` to eyeball. |
+| `for_expansion` (custom iterators) | An `Iter` **interface**: `Iter :: interface { next :: fn(self: *Self) -> ?Elem; }`. `for x in c` desugars to `next()`. | Works at runtime *and* comptime, composes with dynamic dispatch, and is not a macro you reimplement per container. A `#for_expansion` macro stays available for zero-cost unrolling when you want it. |
+| `#insert -> string` building **struct fields** (SOA, `Matrix(N)`) | `#for f in core::type_info(T).fields { #emit_field … }` inside a struct body: typed field emission, not string concatenation. | Generated fields are type-checked at the generation site, with no `.added_strings.jai` to eyeball. |
 | `#caller_code` (call-site AST) | `#caller` builtin yielding a typed `ast.Call` you `match` on. | Typed AST, not `cast(*Code_Procedure_Call)`. |
-| `compiler_get_nodes` / `compiler_get_code` (arbitrary code AST round-trip) | Typed macro params: a macro takes `body: ast.Block` (matchable) instead of opaque `Code`; rebuild and `#insert`. | Type-safe AST surgery — match on `ast.*`, never cast `Code_Node*`. |
-| `get_type_table` | `type_table()` — but tree-shaken and capability-gated. | Smaller binaries; sandboxable. |
+| `compiler_get_nodes` / `compiler_get_code` (arbitrary code AST round-trip) | Typed macro params: a macro takes `body: ast.Block` (matchable) instead of opaque `Code`, and you rebuild and `#insert`. | Type-safe AST surgery: match on `ast.*`, never cast `Code_Node*`. |
+| `get_type_table` | `type_table()`, but tree-shaken and capability-gated. | Smaller binaries, sandboxable. |
 | `#compile_time` | `#phase` builtin (`.comptime` / `.runtime`), foldable in `#if`. | — |
 | (none) | **Capability-sandboxed reflection + FFI** | The structural supply-chain fix: a plugin gets `Reflect`/`FileSys` capabilities or it physically can't reach the host. Jai has no equivalent. |
 
-The unifying idea: **reflection is a value, constraints are predicates over it,
-`Any` is reflection plus a pointer, iteration is an interface, and code generation
-is a `#for` over reflected fields.** Five composable pieces instead of a dozen
-special forms — all type-checked, all phase-unified, all sandboxable.
+The unifying idea is this: **reflection is a value, constraints are predicates over it, `Any`
+is reflection plus a pointer, iteration is an interface, and code generation is a `#for` over
+reflected fields.** That gives five composable pieces instead of a dozen special forms, and all
+of them are type-checked, phase-unified and sandboxable.
