@@ -63,9 +63,12 @@ root. The comptime heap reserves its pages through two primitives, `VirtualAlloc
 All of this is about the supply chain. A dependency's compile-time code, such as a `#run` or a
 `#compiler` hook, can't reach the host unless it was handed the capability to. That shuts the
 `build.rs` hole: pulling in a package can't read your keys or spawn a process while you compile.
-`unsafe` is the next effect to gate. Granular caps (`fs`, `net`) arrive with the package manager
-that gives them something to guard. In the code, this is `Vm.caps` in `src/vm/engine.zig`, and
-it is checked at the FFI opcode.
+The package manager hands out these grants. A `#use` line in `fels.pkg` can give a package
+`ffi` for named libraries only, such as `ffi("user32")` (see
+[16_packages](16_packages.md#capabilities)). `ffi` is the only capability so far. Caps for
+reading files, the network or running programs are still planned, and `unsafe` is the next
+effect to gate. In the code, this is `Vm.caps` in `src/vm/engine.zig`, and it is checked at the
+FFI opcode.
 
 ## Data at compile time
 
