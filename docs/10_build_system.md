@@ -7,7 +7,7 @@ loop that inspects and generates the program.
 
 More is planned on the same base. Dependency builds are to run in a capability sandbox, which
 is the structural fix for the `build.rs` problem. A content-hashed parallel build graph,
-typed-AST codegen, targets as values and `--watch` on the `felsld` linker are planned as well.
+typed-AST codegen, a macOS target and `--watch` on the `felsld` linker are planned as well.
 
 This page is the design. The VM and metaprogramming foundation it builds on is described in
 [09_comptime.md](09_comptime.md).
@@ -46,7 +46,7 @@ This is Jai's model (`#run build()`) without the boilerplate. If you come from J
 
 ## 2. Layer 1 — the declarative builder
 
-Layer 1 is the everyday API. It is a set of methods on `*Build` and `*Artifact` (UFCS) that
+Layer 1 is the everyday API. It is a set of methods on `Build` and `Artifact` (UFCS) that
 only populate data, while the compiler performs the effects. That split is what makes the
 build deterministic and sandboxable.
 
@@ -82,31 +82,31 @@ build :: fn(b: Build) {
 
 ### Core types
 
-```fels
-pub Optimize   :: enum { debug, release_safe, release_fast, release_small }
-pub OutputKind :: enum { executable, shared_library, static_library, object, none }
-pub Backend    :: enum { llvm, native }   // native = fels's own backend (future)
+These are the types of `lib/std/build.fels` as built. The five structs are handles that carry
+an id, and the state they name lives in the compiler:
 
-pub Artifact :: struct {
-    name:    []const u8,
-    root:    []const u8,        // entry .fels source
-    kind:    OutputKind,
-    opt:     Optimize,
-    backend: Backend,
-    output:  []const u8,        // "" → derived from name
-    // fixed-capacity pools (VM-readable; no growable lists needed at build time)
-    libs:       [MAX_LIBS][]const u8,    n_libs: usize,
-    lib_paths:  [MAX_PATHS][]const u8,   n_lib_paths: usize,
-    defines:    [MAX_DEFS]Define,        n_defs: usize,
-    deps:       [MAX_DEPS]u32,           n_deps: usize,   // indices into Build.deps
-}
+```fels
+pub Build    :: struct { id: i32 }
+pub Artifact :: struct { id: i32 }
+pub Step     :: struct { id: i32 }   // its methods: see Steps below
+pub Command  :: struct { id: i32 }   // its methods: arg, arg_output, cwd, env
+pub Tests    :: struct { id: i32 }   // its methods: see Test steps below
+
+pub Optimize  :: enum { debug, release_safe, release_fast, release_small }
+pub Subsystem :: enum { console, windows }
+pub LinkMode  :: enum { dynamic, static }
+pub Target    :: enum { windows, linux, linux_gnu }
+pub Os        :: enum { windows, linux, macos, other }
 ```
+
+Two more enums are planned, for `use_backend` and the Layer 2 `Options`: `Backend` (`llvm`,
+`native`) and `OutputKind` (`executable`, `shared_library`, `static_library`, `object`, `none`).
 
 ### Builder methods (selection)
 
 | Method | Effect |
 | --- | --- |
-| `b.executable(name, root) -> *Artifact` | declare an exe |
+| `b.executable(name, root) -> Artifact` | declare an exe |
 | `b.shared(name, root)` / `b.static(name, root)` / `b.object(name, root)` | other output kinds |
 | `e.release()` · `e.debug()` · `e.release_small()` | optimization shorthands |
 | `e.optimize(Optimize.release_fast)` · `e.use_backend(Backend.llvm)` | full optimization / backend (`use_backend` is planned) |
@@ -247,10 +247,10 @@ typed-AST and type-info handles.
 
 ## 5. The distinctive parts
 
-> Planned: this section is design. Two parts of it are built so far: the gating of comptime
-> FFI, and the ordering and up-to-date check described in 5.2 (see the plan in section 9).
-> `*Caps`, `#provided`, `add_quote`, `Target` values, `--watch` and `b.codegen` do not exist
-> yet.
+> Planned: this section is design. Three parts of it are built so far: the gating of
+> comptime FFI, the ordering and up-to-date check described in 5.2, and the target loop of
+> 5.4 (see the plan in section 9). `*Caps`, `#provided`, `add_quote`, `--watch` and
+> `b.codegen` do not exist yet.
 
 ### 5.1 Capability-sandboxed dependency builds — the supply-chain fix
 In Jai, the build is arbitrary code with full access to the host, and the same is true of
@@ -303,13 +303,17 @@ println(GIT_REV);
 `Target` is an ordinary value, so cross-compilation becomes a loop:
 
 ```fels
-targets: [3]Target = .{ Target.win_x64, Target.linux_x64, Target.macos_arm64 };
+targets: [2]Target = .{ Target.windows, Target.linux };
 for t in targets {
-    e := b.executable("tool", "src/main.fels");
+    e := b.executable(name_for(t), "src/main.fels");   // one name per target
     e.target(t);
     e.output(out_for(t));
 }
 ```
+
+This loop works today, with `name_for` and `out_for` as functions of your own build.fels.
+Each artifact needs its own name, because its up-to-date stamp is kept under that name. A
+`.linux_gnu` target also needs `e.sysroot(dir)`, and a macOS target is planned.
 
 ### 5.5 `--watch`, hermetic builds, asset pipelines
 - **`fels build --watch`** re-runs only the affected steps when a file changes. The
@@ -338,6 +342,10 @@ fels build -Dkey=value      set an option the script reads via b.option(...)
 fels build --watch          rebuild affected steps on change (planned)
 fels build --explain        print the build graph + cache decisions (planned)
 fels build --frozen         fail if the lockfile would change
+fels build --offline        use only fels.lock and the package cache, never git
+fels build --rebuild        build every artifact, also the ones that are up to date
+fels build --prefix <dir>   the install prefix for `fels build install` (default: dist)
+fels build -q, --quiet      print no progress lines (building, up to date, ✓)
 fels build <file.fels>        direct single-file build (back-compat, today's behavior)
 ```
 
