@@ -196,9 +196,9 @@ describe_kind :: fn(e: ParseError) -> []const u8 {
 an enum value. Where the set is known, `.overflow(n)` does the same (`e: ParseError = .overflow(n)`,
 or `return .overflow(n);` from `-> ParseError`).
 
-`fail e;` raises an error value. It can be one that a `catch` bound or a parameter, and it can be
-any error the function's set takes (the rule of `?`). Within one set the error goes on whole,
-payload and all:
+`fail e;` raises any error value, wherever it comes from: one that a `catch` bound, a parameter,
+a local or a field. The function's error set has to take that error, by the same rule as `?`.
+Within one set the error goes on whole, payload and all:
 
 ```fels
 retry :: fn(text: []const u8) -> i32 ! ParseError {
