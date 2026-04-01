@@ -250,7 +250,10 @@ Fels has no operator overloading, so the arithmetic and vector derives
 are ideal for `std.math`'s `Vec2`/`Vec3`/`Color`. `format` needs the struct's file to bring
 `StringBuilder` into scope (`#import std.strings.{StringBuilder};`). It dispatches per field
 type (`append_i64`/`append_u64`/`append_f64`/`append_bool`) and recurses into a nested type's
-own `format`. For the other derives, recursing into nested fields is a planned enhancement.
+own `format`. `Eq` recurses as well: a field whose type is another named type is compared with
+that type's own `eq`, so that type must derive `Eq` too. `Default` and `Clone` accept nested
+fields, because they build `.{}` or copy each field as it is. The other derives apply their
+operator to the nested value directly, so a field of struct type does not compile with them.
 
 ### Writing your own derive
 
@@ -296,6 +299,6 @@ proc-macro with ambient power. The plan is to scope user-written generators to a
 filesystem, the network or FFI.
 
 > Built-in derives: `Eq`, `Ord`, `Hash`, `Default`, `Clone`, `Add`, `Sub`, `Mul`,
-> `Neg`, `Min`, `Max`, `Clamp`, `Scale`, `Lerp`, `format`. `json`, `Builder` and
-> `bytes` follow the same shape, and they slot into the derive registry in
-> `src/parser.zig:synthDerive`.
+> `Neg`, `Min`, `Max`, `Clamp`, `Scale`, `Lerp`, `format`. Derives such as `json`,
+> `Builder` or `bytes` are ideas only and are not implemented. A new built-in derive would be
+> one more case in `src/parser.zig:synthDerive`, and a `#compiler` hook can provide one today.
