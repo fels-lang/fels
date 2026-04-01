@@ -21,6 +21,9 @@ Fels has signed and unsigned integer types of fixed width:
 `isize` and `usize` are as wide as a pointer, so they have 64 bits on 64-bit platforms. Use
 `usize` for array indices and lengths, and `isize` when you need a signed offset.
 
+There is also `byte`, which holds 0 to 255 like `u8`. It is a separate type, so assigning a
+`byte` to a `u8`, or a `u8` to a `byte`, needs `as`.
+
 #### Integer Literals
 
 An integer literal can carry a suffix that names its type:
@@ -72,9 +75,9 @@ A suffix has the final word. It fixes the literal's width even through inference
 This matters for values that exceed 32 bits (e.g. addresses built with `usize`/`i64`),
 because a narrowed slot would silently truncate the value.
 
-Only the widths in the table above are valid suffixes (`i8`/`i16`/`i32`/`i64`/`isize`, their
-`u` twins, and `byte`). An unsupported or malformed width is a compile error, so a suffix is
-never dropped silently:
+Only the types above are valid suffixes (`i8`/`i16`/`i32`/`i64`/`isize`, their `u` twins,
+and `byte`). An unsupported or malformed width is a compile error, so a suffix is never
+dropped silently:
 
 ```fels
 x := 0u128;   // error: unsupported integer width `u128`: fels integers are at most 64-bit — use `u64` or `usize`
@@ -120,7 +123,8 @@ hash like the one above can be evaluated in a `#run` constant and matches its ru
 
 #### Sub-Byte Integer Types
 
-For the fields of `#packed` structs, Fels has the sub-byte integer types `u1` through `u7`:
+For the fields of `#packed` structs, Fels has the sub-byte integer types `u1` through `u7` and
+`i1` through `i7`:
 
 ```fels
 #packed
@@ -205,12 +209,17 @@ p3: Point = .{};
 A named literal can only name fields the struct really has, and it must supply every field
 that has no default. Otherwise you get a compile error (`no field …` / `missing field …`).
 
+A positional literal, `.{}` included, may stop short. The fields it leaves out are zero, or
+take their defaults (see below). So `.{ 10 }` gives a `Point` whose `y` is 0, and `.{}` sets
+both fields to 0. A positional literal with more values than the struct has fields is an error.
+
 #### Default field values
 
-A field can declare a default with `= expr`. When a named literal leaves the field out, or a
-positional/`.{}` literal stops short of it, the field is filled from its default. Defaults
-work like trailing default arguments, so put the defaulted fields last, where a positional
-literal can reach them:
+A field can declare a default with `= expr`. When a named literal leaves the field out, the
+field is filled from its default. A positional/`.{}` literal fills the fields after its last
+value from their defaults too, but only up to the first field that has no default. That field
+and every field after it are zero. Defaults work like trailing default arguments, so put the
+defaulted fields last, where a positional literal can reach them:
 
 ```fels
 Config :: struct {
@@ -222,6 +231,7 @@ Config :: struct {
 a: Config = .{ .name = "build" };               // retries = 3, verbose = false
 b: Config = .{ .name = "ci", .verbose = true }; // retries = 3
 c: Config = .{ "deploy", 5 };                   // verbose = false (default)
+d: Config = .{};                                // name is empty, retries = 0, verbose = false
 ```
 
 #### Field Access
@@ -652,7 +662,8 @@ constants and `#compiler` hooks, e.g. `if d.derives == "Sum"`.
 
 ## Array Types
 
-An array is a fixed-size sequence, allocated on the stack:
+An array is a fixed-size sequence, and it is stored where you declare it. A local array lives on
+the stack, a global one in static memory, and an array field inside its struct:
 
 ```fels
 [N]T    // array of N elements of type T
@@ -901,7 +912,7 @@ ownership:
 
 ```fels
 print_name :: fn(name: borrow []const u8) -> void {
-    // Can read `name` but cannot store it or return it
+    // Can use `name` here, but cannot store it or return it
 }
 ```
 
@@ -909,7 +920,7 @@ print_name :: fn(name: borrow []const u8) -> void {
 
 | Allowed | Not Allowed |
 |---------|-------------|
-| Read through the reference | Store through a pointer or into a global |
+| Read and write through the reference | Store the reference through a pointer or into a global |
 | Pass to another `borrow` parameter | Return from a function |
 | Use in expressions | Forward to a non-`borrow` parameter |
 | Hold in a local struct or array, which is then borrowed too | |
@@ -955,12 +966,13 @@ value of one type is silently accepted as another:
 | Source | Target | Description |
 |--------|--------|-------------|
 | Integer literal | Any integer type | Only if the literal's value fits in the target type |
-| Array (`[N]T`) | Slice (`[]T`) | Via the `[:]` slice operator |
-| Concrete type | `*Interface` pointer | When the type implements the interface (checked at compile time) |
+| Pointer or slice (`*T`, `[]T`) | Its `const` form (`*const T`, `[]const T`) | Adds `const` |
+| Pointer to a concrete type (`*T`) | `*Interface` pointer | When `T` implements the interface (checked at compile time) |
 | Non-null value | Optional (`?T`) | A value of type `T` is accepted where `?T` is expected |
 
 Every other conversion needs an explicit `as` cast. Fels keeps implicit coercions to a
-minimum on purpose, to prevent subtle type errors.
+minimum on purpose, to prevent subtle type errors. An array does not become a slice by itself
+either, so write `arr[:]` to pass it where a slice is expected (see [Array Types](#array-types)).
 
 > [!NOTE]
 > Integer literals are special. The literal `42` can become a `u8`, an `i64`, a `usize` or
