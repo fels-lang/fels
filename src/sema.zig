@@ -7394,8 +7394,41 @@ const Checker = struct {
                 .value => |v| .{ .value = -v },
                 else => |other| other,
             },
+            .binary => |binary| self.untypedIntArithmetic(binary),
             else => untypedIntLit(expr),
         };
+    }
+
+    /// `200 + 100`, `1 << 40`: arithmetic on untyped literals, computed exactly, so the result
+    /// is checked against the type it goes to as one literal is. (`b: u8 = 200 + 100` stored
+    /// 44, and the comptime VM kept 300.) The wrapping operators wrap on purpose: not checked.
+    fn untypedIntArithmetic(self: *Checker, binary: ast.BinaryExpr) UntypedIntLit {
+        const l = switch (self.untypedIntValue(binary.left.*)) {
+            .value => |v| v,
+            .too_large => return .too_large,
+            .none => return .none,
+        };
+        const r = switch (self.untypedIntValue(binary.right.*)) {
+            .value => |v| v,
+            .too_large => return .too_large,
+            .none => return .none,
+        };
+        const result: i128 = switch (binary.op) {
+            .add => l + r,
+            .sub => l - r,
+            .mul => std.math.mul(i128, l, r) catch return .too_large,
+            .div => if (r == 0) return .none else @divTrunc(l, r),
+            .rem => if (r == 0) return .none else @rem(l, r),
+            .shl => if (r < 0 or r > 64) return .none else std.math.shlExact(i128, l, @intCast(r)) catch return .too_large,
+            .shr => if (r < 0 or r > 64) return .none else l >> @intCast(r),
+            .bit_and => l & r,
+            .bit_or => l | r,
+            .bit_xor => l ^ r,
+            else => return .none,
+        };
+        // Past 64 bits there is no integer type it fits.
+        if (result >= (@as(i128, 1) << 64) or result < -(@as(i128, 1) << 63)) return .too_large;
+        return .{ .value = result };
     }
 
     /// An integer literal takes the type it is used as: `k: i64 = -5` makes the `-5`
@@ -7464,6 +7497,7 @@ const Checker = struct {
             .ident => |name| name,
             .scope_access => |sa| sa.member,
             .unary => |unary| std.fmt.allocPrint(self.allocator, "-{s}", .{self.intLitText(unary.expr.*)}) catch "",
+            .binary => |binary| std.fmt.allocPrint(self.allocator, "{s} {s} {s}", .{ self.intLitText(binary.left.*), binaryOpText(binary.op), self.intLitText(binary.right.*) }) catch "",
             else => "",
         };
     }
@@ -7940,6 +7974,26 @@ fn suggestedIntSuffix(written: []const u8, value: i128) []const u8 {
 }
 
 /// A literal, possibly under unary minus, rather than the name of a constant.
+/// How the operator `op` is written, for a message.
+fn binaryOpText(op: ast.BinaryOp) []const u8 {
+    return switch (op) {
+        .add => "+",
+        .sub => "-",
+        .mul => "*",
+        .div => "/",
+        .rem => "%",
+        .shl => "<<",
+        .shr => ">>",
+        .bit_and => "&",
+        .bit_or => "|",
+        .bit_xor => "^",
+        .wrap_add => "+%",
+        .wrap_sub => "-%",
+        .wrap_mul => "*%",
+        else => "?",
+    };
+}
+
 fn isLiteralShape(expr: ast.Expr) bool {
     return switch (expr.kind) {
         .int => true,

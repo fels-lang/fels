@@ -1162,6 +1162,19 @@ test "diagnostics: an atomic takes its ordering" {
     try expectNoError(a, "", "main :: fn() -> i32 { x: u32 = 5; core::atomic_store(&x, 7, 4); core::atomic_fence(4); return core::atomic_load(&x, 4) as i32; }");
 }
 
+test "diagnostics: arithmetic on integer literals has to fit the type it goes to" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `b: u8 = 200 + 100` stored 44; the comptime VM kept 300.
+    try expectFirstError(a, "main :: fn() -> i32 { b: u8 = 200 + 100; return 0; }", &.{"`200 + 100` is 300, which does not fit in `u8`"});
+    try expectFirstError(a, "main :: fn() -> i32 { x: u32 = 1 << 40; return 0; }", &.{"`1 << 40` is 1099511627776, which does not fit in `u32`"});
+    try expectFirstError(a, "N :: 200;\nmain :: fn() -> i32 { b: u8 = N + 100; return 0; }", &.{"`N + 100` is 300, which does not fit in `u8`"});
+    try expectNoError(a, "", "main :: fn() -> i32 { b: u8 = 300 - 100; big: u64 = 1 << 40; m: u16 = 0xFFFF & 0x0F0F; return 0; }");
+    // The wrapping operators wrap on purpose.
+    try expectNoError(a, "", "main :: fn() -> i32 { w: u8 = 200 +% 100; return w as i32; }");
+}
+
 test "diagnostics: a constant is not written to" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
