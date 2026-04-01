@@ -13,18 +13,12 @@ These compile without a message and give a wrong result.
   parameter or a temporary is an error, but these are not checked yet: a slice of a local array
   (`return buf[:]`, which a function that `#run` calls uses to return bytes), an address passed
   back through a call (`return id(&x);`), and an address stored into a global or through a pointer
-  (`G = &x;`). Verified 2026-10-17.
-- **`core::atomic_*` without its ordering argument compiles**: `core::atomic_store(&x, 7)`,
-  `core::atomic_load(&x)` and `core::atomic_add(&y, 2)` give wrong values instead of an error about
-  the missing argument; with the ordering (`core::atomic_load(&x, 4)`) they are right. Verified
-  2026-10-17.
+  (`G = &x;`). Verified 2026-10-17. The slice is left unchecked on purpose: a function that a
+  `#run` calls returns the bytes it built that way, and telling those calls from run-time ones
+  is not done yet.
 
 ## 2. Compiler crashes and missing messages
 
-- **A file without `main` builds an executable that crashes at start** (access violation) instead
-  of failing the build. Verified 2026-10-17.
-- **`fels ir file.fels | head` panics** ("reached unreachable code") when the output pipe closes
-  early. Verified 2026-10-17. In `src/main.zig` `cmdIr`.
 - **Macro errors go to stderr only**; the language server does not show them. Reported.
 - **`std.json` and `std.serde` cannot be imported together**: both declare a `Parser`, and the
   field tables the runtime gets for reflection are named after the type alone ("`<runtime>`:
@@ -33,14 +27,13 @@ These compile without a message and give a wrong result.
 
 ## 3. Decisions to make
 
-- **Literal range checks**: a hex value too large for a signed type is rejected
-  (`x: i32 = 0x80004005` needs `as i32`); `n == -1` with `n: usize` is rejected; literal arithmetic
-  such as `b: u8 = 200 + 100` is not range checked: the program stores 44, the comptime VM keeps
-  300. Verified 2026-10-17.
 - **`&x as usize` parses as `&(x as usize)`**; the cast of an address needs parentheses. Intended
   or not?
 - **`heap.dupe` takes no `borrow` parameter**, so a zone-owned slice cannot be duplicated into
   another arena ("zone-owned value from `scratch` can only be passed to a `borrow` parameter").
+  Not a one-line fix: `dupe` copies shallowly, so with a borrowed source every element it copies
+  is borrowed too, and `dupe(Group, …)` of structs holding slices (Strata does this) would be
+  refused. A copy of a zone's bytes, or of elements without pointers, needs its own function.
   Verified 2026-10-17.
 
 ## 4. Missing features and limits
@@ -56,7 +49,6 @@ These compile without a message and give a wrong result.
   `tests/fixtures/stdlib/fmt_tests.fels` runs natively only. Verified 2026-10-17.
 - A constant computed by a call or `#run` cannot be read by other compile-time code
   (`SUM :: PLAIN + 3` with `PLAIN :: plain();`). Verified 2026-10-17.
-- No exponent notation for floats (`1e5`); the error says so.
 
 ## 5. Language server (`fels lsp`)
 
@@ -79,13 +71,11 @@ These compile without a message and give a wrong result.
 ## 6. Grammar (`tree-sitter-fels`)
 
 - Looser than the parser: attributes on `Type as Iface` impl blocks; `unsafe a ?? b` binds a little
-  differently; an inline error set (`! { a, b }`, written without dots since 2026-10-17) and a body
-  after a bare `!` are told apart by precedence, where the parser takes `{` followed by a name and
-  a `,` or `}` for a set.
+  differently; an inline error set (`! { a, b }`) and a body after a bare `!` are told apart by
+  precedence, where the parser takes `{` followed by a name and a `,` or `}` for a set.
 - Stricter than the parser: commas are required between aggregate literal elements; `#run <stmt>;`
   is only supported as `#run { }` or an expression statement; `if a | b | c {` cannot be parsed;
   `where` cannot be an error type name.
-- Missing: `union`, the keyword since 2026-10-17.
 - Highlighting: `.name` in expressions is always an enum literal (never an error variant); a use of
   `T` in a body is a plain type; constants are recognized only by ALL_CAPS names.
 - `scripts/parse_doc_blocks.py` keeps the `> ` prefix of fences inside block quotes, and its line
@@ -97,6 +87,5 @@ These compile without a message and give a wrong result.
 - Many parallel Zig builds exhaust memory; the PC froze once. Some test runs need `-j1`.
 - The Zed extension's `runnables.scm` was never tried; `injections.scm` was removed because Zed
   rejected the empty file.
-- The docs still contain three programs with a `main` that are not whole: 06:133 uses an
-  undeclared `IoError`, 08:193 an undeclared `compute_size`, and 11:458 needs the raylib bindings
-  generated first.
+- One program with a `main` in the docs does not build on its own: 11:458 needs the raylib
+  bindings generated first.

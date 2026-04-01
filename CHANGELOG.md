@@ -29,6 +29,7 @@ the major version is `0`, any minor bump may break source compatibility.
   done in `unsafe`; writing one is not. A literal sets one field and zeroes the rest; a static
   union starts as `.{}`. bindgen turns a C union into one (a union with a bitfield stays a byte
   blob), and `core::type_info` reports one as `.union_`.
+- **Exponent notation for floats**: `1e5`, `1.5e-3`, `6.02E23f32`. It was refused.
 - **Bit fields.** A `#packed` struct with a sub-byte field (`u1`–`u7`, `i1`–`i7`) is laid out
   bit by bit: `PixelFormat { red: u5, green: u6, blue: u5 }` is two bytes, and a hardware register
   or a binary header with bit fields has a spelling. Each integer takes its width from where the
@@ -84,6 +85,11 @@ the major version is `0`, any minor bump may break source compatibility.
   warning.
 - **`std.list` is gone**; `std.vec` is the growable array.
 - **`union` is a keyword.**
+- **An atomic builtin takes its ordering**: `core::atomic_store(&x, 7)` without it is an error. It
+  compiled and read the wrong arguments (the store did not happen).
+- **Arithmetic on integer literals has to fit**: `b: u8 = 200 + 100` is an error (it stored 44);
+  `200 +% 100` still wraps.
+- **A program without `main` does not build**: it linked, and the executable crashed at start.
 - **A set names its errors without the dot, inline as declared**: `-> T ! { a, b }`, as
   `errors { a, b }`. The dotted spelling (`! { .a, .b }`, `errors { .a }`) warns.
 - **A `#packed` struct with sub-byte fields changes size** (see Bit fields above), and
@@ -128,6 +134,7 @@ the major version is `0`, any minor bump may break source compatibility.
   constraint's own module was unknown at every use from another module; and a type that failed
   a constraint was reported at the declaration's offset, shown on whatever line of the caller's
   file had it. It is reported at the call.
+- **`fels ir x.fels | head` panicked** when the pipe closed early.
 - **Writing a scalar global in a `#run`** stopped with "the comptime VM cannot run `f`"; it says
   that compile-time code does not modify a global, as writing a field of one did.
 - **A misspelled variant in an array literal or a typed global's value** (`.{ .none, .squar }`)
