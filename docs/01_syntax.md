@@ -1,12 +1,12 @@
 # Syntax Reference
 
-Every lexical element of Fels: comments, identifiers, literals, operators, and punctuation.
+This page covers every lexical element of Fels, from comments and identifiers to literals,
+operators and punctuation.
 
 ## Comments
 
-Fels supports **line comments only**. There are no block comments.
-
-A line comment begins with `//` and extends to the end of the line:
+Fels has **line comments only** and no block comments. A line comment starts with `//` and
+runs to the end of the line:
 
 ```fels
 // This is a comment
@@ -14,16 +14,17 @@ x := 42; // inline comment
 ```
 
 > [!NOTE]
-> Block comments (`/* ... */`) are intentionally omitted from Fels. Use multiple line comments instead.
+> Fels leaves out block comments (`/* ... */`) on purpose. For a longer comment, write several
+> line comments in a row.
 
 ## Identifiers
 
-Identifiers name variables, functions, types, and other declarations.
+Identifiers are the names you give to variables, functions, types and other declarations.
 
 **Rules:**
 - Must start with a letter (`a`–`z`, `A`–`Z`) or underscore (`_`)
-- May continue with letters, digits (`0`–`9`), or underscores
-- Are **case-sensitive** — `foo`, `Foo`, and `FOO` are three distinct identifiers
+- May continue with letters, digits (`0`–`9`) or underscores
+- Are **case-sensitive**, so `foo`, `Foo` and `FOO` are three different identifiers
 
 ```fels
 x := 1;
@@ -34,7 +35,9 @@ Point2D :: struct { x: f64, y: f64 }
 
 ### Escaped Identifiers
 
-Prefix an identifier with `@` to use a keyword as a regular identifier, or to define special names (like the runtime's `@panic`) without clashing with user names:
+Put `@` in front of an identifier to use a keyword as an ordinary name. The same prefix lets
+you define special names (like the runtime's `@panic`) that cannot clash with the names in
+user code:
 
 ```fels
 @if := 42;          // uses the keyword 'if' as a variable name
@@ -43,7 +46,7 @@ Prefix an identifier with `@` to use a keyword as a regular identifier, or to de
 
 ## Keywords
 
-The following table lists every keyword in Fels, grouped by category.
+The tables below list every keyword in Fels, grouped by category.
 
 ### Declaration Keywords
 
@@ -103,15 +106,15 @@ The following table lists every keyword in Fels, grouped by category.
 
 ### Words that are not reserved
 
-Some words have a meaning only in one position and stay usable as ordinary names
-everywhere else: `macro` and `constraint` after `::` (a macro or constraint
-declaration), `where` after a signature, `ok` and `err` after `defer.`, and the
-names after `#` such as `extern`, `run` and `quote`. `macro := 5;` is a valid
+Some words only mean something in one position, and everywhere else you can use them as
+ordinary names. These are `macro` and `constraint` after `::` (a macro or constraint
+declaration) and `where` after a signature. The same goes for `ok` and `err` after `defer.`
+and for the names after `#`, such as `extern`, `run` and `quote`. So `macro := 5;` is a valid
 declaration.
 
 ## Primitive Type Keywords
 
-Fels provides a fixed set of primitive types:
+Fels has a fixed set of primitive types:
 
 | Type | Description |
 |------|-------------|
@@ -131,13 +134,15 @@ Fels provides a fixed set of primitive types:
 | `f64` | 64-bit IEEE 754 float |
 
 > [!NOTE]
-> `f32` and `f64` are handled as identifiers (not keywords) at the lexer level, but are recognized as primitive types during semantic analysis.
+> The lexer sees `f32` and `f64` as identifiers, not keywords. They are recognized as
+> primitive types later, during semantic analysis.
 
 ## Literals
 
 ### Integer Literals
 
-Integer literals can be written in decimal, hexadecimal, or binary. Underscores may be used anywhere within the digit sequence for readability.
+You can write integer literals in decimal, hexadecimal or binary. Underscores may go anywhere
+in the digits to make long numbers easier to read.
 
 ```fels
 42            // decimal, type inferred
@@ -160,11 +165,13 @@ Integer literals can be written in decimal, hexadecimal, or binary. Underscores 
 | `0b` / `0B` | 2 (binary) | `0`, `1` |
 
 **Type suffixes:**
-An integer literal may end with a type suffix to specify its exact type: `i8`, `i16`, `i32`, `i64`, `isize`, `u8`, `u16`, `u32`, `u64`, `usize`. Without a suffix, the type is inferred from context.
+An integer literal may end with a type suffix that sets its exact type: `i8`, `i16`, `i32`,
+`i64`, `isize`, `u8`, `u16`, `u32`, `u64`, `usize`. Without a suffix, the type is inferred
+from the context.
 
 ### Float Literals
 
-Float literals always contain a decimal point. A fractional part is required.
+A float literal always contains a decimal point, and the fractional part after it is required.
 
 ```fels
 3.14      // f64 by default
@@ -177,11 +184,12 @@ Float literals always contain a decimal point. A fractional part is required.
 ```
 
 > [!NOTE]
-> Bare integers like `1` are not implicitly treated as floats. You must write `1.0` (or `1e0`) when a floating-point value is intended.
+> A bare integer like `1` is never treated as a float on its own. When you mean a
+> floating-point value, write `1.0` (or `1e0`).
 
 ### String Literals
 
-String literals are enclosed in double quotes. The type of a string literal is `[]const u8`.
+String literals go in double quotes, and their type is `[]const u8`.
 
 ```fels
 "hello world"      // simple string
@@ -205,8 +213,8 @@ String literals are enclosed in double quotes. The type of a string literal is `
 ### Character Literals
 
 A character literal is written in single quotes and is **sugar for its integer
-code point** — an untyped integer literal (like `65`) that coerces to `u8`,
-`i32`, a `rune`, etc. from context. There is no dedicated `char` type.
+code point**. It is an untyped integer literal (like `65`), so it coerces to `u8`,
+`i32`, a `rune` and so on from the context. There is no dedicated `char` type.
 
 ```fels
 'A'        // 65
@@ -217,14 +225,14 @@ code point** — an untyped integer literal (like `65`) that coerces to `u8`,
 '\x41'     // 65  — hex escape
 ```
 
-Because it is just an integer literal, it works anywhere a number does:
+Because it is an ordinary integer literal, it works anywhere a number does:
 
 ```fels
 nl: u8 = '\n';
 if name[i] == '.' { dots = dots + 1; }   // coerces to u8 in the comparison
 ```
 
-A bare multi-byte UTF-8 character (e.g. `'é'`) decodes to its Unicode code point.
+A bare multi-byte UTF-8 character, such as `'é'`, decodes to its Unicode code point.
 
 ### Boolean Literals
 
@@ -235,7 +243,7 @@ false
 
 ### Null Literal
 
-The `null` literal is used with optional types:
+You use the `null` literal with optional types:
 
 ```fels
 null  // for optionals
@@ -266,7 +274,8 @@ null  // for optionals
 | `>=` | Greater than or equal | `a >= b` |
 
 > [!NOTE]
-> Comparison operators are non-chaining. An expression like `a < b < c` is a compile error. Use `a < b && b < c` instead.
+> Comparison operators do not chain, so an expression like `a < b < c` is a compile error.
+> Write `a < b && b < c` instead.
 
 ### Logical Operators
 
@@ -288,7 +297,7 @@ null  // for optionals
 | `>>` | Right shift | `a >> 2` |
 
 > [!NOTE]
-> The `&` symbol doubles as the **address-of** operator when used as a prefix: `&my_var`.
+> Used as a prefix, the `&` symbol is also the **address-of** operator: `&my_var`.
 
 ### Assignment Operators
 
@@ -310,9 +319,9 @@ null  // for optionals
 
 | Operator | Kind | Description |
 |----------|------|-------------|
-| `?` | Postfix | Error propagation — returns early on error |
-| `??` | Infix | Nil coalesce — provide a default for optional/error values |
-| `!!` | Postfix | Force unwrap — panic on `null` or error |
+| `?` | Postfix | Error propagation: returns early on error |
+| `??` | Infix | Nil coalesce: gives a default for optional/error values |
+| `!!` | Postfix | Force unwrap: panics on `null` or error |
 | `as` | Infix | Type cast |
 | `&` | Prefix | Address-of |
 | `*` | Prefix | Pointer dereference |
@@ -327,7 +336,7 @@ null  // for optionals
 
 ### Operator Precedence
 
-Operators are listed from **highest** to **lowest** precedence:
+The table lists operators from **highest** to **lowest** precedence:
 
 | Precedence | Operators | Associativity |
 |:----------:|-----------|:-------------:|
@@ -344,13 +353,15 @@ Operators are listed from **highest** to **lowest** precedence:
 | 11 (lowest) | `?`, `!!`, `as`, `catch`, `??` (postfix/special) | Left-to-right |
 
 > [!TIP]
-> When in doubt, use parentheses to make precedence explicit. This improves readability and avoids subtle bugs.
+> When in doubt, add parentheses to make the precedence explicit. The code is easier to read
+> that way, and you avoid subtle bugs.
 
 ## Declarations
 
 ### Constants (Compile-Time)
 
-Constants are bound with `::` and must be computable at compile time. By convention, constant names use `UPPER_SNAKE_CASE`:
+You bind a constant with `::`, and its value must be computable at compile time. By
+convention, constant names are written in `UPPER_SNAKE_CASE`:
 
 ```fels
 MAX :: 100;
@@ -358,8 +369,9 @@ PI :: 3.14159;
 GREETING :: "hello";
 ```
 
-The initializer does not have to be a literal. Arithmetic over constants already
-declared is folded to a value at build time, and constants compose to any depth:
+The initializer does not have to be a literal. Arithmetic over constants that are already
+declared is folded to a value at build time, and constants can build on each other to any
+depth:
 
 ```fels
 W      :: 800;
@@ -367,15 +379,15 @@ STRIDE :: W * 3;         // 2400, folded during the build
 SIZE   :: STRIDE * 450;  // 1080000, folded through STRIDE
 ```
 
-A constant must be declared before the constants that use it.
+A constant has to be declared before the constants that use it.
 
-A string constant is a real `[]const u8` slice, so slice operations work on it
-directly — `GREETING.len` is `5`, `GREETING[0]` is the first byte. (More generally,
-field and index access work on any top-level constant, not just locals.)
+A string constant is a real `[]const u8` slice, so slice operations work on it directly.
+`GREETING.len` is `5`, and `GREETING[0]` is the first byte. (More generally, field and index
+access work on any top-level constant, not only on locals.)
 
-A constant can have its type written between two colons, `NAME : T : value`, as a
-variable can (`name: T = value`). Then the value takes that type, and it can be a struct
-or an array, a table the program reads but cannot change:
+You can write a constant's type between the two colons, `NAME : T : value`, much as a
+variable has one (`name: T = value`). The value then takes that type. It can be a struct or
+an array, which gives you a table the program reads but cannot change:
 
 ```fels
 LIMIT  : i64      : 5000000000;
@@ -384,8 +396,9 @@ DIGITS : [10]u8   : .{ 48, 49, 50, 51, 52, 53, 54, 55, 56, 57 };
 ```
 
 A constant is read-only data. Assigning to it, to one of its fields or to one of its
-elements is a compile error, and `&ORIGIN` is a `*const Point`, so nothing can write it
-through a pointer either. (A pointer a constant holds may point at something writable.)
+elements is a compile error. `&ORIGIN` is a `*const Point`, so nothing can write to it
+through a pointer either. (A pointer that a constant holds may still point at something
+writable.)
 
 Constants can also bind functions, types, and other compile-time constructs:
 
@@ -403,10 +416,10 @@ Point :: struct {
 ### Mutable globals
 
 A top-level binding written with `: T =` (instead of `::`) is a **mutable
-global** — exactly the local-variable form, lifted to module scope. The operator
-is the whole distinction: `::` is an immutable compile-time constant; `: T =`
-(like a local's `=`) is a runtime-mutable variable. No `mut`/`var`/`static`
-keyword.
+global**. It is exactly the form of a local variable, lifted to module scope. The
+operator makes the whole difference. `::` gives an immutable compile-time constant,
+and `: T =` (like a local's `=`) gives a variable you can change at runtime. There
+is no `mut`, `var` or `static` keyword.
 
 ```fels
 counter: i64 = 0;          // mutable global, explicit type required
@@ -415,28 +428,28 @@ flags:   u32 = 0u32;
 bump :: fn() { counter += 1; }   // read + write from anywhere
 ```
 
-The initializer lives in static storage, like a C `static`: it is data in the image,
+The initializer lives in static storage, like a C `static`. It is data in the image,
 laid out by the compiler and placed by the linker, and nothing runs at startup to
-put it there. A global's type is written explicitly; an immutable `::` constant
-infers its type from the initializer (or has it written, `NAME : T : value`). Reads load
-the current value; `=` and the compound assignments (`+=`, …) store to it.
+put it there. You always write a global's type, while an immutable `::` constant
+infers its type from the initializer (or has it written, `NAME : T : value`). Reading
+a global loads its current value, and `=` and the compound assignments (`+=`, …) store to it.
 
 #### Static aggregates
 
-A global is not limited to a scalar. Its initializer can be any of these, nested to
-any depth:
+A global can hold more than a scalar. Its initializer can be any of the following, nested
+to any depth:
 
 | Initializer | Type of the global (or of the field / element) |
 |---|---|
-| a constant expression — a literal, other constants, `core::sizeof`, a `#run` call | any integer, `f32`/`f64`, `bool`, `[]const u8` (a string) |
+| a constant expression: a literal, other constants, `core::sizeof`, a `#run` call | any integer, `f32`/`f64`, `bool`, `[]const u8` (a string) |
 | `.{ ... }`, positional or named | a struct |
 | `.{ ... }` | an array |
-| `.{}` | anything above: a struct with every field defaulted or zero, an array of zeros, an empty slice; a union only this way |
-| the name of a top-level function | a function value — a `fn(...)` closure, or an `extern fn(...)` C pointer |
-| `&OTHER` — the address of another top-level global | a pointer `*T` or `?*T` |
+| `.{}` | anything above: a struct with every field defaulted or zero, an array of zeros, an empty slice (a union only this way) |
+| the name of a top-level function | a function value: a `fn(...)` closure, or an `extern fn(...)` C pointer |
+| `&OTHER`, the address of another top-level global | a pointer `*T` or `?*T` |
 | `null` | a pointer or an optional |
 | `.variant` or `Enum.variant`, and `Enum.variant(payload)` for one that carries a payload | an enum, or an error of a set (`.eof`, `HttpError.status(404)`) |
-| `#run call()` that returns the whole value | a struct, an array, an enum value, a function pointer, or a string — also as one field or element of a literal |
+| `#run call()` that returns the whole value | a struct, an array, an enum value, a function pointer, or a string, also as one field or element of a literal |
 
 ```fels
 Point :: struct { x: i32, y: i32 }
@@ -460,59 +473,75 @@ FIRST:    Shape                    = Shape.circle(1.5);   // a payload, a string
 use :: fn() -> i32 { return VT.add(1, 2) + HANDLERS[1](4); }   // calls through the tables
 ```
 
-A literal is read exactly as the same literal is for a local variable. A named literal
-gives every omitted field its default and is an error if one has none. A positional (or
-empty) literal that stops short gives the fields after it their defaults, up to the first
-field that has none, and zero from there on — put defaulted fields last, as for trailing
-default arguments. An array literal is zero past its last element. The value is checked
-against the type, and a mistake is a compile error that points at the offending value: a
-number that does not fit (`300` for a `u8`), a string for an integer, a field that does not
-exist or is given twice, a field with no default left out, too many initializers, a function
-that is generic or a lambda, a pointer to anything but a top-level global. `fels check` reports
-these like any type error; a value that only the compile-time evaluator can compute (a `#run`) is
-checked when the program is built.
+A literal is read exactly as the same literal would be for a local variable. A named literal
+gives every omitted field its default, and it is an error if one of those fields has none. A
+positional (or empty) literal that stops short gives the fields after it their defaults, up to
+the first field that has none, and zero from there on. So put defaulted fields last, as you
+would for trailing default arguments. An array literal is zero past its last element.
 
-Not supported yet: an optional that is not a pointer holding anything but `null`, the
-address of an element or a field (`&TABLE[2]`, `&OBJ.id`; take `&TABLE` or `&OBJ`), a slice
-of anything but a string. There is no
-uninitialised form; write `.{}` for zeros.
+The value is checked against the type, and a mistake is a compile error that points at the
+offending value:
 
-A table can also be built by the compiler instead of typed out. `#run` runs a function at
-compile time, and what it returns is the initial value — data in the image, like a literal:
+- a number that does not fit (`300` for a `u8`)
+- a string for an integer
+- a field that does not exist or is given twice
+- a field with no default left out
+- too many initializers
+- a function that is generic or a lambda
+- a pointer to anything but a top-level global
+
+`fels check` reports these like any type error. A value that only the compile-time evaluator
+can compute (a `#run`) is checked when the program is built.
+
+A few things are not supported yet:
+
+- an optional that is not a pointer and holds anything but `null`
+- the address of an element or a field (`&TABLE[2]`, `&OBJ.id`). Take `&TABLE` or `&OBJ`
+  instead.
+- a slice of anything but a string
+
+There is no uninitialised form either. Write `.{}` when you want zeros.
+
+You can also let the compiler build a table instead of typing it out. `#run` runs a function
+at compile time, and what it returns is the initial value. Like a literal, it is data in the
+image:
 
 ```fels
 CRC: [256]u32 = #run make_crc_table();    // built once, by the compiler, on the comptime VM
 ORIGIN :: #run find_origin();             // `::` takes the type of the call
 ```
 
-Only data can come back (a pointer into compile-time memory, a payload variant or a lambda is
-refused, with the place in the value that is wrong); see [09_comptime](09_comptime.md#data-at-compile-time).
+Only data can come back. A pointer into compile-time memory, a payload variant or a lambda is
+refused, and the error names the place in the value that is wrong. See
+[09_comptime](09_comptime.md#data-at-compile-time) for more.
 
-Code that runs at compile time (`#run`, `#assert`) can read static data: it sees a global's
-*initial value* — a struct, an array, an enum value, a function pointer — and can index it, take
-a field, call through it and take the address of an element. It cannot change it: a write is a
-compile error, because the image is what runs and a write would not be in it. Not readable yet is
-a global that holds the address of another global and a global that a `#run` computes; reading one
-stops that `#run` and names the global.
+Code that runs at compile time (`#run`, `#assert`) can read static data. It sees a global's
+*initial value*, whether that is a struct, an array, an enum value or a function pointer. It can
+index that value, take a field, call through it and take the address of an element. It cannot
+change it, though. A write is a compile error, because the image is what runs and a write would
+not be in it. Two kinds of global cannot be read yet: one that holds the address of another
+global, and one that a `#run` computes. Reading either of them stops that `#run` and names the
+global.
 
-The function-pointer forms differ in what they hold. A `fn(...)` *field of a struct*, and an
-`extern fn(...)`, is the bare code address — what a C structure of function pointers holds,
-so a `Vtbl` like the one above has the layout a C header gives it. A plain `fn(...)` global
-is a closure `{ code, environment }`; stored statically it is the function with no
-environment. Either is called where it stands: `F(x)`, `VT.add(1, 2)`, `HANDLERS[i](x)`.
+The function-pointer forms differ in what they hold. A `fn(...)` *field of a struct* and an
+`extern fn(...)` are both the bare code address. That is what a C structure of function pointers
+holds, so a `Vtbl` like the one above has the layout a C header gives it. A plain `fn(...)`
+global is a closure `{ code, environment }`, and when it is stored statically it is the
+function with no environment. You call either one where it stands: `F(x)`, `VT.add(1, 2)`,
+`HANDLERS[i](x)`.
 
-An address stored in a global is a number the linker fixes. An executable linked by `felsld`
-is always loaded at its own base address and holds the final value. A DLL, and an executable
-linked by LLD (which randomizes the base address), carries a base-relocation table that the
-loader applies, so the stored addresses follow the image wherever it lands; `felsld` hands any
-DLL that holds an address to LLD for that reason.
+An address stored in a global is a number that the linker fixes. An executable linked by
+`felsld` is always loaded at its own base address, and it holds the final value. A DLL, and an
+executable linked by LLD (which randomizes the base address), carries a base-relocation table
+that the loader applies. That way the stored addresses follow the image wherever it lands. For
+this reason, `felsld` hands any DLL that holds an address to LLD.
 
-Such a global is **exported** like a function with `#export` — see
-[11_c_interop](11_c_interop.md#exporting-data).
+Such a global is **exported** like a function, with `#export`. See
+[11_c_interop](11_c_interop.md#exporting-data) for the details.
 
 ### Variables (Inferred Type)
 
-Variables are declared with `:=`. The type is inferred from the right-hand side:
+You declare a variable with `:=`, and its type is inferred from the right-hand side:
 
 ```fels
 x := 42;          // inferred as integer
@@ -522,7 +551,7 @@ flag := true;     // inferred as bool
 
 ### Variables (Explicit Type)
 
-When you need to specify the type explicitly, use `: Type =` syntax:
+When you want to state the type yourself, use the `: Type =` syntax:
 
 ```fels
 count: i32 = 0;
@@ -531,13 +560,14 @@ buffer: [256]u8 = .{};
 ```
 
 > [!TIP]
-> Prefer `:=` with type inference when the type is obvious from context. Use explicit types when the inferred type would be ambiguous or when you need a specific numeric width.
+> Prefer `:=` with type inference when the type is obvious from the context. Write the type
+> out when the inferred one would be ambiguous, or when you need a specific numeric width.
 
 ## Punctuation Reference
 
 | Symbol | Usage |
 |--------|-------|
-| `;` | Statement terminator — required after every statement |
+| `;` | Statement terminator, required after every statement |
 | `,` | Separator in lists (parameters, fields, arguments) |
 | `:` | Type annotation separator |
 | `::` | Constant / declaration binding |
@@ -551,7 +581,7 @@ buffer: [256]u8 = .{};
 
 ## Quick Example
 
-Putting it all together — a small Fels program demonstrating core syntax elements:
+To put it all together, here is a small Fels program that uses the core syntax elements:
 
 ```fels
 #import std.io.{ print, println, print_u64 };
