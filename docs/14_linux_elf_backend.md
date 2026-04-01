@@ -1,8 +1,9 @@
 # Linux / ELF / SysV backend
 
 Fels cross-compiles from Windows to a static, freestanding Linux x86-64 ELF with no libc, and
-runs it. Compute and CLI programs work today: I/O, the heap allocator, `Vec`, strings and
-formatting. Filesystem, time, process, net and threads still call Win32 and aren't ported yet.
+runs it. I/O, the heap allocator, `Vec`, strings and formatting work, and so do filesystem,
+time, process, net and threads, which go through Linux syscalls. One gap remains: a struct
+passed by value to a C function still follows the Win64 rules (§5).
 
 The design sections below (§2 on) are the original plan. The implementation went freestanding
 with direct syscalls instead of glibc/crt1.o, and the notes point out where it differs from the
@@ -25,10 +26,11 @@ fels build app.fels -o app --target linux --libc --sysroot <dir-with-libc.so.6> 
 ```
 
 `--libc` (or `app.link_libc()` in build.fels) is the **portable "I need libc" switch**. It
-means the Windows CRT on Windows and glibc on Linux. The entire `std` library runs on Linux,
-with **full parity with Windows**: io, heap, time, fs, process (including `set_env`), net and
-thread. Both ABIs are implemented and verified, the static one (`linux`, the default) and the
-glibc one (`linux --libc`).
+means the Windows CRT on Windows and glibc on Linux. The `std` library runs on Linux, with
+**full parity with Windows**: io, heap, time, fs, process (including `set_env`), net and
+thread. The one exception is `std.winrt`, which is Windows only by design. Both ABIs are
+implemented and verified, the static one (`linux`, the default) and the glibc one
+(`linux --libc`).
 
 This is what works end to end, verified under WSL:
 
@@ -43,9 +45,10 @@ This is what works end to end, verified under WSL:
 | `Vec`, strings, fmt | ✅ | fall out of the allocator + I/O above |
 | `__chkstk`, `_fltused`, Windows entry | ✅ gated off | `context.applyTargetStubs` and `llvm.lower` emit them only when `target_os == .windows` |
 
-All of `std` is ported. `std.fs`, `std.time`, `std.process`, `std.net` and `std.thread` sit
-behind the same runtime/stdlib seam that the allocator uses, and the syscall wrappers in
-[`src/runtime/linux.fels`](../src/runtime/linux.fels) back them. The per-module table is in
+All of `std` is ported, apart from the Windows-only `std.winrt`. `std.fs`, `std.time`,
+`std.process`, `std.net` and `std.thread` sit behind the same runtime/stdlib seam that the
+allocator uses, and the syscall wrappers in [`src/runtime/linux.fels`](../src/runtime/linux.fels)
+back them. The per-module table is in
 [18_targets_and_tiers.md](18_targets_and_tiers.md) §6.
 
 Key implementation notes and gotchas:
@@ -149,8 +152,10 @@ This is the one really intricate piece. SysV classifies an aggregate into **eigh
   (`byval` pointer arg / `sret` return), the same as Win64's indirect.
 - Otherwise it is 1–2 eightbytes, and each one is classified by the fields that land in it.
   All-float → **SSE** (passed in an XMM register), anything integer or pointer → **INTEGER** (a
-  GP register). Two eightbytes coerce to a `{T0, T1}` pair. For example `{ double, double }` (a
-  `Vector2`) → two XMMs, **not** an `i64` as on Win64.
+  GP register). Two eightbytes coerce to a `{T0, T1}` pair. For example raylib's `Vector2` is
+  `{ float, float }`, a single SSE eightbyte, so SysV passes it in one XMM register. Win64
+  passes it as an `i64` in a GP register. A `{ double, double }` is two SSE eightbytes and goes
+  in two XMMs, while Win64 passes it by reference.
 
 Concretely, extend the `Class` union in `abi.zig`:
 
@@ -169,11 +174,19 @@ offset. Then it folds them (INTEGER beats SSE in a shared eightbyte) and returns
 `coerce`/`coerce_pair`/`indirect`. The call/return lowering builds the coerced LLVM type
 (`i64`, `double` or a 2-element struct) and `bitcast`s the aggregate through memory, exactly as
 the Win64 path already does. Only the *chosen* type differs. The float-in-register difference
-is the whole reason raylib's `Vector2`/`Color` need this and can't reuse Win64's "coerce to iN".
+is the whole reason raylib's `Vector2` and `Rectangle` need this, because Win64 passes them as
+an `i64` or by reference. `Color` is four `u8` fields, a single INTEGER eightbyte, so the Win64
+coercion to `i32` already matches SysV.
+
+This is not built yet. `classify` in [abi.zig](../src/backend/llvm/abi.zig) has only the Win64
+rule, and `--target linux` uses it too. So today a `Vector2` reaches a Linux C function as an
+`i64` in a GP register, and a 16-byte struct goes on the stack instead of in two registers.
+Structs over 16 bytes and integer-only structs of 1, 2, 4 or 8 bytes, like `Color`, already
+match SysV.
 
 The entry-block allocas that avoid Win64's `__chkstk`, and the existing `sret`/`byval`
-attribute plumbing ([abi.zig:159](../src/backend/llvm/abi.zig)), are already target-neutral and
-carry straight over.
+attribute plumbing (`applyAbiAttrs` in [abi.zig](../src/backend/llvm/abi.zig)), are already
+target-neutral and carry straight over.
 
 Test: re-run the C-ABI corpus (`tests/compiler/new_types_attrs.zig`) against a small Linux C
 object that takes and returns `Color`/`Vector2`/`Rectangle` by value, and assert the field
@@ -215,7 +228,7 @@ injection in the pipeline keyed on `Target` works too.
 
 ## 7. Comptime FFI, then loose ends
 
-- **Comptime FFI** ([vm/ffi.zig](../src/backend/llvm/../vm/ffi.zig)) is gated with
+- **Comptime FFI** ([vm/ffi.zig](../src/vm/ffi.zig)) is gated with
   `os.tag != .windows → error`. Add a `dlopen`/`dlsym` path (link the compiler itself with
   `-ldl`) so that `#run`/`#compiler` hooks can call into shared objects on Linux, the way the
   `LoadLibrary` path does on Windows.
