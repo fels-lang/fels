@@ -1,27 +1,28 @@
 # Fels Language Overview
 
-Fels is an experimental systems programming language written in Zig. Key design principles:
+Fels is an experimental systems programming language, implemented in Zig. A few principles
+shape its design:
 - No hidden allocations
-- Explicit dynamic dispatch through `*Interface` values
-- Static polymorphism via monomorphized generics
-- Allocation zones for lexical ownership without GC
+- Dynamic dispatch is explicit, through `*Interface` values
+- Static polymorphism comes from monomorphized generics
+- Allocation zones give you lexical ownership without a GC
 - Runtime checks trap out-of-bounds indexing, null pointers and overflow close to their
-  source, in release builds too (`release_fast` is the opt-out)
+  source. They stay on in release builds too, and `release_fast` is the opt-out.
 
 ## Getting Started
 
-Building:
+To build Fels and run its tests:
 ```powershell
 zig build
 zig build test
 ```
 
-With LLVM backend:
+To build with the LLVM backend, pass the path to your LLVM:
 ```powershell
 zig build -Dllvm-path=Y:/SDK/LLVM
 ```
 
-Compiler commands:
+These compiler commands get you started:
 ```text
 fels check <file>     Parse and type-check
 fels ir <file>        Print Fels IR
@@ -41,6 +42,8 @@ main :: fn() -> i32 {
 ```
 
 ## Language at a Glance
+
+Here is a quick tour of the syntax in one file:
 
 ```fels
 #import std.io.{ IoError, println, print_u64 };
@@ -162,11 +165,12 @@ main :: fn() -> i32 {
 
 ## Design Philosophy
 
-- **Systems language**: no GC, manual memory via zones
-- **Everything explicit**: no hidden allocations, explicit dispatch
-- **Safety by default**: every build but `release_fast` catches these faults at runtime
-- **Simple module system**: file = module, pub for visibility
-- **Growing incrementally**: complete semantics before more syntax
+- **Systems language**: there is no GC, and you manage memory by hand through zones
+- **Everything explicit**: no allocation is hidden from you, and dispatch is always explicit
+- **Safety by default**: every build except `release_fast` catches the faults listed above at
+  runtime
+- **Simple module system**: each file is a module, and `pub` controls visibility
+- **Growing incrementally**: the semantics get completed before more syntax is added
 
 ## Where to Go Next
 
