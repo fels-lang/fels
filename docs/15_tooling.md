@@ -76,8 +76,8 @@ property test against multibyte source exercises it.
 The diagnostics already *suggest* a fix, and the LSP turns those suggestions into one-click
 fixes:
 
-- "unknown type `Poimt`; did you mean `Point`?" → a rename edit. (The did-you-mean engine
-  landed in [sema.zig](../src/sema.zig) as `suggestTypeName`.)
+- "unknown type `Poimt`" with the line "help: did you mean `Point`?" → a rename edit. (The
+  did-you-mean engine landed in [sema.zig](../src/sema.zig) as `suggestTypeName`.)
 - "non-exhaustive match: variant `.X` not handled" → insert the missing arm (sema already
   enumerates the missing variants).
 - "`fail` used in a function without a `!` error return type" → add the `! Err`.
@@ -108,9 +108,12 @@ Fels frontend can:
 
 ### 1.6 Scope
 
-v1: diagnostics, hover, definition, completion, document symbols, formatting.
-v2: references/rename, signature help, semantic tokens, code actions.
-v3: comptime-aware indexing, inlay hints, workspace-wide symbol search.
+Done: diagnostics, hover, definition, completion, document symbols, signature help, inlay
+hints, references, rename, document highlight and workspace symbols (§8). Derived methods
+already show up in completion and hover.
+
+Next: semantic tokens, code actions, formatting (it waits for `fels fmt`) and the rest of the
+comptime-aware indexing.
 
 ## 2. `fels fmt` — the canonical formatter
 
@@ -173,13 +176,13 @@ prototyping a generic or inspecting `core::type_info`.
 
 ## 7. Build order
 
+Done so far: `fels lsp` with everything in §8, and `#test` with `fels test` (§4). What is
+left, in order:
+
 1. `fels fmt` (the smallest, and it unblocks LSP formatting and CI style).
-2. `fels lsp` v1 (diagnostics, hover, definition, completion). It is the tool with the highest
-   impact, and almost entirely a thin wrapper over `checkTypesTolerant`.
-3. `#test` + `fels test`.
-4. `fels doc` (reflection-driven).
-5. LSP v2/v3 (rename, semantic tokens, code actions, comptime-aware indexing).
-6. `fels repl`.
+2. `fels doc` (reflection-driven).
+3. The rest of the LSP (semantic tokens, code actions, comptime-aware indexing).
+4. `fels repl`.
 
 The common thread: the compiler is already a tolerant library with reflection, so each tool is
 small. The investment goes into the **library seams** (position mapping, a reference index,
@@ -281,7 +284,7 @@ args = ["lsp"]
 [[language]]
 name = "fels"
 scope = "source.fels"
-file-types = ["gab"]
+file-types = ["fels"]
 roots = ["build.fels"]
 language-servers = ["fels"]
 comment-tokens = ["//"]
@@ -290,7 +293,7 @@ comment-tokens = ["//"]
 **Neovim**, in your config:
 
 ```lua
-vim.filetype.add({ extension = { gab = "fels" } })
+vim.filetype.add({ extension = { fels = "fels" } })
 vim.api.nvim_create_autocmd("FileType", {
   pattern = "fels",
   callback = function()
