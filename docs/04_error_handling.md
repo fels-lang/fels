@@ -1,13 +1,13 @@
 # Error Handling
 
-Fels uses an explicit error-handling model inspired by Zig and Rust. Functions
-that can fail declare it in their signature, and callers must always handle
-the possibility of failure — there are no hidden exceptions.
+Fels handles errors explicitly, with a model inspired by Zig and Rust. A function
+that can fail says so in its signature, and every caller has to deal with the
+possibility of failure. There are no hidden exceptions.
 
 ## Error Types
 
-Error types are declared with the `errors` keyword. Each variant is a named
-error condition, optionally carrying a payload:
+You declare an error type with the `errors` keyword. Each variant is a named
+error condition, and it can carry a payload:
 
 ```fels
 IoError :: errors {
@@ -23,12 +23,11 @@ ParseError :: errors {
 }
 ```
 
-Error variants are referenced with a dot prefix: `.not_found`, `.overflow`, etc.
+You refer to an error variant with a dot prefix, as in `.not_found` or `.overflow`.
 
 ## Fallible Functions
 
-A function that can fail annotates its return type with `!` followed by the
-error type:
+A function that can fail puts `!` and the error type after its return type:
 
 ```fels
 // Named error type
@@ -49,11 +48,11 @@ combine :: fn() -> i32 ! {
 }
 ```
 
-The return type of a fallible function is internally a *fallible type*
-`T ! E` — a tagged union of the success value (`T`) and the error (`E`).
+Internally, the return type of a fallible function is a *fallible type* `T ! E`.
+It is a tagged union of the success value (`T`) and the error (`E`).
 
 A fallible function with a value (`-> i32 ! E`) must `return` or `fail` on every
-path. A `-> void ! E` function may also run to the end of its body, which is
+path. A `-> void ! E` function may also run to the end of its body. That counts as
 success, the same as `return;`:
 
 ```fels
@@ -78,16 +77,15 @@ validate :: fn(input: []const u8) -> bool ! ParseError {
 }
 ```
 
-`fail .variant` is only allowed inside functions with a `!` error return type.
+`fail .variant` is only allowed inside a function with a `!` error return type.
 The variant must exist in the function's declared error type, and any payload
-must match the variant's declared payload type. The payload goes in parentheses, as an
-enum variant's does (`Shape.circle(r)`); the older `fail .overflow { n }` still compiles,
-with a warning.
+must match the payload type the variant declares. The payload goes in parentheses, as it
+does for an enum variant (`Shape.circle(r)`). The older `fail .overflow { n }` still
+compiles, but with a warning.
 
 ## Error Propagation with `?`
 
-The `?` operator propagates errors upward to the caller, similar to Rust's `?`
-or Zig's `try`:
+The `?` operator passes an error up to the caller, much like Rust's `?` or Zig's `try`:
 
 ```fels
 outer :: fn() -> i32 ! IoError {
@@ -96,9 +94,9 @@ outer :: fn() -> i32 ! IoError {
 }
 ```
 
-`?` is only valid inside a function whose error type is compatible with the
-expression's error type. If the expression succeeds, `?` unwraps and yields
-the success value.
+You can only use `?` inside a function whose error type is compatible with the
+expression's error type. When the expression succeeds, `?` unwraps it and gives
+you the success value.
 
 ### Chaining `?`
 
@@ -115,10 +113,10 @@ pub writer_append :: fn(self: *Byte_Writer, values: []const u8) -> usize ! Strin
 
 ### Tail-forwarding a fallible result
 
-When a function's whole job is to delegate to another fallible function with a
-compatible error type, `return inner();` forwards the entire `{ok, err}` result —
-no `?` needed. On success it returns the ok value; on failure the error flows out
-unchanged:
+Sometimes a function's whole job is to delegate to another fallible function with a
+compatible error type. Then `return inner();` forwards the entire `{ok, err}` result,
+and you need no `?`. On success it returns the ok value, and on failure the error flows
+out unchanged:
 
 ```fels
 connect :: fn(sa: SocketAddr) -> TcpStream ! NetError {
@@ -126,13 +124,13 @@ connect :: fn(sa: SocketAddr) -> TcpStream ! NetError {
 }
 ```
 
-This is the value-returning twin of `?`: `?` *unwraps* (yielding the ok value to
-the current function), while a tail-`return` *passes the result through*.
+This is the value-returning twin of `?`. Where `?` *unwraps* and hands the ok value
+to the current function, a tail-`return` *passes the result through*.
 
 ### Qualified error types
 
-A `!` error type may be qualified with the module it comes from, just like any
-other type:
+A `!` error type may be qualified with the module it comes from, like any other
+type:
 
 ```fels
 #import std.heap as heap;
@@ -143,7 +141,7 @@ build :: fn(into: *heap::Arena, n: usize) -> []u8 ! heap::MemError {
 
 ## Catching Errors with `catch`
 
-Use `catch` to handle an error locally instead of propagating it:
+Use `catch` when you want to handle an error locally instead of passing it on:
 
 ```fels
 result := parse("42") catch err {
@@ -154,11 +152,11 @@ result := parse("42") catch err {
 // `result` holds the success value
 ```
 
-The `catch` block receives the error value bound to the name you provide. When the call has a
-value (`result := parse("42") catch err { … }`), the block gives the expression one: `yield` ends
-the handler with the value to use in place of the call's, or the block leaves the expression with
-`return`, `fail`, `break` or `continue`. A handler that can run to its end is a compile error
-there:
+The `catch` block receives the error value, bound to the name you give it. When the call has a
+value (`result := parse("42") catch err { … }`), the block has to give the expression one. Either
+`yield` ends the handler with the value to use in place of the call's, or the block leaves the
+expression with `return`, `fail`, `break` or `continue`. In that position, a handler that can run
+to its end is a compile error:
 
 ```fels
 count := parse(text) catch err {
@@ -167,14 +165,14 @@ count := parse(text) catch err {
 };
 ```
 
-`yield` belongs to the innermost `catch` handler. It leaves the loops inside the handler, runs the
-handler's `defer`s, and its value is checked against the call's success type, as a `return` value
-is against the function's return type. It is refused outside a handler and in a `defer` body. For
-a fallback that does not look at the error, `value ?? default` (below) is shorter.
+`yield` belongs to the innermost `catch` handler. It leaves the loops inside the handler and runs
+the handler's `defer`s. Its value is checked against the call's success type, the way a `return`
+value is checked against the function's return type. A `yield` is refused outside a handler and in
+a `defer` body. If your fallback does not look at the error, `value ?? default` (below) is shorter.
 
 When the `catch` is a statement of its own, or the call returns `void`, there is no value to
-produce (a `yield` there is refused) and the handler may simply end; execution then carries on
-after the `catch`:
+produce, and a `yield` there is refused. The handler may then run to its end, and execution
+carries on after the `catch`:
 
 ```fels
 write_all(data) catch err { failures += 1; };     // ignore the byte count; count the failure and go on
@@ -182,8 +180,8 @@ write_all(data) catch err { failures += 1; };     // ignore the byte count; coun
 
 ### Errors are values
 
-An error is a value of its set's type. It can be kept in a local, passed to a function, stored in
-a struct field or returned, and a bare `.variant` is one where its set's type is expected:
+An error is a value of its set's type. You can keep it in a local, pass it to a function, store it
+in a struct field or return it. Where its set's type is expected, a bare `.variant` is such a value:
 
 ```fels
 last_error: ParseError = .invalid_input;
@@ -194,10 +192,13 @@ describe_kind :: fn(e: ParseError) -> []const u8 {
 }
 ```
 
-`ParseError.buffer_full` and `ParseError.overflow(n)` build one, as `Shape.circle(r)` builds
-an enum value, and where the set is known `.overflow(n)` does (`e: ParseError = .overflow(n)`,
-`return .overflow(n);` from `-> ParseError`). `fail e;` raises an error value: one a `catch` bound, a parameter, any error
-the function's set takes (the rule of `?`). Within one set it goes on whole, payload and all:
+`ParseError.buffer_full` and `ParseError.overflow(n)` build one, the way `Shape.circle(r)` builds
+an enum value. Where the set is known, `.overflow(n)` does the same (`e: ParseError = .overflow(n)`,
+or `return .overflow(n);` from `-> ParseError`).
+
+`fail e;` raises an error value. It can be one that a `catch` bound or a parameter, and it can be
+any error the function's set takes (the rule of `?`). Within one set the error goes on whole,
+payload and all:
 
 ```fels
 retry :: fn(text: []const u8) -> i32 ! ParseError {
@@ -210,8 +211,8 @@ retry :: fn(text: []const u8) -> i32 ! ParseError {
 
 ### Inspecting the error variant
 
-`err == .variant` and `err != .variant` ask whether an error is that variant, wherever the error
-is: the name a `catch` bound, a parameter, a field, a call's result.
+`err == .variant` and `err != .variant` ask whether an error is that variant. They work wherever
+the error is: the name a `catch` bound, a parameter, a field or a call's result.
 
 ```fels
 result := parse_json_string(input, output) catch err {
@@ -223,14 +224,14 @@ result := parse_json_string(input, output) catch err {
 };
 ```
 
-The variant must be one of the error's own set: naming a variant the set does not have (`.secnd`)
-is a compile error. An inferred set (bare `!`) has no list to check against, so any name is
-accepted there. An error is identified by its variant's name and keeps it as `?` passes it on
-through any number of functions, inferred sets included: a `.timeout` raised by a function
-returning `IoError` is still `.timeout` when it is caught from an inferred-set function that
-called it.
+The variant must be one of the error's own set, so naming a variant the set does not have
+(`.secnd`) is a compile error. An inferred set (bare `!`) has no list to check against, so any
+name is accepted there. An error is identified by its variant's name. It keeps that name while
+`?` passes it on through any number of functions, inferred sets included. A `.timeout` raised by
+a function returning `IoError` is still `.timeout` when you catch it from an inferred-set
+function that called it.
 
-`match` takes an error too, as a statement or as a value:
+`match` takes an error too, either as a statement or as a value:
 
 ```fels
 code := parse(text) catch err {
@@ -244,13 +245,13 @@ code := parse(text) catch err {
 
 A match on an error of a declared or inline set covers each of its variants or has an `else`
 arm, as a match on an enum does. An error of an inferred set can be any error, so a match on it
-takes any variant name and always needs an `else`. Two errors of a set without payloads compare
-with `==`. An error cannot be cast to an integer.
+takes any variant name and always needs an `else`. Two errors of a set without payloads can be
+compared with `==`. An error cannot be cast to an integer.
 
 ### Reading a payload
 
-A variant declared with a payload (`overflow: i64`) carries a value of that type, given with
-`fail .overflow(n)`. A `match` arm binds it, and so does `if err == .variant |name|`:
+A variant declared with a payload (`overflow: i64`) carries a value of that type, which you give
+with `fail .overflow(n)`. A `match` arm binds it, and so does `if err == .variant |name|`:
 
 ```fels
 describe :: fn(e: ParseError) -> i64 {
@@ -267,21 +268,22 @@ v := parse(text) catch err {
 };
 ```
 
-The binding has the variant's payload type; binding a variant that carries none is a compile
-error. The payload goes where the error goes: `?` passes it on within one set, and it stays with
-an error kept in a local, a field or a global. Three limits:
+The binding has the variant's payload type, and binding a variant that carries none is a compile
+error. The payload goes wherever the error goes. `?` passes it on within one set, and it stays
+with an error kept in a local, a field or a global. There are three limits:
 
-- An inferred set (`-> T !`) keeps an error's variant but not its payload, so a payload cannot be
-  bound through one: give the function the named set (`-> T ! ParseError`) to pass payloads on.
-- An inline set (`-> T ! { a, b }`, named as a declared set's errors are) carries no payloads; a variant with one belongs to a
-  declared set.
-- Two errors of a set with payloads do not compare with `==` (the same variant, or the same
-  payload too?): compare each with a variant, or `match` it.
+- An inferred set (`-> T !`) keeps an error's variant but not its payload, so you cannot bind a
+  payload through one. Give the function the named set (`-> T ! ParseError`) to pass payloads on.
+- An inline set (`-> T ! { a, b }`, named as a declared set's errors are) carries no payloads. A
+  variant with a payload belongs to a declared set.
+- Two errors of a set with payloads do not compare with `==`, because it would not be clear
+  whether that means the same variant or the same payload too. Compare each one with a variant,
+  or `match` it.
 
 ## Force Unwrap with `!!`
 
-The `!!` operator unwraps a fallible (or optional) value, panicking at runtime
-if it contains an error (or null):
+The `!!` operator unwraps a fallible (or optional) value. If the value contains an
+error (or null), it panics at runtime:
 
 ```fels
 // Panics with a runtime error if parse() fails
@@ -291,12 +293,12 @@ value := parse("42")!!;
 ptr := maybe_ptr!!;
 ```
 
-Use `!!` sparingly — it is a convenience for cases where failure is truly
+Use `!!` sparingly. It is a convenience for the cases where failure is truly
 unexpected and should abort the program.
 
 ## Nil Coalesce with `??`
 
-The `??` operator provides a default value when the left side is an error or
+The `??` operator gives you a default value when the left side is an error or
 null:
 
 ```fels
@@ -309,7 +311,8 @@ name := get_name() ?? "unknown";
 
 ## Defer Modes
 
-Fels supports conditional defers that run only on success or failure:
+Besides the plain `defer`, Fels has conditional defers that run only on success or only on
+failure:
 
 ```fels
 process :: fn() -> void ! IoError {
@@ -338,15 +341,16 @@ process :: fn() -> void ! IoError {
 | Success only | `defer.ok { ... }` | Only on normal return |
 | Error only | `defer.err { ... }` | Only on `fail` or `?` propagation |
 
-Multiple defers execute in reverse order (LIFO), just like Go and Zig.
+When there are several defers, they run in reverse order (LIFO), as in Go and Zig.
 
-`?` leaves the function the way `fail` does, so everything `fail` runs, `?` runs: the defers
-registered before it (a `defer` placed after the `?` does not exist yet), `defer.err`, and the
-exit of every `zone` it leaves. It works the same in code the compiler runs (`#run`, `#assert`).
+`?` leaves the function the way `fail` does, so `?` runs everything that `fail` runs. That means the
+defers registered before it, `defer.err`, and the exit of every `zone` it leaves. (A `defer`
+placed after the `?` does not exist yet.) It works the same in code the compiler runs (`#run`,
+`#assert`).
 
 ## Pattern: Fallible Function with Cleanup
 
-A common pattern in Fels combines `defer`, `fail`, and `?`:
+A common pattern in Fels brings `defer`, `fail` and `?` together:
 
 ```fels
 #import std.fs.{ FsError, open, close };
@@ -376,7 +380,7 @@ main :: fn() -> i32 {
 
 ## Fallible Entry Points
 
-`main` can itself be a fallible function:
+`main` can be a fallible function too:
 
 ```fels
 #import std.io.{ IoError, println };
@@ -387,8 +391,8 @@ main :: fn() -> i32 ! IoError {
 }
 ```
 
-The runtime handles top-level error propagation by aborting with the error
-message.
+When an error propagates all the way to the top level, the runtime aborts with the
+error message.
 
 ## Summary Table
 
@@ -398,7 +402,7 @@ message.
 | `fail .variant` | Return an error |
 | `fail .variant(payload)` | Return an error with payload |
 | `fail err;` | Return an error value (a caught one, a parameter) |
-| `ParseError.overflow(n)` | An error value, built as an enum value is; `.overflow(n)` where the set is known |
+| `ParseError.overflow(n)` | An error value, built like an enum value (`.overflow(n)` where the set is known) |
 | `expr?` | Propagate error, unwrap success |
 | `expr catch err { ... }` | Handle error locally |
 | `yield value;` | End a `catch` handler with the value of the expression |
