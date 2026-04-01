@@ -28,13 +28,14 @@ build :: fn(b: Build) {
 When you run `fels build` without a file argument, it finds `./build.fels` and **runs
 `build(b)` inside the comptime VM**. That is the same engine behind `#run` and `#compiler`.
 There is no separate "build binary": the build script never touches the disk to compile
-itself, because it executes as compile-time Fels. After it returns, the compiler reads the
-populated `Build` value back out of VM memory and executes the plan.
+itself, because it executes as compile-time Fels. While it runs, each builder method records
+its call in the compiler's build plan through a `__build_*` intrinsic (see section 9). After
+`build(b)` returns, the compiler executes that plan.
 
 This is Jai's model (`#run build()`) without the boilerplate. If you come from Jai,
 `#run build();` is also accepted, but the idiom in Fels is a bare `fels build`.
 
-**Three layers:**
+**Four layers:**
 
 | Layer | Audience | Surface |
 | --- | --- | --- |
@@ -108,14 +109,14 @@ pub Artifact :: struct {
 | `b.executable(name, root) -> *Artifact` | declare an exe |
 | `b.shared(name, root)` / `b.static(name, root)` / `b.object(name, root)` | other output kinds |
 | `e.release()` · `e.debug()` · `e.release_small()` | optimization shorthands |
-| `e.optimize(Optimize.release_fast)` · `e.use_backend(Backend.llvm)` | full optimization / backend |
+| `e.optimize(Optimize.release_fast)` · `e.use_backend(Backend.llvm)` | full optimization / backend (`use_backend` is planned) |
 | `e.link(lib)` · `e.lib_path(dir)` | system libraries + search dirs |
 | `e.output(path)` | explicit output path |
 | `e.define(key, value)` | inject a comptime constant into that build |
-| `e.depend(dep)` · `e.needs(step)` | edges in the build graph |
+| `e.depend(dep)` · `e.needs(step)` | edges in the build graph (`needs` is planned, and `depend` is accepted but ignored for now) |
 | `b.run_step(name, exe)` · `b.test_dir(name, dir)` | run/test steps |
-| `b.codegen(name, fn)` · `b.custom(name, fn)` | codegen / arbitrary steps |
-| `b.require_path(name, dir)` · `b.require_git(name, url, rev)` | dependencies |
+| `b.codegen(name, fn)` · `b.custom(name, fn)` | codegen / arbitrary steps (planned: neither is built yet) |
+| `b.require_path(name, dir)` · `b.require_git(name, url)` | dependencies |
 | `b.default(artifact)` | the default target |
 | `b.option(key) -> bool` · `b.option_str(key, default) -> []const u8` | read a `-Dkey` / `-Dkey=value` CLI override |
 
@@ -246,9 +247,10 @@ typed-AST and type-info handles.
 
 ## 5. The distinctive parts
 
-> Planned: this section is design. The only part of it built so far is the gating of
-> comptime FFI (see the plan in section 9). `*Caps`, `#provided`, `add_quote`, `Target`
-> values, `--watch` and `b.codegen` do not exist yet.
+> Planned: this section is design. Two parts of it are built so far: the gating of comptime
+> FFI, and the ordering and up-to-date check described in 5.2 (see the plan in section 9).
+> `*Caps`, `#provided`, `add_quote`, `Target` values, `--watch` and `b.codegen` do not exist
+> yet.
 
 ### 5.1 Capability-sandboxed dependency builds — the supply-chain fix
 In Jai, the build is arbitrary code with full access to the host, and the same is true of
@@ -278,6 +280,12 @@ Steps and artifacts form a DAG. Each step declares its inputs and outputs and is
 **content-hashed**, so unchanged steps are skipped and independent steps run in parallel.
 Jai's build is largely linear, while the one in Fels is incremental by construction.
 `fels build --explain` prints the graph and tells you why each step ran or was cached.
+
+What is built today is smaller. Steps and artifacts run in the order of their edges, and a
+cycle is an error. Each artifact keeps an input stamp, so an unchanged one prints "up to
+date" (see [Up to date](#up-to-date)), and `--rebuild` builds it anyway. A step runs its
+actions every time, and nothing runs in parallel yet. There is no `--explain` or `--watch`
+either, and `e.depend(dep)` is accepted but ignored.
 
 ### 5.3 Typed-AST codegen + `#provided`
 Generated code goes in as **typed AST** (`w.add_quote(#quote { … })`) and is validated at
@@ -326,9 +334,9 @@ fels build test             build + run the test step
 fels build --list           list artifacts and steps
 fels build --release        shorthand override (debug → release_safe)
 fels build --release-fast   the same, without the safety checks (debug → release_fast)
-fels build -D key=value     set an option the script reads via b.option(...)
-fels build --watch          rebuild affected steps on change
-fels build --explain        print the build graph + cache decisions
+fels build -Dkey=value      set an option the script reads via b.option(...)
+fels build --watch          rebuild affected steps on change (planned)
+fels build --explain        print the build graph + cache decisions (planned)
 fels build --frozen         fail if the lockfile would change
 fels build <file.fels>        direct single-file build (back-compat, today's behavior)
 ```
@@ -386,10 +394,13 @@ Here is what the build system needs, set against what already exists:
 | Layer 1 surface: `executable`/`shared`/`static`/`object`, `link`/`lib_path`/`output`/`optimize`/`define`, `require_*`/`depend`, `run_step`/`test_dir`/`default` | ✅ done |
 | CLI: `fels build` / `run` / `<name>` / `--list` / `--release` / `-q` | ✅ done |
 | `test_dir` step execution | ✅ done |
-| Build graph: deps/steps DAG, topo order, parallel | later |
-| Content hashing + incremental + `--watch` | later |
+| Build order: steps and artifacts run in the order of their edges (`after`, `depends_on`, `link_artifact`), with cycle detection | ✅ done |
+| Incremental builds: an input stamp per artifact (settings key + a hash of every file it read), "up to date", `--rebuild` | ✅ done |
+| Parallel builds, `--explain`, `--watch` | later |
+| `e.depend(dep)` edges (accepted, but ignored for now) | later |
 | Capabilities / `*Caps` sandbox + VM capability table | ⏳ slices 1–2 done: comptime FFI is gated in `src/vm/engine.zig`, and the grant is per-library with conservative narrowing. The `*Caps` surface in `build.fels` is open |
-| `add_quote` typed codegen / `#provided` / `define` injection | later (extends `#quote`/`#insert`) |
+| `define` injection: `define`/`define_int`/`define_bool` write a `build_options` module | ✅ done |
+| `add_quote` typed codegen / `#provided` | later (extends `#quote`/`#insert`) |
 | Layer 2 (`workspace`/`Options`) + Layer 3 (intercept) surface | later |
 | Cross-compile targets | ✅ Linux x86-64 (`a.target(.linux)`, `.linux_gnu`), macOS later |
 
@@ -401,8 +412,9 @@ imperatively while the script runs. That is robust, needs no fragile offset math
 model Jai itself uses. `Build`/`Artifact` are tiny value handles that carry an id, and all
 the state lives in the driver.
 
-**Build order from here:** first the dependency/build graph and incremental builds, then the
-rest of the capability system, then the surface of Layers 2–3, and last cross-compile.
+**Build order from here:** first the rest of the build graph (`e.depend` edges, parallel
+builds, `--explain` and `--watch`), then the rest of the capability system, and then the
+surface of Layers 2–3. Cross-compiling to Linux x86-64 is done, and macOS comes last.
 
 ## 10. Minimal end-to-end (the target for v1)
 
@@ -527,7 +539,7 @@ limit := build_options::MAX_PLAYERS;
 `deps/mathlib/ops.fels`, and a bare `#import mathlib` reads `deps/mathlib/mathlib.fels`.
 
 **Dependencies**: `b.require_path(name, dir)` and `b.require_git(name, url)` return a dep id,
-which you pass to `a.depend(dep_id)`.
+which you pass to `a.depend(dep_id)`. The build accepts that call, but it has no effect yet.
 
 **Workspace**: `b.workspace(name)` names the build, and `b.summary()` prints a summary after
 the build.
