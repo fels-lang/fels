@@ -34,7 +34,7 @@ Attributes change the behavior or the layout of a declaration, and each one star
 
 - `#export("name")`: exports the symbol with external linkage. Without a string, it exports the
   symbol under its Fels name. It works on a function and on a top-level global
-  (`#export("gab_entry") ENTRY: PluginEntry = .{ ... };`), see
+  (`#export("plugin_entry") ENTRY: PluginEntry = .{ ... };`), see
   [11_c_interop](11_c_interop.md#exporting-data).
 - `#extern("library_name", "symbol_name")`: declares a binding to an external function (FFI).
   The second argument is the **real link symbol**. The Fels declaration name does not have to
@@ -151,8 +151,10 @@ instruction. All of them except `fma` also **fold at compile time**, so you can 
 These work on any integer: `core::count_ones(x)`, `core::count_zeros(x)`,
 `core::leading_zeros(x)`, `core::trailing_zeros(x)`, `core::swap_bytes(x)`,
 `core::reverse_bits(x)`, `core::rotate_left(x, n)` and `core::rotate_right(x, n)`. Each one
-returns the type of `x`. `core::count_ones` folds at compile time, but the ones that depend on
-the width currently fall back to runtime inside `#run`.
+returns the type of `x`. Only `core::count_ones` folds at compile time. The others depend on the
+width of `x`, and the comptime VM cannot run them yet. A `#run` expression inside a function
+that uses one is compiled as ordinary code and computed at run time. A top-level `#run`
+constant or an `#assert` that needs one is a compile error.
 
 ### Memory & control
 
@@ -204,7 +206,9 @@ the program.
 
 `#run` executes Fels code on the comptime VM while the program compiles, and folds the result
 to a constant. `#run expr` is an expression, and it may initialise a top-level constant. The
-block form `#run { … }` is a statement and, like `#if`, only appears inside a function.
+block form `#run { … }` is a statement. Unlike `#if`, it works only inside a function, not at
+the top level. Today the compiler type-checks the block and then compiles it as ordinary code,
+so its statements run when the program runs, not on the comptime VM.
 
 ```fels
 compute_size :: fn() -> i32 { return 16 * 4; }
@@ -277,7 +281,7 @@ header.fels:3:9: error: static assertion failed: Header is sent as-is over the w
 ### The `TARGET` constant
 
 `TARGET` describes the platform and the mode that the program is built for. It is a constant,
-`TARGET : TargetInfo`, and its fields are enums:
+`TARGET : TargetInfo`. Its `os` and `arch` fields are enums, and `debug` is a `bool`:
 
 - `TARGET.os`: a `TargetOs`, which is `.windows`, `.linux`, `.macos` or `.unknown`.
 - `TARGET.arch`: a `TargetArch`, which is `.x86_64`, `.aarch64` or `.unknown`.
