@@ -2,13 +2,14 @@
 
 ## Modules
 
-In Fels, a module corresponds exactly to a file. 
+In Fels, a module corresponds exactly to a file. Every file is a module, and every module is
+one file.
 
 ### Imports
 
-Use the `#import` directive to bring another module's public symbols into scope.
-Paths are dot-separated relative to the current file, or start with `std.` for the
-standard library. There are four forms:
+The `#import` directive brings another module's public symbols into scope. A path is a list
+of names separated by dots. It is relative to the current file, or it starts with `std.` when
+it points into the standard library. You can import in four forms:
 
 ```fels
 // 1. Namespace import — bind the module under its last path segment.
@@ -33,23 +34,24 @@ standard library. There are four forms:
 #import math.{ add };    add(1, 2);
 ```
 
-**`::` vs `.`** — `::` accesses a *module namespace* member (`io::println`), while
-`.` accesses a *value's* field or method (`point.x`, `writer.flush()`). Keeping
-them distinct means a local variable named `io` never shadows the `io` namespace.
+**`::` vs `.`**: `::` reaches a member of a *module namespace* (`io::println`), and `.`
+reaches a *value's* field or method (`point.x`, `writer.flush()`). Because the two stay
+distinct, a local variable named `io` never shadows the `io` namespace.
 
-> **Collisions are fine.** Two different modules may each declare the same name
-> (e.g. both define a `greet` or a `parse`); the compiler mangles colliding names
-> per module internally, so they link cleanly. You reach each through its
-> namespace (`a::greet`, `b::greet`) or a selective/glob import. A name is only
-> mangled when it actually collides — unique names keep their bare linkage.
-> This holds for functions, constants and types alike: a file that imports `std.io` may
-> declare its own `Writer`, and `io::Writer` is still the other one. Importing the name
-> itself next to its own (`#import std.io.{ Writer };`) is ambiguous, an error.
+> **Collisions are fine.** Two different modules may each declare the same name, for
+> example when both define a `greet` or a `parse`. The compiler mangles colliding names per
+> module internally, so they link cleanly. You reach each one through its namespace
+> (`a::greet`, `b::greet`) or through a selective or glob import. A name is only mangled
+> when it actually collides, and unique names keep their bare linkage. This holds for
+> functions, constants and types alike. A file that imports `std.io` may declare its own
+> `Writer`, and `io::Writer` is still the other one. What you cannot do is import the name
+> itself next to your own (`#import std.io.{ Writer };`). That is ambiguous, and it is an
+> error.
 
 ### Visibility
 
-By default, all declarations (`fn`, `struct`, `const`, etc.) are private to the module.
-Use the `pub` keyword to make them accessible from other modules.
+By default, every declaration (`fn`, `struct`, `const`, etc.) is private to its module.
+Put the `pub` keyword in front of one to make it accessible from other modules.
 
 ```fels
 // Only usable in this file
@@ -65,9 +67,10 @@ pub User :: struct {
 }
 ```
 
-A module offers another module's type under its own name with a `pub` alias of it, of the
-same name or another (a re-export). Importers name it, build it and call its associated
-functions through the module, and an error set re-exported this way is one after `!`:
+A module can offer another module's type under its own name. You write a `pub` alias of the
+type, with the same name or a different one, and that is a re-export. Importers then name
+the type, build it and call its associated functions through your module. An error set
+re-exported this way can stand after `!` as well:
 
 ```fels
 // shapes/circle.fels
@@ -84,14 +87,14 @@ pub Circle :: circle::Circle;        // the same type, offered by `shapes`
 c: shapes::Circle = shapes::Circle::unit();
 ```
 
-`std.net` does this for the types of its submodules (`net::TcpStream`, `net::NetError`). A
-function is re-exported the same way, by a `pub` constant that names it:
-`pub read :: files::read_all;` makes `module::read(…)` that function.
+`std.net` does this for the types of its submodules (`net::TcpStream`, `net::NetError`). You
+re-export a function the same way, with a `pub` constant that names it. After
+`pub read :: files::read_all;`, calling `module::read(…)` calls that function.
 
 ## Interfaces
 
-Interfaces in Fels define a set of methods that a type must implement. They enable
-dynamic dispatch via `*InterfaceType` pointers.
+An interface in Fels names a set of methods that a type must implement. Through
+`*InterfaceType` pointers, interfaces give you dynamic dispatch.
 
 ### Declaration
 
@@ -103,11 +106,14 @@ pub Writer :: interface {
     flush :: fn(self: *Self) -> void ! IoError;
 }
 ```
-Notice the `self: *Self` parameter. Every interface method must take `*Self` (or `borrow *Self`) as its first parameter, and every parameter is named, as in any function declaration.
+Notice the `self: *Self` parameter. Every interface method must take `*Self` (or
+`borrow *Self`) as its first parameter. Every parameter has a name, as in any function
+declaration.
 
 ### Implementation
 
-You implement an interface for a concrete type using the `as` keyword outside of the struct definition:
+You implement an interface for a concrete type with the `as` keyword, outside of the struct
+definition:
 
 ```fels
 File :: struct { handle: usize }
@@ -127,8 +133,8 @@ File as Writer {
 
 ### Dynamic Dispatch
 
-You can implicitly coerce a pointer to a concrete type into an interface pointer.
-Calls through an interface pointer use a vtable for dynamic dispatch.
+A pointer to a concrete type coerces implicitly into an interface pointer. Calls through an
+interface pointer then use a vtable, so the method is chosen at run time (dynamic dispatch).
 
 With the `Writer` and `File` above:
 
@@ -147,8 +153,8 @@ use_file :: fn() {
 
 ### Extension Methods
 
-Any function whose first parameter is named `self` acts as an extension method
-and can be called using dot-syntax:
+Any function whose first parameter is named `self` acts as an extension method, so you can
+call it with dot syntax:
 
 ```fels
 pub write_all :: fn(self: *Writer, data: []const u8) -> usize ! IoError {
@@ -159,20 +165,20 @@ pub write_all :: fn(self: *Writer, data: []const u8) -> usize ! IoError {
 // w.write_all(data)?
 ```
 
-A type's *own* methods can instead be declared **inside the struct body** (where
-`Self` and the struct's type parameters are implicit) — see
-[Methods](02_types.md#methods). Use in-struct declarations for a type's own API and
-free `self`-first functions to extend a type you don't own; an in-struct method
-shadows a free function of the same name when called on that type.
+A type's *own* methods can instead be declared **inside the struct body**, where `Self` and
+the struct's type parameters are implicit (see [Methods](02_types.md#methods)). Use in-struct
+declarations for a type's own API, and free `self`-first functions to extend a type you
+don't own. When you call a method on that type, an in-struct method shadows a free function
+of the same name.
 
 ## Generics
 
-Fels provides static polymorphism via monomorphized generics. 
-Each unique combination of type arguments generates a separate, specialized copy of the function or struct.
+Fels gives you static polymorphism through monomorphized generics. Each unique combination
+of type arguments generates a separate, specialized copy of the function or struct.
 
 ### Generic Functions
 
-Generic type parameters are prefixed with `$`:
+You mark a generic type parameter with a `$` in front of its name:
 
 ```fels
 // $T is an unconstrained type parameter
