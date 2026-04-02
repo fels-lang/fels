@@ -86,6 +86,8 @@ const Options = struct {
 
 pub fn main(init: std.process.Init) u8 {
     enableUtf8Console();
+    // Colors for the diagnostics, when stderr is a terminal.
+    fels.style.detectPosix(init.io, init.environ_map);
     const allocator = init.gpa;
     const io = init.io;
 
