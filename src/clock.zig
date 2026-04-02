@@ -12,7 +12,12 @@ const win = if (builtin.os.tag == .windows) struct {
 
 /// Monotonic nanoseconds (best-effort; returns 0 where unavailable).
 pub fn monoNs() u64 {
-    if (builtin.os.tag != .windows) return 0;
+    if (builtin.os.tag != .windows) {
+        const posix = std.posix;
+        var ts: posix.timespec = undefined;
+        if (posix.errno(posix.system.clock_gettime(posix.CLOCK.MONOTONIC, &ts)) != .SUCCESS) return 0;
+        return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+    }
     var counter: i64 = 0;
     var freq: i64 = 0;
     if (win.QueryPerformanceCounter(&counter) == 0) return 0;
