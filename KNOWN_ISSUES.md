@@ -23,7 +23,30 @@ These compile without a message and give a wrong result.
   where SysV wants two. Calling a real Linux C object under WSL gave wrong values for both; a
   `Color` (four bytes) happens to match. Verified 2026-10-17.
 
+- **`core::sizeof(byte)` is 8.** `byte` is laid out like a pointer: `[4]byte` takes 32 bytes, and
+  `byte` fields and elements sit 8 bytes apart. `lowerNamedType` in `src/ir.zig` has no case for
+  `byte`. Verified 2026-10-17.
+- **A sub-byte local can compare wrong.** A local `i3` is stored with an `i8` store into an `i3`
+  slot and read back as `i3`; in one probe `x != -2` was true for `x: i3 = -2`. Sub-byte values are
+  not range checked either (`x: i3 = -5` is accepted), because sema reads `i1`–`i7` as `i8`.
+- **A write to a constant reached through a module name compiles**: `com::IID_IUnknown.data1 = 5;`
+  passes and crashes at run time, and `&com::IID_IUnknown` is a `*Guid`. The same write through a
+  local or an imported name is refused. Verified 2026-10-17.
+- **A `#run { }` block inside a function runs when the program runs**, as ordinary code, not on the
+  comptime VM. `#run expr` runs at compile time. Verified 2026-10-17.
+- **A borrowed value can be stored into a global** with a plain assignment (`saved = name;`),
+  though a store through a pointer is refused. Verified 2026-10-17.
+- **`[]const T` converts to `[]T` without a word**, in an assignment and as an argument.
+  (`*const T` to `*T` is refused.) Verified 2026-10-17.
+
 ## 2. Compiler crashes and missing messages
+
+- **`main :: fn() { … }` without a return type fails to build on Windows** with an LLVM verifier
+  error (`%ret = call void @main()`): the entry point expects an `i32`. It builds for Linux.
+- **`Atomic(T)` methods take any `Native` type**, so `Atomic(f64).and` or `Atomic(bool).add` passes
+  the type check and then fails in LLVM. The free functions in `std.atomics` give a type error.
+- **`fels check` misses a field error in a named struct literal** ("missing field", "no field"):
+  only lowering reports it, so `fels build` does.
 
 - **`#derive(Neg)`, `Min`, `Max` and `Clamp` on a struct with a nested struct field** pass
   `fels check` and then crash the code generator ("Intrinsic has incorrect return type").
@@ -53,6 +76,9 @@ These compile without a message and give a wrong result.
 
 ## 4. Missing features and limits
 
+- A zone handle is typed `Zone`, not `*Arena`, so a function that takes an `*Arena`
+  (`strings::builder(&temp)`) refuses it; only methods reach the zone's arena. And no `std.io`
+  function takes a `borrow` parameter, so zone memory cannot be printed directly.
 - On Linux `fs::read_all` fails on `/proc` files: it sizes the file by seeking, and they have no
   size.
 - Artifacts with the same name share one up-to-date stamp in `fels build`, so a target matrix
