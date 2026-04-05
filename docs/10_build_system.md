@@ -345,7 +345,7 @@ fels build --frozen         fail if the lockfile would change
 fels build --offline        use only fels.lock and the package cache, never git
 fels build --rebuild        build every artifact, also the ones that are up to date
 fels build --prefix <dir>   the install prefix for `fels build install` (default: dist)
-fels build -q, --quiet      print no progress lines (building, up to date, ✓)
+fels build -q, --quiet      print no progress: no live tree, no ✓ and up-to-date lines
 fels build <file.fels>        direct single-file build (back-compat, today's behavior)
 ```
 
@@ -687,13 +687,28 @@ through `build_options`, so the program is built again.
 
 ```text
 $ fels build
-  up to date: mathutil
-  building app (src/main.fels)
-  up to date: plugin
+· mathutil up to date
+✓ app → bin/app.exe  1.84s
+· plugin up to date
+
+Build Summary: 1 built, 2 up to date · 1.91s
 ```
 
 `fels build --rebuild` builds every artifact anyway. Compile-time code that reads other
 files through `#extern` calls is not tracked, so rebuild after you change such a file.
+
+## What a build prints
+
+On a terminal, `fels build` shows what it is doing as a live tree, as `zig build` does: the
+artifact being built and the stage it is in (checking, lowering, generating code, linking).
+The tree goes away when the build is done. What stays is one line for each artifact: `✓` with
+its output and the time it took, `·` when it was up to date, or `✗` when it does not compile
+(the errors are printed above it). A build of more than one artifact ends with a `Build
+Summary` line. Before a `run` step starts the program, its line shows with `▸`.
+
+When the output goes to a file or a pipe there is no tree and no color, and the lines are the
+same. `NO_COLOR` turns the colors off on a terminal too, and `FELS_COLOR` turns them on when
+the output is piped. `-q` prints only errors.
 
 ## Printing from build.fels
 

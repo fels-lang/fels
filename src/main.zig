@@ -706,8 +706,12 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
     }
 
     fels.build_driver.run(allocator, io, build_path, opts) catch |err| {
-        // The messages from the script run or the packages already say what is wrong.
-        if (err != error.ScriptError and err != error.PackageError) std.debug.print("fels build: {s}\n", .{@errorName(err)});
+        // Most failures are printed where they happen: the script's errors, a package's, an
+        // artifact that does not compile, a step or a program that failed.
+        switch (err) {
+            error.NoBuildScript, error.NoBuildFn, error.NoArtifacts, error.OutOfMemory => std.debug.print("{s} fels build: {s}\n", .{ ui.mark(.fail), @errorName(err) }),
+            else => {},
+        }
         return 1;
     };
     return 0;

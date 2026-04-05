@@ -14,6 +14,8 @@ const pipeline = @import("pipeline.zig");
 const ir = @import("ir.zig");
 const driver = @import("driver.zig");
 const diagnostic = @import("diagnostic.zig");
+const ui = @import("ui.zig");
+const clock = @import("clock.zig");
 const coff_archive = @import("coff_archive.zig");
 const pkg = @import("pkg.zig");
 const vm_engine = @import("vm/engine.zig");
@@ -224,6 +226,12 @@ pub const BuildPlan = struct {
     install_prefix: ?[]const u8 = null,
     install_items: std.ArrayList(InstallItem) = .empty,
     oom: bool = false,
+    /// What the build did, for its last line: the artifacts built, up to date, failed, and
+    /// whether a program or the tests ran (they print their own output, so it is left out).
+    built: u32 = 0,
+    fresh: u32 = 0,
+    failed: u32 = 0,
+    ran: bool = false,
 
     fn init(gpa: std.mem.Allocator) BuildPlan {
         return .{ .arena = std.heap.ArenaAllocator.init(gpa) };
@@ -934,6 +942,11 @@ pub const RunOptions = struct {
 
 /// Run `build_path` (a build.fels) and execute the resulting plan.
 pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: RunOptions) BuildError!void {
+    const started = clock.monoNs();
+    // On a terminal, the live tree: build.fels while it runs, then each artifact and its stages.
+    if (!opts.quiet and !opts.list) ui.start("fels build", 0);
+    defer ui.finish();
+    const script = ui.root.start(std.fs.path.basename(build_path), 0);
     var plan = try loadPlan(gpa, io, build_path, opts.options);
     defer plan.deinit();
 
@@ -952,6 +965,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: Run
     try runPackageBuilds(gpa, io, &plan, folder_caps);
     ir.package_caps = folder_caps;
     defer ir.package_caps = &.{};
+    script.end();
 
     if (opts.list) {
         printList(&plan);
@@ -960,7 +974,27 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: Run
 
     // 3. Execute the plan.
     const base_dir = std.fs.path.dirname(build_path) orelse ".";
-    try executePlan(gpa, io, &plan, base_dir, opts);
+    executePlan(gpa, io, &plan, base_dir, opts) catch |err| {
+        if (!opts.quiet) printDone(&plan, started);
+        return err;
+    };
+    if (!opts.quiet) printDone(&plan, started);
+}
+
+/// `Build Summary: 2 built, 1 up to date · 3.12s`, the last line of a build of more than one
+/// artifact. Not after a program or the tests ran: their output ends the build.
+fn printDone(plan: *BuildPlan, started: u64) void {
+    ui.finish();
+    if (plan.ran or plan.built + plan.fresh + plan.failed < 2) return;
+    var buf: [160]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    ui.writeCounts(&w, &.{
+        .{ .n = plan.built, .what = "built", .color = .good },
+        .{ .n = plan.fresh, .what = "up to date", .color = .plain },
+        .{ .n = plan.failed, .what = "failed", .color = .bad },
+    }) catch {};
+    var d: [48]u8 = undefined;
+    std.debug.print("\n{s}Build Summary:{s} {s} \u{00b7} {s}\n", .{ ui.pal.bold(), ui.pal.reset(), w.buffered(), ui.dimDuration(&d, clock.sinceNs(started)) });
 }
 
 /// Run the build.fels of every package that has one, with the capabilities fels.pkg granted
@@ -1065,6 +1099,7 @@ fn loadPlanWith(
             defer gpa.free(r);
             std.debug.print("{s}\n", .{r});
         }
+        std.debug.print("{s} {s}: does not compile\n", .{ ui.mark(.fail), build_path });
         return error.CompileFailed;
     }
 
@@ -1155,7 +1190,7 @@ fn runAction(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []c
                 std.debug.print("fels build: cannot write {s}\n", .{path});
                 return error.StepFailed;
             };
-            if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{path});
+            if (!opts.quiet) std.debug.print("{s} {s}\n", .{ ui.mark(.ok), path });
         },
         .remove => |rel| {
             const path = joinPath(a, base_dir, rel) catch return error.OutOfMemory;
@@ -1163,7 +1198,7 @@ fn runAction(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []c
                 std.debug.print("fels build: cannot remove {s}\n", .{path});
                 return error.StepFailed;
             };
-            if (!opts.quiet) std.debug.print("  removed {s}\n", .{path});
+            if (!opts.quiet) std.debug.print("{s} removed {s}\n", .{ ui.mark(.ok), path });
         },
         .print => |text| std.debug.print("{s}\n", .{text}),
     }
@@ -1201,7 +1236,15 @@ fn runCommand(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
         for (cmd.env.items) |kv| env.?.put(kv.a, kv.b) catch return error.OutOfMemory;
     }
 
-    if (!opts.quiet) std.debug.print("  running {s}\n", .{program});
+    ui.finish();
+    plan.ran = plan.ran or cmd.is_run;
+    if (!opts.quiet) {
+        // The program as build.fels names it (an artifact by its output), and its arguments.
+        const shown = if (cmd.program_artifact) |art| try resolveOutput(plan, base_dir, plan.artifacts.items[art]) else cmd.program;
+        std.debug.print("{s} {s}", .{ ui.mark(.run), shown });
+        for (argv.items[1..]) |arg| std.debug.print(" {s}", .{arg});
+        std.debug.print("\n", .{});
+    }
     var child = std.process.spawn(io, .{
         .argv = argv.items,
         .cwd = .{ .path = cwd },
@@ -1216,11 +1259,11 @@ fn runCommand(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
     const term = child.wait(io) catch return error.StepFailed;
     switch (term) {
         .exited => |code| if (code != 0) {
-            std.debug.print("  {s} exited with code {d}\n", .{ std.fs.path.basename(program), code });
+            std.debug.print("{s} {s} exited with code {d}\n", .{ ui.mark(if (cmd.is_run) .warn else .fail), std.fs.path.basename(program), code });
             if (!cmd.is_run) return error.StepFailed;
         },
         else => {
-            std.debug.print("  {s} did not exit normally\n", .{std.fs.path.basename(program)});
+            std.debug.print("{s} {s} did not exit normally\n", .{ ui.mark(.fail), std.fs.path.basename(program) });
             return if (cmd.is_run) error.RunFailed else error.StepFailed;
         },
     }
@@ -1228,9 +1271,10 @@ fn runCommand(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
 
 /// A post-build summary of every artifact (kind, output path, opt level).
 fn printSummary(plan: *BuildPlan, base_dir: []const u8) void {
-    std.debug.print("\n── build summary", .{});
-    if (plan.workspace_name) |w| std.debug.print(" · {s}", .{w});
-    std.debug.print(" ──\n", .{});
+    ui.finish();
+    std.debug.print("\n{s}Artifacts{s}", .{ ui.pal.bold(), ui.pal.reset() });
+    if (plan.workspace_name) |w| std.debug.print(" \u{00b7} {s}", .{w});
+    std.debug.print("\n", .{});
     for (plan.artifacts.items) |art| {
         const out = resolveOutput(plan, base_dir, art) catch art.name;
         const opt = optName(art.opt);
@@ -1340,7 +1384,7 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
                     if (art.link_mode == 1)
                         std.debug.print("fels build: warning: '{s}' requested static linking, but '{s}/{s}.lib' is an import library — the link will be DYNAMIC. Point lib_path at the static archive.\n", .{ lib_name, dir, lib_name });
                     auto_dlls.append(a, joinPath(a, dir, dll) catch continue) catch {};
-                    if (!opts.quiet) std.debug.print("  {s} → dynamic ({s})\n", .{ lib_name, dll });
+                    if (!opts.quiet) std.debug.print("  {s}{s} \u{2192} dynamic ({s}){s}\n", .{ ui.pal.dim(), lib_name, dll, ui.pal.reset() });
                 },
                 .unknown => {},
             }
@@ -1384,9 +1428,11 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
     const stamp = std.fmt.allocPrint(a, "{s}/.fels-cache/build/{s}/inputs", .{ base_dir, art.name }) catch return error.OutOfMemory;
     const fresh = !opts.rebuild and fileExists(io, out_path) and upToDate(gpa, io, stamp, key);
     if (fresh) {
-        if (!opts.quiet) std.debug.print("  up to date: {s}\n", .{art.name});
-    } else if (!opts.quiet) std.debug.print("  building {s} ({s})\n", .{ art.name, root_path });
+        plan.fresh += 1;
+        if (!opts.quiet) std.debug.print("{s} {s} {s}up to date{s}\n", .{ ui.mark(.skip), art.name, ui.pal.dim(), ui.pal.reset() });
+    }
     var inputs: std.ArrayList([]const u8) = .empty;
+    var stages = ui.Stages.begin(ui.root, art.name);
 
     if (!fresh) driver.compileFileWithLlvm(gpa, io, .{
         .inputs = &inputs,
@@ -1410,15 +1456,22 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
         .library_object = art.kind == .static_library,
         .target_os = art.target_os,
         .sysroot = if (art.sysroot.len != 0) joinPath(a, base_dir, art.sysroot) catch return error.OutOfMemory else "",
+        .progress = ui.Stages.step,
+        .progress_ctx = &stages,
     }) catch |err| {
-        std.debug.print("fels build: failed to build '{s}': {s}\n", .{ art.name, @errorName(err) });
+        _ = stages.end();
+        plan.failed += 1;
+        std.debug.print("{s} {s}: {s}\n", .{ ui.mark(.fail), art.name, ui.failure(err) });
         return error.CompileFailed;
     };
+    const took = stages.end();
     if (!fresh) {
         if (art.kind == .static_library) try writeStaticLibrary(gpa, io, obj_path, out_path);
         inputs.appendSlice(a, lib_files.items) catch return error.OutOfMemory;
         writeStamp(gpa, io, stamp, key, inputs.items);
-        if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{out_path});
+        plan.built += 1;
+        var d: [48]u8 = undefined;
+        if (!opts.quiet) std.debug.print("{s} {s} {s}\u{2192}{s} {s}  {s}\n", .{ ui.mark(.ok), art.name, ui.pal.dim(), ui.pal.reset(), out_path, ui.dimDuration(&d, took) });
     }
 
     // Copy runtime dependencies next to the output — both the explicit
@@ -1442,7 +1495,7 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
         defer gpa.free(data);
         std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dst, .data = data }) catch continue;
         plan.artifacts.items[idx].copied.append(a, dst) catch {};
-        if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{dst});
+        if (!opts.quiet) std.debug.print("  {s}+ {s}{s}\n", .{ ui.pal.dim(), dst, ui.pal.reset() });
     }
 }
 
@@ -1507,7 +1560,8 @@ fn runInstall(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
             count += 1;
         }
     }
-    if (!opts.quiet) std.debug.print("installed {d} file(s) to {s}\n", .{ count, prefix });
+    ui.finish();
+    if (!opts.quiet) std.debug.print("{s} installed {d} {s} to {s}\n", .{ ui.mark(.ok), count, if (count == 1) "file" else "files", prefix });
 }
 
 fn fileExists(io: std.Io, path: []const u8) bool {
@@ -1534,7 +1588,7 @@ fn copyFile(gpa: std.mem.Allocator, io: std.Io, src: []const u8, dest: []const u
         std.debug.print("fels build: cannot write {s}\n", .{dest});
         return error.InstallFailed;
     };
-    if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{dest});
+    if (!opts.quiet) std.debug.print("  {s}+ {s}{s}\n", .{ ui.pal.dim(), dest, ui.pal.reset() });
 }
 
 /// Copy the folder `src` to `dest` with everything in it. Returns the number of files.
