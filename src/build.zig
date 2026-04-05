@@ -1797,7 +1797,9 @@ fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
     const out_dir = ".zig-cache/felstest";
     std.Io.Dir.cwd().createDirPath(io, out_dir) catch {};
 
-    if (!opts.quiet) std.debug.print("running tests in {s}/\n", .{dir_abs});
+    plan.ran = true;
+    const started = clock.monoNs();
+    if (!opts.quiet) std.debug.print("{s}{s}/{s}\n", .{ ui.pal.bold(), dir_abs, ui.pal.reset() });
     var passed: u32 = 0;
     var failed: u32 = 0;
     for (files.items) |rel| {
@@ -1819,6 +1821,7 @@ fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
         defer gpa.free(src);
 
         var why: []const u8 = "";
+        var stages = ui.Stages.begin(ui.root, rel);
         compile: {
             driver.compileFileWithLlvm(gpa, io, .{
                 .file_name = src_path,
@@ -1830,10 +1833,13 @@ fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
                 .llvm_bin = opts.llvm_bin,
                 .lib_paths = lib_paths.items,
                 .extra_libs = libs.items,
+                .progress = ui.Stages.step,
+                .progress_ctx = &stages,
             }) catch {
-                why = "did not compile (see above)";
+                why = "does not compile (see above)";
                 break :compile;
             };
+            stages.stage("running");
             const r = std.process.run(a, io, .{ .argv = &.{exe} }) catch {
                 why = "could not be started";
                 break :compile;
@@ -1849,16 +1855,26 @@ fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
                 if (output.len != 0) why = std.fmt.allocPrint(a, "{s}:\n      {s}", .{ why, output }) catch why;
             }
         }
+        var d: [48]u8 = undefined;
+        const took = ui.dimDuration(&d, stages.end());
         if (why.len == 0) {
             passed += 1;
-            if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{rel});
+            if (!opts.quiet) std.debug.print("  {s} {s}  {s}\n", .{ ui.mark(.ok), rel, took });
         } else {
             failed += 1;
-            std.debug.print("  \u{2717} {s} {s}\n", .{ rel, why });
+            std.debug.print("  {s} {s}: {s}\n", .{ ui.mark(.fail), rel, why });
         }
     }
 
-    std.debug.print("\n{d} passed, {d} failed\n", .{ passed, failed });
+    ui.finish();
+    var buf: [96]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    ui.writeCounts(&w, &.{
+        .{ .n = passed, .what = "passed", .color = .good },
+        .{ .n = failed, .what = "failed", .color = .bad },
+    }) catch {};
+    var d: [48]u8 = undefined;
+    std.debug.print("\n{s}Test Summary:{s} {s} \u{00b7} {s}\n", .{ ui.pal.bold(), ui.pal.reset(), w.buffered(), ui.dimDuration(&d, clock.sinceNs(started)) });
     if (failed != 0) return error.RunFailed;
 }
 
