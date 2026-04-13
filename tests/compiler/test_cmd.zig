@@ -103,7 +103,7 @@ test "fels test: the tests of each file run, a failing one says why" {
     try std.testing.expect(!r.summary.ok());
     try expectHas(r.text, "/src/mathx.fels\n  \u{2713} clamp_works\n  \u{2717} lerp_works: t.eq: values are not equal\n");
     try expectHas(r.text, "/src/more.fels\n  \u{2713} clamps_through_the_package\n");
-    try std.testing.expect(std.mem.endsWith(u8, r.text, "\n2 passed, 1 failed\n"));
+    try expectHas(r.text, "\n\nTest Summary: 2 passed, 1 failed \u{00b7} ");
 }
 
 test "fels test: on the comptime VM, a test named like a function of another file runs" {
@@ -140,7 +140,7 @@ test "fels test: a file that does not compile is reported and counts as failed" 
     try std.testing.expectEqual(@as(u32, 1), r.summary.broken);
     try std.testing.expect(!r.summary.ok());
     try expectHas(r.text, "/src/broken.fels\n  \u{2717} does not compile\n");
-    try std.testing.expect(std.mem.endsWith(u8, r.text, "\n1 passed, 0 failed, 1 file has errors\n"));
+    try expectHas(r.text, "\n\nTest Summary: 1 passed, 1 file has errors \u{00b7} ");
 }
 
 test "fels test: no #test functions is not a failure" {
@@ -227,9 +227,9 @@ test "fels test: on the comptime VM, a test that needs the running program is sk
     try std.testing.expectEqual(@as(u32, 1), r.summary.passed);
     try std.testing.expectEqual(@as(u32, 2), r.summary.skipped);
     try std.testing.expect(r.summary.ok());
-    try expectHas(r.text, "  - asks_the_os: skipped (comptime FFI to `");
-    try expectHas(r.text, "  - counts: skipped (compile-time code cannot modify a global)\n");
-    try std.testing.expect(std.mem.endsWith(u8, r.text, "\n1 passed, 0 failed, 2 skipped\n"));
+    try expectHas(r.text, "  \u{00b7} asks_the_os: skipped (comptime FFI to `");
+    try expectHas(r.text, "  \u{00b7} counts: skipped (compile-time code cannot modify a global)\n");
+    try expectHas(r.text, "\n\nTest Summary: 1 passed, 2 skipped \u{00b7} ");
 }
 
 /// An app: `main`, a function, and tests that print, write a file, fail.
@@ -285,7 +285,7 @@ test "fels test: natively, an app's tests write files, and a failing one shows w
     // The test program runs in the project folder, and the app's own `main` does not run.
     std.Io.Dir.cwd().access(io, dir ++ "/out.txt", .{}) catch return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, r.text, "the app runs") == null);
-    try std.testing.expect(std.mem.endsWith(u8, r.text, "\n2 passed, 1 failed\n"));
+    try expectHas(r.text, "\n\nTest Summary: 2 passed, 1 failed \u{00b7} ");
 }
 
 // `a.alloc_bytes(4)` is std.heap's method on Arena. A free `alloc_bytes(n: i32)` in the program

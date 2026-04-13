@@ -16,6 +16,8 @@ const ir = @import("ir.zig");
 const diagnostic = @import("diagnostic.zig");
 const runtime = @import("runtime.zig");
 const style = @import("style.zig");
+const ui = @import("ui.zig");
+const clock = @import("clock.zig");
 const pkg = @import("pkg.zig");
 const build = @import("build.zig");
 const driver = @import("driver.zig");
@@ -72,6 +74,7 @@ fn skipDir(name: []const u8) bool {
 
 /// Run the tests of `opts.paths` (or of the project) and write the report to `out`.
 pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Options) Error!Summary {
+    const started = clock.monoNs();
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
@@ -120,22 +123,39 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
     if (build_options.enable_llvm and !opts.comptime_only)
         native = try Native.init(gpa, io, a, out, opts, packages, caps);
 
+    // On a terminal, the live tree: a node per file, with the stage it is in.
+    ui.start("fels test", files.list.items.len);
+    defer ui.finish();
     var summary: Summary = .{};
     for (files.list.items) |path| {
-        try testFile(gpa, io, out, path, try displayPath(a, path), opts.palette, if (native) |*n| n else null, &summary);
+        const display = try displayPath(a, path);
+        var stages = ui.Stages.begin(ui.root, display);
+        defer _ = stages.end();
+        try testFile(gpa, io, out, path, display, opts.palette, if (native) |*n| n else null, &stages, &summary);
         try out.flush();
     }
+    ui.finish();
 
-    if (summary.passed + summary.failed + summary.skipped == 0)
-        try out.writeAll("no #test functions found")
-    else
-        try out.print("{d} passed, {d} failed", .{ summary.passed, summary.failed });
-    if (summary.skipped != 0) try out.print(", {d} skipped", .{summary.skipped});
-    if (summary.broken != 0)
-        try out.print(", {d} {s}", .{ summary.broken, if (summary.broken == 1) "file has errors" else "files have errors" });
-    try out.writeAll("\n");
+    if (summary.passed + summary.failed + summary.skipped + summary.broken == 0) {
+        try out.writeAll("no #test functions found\n");
+    } else {
+        try out.print("\n{s}Test Summary:{s} ", .{ ui.pal.bold(), ui.pal.reset() });
+        try ui.writeCounts(out, &.{
+            .{ .n = summary.passed, .what = "passed", .color = .good },
+            .{ .n = summary.failed, .what = "failed", .color = .bad },
+            .{ .n = summary.skipped, .what = "skipped", .color = .plain },
+            .{ .n = summary.broken, .what = if (summary.broken == 1) "file has errors" else "files have errors", .color = .bad },
+        });
+        var d: [48]u8 = undefined;
+        try out.print(" \u{00b7} {s}\n", .{ui.dimDuration(&d, clock.sinceNs(started))});
+    }
     try out.flush();
     return summary;
+}
+
+/// A file's name above its tests, in bold.
+fn printFileName(out: *std.Io.Writer, display: []const u8) Error!void {
+    try out.print("{s}{s}{s}\n", .{ ui.pal.bold(), display, ui.pal.reset() });
 }
 
 /// Compile one file, show its diagnostics, and run its own `#test` functions: as a native
@@ -148,8 +168,10 @@ fn testFile(
     display: []const u8,
     palette: style.Palette,
     native: ?*const Native,
+    stages: *ui.Stages,
     summary: *Summary,
 ) Error!void {
+    stages.stage("checking");
     const saved_runner = pipeline.test_runner;
     pipeline.test_runner = native != null;
     defer pipeline.test_runner = saved_runner;
@@ -157,7 +179,8 @@ fn testFile(
         error.OutOfMemory => return error.OutOfMemory,
         else => {
             // The reason is already printed: a parse error, an import that cannot be read.
-            try out.print("{s}\n  \u{2717} does not compile\n", .{display});
+            try printFileName(out, display);
+            try out.print("  {s} does not compile\n", .{ui.mark(.fail)});
             summary.broken += 1;
             return;
         },
@@ -172,30 +195,33 @@ fn testFile(
             defer gpa.free(text);
             try out.print("{s}\n", .{text});
         }
-        try out.print("{s}\n  \u{2717} does not compile\n", .{display});
+        try printFileName(out, display);
+        try out.print("  {s} does not compile\n", .{ui.mark(.fail)});
         summary.broken += 1;
         return;
     }
 
     const selected: ir.TestOptions = .{ .only_file = path };
     if (ir.countTestDecls(fe.module, selected) == 0) return;
-    if (native) |n| return n.testFile(gpa, io, out, fe, path, display, summary);
+    if (native) |n| return n.testFile(gpa, io, out, fe, path, display, stages, summary);
+    stages.stage("running");
     const report = ir.runComptimeTestsWith(gpa, fe, selected) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.SemanticFailed => {
-            try out.print("{s}\n  \u{2717} the comptime VM cannot load this file, so its tests do not run\n", .{display});
+            try printFileName(out, display);
+            try out.print("  {s} the comptime VM cannot load this file, so its tests do not run\n", .{ui.mark(.fail)});
             summary.broken += 1;
             return;
         },
     };
-    try out.print("{s}\n", .{display});
+    try printFileName(out, display);
     for (report.results) |r| {
         if (r.failure) |why|
-            try out.print("  \u{2717} {s}: {s}\n", .{ r.name, why })
+            try out.print("  {s} {s}: {s}\n", .{ ui.mark(.fail), r.name, why })
         else if (r.skipped) |why|
-            try out.print("  - {s}: skipped ({s})\n", .{ r.name, why })
+            try out.print("  {s} {s}: skipped ({s})\n", .{ ui.mark(.skip), r.name, why })
         else
-            try out.print("  \u{2713} {s}\n", .{r.name});
+            try out.print("  {s} {s}\n", .{ ui.mark(.ok), r.name });
     }
     summary.passed += report.passed;
     summary.failed += report.failed;
@@ -257,6 +283,7 @@ const Native = struct {
         fe: pipeline.FrontEnd,
         path: []const u8,
         display: []const u8,
+        stages: *ui.Stages,
         summary: *Summary,
     ) Error!void {
         var arena = std.heap.ArenaAllocator.init(gpa);
@@ -281,18 +308,22 @@ const Native = struct {
             .llvm_bin = self.llvm_bin,
             .lib_paths = self.lib_paths,
             .extra_libs = self.libs,
+            .progress = ui.Stages.step,
+            .progress_ctx = stages,
         }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
                 // The linker or the backend printed the reason.
-                try out.print("{s}\n  \u{2717} the test program does not build\n", .{display});
+                try printFileName(out, display);
+                try out.print("  {s} the test program does not build\n", .{ui.mark(.fail)});
                 summary.broken += 1;
                 return;
             },
         };
         self.copyRuntimeFiles(gpa, io);
 
-        try out.print("{s}\n", .{display});
+        stages.stage("running");
+        try printFileName(out, display);
         // After a crash, or a `t.fatal`, the program starts again behind that test.
         var from: u32 = 0;
         while (true) {
@@ -302,7 +333,7 @@ const Native = struct {
             else
                 &.{ exe, std.fmt.bufPrint(&num, "{d}", .{from}) catch unreachable };
             const r = std.process.run(a, io, .{ .argv = argv, .cwd = .{ .path = self.cwd } }) catch {
-                try out.writeAll("  \u{2717} the test program could not be started\n");
+                try out.print("  {s} the test program could not be started\n", .{ui.mark(.fail)});
                 summary.broken += 1;
                 return;
             };
@@ -310,7 +341,7 @@ const Native = struct {
             if (ran.done) return;
             if (ran.started == 0) {
                 // It stopped before the first test it was to run.
-                try out.print("  \u{2717} the test program stopped before its tests ran{s}\n", .{try exitText(a, r)});
+                try out.print("  {s} the test program stopped before its tests ran{s}\n", .{ ui.mark(.fail), try exitText(a, r) });
                 summary.broken += 1;
                 return;
             }
@@ -369,7 +400,7 @@ fn readRun(a: std.mem.Allocator, out: *std.Io.Writer, r: std.process.RunResult, 
             try msgs.append(a, what["MSG ".len..]);
         } else if (std.mem.eql(u8, what, "PASS")) {
             if (current) |name| {
-                try out.print("  \u{2713} {s}\n", .{name});
+                try out.print("  {s} {s}\n", .{ ui.mark(.ok), name });
                 summary.passed += 1;
             }
             current = null;
@@ -397,14 +428,14 @@ fn readRun(a: std.mem.Allocator, out: *std.Io.Writer, r: std.process.RunResult, 
 /// `✗ name: first message`, the other messages below it, then what the test printed.
 fn printFailure(out: *std.Io.Writer, name: []const u8, msgs: []const []const u8, printed: []const u8) Error!void {
     if (msgs.len == 0)
-        try out.print("  \u{2717} {s}\n", .{name})
+        try out.print("  {s} {s}\n", .{ ui.mark(.fail), name })
     else
-        try out.print("  \u{2717} {s}: {s}\n", .{ name, msgs[0] });
+        try out.print("  {s} {s}: {s}{s}{s}\n", .{ ui.mark(.fail), name, ui.pal.red(), msgs[0], ui.pal.reset() });
     if (msgs.len > 1) for (msgs[1..]) |m| try out.print("      {s}\n", .{m});
     const text = std.mem.trim(u8, printed, " \r\n");
     if (text.len == 0) return;
     var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |l| try out.print("      | {s}\n", .{std.mem.trimEnd(u8, l, "\r")});
+    while (lines.next()) |l| try out.print("      {s}|{s} {s}\n", .{ ui.pal.dim(), ui.pal.reset(), std.mem.trimEnd(u8, l, "\r") });
 }
 
 /// ` (exit code N)` for how the program ended, or nothing.
@@ -488,12 +519,13 @@ fn fileExists(io: std.Io, path: []const u8) bool {
 /// failed or a file has errors.
 pub fn cmd(gpa: std.mem.Allocator, io: std.Io, opts: Options) u8 {
     var buf: [4096]u8 = undefined;
-    // Streaming: the parser prints to stderr too, and a positional writer would write over it
-    // when stderr is a file.
-    var w = std.Io.File.stderr().writerStreaming(io, &buf);
+    // Through the lock of std.debug.print: the parser prints with it too, and the live tree
+    // clears before each write.
+    var w: ui.Stderr = .init(&buf);
     var with_colors = opts;
     with_colors.palette = style.forStderr();
     const summary = run(gpa, io, &w.interface, with_colors) catch |err| {
+        ui.finish();
         w.interface.flush() catch {};
         switch (err) {
             error.PackageError, error.BadPath => {},
