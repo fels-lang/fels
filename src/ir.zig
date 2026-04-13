@@ -1503,13 +1503,17 @@ fn eliminateFunctionDeadCode(allocator: std.mem.Allocator, function: IrFunction)
     var blocks: std.ArrayList(IrBlock) = .empty;
     errdefer blocks.deinit(allocator);
 
+    // The registers something reads, in one walk of the function.
+    var used = try usedRegs(allocator, function);
+    defer used.deinit(allocator);
+
     for (function.blocks) |block| {
         var instrs: std.ArrayList(Instr) = .empty;
         errdefer instrs.deinit(allocator);
 
         for (block.instrs) |instr| {
             if (instr.id) |id| {
-                if (!instrHasSideEffects(instr) and !regIsUsed(function, id)) continue;
+                if (!instrHasSideEffects(instr) and !(id < used.bit_length and used.isSet(id))) continue;
             }
             try instrs.append(allocator, instr);
         }
@@ -1546,78 +1550,99 @@ fn instrHasSideEffects(instr: Instr) bool {
     };
 }
 
-fn regIsUsed(function: IrFunction, id: RegId) bool {
+/// The registers the instructions and terminators of `function` read, a bit each (register
+/// ids are numbered per function).
+fn usedRegs(allocator: std.mem.Allocator, function: IrFunction) error{OutOfMemory}!std.DynamicBitSetUnmanaged {
+    var len: usize = 0;
+    for (function.blocks) |block| for (block.instrs) |instr| if (instr.id) |id| {
+        len = @max(len, @as(usize, id) + 1);
+    };
+    var used: Uses = .{ .set = try .initEmpty(allocator, len) };
     for (function.blocks) |block| {
-        for (block.instrs) |instr| {
-            if (instrUsesReg(instr, id)) return true;
-        }
-        if (block.terminator) |terminator| {
-            if (terminatorUsesReg(terminator, id)) return true;
+        for (block.instrs) |instr| used.instr(instr);
+        if (block.terminator) |terminator| used.terminator(terminator);
+    }
+    return used.set;
+}
+
+/// Marks the registers an instruction or a terminator reads.
+const Uses = struct {
+    set: std.DynamicBitSetUnmanaged,
+
+    fn instr(self: *Uses, in: Instr) void {
+        switch (in.kind) {
+            .const_value, .alloc, .alloc_slice, .zone_push, .zone_pop, .global_load => {},
+            .inline_asm => |ai| self.markAll(ai.args),
+            .zone_free => |zf| self.mark(zf.ptr),
+            .unary => |unary| self.mark(unary.value),
+            .binary => |binary| {
+                self.mark(binary.lhs);
+                self.mark(binary.rhs);
+            },
+            .cast => |cast| self.mark(cast.value),
+            .call => |call| self.markAll(call.args),
+            .call_indirect => |call| {
+                self.mark(call.callee);
+                self.markAll(call.args);
+            },
+            .builtin => |builtin| self.markAll(builtin.args),
+            .struct_lit => |strukt| for (strukt.fields) |field| self.mark(field.value),
+            .variant_lit => |variant| if (variant.payload) |payload| self.mark(payload),
+            .field, .field_addr => |field| self.mark(field.base),
+            .index, .index_addr => |index| {
+                self.mark(index.base);
+                self.mark(index.index);
+            },
+            .slice_expr => |slice| {
+                self.mark(slice.ptr);
+                self.mark(slice.len);
+            },
+            .variant_is, .variant_payload, .variant_tag => |variant| self.mark(variant.value),
+            .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| self.mark(value),
+            .at => |at| self.mark(at.value),
+            .raw_pointer => |ptr| self.mark(ptr.address),
+            .interface_make => |make| self.mark(make.data),
+            .interface_data => |value| self.mark(value),
+            .interface_method => |method| self.mark(method.value),
+            .closure_make => |mk| self.mark(mk.env),
+            .closure_env_make => |mk| {
+                self.mark(mk.arena);
+                for (mk.fields) |f| self.mark(f.value);
+            },
+            .closure_env_load => |ld| self.mark(ld.env),
+            .store_local => |store| self.mark(store.value),
+            .global_store => |store| self.mark(store.value),
+            .store => |store| {
+                self.mark(store.target);
+                self.mark(store.value);
+            },
         }
     }
-    return false;
-}
 
-fn instrUsesReg(instr: Instr, id: RegId) bool {
-    return switch (instr.kind) {
-        .const_value, .alloc, .alloc_slice, .zone_push, .zone_pop, .global_load => false,
-        .inline_asm => |ai| valuesUseReg(ai.args, id),
-        .zone_free => |zf| valueUsesReg(zf.ptr, id),
-        .unary => |unary| valueUsesReg(unary.value, id),
-        .binary => |binary| valueUsesReg(binary.lhs, id) or valueUsesReg(binary.rhs, id),
-        .cast => |cast| valueUsesReg(cast.value, id),
-        .call => |call| valuesUseReg(call.args, id),
-        .call_indirect => |call| valueUsesReg(call.callee, id) or valuesUseReg(call.args, id),
-        .builtin => |builtin| valuesUseReg(builtin.args, id),
-        .struct_lit => |strukt| for (strukt.fields) |field| {
-            if (valueUsesReg(field.value, id)) break true;
-        } else false,
-        .variant_lit => |variant| variant.payload != null and valueUsesReg(variant.payload.?, id),
-        .field, .field_addr => |field| valueUsesReg(field.base, id),
-        .index, .index_addr => |index| valueUsesReg(index.base, id) or valueUsesReg(index.index, id),
-        .slice_expr => |slice| valueUsesReg(slice.ptr, id) or valueUsesReg(slice.len, id),
-        .variant_is, .variant_payload, .variant_tag => |variant| valueUsesReg(variant.value, id),
-        .optional_is_some, .optional_payload, .try_is_ok, .try_ok, .try_err, .iter_init, .iter_has_next, .iter_next => |value| valueUsesReg(value, id),
-        .at => |at| valueUsesReg(at.value, id),
-        .raw_pointer => |ptr| valueUsesReg(ptr.address, id),
-        .interface_make => |make| valueUsesReg(make.data, id),
-        .interface_data => |value| valueUsesReg(value, id),
-        .interface_method => |method| valueUsesReg(method.value, id),
-        .closure_make => |mk| valueUsesReg(mk.env, id),
-        .closure_env_make => |mk| blk: {
-            if (valueUsesReg(mk.arena, id)) break :blk true;
-            for (mk.fields) |f| if (valueUsesReg(f.value, id)) break :blk true;
-            break :blk false;
-        },
-        .closure_env_load => |ld| valueUsesReg(ld.env, id),
-        .store_local => |store| valueUsesReg(store.value, id),
-        .global_store => |store| valueUsesReg(store.value, id),
-        .store => |store| valueUsesReg(store.target, id) or valueUsesReg(store.value, id),
-    };
-}
-
-fn terminatorUsesReg(terminator: Terminator, id: RegId) bool {
-    return switch (terminator) {
-        .return_value => |value| value != null and valueUsesReg(value.?, id),
-        .fail => |ft| valueUsesReg(ft.disc, id) or (ft.err != null and valueUsesReg(ft.err.?, id)),
-        .panic, .branch, .unreachable_term => false,
-        .cond_branch => |branch| valueUsesReg(branch.cond, id),
-    };
-}
-
-fn valuesUseReg(values: []const Value, id: RegId) bool {
-    for (values) |value| {
-        if (valueUsesReg(value, id)) return true;
+    fn terminator(self: *Uses, term: Terminator) void {
+        switch (term) {
+            .return_value => |value| if (value) |v| self.mark(v),
+            .fail => |ft| {
+                self.mark(ft.disc);
+                if (ft.err) |e| self.mark(e);
+            },
+            .panic, .branch, .unreachable_term => {},
+            .cond_branch => |branch| self.mark(branch.cond),
+        }
     }
-    return false;
-}
 
-fn valueUsesReg(value: Value, id: RegId) bool {
-    return switch (value) {
-        .reg => |reg| reg == id,
-        .param, .local, .global, .imm => false,
-    };
-}
+    fn markAll(self: *Uses, vs: []const Value) void {
+        for (vs) |v| self.mark(v);
+    }
+
+    /// A read of a register no instruction makes is left to the validator.
+    fn mark(self: *Uses, v: Value) void {
+        switch (v) {
+            .reg => |id| if (id < self.set.bit_length) self.set.set(id),
+            .param, .local, .global, .imm => {},
+        }
+    }
+};
 
 fn lowerStruct(allocator: std.mem.Allocator, decl: ast.TypeDecl, strukt: ast.StructDecl, types: sema.TypeEnv, symbols: sema.SymbolTable) !StructDef {
     var fields: std.ArrayList(FieldDef) = .empty;
