@@ -561,7 +561,7 @@ fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source:
         .progress_ctx = &stages,
         .timings = &timings,
     }) catch |err| return buildFailed(&stages, path, err);
-    return buildDone(&stages, obj_path, timings, opts);
+    return buildDone(io, &stages, obj_path, timings, opts);
 }
 
 /// The line of a failed single-file compile: `✗ path: does not compile` (the reason is above).
@@ -572,15 +572,17 @@ fn buildFailed(stages: *ui.Stages, path: []const u8, err: anyerror) u8 {
     return 1;
 }
 
-/// The line of a finished single-file compile: `✓ out  0.84s  (check 120ms · ... )`.
-fn buildDone(stages: *ui.Stages, out: []const u8, timings: fels.Timings, opts: *Options) u8 {
+/// The line of a finished single-file compile: `✓ out  1.2 MB  0.84s  (check 120ms · ... )`.
+fn buildDone(io: std.Io, stages: *ui.Stages, out: []const u8, timings: fels.Timings, opts: *Options) u8 {
     const ns = stages.end();
     ui.finish();
     if (opts.quiet) return 0;
     var d: [48]u8 = undefined;
     var b: [160]u8 = undefined;
     const breakdown = ui.stageBreakdown(&b, timings);
-    std.debug.print("{s} {s}  {s}", .{ ui.mark(.ok), out, ui.dimDuration(&d, if (timings.total_ns != 0) timings.total_ns else ns) });
+    var z: [24]u8 = undefined;
+    const bytes = if (std.Io.Dir.cwd().statFile(io, out, .{})) |st| ui.size(&z, st.size) else |_| "";
+    std.debug.print("{s} {s}  {s}{s}{s}  {s}", .{ ui.mark(.ok), out, ui.pal.dim(), bytes, ui.pal.reset(), ui.dimDuration(&d, if (timings.total_ns != 0) timings.total_ns else ns) });
     if (breakdown.len != 0) std.debug.print("  {s}({s}){s}", .{ ui.pal.dim(), breakdown, ui.pal.reset() });
     std.debug.print("\n", .{});
     if (opts.show_time) printTimings(timings, out);
@@ -610,7 +612,7 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
         .progress_ctx = &stages,
         .timings = &timings,
     }) catch |err| return buildFailed(&stages, path, err);
-    return buildDone(&stages, exe_path, timings, opts);
+    return buildDone(io, &stages, exe_path, timings, opts);
 }
 
 // Build system (`fels build` with a build.fels)
