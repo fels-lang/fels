@@ -688,7 +688,7 @@ through `build_options`, so the program is built again.
 ```text
 $ fels build
 · mathutil up to date
-✓ app → bin/app.exe  1.84s
+✓ app → bin/app.exe  1.84s  (check 210ms · lower 520ms · optimise 12ms · codegen 60ms · emit 1.02s · link 9ms)
 · plugin up to date
 
 Build Summary: 1 built, 2 up to date · 1.91s
@@ -700,9 +700,10 @@ files through `#extern` calls is not tracked, so rebuild after you change such a
 ## What a build prints
 
 On a terminal, `fels build` shows what it is doing as a live tree, as `zig build` does: the
-artifact being built and the stage it is in (checking, lowering, generating code, linking).
-The tree goes away when the build is done. What stays is one line for each artifact: `✓` with
-its output and the time it took, `·` when it was up to date, or `✗` when it does not compile
+artifact being built and the stage it is in (checking, lowering, optimising, generating code,
+emitting the object, linking). The tree goes away when the build is done. What stays is one
+line for each artifact: `✓` with its output, the time it took and the time of each stage, `·`
+when it was up to date, or `✗` when it does not compile
 (the errors are printed above it). A build of more than one artifact ends with a `Build
 Summary` line. Before a `run` step starts the program, its line shows with `▸`.
 

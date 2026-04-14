@@ -7,14 +7,28 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Changed
 
+- **Builds and tests are much faster.** Strata, about 24,000 lines, builds in 3.0 s, not
+  14.4 s, and its 163 tests run in about 4 s, not 210 s:
+  - Two IR passes were quadratic in the size of a function. Dead-code elimination searched
+    the function for every instruction it kept, and the validator searched for every operand.
+    Together they took 9 s of Strata's build, and now 30 ms.
+  - LLVM selects instructions with SelectionDAG at `-O0` too. FastISel fails on slices and
+    structs that are passed, returned, loaded or stored whole, and handing those blocks over
+    cost more than using SelectionDAG for everything (emit: 2.4 s, now 1.6 s).
+  - String equality with a literal reads its bytes without a bounds check per byte, since
+    the length is checked first. Strata's table of a thousand translations was 200,000 LLVM
+    instructions, and is now half that.
+  - `fels test` tests the files at the same time, one `fels` process per core (`-j<n>` sets
+    how many, `-j1` tests one file at a time). The report keeps the order of the files.
 - **The commands show what they are doing.** On a terminal, `fels build` and `fels test` draw
   a live tree of the work, as `zig build` does: the artifact or the test file, and the stage it
   is in (checking, lowering, generating code, linking, running). Then each artifact gets one
   line: `✓ app → bin/app.exe  1.84s`, `· lib up to date`, or `✗ app: does not compile` under
   its errors. A build of more than one artifact ends with a `Build Summary`, and `fels test`
   with a `Test Summary` and the time. Marks and counts are in color. `fels build <file>` puts
-  the time of each stage on its result line, and the timing table is behind `-t` now. Piped
-  output has no tree and no color, and the same lines.
+  the time of each stage on its result line, and the timing table is behind `-t` now. A
+  project build does the same on each artifact's line. Piped output has no tree and no
+  color, and the same lines.
 - **Colors on Linux and macOS** too, for diagnostics and the commands' lines, on a terminal.
   `NO_COLOR`, `FELS_COLOR` and `TERM=dumb` work as on Windows.
 
