@@ -37,6 +37,7 @@ fels test                     the tests of the project: src/, or the folder with
 fels test src/parser.fels     the tests of one file
 fels test examples tests      the tests of the files in these folders
 fels test --comptime          run them on the comptime VM instead
+fels test -j4                 test four files at once (default: one per core; -j1 one by one)
 ```
 
 Each file is compiled on its own, and the tests declared in that file run. The tests of the
@@ -61,9 +62,15 @@ Test Summary: 3 passed, 2 failed · 0.42s
 ```
 
 A failed test shows every check that failed, and below them, after `|`, what the test printed.
-A passing test prints nothing. On a terminal, a live tree shows which file is being built or
-run while you wait, and the marks and counts are in color. `fels test` exits with 1 when a test failed or a file does not
-compile, so you can use it in CI.
+A passing test prints nothing. On a terminal, a live tree shows which files are being built or
+run while you wait, and the marks and counts are in color. `fels test` exits with 1 when a test
+failed or a file does not compile, so you can use it in CI.
+
+The files are tested at the same time, as many as the computer has cores, each in a `fels`
+process of its own. The report still comes in the order of the files. The tests of one file run
+one after the other, but two files run side by side: if the tests of both write the same file in
+the project folder, they get in each other's way. Give each file of output its own name, or test
+one file at a time with `-j1`.
 
 ### The test program
 
