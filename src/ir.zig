@@ -5415,7 +5415,9 @@ const FunctionLowerer = struct {
 
     /// Compare a `[]const u8` subject to a string literal, byte by byte. The
     /// literal's bytes are read only inside a block guarded by a length match, so
-    /// a shorter subject is never read out of bounds (Fels's `&&` is eager).
+    /// a shorter subject is never read out of bounds (Fels's `&&` is eager), and the
+    /// reads need no bounds check: with one, each byte was a compare, a branch and a
+    /// panic call, and a table of a thousand strings took seconds to compile.
     fn lowerStringEq(self: *FunctionLowerer, subject_in: Value, literal_raw: []const u8) LowerError!Value {
         const subject = try self.materializeStrOperand(subject_in);
         const lit = strlit.bytes(self.allocator, literal_raw);
@@ -5432,7 +5434,7 @@ const FunctionLowerer = struct {
         self.startBlock(cmp_id, "streq.cmp");
         var acc: Value = .{ .imm = .{ .bool = true } };
         for (lit, 0..) |c, i| {
-            const byte = try self.emit(.byte, .{ .index = .{ .base = subject, .index = .{ .imm = .{ .uint = i } } } });
+            const byte = try self.emit(.byte, .{ .index = .{ .base = subject, .index = .{ .imm = .{ .uint = i } }, .checked = false } });
             const beq = try self.emit(.bool, .{ .binary = .{ .op = .eq, .lhs = byte, .rhs = .{ .imm = .{ .uint = c } } } });
             acc = try self.emit(.bool, .{ .binary = .{ .op = .and_op, .lhs = acc, .rhs = beq } });
         }
@@ -5481,9 +5483,10 @@ const FunctionLowerer = struct {
         const more = try self.emit(.bool, .{ .binary = .{ .op = .lt, .lhs = .{ .local = idx_name }, .rhs = lhs_len } });
         try self.terminate(.{ .cond_branch = .{ .cond = more, .then_block = body_id, .else_block = matched_id } });
 
+        // In bounds of both: the index is below `lhs.len`, which is `rhs.len`.
         self.startBlock(body_id, "streq.body");
-        const a = try self.emit(.byte, .{ .index = .{ .base = lhs, .index = .{ .local = idx_name } } });
-        const b = try self.emit(.byte, .{ .index = .{ .base = rhs, .index = .{ .local = idx_name } } });
+        const a = try self.emit(.byte, .{ .index = .{ .base = lhs, .index = .{ .local = idx_name }, .checked = false } });
+        const b = try self.emit(.byte, .{ .index = .{ .base = rhs, .index = .{ .local = idx_name }, .checked = false } });
         const beq = try self.emit(.bool, .{ .binary = .{ .op = .eq, .lhs = a, .rhs = b } });
         // A mismatched byte → done (result stays false).
         try self.terminate(.{ .cond_branch = .{ .cond = beq, .then_block = incr_id, .else_block = done_id } });
