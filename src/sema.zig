@@ -4,6 +4,7 @@ const freevars = @import("freevars.zig");
 const NodeId = ast.NodeId;
 const diag_mod = @import("diagnostic.zig");
 const style = @import("style.zig");
+const ui = @import("ui.zig");
 const Diagnostic = diag_mod.Diagnostic;
 const DiagKind = diag_mod.DiagKind;
 const Span = @import("lexer/span.zig").Span;
@@ -2851,6 +2852,7 @@ const Checker = struct {
 
         // Generic functions with unbound type params are checked per-instantiation, not here.
         if (decl.type_params.len > 0 and self.current_type_binding.len == 0) return;
+        ui.item(decl.name, decl.file_name);
 
         self.current_type_params = decl.type_params;
         defer self.current_type_params = &.{};
