@@ -25,6 +25,7 @@ pub const BlockId = u32;
 pub var comptime_ns: u64 = 0;
 
 const clock = @import("clock.zig");
+const ui = @import("ui.zig");
 
 fn ctNow() u64 {
     return clock.monoNs();
@@ -863,6 +864,9 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
 
     const outer_scope = type_scope;
     defer type_scope = outer_scope;
+    // The live tree counts the functions as they are lowered; not those of the module the
+    // comptime VM runs (`cvm == null`), which is lowered inside another stage.
+    if (cvm != null) ui.itemTotal(loweredFunctionCount(front_end));
     for (front_end.module.items) |item| {
         _ = enterTypeScope(front_end.symbols, front_end.types, item.fileName());
         switch (item) {
@@ -982,6 +986,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                 // recursive ast.* types — never sees them.
                 const comptime_only = cvm != null and fnIsComptimeOnly(decl);
                 if (decl.type_params.len == 0 and !comptime_only) {
+                    if (cvm != null) ui.item(decl.name, decl.file_name);
                     try functions.append(allocator, try lowerFunction(allocator, front_end.types, front_end.symbols, front_end.module, decl, cvm, error_codes));
                 }
                 if (externLibName(decl.attrs)) |lib| try addExternLib(allocator, &extern_libs, lib);
@@ -989,6 +994,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
             .interface_impl => |impl| {
                 for (impl.methods) |method| {
                     const mangled = try interfaceMethodName(allocator, linkNameFor(front_end.symbols, impl.file_name, impl.type_name), linkNameFor(front_end.symbols, impl.file_name, impl.interface_name), method.name);
+                    if (cvm != null) ui.item(method.name, impl.file_name);
                     try functions.append(allocator, try lowerInterfaceMethod(
                         allocator,
                         front_end.types,
@@ -1089,6 +1095,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                     // Per-instantiation generic-callee names: the same call node maps
                     // to a different concrete callee in each instantiation.
                     inst_types.generic_call_insts = inst.call_insts;
+                    if (cvm != null) ui.item(inst.mangled_name, decl.file_name);
                     try functions.append(allocator, try lowerFunctionInstantiation(
                         allocator,
                         inst_types,
@@ -1128,6 +1135,19 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
         .vtables = try vtables.toOwnedSlice(allocator),
         .extern_libs = try extern_libs.toOwnedSlice(allocator),
     };
+}
+
+/// About how many functions `lowerModuleInner` lowers, for the count in the live tree.
+fn loweredFunctionCount(front_end: pipeline.FrontEnd) usize {
+    var n: usize = front_end.types.generic_instantiations.items.len;
+    for (front_end.module.items) |item| switch (item) {
+        .function => |decl| if (decl.type_params.len == 0 and !fnIsComptimeOnly(decl)) {
+            n += 1;
+        },
+        .interface_impl => |impl| n += impl.methods.len,
+        else => {},
+    };
+    return n;
 }
 
 pub fn validateModule(module: IrModule) ValidationError!void {
@@ -6971,6 +6991,14 @@ test "a file's package folder decides its capabilities" {
     try std.testing.expect(capsForFile("main.fels").ffi == .none);
 }
 
+/// A node in the live tree while the comptime VM runs `expr`: `#run (main.fels:12)`.
+fn runNode(file: []const u8, expr: ast.Expr) std.Progress.Node {
+    if (!ui.active()) return .none;
+    const src = diag_mod.sourceOf(file, "");
+    const line = 1 + std.mem.count(u8, src[0..@min(expr.span.start, src.len)], "\n");
+    return ui.sub("#run ({s}:{d})", .{ std.fs.path.basename(file), line });
+}
+
 pub const ComptimeVm = struct {
     /// General-purpose allocator for the VM's transient per-call frames.
     gpa: std.mem.Allocator,
@@ -7029,6 +7057,10 @@ pub const ComptimeVm = struct {
     }
 
     fn buildCache(self: *ComptimeVm) !Cache {
+        // The module the VM runs is lowered once, at the first evaluation: in a big program
+        // that takes a while, so the live tree says so.
+        const node = ui.sub("preparing the comptime VM", .{});
+        defer node.end();
         const a = self.arena.allocator();
         // Lower the module with NO evaluator (cvm = null) so that any nested
         // `#run` encountered while building this cache lowers its operand
@@ -7043,6 +7075,8 @@ pub const ComptimeVm = struct {
     fn evalRaw(self: *ComptimeVm, expr: ast.Expr) ?vm_value.Value {
         const _ct = ctNow();
         defer ctAdd(_ct);
+        const node = runNode(self.current_file, expr);
+        defer node.end();
         const c = self.ensureCache() orelse return null;
         const a = self.arena.allocator();
         const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file, &self.error_codes) catch return null;
@@ -7121,6 +7155,8 @@ pub const ComptimeVm = struct {
     fn evalStatic(self: *ComptimeVm, expr: ast.Expr, ty: IrType, out_alloc: std.mem.Allocator) StaticEval {
         const _ct = ctNow();
         defer ctAdd(_ct);
+        const node = runNode(self.current_file, expr);
+        defer node.end();
         const c = self.ensureCache() orelse return .failed;
         const a = self.arena.allocator();
         const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file, &self.error_codes) catch return .failed;
@@ -7153,6 +7189,8 @@ pub const ComptimeVm = struct {
     ) ?ast.Block {
         const _ct = ctNow();
         defer ctAdd(_ct);
+        const node = runNode(self.current_file, expr);
+        defer node.end();
         const c = self.ensureCache() orelse return null;
         const a = self.arena.allocator();
         const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file, &self.error_codes) catch return null;
@@ -7170,6 +7208,8 @@ pub const ComptimeVm = struct {
     fn evalToString(self: *ComptimeVm, expr: ast.Expr, out_alloc: std.mem.Allocator) ?[]const u8 {
         const _ct = ctNow();
         defer ctAdd(_ct);
+        const node = runNode(self.current_file, expr);
+        defer node.end();
         const c = self.ensureCache() orelse return null;
         const a = self.arena.allocator();
         const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file, &self.error_codes) catch return null;
