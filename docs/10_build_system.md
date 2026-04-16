@@ -688,7 +688,8 @@ through `build_options`, so the program is built again.
 ```text
 $ fels build
 · mathutil up to date
-✓ app → bin/app.exe  1.84s  (check 210ms · lower 520ms · optimise 12ms · codegen 60ms · emit 1.02s · link 9ms)
+✓ app → bin/app.exe  412 KB  1.84s  (check 210ms · lower 520ms · optimise 12ms · codegen 60ms · emit 1.02s · link 9ms)
+  because src/main.fels changed
 · plugin up to date
 
 Build Summary: 1 built, 2 up to date · 1.91s
@@ -701,11 +702,25 @@ files through `#extern` calls is not tracked, so rebuild after you change such a
 
 On a terminal, `fels build` shows what it is doing as a live tree, as `zig build` does: the
 artifact being built and the stage it is in (checking, lowering, optimising, generating code,
-emitting the object, linking). The tree goes away when the build is done. What stays is one
-line for each artifact: `✓` with its output, the time it took and the time of each stage, `·`
-when it was up to date, or `✗` when it does not compile
-(the errors are printed above it). A build of more than one artifact ends with a `Build
-Summary` line. Before a `run` step starts the program, its line shows with `▸`.
+emitting the object, linking). Inside a stage it counts the functions and names the one it is
+at, and it shows a `#run` while it runs, with its file and line:
+
+```text
+[1] fels build
+└─ [1/6] app
+   └─ [1414/2168] lowering
+      └─ menu (app.fels)
+         ├─ #run (app.fels:1153)
+         └─ preparing the comptime VM
+```
+
+The tree goes away when the build is done. What stays is one line for each artifact: `✓` with
+its output, its size, the time it took and the time of each stage, `·` when it was up to date,
+or `✗` when it does not compile (the errors are printed above it). Under a `✓` a dim line says
+why the artifact was built again: a file that changed (and how many more did), its settings,
+another fels, or an output that was missing. A first build and `--rebuild` have no such line.
+A build of more than one artifact ends with a `Build Summary` line. Before a `run` step starts
+the program, its line shows with `▸`.
 
 When the output goes to a file or a pipe there is no tree and no color, and the lines are the
 same. `NO_COLOR` turns the colors off on a terminal too, and `FELS_COLOR` turns them on when
