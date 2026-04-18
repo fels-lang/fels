@@ -3074,13 +3074,33 @@ const FunctionLowerer = struct {
         try visiting.put(name, {});
         defer _ = visiting.remove(name);
 
+        // Where each field is (its byte offset; in a bit-packed struct its first bit and its
+        // width), and the struct's size: a reader such as std.io's value writer walks the
+        // struct by them.
+        const source = SemaLayoutSource{ .allocator = self.allocator, .types = self.types, .symbols = self.symbols };
+        const def = source.structDef(name);
+        var places: [64]layout_mod.BitPlace = undefined;
+        const bit_places: ?[]layout_mod.BitPlace = if (def) |d| (if (layout_mod.isBitPacked(d)) layout_mod.bitPlaces(d, source, &places) else null) else null;
+        const size: u64 = if (layout_mod.ofWith(.{ .struct_type = name }, source)) |l| l.size else 0;
+
         var field_vals: std.ArrayList(Value) = .empty;
         defer field_vals.deinit(self.allocator);
         for (fields) |f| {
             const fty = lowerSemaTypeWithEnv(self.allocator, f.ty, self.types, self.symbols) catch IrType.unknown;
+            const offset: u64 = if (def) |d| layout_mod.offsetOfWith(d, f.name, source) orelse 0 else 0;
+            var bit: u64 = offset * 8;
+            var bits: u64 = 0;
+            if (bit_places) |bp| if (def) |d| for (d.fields, 0..) |df, k| {
+                if (!std.mem.eql(u8, df.name, f.name)) continue;
+                bit = bp[k].bit;
+                if (bp[k].int) bits = bp[k].bits;
+            };
             const fv = try self.mkStruct("TiField", &.{
                 .{ .name = "name", .value = astStr(f.name) },
                 .{ .name = "ty", .value = try self.tiPtr(fty, visiting) },
+                .{ .name = "offset", .value = .{ .imm = .{ .uint = offset } } },
+                .{ .name = "bit", .value = .{ .imm = .{ .uint = bit } } },
+                .{ .name = "bits", .value = .{ .imm = .{ .uint = bits } } },
             });
             try field_vals.append(self.allocator, fv);
         }
@@ -3092,6 +3112,8 @@ const FunctionLowerer = struct {
             // consumer (serde deserialize) can build an `Any` over a struct element
             // and look its size up via `type_size_of`.
             .{ .name = "id", .value = .{ .imm = .{ .uint = typeIdHash(.{ .struct_type = name }) } } },
+            .{ .name = "size", .value = .{ .imm = .{ .uint = size } } },
+            .{ .name = "bit_packed", .value = .{ .imm = .{ .bool = bit_places != null } } },
         });
         // A union's fields overlap: it is no struct to a reader that walks them all.
         return self.mkVariant("TypeInfo", if (self.isUnionType(.{ .struct_type = name })) "union_" else "struct_", payload);
