@@ -1420,6 +1420,15 @@ fn renderType(a: std.mem.Allocator, ty: ast.TypeRef) error{OutOfMemory}!?[]const
             const inner = (try renderType(a, o.inner.*)) orelse return null;
             return try std.fmt.allocPrint(a, "?{s}", .{inner});
         },
+        // `[N]T` with a literal or named length.
+        .array => |arr| {
+            const inner = (try renderType(a, arr.inner.*)) orelse return null;
+            const len = switch (arr.len.kind) {
+                .int, .ident => |t| t,
+                else => return null,
+            };
+            return try std.fmt.allocPrint(a, "[{s}]{s}", .{ len, inner });
+        },
         else => null,
     };
 }
