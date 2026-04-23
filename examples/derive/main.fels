@@ -37,7 +37,7 @@ kind_name :: fn(ti: TypeInfo) -> []const u8 {
 print_schema :: fn($T: type) {
     match core::type_info(T) {
         .struct_ |s| => {
-            print(s.name); print(" {\n");
+            print(s.name); print(" {{\n");
             i: usize = 0usize;
             while i < s.fields.len {
                 print("  "); print(s.fields[i].name); print(": ");
@@ -45,7 +45,7 @@ print_schema :: fn($T: type) {
                 print(kind_name(ft)); print("\n");
                 i += 1usize;
             }
-            print("}\n");
+            print("}}\n");
         }
         else => print("(not a struct)\n");
     }

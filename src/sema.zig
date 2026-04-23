@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const freevars = @import("freevars.zig");
+const format_expand = @import("format_expand.zig");
 const NodeId = ast.NodeId;
 const diag_mod = @import("diagnostic.zig");
 const style = @import("style.zig");
@@ -655,6 +656,9 @@ pub const TypeEnv = struct {
     /// Resolved at the definition site; read by the lambda body check and by IR.
     lambda_captures: std.StringHashMap([]const Capture) = undefined,
     diagnostics: std.ArrayList(Diagnostic) = .empty,
+    /// The string literals with a brace in them that are passed to a `Format` parameter: the
+    /// pipeline makes each the code of its format before the strict pass (`format_expand`).
+    format_literals: std.AutoHashMapUnmanaged(ast.NodeId, void) = .empty,
     /// The names declared inside function bodies, in the order they were checked. Empty
     /// unless the checker ran for the language server.
     local_bindings: std.ArrayList(LocalBinding) = .empty,
@@ -692,6 +696,7 @@ pub const TypeEnv = struct {
     }
 
     pub fn deinit(self: *TypeEnv, allocator: std.mem.Allocator) void {
+        self.format_literals.deinit(allocator);
         self.symbol_types.deinit();
         self.layouts.deinit();
         self.fn_sigs.deinit();
@@ -1398,6 +1403,35 @@ pub fn checkTypesForAnalysis(
     file: []const u8,
 ) error{OutOfMemory}!TypeEnv {
     return checkTypesTolerantImpl(allocator, module, symbols, source, file, true);
+}
+
+/// The tolerant pass that finds the formats (`TypeEnv.format_literals`): it checks the generic
+/// instantiations too, as the strict pass does, since a format may be in a generic body.
+pub fn checkTypesForFormats(
+    allocator: std.mem.Allocator,
+    module: ast.Module,
+    symbols: *SymbolTable,
+    source: []const u8,
+    file: []const u8,
+) error{OutOfMemory}!TypeEnv {
+    var checker = Checker.init(allocator, symbols.*);
+    checker.source = source;
+    checker.file = file;
+    checker.tolerant = true;
+    defer checker.deinit();
+    defer symbols.* = checker.symbols;
+    checker.checkModule(module) catch |err| switch (err) {
+        error.SemanticFailed => {},
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    var checked: usize = 0;
+    while (checked < checker.env.generic_instantiations.items.len) : (checked += 1) {
+        checker.checkGenericInstantiation(module, checked) catch |err| switch (err) {
+            error.SemanticFailed => {},
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+    }
+    return checker.finish();
 }
 
 fn checkTypesTolerantImpl(
@@ -2141,10 +2175,26 @@ const Checker = struct {
     }
 
     fn checkNonEscapingArgument(self: *Checker, expr: ast.Expr, expected: ?Ty) SemanticError!void {
+        try self.noteFormatLiteral(expr, expected);
         const owner = self.exprZoneOwner(expr) orelse return;
         if (expected) |ty| if (ty == .borrow) return;
         const source = if (owner.kind == .borrow) "borrowed value" else "zone-owned value";
         self.emitError(expr.span, "{s} from `{s}` can only be passed to a `borrow` parameter", .{ source, owner.name });
+        return error.SemanticFailed;
+    }
+
+    /// A string literal with a brace in it, passed where a `Format` is expected, is a format:
+    /// the tolerant pass notes it (`TypeEnv.format_literals`) for the pipeline to make it code.
+    /// By the strict pass every such literal is code; one left over is a compiler bug.
+    fn noteFormatLiteral(self: *Checker, expr: ast.Expr, expected: ?Ty) SemanticError!void {
+        const ty = expected orelse return;
+        if (expr.kind != .string or !format_expand.hasBraces(expr.kind.string)) return;
+        if (!self.isFormatTy(ty)) return;
+        if (self.tolerant) {
+            self.env.format_literals.put(self.allocator, expr.id, {}) catch {};
+            return;
+        }
+        self.emitError(expr.span, "internal compiler error: this format was not read before the type check; please report it", .{});
         return error.SemanticFailed;
     }
 

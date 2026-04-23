@@ -9,6 +9,7 @@ const macroexpand = @import("macroexpand.zig");
 const ast_prelude = @import("ast_prelude.zig");
 const ir_mod = @import("ir.zig");
 const style = @import("style.zig");
+const format_expand = @import("format_expand.zig");
 
 /// Node-id base for prelude nodes — high enough to never collide with a real
 /// program's ids (which start at 1 and increment per parsed node).
@@ -829,11 +830,12 @@ fn runPipelineWithSource(
 /// computes the constants, and the strict pass runs again with their values.
 fn strictPass(
     allocator: std.mem.Allocator,
-    module: ast.Module,
+    given: ast.Module,
     source: []const u8,
     file: []const u8,
     arena: *std.heap.ArenaAllocator,
 ) CompileError!FrontEnd {
+    const module = try expandFormats(allocator, given, source, file);
     var where_cvm: ?ir_mod.ComptimeVm = null;
     defer if (where_cvm) |*c| c.deinit();
     if (hasWhereClause(module)) {
@@ -857,6 +859,28 @@ fn strictPass(
     const fe: FrontEnd = .{ .module = module, .symbols = pass.symbols, .types = pass.types, .arena = arena };
     try reportStaticDataErrors(allocator, fe);
     return fe;
+}
+
+/// The string literals passed to a `Format` parameter made the code of their format
+/// (`format_expand`). Which literals those are takes the types, so a tolerant pass notes them
+/// first; it runs only when some call passes a literal with a brace in it.
+fn expandFormats(
+    allocator: std.mem.Allocator,
+    module: ast.Module,
+    source: []const u8,
+    file: []const u8,
+) CompileError!ast.Module {
+    if (!format_expand.hasCandidates(module)) return module;
+    const pass = runSema(allocator, module, source, file, .formats) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // The strict pass reports what is wrong.
+        else => return module,
+    };
+    if (pass.types.format_literals.count() == 0) return module;
+    return format_expand.rewrite(allocator, module, &pass.types.format_literals) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Reported => return error.SemanticFailed,
+    };
 }
 
 /// One strict sema pass, with the `where` evaluator when there is one.
@@ -1816,7 +1840,8 @@ const SemaResult = struct {
     types: sema.TypeEnv,
 };
 
-const SemaMode = enum { strict, tolerant };
+/// `formats`: tolerant, and the generic instantiations are checked too (`expandFormats`).
+const SemaMode = enum { strict, tolerant, formats };
 
 fn runSema(
     allocator: std.mem.Allocator,
@@ -1858,6 +1883,9 @@ fn runSemaResolved(
 
     const types = switch (mode) {
         .tolerant => sema.checkTypesTolerant(allocator, module, &symbols, source, file) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+        },
+        .formats => sema.checkTypesForFormats(allocator, module, &symbols, source, file) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
         },
         .strict => sema.checkTypesWithResolution(allocator, module, &symbols, source, file, where_ctx, where_fn, where_type_fn, const_seeds) catch |err| switch (err) {
