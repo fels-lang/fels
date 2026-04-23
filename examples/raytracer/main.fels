@@ -4,7 +4,7 @@
 
 #import std.fs;
 #import std.heap.{ Arena, make, alloc, alloc_bytes };
-#import std.io.{ Writer, print, print_u64 };
+#import std.io.{ Writer, print };
 #import std.math.{ Vec3, v3, v3_add, v3_sub, v3_scale, v3_dot, v3_cross, v3_normalize, deg2rad, tan };
 #import std.rand.{ Rng, seed, next_f32, range_f32 };
 #import std.time;
@@ -273,8 +273,7 @@ main :: fn() -> i32 {
     start := time::now();
 
     print("rendering ");
-    print_u64(W as u64); print("x"); print_u64(H as u64);
-    print(" at "); print_u64(SAMPLES as u64); print(" spp\n");
+    print("{W}x{H} at {SAMPLES} spp\n");
 
     y: i32 = 0;
     while y < H {
@@ -301,7 +300,7 @@ main :: fn() -> i32 {
     }
 
     ms := time::since_millis(start);
-    print("\ndone in "); print_u64(ms as u64); print(" ms\n");
+    print("\ndone in {ms} ms\n");
 
     f := fs::create("render.bmp") catch e {
         print("could not open render.bmp\n");

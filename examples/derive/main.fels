@@ -4,7 +4,7 @@
 //   2. `core::type_info` reflects a struct's schema at runtime with no codegen.
 
 #import std.heap.{ Arena, make };
-#import std.io.{ print, print_i64, print_u64 };
+#import std.io.{ print };
 
 // 1. Compile-time execution
 fib :: fn(n: i32) -> i64 {
@@ -54,8 +54,8 @@ print_schema :: fn($T: type) {
 #entry
 main :: fn() -> i32 {
     print("compile-time #run:\n");
-    print("  fib(30) = "); print_i64(FIB30); print("\n");
-    print("  tri(7)  = "); print_i64(TRI7); print("\n\n");
+    print("  fib(30) = {FIB30}\n");
+    print("  tri(7)  = {TRI7}\n\n");
 
     print("reflected schemas (runtime, zero codegen):\n");
     print_schema(Person);

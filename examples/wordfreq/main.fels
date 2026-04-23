@@ -5,7 +5,7 @@
 #import std.fs;
 #import std.heap.{ Arena, make };
 #import std.strings.{ str_eq, is_alpha, to_lower_byte };
-#import std.io.{ print, print_u64 };
+#import std.io.{ print };
 #import std.process;
 
 MAXW :: 1024;
@@ -94,7 +94,7 @@ main :: fn() -> i32 {
             i += 1usize;
         }
         if best_c == 0u64 { break; }
-        print("  "); print_u64(best_c); print("  "); print(words[best].word); print("\n");
+        print("  {best_c}  {words[best].word}\n");
         words[best].count = 0u64;
         shown += 1usize;
     }

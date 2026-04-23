@@ -8,7 +8,7 @@
 
 #import std.fs;
 #import std.heap.{ Arena, make };
-#import std.io.{ print, print_u64 };
+#import std.io.{ print };
 #import std.strings.{ str_concat, str_ends_with, str_eq, str_starts_with, str_trim };
 #import std.process;
 
@@ -98,7 +98,7 @@ first_arg :: fn(line: []const u8, def: []const u8) -> []const u8 {
 }
 
 row :: fn(label: []const u8, n: u64) {
-    print("  "); print(label); print_u64(n); print("\n");
+    print("  {label}{n}\n");
 }
 
 #entry

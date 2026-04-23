@@ -6,7 +6,7 @@
 //            term = factor (('*'|'/'|'%') factor)*
 //            factor = number | '(' expr ')' | '-' factor
 
-#import std.io.{ print, print_i64 };
+#import std.io.{ print };
 #import std.process;
 
 P :: struct { s: []const u8, pos: usize }
@@ -100,6 +100,6 @@ main :: fn() -> i32 {
 
     p: P = .{ src, 0usize };
     result := expr(&p);
-    print(src); print(" = "); print_i64(result); print("\n");
+    print("{src} = {result}\n");
     return 0;
 }
