@@ -24,6 +24,14 @@ fn enableUtf8Console() void {
     if (builtin.os.tag == .windows) _ = win.SetConsoleOutputCP(65001);
 }
 
+// The embedded linker (felsld.obj, a `--no-entry` object) prints floats through std.io, and
+// Windows code that uses floats references `_fltused`. A `--no-entry` object leaves that marker
+// to the binary it goes into, and Zig's MinGW CRT does not define it, so fels.exe does.
+var fltused: c_int = 1;
+comptime {
+    if (builtin.os.tag == .windows) @export(&fltused, .{ .name = "_fltused" });
+}
+
 const ui = fels.ui;
 
 /// The io of `std.debug.print`, which the live progress tree (ui.zig) draws through too, so
