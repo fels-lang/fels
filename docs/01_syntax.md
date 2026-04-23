@@ -596,7 +596,7 @@ buffer: [256]u8 = .{};
 To put it all together, here is a small Fels program that uses the core syntax elements:
 
 ```fels
-#import std.io.{ print, println, print_u64 };
+#import std.io.{ print, println };
 
 MAX_SIZE :: 1024;
 
@@ -635,9 +635,7 @@ main :: fn() -> i32 {
         };
     }
 
-    print("buffer has ");
-    print_u64(buf.len as u64);
-    println(" bytes");
+    println("buffer has {buf.len} bytes");
     return 0;
 }
 ```

@@ -420,12 +420,12 @@ The condition may be any optional, and the `|x|` binding is itself optional:
 ```fels
 // Exclusive range: 0, 1, 2, ..., 9
 for i in 0..10 {
-    print_u64(i as u64);
+    println("{i}");
 }
 
 // Inclusive range: 0, 1, 2, ..., 10
 for i in 0..=10 {
-    print_u64(i as u64);
+    println("{i}");
 }
 ```
 
@@ -446,7 +446,7 @@ data: [4]i32 = .{ 10, 20, 30, 40 };
 
 // By value
 for val in data[:] {
-    print_i64(val as i64);
+    println("{val}");
 }
 
 // With index

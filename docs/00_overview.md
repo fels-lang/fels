@@ -46,7 +46,7 @@ main :: fn() -> i32 {
 Here is a quick tour of the syntax in one file:
 
 ```fels
-#import std.io.{ IoError, print, println, print_u64 };
+#import std.io.{ IoError, print, println };
 
 // Constants use :: (compile-time binding)
 MAX_SIZE :: 1024;
@@ -143,7 +143,7 @@ main :: fn() -> i32 {
         .red => { println("red"); },
         .green => { println("green"); },
         .blue => { println("blue"); },
-        .custom |value| => { print_u64(value as u64); },
+        .custom |value| => { println("custom {value}"); },
     }
     
     // Error handling

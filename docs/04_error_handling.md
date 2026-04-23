@@ -354,7 +354,7 @@ A common pattern in Fels brings `defer`, `fail` and `?` together:
 
 ```fels
 #import std.fs.{ FsError, open, close };
-#import std.io.{ Reader, eprintln, print_u64 };
+#import std.io.{ Reader, eprintln, println };
 
 process_file :: fn(path: []const u8) -> usize ! FsError {
     file := open(path)?;
@@ -373,7 +373,7 @@ main :: fn() -> i32 {
         }
         return 1;
     };
-    print_u64(result as u64);
+    println("read {result} bytes");
     return 0;
 }
 ```
