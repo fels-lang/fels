@@ -24,6 +24,8 @@ const heap_prelude_id_base: ast.NodeId = 600_000;
 /// Node-id base for the injected `TypeInfo` reflection prelude (distinct range).
 const reflection_prelude_id_base: ast.NodeId = 500_000;
 const any_prelude_id_base: ast.NodeId = 400_000;
+/// Node-id base for the injected `Format`/`Formatter` prelude.
+const format_prelude_id_base: ast.NodeId = 4_000_000;
 const fieldnav_prelude_id_base: ast.NodeId = 300_000;
 /// Node-id base for the injected `Test` testing prelude (distinct range).
 const testing_prelude_id_base: ast.NodeId = 200_000;
@@ -738,39 +740,7 @@ fn preparePipeline(
     else
         with_target;
 
-    // `type_info(T)` yields a matchable `TypeInfo` value; inject that reflection
-    // surface when the module uses it (and doesn't already define `TypeInfo`).
-    const with_reflect = if (moduleUsesReflection(with_prelude) and !moduleDefinesType(with_prelude, "TypeInfo"))
-        prependReflectionPrelude(allocator, with_prelude) catch |err| switch (err) {
-            error.ParseFailed => return error.ParseFailed,
-            error.OutOfMemory => return error.OutOfMemory,
-        }
-    else
-        with_prelude;
-
-    // `Any` (type-erased value + safe downcast) is mostly ordinary generic Fels —
-    // inject it when the module uses `Any`/`any(`/`any_*` (and doesn't define its
-    // own `Any`). Detected over the combined AST (not the source string, which in
-    // a multi-module compile is only the first file). The wrap `any(x)` is the
-    // only compiler-driven piece.
-    const uses_any = moduleUsesAny(with_reflect) and !moduleDefinesType(with_reflect, "Any");
-    const with_any = if (uses_any)
-        prependAnyPrelude(allocator, with_reflect) catch |err| switch (err) {
-            error.ParseFailed => return error.ParseFailed,
-            error.OutOfMemory => return error.OutOfMemory,
-        }
-    else
-        with_reflect;
-
-    // Generate `any_field_at`/`any_field_name` over the module's concrete structs,
-    // so `Any` values navigate their fields (and `serialize` can walk them).
-    const with_nav = if (uses_any)
-        prependFieldNavPrelude(allocator, with_any) catch |err| switch (err) {
-            error.ParseFailed => return error.ParseFailed,
-            error.OutOfMemory => return error.OutOfMemory,
-        }
-    else
-        with_any;
+    const with_nav = try prependValuePreludes(allocator, with_prelude);
 
     // A `zone X: Arena {}` handle is an ordinary `std.heap.Arena`, so any module
     // with a zone block depends on std.heap. Prepend the embedded bump-allocator
@@ -1012,13 +982,15 @@ fn runCompilerHookPass(
         error.ParseFailed => return error.ParseFailed,
         error.OutOfMemory => return error.OutOfMemory,
     };
-    const pre = if (usesMetaprogramming(with_cprelude))
+    const with_ast = if (usesMetaprogramming(with_cprelude))
         prependAstPrelude(allocator, with_cprelude) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,
         }
     else
         with_cprelude;
+    // The run of the hooks compiles std as the final compile does, with the types std uses.
+    const pre = try prependValuePreludes(allocator, with_ast);
     const expanded = macroexpand.expand(allocator, pre) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,
         error.OutOfMemory => return error.OutOfMemory,
@@ -1433,6 +1405,90 @@ fn renderType(a: std.mem.Allocator, ty: ast.TypeRef) error{OutOfMemory}!?[]const
     };
 }
 
+/// The preludes of the types a program's values are printed and inspected with, each when
+/// the module uses it: `Format`/`Formatter`, `TypeInfo`, `Any` with the field navigators.
+/// The `#compiler` hook pass needs them as the final compile does, since std uses them.
+fn prependValuePreludes(allocator: std.mem.Allocator, module: ast.Module) CompileError!ast.Module {
+    const fail = struct {
+        fn map(err: anyerror) CompileError {
+            return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.ParseFailed,
+            };
+        }
+    }.map;
+    // `Format` and `Formatter` (printing with values in the text), when the module names
+    // one. Before the reflection and `Any` steps: they use both, so those come too.
+    const with_format = if (moduleUsesFormat(module) and !moduleDefinesType(module, "Format"))
+        prependFormatPrelude(allocator, module) catch |err| return fail(err)
+    else
+        module;
+
+    // `type_info(T)` yields a matchable `TypeInfo` value; inject that reflection
+    // surface when the module uses it (and doesn't already define `TypeInfo`).
+    const with_reflect = if (moduleUsesReflection(with_format) and !moduleDefinesType(with_format, "TypeInfo"))
+        prependReflectionPrelude(allocator, with_format) catch |err| return fail(err)
+    else
+        with_format;
+
+    // `Any` (type-erased value + safe downcast) is mostly ordinary generic Fels —
+    // inject it when the module uses `Any`/`any(`/`any_*` (and doesn't define its
+    // own `Any`). Detected over the combined AST (not the source string, which in
+    // a multi-module compile is only the first file). The wrap `any(x)` is the
+    // only compiler-driven piece.
+    const uses_any = moduleUsesAny(with_reflect) and !moduleDefinesType(with_reflect, "Any");
+    const with_any = if (uses_any)
+        prependAnyPrelude(allocator, with_reflect) catch |err| return fail(err)
+    else
+        with_reflect;
+
+    // Generate `any_field_at`/`any_field_name` over the module's concrete structs,
+    // so `Any` values navigate their fields (and `serialize` can walk them).
+    return if (uses_any)
+        prependFieldNavPrelude(allocator, with_any) catch |err| return fail(err)
+    else
+        with_any;
+}
+
+fn prependFormatPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
+    // `src` must outlive the parse: the tree's names point into it (the front-end arena).
+    var src: std.ArrayList(u8) = .empty;
+    try src.appendSlice(allocator, ast_prelude.format_source);
+    try appendCustomFormats(allocator, &src, user);
+    const parsed = try parser.parseSourceFrom(allocator, "<runtime>", src.items, format_prelude_id_base);
+    var items: std.ArrayList(ast.Item) = .empty;
+    try items.appendSlice(allocator, parsed.module.items);
+    try items.appendSlice(allocator, user.items);
+    return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
+/// `__fmt_custom(id, data, f)`: a value of a type with its own
+/// `format :: fn(self, f: *Formatter)` method is printed by it. std.io's value writer asks
+/// first, for a value at the top as for one inside another. A `format` method of another
+/// signature is no printing method and is left alone.
+fn appendCustomFormats(allocator: std.mem.Allocator, src: *std.ArrayList(u8), user: ast.Module) !void {
+    try src.appendSlice(allocator, "\n__fmt_custom :: fn(id: usize, data: *const u8, f: *Formatter) -> bool {\n");
+    for (user.items) |item| {
+        const decl = switch (item) {
+            .function => |d| d,
+            else => continue,
+        };
+        if (std.mem.eql(u8, decl.file_name, "<runtime>") or decl.type_params.len != 0) continue;
+        if (!std.mem.endsWith(u8, decl.name, ".format")) continue;
+        const type_name = decl.name[0 .. decl.name.len - ".format".len];
+        if (std.mem.indexOfScalar(u8, type_name, '.') != null or decl.params.len != 2) continue;
+        const second = decl.params[1].ty;
+        if (second != .pointer or !typeRefNames(second, "Formatter")) continue;
+        const by_pointer = decl.params[0].ty == .pointer;
+        if (by_pointer) {
+            try appendFmt(src, allocator, "    if id == core::type_id({s}) {{ unsafe {{ (data as *{s}).format(f); }} return true; }}\n", .{ type_name, type_name });
+        } else {
+            try appendFmt(src, allocator, "    if id == core::type_id({s}) {{ unsafe {{ (*(data as *const {s})).format(f); }} return true; }}\n", .{ type_name, type_name });
+        }
+    }
+    try src.appendSlice(allocator, "    return false;\n}\n");
+}
+
 fn prependAnyPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
     const parsed = try parser.parseSourceFrom(allocator, "<runtime>", ast_prelude.any_source, any_prelude_id_base);
     var items: std.ArrayList(ast.Item) = .empty;
@@ -1534,6 +1590,32 @@ fn moduleUsesAny(module: ast.Module) bool {
         else => {},
     };
     return false;
+}
+
+/// True when a function of the module takes or returns a `Format` or a `Formatter` (a
+/// pointer to one, too), so the prelude that declares them is injected.
+fn moduleUsesFormat(module: ast.Module) bool {
+    for (module.items) |item| switch (item) {
+        .function => |f| {
+            if (typeRefNames(f.return_ty, "Format") or typeRefNames(f.return_ty, "Formatter")) return true;
+            for (f.params) |p| if (typeRefNames(p.ty, "Format") or typeRefNames(p.ty, "Formatter")) return true;
+        },
+        else => {},
+    };
+    return false;
+}
+
+/// Whether `ty` is the type `name`, or a pointer, optional, slice or array of it.
+fn typeRefNames(ty: ast.TypeRef, name: []const u8) bool {
+    return switch (ty) {
+        .named => |n| n.namespace == null and std.mem.eql(u8, n.name, name),
+        .pointer, .many_pointer => |p| typeRefNames(p.inner.*, name),
+        .optional => |o| typeRefNames(o.inner.*, name),
+        .slice => |sl| typeRefNames(sl.inner.*, name),
+        .array => |a| typeRefNames(a.inner.*, name),
+        .borrow => |b| typeRefNames(b.inner.*, name),
+        else => false,
+    };
 }
 
 fn typeRefUsesAny(ty: ast.TypeRef) bool {

@@ -203,6 +203,26 @@ pub const Scope = struct {
     }
 };
 
+/// Whether `ty` is the prelude's `Format` (`ast_prelude.format_source`).
+pub fn isFormatSym(symbols: SymbolTable, ty: Ty) bool {
+    return switch (ty) {
+        .named => |id| blk: {
+            const sym = symbols.symbol(id);
+            break :blk std.mem.eql(u8, sym.name, "Format") and std.mem.eql(u8, sym.file_name, "<runtime>");
+        },
+        else => false,
+    };
+}
+
+/// `[]u8`, `[]const u8` or the old `text`: bytes that print as they are.
+fn isByteText(ty: Ty) bool {
+    return switch (ty) {
+        .text => true,
+        .slice => |inner| inner.* == .u8 or inner.* == .byte,
+        else => false,
+    };
+}
+
 pub const Symbol = struct {
     id: SymbolId,
     name: []const u8,
@@ -7019,12 +7039,21 @@ const Checker = struct {
         };
     }
 
+    /// The `Format` of the prelude (`ast_prelude.format_source`), not a type of that name the
+    /// program declares.
+    pub fn isFormatTy(self: *Checker, ty: Ty) bool {
+        return isFormatSym(self.symbols, ty);
+    }
+
     fn compatible(self: *Checker, actual: Ty, expected: Ty) !bool {
         if (expected == .borrow) return self.compatible(actual, expected.borrow.*);
         if (actual == .borrow) return self.compatible(actual.borrow.*, expected);
         if (sameTy(actual, expected)) return true;
         // Any value auto-wraps into an `Any` (the compiler inserts `any(x)`).
         if (self.isAnyTy(expected) and !self.isAnyTy(actual)) return true;
+        // Text passed where a `Format` is expected is printed as it is. (A literal with
+        // `{value}` in it was made into the format's code before this pass.)
+        if (self.isFormatTy(expected) and isByteText(actual)) return true;
         if (try self.interfaceCoercion(actual, expected)) return true;
         if (expected == .optional) {
             if (actual == .null_ptr) return true;
