@@ -41,6 +41,10 @@ These compile without a message and give a wrong result.
 
 ## 2. Compiler crashes and missing messages
 
+- **A payload capture of one `match` arm and a loop variable of another with the same name**
+  crash the code generator: `.int |i| => …` in one arm and `for i in 0..n { if i > 0 … }` in
+  another. Name the loop variable differently. Verified 2026-10-18.
+
 - **`main :: fn() { … }` without a return type fails to build on Windows** with an LLVM verifier
   error (`%ret = call void @main()`): the entry point expects an `i32`. It builds for Linux.
 - **`Atomic(T)` methods take any `Native` type**, so `Atomic(f64).and` or `Atomic(bool).add` passes
@@ -75,6 +79,11 @@ These compile without a message and give a wrong result.
   Verified 2026-10-17.
 
 ## 4. Missing features and limits
+
+- **A lambda in a generic function cannot use the function's values**: `fn(v: $T) { g := fn()
+  -> i32 { return v as i32; }; … }` is "unknown name `v`". The lifted lambda is checked and built
+  once, not per instantiation. So a format with values cannot be in a generic function either
+  (its code is such a lambda); that is refused with the reason.
 
 - A zone handle is typed `Zone`, not `*Arena`, so a function that takes an `*Arena`
   (`strings::builder(&temp)`) refuses it; only methods reach the zone's arena. And no `std.io`
