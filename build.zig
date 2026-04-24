@@ -208,6 +208,10 @@ pub fn build(b: *std.Build) void {
         const gen = b.addRunArtifact(exe);
         gen.addArg("object");
         gen.addFileArg(b.path("linker/felsld.fels"));
+        // The std of this checkout, not the one FELS_HOME or FELS_STD names: an installed
+        // older std would build a linker that CI's build does not match.
+        gen.addArg("--std-path");
+        gen.addDirectoryArg(b.path("lib"));
         gen.addArgs(&.{ "--no-entry", "-O2", "-o" });
         const felsld_obj = gen.addOutputFileArg("felsld.obj");
         gen.addPathDir(b.fmt("{s}/bin", .{lp})); // so LLVM-C.dll resolves at run time
