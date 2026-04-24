@@ -5055,6 +5055,11 @@ const FunctionLowerer = struct {
         const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, self.exprType(expr)) };
         return switch (expr.kind) {
             .ident => |name| blk: {
+                // Inside a lambda, a captured variable is a value read from `__env` (as in
+                // `lowerExpr`): a `*Self` method called on it (`a.get()`) points at a copy,
+                // as `&a` does. It has no local slot, so the address was undefined.
+                for (self.lambda_captures) |c| if (std.mem.eql(u8, c.name, name))
+                    break :blk try self.emitRef(ptr_ty, try self.lowerExpr(expr), expr.span);
                 const cur = self.curLocal(name);
                 // Not a declared local (a param is not a global either): a top-level global
                 // is addressed in place, so a write through the address reaches it.

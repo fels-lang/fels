@@ -159,6 +159,23 @@ test "format: braces of the text, text passed on as it is, and a Format of the p
     try std.testing.expectEqualStrings("{n} is 3\n{not read}\nshown 3\n", out);
 }
 
+test "format: method calls on values in one format" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Each value of a format is a capture of its code; a `*Self` method on two of them crashed.
+    const out = try printed(arena.allocator(),
+        \\#import std.io;
+        \\V :: struct { x: i32, pub get :: fn(self: *Self) -> i32 { return self.x; } }
+        \\main :: fn() -> i32 {
+        \\    a: V = .{ 1 };
+        \\    b: V = .{ 2 };
+        \\    io::println("{a.get()} {b.get()} {a.get() + b.get()}") catch e {};
+        \\    return 0;
+        \\}
+    , "fmt_methods");
+    try std.testing.expectEqualStrings("1 2 3\n", out);
+}
+
 test "format: a writer takes a format, and printing works at compile time" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
