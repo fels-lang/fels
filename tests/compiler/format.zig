@@ -30,6 +30,16 @@ fn printed(a: std.mem.Allocator, src: []const u8, label: []const u8) ![]const u8
     return r.stdout;
 }
 
+/// That `src` does not compile. A skip (no LLVM, not Windows) stays a skip.
+fn refused(a: std.mem.Allocator, src: []const u8, label: []const u8) !void {
+    _ = printed(a, src, label) catch |err| {
+        // Without LLVM, `printed` can only skip, so its error set has no `CompileFailed`.
+        if (@as(anyerror, err) == error.CompileFailed) return;
+        return err;
+    };
+    return error.TestExpectedError;
+}
+
 test "format: the values in the braces print by their type" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -186,18 +196,18 @@ test "format: a mistake in a format is an error at its place in the string" {
     for (bad, 0..) |line, i| {
         const src = try std.fmt.allocPrint(a, "#import std.io;\nmain :: fn() -> i32 {{\n    n := 3;\n    {s}\n    return 0;\n}}\n", .{line});
         const label = try std.fmt.allocPrint(a, "fmt_bad_{d}", .{i});
-        try std.testing.expectError(error.CompileFailed, printed(a, src, label));
+        try refused(a, src, label);
     }
 }
 
 test "format: a format with values in a generic function is refused with the reason" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    try std.testing.expectError(error.CompileFailed, printed(arena.allocator(),
+    try refused(arena.allocator(),
         \\#import std.io;
         \\describe :: fn(v: $T) { io::println("value {v}") catch e {}; }
         \\main :: fn() -> i32 { describe(42); return 0; }
-    , "fmt_generic"));
+    , "fmt_generic");
 }
 
 test "a lambda that captures an optional tests its flag" {
