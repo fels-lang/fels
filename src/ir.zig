@@ -6125,12 +6125,13 @@ const FunctionLowerer = struct {
             if (expr.kind == .ident) {
                 const cur = self.local_alias.get(expr.kind.ident) orelse expr.kind.ident;
                 if (self.local_types.get(cur)) |local_ty| return local_ty;
-                // An optional a lambda captured stays one: `o == null` tests its flag, where it
-                // compared the whole value. (Only optionals: an array capture is read as the
-                // value it is, not sliced through a local's slot.)
+                // A lambda's capture has its own type: an optional stays one (`o == null` tests
+                // its flag), and `m := n` makes `m` an `i32` and `ys := xs` an array, not a
+                // pointer. (Slicing a captured array takes the address of a copy of it, in
+                // `lowerLValueAddress`.)
                 for (self.lambda_captures) |c| if (std.mem.eql(u8, c.name, expr.kind.ident)) {
                     const ty = lowerSemaTypeWithEnv(self.allocator, c.ty, self.types, self.symbols) catch IrType.unknown;
-                    if (ty == .optional) return ty;
+                    if (ty != .unknown) return ty;
                 };
                 for (self.params) |param| if (std.mem.eql(u8, param.name, expr.kind.ident)) {
                     // In a generic instantiation a param whose declared type mentions a

@@ -3673,6 +3673,33 @@ test "exe: a lambda captures enclosing locals by value (closure env)" {
     try std.testing.expectEqual(@as(u32, 220), code);
 }
 
+test "exe: a lambda calls methods on its captures and copies them into locals" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A `*Self` method called on a capture got an undefined receiver (`a.get()`), and a
+    // local copied from a scalar or array capture (`m := n`, `ys := xs`) was typed a pointer.
+    const code = try compileAndRun(arena.allocator(),
+        \\V :: struct { x: i32, pub get :: fn(self: *Self) -> i32 { return self.x; } }
+        \\call :: fn(f: fn() -> i32) -> i32 { return f(); }
+        \\main :: fn() -> i32 {
+        \\    a: V = .{ 1 };
+        \\    b: V = .{ 2 };
+        \\    n: i32 = 1;
+        \\    xs: [3]i32 = .{ 1, 2, 3 };
+        \\    g := fn() -> i32 {
+        \\        m := n;
+        \\        ys := xs;
+        \\        s := xs[1..3];
+        \\        return (a.get() + b.get()) * 64 + m * 16 + ys[2] * 4 + s[0];
+        \\    };
+        \\    return call(g); // 3 * 64 + 16 + 12 + 2
+        \\}
+    , "exe_capture_methods");
+    try std.testing.expectEqual(@as(u32, 222), code);
+}
+
 test "exe: a big array or struct is returned through a hidden pointer on every call path" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
