@@ -659,6 +659,9 @@ pub const TypeEnv = struct {
     /// The string literals with a brace in them that are passed to a `Format` parameter: the
     /// pipeline makes each the code of its format before the strict pass (`format_expand`).
     format_literals: std.AutoHashMapUnmanaged(ast.NodeId, void) = .empty,
+    /// The name a generic struct's instance is written with (`Pair(i32)`), by its mangled
+    /// name (`Pair__T_i32`): what diagnostics, `core::type_name` and `TypeInfo` show.
+    type_display: std.StringHashMapUnmanaged([]const u8) = .empty,
     /// The names declared inside function bodies, in the order they were checked. Empty
     /// unless the checker ran for the language server.
     local_bindings: std.ArrayList(LocalBinding) = .empty,
@@ -697,6 +700,7 @@ pub const TypeEnv = struct {
 
     pub fn deinit(self: *TypeEnv, allocator: std.mem.Allocator) void {
         self.format_literals.deinit(allocator);
+        self.type_display.deinit(allocator);
         self.symbol_types.deinit();
         self.layouts.deinit();
         self.fn_sigs.deinit();
@@ -1826,7 +1830,7 @@ const Checker = struct {
             .slice => |inner| std.fmt.allocPrint(self.allocator, "[]{s}", .{self.formatTy(inner.*)}) catch "[]T",
             .array => |array| std.fmt.allocPrint(self.allocator, "[{d}]{s}", .{ array.len, self.formatTy(array.elem.*) }) catch "[N]T",
             .borrow => |inner| std.fmt.allocPrint(self.allocator, "borrow {s}", .{self.formatTy(inner.*)}) catch "borrow T",
-            .named => |id| self.symbols.symbol(id).name,
+            .named => |id| self.env.type_display.get(self.symbols.symbol(id).name) orelse self.symbols.symbol(id).name,
             .type_param => |n| n,
             .fallible => |f| std.fmt.allocPrint(self.allocator, "{s} ! error", .{self.formatTy(f.ok.*)}) catch "T!E",
             else => "T",
@@ -6169,6 +6173,16 @@ const Checker = struct {
         // Return existing instantiation if already done.
         if (self.env.generic_struct_instances.get(mangled)) |inst_id|
             return .{ .named = inst_id };
+
+        var display: std.ArrayList(u8) = .empty;
+        try display.appendSlice(self.allocator, name);
+        try display.append(self.allocator, '(');
+        for (arg_tys, 0..) |arg_ty, k| {
+            if (k > 0) try display.appendSlice(self.allocator, ", ");
+            try display.appendSlice(self.allocator, self.formatTy(arg_ty));
+        }
+        try display.append(self.allocator, ')');
+        try self.env.type_display.put(self.allocator, mangled, try display.toOwnedSlice(self.allocator));
 
         // Register a new symbol for the instantiated struct.
         const inst_id = self.symbols.symbols.items.len;

@@ -62,6 +62,17 @@ test "diagnostics: assigning a lambda's captured variable is an error" {
     defer fe.deinit(arena.allocator());
 }
 
+test "diagnostics: a generic struct's instance is named as it is written" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\Pair :: struct($T: type) { a: T, b: T }
+        \\main :: fn() -> i32 { p: Pair(i32) = .{ 1, 2 }; q: bool = p; return 0; }
+    ;
+    const msg = (try firstError(arena.allocator(), src)) orelse return error.NoError;
+    try std.testing.expect(std.mem.indexOf(u8, msg, "found `Pair(i32)`") != null);
+}
+
 test "diagnostics: returning a non-capturing function value is allowed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
