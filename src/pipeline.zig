@@ -1655,6 +1655,31 @@ fn typeRefUsesAny(ty: ast.TypeRef) bool {
     };
 }
 
+/// Whether a string literal that may be a format (it has braces) names one of `pred`'s names in
+/// its braces. Its values become code after the preludes are chosen (`expandFormats`), so a
+/// `{any_name(v)}` or `{core::type_info(T)}` there needs them as much as code does. Any word
+/// of the text counts; an extra prelude costs nothing at run time.
+fn formatTextNames(raw: []const u8, comptime pred: fn ([]const u8) bool) bool {
+    if (!format_expand.hasBraces(raw)) return false;
+    var i: usize = 0;
+    while (i < raw.len) {
+        if (std.ascii.isAlphabetic(raw[i]) or raw[i] == '_') {
+            const start = i;
+            while (i < raw.len and (std.ascii.isAlphanumeric(raw[i]) or raw[i] == '_')) i += 1;
+            if (pred(raw[start..i])) return true;
+        } else i += 1;
+    }
+    return false;
+}
+
+fn isAnyName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Any") or isAnyBuiltin(name) or std.mem.startsWith(u8, name, "any_");
+}
+
+fn isReflectionName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "type_info") or std.mem.eql(u8, name, "type_name") or std.mem.eql(u8, name, "TypeInfo");
+}
+
 fn isAnyBuiltin(name: []const u8) bool {
     return std.mem.eql(u8, name, "any") or std.mem.eql(u8, name, "any_is") or
         std.mem.eql(u8, name, "any_as") or std.mem.eql(u8, name, "any_id");
@@ -1721,6 +1746,9 @@ fn exprUsesAny(expr: ast.Expr) bool {
         .force_unwrap, .unsafe_expr, .run_expr => |inner| exprUsesAny(inner.*),
         .as_cast => |c| exprUsesAny(c.value.*),
         .nil_coalesce => |nc| exprUsesAny(nc.value.*) or exprUsesAny(nc.default.*),
+        .string => |raw| formatTextNames(raw, isAnyName),
+        .try_expr => |t| exprUsesAny(t.value.*),
+        .catch_expr => |c| exprUsesAny(c.value.*) or blockUsesAny(c.handler),
         else => false,
     };
 }
@@ -1780,6 +1808,9 @@ fn exprUsesReflection(expr: ast.Expr) bool {
         .force_unwrap, .unsafe_expr, .run_expr => |inner| exprUsesReflection(inner.*),
         .as_cast => |c| exprUsesReflection(c.value.*),
         .nil_coalesce => |nc| exprUsesReflection(nc.value.*) or exprUsesReflection(nc.default.*),
+        .string => |raw| formatTextNames(raw, isReflectionName),
+        .try_expr => |t| exprUsesReflection(t.value.*),
+        .catch_expr => |c| exprUsesReflection(c.value.*) or blockUsesReflection(c.handler),
         else => false,
     };
 }
