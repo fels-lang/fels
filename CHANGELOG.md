@@ -3,6 +3,23 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Changed
+
+- **Assigning a lambda's captured variable is an error.** A capture is a copy made for each
+  call, so `n = 9`, `n += 1`, `p.x = 9` or `xs[0] = 9` in a lambda changed nothing and was
+  accepted. The error says to capture a pointer (`p := &n;`, then `*p = …` in the lambda).
+  A write through a captured pointer or slice still reaches the variable.
+
+### Fixed
+
+- A format with two method calls crashed (`io::println("{a.get()} {b.get()}")`). A lambda that
+  called a `*Self` method on a captured value passed an undefined pointer, so the method read
+  garbage (`a.get() + b.get()` was 2 for 1 and 2).
+- In a lambda, a local copied from a captured number or array (`m := n`, `ys := xs`) was typed a
+  pointer: the build failed in LLVM, or the program crashed.
+
 ## 0.10.0 — 2026-10-18
 
 Text prints with its values: `io::println("{name} has {n} items")` shows any value by its type,
