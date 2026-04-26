@@ -7030,10 +7030,46 @@ const Checker = struct {
         };
     }
 
-    /// Reject assignments to a constant and through a *const pointer.
+    /// The captured variable a write to `place` lands in, inside a lifted lambda (`n = 9`,
+    /// `p.x = 9`, `xs[0] = 9`). A capture is a copy of the enclosing variable, made for each
+    /// call, so the write reaches nothing. Null for a place behind a pointer or a slice (the
+    /// write goes where it points) and for a local of the lambda's own.
+    fn captureRoot(self: *Checker, place: ast.Expr) ?[]const u8 {
+        const frame = self.current_frame orelse return null;
+        if (frame.captures.len == 0) return null;
+        return switch (place.kind) {
+            .ident => |name| blk: {
+                var i = self.scope_stack.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    if (!self.scope_stack.items[i].contains(name)) continue;
+                    if (i != frame.scope_index) break :blk null;
+                    for (frame.captures) |c| if (std.mem.eql(u8, c.name, name)) break :blk name;
+                    break :blk null;
+                }
+                break :blk null;
+            },
+            .field => |f| blk: {
+                const base_ty = self.inferExpr(f.base.*) catch break :blk null;
+                break :blk if (isPointerTy(base_ty)) null else self.captureRoot(f.base.*);
+            },
+            .index => |ix| blk: {
+                const base_ty = self.inferExpr(ix.base.*) catch break :blk null;
+                break :blk if (base_ty == .array) self.captureRoot(ix.base.*) else null;
+            },
+            else => null,
+        };
+    }
+
+    /// Reject assignments to a constant, to a lambda's captured copy, and through a *const
+    /// pointer.
     fn checkAssignTarget(self: *Checker, target: ast.Expr) SemanticError!void {
         if (self.constantRoot(target)) |name| {
             self.emitError(target.span, "`{s}` is a constant: declare it `{s}: T = value;` to change it", .{ name, name });
+            return error.SemanticFailed;
+        }
+        if (self.captureRoot(target)) |name| {
+            self.emitError(target.span, "`{s}` is a copy in this lambda (captured by value), so the assignment would change nothing; capture a pointer to change it (`p := &{s};` before the lambda, `*p = …` in it)", .{ name, name });
             return error.SemanticFailed;
         }
         switch (target.kind) {

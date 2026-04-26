@@ -35,6 +35,33 @@ test "diagnostics: returning a capturing closure held in a local is rejected" {
     try std.testing.expectError(error.SemanticFailed, result);
 }
 
+test "diagnostics: assigning a lambda's captured variable is an error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A capture is a copy made for each call: `n = 9`, `p.x = 9` or `xs[0] = 9` in the
+    // lambda would change nothing, so each is refused. A write through a captured pointer
+    // or slice reaches the variable, and a local of the lambda is its own.
+    const bad = [_][]const u8{
+        "f :: fn() -> i32 { n: i32 = 1; g := fn() -> i32 { n = 9; return n; }; return g(); }",
+        "f :: fn() -> i32 { n: i32 = 1; g := fn() -> i32 { n += 1; return n; }; return g(); }",
+        "P :: struct { x: i32 }\nf :: fn() -> i32 { p: P = .{ 1 }; g := fn() -> i32 { p.x = 9; return p.x; }; return g(); }",
+        "f :: fn() -> i32 { xs: [2]i32 = .{ 1, 2 }; g := fn() -> i32 { xs[0] = 9; return xs[0]; }; return g(); }",
+    };
+    for (bad) |src| try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "capture_write.fels", src));
+    const ok =
+        \\f :: fn() -> i32 {
+        \\    n: i32 = 1;
+        \\    p := &n;
+        \\    xs: [2]i32 = .{ 1, 2 };
+        \\    s := xs[0..2];
+        \\    g := fn() -> i32 { *p = 9; s[0] = 9; m := n; m = 5; return m; };
+        \\    return g();
+        \\}
+    ;
+    var fe = try fels.compile(arena.allocator(), "capture_write_ok.fels", ok);
+    defer fe.deinit(arena.allocator());
+}
+
 test "diagnostics: returning a non-capturing function value is allowed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
