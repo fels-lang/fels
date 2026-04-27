@@ -3077,6 +3077,21 @@ const FunctionLowerer = struct {
         }
     }
 
+    /// How a type is written (`[]i32`, `*Point`, `?i32`, `[4]u8`, `Pair(i32)`): what
+    /// `core::type_name` and an `Any`'s name say. The ids hash the mangled spelling
+    /// (`typeIdHash`), which stays as it is.
+    fn typeDisplayName(self: *FunctionLowerer, ty: IrType) LowerError![]const u8 {
+        return switch (ty) {
+            .ptr => |inner| try std.fmt.allocPrint(self.allocator, "*{s}", .{try self.typeDisplayName(inner.*)}),
+            .optional => |inner| try std.fmt.allocPrint(self.allocator, "?{s}", .{try self.typeDisplayName(inner.*)}),
+            .slice => |inner| try std.fmt.allocPrint(self.allocator, "[]{s}", .{try self.typeDisplayName(inner.*)}),
+            .array => |arr| try std.fmt.allocPrint(self.allocator, "[{d}]{s}", .{ arr.len, try self.typeDisplayName(arr.elem.*) }),
+            .text => "[]const u8",
+            .struct_type, .variant_type => |n| self.types.type_display.get(n) orelse n,
+            else => vm_compiler.typeNameMangle(ty),
+        };
+    }
+
     fn tiStruct(self: *FunctionLowerer, name: []const u8, visiting: *std.StringHashMap(void)) LowerError!Value {
         if (visiting.contains(name)) return self.mkVariant("TypeInfo", "other", astStr(name));
         const fields = self.structFieldInfos(name) orelse return self.mkVariant("TypeInfo", "other", astStr(name));
@@ -3115,7 +3130,7 @@ const FunctionLowerer = struct {
         }
         const slice = try self.materializeSlice(.{ .struct_type = "TiField" }, field_vals.items);
         const payload = try self.mkStruct("TiStruct", &.{
-            .{ .name = "name", .value = astStr(name) },
+            .{ .name = "name", .value = astStr(self.types.type_display.get(name) orelse name) },
             .{ .name = "fields", .value = slice },
             // The type's stable runtime id (== `core::type_id(S)`), so a reflective
             // consumer (serde deserialize) can build an `Any` over a struct element
@@ -4374,7 +4389,7 @@ const FunctionLowerer = struct {
                         .named => |n| n.value,
                     };
                     const ty = try self.lowerTypeArg(first);
-                    break :blk .{ .imm = .{ .text = vm_compiler.typeNameMangle(ty) } };
+                    break :blk .{ .imm = .{ .text = try self.typeDisplayName(ty) } };
                 }
                 // `any(x)` wraps a value into a type-erased `Any { data, id, name }`.
                 // Only when `any` isn't a user function: a user fn named `any`
@@ -4554,7 +4569,7 @@ const FunctionLowerer = struct {
             val;
         const ptr = try self.emit(.{ .ptr = try boxType(self.allocator, val_ty) }, .{ .unary = .{ .op = .ref, .value = spillable } });
         const id_val: Value = .{ .imm = .{ .uint = typeIdHash(val_ty) } };
-        const name_val: Value = .{ .imm = .{ .text = vm_compiler.typeNameMangle(val_ty) } };
+        const name_val: Value = .{ .imm = .{ .text = try self.typeDisplayName(val_ty) } };
         return self.emit(.{ .struct_type = "Any" }, .{ .builtin = .{
             .name = "compound_literal",
             .args = try self.allocator.dupe(Value, &.{ ptr, id_val, name_val }),

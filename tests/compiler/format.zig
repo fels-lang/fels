@@ -176,6 +176,35 @@ test "format: method calls on values in one format" {
     try std.testing.expectEqualStrings("1 2 3\n", out);
 }
 
+test "format: types print with the names they are written with" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A generic struct's instance is `Pair(i32)`, not its mangled `Pair__T_i32`; a slice,
+    // pointer, optional or array type is spelled out, not "slice" or "ptr". Reflection and
+    // `Any` used only inside a format's braces bring their declarations in too.
+    const out = try printed(arena.allocator(),
+        \\#import std.io;
+        \\Pair :: struct($T: type) { a: T, b: T }
+        \\P :: struct { x: i32 }
+        \\main :: fn() -> i32 {
+        \\    p: Pair(i32) = .{ 1, 2 };
+        \\    q: Pair(Pair(u8)) = .{ .{ 1, 2 }, .{ 3, 4 } };
+        \\    xs: [3]i32 = .{ 1, 2, 3 };
+        \\    io::println("{p} {q}") catch e {};
+        \\    io::println("{core::type_name(Pair(i64))} {core::type_name([]i32)} {core::type_name(*P)} {core::type_name(?i32)} {core::type_name([4]u8)}") catch e {};
+        \\    io::println("{any_name(core::any(xs[0..3]))} {any_name(core::any(&p))}") catch e {};
+        \\    return 0;
+        \\}
+    , "fmt_type_names");
+    try std.testing.expectEqualStrings(
+        "Pair(i32){ a: 1, b: 2 } Pair(Pair(u8)){ a: Pair(u8){ a: 1, b: 2 }, b: Pair(u8){ a: 3, b: 4 } }\n" ++
+            "Pair(i64) []i32 *P ?i32 [4]u8\n" ++
+            "[]i32 *Pair(i32)\n",
+        out,
+    );
+}
+
+
 test "format: a writer takes a format, and printing works at compile time" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
