@@ -19,6 +19,15 @@ the major version is `0`, any minor bump may break source compatibility.
   garbage (`a.get() + b.get()` was 2 for 1 and 2).
 - In a lambda, a local copied from a captured number or array (`m := n`, `ys := xs`) was typed a
   pointer: the build failed in LLVM, or the program crashed.
+- A generic struct's instance printed and showed in errors with its mangled name
+  (`Pair__T_i32{ a: 1, b: 2 }`); it is `Pair(i32)` now. `core::type_name`, an `Any`'s name and
+  `TypeInfo` spell every type out: `[]i32`, `*Point`, `?i32`, `[4]u8`, where they said `slice`,
+  `ptr` and `opt`.
+- `core::type_name(x)`, `core::type_id(x)` and `core::type_info(x)` with a variable `x` answered
+  for a type named `x` (`type_name(x)` was `"x"`). They are of the variable's type now, as for any
+  other expression; a type of that name still wins.
+- `any_name(...)`, `core::any(...)` or `core::type_info(...)` used only inside a format's braces
+  was "unknown function": the declarations they need were left out.
 
 ## 0.10.0 — 2026-10-18
 
