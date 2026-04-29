@@ -204,6 +204,28 @@ test "format: types print with the names they are written with" {
     );
 }
 
+test "format: type_name, type_id and type_info of a value are of its type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A name that is no type but a variable is the variable's type; it was taken for a type
+    // of that name (`type_name(x)` was "x"). A type of the name still wins over a variable.
+    const out = try printed(arena.allocator(),
+        \\#import std.io;
+        \\P :: struct { x: i32 }
+        \\Node :: struct { val: i32, other: i64 }
+        \\size_of_node :: fn(Node: i32) -> usize { return core::sizeof(Node); }
+        \\main :: fn() -> i32 {
+        \\    x: i32 = 3;
+        \\    p: P = .{ 1 };
+        \\    same := core::type_id(x) == core::type_id(i32);
+        \\    bits: u16 = 0;
+        \\    match core::type_info(x) { .int |i| => { bits = i.bits; } else => {} }
+        \\    io::println("{core::type_name(x)} {core::type_name(p)} {same} {bits} {size_of_node(1)}") catch e {};
+        \\    return 0;
+        \\}
+    , "fmt_value_forms");
+    try std.testing.expectEqualStrings("i32 P true 32 16\n", out);
+}
 
 test "format: a writer takes a format, and printing works at compile time" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

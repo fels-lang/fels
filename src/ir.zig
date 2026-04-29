@@ -3077,6 +3077,13 @@ const FunctionLowerer = struct {
         }
     }
 
+    /// Whether `name` is a type visible here: a top-level type (a struct, enum, error set,
+    /// union, interface, alias or generic instance), not a function or a value.
+    fn namesType(self: *FunctionLowerer, name: []const u8) bool {
+        const id = resolveTopLevel(self.symbols, self.file_name, name) orelse return false;
+        return self.symbols.symbol(id).kind == .type;
+    }
+
     /// How a type is written (`[]i32`, `*Point`, `?i32`, `[4]u8`, `Pair(i32)`): what
     /// `core::type_name` and an `Any`'s name say. The ids hash the mangled spelling
     /// (`typeIdHash`), which stays as it is.
@@ -5996,7 +6003,15 @@ const FunctionLowerer = struct {
                     if (self.types.alias_refs.get(id)) |aliased|
                         break :blk lowerAstTypeWithEnv(self.allocator, aliased, self.types, self.symbols) catch .unknown;
                 }
-                break :blk lowerNamedType(name);
+                // A name that is no type but a value (a local, a param, a capture, a global) is
+                // the value's type, as an expression is (`core::type_name(x)`, `type_id(x)`).
+                // A type of the name wins over a variable (`fn(Node: i32)`, `sizeof(Node)`).
+                const named = lowerNamedType(name);
+                if (named == .struct_type and !self.namesType(name)) {
+                    const known = self.exprType(expr);
+                    if (known != .unknown) break :blk known;
+                }
+                break :blk named;
             },
             // `ns::alias` likewise (sema recorded which symbol the access names).
             .scope_access => blk: {
