@@ -28,6 +28,14 @@ the major version is `0`, any minor bump may break source compatibility.
   other expression; a type of that name still wins.
 - `any_name(...)`, `core::any(...)` or `core::type_info(...)` used only inside a format's braces
   was "unknown function": the declarations they need were left out.
+- `core::require(T, Numeric)` (or `Int`, `Signed`, any built-in constraint) inside a `constraint`
+  was "unknown name `Numeric`". It is checked by the type's kind now, and a type that fails it
+  is reported with both constraints.
+- `#extern("kernel32")` with only the library is an error that names the symbol to add; it was
+  an internal error during the IR passes.
+- A `#compiler` hook that does not return text (`-> AstBlock`), or that stops on the way, says
+  so; the build failed with no reason. An `#insert #run gen()` whose generator does not compile
+  shows the generator's errors, not only "did not evaluate to an `AstBlock`".
 
 ## 0.10.0 — 2026-10-18
 

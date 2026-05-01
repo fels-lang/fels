@@ -85,6 +85,12 @@ These compile without a message and give a wrong result.
   once, not per instantiation. So a format with values cannot be in a generic function either
   (its code is such a lambda); that is refused with the reason.
 
+- **`any_elem` and `any_deref` know only the slice and pointer types of struct fields**: the
+  navigators are written from the program's struct declarations, before types are known, so
+  `any_elem(core::any(xs[0..3]), 1)` and `any_deref(core::any(&p))` give `null`. Through a field
+  (`any_field_at` and then `any_elem`) they work. The fix is an `Any` that carries its type's
+  `TypeInfo` (docs/12, "`v.info()`"). Verified 2026-10-18.
+
 - A zone handle is typed `Zone`, not `*Arena`, so a function that takes an `*Arena`
   (`strings::builder(&temp)`) refuses it; only methods reach the zone's arena. And no `std.io`
   function takes a `borrow` parameter, so zone memory cannot be printed directly.
