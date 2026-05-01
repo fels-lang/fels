@@ -123,6 +123,32 @@ test "named constraint: `core::require(T, Other)` composition accepts when all h
     try fels.ir_mod.validateModule(module);
 }
 
+test "named constraint: `core::require` takes a built-in constraint too" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // `Numeric`, `Int`, `Signed`, … are no declarations, so `require(T, Numeric)` was
+    // "unknown name `Numeric`"; they are checked by the type's kind, as `$T: Numeric` is.
+    const ok =
+        \\Num  :: constraint($T) { core::require(T, Numeric); }
+        \\SInt :: constraint($T) { core::require(T, Int); core::require(T, Signed); }
+        \\dbl :: fn($T: Num, x: T) -> T { return x + x; }
+        \\neg :: fn($T: SInt, x: T) -> T { return 0 - x; }
+        \\go :: fn() -> i32 { a: i64 = 2; return dbl(20) + (neg(a) as i32); }
+    ;
+    var fe = try fels.compile(arena.allocator(), "require_builtin.fels", ok);
+    defer fe.deinit(arena.allocator());
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
+
+    const bad =
+        \\SInt :: constraint($T) { core::require(T, Int); core::require(T, Signed); }
+        \\neg :: fn($T: SInt, x: T) -> T { return 0 - x; }
+        \\go :: fn() -> i32 { v: u8 = 3; return neg(v) as i32; }
+    ;
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "require_builtin_bad.fels", bad));
+}
+
 test "named constraint: `require` propagates the required constraint's rejection" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -2851,6 +2851,12 @@ const Checker = struct {
                 else => continue,
             };
             const req_ty = self.resolveExprAsType(callArgExpr(call.args[0])) orelse ty;
+            // A built-in constraint (`core::require(T, Numeric)`) is checked by the type's kind.
+            switch (checkBuiltinConstraint(self, other, req_ty)) {
+                .ok => continue,
+                .fail => |desc| return std.fmt.allocPrint(self.allocator, "`{s}` requires `{s}`: expected {s}", .{ name, other, desc }) catch "",
+                .not_builtin => {},
+            }
             if (self.runConstraintPredicateRec(other, req_ty, visiting)) |m| {
                 if (m.len > 0) return m;
             }
@@ -3947,8 +3953,9 @@ const Checker = struct {
                 // not yet typed, and skip any the callee consumed as a *type*
                 // argument (e.g. `arena.new(List(i32))`, `truncate_to(u32, x)`),
                 // which `inferTypeArg` records — re-inferring those as values
-                // would wrongly treat a type name as a function call.
-                for (call.args) |arg| switch (arg) {
+                // would wrongly treat a type name as a function call. `core::require(T,
+                // Numeric)` names a type and a constraint, no values.
+                if (requireCall(.{ .expr = expr }) == null) for (call.args) |arg| switch (arg) {
                     .positional => |value| if (!self.env.expr_types.contains(value.id)) {
                         _ = try self.inferExpr(value);
                     },

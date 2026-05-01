@@ -4218,7 +4218,9 @@ const FunctionLowerer = struct {
                 const is_type_arg_builtin = std.mem.eql(u8, callee_name, "sizeof") or
                     std.mem.eql(u8, callee_name, "type_info") or
                     std.mem.eql(u8, callee_name, "type_name") or
-                    std.mem.eql(u8, callee_name, "typeid_of");
+                    std.mem.eql(u8, callee_name, "typeid_of") or
+                    // `require(T, Numeric)`: a type and a constraint, which no value names.
+                    (self.in_where and std.mem.eql(u8, callee_name, "require"));
                 // These take a TYPE as their first argument (the rest are
                 // values). The type is not lowered as a value — it would crash
                 // on a type parameter `T` — but a placeholder keeps the value
