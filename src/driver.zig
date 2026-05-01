@@ -351,8 +351,8 @@ pub fn emitLlvmFromFrontend(
 
     if (opts.progress) |p| p(opts.progress_ctx, .passes);
     const t_passes = nowNs();
-    ir.runDefaultPasses(ir_allocator, &module) catch {
-        std.debug.print("{s}: internal compiler error during IR optimisation passes\n", .{opts.file_name});
+    ir.runDefaultPasses(ir_allocator, &module) catch |err| {
+        std.debug.print("{s}: internal compiler error during IR optimisation passes ({s})\n", .{ opts.file_name, @errorName(err) });
         return error.LoweringFailed;
     };
     ir.validateModule(module) catch {
