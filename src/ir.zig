@@ -7963,6 +7963,16 @@ pub fn runCompilerHooks(allocator: std.mem.Allocator, front_end: pipeline.FrontE
             // Only run hooks for the phase being processed: bare `#compiler` in
             // the generate phase, `#compiler(final)` in the final phase.
             if (compilerHookIsFinal(f.attrs) != final_phase) continue;
+            // The generated code comes back as text; any other result stopped the build with
+            // no reason given.
+            const returns_text = switch (f.return_ty) {
+                .slice => |s| s.inner.* == .named and std.mem.eql(u8, s.inner.named.name, "u8"),
+                else => false,
+            };
+            if (!returns_text) {
+                std.debug.print("{s}: error: the `#compiler` hook `{s}` must return the code it generates as text, `-> []const u8` (an `AstBlock` goes into a function body with `#insert #run`)\n", .{ f.file_name, f.name });
+                return error.SemanticFailed;
+            }
             // Build a synthetic `f()` call and evaluate it to a string.
             const callee = allocator.create(ast.Expr) catch return error.OutOfMemory;
             callee.* = .{ .id = id, .kind = .{ .ident = f.name }, .span = f.span };
@@ -7971,7 +7981,11 @@ pub fn runCompilerHooks(allocator: std.mem.Allocator, front_end: pipeline.FrontE
             cvm.current_file = f.file_name;
             const src = cvm.evalToString(call_expr, allocator) orelse {
                 // A `compiler_error("...")` halt prints the hook's diagnostic.
-                if (cvm.hook_error) |m| std.debug.print("error: {s}\n", .{m});
+                if (cvm.hook_error) |m| {
+                    std.debug.print("error: {s}\n", .{m});
+                } else {
+                    std.debug.print("{s}: error: the `#compiler` hook `{s}` stopped before it returned its code: the compile-time VM could not run it to the end\n", .{ f.file_name, f.name });
+                }
                 return error.SemanticFailed;
             };
             try out.appendSlice(allocator, src);
