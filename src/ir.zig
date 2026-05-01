@@ -8326,6 +8326,27 @@ const InsertExpander = struct {
         return .{ .statements = try out.toOwnedSlice(self.allocator), .span = block.span };
     }
 
+    /// Print the first pass's errors inside the function a computed `#insert` calls (`gen` of
+    /// `#insert #run gen(…)`); whether there were any.
+    fn showGeneratorErrors(self: *InsertExpander, operand: ast.Expr) bool {
+        if (operand.kind != .call or operand.kind.call.callee.kind != .ident) return false;
+        const name = operand.kind.call.callee.kind.ident;
+        const fe = self.cvm.front_end;
+        var shown = false;
+        for (fe.module.items) |item| switch (item) {
+            .function => |f| if (std.mem.eql(u8, f.name, name)) {
+                for (fe.types.diagnostics.items) |d| {
+                    if (d.kind != .err or !std.mem.eql(u8, d.file, f.file_name)) continue;
+                    if (d.span.start < f.span.start or d.span.end > f.span.end) continue;
+                    std.debug.print("{s}: error: {s}\n", .{ d.file, d.message });
+                    shown = true;
+                }
+            },
+            else => {},
+        };
+        return shown;
+    }
+
     fn rewriteStmt(self: *InsertExpander, stmt: ast.Stmt) InsertExpandError!ast.Stmt {
         switch (stmt) {
             .insert_stmt => |ins| {
@@ -8349,7 +8370,11 @@ const InsertExpander = struct {
                 // `#run gen()` (or any other computed operand): evaluate and reify.
                 const inner = if (ins.operand.kind == .run_expr) ins.operand.kind.run_expr.* else ins.operand;
                 const block = self.cvm.evalToAstBlock(inner, self.allocator, ins.span, &self.next_id) orelse {
-                    std.debug.print("error: `#insert` operand did not evaluate to an `AstBlock` at compile time\n", .{});
+                    // The generator may not compile: the first pass checked it and went on, so
+                    // its errors are the reason. Only those inside it: the first pass also
+                    // misses the names the insert itself is to declare.
+                    const shown = self.showGeneratorErrors(inner);
+                    std.debug.print("error: `#insert` operand did not evaluate to an `AstBlock` at compile time{s}\n", .{if (shown) " (see the errors above)" else ""});
                     return error.SemanticFailed;
                 };
                 return .{ .insert_stmt = .{
