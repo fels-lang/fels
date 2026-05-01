@@ -73,6 +73,19 @@ test "diagnostics: a generic struct's instance is named as it is written" {
     try std.testing.expect(std.mem.indexOf(u8, msg, "found `Pair(i32)`") != null);
 }
 
+test "diagnostics: `#extern` with only the library names the symbol it needs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // It left a function with neither a body nor a symbol, an internal error later.
+    const src =
+        \\#extern("kernel32")
+        \\MulDiv :: fn(a: i32, b: i32, c: i32) -> i32;
+        \\main :: fn() -> i32 { return MulDiv(6, 7, 1); }
+    ;
+    const msg = (try firstError(arena.allocator(), src)) orelse return error.NoError;
+    try std.testing.expect(std.mem.indexOf(u8, msg, "`#extern(\"kernel32\", \"MulDiv\")`") != null);
+}
+
 test "diagnostics: returning a non-capturing function value is allowed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

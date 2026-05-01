@@ -2497,6 +2497,15 @@ const Checker = struct {
                     self.current_type_params = decl.type_params;
                     defer self.current_type_params = &.{};
 
+                    // `#extern("kernel32")` alone left a function with neither a body nor a
+                    // symbol, which failed later as an internal error.
+                    for (decl.attrs) |attr| {
+                        if (!std.mem.eql(u8, attr.name, "extern") and !std.mem.eql(u8, attr.name, "foreign")) continue;
+                        if (attr.args.len >= 2) continue;
+                        self.emitError(decl.span, "`#{s}` names the library and the symbol: `#{s}(\"kernel32\", \"{s}\")`", .{ attr.name, attr.name, decl.name });
+                        return error.SemanticFailed;
+                    }
+
                     var params = std.ArrayList(ParamSig).empty;
                     errdefer params.deinit(self.allocator);
                     for (decl.params) |param| {
