@@ -1004,12 +1004,14 @@ put_bare :: fn(f: *Formatter, d: *const u8, id: usize, ti: TypeInfo, sp: Spec, n
         }
         .enum_ |en| => {
             disc := unsafe *(d as *const i32);
-            if disc >= 0 && (disc as usize) < en.variants.len {
-                put_padded(f, en.variants[disc as usize].name, sp, false);
-            } else {
-                f.text(short_name(en.name));
-                f.text("(?)");
+            for k in 0..en.variants.len {
+                if en.variants[k].value == disc as i64 {
+                    put_padded(f, en.variants[k].name, sp, false);
+                    return;
+                }
             }
+            f.text(short_name(en.name));
+            f.text("(?)");
         }
         .void_ => f.text("void");
         .other |name| => f.text(name);

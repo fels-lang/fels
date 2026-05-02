@@ -148,7 +148,11 @@ write_val :: fn(v: Any, ti: TypeInfo, w: *StringBuilder) {
             unsafe {
                 disc: i32 = *(v.data as *const i32);
                 append_byte(w, 34);
-                if (disc as usize) < en.variants.len { append(w, en.variants[disc as usize].name); }
+                i: usize = 0;
+                while i < en.variants.len {
+                    if en.variants[i].value == disc as i64 { append(w, en.variants[i].name); }
+                    i = i + 1;
+                }
                 append_byte(w, 34);
             }
         }
@@ -448,7 +452,7 @@ parse_value :: fn(p: *Parser, target: Any, ti: TypeInfo, a: *Arena) {
             disc: i32 = 0;
             i: usize = 0;
             while i < en.variants.len {
-                if name_eq(en.variants[i].name, key) { disc = i as i32; }
+                if name_eq(en.variants[i].name, key) { disc = en.variants[i].value as i32; }
                 i = i + 1;
             }
             unsafe { *(target.data as *i32) = disc; }
