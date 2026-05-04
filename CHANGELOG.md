@@ -33,6 +33,9 @@ the major version is `0`, any minor bump may break source compatibility.
   is reported with both constraints.
 - `#extern("kernel32")` with only the library is an error that names the symbol to add; it was
   an internal error during the IR passes.
+- `core::type_info(E)` of an error set listed every error of the program, std's too, with the
+  variant's position as the error's number. It lists the set's own errors now, and every
+  `TiVariant` has a `value`: an enum variant's tag, an error's number.
 - A `#compiler` hook that does not return text (`-> AstBlock`), or that stops on the way, says
   so; the build failed with no reason. An `#insert #run gen()` whose generator does not compile
   shows the generator's errors, not only "did not evaluate to an `AstBlock`".
