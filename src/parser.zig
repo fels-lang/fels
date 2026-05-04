@@ -2322,7 +2322,12 @@ pub const Parser = struct {
                     const block = try self.parseBlock();
                     return self.expr(.{ .quote = block }, Span.new(tok.start, block.span.end));
                 }
-                try self.errorAt(tok, "expected 'run' or 'quote' after # in expression position");
+                // #insert m(args) — an expression macro's expansion.
+                if (self.matchIdent("insert")) {
+                    const inner = try self.parseExpr(18);
+                    return self.expr(.{ .insert_expr = try self.allocExpr(inner) }, Span.new(tok.start, inner.span.end));
+                }
+                try self.errorAt(tok, "expected `run`, `quote`, `parse` or `insert` after `#` in an expression");
                 return error.ParseFailed;
             },
             // $name / $(expr) — a splice hole inside a #quote (macro template).

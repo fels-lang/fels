@@ -131,6 +131,18 @@ test "metaprogram: macro with wrong argument count is rejected" {
     try std.testing.expectError(error.SemanticFailed, fels.compile(a, "mac2.fels", src));
 }
 
+test "metaprogram: #insert in an expression takes an expression macro" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // A macro that makes statements, or no macro at all, cannot stand for a value.
+    const bad = [_][]const u8{
+        "bump :: macro(x: Expr) { return #quote { $x = $x + 1; }; }\nrun :: fn() -> i32 { n := 2; r := #insert bump(n); return r; }",
+        "run :: fn() -> i32 { n := 2; r := #insert n; return r; }",
+    };
+    for (bad) |src| try std.testing.expectError(error.SemanticFailed, fels.compile(a, "mac_expr_bad.fels", src));
+}
+
 test "metaprogram: stray $ splice outside a macro is rejected" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

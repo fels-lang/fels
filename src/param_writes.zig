@@ -141,7 +141,7 @@ const Walker = struct {
                 if (s.end) |x| try self.walkExpr(x.*);
             },
             .as_cast => |c| try self.walkExpr(c.value.*),
-            .force_unwrap, .unsafe_expr, .run_expr, .quote_expr, .splice, .parse_expr => |inner| try self.walkExpr(inner.*),
+            .force_unwrap, .unsafe_expr, .run_expr, .quote_expr, .splice, .parse_expr, .insert_expr => |inner| try self.walkExpr(inner.*),
             .nil_coalesce => |nc| {
                 try self.walkExpr(nc.value.*);
                 try self.walkExpr(nc.default.*);

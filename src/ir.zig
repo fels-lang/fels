@@ -3581,7 +3581,7 @@ const FunctionLowerer = struct {
             .quote => |block| try self.materializeBlock(block),
             // `#parse` is resolved by the two-pass pipeline (string → AST), never
             // value-lowered; `$`-splices are macro internals.
-            .splice, .parse_expr => return error.LoweringFailed,
+            .splice, .parse_expr, .insert_expr => return error.LoweringFailed,
             .match_expr => try self.lowerMatchExpr(expr, null),
             .if_expr => try self.lowerIfExpr(expr, null),
             .ident => |name| blk: {

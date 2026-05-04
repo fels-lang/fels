@@ -3583,6 +3583,11 @@ const Checker = struct {
             // `#parse(expr)` yields code (an `AstBlock`); only useful as an
             // `#insert` operand. The inner expression must produce a string,
             // which is evaluated and parsed by the two-pass pipeline.
+            // The macroexpand pass replaced every `#insert macro(…)` in an expression.
+            .insert_expr => |inner| {
+                self.emitError(inner.span, "`#insert` in an expression takes a macro whose template is an expression, `return #quote(…);`", .{});
+                return error.SemanticFailed;
+            },
             .parse_expr => |inner| blk: {
                 _ = try self.inferExpr(inner.*);
                 const id = self.resolveSymbol("AstBlock") orelse {

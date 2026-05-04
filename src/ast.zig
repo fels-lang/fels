@@ -652,6 +652,9 @@ pub const ExprKind = union(enum) {
     /// string as code, and (as an `#insert` operand) splice it. The string
     /// escape hatch out of typed quotations.
     parse_expr: *const Expr,
+    /// `#insert m(args)` in an expression: the expression a macro's `return #quote(expr);`
+    /// makes of the arguments. The macroexpand pass replaces it; one left over is an error.
+    insert_expr: *const Expr,
     compound_literal: []const Expr,
     /// `.{ .x = 1, .y = 2 }` — a struct literal with named fields. Resolved against
     /// the expected struct type (reordered to declaration order, omitted fields

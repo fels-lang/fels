@@ -1336,7 +1336,7 @@ const Walker = struct {
             .type_ref => |tr| w.walkTypeRef(tr),
             .int, .float, .string, .bool, .null => {},
             .quote, .quote_expr, .splice => {},
-            .parse_expr => |inner| w.walkExpr(inner.*, .read, null),
+            .parse_expr, .insert_expr => |inner| w.walkExpr(inner.*, .read, null),
             .compound_literal => |vals| {
                 const s = w.literalType(e, expected);
                 for (vals, 0..) |v, i| w.walkExpr(v, .read, if (s) |sid| w.cx.fieldTypeAt(sid, i) else null);
