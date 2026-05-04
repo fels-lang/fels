@@ -49,24 +49,44 @@ const Expander = struct {
             .function => |f| {
                 if (f.is_macro) continue; // dropped — never lowered
                 var nf = f;
-                if (f.body) |body| nf.body = try self.expandBlock(body);
+                if (f.body) |body| nf.body = try self.expandBody(body);
                 try out.append(self.arena, .{ .function = nf });
             },
             .interface_impl => |impl| {
                 var methods: std.ArrayList(ast.FunctionDecl) = .empty;
                 for (impl.methods) |m| {
                     var nm = m;
-                    if (m.body) |body| nm.body = try self.expandBlock(body);
+                    if (m.body) |body| nm.body = try self.expandBody(body);
                     try methods.append(self.arena, nm);
                 }
                 var ni = impl;
                 ni.methods = try methods.toOwnedSlice(self.arena);
                 try out.append(self.arena, .{ .interface_impl = ni });
             },
+            .const_decl => |d| {
+                var nd = d;
+                if (hasInsertExpr(d.value)) {
+                    var env = Env.init(self.arena);
+                    var hyg = Hyg.init(self.arena);
+                    nd.value = try self.substExpr(d.value, &env, &hyg);
+                }
+                try out.append(self.arena, .{ .const_decl = nd });
+            },
             else => try out.append(self.arena, item),
         };
 
         return .{ .file_name = module.file_name, .items = try out.toOwnedSlice(self.arena) };
+    }
+
+    /// A function body with its macros expanded: the `#insert` statements, then the
+    /// `#insert` expressions, if it has any (a substitution with nothing bound rebuilds the
+    /// body and expands each one).
+    fn expandBody(self: *Expander, body: ast.Block) ExpandError!ast.Block {
+        const stmts = try self.expandBlock(body);
+        if (!hasInsertExpr(stmts)) return stmts;
+        var env = Env.init(self.arena);
+        var hyg = Hyg.init(self.arena);
+        return self.substBlock(stmts, &env, &hyg);
     }
 
     /// Walk a block, rewriting any `#insert <macrocall>` (and recursing into
@@ -184,6 +204,13 @@ const Expander = struct {
             try env.put(param.name, arg_expr);
         }
 
+        // An expression macro inserted as a statement: its expression is the statement.
+        if (macroExprTemplate(macro)) |e| {
+            var no_hyg = Hyg.init(self.arena);
+            const stmts = try self.arena.alloc(ast.Stmt, 1);
+            stmts[0] = .{ .expr = try self.substExpr(e, &env, &no_hyg) };
+            return .{ .statements = stmts, .span = e.span };
+        }
         const template = try macroTemplate(macro);
 
         // Hygiene: collect the template's own locals and assign fresh names.
@@ -191,6 +218,41 @@ const Expander = struct {
         try self.collectIntroduced(template, &hyg);
 
         return self.substBlock(template, &env, &hyg);
+    }
+
+    /// `#insert m(args)` in an expression: the expression `m`'s `return #quote(expr);` makes of
+    /// the arguments.
+    fn expandMacroExpr(self: *Expander, macro: ast.FunctionDecl, call: ast.CallExpr) ExpandError!ast.Expr {
+        if (call.args.len != macro.params.len) {
+            return fail("macro `{s}` expects {d} argument(s), but {d} were provided", .{ macro.name, macro.params.len, call.args.len });
+        }
+        var env = Env.init(self.arena);
+        for (macro.params, call.args) |param, arg| {
+            const arg_expr = switch (arg) {
+                .positional => |e| e,
+                .named => |n| n.value,
+            };
+            try checkMacroArgType(macro.name, param, arg_expr);
+            try env.put(param.name, arg_expr);
+        }
+        const template = macroExprTemplate(macro) orelse
+            return fail("macro `{s}` makes statements (`return #quote {{ … }};`): `#insert` it as a statement, not in an expression", .{macro.name});
+        var hyg = Hyg.init(self.arena);
+        return self.substExpr(template, &env, &hyg);
+    }
+
+    /// The expression of a macro whose body is `return #quote(expr);`, or null.
+    fn macroExprTemplate(macro: ast.FunctionDecl) ?ast.Expr {
+        const body = macro.body orelse return null;
+        for (body.statements) |stmt| switch (stmt) {
+            .return_stmt => |ret| {
+                const value = ret.value orelse continue;
+                if (value.kind == .quote_expr) return value.kind.quote_expr.*;
+                return null;
+            },
+            else => {},
+        };
+        return null;
     }
 
     /// Enforce typed macro parameters. `AstBlock`/`Block` require a block quote
@@ -218,11 +280,11 @@ const Expander = struct {
             .return_stmt => |ret| {
                 const value = ret.value orelse continue;
                 if (value.kind == .quote) return value.kind.quote;
-                return fail("macro `{s}` must `return` a `#quote {{ ... }}` block", .{macro.name});
+                return fail("macro `{s}` must `return` a `#quote {{ ... }}` block or a `#quote(…)` expression", .{macro.name});
             },
             else => {},
         };
-        return fail("macro `{s}` must contain `return #quote {{ ... }};`", .{macro.name});
+        return fail("macro `{s}` must contain `return #quote {{ ... }};` or `return #quote(…);`", .{macro.name});
     }
 
     fn collectIntroduced(self: *Expander, block: ast.Block, hyg: *Hyg) ExpandError!void {
@@ -538,6 +600,48 @@ const Expander = struct {
                 .handler = try self.substBlock(c.handler, env, hyg),
             } }),
             .parse_expr => |inner| return self.rebuild(expr, .{ .parse_expr = try self.substPtr(inner, env, hyg) }),
+            .insert_expr => |inner| {
+                const operand = try self.substExpr(inner.*, env, hyg);
+                if (operand.kind == .call and operand.kind.call.callee.kind == .ident) {
+                    if (self.macros.get(operand.kind.call.callee.kind.ident)) |macro| {
+                        const made = try self.expandMacroExpr(macro, operand.kind.call);
+                        // Its own `#insert`s (a macro that uses one) expand too.
+                        if (!hasInsertExpr(made)) return made;
+                        var inner_env = Env.init(self.arena);
+                        var inner_hyg = Hyg.init(self.arena);
+                        return self.substExpr(made, &inner_env, &inner_hyg);
+                    }
+                }
+                return self.rebuild(expr, .{ .insert_expr = try self.dup(operand) }); // sema rejects it
+            },
+            .match_expr => |m| {
+                var arms: std.ArrayList(ast.MatchExprArm) = .empty;
+                for (m.arms) |arm| {
+                    var na = arm;
+                    if (arm.binding) |b| na.binding = self.rename(b, hyg);
+                    if (arm.guard) |g| na.guard = try self.substExpr(g, env, hyg);
+                    na.value = try self.substExpr(arm.value, env, hyg);
+                    try arms.append(self.arena, na);
+                }
+                const nm = try self.arena.create(ast.MatchExpr);
+                nm.* = .{ .subject = try self.substPtr(m.subject, env, hyg), .arms = try arms.toOwnedSlice(self.arena), .span = m.span };
+                return self.rebuild(expr, .{ .match_expr = nm });
+            },
+            .if_expr => |ie| {
+                const ni = try self.arena.create(ast.IfExpr);
+                ni.* = .{
+                    .cond = try self.substExpr(ie.cond, env, hyg),
+                    .then_value = try self.substExpr(ie.then_value, env, hyg),
+                    .else_value = try self.substExpr(ie.else_value, env, hyg),
+                    .span = ie.span,
+                };
+                return self.rebuild(expr, .{ .if_expr = ni });
+            },
+            .struct_literal => |fields| {
+                var nf: std.ArrayList(ast.FieldInit) = .empty;
+                for (fields) |f| try nf.append(self.arena, .{ .name = f.name, .value = try self.substExpr(f.value, env, hyg), .span = f.span });
+                return self.rebuild(expr, .{ .struct_literal = try nf.toOwnedSlice(self.arena) });
+            },
             // Leaves (literals, type refs) and nested `#quote`s (kept as data)
             // substitute to themselves.
             else => return expr,
@@ -581,6 +685,41 @@ const Expander = struct {
         return hyg.get(name) orelse name;
     }
 };
+
+/// Whether `value` (any AST node) holds an `#insert` expression, at any depth. Generic over the
+/// AST's types, so a new kind of node is searched without a change here.
+pub fn hasInsertExpr(value: anytype) bool {
+    const T = @TypeOf(value);
+    if (T == ast.Expr) {
+        if (value.kind == .insert_expr) return true;
+        return hasInsertExpr(value.kind);
+    }
+    switch (@typeInfo(T)) {
+        .@"struct" => |info| {
+            inline for (info.fields) |field| {
+                if (hasInsertExpr(@field(value, field.name))) return true;
+            }
+            return false;
+        },
+        .@"union" => |info| {
+            if (info.tag_type == null) return false;
+            switch (value) {
+                inline else => |payload| return hasInsertExpr(payload),
+            }
+        },
+        .pointer => |info| switch (info.size) {
+            .one => return hasInsertExpr(value.*),
+            .slice => {
+                if (info.child == u8) return false;
+                for (value) |element| if (hasInsertExpr(element)) return true;
+                return false;
+            },
+            else => return false,
+        },
+        .optional => return if (value) |inner| hasInsertExpr(inner) else false,
+        else => return false,
+    }
+}
 
 /// A macro argument used in type position (`x: $t = …`) — convert the argument
 /// expr to a type. Bare type names parse as `.type_ref`; identifiers to `.named`;

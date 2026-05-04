@@ -1756,6 +1756,31 @@ test "exe: macro local is hygienic (no capture of caller's name)" {
     try std.testing.expectEqual(@as(u32, 50), code);
 }
 
+test "exe: an expression macro is inserted where a value goes" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `return #quote(expr);` makes an expression macro: `#insert sq(n)` in a local, an
+    // argument, a constant, a lambda and another macro's template, and as a statement.
+    const code = try compileAndRun(arena.allocator(),
+        \\sq :: macro(x: Expr) { return #quote(($x) * ($x)); }
+        \\max2 :: macro(a: Expr, b: Expr) { return #quote(if $a > $b { $a } else { $b }); }
+        \\quad :: macro(x: Expr) { return #quote(#insert sq(#insert sq($x))); }
+        \\N :: #insert sq(3);
+        \\call :: fn(f: fn() -> i32) -> i32 { return f(); }
+        \\main :: fn() -> i32 {
+        \\    n := 2;
+        \\    a := #insert sq(n + 1);
+        \\    b := #insert max2(#insert sq(n), 3);
+        \\    g := fn() -> i32 { return #insert quad(2); };
+        \\    #insert sq(n);
+        \\    return a + b * 10 + call(g) + N * 100; // 9 + 40 + 16 + 900
+        \\}
+    , "exe_expr_macro");
+    try std.testing.expectEqual(@as(u32, 965 % 256), code);
+}
+
 test "exe: #for unrolls a comptime loop, baking the index" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

@@ -14,6 +14,7 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const parser = @import("parser.zig");
+const macroexpand = @import("macroexpand.zig");
 const diag_mod = @import("diagnostic.zig");
 const style = @import("style.zig");
 const Span = @import("lexer/span.zig").Span;
@@ -394,6 +395,11 @@ const Rewriter = struct {
                     },
                 };
                 next_id = parsed.next_id;
+                // The macros were expanded, and dropped, before the formats are read.
+                if (macroexpand.hasInsertExpr(parsed.expr)) {
+                    r.report("a macro cannot be expanded in a format's braces: put its value in a local first (`v := #insert m(x);`, then `{v}`)", Span.new(ph.start, ph.end));
+                    return null;
+                }
                 for (parsed.lifted) |l| try r.added.append(r.a, .{ .function = l });
                 try stmts.append(r.a, .{ .expr = try r.call("value", &.{ parsed.expr, try r.string(ph.spec, span) }, span) });
             },
