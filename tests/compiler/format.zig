@@ -137,6 +137,28 @@ test "format: an error prints its name" {
     try std.testing.expectEqualStrings("failed: too_big\n", out);
 }
 
+test "format: an error set's TypeInfo lists its own errors, each with its number" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // It listed every error of the program, std's too, with the variant's index as the number.
+    const out = try printed(arena.allocator(),
+        \\#import std.io;
+        \\E :: errors { not_found, too_big }
+        \\Mode :: enum { fast, slow, off }
+        \\find :: fn(n: i32) -> i32 ! E { if n < 0 { fail .not_found; } return n; }
+        \\main :: fn() -> i32 {
+        \\    match core::type_info(E) {
+        \\        .enum_ |en| => { io::println("{en.name} {en.variants.len} {en.variants[0].name} {en.variants[1].name}") catch x {}; }
+        \\        else => {}
+        \\    }
+        \\    match core::type_info(Mode) { .enum_ |en| => { io::println("{en.variants[2].value}") catch x {}; } else => {} }
+        \\    r := find(-1) catch e { io::println("{e}") catch x {}; yield 0; };
+        \\    return r;
+        \\}
+    , "fmt_error_set_info");
+    try std.testing.expectEqualStrings("E 2 not_found too_big\n2\nnot_found\n", out);
+}
+
 test "format: braces of the text, text passed on as it is, and a Format of the program's own" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
