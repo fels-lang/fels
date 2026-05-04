@@ -6,13 +6,16 @@ Reflection in Fels works at comptime and at runtime, and it threads through gene
 At comptime, `core::type_info(T)` is a matchable value, so you can `match` on a type's structure:
 its struct fields, enum variants or scalar kind. Constraints build on it. There are built-in
 predicates (`$T: Numeric`/`Int`/`Float`/`Struct`/`Enum`/`Ptr`/…), named
-`constraint Name($T) { … }` declarations, and `where { … }` blocks that inspect
+`Name :: constraint($T) { … }` declarations, and `where { … }` blocks that inspect
 `core::type_info(T)` and can `core::reject("msg")`. The predicate runs during generic resolution,
 so a bad type fails at the call site before the body is checked. A `where` can also compute an
 output type param (`-> $Acc`).
 
 At runtime, `core::type_id(T)` is a stable type identity. It is a content hash and is comparable
-across compilation units. `core::type_name(T)` and `core::sizeof(T)` fold to real runtime values.
+across compilation units. `core::type_name(T)` and `core::sizeof(T)` fold to real runtime values;
+`type_name` spells the type as it is written (`[]i32`, `*Point`, `?i32`, `[4]u8`, `Pair(i32)`).
+Each of these takes a value too: `core::type_name(x)` is the name of `x`'s type. A type of the
+same name wins over a variable.
 `Any` is a type-erased value: `any(x)` wraps a value, and `any_as(v, T) -> ?T` is a safe
 downcast. The metadata travels inline with the value, baked as a tree-shaken string literal, so
 reflection you don't use costs nothing. With the free functions `any_field_at`, `any_elem` and
@@ -63,10 +66,26 @@ module uses reflection.
 
 > **Implemented today:** `core::type_info(T)` returns such an enum. Its variants are
 > `void_`, `boolean`, `int`, `float`, `pointer`, `slice`, `array`, `optional`, `struct_`,
-> `union_`, `enum_` and `other` (the name of any other type), with `TiInt`/`TiFloat`/…
-> payloads. The `fn_`, `iface` and `distinct_` variants below are still design. (`void`,
-> `bool` and `distinct` are keywords, so those variants are spelled `void_`, `boolean` and
-> `distinct_`.)
+> `union_`, `enum_` and `other` (the name of any other type). The payloads are, as built:
+>
+> ```fels
+> TiInt     :: struct { bits: u16, signed: bool }
+> TiFloat   :: struct { bits: u16 }
+> TiPtr     :: struct { elem: *TypeInfo, is_const: bool }
+> TiArray   :: struct { len: usize, elem: *TypeInfo }
+> TiField   :: struct { name: []const u8, ty: *TypeInfo, offset: usize, bit: u32, bits: u16 }
+> TiStruct  :: struct { name: []const u8, fields: []TiField, id: usize, size: usize, bit_packed: bool }
+> TiVariant :: struct { name: []const u8, has_payload: bool, value: i64 }
+> TiEnum    :: struct { name: []const u8, variants: []TiVariant }
+> ```
+>
+> A field's `offset` is its byte offset; in a `#packed` struct `bit` and `bits` place an integer
+> field. A union is `union_` with a `TiStruct` whose fields all start at 0. A variant's `value`
+> is its tag. An error set is an `enum_` of its own errors, each `value` the error's number, and
+> the type `error` lists every error of the program. Function, interface and distinct types are
+> `other` today: the `fn_`, `iface` and `distinct_` variants below, a variant's payload type, a
+> field's `is_const` and a struct's `align` are still design. (`void`, `bool` and `distinct` are
+> keywords, so those variants are spelled `void_`, `boolean` and `distinct_`.)
 
 ```fels
 TypeInfo :: enum {
@@ -118,7 +137,7 @@ describe :: fn(info: TypeInfo) -> []const u8 {
 > instantiation. Identity tests are a single `usize` compare. When a program uses `Any`, the
 > compiler also generates `type_name_of(id)` and `type_size_of(id)`, which give a type's name and
 > size from a bare id. They know the scalar types, the program's structs and their field types,
-> and they return `"?"` or 0 for any other id. (A struct with an array field is left out.) The
+> and they return `"?"` or 0 for any other id. The
 > full lookup `info_of(id)`, which would return a `TypeInfo`, is still design and needs §4.
 > `core::typeid_of(T)` is an older spelling of the same builtin, and these docs use
 > `core::type_id(T)`.
@@ -156,7 +175,9 @@ and the data's type metadata.
 > an `Any` parameter is wrapped automatically. Navigation works through free functions:
 > `any_field_at(v, i)`, `any_elem(v, i)` and `any_deref(v)` return a `?Any`, and
 > `any_field_count(v)` and `any_field_name(v, i)` give a struct's field count and names. Fields
-> are reached by index, not by name. (The method spellings below, `v.info()`, `v.field("name")`,
+> are reached by index, not by name. `any_elem` and `any_deref` know the slice and pointer
+> types of the program's struct fields; a slice or pointer wrapped directly (`any(xs[0..3])`)
+> gives `null` (KNOWN_ISSUES). (The method spellings below, `v.info()`, `v.field("name")`,
 > `v.elem(i)`, `v.deref()` and `v.as(T)`, are design only. `as` is a keyword, so the downcast is
 > the function `any_as(v, T)`.)
 
@@ -281,7 +302,7 @@ composable case, and a **`where` block** as the escape hatch that can rewrite an
 ### 6.1 Named constraints
 
 > **Implemented today:** both **built-in** constraints and **user-defined
-> `constraint Name($T) { … }` declarations**. The built-ins are `$T: Numeric`, `Int`, `Float`,
+> `Name :: constraint($T) { … }` declarations**. The built-ins are `$T: Numeric`, `Int`, `Float`,
 > `Signed`, `Unsigned`, `Bool`, `Struct`, `Enum` and `Ptr`, and they are checked by type kind.
 > A non-satisfying type is rejected with a clear message at the `$T: Name` site
 > (``type `P` does not satisfy `MyNum`: expected a numeric type``). A user `constraint` is a
@@ -289,8 +310,8 @@ composable case, and a **`where` block** as the escape hatch that can rewrite an
 > `core::reject`. It runs on the resolution VM at each `$T: Name` use, via the same two-pass
 > rail. Built-ins take precedence over a same-named user constraint.
 > **`core::require(T, Other)` composition works**: a top-level `core::require` guard
-> recursively enforces another constraint (with cycle detection) and propagates its rejection
-> message. The constraint's own checks run after the guards. (Generic inference also binds `$T`
+> recursively enforces another constraint, a user one or a built-in one (`Numeric`, `Signed`,
+> …), with cycle detection, and propagates its rejection message. The constraint's own checks run after the guards. (Generic inference also binds `$T`
 > from `[]$T`/`?$T`, not just `*$T`.) **Still design:** the `&` combinator below. Also,
 > `core::require` is a *top-level* guard and is not evaluated inside conditional control flow.
 
@@ -439,7 +460,7 @@ directives:
 
 | Jai feature | Fels realization | Improvement |
 |---|---|---|
-| `for_expansion` (custom iterators) | An `Iter` **interface**: `Iter :: interface { next :: fn(self: *Self) -> ?Elem; }`. `for x in c` desugars to `next()`. | Works at runtime *and* comptime, composes with dynamic dispatch, and is not a macro you reimplement per container. A `#for_expansion` macro stays available for zero-cost unrolling when you want it. |
+| `for_expansion` (custom iterators) | `for x in c` calls `c.next()` until it returns `null`, for any type with a `next :: fn(self: *Self) -> ?T` method. Built (see [03](03_functions_control_flow.md#for-iterators)); an `Iter` interface for it is design. | Works at runtime *and* comptime, composes with dynamic dispatch, and is not a macro you reimplement per container. A `#for_expansion` macro stays available for zero-cost unrolling when you want it. |
 | `#insert -> string` building **struct fields** (SOA, `Matrix(N)`) | `#for f in core::type_info(T).fields { #emit_field … }` inside a struct body: typed field emission, not string concatenation. | Generated fields are type-checked at the generation site, with no `.added_strings.jai` to eyeball. |
 | `#caller_code` (call-site AST) | `#caller` builtin yielding a typed `ast.Call` you `match` on. | Typed AST, not `cast(*Code_Procedure_Call)`. |
 | `compiler_get_nodes` / `compiler_get_code` (arbitrary code AST round-trip) | Typed macro params: a macro takes `body: ast.Block` (matchable) instead of opaque `Code`, and you rebuild and `#insert`. | Type-safe AST surgery: match on `ast.*`, never cast `Code_Node*`. |
