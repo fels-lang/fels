@@ -31,7 +31,8 @@ do not leak, see [Hygiene](#4-hygiene).)
 ## 2. Macros
 
 A macro is a compile-time template. You declare it like a function, with `macro` in place of
-`fn`, and its body must be a single `return #quote { ... };`. `macro` is not a reserved word. It
+`fn`, and its body must be a single `return #quote { ... };`, or `return #quote(expr);` for a
+macro that stands for a value ([Expression macros](#expression-macros)). `macro` is not a reserved word. It
 only has this meaning after `::`, so you can still use it as an ordinary name. Macros are top
 level declarations, and a struct body holds only fields and `fn` methods.
 
@@ -109,6 +110,30 @@ build :: macro(out: Expr, ty: Expr, sel: Expr, lo: Expr, hi: Expr) {
 }
 ```
 
+### Expression macros
+
+A macro whose body is `return #quote(expr);` makes an expression. `#insert` it wherever a value
+goes: in a local, an argument, a constant, another macro's template.
+
+```fels
+sq :: macro(x: Expr) { return #quote(($x) * ($x)); }
+max2 :: macro(a: Expr, b: Expr) { return #quote(if $a > $b { $a } else { $b }); }
+
+N :: #insert sq(3);                      // 9
+
+main :: fn() -> i32 {
+    n := 2;
+    a := #insert sq(n + 1);              // (n + 1) * (n + 1)
+    b := #insert max2(#insert sq(n), 3); // a macro's value as another's argument
+    return a + b;
+}
+```
+
+The arguments are substituted as code, not computed first, so write the parentheses into
+the template (`($x) * ($x)`) as above. `#insert sq(n);` as a statement is the expression as a
+statement. A macro that makes statements cannot stand for a value, and a macro does not expand
+inside a format's braces (`"{#insert sq(n)}"`): put its value in a local first.
+
 ## 3. `#for` — compile-time unrolling
 
 Inside a template, `#for i in a..b { ... }` is **unrolled** at expansion time. The body is
@@ -177,8 +202,8 @@ the code as a string.
 
 - A `$name` splice **only** means something inside a macro template's `return #quote { ... }`,
   and `name` must be one of the macro's parameters. A stray `$` elsewhere is an error.
-- The macro body must be exactly one `return #quote { ... };`. A macro is a *template*, not a
-  place to run logic. For generation that is driven by logic, use the programmatic path below.
+- The macro body must be exactly one `return #quote { ... };` or `return #quote(expr);`. A
+  macro is a *template*, not a place to run logic. For generation that is driven by logic, use the programmatic path below.
 - A `Block` argument cannot be spliced in expression position (`$b` where an expression is
   expected). Splice it as a statement (`$b;`) instead.
 

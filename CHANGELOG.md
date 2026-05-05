@@ -5,6 +5,12 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ## Unreleased
 
+### Added
+
+- **Expression macros.** A macro whose body is `return #quote(expr);` stands for a value:
+  `a := #insert sq(n + 1);`, in an argument, a constant or another macro's template too.
+  `#insert` of one as a statement is its expression as a statement.
+
 ### Changed
 
 - **Assigning a lambda's captured variable is an error.** A capture is a copy made for each
