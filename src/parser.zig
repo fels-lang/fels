@@ -1123,8 +1123,24 @@ pub const Parser = struct {
             const binding = try self.expect(.ident, "expected loop binding after #for");
             _ = try self.expect(.keyword_in, "expected `in` after #for binding");
             const start_expr = try self.parseExpr(0);
+            // `#for f in fields(T) { … }`: once per field of the struct `T`.
+            if (self.check(.l_brace) and start_expr.kind == .call and start_expr.kind.call.callee.kind == .ident and
+                std.mem.eql(u8, start_expr.kind.call.callee.kind.ident, "fields") and start_expr.kind.call.args.len == 1 and
+                start_expr.kind.call.args[0] == .positional)
+            {
+                const body = try self.parseBlock();
+                return .{ .comptime_for = .{
+                    .binding = binding.text(self.source),
+                    .start = start_expr,
+                    .end = start_expr,
+                    .inclusive = false,
+                    .body = body,
+                    .span = Span.new(hash.start, body.span.end),
+                    .fields_of = start_expr.kind.call.args[0].positional,
+                } };
+            }
             if (!(self.match(.dot_dot) or self.match(.dot_dot_eq))) {
-                try self.errorAt(self.peek(), "#for requires a range `a..b` or `a..=b`");
+                try self.errorAt(self.peek(), "#for goes through a range `a..b` or `a..=b`, or a struct's fields, `fields(T)`");
                 return error.ParseFailed;
             }
             const inclusive = self.previous().kind == .dot_dot_eq;
@@ -2081,9 +2097,21 @@ pub const Parser = struct {
 
         // `$Acc` — a type parameter reference. In return position (`-> $Acc`)
         // this declares an *output* type param computed by the `where` clause.
-        if (self.match(.dollar)) {
+        if (self.check(.dollar)) {
+            const dollar = self.peek();
+            // `$(f.ty)`, `$(T)_box`: a type name with splices, put in by the macro expander.
+            if (self.peekKind(1) == .l_paren or self.spliceIsName(dollar)) {
+                const name = try self.parseSplicedName(self.advance());
+                return .{ .named = .{ .name = name.text, .span = Span.new(dollar.start, name.end) } };
+            }
+            _ = self.advance();
             const tp = try self.expect(.ident, "expected type-param name after $");
             return .{ .type_param = .{ .name = tp.text(self.source), .span = spanFrom(tp, tp) } };
+        }
+        if (self.check(.ident) and self.spliceFollows(self.peek())) {
+            const first = self.advance();
+            const name = try self.parseSplicedName(first);
+            return .{ .named = .{ .name = name.text, .span = Span.new(first.start, name.end) } };
         }
 
         const name = self.advance();
@@ -2125,6 +2153,94 @@ pub const Parser = struct {
         } };
     }
 
+    /// Whether a splice (`$`) is written right against the name token `tok` ends with, so the
+    /// two are one name (`get_$(f.name)`).
+    fn spliceFollows(self: *Parser, tok: Token) bool {
+        const next = self.peek();
+        return next.kind == .dollar and next.start == tok.start + tok.len;
+    }
+
+    /// Whether the splice that starts at the `$` token `dollar` is part of a longer name: a name
+    /// or another splice is written right after it (`$(T)_new`, `$(a)$(b)`).
+    fn spliceIsName(self: *Parser, dollar: Token) bool {
+        var i = self.index;
+        while (i < self.tokens.len and self.tokens[i].start < dollar.start) i += 1;
+        if (i < self.tokens.len and self.tokens[i].start == dollar.start) i += 1; // the `$`
+        if (i >= self.tokens.len) return false;
+        var end: usize = undefined;
+        if (self.tokens[i].kind == .l_paren) {
+            var depth: usize = 0;
+            while (i < self.tokens.len) : (i += 1) {
+                switch (self.tokens[i].kind) {
+                    .l_paren => depth += 1,
+                    .r_paren => {
+                        depth -= 1;
+                        if (depth == 0) break;
+                    },
+                    else => {},
+                }
+            }
+            if (i >= self.tokens.len) return false;
+            end = self.tokens[i].start + self.tokens[i].len;
+        } else if (self.tokens[i].kind == .ident) {
+            end = self.tokens[i].start + self.tokens[i].len;
+        } else return false;
+        if (i + 1 >= self.tokens.len) return false;
+        const after = self.tokens[i + 1];
+        return after.start == end and (after.kind == .ident or after.kind == .dollar);
+    }
+
+    /// A name with splices in a macro template: names and `$name` / `$(…)` written against
+    /// each other (`get_$(f.name)`, `$(T)_new`, `$(f.name)`), from `first` (a name or the `$`,
+    /// consumed) on. Its text keeps each splice as `$(…)`; the macro expander puts the names in.
+    fn parseSplicedName(self: *Parser, first: Token) ParseError!struct { text: []const u8, end: usize } {
+        var text: std.ArrayList(u8) = .empty;
+        errdefer text.deinit(self.allocator);
+        var tok = first;
+        while (true) {
+            var end: usize = tok.start + tok.len;
+            if (tok.kind == .ident) {
+                try text.appendSlice(self.allocator, tok.text(self.source));
+            } else if (tok.kind == .dollar) {
+                if (self.match(.l_paren)) {
+                    const open = self.previous();
+                    var depth: usize = 1;
+                    while (depth > 0) {
+                        const t = self.advance();
+                        switch (t.kind) {
+                            .l_paren => depth += 1,
+                            .r_paren => depth -= 1,
+                            .eof => {
+                                try self.errorAt(t, "expected ) after $( splice");
+                                return error.ParseFailed;
+                            },
+                            else => {},
+                        }
+                    }
+                    const close = self.previous();
+                    try text.appendSlice(self.allocator, "$(");
+                    try text.appendSlice(self.allocator, std.mem.trim(u8, self.source[open.start + 1 .. close.start], " \t"));
+                    try text.append(self.allocator, ')');
+                    end = close.start + close.len;
+                } else {
+                    const n = try self.expect(.ident, "expected name or ( after $");
+                    try text.appendSlice(self.allocator, "$(");
+                    try text.appendSlice(self.allocator, n.text(self.source));
+                    try text.append(self.allocator, ')');
+                    end = n.start + n.len;
+                }
+            } else {
+                try self.errorAt(tok, "expected a name");
+                return error.ParseFailed;
+            }
+            const next = self.peek();
+            if (next.start != end or (next.kind != .ident and next.kind != .dollar)) {
+                return .{ .text = try text.toOwnedSlice(self.allocator), .end = end };
+            }
+            tok = self.advance();
+        }
+    }
+
     fn parseExpr(self: *Parser, min_bp: u8) ParseError!ast.Expr {
         var left = try self.parsePrefix();
 
@@ -2134,6 +2250,12 @@ pub const Parser = struct {
                 continue;
             }
             if (self.match(.dot)) {
+                // `v.$(f.name)` in a macro template: a field name with splices.
+                if (self.check(.dollar) or (self.check(.ident) and self.spliceFollows(self.peek()))) {
+                    const name = try self.parseSplicedName(self.advance());
+                    left = try self.expr(.{ .field = .{ .base = try self.allocExpr(left), .name = name.text } }, Span.new(left.span.start, name.end));
+                    continue;
+                }
                 const field = try self.expect(.ident, "expected field name");
                 left = try self.expr(.{ .field = .{ .base = try self.allocExpr(left), .name = field.text(self.source) } }, Span.new(left.span.start, field.start + field.len));
                 continue;
@@ -2231,7 +2353,13 @@ pub const Parser = struct {
     fn parsePrefix(self: *Parser) ParseError!ast.Expr {
         const tok = self.advance();
         switch (tok.kind) {
-            .ident => return self.expr(.{ .ident = tok.text(self.source) }, spanFrom(tok, tok)),
+            .ident => {
+                if (self.spliceFollows(tok)) {
+                    const name = try self.parseSplicedName(tok);
+                    return self.expr(.{ .ident = name.text }, Span.new(tok.start, name.end));
+                }
+                return self.expr(.{ .ident = tok.text(self.source) }, spanFrom(tok, tok));
+            },
             .keyword_bool,
             .keyword_void,
             .keyword_i8,
@@ -2332,6 +2460,11 @@ pub const Parser = struct {
             },
             // $name / $(expr) — a splice hole inside a #quote (macro template).
             .dollar => {
+                // `$(T)_new`: a splice written against a name makes one name.
+                if (self.spliceIsName(tok)) {
+                    const name = try self.parseSplicedName(tok);
+                    return self.expr(.{ .ident = name.text }, Span.new(tok.start, name.end));
+                }
                 if (self.match(.l_paren)) {
                     const inner = try self.parseExpr(0);
                     const close = try self.expect(.r_paren, "expected ) after $( splice");

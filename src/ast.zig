@@ -321,6 +321,10 @@ pub const ComptimeForStmt = struct {
     inclusive: bool,
     body: Block,
     span: Span,
+    /// `#for f in fields(T) { … }`: the `T` whose fields it goes through, each bound to `f`
+    /// (`$(f.name)`, `$(f.ty)`, `$(f.index)`, `$(f.text)`). `start` and `end` then hold the
+    /// `fields(T)` call.
+    fields_of: ?Expr = null,
 };
 
 pub const ComptimeIfStmt = struct {
