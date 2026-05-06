@@ -22,8 +22,15 @@ const Hyg = std.StringHashMap([]const u8);
 /// The field a `#for f in fields(T)` is at: `$(f.name)`, `$(f.ty)`, `$(f.index)`, `$(f.text)`.
 const FieldRecord = struct { name: []const u8, ty: ast.TypeRef, index: usize };
 
+/// The node ids an expansion gives what it makes, above those of the parser (from 1), its
+/// lifted lambdas (1_000_000_000) and the formats (2_000_000_000).
+const macro_id_base: ast.NodeId = 3_000_000_000;
+
 const Expander = struct {
     arena: std.mem.Allocator,
+    /// The next node id. Each copy a template makes is its own expression: the checker keys
+    /// types by id, and the copies of a `#for` over fields have different types.
+    next_id: ast.NodeId = macro_id_base,
     macros: std.StringHashMap(ast.FunctionDecl),
     /// The program's structs, by name, for `#for f in fields(T)`.
     structs: std.StringHashMap(ast.StructDecl),
@@ -505,7 +512,7 @@ const Expander = struct {
 
         var i = start;
         while (i < end) : (i += 1) {
-            const lit = try self.intLit(i, cf.start.id, cf.span);
+            const lit = try self.intLit(i, self.freshId(), cf.span);
             try env.put(cf.binding, lit);
             // Fresh hygiene per iteration so the body's own locals don't collide
             // across unrolled copies (start from the macro's renames, if any).
@@ -624,24 +631,24 @@ const Expander = struct {
     fn substExpr(self: *Expander, expr: ast.Expr, env: *Env, hyg: *Hyg) ExpandError!ast.Expr {
         switch (expr.kind) {
             .splice => |inner| {
-                if (try self.fieldSplice(inner.*, expr.span, expr.id)) |e| return e;
+                if (try self.fieldSplice(inner.*, expr.span, self.freshId())) |e| return e;
                 if (inner.kind != .ident) return fail("`$` splice must reference a macro parameter", .{});
                 const name = inner.kind.ident;
                 const arg = env.get(name) orelse return fail("`${s}` does not name a macro parameter", .{name});
                 return switch (arg.kind) {
-                    .quote_expr => |e| e.*,
+                    .quote_expr => |e| self.copyArg(e.*),
                     .quote => fail("block argument `${s}` cannot be spliced in expression position", .{name}),
-                    else => arg,
+                    else => self.copyArg(arg),
                 };
             },
             .ident => |name| {
                 if (hyg.get(name)) |fresh| {
-                    return .{ .id = expr.id, .kind = .{ .ident = fresh }, .span = expr.span };
+                    return .{ .id = self.freshId(), .kind = .{ .ident = fresh }, .span = expr.span };
                 }
                 if (std.mem.indexOf(u8, name, "$(") != null) {
-                    return .{ .id = expr.id, .kind = .{ .ident = try self.resolveName(name, env) }, .span = expr.span };
+                    return .{ .id = self.freshId(), .kind = .{ .ident = try self.resolveName(name, env) }, .span = expr.span };
                 }
-                return expr;
+                return self.rebuild(expr, expr.kind);
             },
             .binary => |b| return self.rebuild(expr, .{ .binary = .{
                 .op = b.op,
@@ -746,8 +753,8 @@ const Expander = struct {
                 return self.rebuild(expr, .{ .struct_literal = try nf.toOwnedSlice(self.arena) });
             },
             // Leaves (literals, type refs) and nested `#quote`s (kept as data)
-            // substitute to themselves.
-            else => return expr,
+            // substitute to themselves, with an id of their own.
+            else => return self.rebuild(expr, expr.kind),
         }
     }
 
@@ -789,8 +796,20 @@ const Expander = struct {
     }
 
     fn rebuild(self: *Expander, original: ast.Expr, kind: ast.ExprKind) ast.Expr {
-        _ = self;
-        return .{ .id = original.id, .kind = kind, .span = original.span };
+        return .{ .id = self.freshId(), .kind = kind, .span = original.span };
+    }
+
+    fn freshId(self: *Expander) ast.NodeId {
+        const id = self.next_id;
+        self.next_id += 1;
+        return id;
+    }
+
+    /// A copy of a macro argument with ids of its own, for each place it is spliced into.
+    fn copyArg(self: *Expander, arg: ast.Expr) ExpandError!ast.Expr {
+        var env = Env.init(self.arena);
+        var hyg = Hyg.init(self.arena);
+        return self.substExpr(arg, &env, &hyg);
     }
 
     fn rename(self: *Expander, name: []const u8, hyg: *Hyg) []const u8 {

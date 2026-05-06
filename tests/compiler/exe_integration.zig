@@ -1781,6 +1781,36 @@ test "exe: an expression macro is inserted where a value goes" {
     try std.testing.expectEqual(@as(u32, 965 % 256), code);
 }
 
+test "exe: #for f in fields(T) goes through a struct's fields, and names are built from them" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `$(f.name)` is a field's name (also in `v.$(f.name)` and joined into `$(f.name)_twice`),
+    // `$(f.ty)` its type, `$(f.index)` its position. Each copy has its own types: `c` is an
+    // `i32` for `x` and an `i64` for `z`.
+    const code = try compileAndRun(arena.allocator(),
+        \\Point :: struct { x: i32, y: i32, z: i64 }
+        \\sum_fields :: macro(out: Expr, v: Expr, T: Expr) {
+        \\    return #quote {
+        \\        #for f in fields($T) {
+        \\            c: $(f.ty) = $v.$(f.name);
+        \\            $out = $out + (c as i64) * ($(f.index) + 1);
+        \\        }
+        \\    };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    p: Point = .{ 1, 2, 3 };
+        \\    total: i64 = 0;
+        \\    #insert sum_fields(total, p, Point);       // 1*1 + 2*2 + 3*3 = 14
+        \\    x_twice := 0; y_twice := 0; z_twice := 0;
+        \\    #for f in fields(Point) { $(f.name)_twice = (p.$(f.name) * 2) as i32; }
+        \\    return (total as i32) * 10 + x_twice + y_twice + z_twice; // 140 + 12
+        \\}
+    , "exe_for_fields");
+    try std.testing.expectEqual(@as(u32, 152), code);
+}
+
 test "exe: #for unrolls a comptime loop, baking the index" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
