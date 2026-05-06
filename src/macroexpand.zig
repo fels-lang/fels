@@ -19,9 +19,16 @@ const Env = std.StringHashMap(ast.Expr);
 /// Hygiene: a template-introduced local name → its fresh, collision-free name.
 const Hyg = std.StringHashMap([]const u8);
 
+/// The field a `#for f in fields(T)` is at: `$(f.name)`, `$(f.ty)`, `$(f.index)`, `$(f.text)`.
+const FieldRecord = struct { name: []const u8, ty: ast.TypeRef, index: usize };
+
 const Expander = struct {
     arena: std.mem.Allocator,
     macros: std.StringHashMap(ast.FunctionDecl),
+    /// The program's structs, by name, for `#for f in fields(T)`.
+    structs: std.StringHashMap(ast.StructDecl),
+    /// The `#for f in fields(T)` loops being unrolled: `f` → the field it is at.
+    records: std.StringHashMap(FieldRecord),
     /// Monotonic counter so each expansion's hygienic names are distinct.
     gensym: u32 = 0,
 
@@ -41,6 +48,10 @@ const Expander = struct {
     fn expandModule(self: *Expander, module: ast.Module) ExpandError!ast.Module {
         for (module.items) |item| switch (item) {
             .function => |f| if (f.is_macro) try self.macros.put(f.name, f),
+            .type_decl => |d| switch (d.kind) {
+                .struct_type => |st| if (!self.structs.contains(d.name)) try self.structs.put(d.name, st),
+                else => {},
+            },
             else => {},
         };
 
@@ -487,6 +498,7 @@ const Expander = struct {
     /// Emit `cf.body` once per index in `[start, end)` (or `..=`), binding the
     /// loop variable to that index's literal so `$(i)` splices it.
     fn unrollFor(self: *Expander, cf: ast.ComptimeForStmt, env: *Env, base_hyg: *Hyg, out: *std.ArrayList(ast.Stmt)) ExpandError!void {
+        if (cf.fields_of) |of| return self.unrollFields(cf, of, env, base_hyg, out);
         const start = try self.evalIntBound(cf.start, env, base_hyg);
         const last = try self.evalIntBound(cf.end, env, base_hyg);
         const end = if (cf.inclusive) last + 1 else last;
@@ -503,6 +515,93 @@ const Expander = struct {
             for (expanded.statements) |s| try out.append(self.arena, s);
         }
         _ = env.remove(cf.binding);
+    }
+
+    /// `#for f in fields(T) { … }`: `cf.body` once per field of the struct `T`, with `f` at
+    /// that field.
+    fn unrollFields(self: *Expander, cf: ast.ComptimeForStmt, of: ast.Expr, env: *Env, base_hyg: *Hyg, out: *std.ArrayList(ast.Stmt)) ExpandError!void {
+        const ty = try self.substExpr(of, env, base_hyg);
+        const name = switch (ty.kind) {
+            .ident => |n| n,
+            else => return fail("`fields(…)` takes the name of a struct", .{}),
+        };
+        const strukt = self.structs.get(name) orelse
+            return fail("`fields({s})`: `{s}` is no struct declared in this program", .{ name, name });
+        if (strukt.type_params.len > 0) return fail("`fields({s})`: `{s}` is generic, and its fields' types are not known yet", .{ name, name });
+        if (self.records.contains(cf.binding)) return fail("`#for {s} in fields(…)` inside another `#for {s}`: name it differently", .{ cf.binding, cf.binding });
+        for (strukt.fields, 0..) |field, k| {
+            try self.records.put(cf.binding, .{ .name = field.name, .ty = field.ty, .index = k });
+            var hyg = try self.cloneHyg(base_hyg);
+            try self.collectIntroduced(cf.body, &hyg);
+            const expanded = try self.substBlock(cf.body, env, &hyg);
+            for (expanded.statements) |st| try out.append(self.arena, st);
+        }
+        _ = self.records.remove(cf.binding);
+    }
+
+    /// A name with splices (`get_$(f.name)`, `$(T)_new`; the parser keeps each splice as
+    /// `$(…)`): each splice is the name it stands for, a macro parameter's or a field's.
+    fn resolveName(self: *Expander, text: []const u8, env: *Env) ExpandError![]const u8 {
+        var out: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+        while (i < text.len) {
+            if (!std.mem.startsWith(u8, text[i..], "$(")) {
+                try out.append(self.arena, text[i]);
+                i += 1;
+                continue;
+            }
+            const close = std.mem.indexOfScalarPos(u8, text, i, ')') orelse return fail("`{s}`: a `$(` is not closed", .{text});
+            const inner = std.mem.trim(u8, text[i + 2 .. close], " ");
+            try out.appendSlice(self.arena, try self.spliceName(inner, env));
+            i = close + 1;
+        }
+        return out.toOwnedSlice(self.arena);
+    }
+
+    /// The name `$(inner)` stands for in a name: a macro parameter bound to a name or a type
+    /// (`$(T)`), or a field's name (`$(f.name)`).
+    fn spliceName(self: *Expander, inner: []const u8, env: *Env) ExpandError![]const u8 {
+        if (std.mem.indexOfScalar(u8, inner, '.')) |dot| {
+            const rec = self.records.get(inner[0..dot]) orelse
+                return fail("`$({s})`: `{s}` is no `#for … in fields(…)` binding", .{ inner, inner[0..dot] });
+            const member = inner[dot + 1 ..];
+            if (std.mem.eql(u8, member, "name")) return rec.name;
+            if (std.mem.eql(u8, member, "ty")) return switch (rec.ty) {
+                .named => |n| n.name,
+                else => fail("`$({s})` in a name: the type of `{s}` is not a plain name", .{ inner, rec.name }),
+            };
+            if (std.mem.eql(u8, member, "index")) return std.fmt.allocPrint(self.arena, "{d}", .{rec.index});
+            return fail("`$({s})`: a field has `name`, `ty`, `index` and `text`", .{inner});
+        }
+        const arg = env.get(inner) orelse return fail("`$({s})` does not name a macro parameter", .{inner});
+        return switch (arg.kind) {
+            .ident => |n| n,
+            .type_ref => |tr| switch (tr) {
+                .named => |n| n.name,
+                else => fail("`$({s})` in a name: its argument is no plain name", .{inner}),
+            },
+            .int => |t| t,
+            else => fail("`$({s})` in a name: its argument is no name", .{inner}),
+        };
+    }
+
+    /// `$(f.name)`, `$(f.ty)`, `$(f.index)`, `$(f.text)` as an expression, or null when
+    /// `inner` is no field of a `#for … in fields(…)`.
+    fn fieldSplice(self: *Expander, inner: ast.Expr, span: Span, id: ast.NodeId) ExpandError!?ast.Expr {
+        if (inner.kind != .field or inner.kind.field.base.kind != .ident) return null;
+        const rec = self.records.get(inner.kind.field.base.kind.ident) orelse return null;
+        const member = inner.kind.field.name;
+        const kind: ast.ExprKind = if (std.mem.eql(u8, member, "name"))
+            .{ .ident = rec.name }
+        else if (std.mem.eql(u8, member, "ty"))
+            .{ .type_ref = rec.ty }
+        else if (std.mem.eql(u8, member, "index"))
+            .{ .int = try std.fmt.allocPrint(self.arena, "{d}", .{rec.index}) }
+        else if (std.mem.eql(u8, member, "text"))
+            .{ .string = try std.fmt.allocPrint(self.arena, "\"{s}\"", .{rec.name}) }
+        else
+            return fail("`$({s}.{s})`: a field has `name`, `ty`, `index` and `text`", .{ inner.kind.field.base.kind.ident, member });
+        return .{ .id = id, .kind = kind, .span = span };
     }
 
     fn evalIntBound(self: *Expander, expr: ast.Expr, env: *Env, hyg: *Hyg) ExpandError!i64 {
@@ -525,6 +624,7 @@ const Expander = struct {
     fn substExpr(self: *Expander, expr: ast.Expr, env: *Env, hyg: *Hyg) ExpandError!ast.Expr {
         switch (expr.kind) {
             .splice => |inner| {
+                if (try self.fieldSplice(inner.*, expr.span, expr.id)) |e| return e;
                 if (inner.kind != .ident) return fail("`$` splice must reference a macro parameter", .{});
                 const name = inner.kind.ident;
                 const arg = env.get(name) orelse return fail("`${s}` does not name a macro parameter", .{name});
@@ -537,6 +637,9 @@ const Expander = struct {
             .ident => |name| {
                 if (hyg.get(name)) |fresh| {
                     return .{ .id = expr.id, .kind = .{ .ident = fresh }, .span = expr.span };
+                }
+                if (std.mem.indexOf(u8, name, "$(") != null) {
+                    return .{ .id = expr.id, .kind = .{ .ident = try self.resolveName(name, env) }, .span = expr.span };
                 }
                 return expr;
             },
@@ -562,7 +665,7 @@ const Expander = struct {
             },
             .field => |f| return self.rebuild(expr, .{ .field = .{
                 .base = try self.substPtr(f.base, env, hyg),
-                .name = f.name,
+                .name = if (std.mem.indexOf(u8, f.name, "$(") != null) try self.resolveName(f.name, env) else f.name,
             } }),
             .index => |i| return self.rebuild(expr, .{ .index = .{
                 .base = try self.substPtr(i.base, env, hyg),
@@ -657,6 +760,16 @@ const Expander = struct {
     /// Recurses into `*T` / `[]T` / `?T` so e.g. `*$T` works.
     fn substType(self: *Expander, ty: ast.TypeRef, env: *Env) ExpandError!ast.TypeRef {
         return switch (ty) {
+            // `$(f.ty)`, or a type name with splices (`$(T)_box`).
+            .named => |n| blk: {
+                if (std.mem.indexOf(u8, n.name, "$(") == null) break :blk ty;
+                if (std.mem.startsWith(u8, n.name, "$(") and std.mem.endsWith(u8, n.name, ".ty)") and
+                    std.mem.indexOfScalar(u8, n.name[2..], '$') == null)
+                {
+                    if (self.records.get(n.name[2 .. n.name.len - 4])) |rec| break :blk rec.ty;
+                }
+                break :blk .{ .named = .{ .name = try self.resolveName(n.name, env), .span = n.span } };
+            },
             .type_param => |tp| if (env.get(tp.name)) |arg|
                 (exprToTypeRef(self.arena, arg) orelse fail("macro parameter `${s}` cannot be used as a type", .{tp.name}))
             else
@@ -753,6 +866,11 @@ fn intValue(e: ast.Expr) ?i64 {
 
 /// Expand all macros in `module`, returning a macro-free module.
 pub fn expand(arena: std.mem.Allocator, module: ast.Module) ExpandError!ast.Module {
-    var expander = Expander{ .arena = arena, .macros = std.StringHashMap(ast.FunctionDecl).init(arena) };
+    var expander = Expander{
+        .arena = arena,
+        .macros = std.StringHashMap(ast.FunctionDecl).init(arena),
+        .structs = std.StringHashMap(ast.StructDecl).init(arena),
+        .records = std.StringHashMap(FieldRecord).init(arena),
+    };
     return expander.expandModule(module);
 }

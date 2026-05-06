@@ -143,6 +143,19 @@ test "metaprogram: #insert in an expression takes an expression macro" {
     for (bad) |src| try std.testing.expectError(error.SemanticFailed, fels.compile(a, "mac_expr_bad.fels", src));
 }
 
+test "metaprogram: #for over fields takes a struct of the program and a field's members" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const bad = [_][]const u8{
+        "run :: fn() { #for f in fields(Nope) { } }",
+        "P :: struct { x: i32 }\nrun :: fn() { #for f in fields(P) { s := $(f.size); } }",
+        "B :: struct($T: type) { v: T }\nrun :: fn() { #for f in fields(B) { } }",
+        "P :: struct { x: i32 }\nrun :: fn() { #for f in fields(P) { #for f in fields(P) { } } }",
+    };
+    for (bad) |src| try std.testing.expectError(error.SemanticFailed, fels.compile(a, "for_fields_bad.fels", src));
+}
+
 test "metaprogram: stray $ splice outside a macro is rejected" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
