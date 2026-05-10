@@ -2108,7 +2108,7 @@ pub const Parser = struct {
             const tp = try self.expect(.ident, "expected type-param name after $");
             return .{ .type_param = .{ .name = tp.text(self.source), .span = spanFrom(tp, tp) } };
         }
-        if (self.check(.ident) and self.spliceFollows(self.peek())) {
+        if (self.check(.ident) and self.spliceAfterNext()) {
             const first = self.advance();
             const name = try self.parseSplicedName(first);
             return .{ .named = .{ .name = name.text, .span = Span.new(first.start, name.end) } };
@@ -2158,6 +2158,14 @@ pub const Parser = struct {
     fn spliceFollows(self: *Parser, tok: Token) bool {
         const next = self.peek();
         return next.kind == .dollar and next.start == tok.start + tok.len;
+    }
+
+    /// Whether a splice is written right against the name token not read yet (`get_$(…)`).
+    fn spliceAfterNext(self: *Parser) bool {
+        if (self.index + 1 >= self.tokens.len) return false;
+        const cur = self.tokens[self.index];
+        const next = self.tokens[self.index + 1];
+        return next.kind == .dollar and next.start == cur.start + cur.len;
     }
 
     /// Whether the splice that starts at the `$` token `dollar` is part of a longer name: a name
@@ -2251,7 +2259,7 @@ pub const Parser = struct {
             }
             if (self.match(.dot)) {
                 // `v.$(f.name)` in a macro template: a field name with splices.
-                if (self.check(.dollar) or (self.check(.ident) and self.spliceFollows(self.peek()))) {
+                if (self.check(.dollar) or (self.check(.ident) and self.spliceAfterNext())) {
                     const name = try self.parseSplicedName(self.advance());
                     left = try self.expr(.{ .field = .{ .base = try self.allocExpr(left), .name = name.text } }, Span.new(left.span.start, name.end));
                     continue;
