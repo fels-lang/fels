@@ -19,10 +19,14 @@ pub const Item = union(enum) {
     interface_impl: InterfaceImpl,
     system_library: SystemLibraryDecl,
     static_assert: StaticAssertDecl,
+    /// `#insert m(args);` among the declarations: the macroexpand pass puts the declarations
+    /// the macro makes in its place.
+    insert: InsertDecl,
 
     pub fn name(self: Item) ?[]const u8 {
         return switch (self) {
             .import => null,
+            .insert => null,
             .const_decl => |decl| decl.name,
             .type_decl => |decl| decl.name,
             .function => |decl| decl.name,
@@ -41,6 +45,7 @@ pub const Item = union(enum) {
             .interface_impl => |decl| decl.span,
             .system_library => |decl| decl.span,
             .static_assert => |decl| decl.span,
+            .insert => |decl| decl.span,
         };
     }
 
@@ -53,6 +58,7 @@ pub const Item = union(enum) {
             .interface_impl => |decl| decl.file_name,
             .system_library => |decl| decl.file_name,
             .static_assert => |decl| decl.file_name,
+            .insert => |decl| decl.file_name,
         };
     }
 
@@ -181,6 +187,14 @@ pub const EnumVariantDecl = struct {
     span: Span,
 };
 
+/// `#insert m(args);` among the declarations or in a struct body.
+pub const InsertDecl = struct {
+    operand: Expr,
+    file_name: []const u8,
+    source: []const u8,
+    span: Span,
+};
+
 pub const StructDecl = struct {
     type_params: []const []const u8, // e.g. ["T"] for struct($T: type) { ... }
     /// Constraints on the type params (`struct($T: Native) { … }`), mirroring the
@@ -196,6 +210,8 @@ pub const StructDecl = struct {
     methods: []const FunctionDecl = &.{},
     /// `union { … }`: every field at offset 0, the size of the largest.
     is_union: bool = false,
+    /// `#insert m(args);` in the body: the macroexpand pass adds the methods the macro makes.
+    inserts: []const InsertDecl = &.{},
 };
 
 pub const ErrorDecl = struct {
@@ -299,6 +315,9 @@ pub const Stmt = union(enum) {
     comptime_run: Block,
     insert_stmt: InsertStmt,
     comptime_for: ComptimeForStmt,
+    /// A declaration among statements: only a declaration quote holds one
+    /// (`#quote { f :: fn() { … } }`), which `#insert` makes declarations of.
+    decl: *const Item,
     expr: Expr,
 };
 

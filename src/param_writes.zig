@@ -50,6 +50,7 @@ const Walker = struct {
 
     fn walkStmt(self: *Walker, stmt: ast.Stmt) anyerror!void {
         switch (stmt) {
+            .decl => {},
             .local_infer => |s| try self.walkExpr(s.value),
             .local_typed => |s| try self.walkExpr(s.value),
             .assign => |s| {

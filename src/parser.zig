@@ -281,6 +281,12 @@ pub const Parser = struct {
             return;
         }
 
+        // `#insert m(args);` among the declarations: the declarations a macro makes.
+        if (self.check(.hash) and self.checkIdentAt(1, "insert")) {
+            try items.append(self.allocator, .{ .insert = try self.parseInsertDecl() });
+            return;
+        }
+
         var attrs = try self.parseAttributes();
         if (self.match(.hash)) {
             try items.append(self.allocator, .{ .import = try self.parseImport(self.previous()) });
@@ -389,8 +395,36 @@ pub const Parser = struct {
         return error.ParseFailed;
     }
 
+    /// `#insert m(args);`, at the `#`.
+    fn parseInsertDecl(self: *Parser) ParseError!ast.InsertDecl {
+        const hash = self.advance();
+        _ = self.advance(); // `insert`
+        const operand = try self.parseExpr(0);
+        const semi = try self.expect(.semicolon, "expected ; after #insert operand");
+        return .{ .operand = operand, .file_name = self.file_name, .source = self.source, .span = spanFrom(hash, semi) };
+    }
+
     fn parseTopLevel(self: *Parser, attrs: []const ast.Attribute, is_public: bool) ParseError!ast.Item {
+        // `get_$(f.name) :: fn …` in a declaration quote: a name with splices.
+        if (self.check(.dollar) or (self.check(.ident) and self.spliceAfterNext())) {
+            const first = self.peek();
+            const spliced = try self.parseSplicedName(self.advance());
+            // The rest is read as for a plain name: back to a stand-in of its first token.
+            const stand_in: Token = .{ .kind = .ident, .start = first.start, .len = first.len };
+            var item = try self.parseTopLevelNamed(attrs, is_public, stand_in);
+            switch (item) {
+                .function => |*f| f.name = spliced.text,
+                .type_decl => |*t| t.name = spliced.text,
+                .const_decl => |*c| c.name = spliced.text,
+                else => {},
+            }
+            return item;
+        }
         const name = try self.expect(.ident, "expected declaration name");
+        return self.parseTopLevelNamed(attrs, is_public, name);
+    }
+
+    fn parseTopLevelNamed(self: *Parser, attrs: []const ast.Attribute, is_public: bool, name: Token) ParseError!ast.Item {
         if (self.match(.keyword_as)) {
             if (attrs.len != 0) {
                 try self.errorAt(name, "attributes are not supported on interface implementation blocks");
@@ -637,8 +671,15 @@ pub const Parser = struct {
         errdefer fields.deinit(self.allocator);
         var methods: std.ArrayList(ast.FunctionDecl) = .empty;
         errdefer methods.deinit(self.allocator);
+        var inserts: std.ArrayList(ast.InsertDecl) = .empty;
+        errdefer inserts.deinit(self.allocator);
 
         while (!self.check(.r_brace) and !self.check(.eof)) {
+            // `#insert m(args);`: the methods a macro makes.
+            if (self.check(.hash) and self.checkIdentAt(1, "insert")) {
+                try inserts.append(self.allocator, try self.parseInsertDecl());
+                continue;
+            }
             // An associated declaration: `[pub] name :: fn(...) { ... }`. A field is
             // `name : type`. Disambiguate on `::` vs `:` after the (optional pub +)
             // leading identifier.
@@ -711,6 +752,7 @@ pub const Parser = struct {
                 .type_constraints = tcs,
                 .fields = fields_slice,
                 .methods = method_decls,
+                .inserts = try inserts.toOwnedSlice(self.allocator),
             } },
             .span = spanFrom(name, close),
         };
@@ -1619,7 +1661,9 @@ pub const Parser = struct {
                     // Syntax: name: $T   or   name: T  (T already introduced)
                     const param_name = try self.expect(.ident, "expected parameter name");
                     _ = try self.expect(.colon, "expected : after parameter name");
-                    if (self.match(.dollar)) {
+                    // `v: $(f.ty)` in a macro template is a type with splices, read as a type.
+                    if (self.check(.dollar) and self.peekKind(1) != .l_paren and !self.spliceIsName(self.peek())) {
+                        _ = self.advance();
                         // a: $T — introduces type variable T, param type is T
                         const tp_name = try self.expect(.ident, "expected type variable name after $");
                         try type_params.append(self.allocator, tp_name.text(self.source));
@@ -1727,7 +1771,63 @@ pub const Parser = struct {
         };
     }
 
+    /// Whether a declaration starts here, in a block: `[pub] name :: fn/struct/…` or a
+    /// constant (`name :: 5;`), with a name that may hold splices. `io::println(…)` is no
+    /// declaration: after its `::` comes a name.
+    fn declAhead(self: *Parser) bool {
+        var i = self.index;
+        if (i < self.tokens.len and self.tokens[i].kind == .keyword_pub) return true;
+        var end: usize = 0;
+        var first = true;
+        while (i < self.tokens.len) {
+            const t = self.tokens[i];
+            if (!first and t.start != end) break;
+            if (t.kind == .ident) {
+                end = t.start + t.len;
+                i += 1;
+            } else if (t.kind == .dollar and i + 1 < self.tokens.len) {
+                i += 1;
+                if (self.tokens[i].kind == .l_paren) {
+                    var depth: usize = 0;
+                    while (i < self.tokens.len) : (i += 1) {
+                        switch (self.tokens[i].kind) {
+                            .l_paren => depth += 1,
+                            .r_paren => {
+                                depth -= 1;
+                                if (depth == 0) break;
+                            },
+                            else => {},
+                        }
+                    }
+                    if (i >= self.tokens.len) return false;
+                } else if (self.tokens[i].kind != .ident) return false;
+                end = self.tokens[i].start + self.tokens[i].len;
+                i += 1;
+            } else break;
+            first = false;
+        }
+        if (first or i + 1 >= self.tokens.len or self.tokens[i].kind != .colon_colon) return false;
+        return switch (self.tokens[i + 1].kind) {
+            .keyword_fn, .keyword_struct, .keyword_union, .keyword_enum, .keyword_interface, .keyword_errors, .keyword_distinct => true,
+            .int_lit, .float_lit, .string_lit => true,
+            else => false,
+        };
+    }
+
     fn parseStmt(self: *Parser) ParseError!ast.Stmt {
+        // A declaration, as a declaration quote holds them (`#quote { f :: fn() { … } }`).
+        if (self.declAhead()) {
+            const hoisted = self.hoisted_methods.items.len;
+            var items: std.ArrayList(ast.Item) = .empty;
+            try self.parseTopLevelItem(&items);
+            if (self.hoisted_methods.items.len != hoisted) {
+                try self.errorAt(self.previous(), "a struct with methods cannot be in a quote yet: make its methods with an `#insert` in its body");
+                return error.ParseFailed;
+            }
+            const item = try self.allocator.create(ast.Item);
+            item.* = items.items[0];
+            return .{ .decl = item };
+        }
         if (self.match(.keyword_return)) {
             const start = self.previous();
             const value = if (!self.check(.semicolon)) try self.parseExpr(0) else null;

@@ -1004,6 +1004,7 @@ const Walker = struct {
 
     fn walkItem(w: *Walker, item: ast.Item) void {
         switch (item) {
+            .insert => |ins| w.walkExpr(ins.operand, .read, null),
             .import => |imp| w.walkImport(imp),
             .const_decl => |d| w.walkConst(d),
             .type_decl => |d| w.walkTypeDecl(d),
@@ -1173,6 +1174,7 @@ const Walker = struct {
 
     fn walkStmt(w: *Walker, s: ast.Stmt) void {
         switch (s) {
+            .decl => {},
             .local_infer => |l| {
                 w.walkExpr(l.value, .read, null);
                 w.declare(l.name, l.span.start, .local, .{ .expr = l.value });

@@ -58,6 +58,7 @@ const Analyzer = struct {
 
     fn walkStmt(self: *Analyzer, stmt: ast.Stmt) anyerror!void {
         switch (stmt) {
+            .decl => {},
             .local_infer => |s| {
                 try self.walkExpr(s.value);
                 try self.bind(s.name);

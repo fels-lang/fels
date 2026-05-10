@@ -1059,6 +1059,7 @@ pub fn collectSymbolsInto(
             continue;
         }
         const kind: SymbolKind = switch (item) {
+            .insert => unreachable, // no name
             .import => unreachable,
             .const_decl => |d| if (d.is_mutable) .global_var else .const_symbol,
             .type_decl => .type,
@@ -2309,6 +2310,7 @@ const Checker = struct {
 
     fn checkItem(self: *Checker, item: ast.Item) SemanticError!void {
         switch (item) {
+            .insert => {}, // expanded by macroexpand
             .import => {},
             .const_decl => |decl| {
                 // An alias spelled like a constant: validate it as `checkTypeDecl` does
@@ -2389,6 +2391,7 @@ const Checker = struct {
             // symbol (a bare root-scope lookup would miss them).
             const id = self.symbols.resolveVisible(item.fileName(), name) orelse continue;
             switch (item) {
+                .insert => {},
                 .const_decl => |decl| {
                     // An alias spelled like a constant is a type like any other (it was
                     // registered in the pre-pass); there is no value to infer. A value is
@@ -3069,6 +3072,10 @@ const Checker = struct {
 
     fn checkStmt(self: *Checker, stmt: ast.Stmt) SemanticError!void {
         switch (stmt) {
+            .decl => |item| {
+                self.emitError(item.span(), "a declaration in a function body: a declaration quote holds declarations, for an `#insert` among the declarations or in a struct body", .{});
+                return error.SemanticFailed;
+            },
             .local_infer => |local| {
                 var local_ty = try self.inferExpr(local.value);
                 // `x := 5;` has the type its uses ask for (`inferLiteralLocals`), an `i32` when

@@ -870,6 +870,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
     for (front_end.module.items) |item| {
         _ = enterTypeScope(front_end.symbols, front_end.types, item.fileName());
         switch (item) {
+            .insert => {}, // expanded by macroexpand
             .import => {},
             .static_assert => |decl| try checkStaticAssert(decl, cvm),
             .type_decl => |decl| switch (decl.kind) {
@@ -2314,6 +2315,7 @@ const FunctionLowerer = struct {
 
     fn lowerStmt(self: *FunctionLowerer, stmt: ast.Stmt) LowerError!void {
         switch (stmt) {
+            .decl => return error.LoweringFailed, // only in a declaration quote
             .local_infer => |local| {
                 const value = try self.lowerExpr(local.value);
                 const local_ty = self.exprType(local.value);

@@ -380,6 +380,7 @@ const Expander = struct {
         }
 
         switch (stmt) {
+            .decl => try out.append(self.arena, stmt),
             .local_infer => |l| try out.append(self.arena, .{ .local_infer = .{
                 .name = self.rename(l.name, hyg),
                 .value = try self.substExpr(l.value, env, hyg),
