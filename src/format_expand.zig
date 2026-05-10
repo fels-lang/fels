@@ -209,6 +209,37 @@ pub fn hasCandidates(module: ast.Module) bool {
     return r.candidates;
 }
 
+/// Point every span in the node `ptr` points to, at any depth, at `to`: the code of a format a
+/// macro made was read from text that is not the file's. Generic over the AST's types. The nodes
+/// are the parser's fresh ones, so they are written in place.
+fn pinSpans(ptr: anytype, to: Span) void {
+    const T = @typeInfo(@TypeOf(ptr)).pointer.child;
+    const node: *T = @constCast(ptr);
+    if (T == Span) {
+        node.* = to;
+        return;
+    }
+    switch (@typeInfo(T)) {
+        .@"struct" => |info| inline for (info.fields) |field| pinSpans(&@field(node.*, field.name), to),
+        .@"union" => |info| {
+            if (info.tag_type == null) return;
+            switch (node.*) {
+                inline else => |*payload| pinSpans(payload, to),
+            }
+        },
+        .pointer => |info| switch (info.size) {
+            .one => pinSpans(node.*, to),
+            .slice => {
+                if (info.child == u8) return;
+                for (node.*) |*element| pinSpans(element, to);
+            },
+            else => {},
+        },
+        .optional => if (node.*) |*inner| pinSpans(inner, to),
+        else => {},
+    }
+}
+
 const Rewriter = struct {
     a: std.mem.Allocator,
     /// The literals to replace; null only to look for candidates.
@@ -268,7 +299,7 @@ const Rewriter = struct {
                 try r.expr(&fs.iter);
                 try r.block(fs.body);
             },
-            .unsafe_block, .comptime_run => |b| try r.block(b),
+            .comptime_run => |b| try r.block(b),
             .zone_block => |z| try r.block(z.body),
             .defer_stmt => |d| try r.block(d.body),
             .match_stmt => |m| {
@@ -285,6 +316,8 @@ const Rewriter = struct {
             },
             .comptime_for => |cf| try r.block(cf.body),
             .expr => |*e| try r.expr(e),
+            // A macro's expansion is spliced as `#insert #quote { … }`.
+            .insert_stmt => |ins| if (ins.operand.kind == .quote) try r.block(ins.operand.kind.quote),
             else => {},
         }
     }
@@ -363,10 +396,16 @@ const Rewriter = struct {
     /// The `Format` of the literal `lit`: its function added to the module, or null after a
     /// mistake (printed).
     fn format(r: *Rewriter, lit: ast.Expr) Error!?ast.Expr {
-        const sp = try split(r.a, lit.kind.string, lit.span.start);
+        const raw = lit.kind.string;
+        // A macro's template made this literal's text (its locals renamed, its splices put in):
+        // it is read from that text, and a mistake in it is reported at the literal.
+        const verbatim = lit.span.start + raw.len <= r.source.len and
+            std.mem.eql(u8, r.source[lit.span.start..][0..raw.len], raw);
+        const text_source = if (verbatim) r.source else raw;
+        const sp = try split(r.a, raw, if (verbatim) lit.span.start else 0);
         const pieces = switch (sp) {
             .problem => |p| {
-                r.report(p.msg, Span.new(p.at, p.at + p.len));
+                r.report(p.msg, if (verbatim) Span.new(p.at, p.at + p.len) else lit.span);
                 return null;
             },
             .pieces => |ps| ps,
@@ -382,22 +421,24 @@ const Rewriter = struct {
         for (pieces) |piece| switch (piece) {
             .text => |t| try stmts.append(r.a, .{ .expr = try r.call("text", &.{try r.string(t, span)}, span) }),
             .value => |ph| {
+                const at: Span = if (verbatim) Span.new(ph.start, ph.end) else span;
                 if (specProblem(ph.spec)) |msg| {
-                    r.report(msg, Span.new(ph.spec_at, ph.spec_at + @max(ph.spec.len, 1)));
+                    r.report(msg, if (verbatim) Span.new(ph.spec_at, ph.spec_at + @max(ph.spec.len, 1)) else span);
                     return null;
                 }
                 // The parser numbers from the id it is given, and `newId` gave `next_id` last.
-                const parsed = parser.parseEmbedded(r.a, r.file, r.source, ph.start, ph.end, next_id + 1) catch |err| switch (err) {
+                const parsed = parser.parseEmbedded(r.a, r.file, text_source, ph.start, ph.end, next_id + 1) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     else => {
-                        r.report("this is not a value the format can print: the braces hold one expression, and no string literal (a brace in the text is `{{`)", Span.new(ph.start, ph.end));
+                        r.report("this is not a value the format can print: the braces hold one expression, and no string literal (a brace in the text is `{{`)", at);
                         return null;
                     },
                 };
                 next_id = parsed.next_id;
+                if (!verbatim) pinSpans(&parsed.expr, span);
                 // The macros were expanded, and dropped, before the formats are read.
                 if (macroexpand.hasInsertExpr(parsed.expr)) {
-                    r.report("a macro cannot be expanded in a format's braces: put its value in a local first (`v := #insert m(x);`, then `{v}`)", Span.new(ph.start, ph.end));
+                    r.report("a macro cannot be expanded in a format's braces: put its value in a local first (`v := #insert m(x);`, then `{v}`)", at);
                     return null;
                 }
                 for (parsed.lifted) |l| try r.added.append(r.a, .{ .function = l });

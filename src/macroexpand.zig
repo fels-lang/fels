@@ -349,8 +349,9 @@ const Expander = struct {
 
     fn introduce(self: *Expander, name: []const u8, hyg: *Hyg) ExpandError!void {
         if (hyg.contains(name)) return;
-        // `$` cannot appear in a user identifier, so this name can never collide.
-        const fresh = try std.fmt.allocPrint(self.arena, "{s}$m{d}", .{ name, self.gensym });
+        // Names starting with `__` are the compiler's, so this one collides with no name of
+        // the program. It is a name the parser reads, as a format's braces have it in its text.
+        const fresh = try std.fmt.allocPrint(self.arena, "__m{d}_{s}", .{ self.gensym, name });
         self.gensym += 1;
         try hyg.put(name, fresh);
     }
@@ -565,6 +566,45 @@ const Expander = struct {
         return out.toOwnedSlice(self.arena);
     }
 
+    /// A template string's text with its splices put in: `$(…)` and `$name` that name a macro
+    /// parameter or a field of a `#for`; any other `$` is text (`"$HOME"`, `"$5"`).
+    fn resolveText(self: *Expander, text: []const u8, env: *Env) ExpandError![]const u8 {
+        var out: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+        while (i < text.len) {
+            if (text[i] != '$' or i + 1 >= text.len) {
+                try out.append(self.arena, text[i]);
+                i += 1;
+                continue;
+            }
+            var inner: []const u8 = "";
+            var next: usize = i + 1;
+            if (text[i + 1] == '(') {
+                const close = std.mem.indexOfScalarPos(u8, text, i, ')') orelse {
+                    try out.append(self.arena, text[i]);
+                    i += 1;
+                    continue;
+                };
+                inner = std.mem.trim(u8, text[i + 2 .. close], " ");
+                next = close + 1;
+            } else if (std.ascii.isAlphabetic(text[i + 1]) or text[i + 1] == '_') {
+                var j = i + 1;
+                while (j < text.len and isWordChar(text[j])) j += 1;
+                inner = text[i + 1 .. j];
+                next = j;
+            }
+            const base = if (std.mem.indexOfScalar(u8, inner, '.')) |dot| inner[0..dot] else inner;
+            if (inner.len == 0 or !(env.contains(base) or self.records.contains(base))) {
+                try out.append(self.arena, text[i]);
+                i += 1;
+                continue;
+            }
+            try out.appendSlice(self.arena, try self.spliceName(inner, env));
+            i = next;
+        }
+        return out.toOwnedSlice(self.arena);
+    }
+
     /// The name `$(inner)` stands for in a name: a macro parameter bound to a name or a type
     /// (`$(T)`), or a field's name (`$(f.name)`).
     fn spliceName(self: *Expander, inner: []const u8, env: *Env) ExpandError![]const u8 {
@@ -590,6 +630,43 @@ const Expander = struct {
             .int => |t| t,
             else => fail("`$({s})` in a name: its argument is no name", .{inner}),
         };
+    }
+
+    /// A string literal's text in a template: `$(…)` name splices resolved, and inside braces
+    /// each word that is a local of the template renamed as the template's code is.
+    fn templateText(self: *Expander, raw: []const u8, env: *Env, hyg: *Hyg) ExpandError![]const u8 {
+        const resolved = if (std.mem.indexOfScalar(u8, raw, '$') != null) try self.resolveText(raw, env) else raw;
+        if (std.mem.indexOfScalar(u8, resolved, '{') == null or hyg.count() == 0) return resolved;
+        var out: std.ArrayList(u8) = .empty;
+        var depth: usize = 0;
+        var i: usize = 0;
+        while (i < resolved.len) {
+            const c = resolved[i];
+            if (c == '\\' and i + 1 < resolved.len) {
+                try out.appendSlice(self.arena, resolved[i .. i + 2]);
+                i += 2;
+                continue;
+            }
+            if (c == '{' and depth == 0 and i + 1 < resolved.len and resolved[i + 1] == '{') {
+                try out.appendSlice(self.arena, "{{");
+                i += 2;
+                continue;
+            }
+            if (c == '{') depth += 1;
+            if (c == '}' and depth > 0) depth -= 1;
+            if (depth > 0 and (std.ascii.isAlphabetic(c) or c == '_') and (i == 0 or !isWordChar(resolved[i - 1]))) {
+                const start = i;
+                while (i < resolved.len and isWordChar(resolved[i])) i += 1;
+                const word = resolved[start..i];
+                // `.name` after a dot is a field, not a local.
+                const after_dot = start > 0 and resolved[start - 1] == '.';
+                try out.appendSlice(self.arena, if (!after_dot) (hyg.get(word) orelse word) else word);
+                continue;
+            }
+            try out.append(self.arena, c);
+            i += 1;
+        }
+        return out.toOwnedSlice(self.arena);
     }
 
     /// `$(f.name)`, `$(f.ty)`, `$(f.index)`, `$(f.text)` as an expression, or null when
@@ -724,6 +801,13 @@ const Expander = struct {
                 }
                 return self.rebuild(expr, .{ .insert_expr = try self.dup(operand) }); // sema rejects it
             },
+            // A string in a template may be a format whose braces are code: its locals have
+            // their hygienic names there too, and `$(…)` splices put their names in, in the text
+            // and in the braces (`"$(f.name) = {p.$(f.name)}"`).
+            .string => |raw| {
+                if (std.mem.indexOfAny(u8, raw, "{$") == null) return self.rebuild(expr, expr.kind);
+                return self.rebuild(expr, .{ .string = try self.templateText(raw, env, hyg) });
+            },
             .match_expr => |m| {
                 var arms: std.ArrayList(ast.MatchExprArm) = .empty;
                 for (m.arms) |arm| {
@@ -817,6 +901,10 @@ const Expander = struct {
         return hyg.get(name) orelse name;
     }
 };
+
+fn isWordChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_';
+}
 
 /// Whether `value` (any AST node) holds an `#insert` expression, at any depth. Generic over the
 /// AST's types, so a new kind of node is searched without a change here.

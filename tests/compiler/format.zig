@@ -198,6 +198,29 @@ test "format: method calls on values in one format" {
     try std.testing.expectEqualStrings("1 2 3\n", out);
 }
 
+test "format: a format in a macro's template sees its locals and its splices" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The template's locals are renamed in its braces too, and `$(f.name)` is put in, in the
+    // text and in the braces. A macro used twice makes two formats.
+    const out = try printed(arena.allocator(),
+        \\#import std.io;
+        \\Point :: struct { x: i32, y: i64 }
+        \\say :: macro(v: Expr) { return #quote { c := $v; io::println("say {c}") catch e {}; }; }
+        \\show :: macro(v: Expr, T: Expr) {
+        \\    return #quote { #for f in fields($T) { io::println("$(f.name) = {$v.$(f.name)}") catch e {}; } };
+        \\}
+        \\main :: fn() -> i32 {
+        \\    p: Point = .{ 4, 5 };
+        \\    #insert say(1);
+        \\    #insert say(2);
+        \\    #insert show(p, Point);
+        \\    return 0;
+        \\}
+    , "fmt_in_macro");
+    try std.testing.expectEqualStrings("say 1\nsay 2\nx = 4\ny = 5\n", out);
+}
+
 test "format: types print with the names they are written with" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
