@@ -156,6 +156,60 @@ The two loops look alike, but they work differently:
   and you splice it with `$(i)`. The bounds must be integer literals (or macro parameters bound
   to literals).
 
+### Over a struct's fields
+
+`#for f in fields(T) { ... }` emits its body once per field of the struct `T`, in a template or
+in ordinary code. Each copy has the field at hand:
+
+| Splice | Is |
+|---|---|
+| `$(f.name)` | the field's name, as a name: `v.$(f.name)`, or joined into a longer one |
+| `$(f.ty)` | the field's type, where a type goes: `c: $(f.ty) = …` |
+| `$(f.index)` | its position, an integer literal from 0 |
+| `$(f.text)` | its name as a string literal: `io::println($(f.text))` |
+
+```fels
+Point :: struct { x: i32, y: i32, z: i64 }
+
+sum_fields :: macro(out: Expr, v: Expr, T: Expr) {
+    return #quote {
+        #for f in fields($T) {
+            c: $(f.ty) = $v.$(f.name);       // an i32 for x and y, an i64 for z
+            $out = $out + (c as i64);
+        }
+    };
+}
+
+main :: fn() -> i32 {
+    p: Point = .{ 1, 2, 3 };
+    total: i64 = 0;
+    #insert sum_fields(total, p, Point);    // 6
+    return total as i32;
+}
+```
+
+`T` is a struct declared in the program, by its name; a generic one is refused, as its fields'
+types are not known before the type check. Two `#for` loops over fields, one inside the other,
+need different names for their bindings.
+
+### Building names
+
+A name written directly against a splice joins with it into one name: `$(f.name)_twice`,
+`get_$(f.name)`, `$(T)_new`. The splice is a field's name or type, or a macro parameter whose
+argument is a name, a type or an integer.
+
+```fels
+x_twice := 0; y_twice := 0; z_twice := 0;
+#for f in fields(Point) { $(f.name)_twice = (p.$(f.name) * 2) as i32; }
+```
+
+### Formats in templates
+
+A format in a template is read after the expansion, with the template's own names: its
+locals in the braces are the renamed ones, and `$(…)` and `$name` splices are put into its
+text and braces (`"$(f.name) = {$v.$(f.name)}"` prints `x = 1`). A `$` that names no macro
+parameter or field stays as it is (`"$5"`). A macro used twice makes two formats.
+
 ## 4. Hygiene
 
 A macro's own locals are **renamed to fresh, collision-free names**. That way they can never

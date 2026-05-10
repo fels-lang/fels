@@ -7,6 +7,12 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **`#for f in fields(T)`** emits its body once per field of the struct `T`, in a macro's template
+  or in ordinary code, with `$(f.name)`, `$(f.ty)`, `$(f.index)` and `$(f.text)` (the name as a
+  string) for that field.
+- **Names built from splices**: a name written against a splice joins with it,
+  `$(f.name)_twice`, `get_$(f.name)`, `$(T)_new`, also after a `.` (`v.$(f.name)`) and as a type
+  (`c: $(f.ty)`).
 - **Expression macros.** A macro whose body is `return #quote(expr);` stands for a value:
   `a := #insert sq(n + 1);`, in an argument, a constant or another macro's template too.
   `#insert` of one as a statement is its expression as a statement.
@@ -25,6 +31,9 @@ the major version is `0`, any minor bump may break source compatibility.
   garbage (`a.get() + b.get()` was 2 for 1 and 2).
 - In a lambda, a local copied from a captured number or array (`m := n`, `ys := xs`) was typed a
   pointer: the build failed in LLVM, or the program crashed.
+- A format in a macro's template did not work: its braces did not see the template's renamed
+  locals ("unknown name"), and a macro used twice stopped with an internal error. The copies a
+  template makes have node ids of their own now, so they can also have different types.
 - A generic struct's instance printed and showed in errors with its mangled name
   (`Pair__T_i32{ a: 1, b: 2 }`); it is `Pair(i32)` now. `core::type_name`, an `Any`'s name and
   `TypeInfo` spell every type out: `[]i32`, `*Point`, `?i32`, `[4]u8`, where they said `slice`,
