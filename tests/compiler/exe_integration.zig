@@ -1811,6 +1811,54 @@ test "exe: #for f in fields(T) goes through a struct's fields, and names are bui
     try std.testing.expectEqual(@as(u32, 152), code);
 }
 
+test "exe: a macro makes declarations, among the declarations and in a struct body" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A declaration quote: getters among the declarations (named `get_x`, …), setters as
+    // methods of the struct whose body inserts them (`Self` is the struct), a struct with a
+    // function of its own name, and a quote inserted as it is.
+    const code = try compileAndRun(arena.allocator(),
+        \\getters :: macro(T: Expr) {
+        \\    return #quote {
+        \\        #for f in fields($T) {
+        \\            get_$(f.name) :: fn(self: *$T) -> $(f.ty) { return self.$(f.name); }
+        \\        }
+        \\    };
+        \\}
+        \\setters :: macro(T: Expr) {
+        \\    return #quote {
+        \\        #for f in fields($T) {
+        \\            pub set_$(f.name) :: fn(self: *Self, v: $(f.ty)) { self.$(f.name) = v; }
+        \\        }
+        \\    };
+        \\}
+        \\pair_of :: macro(name: Expr, T: Expr) {
+        \\    return #quote {
+        \\        $name :: struct { a: $T, b: $T }
+        \\        $(name)_sum :: fn(p: $name) -> $T { return p.a + p.b; }
+        \\    };
+        \\}
+        \\Point :: struct {
+        \\    x: i32,
+        \\    y: i64,
+        \\    #insert setters(Point);
+        \\}
+        \\#insert getters(Point);
+        \\#insert pair_of(IntPair, i32);
+        \\#insert #quote { LIMIT :: 10; };
+        \\main :: fn() -> i32 {
+        \\    p: Point = .{ 0, 0 };
+        \\    p.set_x(5);
+        \\    p.set_y(7);
+        \\    q: IntPair = .{ 2, 3 };
+        \\    return get_x(&p) * 10 + (p.get_y() as i32) + IntPair_sum(q) * 100 + LIMIT; // 50 + 7 + 500 + 10
+        \\}
+    , "exe_decl_quote");
+    try std.testing.expectEqual(@as(u32, 567 % 256), code);
+}
+
 test "exe: #for unrolls a comptime loop, baking the index" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

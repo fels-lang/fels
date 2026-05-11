@@ -156,6 +156,23 @@ test "metaprogram: #for over fields takes a struct of the program and a field's 
     for (bad) |src| try std.testing.expectError(error.SemanticFailed, fels.compile(a, "for_fields_bad.fels", src));
 }
 
+test "metaprogram: declarations go into a declaration quote, for an #insert among declarations" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const bad = [_][]const u8{
+        // a statement in a quote inserted among the declarations
+        "#insert #quote { x := 5; };\nrun :: fn() -> i32 { return 0; }",
+        // a declaration in a function body
+        "run :: fn() -> i32 { helper :: fn() -> i32 { return 1; } return 0; }",
+        // a struct body's #insert makes methods only
+        "mk :: macro() { return #quote { N :: 5; }; }\nP :: struct { x: i32, #insert mk(); }",
+        // no macro of that name
+        "#insert nothing(1);",
+    };
+    for (bad) |src| try std.testing.expectError(error.SemanticFailed, fels.compile(a, "decl_quote_bad.fels", src));
+}
+
 test "metaprogram: stray $ splice outside a macro is rejected" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

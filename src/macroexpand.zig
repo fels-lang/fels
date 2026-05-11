@@ -36,6 +36,8 @@ const Expander = struct {
     structs: std.StringHashMap(ast.StructDecl),
     /// The `#for f in fields(T)` loops being unrolled: `f` → the field it is at.
     records: std.StringHashMap(FieldRecord),
+    /// The struct an `#insert` in its body makes methods for: `Self` in them is this type.
+    self_type: ?ast.TypeRef = null,
     /// Monotonic counter so each expansion's hygienic names are distinct.
     gensym: u32 = 0,
 
@@ -63,9 +65,47 @@ const Expander = struct {
         };
 
         var out: std.ArrayList(ast.Item) = .empty;
-        for (module.items) |item| switch (item) {
+        for (module.items) |item| try self.expandItem(item, &out);
+
+        return .{ .file_name = module.file_name, .items = try out.toOwnedSlice(self.arena) };
+    }
+
+    /// `item` with its macros expanded, onto `out`: an `#insert` among the declarations is the
+    /// declarations it makes, and a struct's `#insert`s add its methods.
+    fn expandItem(self: *Expander, item: ast.Item, out: *std.ArrayList(ast.Item)) ExpandError!void {
+        switch (item) {
+            .insert => |ins| {
+                var made: std.ArrayList(ast.Item) = .empty;
+                try self.insertDecls(ins, &made);
+                for (made.items) |m| try self.expandItem(m, out);
+            },
+            .type_decl => |d| {
+                try out.append(self.arena, item);
+                const st = switch (d.kind) {
+                    .struct_type => |st| st,
+                    else => return,
+                };
+                if (st.inserts.len == 0) return;
+                if (st.type_params.len > 0) return fail("`#insert` in the body of `{s}`: a generic struct cannot have one yet", .{d.name});
+                const saved = self.self_type;
+                defer self.self_type = saved;
+                self.self_type = .{ .named = .{ .name = d.name, .span = d.span } };
+                for (st.inserts) |ins| {
+                    var made: std.ArrayList(ast.Item) = .empty;
+                    try self.insertDecls(ins, &made);
+                    for (made.items) |m| switch (m) {
+                        // A method: hoisted as the parser hoists one, `Struct.name`.
+                        .function => |f| {
+                            var method = f;
+                            method.name = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ d.name, f.name });
+                            try self.expandItem(.{ .function = method }, out);
+                        },
+                        else => return fail("`#insert` in the body of `{s}` makes methods: `name :: fn(self: *Self, …)`", .{d.name}),
+                    };
+                }
+            },
             .function => |f| {
-                if (f.is_macro) continue; // dropped — never lowered
+                if (f.is_macro) return; // dropped — never lowered
                 var nf = f;
                 if (f.body) |body| nf.body = try self.expandBody(body);
                 try out.append(self.arena, .{ .function = nf });
@@ -91,9 +131,106 @@ const Expander = struct {
                 try out.append(self.arena, .{ .const_decl = nd });
             },
             else => try out.append(self.arena, item),
-        };
+        }
+    }
 
-        return .{ .file_name = module.file_name, .items = try out.toOwnedSlice(self.arena) };
+    /// The declarations `#insert m(args);` (or `#insert #quote { … };`) makes, onto `made`.
+    /// Made in another file than the macro's, they belong to the `#insert`'s file, and what
+    /// they say points at the `#insert`.
+    fn insertDecls(self: *Expander, ins: ast.InsertDecl, made: *std.ArrayList(ast.Item)) ExpandError!void {
+        const block: ast.Block = switch (ins.operand.kind) {
+            .quote => |q| blk: {
+                var env = Env.init(self.arena);
+                var hyg = Hyg.init(self.arena);
+                break :blk try self.substBlock(q, &env, &hyg);
+            },
+            .call => |c| blk: {
+                if (c.callee.kind != .ident) return fail("`#insert` among the declarations takes a macro call or a `#quote {{ … }}`", .{});
+                const macro = self.macros.get(c.callee.kind.ident) orelse
+                    return fail("`#insert {s}(…)` among the declarations: `{s}` is no macro", .{ c.callee.kind.ident, c.callee.kind.ident });
+                break :blk try self.expandMacroCall(macro, c);
+            },
+            else => return fail("`#insert` among the declarations takes a macro call or a `#quote {{ … }}`", .{}),
+        };
+        for (block.statements) |stmt| switch (stmt) {
+            .decl => |item| {
+                var it = item.*;
+                if (!std.mem.eql(u8, it.fileName(), ins.file_name)) {
+                    switch (it) {
+                        .function => |*f| {
+                            f.file_name = ins.file_name;
+                            f.source = ins.source;
+                        },
+                        .type_decl => |*t| t.file_name = ins.file_name,
+                        .const_decl => |*c| {
+                            c.file_name = ins.file_name;
+                            c.source = ins.source;
+                        },
+                        else => {},
+                    }
+                    pinItemSpans(&it, ins.span);
+                }
+                try made.append(self.arena, it);
+            },
+            else => return fail("`#insert` among the declarations: its quote holds a statement; a declaration quote holds declarations only (`name :: fn(…) {{ … }}`)", .{}),
+        };
+    }
+
+    /// A declaration of a template with its splices put in: its name, its types, its body.
+    fn substItem(self: *Expander, item: ast.Item, env: *Env) ExpandError!ast.Item {
+        switch (item) {
+            .function => |f| {
+                var nf = f;
+                nf.name = try self.spliced(f.name, env);
+                const params = try self.arena.alloc(ast.Param, f.params.len);
+                for (f.params, 0..) |prm, k| {
+                    params[k] = prm;
+                    params[k].name = try self.spliced(prm.name, env);
+                    params[k].ty = try self.substType(prm.ty, env);
+                }
+                nf.params = params;
+                nf.return_ty = try self.substType(f.return_ty, env);
+                if (f.body) |b| {
+                    // Its own scope: the template's locals are not its locals.
+                    var hyg = Hyg.init(self.arena);
+                    nf.body = try self.substBlock(b, env, &hyg);
+                }
+                return .{ .function = nf };
+            },
+            .type_decl => |d| {
+                var nd = d;
+                nd.name = try self.spliced(d.name, env);
+                switch (d.kind) {
+                    .struct_type => |st| {
+                        var nst = st;
+                        const fields = try self.arena.alloc(ast.FieldDecl, st.fields.len);
+                        for (st.fields, 0..) |fld, k| {
+                            fields[k] = fld;
+                            fields[k].name = try self.spliced(fld.name, env);
+                            fields[k].ty = try self.substType(fld.ty, env);
+                        }
+                        nst.fields = fields;
+                        nd.kind = .{ .struct_type = nst };
+                    },
+                    else => {},
+                }
+                return .{ .type_decl = nd };
+            },
+            .const_decl => |d| {
+                var nd = d;
+                nd.name = try self.spliced(d.name, env);
+                var hyg = Hyg.init(self.arena);
+                nd.value = try self.substExpr(d.value, env, &hyg);
+                if (d.ty) |t| nd.ty = try self.substType(t, env);
+                return .{ .const_decl = nd };
+            },
+            else => return item,
+        }
+    }
+
+    /// `text` with its splices put in, or `text` when it has none.
+    fn spliced(self: *Expander, text: []const u8, env: *Env) ExpandError![]const u8 {
+        return if (std.mem.indexOf(u8, text, "$(") != null) self.resolveName(text, env) else text;
     }
 
     /// A function body with its macros expanded: the `#insert` statements, then the
@@ -380,7 +517,11 @@ const Expander = struct {
         }
 
         switch (stmt) {
-            .decl => try out.append(self.arena, stmt),
+            .decl => |item| {
+                const made = try self.arena.create(ast.Item);
+                made.* = try self.substItem(item.*, env);
+                try out.append(self.arena, .{ .decl = made });
+            },
             .local_infer => |l| try out.append(self.arena, .{ .local_infer = .{
                 .name = self.rename(l.name, hyg),
                 .value = try self.substExpr(l.value, env, hyg),
@@ -854,6 +995,7 @@ const Expander = struct {
         return switch (ty) {
             // `$(f.ty)`, or a type name with splices (`$(T)_box`).
             .named => |n| blk: {
+                if (self.self_type) |st| if (n.namespace == null and std.mem.eql(u8, n.name, "Self")) break :blk st;
                 if (std.mem.indexOf(u8, n.name, "$(") == null) break :blk ty;
                 if (std.mem.startsWith(u8, n.name, "$(") and std.mem.endsWith(u8, n.name, ".ty)") and
                     std.mem.indexOfScalar(u8, n.name[2..], '$') == null)
@@ -902,6 +1044,41 @@ const Expander = struct {
         return hyg.get(name) orelse name;
     }
 };
+
+/// Point every span in `item` at `to`: a declaration made by a macro of another file belongs
+/// to the `#insert`'s file, whose text its spans are not in. Its nodes are the expansion's own
+/// copies, written in place.
+fn pinItemSpans(item: *ast.Item, to: Span) void {
+    pinSpans(item, to);
+}
+
+fn pinSpans(ptr: anytype, to: Span) void {
+    const T = @typeInfo(@TypeOf(ptr)).pointer.child;
+    const node: *T = @constCast(ptr);
+    if (T == Span) {
+        node.* = to;
+        return;
+    }
+    switch (@typeInfo(T)) {
+        .@"struct" => |info| inline for (info.fields) |field| pinSpans(&@field(node.*, field.name), to),
+        .@"union" => |info| {
+            if (info.tag_type == null) return;
+            switch (node.*) {
+                inline else => |*payload| pinSpans(payload, to),
+            }
+        },
+        .pointer => |info| switch (info.size) {
+            .one => pinSpans(node.*, to),
+            .slice => {
+                if (info.child == u8) return;
+                for (node.*) |*element| pinSpans(element, to);
+            },
+            else => {},
+        },
+        .optional => if (node.*) |*inner| pinSpans(inner, to),
+        else => {},
+    }
+}
 
 fn isWordChar(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_';
