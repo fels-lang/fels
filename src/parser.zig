@@ -2558,12 +2558,19 @@ pub const Parser = struct {
                     const block = try self.parseBlock();
                     return self.expr(.{ .quote = block }, Span.new(tok.start, block.span.end));
                 }
+                // #embed("path") — a file's bytes.
+                if (self.matchIdent("embed")) {
+                    _ = try self.expect(.l_paren, "expected ( after #embed");
+                    const path = try self.expect(.string_lit, "`#embed` takes the path of a file, as a string literal");
+                    const close = try self.expect(.r_paren, "expected ) after the #embed path");
+                    return self.expr(.{ .embed = .{ .path = path.text(self.source) } }, Span.new(tok.start, close.start + close.len));
+                }
                 // #insert m(args) — an expression macro's expansion.
                 if (self.matchIdent("insert")) {
                     const inner = try self.parseExpr(18);
                     return self.expr(.{ .insert_expr = try self.allocExpr(inner) }, Span.new(tok.start, inner.span.end));
                 }
-                try self.errorAt(tok, "expected `run`, `quote`, `parse` or `insert` after `#` in an expression");
+                try self.errorAt(tok, "expected `run`, `quote`, `parse`, `insert` or `embed` after `#` in an expression");
                 return error.ParseFailed;
             },
             // $name / $(expr) — a splice hole inside a #quote (macro template).

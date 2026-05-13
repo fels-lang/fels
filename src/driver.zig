@@ -276,6 +276,15 @@ pub fn compileWithLlvm(
 }
 
 /// Full file pipeline: .fels path + imports -> IR -> LLVM IR -> .o -> (optional) .exe
+/// The absolute folder of `file`, or null when there is none to find.
+fn projectRootOf(allocator: std.mem.Allocator, io: std.Io, file: []const u8) ?[]const u8 {
+    const dir = std.fs.path.dirname(file) orelse ".";
+    if (std.fs.path.isAbsolute(dir)) return std.fs.path.resolve(allocator, &.{dir}) catch null;
+    const cwd = std.process.currentPathAlloc(io, allocator) catch return null;
+    defer allocator.free(cwd);
+    return std.fs.path.resolve(allocator, &.{ cwd, dir }) catch null;
+}
+
 pub fn compileFileWithLlvm(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -285,6 +294,12 @@ pub fn compileFileWithLlvm(
     const saved_target = pipeline.build_target.current;
     pipeline.build_target.current = buildTargetOf(opts);
     defer pipeline.build_target.current = saved_target;
+    // A file built alone is its project: its compile-time code reads below its folder.
+    const saved_root = ir.project_root;
+    defer ir.project_root = saved_root;
+    const own_root = if (saved_root == null) projectRootOf(allocator, io, opts.file_name) else null;
+    defer if (own_root) |r| allocator.free(r);
+    if (own_root) |r| ir.project_root = r;
 
     const ct0 = ir.comptime_ns;
     const t_total = nowNs();

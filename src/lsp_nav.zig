@@ -1334,6 +1334,7 @@ const Walker = struct {
 
     fn walkExpr(w: *Walker, e: ast.Expr, role: Role, expected: ?SymbolId) void {
         switch (e.kind) {
+            .embed => {},
             .ident => |name| w.walkIdent(e, name, role, expected),
             .type_ref => |tr| w.walkTypeRef(tr),
             .int, .float, .string, .bool, .null => {},

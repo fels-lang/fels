@@ -8,6 +8,7 @@ const sema = @import("sema.zig");
 const macroexpand = @import("macroexpand.zig");
 const ast_prelude = @import("ast_prelude.zig");
 const ir_mod = @import("ir.zig");
+const strlit = @import("strlit.zig");
 const style = @import("style.zig");
 const format_expand = @import("format_expand.zig");
 
@@ -313,6 +314,7 @@ fn compileFileInternal(
         .next_id = &next_id,
         .root_source = &root_source,
         .stdlib_root = stdlib_root_override orelse build_options.stdlib_root,
+        .root_dir = std.fs.path.dirname(absolute(io, fe_allocator, path) catch path),
     };
     loadFile(&ctx, path, true, false) catch |err| switch (err) {
         error.ParseFailed => return error.ParseFailed,
@@ -360,7 +362,98 @@ const LoadCtx = struct {
     stdlib_root: ?[]const u8,
     /// Null for the compiler (strict: print and fail); set by `analyzeFile`.
     analysis: ?*AnalysisState = null,
+    /// The folder of the file compiled, for an `#embed` when no project set `ir.project_root`.
+    root_dir: ?[]const u8 = null,
 };
+
+/// Read the file of each `#embed("…")` in the `items` of the file at `path`, below that file's
+/// folder, if the code there may read it (`ir.capsForFile`): the project's own code reads
+/// below the project's folder, a package's what fels.pkg grants it.
+fn readEmbeds(ctx: *LoadCtx, path: []const u8, source: []const u8, items: []const ast.Item) anyerror!void {
+    const Reader = struct {
+        ctx: *LoadCtx,
+        file: []const u8,
+        source: []const u8,
+        failed: bool = false,
+
+        fn visit(r: *@This(), ptr: anytype) anyerror!void {
+            const T = @typeInfo(@TypeOf(ptr)).pointer.child;
+            const node: *T = @constCast(ptr);
+            if (T == ast.Expr) {
+                if (node.kind == .embed) return r.read(&node.kind.embed, node.span);
+            }
+            switch (@typeInfo(T)) {
+                .@"struct" => |info| inline for (info.fields) |field| try r.visit(&@field(node.*, field.name)),
+                .@"union" => |info| {
+                    if (info.tag_type == null) return;
+                    switch (node.*) {
+                        inline else => |*payload| try r.visit(payload),
+                    }
+                },
+                .pointer => |info| switch (info.size) {
+                    .one => try r.visit(node.*),
+                    .slice => {
+                        if (info.child == u8) return;
+                        for (node.*) |*element| try r.visit(element);
+                    },
+                    else => {},
+                },
+                .optional => if (node.*) |*inner| try r.visit(inner),
+                else => {},
+            }
+        }
+
+        fn read(r: *@This(), e: *ast.EmbedExpr, span: Span) anyerror!void {
+            // The language server reads no files: an `#embed` is empty to it.
+            if (r.ctx.analysis != null) {
+                e.bytes = "";
+                return;
+            }
+            const a = r.ctx.allocator;
+            const rel = strlit.bytes(a, e.path);
+            const file_abs = try absolute(r.ctx.io, a, r.file);
+            const target = try std.fs.path.resolve(a, &.{ std.fs.path.dirname(file_abs) orelse ".", rel });
+            // The package a file is in is found as the VM finds it, by the path as given; the
+            // read is checked with both absolute.
+            const caps = ir_mod.capsForFileUnder(r.file, r.ctx.root_dir);
+            if (!caps.allowsRead(target)) {
+                const why = switch (caps.read) {
+                    .none => "this code may read no files: a package's compile-time code reads what fels.pkg grants it (`may read(\"…\")` on its `#use` line)",
+                    else => "it is outside the folders this code may read: the project's own code reads the files below the project's folder, a package's what fels.pkg grants it",
+                };
+                r.report(span, "`#embed({s})` reads `{s}`, but {s}", .{ e.path, target, why });
+                return;
+            }
+            e.bytes = std.Io.Dir.cwd().readFileAlloc(r.ctx.io, target, a, .unlimited) catch |err| {
+                r.report(span, "`#embed({s})`: cannot read `{s}`: {s}", .{ e.path, target, @errorName(err) });
+                return;
+            };
+            // A file the compile read, as its sources are: a change to it builds again.
+            try r.ctx.loaded.put(target, {});
+        }
+
+        fn report(r: *@This(), span: Span, comptime fmt: []const u8, args: anytype) void {
+            r.failed = true;
+            const msg = std.fmt.allocPrint(r.ctx.allocator, fmt, args) catch "`#embed` failed";
+            const d = Diagnostic.err(msg, span, r.file);
+            if (r.ctx.analysis) |an| {
+                an.diags.append(r.ctx.allocator, d) catch {};
+                return;
+            }
+            diag_mod.printErrorAt(msg, r.file, r.source, span);
+        }
+    };
+    var reader: Reader = .{ .ctx = ctx, .file = path, .source = source };
+    for (items) |*item| try reader.visit(item);
+    if (reader.failed and ctx.analysis == null) return error.SemanticFailed;
+}
+
+/// `path` as an absolute path: joined to the current folder when it is relative.
+fn absolute(io: std.Io, a: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(path)) return std.fs.path.resolve(a, &.{path});
+    const cwd = try std.process.currentPathAlloc(io, a);
+    return std.fs.path.resolve(a, &.{ cwd, path });
+}
 
 fn loadFile(ctx: *LoadCtx, path: []const u8, is_root: bool, is_std: bool) anyerror!void {
     if (ctx.loaded.contains(path)) return;
@@ -405,6 +498,7 @@ fn loadFile(ctx: *LoadCtx, path: []const u8, is_root: bool, is_std: bool) anyerr
         ctx.next_id.* = parsed.next_id;
         items = parsed.module.items;
     }
+    try readEmbeds(ctx, path, diag_mod.sourceOf(path, ""), items);
 
     // Retain the import edge for visibility checking, then load the dependency.
     const dir = std.fs.path.dirname(path) orelse ".";

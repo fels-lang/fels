@@ -111,6 +111,7 @@ const Walker = struct {
 
     fn walkExpr(self: *Walker, expr: ast.Expr) anyerror!void {
         switch (expr.kind) {
+            .embed => {},
             .binary => |b| {
                 try self.walkExpr(b.left.*);
                 try self.walkExpr(b.right.*);

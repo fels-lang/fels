@@ -187,6 +187,13 @@ pub const EnumVariantDecl = struct {
     span: Span,
 };
 
+pub const EmbedExpr = struct {
+    /// The path as written, quotes and all: relative to the folder of the file that names it.
+    path: []const u8,
+    /// The file's bytes, once read; null when the program was not compiled from files.
+    bytes: ?[]const u8 = null,
+};
+
 /// `#insert m(args);` among the declarations or in a struct body.
 pub const InsertDecl = struct {
     operand: Expr,
@@ -678,6 +685,10 @@ pub const ExprKind = union(enum) {
     /// `#insert m(args)` in an expression: the expression a macro's `return #quote(expr);`
     /// makes of the arguments. The macroexpand pass replaces it; one left over is an error.
     insert_expr: *const Expr,
+    /// `#embed("data/table.csv")`: the bytes of a file, as a `[]const u8` constant. The file is
+    /// read when the source is loaded (`pipeline.loadFile`), under the read capability of the
+    /// code that names it.
+    embed: EmbedExpr,
     compound_literal: []const Expr,
     /// `.{ .x = 1, .y = 2 }` — a struct literal with named fields. Resolved against
     /// the expected struct type (reordered to declaration order, omitted fields

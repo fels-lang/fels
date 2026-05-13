@@ -792,6 +792,13 @@ fn stringLiteral(a: std.mem.Allocator, text: []const u8) ![]const u8 {
     return out.toOwnedSlice(a);
 }
 
+/// `dir` as an absolute folder, or null when the current folder cannot be found.
+pub fn absoluteDir(a: std.mem.Allocator, io: std.Io, dir: []const u8) ?[]const u8 {
+    if (std.fs.path.isAbsolute(dir)) return std.fs.path.resolve(a, &.{dir}) catch null;
+    const cwd = std.process.currentPathAlloc(io, a) catch return null;
+    return std.fs.path.resolve(a, &.{ cwd, dir }) catch null;
+}
+
 /// The VM capabilities of each package's folder, from what fels.pkg granted it. `fels build`
 /// and `fels test` put them in `ir.package_caps`.
 pub fn folderCaps(a: std.mem.Allocator, packages: []const pkg.resolve.Package) error{OutOfMemory}![]const ir.FolderCaps {
@@ -965,6 +972,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: Run
     try runPackageBuilds(gpa, io, &plan, folder_caps);
     ir.package_caps = folder_caps;
     defer ir.package_caps = &.{};
+    // The project's own compile-time code reads below the project's folder.
+    const saved_root = ir.project_root;
+    defer ir.project_root = saved_root;
+    ir.project_root = absoluteDir(plan.a(), io, base);
     script.end();
 
     if (opts.list) {
@@ -1687,6 +1698,8 @@ fn settingsKey(io: std.Io, plan: *BuildPlan, art: Artifact, parts: KeyParts) Bui
             .libs => |libs| for (libs) |l| str(&h, l),
         }
     }
+    // The folder the project's own compile-time code reads below.
+    str(&h, ir.project_root orelse "");
     return .{ .fels = f.final(), .settings = h.final() };
 }
 

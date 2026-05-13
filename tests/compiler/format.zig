@@ -221,6 +221,32 @@ test "format: a format in a macro's template sees its locals and its splices" {
     try std.testing.expectEqualStrings("say 1\nsay 2\nx = 4\ny = 5\n", out);
 }
 
+test "format: #embed puts a file of the project in the program, and no file outside it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The project of a file built alone is its folder. The bytes are text, never a format,
+    // and a `#run` reads them like any constant.
+    std.Io.Dir.cwd().createDirPath(std.testing.io, ".zig-cache/fmt/embed_data") catch {};
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = ".zig-cache/fmt/embed_data/note.txt", .data = "{braces} stay\nsecond\n" });
+    const out = try printed(a,
+        \\#import std.io;
+        \\NOTE :: #embed("embed_data/note.txt");
+        \\count :: fn(s: []const u8) -> i32 { n := 0; for c in s { if c == 10 { n += 1; } } return n; }
+        \\LINES :: #run count(#embed("embed_data/note.txt"));
+        \\main :: fn() -> i32 {
+        \\    io::print(NOTE) catch e {};
+        \\    io::println("{NOTE.len} {LINES}") catch e {};
+        \\    return 0;
+        \\}
+    , "fmt_embed");
+    try std.testing.expectEqualStrings("{braces} stay\nsecond\n21 2\n", out);
+    try refused(a,
+        \\X :: #embed("../../build.zig");
+        \\main :: fn() -> i32 { return X.len as i32; }
+    , "fmt_embed_outside");
+}
+
 test "format: types print with the names they are written with" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

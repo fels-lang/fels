@@ -3584,6 +3584,7 @@ const FunctionLowerer = struct {
             // `#parse` is resolved by the two-pass pipeline (string → AST), never
             // value-lowered; `$`-splices are macro internals.
             .splice, .parse_expr, .insert_expr => return error.LoweringFailed,
+            .embed => |e| .{ .imm = .{ .text = e.bytes orelse "" } },
             .match_expr => try self.lowerMatchExpr(expr, null),
             .if_expr => try self.lowerIfExpr(expr, null),
             .ident => |name| blk: {
@@ -7101,14 +7102,30 @@ pub const FolderCaps = struct {
 
 pub var package_caps: []const FolderCaps = &.{};
 
-/// The capabilities a `#run` in `file` gets: those of the package folder it is in.
-fn capsForFile(file: []const u8) vm_engine.Caps {
+/// The folder of the project being built (its fels.pkg or build.fels, or the file built). Its
+/// own compile-time code may read the files below it, and nothing else.
+pub var project_root: ?[]const u8 = null;
+var project_root_list: [1][]const u8 = undefined;
+
+/// The capabilities compile-time code in `file` gets: those of the package folder it is in,
+/// and outside every package, the project's: reading the files below the project's folder.
+pub fn capsForFile(file: []const u8) vm_engine.Caps {
+    return capsForFileUnder(file, null);
+}
+
+/// `capsForFile`, with `default_root` as the project's folder when no build set one.
+pub fn capsForFileUnder(file: []const u8, default_root: ?[]const u8) vm_engine.Caps {
     var best: ?FolderCaps = null;
     for (package_caps) |pc| {
         if (!inFolder(file, pc.dir)) continue;
         if (best == null or pc.dir.len > best.?.dir.len) best = pc;
     }
-    return if (best) |b| b.caps else .{};
+    if (best) |b| return b.caps;
+    if (project_root orelse default_root) |root| {
+        project_root_list[0] = root;
+        return .{ .read = .{ .dirs = &project_root_list } };
+    }
+    return .{};
 }
 
 /// Whether `file` is below `dir`, comparing `/` and `\` alike and letters without case.
@@ -8628,7 +8645,7 @@ fn exprHasRun(expr: ast.Expr) bool {
 /// back as zero — so anything not on this list has to be folded first.
 fn isDirectLiteral(expr: ast.Expr) bool {
     return switch (expr.kind) {
-        .int, .float, .bool, .string, .null => true,
+        .int, .float, .bool, .string, .null, .embed => true,
         .unary => |u| u.op == .neg and u.expr.kind == .int,
         else => false,
     };
@@ -9734,7 +9751,7 @@ fn inferConstType(expr: ast.Expr) IrType {
         .float => |text| if (std.mem.endsWith(u8, text, "f32")) .f32 else .f64,
         .unary => |u| if (u.op == .neg) inferConstType(u.expr.*) else .unknown,
         .bool => .bool,
-        .string => string_slice_ty,
+        .string, .embed => string_slice_ty,
         .null => .unknown,
         else => .unknown,
     };
@@ -9773,6 +9790,7 @@ fn lowerImm(allocator: std.mem.Allocator, expr: ast.Expr) Imm {
         },
         .bool => |value| .{ .bool = value },
         .string => |text| .{ .text = strlit.bytes(allocator, text) },
+        .embed => |e| .{ .text = e.bytes orelse "" },
         .null => .null,
         else => .null,
     };

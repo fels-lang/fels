@@ -149,6 +149,7 @@ const Analyzer = struct {
 
     fn walkExpr(self: *Analyzer, expr: ast.Expr) anyerror!void {
         switch (expr.kind) {
+            .embed => {},
             .ident => |name| try self.ref(name),
             .binary => |b| {
                 try self.walkExpr(b.left.*);

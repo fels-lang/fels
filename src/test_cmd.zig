@@ -113,6 +113,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
     const saved_caps = ir.package_caps;
     ir.package_caps = caps;
     defer ir.package_caps = saved_caps;
+    // The project's own compile-time code reads below the project's folder.
+    const saved_root = ir.project_root;
+    defer ir.project_root = saved_root;
+    if (saved_root == null) ir.project_root = build.absoluteDir(a, io, opts.project_dir);
 
     var files: Files = .{ .a = a };
     if (opts.paths.len == 0) {
