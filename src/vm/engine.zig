@@ -55,6 +55,43 @@ pub const BuildHost = struct {
 pub const Caps = struct {
     /// Which host (DLL / C) libraries this run may call into.
     ffi: Ffi = .none,
+    /// Which files this compile-time code may read: `#embed`, and `std.fs` in a `#run`.
+    read: Read = .none,
+
+    /// A read grant: no files, the files below these folders, or any file.
+    pub const Read = union(enum) {
+        none,
+        /// Absolute folders, borrowed: the slice must outlive the run.
+        dirs: []const []const u8,
+        all,
+    };
+
+    /// Whether the file at the absolute `path` may be read. A path that leaves its folder
+    /// (`..`) is no file below it.
+    pub fn allowsRead(self: Caps, path: []const u8) bool {
+        return switch (self.read) {
+            .none => false,
+            .all => true,
+            .dirs => |dirs| blk: {
+                if (std.mem.indexOf(u8, path, "..") != null) break :blk false;
+                for (dirs) |d| if (below(path, d)) break :blk true;
+                break :blk false;
+            },
+        };
+    }
+
+    /// Whether `path` is below the folder `dir`, comparing `/` and `\` alike and letters
+    /// without case (Windows paths).
+    pub fn below(path: []const u8, dir: []const u8) bool {
+        if (dir.len == 0 or path.len <= dir.len) return false;
+        for (dir, path[0..dir.len]) |d, p| {
+            const dn = if (d == '\\') '/' else std.ascii.toLower(d);
+            const pn = if (p == '\\') '/' else std.ascii.toLower(p);
+            if (dn != pn) return false;
+        }
+        const last = dir[dir.len - 1];
+        return last == '/' or last == '\\' or path[dir.len] == '/' or path[dir.len] == '\\';
+    }
 
     /// A host-call grant. `.libs` is the point of the exercise: a build hook can be
     /// handed exactly the libraries it needs instead of the whole host.
@@ -107,7 +144,7 @@ pub const Caps = struct {
     /// is `.none`, because a true intersection would have to allocate and failing
     /// closed is the safe direction.
     pub fn narrow(self: Caps, request: Caps) Caps {
-        return .{ .ffi = switch (self.ffi) {
+        return .{ .read = narrowRead(self.read, request.read), .ffi = switch (self.ffi) {
             .none => .none,
             .all => request.ffi,
             .libs => |mine| switch (request.ffi) {
@@ -121,6 +158,31 @@ pub const Caps = struct {
                     .none,
             },
         } };
+    }
+
+    /// Like the FFI grant: never broader than either side, and failing closed when neither
+    /// list of folders holds the other's.
+    fn narrowRead(mine: Read, theirs: Read) Read {
+        return switch (mine) {
+            .none => .none,
+            .all => theirs,
+            .dirs => |m| switch (theirs) {
+                .none => .none,
+                .all => mine,
+                .dirs => |t| if (dirsWithin(t, m)) theirs else if (dirsWithin(m, t)) mine else .none,
+            },
+        };
+    }
+
+    /// Whether each folder of `inner` is one of `outer` or below one.
+    fn dirsWithin(inner: []const []const u8, outer: []const []const u8) bool {
+        next: for (inner) |i| {
+            for (outer) |o| {
+                if (std.ascii.eqlIgnoreCase(i, o) or below(i, o)) continue :next;
+            }
+            return false;
+        }
+        return true;
     }
 
     fn isSubset(inner: []const []const u8, outer: []const []const u8) bool {
