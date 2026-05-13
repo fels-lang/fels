@@ -134,6 +134,46 @@ the template (`($x) * ($x)`) as above. `#insert sq(n);` as a statement is the ex
 statement. A macro that makes statements cannot stand for a value, and a macro does not expand
 inside a format's braces (`"{#insert sq(n)}"`): put its value in a local first.
 
+### Declarations
+
+A quote whose items are declarations (`name :: fn …`, `Name :: struct …`, `N :: 5;`) is a
+declaration quote. `#insert` it among the declarations of a file, and it adds them there; in a
+struct's body, it adds the struct's methods, with `Self` the struct. With `#for` over fields
+and names built from splices, a macro writes the mechanical functions of a type:
+
+```fels
+getters :: macro(T: Expr) {
+    return #quote {
+        #for f in fields($T) {
+            get_$(f.name) :: fn(self: *$T) -> $(f.ty) { return self.$(f.name); }
+        }
+    };
+}
+
+setters :: macro(T: Expr) {
+    return #quote {
+        #for f in fields($T) {
+            pub set_$(f.name) :: fn(self: *Self, v: $(f.ty)) { self.$(f.name) = v; }
+        }
+    };
+}
+
+Point :: struct {
+    x: i32,
+    y: i64,
+    #insert setters(Point);        // the methods p.set_x(…), p.set_y(…)
+}
+
+#insert getters(Point);            // get_x(&p), p.get_y()
+#insert #quote { LIMIT :: 10; };   // a quote inserted as it is
+```
+
+A declaration quote holds declarations only, and a function body holds none. An `#insert` in
+a struct body makes functions only, and a generic struct cannot have one yet. A struct with
+methods cannot be written in a quote yet: give it an `#insert` in its body instead. A macro of
+another file makes its declarations in the file of the `#insert`; an error in one points at the
+`#insert`.
+
 ## 3. `#for` — compile-time unrolling
 
 Inside a template, `#for i in a..b { ... }` is **unrolled** at expansion time. The body is
@@ -371,6 +411,9 @@ Point :: struct { x: i32, y: i32 }              // → `sum_Point` is generated
 Built-in (parser-side) and user (hook-side) derives can sit on the same struct. For a struct
 with several derives, `Decl.derives` is `"A B C"`. So match the exact string when you look for a
 single derive, or check for a substring to test membership.
+
+A macro with `#for f in fields(T)` and an `#insert` in the struct's body
+([Declarations](#declarations)) is another way to write a derive, with no source text built.
 
 A Fels derive is a compiler-side generator driven by the structure of the type. It is not a
 proc-macro with ambient power. The plan is to scope user-written generators to a pure

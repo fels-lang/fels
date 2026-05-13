@@ -7,6 +7,12 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **Macros make declarations.** A quote whose items are declarations (`name :: fn …`,
+  `Name :: struct …`, `N :: 5;`) is a declaration quote: `#insert` it among a file's
+  declarations, or in a struct's body for methods (`Self` is the struct). With `#for` over
+  fields, `getters :: macro(T: Expr) { return #quote { #for f in fields($T) { get_$(f.name) ::
+  fn(self: *$T) -> $(f.ty) { return self.$(f.name); } } }; }` and `#insert getters(Point);`
+  write a getter per field.
 - **`#for f in fields(T)`** emits its body once per field of the struct `T`, in a macro's template
   or in ordinary code, with `$(f.name)`, `$(f.ty)`, `$(f.index)` and `$(f.text)` (the name as a
   string) for that field.
