@@ -801,18 +801,28 @@ pub fn absoluteDir(a: std.mem.Allocator, io: std.Io, dir: []const u8) ?[]const u
 
 /// The VM capabilities of each package's folder, from what fels.pkg granted it. `fels build`
 /// and `fels test` put them in `ir.package_caps`.
-pub fn folderCaps(a: std.mem.Allocator, packages: []const pkg.resolve.Package) error{OutOfMemory}![]const ir.FolderCaps {
+pub fn folderCaps(a: std.mem.Allocator, io: std.Io, packages: []const pkg.resolve.Package) error{OutOfMemory}![]const ir.FolderCaps {
     var out: std.ArrayList(ir.FolderCaps) = .empty;
     for (packages) |p| {
         var libs: std.ArrayList([]const u8) = .empty;
         var any = false;
+        // `read`: absolute folders of the package (`read` alone is its whole folder).
+        var dirs: std.ArrayList([]const u8) = .empty;
         for (p.caps) |c| {
+            if (std.mem.eql(u8, c.name, "read")) {
+                // Absolute, as the file a read names is made absolute to be checked.
+                const pkg_dir = absoluteDir(a, io, p.dir) orelse p.dir;
+                if (c.args.len == 0) try dirs.append(a, pkg_dir);
+                for (c.args) |sub| try dirs.append(a, try std.fs.path.resolve(a, &.{ pkg_dir, sub }));
+                continue;
+            }
             if (!std.mem.eql(u8, c.name, "ffi")) continue;
             if (c.args.len == 0) any = true;
             try libs.appendSlice(a, c.args);
         }
         const ffi: @import("vm/engine.zig").Caps.Ffi = if (any) .all else if (libs.items.len != 0) .{ .libs = libs.items } else .none;
-        try out.append(a, .{ .dir = p.dir, .caps = .{ .ffi = ffi } });
+        const read: @import("vm/engine.zig").Caps.Read = if (dirs.items.len != 0) .{ .dirs = dirs.items } else .none;
+        try out.append(a, .{ .dir = p.dir, .caps = .{ .ffi = ffi, .read = read } });
     }
     return out.items;
 }
@@ -968,7 +978,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: Run
         plan.packages = r.packages;
         plan.self_root = r.self_root;
     }
-    const folder_caps = try folderCaps(plan.a(), plan.packages);
+    const folder_caps = try folderCaps(plan.a(), io, plan.packages);
     try runPackageBuilds(gpa, io, &plan, folder_caps);
     ir.package_caps = folder_caps;
     defer ir.package_caps = &.{};
@@ -1696,6 +1706,12 @@ fn settingsKey(io: std.Io, plan: *BuildPlan, art: Artifact, parts: KeyParts) Bui
             .none => str(&h, "none"),
             .all => str(&h, "all"),
             .libs => |libs| for (libs) |l| str(&h, l),
+        }
+        str(&h, "read");
+        switch (pc.caps.read) {
+            .none => str(&h, "none"),
+            .all => str(&h, "all"),
+            .dirs => |dirs| for (dirs) |d| str(&h, d),
         }
     }
     // The folder the project's own compile-time code reads below.

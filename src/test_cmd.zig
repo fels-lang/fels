@@ -102,7 +102,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
     if (loaded) |r| {
         if (r.self_root) |s| try roots.append(a, s);
         for (r.packages) |p| try roots.append(a, .{ .name = p.name, .dir = p.import_dir });
-        caps = try build.folderCaps(a, r.packages);
+        caps = try build.folderCaps(a, io, r.packages);
         packages = r.packages;
         if (!opts.worker) for (r.missing) |name|
             try out.print("note: the package `{s}` is in fels.pkg but not fetched yet; run `fels fetch`\n", .{name});

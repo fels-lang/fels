@@ -17,12 +17,14 @@ pub const Problem = directives.Problem;
 pub const Error = directives.Error;
 
 /// The capabilities fels knows. `ffi` lets compile-time code call into host libraries; with
-/// arguments, only into those.
-pub const known_caps = [_][]const u8{"ffi"};
+/// arguments, only into those. `read` lets it read files (`#embed`): with arguments, the files
+/// below those folders of the package; without, the files of the package's folder.
+pub const known_caps = [_][]const u8{ "ffi", "read" };
 
 pub const Cap = struct {
     name: []const u8,
-    /// The libraries `ffi` may call into; empty means any.
+    /// The libraries `ffi` may call into, or the folders `read` may read; empty means any
+    /// library, or the package's whole folder.
     args: []const []const u8 = &.{},
 };
 
@@ -125,12 +127,18 @@ fn caps(c: *directives.Cursor, out: *std.ArrayList(Cap)) Error!void {
         const known = for (known_caps) |k| {
             if (std.mem.eql(u8, k, name)) break true;
         } else false;
-        if (!known) return c.fail(t, "unknown capability `{s}`; fels knows `ffi`", .{name});
+        if (!known) return c.fail(t, "unknown capability `{s}`; fels knows `ffi` and `read`", .{name});
+        const is_read = std.mem.eql(u8, name, "read");
         var args: std.ArrayList([]const u8) = .empty;
         if (c.peek().kind == .l_paren) {
             _ = c.next();
             while (true) {
-                try args.append(c.arena, try c.string("a library name"));
+                const at = c.peek();
+                const arg = try c.string(if (is_read) "a folder of the package" else "a library name");
+                // A package reads its own files: a folder of it, never one outside it.
+                if (is_read and (std.fs.path.isAbsolute(arg) or std.mem.indexOf(u8, arg, "..") != null))
+                    return c.fail(at, "`read(\"{s}\")` names a folder outside the package; it takes folders of the package, as `read(\"data\")`", .{arg});
+                try args.append(c.arena, arg);
                 if (c.peek().kind != .comma) break;
                 _ = c.next();
             }
@@ -143,21 +151,38 @@ fn caps(c: *directives.Cursor, out: *std.ArrayList(Cap)) Error!void {
 }
 
 /// Whether `granted` covers `need`: the same capability, with every library `need` names (a
-/// grant without libraries covers any).
+/// grant without libraries covers any). For `read`, a folder covers itself and the folders
+/// below it.
 pub fn covers(granted: []const Cap, need: Cap) bool {
+    const folders = std.mem.eql(u8, need.name, "read");
     for (granted) |g| {
         if (!std.mem.eql(u8, g.name, need.name)) continue;
         if (g.args.len == 0) return true;
         if (need.args.len == 0) continue; // needs any library, granted only some
         const all = for (need.args) |lib| {
             const found = for (g.args) |ga| {
-                if (std.ascii.eqlIgnoreCase(ga, lib)) break true;
+                if (if (folders) folderWithin(lib, ga) else std.ascii.eqlIgnoreCase(ga, lib)) break true;
             } else false;
             if (!found) break false;
         } else true;
         if (all) return true;
     }
     return false;
+}
+
+/// Whether the folder `inner` is `outer` or below it, both relative to a package, with `/`
+/// and `\\` alike and the ends' slashes ignored.
+pub fn folderWithin(inner: []const u8, outer: []const u8) bool {
+    const i = std.mem.trim(u8, inner, "/\\");
+    const o = std.mem.trim(u8, outer, "/\\");
+    if (o.len == 0 or (o.len == 1 and o[0] == '.')) return true;
+    if (i.len < o.len) return false;
+    for (o, i[0..o.len]) |oc, ic| {
+        const a = if (oc == '\\') '/' else std.ascii.toLower(oc);
+        const b = if (ic == '\\') '/' else std.ascii.toLower(ic);
+        if (a != b) return false;
+    }
+    return i.len == o.len or i[o.len] == '/' or i[o.len] == '\\';
 }
 
 /// A capability written as in fels.pkg: `ffi("a", "b")`.
@@ -232,4 +257,18 @@ test "fels.pkg: a grant covers a need" {
     try std.testing.expect(!covers(&.{gl}, gl_gdi));
     try std.testing.expect(!covers(&.{gl}, any));
     try std.testing.expect(!covers(&.{}, gl));
+}
+
+test "read grants folders of the package, and a folder covers the ones below it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var problem: Problem = .{};
+    const m = try parse(arena.allocator(), "#use words from \"../words\" may read(\"data\"), ffi(\"user32\");\n", &problem);
+    const caps_of = m.uses[0].may;
+    try std.testing.expect(covers(caps_of, .{ .name = "read", .args = &.{"data"} }));
+    try std.testing.expect(covers(caps_of, .{ .name = "read", .args = &.{"data/sub"} }));
+    try std.testing.expect(!covers(caps_of, .{ .name = "read", .args = &.{"database"} }));
+    try std.testing.expect(!covers(caps_of, .{ .name = "read", .args = &.{"other"} }));
+    try std.testing.expect(covers(&.{.{ .name = "read" }}, .{ .name = "read", .args = &.{"any/where"} }));
+    try std.testing.expectError(error.Invalid, parse(arena.allocator(), "#use w from \"../w\" may read(\"../secrets\");\n", &problem));
 }

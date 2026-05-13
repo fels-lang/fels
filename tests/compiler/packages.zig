@@ -263,6 +263,43 @@ test "packages: a package's #run gets the capability fels.pkg grants, and no mor
     try std.testing.expectError(error.CompileFailed, fels.build_driver.run(a, io, base ++ "/app/build.fels", opts));
 }
 
+test "packages: a package's #embed reads the folders fels.pkg grants it, and no more" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const base = ".zig-cache/pk_read_caps";
+    std.Io.Dir.cwd().deleteTree(io, base) catch {};
+    // A path package that embeds a file of its own `data` folder.
+    try write(base ++ "/words", "fels.pkg", "#package words \"0.1.0\";\n#needs read(\"data\");\n");
+    try write(base ++ "/words/data", "list.txt", "alpha beta\n");
+    try write(base ++ "/words", "words.fels",
+        \\LIST :: #embed("data/list.txt");
+        \\pub size :: fn() -> i32 { return LIST.len as i32; }
+        \\
+    );
+    try write(base ++ "/app", "main.fels", "#import words;\nmain :: fn() -> i32 { return words::size(); }\n");
+    try write(base ++ "/app", "build.fels", "#import std.build.{ Build };\nbuild :: fn(b: Build) {\n    b.executable(\"app\", \"main.fels\");\n}\n");
+    const lp = fels.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
+    const opts: fels.build_driver.RunOptions = .{ .quiet = true, .llvm_bin = fels.llvm_path ++ "/bin", .lib_paths = lib_paths };
+
+    // Granted: the file is in the program.
+    try write(base ++ "/app", "fels.pkg", "#use words from \"../words\" may read(\"data\");\n");
+    try fels.build_driver.run(a, io, base ++ "/app/build.fels", opts);
+    var child = try std.process.spawn(io, .{ .argv = &.{base ++ "/app/app.exe"}, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+    switch (try child.wait(io)) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 11), code),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // Not granted, and not declared: the read is refused where the package names the file.
+    try write(base ++ "/words", "fels.pkg", "#package words \"0.1.0\";\n");
+    try write(base ++ "/app", "fels.pkg", "#use words from \"../words\";\n");
+    try std.testing.expectError(error.CompileFailed, fels.build_driver.run(a, io, base ++ "/app/build.fels", opts));
+}
+
 test "packages: the language server resolves fels.pkg, and says when a package is not fetched" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
