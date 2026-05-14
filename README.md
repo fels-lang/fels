@@ -28,7 +28,7 @@ the compiler, and I fixed them along the way.
 
 Fels runs on 64-bit Windows and builds programs for Windows and Linux.
 
-1. Download `fels-0.10.0-x86_64-windows.zip` from the
+1. Download `fels-0.11.0-x86_64-windows.zip` from the
    [latest release](https://github.com/fels-lang/fels/releases/latest).
 2. Unpack it and run `install.ps1` in that folder. It copies Fels to `%LOCALAPPDATA%\fels` and
    puts it on your PATH.

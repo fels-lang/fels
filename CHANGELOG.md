@@ -3,7 +3,14 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.11.0 — 2026-10-18
+
+Macros write code from a type's shape: `#for f in fields(T)` goes through a struct's fields, names
+are built from splices (`get_$(f.name)`), a quote of declarations adds functions among the
+declarations or methods in a struct's body, and a macro can stand for a value. `#embed` puts a
+file in the program, under a `read` capability: the project reads its own folder, a package what
+fels.pkg grants it. And a round of fixes from a review of the reflection and metaprogramming
+docs: printing with two method calls, generic struct names, lambda captures, error-set reflection.
 
 ### Added
 
