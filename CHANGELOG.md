@@ -7,6 +7,11 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **`#embed("data/table.csv")`** puts a file's bytes into the program, a `[]const u8`, read as the
+  program is compiled; a change to the file builds again.
+- **The `read` capability.** The project's own compile-time code may read the files below the
+  project's folder, and nothing else; a package's code what its `#use` line grants,
+  `may read("data")` or `may read`, and never outside its folder.
 - **Macros make declarations.** A quote whose items are declarations (`name :: fn …`,
   `Name :: struct …`, `N :: 5;`) is a declaration quote: `#insert` it among a file's
   declarations, or in a struct's body for methods (`Self` is the struct). With `#for` over

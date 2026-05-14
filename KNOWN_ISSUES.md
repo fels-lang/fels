@@ -85,6 +85,11 @@ These compile without a message and give a wrong result.
   once, not per instantiation. So a format with values cannot be in a generic function either
   (its code is such a lambda); that is refused with the reason.
 
+- **`std.fs` does not read files in a `#run`**, even where the `read` capability allows it: its
+  platform functions pass local arrays (`w: [1024]u16`) to the host, and the comptime FFI passes a
+  pointer into compile-time memory as one scratch word. `#embed("path")` reads a file at compile
+  time. Verified 2026-10-18.
+
 - **`any_elem` and `any_deref` know only the slice and pointer types of struct fields**: the
   navigators are written from the program's struct declarations, before types are known, so
   `any_elem(core::any(xs[0..3]), 1)` and `any_deref(core::any(&p))` give `null`. Through a field

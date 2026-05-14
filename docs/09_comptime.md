@@ -50,6 +50,17 @@ the same machinery. `build.fels` runs in the VM, and its builder calls are lower
 
 ## Capabilities
 
+Compile-time code has two capabilities: `ffi`, calling into host libraries, and `read`, reading
+files (`#embed`). The project's own code (its `#run`s, its `#compiler` hooks, its `#embed`s) may
+read the files below the project's folder: the folder of its fels.pkg or build.fels, or of the
+file built alone. Nothing else is open to it. A package's code gets what its `#use` line grants:
+`may read("data")` lets it read the files below its own `data` folder, `may read` its whole
+folder, and it never reads outside its folder. A read that is not allowed stops the build where
+the file is named:
+
+    words.fels:1:9: error: `#embed("data/list.txt")` reads `…\words\data\list.txt`, but this
+    code may read no files: a package's compile-time code reads what fels.pkg grants it
+
 Host FFI needs the `ffi` capability. A bare `#run` has none. It is pure, and a call into a host
 function halts the build:
 
@@ -65,9 +76,11 @@ All of this is about the supply chain. A dependency's compile-time code, such as
 `build.rs` hole: pulling in a package can't read your keys or spawn a process while you compile.
 The package manager hands out these grants. A `#use` line in `fels.pkg` can give a package
 `ffi` for named libraries only, such as `ffi("user32")` (see
-[16_packages](16_packages.md#capabilities)). `ffi` is the only capability so far. Caps for
-reading files, the network or running programs are still planned, and `unsafe` is the next
-effect to gate. In the code, this is `Vm.caps` in `src/vm/engine.zig`, and it is checked at the
+[16_packages](16_packages.md#capabilities)). Caps for writing files, the network or running
+programs are still planned, and `unsafe` is the next effect to gate. `std.fs` does not read files
+in a `#run` yet, even where `read` is granted: its functions pass the VM's local arrays to the
+host, which the comptime FFI cannot do (KNOWN_ISSUES). `#embed` is the way to read a file at
+compile time today. In the code, this is `Vm.caps` in `src/vm/engine.zig`, and it is checked at the
 FFI opcode.
 
 ## Data at compile time

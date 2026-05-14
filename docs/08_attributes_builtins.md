@@ -202,6 +202,22 @@ and `||`. Anything else in the condition is a compile error, and so is a platfor
 does not know. The declarations in the branches not taken are parsed, but they are not part of
 the program.
 
+### Embedding a file (`#embed`)
+
+`#embed("path")` is the bytes of a file, a `[]const u8` in the program's static data. The path is
+relative to the folder of the file that names it, and the file is read as the program is
+compiled, so a change to it builds the program again.
+
+```fels
+GREETING :: #embed("data/greeting.txt");
+LINES :: #run count_lines(#embed("data/greeting.txt"));
+```
+
+What compile-time code may read is a capability ([09](09_comptime.md#capabilities)): the
+project's own code reads the files below the project's folder, and a package's code what its
+`#use` line grants it (`may read("data")`). The bytes are text, never a format: printing them
+shows their braces as they are.
+
 ### Compile-time Run (`#run`)
 
 `#run` executes Fels code on the comptime VM while the program compiles, and folds the result

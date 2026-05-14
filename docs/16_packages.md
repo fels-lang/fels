@@ -56,9 +56,11 @@ version tags and `fels.pkg` gives no version, the repository is used at its defa
 
 ## Capabilities
 
-Today Fels has one capability, `ffi`, which lets compile-time code call into host libraries.
-With library names (`ffi("user32")`) it may call only into those, and without them (`ffi`) it
-may call into any.
+Fels has two capabilities for a package's compile-time code. `ffi` lets it call into host
+libraries: with library names (`ffi("user32")`) only into those, without them (`ffi`) into any.
+`read` lets it read files with `#embed`: with folders (`read("data")`) the files below those
+folders of the package, without them its whole folder. A package never reads outside its folder
+(`read("../x")` is an error in fels.pkg).
 
 - A package says what it needs with `#needs ffi("user32");` in its own `fels.pkg`.
 - You grant it on the `#use` line with `may ffi("user32")`.
@@ -174,6 +176,6 @@ yet shows "run `fels fetch`" at its import.
 ## Not built yet
 
 - A registry or index of package names. Today you use a package by its location.
-- More capabilities than `ffi` (reading files, the network, running programs). These arrive
-  with the compile-time features that need them.
+- More capabilities than `ffi` and `read` (writing files, the network, running programs). These
+  arrive with the compile-time features that need them.
 - Building a package's C sources. A package brings its C libraries prebuilt.
