@@ -2664,14 +2664,17 @@ const FunctionLowerer = struct {
         const suffix = self.next_block_id;
         const end_name = try std.fmt.allocPrint(self.allocator, "__for_end_{d}", .{suffix});
 
-        try self.emitNoResult(loop_ty, .{ .store_local = .{
-            .name = for_stmt.binding,
-            .value = try self.lowerExpr(for_stmt.start),
-        } });
-        try self.emitNoResult(loop_ty, .{ .store_local = .{
-            .name = end_name,
-            .value = try self.lowerExpr(for_stmt.end),
-        } });
+        // The bounds are read before the index exists (`for i in i..n` starts at the `i` outside).
+        const start = try self.lowerExpr(for_stmt.start);
+        const end = try self.lowerExpr(for_stmt.end);
+        // The index is a local of the loop's own, as `for x in xs`'s `x` is: a slot of its own
+        // when an `i` of another type is about, which two loops one after the other are
+        // (`for i in 0..256` and then `for i in 0..xs.len`). They had one 4-byte slot, and the
+        // second loop stored its 8-byte index into it.
+        const scope = try self.enterScope();
+        const binding = try self.declareLocal(for_stmt.binding, loop_ty);
+        try self.emitNoResult(loop_ty, .{ .store_local = .{ .name = binding, .value = start } });
+        try self.emitNoResult(loop_ty, .{ .store_local = .{ .name = end_name, .value = end } });
 
         const cond_id = self.allocBlockId();
         const body_id = self.allocBlockId();
@@ -2689,7 +2692,7 @@ const FunctionLowerer = struct {
         self.startBlock(cond_id, "for.range.cond");
         const cond = try self.emit(.bool, .{ .binary = .{
             .op = if (for_stmt.inclusive) .le else .lt,
-            .lhs = .{ .local = for_stmt.binding },
+            .lhs = .{ .local = binding },
             .rhs = .{ .local = end_name },
         } });
         try self.terminate(.{ .cond_branch = .{
@@ -2704,11 +2707,12 @@ const FunctionLowerer = struct {
         self.startBlock(increment_id, "for.range.increment");
         const next = try self.emit(loop_ty, .{ .binary = .{
             .op = .add,
-            .lhs = .{ .local = for_stmt.binding },
+            .lhs = .{ .local = binding },
             .rhs = .{ .imm = .{ .int = 1 } },
         } });
-        try self.emitNoResult(loop_ty, .{ .store_local = .{ .name = for_stmt.binding, .value = next } });
+        try self.emitNoResult(loop_ty, .{ .store_local = .{ .name = binding, .value = next } });
         try self.terminate(.{ .branch = cond_id });
+        self.leaveScope(scope);
 
         _ = self.loop_stack.pop();
         self.startBlock(after_id, "for.range.after");
