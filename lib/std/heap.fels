@@ -262,13 +262,13 @@ pub new_slice :: fn($T: type, self: *Arena, n: usize) -> []T {
 
 // Rewind the arena to empty, KEEPING its chunks for reuse. Everything allocated
 // before is invalidated; no memory is returned to the OS, so the next round of
-// allocations is syscall-free until it exceeds the retained capacity.
+// allocations is syscall-free until it exceeds the retained capacity. It takes the same time
+// however many chunks there are: only the first is rewound, as `carve` sets a later chunk's
+// `used` when it moves into it.
 pub reset :: fn(self: *Arena) {
-    cur := self.first;
-    while cur != 0 {
-        c := unsafe core::ptr_from_int(*Chunk, cur);
+    if self.first != 0 {
+        c := unsafe core::ptr_from_int(*Chunk, self.first);
         c.used = 0;
-        cur = c.next;
     }
     self.head = self.first;
 }
@@ -289,13 +289,8 @@ pub restore :: fn(self: *Arena, m: Mark) {
         reset(self);
         return;
     }
+    // The chunks after it are rewound when `carve` moves into them, as after `reset`.
     mc := unsafe core::ptr_from_int(*Chunk, m.chunk);
-    cur := mc.next;
-    while cur != 0 {
-        c := unsafe core::ptr_from_int(*Chunk, cur);
-        c.used = 0;
-        cur = c.next;
-    }
     mc.used = m.used;
     self.head = m.chunk;
 }
