@@ -37,6 +37,156 @@ const chkstk_x64_asm =
     \\
 ;
 
+/// The C library's memory functions, which LLVM's optimiser and code generator call on their
+/// own: a copy loop becomes `memcpy`, a zeroing loop `memset`, a chain of compares `memcmp`
+/// or `bcmp`, a large aggregate copy `memcpy`. Fels links no C library, so the program
+/// carries them, as Zig's and Rust's runtimes do. Each is weak: a C library linked in brings
+/// its own, and the linker takes that one. `rep movsb`/`rep stosb` are what the CPU copies and
+/// fills fastest with for the sizes that reach a call (smaller constant sizes are inlined).
+/// AT&T; one per calling convention, as the arguments come in different registers.
+const MemStub = struct { name: [:0]const u8, windows: []const u8, sysv: []const u8 };
+
+const mem_stubs = [_]MemStub{
+    .{
+        .name = "memcpy",
+        // rdi and rsi are the caller's on Windows, so they are kept in r9 and r10.
+        .windows =
+        \\  mov %rcx, %rax
+        \\  mov %rdi, %r9
+        \\  mov %rsi, %r10
+        \\  mov %rcx, %rdi
+        \\  mov %rdx, %rsi
+        \\  mov %r8, %rcx
+        \\  rep movsb
+        \\  mov %r9, %rdi
+        \\  mov %r10, %rsi
+        \\  ret
+        \\
+        ,
+        .sysv =
+        \\  mov %rdi, %rax
+        \\  mov %rdx, %rcx
+        \\  rep movsb
+        \\  ret
+        \\
+        ,
+    },
+    .{
+        .name = "memmove",
+        // Forwards unless the destination starts inside the source; then backwards, from the
+        // last byte, with the direction flag set and cleared again.
+        .windows =
+        \\  mov %rcx, %rax
+        \\  mov %rdi, %r9
+        \\  mov %rsi, %r10
+        \\  mov %rcx, %rdi
+        \\  mov %rdx, %rsi
+        \\  mov %r8, %rcx
+        \\  mov %rdi, %r11
+        \\  sub %rsi, %r11
+        \\  cmp %rcx, %r11
+        \\  jb 1f
+        \\  rep movsb
+        \\  jmp 2f
+        \\1:
+        \\  lea -1(%rsi,%rcx), %rsi
+        \\  lea -1(%rdi,%rcx), %rdi
+        \\  std
+        \\  rep movsb
+        \\  cld
+        \\2:
+        \\  mov %r9, %rdi
+        \\  mov %r10, %rsi
+        \\  ret
+        \\
+        ,
+        .sysv =
+        \\  mov %rdi, %rax
+        \\  mov %rdx, %rcx
+        \\  mov %rdi, %r8
+        \\  sub %rsi, %r8
+        \\  cmp %rcx, %r8
+        \\  jb 1f
+        \\  rep movsb
+        \\  ret
+        \\1:
+        \\  lea -1(%rsi,%rcx), %rsi
+        \\  lea -1(%rdi,%rcx), %rdi
+        \\  std
+        \\  rep movsb
+        \\  cld
+        \\  ret
+        \\
+        ,
+    },
+    .{
+        .name = "memset",
+        .windows =
+        \\  mov %rcx, %r9
+        \\  mov %rdi, %r10
+        \\  mov %rcx, %rdi
+        \\  mov %edx, %eax
+        \\  mov %r8, %rcx
+        \\  rep stosb
+        \\  mov %r10, %rdi
+        \\  mov %r9, %rax
+        \\  ret
+        \\
+        ,
+        .sysv =
+        \\  mov %rdi, %r8
+        \\  mov %esi, %eax
+        \\  mov %rdx, %rcx
+        \\  rep stosb
+        \\  mov %r8, %rax
+        \\  ret
+        \\
+        ,
+    },
+    .{
+        .name = "memcmp",
+        // `repe cmpsb` stops past the first byte that differs; the result is the difference
+        // of those two bytes, as unsigned values, or 0.
+        .windows =
+        \\  mov %rdi, %r9
+        \\  mov %rsi, %r10
+        \\  mov %rcx, %rsi
+        \\  mov %rdx, %rdi
+        \\  mov %r8, %rcx
+        \\  xor %eax, %eax
+        \\  test %rcx, %rcx
+        \\  je 1f
+        \\  repe cmpsb
+        \\  je 1f
+        \\  movzbl -1(%rsi), %eax
+        \\  movzbl -1(%rdi), %edx
+        \\  sub %edx, %eax
+        \\1:
+        \\  mov %r9, %rdi
+        \\  mov %r10, %rsi
+        \\  ret
+        \\
+        ,
+        .sysv =
+        \\  mov %rdx, %rcx
+        \\  xor %eax, %eax
+        \\  test %rcx, %rcx
+        \\  je 1f
+        \\  repe cmpsb
+        \\  je 1f
+        \\  movzbl -1(%rdi), %eax
+        \\  movzbl -1(%rsi), %ecx
+        \\  sub %ecx, %eax
+        \\1:
+        \\  ret
+        \\
+        ,
+    },
+};
+
+/// `bcmp` only says whether the bytes differ: `memcmp` answers that too.
+const all_mem_stubs = mem_stubs ++ [_]MemStub{.{ .name = "bcmp", .windows = mem_stubs[3].windows, .sysv = mem_stubs[3].sysv }};
+
 /// One entry in a struct's field table.
 pub const StructField = struct {
     name: []const u8,
@@ -173,6 +323,29 @@ pub const ModuleCg = struct {
         if (self.library_object) return;
         if (self.target_os == .windows and builtin.target.cpu.arch == .x86_64)
             llvm.LLVMAppendModuleInlineAsm(self.mod, chkstk_x64_asm.ptr, chkstk_x64_asm.len);
+    }
+
+    /// Append the C library's memory functions (`mem_stubs`) that LLVM may call, once the
+    /// module's own functions are all in and before it is optimised. A name the program
+    /// already has, as a function of its own or one it imports, is left to the program. A
+    /// static library's object leaves them all to the program that links it.
+    pub fn applyMemoryStubs(self: *ModuleCg) void {
+        if (self.library_object or builtin.target.cpu.arch != .x86_64) return;
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(self.allocator);
+        text.appendSlice(self.allocator, ".text\n") catch return;
+        inline for (all_mem_stubs) |stub| {
+            if (llvm.LLVMGetNamedFunction(self.mod, stub.name.ptr) == null and llvm.LLVMGetNamedGlobal(self.mod, stub.name.ptr) == null) {
+                const body = if (self.target_os == .windows) stub.windows else stub.sysv;
+                const head = if (self.target_os == .windows)
+                    ".weak " ++ stub.name ++ "\n" ++ stub.name ++ ":\n"
+                else
+                    ".weak " ++ stub.name ++ "\n.type " ++ stub.name ++ ",@function\n" ++ stub.name ++ ":\n";
+                text.appendSlice(self.allocator, head) catch return;
+                text.appendSlice(self.allocator, body) catch return;
+            }
+        }
+        llvm.LLVMAppendModuleInlineAsm(self.mod, text.items.ptr, text.items.len);
     }
 
     pub fn init(allocator: std.mem.Allocator, module_name: [*:0]const u8) ModuleCg {
