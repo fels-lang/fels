@@ -304,8 +304,7 @@ fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {
 
     // Call Fels main.
     const main_fn = cg.fn_decls.get(main.name) orelse return;
-    const main_fn_ty = llvm_c.LLVMGlobalGetValueType(main_fn);
-    const main_ret = llvm_c.LLVMBuildCall2(cg.builder, main_fn_ty, main_fn, null, 0, "ret");
+    const main_ret = callMain(cg, main_fn);
 
     // Coerce i32 → u32 (bitcast — same bits, different signedness).
     const u32_ty = llvm_c.LLVMInt32TypeInContext(cg.ctx);
@@ -335,4 +334,12 @@ fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {
     var ep_args = [_]llvm_c.LLVMValueRef{exit_code};
     _ = llvm_c.LLVMBuildCall2(cg.builder, ep_fn_ty, ep_fn, &ep_args, 1, "");
     _ = llvm_c.LLVMBuildUnreachable(cg.builder);
+}
+
+/// A call of `main`. A `void` one has no result to name: LLVM refuses the module when it has
+/// one (`%ret = call void @main()`), which was a `main :: fn() { … }` on Windows.
+fn callMain(cg: *ctx_mod.ModuleCg, main_fn: llvm_c.LLVMValueRef) llvm_c.LLVMValueRef {
+    const fn_ty = llvm_c.LLVMGlobalGetValueType(main_fn);
+    const void_result = llvm_c.LLVMGetTypeKind(llvm_c.LLVMGetReturnType(fn_ty)) == llvm_c.LLVMVoidTypeKind;
+    return llvm_c.LLVMBuildCall2(cg.builder, fn_ty, main_fn, null, 0, if (void_result) "" else "ret");
 }
