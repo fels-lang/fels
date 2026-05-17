@@ -159,6 +159,44 @@ pub fn verify(cg: *ModuleCg) EmitError!void {
     }
 }
 
+// Optimisation
+
+/// LLVM's optimisation pipeline for `opt_level`, the one clang runs at the same `-O`: inlining,
+/// SROA, loop-invariant code motion, unrolling, vectorisation and the rest. Without it the
+/// level only reaches the code generator, which works one function at a time and leaves the
+/// loops as they were written. Nothing runs at `-O0`.
+pub fn optimize(cg: *ModuleCg, tm: TargetMachine, opt_level: u2) EmitError!void {
+    const pipeline: [*:0]const u8 = switch (opt_level) {
+        0 => return,
+        1 => "default<O1>",
+        2 => "default<O2>",
+        3 => "default<O3>",
+    };
+    notBuiltins(cg);
+    const options = llvm.LLVMCreatePassBuilderOptions();
+    defer llvm.LLVMDisposePassBuilderOptions(options);
+    if (llvm.LLVMRunPasses(cg.mod, pipeline, tm.tm, options)) |err| {
+        const msg = llvm.LLVMGetErrorMessage(err);
+        defer llvm.LLVMDisposeErrorMessage(msg);
+        std.debug.print("LLVM optimisation error: {s}\n", .{msg});
+        return error.EmitFailed;
+    }
+}
+
+/// Marks the program's own functions `nobuiltin`, and with them every call to one. Fels names
+/// its functions as they are written, so std.math's `sin` and `pow` are `@sin` and `@pow` in
+/// the module, and LLVM takes a function by that name for the C library's: it would fold a
+/// call to one by what the C function does, or replace it with a call to another the program
+/// does not have (`pow(2.0, x)` with `exp2(x)`).
+fn notBuiltins(cg: *ModuleCg) void {
+    const kind = llvm.LLVMGetEnumAttributeKindForName("nobuiltin", "nobuiltin".len);
+    const attr = llvm.LLVMCreateEnumAttribute(cg.ctx, kind, 0);
+    var f = llvm.LLVMGetFirstFunction(cg.mod);
+    while (f) |fv| : (f = llvm.LLVMGetNextFunction(fv)) {
+        if (llvm.LLVMIsDeclaration(fv) == 0) llvm.LLVMAddAttributeAtIndex(fv, 0xFFFF_FFFF, attr); // LLVMAttributeFunctionIndex
+    }
+}
+
 // Dead function removal
 
 /// Delete every internal function nothing refers to, repeating until none is left (deleting

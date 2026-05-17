@@ -7,4 +7,5 @@ pub const llvm = @cImport({
     @cInclude("llvm-c/TargetMachine.h");
     @cInclude("llvm-c/BitWriter.h");
     @cInclude("llvm-c/Support.h");
+    @cInclude("llvm-c/Transforms/PassBuilder.h");
 });

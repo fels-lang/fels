@@ -122,6 +122,7 @@ pub const LlvmBackend = struct {
         emit.dropDeadFunctions(&self.cg);
         try emit.verify(&self.cg);
         self.cg.applyMemoryStubs();
+        try emit.optimize(&self.cg, tm, opt_level);
         try emit.emitObject(&self.cg, tm, path);
     }
 
@@ -134,6 +135,7 @@ pub const LlvmBackend = struct {
         emit.dropDeadFunctions(&self.cg);
         try emit.verify(&self.cg);
         self.cg.applyMemoryStubs();
+        try emit.optimize(&self.cg, tm, opt_level);
         return emit.emitObjectToMemory(&self.cg, tm, allocator);
     }
 

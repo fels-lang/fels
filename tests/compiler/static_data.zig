@@ -489,12 +489,15 @@ test "static data: a run that fills a big array does not leave a slow function b
     var backend = fels.LlvmBackend.init(arena.allocator(), "big_fill");
     defer backend.deinit();
     try backend.lower(module);
+    // `T` is data in the IR as lowered (the optimiser then folds `T[100]` and drops it), and
+    // `fill` is gone from the IR emitted
+    const lowered = try backend.getIrText(arena.allocator());
     try backend.emitObject(".zig-cache/big_fill_test.o", 2);
     const ir = try backend.getIrText(arena.allocator());
 
     _ = qpc.QueryPerformanceCounter(&t1);
     const ms = @divTrunc((t1 - t0) * 1000, freq);
-    try expectIrHas(ir, "@T = global [10000 x i32] [i32 0, i32 3, i32 6");
+    try expectIrHas(lowered, "@T = global [10000 x i32] [i32 0, i32 3, i32 6");
     try expectIrLacks(ir, "@fill");
     if (ms > 5000) {
         std.debug.print("\nbuilding took {d} ms, expected well under 5000\n", .{ms});
