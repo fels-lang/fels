@@ -67,10 +67,12 @@ pub fn build(b: *std.Build) void {
         // Use b.fmt to avoid pathJoin stripping backslashes on Windows absolute paths.
         compiler_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{lp}) });
         compiler_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{lp}) });
-        // Link the unified LLVM library.  Name varies by installation:
-        //   Windows prebuilt (llvm.org): LLVM-C
-        //   Linux/macOS:                 LLVM-17 / LLVM
-        compiler_mod.linkSystemLibrary("LLVM-C", .{});
+        if (target.result.os.tag == .windows) {
+            // llvm.org's Windows release: the C API in one DLL, LLVM-C.dll.
+            compiler_mod.linkSystemLibrary("LLVM-C", .{});
+        } else {
+            linkStaticLlvm(b, compiler_mod, lp);
+        }
         // libclang isn't linked. The include path gives @cImport its types, but the
         // functions load at runtime (clang_c.zig), so fels.exe doesn't drag in the
         // 81 MB libclang.dll. It's pulled in only for `fels bindgen`.
@@ -189,7 +191,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const exe = b.addExecutable(.{ .name = "fels", .root_module = exe_mod });
+    // Off Windows the compiler is built with LLVM and linked with LLD, as it is on Windows. Zig's
+    // own x86 backend writes debug information for the libclang functions `clang_c.zig` only
+    // takes the types of (they are loaded at run time), and its ELF linker then wants them
+    // defined; LLD also links the large C++ archives of a static LLVM.
+    const zig_llvm: ?bool = if (llvm_path != null and target.result.os.tag != .windows) true else null;
+    const exe = b.addExecutable(.{ .name = "fels", .root_module = exe_mod, .use_llvm = zig_llvm, .use_lld = zig_llvm });
     exe.root_module.addImport("fels_compiler", compiler_mod);
 
     if (embed_linker and llvm_path != null) {
@@ -222,7 +229,7 @@ pub fn build(b: *std.Build) void {
         // The embedded object carries the fels runtime, which references ws2_32
         // (the net module). kernel32 is already linked; add Winsock.
         final_mod.linkSystemLibrary("ws2_32", .{});
-        const final = b.addExecutable(.{ .name = "fels", .root_module = final_mod });
+        const final = b.addExecutable(.{ .name = "fels", .root_module = final_mod, .use_llvm = zig_llvm, .use_lld = zig_llvm });
         final.win32_module_definition = b.path("linker/felsld_embed.def");
         b.installArtifact(final);
     } else {
@@ -245,15 +252,45 @@ pub fn build(b: *std.Build) void {
 
     const test_filter = b.option([]const u8, "test-filter", "Only run tests whose name contains this substring");
     const filters: []const []const u8 = if (test_filter) |f| &.{f} else &.{};
-    const compiler_unit_tests = b.addTest(.{ .root_module = compiler_mod, .filters = filters });
-    const exe_unit_tests = b.addTest(.{ .root_module = exe_mod, .filters = filters });
-    const integration_tests = b.addTest(.{ .root_module = test_mod, .filters = filters });
+    const compiler_unit_tests = b.addTest(.{ .root_module = compiler_mod, .filters = filters, .use_llvm = zig_llvm, .use_lld = zig_llvm });
+    const exe_unit_tests = b.addTest(.{ .root_module = exe_mod, .filters = filters, .use_llvm = zig_llvm, .use_lld = zig_llvm });
+    const integration_tests = b.addTest(.{ .root_module = test_mod, .filters = filters, .use_llvm = zig_llvm, .use_lld = zig_llvm });
 
     // Tests are a separate step — `zig build test` — not part of install.
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&b.addRunArtifact(compiler_unit_tests).step);
     test_step.dependOn(&b.addRunArtifact(exe_unit_tests).step);
     test_step.dependOn(&b.addRunArtifact(integration_tests).step);
+}
+
+/// LLVM linked into the compiler from llvm.org's Linux release, which has no shared LLVM:
+/// its static archives, the ones `llvm-config` names for what the compiler uses (the C API's
+/// core, the optimiser, the bitcode writer, the x86 code generator), and what they need of
+/// the system. The archives are C++ built with GCC, so they need its C++ library,
+/// libstdc++, and not the libc++ Zig carries: it is linked as the system has it, by path, as
+/// a distribution ships only the runtime file (`libstdc++.so.6`) without the development
+/// link (`libstdc++.so`). zlib and zstd likewise.
+fn linkStaticLlvm(b: *std.Build, mod: *std.Build.Module, lp: []const u8) void {
+    const llvm_config = b.fmt("{s}/bin/llvm-config", .{lp});
+    const names = b.run(&.{ llvm_config, "--link-static", "--libnames", "core", "passes", "bitwriter", "analysis", "target", "x86codegen", "x86asmparser", "x86desc", "x86info" });
+    var it = std.mem.tokenizeAny(u8, names, " \t\r\n");
+    while (it.next()) |name| mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/{s}", .{ lp, name }) });
+    for ([_][]const u8{ "libstdc++.so.6", "libgcc_s.so.1", "libz.so.1", "libzstd.so.1" }) |lib| {
+        mod.addObjectFile(.{ .cwd_relative = systemLib(b, lib) });
+    }
+    for ([_][]const u8{ "m", "dl", "rt", "pthread" }) |lib| mod.linkSystemLibrary(lib, .{});
+}
+
+/// Where the system keeps the shared library `file`: the first of the usual library folders
+/// that has it (Debian and Ubuntu keep them in a folder named after the target, Fedora and
+/// Arch in /usr/lib64 or /usr/lib).
+fn systemLib(b: *std.Build, file: []const u8) []const u8 {
+    for ([_][]const u8{ "/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib" }) |dir| {
+        const path = b.fmt("{s}/{s}", .{ dir, file });
+        std.Io.Dir.accessAbsolute(b.graph.io, path, .{}) catch continue;
+        return path;
+    }
+    std.debug.panic("linking LLVM: {s} is not in the system's library folders", .{file});
 }
 
 /// `base` version with a best-effort `+<git-short-sha>` appended — but only for a
