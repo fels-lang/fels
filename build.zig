@@ -182,13 +182,6 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    // Basalt stub (kept for historical reasons, can be removed)
-    const basalt_lib_dir = b.option(
-        []const u8,
-        "basalt-lib-dir",
-        "Directory containing libbasalt.a",
-    ) orelse "C:\\Users\\chris\\backend\\basalt\\bin";
-
     // CLI executable
     const exe_mod = b.addModule("fels", .{
         .root_source_file = b.path("src/main.zig"),
@@ -198,7 +191,6 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{ .name = "fels", .root_module = exe_mod });
     exe.root_module.addImport("fels_compiler", compiler_mod);
-    exe.root_module.addLibraryPath(.{ .cwd_relative = basalt_lib_dir });
 
     if (embed_linker and llvm_path != null) {
         // Stage 1: the base fels.exe compiles the linker to a freestanding object
@@ -226,7 +218,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         final_mod.addImport("fels_compiler", compiler_mod);
-        final_mod.addLibraryPath(.{ .cwd_relative = basalt_lib_dir });
         final_mod.addObjectFile(felsld_obj);
         // The embedded object carries the fels runtime, which references ws2_32
         // (the net module). kernel32 is already linked; add Winsock.
