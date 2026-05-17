@@ -1284,6 +1284,18 @@ const FnCompiler = struct {
             try self.emit(.{ .op = .sys_write, .a = target, .b = data });
             return;
         }
+        // The runtime's memory primitives: the VM does them with the host's memory.
+        if (instructions.MemOp.of(ci.callee, ci.args.len)) |op| {
+            const argc: u32 = @intCast(ci.args.len);
+            const base = self.next_reg;
+            self.next_reg += argc;
+            for (ci.args, 0..) |arg, i| {
+                const ar = try self.resolveReg(arg);
+                try self.emit(Instr.r_r_imm(.copy, base + @as(Reg, @intCast(i)), ar, 0));
+            }
+            try self.emit(.{ .op = .sys_mem, .a = target, .b = base, .c = argc, .imm = @intFromEnum(op) });
+            return;
+        }
         const map = self.func_map orelse return error.Unsupported;
         const fidx = map.get(ci.callee) orelse return error.Unsupported;
 

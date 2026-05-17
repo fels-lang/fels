@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const instructions = @import("instructions.zig");
 const value = @import("value.zig");
 const zones = @import("zones.zig");
@@ -44,6 +45,74 @@ const Frame = struct {
 pub const BuildHost = struct {
     ctx: *anyopaque,
     call: *const fn (ctx: *anyopaque, op: u32, args: []const Value) Value,
+};
+
+/// A `sys_mem`: the runtime's memory primitive `op` on the host's memory. Addresses and sizes
+/// are integers, as the runtimes pass them; a failure is 0 or `false`, as theirs is.
+fn hostMemory(op: instructions.MemOp, args: []const Value) Value {
+    const word = struct {
+        fn of(v: Value) usize {
+            return switch (v) {
+                .uint => |u| @truncate(u),
+                .int => |i| @truncate(@as(u128, @bitCast(i))),
+                .host_ptr => |p| p.addr,
+                .host_buf => |b| b.addr,
+                else => 0,
+            };
+        }
+    }.of;
+    return switch (op) {
+        .reserve => .{ .uint = host_mem.reserve(word(args[0])) },
+        .commit => .{ .bool = host_mem.commit(word(args[0]), word(args[1])) },
+        .alloc => blk: {
+            const size = word(args[0]);
+            const addr = host_mem.reserve(size);
+            if (addr == 0 or !host_mem.commit(addr, size)) break :blk .{ .uint = 0 };
+            break :blk .{ .uint = addr };
+        },
+        .release => blk: {
+            host_mem.release(word(args[0]), word(args[1]));
+            break :blk .{ .uint = 0 };
+        },
+    };
+}
+
+/// The host's pages: reserved without memory behind them, committed, released. What the
+/// runtimes' `os_reserve`, `os_commit` and `os_release` do, for the compiler's own OS.
+const host_mem = if (builtin.os.tag == .windows) struct {
+    const MEM_COMMIT = 0x1000;
+    const MEM_RESERVE = 0x2000;
+    const MEM_RELEASE = 0x8000;
+    const PAGE_NOACCESS = 0x01;
+    const PAGE_READWRITE = 0x04;
+    extern "kernel32" fn VirtualAlloc(addr: ?*anyopaque, size: usize, kind: u32, protect: u32) callconv(.winapi) ?*anyopaque;
+    extern "kernel32" fn VirtualFree(addr: ?*anyopaque, size: usize, kind: u32) callconv(.winapi) i32;
+
+    fn reserve(size: usize) usize {
+        return @intFromPtr(VirtualAlloc(null, size, MEM_RESERVE, PAGE_NOACCESS));
+    }
+    fn commit(addr: usize, size: usize) bool {
+        if (addr == 0) return false;
+        return VirtualAlloc(@ptrFromInt(addr), size, MEM_COMMIT, PAGE_READWRITE) != null;
+    }
+    fn release(addr: usize, size: usize) void {
+        _ = size;
+        if (addr != 0) _ = VirtualFree(@ptrFromInt(addr), 0, MEM_RELEASE);
+    }
+} else struct {
+    const linux = std.os.linux;
+
+    fn reserve(size: usize) usize {
+        const r = linux.mmap(null, size, .{}, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0);
+        return if (linux.errno(r) == .SUCCESS) r else 0;
+    }
+    fn commit(addr: usize, size: usize) bool {
+        if (addr == 0) return false;
+        return linux.errno(linux.mprotect(@ptrFromInt(addr), size, .{ .READ = true, .WRITE = true })) == .SUCCESS;
+    }
+    fn release(addr: usize, size: usize) void {
+        if (addr != 0) _ = linux.munmap(@ptrFromInt(addr), size);
+    }
 };
 
 /// What a comptime run is allowed to do. A bare `#run` gets nothing — it is pure —
@@ -917,6 +986,10 @@ pub const Vm = struct {
                     try self.copyStrBytes(data, bytes);
                     std.debug.print("{s}", .{bytes});
                     frame.regs[inst.a] = .{ .uint = len };
+                },
+                .sys_mem => {
+                    const args = frame.regs[inst.b .. inst.b + inst.c];
+                    frame.regs[inst.a] = hostMemory(@enumFromInt(inst.imm), args);
                 },
                 .trap => {
                     if (inst.imm == instructions.unrunnable_trap) {

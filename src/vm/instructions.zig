@@ -77,6 +77,11 @@ pub const Opcode = enum(u8) {
     // a = dst (bytes written), b = the string or byte slice. The runtime's `write_stdout` and
     // `write_stderr` at compile time: the bytes go to the compiler's output (stderr).
     sys_write,
+    // a = dst; b = arg base reg; c = arg count; imm = a `MemOp`. The runtime's memory
+    // primitives at compile time (`os_reserve`, `os_commit`, `os_alloc`, `os_release`): the VM
+    // reserves, commits and frees the host's memory itself, whatever the target, as a target's
+    // runtime may reach its OS in a way the VM cannot run (Linux's makes system calls in `asm`).
+    sys_mem,
     trap, // imm = const-pool index of message string, or -1 for none
 
     // Host call
@@ -84,6 +89,27 @@ pub const Opcode = enum(u8) {
     // imm = host-op id (see BuildOp); b = arg base reg; c = arg count;
     // a = dst reg for the returned value (e.g. a fresh artifact id).
     host_call,
+};
+
+/// Which memory primitive a `sys_mem` is, as the runtimes name them.
+pub const MemOp = enum(u8) {
+    /// `os_reserve(size) -> usize`: address space, no memory behind it yet (0 when it fails).
+    reserve,
+    /// `os_commit(addr, size) -> bool`: memory behind reserved space, readable and writable.
+    commit,
+    /// `os_alloc(size) -> usize`: reserved and committed (0 when it fails).
+    alloc,
+    /// `os_release(addr, size)`: give it back.
+    release,
+
+    pub fn of(name: []const u8, argc: usize) ?MemOp {
+        const ops = [_]struct { []const u8, MemOp, usize }{
+            .{ "os_reserve", .reserve, 1 }, .{ "os_commit", .commit, 2 },
+            .{ "os_alloc", .alloc, 1 },     .{ "os_release", .release, 2 },
+        };
+        for (ops) |o| if (std.mem.eql(u8, name, o[0]) and argc == o[2]) return o[1];
+        return null;
+    }
 };
 
 /// Operation id carried in `scalar_builtin`'s `imm` — a `core::` math/bit fold the
