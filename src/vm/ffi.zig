@@ -53,8 +53,33 @@ const win = struct {
     extern "kernel32" fn GetProcAddress(hModule: *anyopaque, lpProcName: [*:0]const u8) callconv(.winapi) ?*anyopaque;
 };
 
+/// The C library's loader, on Linux (in glibc's libc since 2.34).
+const posix = struct {
+    extern "c" fn dlopen(path: ?[*:0]const u8, mode: c_int) ?*anyopaque;
+    extern "c" fn dlsym(handle: ?*anyopaque, name: [*:0]const u8) ?*anyopaque;
+    const RTLD_NOW = 2;
+};
+
+/// `lib` on Linux: a path or a file name with `.so` is taken as it is; a bare name (`m`, `X11`)
+/// is the library of that name as a link line spells it (`-lm`): `libm.so`, or, where only the
+/// runtime's versioned file is installed, `libm.so.6` and the like.
+fn resolveProcPosix(allocator: std.mem.Allocator, lib: []const u8, symbol: []const u8) FfiError!*anyopaque {
+    const sym_z = try allocator.dupeZ(u8, symbol);
+    if (std.mem.indexOf(u8, lib, ".so") != null or std.mem.indexOfScalar(u8, lib, '/') != null) {
+        const module = posix.dlopen((try allocator.dupeZ(u8, lib)).ptr, posix.RTLD_NOW) orelse return error.LibNotFound;
+        return posix.dlsym(module, sym_z) orelse error.SymbolNotFound;
+    }
+    for ([_][]const u8{ "", ".6", ".1", ".2", ".0" }) |version| {
+        const name = try std.fmt.allocPrintSentinel(allocator, "lib{s}.so{s}", .{ lib, version }, 0);
+        // (the library stays loaded for the rest of the compile)
+        const module = posix.dlopen(name.ptr, posix.RTLD_NOW) orelse continue;
+        return posix.dlsym(module, sym_z) orelse error.SymbolNotFound;
+    }
+    return error.LibNotFound;
+}
+
 fn resolveProc(allocator: std.mem.Allocator, lib: []const u8, symbol: []const u8) FfiError!*anyopaque {
-    if (@import("builtin").os.tag != .windows) return error.LibNotFound; // FFI is Windows-only for now
+    if (@import("builtin").os.tag != .windows) return resolveProcPosix(allocator, lib, symbol);
     // Append `.dll` if the name has no extension (`kernel32` → `kernel32.dll`).
     const lib_z: [*:0]const u8 = if (std.mem.indexOfScalar(u8, lib, '.') != null)
         (try allocator.dupeZ(u8, lib)).ptr
