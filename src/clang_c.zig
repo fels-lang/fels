@@ -131,12 +131,16 @@ pub fn ensureLoaded() LoadError!void {
     const name = libName();
     if (build_options.llvm_path.len != 0) {
         var buf: [std.fs.max_path_bytes]u8 = undefined;
-        if (std.fmt.bufPrint(&buf, "{s}/bin/{s}", .{ build_options.llvm_path, name })) |p| {
+        if (std.fmt.bufPrint(&buf, "{s}/{s}/{s}", .{ build_options.llvm_path, llvm_lib_dir, name })) |p| {
             if (load(p)) |_| return else |_| {}
         } else |_| {}
     }
     return load(name); // bare name → PATH / rpath / loader search
 }
+
+/// The folder of an LLVM install that holds its shared libraries, libclang among them: Windows
+/// keeps a DLL beside the programs, in `bin/`; Linux and macOS keep them in `lib/`.
+pub const llvm_lib_dir = if (is_windows) "bin" else "lib";
 
 /// The platform's libclang shared-object filename.
 pub fn libName() []const u8 {

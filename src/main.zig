@@ -425,8 +425,12 @@ fn cmdBindgen(allocator: std.mem.Allocator, io: std.Io, env: anytype, args: []co
 }
 
 /// Find libclang and load it (bindgen only). Order: `$FELS_LIBCLANG` (file or dir)
-/// > beside fels.exe > `<exe>/bindgen` > `$FELS_LLVM/bin` > the build-time LLVM dir >
-/// the bare name (OS loader search). Prints how to get it on total failure.
+/// > beside fels.exe > `<exe>/bindgen` > `$FELS_LLVM` > the build-time LLVM dir >
+/// the bare name (OS loader search). Prints how to get it on total failure. An LLVM install
+/// keeps it in `bin/` on Windows and in `lib/` elsewhere.
+/// The folder of an LLVM install with its shared libraries, libclang among them.
+const llvm_lib_dir = if (@import("builtin").os.tag == .windows) "bin" else "lib";
+
 fn loadLibclang(allocator: std.mem.Allocator, io: std.Io, env: anytype, exe_dir: ?[]const u8) !void {
     const name = switch (@import("builtin").os.tag) {
         .windows => "libclang.dll",
@@ -448,13 +452,13 @@ fn loadLibclang(allocator: std.mem.Allocator, io: std.Io, env: anytype, exe_dir:
     }
     // 4/5. `$FELS_LLVM/bin`, then the build-time LLVM dir (dev/CI fallback).
     if (env.get("FELS_LLVM")) |r| {
-        if (std.fmt.allocPrint(allocator, "{s}/bin", .{r})) |b| {
+        if (std.fmt.allocPrint(allocator, "{s}/{s}", .{ r, llvm_lib_dir })) |b| {
             defer allocator.free(b);
             if (tryLoadClangIn(allocator, io, b, name)) return;
         } else |_| {}
     }
     if (fels.llvm_path.len != 0) {
-        if (std.fmt.allocPrint(allocator, "{s}/bin", .{fels.llvm_path})) |b| {
+        if (std.fmt.allocPrint(allocator, "{s}/{s}", .{ fels.llvm_path, llvm_lib_dir })) |b| {
             defer allocator.free(b);
             if (tryLoadClangIn(allocator, io, b, name)) return;
         } else |_| {}
