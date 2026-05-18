@@ -1803,9 +1803,11 @@ fn seedEntryErrorCodes(front_end: pipeline.FrontEnd, error_codes: *ErrorCodes) L
         };
         if (decl.type_params.len != 0) continue;
         if (!std.mem.eql(u8, decl.name, "main") and !hasAttr(decl.attrs, "entry")) continue;
-        const id = front_end.symbols.resolveVisible(decl.file_name, decl.name) orelse return;
-        const sig = front_end.types.fn_sigs.get(id) orelse return;
-        const variants = errorSetVariantsIn(front_end.types, sig.error_ty orelse return) orelse return;
+        // (an entry that cannot fail is passed over: on Linux the runtime's `_start` is one,
+        // and comes before the program's `main`)
+        const id = front_end.symbols.resolveVisible(decl.file_name, decl.name) orelse continue;
+        const sig = front_end.types.fn_sigs.get(id) orelse continue;
+        const variants = errorSetVariantsIn(front_end.types, sig.error_ty orelse continue) orelse continue;
         for (variants) |variant| _ = try error_codes.code(variant.name);
         return;
     }
