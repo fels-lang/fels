@@ -86,12 +86,20 @@ pub const LlvmBackend = struct {
         }
 
         // Auto-generate the platform entry point. Windows: a `mainCRTStartup` that
-        // calls `main` + `ExitProcess`. Linux: nothing — the runtime provides a
-        // `#naked _start` that calls `main` + the exit syscall.
+        // calls `main` + `ExitProcess`. Linux: the runtime's `#naked _start` calls
+        // `__fels_main`, which calls `main` and returns the status to exit with.
         if (self.cg.target_os == .windows and !self.cg.no_entry) {
             for (module.functions) |f| {
                 if (f.entry) {
                     try emitWindowsEntryPoint(&self.cg, f);
+                    break;
+                }
+            }
+        }
+        if (self.cg.target_os == .linux and !self.cg.no_entry) {
+            for (module.functions) |f| {
+                if (f.entry and !std.mem.eql(u8, f.name, "_start")) {
+                    try emitLinuxMain(&self.cg, f);
                     break;
                 }
             }
@@ -306,9 +314,43 @@ fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {
     const main_fn = cg.fn_decls.get(main.name) orelse return;
     const main_ret = callMain(cg, main_fn);
 
+    const exit_code = exitStatus(cg, main, main_ret);
+
+    // Call ExitProcess.
+    const ep_fn = cg.fn_decls.get(ep_sym).?;
+    const ep_fn_ty = llvm_c.LLVMGlobalGetValueType(ep_fn);
+    var ep_args = [_]llvm_c.LLVMValueRef{exit_code};
+    _ = llvm_c.LLVMBuildCall2(cg.builder, ep_fn_ty, ep_fn, &ep_args, 1, "");
+    _ = llvm_c.LLVMBuildUnreachable(cg.builder);
+}
+
+/// `__fels_main() -> i32` for Linux: the runtime's `_start` calls it (or glibc's
+/// `__libc_start_main` does) and exits with what it returns, the status `main` ends with.
+fn emitLinuxMain(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {
+    const i32_ty = llvm_c.LLVMInt32TypeInContext(cg.ctx);
+    const wrapper_ty = llvm_c.LLVMFunctionType(i32_ty, null, 0, 0);
+    const wrapper = llvm_c.LLVMAddFunction(cg.mod, "__fels_main", wrapper_ty);
+    const bb = llvm_c.LLVMAppendBasicBlockInContext(cg.ctx, wrapper, "entry");
+    llvm_c.LLVMPositionBuilderAtEnd(cg.builder, bb);
+    const main_fn = cg.fn_decls.get(main.name) orelse return;
+    const main_ret = callMain(cg, main_fn);
+    _ = llvm_c.LLVMBuildRet(cg.builder, exitStatus(cg, main, main_ret));
+}
+
+/// A call of `main`. A `void` one has no result to name: LLVM refuses the module when it has
+/// one (`%ret = call void @main()`), which was a `main :: fn() { … }` on Windows.
+fn callMain(cg: *ctx_mod.ModuleCg, main_fn: llvm_c.LLVMValueRef) llvm_c.LLVMValueRef {
+    const fn_ty = llvm_c.LLVMGlobalGetValueType(main_fn);
+    const void_result = llvm_c.LLVMGetTypeKind(llvm_c.LLVMGetReturnType(fn_ty)) == llvm_c.LLVMVoidTypeKind;
+    return llvm_c.LLVMBuildCall2(cg.builder, fn_ty, main_fn, null, 0, if (void_result) "" else "ret");
+}
+
+/// The status a program exits with when `main` returned `main_ret`: its `i32`, 0 for a
+/// `void` main, and for a main that can fail, the error's code when it failed.
+fn exitStatus(cg: *ctx_mod.ModuleCg, main: ir.IrFunction, main_ret: llvm_c.LLVMValueRef) llvm_c.LLVMValueRef {
     // Coerce i32 → u32 (bitcast — same bits, different signedness).
     const u32_ty = llvm_c.LLVMInt32TypeInContext(cg.ctx);
-    const exit_code = if (main.error_ty != null) blk: {
+    return if (main.error_ty != null) blk: {
         const err = llvm_c.LLVMBuildExtractValue(cg.builder, main_ret, 1, "main_err");
         const ok = if (main.return_ty == .void)
             llvm_c.LLVMConstInt(u32_ty, 0, 0)
@@ -327,19 +369,4 @@ fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {
         llvm_c.LLVMConstInt(u32_ty, 0, 0)
     else
         values.coerce(cg.builder, cg.ctx, main_ret, u32_ty);
-
-    // Call ExitProcess.
-    const ep_fn = cg.fn_decls.get(ep_sym).?;
-    const ep_fn_ty = llvm_c.LLVMGlobalGetValueType(ep_fn);
-    var ep_args = [_]llvm_c.LLVMValueRef{exit_code};
-    _ = llvm_c.LLVMBuildCall2(cg.builder, ep_fn_ty, ep_fn, &ep_args, 1, "");
-    _ = llvm_c.LLVMBuildUnreachable(cg.builder);
-}
-
-/// A call of `main`. A `void` one has no result to name: LLVM refuses the module when it has
-/// one (`%ret = call void @main()`), which was a `main :: fn() { … }` on Windows.
-fn callMain(cg: *ctx_mod.ModuleCg, main_fn: llvm_c.LLVMValueRef) llvm_c.LLVMValueRef {
-    const fn_ty = llvm_c.LLVMGlobalGetValueType(main_fn);
-    const void_result = llvm_c.LLVMGetTypeKind(llvm_c.LLVMGetReturnType(fn_ty)) == llvm_c.LLVMVoidTypeKind;
-    return llvm_c.LLVMBuildCall2(cg.builder, fn_ty, main_fn, null, 0, if (void_result) "" else "ret");
 }
