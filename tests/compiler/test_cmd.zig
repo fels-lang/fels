@@ -227,7 +227,10 @@ test "fels test: on the comptime VM, a test that needs the running program is sk
     try std.testing.expectEqual(@as(u32, 1), r.summary.passed);
     try std.testing.expectEqual(@as(u32, 2), r.summary.skipped);
     try std.testing.expect(r.summary.ok());
-    try expectHas(r.text, "  \u{00b7} asks_the_os: skipped (comptime FFI to `");
+    try expectHas(r.text, if (builtin.os.tag == .windows)
+        "  \u{00b7} asks_the_os: skipped (comptime FFI to `"
+    else
+        "  \u{00b7} asks_the_os: skipped (the comptime VM cannot run `sys_getpid`)");
     try expectHas(r.text, "  \u{00b7} counts: skipped (compile-time code cannot modify a global)\n");
     try expectHas(r.text, "\n\nTest Summary: 1 passed, 2 skipped \u{00b7} ");
 }

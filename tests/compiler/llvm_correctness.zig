@@ -635,6 +635,7 @@ test "LLVM lowering applies #cold / #section / #weak / #link_name (Phase 3)" {
 
 test "LLVM: bindings of one C symbol share its function but keep their own signatures" {
     if (comptime !fels.llvm_enabled) return;
+    if (comptime @import("builtin").os.tag != .windows) return error.SkipZigTest; // the Windows runtime's `CloseHandle`
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

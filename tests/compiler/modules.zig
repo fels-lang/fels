@@ -169,6 +169,7 @@ test "modules: two modules may bind one C symbol under the same name" {
 }
 
 test "modules: a user #extern and constant may reuse names the runtime declares" {
+    if (comptime @import("builtin").os.tag != .windows) return error.SkipZigTest; // the Windows runtime's names
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
