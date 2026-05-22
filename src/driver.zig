@@ -379,8 +379,9 @@ pub fn emitLlvmFromFrontend(
     // An executable starts at `main` (or an `#entry` function). Without one the link went
     // through and the program jumped to nothing at start.
     if (opts.exe_path != null and !opts.dll and !opts.no_entry and !opts.library_object and opts.entry == null) {
+        // (on Linux the runtime's `_start` is an entry too: it calls the program's)
         const has_entry = for (module.functions) |f| {
-            if (f.entry) break true;
+            if (f.entry and !(opts.target_os == .linux and std.mem.eql(u8, f.name, "_start"))) break true;
         } else false;
         if (!has_entry) {
             std.debug.print("error: {s} has no `main`: an executable starts at `main :: fn() -> i32`, or at a function marked `#entry`\n", .{opts.file_name});
