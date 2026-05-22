@@ -962,9 +962,13 @@ exit :: fn(code: u32) {
 }
 
 /// Terminate after an unrecoverable runtime failure.
+// The status a panic exits with: 239, the low byte of the Windows runtime's 0xDEADBEEF,
+// so that a panic ends a program the same way on both.
+PANIC_EXIT_CODE :: 239;
+
 #noreturn
 abort :: fn() {
-    sys_exit(1);
+    sys_exit(PANIC_EXIT_CODE);
 }
 
 /// Abort with a message. Never returns.
