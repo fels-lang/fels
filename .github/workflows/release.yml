@@ -6,6 +6,9 @@ name: Release
 # The release notes are the matching section of CHANGELOG.md ("## 0.3.1 ..."). A pre-release
 # without its own section uses "## Unreleased".
 #
+# Windows and Linux are built, packaged and smoke tested in jobs of their own, side by side;
+# the release is published once both have passed, with the archives of both.
+#
 # Run it by hand (Actions > Release > Run workflow) to build, package and smoke test without
 # publishing. The archives are kept as workflow artifacts either way.
 on:
@@ -18,8 +21,11 @@ permissions:
 
 jobs:
   release:
-    name: build and publish
+    name: build (Windows)
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -121,21 +127,109 @@ jobs:
       - name: Keep the archives
         uses: actions/upload-artifact@v4
         with:
-          name: fels-${{ steps.pkg.outputs.file_version }}
+          name: fels-${{ steps.pkg.outputs.file_version }}-windows
           path: |
             ${{ steps.pkg.outputs.archive }}
             ${{ steps.pkg.outputs.bindgen_archive }}
             ${{ steps.pkg.outputs.linux_cross_archive }}
           compression-level: 0 # already zipped
 
-      - name: Publish the release
+      - name: Keep the release notes
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: actions/upload-artifact@v4
         with:
-          name: fels ${{ steps.tag.outputs.version }}
-          prerelease: ${{ steps.tag.outputs.prerelease }}
-          body_path: notes.md
-          files: |
+          name: notes
+          path: notes.md
+
+  linux:
+    name: build (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+          cache-size-limit: 4096
+      - uses: ./.github/actions/setup-llvm
+        id: llvm
+
+      # The Windows job checks the tag against build.zig.zon and reads the notes.
+      - name: Build and package
+        id: pkg
+        shell: bash
+        run: |
+          version=""
+          if [ "${{ github.ref_type }}" = "tag" ]; then version="${GITHUB_REF_NAME#v}"; fi
+          sh scripts/package.sh "${{ steps.llvm.outputs.path }}" "$version"
+
+      # Run the packaged compiler from a folder outside the repo, the way a user gets it.
+      - name: Smoke test the archive
+        shell: bash
+        run: |
+          set -eu
+          dir="$RUNNER_TEMP/smoke"
+          mkdir -p "$dir"
+          tar -xzf "${{ steps.pkg.outputs.archive }}" -C "$dir"
+          fels="$(find "$dir" -name fels -type f -path '*/bin/*' | head -n 1)"
+          "$fels" version
+          cd "$dir"
+          cat > hello.fels <<'FELS'
+          #import std.io.{ println };
+
+          main :: fn() -> i32 {
+              println("hello from Fels");
+              return 5;
+          }
+          FELS
+          "$fels" build hello.fels
+          set +e; ./hello; code=$?; set -e
+          [ "$code" = 5 ] || { echo "hello returned $code, expected 5"; exit 1; }
+
+          # The same program through build.fels.
+          rm hello
+          cat > build.fels <<'FELS'
+          #import std.build.{ Build, executable, default };
+
+          build :: fn(b: Build) {
+              exe := b.executable("hello", "hello.fels");
+              b.default(exe);
+          }
+          FELS
+          "$fels" build
+          set +e; ./hello; code=$?; set -e
+          [ "$code" = 5 ] || { echo "hello from build.fels returned $code, expected 5"; exit 1; }
+
+          # A project from each template: its tests pass, and it builds.
+          for t in app lib; do
+              "$fels" new "smoke_$t" "--$t" --no-git
+              (cd "smoke_$t" && "$fels" test && "$fels" build)
+          done
+
+      - name: Keep the archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: fels-${{ steps.pkg.outputs.file_version }}-linux
+          path: |
             ${{ steps.pkg.outputs.archive }}
             ${{ steps.pkg.outputs.bindgen_archive }}
-            ${{ steps.pkg.outputs.linux_cross_archive }}
+          compression-level: 0 # already compressed
+
+  publish:
+    name: publish
+    if: github.ref_type == 'tag'
+    needs: [release, linux]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: fels ${{ needs.release.outputs.version }}
+          prerelease: ${{ needs.release.outputs.prerelease }}
+          body_path: dist/notes.md
+          files: |
+            dist/**/*.zip
+            dist/**/*.tar.gz
