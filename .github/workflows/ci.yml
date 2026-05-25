@@ -59,3 +59,21 @@ jobs:
           zig build test
           -Dllvm-path="${{ steps.llvm.outputs.path }}"
           -Dwindows-sdk-lib-path="${{ env.SDK_LIB }}"
+
+  # ── Linux: the compiler built and tested on Linux ────────────────────────────
+  # LLVM linked in statically (llvm.org's Linux release has no shared LLVM), the
+  # test programs built as static ELF executables, linked with ld.lld and run.
+  # The tests that use the Windows API or the Windows linkers skip themselves.
+  linux:
+    name: build + test (Linux, LLVM)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+          cache-size-limit: 4096
+      - uses: ./.github/actions/setup-llvm
+        id: llvm
+      - name: Build + test (full suite)
+        run: zig build test -Dllvm-path="${{ steps.llvm.outputs.path }}"

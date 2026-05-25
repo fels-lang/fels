@@ -1,7 +1,8 @@
 name: Set up LLVM
 description: >
-  Download the official LLVM release for Windows, keep only the files fels needs, and cache
-  them. The first run downloads about 820 MB; later runs restore a much smaller cache.
+  Download the official LLVM release for the runner's OS (Windows or Linux), keep only the
+  files fels needs, and cache them. The first run downloads about 820 MB (Windows) or 1.9 GB
+  (Linux); later runs restore a much smaller cache.
 
 inputs:
   version:
@@ -19,7 +20,7 @@ runs:
     - name: LLVM directory
       id: dir
       shell: pwsh
-      run: '"path=${{ runner.temp }}\llvm" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT'
+      run: '"path=$(Join-Path "${{ runner.temp }}" "llvm")" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT'
 
     # Bump the "files" number when the list of kept files below changes, so the old cache is not
     # restored.
@@ -28,10 +29,10 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ steps.dir.outputs.path }}
-        key: llvm-${{ inputs.version }}-windows-files1
+        key: llvm-${{ inputs.version }}-${{ runner.os }}-files1
 
     - name: Download and trim LLVM
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'Windows'
       shell: pwsh
       env:
         LLVM_VERSION: ${{ inputs.version }}
@@ -74,3 +75,37 @@ runs:
         Remove-Item -Recurse -Force $full, $archive
         $mb = (Get-ChildItem -Recurse -File $dst | Measure-Object Length -Sum).Sum / 1MB
         Write-Host ("==> LLVM {0} in {1} ({2:N0} MB)" -f $env:LLVM_VERSION, $dst, $mb)
+
+    # Linux: llvm.org's release has no shared LLVM, so fels links its static libraries (see
+    # build.zig, `linkStaticLlvm`).
+    - name: Download and trim LLVM (Linux)
+      if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'Linux'
+      shell: bash
+      env:
+        LLVM_VERSION: ${{ inputs.version }}
+        LLVM_DIR: ${{ steps.dir.outputs.path }}
+      run: |
+        set -euo pipefail
+        name="LLVM-$LLVM_VERSION-Linux-X64"
+        url="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$name.tar.xz"
+        full="$RUNNER_TEMP/llvm-full"
+        echo "==> downloading $url"
+        mkdir -p "$full"
+        # unpacked as it downloads: the 1.9 GB archive is never on disk
+        curl -fsSL --retry 3 "$url" | tar -xJ -C "$full"
+        src="$full/$name"
+
+        # Keep what the build, the tests and scripts/package.sh use:
+        #   bin/      llvm-config (build.zig asks it for the libraries), lld and its ld.lld
+        #             link (the tests link with it, the release ships it)
+        #   include/  the LLVM-C and clang-c headers
+        #   lib/      the LLVM static libraries, libclang (bindgen) and lib/clang (its headers)
+        dst="$LLVM_DIR"
+        mkdir -p "$dst/bin" "$dst/lib"
+        mv "$src/bin/llvm-config" "$src/bin/lld" "$dst/bin/"
+        ln -s lld "$dst/bin/ld.lld"
+        mv "$src/include" "$dst/"
+        mv "$src/lib/clang" "$dst/lib/"
+        mv "$src"/lib/libLLVM*.a "$src"/lib/libclang.so* "$dst/lib/"
+        rm -rf "$full"
+        echo "==> LLVM $LLVM_VERSION in $dst ($(du -sh "$dst" | cut -f1))"
