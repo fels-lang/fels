@@ -15,3 +15,7 @@ dist/
 
 # raytracer example output
 examples/raytracer/render.*
+
+# Benchmark builds (bench/run.py)
+bench/out/
+*.pdb
