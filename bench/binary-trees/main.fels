@@ -1,0 +1,67 @@
+// binary-trees: the Benchmarks Game's binary trees, built and walked many times over.
+// Many small allocations and pointer chasing. Every tree is allocated in an arena that is
+// reset after it is checked, in all three languages.
+
+#import std.io;
+#import std.heap.{ Arena, make, new, reset };
+#import std.process;
+
+Node :: struct { left: ?*Node, right: ?*Node }
+
+bottom_up :: fn(depth: i32, a: *Arena) -> *Node {
+    node := new(Node, a);
+    if depth > 0 {
+        node.left = bottom_up(depth - 1, a);
+        node.right = bottom_up(depth - 1, a);
+    } else {
+        node.left = null;
+        node.right = null;
+    }
+    return node;
+}
+
+check :: fn(node: *Node) -> i32 {
+    if node.left |l| {
+        if node.right |r| { return 1 + check(l) + check(r); }
+    }
+    return 1;
+}
+
+// The first argument as a number, or `fallback`.
+arg_int :: fn(fallback: i64) -> i64 {
+    a := make();
+    args := process::args(&a);
+    if args.len < 2 { return fallback; }
+    n: i64 = 0;
+    for c in args[1] { n = n * 10 + ((c - 48) as i64); }
+    return n;
+}
+
+main :: fn() -> i32 {
+    min_depth: i32 = 4;
+    max_depth := arg_int(10) as i32;
+    if max_depth < min_depth + 2 { max_depth = min_depth + 2; }
+
+    stretch := max_depth + 1;
+    scratch := make();
+    stretch_check := check(bottom_up(stretch, &scratch));
+    io::println("stretch tree of depth {stretch}\t check: {stretch_check}") catch e {};
+    reset(&scratch);
+
+    long_arena := make();
+    long_lived := bottom_up(max_depth, &long_arena);
+
+    d := min_depth;
+    while d <= max_depth {
+        iterations: i32 = 1 << (max_depth - d + min_depth);
+        sum: i32 = 0;
+        for i in 0..iterations {
+            sum += check(bottom_up(d, &scratch));
+            reset(&scratch);
+        }
+        io::println("{iterations}\t trees of depth {d}\t check: {sum}") catch e {};
+        d += 2;
+    }
+    io::println("long lived tree of depth {max_depth}\t check: {check(long_lived)}") catch e {};
+    return 0;
+}
