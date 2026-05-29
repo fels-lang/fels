@@ -1,0 +1,71 @@
+// fannkuch-redux: the Benchmarks Game's pancake flips over every permutation of 1..n.
+// Small integer arrays, copies and reversals, and a permutation generator. Prints the checksum
+// and the most flips.
+
+#import std.io;
+#import std.heap;
+#import std.process;
+
+// The first argument as a number, or `fallback`.
+arg_int :: fn(fallback: i64) -> i64 {
+    a := heap::make();
+    args := process::args(&a);
+    if args.len < 2 { return fallback; }
+    n: i64 = 0;
+    for c in args[1] { n = n * 10 + ((c - 48) as i64); }
+    return n;
+}
+
+main :: fn() -> i32 {
+    n := arg_int(7) as usize;
+    a := heap::make();
+    perm := heap::alloc(i32, &a, n);
+    perm1 := heap::alloc(i32, &a, n);
+    count := heap::alloc(i32, &a, n);
+    for i in 0..n { perm1[i] = i as i32; }
+
+    max_flips: i32 = 0;
+    checksum: i32 = 0;
+    perm_count: i32 = 0;
+    r := n;
+    while true {
+        while r != 1 {
+            count[r - 1] = r as i32;
+            r -= 1;
+        }
+        for i in 0..n { perm[i] = perm1[i]; }
+        flips: i32 = 0;
+        k := perm[0] as usize;
+        while k != 0 {
+            lo: usize = 0;
+            hi := k;
+            while lo < hi {
+                t := perm[lo];
+                perm[lo] = perm[hi];
+                perm[hi] = t;
+                lo += 1;
+                hi -= 1;
+            }
+            flips += 1;
+            k = perm[0] as usize;
+        }
+        if flips > max_flips { max_flips = flips; }
+        if perm_count % 2 == 0 { checksum += flips; } else { checksum -= flips; }
+
+        // The next permutation.
+        while true {
+            if r == n {
+                io::println("{checksum}\nPfannkuchen({n}) = {max_flips}") catch e {};
+                return 0;
+            }
+            perm0 := perm1[0];
+            for i in 0..r { perm1[i] = perm1[i + 1]; }
+            perm1[r] = perm0;
+            count[r] -= 1;
+            if count[r] > 0 { break; }
+            r += 1;
+        }
+        perm_count += 1;
+    }
+    return 0;
+}
