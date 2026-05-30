@@ -1,0 +1,36 @@
+// sieve: the primes up to n, by the sieve of Eratosthenes over one byte per number.
+// Memory traffic with strided writes, and a branch per number. Prints how many there are.
+
+#import std.io;
+#import std.heap;
+#import std.process;
+
+// The first argument as a number, or `fallback`.
+arg_int :: fn(fallback: i64) -> i64 {
+    a := heap::make();
+    args := process::args(&a);
+    if args.len < 2 { return fallback; }
+    n: i64 = 0;
+    for c in args[1] { n = n * 10 + ((c - 48) as i64); }
+    return n;
+}
+
+main :: fn() -> i32 {
+    n := arg_int(1000) as usize;
+    a := heap::make();
+    composite := heap::alloc(u8, &a, n + 1);
+    for i in 0..(n + 1) { composite[i] = 0; }
+    count: usize = 0;
+    for i in 2..(n + 1) {
+        if composite[i] == 0 {
+            count += 1;
+            j := i * i;
+            while j <= n {
+                composite[j] = 1;
+                j += i;
+            }
+        }
+    }
+    io::println("{count}") catch e {};
+    return 0;
+}
