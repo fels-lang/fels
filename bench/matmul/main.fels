@@ -1,0 +1,42 @@
+// matmul: an n x n matrix product of doubles, the naive i-k-j loop order.
+// Floating-point multiply-add over rows, the loop compilers vectorize. The entries are small
+// integers, so the sum it prints is exact in every language.
+
+#import std.io;
+#import std.heap;
+#import std.process;
+
+// The first argument as a number, or `fallback`.
+arg_int :: fn(fallback: i64) -> i64 {
+    a := heap::make();
+    args := process::args(&a);
+    if args.len < 2 { return fallback; }
+    n: i64 = 0;
+    for c in args[1] { n = n * 10 + ((c - 48) as i64); }
+    return n;
+}
+
+main :: fn() -> i32 {
+    n := arg_int(100) as usize;
+    a := heap::make();
+    x := heap::alloc(f64, &a, n * n);
+    y := heap::alloc(f64, &a, n * n);
+    z := heap::alloc(f64, &a, n * n);
+    for i in 0..n {
+        for j in 0..n {
+            x[i * n + j] = ((i + j) % 3) as f64;
+            y[i * n + j] = ((i * j) % 5) as f64;
+            z[i * n + j] = 0.0;
+        }
+    }
+    for i in 0..n {
+        for k in 0..n {
+            xik := x[i * n + k];
+            for j in 0..n { z[i * n + j] += xik * y[k * n + j]; }
+        }
+    }
+    sum := 0.0;
+    for i in 0..(n * n) { sum += z[i]; }
+    io::println("{sum as i64}") catch e {};
+    return 0;
+}
