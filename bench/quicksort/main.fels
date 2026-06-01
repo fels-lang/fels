@@ -1,0 +1,83 @@
+// quicksort: n pseudo-random u32 (xorshift32) sorted by one quicksort written out the same way
+// in every language: Hoare partition around the middle element, insertion sort below 16
+// elements, the smaller side recursed into. Comparisons, swaps and unpredictable branches.
+// Prints whether the result is sorted, its ends and a checksum.
+
+#import std.io;
+#import std.heap;
+#import std.process;
+
+insertion_sort :: fn(a: []u32, lo: i64, hi: i64) {
+    i := lo + 1;
+    while i <= hi {
+        v := a[i as usize];
+        j := i - 1;
+        while j >= lo && a[j as usize] > v {
+            a[(j + 1) as usize] = a[j as usize];
+            j -= 1;
+        }
+        a[(j + 1) as usize] = v;
+        i += 1;
+    }
+}
+
+quicksort :: fn(a: []u32, lo_in: i64, hi_in: i64) {
+    lo := lo_in;
+    hi := hi_in;
+    while hi - lo > 16 {
+        p := a[(lo + (hi - lo) / 2) as usize];
+        i := lo - 1;
+        j := hi + 1;
+        while true {
+            i += 1;
+            while a[i as usize] < p { i += 1; }
+            j -= 1;
+            while a[j as usize] > p { j -= 1; }
+            if i >= j { break; }
+            t := a[i as usize];
+            a[i as usize] = a[j as usize];
+            a[j as usize] = t;
+        }
+        // Recurse into the smaller side, go on with the larger.
+        if j - lo < hi - j {
+            quicksort(a, lo, j);
+            lo = j + 1;
+        } else {
+            quicksort(a, j + 1, hi);
+            hi = j;
+        }
+    }
+    insertion_sort(a, lo, hi);
+}
+
+// The first argument as a number, or `fallback`.
+arg_int :: fn(fallback: i64) -> i64 {
+    a := heap::make();
+    args := process::args(&a);
+    if args.len < 2 { return fallback; }
+    n: i64 = 0;
+    for c in args[1] { n = n * 10 + ((c - 48) as i64); }
+    return n;
+}
+
+main :: fn() -> i32 {
+    n := arg_int(1000) as usize;
+    arena := heap::make();
+    a := heap::alloc(u32, &arena, n);
+    x: u32 = 2463534242;
+    for i in 0..n {
+        x = x ^ (x << 13);
+        x = x ^ (x >> 17);
+        x = x ^ (x << 5);
+        a[i] = x;
+    }
+    quicksort(a, 0, (n as i64) - 1);
+    sorted := true;
+    checksum: u64 = 0;
+    for i in 0..n {
+        if i > 0 && a[i - 1] > a[i] { sorted = false; }
+        checksum = checksum +% (a[i] as u64) *% ((i as u64) + 1);
+    }
+    io::println("{sorted} {a[0]} {a[n - 1]} {checksum}") catch e {};
+    return 0;
+}
