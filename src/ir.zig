@@ -4499,6 +4499,17 @@ const FunctionLowerer = struct {
                 break :blk try self.emitAt(self.exprType(expr), .{ .field = .{ .base = base, .name = field.name } }, expr.span);
             },
             .index => |index| blk: {
+                // An array that is a field or an element (`t.vals[i]`, `grid[r][c]`) is read in
+                // place. Indexing its value copied the whole array first: 32 KiB for each byte
+                // the Linux runtime read from its environment table, and the optimiser split
+                // that copy into a store per element, which took the code generator minutes.
+                if (self.exprType(index.base.*) == .array and self.isArrayInPlace(index.base.*)) {
+                    const elem_ty = self.exprType(expr);
+                    const addr = try self.lowerLValueAddress(index.base.*);
+                    const idx = try self.lowerExpr(index.index.*);
+                    const ptr = try self.emitAt(.{ .ptr = try boxType(self.allocator, elem_ty) }, .{ .index_addr = .{ .base = addr, .index = idx } }, expr.span);
+                    break :blk try self.emitAt(elem_ty, .{ .unary = .{ .op = .deref, .value = ptr } }, expr.span);
+                }
                 const base = try self.lowerExpr(index.base.*);
                 const idx = try self.lowerExpr(index.index.*);
                 break :blk try self.emitAt(self.exprType(expr), .{ .index = .{ .base = base, .index = idx } }, expr.span);
@@ -5149,6 +5160,36 @@ const FunctionLowerer = struct {
                 else => try self.emitRef(ptr_ty, try self.lowerExpr(expr), expr.span),
             },
             else => try self.emitRef(ptr_ty, try self.lowerExpr(expr), expr.span),
+        };
+    }
+
+    /// Whether the array `expr` is a field or an element of something reached through a
+    /// pointer (`t.vals` with `t: *Table`, `self.grid[r]`, `xs[i].tags`, `p.*.a`), so
+    /// `lowerLValueAddress` finds it where it is. One in a value of the function's or the
+    /// program's own (`RECS[0].tags` of a global) is left to the copy: the comptime VM reads
+    /// static data through the copy, not through an address into it.
+    fn isArrayInPlace(self: *FunctionLowerer, expr: ast.Expr) bool {
+        return switch (expr.kind) {
+            .field => |field| !self.isComputedField(field) and self.isBehindPointer(field.base.*),
+            .index => |index| self.isBehindPointer(index.base.*),
+            else => false,
+        };
+    }
+
+    /// Whether `expr` is in memory a pointer leads to: a pointer itself (a field of it is
+    /// read through it), an element of a slice or a pointer, a pointee, or a field or array
+    /// element of one of those.
+    fn isBehindPointer(self: *FunctionLowerer, expr: ast.Expr) bool {
+        return switch (expr.kind) {
+            .ident => self.exprType(expr) == .ptr,
+            .field => |field| !self.isComputedField(field) and
+                (self.exprType(field.base.*) == .ptr or self.isBehindPointer(field.base.*)),
+            .index => |index| switch (self.exprType(index.base.*)) {
+                .array => self.isBehindPointer(index.base.*),
+                else => true,
+            },
+            .unary => |unary| unary.op == .deref,
+            else => false,
         };
     }
 
