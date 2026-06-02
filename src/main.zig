@@ -355,7 +355,12 @@ pub fn main(init: std.process.Init) u8 {
         return cmdObject(allocator, io, src_path, source, out, &opts);
     }
     if (std.mem.eql(u8, cmd, "build")) {
-        const exe = opts.out_path orelse deriveOut(allocator, src_path, if (opts.dll) ".dll" else ".exe");
+        // A Windows program is `hello.exe`, a Linux one `hello`, whatever the host.
+        const ext = switch (opts.target_os) {
+            .windows => if (opts.dll) ".dll" else ".exe",
+            else => if (opts.dll) ".so" else "",
+        };
+        const exe = opts.out_path orelse deriveOut(allocator, src_path, ext);
         defer if (opts.out_path == null) allocator.free(exe);
         const obj = std.fmt.allocPrint(allocator, "{s}.o", .{exe}) catch return 1;
         defer allocator.free(obj);
