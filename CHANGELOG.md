@@ -36,6 +36,12 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
   with 239 there too.
 - `main :: fn() { … }`, without a return type, builds on Windows: the entry point named the
   result of a call that has none, and LLVM refused the module.
+- `core::asm` hands LLVM its constraints in the order LLVM reads them, outputs first. The
+  runtimes name the inputs first, and LLVM took the string as it came.
+- Indexing an array reached through a pointer (`t.vals[i]` with `t: *Table`, `xs[i].tags[j]`)
+  reads it in place. It copied the whole array first, for every element read; at `-O2` the
+  optimiser split such a copy into a store per byte, and a Linux program using `std.env` took
+  minutes to build.
 
 ## 0.11.0 — 2026-10-18
 
