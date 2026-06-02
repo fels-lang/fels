@@ -3,6 +3,40 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+Programs built with `-O1` to `-O3` (and `fels build` of a single file, which is `-O2`) go
+through LLVM's optimiser now: they run as fast as the same C or Zig, where before they took
+1.5 to 3.5 times as long. And the compiler runs on Linux.
+
+### Added
+
+- **The compiler on Linux.** `fels` builds and runs on x86-64 Linux, with LLVM linked in, and
+  builds static Linux executables there with `ld.lld`. The release has a Linux archive,
+  `fels-<version>-x86_64-linux.tar.gz`, with `install.sh`; it needs a C++ runtime from GCC 11 or
+  newer (Ubuntu 22.04, Debian 12, Fedora 35 and later). CI builds and tests it on Linux.
+- **Benchmarks against C and Zig** in `bench/`: ten programs written alike in the three
+  languages, their outputs compared before they are timed (`python bench/run.py`).
+
+### Changed
+
+- **`-O1`, `-O2` and `-O3` run LLVM's optimiser**, the pipeline clang runs at the same level:
+  inlining, loop optimisations, vectorisation. The level used to reach only the code generator.
+  A program now also carries `memcpy`, `memset`, `memmove`, `memcmp` and `bcmp`, which the
+  optimiser calls (a C library's take their place when one is linked). A small program is
+  smaller, too: unused parts of the runtime are dropped.
+- **`std.heap`'s `reset` and `restore`** take the same time however many chunks the arena has.
+
+### Fixed
+
+- Two `for i in a..b` loops with the same index name and different types (`0..256`, then
+  `0..xs.len`) shared one slot, and the second stored its 8-byte index into 4 bytes.
+- On Linux, a `main` that fails exits with its error's position in its own set, as on Windows,
+  and a `void` main exits with 0; both exited with whatever was in a register. A panic exits
+  with 239 there too.
+- `main :: fn() { … }`, without a return type, builds on Windows: the entry point named the
+  result of a call that has none, and LLVM refused the module.
+
 ## 0.11.0 — 2026-10-18
 
 Macros write code from a type's shape: `#for f in fields(T)` goes through a struct's fields, names
