@@ -5866,12 +5866,15 @@ const FunctionLowerer = struct {
             pos += 1;
         }
 
-        // LLVM constraint order: outputs, inputs, clobbers.
-        for (call.args) |arg| {
+        // LLVM constraint order: outputs, inputs, clobbers, whatever order the call names them
+        // in. The runtimes name the inputs first, and LLVM's C API took `{rax},{rdi},={rax}`
+        // unchecked; its IR parser refuses a string with an output after an input.
+        for ([_][]const u8{ "outputs", "inputs", "clobbers" }) |group| for (call.args) |arg| {
             const n = switch (arg) {
                 .named => |n| n,
                 else => continue,
             };
+            if (!std.mem.eql(u8, n.name, group)) continue;
             const items = switch (n.value.kind) {
                 .compound_literal => |c| c,
                 else => continue,
@@ -5913,7 +5916,7 @@ const FunctionLowerer = struct {
                     try constraints.append(self.allocator, ',');
                 }
             }
-        }
+        };
 
         // Remove trailing comma.
         if (constraints.items.len > 0 and constraints.items[constraints.items.len - 1] == ',')
