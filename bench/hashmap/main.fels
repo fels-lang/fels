@@ -1,0 +1,84 @@
+// hashmap: an open-addressing hash table of u64 keys, written out the same way in every
+// language: linear probing, a power-of-two table at least twice the keys, a multiplicative
+// hash. n keys from splitmix64 are inserted, then looked up again with n keys of another
+// seed. Random memory access and a branch per probe. Prints the hits and the sum of their
+// values.
+
+#import std.io;
+#import std.heap;
+#import std.process;
+
+Table :: struct { keys: []u64, vals: []u64, shift: u64 }
+
+splitmix :: fn(state: *u64) -> u64 {
+    *state = *state +% 0x9E3779B97F4A7C15;
+    z := *state;
+    z = (z ^ (z >> 30)) *% 0xBF58476D1CE4E5B9;
+    z = (z ^ (z >> 27)) *% 0x94D049BB133111EB;
+    return (z ^ (z >> 31)) | 1; // 0 marks an empty slot
+}
+
+slot :: fn(t: *Table, key: u64) -> usize {
+    return ((key *% 0x9E3779B97F4A7C15) >> t.shift) as usize;
+}
+
+insert :: fn(t: *Table, key: u64, val: u64) {
+    mask := t.keys.len - 1;
+    i := slot(t, key);
+    while t.keys[i] != 0 && t.keys[i] != key { i = (i + 1) & mask; }
+    t.keys[i] = key;
+    t.vals[i] = val;
+}
+
+find :: fn(t: *Table, key: u64) -> ?u64 {
+    mask := t.keys.len - 1;
+    i := slot(t, key);
+    while t.keys[i] != 0 {
+        if t.keys[i] == key { return t.vals[i]; }
+        i = (i + 1) & mask;
+    }
+    return null;
+}
+
+// The first argument as a number, or `fallback`.
+arg_int :: fn(fallback: i64) -> i64 {
+    a := heap::make();
+    args := process::args(&a);
+    if args.len < 2 { return fallback; }
+    n: i64 = 0;
+    for c in args[1] { n = n * 10 + ((c - 48) as i64); }
+    return n;
+}
+
+main :: fn() -> i32 {
+    n := arg_int(1000) as usize;
+    bits: u64 = 1;
+    while ((1 as usize) << (bits as u32)) < 2 * n { bits += 1; }
+    cap := (1 as usize) << (bits as u32);
+    a := heap::make();
+    t: Table = .{ heap::alloc(u64, &a, cap), heap::alloc(u64, &a, cap), 64 - bits };
+    for i in 0..cap {
+        t.keys[i] = 0;
+        t.vals[i] = 0;
+    }
+    seed: u64 = 1;
+    for i in 0..n { insert(&t, splitmix(&seed), i as u64); }
+    found: u64 = 0;
+    sum: u64 = 0;
+    seed = 1;
+    for i in 0..n {
+        if find(&t, splitmix(&seed)) |v| {
+            found += 1;
+            sum = sum +% v;
+        }
+    }
+    seed = 2;
+    for i in 0..n {
+        if find(&t, splitmix(&seed)) |v| {
+            found += 1;
+            sum = sum +% v;
+        }
+    }
+    io::println("{found} {sum}") catch e {};
+    return 0;
+}
