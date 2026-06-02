@@ -36,6 +36,8 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
   with 239 there too.
 - `main :: fn() { … }`, without a return type, builds on Windows: the entry point named the
   result of a call that has none, and LLVM refused the module.
+- `fels build hello.fels` names a Linux program `hello`, not `hello.exe`, on Linux and with
+  `--target linux` on Windows.
 - `core::asm` hands LLVM its constraints in the order LLVM reads them, outputs first. The
   runtimes name the inputs first, and LLVM took the string as it came.
 - Indexing an array reached through a pointer (`t.vals[i]` with `t: *Table`, `xs[i].tags[j]`)
