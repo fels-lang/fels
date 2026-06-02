@@ -22,6 +22,7 @@ import json
 import os
 import platform
 import random
+import re
 import shutil
 import statistics
 import subprocess
@@ -230,9 +231,14 @@ def main():
                 print(f'  {name:15} {v:10} missing {os.path.relpath(source, HERE)}')
                 continue
             cmd = build_cmd(v, name, src_dir, exe, args)
-            start = time.perf_counter()
-            p = run(cmd, env=env, cwd=src_dir)
-            build_s = time.perf_counter() - start
+            # Zig 0.16 on Windows now and then fails to read a file of its own standard library
+            # ("unable to load 'ascii.zig': Unexpected"); the same build goes through again.
+            for attempt in range(3):
+                start = time.perf_counter()
+                p = run(cmd, env=env, cwd=src_dir)
+                build_s = time.perf_counter() - start
+                if p.returncode == 0 or not re.search(r"unable to load '[^']+': Unexpected", p.stderr or ''):
+                    break
             entry = {'exe': exe, 'build_s': build_s, 'command': ' '.join(cmd)}
             if p.returncode != 0 or not os.path.exists(exe):
                 entry['error'] = 'build failed: ' + (p.stderr or p.stdout).strip()[:2000]
