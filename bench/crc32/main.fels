@@ -1,0 +1,46 @@
+// crc32: the IEEE CRC-32 (the table-driven, byte-at-a-time loop zlib's reference uses) of a
+// 16 MiB buffer of xorshift32 bytes, `n` times over. Byte loads, table lookups and shifts in
+// a dependency chain. Prints the CRC.
+
+#import std.io;
+#import std.heap;
+#import std.process;
+
+SIZE :: 16777216;
+
+// The first argument as a number, or `fallback`.
+arg_int :: fn(fallback: i64) -> i64 {
+    a := heap::make();
+    args := process::args(&a);
+    if args.len < 2 { return fallback; }
+    n: i64 = 0;
+    for c in args[1] { n = n * 10 + ((c - 48) as i64); }
+    return n;
+}
+
+main :: fn() -> i32 {
+    passes := arg_int(1);
+    a := heap::make();
+    table := heap::alloc(u32, &a, 256);
+    for i in 0..256 {
+        c := i as u32;
+        for k in 0..8 {
+            if c & 1 != 0 { c = 0xEDB88320 ^ (c >> 1); } else { c = c >> 1; }
+        }
+        table[i] = c;
+    }
+    buf := heap::alloc(u8, &a, SIZE);
+    x: u32 = 2463534242;
+    for i in 0..buf.len {
+        x = x ^ (x << 13);
+        x = x ^ (x >> 17);
+        x = x ^ (x << 5);
+        buf[i] = (x & 255) as u8;
+    }
+    crc: u32 = 0xFFFFFFFF;
+    for p in 0..passes {
+        for b in buf { crc = table[((crc ^ (b as u32)) & 255) as usize] ^ (crc >> 8); }
+    }
+    io::println("{crc ^ 0xFFFFFFFF}") catch e {};
+    return 0;
+}
