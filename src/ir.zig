@@ -5,6 +5,7 @@ const parser = @import("parser.zig");
 const sema = @import("sema.zig");
 const param_writes = @import("param_writes.zig");
 const Span = @import("lexer/span.zig").Span;
+const LineStarts = @import("lexer/span.zig").LineStarts;
 const diag_mod = @import("diagnostic.zig");
 const vm_compiler = @import("vm/compiler.zig");
 const vm_engine = @import("vm/engine.zig");
@@ -248,6 +249,14 @@ pub const ErrorCase = struct {
 pub const ErrorCodes = struct {
     allocator: std.mem.Allocator,
     names: std.StringArrayHashMapUnmanaged(void) = .empty,
+    /// Where the lines of each source start, found once per source. They ride along with the
+    /// error names, the one table every function's lowering is handed: each instruction carries
+    /// the line and column it comes from (`FunctionLowerer.sourceLocation`).
+    lines: std.AutoHashMapUnmanaged(SourceKey, LineStarts) = .empty,
+
+    /// A source by its text: a function points into the text of its file, which the front end
+    /// keeps for the whole lowering.
+    const SourceKey = struct { ptr: usize, len: usize };
 
     pub fn init(allocator: std.mem.Allocator) ErrorCodes {
         return .{ .allocator = allocator };
@@ -255,6 +264,23 @@ pub const ErrorCodes = struct {
 
     pub fn deinit(self: *ErrorCodes) void {
         self.names.deinit(self.allocator);
+        var it = self.lines.valueIterator();
+        while (it.next()) |l| l.deinit(self.allocator);
+        self.lines.deinit(self.allocator);
+    }
+
+    /// The line and column of `offset` in `source`.
+    pub fn lineCol(self: *ErrorCodes, source: []const u8, offset: usize) Span.LineColResult {
+        const key: SourceKey = .{ .ptr = @intFromPtr(source.ptr), .len = source.len };
+        const entry = self.lines.getOrPut(self.allocator, key) catch
+            return Span.new(offset, offset).line_col(source);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = LineStarts.of(self.allocator, source) catch {
+                _ = self.lines.remove(key);
+                return Span.new(offset, offset).line_col(source);
+            };
+        }
+        return entry.value_ptr.lineCol(offset, source.len);
     }
 
     /// The number of the error variant `name`, giving it the next free one on first use.
@@ -3672,7 +3698,7 @@ const FunctionLowerer = struct {
                     // The platform the program is built for, as `TARGET` says.
                     if (eq(u8, m, "os")) break :blk astStr(pipeline.build_target.current.osName());
                     if (eq(u8, m, "arch")) break :blk astStr(pipeline.build_target.current.archName());
-                    const lc = expr.span.line_col(self.source);
+                    const lc = self.error_codes.lineCol(self.source, expr.span.start);
                     if (eq(u8, m, "line")) break :blk Value{ .imm = .{ .int = @intCast(lc.line) } };
                     if (eq(u8, m, "column")) break :blk Value{ .imm = .{ .int = @intCast(lc.col) } };
                     break :blk Value{ .imm = .null };
@@ -6354,7 +6380,7 @@ const FunctionLowerer = struct {
     }
 
     fn sourceLocation(self: *const FunctionLowerer, span: Span) SourceLocation {
-        const location = span.line_col(self.source);
+        const location = self.error_codes.lineCol(self.source, span.start);
         return .{
             .file = self.file_name,
             .line = location.line,
