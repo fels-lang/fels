@@ -19,20 +19,23 @@ pub fn initNativeTarget() EmitError!void {
         return error.TargetInitFailed;
     if (llvm.LLVMInitializeNativeAsmParser() != 0)
         return error.TargetInitFailed;
-    noFastIsel();
+    fastIsel();
 }
 
-var fast_isel_off = false;
+/// LLVM's command-line options, set once per process: at `-O0` it takes the instruction selector
+/// from them (`LLVMSetTargetMachineFastISel` does not reach it).
+var options_set = false;
 
-/// Select instructions with SelectionDAG at `-O0` too, not FastISel. FastISel cannot select a
-/// slice or a struct passed, returned, loaded or stored whole, which Fels code does all the
-/// time, and it hands each block where it fails to SelectionDAG: Strata took 2.5 s to emit
-/// that way, and 1.8 s with SelectionDAG alone. At `-O0` LLVM takes this from its command-line
-/// option (`LLVMSetTargetMachineFastISel` does not reach it), which it reads once per process.
-fn noFastIsel() void {
-    if (fast_isel_off) return;
-    fast_isel_off = true;
-    const argv = [_][*:0]const u8{ "fels", "-fast-isel=false" };
+/// Select instructions with FastISel at `-O0`, LLVM's default there. It cannot select a slice or
+/// a struct passed, returned, loaded or stored whole, and hands the rest of each block where it
+/// meets one to SelectionDAG, the slow selector. Fels code did that all the time, and Strata
+/// took 2.5 s to emit with FastISel and 1.8 s with SelectionDAG alone, so FastISel was off.
+/// Since fields are read where they are (`instrs.fieldOf`), FastISel is the faster of the two:
+/// 1.1 s against 1.4 s for Strata.
+fn fastIsel() void {
+    if (options_set) return;
+    options_set = true;
+    const argv = [_][*:0]const u8{ "fels", "-fast-isel=true" };
     llvm.LLVMParseCommandLineOptions(argv.len, @ptrCast(&argv), null);
 }
 
