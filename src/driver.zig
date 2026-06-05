@@ -397,6 +397,7 @@ pub fn emitLlvmFromFrontend(
     var be = llvm_backend.LlvmBackend.init(allocator, module_name);
     defer be.deinit();
 
+    be.discardValueNames();
     be.setTarget(opts.target_os);
     be.cg.no_entry = opts.no_entry or opts.library_object;
     be.cg.library_object = opts.library_object;

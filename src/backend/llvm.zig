@@ -37,6 +37,14 @@ pub const LlvmBackend = struct {
         self.cg.safety = on;
     }
 
+    /// Give the module's blocks and local values no names. Nothing reads them in an object, and
+    /// LLVM keeps every name in a table, which costs time as the IR is built and as the debug
+    /// build's `flatten` moves a body into a function of its own. Clang does the same. For a
+    /// build that emits an object; `fels ir` and the tests read the names.
+    pub fn discardValueNames(self: *LlvmBackend) void {
+        llvm_c.LLVMContextSetDiscardValueNames(self.cg.ctx, 1);
+    }
+
     /// Set the target OS (cross-compilation). Must be called before `lower`.
     pub fn setTarget(self: *LlvmBackend, target_os: std.Target.Os.Tag) void {
         self.cg.target_os = target_os;
