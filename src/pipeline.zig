@@ -1634,13 +1634,22 @@ fn prependTargetPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Mod
 
 /// Whether a source of the module has the word `TARGET`. A source that has it in a comment
 /// or a string only brings in three declarations the program does not use.
+/// A declaration's `source` is the text of its whole file, and a file's declarations come one
+/// after the other: each text is read once, not once per declaration (a file of 5,000
+/// functions was read 5,000 times, 5 s for 100,000 lines).
 fn mentionsTarget(module: ast.Module, root_source: []const u8) bool {
     if (hasWord(root_source, "TARGET")) return true;
-    for (module.items) |item| switch (item) {
-        .function => |f| if (hasWord(f.source, "TARGET")) return true,
-        .const_decl => |d| if (hasWord(d.source, "TARGET")) return true,
-        else => {},
-    };
+    var last: []const u8 = root_source;
+    for (module.items) |item| {
+        const text = switch (item) {
+            .function => |f| f.source,
+            .const_decl => |d| d.source,
+            else => continue,
+        };
+        if (text.ptr == last.ptr and text.len == last.len) continue;
+        if (hasWord(text, "TARGET")) return true;
+        last = text;
+    }
     return false;
 }
 
