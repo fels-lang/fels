@@ -25,6 +25,9 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
   A program now also carries `memcpy`, `memset`, `memmove`, `memcmp` and `bcmp`, which the
   optimiser calls (a C library's take their place when one is linked). A small program is
   smaller, too: unused parts of the runtime are dropped.
+- **Compiling a big file is many times faster.** Every instruction looked up its line by reading
+  the file from the start, and every function had the whole file searched for `TARGET`: 100,000
+  lines took 46 s to build, now 3.5 s. Strata's debug build went from 2.9 s to 1.9 s.
 - **`std.heap`'s `reset` and `restore`** take the same time however many chunks the arena has.
 
 ### Fixed
