@@ -9,6 +9,7 @@ const structs = @import("llvm/structs.zig");
 const globals = @import("llvm/globals.zig");
 const fns = @import("llvm/functions.zig");
 const emit = @import("llvm/emit.zig");
+const flatten = @import("llvm/flatten.zig");
 const link = @import("llvm/link.zig");
 const vars_mod = @import("llvm/variants.zig");
 const vtables = @import("llvm/vtables.zig");
@@ -130,6 +131,11 @@ pub const LlvmBackend = struct {
         emit.dropDeadFunctions(&self.cg);
         try emit.verify(&self.cg);
         self.cg.applyMemoryStubs();
+        if (opt_level == 0) {
+            flatten.run(&self.cg);
+            // (checked in a debug build of the compiler, as the tests run it)
+            if (@import("builtin").mode == .Debug) try emit.verify(&self.cg);
+        }
         try emit.optimize(&self.cg, tm, opt_level);
         try emit.emitObject(&self.cg, tm, path);
     }
@@ -143,6 +149,11 @@ pub const LlvmBackend = struct {
         emit.dropDeadFunctions(&self.cg);
         try emit.verify(&self.cg);
         self.cg.applyMemoryStubs();
+        if (opt_level == 0) {
+            flatten.run(&self.cg);
+            // (checked in a debug build of the compiler, as the tests run it)
+            if (@import("builtin").mode == .Debug) try emit.verify(&self.cg);
+        }
         try emit.optimize(&self.cg, tm, opt_level);
         return emit.emitObjectToMemory(&self.cg, tm, allocator);
     }
