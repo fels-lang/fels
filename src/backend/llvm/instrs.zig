@@ -81,15 +81,15 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
 
         .optional_is_some => |value| blk: {
             const opt_ty = fncg.irTypeOf(value) orelse instr.ty;
-            const opt = resolveVal(cg, fncg, value, opt_ty);
             // Nullable pointer optimisation: ?*T is just a raw ptr; non-null = some.
             if (opt_ty == .optional) {
                 if (opt_ty.optional.* == .ptr) {
+                    const opt = resolveVal(cg, fncg, value, opt_ty);
                     const null_ptr = llvm.LLVMConstNull(llvm.LLVMPointerTypeInContext(cg.ctx, 0));
                     break :blk llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntNE, opt, null_ptr, "");
                 }
             }
-            break :blk values.extractAggregateField(cg, opt, 0, "optional discriminant");
+            break :blk fieldOf(cg, fncg, value, opt_ty, 0, "optional discriminant");
         },
 
         .optional_payload => |value| blk: {
@@ -98,10 +98,9 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
                 .optional => |inner| inner.*,
                 else => break :blk null,
             };
-            const opt = resolveVal(cg, fncg, value, opt_ty);
             // Nullable pointer optimisation: the pointer IS the payload.
-            if (payload_ty == .ptr) break :blk opt;
-            break :blk values.extractAggregateField(cg, opt, 1, "optional payload");
+            if (payload_ty == .ptr) break :blk resolveVal(cg, fncg, value, opt_ty);
+            break :blk fieldOf(cg, fncg, value, opt_ty, 1, "optional payload");
         },
 
         .cast => |cs| blk: {
@@ -163,16 +162,14 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
 
         // try_is_ok: extract discriminant field (1) and compare to zero.
         .try_is_ok => |val| blk: {
-            const fallible = resolveVal(cg, fncg, val, .unknown);
-            const disc = values.extractAggregateField(cg, fallible, 1, "fallible discriminant") orelse break :blk null;
+            const disc = fieldOf(cg, fncg, val, .unknown, 1, "fallible discriminant") orelse break :blk null;
             const zero = llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), 0, 0);
             break :blk llvm.LLVMBuildICmp(cg.builder, llvm.LLVMIntEQ, disc, zero, "");
         },
 
         // try_ok: extract ok-value field (0).
         .try_ok => |val| blk: {
-            const fallible = resolveVal(cg, fncg, val, .unknown);
-            break :blk values.extractAggregateField(cg, fallible, 0, "fallible ok value");
+            break :blk fieldOf(cg, fncg, val, .unknown, 0, "fallible ok value");
         },
 
         // try_err: the number of the error, field 1; or, typed as a set whose errors carry
@@ -204,6 +201,23 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
 
 fn resolveVal(cg: *ModuleCg, fncg: anytype, val: ir.Value, ty: ir.IrType) llvm.LLVMValueRef {
     return values.resolveValue(cg, fncg, val, ty);
+}
+
+/// Field `index` of the aggregate `val` (a slice, struct, optional, fallible). A local is read
+/// where it is, the field alone: loading all of it to take one field out is two instructions
+/// LLVM's fast instruction selector cannot do, and each sent the rest of its block to the slow
+/// one (SelectionDAG), which was most of the time a build spent in LLVM.
+fn fieldOf(cg: *ModuleCg, fncg: anytype, val: ir.Value, ty: ir.IrType, index: c_uint, what: []const u8) ?llvm.LLVMValueRef {
+    if (val == .local) {
+        if (fncg.locals.get(val.local)) |slot| {
+            const lty = types.lower(cg, fncg.local_ir_types.get(val.local) orelse ty);
+            if (llvm.LLVMGetTypeKind(lty) == llvm.LLVMStructTypeKind and index < llvm.LLVMCountStructElementTypes(lty)) {
+                const field = llvm.LLVMBuildStructGEP2(cg.builder, lty, slot, index, "");
+                return llvm.LLVMBuildLoad2(cg.builder, llvm.LLVMStructGetTypeAtIndex(lty, index), field, "");
+            }
+        }
+    }
+    return values.extractAggregateField(cg, resolveVal(cg, fncg, val, ty), index, what);
 }
 
 fn lowerInterfaceMake(cg: *ModuleCg, fncg: anytype, make: ir.InterfaceMakeInstr) ?llvm.LLVMValueRef {
@@ -368,8 +382,7 @@ fn lowerIndexAddress(
     const base_ir_ty = indexBaseType(fncg, ix.base);
     if (base_ir_ty) |base_ty| switch (base_ty) {
         .slice => {
-            const base_val = resolveVal(cg, fncg, ix.base, base_ty);
-            const ptr = values.extractAggregateField(cg, base_val, 0, "slice index base pointer") orelse return null;
+            const ptr = fieldOf(cg, fncg, ix.base, base_ty, 0, "slice index base pointer") orelse return null;
             var indices = [_]llvm.LLVMValueRef{idx};
             return llvm.LLVMBuildGEP2(cg.builder, elem_lty, ptr, &indices, 1, "");
         },
@@ -956,8 +969,8 @@ fn lowerField(
         .slice => {
             // Slice is a value type { ptr, usize }.  Use extractvalue.
             const idx: u32 = if (std.mem.eql(u8, f.name, "ptr")) 0 else 1;
-            const base_val = resolveVal(cg, fncg, f.base, base_ir_ty);
             if (want_addr) {
+                const base_val = resolveVal(cg, fncg, f.base, base_ir_ty);
                 // Spill to a temp alloca so we can take an address. (In the entry block: an
                 // alloca anywhere else is a dynamic allocation, and in a loop it grows the
                 // stack on every iteration.)
@@ -965,19 +978,19 @@ fn lowerField(
                 _ = llvm.LLVMBuildStore(cg.builder, base_val, tmp);
                 return llvm.LLVMBuildStructGEP2(cg.builder, cg.getSliceType(), tmp, idx, "");
             }
-            return values.extractAggregateField(cg, base_val, idx, "slice field access");
+            return fieldOf(cg, fncg, f.base, base_ir_ty, idx, "slice field access");
         },
 
         .fallible => {
             const idx: u32 = if (std.mem.eql(u8, f.name, "ok")) 0 else 1;
             const lty = types.lower(cg, base_ir_ty);
-            const base_val = resolveVal(cg, fncg, f.base, base_ir_ty);
             if (want_addr) {
+                const base_val = resolveVal(cg, fncg, f.base, base_ir_ty);
                 const tmp = abi.entryAlloca(cg, fncg.llvm_fn, lty);
                 _ = llvm.LLVMBuildStore(cg.builder, base_val, tmp);
                 return llvm.LLVMBuildStructGEP2(cg.builder, lty, tmp, idx, "");
             }
-            return values.extractAggregateField(cg, base_val, idx, "fallible field access");
+            return fieldOf(cg, fncg, f.base, base_ir_ty, idx, "fallible field access");
         },
 
         .struct_type => |name| {
@@ -1013,8 +1026,7 @@ fn lowerField(
                 const base_ptr = localOrAllocaPtr(cg, fncg, f.base, struct_lty) orelse return null;
                 return llvm.LLVMBuildStructGEP2(cg.builder, struct_lty, base_ptr, idx, "");
             }
-            const base_val = resolveVal(cg, fncg, f.base, base_ir_ty);
-            return values.extractAggregateField(cg, base_val, idx, "struct field access");
+            return fieldOf(cg, fncg, f.base, base_ir_ty, idx, "struct field access");
         },
 
         .ptr => |inner| {
@@ -1664,8 +1676,7 @@ fn emitBoundsCheck(cg: *ModuleCg, fncg: anytype, ix: ir.IndexInstr, location: ir
     const base_ir_ty = indexBaseType(fncg, ix.base) orelse return;
     const len = switch (base_ir_ty) {
         .slice => blk: {
-            const slice = resolveVal(cg, fncg, ix.base, base_ir_ty);
-            break :blk values.extractAggregateField(cg, slice, 1, "slice bounds-check length") orelse return;
+            break :blk fieldOf(cg, fncg, ix.base, base_ir_ty, 1, "slice bounds-check length") orelse return;
         },
         .array => |array| llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), array.len, 0),
         .ptr => |inner| switch (inner.*) {
