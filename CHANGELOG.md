@@ -27,10 +27,13 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
   smaller, too: unused parts of the runtime are dropped.
 - **Compiling a big file is many times faster.** Every instruction looked up its line by reading
   the file from the start, and every function had the whole file searched for `TARGET`: 100,000
-  lines took 46 s to build, now 2.3 s. Strata's debug build went from 2.9 s to 1.5 s.
-- **A debug build spends half the time in LLVM's code generator.** A field of a local slice or
-  struct is loaded alone, where it is, not taken out of a copy of the whole; LLVM's fast
-  instruction selector, which cannot handle the copies, is used again.
+  lines took 46 s to build, now 1.8 s. Strata's debug build went from 2.9 s to 1.1 s.
+- **A debug build spends less than half the time in LLVM's code generator.** LLVM's fast
+  instruction selector cannot select a slice or a struct moved as a whole, and handed such code
+  to the slow one. Now a field of a local is loaded alone, where it is; a Fels function that is
+  only called directly takes a small slice or struct as its fields and returns one through a
+  pointer; a store of one is a store of each field, or a fill; and the module gives LLVM no
+  names for blocks and local values. The fast selector is used again.
 - **`std.heap`'s `reset` and `restore`** take the same time however many chunks the arena has.
 
 ### Fixed
