@@ -757,8 +757,8 @@ test "LLVM: a function returning a big array by value compiles quickly" {
     for ([_][]const u8{
         "define internal void @fill(ptr noalias sret([10000 x i32]) %0, i32 %k)",
         "call void @fill(ptr sret([10000 x i32])",
-        "call void @llvm.memset.inline.p0.i64(ptr align 4 %t, i8 0, i64 40000, i1 false)",
-        "call void @llvm.memcpy.inline.p0.p0.i64(ptr %0, ptr align 4 %t, i64 40000, i1 false)",
+        "call void @llvm.memset.p0.i64(ptr align 4 %t, i8 0, i64 40000, i1 false)",
+        "call void @llvm.memcpy.p0.p0.i64(ptr %0, ptr align 4 %t, i64 40000, i1 false)",
     }) |expected| {
         if (std.mem.indexOf(u8, llvm_ir, expected) == null) {
             std.debug.print("\nexpected the LLVM IR to contain:\n  {s}\n", .{expected});

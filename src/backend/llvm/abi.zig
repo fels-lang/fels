@@ -229,8 +229,8 @@ pub fn markCallSret(cg: *ModuleCg, call: llvm.LLVMValueRef, ty: llvm.LLVMTypeRef
 /// Store `val` at `ptr`. A large aggregate that was just loaded (nothing that writes memory
 /// has been emitted since the load) is copied from where it was loaded instead: the x86 code
 /// generator splits a first-class aggregate load and store into one piece per element, which
-/// is slow to compile for a big array. The copy is `llvm.memcpy.inline` (a `rep movsb`), as
-/// a plain `memcpy` this size becomes a call to the C library's, which is not linked.
+/// is slow to compile for a big array. The copy is `llvm.memcpy`, which becomes a call of the
+/// `memcpy` the program carries (`ModuleCg.applyMemoryStubs`), or of the C library's.
 pub fn storeValue(cg: *ModuleCg, val: llvm.LLVMValueRef, ptr: llvm.LLVMValueRef) void {
     const ty = llvm.LLVMTypeOf(val);
     if (types.returnsIndirect(cg, ty)) {
@@ -243,7 +243,7 @@ pub fn storeValue(cg: *ModuleCg, val: llvm.LLVMValueRef, ptr: llvm.LLVMValueRef)
             if (src == ptr) return; // `x = x`
             var overloads = [_]llvm.LLVMTypeRef{ ptr_ty, ptr_ty, i64_ty };
             var args = [_]llvm.LLVMValueRef{ ptr, src, size, no };
-            const copy = callIntrinsic(cg, "llvm.memcpy.inline", &overloads, &args);
+            const copy = callIntrinsic(cg, "llvm.memcpy", &overloads, &args);
             setArgAlign(cg, copy, 0, alignOf(ptr));
             setArgAlign(cg, copy, 1, llvm.LLVMGetAlignment(val));
             return;
@@ -252,7 +252,7 @@ pub fn storeValue(cg: *ModuleCg, val: llvm.LLVMValueRef, ptr: llvm.LLVMValueRef)
         if (llvm.LLVMIsNull(val) != 0) {
             var overloads = [_]llvm.LLVMTypeRef{ ptr_ty, i64_ty };
             var args = [_]llvm.LLVMValueRef{ ptr, llvm.LLVMConstInt(llvm.LLVMInt8TypeInContext(cg.ctx), 0, 0), size, no };
-            setArgAlign(cg, callIntrinsic(cg, "llvm.memset.inline", &overloads, &args), 0, alignOf(ptr));
+            setArgAlign(cg, callIntrinsic(cg, "llvm.memset", &overloads, &args), 0, alignOf(ptr));
             return;
         }
     }
