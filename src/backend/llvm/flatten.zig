@@ -32,10 +32,11 @@ const Val = llvm.LLVMValueRef;
 /// `LLVMAttributeFunctionIndex`, which the C header writes as -1 for an unsigned parameter.
 const fn_index: c_uint = 0xFFFF_FFFF;
 
-/// A parameter is taken apart when it has at most this many fields (a slice has 2).
-const max_param_leaves = 4;
+/// A parameter is taken apart when it has at most this many fields (a slice has 2, a format
+/// `Spec` 7).
+const max_param_leaves = 8;
 /// A store is split into the stores of its fields when it has at most this many.
-const max_store_leaves = 16;
+const max_store_leaves = 32;
 
 /// Where a field (a leaf: no aggregate inside) sits in an aggregate: its indices, outermost
 /// first.
@@ -455,6 +456,12 @@ const Pass = struct {
         for (stores.items) |st| {
             const v = llvm.LLVMGetOperand(st, 0);
             const ty = llvm.LLVMTypeOf(v);
+            if (llvm.LLVMIsNull(v) != 0) {
+                llvm.LLVMPositionBuilderBefore(self.b, st);
+                self.fill(llvm.LLVMGetOperand(st, 1), llvm.LLVMABISizeOfType(self.td, ty), llvm.LLVMGetAlignment(st));
+                self.erase(st);
+                continue;
+            }
             if (llvm.LLVMGetTypeKind(ty) != llvm.LLVMStructTypeKind) continue;
             var paths: std.ArrayList(Path) = .empty;
             if (!leaves(ty, .{}, &paths, self.a, max_store_leaves)) continue;
@@ -470,6 +477,23 @@ const Pass = struct {
             const leaf = self.leafOf(ld, llvm.LLVMTypeOf(ld), idx);
             llvm.LLVMReplaceAllUsesWith(ev, leaf);
             self.erase(ev);
+        }
+    }
+
+    /// `memset(dst, 0, size)`, which FastISel selects (as stores, or a call of the program's
+    /// `memset` for a large one).
+    fn fill(self: *Pass, dst: Val, size: u64, alignment: c_uint) void {
+        const ctx = self.cg.ctx;
+        const ptr_ty = llvm.LLVMPointerTypeInContext(ctx, 0);
+        const i64_ty = llvm.LLVMInt64TypeInContext(ctx);
+        var overloads = [_]Ty{ ptr_ty, i64_ty };
+        const name = "llvm.memset";
+        const f = llvm.LLVMGetIntrinsicDeclaration(self.cg.mod, llvm.LLVMLookupIntrinsicID(name.ptr, name.len), &overloads, overloads.len);
+        var args = [_]Val{ dst, llvm.LLVMConstInt(llvm.LLVMInt8TypeInContext(ctx), 0, 0), llvm.LLVMConstInt(i64_ty, size, 0), llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(ctx), 0, 0) };
+        const call = llvm.LLVMBuildCall2(self.b, llvm.LLVMGlobalGetValueType(f), f, &args, args.len, "");
+        if (alignment > 1) {
+            const kind = llvm.LLVMGetEnumAttributeKindForName("align", 5);
+            llvm.LLVMAddCallSiteAttribute(call, 1, llvm.LLVMCreateEnumAttribute(ctx, kind, alignment));
         }
     }
 
