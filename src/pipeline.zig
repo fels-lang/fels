@@ -1932,40 +1932,44 @@ fn moduleProvidesArena(module: ast.Module) bool {
 
 /// True when any function/impl body in the module contains a `zone` block.
 fn moduleUsesZone(module: ast.Module) bool {
-    for (module.items) |item| switch (item) {
-        .function => |f| if (f.body) |b| {
-            if (blockUsesZone(b)) return true;
-        },
+    for (module.items) |item| if (itemZoneSpan(item) != null) return true;
+    return false;
+}
+
+/// The span of the first `zone` block in a function's or an impl's bodies, or null
+/// when they have none.
+fn itemZoneSpan(item: ast.Item) ?Span {
+    switch (item) {
+        .function => |f| if (f.body) |b| return blockZoneSpan(b),
         .interface_impl => |impl| for (impl.methods) |m| {
-            if (m.body) |b| if (blockUsesZone(b)) return true;
+            if (m.body) |b| if (blockZoneSpan(b)) |span| return span;
         },
         else => {},
-    };
-    return false;
+    }
+    return null;
 }
 
-fn blockUsesZone(block: ast.Block) bool {
-    for (block.statements) |stmt| if (stmtUsesZone(stmt)) return true;
-    return false;
+fn blockZoneSpan(block: ast.Block) ?Span {
+    for (block.statements) |stmt| if (stmtZoneSpan(stmt)) |span| return span;
+    return null;
 }
 
-fn stmtUsesZone(stmt: ast.Stmt) bool {
+fn stmtZoneSpan(stmt: ast.Stmt) ?Span {
     return switch (stmt) {
-        .zone_block => true,
-        .comptime_run, .unsafe_block => |b| blockUsesZone(b),
-        .if_stmt => |s| blockUsesZone(s.then_block) or
-            (if (s.else_block) |e| blockUsesZone(e) else false),
-        .while_stmt => |s| blockUsesZone(s.body),
-        .for_range => |s| blockUsesZone(s.body),
-        .for_slice => |s| blockUsesZone(s.body),
-        .defer_stmt => |s| blockUsesZone(s.body),
-        .comptime_if => |s| blockUsesZone(s.then_block) or
-            (if (s.else_block) |e| blockUsesZone(e) else false),
-        .match_stmt => |s| blk: {
-            for (s.arms) |a| if (blockUsesZone(a.body)) break :blk true;
-            break :blk false;
-        },
-        else => false,
+        .zone_block => |z| z.span,
+        .comptime_run, .unsafe_block => |b| blockZoneSpan(b),
+        .if_stmt => |s| blockZoneSpan(s.then_block) orelse
+            (if (s.else_block) |e| blockZoneSpan(e) else null),
+        .while_stmt => |s| blockZoneSpan(s.body),
+        .for_range => |s| blockZoneSpan(s.body),
+        .for_slice => |s| blockZoneSpan(s.body),
+        .defer_stmt => |s| blockZoneSpan(s.body),
+        .comptime_if => |s| blockZoneSpan(s.then_block) orelse
+            (if (s.else_block) |e| blockZoneSpan(e) else null),
+        .match_stmt => |s| for (s.arms) |a| {
+            if (blockZoneSpan(a.body)) |span| break span;
+        } else null,
+        else => null,
     };
 }
 
