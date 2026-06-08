@@ -392,6 +392,9 @@ pub const ClosureEnvMakeInstr = struct {
     /// address, or a caller-supplied `*Arena` parameter) so the closure can escape
     /// the defining frame. `.imm = .null` = allocate on the stack (no escape).
     arena: Value = .{ .imm = .null },
+    /// The function that allocates the env on `arena`: std.heap's `alloc_bytes`, by its
+    /// link name (qualified when another module declares an `alloc_bytes` too).
+    alloc_fn: []const u8,
 };
 
 pub const ClosureEnvLoadInstr = struct {
@@ -6213,7 +6216,11 @@ const FunctionLowerer = struct {
             const arena_ty: IrType = .{ .ptr = try boxType(self.allocator, self.arenaIrType()) };
             break :blk try self.emit(arena_ty, .{ .unary = .{ .op = .ref, .value = .{ .local = handle } } });
         } else if (self.arenaParam()) |pname| Value{ .param = pname } else Value{ .imm = .null };
-        return try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .closure_env_make = .{ .fields = fields, .arena = arena } });
+        return try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .closure_env_make = .{
+            .fields = fields,
+            .arena = arena,
+            .alloc_fn = self.arenaFunction("alloc_bytes"),
+        } });
     }
 
     /// Name of the first `*Arena` parameter of the function being lowered (a

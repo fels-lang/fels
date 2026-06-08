@@ -261,7 +261,7 @@ fn lowerClosureEnvMake(cg: *ModuleCg, fncg: anytype, mk: ir.ClosureEnvMakeInstr)
     };
     const env_ptr = blk: {
         if (has_arena) {
-            if (cg.fn_decls.get("alloc_bytes")) |alloc_fn| {
+            if (cg.fn_decls.get(mk.alloc_fn)) |alloc_fn| {
                 const arena = resolveVal(cg, fncg, mk.arena, .unknown); // a *Arena
                 const i64_ty = llvm.LLVMInt64TypeInContext(cg.ctx);
                 const size = llvm.LLVMABISizeOfType(cg.targetData(), struct_ty);
