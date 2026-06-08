@@ -556,6 +556,37 @@ test "modules: configured std root loads std.heap" {
     try fels.ir_mod.validateModule(module);
 }
 
+test "modules: a zone in an imported module reaches std.heap" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The embedded std.heap is imported into each file with a zone, not only the root.
+    const util =
+        \\pub first :: fn(n: usize) -> u8 {
+        \\    zone z: Arena {
+        \\        buf := z.new_slice(u8, n);
+        \\        buf[0] = 7u8;
+        \\        return buf[0];
+        \\    }
+        \\    return 0u8;
+        \\}
+    ;
+    const main_src =
+        \\#import util;
+        \\run :: fn() -> u8 { return util::first(4); }
+    ;
+
+    // The first file is the root.
+    var fe = try fels.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "main.fels", .source = main_src },
+        .{ .file_name = "util.fels", .source = util },
+    });
+    defer fe.deinit(arena.allocator());
+
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
+}
+
 test "modules: imported self functions are extension methods" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
