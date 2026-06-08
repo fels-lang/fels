@@ -53,6 +53,10 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
   reads it in place. It copied the whole array first, for every element read; at `-O2` the
   optimiser split such a copy into a store per byte, and a Linux program using `std.env` took
   minutes to build.
+- A panic in `std.heap`'s code, which a `zone` brings in, names `<std>/heap.fels` and its
+  place there. It named the program's file at a line of heap.fels, often past the file's end.
+- A `zone` in an imported module builds: only the root file saw `Arena`'s methods. And a
+  program with a zone may declare names std.heap keeps to itself (`carve`, `Chunk`).
 
 ## 0.11.0 — 2026-10-18
 
