@@ -2327,18 +2327,40 @@ const FunctionLowerer = struct {
     // lowered as ordinary UFCS/extension calls (sema resolved them against the
     // Arena type), so the handle just needs to be a real Arena local here.
     fn lowerZoneEnter(self: *FunctionLowerer, name: []const u8) LowerError!void {
-        const arena_ty: IrType = .{ .struct_type = "Arena" };
-        const made = try self.emit(arena_ty, .{ .call = .{ .callee = "make", .args = &.{} } });
+        const arena_ty = self.arenaIrType();
+        const made = try self.emit(arena_ty, .{ .call = .{ .callee = self.arenaFunction("make"), .args = &.{} } });
         try self.local_types.put(name, arena_ty);
         try self.emitNoResult(arena_ty, .{ .store_local = .{ .name = name, .value = made } });
     }
 
     fn lowerZoneExit(self: *FunctionLowerer, name: []const u8) LowerError!void {
-        const arena_ty: IrType = .{ .struct_type = "Arena" };
+        const arena_ty = self.arenaIrType();
         const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, arena_ty) };
         const addr = try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = .{ .local = name } } });
         const args = try self.allocator.dupe(Value, &[_]Value{addr});
-        try self.emitNoResult(.void, .{ .call = .{ .callee = "deinit", .args = args } });
+        try self.emitNoResult(.void, .{ .call = .{ .callee = self.arenaFunction("deinit"), .args = args } });
+    }
+
+    /// The `Arena` type the function being lowered sees, as sema's `arenaTy` finds it: the
+    /// type of a `zone` handle (std.heap's). Null when no type of that name is in scope.
+    fn arenaSymbol(self: *const FunctionLowerer) ?sema.Symbol {
+        const id = resolveTopLevel(self.symbols, self.file_name, "Arena") orelse return null;
+        const sym = self.symbols.symbol(id);
+        return if (sym.kind == .type) sym else null;
+    }
+
+    /// The IR type of a `zone` handle: `Arena` by its link name.
+    fn arenaIrType(self: *const FunctionLowerer) IrType {
+        const sym = self.arenaSymbol() orelse return .{ .struct_type = "Arena" };
+        return .{ .struct_type = sym.link_name };
+    }
+
+    /// The link name of the function `name` (`make`, `deinit`, `alloc_bytes`) of the module
+    /// that declares `Arena`. When another module declares a function of that name too,
+    /// both names are qualified, and the bare one names neither.
+    fn arenaFunction(self: *const FunctionLowerer, name: []const u8) []const u8 {
+        const sym = self.arenaSymbol() orelse return name;
+        return linkNameFor(self.symbols, sym.file_name, name);
     }
 
     fn lowerStmt(self: *FunctionLowerer, stmt: ast.Stmt) LowerError!void {
@@ -6188,7 +6210,7 @@ const FunctionLowerer = struct {
         // parameter, else the stack (non-escaping).
         const arena: Value = if (self.active_zones.items.len > 0) blk: {
             const handle = self.active_zones.items[self.active_zones.items.len - 1];
-            const arena_ty: IrType = .{ .ptr = try boxType(self.allocator, .{ .struct_type = "Arena" }) };
+            const arena_ty: IrType = .{ .ptr = try boxType(self.allocator, self.arenaIrType()) };
             break :blk try self.emit(arena_ty, .{ .unary = .{ .op = .ref, .value = .{ .local = handle } } });
         } else if (self.arenaParam()) |pname| Value{ .param = pname } else Value{ .imm = .null };
         return try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .closure_env_make = .{ .fields = fields, .arena = arena } });
@@ -6197,10 +6219,11 @@ const FunctionLowerer = struct {
     /// Name of the first `*Arena` parameter of the function being lowered (a
     /// caller-supplied region for an escaping closure's environment), or null.
     fn arenaParam(self: *FunctionLowerer) ?[]const u8 {
+        const arena_name = self.arenaIrType().struct_type;
         for (self.params) |p| {
             if (p.is_type_param) continue;
             const ty = lowerAstTypeWithEnv(self.allocator, p.ty, self.types, self.symbols) catch continue;
-            if (ty == .ptr and ty.ptr.* == .struct_type and std.mem.eql(u8, ty.ptr.struct_type, "Arena")) return p.name;
+            if (ty == .ptr and ty.ptr.* == .struct_type and std.mem.eql(u8, ty.ptr.struct_type, arena_name)) return p.name;
         }
         return null;
     }
