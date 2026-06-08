@@ -250,6 +250,57 @@ test "LLVM panic lowering synthesizes the runtime declaration when absent" {
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "standalone_unwrap.fels:2:12") != null);
 }
 
+test "LLVM panic locations in the embedded std.heap name heap.fels" {
+    if (comptime !fels.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // A zone brings in the compiler's copy of std.heap. The line and column of a check in
+    // its code are positions in heap.fels, so the program's name there would point at the
+    // wrong text, or past the program's last line.
+    const src =
+        \\first :: fn(n: usize) -> u8 {
+        \\    zone z: Arena {
+        \\        buf := z.alloc_bytes(n);
+        \\        return buf[0];
+        \\    }
+        \\    return 0u8;
+        \\}
+    ;
+
+    var fe = try fels.compileWithRuntime(arena.allocator(), "zone_location.fels", src);
+    defer fe.deinit(arena.allocator());
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+
+    const alloc_bytes = for (module.functions) |f| {
+        if (std.mem.eql(u8, f.name, "alloc_bytes")) break f;
+    } else return error.FunctionNotFound;
+    const location = for (alloc_bytes.blocks) |block| {
+        if (block.terminator) |t| switch (t) {
+            .panic => |p| break p.location,
+            else => {},
+        };
+    } else return error.PanicNotFound;
+    try std.testing.expectEqualStrings("<std>/heap.fels", location.file);
+
+    var backend = fels.LlvmBackend.init(arena.allocator(), "zone_location");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    const text = try std.fmt.allocPrint(arena.allocator(), "<std>/heap.fels:{d}:{d}", .{ location.line, location.column });
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, text) != null);
+    // Every location that names the program is on one of its lines.
+    const lines = std.mem.count(u8, src, "\n") + 1;
+    var rest: []const u8 = llvm_ir;
+    while (std.mem.indexOf(u8, rest, "zone_location.fels:")) |at| {
+        rest = rest[at + "zone_location.fels:".len ..];
+        const end = std.mem.indexOfScalar(u8, rest, ':') orelse return error.NoColumn;
+        try std.testing.expect(try std.fmt.parseInt(usize, rest[0..end], 10) <= lines);
+    }
+}
+
 test "LLVM error/fallible ABI: fail and return lower to { ok, i32 } struct, with the payload bytes" {
     if (comptime !fels.llvm_enabled) return;
 

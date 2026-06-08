@@ -1189,14 +1189,24 @@ fn prependCompilerPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.M
     return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
 }
 
+/// The names the embedded std.heap and std.ptr are parsed under: files of their own,
+/// so a location in their code (a panic message, a diagnostic) names the file that
+/// code is in. In angle brackets like `<runtime>`: they are the compiler's copies, not
+/// paths on disk, and never clash with a `std/ptr.fels` the program loads itself.
+const heap_prelude_file = "<std>/heap.fels";
+const ptr_prelude_file = "<std>/ptr.fels";
+
 /// Prepend the embedded std.heap bump arena (and std.ptr, which it uses) to the
 /// user's module so a `zone` block's `Arena` handle and allocator are in scope.
-/// Parsed under the USER's file name (Fels symbols are file-private) with a high
-/// id base; `ptr` is parsed first and `heap` chains off its next id. The
-/// embedded `heap` imports `std.ptr` — stripped here, since ptr is inlined.
+/// Each is parsed under its own file name with a high id base; `ptr` is parsed
+/// first and `heap` chains off its next id. The embedded `heap`'s `#import std.ptr`
+/// reaches the embedded ptr. Fels symbols are file-private, so every file with a
+/// zone imports heap as `#import std.heap.*;` would (`appendZoneImports`).
 fn prependHeapPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
-    const ptr_parsed = try parser.parseSourceFrom(allocator, user.file_name, std_prelude.ptr_src, heap_prelude_id_base);
-    const heap_parsed = try parser.parseSourceFrom(allocator, user.file_name, std_prelude.heap_src, ptr_parsed.next_id);
+    const ptr_parsed = try parser.parseSourceFrom(allocator, ptr_prelude_file, std_prelude.ptr_src, heap_prelude_id_base);
+    const heap_parsed = try parser.parseSourceFrom(allocator, heap_prelude_file, std_prelude.heap_src, ptr_parsed.next_id);
+    diag_mod.rememberSource(ptr_prelude_file, std_prelude.ptr_src);
+    diag_mod.rememberSource(heap_prelude_file, std_prelude.heap_src);
 
     var items: std.ArrayList(ast.Item) = .empty;
 
@@ -1217,11 +1227,40 @@ fn prependHeapPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Modul
         else => try items.append(allocator, item),
     };
     for (heap_parsed.module.items) |item| switch (item) {
-        .import => {},
+        .import => |imp| if (isStdImport(imp, "ptr")) {
+            var resolved = imp;
+            resolved.resolved_file = ptr_prelude_file;
+            try items.append(allocator, .{ .import = resolved });
+        },
         else => try items.append(allocator, item),
     };
+    try appendZoneImports(allocator, &items, user.items);
     try items.appendSlice(allocator, user.items);
     return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
+/// Whether `imp` imports the standard library module `name` (`#import std.<name>…`).
+fn isStdImport(imp: ast.ImportDecl, name: []const u8) bool {
+    return imp.path.len == 2 and std.mem.eql(u8, imp.path[0], "std") and std.mem.eql(u8, imp.path[1], name);
+}
+
+/// For each file of `items` with a `zone` block, the import `#import std.heap.*;` would
+/// be, of the embedded heap: that file's `Arena` handles and their calls resolve. It
+/// sits on the file's first zone, where a clash with the file's own names is reported.
+fn appendZoneImports(allocator: std.mem.Allocator, out: *std.ArrayList(ast.Item), items: []const ast.Item) !void {
+    var files = std.StringHashMap(void).init(allocator);
+    defer files.deinit();
+    for (items) |item| {
+        const span = itemZoneSpan(item) orelse continue;
+        if ((try files.getOrPut(item.fileName())).found_existing) continue;
+        try out.append(allocator, .{ .import = .{
+            .path = &.{ "std", "heap" },
+            .glob = true,
+            .file_name = item.fileName(),
+            .resolved_file = heap_prelude_file,
+            .span = span,
+        } });
+    }
 }
 
 /// True when the module already declares a top-level function `name`.
