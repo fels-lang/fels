@@ -1,0 +1,4 @@
+// For zone_names_app.fels: functions named like std.heap's, which a zone must not call.
+pub make :: fn() -> i32 { return 3; }
+pub deinit :: fn() -> i32 { return 2; }
+pub alloc_bytes :: fn() -> i32 { return 2; }

@@ -1,0 +1,20 @@
+// A zone calls std.heap's `make` on the way in and its `deinit` on the way out, and a closure
+// made in the zone has its environment allocated with `alloc_bytes`: the heap's own functions,
+// though the module imported here declares functions of the same names. When two modules
+// declare a name, both get qualified link names, and the zone called the bare names: the
+// program built and then ran out of memory in its first zone. Returns 42.
+#import zone_names_other;
+
+call_it :: fn(f: fn(i32) -> i32, v: i32) -> i32 { return f(v); }
+
+main :: fn() -> i32 {
+    r: i32 = 0;
+    zone z: Arena {
+        buf := z.new_slice(u8, 4);
+        buf[0] = 30u8;
+        base := buf[0] as i32;
+        f := fn(x: i32) -> i32 { return base + x; };
+        r = call_it(f, 5);
+    }
+    return r + zone_names_other::make() + zone_names_other::deinit() + zone_names_other::alloc_bytes();
+}

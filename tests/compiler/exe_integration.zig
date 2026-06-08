@@ -3118,6 +3118,7 @@ test "exe: std.path / std.time / std.crypto / std.serde run correctly cross-modu
         .{ "tests/fixtures/lang/static_vm_app.fels", "exe_static_vm_app" },
         .{ "tests/fixtures/lang/static_run_app.fels", "exe_static_run_app" },
         .{ "tests/fixtures/lang/try_defer_app.fels", "exe_try_defer_app" },
+        .{ "tests/fixtures/lang/zone_names_app.fels", "exe_zone_names_app" },
         .{ "tests/fixtures/stdlib/sync_app.fels", "exe_sync_app" },
         .{ "tests/fixtures/stdlib/com_app.fels", "exe_com_app" },
     }) |c| {
