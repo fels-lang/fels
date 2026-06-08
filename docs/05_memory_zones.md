@@ -37,7 +37,8 @@ can construct by hand with `std.heap.make()`. Entering the zone amounts to `hand
 Every exit path (normal, `return`, `break`, `continue`, `fail`) runs `deinit()` automatically,
 so the arena is always drained on the way out. You never write `make`/`deinit` yourself. The
 module does not need to `#import std.heap` either, because the compiler injects it whenever a
-zone block is present.
+zone block is present. A file with a zone sees its public names as `#import std.heap.*;` would
+bring them in, so a name of the file's own must not be one of them (`make`, `reset`, `mark`).
 
 Because the handle is a full `Arena`, the whole library API is available on it, not only
 `new`/`new_slice`:
