@@ -85,6 +85,9 @@ pub const ImportDecl = struct {
     file_name: []const u8,
     resolved_file: ?[]const u8 = null,
     span: Span,
+    /// Made by the compiler, not written: the embedded std.heap's names in a file with a
+    /// `zone` (`pipeline.appendZoneImports`), on that file's first zone.
+    for_zone: bool = false,
 
     /// The namespace name a bare/aliased import binds, or null for
     /// selective/glob imports (which introduce no namespace).

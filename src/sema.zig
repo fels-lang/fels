@@ -1329,7 +1329,11 @@ fn addVisibleName(
     id: SymbolId,
 ) SemanticError!void {
     if (visible.get(name)) |existing| {
-        if (existing != id) {
+        // A zone's import is read before the file's own imports, so the name it meets
+        // is one the file declares.
+        if (existing != id and imp.for_zone) {
+            try collectError(allocator, sink, imp.file_name, imp.span, "a `zone` brings in std.heap's `{s}`, which this file declares too; rename this file's `{s}`", .{ name, name });
+        } else if (existing != id) {
             try collectError(allocator, sink, imp.file_name, imp.span, "import makes `{s}` ambiguous", .{name});
         }
         return;

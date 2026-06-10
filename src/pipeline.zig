@@ -1259,6 +1259,7 @@ fn appendZoneImports(allocator: std.mem.Allocator, out: *std.ArrayList(ast.Item)
             .file_name = item.fileName(),
             .resolved_file = heap_prelude_file,
             .span = span,
+            .for_zone = true,
         } });
     }
 }

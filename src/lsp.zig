@@ -1413,6 +1413,19 @@ test "lsp: an error in an imported module belongs to that module" {
     try std.testing.expect(countFor(a, "util.fels") >= 1);
 }
 
+test "lsp: a name of std.heap's that a file with a zone declares too is reported on the zone" {
+    const src = "make :: fn() -> i32 { return 3; }\nmain :: fn() -> i32 {\n    zone z: Arena { }\n    return make();\n}\n";
+    var mem = MemFiles{ .names = &.{"main.fels"}, .texts = &.{src} };
+    var a = try mem.analyze("main.fels", false);
+    defer a.deinit();
+    try std.testing.expectEqual(@as(usize, 1), countFor(a, "main.fels"));
+    const d = for (a.diagnostics) |d| {
+        if (MemFiles.same("main.fels", d.file)) break d;
+    } else unreachable;
+    try std.testing.expect(std.mem.indexOf(u8, d.message, "a `zone` brings in std.heap's `make`") != null);
+    try std.testing.expectEqual(std.mem.indexOf(u8, src, "zone").?, d.span.start);
+}
+
 test "lsp: std is loaded and marked, and Mutex is known" {
     var mem = MemFiles{
         .names = &.{"main.fels"},
