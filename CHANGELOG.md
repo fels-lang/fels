@@ -57,6 +57,11 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
   place there. It named the program's file at a line of heap.fels, often past the file's end.
 - A `zone` in an imported module builds: only the root file saw `Arena`'s methods. And a
   program with a zone may declare names std.heap keeps to itself (`carve`, `Chunk`).
+- A `zone` calls std.heap's own `make`, `deinit` and `alloc_bytes` when another module declares
+  functions of those names too. The program built, but its zone handle was undefined (it ran
+  out of memory at once) and a closure made in the zone had its environment on the stack.
+- A file with a zone that declares one of std.heap's public names (`make`, `reset`) is told
+  that the zone brings the name in, not that an import it never wrote makes it ambiguous.
 
 ## 0.11.0 — 2026-10-18
 
