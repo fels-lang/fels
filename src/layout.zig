@@ -22,12 +22,21 @@ pub const Layout = struct {
 
 const max_depth = 32;
 
-/// A source of struct definitions backed by a slice (the VM's and the backend's view).
+/// A source of struct definitions backed by a slice (the VM's and the backend's view). With
+/// `variants`, it lays out enums too (`variantDef`); a source without them does not.
 pub const SliceSource = struct {
     structs: []const ir.StructDef,
+    variants: []const ir.VariantDef = &.{},
 
     pub fn structDef(self: SliceSource, name: []const u8) ?ir.StructDef {
         for (self.structs) |def| {
+            if (std.mem.eql(u8, def.name, name)) return def;
+        }
+        return null;
+    }
+
+    pub fn variantDef(self: SliceSource, name: []const u8) ?ir.VariantDef {
+        for (self.variants) |def| {
             if (std.mem.eql(u8, def.name, name)) return def;
         }
         return null;
@@ -88,9 +97,34 @@ fn ofDepth(ty: ir.IrType, source: anytype, depth: u32) ?Layout {
             const elem = ofDepth(arr.elem.*, source, depth + 1) orelse return null;
             break :blk .{ .size = elem.size * arr.len, .alignment = elem.alignment };
         },
-        .struct_type => |name| structLayout(name, source, depth),
+        // (an error set with payloads is named as a struct type, and laid out as its enum)
+        .struct_type => |name| structLayout(name, source, depth) orelse variantLayout(name, source, depth),
+        .variant_type => |name| variantLayout(name, source, depth),
         else => null,
     };
+}
+
+/// An enum, when `source` has its definition: a plain `i32` when no variant carries a payload,
+/// otherwise `{ i32, [N x i8] }`, with room in N for the largest payload (an integer's bits,
+/// anything else its bytes), as `backend/llvm/variants.zig` lays it out.
+fn variantLayout(name: []const u8, source: anytype, depth: u32) ?Layout {
+    const bytes = payloadBytes(name, source, depth) orelse return null;
+    if (bytes == 0) return scalar(4);
+    return record(&.{ scalar(4), .{ .size = bytes, .alignment = 1 } }, false);
+}
+
+/// The payload bytes of the enum `name`: 0 for an enum whose variants carry none, null when
+/// `source` does not define it.
+fn payloadBytes(name: []const u8, source: anytype, depth: u32) ?u64 {
+    if (!@hasDecl(@TypeOf(source), "variantDef")) return null;
+    const def = source.variantDef(name) orelse return null;
+    var bits: u64 = 0;
+    for (def.variants) |v| {
+        const p = v.payload orelse continue;
+        const b = if (intBits(p)) |n| n else if (p == .bool) 1 else (ofDepth(p, source, depth + 1) orelse return null).size * 8;
+        bits = @max(bits, b);
+    }
+    return (bits + 7) / 8;
 }
 
 /// A struct member: laid out as the same type anywhere else (a `fn(...)` closure is two
@@ -128,11 +162,18 @@ fn optional(inner: ir.IrType, source: anytype, depth: u32) ?Layout {
 }
 
 fn fallible(f: ir.FallibleType, source: anytype, depth: u32) ?Layout {
-    // `{ T, i32 }`, with an `i8` placeholder when the success type is void.
+    // `{ T, i32 }`, with an `i8` placeholder when the success type is void; for an error set
+    // whose errors carry payloads, their bytes after the number, `{ T, i32, [N x i8] }`.
     const ok = if (f.ok.* == .void)
         Layout{ .size = 1, .alignment = 1 }
     else
         ofDepth(f.ok.*, source, depth + 1) orelse return null;
+    const set: ?[]const u8 = switch (f.err.*) {
+        .struct_type, .variant_type => |n| n,
+        else => null,
+    };
+    if (set) |name| if (payloadBytes(name, source, depth)) |bytes| if (bytes > 0)
+        return record(&.{ ok, .{ .size = 4, .alignment = 4 }, .{ .size = bytes, .alignment = 1 } }, false);
     return record(&.{ ok, .{ .size = 4, .alignment = 4 } }, false);
 }
 
