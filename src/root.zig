@@ -18,6 +18,7 @@ pub const backend_mod = backend;
 pub const diagnostic_mod = diagnostic;
 pub const driver_mod = driver;
 pub const ir_mod = ir;
+pub const slab_mod = @import("slab.zig");
 pub const parser_mod = parser;
 pub const pipeline_mod = pipeline;
 pub const sema_mod = sema;
