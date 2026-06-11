@@ -195,6 +195,15 @@ pub const LlvmDriverError = error{
     OutOfMemory,
 };
 
+/// Fail, naming the call, when the lowered `module` calls a name that is no function of it
+/// (`ir.unknownCall`): a compiler bug. Checked before the passes, whose validation would
+/// only say that the IR is malformed.
+pub fn checkCalls(file_name: []const u8, module: ir.IrModule) error{ LoweringFailed, OutOfMemory }!void {
+    const call = try ir.unknownCall(module) orelse return;
+    std.debug.print("{s}: internal compiler error: `{s}` calls `{s}`, which is no function of the program\n", .{ file_name, call.caller, call.callee });
+    return error.LoweringFailed;
+}
+
 /// Print diagnostics from a FrontEnd to stderr, using the correct source text
 /// for each file (user file or embedded runtime).
 fn printFeDiagnostics(
@@ -363,6 +372,7 @@ pub fn emitLlvmFromFrontend(
         error.OutOfMemory => return error.OutOfMemory,
     };
     if (opts.timings) |tm| tm.lower_ns = sinceNs(t_lower);
+    try checkCalls(opts.file_name, module);
 
     if (opts.progress) |p| p(opts.progress_ctx, .passes);
     const t_passes = nowNs();

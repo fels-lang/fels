@@ -520,6 +520,7 @@ fn cmdIr(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []c
     defer fe.deinit(allocator);
     printDiags(allocator, fe.diagnostics(), path, source);
     var module = fels.lowerFrontend(allocator, fe) catch return 1;
+    fels.driver_mod.checkCalls(path, module) catch return 1;
     fels.ir_mod.runDefaultPasses(allocator, &module) catch return 1;
     var be = fels.LlvmBackend.init(allocator, "sk");
     defer be.deinit();
