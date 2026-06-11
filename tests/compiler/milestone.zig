@@ -207,6 +207,47 @@ test "ir validation rejects missing branch targets" {
     try std.testing.expectError(error.InvalidIr, fels.ir_mod.validateModule(invalid));
 }
 
+/// A function `name` without parameters that runs `instrs` and returns nothing.
+fn voidFunction(comptime name: []const u8, comptime instrs: []const fels.ir_mod.Instr) fels.ir_mod.IrFunction {
+    return .{
+        .name = name,
+        .params = &.{},
+        .return_ty = .void,
+        .error_ty = null,
+        .blocks = &.{.{ .id = 0, .name = "entry", .instrs = instrs, .terminator = .{ .return_value = null } }},
+        .extern_name = null,
+        .inline_hint = false,
+        .no_inline = false,
+        .no_return = false,
+        .entry = false,
+        .naked = false,
+        .export_sym = null,
+    };
+}
+
+fn callOf(comptime callee: []const u8) fels.ir_mod.Instr {
+    return .{ .id = null, .ty = .void, .kind = .{ .call = .{ .callee = callee, .args = &.{} } } };
+}
+
+test "ir validation rejects a call to a function the module does not have" {
+    // The code generator has nothing to call there. It dropped such a call and left its
+    // result undefined: a zone's handle once came from a `make` called by the wrong name.
+    const known = fels.IrModule{ .file_name = "calls.fels", .functions = &.{
+        voidFunction("helper", &.{}),
+        voidFunction("caller", &.{ callOf("helper"), callOf("@panic") }),
+    } };
+    try fels.ir_mod.validateModule(known);
+
+    const unknown = fels.IrModule{ .file_name = "calls.fels", .functions = &.{
+        voidFunction("helper", &.{}),
+        voidFunction("caller", &.{callOf("make")}),
+    } };
+    try std.testing.expectError(error.InvalidIr, fels.ir_mod.validateModule(unknown));
+    const call = (try fels.ir_mod.unknownCall(unknown)).?;
+    try std.testing.expectEqualStrings("caller", call.caller);
+    try std.testing.expectEqualStrings("make", call.callee);
+}
+
 fn findFunction(module: fels.IrModule, name: []const u8) ?fels.ir_mod.IrFunction {
     for (module.functions) |function| {
         if (std.mem.eql(u8, function.name, name)) return function;

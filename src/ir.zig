@@ -1196,6 +1196,29 @@ pub fn validateModule(module: IrModule) ValidationError!void {
     for (module.functions) |function| {
         try validateFunction(a, function, &ids);
     }
+    if (try unknownCall(module) != null) return error.InvalidIr;
+}
+
+/// A direct call to a name that is no function of the module: the function the call is
+/// in, and the name it calls.
+pub const UnknownCall = struct {
+    caller: []const u8,
+    callee: []const u8,
+};
+
+/// The first direct call in `module` whose callee is none of its functions, nor `@panic`
+/// (which the code generator declares when the program has none). There is nothing to call
+/// there: the code generator dropped such a call, and its result was undefined.
+pub fn unknownCall(module: IrModule) error{OutOfMemory}!?UnknownCall {
+    var names = std.StringHashMap(void).init(std.heap.smp_allocator);
+    defer names.deinit();
+    for (module.functions) |function| try names.put(function.name, {});
+    for (module.functions) |function| for (function.blocks) |block| for (block.instrs) |instr| switch (instr.kind) {
+        .call => |call| if (!names.contains(call.callee) and !std.mem.eql(u8, call.callee, "@panic"))
+            return .{ .caller = function.name, .callee = call.callee },
+        else => {},
+    };
+    return null;
 }
 
 /// The ids of a function's registers and blocks, a bit each: both are numbered per function,
