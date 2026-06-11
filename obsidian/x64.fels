@@ -1,0 +1,194 @@
+// SPDX-License-Identifier: Apache-2.0
+// Obsidian's x86-64 encoder: machine code into a byte buffer.
+//
+// Each function emits one instruction. Operands are named in the function (`mov_rr`, `alu_ri`,
+// `mov_rm` for a load, `mov_mr` for a store), so a call says what it encodes. A size is the
+// operand width in bytes, 1, 2, 4 or 8. Registers are numbers: the general ones `RAX` to `R15`,
+// and `XMM0` to `XMM15` for the floating-point instructions. Where an instruction has a shorter
+// form, the encoder writes the one llvm-mc writes.
+//
+// Jumps go to labels: `new_label` makes one, `bind` places it at the current offset, and
+// `finish` patches every jump once the code is complete. A jump is always the 5- or 6-byte form,
+// so code is written in one pass, without relaxing jumps that turn out short.
+//
+// Each encoding is checked against llvm-mc in `x64_tests.fels`, which
+// `tools/gen_x64_tests.py` writes.
+
+#import std.heap.{ Arena };
+#import std.vec.{ Vec };
+#import std.vec as vec;
+
+// Registers
+
+pub RAX :: 0u8;
+pub RCX :: 1u8;
+pub RDX :: 2u8;
+pub RBX :: 3u8;
+pub RSP :: 4u8;
+pub RBP :: 5u8;
+pub RSI :: 6u8;
+pub RDI :: 7u8;
+pub R8 :: 8u8;
+pub R9 :: 9u8;
+pub R10 :: 10u8;
+pub R11 :: 11u8;
+pub R12 :: 12u8;
+pub R13 :: 13u8;
+pub R14 :: 14u8;
+pub R15 :: 15u8;
+
+pub XMM0 :: 0u8;
+pub XMM1 :: 1u8;
+pub XMM2 :: 2u8;
+pub XMM3 :: 3u8;
+pub XMM4 :: 4u8;
+pub XMM5 :: 5u8;
+pub XMM6 :: 6u8;
+pub XMM7 :: 7u8;
+pub XMM8 :: 8u8;
+pub XMM9 :: 9u8;
+pub XMM10 :: 10u8;
+pub XMM11 :: 11u8;
+pub XMM12 :: 12u8;
+pub XMM13 :: 13u8;
+pub XMM14 :: 14u8;
+pub XMM15 :: 15u8;
+
+/// No register (a memory operand without an index).
+pub NO_REG :: 255u8;
+/// The base of a RIP-relative memory operand.
+pub RIP :: 254u8;
+
+// Condition codes, as the low nibble of `jcc`, `setcc` and `cmovcc`
+
+pub CC_O :: 0u8;
+pub CC_NO :: 1u8;
+pub CC_B :: 2u8;    // below (unsigned <), carry
+pub CC_AE :: 3u8;   // above or equal (unsigned >=), no carry
+pub CC_E :: 4u8;    // equal, zero
+pub CC_NE :: 5u8;
+pub CC_BE :: 6u8;
+pub CC_A :: 7u8;
+pub CC_S :: 8u8;
+pub CC_NS :: 9u8;
+pub CC_P :: 10u8;
+pub CC_NP :: 11u8;
+pub CC_L :: 12u8;   // less (signed <)
+pub CC_GE :: 13u8;
+pub CC_LE :: 14u8;
+pub CC_G :: 15u8;
+
+// The arithmetic group: `add` to `cmp` share their encodings, told apart by this number.
+
+pub ALU_ADD :: 0u8;
+pub ALU_OR :: 1u8;
+pub ALU_ADC :: 2u8;
+pub ALU_SBB :: 3u8;
+pub ALU_AND :: 4u8;
+pub ALU_SUB :: 5u8;
+pub ALU_XOR :: 6u8;
+pub ALU_CMP :: 7u8;
+
+// Shifts and rotates, the `/digit` of their encodings.
+
+pub SH_ROL :: 0u8;
+pub SH_ROR :: 1u8;
+pub SH_SHL :: 4u8;
+pub SH_SHR :: 5u8;
+pub SH_SAR :: 7u8;
+
+/// A memory operand: `[base + index * scale + disp]`. `index` is `NO_REG` when there is none,
+/// `base` is `RIP` for `[rip + disp]`; `scale` is 1, 2, 4 or 8.
+pub Mem :: struct {
+    base: u8,
+    index: u8,
+    scale: u8,
+    disp: i32,
+}
+
+/// `[base + disp]`.
+pub at :: fn(base: u8, disp: i32) -> Mem {
+    return .{ .base = base, .index = NO_REG, .scale = 1u8, .disp = disp };
+}
+
+/// `[base + index * scale + disp]`.
+pub at_index :: fn(base: u8, index: u8, scale: u8, disp: i32) -> Mem {
+    return .{ .base = base, .index = index, .scale = scale, .disp = disp };
+}
+
+/// A jump not yet patched: the offset of its 32-bit displacement and the label it goes to.
+Fixup :: struct {
+    at: usize,
+    label: u32,
+}
+
+/// Machine code being written, and its labels.
+pub Code :: struct {
+    bytes: Vec(u8),
+    /// Where each label is, or -1 while it is not bound.
+    labels: Vec(i64),
+    fixups: Vec(Fixup),
+
+    pub len :: fn(self: *Self) -> usize { return self.bytes.len(); }
+
+    pub byte :: fn(self: *Self, b: u8) { self.bytes.push(b); }
+
+    pub u16le :: fn(self: *Self, v: u16) {
+        self.bytes.push((v & 255u16) as u8);
+        self.bytes.push((v >> 8u16) as u8);
+    }
+
+    pub u32le :: fn(self: *Self, v: u32) {
+        self.bytes.push((v & 255u32) as u8);
+        self.bytes.push(((v >> 8u32) & 255u32) as u8);
+        self.bytes.push(((v >> 16u32) & 255u32) as u8);
+        self.bytes.push((v >> 24u32) as u8);
+    }
+
+    pub i32le :: fn(self: *Self, v: i32) { self.u32le(v as u32); }
+
+    pub u64le :: fn(self: *Self, v: u64) {
+        self.u32le((v & 4294967295u64) as u32);
+        self.u32le((v >> 32u64) as u32);
+    }
+
+    /// Overwrite the 32-bit value at `at`.
+    pub patch32 :: fn(self: *Self, at: usize, v: u32) {
+        self.bytes.set(at, (v & 255u32) as u8);
+        self.bytes.set(at + 1, ((v >> 8u32) & 255u32) as u8);
+        self.bytes.set(at + 2, ((v >> 16u32) & 255u32) as u8);
+        self.bytes.set(at + 3, (v >> 24u32) as u8);
+    }
+
+    // Labels
+
+    pub new_label :: fn(self: *Self) -> u32 {
+        self.labels.push(-1i64);
+        return (self.labels.len() - 1) as u32;
+    }
+
+    /// Place `label` here.
+    pub bind :: fn(self: *Self, label: u32) {
+        self.labels.set(label as usize, self.len() as i64);
+    }
+
+    /// Patch every jump to a label that is bound. Call once, when the code is complete.
+    pub finish :: fn(self: *Self) {
+        for f in self.fixups.items() {
+            target := self.labels.get(f.label as usize);
+            self.patch32(f.at, ((target - (f.at as i64 + 4i64)) as i32) as u32);
+        }
+        self.fixups.clear();
+    }
+
+    /// A 32-bit displacement to `label`, patched by `finish`.
+    rel32_to :: fn(self: *Self, label: u32) {
+        self.fixups.push(.{ .at = self.len(), .label = label });
+        self.u32le(0u32);
+    }
+}
+
+/// An empty buffer that grows in `a`.
+pub code :: fn(a: *Arena) -> Code {
+    return .{ .bytes = vec::make(u8, a), .labels = vec::make(i64, a), .fixups = vec::make(Fixup, a) };
+}
