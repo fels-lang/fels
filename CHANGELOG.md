@@ -62,6 +62,9 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
   out of memory at once) and a closure made in the zone had its environment on the stack.
 - A file with a zone that declares one of std.heap's public names (`make`, `reset`) is told
   that the zone brings the name in, not that an import it never wrote makes it ambiguous.
+- When the compiler lowers a call to a name that is no function of the program (a compiler
+  bug), the build stops with an internal compiler error that names the caller and the callee.
+  The code generator dropped such a call, and the program went on with an undefined result.
 
 ## 0.11.0 — 2026-10-18
 
