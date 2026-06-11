@@ -522,6 +522,13 @@ fn cmdIr(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []c
     var module = fels.lowerFrontend(allocator, fe) catch return 1;
     fels.driver_mod.checkCalls(path, module) catch return 1;
     fels.ir_mod.runDefaultPasses(allocator, &module) catch return 1;
+    // `FELS_SLAB_ROUNDTRIP`: the IR as it comes back from a Slab (see `driver.zig`)
+    var rt_arena = std.heap.ArenaAllocator.init(allocator);
+    defer rt_arena.deinit();
+    if (std.c.getenv("FELS_SLAB_ROUNDTRIP") != null) {
+        const s = fels.slab_mod.build(rt_arena.allocator(), module) catch return 1;
+        module = fels.slab_mod.toIr(rt_arena.allocator(), &s) catch return 1;
+    }
     var be = fels.LlvmBackend.init(allocator, "sk");
     defer be.deinit();
     be.setTarget(opts.target_os);

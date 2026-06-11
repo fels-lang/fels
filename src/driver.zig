@@ -2,6 +2,7 @@ const std = @import("std");
 const backend = @import("backend.zig");
 const ir = @import("ir.zig");
 const pipeline = @import("pipeline.zig");
+const slab = @import("slab.zig");
 const diag_mod = @import("diagnostic.zig");
 const runtime_mod = @import("runtime.zig");
 const build_options = @import("build_options");
@@ -386,6 +387,19 @@ pub fn emitLlvmFromFrontend(
     };
     if (opts.timings) |tm| tm.passes_ns = sinceNs(t_passes);
 
+    // With `FELS_SLAB_ROUNDTRIP` set, the module goes through Slab and back and is compiled from
+    // what comes back: the check that Slab holds all a backend needs (`slab.zig`). The layouts
+    // Slab gives its types are checked against LLVM's below.
+    var round: ?slab.Slab = null;
+    defer if (round) |*s| s.deinit(allocator);
+    if (std.c.getenv("FELS_SLAB_ROUNDTRIP") != null) {
+        round = slab.build(allocator, module) catch |err| {
+            std.debug.print("{s}: internal compiler error: the module does not go into a Slab ({s})\n", .{ opts.file_name, @errorName(err) });
+            return error.LoweringFailed;
+        };
+        module = try slab.toIr(ir_allocator, &round.?);
+    }
+
     // An executable starts at `main` (or an `#entry` function). Without one the link went
     // through and the program jumped to nothing at start.
     if (opts.exe_path != null and !opts.dll and !opts.no_entry and !opts.library_object and opts.entry == null) {
@@ -420,6 +434,12 @@ pub fn emitLlvmFromFrontend(
         return error.LoweringFailed;
     };
     if (opts.timings) |tm| tm.codegen_ns = sinceNs(t_codegen);
+    if (round) |*s| {
+        if (try be.slabLayoutMismatches(ir_allocator, s) != 0) {
+            std.debug.print("{s}: internal compiler error: Slab lays out types otherwise than LLVM (see above)\n", .{opts.file_name});
+            return error.LoweringFailed;
+        }
+    }
 
     if (opts.exe_path) |exe| {
         // Linking: emit the object to MEMORY (no .obj round-trip) and hand the

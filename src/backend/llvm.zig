@@ -15,6 +15,8 @@ const vars_mod = @import("llvm/variants.zig");
 const vtables = @import("llvm/vtables.zig");
 const values = @import("llvm/values.zig");
 const llvm_c = @import("llvm/c_api.zig").llvm;
+const llvm_types = @import("llvm/types.zig");
+const slab = @import("../slab.zig");
 
 pub const LlvmBackend = struct {
     cg: ctx_mod.ModuleCg,
@@ -183,6 +185,30 @@ pub const LlvmBackend = struct {
     pub fn linkWindowsMem(self: *LlvmBackend, allocator: std.mem.Allocator, io: std.Io, obj_bytes: []const u8, opts: link.WindowsLinkOptions) !void {
         _ = self;
         return link.windowsMem(allocator, io, obj_bytes, opts);
+    }
+
+    /// How many of the types of `s` Slab lays out otherwise than LLVM does, each named on stderr.
+    /// Obsidian takes its layouts from Slab and LLVM from itself, and the two must agree: a
+    /// struct a C function receives, and the data of a static table, are laid out by both.
+    pub fn slabLayoutMismatches(self: *LlvmBackend, arena: std.mem.Allocator, s: *const slab.Slab) !usize {
+        const tys = try slab.irTypes(arena, s);
+        const td = self.cg.targetData();
+        var bad: usize = 0;
+        for (s.types, tys) |t, ty| {
+            if (t.size == slab.none) continue;
+            switch (t.kind) {
+                .void, .unknown, .zone, .opaque_type, .list, .map, .range => continue,
+                else => {},
+            }
+            const lty = llvm_types.lower(&self.cg, ty);
+            const size = llvm_c.LLVMABISizeOfType(td, lty);
+            const alignment = llvm_c.LLVMABIAlignmentOfType(td, lty);
+            if (size != t.size or alignment != t.alignment) {
+                std.debug.print("slab layout: {s} {any}: size {d} align {d}, LLVM size {d} align {d}\n", .{ @tagName(t.kind), ty, t.size, t.alignment, size, alignment });
+                bad += 1;
+            }
+        }
+        return bad;
     }
 
     /// Dump the LLVM IR to stderr (debugging).
