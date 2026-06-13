@@ -376,3 +376,126 @@ pub movsx_rm :: fn(c: *Code, size: u8, dst: u8, from: u8, m: Mem) {
     }
     mem_operand(c, dst, m);
 }
+
+// Arithmetic
+
+/// `op dst, src` for `op` one of `ALU_ADD` to `ALU_CMP`.
+pub alu_rr :: fn(c: *Code, op: u8, size: u8, dst: u8, src: u8) {
+    op_rr(c, size, op << 3u8, (op << 3u8) + 1u8, src, dst);   // 00+8op, 01+8op /r
+}
+
+/// `op dst, [m]`.
+pub alu_rm :: fn(c: *Code, op: u8, size: u8, dst: u8, m: Mem) {
+    op_rm(c, size, (op << 3u8) + 2u8, (op << 3u8) + 3u8, dst, m);   // 02+8op, 03+8op /r
+}
+
+/// `op [m], src`.
+pub alu_mr :: fn(c: *Code, op: u8, size: u8, m: Mem, src: u8) {
+    op_rm(c, size, op << 3u8, (op << 3u8) + 1u8, src, m);
+}
+
+/// `op dst, imm`, with an 8-bit immediate where it fits, and the short form for `al`/`ax`/`eax`/`rax`.
+pub alu_ri :: fn(c: *Code, op: u8, size: u8, dst: u8, v: i64) {
+    size_prefix(c, size);
+    rex(c, size == 8u8, 0u8, 0u8, dst, byte_needs_rex(size, dst));
+    if size == 1u8 && dst == RAX { c.byte(op * 8u8 + 4u8); c.byte(((v as i32) as i8) as u8); return; }   // 04+8op ib
+    if size == 1u8 { c.byte(128u8); modrm(c, 3u8, op, dst); c.byte(((v as i32) as i8) as u8); return; }   // 80 /op ib
+    if fits_i8(v) { c.byte(131u8); modrm(c, 3u8, op, dst); c.byte((v as i8) as u8); return; }   // 83 /op ib
+    if dst == RAX { c.byte(op * 8u8 + 5u8); imm_of(c, size, v); return; }   // 05+8op iw/id
+    c.byte(129u8);   // 81 /op iw/id
+    modrm(c, 3u8, op, dst);
+    imm_of(c, size, v);
+}
+
+/// `op [m], imm`.
+pub alu_mi :: fn(c: *Code, op: u8, size: u8, m: Mem, v: i64) {
+    size_prefix(c, size);
+    rex_mem(c, size == 8u8, 0u8, m, false);
+    if size == 1u8 { c.byte(128u8); mem_operand(c, op, m); c.byte(((v as i32) as i8) as u8); return; }
+    if fits_i8(v) { c.byte(131u8); mem_operand(c, op, m); c.byte((v as i8) as u8); return; }
+    c.byte(129u8);
+    mem_operand(c, op, m);
+    imm_of(c, size, v);
+}
+
+/// `test a, b`.
+pub test_rr :: fn(c: *Code, size: u8, a: u8, b: u8) { op_rr(c, size, 132u8, 133u8, b, a); }   // 84, 85 /r
+
+/// `test r, imm`.
+pub test_ri :: fn(c: *Code, size: u8, r: u8, v: i64) {
+    size_prefix(c, size);
+    rex(c, size == 8u8, 0u8, 0u8, r, byte_needs_rex(size, r));
+    if r == RAX {
+        if size == 1u8 { c.byte(168u8); } else { c.byte(169u8); }   // A8 ib, A9 iw/id
+        imm_of(c, size, v);
+        return;
+    }
+    if size == 1u8 { c.byte(246u8); } else { c.byte(247u8); }   // F6, F7 /0
+    modrm(c, 3u8, 0u8, r);
+    imm_of(c, size, v);
+}
+
+/// `imul dst, src`.
+pub imul_rr :: fn(c: *Code, size: u8, dst: u8, src: u8) {
+    size_prefix(c, size);
+    rex(c, size == 8u8, dst, 0u8, src, false);
+    c.byte(15u8);
+    c.byte(175u8);   // 0F AF /r
+    modrm(c, 3u8, dst, src);
+}
+
+/// `imul dst, src, imm`.
+pub imul_rri :: fn(c: *Code, size: u8, dst: u8, src: u8, v: i64) {
+    size_prefix(c, size);
+    rex(c, size == 8u8, dst, 0u8, src, false);
+    if fits_i8(v) { c.byte(107u8); modrm(c, 3u8, dst, src); c.byte((v as i8) as u8); return; }   // 6B /r ib
+    c.byte(105u8);   // 69 /r id
+    modrm(c, 3u8, dst, src);
+    imm_of(c, size, v);
+}
+
+/// The one-operand group F7 (F6 for 8 bits): `/2` not, `/3` neg, `/4` mul, `/5` imul, `/6`
+/// div, `/7` idiv.
+unary :: fn(c: *Code, digit: u8, size: u8, r: u8) {
+    size_prefix(c, size);
+    rex(c, size == 8u8, 0u8, 0u8, r, byte_needs_rex(size, r));
+    if size == 1u8 { c.byte(246u8); } else { c.byte(247u8); }
+    modrm(c, 3u8, digit, r);
+}
+
+pub not_r :: fn(c: *Code, size: u8, r: u8) { unary(c, 2u8, size, r); }
+pub neg_r :: fn(c: *Code, size: u8, r: u8) { unary(c, 3u8, size, r); }
+/// `mul r`: rdx:rax = rax * r, unsigned.
+pub mul_r :: fn(c: *Code, size: u8, r: u8) { unary(c, 4u8, size, r); }
+/// `div r`: rax = rdx:rax / r, rdx = the remainder, unsigned.
+pub div_r :: fn(c: *Code, size: u8, r: u8) { unary(c, 6u8, size, r); }
+/// `idiv r`: the same, signed.
+pub idiv_r :: fn(c: *Code, size: u8, r: u8) { unary(c, 7u8, size, r); }
+
+/// `cqo` (64 bits) or `cdq` (32): rdx gets the sign of rax, before `idiv`.
+pub sign_extend_rax :: fn(c: *Code, size: u8) {
+    if size == 8u8 { c.byte(72u8); }   // REX.W
+    c.byte(153u8);   // 99
+}
+
+/// `shift r, cl`.
+pub shift_cl :: fn(c: *Code, op: u8, size: u8, r: u8) {
+    size_prefix(c, size);
+    rex(c, size == 8u8, 0u8, 0u8, r, byte_needs_rex(size, r));
+    if size == 1u8 { c.byte(210u8); } else { c.byte(211u8); }   // D2, D3 /op
+    modrm(c, 3u8, op, r);
+}
+
+/// `shift r, n` (the one-byte form for a shift by 1).
+pub shift_ri :: fn(c: *Code, op: u8, size: u8, r: u8, n: u8) {
+    size_prefix(c, size);
+    rex(c, size == 8u8, 0u8, 0u8, r, byte_needs_rex(size, r));
+    if n == 1u8 {
+        if size == 1u8 { c.byte(208u8); } else { c.byte(209u8); }   // D0, D1 /op
+        modrm(c, 3u8, op, r);
+        return;
+    }
+    if size == 1u8 { c.byte(192u8); } else { c.byte(193u8); }   // C0, C1 /op ib
+    modrm(c, 3u8, op, r);
+    c.byte(n);
+}
