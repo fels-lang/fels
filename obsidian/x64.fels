@@ -499,3 +499,87 @@ pub shift_ri :: fn(c: *Code, op: u8, size: u8, r: u8, n: u8) {
     modrm(c, 3u8, op, r);
     c.byte(n);
 }
+
+// Control flow
+
+pub push_r :: fn(c: *Code, r: u8) {
+    rex(c, false, 0u8, 0u8, r, false);
+    c.byte(80u8 + fn_low(r));   // 50+r
+}
+
+pub pop_r :: fn(c: *Code, r: u8) {
+    rex(c, false, 0u8, 0u8, r, false);
+    c.byte(88u8 + fn_low(r));   // 58+r
+}
+
+pub ret :: fn(c: *Code) { c.byte(195u8); }      // C3
+pub leave :: fn(c: *Code) { c.byte(201u8); }    // C9
+pub int3 :: fn(c: *Code) { c.byte(204u8); }     // CC
+pub ud2 :: fn(c: *Code) { c.byte(15u8); c.byte(11u8); }   // 0F 0B
+pub syscall :: fn(c: *Code) { c.byte(15u8); c.byte(5u8); }   // 0F 05
+pub nop :: fn(c: *Code) { c.byte(144u8); }      // 90
+
+/// `call rel32` to an offset the caller patches later (a function not yet placed): returns the
+/// offset of the displacement.
+pub call_rel32 :: fn(c: *Code) -> usize {
+    c.byte(232u8);   // E8 cd
+    at := c.len();
+    c.u32le(0u32);
+    return at;
+}
+
+/// `call r`.
+pub call_r :: fn(c: *Code, r: u8) {
+    rex(c, false, 0u8, 0u8, r, false);
+    c.byte(255u8);   // FF /2
+    modrm(c, 3u8, 2u8, r);
+}
+
+/// `call [m]` (through an import table entry, `[rip + disp]`).
+pub call_m :: fn(c: *Code, m: Mem) {
+    rex_mem(c, false, 0u8, m, false);
+    c.byte(255u8);
+    mem_operand(c, 2u8, m);
+}
+
+/// `jmp label`.
+pub jmp :: fn(c: *Code, label: u32) {
+    c.byte(233u8);   // E9 cd
+    c.rel32_to(label);
+}
+
+/// `jcc label`.
+pub jcc :: fn(c: *Code, cc: u8, label: u32) {
+    c.byte(15u8);
+    c.byte(128u8 + cc);   // 0F 80+cc cd
+    c.rel32_to(label);
+}
+
+/// `jmp r`.
+pub jmp_r :: fn(c: *Code, r: u8) {
+    rex(c, false, 0u8, 0u8, r, false);
+    c.byte(255u8);   // FF /4
+    modrm(c, 3u8, 4u8, r);
+}
+
+/// `setcc r8`.
+pub setcc :: fn(c: *Code, cc: u8, r: u8) {
+    rex(c, false, 0u8, 0u8, r, byte_needs_rex(1u8, r));
+    c.byte(15u8);
+    c.byte(144u8 + cc);   // 0F 90+cc /0
+    modrm(c, 3u8, 0u8, r);
+}
+
+/// `cmovcc dst, src`.
+pub cmovcc :: fn(c: *Code, cc: u8, size: u8, dst: u8, src: u8) {
+    size_prefix(c, size);
+    rex(c, size == 8u8, dst, 0u8, src, false);
+    c.byte(15u8);
+    c.byte(64u8 + cc);   // 0F 40+cc /r
+    modrm(c, 3u8, dst, src);
+}
+
+// Strings: copies and fills
+
+pub rep_movsb :: fn(c: *Code) { c.byte(243u8); c.byte(164u8); }   // F3 A4
+pub rep_stosb :: fn(c: *Code) { c.byte(243u8); c.byte(170u8); }   // F3 AA
