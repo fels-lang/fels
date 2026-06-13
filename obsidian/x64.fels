@@ -192,3 +192,187 @@ pub Code :: struct {
 pub code :: fn(a: *Arena) -> Code {
     return .{ .bytes = vec::make(u8, a), .labels = vec::make(i64, a), .fixups = vec::make(Fixup, a) };
 }
+
+// Encoding helpers
+
+fn_low :: fn(r: u8) -> u8 { return r & 7u8; }
+fn_ext :: fn(r: u8) -> u8 { return (r >> 3u8) & 1u8; }
+
+/// A register operand of 8 bits that needs a REX prefix to mean spl, bpl, sil or dil (and not
+/// ah, ch, dh, bh).
+byte_needs_rex :: fn(size: u8, r: u8) -> bool {
+    return size == 1u8 && r >= 4u8 && r <= 7u8;
+}
+
+/// The operand-size prefix of a 16-bit operation.
+size_prefix :: fn(c: *Code, size: u8) {
+    if size == 2u8 { c.byte(102u8); }   // 0x66
+}
+
+/// A REX prefix, when one is needed: `w` for a 64-bit operand, `r` the ModRM.reg register,
+/// `x` the index register, `b` the ModRM.rm or base register.
+rex :: fn(c: *Code, w: bool, r: u8, x: u8, b: u8, force: bool) {
+    bits: u8 = (fn_ext(r) << 2u8) | (fn_ext(x) << 1u8) | fn_ext(b);
+    if w { bits = bits | 8u8; }
+    if bits != 0u8 || force { c.byte(64u8 | bits); }   // 0x40 | WRXB
+}
+
+modrm :: fn(c: *Code, md: u8, reg: u8, rm: u8) {
+    c.byte((md << 6u8) | (fn_low(reg) << 3u8) | fn_low(rm));
+}
+
+fits_i8 :: fn(v: i64) -> bool { return v >= -128i64 && v <= 127i64; }
+fits_i32 :: fn(v: i64) -> bool { return v >= -2147483648i64 && v <= 2147483647i64; }
+
+/// The ModRM, SIB and displacement of a memory operand, with `reg` in ModRM.reg.
+mem_operand :: fn(c: *Code, reg: u8, m: Mem) {
+    if m.base == RIP {
+        modrm(c, 0u8, reg, 5u8);
+        c.i32le(m.disp);
+        return;
+    }
+    d := m.disp as i64;
+    // [rbp] and [r13] have no form without a displacement: they take a zero byte.
+    md: u8 = 2u8;
+    if d == 0i64 && fn_low(m.base) != 5u8 { md = 0u8; } else if fits_i8(d) { md = 1u8; }
+    if m.index != NO_REG || fn_low(m.base) == 4u8 {
+        // a SIB byte: an index, or a base of rsp or r12
+        modrm(c, md, reg, 4u8);
+        ss: u8 = 0u8;
+        if m.scale == 2u8 { ss = 1u8; } else if m.scale == 4u8 { ss = 2u8; } else if m.scale == 8u8 { ss = 3u8; }
+        idx: u8 = 4u8;  // none
+        if m.index != NO_REG { idx = fn_low(m.index); }
+        c.byte((ss << 6u8) | (idx << 3u8) | fn_low(m.base));
+    } else {
+        modrm(c, md, reg, m.base);
+    }
+    if md == 1u8 { c.byte((m.disp as i8) as u8); } else if md == 2u8 { c.i32le(m.disp); }
+}
+
+/// The REX prefix of an instruction with a memory operand.
+rex_mem :: fn(c: *Code, w: bool, reg: u8, m: Mem, force: bool) {
+    idx: u8 = 0u8;
+    if m.index != NO_REG { idx = m.index; }
+    base: u8 = 0u8;
+    if m.base != RIP { base = m.base; }
+    rex(c, w, reg, idx, base, force);
+}
+
+/// Prefixes and opcode of an operation of `size` between `reg` and the register `rm`: the
+/// opcode for 8 bits is `op8`, for 16, 32 and 64 `op`.
+op_rr :: fn(c: *Code, size: u8, op8: u8, op: u8, reg: u8, rm: u8) {
+    size_prefix(c, size);
+    rex(c, size == 8u8, reg, 0u8, rm, byte_needs_rex(size, reg) || byte_needs_rex(size, rm));
+    if size == 1u8 { c.byte(op8); } else { c.byte(op); }
+    modrm(c, 3u8, reg, rm);
+}
+
+/// The same between `reg` and memory.
+op_rm :: fn(c: *Code, size: u8, op8: u8, op: u8, reg: u8, m: Mem) {
+    size_prefix(c, size);
+    rex_mem(c, size == 8u8, reg, m, byte_needs_rex(size, reg));
+    if size == 1u8 { c.byte(op8); } else { c.byte(op); }
+    mem_operand(c, reg, m);
+}
+
+/// An immediate of `size` (8 bits, 16, or 32 for 32 and 64-bit operations).
+imm_of :: fn(c: *Code, size: u8, v: i64) {
+    if size == 1u8 { c.byte(((v as i32) as i8) as u8); }
+    else if size == 2u8 { c.u16le(((v as i32) as i16) as u16); }
+    else { c.i32le(v as i32); }
+}
+
+// Moves
+
+/// `mov dst, src`.
+pub mov_rr :: fn(c: *Code, size: u8, dst: u8, src: u8) { op_rr(c, size, 136u8, 137u8, src, dst); }   // 88, 89 /r
+
+/// `mov dst, [m]`: a load.
+pub mov_rm :: fn(c: *Code, size: u8, dst: u8, m: Mem) { op_rm(c, size, 138u8, 139u8, dst, m); }    // 8A, 8B /r
+
+/// `mov [m], src`: a store.
+pub mov_mr :: fn(c: *Code, size: u8, m: Mem, src: u8) { op_rm(c, size, 136u8, 137u8, src, m); }    // 88, 89 /r
+
+/// `mov dst, imm` in the shortest form: a 32-bit move for a value that fits 32 unsigned bits
+/// (it clears the upper half), a sign-extended 32-bit immediate, or the full 64 bits.
+pub mov_ri :: fn(c: *Code, size: u8, dst: u8, v: i64) {
+    if size == 8u8 && v >= 0i64 && v <= 4294967295i64 {
+        rex(c, false, 0u8, 0u8, dst, false);
+        c.byte(184u8 + fn_low(dst));   // B8+r
+        c.u32le(v as u32);
+        return;
+    }
+    if size == 8u8 && fits_i32(v) {
+        rex(c, true, 0u8, 0u8, dst, false);
+        c.byte(199u8);   // C7 /0
+        modrm(c, 3u8, 0u8, dst);
+        c.i32le(v as i32);
+        return;
+    }
+    size_prefix(c, size);
+    rex(c, size == 8u8, 0u8, 0u8, dst, byte_needs_rex(size, dst));
+    if size == 1u8 { c.byte(176u8 + fn_low(dst)); c.byte(((v as i32) as i8) as u8); return; }   // B0+r
+    c.byte(184u8 + fn_low(dst));   // B8+r
+    if size == 2u8 { c.u16le(((v as i32) as i16) as u16); }
+    else if size == 4u8 { c.u32le((v as i32) as u32); }
+    else { c.u64le(v as u64); }
+}
+
+/// `mov [m], imm`: an immediate of up to 32 bits (sign-extended for a 64-bit store).
+pub mov_mi :: fn(c: *Code, size: u8, m: Mem, v: i64) {
+    size_prefix(c, size);
+    rex_mem(c, size == 8u8, 0u8, m, false);
+    if size == 1u8 { c.byte(198u8); } else { c.byte(199u8); }   // C6, C7 /0
+    mem_operand(c, 0u8, m);
+    imm_of(c, size, v);
+}
+
+/// `lea dst, [m]`.
+pub lea :: fn(c: *Code, size: u8, dst: u8, m: Mem) {
+    size_prefix(c, size);
+    rex_mem(c, size == 8u8, dst, m, false);
+    c.byte(141u8);   // 8D /r
+    mem_operand(c, dst, m);
+}
+
+/// `movzx dst, src` from 8 or 16 bits (`from` is 1 or 2) to `size`.
+pub movzx_rr :: fn(c: *Code, size: u8, dst: u8, from: u8, src: u8) {
+    size_prefix(c, size);
+    rex(c, size == 8u8, dst, 0u8, src, from == 1u8 && byte_needs_rex(1u8, src));
+    c.byte(15u8);
+    if from == 1u8 { c.byte(182u8); } else { c.byte(183u8); }   // 0F B6, 0F B7
+    modrm(c, 3u8, dst, src);
+}
+
+/// `movzx dst, [m]`, a load that clears the upper bits.
+pub movzx_rm :: fn(c: *Code, size: u8, dst: u8, from: u8, m: Mem) {
+    size_prefix(c, size);
+    rex_mem(c, size == 8u8, dst, m, false);
+    c.byte(15u8);
+    if from == 1u8 { c.byte(182u8); } else { c.byte(183u8); }
+    mem_operand(c, dst, m);
+}
+
+/// `movsx dst, src` from 8 or 16 bits, `movsxd` from 32 (`from` is 1, 2 or 4).
+pub movsx_rr :: fn(c: *Code, size: u8, dst: u8, from: u8, src: u8) {
+    size_prefix(c, size);
+    rex(c, size == 8u8, dst, 0u8, src, from == 1u8 && byte_needs_rex(1u8, src));
+    if from == 4u8 { c.byte(99u8); }   // 63 /r
+    else {
+        c.byte(15u8);
+        if from == 1u8 { c.byte(190u8); } else { c.byte(191u8); }   // 0F BE, 0F BF
+    }
+    modrm(c, 3u8, dst, src);
+}
+
+/// `movsx dst, [m]` (`movsxd` from 4 bytes).
+pub movsx_rm :: fn(c: *Code, size: u8, dst: u8, from: u8, m: Mem) {
+    size_prefix(c, size);
+    rex_mem(c, size == 8u8, dst, m, false);
+    if from == 4u8 { c.byte(99u8); }
+    else {
+        c.byte(15u8);
+        if from == 1u8 { c.byte(190u8); } else { c.byte(191u8); }
+    }
+    mem_operand(c, dst, m);
+}
