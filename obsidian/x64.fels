@@ -583,3 +583,82 @@ pub cmovcc :: fn(c: *Code, cc: u8, size: u8, dst: u8, src: u8) {
 
 pub rep_movsb :: fn(c: *Code) { c.byte(243u8); c.byte(164u8); }   // F3 A4
 pub rep_stosb :: fn(c: *Code) { c.byte(243u8); c.byte(170u8); }   // F3 AA
+
+// Floating point (SSE2, scalar)
+
+/// A scalar SSE instruction between `xmm` registers or with memory: its prefix (F2 for double,
+/// F3 for float, 66, or 0 for none), a REX when needed, 0F and the opcode.
+sse_rr :: fn(c: *Code, prefix: u8, w: bool, op: u8, reg: u8, rm: u8) {
+    if prefix != 0u8 { c.byte(prefix); }
+    rex(c, w, reg, 0u8, rm, false);
+    c.byte(15u8);
+    c.byte(op);
+    modrm(c, 3u8, reg, rm);
+}
+
+sse_rm :: fn(c: *Code, prefix: u8, w: bool, op: u8, reg: u8, m: Mem) {
+    if prefix != 0u8 { c.byte(prefix); }
+    rex_mem(c, w, reg, m, false);
+    c.byte(15u8);
+    c.byte(op);
+    mem_operand(c, reg, m);
+}
+
+/// The prefix of a scalar operation on a double (`size` 8) or a float (4).
+fp_prefix :: fn(size: u8) -> u8 {
+    if size == 8u8 { return 242u8; }   // F2
+    return 243u8;                      // F3
+}
+
+/// `movsd`/`movss dst, src`.
+pub fmov_xx :: fn(c: *Code, size: u8, dst: u8, src: u8) { sse_rr(c, fp_prefix(size), false, 16u8, dst, src); }   // 10
+/// `movsd`/`movss dst, [m]`.
+pub fmov_xm :: fn(c: *Code, size: u8, dst: u8, m: Mem) { sse_rm(c, fp_prefix(size), false, 16u8, dst, m); }
+/// `movsd`/`movss [m], src`.
+pub fmov_mx :: fn(c: *Code, size: u8, m: Mem, src: u8) { sse_rm(c, fp_prefix(size), false, 17u8, src, m); }   // 11
+
+pub FP_ADD :: 88u8;    // 58
+pub FP_MUL :: 89u8;    // 59
+pub FP_SUB :: 92u8;    // 5C
+pub FP_MIN :: 93u8;    // 5D
+pub FP_DIV :: 94u8;    // 5E
+pub FP_MAX :: 95u8;    // 5F
+pub FP_SQRT :: 81u8;   // 51
+
+/// `addsd`, `mulsd`, ... (`op` one of `FP_ADD` to `FP_SQRT`) `dst, src`.
+pub fop_xx :: fn(c: *Code, op: u8, size: u8, dst: u8, src: u8) { sse_rr(c, fp_prefix(size), false, op, dst, src); }
+/// The same with `[m]`.
+pub fop_xm :: fn(c: *Code, op: u8, size: u8, dst: u8, m: Mem) { sse_rm(c, fp_prefix(size), false, op, dst, m); }
+
+/// `ucomisd`/`ucomiss a, b`: compare, setting the flags as an unsigned compare does (and PF for
+/// unordered).
+pub fcmp_xx :: fn(c: *Code, size: u8, a: u8, b: u8) {
+    p: u8 = 0u8;
+    if size == 8u8 { p = 102u8; }   // 66
+    sse_rr(c, p, false, 46u8, a, b);   // 0F 2E
+}
+
+/// `cvtsi2sd`/`cvtsi2ss dst, src` from a 32 or 64-bit integer.
+pub cvt_int_to_fp :: fn(c: *Code, fp_size: u8, int_size: u8, dst: u8, src: u8) { sse_rr(c, fp_prefix(fp_size), int_size == 8u8, 42u8, dst, src); }   // 2A
+
+/// `cvttsd2si`/`cvttss2si dst, src` to a 32 or 64-bit integer, truncating.
+pub cvt_fp_to_int :: fn(c: *Code, fp_size: u8, int_size: u8, dst: u8, src: u8) { sse_rr(c, fp_prefix(fp_size), int_size == 8u8, 44u8, dst, src); }   // 2C
+
+/// `cvtss2sd` (`to` 8) or `cvtsd2ss` (`to` 4) `dst, src`.
+pub cvt_fp_to_fp :: fn(c: *Code, to: u8, dst: u8, src: u8) {
+    p: u8 = 242u8;   // from double: F2
+    if to == 8u8 { p = 243u8; }   // from float: F3
+    sse_rr(c, p, false, 90u8, dst, src);   // 5A
+}
+
+/// `movq xmm, r64`.
+pub movq_xr :: fn(c: *Code, dst: u8, src: u8) { sse_rr(c, 102u8, true, 110u8, dst, src); }   // 66 REX.W 0F 6E
+/// `movq r64, xmm`.
+pub movq_rx :: fn(c: *Code, dst: u8, src: u8) { sse_rr(c, 102u8, true, 126u8, src, dst); }   // 66 REX.W 0F 7E
+
+/// `xorpd`/`xorps dst, src` (for `-x`, and to clear a register).
+pub fxor_xx :: fn(c: *Code, size: u8, dst: u8, src: u8) {
+    p: u8 = 0u8;
+    if size == 8u8 { p = 102u8; }
+    sse_rr(c, p, false, 87u8, dst, src);   // 0F 57
+}
