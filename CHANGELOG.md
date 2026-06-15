@@ -1142,8 +1142,8 @@ repository, `skarn-lang/skarn`, is superseded by `gabbro-lang/gabbro`.
 ### Known limitations
 
 Gabbro is experimental. Some accepted constructs still have incomplete backend
-semantics. The full list, with file references, is in
-[ROADMAP.md](ROADMAP.md#known-gaps); the headlines:
+semantics. The full list, with file references, was in the roadmap of that
+release; the headlines:
 
 - No runtime test lane, formatter, doc generator, REPL or package manager.
 - No external packages; projects are single-tree.

@@ -148,7 +148,9 @@ These compile without a message and give a wrong result.
 
 ## 7. Tooling, release and the editor
 
-- The released compiler has a Windows SDK library path baked in (RELEASING.md, "Known gap").
+- The released compiler has a Windows SDK library path baked in: on a machine without that SDK
+  version, linking programs needs a matching SDK or a compiler built with
+  `-Dwindows-sdk-lib-path`.
 - Many parallel Zig builds exhaust memory; the PC froze once. Some test runs need `-j1`.
 - The Zed extension's `runnables.scm` was never tried; `injections.scm` was removed because Zed
   rejected the empty file.
