@@ -88,6 +88,19 @@ test "layout: distinct types and aliases are measured as what they are stored as
     );
 }
 
+test "layout: a byte takes one byte, alone, in an array and in a struct" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try lower(arena.allocator(),
+        \\B :: struct { a: byte, b: byte, n: u16 }
+        \\#assert(core::sizeof(byte) == 1);
+        \\#assert(core::align_of(byte) == 1);
+        \\#assert(core::sizeof([4]byte) == 4);
+        \\#assert(core::offset_of(B, "b") == 1);
+        \\#assert(core::sizeof(B) == 4);
+    );
+}
+
 test "layout: #assert fails the build when its condition is false" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -2358,6 +2358,30 @@ test "exe: sizeof returns the actual size of its type argument" {
     try std.testing.expectEqual(@as(u32, 15), code);
 }
 
+test "exe: bytes sit one byte apart in an array and a struct" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // 100 * (the step between elements) + 10 * (the offset of the second field) + the size of
+    // the struct: a `byte` laid out like a pointer gave 800 + 80 + 24.
+    const code = try compileAndRun(arena.allocator(),
+        \\B :: struct { a: byte, b: byte, n: u16 }
+        \\main :: fn() -> i32 {
+        \\    bytes: [4]byte = .{ 1 as byte, 2 as byte, 3 as byte, 4 as byte };
+        \\    b: B = .{ 7 as byte, 9 as byte, 300 };
+        \\    step: usize = 0;
+        \\    field: usize = 0;
+        \\    unsafe {
+        \\        step = ((&bytes[1]) as usize) - ((&bytes[0]) as usize);
+        \\        field = ((&b.b) as usize) - ((&b) as usize);
+        \\    }
+        \\    return core::narrow(i32, step * 100 + field * 10 + core::sizeof(B));
+        \\}
+    , "exe_byte_layout");
+    try std.testing.expectEqual(@as(u32, 114), code);
+}
+
 test "exe: sizeof on pointer types returns pointer width" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
