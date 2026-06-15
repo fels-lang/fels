@@ -26,7 +26,8 @@ the compiler, and I fixed them along the way.
 
 ## Install
 
-Fels runs on 64-bit Windows and builds programs for Windows and Linux.
+Fels builds programs for 64-bit Windows and Linux. The release download is for Windows; on
+Linux, build the compiler from source (see [Building Fels](#building-fels)).
 
 1. Download `fels-0.11.0-x86_64-windows.zip` from the
    [latest release](https://github.com/fels-lang/fels/releases/latest).
@@ -179,11 +180,11 @@ all.
 ## Where it stands
 
 - Windows x64 works from end to end.
-- Linux x64 works as a target, and I build Linux programs from Windows. A Linux build of the
-  compiler itself is not there yet.
+- Linux x64 works as a target, from Windows or on Linux itself: the compiler builds and passes
+  its tests there, though the release has no Linux download yet.
 - There is no macOS support and no formatter yet.
 - Programs carry no debug info yet, so a debugger shows no source lines.
-- The compiler has 734 tests, and CI runs them on every push.
+- The compiler has 774 tests, and CI runs them on Windows and Linux on every push.
 
 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) lists what is still rough, and the
 [changelog](CHANGELOG.md) shows what changed in each release.
@@ -206,12 +207,16 @@ programs that show a problem help the most.
 
 ## Building Fels
 
-The compiler is written in Zig 0.16. You need an LLVM build that includes its C headers.
+The compiler is written in Zig 0.16. You need an LLVM build that includes its C headers: on
+Linux, llvm.org's release (`LLVM-22.1.6-Linux-X64.tar.xz`, which the build links statically), on
+Windows `clang+llvm-22.1.6-x86_64-pc-windows-msvc.tar.xz`.
 
 ```text
 zig build -Dllvm-path=path/to/llvm
 zig build test -Dllvm-path=path/to/llvm
 ```
+
+The compiler lands in `zig-out/bin`.
 
 ## License
 
