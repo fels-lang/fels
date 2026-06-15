@@ -38,6 +38,9 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
 
 ### Fixed
 
+- A `byte` takes one byte, as a `u8` does. In an array or a struct it was laid out like a
+  pointer, 8 bytes, so `[4]byte` took 32; `core::sizeof(byte)` said 8, or was no constant in
+  `#assert`.
 - Two `for i in a..b` loops with the same index name and different types (`0..256`, then
   `0..xs.len`) shared one slot, and the second stored its 8-byte index into 4 bytes.
 - On Linux, a `main` that fails exits with its error's position in its own set, as on Windows,

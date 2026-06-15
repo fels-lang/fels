@@ -23,9 +23,6 @@ These compile without a message and give a wrong result.
   where SysV wants two. Calling a real Linux C object under WSL gave wrong values for both; a
   `Color` (four bytes) happens to match. Verified 2026-10-17.
 
-- **`core::sizeof(byte)` is 8.** `byte` is laid out like a pointer: `[4]byte` takes 32 bytes, and
-  `byte` fields and elements sit 8 bytes apart. `lowerNamedType` in `src/ir.zig` has no case for
-  `byte`. Verified 2026-10-17.
 - **A sub-byte local can compare wrong.** A local `i3` is stored with an `i8` store into an `i3`
   slot and read back as `i3`; in one probe `x != -2` was true for `x: i3 = -2`. Sub-byte values are
   not range checked either (`x: i3 = -5` is accepted), because sema reads `i1`–`i7` as `i8`.
