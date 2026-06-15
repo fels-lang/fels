@@ -38,4 +38,5 @@ comptime {
     _ = @import("compiler/std_tests.zig");
     _ = @import("compiler/format.zig");
     _ = @import("compiler/slab.zig");
+    _ = @import("compiler/obsidian.zig");
 }
