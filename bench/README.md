@@ -94,6 +94,21 @@ busy.
 These are ten small kernels. They say how fast the code a compiler makes is for loops,
 arithmetic, memory access and allocation, written the same way in each language. They do not say
 how fast idiomatic programs are (a Zig or C programmer might write some of them differently, and
-so might a Fels one), how long large programs take to compile, or how the standard libraries
-compare. If you think one of the programs is unfair to a language, the programs are short: say
-which line, or send a better version that keeps to the rules.
+so might a Fels one), how long large programs take to compile (that is [below](#compile-speed)),
+or how the standard libraries compare. If you think one of the programs is unfair to a language,
+the programs are short: say which line, or send a better version that keeps to the rules.
+
+## Compile speed
+
+`bench/compile.py` times the compiler instead of the programs. It writes a program of ordinary
+code (100 000 lines by default: functions of one 20-line shape, with arithmetic, loops, struct
+fields and calls), builds it the way a debug build is made (`fels build`, -O0 with the safety
+checks), runs it, and reports every phase of the fastest of three builds in milliseconds and
+microseconds per line:
+
+```
+python bench/compile.py
+python bench/compile.py --lines 1000000 --json out.json
+```
+
+The goal is a million lines a second for a debug build, every phase included: 1 µs a line.
