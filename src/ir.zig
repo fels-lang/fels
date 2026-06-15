@@ -6837,6 +6837,8 @@ fn lowerNamedType(name: []const u8) IrType {
     if (std.mem.eql(u8, name, "i32")) return .{ .i = 32 };
     if (std.mem.eql(u8, name, "i64")) return .{ .i = 64 };
     if (std.mem.eql(u8, name, "u8")) return .{ .u = 8 };
+    // (a byte is laid out as a `u8`, as `lowerSemaType` lowers it)
+    if (std.mem.eql(u8, name, "byte")) return .{ .u = 8 };
     if (std.mem.eql(u8, name, "u16")) return .{ .u = 16 };
     if (std.mem.eql(u8, name, "u32")) return .{ .u = 32 };
     if (std.mem.eql(u8, name, "u64")) return .{ .u = 64 };
