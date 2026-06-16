@@ -199,6 +199,46 @@ test "engine: block_at reads the block a cell points at, and keeps a host addres
     try std.testing.expectEqual(@as(usize, 4096), (try vm.execute(host_fn)).host_ptr.addr);
 }
 
+test "engine: copy_cells copies a block, overlapping or not, and stores what is no block" {
+    var vm = engine.Vm.init(std.testing.allocator);
+    defer vm.deinit();
+
+    // r0 = [1, 2, 3, void]; r1 = [void, void].
+    const prefix = [_]Instr{
+        Instr.r_imm(.zone_alloc, 0, 4),
+        Instr.r_imm(.zone_alloc, 1, 2),
+        Instr.r_imm(.load_imm, 2, 1),
+        Instr.r_r_imm(.store_cell, 0, 2, 0),
+        Instr.r_imm(.load_imm, 2, 2),
+        Instr.r_r_imm(.store_cell, 0, 2, 1),
+        Instr.r_imm(.load_imm, 2, 3),
+        Instr.r_r_imm(.store_cell, 0, 2, 2),
+        Instr.r_r_imm(.field_addr, 3, 0, 1),
+    };
+    const Case = struct { copy: Instr, block: u32, cell: i64, want: i128 };
+    const cases = [_]Case{
+        // Two cells of r0 into r1.
+        .{ .copy = .{ .op = .copy_cells, .a = 1, .b = 0, .imm = 2 }, .block = 1, .cell = 1, .want = 2 },
+        // r0's first three cells one cell on, over themselves: [1, 1, 2, 3].
+        .{ .copy = .{ .op = .copy_cells, .a = 3, .b = 0, .imm = 3 }, .block = 0, .cell = 3, .want = 3 },
+        .{ .copy = .{ .op = .copy_cells, .a = 3, .b = 0, .imm = 3 }, .block = 0, .cell = 1, .want = 1 },
+        // And back: [2, 3, 3, void].
+        .{ .copy = .{ .op = .copy_cells, .a = 0, .b = 3, .imm = 2 }, .block = 0, .cell = 0, .want = 2 },
+        .{ .copy = .{ .op = .copy_cells, .a = 0, .b = 3, .imm = 2 }, .block = 0, .cell = 1, .want = 3 },
+        // An integer is no block: it is stored in the destination's first cell.
+        .{ .copy = .{ .op = .copy_cells, .a = 1, .b = 2, .imm = 2 }, .block = 1, .cell = 0, .want = 3 },
+    };
+    inline for (cases) |c| {
+        const code = prefix ++ [_]Instr{
+            c.copy,
+            Instr.r_r_imm(.load_cell, 4, c.block, c.cell),
+            Instr.r_imm(.ret, 4, 0),
+        };
+        const func = instructions.BytecodeFunction{ .name = "copy", .instrs = &code, .num_regs = 5, .num_locals = 0 };
+        try std.testing.expectEqual(c.want, (try vm.execute(func)).int);
+    }
+}
+
 test "engine: a static is built on first read, shared, and read-only" {
     // Global 0 is a two-cell block [10, 20] built by its own function.
     const init_code = [_]Instr{

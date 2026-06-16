@@ -498,6 +498,29 @@ pub const Vm = struct {
         return built;
     }
 
+    /// Write `val` at cell `offset` from `target` (`store_cell`). The target's own offset is
+    /// already baked in by `field_addr` / `index_addr`; at a host address, write `hp.size` bytes.
+    fn storeCell(self: *Vm, target: Value, offset: i64, val: Value) VmError!void {
+        if (target == .host_ptr) {
+            hostStore(target.host_ptr.addr + @as(usize, @intCast(offset)) * 8, target.host_ptr.size, val);
+        } else {
+            const base = try asPtr(target);
+            self.zone_stack.setCell(base.zone, base.offset + @as(u32, @intCast(offset)), val) catch |e| return self.writeFailed(e);
+        }
+    }
+
+    /// Copy the `n` cells of block `src` over those of block `dst` (`copy_cells`), back to front
+    /// when the source starts before an overlapping destination.
+    fn copyCells(self: *Vm, dst: Value.Ptr, src: Value.Ptr, n: u32) VmError!void {
+        const backward = dst.zone == src.zone and dst.offset > src.offset;
+        var k: u32 = 0;
+        while (k < n) : (k += 1) {
+            const i = if (backward) n - 1 - k else k;
+            const cell = try self.zone_stack.getCell(src.zone, src.offset + i);
+            self.zone_stack.setCell(dst.zone, dst.offset + i, cell) catch |e| return self.writeFailed(e);
+        }
+    }
+
     /// A failed store: a write into static data is the program's mistake, so say so.
     fn writeFailed(self: *Vm, err: zones.ZoneError) VmError {
         if (err == error.ReadOnly) {
@@ -795,16 +818,16 @@ pub const Vm = struct {
                         frame.regs[inst.a] = try self.zone_stack.getCell(base.zone, base.offset + @as(u32, @intCast(inst.imm)));
                     }
                 },
-                .store_cell => {
-                    // The target's offset is already baked in by `field_addr` /
-                    // `index_addr`; write `hp.size` bytes at the host address.
-                    if (frame.regs[inst.a] == .host_ptr) {
-                        const hp = frame.regs[inst.a].host_ptr;
-                        hostStore(hp.addr + @as(usize, @intCast(inst.imm)) * 8, hp.size, frame.regs[inst.b]);
-                    } else {
-                        const base = try asPtr(frame.regs[inst.a]);
-                        self.zone_stack.setCell(base.zone, base.offset + @as(u32, @intCast(inst.imm)), frame.regs[inst.b]) catch |e| return self.writeFailed(e);
-                    }
+                .store_cell => try self.storeCell(frame.regs[inst.a], inst.imm, frame.regs[inst.b]),
+                .copy_cells => {
+                    // A whole aggregate stored through a pointer to one: its cells are copied
+                    // into the block the pointer points at. A value that is no block of cells
+                    // (one read from host memory) is stored as `store_cell` stores it.
+                    const dst = zoneBlock(frame.regs[inst.a]);
+                    const src = zoneBlock(frame.regs[inst.b]);
+                    if (dst != null and src != null) {
+                        try self.copyCells(dst.?, src.?, @intCast(inst.imm));
+                    } else try self.storeCell(frame.regs[inst.a], 0, frame.regs[inst.b]);
                 },
                 .zone_fill => {
                     const base = try asPtr(frame.regs[inst.a]);
@@ -1047,6 +1070,15 @@ fn asPtr(v: Value) VmError!Value.Ptr {
         .struct_ref => |r| .{ .zone = r.zone, .offset = r.offset },
         .slice => |s| .{ .zone = s.zone, .offset = s.offset },
         else => error.TypeMismatch,
+    };
+}
+
+/// The zone block a value points at, or null when it is no pointer into a zone.
+fn zoneBlock(v: Value) ?Value.Ptr {
+    return switch (v) {
+        .ptr => |p| p,
+        .struct_ref => |r| .{ .zone = r.zone, .offset = r.offset },
+        else => null,
     };
 }
 
