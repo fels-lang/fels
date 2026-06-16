@@ -169,6 +169,36 @@ test "engine: zone_fill sets a run of cells and leaves the rest" {
     }
 }
 
+test "engine: block_at reads the block a cell points at, and keeps a host address" {
+    var vm = engine.Vm.init(std.testing.allocator);
+    defer vm.deinit();
+
+    // Cell 1 of an outer block points at an inner block [void, 6].
+    const nested = [_]Instr{
+        Instr.r_imm(.zone_alloc, 0, 2),
+        Instr.r_imm(.zone_alloc, 1, 2),
+        Instr.r_imm(.load_imm, 2, 6),
+        Instr.r_r_imm(.store_cell, 1, 2, 1),
+        Instr.r_r_imm(.store_cell, 0, 1, 1),
+        Instr.r_r_imm(.field_addr, 3, 0, 1),
+        .{ .op = .block_at, .a = 4, .b = 3 },
+        Instr.r_r_imm(.load_cell, 5, 4, 1),
+        Instr.r_imm(.ret, 5, 0),
+    };
+    const nested_fn = instructions.BytecodeFunction{ .name = "nested", .instrs = &nested, .num_regs = 6, .num_locals = 0 };
+    try std.testing.expectEqual(@as(i128, 6), (try vm.execute(nested_fn)).int);
+
+    // In host memory an aggregate is inline: its address is the one block_at was given.
+    const host = [_]Instr{
+        Instr.r_imm(.load_imm, 0, 4096),
+        Instr.r_r_imm(.host_ptr_make, 1, 0, 16),
+        .{ .op = .block_at, .a = 2, .b = 1 },
+        Instr.r_imm(.ret, 2, 0),
+    };
+    const host_fn = instructions.BytecodeFunction{ .name = "host", .instrs = &host, .num_regs = 3, .num_locals = 0 };
+    try std.testing.expectEqual(@as(usize, 4096), (try vm.execute(host_fn)).host_ptr.addr);
+}
+
 test "engine: a static is built on first read, shared, and read-only" {
     // Global 0 is a two-cell block [10, 20] built by its own function.
     const init_code = [_]Instr{

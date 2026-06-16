@@ -56,6 +56,7 @@ pub const Opcode = enum(u8) {
     store_cell, // a = base ptr; b = src value; imm = cell offset to write
     index_addr, // a = dst; b = base ptr; c = index reg; imm = cells per element
     index_load, // a = dst; b = base (zone slice/ptr OR host string); c = index reg; imm = cells per element → loaded element
+    block_at, // a = dst; b = address of a cell holding an aggregate → that aggregate's block (a host address: itself)
     slice_make, // a = dst; b = ptr reg; c = len reg → slice value
     slice_len, // a = dst; b = slice reg → its length as a uint
     slice_ptr, // a = dst; b = slice/host_buf reg → its base pointer

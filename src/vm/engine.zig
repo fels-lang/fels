@@ -855,6 +855,18 @@ pub const Vm = struct {
                         },
                     }
                 },
+                .block_at => {
+                    // An aggregate in a field or an element is a pointer to a block of its own,
+                    // and a pointer to the aggregate is that same pointer (`&s` of a local is
+                    // `s`). In host memory the aggregate is inline: its address is the cell's.
+                    frame.regs[inst.a] = switch (frame.regs[inst.b]) {
+                        .host_ptr => frame.regs[inst.b],
+                        else => blk: {
+                            const cell = try asPtr(frame.regs[inst.b]);
+                            break :blk try self.zone_stack.getCell(cell.zone, cell.offset);
+                        },
+                    };
+                },
                 .slice_make => {
                     const len = frame.regs[inst.c].asI128() orelse return error.TypeMismatch;
                     if (frame.regs[inst.b] == .host_ptr) {
