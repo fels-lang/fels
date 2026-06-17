@@ -23,9 +23,9 @@ These compile without a message and give a wrong result.
   where SysV wants two. Calling a real Linux C object under WSL gave wrong values for both; a
   `Color` (four bytes) happens to match. Verified 2026-10-17.
 
-- **A sub-byte local can compare wrong.** A local `i3` is stored with an `i8` store into an `i3`
-  slot and read back as `i3`; in one probe `x != -2` was true for `x: i3 = -2`. Sub-byte values are
-  not range checked either (`x: i3 = -5` is accepted), because sema reads `i1`–`i7` as `i8`.
+- **A sub-byte value is not kept in its range** outside a `#packed` struct: the type checker reads
+  `i1`–`i7` and `u1`–`u7` as `i8` and `u8`, so `x: i3 = -5` is accepted and a `u3` counts past 7
+  without an overflow panic. (In a `#packed` struct the field keeps only its bits.)
 - **A write to a constant reached through a module name compiles**: `com::IID_IUnknown.data1 = 5;`
   passes and crashes at run time, and `&com::IID_IUnknown` is a `*Guid`. The same write through a
   local or an imported name is refused. Verified 2026-10-17.

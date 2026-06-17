@@ -38,6 +38,11 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
 
 ### Fixed
 
+- A sub-byte integer (`u1` to `u7`, `i1` to `i7`) outside a `#packed` struct is a whole
+  byte in the code generator too, as the docs and the type checker have it. A local `x: i3 = -2`
+  compared unequal to `-2`, being stored as an `i8` and read back as an `i3`, and a function
+  returning a `u3` parameter as a `u8` stopped the build with an LLVM error.
+  `core::has_padding(u3)` is false now: the value sets its whole byte.
 - `for &x in arr` over an array writes into the array. The loop went through a copy of it,
   and the writes were lost; over a slice (`arr[:]`) it was right.
 - A `byte` takes one byte, as a `u8` does. In an array or a struct it was laid out like a
