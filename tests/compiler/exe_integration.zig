@@ -2412,6 +2412,45 @@ test "exe: for &x over an array writes into the array, wherever it is" {
     try std.testing.expectEqual(@as(u32, 52), code);
 }
 
+test "exe: a sub-byte integer outside a #packed struct is a whole byte, and compares as stored" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // A local, a parameter, a return value, a plain struct's field, an array element and a
+    // global of a sub-byte type, and a #packed struct's field read into a local. A local `i3`
+    // was stored as an `i8` into an `i3` slot: `x != -2` held for `x: i3 = -2`, and returning
+    // a `u3` parameter as a `u8` was refused by LLVM.
+    const src =
+        \\S :: struct { a: u3, b: u8 }
+        \\#packed
+        \\Pk :: struct { lo: u3, mid: i3, hi: u2 }
+        \\G: i3 = -3;
+        \\widen :: fn(v: u3) -> u8 { return v; }
+        \\main :: fn() -> i32 {
+        \\    x: i3 = -2;
+        \\    if x != -2 { return 1; }
+        \\    y: i8 = x;
+        \\    if y != -2 { return 2; }
+        \\    u: u3 = 5;
+        \\    z: u8 = u + 1;
+        \\    if z != 6 || widen(5) != 5 { return 3; }
+        \\    s: S = .{ 6, 1 };
+        \\    arr: [2]u3 = .{ 7, 2 };
+        \\    if s.a != 6 || arr[0] != 7 || G != -3 { return 4; }
+        \\    pk: Pk = .{ 5, -2, 3 };
+        \\    m := pk.mid;
+        \\    if m != -2 || pk.lo != 5 || pk.hi != 3 || core::sizeof(Pk) != 1 { return 5; }
+        \\    w: u3 = 3;
+        \\    w = w + 2;
+        \\    if w != 5 || core::sizeof(u3) != 1 || core::sizeof(S) != 2 { return 6; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_sub_byte", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_sub_byte_o2", 2, true));
+}
+
 test "exe: sizeof on pointer types returns pointer width" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4533,7 +4572,8 @@ test "exe: a #packed struct with sub-byte fields is laid out bit by bit" {
     // Each integer takes its width from where the last field ended, a byte-sized one too;
     // a field that is no integer is whole bytes at a whole byte. Reads and writes keep the
     // neighbouring bits, a signed field reads back negative, and a literal, a static, a
-    // #run result, an array element and a nested field all hold the same bits.
+    // #run result, an array element and a nested field all hold the same bits. Outside a #packed
+    // struct a `u3` is a whole byte, which its value sets: no padding.
     const src =
         \\#packed
         \\ControlReg :: struct { enable: u1, mode: u3, reserved: u3, flag: u1 }
@@ -4584,7 +4624,7 @@ test "exe: a #packed struct with sub-byte fields is laid out bit by bit" {
         \\    b: ControlReg = .{ 1, 2, 3, 0 };
         \\    if a != b { return 16; }
         \\    if R.mode != 6 || R.flag != 1 { return 17; }
-        \\    if !core::has_padding(u3) || core::has_padding(ControlReg) || core::has_padding(Straddle) || !core::has_padding(Odd) { return 18; }
+        \\    if core::has_padding(u3) || core::has_padding(ControlReg) || core::has_padding(Straddle) || !core::has_padding(Odd) { return 18; }
         \\    return 42;
         \\}
     ;
