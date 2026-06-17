@@ -38,6 +38,8 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
 
 ### Fixed
 
+- `for &x in arr` over an array writes into the array. The loop went through a copy of it,
+  and the writes were lost; over a slice (`arr[:]`) it was right.
 - A `byte` takes one byte, as a `u8` does. In an array or a struct it was laid out like a
   pointer, 8 bytes, so `[4]byte` took 32; `core::sizeof(byte)` said 8, or was no constant in
   `#assert`.
