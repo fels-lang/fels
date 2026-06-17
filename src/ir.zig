@@ -2814,10 +2814,18 @@ const FunctionLowerer = struct {
         const iter_name = try std.fmt.allocPrint(self.allocator, "__for_iter_{d}", .{suffix});
         const index_name = try std.fmt.allocPrint(self.allocator, "__for_index_{d}", .{suffix});
 
-        try self.emitNoResult(iter_ty, .{ .store_local = .{
-            .name = iter_name,
-            .value = try self.lowerExpr(for_stmt.iter),
-        } });
+        // `for &x in arr` over an array goes through a slice of the array where it is, as
+        // `arr[:]` does: a copy of the array in the loop's own local took the writes.
+        const in_place = for_stmt.by_ref and iter_ty == .array;
+        const iter_local_ty: IrType = if (in_place) .{ .slice = try boxType(self.allocator, elem_ty) } else iter_ty;
+        const iter_value: Value = if (in_place)
+            try self.emit(iter_local_ty, .{ .slice_expr = .{
+                .ptr = try self.lowerLValueAddress(for_stmt.iter),
+                .len = .{ .imm = .{ .uint = iter_ty.array.len } },
+            } })
+        else
+            try self.lowerExpr(for_stmt.iter);
+        try self.emitNoResult(iter_local_ty, .{ .store_local = .{ .name = iter_name, .value = iter_value } });
         try self.emitNoResult(.usize, .{ .store_local = .{
             .name = index_name,
             .value = .{ .imm = .{ .uint = 0 } },
