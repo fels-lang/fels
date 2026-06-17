@@ -275,6 +275,28 @@ test "#run: taking the address of a scalar local folds on the VM" {
     try std.testing.expect(r1 and r2);
 }
 
+test "#run: for &x over an array writes into the array on the VM" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\P :: struct { x: i32 }
+        \\fill :: fn() -> i32 {
+        \\    arr: [3]i32 = .{ 1, 2, 3 };
+        \\    for &x in arr { *x = 10; }
+        \\    ps: [2]P = .{ .{ 1 }, .{ 2 } };
+        \\    for &p, i in ps { p.x = 7 + i as i32; }
+        \\    return arr[0] + arr[1] + arr[2] + ps[0].x + ps[1].x;
+        \\}
+        \\R :: #run fill();    // 30 + 7 + 8
+    ;
+    var fe = try fels.compile(arena.allocator(), "for_ref_ct.fels", src);
+    defer fe.deinit(arena.allocator());
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
+    try expectGlobalInt(m, "R", 45);
+}
+
 test "#run: a struct, array or enum result becomes the data of a global" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -2382,6 +2382,36 @@ test "exe: bytes sit one byte apart in an array and a struct" {
     try std.testing.expectEqual(@as(u32, 114), code);
 }
 
+test "exe: for &x over an array writes into the array, wherever it is" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // A local array, an array of structs with an index, an array field through a pointer, a
+    // global, and a call's result (a temporary: its writes are the loop's own). The loop wrote
+    // into a copy of the array, and only a slice was changed in place.
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct { x: i32 }
+        \\H :: struct { vals: [3]i32 }
+        \\G: [2]i32 = .{ 5, 6 };
+        \\make :: fn() -> [2]i32 { return .{ 1, 2 }; }
+        \\main :: fn() -> i32 {
+        \\    arr: [3]i32 = .{ 1, 2, 3 };
+        \\    for &x in arr { *x = 10; }
+        \\    ps: [2]P = .{ .{ 1 }, .{ 2 } };
+        \\    for &p, i in ps { p.x = 7 + i as i32; }
+        \\    h: H = .{ .{ 0, 0, 0 } };
+        \\    hp := &h;
+        \\    for &v in hp.vals { *v = 4; }
+        \\    for &g in G { *g += 1; }
+        \\    sum := 0;
+        \\    for &t in make() { *t += 100; sum += *t; }
+        \\    return arr[0] + arr[2] + ps[0].x + ps[1].x + h.vals[1] + G[0] + G[1] + (sum - 203);
+        \\}
+    , "exe_for_ref_array");
+    try std.testing.expectEqual(@as(u32, 52), code);
+}
+
 test "exe: sizeof on pointer types returns pointer width" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
