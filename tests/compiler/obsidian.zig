@@ -13,8 +13,8 @@ const files = [_][]const u8{
 
 test "obsidian: the encoder writes what llvm-mc writes" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
-    // (the comptime VM cannot run them: a pointer to a struct field that is a struct, as a Vec
-    // in Code is, reads out of bounds there)
+    // (not on the comptime VM: a Vec of structs, as `Code` keeps its jumps in, fails there with
+    // TypeMismatch)
     const project = ".zig-cache/obsidian_tests";
     std.Io.Dir.cwd().createDirPath(io, project) catch {};
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
