@@ -616,3 +616,151 @@ test "fels test: natively, a crash and t.fatal end only their own test" {
     try expectHas(r.text, "  \u{2713} first\n  \u{2717} out_of_bounds: panic: index out of bounds");
     try expectHas(r.text, "  \u{2717} gives_up: no config file\n  \u{2713} last\n");
 }
+
+// A struct-valued field points at a block of its own on the comptime VM. Its address was the
+// field's cell, one level too high: reading through `&o.inner` ran past `o`, and a method of
+// the field (`c.bytes.push`, whose receiver is `&c.bytes`) failed with OutOfBounds.
+const nested_field_source =
+    \\#import std.heap as heap;
+    \\#import std.vec as vec;
+    \\#import std.vec.{ Vec };
+    \\
+    \\Inner :: struct { a: u32, b: u32 }
+    \\Outer :: struct { x: u32, inner: Inner }
+    \\Named :: struct { name: []const u8, inner: Inner }
+    \\Buf :: struct { n: u32, bytes: Vec(u8) }
+    \\
+    \\get_b :: fn(p: *Inner) -> u32 { return p.b; }
+    \\set_b :: fn(p: *Inner, v: u32) { p.b = v; }
+    \\put :: fn(p: *Inner, v: Inner) { *p = v; }
+    \\
+    \\#test
+    \\a_pointer_to_a_nested_struct :: fn(t: *Test) {
+    \\    o: Outer = .{ .x = 1, .inner = .{ .a = 2, .b = 3 } };
+    \\    p := &o.inner;
+    \\    t.eq(p.b, 3u32);
+    \\    p.a = 4u32;
+    \\    o.inner.b = 5u32;
+    \\    t.eq(o.inner.a, 4u32);
+    \\    t.eq(p.b, 5u32);
+    \\    t.eq(o.x, 1u32);
+    \\}
+    \\
+    \\#test
+    \\after_a_slice_field :: fn(t: *Test) {
+    \\    n: Named = .{ .name = "nine", .inner = .{ .a = 2, .b = 3 } };
+    \\    set_b(&n.inner, 9u32);
+    \\    t.eq(get_b(&n.inner), 9u32);
+    \\    t.eq(n.name.len, 4usize);
+    \\}
+    \\
+    \\#test
+    \\a_whole_struct_through_the_pointer :: fn(t: *Test) {
+    \\    o: Outer = .{ .x = 1, .inner = .{ .a = 2, .b = 3 } };
+    \\    put(&o.inner, .{ .a = 7, .b = 8 });
+    \\    t.eq(o.inner.a, 7u32);
+    \\    t.eq(o.inner.b, 8u32);
+    \\    o.inner = .{ .a = 5, .b = 6 };
+    \\    t.eq(o.inner.b, 6u32);
+    \\    t.eq(o.x, 1u32);
+    \\}
+    \\
+    \\#test
+    \\methods_of_a_vec_field :: fn(t: *Test) {
+    \\    h := heap::make();
+    \\    c: Buf = .{ .n = 0, .bytes = vec::make(u8, &h) };
+    \\    c.bytes.push(1u8);
+    \\    c.bytes.push(2u8);
+    \\    t.eq(c.bytes.len(), 2usize);
+    \\    t.expect(c.bytes.cap() >= 2usize);
+    \\    t.eq(c.bytes.get(1usize), 2u8);
+    \\    h.deinit();
+    \\}
+    \\
+;
+
+test "fels test: on the comptime VM, a pointer to a struct-valued field reads and writes the field" {
+    const dir = ".zig-cache/tc_nested_field_ptr";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/main.fels", nested_field_source);
+    const vm = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(vm.text);
+    try expectHas(vm.text, "  \u{2713} a_pointer_to_a_nested_struct\n  \u{2713} after_a_slice_field\n");
+    try expectHas(vm.text, "  \u{2713} a_whole_struct_through_the_pointer\n  \u{2713} methods_of_a_vec_field\n");
+    try std.testing.expectEqual(@as(u32, 4), vm.summary.passed);
+    try std.testing.expect(vm.summary.ok());
+    if (comptime !fels.llvm_enabled) return;
+    if (comptime builtin.os.tag != .windows) return;
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try std.testing.expectEqual(@as(u32, 4), native.summary.passed);
+    try std.testing.expect(native.summary.ok());
+}
+
+// The same for an array field, an element that is a struct, and an enum field: each is a block
+// of its own, which its address is, except where a slice starts.
+const aggregate_element_source =
+    \\Inner :: struct { a: u32, b: u32 }
+    \\Kind :: enum { red, green, blue }
+    \\Tagged :: struct { n: u32, k: Kind }
+    \\Table :: struct { n: u32, vals: [3]u32, items: [2]Inner }
+    \\
+    \\set_b :: fn(p: *Inner, v: u32) { p.b = v; }
+    \\put :: fn(p: *Inner, v: Inner) { *p = v; }
+    \\second :: fn(t: *Table) -> u32 { return t.vals[1]; }
+    \\paint :: fn(k: *Kind) { *k = .blue; }
+    \\
+    \\#test
+    \\an_array_field_through_a_pointer :: fn(t: *Test) {
+    \\    tb: Table = .{ .n = 1, .vals = .{ 4, 5, 6 }, .items = .{ .{ .a = 1, .b = 2 }, .{ .a = 3, .b = 4 } } };
+    \\    t.eq(second(&tb), 5u32);
+    \\    s := tb.vals[1..3];
+    \\    t.eq(s[1], 6u32);
+    \\    p := &tb;
+    \\    p.items[1].b = 40u32;
+    \\    t.eq(tb.items[1].b, 40u32);
+    \\    t.eq(tb.n, 1u32);
+    \\}
+    \\
+    \\#test
+    \\a_pointer_to_an_element :: fn(t: *Test) {
+    \\    arr: [2]Inner = .{ .{ .a = 1, .b = 2 }, .{ .a = 3, .b = 4 } };
+    \\    set_b(&arr[0], 9u32);
+    \\    put(&arr[1], .{ .a = 7, .b = 8 });
+    \\    t.eq(arr[0].b, 9u32);
+    \\    t.eq(arr[1].a, 7u32);
+    \\    s := arr[1..];
+    \\    t.eq(s[0].b, 8u32);
+    \\}
+    \\
+    \\#test
+    \\a_pointer_to_an_enum_field :: fn(t: *Test) {
+    \\    g: Tagged = .{ .n = 1, .k = .green };
+    \\    paint(&g.k);
+    \\    t.expect(g.k == .blue);
+    \\    k: Kind = .red;
+    \\    paint(&k);
+    \\    t.expect(k == .blue);
+    \\}
+    \\
+;
+
+test "fels test: on the comptime VM, a pointer to an array field, a struct element or an enum field" {
+    const dir = ".zig-cache/tc_aggregate_element_ptr";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/main.fels", aggregate_element_source);
+    const vm = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(vm.text);
+    try expectHas(vm.text, "  \u{2713} an_array_field_through_a_pointer\n  \u{2713} a_pointer_to_an_element\n");
+    try expectHas(vm.text, "  \u{2713} a_pointer_to_an_enum_field\n");
+    try std.testing.expectEqual(@as(u32, 3), vm.summary.passed);
+    try std.testing.expect(vm.summary.ok());
+    if (comptime !fels.llvm_enabled) return;
+    if (comptime builtin.os.tag != .windows) return;
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try std.testing.expectEqual(@as(u32, 3), native.summary.passed);
+    try std.testing.expect(native.summary.ok());
+}
