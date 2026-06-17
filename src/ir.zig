@@ -1084,7 +1084,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                 for (fields) |f| {
                     try ir_fields.append(allocator, .{
                         .name = f.name,
-                        .ty = try fieldIrType(allocator, f, front_end.types, front_end.symbols),
+                        .ty = try fieldIrType(allocator, f, layout.is_packed, front_end.types, front_end.symbols),
                     });
                 }
                 try structs.append(allocator, .{
@@ -1762,17 +1762,23 @@ fn lowerStruct(allocator: std.mem.Allocator, decl: ast.TypeDecl, strukt: ast.Str
     var fields: std.ArrayList(FieldDef) = .empty;
     errdefer fields.deinit(allocator);
 
+    const is_packed = hasAttr(decl.attrs, "packed");
     for (strukt.fields) |field| {
+        // A sub-byte field of a #packed struct takes only its bits; anywhere else a whole byte.
+        const bits = sema.subByteBits(field.ty);
         try fields.append(allocator, .{
             .name = field.name,
-            .ty = try lowerAstTypeWithEnv(allocator, field.ty, types, symbols),
+            .ty = if (is_packed and bits != 0)
+                (if (field.ty.named.name[0] == 'i') IrType{ .i = bits } else IrType{ .u = bits })
+            else
+                try lowerAstTypeWithEnv(allocator, field.ty, types, symbols),
         });
     }
 
     const def: StructDef = .{
         .name = linkNameFor(symbols, decl.file_name, decl.name),
         .fields = try fields.toOwnedSlice(allocator),
-        .is_packed = hasAttr(decl.attrs, "packed"),
+        .is_packed = is_packed,
         .is_union = strukt.is_union,
         .alignment = alignAttr(decl.attrs),
     };
@@ -6825,21 +6831,10 @@ fn lowerInlineErrorSet(allocator: std.mem.Allocator, set: ast.InlineErrorSet) !I
 }
 
 fn lowerNamedType(name: []const u8) IrType {
-    // Sub-byte integers — LLVM supports arbitrary-width integers
-    if (std.mem.eql(u8, name, "u1")) return .{ .u = 1 };
-    if (std.mem.eql(u8, name, "u2")) return .{ .u = 2 };
-    if (std.mem.eql(u8, name, "u3")) return .{ .u = 3 };
-    if (std.mem.eql(u8, name, "u4")) return .{ .u = 4 };
-    if (std.mem.eql(u8, name, "u5")) return .{ .u = 5 };
-    if (std.mem.eql(u8, name, "u6")) return .{ .u = 6 };
-    if (std.mem.eql(u8, name, "u7")) return .{ .u = 7 };
-    if (std.mem.eql(u8, name, "i1")) return .{ .i = 1 };
-    if (std.mem.eql(u8, name, "i2")) return .{ .i = 2 };
-    if (std.mem.eql(u8, name, "i3")) return .{ .i = 3 };
-    if (std.mem.eql(u8, name, "i4")) return .{ .i = 4 };
-    if (std.mem.eql(u8, name, "i5")) return .{ .i = 5 };
-    if (std.mem.eql(u8, name, "i6")) return .{ .i = 6 };
-    if (std.mem.eql(u8, name, "i7")) return .{ .i = 7 };
+    // A sub-byte integer takes a whole byte, as sema reads it: only a field of a #packed
+    // struct keeps its bits (`lowerStruct`, `fieldIrType`).
+    if (name.len == 2 and (name[0] == 'u' or name[0] == 'i') and name[1] >= '1' and name[1] <= '7')
+        return if (name[0] == 'i') .{ .i = 8 } else .{ .u = 8 };
     if (std.mem.eql(u8, name, "i8")) return .{ .i = 8 };
     if (std.mem.eql(u8, name, "i16")) return .{ .i = 16 };
     if (std.mem.eql(u8, name, "i32")) return .{ .i = 32 };
@@ -8988,16 +8983,16 @@ fn structDefFromSema(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols:
     for (fields, 0..) |field, i| {
         out[i] = .{
             .name = field.name,
-            .ty = fieldIrType(allocator, field, types, symbols) catch return null,
+            .ty = fieldIrType(allocator, field, type_layout.is_packed, types, symbols) catch return null,
         };
     }
     return .{ .name = name, .fields = out, .is_packed = type_layout.is_packed, .is_union = type_layout.is_union, .alignment = type_layout.alignment };
 }
 
-/// The IR type of a struct field sema describes: a sub-byte integer at its own width (sema's
-/// `ty` for one is a `u8` or an `i8`).
-fn fieldIrType(allocator: std.mem.Allocator, field: sema.FieldInfo, types: sema.TypeEnv, symbols: sema.SymbolTable) !IrType {
-    if (field.bits != 0) return if (field.ty == .i8) IrType{ .i = field.bits } else IrType{ .u = field.bits };
+/// The IR type of a struct field sema describes: a sub-byte integer of a #packed struct at its
+/// own width (sema's `ty` for one is a `u8` or an `i8`), as `lowerStruct` lowers it.
+fn fieldIrType(allocator: std.mem.Allocator, field: sema.FieldInfo, is_packed: bool, types: sema.TypeEnv, symbols: sema.SymbolTable) !IrType {
+    if (field.bits != 0 and is_packed) return if (field.ty == .i8) IrType{ .i = field.bits } else IrType{ .u = field.bits };
     return lowerSemaTypeWithEnv(allocator, field.ty, types, symbols);
 }
 
@@ -9009,7 +9004,8 @@ fn typeHasPadding(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: se
     if (depth > 32) return null;
     return switch (ty) {
         .void, .bool, .byte, .rune, .f32, .f64, .usize, .isize, .addr, .ptr, .zone => false,
-        // A `u3` is stored in a byte, five bits of which no value sets.
+        // A sub-byte integer (only a #packed struct's field is one; anywhere else a `u3` is a
+        // whole byte) leaves bits of its byte unset.
         .i, .u => |bits| bits % 8 != 0,
         .slice, .text, .interface_value, .fn_ptr => false,
         .optional => |inner| inner.* != .ptr,
