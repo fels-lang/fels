@@ -230,6 +230,13 @@ const FnCompiler = struct {
     /// addressable; reads/writes go through the cell. (Aggregate locals already
     /// hold a cell pointer, so they're never spilled here.)
     addressed: std.StringHashMap(void),
+    /// The address of an aggregate in a field or an element (its own block, `block_at`) →
+    /// the address of the cell that points at the block. An assignment to the field or the
+    /// element sets that cell.
+    aggregate_cells: std.AutoHashMap(ir.RegId, Reg),
+    /// Element addresses a slice starts at (`slice_expr`'s pointer). A slice counts its
+    /// elements in cells of the array, so there an aggregate element stays its cell.
+    slice_starts: std.AutoHashMap(ir.RegId, void),
     next_reg: Reg = 0,
     /// Scratch registers for building static data, one per nesting depth of the value.
     scratch: std.ArrayList(Reg) = .empty,
@@ -255,6 +262,8 @@ const FnCompiler = struct {
             .name_types = std.StringHashMap(ir.IrType).init(allocator),
             .type_info_nodes = std.AutoHashMap(ir.RegId, TypeInfoNode).init(allocator),
             .addressed = std.StringHashMap(void).init(allocator),
+            .aggregate_cells = std.AutoHashMap(ir.RegId, Reg).init(allocator),
+            .slice_starts = std.AutoHashMap(ir.RegId, void).init(allocator),
         };
     }
 
@@ -267,6 +276,8 @@ const FnCompiler = struct {
         self.name_types.deinit();
         self.type_info_nodes.deinit();
         self.addressed.deinit();
+        self.aggregate_cells.deinit();
+        self.slice_starts.deinit();
         self.scratch.deinit(self.allocator);
     }
 
@@ -274,6 +285,7 @@ const FnCompiler = struct {
         try self.collectLocals();
         try self.collectTypes();
         try self.collectAddressed();
+        try self.collectSliceStarts();
         self.seedScratchBase();
         try self.emitAddressedInit();
 
@@ -350,6 +362,16 @@ const FnCompiler = struct {
                 if (isAggregate(self.typeOf(un.value))) continue;
                 try self.addressed.put(name, {});
             }
+        }
+    }
+
+    /// Find the element addresses slices start at (`slice_starts`).
+    fn collectSliceStarts(self: *FnCompiler) CompileError!void {
+        for (self.func.blocks) |block| {
+            for (block.instrs) |inst| switch (inst.kind) {
+                .slice_expr => |se| if (se.ptr == .reg) try self.slice_starts.put(se.ptr.reg, {}),
+                else => {},
+            };
         }
     }
 
@@ -1018,6 +1040,14 @@ const FnCompiler = struct {
             .field_addr => |f| {
                 const base = try self.resolveReg(f.base);
                 const idx = try self.fieldOffset(self.typeOf(f.base), f.name);
+                // A field that is an aggregate points at a block of its own, and the address of
+                // the aggregate is that block (as `&s` of a local is `s`), not the field's cell.
+                if (self.blockCells(innerType(inst.ty) orelse .unknown) != null) {
+                    const cell = self.newReg();
+                    try self.emit(Instr.r_r_imm(.field_addr, cell, base, idx));
+                    try self.emitBlockAt(target, cell);
+                    return;
+                }
                 try self.emit(Instr.r_r_imm(.field_addr, target, base, idx));
             },
 
@@ -1047,6 +1077,12 @@ const FnCompiler = struct {
                     else => inst.ty,
                 };
                 const addr = try self.lowerIndexAddr(ix.base, ix.index, self.cellCount(elem_ty));
+                // An element that is an aggregate is addressed as such a field is, except where a
+                // slice starts.
+                if (self.blockCells(elem_ty) != null and !self.slice_starts.contains(target)) {
+                    try self.emitBlockAt(target, addr);
+                    return;
+                }
                 try self.emit(Instr.r_r_imm(.copy, target, addr, 0));
             },
             .slice_expr => |se| {
@@ -1055,8 +1091,20 @@ const FnCompiler = struct {
                 try self.emit(Instr.r_r_r(.slice_make, target, ptr, len));
             },
             .store => |s| {
+                // An assignment to a field or an element that is an aggregate points its cell at
+                // the new value.
+                if (s.target == .reg) if (self.aggregate_cells.get(s.target.reg)) |cell| {
+                    const vr = try self.resolveReg(s.value);
+                    try self.emit(Instr.r_r_imm(.store_cell, cell, vr, 0));
+                    return;
+                };
                 const ptr = try self.resolveReg(s.target);
                 const vr = try self.resolveReg(s.value);
+                // A whole aggregate stored through a pointer to one is copied into its block.
+                if (self.blockCells(inst.ty)) |n| {
+                    try self.emit(Instr.r_r_imm(.copy_cells, ptr, vr, @intCast(n)));
+                    return;
+                }
                 try self.emit(Instr.r_r_imm(.store_cell, ptr, vr, 0));
             },
             .at => |a| {
@@ -1233,6 +1281,13 @@ const FnCompiler = struct {
             const vr = try self.resolveReg(arg);
             try self.emit(Instr.r_r_imm(.store_cell, target, vr, @intCast(i * stride)));
         }
+    }
+
+    /// Leave in `target` the block of the aggregate in the cell `cell` addresses, and remember
+    /// the cell for an assignment to the aggregate.
+    fn emitBlockAt(self: *FnCompiler, target: Reg, cell: Reg) CompileError!void {
+        try self.emit(Instr.r_r_imm(.block_at, target, cell, 0));
+        try self.aggregate_cells.put(target, cell);
     }
 
     /// Emit an `index_addr`, returning the register holding the element pointer.
@@ -1511,6 +1566,25 @@ const FnCompiler = struct {
     /// Number of cells a value of `ty` occupies in zone memory.
     fn cellCount(self: *FnCompiler, ty: ir.IrType) usize {
         return cellCountOf(self.module, ty);
+    }
+
+    /// Cells of the block a value of `ty` is, when it is one: a struct, an array and an enum value
+    /// each live in a block of their own, which a field or an element of their type points at.
+    /// Null for anything else, a union and an error set too (some of whose values are numbers).
+    fn blockCells(self: *FnCompiler, ty: ir.IrType) ?usize {
+        switch (ty) {
+            .array => return self.cellCount(ty),
+            .struct_type, .variant_type => |name| {
+                if (self.structDef(name)) |def| return if (def.is_union) null else def.fields.len;
+                for (self.module.variants) |v| {
+                    if (!std.mem.eql(u8, v.name, name)) continue;
+                    for (v.variants) |case| if (case.disc != null) return null;
+                    return 2; // [tag, payload]
+                }
+                return null;
+            },
+            else => return null,
+        }
     }
 };
 
