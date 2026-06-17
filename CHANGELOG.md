@@ -68,6 +68,12 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
 - When the compiler lowers a call to a name that is no function of the program (a compiler
   bug), the build stops with an internal compiler error that names the caller and the callee.
   The code generator dropped such a call, and the program went on with an undefined result.
+- On the comptime VM (`#run`, `#assert`, `fels test --comptime`), a pointer to a field that is
+  a struct, an array or an enum value (`&o.inner`), or to an element that is one (`&xs[i]`),
+  points at that value. It pointed at the cell holding it, one level too high: reading through
+  it failed with `OutOfBounds`, and so did every method called on such a field, like
+  `c.bytes.push(x)` on a `Vec` field. Storing a whole struct through a pointer (`*p = v`)
+  copies it into the struct `p` points at; for a local's address it wrote into the first field.
 
 ## 0.11.0 — 2026-10-18
 
