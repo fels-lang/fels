@@ -3184,6 +3184,16 @@ const Checker = struct {
                             return error.SemanticFailed;
                         }
                     }
+                    // A global by its name (`saved = name;`) would outlive the borrow too.
+                    if (assign.target.kind == .ident and owner.kind == .borrow) {
+                        const name = assign.target.kind.ident;
+                        const global = self.lookupLocal(name) == null and
+                            if (self.resolveSymbol(name)) |id| self.symbols.symbol(id).kind == .global_var else false;
+                        if (global) {
+                            self.emitError(assign.span, "borrowed value from `{s}` cannot be stored into the global `{s}`: it would outlive the borrow", .{ owner.name, name });
+                            return error.SemanticFailed;
+                        }
+                    }
                     // Find the variable the store ultimately mutates. Storing a
                     // zone-owned value into `list.data` makes `list` transitively
                     // hold zone memory, so `list` must not outlive that zone.
