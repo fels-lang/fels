@@ -1258,6 +1258,15 @@ test "diagnostics: a constant is not written to" {
     // allowed.
     try expectNoError(a, decls, "main :: fn() -> i32 { M := 1; M = 3; return M; }");
     try expectNoError(a, "Point :: struct { x: i32, y: i32 }\ng: Point = .{ 1, 2 };\nP :: &g;\n", "main :: fn() -> i32 { P.x = 5; return g.x; }");
+
+    // A constant of another module, reached through its name (`com::IID`): the write compiled
+    // and crashed at run time, and its address was a `*Guid`.
+    const lib = "pub Guid :: struct { data1: u32, data2: u16 }\npub IID : Guid : .{ 7, 1 };\npub take :: fn(g: *Guid) { g.data1 = 1; }\npub read :: fn(g: *const Guid) -> u32 { return g.data1; }\n";
+    const write = (try firstErrorWithLib(a, lib, "#import std.com;\nrun :: fn() -> i32 { com::IID.data1 = 5; return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, write, "`IID` is a constant") != null);
+    const addr = (try firstErrorWithLib(a, lib, "#import std.com;\nrun :: fn() -> i32 { com::take(&com::IID); return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, addr, "found `*const Guid`") != null);
+    try std.testing.expect(try firstErrorWithLib(a, lib, "#import std.com;\nrun :: fn() -> u32 { return com::IID.data1 + com::read(&com::IID); }") == null);
 }
 
 test "diagnostics: an error's payload is bound where its variant carries one" {
