@@ -38,6 +38,9 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
 
 ### Fixed
 
+- A borrowed value cannot be stored into a global by its name (`saved = name;` for a
+  `name: borrow []const u8`), as it could not be through a pointer or into a global's field: the
+  global would outlive the borrow.
 - A constant of another module, reached through its name, cannot be written either:
   `com::IID_IUnknown.data1 = 5` compiled and crashed at run time, and `&com::IID_IUnknown` was a
   `*Guid`. It is a `*const Guid` now, as the address of a constant of the file's own is.

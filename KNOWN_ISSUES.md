@@ -28,8 +28,6 @@ These compile without a message and give a wrong result.
   without an overflow panic. (In a `#packed` struct the field keeps only its bits.)
 - **A `#run { }` block inside a function runs when the program runs**, as ordinary code, not on the
   comptime VM. `#run expr` runs at compile time. Verified 2026-10-17.
-- **A borrowed value can be stored into a global** with a plain assignment (`saved = name;`),
-  though a store through a pointer is refused. Verified 2026-10-17.
 - **`[]const T` converts to `[]T` without a word**, in an assignment and as an argument.
   (`*const T` to `*T` is refused.) Verified 2026-10-17.
 
