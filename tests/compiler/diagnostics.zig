@@ -1952,6 +1952,20 @@ test "diagnostics: returning the address of a local, a parameter or a temporary 
     try expectFirstError(a, frame_prelude ++ "f :: fn() -> S { x := 5; s: S = .{ .p = &G }; s.p = &x; return s; }", &.{local});
 }
 
+test "diagnostics: the address of a local or a parameter is not stored into a global" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // These compiled, and the global pointed into a frame that was gone.
+    const globals = frame_prelude ++ "GP: *i32 = &G;\nGS: S = .{ .p = &G };\n";
+    try expectFirstError(a, globals ++ "f :: fn() { x: i32 = 5; GP = &x; }", &.{"the address of local `x` cannot be stored into the global `GP`"});
+    try expectFirstError(a, globals ++ "f :: fn(v: i32) { GS.p = &v; }", &.{"the address of parameter `v` cannot be stored into the global `GS`"});
+    try expectFirstError(a, globals ++ "f :: fn() { y: i32 = 1; q := &y; GP = q; }", &.{"the address of local `y` cannot be stored into the global `GP`"});
+    // A pointer the caller passes, the address of a global, and `main`'s own locals (its frame
+    // lasts as long as the program) may go there.
+    try expectNoError(a, globals, "f :: fn(p: *i32) { GP = p; GS.p = &G; }\nmain :: fn() -> i32 { m: i32 = 3; GP = &m; return 0; }");
+}
+
 test "diagnostics: returning an address that outlives the function is allowed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
