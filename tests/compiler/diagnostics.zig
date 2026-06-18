@@ -1195,11 +1195,16 @@ test "diagnostics: a value made from borrowed data does not outlive the borrow" 
         .{ .body = "f :: fn(p: borrow Parser) -> Parser { return p; }", .needle = "borrowed value from `p` cannot be returned" },
         .{ .body = "f :: fn(src: borrow []const u8) -> usize { p: Parser = .{ \"\", 0 }; p.src = src; return take(p); }", .needle = "borrowed value from `src` can only be passed to a `borrow` parameter" },
         .{ .body = "f :: fn(n: borrow i32) -> i32 { return n; }", .needle = "`borrow i32` borrows nothing" },
+        // A global by its name: this compiled.
+        .{ .body = "saved: []const u8 = \"\";\nf :: fn(name: borrow []const u8) { saved = name; }", .needle = "borrowed value from `name` cannot be stored into the global `saved`" },
+        .{ .body = "f :: fn(p: borrow Parser) { G = p; }", .needle = "borrowed value from `p` cannot be stored into the global `G`" },
     };
     for (cases) |case| {
         const src = try std.mem.concat(a, u8, &.{ decls, case.body, "\n" });
         try expectFirstError(a, src, &.{case.needle});
     }
+    // A local or a parameter of the function may hold it.
+    try expectNoError(a, decls, "f :: fn(src: borrow []const u8, other: borrow []const u8) -> usize { s := src; s = other; src = other; return s.len + src.len; }");
 }
 
 test "diagnostics: an atomic takes its ordering" {
