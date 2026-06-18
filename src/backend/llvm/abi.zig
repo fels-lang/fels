@@ -35,8 +35,8 @@ pub const Class = union(enum) {
     /// Passed/returned unchanged: scalars, pointers, and anything that isn't a
     /// by-value struct.
     direct,
-    /// A small aggregate (size 1/2/4/8) coerced to an integer of `bits` bits.
-    coerce: u16,
+    /// A small aggregate passed or returned as this LLVM type instead: an integer of its size.
+    coerce: llvm.LLVMTypeRef,
     /// A larger/odd aggregate passed via a pointer (byval arg / sret return).
     indirect,
 };
@@ -82,7 +82,7 @@ fn classify(cg: *ModuleCg, ty: ir.IrType) Class {
         .struct_type => |name| blk: {
             const st = cg.struct_types.get(name) orelse break :blk Class.direct;
             break :blk switch (sizeOf(cg, st)) {
-                1, 2, 4, 8 => |sz| Class{ .coerce = @intCast(sz * 8) },
+                1, 2, 4, 8 => |sz| Class{ .coerce = llvm.LLVMIntTypeInContext(cg.ctx, @intCast(sz * 8)) },
                 else => Class.indirect,
             };
         },
@@ -142,7 +142,7 @@ pub fn externFnType(cg: *ModuleCg, func: ir.IrFunction, sig: FnAbi) !llvm.LLVMTy
             // A `fn(...)` param at the C boundary is a THIN function pointer, not
             // fels's fat `{fn, env}` closure — C expects a bare pointer.
             .direct => if (p.ir_ty == .fn_ptr) ptr_ty else types.lower(cg, p.ir_ty),
-            .coerce => |bits| llvm.LLVMIntTypeInContext(cg.ctx, bits),
+            .coerce => |as| as,
             .indirect => ptr_ty,
         };
         n += 1;
@@ -150,7 +150,7 @@ pub fn externFnType(cg: *ModuleCg, func: ir.IrFunction, sig: FnAbi) !llvm.LLVMTy
 
     const ret_lty = switch (sig.ret) {
         .direct => if (func.return_ty == .fn_ptr) ptr_ty else types.lower(cg, func.return_ty),
-        .coerce => |bits| llvm.LLVMIntTypeInContext(cg.ctx, bits),
+        .coerce => |as| as,
         .indirect => llvm.LLVMVoidTypeInContext(cg.ctx),
     };
     return llvm.LLVMFunctionType(ret_lty, tys.ptr, @intCast(n), 0);
@@ -318,19 +318,16 @@ pub fn entryAlloca(cg: *ModuleCg, llvm_fn: llvm.LLVMValueRef, ty: llvm.LLVMTypeR
     return llvm.LLVMBuildAlloca(b, ty, "");
 }
 
-/// `%Struct` value → `iN` (a small aggregate passed in a register).
-pub fn structToInt(cg: *ModuleCg, llvm_fn: llvm.LLVMValueRef, val: llvm.LLVMValueRef, struct_ty: llvm.LLVMTypeRef, bits: u16) llvm.LLVMValueRef {
-    const int_ty = llvm.LLVMIntTypeInContext(cg.ctx, bits);
-    const tmp = entryAlloca(cg, llvm_fn, struct_ty);
+/// A value of type `from` read back as a `to`, through memory: a `%Struct` passed as the type
+/// it is coerced to, or a coerced return read back as its `%Struct`. The slot holds the larger
+/// of the two (a 12-byte struct is passed as a 16-byte `{ <2 x float>, float }`), aligned for
+/// both.
+pub fn reinterpret(cg: *ModuleCg, llvm_fn: llvm.LLVMValueRef, val: llvm.LLVMValueRef, from: llvm.LLVMTypeRef, to: llvm.LLVMTypeRef) llvm.LLVMValueRef {
+    const td = cg.targetData();
+    const tmp = entryAlloca(cg, llvm_fn, if (sizeOf(cg, from) >= sizeOf(cg, to)) from else to);
+    llvm.LLVMSetAlignment(tmp, @max(llvm.LLVMABIAlignmentOfType(td, from), llvm.LLVMABIAlignmentOfType(td, to)));
     _ = llvm.LLVMBuildStore(cg.builder, val, tmp);
-    return llvm.LLVMBuildLoad2(cg.builder, int_ty, tmp, "");
-}
-
-/// `iN` (a coerced return value) → `%Struct` value.
-pub fn intToStruct(cg: *ModuleCg, llvm_fn: llvm.LLVMValueRef, val: llvm.LLVMValueRef, struct_ty: llvm.LLVMTypeRef) llvm.LLVMValueRef {
-    const tmp = entryAlloca(cg, llvm_fn, struct_ty);
-    _ = llvm.LLVMBuildStore(cg.builder, val, tmp);
-    return llvm.LLVMBuildLoad2(cg.builder, struct_ty, tmp, "");
+    return llvm.LLVMBuildLoad2(cg.builder, to, tmp, "");
 }
 
 /// `%Struct` value → pointer to a fresh stack copy (a Win64 indirect argument).

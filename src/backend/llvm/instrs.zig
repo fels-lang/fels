@@ -914,7 +914,7 @@ fn lowerCallAbi(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrT
                 .imm => |imm| values.lowerImmAs(cg, imm, types.lower(cg, p.ir_ty)),
                 else => values.coerce(cg.builder, cg.ctx, resolveVal(cg, fncg, arg, .unknown), types.lower(cg, p.ir_ty)),
             },
-            .coerce => |bits| abi.structToInt(cg, fncg.llvm_fn, resolveVal(cg, fncg, arg, p.ir_ty), p.llvm_struct, bits),
+            .coerce => |as| abi.reinterpret(cg, fncg.llvm_fn, resolveVal(cg, fncg, arg, p.ir_ty), p.llvm_struct, as),
             .indirect => abi.structToPtr(cg, fncg.llvm_fn, resolveVal(cg, fncg, arg, p.ir_ty), p.llvm_struct),
         };
         ai += 1;
@@ -925,7 +925,7 @@ fn lowerCallAbi(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrT
 
     if (sig.sret) return llvm.LLVMBuildLoad2(cg.builder, sig.ret_struct, sret_slot, "");
     return switch (sig.ret) {
-        .coerce => abi.intToStruct(cg, fncg.llvm_fn, result, sig.ret_struct),
+        .coerce => |as| abi.reinterpret(cg, fncg.llvm_fn, result, as, sig.ret_struct),
         else => if (ret_ty == .void) null else result,
     };
 }
