@@ -26,9 +26,6 @@ These compile without a message and give a wrong result.
 - **A sub-byte value is not kept in its range** outside a `#packed` struct: the type checker reads
   `i1`–`i7` and `u1`–`u7` as `i8` and `u8`, so `x: i3 = -5` is accepted and a `u3` counts past 7
   without an overflow panic. (In a `#packed` struct the field keeps only its bits.)
-- **A write to a constant reached through a module name compiles**: `com::IID_IUnknown.data1 = 5;`
-  passes and crashes at run time, and `&com::IID_IUnknown` is a `*Guid`. The same write through a
-  local or an imported name is refused. Verified 2026-10-17.
 - **A `#run { }` block inside a function runs when the program runs**, as ordinary code, not on the
   comptime VM. `#run expr` runs at compile time. Verified 2026-10-17.
 - **A borrowed value can be stored into a global** with a plain assignment (`saved = name;`),

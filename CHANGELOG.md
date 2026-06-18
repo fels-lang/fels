@@ -38,6 +38,9 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
 
 ### Fixed
 
+- A constant of another module, reached through its name, cannot be written either:
+  `com::IID_IUnknown.data1 = 5` compiled and crashed at run time, and `&com::IID_IUnknown` was a
+  `*Guid`. It is a `*const Guid` now, as the address of a constant of the file's own is.
 - A sub-byte integer (`u1` to `u7`, `i1` to `i7`) outside a `#packed` struct is a whole
   byte in the code generator too, as the docs and the type checker have it. A local `x: i3 = -2`
   compared unequal to `-2`, being stored as an `i8` and read back as an `i3`, and a function
