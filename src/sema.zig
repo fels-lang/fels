@@ -395,6 +395,8 @@ const FnFrame = struct {
     params: []const ast.Param,
     /// A lambda's captured variables: they live in its environment, not its frame.
     captures: []const Capture,
+    /// `main`, whose frame lasts as long as the program: an address in it may go into a global.
+    is_main: bool = false,
 };
 
 pub const ArrayTy = struct {
@@ -2171,6 +2173,53 @@ const Checker = struct {
         };
     }
 
+    /// The global variable a place is part of: the global itself, a field of it, or an element of
+    /// an array it holds. Not what a pointer in it points at, which may be anywhere.
+    fn globalPlaceRoot(self: *Checker, place: ast.Expr) ?[]const u8 {
+        return switch (place.kind) {
+            .ident => |name| blk: {
+                if (self.lookupLocal(name) != null) break :blk null;
+                const id = self.resolveSymbol(name) orelse break :blk null;
+                break :blk if (self.symbols.symbol(id).kind == .global_var) name else null;
+            },
+            .scope_access => |sa| blk: {
+                const id = self.resolveScopeAccessSymbol(sa) orelse break :blk null;
+                break :blk if (self.symbols.symbol(id).kind == .global_var) sa.member else null;
+            },
+            .field => |field| switch (self.checkedType(field.base.*) orelse return null) {
+                .named, .array => self.globalPlaceRoot(field.base.*),
+                else => null,
+            },
+            .index => |index| switch (self.checkedType(index.base.*) orelse return null) {
+                .array => self.globalPlaceRoot(index.base.*),
+                else => null,
+            },
+            else => null,
+        };
+    }
+
+    /// An address in this function's frame stored into a global: it dangles once the function
+    /// returns. `main`'s frame lasts as long as the program, so its addresses may go there.
+    fn rejectFrameAddressInGlobal(self: *Checker, value: ast.Expr, target: FrameAddress, global: []const u8) SemanticError!void {
+        if (self.current_frame) |frame| if (frame.is_main) return;
+        const help = "the function's frame is gone once it returns; give the global memory of its own (an allocator, a zone, another global)";
+        switch (target.kind) {
+            .local => self.emitErrorRich(value.span, "the address of local `{s}` cannot be stored into the global `{s}`", .{ target.name, global }, .{
+                .primary_label = std.fmt.allocPrint(self.allocator, "points at `{s}`, which lives in this function's frame", .{target.name}) catch null,
+                .help = help,
+            }),
+            .param => self.emitErrorRich(value.span, "the address of parameter `{s}` cannot be stored into the global `{s}`", .{ target.name, global }, .{
+                .primary_label = std.fmt.allocPrint(self.allocator, "points at `{s}`, a copy in this function's frame", .{target.name}) catch null,
+                .help = help,
+            }),
+            .temporary => self.emitErrorRich(value.span, "the address of a temporary cannot be stored into the global `{s}`", .{global}, .{
+                .primary_label = "points at a value that lives in this function's frame",
+                .help = help,
+            }),
+        }
+        return error.SemanticFailed;
+    }
+
     fn rejectBorrowOutsideParam(self: *Checker, ty: Ty, span: Span) SemanticError!void {
         if (!containsBorrow(ty)) return;
         self.emitError(span, "`borrow` is only valid as the outer qualifier of a function parameter", .{});
@@ -3009,7 +3058,7 @@ const Checker = struct {
         }
         const saved_frame = self.current_frame;
         defer self.current_frame = saved_frame;
-        self.current_frame = .{ .scope_index = self.scope_stack.items.len - 1, .params = decl.params, .captures = captures };
+        self.current_frame = .{ .scope_index = self.scope_stack.items.len - 1, .params = decl.params, .captures = captures, .is_main = std.mem.eql(u8, decl.name, "main") };
 
         // A `where { … }` clause is comptime code (inspects `type_info(T)`, may
         // `reject`, and may compute output type params). Checked with the type
@@ -3223,6 +3272,8 @@ const Checker = struct {
                 // aggregate; a store through a pointer reaches memory outside the frame.
                 if (assign.op == .assign) {
                     const target = self.pointerTarget(assign.value);
+                    if (target) |t| if (self.globalPlaceRoot(assign.target)) |global|
+                        try self.rejectFrameAddressInGlobal(assign.value, t, global);
                     if (assign.target.kind == .ident) {
                         try self.setLocalFramePtr(assign.target.kind.ident, target);
                     } else if (target != null) if (self.addressTarget(assign.target)) |stored_in| {
