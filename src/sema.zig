@@ -7074,6 +7074,11 @@ const Checker = struct {
                 const id = self.resolveSymbol(name) orelse break :blk null;
                 break :blk if (self.symbols.symbol(id).kind == .const_symbol) name else null;
             },
+            // A constant of another module (`com::IID_IUnknown`).
+            .scope_access => |sa| blk: {
+                const id = self.resolveScopeAccessSymbol(sa) orelse break :blk null;
+                break :blk if (self.symbols.symbol(id).kind == .const_symbol) sa.member else null;
+            },
             .field => |f| blk: {
                 const base_ty = self.inferExpr(f.base.*) catch break :blk null;
                 break :blk if (isPointerTy(base_ty)) null else self.constantRoot(f.base.*);
