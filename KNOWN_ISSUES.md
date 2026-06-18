@@ -10,10 +10,10 @@ session found it and it was not re-checked.
 These compile without a message and give a wrong result.
 
 - **A dangling pointer the frame check does not see.** Returning the address of a local, a
-  parameter or a temporary is an error, but these are not checked yet: a slice of a local array
-  (`return buf[:]`, which a function that `#run` calls uses to return bytes), an address passed
-  back through a call (`return id(&x);`), and an address stored into a global or through a pointer
-  (`G = &x;`). Verified 2026-10-17. The slice is left unchecked on purpose: a function that a
+  parameter or a temporary is an error, and so is storing one into a global (outside `main`), but
+  these are not checked yet: a slice of a local array (`return buf[:]`, which a function that
+  `#run` calls uses to return bytes, or `S = buf[:]`), an address passed back through a call
+  (`return id(&x);`), and an address stored through a pointer (`*pp = &x;`). Verified 2026-10-19. The slice is left unchecked on purpose: a function that a
   `#run` calls returns the bytes it built that way, and telling those calls from run-time ones
   is not done yet.
 

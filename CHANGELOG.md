@@ -38,6 +38,9 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
 
 ### Fixed
 
+- The address of a local or a parameter cannot be stored into a global (`G = &x;`,
+  `H.p = &v;`), as it cannot be returned: the global pointed into a frame that was gone. `main`
+  may store its own locals' addresses there, as its frame lasts as long as the program.
 - A borrowed value cannot be stored into a global by its name (`saved = name;` for a
   `name: borrow []const u8`), as it could not be through a pointer or into a global's field: the
   global would outlive the borrow.
