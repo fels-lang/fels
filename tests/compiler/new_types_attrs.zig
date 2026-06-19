@@ -440,6 +440,7 @@ test "C ABI: #extern declarations lower by-value aggregates per Win64" {
 
     var backend = fels.LlvmBackend.init(arena.allocator(), "raylib_abi");
     defer backend.deinit();
+    backend.setTarget(.windows); // (a Linux target follows System V: the test after these)
     try backend.lower(m);
     const llvm_ir = try backend.getIrText(arena.allocator());
 
@@ -469,6 +470,7 @@ test "C ABI: call sites coerce by-value struct arguments and sret returns" {
 
     var backend = fels.LlvmBackend.init(arena.allocator(), "raylib_abi_calls");
     defer backend.deinit();
+    backend.setTarget(.windows); // (a Linux target follows System V: the test after these)
     try backend.lower(m);
     const llvm_ir = try backend.getIrText(arena.allocator());
 
@@ -482,6 +484,37 @@ test "C ABI: call sites coerce by-value struct arguments and sret returns" {
             return err;
         };
     }
+}
+
+test "C ABI: #extern declarations and calls lower by-value aggregates per System V on Linux" {
+    if (comptime !fels.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var fe = try fels.compile(arena.allocator(), "raylib_abi.fels", raylib_abi_src);
+    defer fe.deinit(arena.allocator());
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+
+    var backend = fels.LlvmBackend.init(arena.allocator(), "raylib_abi_sysv");
+    defer backend.deinit();
+    backend.setTarget(.linux);
+    try backend.lower(m);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    inline for (.{
+        "@ClearBackground(i32", // Color (4 bytes of integers) → i32
+        "@DrawCircleV(<2 x float>, float, i32", // Vector2 → one XMM register as <2 x float>
+        "@DrawRectangleRec({ <2 x float>, <2 x float> }", // Rectangle (16) → two XMM registers
+        "{ <2 x float>, <2 x float> } @GetCollisionRec(", // and returned in xmm0 and xmm1
+    }) |needle| {
+        std.testing.expect(std.mem.indexOf(u8, llvm_ir, needle) != null) catch |err| {
+            std.debug.print("missing expected System V fragment: {s}\n", .{needle});
+            return err;
+        };
+    }
+    // Nothing of these 16 bytes goes through memory.
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "sret(%Rectangle)") == null);
 }
 
 // C binding generator (`fels bindgen`, libclang)
