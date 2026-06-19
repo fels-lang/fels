@@ -30,6 +30,13 @@ fn compileAndRunAt(allocator: std.mem.Allocator, src: []const u8, label: []const
 /// `compileAndRunAt`, with the runtime safety checks or without them (`--unchecked`). The
 /// program is built for the host: a Windows exe, or a static Linux ELF.
 fn compileAndRunChecked(allocator: std.mem.Allocator, src: []const u8, label: []const u8, opt_level: u2, safety: bool) !u32 {
+    const lib_path = fels.windows_sdk_lib_path;
+    return compileAndRunLinked(allocator, src, label, opt_level, safety, if (lib_path.len > 0) &.{lib_path} else &.{});
+}
+
+/// `compileAndRunChecked`, linked with the libraries in `lib_paths` (an `#extern("name", …)`
+/// library is `-lname` on Linux).
+fn compileAndRunLinked(allocator: std.mem.Allocator, src: []const u8, label: []const u8, opt_level: u2, safety: bool, lib_paths: []const []const u8) !u32 {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime !host_runs) return error.SkipZigTest;
 
@@ -43,8 +50,6 @@ fn compileAndRunChecked(allocator: std.mem.Allocator, src: []const u8, label: []
     const obj_path_z = try allocator.dupeZ(u8, obj_path);
     defer allocator.free(obj_path_z);
 
-    const lib_path = fels.windows_sdk_lib_path;
-    const lib_paths: []const []const u8 = if (lib_path.len > 0) &.{lib_path} else &.{};
     try fels.compileWithLlvm(allocator, io, .{
         .file_name = label,
         .source = src,
@@ -2449,6 +2454,106 @@ test "exe: a sub-byte integer outside a #packed struct is a whole byte, and comp
     ;
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_sub_byte", 0, true));
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_sub_byte_o2", 2, true));
+}
+
+const sysv_c_source =
+    \\typedef struct { float x, y; } V2;
+    \\typedef struct { double a, b; } D2;
+    \\typedef struct { double d; int i; } DI;
+    \\typedef struct { float x, y, z; } V3;
+    \\typedef struct { unsigned char r, g, b, a; } Color;
+    \\typedef struct { long long a, b, c; } Big;
+    \\typedef struct { int i; float f; } IF;
+    \\
+    \\float v2_sum(V2 v) { return v.x + v.y; }
+    \\V2 v2_scale(V2 v, float k) { V2 r = { v.x * k, v.y * k }; return r; }
+    \\double d2_sum(D2 v) { return v.a + v.b; }
+    \\D2 d2_swap(D2 v) { D2 r = { v.b, v.a }; return r; }
+    \\double di_sum(DI v) { return v.d + v.i; }
+    \\DI di_make(double d, int i) { DI r = { d, i }; return r; }
+    \\float v3_sum(V3 v) { return v.x + v.y + v.z; }
+    \\V3 v3_make(float x, float y, float z) { V3 r = { x, y, z }; return r; }
+    \\int color_sum(Color c) { return c.r + c.g + c.b + c.a; }
+    \\long long big_sum(Big b) { return b.a + b.b + b.c; }
+    \\Big big_make(long long a) { Big r = { a, a * 2, a * 3 }; return r; }
+    \\float if_sum(IF v) { return v.i + v.f; }
+    \\/* many arguments: the struct after the registers run out */
+    \\double many(double a, double b, double c, double d, double e, double f, double g, V2 v, D2 w) {
+    \\    return a + b + c + d + e + f + g + v.x + v.y + w.a + w.b;
+    \\}
+;
+
+const sysv_fels_source =
+    \\V2 :: struct { x: f32, y: f32 }
+    \\D2 :: struct { a: f64, b: f64 }
+    \\DI :: struct { d: f64, i: i32 }
+    \\V3 :: struct { x: f32, y: f32, z: f32 }
+    \\Color :: struct { r: u8, g: u8, b: u8, a: u8 }
+    \\Big :: struct { a: i64, b: i64, c: i64 }
+    \\IF :: struct { i: i32, f: f32 }
+    \\#extern("felsabi", "v2_sum") v2_sum :: fn(v: V2) -> f32;
+    \\#extern("felsabi", "v2_scale") v2_scale :: fn(v: V2, k: f32) -> V2;
+    \\#extern("felsabi", "d2_sum") d2_sum :: fn(v: D2) -> f64;
+    \\#extern("felsabi", "d2_swap") d2_swap :: fn(v: D2) -> D2;
+    \\#extern("felsabi", "di_sum") di_sum :: fn(v: DI) -> f64;
+    \\#extern("felsabi", "di_make") di_make :: fn(d: f64, i: i32) -> DI;
+    \\#extern("felsabi", "v3_sum") v3_sum :: fn(v: V3) -> f32;
+    \\#extern("felsabi", "v3_make") v3_make :: fn(x: f32, y: f32, z: f32) -> V3;
+    \\#extern("felsabi", "color_sum") color_sum :: fn(c: Color) -> i32;
+    \\#extern("felsabi", "big_sum") big_sum :: fn(b: Big) -> i64;
+    \\#extern("felsabi", "big_make") big_make :: fn(a: i64) -> Big;
+    \\#extern("felsabi", "if_sum") if_sum :: fn(v: IF) -> f32;
+    \\#extern("felsabi", "many") many :: fn(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, v: V2, w: D2) -> f64;
+    \\main :: fn() -> i32 {
+    \\    if v2_sum(.{ 1.5, 2.25 }) != 3.75 { return 1; }
+    \\    s := v2_scale(.{ 1.0, 2.0 }, 3.0);
+    \\    if s.x != 3.0 || s.y != 6.0 { return 2; }
+    \\    if d2_sum(.{ 1.25, 2.5 }) != 3.75 { return 3; }
+    \\    w := d2_swap(.{ 1.0, 2.0 });
+    \\    if w.a != 2.0 || w.b != 1.0 { return 4; }
+    \\    if di_sum(.{ 1.5, 2 }) != 3.5 { return 5; }
+    \\    m := di_make(2.5, 7);
+    \\    if m.d != 2.5 || m.i != 7 { return 6; }
+    \\    if v3_sum(.{ 1.0, 2.0, 3.5 }) != 6.5 { return 7; }
+    \\    t := v3_make(1.0, 2.0, 3.0);
+    \\    if t.x != 1.0 || t.y != 2.0 || t.z != 3.0 { return 8; }
+    \\    if color_sum(.{ 1, 2, 3, 4 }) != 10 { return 9; }
+    \\    if big_sum(.{ 1, 2, 3 }) != 6 { return 10; }
+    \\    b := big_make(5);
+    \\    if b.a != 5 || b.b != 10 || b.c != 15 { return 11; }
+    \\    if if_sum(.{ 2, 0.5 }) != 2.5 { return 12; }
+    \\    if many(1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, .{ 0.5, 0.25 }, .{ 2.0, 4.0 }) != 13.75 { return 13; }
+    \\    return 42;
+    \\}
+;
+
+test "exe: structs passed to and returned from C follow System V on Linux" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+
+    // The C side, compiled by the LLVM's own clang into `libfelsabi.a`. Structs went by the Win64
+    // rules: a `{ f32, f32 }` as an `i64`, where System V wants one XMM register, a `{ f64, f64 }`
+    // by reference, where it wants two.
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ".zig-cache/felsabi.c", .data = sysv_c_source });
+    const tools = [_][]const []const u8{
+        &.{ fels.llvm_path ++ "/bin/clang", "-c", "-O1", "-fno-pic", "-ffreestanding", "-fno-stack-protector", "-o", ".zig-cache/felsabi.o", ".zig-cache/felsabi.c" },
+        &.{ fels.llvm_path ++ "/bin/llvm-ar", "rcs", ".zig-cache/libfelsabi.a", ".zig-cache/felsabi.o" },
+    };
+    for (tools) |argv| {
+        var tool = std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .inherit, .stderr = .inherit }) catch return error.SkipZigTest; // this LLVM has no clang
+        switch (try tool.wait(io)) {
+            .exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
+            else => return error.CompileFailed,
+        }
+    }
+    for ([_]u2{ 0, 2 }) |opt| {
+        const label = try std.fmt.allocPrint(a, "exe_sysv_abi_o{d}", .{opt});
+        try std.testing.expectEqual(@as(u32, 42), try compileAndRunLinked(a, sysv_fels_source, label, opt, true, &.{".zig-cache"}));
+    }
 }
 
 test "exe: sizeof on pointer types returns pointer width" {
