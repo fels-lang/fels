@@ -1,5 +1,5 @@
-//! Win64 (x86_64-pc-windows-msvc) C ABI for passing/returning by-value
-//! aggregates across the `#extern`/`#foreign` boundary.
+//! The C ABI for passing/returning by-value aggregates across the `#extern`/`#foreign`
+//! boundary: Win64 (x86_64-pc-windows-msvc) for Windows targets, System V for Linux ones.
 //!
 //! Fels's own calls pass structs as first-class LLVM aggregate values, which is
 //! self-consistent for Fels↔Fels code. But the platform C ABI is *not* what LLVM
@@ -18,6 +18,13 @@
 //! `float`/`double` scalar args do), so coercing a `{f32,f32}` to `i64` is
 //! correct — that is precisely how `Vector2` reaches `DrawCircleV`.
 //!
+//! System V (Linux) looks at the fields. An aggregate of more than 16 bytes, or with a field
+//! off its alignment, goes in memory (`byval` / `sret`, as Win64's indirect ones). A smaller one
+//! is split into eightbytes, each passed in an integer register when anything in it is no
+//! float, in an SSE register otherwise: `{f32, f32}` is one `<2 x float>` in an XMM register,
+//! `{f64, f64}` two doubles in two, `{f64, i32}` a double and an integer. Two eightbytes are
+//! passed as a two-field struct, which LLVM splits into the two registers.
+//!
 //! Scope: this applies only to functions with `extern_name` set (pure external
 //! declarations, never defined here) and to their call sites. Fels↔Fels calls and
 //! Fels's internal aggregates (slices, optionals, fallibles, interfaces) are
@@ -35,7 +42,9 @@ pub const Class = union(enum) {
     /// Passed/returned unchanged: scalars, pointers, and anything that isn't a
     /// by-value struct.
     direct,
-    /// A small aggregate passed or returned as this LLVM type instead: an integer of its size.
+    /// A small aggregate passed or returned as this LLVM type instead: an integer of its size
+    /// on Win64; on System V an integer, a `double`, a `float`, a `<2 x float>`, or a struct
+    /// of two of those (one per eightbyte).
     coerce: llvm.LLVMTypeRef,
     /// A larger/odd aggregate passed via a pointer (byval arg / sret return).
     indirect,
@@ -81,6 +90,7 @@ fn classify(cg: *ModuleCg, ty: ir.IrType) Class {
     return switch (ty) {
         .struct_type => |name| blk: {
             const st = cg.struct_types.get(name) orelse break :blk Class.direct;
+            if (cg.target_os != .windows) break :blk classifySysV(cg, st);
             break :blk switch (sizeOf(cg, st)) {
                 1, 2, 4, 8 => |sz| Class{ .coerce = llvm.LLVMIntTypeInContext(cg.ctx, @intCast(sz * 8)) },
                 else => Class.indirect,
@@ -88,6 +98,89 @@ fn classify(cg: *ModuleCg, ty: ir.IrType) Class {
         },
         else => Class.direct,
     };
+}
+
+/// What the scalars of one eightbyte of an aggregate are, for System V.
+const Eightbyte = struct {
+    /// Something in it is no float (an integer, a pointer, a bool): an integer register.
+    integer: bool = false,
+    /// A `double` in it.
+    double: bool = false,
+    /// A `float` in its first or second half.
+    float_lo: bool = false,
+    float_hi: bool = false,
+
+    fn used(self: Eightbyte) bool {
+        return self.integer or self.double or self.float_lo or self.float_hi;
+    }
+};
+
+/// The System V class of an aggregate (`st`, an LLVM struct type).
+fn classifySysV(cg: *ModuleCg, st: llvm.LLVMTypeRef) Class {
+    const size = sizeOf(cg, st);
+    if (size == 0) return .direct;
+    if (size > 16) return .indirect;
+    var eb = [2]Eightbyte{ .{}, .{} };
+    if (!scalarsSysV(cg, st, 0, &eb)) return .indirect;
+    var parts: [2]llvm.LLVMTypeRef = undefined;
+    var n: usize = 0;
+    for (eb, 0..) |e, i| {
+        if (8 * i >= size) break;
+        const bytes: u64 = @min(8, size - 8 * i);
+        parts[n] = if (e.integer or !e.used())
+            llvm.LLVMIntTypeInContext(cg.ctx, @intCast(bytes * 8))
+        else if (e.double)
+            llvm.LLVMDoubleTypeInContext(cg.ctx)
+        else if (e.float_hi)
+            llvm.LLVMVectorType(llvm.LLVMFloatTypeInContext(cg.ctx), 2)
+        else
+            llvm.LLVMFloatTypeInContext(cg.ctx);
+        n += 1;
+    }
+    if (n == 1) return .{ .coerce = parts[0] };
+    return .{ .coerce = llvm.LLVMStructTypeInContext(cg.ctx, &parts, 2, 0) };
+}
+
+/// Mark the eightbytes the scalars of `ty`, at byte `offset` of the aggregate, fall in. False
+/// when a scalar is off its alignment (a packed struct's) or of a kind System V passes in
+/// memory: the aggregate then goes there whole.
+fn scalarsSysV(cg: *ModuleCg, ty: llvm.LLVMTypeRef, offset: u64, eb: *[2]Eightbyte) bool {
+    const td = cg.targetData();
+    switch (llvm.LLVMGetTypeKind(ty)) {
+        llvm.LLVMStructTypeKind => {
+            const count = llvm.LLVMCountStructElementTypes(ty);
+            var i: c_uint = 0;
+            while (i < count) : (i += 1) {
+                const field = llvm.LLVMStructGetTypeAtIndex(ty, i);
+                const at = offset + llvm.LLVMOffsetOfElement(td, ty, i);
+                if (at % llvm.LLVMABIAlignmentOfType(td, field) != 0) return false;
+                if (!scalarsSysV(cg, field, at, eb)) return false;
+            }
+            return true;
+        },
+        llvm.LLVMArrayTypeKind => {
+            const elem = llvm.LLVMGetElementType(ty);
+            const step = sizeOf(cg, elem);
+            var i: u64 = 0;
+            while (i < llvm.LLVMGetArrayLength2(ty)) : (i += 1) {
+                if (!scalarsSysV(cg, elem, offset + i * step, eb)) return false;
+            }
+            return true;
+        },
+        llvm.LLVMFloatTypeKind => {
+            if (offset % 8 < 4) eb[offset / 8].float_lo = true else eb[offset / 8].float_hi = true;
+            return true;
+        },
+        llvm.LLVMDoubleTypeKind => {
+            eb[offset / 8].double = true;
+            return true;
+        },
+        llvm.LLVMIntegerTypeKind, llvm.LLVMPointerTypeKind => {
+            eb[offset / 8].integer = true;
+            return true;
+        },
+        else => return false,
+    }
 }
 
 fn structTypeOf(cg: *ModuleCg, ty: ir.IrType) llvm.LLVMTypeRef {
