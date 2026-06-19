@@ -384,6 +384,23 @@ fn alignOf(ptr: llvm.LLVMValueRef) c_uint {
     return 1;
 }
 
+/// The `sret`/`byval` attributes `applyAbiAttrs` gives the function, on a call of it: the
+/// optimiser reads them at the call, and so does the System V code generator, which copies a
+/// `byval` argument onto the stack. Without them `-O2` passed a 24-byte struct wrong.
+pub fn applyCallAbiAttrs(cg: *ModuleCg, call: llvm.LLVMValueRef, sig: FnAbi) void {
+    if (sig.sret) addCallTypeAttr(cg, call, 1, "sret", sig.ret_struct);
+    const base: c_uint = if (sig.sret) 2 else 1;
+    for (sig.params, 0..) |p, i| switch (p.class) {
+        .indirect => addCallTypeAttr(cg, call, base + @as(c_uint, @intCast(i)), "byval", p.llvm_struct),
+        else => {},
+    };
+}
+
+fn addCallTypeAttr(cg: *ModuleCg, call: llvm.LLVMValueRef, index: c_uint, name: []const u8, ty: llvm.LLVMTypeRef) void {
+    const kind = llvm.LLVMGetEnumAttributeKindForName(name.ptr, name.len);
+    llvm.LLVMAddCallSiteAttribute(call, index, llvm.LLVMCreateTypeAttribute(cg.ctx, kind, ty));
+}
+
 fn addTypeAttr(cg: *ModuleCg, lv: llvm.LLVMValueRef, index: c_uint, name: []const u8, ty: llvm.LLVMTypeRef) void {
     const kind = llvm.LLVMGetEnumAttributeKindForName(name.ptr, name.len);
     const attr = llvm.LLVMCreateTypeAttribute(cg.ctx, kind, ty);

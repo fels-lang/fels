@@ -922,6 +922,7 @@ fn lowerCallAbi(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrT
 
     const result = llvm.LLVMBuildCall2(cg.builder, fn_ty, lv, args.ptr, @intCast(total), "");
     abi.markCallBoolExt(cg, result, fn_ty);
+    abi.applyCallAbiAttrs(cg, result, sig);
 
     if (sig.sret) return llvm.LLVMBuildLoad2(cg.builder, sig.ret_struct, sret_slot, "");
     return switch (sig.ret) {
