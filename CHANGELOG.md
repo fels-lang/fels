@@ -38,6 +38,11 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
 
 ### Fixed
 
+- On Linux, a struct passed to or returned from a C function by value follows System V: by
+  its fields, in integer and SSE registers, and in memory past 16 bytes. It went by the Windows
+  rules: a `Vector2` (`{ f32, f32 }`) arrived as an integer where C wanted an XMM register, and a
+  `{ f64, f64 }` by reference where C wanted two registers. A call of a C function also carries
+  the `byval` and `sret` of its declaration now; at `-O2` a 24-byte struct reached C wrong.
 - The address of a local or a parameter cannot be stored into a global (`G = &x;`,
   `H.p = &v;`), as it cannot be returned: the global pointed into a frame that was gone. `main`
   may store its own locals' addresses there, as its frame lasts as long as the program.

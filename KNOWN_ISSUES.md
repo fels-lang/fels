@@ -17,12 +17,6 @@ These compile without a message and give a wrong result.
   `#run` calls returns the bytes it built that way, and telling those calls from run-time ones
   is not done yet.
 
-- **Structs passed by value to C on Linux follow the Win64 rules.** The SysV classification is not
-  built: `abi.zig` applies its Win64 `classify` on every target. A `Vector2` (`{ float, float }`)
-  goes as an `i64` where SysV wants one XMM register, and a `{ double, double }` goes by reference
-  where SysV wants two. Calling a real Linux C object under WSL gave wrong values for both; a
-  `Color` (four bytes) happens to match. Verified 2026-10-17.
-
 - **A sub-byte value is not kept in its range** outside a `#packed` struct: the type checker reads
   `i1`–`i7` and `u1`–`u7` as `i8` and `u8`, so `x: i3 = -5` is accepted and a `u3` counts past 7
   without an overflow panic. (In a `#packed` struct the field keeps only its bits.)
