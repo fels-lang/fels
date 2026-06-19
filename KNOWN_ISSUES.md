@@ -13,17 +13,21 @@ These compile without a message and give a wrong result.
   parameter or a temporary is an error, and so is storing one into a global (outside `main`), but
   these are not checked yet: a slice of a local array (`return buf[:]`, which a function that
   `#run` calls uses to return bytes, or `S = buf[:]`), an address passed back through a call
-  (`return id(&x);`), and an address stored through a pointer (`*pp = &x;`). Verified 2026-10-19. The slice is left unchecked on purpose: a function that a
-  `#run` calls returns the bytes it built that way, and telling those calls from run-time ones
-  is not done yet.
+  (`return id(&x);`), and an address stored through a pointer (`*pp = &x;`). Verified
+  2026-10-19. The slice is left unchecked on purpose: a function that a `#run` calls returns the
+  bytes it built that way, and telling those calls from run-time ones is not done yet.
 
 - **A sub-byte value is not kept in its range** outside a `#packed` struct: the type checker reads
   `i1`–`i7` and `u1`–`u7` as `i8` and `u8`, so `x: i3 = -5` is accepted and a `u3` counts past 7
   without an overflow panic. (In a `#packed` struct the field keeps only its bits.)
 - **A `#run { }` block inside a function runs when the program runs**, as ordinary code, not on the
   comptime VM. `#run expr` runs at compile time. Verified 2026-10-17.
-- **`[]const T` converts to `[]T` without a word**, in an assignment and as an argument.
-  (`*const T` to `*T` is refused.) Verified 2026-10-17.
+- **`[]const T` converts to `[]T` without a word**, in an assignment and as an argument, and a
+  write through a `[]const T` compiles (`s[0] = x` for `s: []const u8` writes). The type checker
+  has no const slice: it reads `[]const T` as `[]T`. (`*const T` to `*T` is refused.) Verified
+  2026-10-19.
+- **On the comptime VM, a copy of a struct shares its fields with the original**: after
+  `b := a; b.x = 5;`, `a.x` is 5 too. Reported 2026-10-19.
 
 ## 2. Compiler crashes and missing messages
 
@@ -94,6 +98,7 @@ These compile without a message and give a wrong result.
   run `f`"). Verified 2026-10-17.
 - The `atomic` field qualifier is not checked: a plain read or write of such a field compiles,
   and the qualifier is accepted on a local too. Verified 2026-10-17.
+- At compile time a `Vec` of structs (`std.vec`) stops with `TypeMismatch`. Reported 2026-10-19.
 - At compile time a write through `*Writer` into a `std.io.FixedBuf` stops with `OutOfBounds`, so
   `tests/fixtures/stdlib/fmt_tests.fels` runs natively only. Verified 2026-10-17.
 - A constant computed by a call or `#run` cannot be read by other compile-time code
