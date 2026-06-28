@@ -269,6 +269,37 @@ pub const ExternCall = struct {
     returns_value: bool,
 };
 
+/// How a value that is a block of cells (a struct, an array, an enum value) is copied: its cells,
+/// and in turn each block a cell holds that is part of the value (a field that is a struct, an
+/// element, a payload) rather than one it points at. Copied so, the copy shares no block with
+/// the value, as a copy of the bytes does at run time.
+pub const Shape = struct {
+    /// Cells of the block.
+    cells: u32,
+    /// Its parts: `parts[first..][0..len]` of the function's `shape_parts`.
+    first: u32 = 0,
+    len: u32 = 0,
+    kind: Kind = .fields,
+    /// For `elements`: cells from one element to the next.
+    stride: u32 = 0,
+
+    pub const Kind = enum(u8) {
+        /// A struct: each part is a field that is a block, at its cell.
+        fields,
+        /// An array: its one part is the shape of every element, which is at cell `i * stride`.
+        elements,
+        /// An enum value `[tag, payload]`: part `tag` is the shape of that variant's payload, or
+        /// `no_shape` when its payload is no block.
+        payloads,
+    };
+};
+
+/// A part of a `Shape`: the cell that holds the part's block, and the part's own shape.
+pub const ShapePart = struct { cell: u32, shape: u32 };
+
+/// The `ShapePart.shape` of a payload that is no block.
+pub const no_shape: u32 = std.math.maxInt(u32);
+
 pub const BytecodeFunction = struct {
     name: []const u8,
     instrs: []const Instr,
@@ -279,6 +310,9 @@ pub const BytecodeFunction = struct {
     /// How many of `num_locals` are parameters, bound from call arguments.
     num_params: u32 = 0,
     constants: []const value.Value = &.{},
+    /// The shapes the function's copies name (`copy_value`, `copy_cells`), and their parts.
+    shapes: []const Shape = &.{},
+    shape_parts: []const ShapePart = &.{},
     /// When set, calling this function invokes a native function via FFI rather
     /// than executing `instrs` (which is empty for extern functions).
     extern_call: ?ExternCall = null,
@@ -286,6 +320,8 @@ pub const BytecodeFunction = struct {
     pub fn deinit(self: *const BytecodeFunction, allocator: std.mem.Allocator) void {
         allocator.free(self.instrs);
         if (self.constants.len != 0) allocator.free(self.constants);
+        if (self.shapes.len != 0) allocator.free(self.shapes);
+        if (self.shape_parts.len != 0) allocator.free(self.shape_parts);
     }
 };
 

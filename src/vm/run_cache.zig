@@ -139,6 +139,20 @@ fn hashFn(h: *Sha256, f: *const BytecodeFunction) bool {
     }
     feed(h, u32, @intCast(f.constants.len));
     for (f.constants) |c| if (!hashValue(h, c)) return false;
+    // What a copy copies: the same instructions copy other parts of other shapes.
+    feed(h, u32, @intCast(f.shapes.len));
+    for (f.shapes) |s| {
+        feed(h, u32, s.cells);
+        feed(h, u32, s.first);
+        feed(h, u32, s.len);
+        feed(h, u8, @intFromEnum(s.kind));
+        feed(h, u32, s.stride);
+    }
+    feed(h, u32, @intCast(f.shape_parts.len));
+    for (f.shape_parts) |p| {
+        feed(h, u32, p.cell);
+        feed(h, u32, p.shape);
+    }
     return true;
 }
 
