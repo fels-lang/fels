@@ -8,6 +8,8 @@ const layout = @import("../layout.zig");
 const Instr = instructions.Instr;
 const Opcode = instructions.Opcode;
 const Reg = instructions.Reg;
+const Shape = instructions.Shape;
+const ShapePart = instructions.ShapePart;
 const Value = value.Value;
 const BytecodeFunction = instructions.BytecodeFunction;
 const BytecodeModule = instructions.BytecodeModule;
@@ -237,6 +239,13 @@ const FnCompiler = struct {
     /// Element addresses a slice starts at (`slice_expr`'s pointer). A slice counts its
     /// elements in cells of the array, so there an aggregate element stays its cell.
     slice_starts: std.AutoHashMap(ir.RegId, void),
+    /// Values just built (a literal, a call's result: a struct, an array or an enum value) →
+    /// how many places take them. One that a single place takes is that place's own and is not
+    /// copied there (`resolveCopy`).
+    fresh: std.AutoHashMap(ir.RegId, u32),
+    /// The shapes of the values the function copies (`shapeOf`), and their parts.
+    shapes: std.ArrayList(Shape) = .empty,
+    shape_parts: std.ArrayList(ShapePart) = .empty,
     next_reg: Reg = 0,
     /// Scratch registers for building static data, one per nesting depth of the value.
     scratch: std.ArrayList(Reg) = .empty,
@@ -264,6 +273,7 @@ const FnCompiler = struct {
             .addressed = std.StringHashMap(void).init(allocator),
             .aggregate_cells = std.AutoHashMap(ir.RegId, Reg).init(allocator),
             .slice_starts = std.AutoHashMap(ir.RegId, void).init(allocator),
+            .fresh = std.AutoHashMap(ir.RegId, u32).init(allocator),
         };
     }
 
@@ -278,6 +288,9 @@ const FnCompiler = struct {
         self.addressed.deinit();
         self.aggregate_cells.deinit();
         self.slice_starts.deinit();
+        self.fresh.deinit();
+        self.shapes.deinit(self.allocator);
+        self.shape_parts.deinit(self.allocator);
         self.scratch.deinit(self.allocator);
     }
 
@@ -286,6 +299,7 @@ const FnCompiler = struct {
         try self.collectTypes();
         try self.collectAddressed();
         try self.collectSliceStarts();
+        try self.collectFresh();
         self.seedScratchBase();
         try self.emitAddressedInit();
 
@@ -304,6 +318,8 @@ const FnCompiler = struct {
             .num_locals = self.local_slots.count(),
             .num_params = @intCast(self.func.params.len),
             .constants = try self.constants.toOwnedSlice(self.allocator),
+            .shapes = try self.shapes.toOwnedSlice(self.allocator),
+            .shape_parts = try self.shape_parts.toOwnedSlice(self.allocator),
         };
     }
 
@@ -373,6 +389,51 @@ const FnCompiler = struct {
                 else => {},
             };
         }
+    }
+
+    /// Find the values just built (`fresh`) and count the places that take each: a local, a
+    /// store, a literal's part, a capture, the caller.
+    fn collectFresh(self: *FnCompiler) CompileError!void {
+        for (self.func.blocks) |block| {
+            for (block.instrs) |inst| {
+                const id = inst.id orelse continue;
+                const built = switch (inst.kind) {
+                    .struct_lit, .variant_lit, .call, .call_indirect => true,
+                    .builtin => |b| std.mem.eql(u8, b.name, "compound_literal"),
+                    else => false,
+                };
+                if (built) try self.fresh.put(id, 0);
+            }
+        }
+        for (self.func.blocks) |block| {
+            for (block.instrs) |inst| switch (inst.kind) {
+                .store_local => |sl| self.taken(sl.value),
+                .store => |s| self.taken(s.value),
+                .struct_lit => |sl| for (sl.fields) |f| self.taken(f.value),
+                .variant_lit => |vl| if (vl.payload) |p| self.taken(p),
+                .closure_env_make => |mk| for (mk.fields) |f| self.taken(f.value),
+                .builtin => |b| if (std.mem.eql(u8, b.name, "compound_literal") or std.mem.eql(u8, b.name, "optional_some")) {
+                    for (b.args) |arg| self.taken(arg);
+                },
+                else => {},
+            };
+            if (block.terminator) |term| switch (term) {
+                .return_value => |opt| if (opt) |v| self.taken(v),
+                else => {},
+            };
+        }
+    }
+
+    fn taken(self: *FnCompiler, v: ir.Value) void {
+        if (v != .reg) return;
+        if (self.fresh.getPtr(v.reg)) |n| n.* += 1;
+    }
+
+    /// Is `v` a value just built that only one place takes?
+    fn isFresh(self: *FnCompiler, v: ir.Value) bool {
+        if (v != .reg) return false;
+        const n = self.fresh.get(v.reg) orelse return false;
+        return n <= 1;
     }
 
     /// Allocate a backing cell for each addressed scalar local at function entry
@@ -514,6 +575,18 @@ const FnCompiler = struct {
                 }
             },
         }
+    }
+
+    /// The register of `v`, a value of `ty` that a place takes (a literal's part, a capture, the
+    /// caller): when `v` is a struct, an array or an enum value that another place may hold as
+    /// well, a copy of it, so that the two do not share its block.
+    fn resolveCopy(self: *FnCompiler, v: ir.Value, ty: ir.IrType) CompileError!Reg {
+        const r = try self.resolveReg(v);
+        if (self.isFresh(v)) return r;
+        const shape = try self.shapeOf(ty) orelse return r;
+        const copy = self.newReg();
+        try self.emit(Instr.r_r_imm(.copy_value, copy, r, shape));
+        return copy;
     }
 
     fn materializeImm(self: *FnCompiler, dst: Reg, imm: ir.Imm) CompileError!void {
@@ -902,7 +975,7 @@ const FnCompiler = struct {
                     // Marker emitted by `catch` lowering; nothing to execute.
                 } else if (std.mem.eql(u8, b.name, "optional_some") and b.args.len >= 1) {
                     // `some(x)`: a 1-cell block holding the payload.
-                    const pr = try self.resolveReg(b.args[0]);
+                    const pr = try self.resolveCopy(b.args[0], innerType(inst.ty) orelse self.typeOf(b.args[0]));
                     try self.emit(Instr.r_imm(.zone_alloc, target, 1));
                     try self.emit(Instr.r_r_imm(.store_cell, target, pr, 0));
                 } else if (std.mem.eql(u8, b.name, "__str_cat") and b.args.len == 2) {
@@ -1122,7 +1195,7 @@ const FnCompiler = struct {
                 try self.emit(Instr.r_imm(.load_imm, tagr, idx));
                 try self.emit(Instr.r_r_imm(.store_cell, target, tagr, 0));
                 if (vl.payload) |p| {
-                    const pr = try self.resolveReg(p);
+                    const pr = try self.resolveCopy(p, self.payloadType(vl.type_name, vl.variant) orelse self.typeOf(p));
                     try self.emit(Instr.r_r_imm(.store_cell, target, pr, 1));
                 }
             },
@@ -1223,7 +1296,7 @@ const FnCompiler = struct {
                 // One cell per capture (scalar captures only at comptime).
                 try self.emit(Instr.r_imm(.zone_alloc, target, @intCast(mk.fields.len)));
                 for (mk.fields, 0..) |f, i| {
-                    const vr = try self.resolveReg(f.value);
+                    const vr = try self.resolveCopy(f.value, f.ty);
                     try self.emit(Instr.r_r_imm(.store_cell, target, vr, @intCast(i)));
                 }
             },
@@ -1255,7 +1328,7 @@ const FnCompiler = struct {
         try self.emit(Instr.r_imm(.zone_alloc, target, @intCast(def.fields.len)));
         for (sl.fields) |field| {
             const idx = fieldIndex(def, field.name) orelse return error.Unsupported;
-            const vr = try self.resolveReg(field.value);
+            const vr = try self.resolveCopy(field.value, def.fields[@intCast(idx)].ty);
             try self.emit(Instr.r_r_imm(.store_cell, target, vr, idx));
         }
     }
@@ -1263,12 +1336,13 @@ const FnCompiler = struct {
     /// Positional aggregate initializer `.{ v0, v1, ... }` for a struct or
     /// array: cells are filled in declaration / element order.
     fn lowerCompoundLiteral(self: *FnCompiler, target: Reg, ty: ir.IrType, args: []const ir.Value) CompileError!void {
+        var def: ?ir.StructDef = null;
         const slots: usize = switch (ty) {
             .array => |arr| @intCast(arr.len),
             else => blk: {
                 const sname = structName(ty) orelse return error.Unsupported;
-                const def = self.structDef(sname) orelse return error.Unsupported;
-                break :blk def.fields.len;
+                def = self.structDef(sname) orelse return error.Unsupported;
+                break :blk def.?.fields.len;
             },
         };
         const stride: usize = switch (ty) {
@@ -1278,7 +1352,8 @@ const FnCompiler = struct {
         if (args.len > slots) return error.Unsupported;
         try self.emit(Instr.r_imm(.zone_alloc, target, @intCast(slots * stride)));
         for (args, 0..) |arg, i| {
-            const vr = try self.resolveReg(arg);
+            const part_ty = if (def) |d| d.fields[i].ty else ty.array.elem.*;
+            const vr = try self.resolveCopy(arg, part_ty);
             try self.emit(Instr.r_r_imm(.store_cell, target, vr, @intCast(i * stride)));
         }
     }
@@ -1472,6 +1547,17 @@ const FnCompiler = struct {
         return null;
     }
 
+    /// The type of the payload of `variant` of enum `type_name`, when it has one.
+    fn payloadType(self: *FnCompiler, type_name: []const u8, variant: []const u8) ?ir.IrType {
+        for (self.module.variants) |v| {
+            if (!std.mem.eql(u8, v.name, type_name)) continue;
+            for (v.variants) |case| {
+                if (std.mem.eql(u8, case.name, variant)) return case.payload;
+            }
+        }
+        return null;
+    }
+
     /// Cell offset of `field_name` within the struct named by `base_ty`.
     fn fieldOffset(self: *FnCompiler, base_ty: ir.IrType, field_name: []const u8) CompileError!i64 {
         const sname = structName(base_ty) orelse return error.Unsupported;
@@ -1586,7 +1672,69 @@ const FnCompiler = struct {
             else => return null,
         }
     }
+
+    /// The index of the shape of a value of `ty` that is a block (`blockCells`), which a copy of
+    /// the value follows; null for any other value, which is copied as the `Value` it is.
+    fn shapeOf(self: *FnCompiler, ty: ir.IrType) CompileError!?u32 {
+        return self.shapeAt(ty, 0);
+    }
+
+    fn shapeAt(self: *FnCompiler, ty: ir.IrType, depth: usize) CompileError!?u32 {
+        const cells = self.blockCells(ty) orelse return null;
+        // No value holds one of its own type, so the parts end; this only keeps a type that
+        // would from looping (its parts past here would be shared, not copied).
+        if (depth > max_shape_depth) return null;
+        var parts: std.ArrayList(ShapePart) = .empty;
+        defer parts.deinit(self.allocator);
+        var shape: Shape = .{ .cells = @intCast(cells) };
+        switch (ty) {
+            .array => |arr| if (try self.shapeAt(arr.elem.*, depth + 1)) |elem| {
+                shape.kind = .elements;
+                shape.stride = @intCast(self.cellCount(arr.elem.*));
+                try parts.append(self.allocator, .{ .cell = 0, .shape = elem });
+            },
+            .struct_type, .variant_type => |name| if (self.structDef(name)) |def| {
+                for (def.fields, 0..) |field, i| {
+                    const part = try self.shapeAt(field.ty, depth + 1) orelse continue;
+                    try parts.append(self.allocator, .{ .cell = @intCast(i), .shape = part });
+                }
+            } else for (self.module.variants) |v| {
+                if (!std.mem.eql(u8, v.name, name)) continue;
+                var any = false;
+                for (v.variants) |case| {
+                    const part = if (case.payload) |p| try self.shapeAt(p, depth + 1) else null;
+                    any = any or part != null;
+                    try parts.append(self.allocator, .{ .cell = 1, .shape = part orelse instructions.no_shape });
+                }
+                // An enum none of whose payloads is a block is copied as its two cells.
+                if (any) shape.kind = .payloads else parts.clearRetainingCapacity();
+                break;
+            },
+            else => {},
+        }
+        return try self.addShape(shape, parts.items);
+    }
+
+    /// The index of `shape` with `parts`: one the function has already, or a new one.
+    fn addShape(self: *FnCompiler, shape: Shape, parts: []const ShapePart) CompileError!u32 {
+        find: for (self.shapes.items, 0..) |s, i| {
+            if (s.cells != shape.cells or s.kind != shape.kind or s.stride != shape.stride or s.len != parts.len) continue;
+            for (self.shape_parts.items[s.first..][0..s.len], parts) |have, want| {
+                if (have.cell != want.cell or have.shape != want.shape) continue :find;
+            }
+            return @intCast(i);
+        }
+        var new = shape;
+        new.first = @intCast(self.shape_parts.items.len);
+        new.len = @intCast(parts.len);
+        try self.shape_parts.appendSlice(self.allocator, parts);
+        try self.shapes.append(self.allocator, new);
+        return @intCast(self.shapes.items.len - 1);
+    }
 };
+
+/// How deep the parts of a shape go (`FnCompiler.shapeAt`).
+const max_shape_depth = 64;
 
 fn isFloat(ty: ir.IrType) bool {
     return ty == .f32 or ty == .f64;

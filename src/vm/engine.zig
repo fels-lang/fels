@@ -521,6 +521,50 @@ pub const Vm = struct {
         }
     }
 
+    /// A copy of `src`, a value of shape `shape` of `func`, in new blocks: it shares no block with
+    /// `src`, as a copy of the bytes shares no memory at run time. A value that is no block of
+    /// cells (one read from host memory) is its own copy.
+    fn copyValue(self: *Vm, func: *const BytecodeFunction, src: Value, shape: u32) VmError!Value {
+        const from = zoneBlock(src) orelse return src;
+        const s = try shapeIn(func, shape);
+        const to = (try self.zone_stack.alloc(s.cells)).ptr;
+        var i: u32 = 0;
+        while (i < s.cells) : (i += 1) {
+            const cell = try self.zone_stack.getCell(from.zone, from.offset + i);
+            self.zone_stack.setCell(to.zone, to.offset + i, cell) catch |e| return self.writeFailed(e);
+        }
+        var parts = try self.partsOf(func, s, from);
+        while (parts.next()) |part| {
+            const at = to.offset + part.cell;
+            const inner = try self.zone_stack.getCell(to.zone, at);
+            const copy = try self.copyValue(func, inner, part.shape);
+            self.zone_stack.setCell(to.zone, at, copy) catch |e| return self.writeFailed(e);
+        }
+        return .{ .ptr = to };
+    }
+
+    /// The parts of the value of shape `s` in block `block`: the cells that hold a block of their
+    /// own, each with its shape.
+    fn partsOf(self: *Vm, func: *const BytecodeFunction, s: instructions.Shape, block: Value.Ptr) VmError!Parts {
+        if (@as(usize, s.first) + s.len > func.shape_parts.len) return error.InvalidInstruction;
+        const parts = func.shape_parts[s.first..][0..s.len];
+        return switch (s.kind) {
+            .fields => .{ .list = parts },
+            .elements => .{
+                .list = parts,
+                .count = if (s.stride == 0) 0 else s.cells / s.stride,
+                .stride = s.stride,
+            },
+            // Only the variant the tag names has its payload.
+            .payloads => blk: {
+                const tag = (try self.zone_stack.getCell(block.zone, block.offset)).asI128() orelse break :blk .{};
+                const t = std.math.cast(usize, tag) orelse break :blk .{};
+                if (t >= parts.len or parts[t].shape == instructions.no_shape) break :blk .{};
+                break :blk .{ .list = parts[t..][0..1] };
+            },
+        };
+    }
+
     /// A failed store: a write into static data is the program's mistake, so say so.
     fn writeFailed(self: *Vm, err: zones.ZoneError) VmError {
         if (err == error.ReadOnly) {
@@ -829,6 +873,7 @@ pub const Vm = struct {
                         try self.copyCells(dst.?, src.?, @intCast(inst.imm));
                     } else try self.storeCell(frame.regs[inst.a], 0, frame.regs[inst.b]);
                 },
+                .copy_value => frame.regs[inst.a] = try self.copyValue(frame.func, frame.regs[inst.b], @intCast(inst.imm)),
                 .zone_fill => {
                     const base = try asPtr(frame.regs[inst.a]);
                     var i: u32 = 0;
@@ -1072,6 +1117,35 @@ fn asPtr(v: Value) VmError!Value.Ptr {
         else => error.TypeMismatch,
     };
 }
+
+/// Shape `index` of `func`.
+fn shapeIn(func: *const BytecodeFunction, index: u32) VmError!instructions.Shape {
+    if (index >= func.shapes.len) return error.InvalidInstruction;
+    return func.shapes[index];
+}
+
+/// The parts of a value (`Vm.partsOf`), in the order of their cells: the parts of a struct, or
+/// the one part of every element of an array (`count` of them, `stride` cells apart).
+const Parts = struct {
+    list: []const instructions.ShapePart = &.{},
+    count: u32 = 1,
+    stride: u32 = 0,
+    elem: u32 = 0,
+    i: usize = 0,
+
+    fn next(self: *Parts) ?instructions.ShapePart {
+        if (self.list.len == 0) return null;
+        if (self.stride != 0) {
+            if (self.elem >= self.count) return null;
+            const part: instructions.ShapePart = .{ .cell = self.elem * self.stride, .shape = self.list[0].shape };
+            self.elem += 1;
+            return part;
+        }
+        if (self.i >= self.list.len) return null;
+        self.i += 1;
+        return self.list[self.i - 1];
+    }
+};
 
 /// The zone block a value points at, or null when it is no pointer into a zone.
 fn zoneBlock(v: Value) ?Value.Ptr {
