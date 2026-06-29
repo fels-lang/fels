@@ -521,6 +521,39 @@ pub const Vm = struct {
         }
     }
 
+    /// Write `src`, a value of shape `shape` of `func`, over the value in block `dst` (`copy_cells`),
+    /// part by part: a part of `dst` that is a block keeps its block and takes the cells of the
+    /// part of `src`, so a pointer into `dst` sees the new value, as one does at run time where
+    /// the bytes are written over. Anything else of `dst` takes a copy (`copyValue`).
+    fn copyInto(self: *Vm, func: *const BytecodeFunction, dst: Value.Ptr, src: Value.Ptr, shape: u32) VmError!void {
+        if (dst.zone == src.zone and dst.offset == src.offset) return;
+        const s = try shapeIn(func, shape);
+        if (s.len == 0) return self.copyCells(dst, src, s.cells);
+        // An enum value keeps its payload's block only when it stays the same variant.
+        const same_variant = s.kind != .payloads or sameInt(
+            try self.zone_stack.getCell(dst.zone, dst.offset),
+            try self.zone_stack.getCell(src.zone, src.offset),
+        );
+        var parts = try self.partsOf(func, s, src);
+        var part = parts.next();
+        var i: u32 = 0;
+        while (i < s.cells) : (i += 1) {
+            const from = try self.zone_stack.getCell(src.zone, src.offset + i);
+            if (part) |p| if (p.cell == i) {
+                part = parts.next();
+                const have = try self.zone_stack.getCell(dst.zone, dst.offset + i);
+                if (same_variant) if (zoneBlock(have)) |into| if (zoneBlock(from)) |inner| {
+                    try self.copyInto(func, into, inner, p.shape);
+                    continue;
+                };
+                const copy = try self.copyValue(func, from, p.shape);
+                self.zone_stack.setCell(dst.zone, dst.offset + i, copy) catch |e| return self.writeFailed(e);
+                continue;
+            };
+            self.zone_stack.setCell(dst.zone, dst.offset + i, from) catch |e| return self.writeFailed(e);
+        }
+    }
+
     /// A copy of `src`, a value of shape `shape` of `func`, in new blocks: it shares no block with
     /// `src`, as a copy of the bytes shares no memory at run time. A value that is no block of
     /// cells (one read from host memory) is its own copy.
@@ -864,13 +897,13 @@ pub const Vm = struct {
                 },
                 .store_cell => try self.storeCell(frame.regs[inst.a], inst.imm, frame.regs[inst.b]),
                 .copy_cells => {
-                    // A whole aggregate stored through a pointer to one: its cells are copied
-                    // into the block the pointer points at. A value that is no block of cells
-                    // (one read from host memory) is stored as `store_cell` stores it.
+                    // A whole aggregate stored through a pointer to one: it is copied into the
+                    // block the pointer points at. A value that is no block of cells (one read
+                    // from host memory) is stored as `store_cell` stores it.
                     const dst = zoneBlock(frame.regs[inst.a]);
                     const src = zoneBlock(frame.regs[inst.b]);
                     if (dst != null and src != null) {
-                        try self.copyCells(dst.?, src.?, @intCast(inst.imm));
+                        try self.copyInto(frame.func, dst.?, src.?, @intCast(inst.imm));
                     } else try self.storeCell(frame.regs[inst.a], 0, frame.regs[inst.b]);
                 },
                 .copy_value => frame.regs[inst.a] = try self.copyValue(frame.func, frame.regs[inst.b], @intCast(inst.imm)),
@@ -1116,6 +1149,13 @@ fn asPtr(v: Value) VmError!Value.Ptr {
         .slice => |s| .{ .zone = s.zone, .offset = s.offset },
         else => error.TypeMismatch,
     };
+}
+
+/// Are `a` and `b` the same integer (an enum's tag)?
+fn sameInt(a: Value, b: Value) bool {
+    const x = a.asI128() orelse return false;
+    const y = b.asI128() orelse return false;
+    return x == y;
 }
 
 /// Shape `index` of `func`.

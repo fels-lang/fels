@@ -1174,8 +1174,8 @@ const FnCompiler = struct {
                 const ptr = try self.resolveReg(s.target);
                 const vr = try self.resolveReg(s.value);
                 // A whole aggregate stored through a pointer to one is copied into its block.
-                if (self.blockCells(inst.ty)) |n| {
-                    try self.emit(Instr.r_r_imm(.copy_cells, ptr, vr, @intCast(n)));
+                if (try self.shapeOf(inst.ty)) |shape| {
+                    try self.emit(Instr.r_r_imm(.copy_cells, ptr, vr, shape));
                     return;
                 }
                 try self.emit(Instr.r_r_imm(.store_cell, ptr, vr, 0));

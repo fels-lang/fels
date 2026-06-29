@@ -57,7 +57,7 @@ pub const Opcode = enum(u8) {
     index_addr, // a = dst; b = base ptr; c = index reg; imm = cells per element
     index_load, // a = dst; b = base (zone slice/ptr OR host string); c = index reg; imm = cells per element → loaded element
     block_at, // a = dst; b = address of a cell holding an aggregate → that aggregate's block (a host address: itself)
-    copy_cells, // a = dst block; b = src block; imm = cell count → the src cells written over the dst ones
+    copy_cells, // a = dst block; b = src block; imm = shape index → the src value written over the dst one, part by part
     copy_value, // a = dst; b = src; imm = shape index → a copy of the src value that shares no block with it
     slice_make, // a = dst; b = ptr reg; c = len reg → slice value
     slice_len, // a = dst; b = slice reg → its length as a uint
