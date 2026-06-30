@@ -95,6 +95,13 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
   it failed with `OutOfBounds`, and so did every method called on such a field, like
   `c.bytes.push(x)` on a `Vec` field. Storing a whole struct through a pointer (`*p = v`)
   copies it into the struct `p` points at; for a local's address it wrote into the first field.
+- On the comptime VM, a copy of a struct, an array or an enum value is a value of its own, as
+  at run time. It shared the original's memory: after `b := a;`, `b.a = 5` changed `a`, and so
+  did a write to a struct that a literal, a field, a `for` binding, a payload or a function's
+  result had taken from another place. Its fields that are structs are copied too, and an
+  assignment to a local or a field writes into it, so a pointer taken to it before sees the
+  new value. A copy of a global is the code's own to change; the write was refused as one to
+  the global.
 
 ## 0.11.0 — 2026-10-18
 
