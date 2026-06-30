@@ -521,6 +521,19 @@ pub const Vm = struct {
         }
     }
 
+    /// A whole aggregate `src` of shape `shape` of `func` given to a place (a local, a field, an
+    /// element) that holds `have`. A place that holds a block keeps it and takes `src`'s value
+    /// into it, so a pointer to the place sees the new value; null then. Otherwise the place's
+    /// new value: `src` itself when it is a value just built that no other place holds
+    /// (`fresh`), else a copy of it.
+    fn assign(self: *Vm, func: *const BytecodeFunction, have: Value, src: Value, shape: u32, fresh: bool) VmError!?Value {
+        if (zoneBlock(have)) |into| if (zoneBlock(src)) |from| {
+            try self.copyInto(func, into, from, shape);
+            return null;
+        };
+        return if (fresh) src else try self.copyValue(func, src, shape);
+    }
+
     /// Write `src`, a value of shape `shape` of `func`, over the value in block `dst` (`copy_cells`),
     /// part by part: a part of `dst` that is a block keeps its block and takes the cells of the
     /// part of `src`, so a pointer into `dst` sees the new value, as one does at run time where
@@ -907,6 +920,11 @@ pub const Vm = struct {
                     } else try self.storeCell(frame.regs[inst.a], 0, frame.regs[inst.b]);
                 },
                 .copy_value => frame.regs[inst.a] = try self.copyValue(frame.func, frame.regs[inst.b], @intCast(inst.imm)),
+                .assign_local => {
+                    const slot: usize = @intCast(inst.imm);
+                    const into = try self.assign(frame.func, frame.locals[slot], frame.regs[inst.b], inst.c, inst.a != 0);
+                    if (into) |v| frame.locals[slot] = v;
+                },
                 .zone_fill => {
                     const base = try asPtr(frame.regs[inst.a]);
                     var i: u32 = 0;

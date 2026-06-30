@@ -59,6 +59,10 @@ pub const Opcode = enum(u8) {
     block_at, // a = dst; b = address of a cell holding an aggregate → that aggregate's block (a host address: itself)
     copy_cells, // a = dst block; b = src block; imm = shape index → the src value written over the dst one, part by part
     copy_value, // a = dst; b = src; imm = shape index → a copy of the src value that shares no block with it
+    // b = src; c = shape index; imm = local slot; a = 1 when src is a value just built that no
+    // other place holds → a local that holds a block has the src value copied into it (as
+    // `copy_cells`); one that holds none takes src when a = 1, else a copy of it (`copy_value`)
+    assign_local,
     slice_make, // a = dst; b = ptr reg; c = len reg → slice value
     slice_len, // a = dst; b = slice reg → its length as a uint
     slice_ptr, // a = dst; b = slice/host_buf reg → its base pointer

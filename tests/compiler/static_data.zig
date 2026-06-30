@@ -331,6 +331,9 @@ test "static data: compile-time code reads a struct, an array, an enum and a fun
         "sum :: fn() -> u32 { s := 0u32; i := 0usize; while i < SQUARES.len { s += SQUARES[i]; i += 1; } return s; }\n#assert(sum() == 14, \"loop\");",
         "at :: fn() -> u32 { p := &SQUARES[2]; return *p; }\n#assert(at() == 4, \"address of an element\");",
         "copy :: fn() -> u32 { t := SQUARES; return t[3]; }\n#assert(copy() == 9, \"copy into a local\");",
+        // a copy is the code's own, the parts that are structs of their own too
+        "own :: fn() -> u32 { t := SQUARES; t[0] = 99; return t[0] + SQUARES[0]; }\n#assert(own() == 99, \"a copy of a table\");",
+        "moved :: fn() -> i32 { o := ORIGIN; o.x = 9; r := RECS[1]; r.pos.y = 40; return o.x + ORIGIN.x + RECS[1].pos.y; }\n#assert(moved() == 16, \"a copy of a struct and of a nested one\");",
         "origin :: fn() -> i32 { p := &ORIGIN; return p.x + p.y; }\n#assert(origin() == 7, \"address of a struct\");",
         "which :: fn(i: usize) -> i32 { match MODES[i] { .fast => { return 1; }, .slow => { return 2; }, .off => { return 3; }, } }\n#assert(which(0) == 3 && which(1) == 1 && which(2) == 2, \"match\");",
     };
@@ -369,13 +372,12 @@ test "static data: compile-time code cannot change a global" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     // A run sees the initial value that goes into the image; a write would never reach it. Writing
-    // through an element, a field, a pointer, or a copy that aliases the table is refused, not
-    // silently applied to a table the next read would then see altered.
+    // through an element, a field or a pointer is refused, not silently applied to a table the
+    // next read would then see altered. (A copy of the table is the code's own, above.)
     const refused = [_][]const u8{
         "poke :: fn() -> u32 { SQUARES[0] = 5; return SQUARES[0]; }\n#assert(poke() == 5, \"x\");",
         "poke :: fn() -> i32 { ORIGIN.x = 9; return ORIGIN.x; }\n#assert(poke() == 9, \"x\");",
         "poke :: fn() -> u32 { p := &SQUARES[1]; *p = 7; return SQUARES[1]; }\n#assert(poke() == 7, \"x\");",
-        "poke :: fn() -> u32 { t := SQUARES; t[0] = 99; return SQUARES[0]; }\n#assert(poke() == 0, \"a copy of a table must not alias it\");",
         "poke :: fn() -> bool { RECS[0].on = false; return RECS[0].on; }\n#assert(!poke(), \"x\");",
         // a scalar global cannot be assigned either
         "poke :: fn() -> i32 { COUNT = 5; return COUNT; }\n#assert(poke() == 5, \"x\");",

@@ -920,6 +920,9 @@ const FnCompiler = struct {
 
             .store_local => |sl| {
                 const slot = self.local_slots.get(sl.name) orelse return error.Unsupported;
+                if (!self.addressed.contains(sl.name)) if (try self.shapeOf(inst.ty)) |shape| {
+                    return self.lowerAssignLocal(sl, slot, shape);
+                };
                 const vr = try self.resolveReg(sl.value);
                 // An addressed scalar is written through its backing cell.
                 if (self.addressed.contains(sl.name)) {
@@ -1321,6 +1324,23 @@ const FnCompiler = struct {
             // not lowered yet.
             else => return error.Unsupported,
         }
+    }
+
+    /// A struct, an array or an enum value of shape `shape` given to the local in `slot`. The local
+    /// is a block of its own, as it is memory of its own at run time: the first value it takes is
+    /// a copy, unless it is a value just built that no other place holds, and every later one is
+    /// copied into that block, which a pointer to the local keeps seeing.
+    fn lowerAssignLocal(self: *FnCompiler, sl: ir.StoreLocalInstr, slot: u32, shape: u32) CompileError!void {
+        const vr = try self.resolveReg(sl.value);
+        // A param the body changes is given a slot of its own name, filled from the param
+        // (`spillParams`): the caller's value, so it takes a copy, which is then its own.
+        if (sl.value == .param and std.mem.eql(u8, sl.value.param, sl.name)) {
+            const copy = self.newReg();
+            try self.emit(Instr.r_r_imm(.copy_value, copy, vr, shape));
+            try self.emit(Instr.r_r_imm(.store_local, 0, copy, slot));
+            return;
+        }
+        try self.emit(.{ .op = .assign_local, .a = @intFromBool(self.isFresh(sl.value)), .b = vr, .c = shape, .imm = slot });
     }
 
     fn lowerStructLit(self: *FnCompiler, target: Reg, sl: ir.StructLitInstr) CompileError!void {

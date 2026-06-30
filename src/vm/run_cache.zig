@@ -22,7 +22,7 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 
 /// Bump when the VM's bytecode semantics or this file's encoding change. Old
 /// entries then hash differently and are simply never read — never stale.
-const format_version: u32 = 2;
+const format_version: u32 = 3;
 
 pub const Key = [Sha256.digest_length]u8;
 
