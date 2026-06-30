@@ -764,3 +764,177 @@ test "fels test: on the comptime VM, a pointer to an array field, a struct eleme
     try std.testing.expectEqual(@as(u32, 3), native.summary.passed);
     try std.testing.expect(native.summary.ok());
 }
+
+// On the comptime VM a struct value is a pointer to its block, and a copy of the value was a
+// copy of the pointer: a write to the copy changed the original. A copy now has blocks of its
+// own, its fields that are structs, its elements and its payload too.
+const value_copy_source =
+    \\Inner :: struct { a: u32, b: u32 }
+    \\Outer :: struct { x: u32, inner: Inner }
+    \\Deep :: struct { o: Outer, items: [2]Inner }
+    \\Shape :: enum { none, box: Inner }
+    \\
+    \\put :: fn(p: *Outer, v: Outer) { *p = v; }
+    \\
+    \\#test
+    \\local_copy :: fn(t: *Test) {
+    \\    a: Inner = .{ .a = 1, .b = 2 };
+    \\    b := a;
+    \\    b.a = 5u32;
+    \\    t.eq(a.a, 1u32);
+    \\    t.eq(b.a, 5u32);
+    \\}
+    \\
+    \\#test
+    \\field_from_local :: fn(t: *Test) {
+    \\    i: Inner = .{ .a = 1, .b = 2 };
+    \\    o: Outer = .{ .x = 0, .inner = i };
+    \\    o.inner.a = 5u32;
+    \\    t.eq(i.a, 1u32);
+    \\    arr: [2]Inner = .{ i, i };
+    \\    arr[0].a = 6u32;
+    \\    t.eq(arr[1].a, 1u32);
+    \\    t.eq(i.a, 1u32);
+    \\}
+    \\
+    \\#test
+    \\a_copy_is_deep :: fn(t: *Test) {
+    \\    d: Deep = .{ .o = .{ .x = 1, .inner = .{ .a = 1, .b = 2 } }, .items = .{ .{ .a = 3, .b = 4 }, .{ .a = 5, .b = 6 } } };
+    \\    e := d;
+    \\    e.o.inner.b = 20u32;
+    \\    e.items[1].b = 60u32;
+    \\    t.eq(d.o.inner.b, 2u32);
+    \\    t.eq(d.items[1].b, 6u32);
+    \\    t.eq(e.items[1].b, 60u32);
+    \\}
+    \\
+    \\#test
+    \\a_field_or_an_element_read_is_a_copy :: fn(t: *Test) {
+    \\    o: Outer = .{ .x = 1, .inner = .{ .a = 1, .b = 2 } };
+    \\    x := o.inner;
+    \\    x.b = 9u32;
+    \\    t.eq(o.inner.b, 2u32);
+    \\    arr: [2]Inner = .{ .{ .a = 1, .b = 2 }, .{ .a = 3, .b = 4 } };
+    \\    y := arr[1];
+    \\    y.a = 30u32;
+    \\    t.eq(arr[1].a, 3u32);
+    \\    for v in arr {
+    \\        v.a = v.a + 100u32;
+    \\    }
+    \\    t.eq(arr[0].a, 1u32);
+    \\}
+    \\
+    \\#test
+    \\an_assignment_writes_where_pointers_look :: fn(t: *Test) {
+    \\    o: Outer = .{ .x = 1, .inner = .{ .a = 1, .b = 2 } };
+    \\    i: Inner = .{ .a = 3, .b = 4 };
+    \\    p := &o.inner;
+    \\    o.inner = i;
+    \\    o.inner.a = 8u32;
+    \\    t.eq(i.a, 3u32);
+    \\    t.eq(p.a, 8u32);
+    \\    a: Inner = .{ .a = 1, .b = 2 };
+    \\    q := &a;
+    \\    a = i;
+    \\    i.b = 40u32;
+    \\    t.eq(q.b, 4u32);
+    \\}
+    \\
+    \\#test
+    \\a_whole_struct_through_a_pointer_is_deep :: fn(t: *Test) {
+    \\    a: Outer = .{ .x = 1, .inner = .{ .a = 1, .b = 2 } };
+    \\    b: Outer = .{ .x = 3, .inner = .{ .a = 3, .b = 4 } };
+    \\    put(&a, b);
+    \\    b.inner.a = 30u32;
+    \\    t.eq(a.inner.a, 3u32);
+    \\}
+    \\
+    \\#test
+    \\an_enum_payload :: fn(t: *Test) {
+    \\    i: Inner = .{ .a = 1, .b = 2 };
+    \\    s: Shape = .box(i);
+    \\    i.a = 50u32;
+    \\    s2 := s;
+    \\    match s2 {
+    \\        .box |v| => { t.eq(v.a, 1u32); },
+    \\        .none => { t.expect(false); },
+    \\    }
+    \\}
+    \\
+;
+
+test "fels test: on the comptime VM, a copy of a struct, an array or an enum value is a value of its own" {
+    const dir = ".zig-cache/tc_value_copy";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/main.fels", value_copy_source);
+    const vm = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(vm.text);
+    try expectHas(vm.text, "  \u{2713} local_copy\n  \u{2713} field_from_local\n  \u{2713} a_copy_is_deep\n");
+    try expectHas(vm.text, "  \u{2713} a_field_or_an_element_read_is_a_copy\n  \u{2713} an_assignment_writes_where_pointers_look\n");
+    try expectHas(vm.text, "  \u{2713} a_whole_struct_through_a_pointer_is_deep\n  \u{2713} an_enum_payload\n");
+    try std.testing.expectEqual(@as(u32, 7), vm.summary.passed);
+    try std.testing.expect(vm.summary.ok());
+    if (comptime !fels.llvm_enabled) return;
+    if (comptime builtin.os.tag != .windows) return;
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try std.testing.expectEqual(@as(u32, 7), native.summary.passed);
+    try std.testing.expect(native.summary.ok());
+}
+
+// The same across calls: what a function returns, and a param it changes.
+const value_copy_call_source =
+    \\Inner :: struct { a: u32, b: u32 }
+    \\Outer :: struct { x: u32, inner: Inner }
+    \\
+    \\get_inner :: fn(o: *Outer) -> Inner { return o.inner; }
+    \\pass_through :: fn(i: Inner) -> Inner { return i; }
+    \\bump :: fn(i: Inner) -> u32 { i.a = i.a + 10u32; return i.a; }
+    \\wrap :: fn(i: Inner) -> Outer { return .{ .x = 0, .inner = i }; }
+    \\
+    \\#test
+    \\a_returned_field :: fn(t: *Test) {
+    \\    o: Outer = .{ .x = 1, .inner = .{ .a = 1, .b = 2 } };
+    \\    x := get_inner(&o);
+    \\    x.a = 9u32;
+    \\    t.eq(o.inner.a, 1u32);
+    \\}
+    \\
+    \\#test
+    \\a_returned_param :: fn(t: *Test) {
+    \\    i: Inner = .{ .a = 1, .b = 2 };
+    \\    j := pass_through(i);
+    \\    j.a = 9u32;
+    \\    t.eq(i.a, 1u32);
+    \\    o := wrap(i);
+    \\    o.inner.b = 4u32;
+    \\    t.eq(i.b, 2u32);
+    \\}
+    \\
+    \\#test
+    \\a_param_the_callee_changes :: fn(t: *Test) {
+    \\    i: Inner = .{ .a = 1, .b = 2 };
+    \\    t.eq(bump(i), 11u32);
+    \\    t.eq(i.a, 1u32);
+    \\}
+    \\
+;
+
+test "fels test: on the comptime VM, a struct value returned or passed is a copy" {
+    const dir = ".zig-cache/tc_value_copy_call";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/main.fels", value_copy_call_source);
+    const vm = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(vm.text);
+    try expectHas(vm.text, "  \u{2713} a_returned_field\n  \u{2713} a_returned_param\n  \u{2713} a_param_the_callee_changes\n");
+    try std.testing.expectEqual(@as(u32, 3), vm.summary.passed);
+    try std.testing.expect(vm.summary.ok());
+    if (comptime !fels.llvm_enabled) return;
+    if (comptime builtin.os.tag != .windows) return;
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try std.testing.expectEqual(@as(u32, 3), native.summary.passed);
+    try std.testing.expect(native.summary.ok());
+}
