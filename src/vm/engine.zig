@@ -925,6 +925,18 @@ pub const Vm = struct {
                     const into = try self.assign(frame.func, frame.locals[slot], frame.regs[inst.b], inst.c, inst.a != 0);
                     if (into) |v| frame.locals[slot] = v;
                 },
+                .assign_cell => {
+                    // In host memory the aggregate is inline: the value is stored there.
+                    const cell = frame.regs[inst.a];
+                    if (cell == .host_ptr) {
+                        try self.storeCell(cell, 0, frame.regs[inst.b]);
+                    } else {
+                        const at = try asPtr(cell);
+                        const have = try self.zone_stack.getCell(at.zone, at.offset);
+                        const into = try self.assign(frame.func, have, frame.regs[inst.b], inst.c, inst.imm != 0);
+                        if (into) |v| self.zone_stack.setCell(at.zone, at.offset, v) catch |e| return self.writeFailed(e);
+                    }
+                },
                 .zone_fill => {
                     const base = try asPtr(frame.regs[inst.a]);
                     var i: u32 = 0;

@@ -63,6 +63,9 @@ pub const Opcode = enum(u8) {
     // other place holds → a local that holds a block has the src value copied into it (as
     // `copy_cells`); one that holds none takes src when a = 1, else a copy of it (`copy_value`)
     assign_local,
+    // a = address of the cell of a field or an element that is an aggregate; b = src; c = shape
+    // index; imm = 1 when src is a value just built → the same for that field or element
+    assign_cell,
     slice_make, // a = dst; b = ptr reg; c = len reg → slice value
     slice_len, // a = dst; b = slice reg → its length as a uint
     slice_ptr, // a = dst; b = slice/host_buf reg → its base pointer

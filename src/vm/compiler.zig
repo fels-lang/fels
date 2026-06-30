@@ -1167,11 +1167,13 @@ const FnCompiler = struct {
                 try self.emit(Instr.r_r_r(.slice_make, target, ptr, len));
             },
             .store => |s| {
-                // An assignment to a field or an element that is an aggregate points its cell at
-                // the new value.
+                // An assignment to a field or an element that is an aggregate: the block its cell
+                // points at takes the new value, as a local's does (`lowerAssignLocal`).
                 if (s.target == .reg) if (self.aggregate_cells.get(s.target.reg)) |cell| {
                     const vr = try self.resolveReg(s.value);
-                    try self.emit(Instr.r_r_imm(.store_cell, cell, vr, 0));
+                    if (try self.shapeOf(inst.ty)) |shape| {
+                        try self.emit(.{ .op = .assign_cell, .a = cell, .b = vr, .c = shape, .imm = @intFromBool(self.isFresh(s.value)) });
+                    } else try self.emit(Instr.r_r_imm(.store_cell, cell, vr, 0));
                     return;
                 };
                 const ptr = try self.resolveReg(s.target);
