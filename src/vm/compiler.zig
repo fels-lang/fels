@@ -1452,11 +1452,11 @@ const FnCompiler = struct {
                         return;
                     };
                     // ok: [value, disc=0].
-                    const vr = if (opt) |v| try self.resolveReg(v) else try self.constReg(0);
+                    const vr = if (opt) |v| try self.resolveReturn(v) else try self.constReg(0);
                     const wrapped = try self.emitFallible(vr, try self.constReg(0));
                     try self.emit(Instr.r_imm(.ret, wrapped, 0));
                 } else if (opt) |v| {
-                    const r = try self.resolveReg(v);
+                    const r = try self.resolveReturn(v);
                     try self.emit(Instr.r_imm(.ret, r, 0));
                 } else try self.emit(Instr.with_imm(.ret_void, 0));
             },
@@ -1482,6 +1482,15 @@ const FnCompiler = struct {
             .panic => try self.emit(Instr.with_imm(.trap, -1)),
             .unreachable_term => try self.emit(Instr.with_imm(.trap, -1)),
         }
+    }
+
+    /// The register of `v`, the value the function returns: a copy of it when it is a struct, an
+    /// array or an enum value that another place holds past the call (a param's, a field's, a
+    /// global's), so that the caller's local does not share that place's block. A local's own
+    /// value ends with the call and is returned as it is.
+    fn resolveReturn(self: *FnCompiler, v: ir.Value) CompileError!Reg {
+        if (v == .local) return self.resolveReg(v);
+        return self.resolveCopy(v, self.func.return_ty);
     }
 
     fn constReg(self: *FnCompiler, imm: i64) CompileError!Reg {
