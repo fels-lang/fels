@@ -512,13 +512,11 @@ pub const Vm = struct {
     /// Copy the `n` cells of block `src` over those of block `dst` (`copy_cells`), back to front
     /// when the source starts before an overlapping destination.
     fn copyCells(self: *Vm, dst: Value.Ptr, src: Value.Ptr, n: u32) VmError!void {
-        const backward = dst.zone == src.zone and dst.offset > src.offset;
-        var k: u32 = 0;
-        while (k < n) : (k += 1) {
-            const i = if (backward) n - 1 - k else k;
-            const cell = try self.zone_stack.getCell(src.zone, src.offset + i);
-            self.zone_stack.setCell(dst.zone, dst.offset + i, cell) catch |e| return self.writeFailed(e);
-        }
+        const from = try self.zone_stack.cellsAt(src.zone, src.offset, n);
+        const into = self.zone_stack.cellsToWrite(dst.zone, dst.offset, n) catch |e| return self.writeFailed(e);
+        if (dst.zone == src.zone and dst.offset > src.offset) {
+            std.mem.copyBackwards(Value, into, from);
+        } else std.mem.copyForwards(Value, into, from);
     }
 
     /// A whole aggregate `src` of shape `shape` of `func` given to a place (a local, a field, an
@@ -547,23 +545,31 @@ pub const Vm = struct {
             try self.zone_stack.getCell(dst.zone, dst.offset),
             try self.zone_stack.getCell(src.zone, src.offset),
         );
-        var parts = try self.partsOf(func, s, src);
-        var part = parts.next();
-        var i: u32 = 0;
-        while (i < s.cells) : (i += 1) {
-            const from = try self.zone_stack.getCell(src.zone, src.offset + i);
-            if (part) |p| if (p.cell == i) {
-                part = parts.next();
-                const have = try self.zone_stack.getCell(dst.zone, dst.offset + i);
-                if (same_variant) if (zoneBlock(have)) |into| if (zoneBlock(from)) |inner| {
-                    try self.copyInto(func, into, inner, p.shape);
-                    continue;
-                };
-                const copy = try self.copyValue(func, from, p.shape);
-                self.zone_stack.setCell(dst.zone, dst.offset + i, copy) catch |e| return self.writeFailed(e);
+        const parts = try self.partsOf(func, s, src);
+        // The cells between the parts, as they are (nothing is allocated meanwhile, which could
+        // move the cells).
+        {
+            const from = try self.zone_stack.cellsAt(src.zone, src.offset, s.cells);
+            const into = self.zone_stack.cellsToWrite(dst.zone, dst.offset, s.cells) catch |e| return self.writeFailed(e);
+            var start: u32 = 0;
+            var it = parts;
+            while (it.next()) |p| {
+                std.mem.copyForwards(Value, into[start..p.cell], from[start..p.cell]);
+                start = p.cell + 1;
+            }
+            std.mem.copyForwards(Value, into[start..], from[start..]);
+        }
+        // Then each part.
+        var it = parts;
+        while (it.next()) |p| {
+            const have = try self.zone_stack.getCell(dst.zone, dst.offset + p.cell);
+            const from = try self.zone_stack.getCell(src.zone, src.offset + p.cell);
+            if (same_variant) if (zoneBlock(have)) |into| if (zoneBlock(from)) |inner| {
+                try self.copyInto(func, into, inner, p.shape);
                 continue;
             };
-            self.zone_stack.setCell(dst.zone, dst.offset + i, from) catch |e| return self.writeFailed(e);
+            const copy = try self.copyValue(func, from, p.shape);
+            self.zone_stack.setCell(dst.zone, dst.offset + p.cell, copy) catch |e| return self.writeFailed(e);
         }
     }
 
@@ -574,11 +580,10 @@ pub const Vm = struct {
         const from = zoneBlock(src) orelse return src;
         const s = try shapeIn(func, shape);
         const to = (try self.zone_stack.alloc(s.cells)).ptr;
-        var i: u32 = 0;
-        while (i < s.cells) : (i += 1) {
-            const cell = try self.zone_stack.getCell(from.zone, from.offset + i);
-            self.zone_stack.setCell(to.zone, to.offset + i, cell) catch |e| return self.writeFailed(e);
-        }
+        // Both found after the allocation, which may have moved the cells.
+        const cells = try self.zone_stack.cellsAt(from.zone, from.offset, s.cells);
+        const into = self.zone_stack.cellsToWrite(to.zone, to.offset, s.cells) catch |e| return self.writeFailed(e);
+        std.mem.copyForwards(Value, into, cells);
         var parts = try self.partsOf(func, s, from);
         while (parts.next()) |part| {
             const at = to.offset + part.cell;

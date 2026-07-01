@@ -113,6 +113,24 @@ pub const ZoneStack = struct {
         if (offset >= cells.len) return error.OutOfBounds;
         cells[offset] = val;
     }
+
+    /// The `count` cells from `offset` in `zone`, to read. Valid until the next `alloc`, which
+    /// may move the zone's cells.
+    pub fn cellsAt(self: *const ZoneStack, zone: ZoneId, offset: u32, count: u32) ZoneError![]const Value {
+        if (zone >= self.arenas.items.len) return error.OutOfBounds;
+        const cells = self.arenas.items[zone].cells.items;
+        if (@as(usize, offset) + count > cells.len) return error.OutOfBounds;
+        return cells[offset..][0..count];
+    }
+
+    /// The same cells, to write (`setCell`'s rules).
+    pub fn cellsToWrite(self: *ZoneStack, zone: ZoneId, offset: u32, count: u32) ZoneError![]Value {
+        if (zone >= self.arenas.items.len) return error.OutOfBounds;
+        if (self.static_zone) |sz| if (zone == sz and !self.static_open) return error.ReadOnly;
+        const cells = self.arenas.items[zone].cells.items;
+        if (@as(usize, offset) + count > cells.len) return error.OutOfBounds;
+        return cells[offset..][0..count];
+    }
 };
 
 test "zone alloc returns cell offsets and pop frees memory" {
