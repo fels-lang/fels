@@ -938,3 +938,80 @@ test "fels test: on the comptime VM, a struct value returned or passed is a copy
     try std.testing.expectEqual(@as(u32, 3), native.summary.passed);
     try std.testing.expect(native.summary.ok());
 }
+
+// A local that only reads a value which does not change shares it rather than copying it. These
+// are the cases where sharing would show: the shared value returned, passed to a callee that
+// changes its param, or its source changed after it.
+const value_share_source =
+    \\Inner :: struct { a: u32, b: u32 }
+    \\Outer :: struct { x: u32, inner: Inner }
+    \\Shape :: enum { none, box: Inner }
+    \\
+    \\payload_of :: fn(s: Shape) -> Inner {
+    \\    match s {
+    \\        .box |v| => { return v; },
+    \\        .none => { return .{ .a = 0, .b = 0 }; },
+    \\    }
+    \\}
+    \\bump :: fn(i: Inner) -> u32 { i.a = i.a + 10u32; return i.a; }
+    \\first :: fn(arr: [2]Inner) -> Inner { x := arr[0]; return x; }
+    \\inner_of :: fn(o: Outer) -> Inner { y := o.inner; z := y; return z; }
+    \\
+    \\#test
+    \\a_shared_value_returned :: fn(t: *Test) {
+    \\    s: Shape = .box(.{ .a = 1, .b = 2 });
+    \\    x := payload_of(s);
+    \\    x.a = 9u32;
+    \\    t.eq(payload_of(s).a, 1u32);
+    \\    o: Outer = .{ .x = 1, .inner = .{ .a = 1, .b = 2 } };
+    \\    r := inner_of(o);
+    \\    r.b = 20u32;
+    \\    t.eq(o.inner.b, 2u32);
+    \\    arr: [2]Inner = .{ .{ .a = 1, .b = 2 }, .{ .a = 3, .b = 4 } };
+    \\    f := first(arr);
+    \\    f.a = 10u32;
+    \\    t.eq(arr[0].a, 1u32);
+    \\}
+    \\
+    \\#test
+    \\a_shared_value_passed_on :: fn(t: *Test) {
+    \\    i: Inner = .{ .a = 1, .b = 2 };
+    \\    j := i;
+    \\    t.eq(bump(j), 11u32);
+    \\    t.eq(j.a, 1u32);
+    \\}
+    \\
+    \\#test
+    \\a_source_changed_after :: fn(t: *Test) {
+    \\    o: Outer = .{ .x = 1, .inner = .{ .a = 1, .b = 2 } };
+    \\    x := o.inner;
+    \\    o.inner.a = 5u32;
+    \\    t.eq(x.a, 1u32);
+    \\    arr: [3]u32 = .{ 1, 2, 3 };
+    \\    s := 0u32;
+    \\    for v in arr {
+    \\        arr[2] = 100u32;
+    \\        s = s + v;
+    \\    }
+    \\    t.eq(s, 6u32);
+    \\}
+    \\
+;
+
+test "fels test: on the comptime VM, a local that only reads a value shares it where no copy would differ" {
+    const dir = ".zig-cache/tc_value_share";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/main.fels", value_share_source);
+    const vm = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(vm.text);
+    try expectHas(vm.text, "  \u{2713} a_shared_value_returned\n  \u{2713} a_shared_value_passed_on\n  \u{2713} a_source_changed_after\n");
+    try std.testing.expectEqual(@as(u32, 3), vm.summary.passed);
+    try std.testing.expect(vm.summary.ok());
+    if (comptime !fels.llvm_enabled) return;
+    if (comptime builtin.os.tag != .windows) return;
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try std.testing.expectEqual(@as(u32, 3), native.summary.passed);
+    try std.testing.expect(native.summary.ok());
+}
