@@ -26,8 +26,9 @@ These compile without a message and give a wrong result.
   write through a `[]const T` compiles (`s[0] = x` for `s: []const u8` writes). The type checker
   has no const slice: it reads `[]const T` as `[]T`. (`*const T` to `*T` is refused.) Verified
   2026-10-19.
-- **On the comptime VM, a copy of a struct shares its fields with the original**: after
-  `b := a; b.x = 5;`, `a.x` is 5 too. Reported 2026-10-19.
+- **On the comptime VM, a copy of an optional struct shares its payload with the original**:
+  after `b := a;` for `a: ?P`, a write to `b`'s payload changes `a`'s. (Copies of structs,
+  arrays and enum values are their own since 2026-10-19.) Reported 2026-10-19.
 
 ## 2. Compiler crashes and missing messages
 
