@@ -34,7 +34,7 @@ pub const ZoneStack = struct {
     allocator: std.mem.Allocator,
     arenas: std.ArrayList(Arena) = .empty,
     /// The zone that holds the program's static data (a table, a struct constant), which a run
-    /// builds the first time it reads one. It sits under every other zone, so a static outlives
+    /// builds the first time it reads one. It sits under every zone of the run, so a static outlives
     /// the calls that use it, and it is read-only once built: static data is what the image holds,
     /// and code that runs at compile time can read it but cannot change it.
     static_zone: ?ZoneId = null,

@@ -456,7 +456,7 @@ pub const Vm = struct {
     /// turn a comptime-built `AstBlock` back into front-end AST. All zone
     /// memory is freed by `deinit`.
     pub fn executeKeepZones(self: *Vm, function: BytecodeFunction) VmError!Value {
-        if (self.zone_stack.depth() == 0) try self.enterRoot();
+        if (self.zone_stack.static_zone == null) try self.enterRoot();
         return self.run(&function, &.{});
     }
 
@@ -633,15 +633,18 @@ pub const Vm = struct {
         return self.runTop(f, args);
     }
 
-    /// Outermost entry: guarantee an active "root" zone so aggregate/`new`
-    /// allocations always have somewhere to live, then unwind it on the way out.
+    /// Outermost entry: guarantee the static and root zones so static data and aggregate/`new`
+    /// allocations always have somewhere to live, then unwind them on the way out. A caller may
+    /// have pushed a zone of its own for the arguments (the `*Test` of a test, the `Build` of
+    /// build.fels); the run's zones go above it.
     /// (Nested `call` opcodes reuse the existing zone stack and do not add one.)
     fn runTop(self: *Vm, func: *const BytecodeFunction, args: []const Value) VmError!Value {
         const root_mark = self.zone_stack.depth();
-        if (root_mark == 0) try self.enterRoot();
+        const opens = self.zone_stack.static_zone == null;
+        if (opens) try self.enterRoot();
         defer {
             self.zone_stack.popTo(root_mark);
-            if (root_mark == 0) self.forgetStatics();
+            if (opens) self.forgetStatics();
         }
         return self.run(func, args);
     }
