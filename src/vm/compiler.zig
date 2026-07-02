@@ -239,10 +239,21 @@ const FnCompiler = struct {
     /// Element addresses a slice starts at (`slice_expr`'s pointer). A slice counts its
     /// elements in cells of the array, so there an aggregate element stays its cell.
     slice_starts: std.AutoHashMap(ir.RegId, void),
-    /// Values just built (a literal, a call's result: a struct, an array or an enum value) →
-    /// how many places take them. One that a single place takes is that place's own and is not
-    /// copied there (`resolveCopy`).
-    fresh: std.AutoHashMap(ir.RegId, u32),
+    /// Whether `analyze` has run: what a copy may skip is worked out the first time the function
+    /// copies a struct, an array or an enum value, which most functions never do.
+    analyzed: bool = false,
+    /// Per register: the instruction that defines it.
+    defs: []?*const ir.Instr = &.{},
+    /// Per register: for a value just built (a literal, a call's result: a struct, an array or
+    /// an enum value), how many places take it; `not_built` for any other. One that a single
+    /// place takes is that place's own and is not copied there (`resolveCopy`).
+    takers: []u32 = &.{},
+    /// How many `store_local`s name each local (a param the body changes counts its own).
+    store_counts: std.StringHashMap(u32),
+    /// Locals and params something points at or writes into (`&x`, `x.a = 1`, `x[i] = 1`).
+    pointed_at: std.StringHashMap(void),
+    /// Read-only locals (`isReadOnly`) given a value another place holds, which they share.
+    borrowed: std.StringHashMap(void),
     /// The shapes of the values the function copies (`shapeOf`), and their parts.
     shapes: std.ArrayList(Shape) = .empty,
     shape_parts: std.ArrayList(ShapePart) = .empty,
@@ -273,7 +284,9 @@ const FnCompiler = struct {
             .addressed = std.StringHashMap(void).init(allocator),
             .aggregate_cells = std.AutoHashMap(ir.RegId, Reg).init(allocator),
             .slice_starts = std.AutoHashMap(ir.RegId, void).init(allocator),
-            .fresh = std.AutoHashMap(ir.RegId, u32).init(allocator),
+            .store_counts = std.StringHashMap(u32).init(allocator),
+            .pointed_at = std.StringHashMap(void).init(allocator),
+            .borrowed = std.StringHashMap(void).init(allocator),
         };
     }
 
@@ -288,7 +301,11 @@ const FnCompiler = struct {
         self.addressed.deinit();
         self.aggregate_cells.deinit();
         self.slice_starts.deinit();
-        self.fresh.deinit();
+        if (self.defs.len != 0) self.allocator.free(self.defs);
+        if (self.takers.len != 0) self.allocator.free(self.takers);
+        self.store_counts.deinit();
+        self.pointed_at.deinit();
+        self.borrowed.deinit();
         self.shapes.deinit(self.allocator);
         self.shape_parts.deinit(self.allocator);
         self.scratch.deinit(self.allocator);
@@ -299,7 +316,6 @@ const FnCompiler = struct {
         try self.collectTypes();
         try self.collectAddressed();
         try self.collectSliceStarts();
-        try self.collectFresh();
         self.seedScratchBase();
         try self.emitAddressedInit();
 
@@ -391,49 +407,146 @@ const FnCompiler = struct {
         }
     }
 
-    /// Find the values just built (`fresh`) and count the places that take each: a local, a
-    /// store, a literal's part, a capture, the caller.
-    fn collectFresh(self: *FnCompiler) CompileError!void {
+    /// Work out what the function's copies may skip, once: the values just built and how many
+    /// places take each (`takers`), the locals that only read (`isReadOnly`), and those of them
+    /// that share the value they are given (`borrowed`).
+    fn analyze(self: *FnCompiler) CompileError!void {
+        if (self.analyzed) return;
+        self.analyzed = true;
+        var regs: usize = 0;
         for (self.func.blocks) |block| {
-            for (block.instrs) |inst| {
-                const id = inst.id orelse continue;
-                const built = switch (inst.kind) {
-                    .struct_lit, .variant_lit, .call, .call_indirect => true,
-                    .builtin => |b| std.mem.eql(u8, b.name, "compound_literal"),
-                    else => false,
-                };
-                if (built) try self.fresh.put(id, 0);
+            for (block.instrs) |inst| if (inst.id) |id| {
+                regs = @max(regs, @as(usize, id) + 1);
+            };
+        }
+        self.defs = try self.allocator.alloc(?*const ir.Instr, regs);
+        @memset(self.defs, null);
+        self.takers = try self.allocator.alloc(u32, regs);
+        @memset(self.takers, not_built);
+        for (self.func.blocks) |block| {
+            for (block.instrs) |*inst| {
+                if (inst.id) |id| {
+                    self.defs[id] = inst;
+                    const built = switch (inst.kind) {
+                        .struct_lit, .variant_lit, .call, .call_indirect => true,
+                        .builtin => |b| std.mem.eql(u8, b.name, "compound_literal"),
+                        else => false,
+                    };
+                    if (built) self.takers[id] = 0;
+                }
+                if (inst.kind == .store_local) {
+                    const n = try self.store_counts.getOrPut(inst.kind.store_local.name);
+                    n.value_ptr.* = if (n.found_existing) n.value_ptr.* + 1 else 1;
+                }
             }
         }
         for (self.func.blocks) |block| {
             for (block.instrs) |inst| switch (inst.kind) {
+                // The places that take a value: a local, a store, a literal's part, a capture.
                 .store_local => |sl| self.taken(sl.value),
-                .store => |s| self.taken(s.value),
+                .store => |s| {
+                    self.taken(s.value);
+                    try self.pointAt(s.target);
+                },
                 .struct_lit => |sl| for (sl.fields) |f| self.taken(f.value),
                 .variant_lit => |vl| if (vl.payload) |p| self.taken(p),
                 .closure_env_make => |mk| for (mk.fields) |f| self.taken(f.value),
                 .builtin => |b| if (std.mem.eql(u8, b.name, "compound_literal") or std.mem.eql(u8, b.name, "optional_some")) {
                     for (b.args) |arg| self.taken(arg);
                 },
+                // What points at a local or a param, or into one.
+                .unary => |un| if (un.op == .ref) try self.pointAt(un.value),
+                .field_addr => |f| try self.pointAt(f.base),
+                .index_addr => |ix| try self.pointAt(ix.base),
+                .slice_expr => |se| try self.pointAt(se.ptr),
+                .inline_asm => |ia| for (ia.args) |arg| try self.pointAt(arg),
                 else => {},
             };
+            // And the caller.
             if (block.terminator) |term| switch (term) {
                 .return_value => |opt| if (opt) |v| self.taken(v),
+                else => {},
+            };
+        }
+        for (self.func.blocks) |block| {
+            for (block.instrs) |inst| switch (inst.kind) {
+                .store_local => |sl| if (self.isReadOnly(sl.name) and !self.isFresh(sl.value) and self.isStable(sl.value, 0)) {
+                    try self.borrowed.put(sl.name, {});
+                },
                 else => {},
             };
         }
     }
 
     fn taken(self: *FnCompiler, v: ir.Value) void {
-        if (v != .reg) return;
-        if (self.fresh.getPtr(v.reg)) |n| n.* += 1;
+        if (v != .reg or v.reg >= self.takers.len) return;
+        if (self.takers[v.reg] != not_built) self.takers[v.reg] += 1;
     }
 
-    /// Is `v` a value just built that only one place takes?
+    /// Is `v` a value just built that only one place takes? (After `analyze`.)
     fn isFresh(self: *FnCompiler, v: ir.Value) bool {
-        if (v != .reg) return false;
-        const n = self.fresh.get(v.reg) orelse return false;
-        return n <= 1;
+        if (v != .reg or v.reg >= self.takers.len) return false;
+        return self.takers[v.reg] <= 1;
+    }
+
+    /// The instruction that defines register `r`. (After `analyze`.)
+    fn defOf(self: *FnCompiler, r: ir.RegId) ?*const ir.Instr {
+        return if (r < self.defs.len) self.defs[r] else null;
+    }
+
+    fn pointAt(self: *FnCompiler, v: ir.Value) CompileError!void {
+        if (self.rootName(v, 0)) |name| try self.pointed_at.put(name, {});
+    }
+
+    /// The local or param whose blocks `v` is in or points into (`o` of `&o.a[i].b`), if any.
+    fn rootName(self: *FnCompiler, v: ir.Value, depth: usize) ?[]const u8 {
+        if (depth > max_chain) return null;
+        switch (v) {
+            .local, .param => |name| return name,
+            .reg => |r| {
+                const def = self.defOf(r) orelse return null;
+                return switch (def.kind) {
+                    .field, .field_addr => |f| self.rootName(f.base, depth + 1),
+                    .index, .index_addr => |ix| self.rootName(ix.base, depth + 1),
+                    .variant_payload => |vp| self.rootName(vp.value, depth + 1),
+                    .optional_payload => |o| self.rootName(o, depth + 1),
+                    .unary => |un| if (un.op == .ref) self.rootName(un.value, depth + 1) else null,
+                    else => null,
+                };
+            },
+            else => return null,
+        }
+    }
+
+    /// Does the local only read the one value it is given: is it given one, and is it never
+    /// written into or pointed at? Such a local needs no block of its own.
+    fn isReadOnly(self: *FnCompiler, name: []const u8) bool {
+        if (self.isParam(name) or self.addressed.contains(name) or self.pointed_at.contains(name)) return false;
+        return (self.store_counts.get(name) orelse 0) == 1;
+    }
+
+    /// Is `v` a value that stays as it is while the function runs: a param the body does not
+    /// change or point at, a read-only local, a global (static data, which compile-time code
+    /// cannot change), or a field, an element or a payload of one of these?
+    fn isStable(self: *FnCompiler, v: ir.Value, depth: usize) bool {
+        if (depth > max_chain) return false;
+        return switch (v) {
+            .param => |name| !self.store_counts.contains(name) and !self.pointed_at.contains(name),
+            .local => |name| self.isReadOnly(name),
+            .global => |name| self.globalIndex(name) != null,
+            .imm => false,
+            .reg => |r| {
+                const def = self.defOf(r) orelse return false;
+                // A part of a value, not of what a pointer or a slice points at.
+                return switch (def.kind) {
+                    .field => |f| self.blockCells(self.typeOf(f.base)) != null and self.isStable(f.base, depth + 1),
+                    .index => |ix| self.blockCells(self.typeOf(ix.base)) != null and self.isStable(ix.base, depth + 1),
+                    .variant_payload => |vp| self.blockCells(self.typeOf(vp.value)) != null and self.isStable(vp.value, depth + 1),
+                    .optional_payload => |o| self.typeOf(o) == .optional and self.isStable(o, depth + 1),
+                    else => false,
+                };
+            },
+        };
     }
 
     /// Allocate a backing cell for each addressed scalar local at function entry
@@ -582,8 +695,9 @@ const FnCompiler = struct {
     /// well, a copy of it, so that the two do not share its block.
     fn resolveCopy(self: *FnCompiler, v: ir.Value, ty: ir.IrType) CompileError!Reg {
         const r = try self.resolveReg(v);
-        if (self.isFresh(v)) return r;
         const shape = try self.shapeOf(ty) orelse return r;
+        try self.analyze();
+        if (self.isFresh(v)) return r;
         const copy = self.newReg();
         try self.emit(Instr.r_r_imm(.copy_value, copy, r, shape));
         return copy;
@@ -1172,6 +1286,7 @@ const FnCompiler = struct {
                 if (s.target == .reg) if (self.aggregate_cells.get(s.target.reg)) |cell| {
                     const vr = try self.resolveReg(s.value);
                     if (try self.shapeOf(inst.ty)) |shape| {
+                        try self.analyze();
                         try self.emit(.{ .op = .assign_cell, .a = cell, .b = vr, .c = shape, .imm = @intFromBool(self.isFresh(s.value)) });
                     } else try self.emit(Instr.r_r_imm(.store_cell, cell, vr, 0));
                     return;
@@ -1342,6 +1457,13 @@ const FnCompiler = struct {
             try self.emit(Instr.r_r_imm(.store_local, 0, copy, slot));
             return;
         }
+        // A read-only local takes a value just built as it is, and shares one that does not
+        // change while it holds it: nothing writes into either, so no copy can differ.
+        try self.analyze();
+        if (self.isReadOnly(sl.name) and (self.isFresh(sl.value) or self.borrowed.contains(sl.name))) {
+            try self.emit(Instr.r_r_imm(.store_local, 0, vr, slot));
+            return;
+        }
         try self.emit(.{ .op = .assign_local, .a = @intFromBool(self.isFresh(sl.value)), .b = vr, .c = shape, .imm = slot });
     }
 
@@ -1509,9 +1631,12 @@ const FnCompiler = struct {
     /// The register of `v`, the value the function returns: a copy of it when it is a struct, an
     /// array or an enum value that another place holds past the call (a param's, a field's, a
     /// global's), so that the caller's local does not share that place's block. A local's own
-    /// value ends with the call and is returned as it is.
+    /// value ends with the call and is returned as it is; one a local shares (`borrowed`) is not
+    /// its own.
     fn resolveReturn(self: *FnCompiler, v: ir.Value) CompileError!Reg {
-        if (v == .local) return self.resolveReg(v);
+        if (try self.shapeOf(self.func.return_ty) == null) return self.resolveReg(v);
+        try self.analyze();
+        if (v == .local and !self.borrowed.contains(v.local)) return self.resolveReg(v);
         return self.resolveCopy(v, self.func.return_ty);
     }
 
@@ -1766,6 +1891,12 @@ const FnCompiler = struct {
 
 /// How deep the parts of a shape go (`FnCompiler.shapeAt`).
 const max_shape_depth = 64;
+
+/// How long a chain of fields, elements and payloads `rootName` and `isStable` follow.
+const max_chain = 64;
+
+/// `FnCompiler.takers` of a register that holds no value just built.
+const not_built = std.math.maxInt(u32);
 
 fn isFloat(ty: ir.IrType) bool {
     return ty == .f32 or ty == .f64;
