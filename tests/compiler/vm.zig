@@ -241,6 +241,52 @@ test "engine: copy_cells copies a block, overlapping or not, and stores what is 
     }
 }
 
+test "engine: copy_value copies the blocks of a value's parts, and copy_cells writes into them" {
+    var vm = engine.Vm.init(std.testing.allocator);
+    defer vm.deinit();
+
+    // r0 = [1, r1] with r1 = [2, 3]: a struct whose second field is a struct of its own. Shape 0
+    // is the outer struct, whose part at cell 1 has shape 1, two plain cells. r3 = a copy of r0,
+    // r4 = its inner block, whose first cell becomes 20.
+    const shapes = [_]instructions.Shape{ .{ .cells = 2, .first = 0, .len = 1 }, .{ .cells = 2 } };
+    const parts = [_]instructions.ShapePart{.{ .cell = 1, .shape = 1 }};
+    const prefix = [_]Instr{
+        Instr.r_imm(.zone_alloc, 0, 2),
+        Instr.r_imm(.zone_alloc, 1, 2),
+        Instr.r_imm(.load_imm, 2, 2),
+        Instr.r_r_imm(.store_cell, 1, 2, 0),
+        Instr.r_imm(.load_imm, 2, 3),
+        Instr.r_r_imm(.store_cell, 1, 2, 1),
+        Instr.r_imm(.load_imm, 2, 1),
+        Instr.r_r_imm(.store_cell, 0, 2, 0),
+        Instr.r_r_imm(.store_cell, 0, 1, 1),
+        Instr.r_r_imm(.copy_value, 3, 0, 0),
+        Instr.r_r_imm(.load_cell, 4, 3, 1),
+        Instr.r_imm(.load_imm, 2, 20),
+        Instr.r_r_imm(.store_cell, 4, 2, 0),
+    };
+    const Case = struct { tail: [3]Instr, want: i128 };
+    const cases = [_]Case{
+        // The original's inner block still holds 2: the copy has one of its own.
+        .{ .tail = .{ Instr.r_r_imm(.load_cell, 5, 1, 0), Instr.r_imm(.ret, 5, 0), Instr.with_imm(.nop, 0) }, .want = 2 },
+        // The copy written back over the original: the original keeps its inner block, which
+        // takes the copy's cells.
+        .{ .tail = .{ Instr.r_r_imm(.copy_cells, 0, 3, 0), Instr.r_r_imm(.load_cell, 5, 1, 0), Instr.r_imm(.ret, 5, 0) }, .want = 20 },
+    };
+    inline for (cases) |c| {
+        const code = prefix ++ c.tail;
+        const func = instructions.BytecodeFunction{
+            .name = "copy",
+            .instrs = &code,
+            .num_regs = 6,
+            .num_locals = 0,
+            .shapes = &shapes,
+            .shape_parts = &parts,
+        };
+        try std.testing.expectEqual(c.want, (try vm.execute(func)).int);
+    }
+}
+
 test "engine: a static is built on first read, shared, and read-only" {
     // Global 0 is a two-cell block [10, 20] built by its own function.
     const init_code = [_]Instr{
