@@ -38,6 +38,10 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
 
 ### Fixed
 
+- `fels test --comptime` and build.fels read a global that is a struct or an array. Each
+  read failed with `NoActiveZone`: the `*Test` of a test and the `Build` of build.fels are put
+  in a zone of their own before the call, and the comptime VM opened the zone that holds static
+  data only when no zone was open. `#run` read them right.
 - On Linux, a struct passed to or returned from a C function by value follows System V: by
   its fields, in integer and SSE registers, and in memory past 16 bytes. It went by the Windows
   rules: a `Vector2` (`{ f32, f32 }`) arrived as an integer where C wanted an XMM register, and a
