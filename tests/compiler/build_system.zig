@@ -376,3 +376,19 @@ test "build: a build script can print" {
     defer plan.deinit();
     try std.testing.expectEqual(@as(usize, 1), plan.artifacts.items.len);
 }
+
+test "build: a build script reads a global that is a struct" {
+    // The `Build` argument has a zone of its own, below the run's; the static zone was opened
+    // only on an empty zone stack, so reading the global failed with NoActiveZone.
+    const src =
+        \\#import std.build.{ Build };
+        \\Names :: struct { exe: []const u8, src: []const u8 }
+        \\N: Names = .{ .exe = "app", .src = "main.fels" };
+        \\build :: fn(b: Build) {
+        \\    b.executable(N.exe, N.src);
+        \\}
+    ;
+    var plan = try loadPlan("bs_global_struct", src, &.{});
+    defer plan.deinit();
+    try std.testing.expectEqualStrings("app", plan.artifacts.items[0].name);
+}

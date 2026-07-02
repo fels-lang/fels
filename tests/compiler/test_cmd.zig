@@ -1015,3 +1015,62 @@ test "fels test: on the comptime VM, a local that only reads a value shares it w
     try std.testing.expectEqual(@as(u32, 3), native.summary.passed);
     try std.testing.expect(native.summary.ok());
 }
+
+// A global that is a struct or an array is static data, built in the static zone the first
+// time it is read. `fels test` put the `*Test` argument in a zone of its own before the call,
+// and the VM opened its static zone only on an empty zone stack, so every read failed with
+// NoActiveZone.
+const global_aggregate_source =
+    \\Inner :: struct { a: u32, b: u32 }
+    \\Table :: struct { n: u32, vals: [3]u32, inner: Inner }
+    \\
+    \\G: Inner = .{ .a = 1, .b = 2 };
+    \\PRIMES: [4]u32 = .{ 2, 3, 5, 7 };
+    \\T: Table = .{ .n = 3, .vals = .{ 4, 5, 6 }, .inner = .{ .a = 7, .b = 8 } };
+    \\
+    \\second_of_g :: fn() -> u32 { return G.b; }
+    \\
+    \\#test
+    \\a_struct_global :: fn(t: *Test) {
+    \\    t.eq(G.a, 1u32);
+    \\    t.eq(second_of_g(), 2u32);
+    \\    g := G;
+    \\    t.eq(g.b, 2u32);
+    \\}
+    \\
+    \\#test
+    \\an_array_global :: fn(t: *Test) {
+    \\    t.eq(PRIMES[2], 5u32);
+    \\    t.eq(PRIMES.len, 4usize);
+    \\    s := PRIMES[1..];
+    \\    t.eq(s[2], 7u32);
+    \\}
+    \\
+    \\#test
+    \\a_struct_global_with_an_array_and_a_struct :: fn(t: *Test) {
+    \\    t.eq(T.vals[1], 5u32);
+    \\    t.eq(T.inner.b, 8u32);
+    \\    p := &T.inner;
+    \\    t.eq(p.a, 7u32);
+    \\}
+    \\
+;
+
+test "fels test: on the comptime VM, a test reads a global that is a struct or an array" {
+    const dir = ".zig-cache/tc_global_aggregate";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/main.fels", global_aggregate_source);
+    const vm = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(vm.text);
+    try expectHas(vm.text, "  \u{2713} a_struct_global\n  \u{2713} an_array_global\n");
+    try expectHas(vm.text, "  \u{2713} a_struct_global_with_an_array_and_a_struct\n");
+    try std.testing.expectEqual(@as(u32, 3), vm.summary.passed);
+    try std.testing.expect(vm.summary.ok());
+    if (comptime !fels.llvm_enabled) return;
+    if (comptime builtin.os.tag != .windows) return;
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try std.testing.expectEqual(@as(u32, 3), native.summary.passed);
+    try std.testing.expect(native.summary.ok());
+}
