@@ -3,11 +3,13 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.12.0 — 2026-10-19
 
 Programs built with `-O1` to `-O3` (and `fels build` of a single file, which is `-O2`) go
 through LLVM's optimiser now: they run as fast as the same C or Zig, where before they took
-1.5 to 3.5 times as long. And the compiler runs on Linux.
+1.5 to 3.5 times as long. The compiler runs on Linux, and the release has a Linux archive. And a
+round of fixes for programs that compiled but ran wrong: `byte` layout, `for &x` over an array,
+sub-byte locals, structs passed to C on Linux, and escapes the zone and frame checks missed.
 
 ### Added
 
