@@ -38,6 +38,11 @@ through LLVM's optimiser now: they run as fast as the same C or Zig, where befor
 
 ### Fixed
 
+- Zone memory cannot escape its zone through an `if` or `match` value (`keep = if ok { buf }
+  else { other };`), or inside a closure stored outside the zone (`f = fn() -> usize { return
+  buf.len; };`). Both compiled: the check followed names only. A closure over zone memory may
+  still be passed to a function that takes one, as a function value cannot be a `borrow`
+  parameter.
 - `fels test --comptime` and build.fels read a global that is a struct or an array. Each
   read failed with `NoActiveZone`: the `*Test` of a test and the `Build` of build.fels are put
   in a zone of their own before the call, and the comptime VM opened the zone that holds static
