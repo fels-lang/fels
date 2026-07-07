@@ -254,6 +254,65 @@ test "zone ownership: allocations cannot escape" {
     try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "zone_call.fels", passed_to_function));
 }
 
+test "zone ownership: an allocation cannot escape through an if or match value, or inside a closure" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // These compiled: the check followed names, and an if or match value or a closure's
+    // environment carried the zone's memory past it.
+    const escapes = [_][]const u8{
+        \\bad :: fn() -> usize {
+        \\    keep: []u8 = .{};
+        \\    zone scratch: Arena {
+        \\        buf := scratch.new_slice(u8, 16);
+        \\        keep = if buf.len > 0 { buf } else { buf };
+        \\    }
+        \\    return keep.len;
+        \\}
+        ,
+        \\bad :: fn() -> usize {
+        \\    keep: []u8 = .{};
+        \\    zone scratch: Arena {
+        \\        buf := scratch.new_slice(u8, 16);
+        \\        keep = match buf.len { 0 => buf, else => buf };
+        \\    }
+        \\    return keep.len;
+        \\}
+        ,
+        \\bad :: fn() -> usize {
+        \\    f := fn() -> usize { return 0; };
+        \\    zone scratch: Arena {
+        \\        buf := scratch.new_slice(u8, 16);
+        \\        f = fn() -> usize { return buf.len; };
+        \\    }
+        \\    return f();
+        \\}
+    };
+    for (escapes) |src| {
+        try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "zone_escape.fels", src));
+    }
+
+    // Inside the zone, and passed down to a function that calls it, a closure over zone memory is
+    // fine; so is one that captures none, kept outside.
+    var fe = try fels.compile(arena.allocator(), "zone_fine.fels",
+        \\apply :: fn(f: fn(usize) -> usize, x: usize) -> usize { return f(x); }
+        \\good :: fn() -> usize {
+        \\    outer: usize = 7;
+        \\    later := fn(x: usize) -> usize { return x + outer; };
+        \\    total: usize = 0;
+        \\    zone scratch: Arena {
+        \\        buf := scratch.new_slice(u8, 16);
+        \\        other := scratch.new_slice(u8, 4);
+        \\        pick := if buf.len > 8 { buf } else { other };
+        \\        size := fn(x: usize) -> usize { return x + pick.len; };
+        \\        total = size(1) + apply(size, 2) + later(0);
+        \\    }
+        \\    return total;
+        \\}
+    );
+    defer fe.deinit(arena.allocator());
+}
+
 test "zone borrowing: borrowed parameters may use and forward zone-owned values" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
