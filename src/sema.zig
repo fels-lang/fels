@@ -2236,6 +2236,9 @@ const Checker = struct {
         try self.noteFormatLiteral(expr, expected);
         const owner = self.exprZoneOwner(expr) orelse return;
         if (expected) |ty| if (ty == .borrow) return;
+        // A closure passed down (a comparator, a callback) is not refused: a function value
+        // cannot be a `borrow` parameter, so there would be no way to pass one at all.
+        if (expected) |ty| if (ty == .fn_ptr) return;
         const source = if (owner.kind == .borrow) "borrowed value" else "zone-owned value";
         self.emitError(expr.span, "{s} from `{s}` can only be passed to a `borrow` parameter", .{ source, owner.name });
         return error.SemanticFailed;
@@ -5544,7 +5547,13 @@ const Checker = struct {
             if (!tyCanCarryZoneOwner(ty)) return null;
         }
         return switch (expr.kind) {
-            .ident => |name| self.lookupZoneOwner(name),
+            .ident => |name| self.lookupZoneOwner(name) orelse self.closureZoneOwner(expr),
+            // Either branch may be the value (`keep = if ok { buf } else { other };`).
+            .if_expr => |ie| self.exprZoneOwner(ie.then_value) orelse self.exprZoneOwner(ie.else_value),
+            .match_expr => |me| blk: {
+                for (me.arms) |arm| if (self.exprZoneOwner(arm.value)) |owner| break :blk owner;
+                break :blk null;
+            },
             .unsafe_expr, .run_expr, .force_unwrap => |inner| self.exprZoneOwner(inner.*),
             .as_cast => |cast| self.exprZoneOwner(cast.value.*),
             .nil_coalesce => |coalesce| self.exprZoneOwner(coalesce.value.*) orelse self.exprZoneOwner(coalesce.default.*),
@@ -5576,6 +5585,17 @@ const Checker = struct {
             },
             else => null,
         };
+    }
+
+    /// The owner of zone or borrowed memory a closure captures: `fn() -> usize { return buf.len; }`
+    /// in a zone keeps a copy of `buf` in its environment, so the closure must not outlive the
+    /// zone either. Null for anything that is no capturing lambda.
+    fn closureZoneOwner(self: Checker, expr: ast.Expr) ?ZoneOwner {
+        if (expr.kind != .ident) return null;
+        const id = self.resolveSymbol(expr.kind.ident) orelse return null;
+        const caps = self.env.lambda_captures.get(self.symbols.symbol(id).link_name) orelse return null;
+        for (caps) |cap| if (self.lookupZoneOwner(cap.name)) |owner| return owner;
+        return null;
     }
 
     /// The first argument of a `core::` builtin that takes a type, written `*name` or
@@ -7991,7 +8011,8 @@ fn sameTy(a: Ty, b: Ty) bool {
 
 fn tyCanCarryZoneOwner(ty: Ty) bool {
     return switch (ty) {
-        .pointer, .const_ptr, .slice, .borrow, .optional, .fallible, .named, .unknown => true,
+        // (a function value too: a closure's environment may hold zone memory)
+        .pointer, .const_ptr, .slice, .borrow, .optional, .fallible, .named, .fn_ptr, .unknown => true,
         else => false,
     };
 }
