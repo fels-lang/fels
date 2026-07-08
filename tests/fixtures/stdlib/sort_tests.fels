@@ -1,0 +1,164 @@
+// std.sort (and mem.compare_bytes), as `#test` functions: `fels test` runs them natively and on
+// the comptime VM (tests/compiler/std_tests.zig).
+#import std.heap as heap;
+#import std.mem as mem;
+#import std.sort as sort;
+
+// A slice of `n` numbers in [0, range), the same every run.
+numbers :: fn(a: *heap::Arena, n: usize, range: u32, seed: u32) -> []i32 {
+    xs := heap::alloc(i32, a, n);
+    s := seed;
+    i: usize = 0;
+    while i < n {
+        s = s *% 1103515245 +% 12345;
+        xs[i] = ((s >> 8) % range) as i32;
+        i += 1;
+    }
+    return xs;
+}
+
+sum :: fn(xs: []i32) -> i64 {
+    total: i64 = 0;
+    for x in xs { total += x as i64; }
+    return total;
+}
+
+#test
+asc_sorts_shuffled_numbers :: fn(t: *Test) {
+    a := heap::make();
+    sizes: [7]usize = .{ 0, 1, 2, 3, 17, 100, 600 };
+    for n in sizes {
+        xs := numbers(&a, n, 1000, 7);
+        before := sum(xs);
+        sort::asc(i32, xs);
+        t.expect(sort::is_sorted(i32, xs));
+        t.eq(sum(xs), before);
+    }
+    a.deinit();
+}
+
+#test
+sorted_reversed_and_equal_inputs :: fn(t: *Test) {
+    a := heap::make();
+    up := heap::alloc(i32, &a, 300);
+    down := heap::alloc(i32, &a, 300);
+    same := heap::alloc(i32, &a, 300);
+    two := heap::alloc(i32, &a, 300);
+    i: usize = 0;
+    while i < 300 {
+        up[i] = i as i32;
+        down[i] = (300 - i) as i32;
+        same[i] = 5;
+        two[i] = (i % 2) as i32;
+        i += 1;
+    }
+    sort::asc(i32, up);
+    sort::asc(i32, down);
+    sort::asc(i32, same);
+    sort::asc(i32, two);
+    t.expect(sort::is_sorted(i32, up));
+    t.expect(sort::is_sorted(i32, down));
+    t.eq(down[0], 1);
+    t.eq(down[299], 300);
+    t.expect(sort::is_sorted(i32, same));
+    t.eq(two[149], 0);
+    t.eq(two[150], 1);
+    a.deinit();
+}
+
+#test
+desc_puts_the_largest_first :: fn(t: *Test) {
+    a := heap::make();
+    xs := numbers(&a, 200, 50, 3);
+    sort::desc(i32, xs);
+    i: usize = 1;
+    while i < xs.len {
+        t.expect(xs[i - 1] >= xs[i]);
+        i += 1;
+    }
+    fs: [5]f64 = .{ 2.5, -1.0, 9.75, 0.0, 3.0 };
+    sort::desc(f64, fs[:]);
+    t.eq(fs[0], 9.75);
+    t.eq(fs[4], -1.0);
+    a.deinit();
+}
+
+Person :: struct { name: []const u8, age: u32 }
+
+#test
+by_a_function_or_a_closure :: fn(t: *Test) {
+    people: [4]Person = .{ .{ "Ada", 36 }, .{ "Bo", 7 }, .{ "Cy", 64 }, .{ "Di", 20 } };
+    sort::by(Person, people[:], fn(a: Person, b: Person) -> bool { return a.age < b.age; });
+    t.eq(people[0].name, "Bo");
+    t.eq(people[3].name, "Cy");
+    // a closure that reads a local
+    pivot: u32 = 30;
+    sort::by(Person, people[:], fn(a: Person, b: Person) -> bool {
+        return (a.age >= pivot) && (b.age < pivot);
+    });
+    t.expect(people[0].age >= 30);
+    t.expect(people[1].age >= 30);
+    t.expect(people[2].age < 30);
+}
+
+#test
+text_sorts_byte_by_byte :: fn(t: *Test) {
+    names: [5][]const u8 = .{ "pear", "apple", "fig", "app", "Zebra" };
+    sort::by([]const u8, names[:], mem::less_bytes);
+    t.eq(names[0], "Zebra");
+    t.eq(names[1], "app");
+    t.eq(names[2], "apple");
+    t.eq(names[4], "pear");
+    t.eq(mem::compare_bytes("ab", "abc"), -1);
+    t.eq(mem::compare_bytes("b", "abc"), 1);
+    t.eq(mem::compare_bytes("same", "same"), 0);
+}
+
+// An entry is its key times 1000 plus where it started; only the key is compared, so entries with
+// the same key are equal to the sort and must keep their order. (Numbers, not a struct: the
+// comptime VM cannot keep a struct in arena memory yet.)
+key_less :: fn(a: i64, b: i64) -> bool { return a / 1000 < b / 1000; }
+
+#test
+stable_keeps_the_order_of_equal_elements :: fn(t: *Test) {
+    a := heap::make();
+    n: usize = 120;
+    es := heap::alloc(i64, &a, n);
+    keys := numbers(&a, n, 5, 11);
+    i: usize = 0;
+    while i < n {
+        es[i] = (keys[i] as i64) * 1000 + (i as i64);
+        i += 1;
+    }
+    sort::stable_by(i64, es, key_less, &a);
+    i = 1;
+    while i < n {
+        t.expect(es[i - 1] / 1000 <= es[i] / 1000);
+        if es[i - 1] / 1000 == es[i] / 1000 { t.expect(es[i - 1] % 1000 < es[i] % 1000); }
+        i += 1;
+    }
+    xs := numbers(&a, 70, 1000, 5);
+    sort::stable_asc(i32, xs, &a);
+    t.expect(sort::is_sorted(i32, xs));
+    a.deinit();
+}
+
+#test
+searching_a_sorted_slice :: fn(t: *Test) {
+    xs: [7]i32 = .{ 1, 3, 3, 3, 8, 10, 12 };
+    t.eq(sort::lower_bound(i32, xs[:], 3), 1);
+    t.eq(sort::upper_bound(i32, xs[:], 3), 4);
+    t.eq(sort::lower_bound(i32, xs[:], 0), 0);
+    t.eq(sort::lower_bound(i32, xs[:], 13), 7);
+    t.eq(sort::lower_bound(i32, xs[:], 9), 5);
+    t.expect(sort::search(i32, xs[:], 8) == 4);
+    t.expect(sort::search(i32, xs[:], 3) == 1);
+    t.expect(sort::search(i32, xs[:], 4) == null);
+    ys: [4]i32 = .{ 9, 7, 7, 2 };
+    greater := fn(a: i32, b: i32) -> bool { return a > b; };
+    t.eq(sort::lower_bound_by(i32, ys[:], 7, greater), 1);
+    t.eq(sort::upper_bound_by(i32, ys[:], 7, greater), 3);
+    t.expect(sort::search_by(i32, ys[:], 2, greater) == 3);
+    t.expect(sort::is_sorted_by(i32, ys[:], greater));
+    t.expect(!sort::is_sorted(i32, ys[:]));
+}
