@@ -3767,7 +3767,18 @@ const FunctionLowerer = struct {
                 }
                 // `ns::member` as a value (function/const reference).
                 const id = self.resolveScope(sa) orelse break :blk Value{ .imm = .null };
-                break :blk Value{ .global = self.symbols.symbol(id).link_name };
+                const sym = self.symbols.symbol(id);
+                // A function of another module used as a value is a closure `{ fn, null }`, as a
+                // function of this module is (`sort::by([]const u8, names, mem::less_bytes)`).
+                // It was the bare function, which LLVM refused where a closure was expected.
+                if (sym.kind == .function and !self.isTemplateFn(sym.name)) {
+                    break :blk try self.emit(self.fnPtrTypeOf(expr), .{ .closure_make = .{
+                        .fn_link = sym.link_name,
+                        .env = .{ .imm = .null },
+                        .fn_takes_env = false,
+                    } });
+                }
+                break :blk Value{ .global = sym.link_name };
             },
             .type_ref => .{ .imm = .null },
             .unsafe_expr => |inner| try self.lowerExpr(inner.*),
