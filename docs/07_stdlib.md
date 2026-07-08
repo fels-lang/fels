@@ -83,6 +83,8 @@ Safe, generic helpers for typed memory.
 - `swap`, `reverse`
 
 For bytes there are specialized aliases: `eql_bytes`, `copy_bytes` and `zero`.
+`compare_bytes(a, b) -> i32` orders two texts byte by byte (-1, 0 or 1, a prefix first), and
+`less_bytes(a, b) -> bool` is that order as a comparison, for sorting text.
 
 ## `std.bytes`
 This module reads and writes fixed-width integers at an explicit offset in a byte slice. It
@@ -761,6 +763,30 @@ sm.get("alpha");                    // hashes + compares the string bytes
 > bytes are its value with zero ceremony, and the compiler refuses the others.
 
 ## General-purpose modules
+
+### `std.sort`
+
+Sorting slices in place, and binary search in sorted ones. The element type comes first, as
+everywhere in std.
+
+```fels
+sort::asc(i32, xs);                              // smallest first, by `<`
+sort::desc(f64, ys);                             // largest first
+sort::by(Person, people, by_age);                // `less(a, b)`: a goes before b
+sort::by([]const u8, names, mem::less_bytes);    // text, byte by byte
+sort::stable_by(Row, rows, by_date, &scratch);   // equal rows keep their order
+sort::is_sorted(i32, xs)                         // true
+sort::lower_bound(i32, xs, 42)                   // the first index whose element is not < 42
+sort::upper_bound(i32, xs, 42)                   // the first index whose element is > 42
+sort::search(i32, xs, 42)                        // ?usize: the first index holding 42
+```
+
+`asc`, `desc` and `by` are an introsort: O(n log n) in every case, in place, and not stable.
+A run of equal elements costs nothing extra. `stable_asc(T, xs, &arena)` and
+`stable_by(T, xs, less, &arena)` are a merge sort that keeps equal elements in their order; the
+arena gives them a second slice as long as `xs`. Every search has a `_by` form that takes the
+`less` the slice is sorted by (`lower_bound_by`, `upper_bound_by`, `search_by`, `is_sorted_by`).
+`less` may be any function value, a closure too.
 
 ### `std.path`
 
