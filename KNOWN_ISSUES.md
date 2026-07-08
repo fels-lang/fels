@@ -99,7 +99,9 @@ These compile without a message and give a wrong result.
   run `f`"). Verified 2026-10-17.
 - The `atomic` field qualifier is not checked: a plain read or write of such a field compiles,
   and the qualifier is accepted on a local too. Verified 2026-10-17.
-- At compile time a `Vec` of structs (`std.vec`) stops with `TypeMismatch`. Reported 2026-10-19.
+- At compile time a struct stored in arena memory (`heap::alloc` of a struct, a `Vec` of structs)
+  stops with `TypeMismatch`: the comptime VM keeps arena memory as host bytes and writes only
+  numbers there. Verified 2026-10-19.
 - At compile time a write through `*Writer` into a `std.io.FixedBuf` stops with `OutOfBounds`, so
   `tests/fixtures/stdlib/fmt_tests.fels` runs natively only. Verified 2026-10-17.
 - A constant computed by a call or `#run` cannot be read by other compile-time code

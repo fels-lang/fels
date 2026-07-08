@@ -3,6 +3,22 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Added
+
+- **`std.sort`**: `asc`, `desc` and `by` sort a slice in place (an introsort, O(n log n) in
+  every case), `stable_asc` and `stable_by` keep equal elements in their order (a merge sort
+  with a slice from an arena), and `lower_bound`, `upper_bound` and `search` find in a sorted
+  slice. `std.mem` gains `compare_bytes` and `less_bytes`, the byte order of two texts.
+
+### Fixed
+
+- `at == 4` for an optional `at: ?usize` means "set, and equal". It stopped the build with an
+  LLVM error.
+- A function of another module used as a value (`sort::by([]const u8, names, mem::less_bytes)`)
+  is a closure, as a function of the file's own is. It stopped the build with an LLVM error.
+
 ## 0.12.0 — 2026-10-19
 
 Programs built with `-O1` to `-O3` (and `fels build` of a single file, which is `-O2`) go
