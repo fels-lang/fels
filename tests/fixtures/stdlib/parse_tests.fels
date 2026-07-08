@@ -1,0 +1,105 @@
+// std.fmt's number parsing, as `#test` functions: `fels test` runs them natively and on the
+// comptime VM (tests/compiler/std_tests.zig).
+#import std.fmt as fmt;
+
+// How parsing `text` as an `i8` ends: its value, or the error's name.
+as_i8 :: fn(text: []const u8) -> []const u8 {
+    v := fmt::parse_int(i8, text, 10) catch e {
+        if e == .overflow { return "overflow"; }
+        if e == .invalid { return "invalid"; }
+        return "empty";
+    };
+    if v == -128 { return "-128"; }
+    if v == 127 { return "127"; }
+    return "other";
+}
+
+as_u8 :: fn(text: []const u8, base: u8) -> i32 {
+    v := fmt::parse_int(u8, text, base) catch e {
+        if e == .overflow { return -1; }
+        if e == .invalid { return -2; }
+        return -3;
+    };
+    return v as i32;
+}
+
+#test
+decimal_integers_of_every_width :: fn(t: *Test) {
+    t.eq(fmt::parse_int(i32, "42", 10) catch e { yield -1; }, 42);
+    t.eq(fmt::parse_int(i32, "-17", 10) catch e { yield 0; }, -17);
+    t.eq(fmt::parse_int(i32, "+5", 10) catch e { yield 0; }, 5);
+    t.eq(fmt::parse_int(u64, "18446744073709551615", 10) catch e { yield 0; }, 18446744073709551615u64);
+    t.eq(fmt::parse_int(i64, "-9223372036854775808", 10) catch e { yield 0; }, -9223372036854775807i64 - 1);
+    t.eq(fmt::parse_int(i64, "9223372036854775807", 10) catch e { yield 0; }, 9223372036854775807i64);
+    t.eq(fmt::parse_int(usize, "1_000_000", 10) catch e { yield 0; }, 1000000usize);
+}
+
+#test
+the_limits_of_a_type :: fn(t: *Test) {
+    t.eq(as_i8("127"), "127");
+    t.eq(as_i8("-128"), "-128");
+    t.eq(as_i8("128"), "overflow");
+    t.eq(as_i8("-129"), "overflow");
+    t.eq(as_u8("255", 10), 255);
+    t.eq(as_u8("256", 10), -1);
+    t.eq(as_u8("-1", 10), -2);
+    t.eq(as_u8("99999999999999999999999", 10), -1);
+}
+
+#test
+bases_and_prefixes :: fn(t: *Test) {
+    t.eq(as_u8("ff", 16), 255);
+    t.eq(as_u8("FF", 16), 255);
+    t.eq(as_u8("0xff", 0), 255);
+    t.eq(as_u8("0b101", 0), 5);
+    t.eq(as_u8("0o17", 0), 15);
+    t.eq(as_u8("42", 0), 42);
+    t.eq(as_u8("z", 36), 35);
+    t.eq(as_u8("102", 2), -2);
+    t.eq(as_u8("12", 1), -2);
+    t.eq(fmt::parse_int(i32, "-0x10", 0) catch e { yield 0; }, -16);
+}
+
+#test
+what_is_no_number :: fn(t: *Test) {
+    t.eq(as_u8("", 10), -3);
+    t.eq(as_u8("+", 10), -3);
+    t.eq(as_u8("0x", 0), -3);
+    t.eq(as_u8("12a", 10), -2);
+    t.eq(as_u8(" 1", 10), -2);
+    t.eq(as_u8("_1", 10), -2);
+    t.eq(as_u8("1_", 10), -2);
+    t.eq(as_u8("1__0", 10), -2);
+}
+
+float_of :: fn(text: []const u8) -> f64 { return fmt::parse_float(text) catch e { yield -999.0; }; }
+
+#test
+floats :: fn(t: *Test) {
+    t.eq(float_of("3.14"), 3.14);
+    t.eq(float_of("-0.5"), -0.5);
+    t.eq(float_of("+2"), 2.0);
+    t.eq(float_of("1e3"), 1000.0);
+    t.eq(float_of("2.5E-3"), 0.0025);
+    t.eq(float_of(".5"), 0.5);
+    t.eq(float_of("5."), 5.0);
+    t.eq(float_of("0.1"), 0.1);
+    t.eq(float_of("123456789012345.6"), 123456789012345.6);
+    t.eq(float_of("6.02214076e23"), 6.02214076e23);
+    t.eq(float_of("0"), 0.0);
+    t.expect(float_of("1e400") > 1e308);
+    t.expect(float_of("-inf") < -1e308);
+    t.eq(float_of("1e-400"), 0.0);
+    n := float_of("NaN");
+    t.expect(n != n);
+}
+
+#test
+what_is_no_float :: fn(t: *Test) {
+    t.eq(float_of(""), -999.0);
+    t.eq(float_of("."), -999.0);
+    t.eq(float_of("1e"), -999.0);
+    t.eq(float_of("1.2.3"), -999.0);
+    t.eq(float_of("12x"), -999.0);
+    t.eq(float_of("-"), -999.0);
+}
