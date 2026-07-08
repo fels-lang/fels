@@ -2556,6 +2556,30 @@ test "exe: structs passed to and returned from C follow System V on Linux" {
     }
 }
 
+test "exe: an optional compares with a plain value" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // `at == 4` for `at: ?usize` was an integer compare of the whole optional, which LLVM
+    // refused. (A function of another module as a value, `sort::by(…, mem::less_bytes)`, is
+    // covered by tests/fixtures/stdlib/sort_tests.fels.)
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct { x: i32, y: i32 }
+        \\main :: fn() -> i32 {
+        \\    at: ?usize = 4;
+        \\    none: ?usize = null;
+        \\    if !(at == 4) || at != 4 || 4 != at { return 1; }
+        \\    if at == 5 || none == 4 || 4 == none { return 2; }
+        \\    p: ?P = .{ 1, 2 };
+        \\    q: P = .{ 1, 2 };
+        \\    if !(p == q) { return 3; }
+        \\    return 42;
+        \\}
+    , "exe_optional_eq_value");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: sizeof on pointer types returns pointer width" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
