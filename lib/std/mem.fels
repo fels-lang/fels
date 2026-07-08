@@ -91,6 +91,25 @@ pub eql_bytes :: fn(self: []const u8, b: []const u8) -> bool {
     return eql(u8, self, b);
 }
 
+/// Byte-wise order of two texts: -1 when `self` comes first, 1 when `b` does, 0 when they are
+/// equal. A prefix comes before the longer text (`"ab"` before `"abc"`).
+pub compare_bytes :: fn(self: []const u8, b: []const u8) -> i32 {
+    n := shorter_len(self.len, b.len);
+    i: usize = 0;
+    while i < n {
+        if self[i] != b[i] { return if self[i] < b[i] { -1 } else { 1 }; }
+        i += 1;
+    }
+    if self.len == b.len { return 0; }
+    return if self.len < b.len { -1 } else { 1 };
+}
+
+/// Whether `self` comes before `b` byte by byte: the order `sort::by([]const u8, names,
+/// mem::less_bytes)` sorts in.
+pub less_bytes :: fn(self: []const u8, b: []const u8) -> bool {
+    return compare_bytes(self, b) < 0;
+}
+
 pub copy_bytes :: fn(self: []u8, source: []const u8) -> usize {
     return copy(u8, self, source);
 }
