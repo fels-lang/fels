@@ -3874,6 +3874,20 @@ const FunctionLowerer = struct {
                     }
                     const lty = self.exprType(binary.left.*);
                     const rty = self.exprType(binary.right.*);
+                    // An optional against a plain value (`at == 4` for `at: ?usize`): the value
+                    // becomes an optional that holds it, so `==` means "set, and equal". It was
+                    // an integer compare of the whole optional, which LLVM refused. (An optional
+                    // pointer is the pointer itself and compares as one below.)
+                    if ((lty == .optional) != (rty == .optional)) {
+                        const opt_ty = if (lty == .optional) lty else rty;
+                        if (opt_ty.optional.* != .ptr) {
+                            const l = if (lty == .optional) try self.lowerExpr(binary.left.*) else try self.lowerExprAs(binary.left.*, opt_ty);
+                            const r = if (rty == .optional) try self.lowerExpr(binary.right.*) else try self.lowerExprAs(binary.right.*, opt_ty);
+                            const eqv = try self.lowerOptionalEq(l, r, opt_ty.optional.*);
+                            if (binary.op == .not_equal) break :blk try self.emit(.bool, .{ .unary = .{ .op = .not, .value = eqv } });
+                            break :blk eqv;
+                        }
+                    }
                     // Payload enums are aggregates `{tag, …}` (a simple/payloadless
                     // enum is a scalar and compares fine below). `e == .variant`
                     // becomes a discriminant check (`variant_is`); two full enum
