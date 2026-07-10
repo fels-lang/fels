@@ -117,3 +117,150 @@ pub copy_bytes :: fn(self: []u8, source: []const u8) -> usize {
 pub zero :: fn(self: []u8) {
     fill(u8, self, 0);
 }
+
+// Searching
+
+/// The first index where `needle` (a whole sequence) starts in `self`, or null. An empty
+/// `needle` is found at 0.
+pub index_of_slice :: fn($T: type, self: []const T, needle: []const T) -> ?usize {
+    if needle.len > self.len { return null; }
+    i: usize = 0;
+    while i + needle.len <= self.len {
+        if eql(T, self[i..i + needle.len], needle) { return i; }
+        i += 1;
+    }
+    return null;
+}
+
+/// The last index of `needle` in `self`, or null.
+pub last_index_of :: fn($T: type, self: []const T, needle: T) -> ?usize {
+    i := self.len;
+    while i > 0 {
+        i -= 1;
+        if self[i] == needle { return i; }
+    }
+    return null;
+}
+
+/// The last index where `needle` (a whole sequence) starts in `self`, or null.
+pub last_index_of_slice :: fn($T: type, self: []const T, needle: []const T) -> ?usize {
+    if needle.len > self.len { return null; }
+    i := self.len - needle.len + 1;
+    while i > 0 {
+        i -= 1;
+        if eql(T, self[i..i + needle.len], needle) { return i; }
+    }
+    return null;
+}
+
+/// How often `needle` (a whole sequence, not empty) is in `self`, the occurrences not
+/// overlapping: "aaaa" holds "aa" twice.
+pub count :: fn($T: type, self: []const T, needle: []const T) -> usize {
+    if needle.len == 0 { return 0; }
+    n: usize = 0;
+    i: usize = 0;
+    while i + needle.len <= self.len {
+        if eql(T, self[i..i + needle.len], needle) {
+            n += 1;
+            i += needle.len;
+        } else {
+            i += 1;
+        }
+    }
+    return n;
+}
+
+// Trimming
+
+/// `self` without the elements of `set` at its start.
+pub trim_left :: fn($T: type, self: []const T, set: []const T) -> []const T {
+    i: usize = 0;
+    while i < self.len && contains(T, set, self[i]) { i += 1; }
+    return self[i..self.len];
+}
+
+/// `self` without the elements of `set` at its end.
+pub trim_right :: fn($T: type, self: []const T, set: []const T) -> []const T {
+    n := self.len;
+    while n > 0 && contains(T, set, self[n - 1]) { n -= 1; }
+    return self[0..n];
+}
+
+/// `self` without the elements of `set` at either end.
+pub trim :: fn($T: type, self: []const T, set: []const T) -> []const T {
+    return trim_right(T, trim_left(T, self, set), set);
+}
+
+// Iterating over the parts of a slice
+
+/// The parts of a slice between occurrences of a separator, in order and empty ones too:
+/// `"a,,b"` split on `","` is "a", "", "b". `for part in mem::split(u8, text, ",") { … }`.
+pub Split :: struct($T: type) {
+    rest: []const T,
+    sep: []const T,
+    done: bool,
+
+    pub next :: fn(self: *Self) -> ?[]const T {
+        if self.done { return null; }
+        if self.sep.len > 0 {
+            if index_of_slice(T, self.rest, self.sep) |i| {
+                part := self.rest[0..i];
+                self.rest = self.rest[i + self.sep.len..self.rest.len];
+                return part;
+            }
+        }
+        self.done = true;
+        return self.rest;
+    }
+
+    /// What is not split yet: the rest after the parts `next` gave.
+    pub remaining :: fn(self: *Self) -> []const T { return self.rest; }
+}
+
+/// The parts of `self` between occurrences of `sep` (a whole sequence). An empty `sep` gives
+/// `self` as its one part.
+pub split :: fn($T: type, self: []const T, sep: []const T) -> Split(T) {
+    return .{ self, sep, false };
+}
+
+/// The parts of a slice between runs of delimiters, empty parts skipped: `" a  b "` tokenized on
+/// `" "` is "a", "b".
+pub Tokens :: struct($T: type) {
+    rest: []const T,
+    delims: []const T,
+
+    pub next :: fn(self: *Self) -> ?[]const T {
+        i: usize = 0;
+        while i < self.rest.len && contains(T, self.delims, self.rest[i]) { i += 1; }
+        if i == self.rest.len {
+            self.rest = self.rest[i..i];
+            return null;
+        }
+        start := i;
+        while i < self.rest.len && !contains(T, self.delims, self.rest[i]) { i += 1; }
+        part := self.rest[start..i];
+        self.rest = self.rest[i..self.rest.len];
+        return part;
+    }
+}
+
+/// The parts of `self` between runs of any element of `delims`, empty parts skipped.
+pub tokenize :: fn($T: type, self: []const T, delims: []const T) -> Tokens(T) {
+    return .{ self, delims };
+}
+
+/// The two sides of the first occurrence of a separator (`split_once`).
+pub Halves :: struct($T: type) {
+    before: []const T,
+    after: []const T,
+}
+
+/// What comes before and after the first occurrence of `sep` in `self`, or null when it is not
+/// there: `"key=value"` split once on `"="` is "key" and "value".
+pub split_once :: fn($T: type, self: []const T, sep: []const T) -> ?Halves(T) {
+    if index_of_slice(T, self, sep) |i| {
+        h: Halves(T) = .{ self[0..i], self[i + sep.len..self.len] };
+        return h;
+    }
+    return null;
+}
