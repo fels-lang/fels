@@ -2556,6 +2556,38 @@ test "exe: structs passed to and returned from C follow System V on Linux" {
     }
 }
 
+test "exe: for x in an iterator that is a generic struct" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // `x` was typed `T`, not `i32`, and the loop called the template's `next`, which is no
+    // function of the program.
+    const code = try compileAndRun(arena.allocator(),
+        \\Each :: struct($T: type) {
+        \\    xs: []const T,
+        \\    at: usize,
+        \\    pub next :: fn(self: *Self) -> ?T {
+        \\        if self.at >= self.xs.len { return null; }
+        \\        v := self.xs[self.at];
+        \\        self.at += 1;
+        \\        return v;
+        \\    }
+        \\}
+        \\main :: fn() -> i32 {
+        \\    arr: [3]i32 = .{ 10, 20, 12 };
+        \\    it: Each(i32) = .{ arr[:], 0 };
+        \\    total: i32 = 0;
+        \\    for x in it { total += x; }
+        \\    words: [2][]const u8 = .{ "ab", "cde" };
+        \\    ws: Each([]const u8) = .{ words[:], 0 };
+        \\    for w in ws { total += w.len as i32; }
+        \\    return total;
+        \\}
+    , "exe_for_generic_iterator");
+    try std.testing.expectEqual(@as(u32, 47), code);
+}
+
 test "exe: an optional compares with a plain value" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
