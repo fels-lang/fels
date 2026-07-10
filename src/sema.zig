@@ -614,6 +614,10 @@ pub const TypeEnv = struct {
     /// expr's NodeId -> the `next(self: *Self) -> ?T` method's symbol. IR lowers
     /// these as a `while it.next() |x|` loop.
     iterator_fors: std.AutoHashMap(ast.NodeId, SymbolId),
+    /// The same iter expr's NodeId -> what its `next` returns, with a generic struct's type
+    /// parameters bound by the iterator's type (`?[]u8` for `mem::Split(u8)`). The instance of
+    /// such a `next` is in `generic_call_insts` under the same NodeId.
+    iterator_next_types: std.AutoHashMap(ast.NodeId, Ty),
     /// Method-call (field-callee) NodeIds whose value receiver must be implicitly
     /// address-of'd because the method takes a `*Self`/`*const Self` (UFCS auto-ref).
     /// IR lowers these receivers via `lowerLValueAddress`.
@@ -685,6 +689,7 @@ pub const TypeEnv = struct {
             .extension_calls = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .impl_method_calls = std.AutoHashMap(ast.NodeId, ImplMethodCall).init(allocator),
             .iterator_fors = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
+            .iterator_next_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .receiver_auto_addr = std.AutoHashMap(ast.NodeId, void).init(allocator),
             .call_type_args = std.AutoHashMap(ast.NodeId, TypeArgs).init(allocator),
             .enum_lits = std.AutoHashMap(ast.NodeId, EnumLit).init(allocator),
@@ -718,6 +723,7 @@ pub const TypeEnv = struct {
         self.extension_calls.deinit();
         self.impl_method_calls.deinit();
         self.iterator_fors.deinit();
+        self.iterator_next_types.deinit();
         self.receiver_auto_addr.deinit();
         self.call_type_args.deinit();
         self.enum_lits.deinit();
@@ -3456,7 +3462,16 @@ const Checker = struct {
                                     return error.SemanticFailed;
                                 }
                                 try self.env.iterator_fors.put(for_stmt.iter.id, m.id);
-                                break :blk m.sig.return_ty.optional.*;
+                                // A method of a generic struct (`mem::Split(u8)`): its `T` is
+                                // the receiver's type argument, as at a call `it.next()`. The
+                                // element was `[]T`.
+                                var binding = std.StringHashMap(Ty).init(self.allocator);
+                                defer binding.deinit();
+                                try self.bindTypeVars(m.sig.params[0].ty, iter_ty, &binding);
+                                const ret = if (binding.count() > 0) self.substituteTy(m.sig.return_ty, &binding) else m.sig.return_ty;
+                                if (m.sig.type_params.len > 0) try self.instantiateIteratorNext(m.id, m.sig, &binding, for_stmt.iter);
+                                try self.env.iterator_next_types.put(for_stmt.iter.id, ret);
+                                break :blk ret.optional.*;
                             }
                         }
                         self.emitError(for_stmt.iter.span, "for loop requires a slice, an array, or a type with a `next(self: *Self) -> ?T` method", .{});
@@ -6048,6 +6063,36 @@ const Checker = struct {
             },
             else => ty,
         };
+    }
+
+    /// The instance of a generic struct's `next` that `for x in iter` calls, made as a call
+    /// `iter.next()` makes it (the same name, so the two share it), and recorded under the iter
+    /// expression's NodeId in `generic_call_insts`.
+    fn instantiateIteratorNext(self: *Checker, sym_id: SymbolId, sig: FnSig, binding: *const std.StringHashMap(Ty), iter: ast.Expr) SemanticError!void {
+        var type_args = std.ArrayList(TypeArg).empty;
+        errdefer type_args.deinit(self.allocator);
+        for (sig.type_params) |tp_name| {
+            try type_args.append(self.allocator, .{ .name = tp_name, .ty = binding.get(tp_name) orelse .unknown });
+        }
+        const fn_name = self.symbols.symbol(sym_id).name;
+        const mangled = try self.mangleInstantiation(fn_name, type_args.items);
+        for (self.env.generic_instantiations.items) |gi| {
+            if (std.mem.eql(u8, gi.mangled_name, mangled)) {
+                type_args.deinit(self.allocator);
+                try self.env.generic_call_insts.put(iter.id, mangled);
+                return;
+            }
+        }
+        try self.env.generic_instantiations.append(self.allocator, .{
+            .sym_id = sym_id,
+            .fn_name = fn_name,
+            .mangled_name = mangled,
+            .type_args = try type_args.toOwnedSlice(self.allocator),
+            .expr_types = std.AutoHashMap(NodeId, Ty).init(self.allocator),
+            .call_insts = std.AutoHashMap(NodeId, []const u8).init(self.allocator),
+            .origin_span = iter.span,
+        });
+        try self.env.generic_call_insts.put(iter.id, mangled);
     }
 
     fn mangleInstantiation(self: *Checker, fn_name: []const u8, type_args: []const TypeArg) ![]const u8 {

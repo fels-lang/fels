@@ -2905,12 +2905,15 @@ const FunctionLowerer = struct {
     /// same shape as `while it.next() |x|`.
     fn lowerForIterator(self: *FunctionLowerer, for_stmt: ast.ForSliceStmt, next_sym: sema.SymbolId) LowerError!void {
         const sig = self.types.fn_sigs.get(next_sym) orelse return error.LoweringFailed;
-        const ret_ir = try lowerSemaTypeWithEnv(self.allocator, sig.return_ty, self.types, self.symbols);
+        // A `next` of a generic struct (`mem::Split(u8)`) returns its type with the struct's type
+        // parameters bound, and is called as the instance the checker made for the loop.
+        const ret_ty = self.types.iterator_next_types.get(for_stmt.iter.id) orelse sig.return_ty;
+        const ret_ir = try lowerSemaTypeWithEnv(self.allocator, ret_ty, self.types, self.symbols);
         const elem_ir: IrType = switch (ret_ir) {
             .optional => |p| p.*,
             else => .unknown,
         };
-        const next_link = self.symbols.symbol(next_sym).link_name;
+        const next_link = self.types.generic_call_insts.get(for_stmt.iter.id) orelse self.symbols.symbol(next_sym).link_name;
         const iter_ty = self.exprType(for_stmt.iter);
 
         const suffix = self.next_block_id;
