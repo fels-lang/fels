@@ -22,7 +22,7 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 
 /// Bump when the VM's bytecode semantics or this file's encoding change. Old
 /// entries then hash differently and are simply never read — never stale.
-const format_version: u32 = 3;
+const format_version: u32 = 4;
 
 pub const Key = [Sha256.digest_length]u8;
 
@@ -147,11 +147,24 @@ fn hashFn(h: *Sha256, f: *const BytecodeFunction) bool {
         feed(h, u32, s.len);
         feed(h, u8, @intFromEnum(s.kind));
         feed(h, u32, s.stride);
+        feed(h, u32, s.host_first);
+        feed(h, u32, s.host_len);
+        feed(h, u32, s.host_size);
+        feed(h, u32, s.host_stride);
     }
     feed(h, u32, @intCast(f.shape_parts.len));
     for (f.shape_parts) |p| {
         feed(h, u32, p.cell);
         feed(h, u32, p.shape);
+    }
+    // Where host memory keeps the cells: the same copy reads other bytes of another layout.
+    feed(h, u32, @intCast(f.host_cells.len));
+    for (f.host_cells) |c| {
+        feed(h, u32, c.offset);
+        feed(h, u32, c.size);
+        feed(h, u8, @intFromEnum(c.kind));
+        feed(h, u32, c.shape);
+        feed(h, u32, c.elem);
     }
     return true;
 }

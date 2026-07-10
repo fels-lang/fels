@@ -10,6 +10,7 @@ const Opcode = instructions.Opcode;
 const Reg = instructions.Reg;
 const Shape = instructions.Shape;
 const ShapePart = instructions.ShapePart;
+const HostCell = instructions.HostCell;
 const Value = value.Value;
 const BytecodeFunction = instructions.BytecodeFunction;
 const BytecodeModule = instructions.BytecodeModule;
@@ -257,6 +258,8 @@ const FnCompiler = struct {
     /// The shapes of the values the function copies (`shapeOf`), and their parts.
     shapes: std.ArrayList(Shape) = .empty,
     shape_parts: std.ArrayList(ShapePart) = .empty,
+    /// Where host memory keeps the cells of those shapes (`Shape.host_first`).
+    host_cells: std.ArrayList(HostCell) = .empty,
     next_reg: Reg = 0,
     /// Scratch registers for building static data, one per nesting depth of the value.
     scratch: std.ArrayList(Reg) = .empty,
@@ -308,6 +311,7 @@ const FnCompiler = struct {
         self.borrowed.deinit();
         self.shapes.deinit(self.allocator);
         self.shape_parts.deinit(self.allocator);
+        self.host_cells.deinit(self.allocator);
         self.scratch.deinit(self.allocator);
     }
 
@@ -336,6 +340,7 @@ const FnCompiler = struct {
             .constants = try self.constants.toOwnedSlice(self.allocator),
             .shapes = try self.shapes.toOwnedSlice(self.allocator),
             .shape_parts = try self.shape_parts.toOwnedSlice(self.allocator),
+            .host_cells = try self.host_cells.toOwnedSlice(self.allocator),
         };
     }
 
@@ -726,6 +731,11 @@ const FnCompiler = struct {
             try self.emit(Instr.r_r_imm(.bits_to_slice, target, target, @intCast(stride)));
             return;
         }
+        // (a float read from host memory is its bits)
+        if (ty == .f32 or ty == .f64) {
+            try self.emit(Instr.r_r_imm(.bits_to_float, target, target, if (ty == .f32) 4 else 8));
+            return;
+        }
         const shape = intShape(ty) orelse return;
         if (shape.signed) try self.emitNarrow(target, ty);
     }
@@ -952,6 +962,8 @@ const FnCompiler = struct {
                         try self.emit(Instr.r_r_imm(.copy, target, ptr, 0));
                     } else {
                         try self.emit(Instr.r_r_imm(.load_cell, target, ptr, 0));
+                        // (read from host memory, it is its bits: a sign or a float to restore)
+                        try self.emitLoadedValue(target, inst.ty);
                     }
                     return;
                 }
@@ -1225,20 +1237,22 @@ const FnCompiler = struct {
                 }
                 const base = try self.resolveReg(f.base);
                 const idx = try self.fieldOffset(base_ty, f.name);
-                try self.emit(Instr.r_r_imm(.load_cell, target, base, idx));
+                try self.emit(.{ .op = .load_cell, .a = target, .b = base, .c = try self.hostShapeArg(base_ty), .imm = idx });
+                try self.emitLoadedValue(target, inst.ty);
             },
             .field_addr => |f| {
                 const base = try self.resolveReg(f.base);
                 const idx = try self.fieldOffset(self.typeOf(f.base), f.name);
+                const host = try self.hostShapeArg(self.typeOf(f.base));
                 // A field that is an aggregate points at a block of its own, and the address of
                 // the aggregate is that block (as `&s` of a local is `s`), not the field's cell.
                 if (self.blockCells(innerType(inst.ty) orelse .unknown) != null) {
                     const cell = self.newReg();
-                    try self.emit(Instr.r_r_imm(.field_addr, cell, base, idx));
+                    try self.emit(.{ .op = .field_addr, .a = cell, .b = base, .c = host, .imm = idx });
                     try self.emitBlockAt(target, cell);
                     return;
                 }
-                try self.emit(Instr.r_r_imm(.field_addr, target, base, idx));
+                try self.emit(.{ .op = .field_addr, .a = target, .b = base, .c = host, .imm = idx });
             },
 
             // Arrays & slices
@@ -1253,12 +1267,19 @@ const FnCompiler = struct {
                         return;
                     }
                 }
+                // An element that is a struct or an array is the block it is, as `index_addr` and
+                // `block_at` give it: in host memory (an arena's) its bytes, read field by field.
+                if (self.blockCells(inst.ty) != null) {
+                    const addr = try self.lowerIndexAddr(ix.base, ix.index, inst.ty);
+                    try self.emit(Instr.r_r_imm(.block_at, target, addr, 0));
+                    return;
+                }
                 // Combined index+load: handles host strings (`[]const u8`) as
                 // well as zone-backed slices/arrays (a string has no zone addr,
                 // so the separate index_addr→load_cell pair can't serve it).
                 const base = try self.resolveReg(ix.base);
                 const idxr = try self.resolveReg(ix.index);
-                try self.emit(.{ .op = .index_load, .a = target, .b = base, .c = idxr, .imm = @intCast(self.cellCount(inst.ty)) });
+                try self.emit(.{ .op = .index_load, .a = target, .b = base, .c = idxr, .imm = self.elemImm(inst.ty) });
                 try self.emitLoadedValue(target, inst.ty);
             },
             .index_addr => |ix| {
@@ -1266,7 +1287,7 @@ const FnCompiler = struct {
                     .ptr => |e| e.*,
                     else => inst.ty,
                 };
-                const addr = try self.lowerIndexAddr(ix.base, ix.index, self.cellCount(elem_ty));
+                const addr = try self.lowerIndexAddr(ix.base, ix.index, elem_ty);
                 // An element that is an aggregate is addressed as such a field is, except where a
                 // slice starts.
                 if (self.blockCells(elem_ty) != null and !self.slice_starts.contains(target)) {
@@ -1510,12 +1531,21 @@ const FnCompiler = struct {
     }
 
     /// Emit an `index_addr`, returning the register holding the element pointer.
-    fn lowerIndexAddr(self: *FnCompiler, base_val: ir.Value, index_val: ir.Value, elem_cells: usize) CompileError!Reg {
+    fn lowerIndexAddr(self: *FnCompiler, base_val: ir.Value, index_val: ir.Value, elem_ty: ir.IrType) CompileError!Reg {
         const base = try self.resolveReg(base_val);
         const idxr = try self.resolveReg(index_val);
         const dst = self.newReg();
-        try self.emit(.{ .op = .index_addr, .a = dst, .b = base, .c = idxr, .imm = @intCast(elem_cells) });
+        try self.emit(.{ .op = .index_addr, .a = dst, .b = base, .c = idxr, .imm = self.elemImm(elem_ty) });
         return dst;
+    }
+
+    /// The `imm` of an `index_addr` or `index_load` of an element of type `ty`: its cells, and
+    /// above bit 32 its bytes, which step through an array in host memory (a field of a struct in
+    /// an arena) that a host pointer reaches.
+    fn elemImm(self: *FnCompiler, ty: ir.IrType) i64 {
+        const cells: i64 = @intCast(self.cellCount(ty));
+        const bytes: i64 = @intCast(self.byteSize(ty) orelse 0);
+        return cells | (bytes << 32);
     }
 
     /// A runtime "never returns" intrinsic (`@panic`/`exit`/`abort`). At comptime
@@ -1829,6 +1859,18 @@ const FnCompiler = struct {
         }
     }
 
+    /// The `c` of a `field_addr` or `load_cell` on a struct of type `ty`, or on a pointer to one:
+    /// its shape plus one, which says where the field is in host memory; 0 when it cannot be there.
+    fn hostShapeArg(self: *FnCompiler, ty: ir.IrType) CompileError!Reg {
+        const struct_ty = switch (ty) {
+            .ptr => |inner| inner.*,
+            else => ty,
+        };
+        const shape = try self.shapeOf(struct_ty) orelse return 0;
+        if (self.shapes.items[shape].host_len == 0) return 0;
+        return shape + 1;
+    }
+
     /// The index of the shape of a value of `ty` that is a block (`blockCells`), which a copy of
     /// the value follows; null for any other value, which is copied as the `Value` it is.
     fn shapeOf(self: *FnCompiler, ty: ir.IrType) CompileError!?u32 {
@@ -1868,22 +1910,86 @@ const FnCompiler = struct {
             },
             else => {},
         }
-        return try self.addShape(shape, parts.items);
+        var host: std.ArrayList(HostCell) = .empty;
+        defer host.deinit(self.allocator);
+        if (!try self.hostLayout(ty, depth, &host, &shape)) host.clearRetainingCapacity();
+        return try self.addShape(shape, parts.items, host.items);
     }
 
-    /// The index of `shape` with `parts`: one the function has already, or a new one.
-    fn addShape(self: *FnCompiler, shape: Shape, parts: []const ShapePart) CompileError!u32 {
+    /// The cells of a value of `ty` as host memory (an arena's bytes) keeps them, laid out as
+    /// compiled code lays the type out: one per field of a struct, at the field's offset, or the
+    /// one element of an array. False when some part cannot be kept there as the VM keeps it (an
+    /// optional, an enum, a union, a bit-packed struct): such a value is not read from or written
+    /// to host memory.
+    fn hostLayout(self: *FnCompiler, ty: ir.IrType, depth: usize, out: *std.ArrayList(HostCell), shape: *Shape) CompileError!bool {
+        const size = self.byteSize(ty) orelse return false;
+        switch (ty) {
+            .array => |arr| {
+                const cell = try self.hostCell(arr.elem.*, 0, depth) orelse return false;
+                try out.append(self.allocator, cell);
+                shape.host_stride = @intCast(self.byteSize(arr.elem.*) orelse return false);
+            },
+            .struct_type => |name| {
+                const def = self.structDef(name) orelse return false;
+                if (def.is_union or layout.isBitPacked(def)) return false;
+                const source = layout.SliceSource{ .structs = self.module.structs, .variants = self.module.variants };
+                // (each field is one cell of the block: a struct or an array in it is a pointer to
+                // a block of its own)
+                for (def.fields) |field| {
+                    const offset = layout.offsetOfWith(def, field.name, source) orelse return false;
+                    const cell = try self.hostCell(field.ty, offset, depth) orelse return false;
+                    try out.append(self.allocator, cell);
+                }
+            },
+            else => return false,
+        }
+        shape.host_size = @intCast(size);
+        return true;
+    }
+
+    /// A cell of type `ty` at byte `offset` of a value in host memory, or null when the VM cannot
+    /// keep one there.
+    fn hostCell(self: *FnCompiler, ty: ir.IrType, offset: u64, depth: usize) CompileError!?HostCell {
+        const size: u32 = @intCast(self.byteSize(ty) orelse return null);
+        const at: u32 = @intCast(offset);
+        if (self.blockCells(ty) != null) {
+            const inner = try self.shapeAt(ty, depth + 1) orelse return null;
+            if (self.shapes.items[inner].host_len == 0) return null;
+            return .{ .offset = at, .size = size, .kind = .block, .shape = inner };
+        }
+        return switch (ty) {
+            .i, .isize => .{ .offset = at, .size = size, .kind = .int },
+            // (a pointer is kept as its address, as host memory holds it)
+            .u, .usize, .byte, .addr, .rune, .ptr => .{ .offset = at, .size = size, .kind = .uint },
+            .f32, .f64 => .{ .offset = at, .size = size, .kind = .float },
+            .bool => .{ .offset = at, .size = size, .kind = .bool },
+            .slice => |elem| .{ .offset = at, .size = size, .kind = .slice, .elem = @intCast(self.byteSize(elem.*) orelse return null) },
+            .text => .{ .offset = at, .size = size, .kind = .slice, .elem = 1 },
+            else => null,
+        };
+    }
+
+    /// The index of `shape` with `parts` and its cells in host memory: one the function has
+    /// already, or a new one.
+    fn addShape(self: *FnCompiler, shape: Shape, parts: []const ShapePart, host: []const HostCell) CompileError!u32 {
         find: for (self.shapes.items, 0..) |s, i| {
             if (s.cells != shape.cells or s.kind != shape.kind or s.stride != shape.stride or s.len != parts.len) continue;
+            if (s.host_len != host.len or s.host_size != shape.host_size or s.host_stride != shape.host_stride) continue;
             for (self.shape_parts.items[s.first..][0..s.len], parts) |have, want| {
                 if (have.cell != want.cell or have.shape != want.shape) continue :find;
+            }
+            for (self.host_cells.items[s.host_first..][0..s.host_len], host) |have, want| {
+                if (!std.meta.eql(have, want)) continue :find;
             }
             return @intCast(i);
         }
         var new = shape;
         new.first = @intCast(self.shape_parts.items.len);
         new.len = @intCast(parts.len);
+        new.host_first = @intCast(self.host_cells.items.len);
+        new.host_len = @intCast(host.len);
         try self.shape_parts.appendSlice(self.allocator, parts);
+        try self.host_cells.appendSlice(self.allocator, host);
         try self.shapes.append(self.allocator, new);
         return @intCast(self.shapes.items.len - 1);
     }

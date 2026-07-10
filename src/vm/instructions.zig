@@ -54,8 +54,8 @@ pub const Opcode = enum(u8) {
     field_addr, // a = dst; b = base ptr/ref; imm = field/element cell offset
     load_cell, // a = dst; b = base ptr; imm = cell offset to read
     store_cell, // a = base ptr; b = src value; imm = cell offset to write
-    index_addr, // a = dst; b = base ptr; c = index reg; imm = cells per element
-    index_load, // a = dst; b = base (zone slice/ptr OR host string); c = index reg; imm = cells per element → loaded element
+    index_addr, // a = dst; b = base ptr; c = index reg; imm = cells per element, and above bit 32 its bytes (for an array in host memory)
+    index_load, // a = dst; b = base (zone slice/ptr OR host string); c = index reg; imm = as index_addr's → loaded element
     block_at, // a = dst; b = address of a cell holding an aggregate → that aggregate's block (a host address: itself)
     copy_cells, // a = dst block; b = src block; imm = shape index → the src value written over the dst one, part by part
     copy_value, // a = dst; b = src; imm = shape index → a copy of the src value that shares no block with it
@@ -77,6 +77,7 @@ pub const Opcode = enum(u8) {
     host_ptr_make, // a = dst; b = addr reg (uint); imm = byte size of pointee → host_ptr
     host_buf_make, // a = dst; b = addr/host_ptr reg; c = len reg; imm = byte stride → host_buf
     bits_to_slice, // a = dst; b = a slice read from host memory as 16 bytes; imm = byte stride → host_buf
+    bits_to_float, // a = dst; b = an f32 or f64 read from host memory as its bits; imm = its bytes, 4 or 8 → the float
     opt_is_some, // a = dst; b = optional value → bool (non-null)
     interface_method, // a = dst; b = interface value; imm = method slot → fn_ref
     call_indirect, // a = dst; b = callee fn_ref reg; c = arg base reg; imm = arg count
@@ -290,6 +291,14 @@ pub const Shape = struct {
     kind: Kind = .fields,
     /// For `elements`: cells from one element to the next.
     stride: u32 = 0,
+    /// Where the value's cells are in host memory (an arena's bytes, laid out as compiled code
+    /// lays the type out): `host_cells[host_first..][0..host_len]`, one per cell of a struct, or
+    /// one for the element of an array. `host_len` 0: the value cannot live there.
+    host_first: u32 = 0,
+    host_len: u32 = 0,
+    /// Its bytes in host memory, and for an array the bytes from one element to the next.
+    host_size: u32 = 0,
+    host_stride: u32 = 0,
 
     pub const Kind = enum(u8) {
         /// A struct: each part is a field that is a block, at its cell.
@@ -308,6 +317,31 @@ pub const ShapePart = struct { cell: u32, shape: u32 };
 /// The `ShapePart.shape` of a payload that is no block.
 pub const no_shape: u32 = std.math.maxInt(u32);
 
+/// A cell of a block as it is in host memory: its bytes at `offset` in the value, and what they
+/// are, so the cell can be read from them and written back.
+pub const HostCell = struct {
+    offset: u32,
+    size: u32,
+    kind: Kind,
+    /// For `block`: the shape of the block the cell holds. For `slice`: the bytes of an element.
+    shape: u32 = no_shape,
+    elem: u32 = 0,
+
+    pub const Kind = enum(u8) {
+        /// An unsigned integer, or anything kept as its bits (a pointer, an address).
+        uint,
+        /// A signed integer: its bits sign-extended.
+        int,
+        /// An `f32` or `f64`.
+        float,
+        bool,
+        /// A slice: an address and a length.
+        slice,
+        /// A struct or an array inside the value, at `offset`.
+        block,
+    };
+};
+
 pub const BytecodeFunction = struct {
     name: []const u8,
     instrs: []const Instr,
@@ -321,6 +355,8 @@ pub const BytecodeFunction = struct {
     /// The shapes the function's copies name (`copy_value`, `copy_cells`), and their parts.
     shapes: []const Shape = &.{},
     shape_parts: []const ShapePart = &.{},
+    /// The cells of the shapes as they are in host memory (`Shape.host_first`).
+    host_cells: []const HostCell = &.{},
     /// When set, calling this function invokes a native function via FFI rather
     /// than executing `instrs` (which is empty for extern functions).
     extern_call: ?ExternCall = null,
@@ -330,6 +366,7 @@ pub const BytecodeFunction = struct {
         if (self.constants.len != 0) allocator.free(self.constants);
         if (self.shapes.len != 0) allocator.free(self.shapes);
         if (self.shape_parts.len != 0) allocator.free(self.shape_parts);
+        if (self.host_cells.len != 0) allocator.free(self.host_cells);
     }
 };
 

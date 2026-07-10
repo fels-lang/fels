@@ -524,7 +524,11 @@ pub const Vm = struct {
     /// into it, so a pointer to the place sees the new value; null then. Otherwise the place's
     /// new value: `src` itself when it is a value just built that no other place holds
     /// (`fresh`), else a copy of it.
-    fn assign(self: *Vm, func: *const BytecodeFunction, have: Value, src: Value, shape: u32, fresh: bool) VmError!?Value {
+    fn assign(self: *Vm, func: *const BytecodeFunction, have: Value, src_in: Value, shape: u32, fresh_in: bool) VmError!?Value {
+        // A value in host memory (an arena's) is read into blocks of its own first.
+        const from_host = src_in == .host_ptr and try hasHostLayout(func, shape);
+        const src = if (from_host) try self.hostRead(func, src_in.host_ptr.addr, shape) else src_in;
+        const fresh = fresh_in or from_host;
         if (zoneBlock(have)) |into| if (zoneBlock(src)) |from| {
             try self.copyInto(func, into, from, shape);
             return null;
@@ -577,6 +581,7 @@ pub const Vm = struct {
     /// `src`, as a copy of the bytes shares no memory at run time. A value that is no block of
     /// cells (one read from host memory) is its own copy.
     fn copyValue(self: *Vm, func: *const BytecodeFunction, src: Value, shape: u32) VmError!Value {
+        if (src == .host_ptr and try hasHostLayout(func, shape)) return self.hostRead(func, src.host_ptr.addr, shape);
         const from = zoneBlock(src) orelse return src;
         const s = try shapeIn(func, shape);
         const to = (try self.zone_stack.alloc(s.cells)).ptr;
@@ -614,6 +619,78 @@ pub const Vm = struct {
                 break :blk .{ .list = parts[t..][0..1] };
             },
         };
+    }
+
+    /// A value of shape `shape` of `func` read from host memory at `addr` into new blocks: each cell
+    /// from its bytes, as compiled code lays the type out (`HostCell`).
+    fn hostRead(self: *Vm, func: *const BytecodeFunction, addr: usize, shape: u32) VmError!Value {
+        const s = try shapeIn(func, shape);
+        const cells = try hostCellsOf(func, s);
+        const to = (try self.zone_stack.alloc(s.cells)).ptr;
+        var it = HostCells.of(s, cells);
+        while (it.next()) |c| {
+            const v = try self.hostCellRead(func, addr + c.at, c.cell, false);
+            self.zone_stack.setCell(to.zone, to.offset + c.index, v) catch |e| return self.writeFailed(e);
+        }
+        return .{ .ptr = to };
+    }
+
+    /// Write `val`, of shape `shape` of `func`, into host memory at `addr`, laid out as compiled
+    /// code lays it out. A value that is in host memory already is copied byte for byte.
+    fn hostWrite(self: *Vm, func: *const BytecodeFunction, addr: usize, val: Value, shape: u32) VmError!void {
+        const s = try shapeIn(func, shape);
+        if (val == .host_ptr) {
+            if (val.host_ptr.addr == addr or addr == 0 or val.host_ptr.addr == 0) return;
+            const dst: [*]u8 = @ptrFromInt(addr);
+            const src: [*]const u8 = @ptrFromInt(val.host_ptr.addr);
+            std.mem.copyForwards(u8, dst[0..s.host_size], src[0..s.host_size]);
+            return;
+        }
+        const from = zoneBlock(val) orelse return error.TypeMismatch;
+        var it = HostCells.of(s, try hostCellsOf(func, s));
+        while (it.next()) |c| {
+            try self.hostCellWrite(func, addr + c.at, c.cell, try self.zone_stack.getCell(from.zone, from.offset + c.index));
+        }
+    }
+
+    /// The value of a cell `hc` at `at` in host memory. A struct or an array in it is read into a
+    /// block of its own, or with `by_ref` is the address it is at (what a field of a block holds).
+    fn hostCellRead(self: *Vm, func: *const BytecodeFunction, at: usize, hc: instructions.HostCell, by_ref: bool) VmError!Value {
+        const bits = hostLoad(at, hc.size).uint;
+        return switch (hc.kind) {
+            .uint => .{ .uint = bits },
+            .int => blk: {
+                const shift: u7 = @intCast(128 - @as(u32, hc.size) * 8);
+                break :blk .{ .int = @as(i128, @bitCast(bits << shift)) >> shift };
+            },
+            .float => .{ .float = if (hc.size == 4)
+                @floatCast(@as(f32, @bitCast(@as(u32, @truncate(bits)))))
+            else
+                @bitCast(@as(u64, @truncate(bits))) },
+            .bool => .{ .bool = bits != 0 },
+            .slice => .{ .host_buf = .{ .addr = @truncate(bits), .len = @truncate(bits >> 64), .stride = hc.elem } },
+            .block => if (by_ref)
+                .{ .host_ptr = .{ .addr = at, .size = hc.size } }
+            else
+                try self.hostRead(func, at, hc.shape),
+        };
+    }
+
+    /// Write `v` as cell `hc` at `at` in host memory. A value that lives only in the VM's own
+    /// blocks (a slice or a pointer into them) cannot be written there.
+    fn hostCellWrite(self: *Vm, func: *const BytecodeFunction, at: usize, hc: instructions.HostCell, v: Value) VmError!void {
+        switch (hc.kind) {
+            .block => try self.hostWrite(func, at, v, hc.shape),
+            .float => hostStore(at, hc.size, .{ .float = v.asF64() orelse return error.TypeMismatch }),
+            .slice => switch (v) {
+                .host_buf, .string => hostStore(at, hc.size, v),
+                else => return error.TypeMismatch,
+            },
+            .uint, .int, .bool => switch (v) {
+                .ptr, .slice, .struct_ref, .variant => return error.TypeMismatch,
+                else => hostStore(at, hc.size, v),
+            },
+        }
     }
 
     /// A failed store: a write into static data is the program's mistake, so say so.
@@ -895,22 +972,32 @@ pub const Vm = struct {
                     frame.regs[inst.a] = try self.zone_stack.alloc(@intCast(inst.imm));
                 },
                 .field_addr => {
-                    // A field of a HOST struct (e.g. `Chunk` reached via a real
-                    // address): pointer-sized fields, so byte offset = index * 8.
+                    // A field of a struct in host memory: at its offset in the layout compiled code
+                    // gives the struct (`c`, its shape plus one), or for a struct of pointer-sized
+                    // fields (`Chunk`, reached through a real address) at index * 8.
                     if (frame.regs[inst.b] == .host_ptr) {
                         const hp = frame.regs[inst.b].host_ptr;
-                        frame.regs[inst.a] = .{ .host_ptr = .{ .addr = hp.addr + @as(usize, @intCast(inst.imm)) * 8, .size = 8 } };
+                        frame.regs[inst.a] = if (try hostField(frame.func, inst.c, inst.imm)) |hc|
+                            .{ .host_ptr = .{ .addr = hp.addr + hc.offset, .size = hc.size } }
+                        else
+                            .{ .host_ptr = .{ .addr = hp.addr + @as(usize, @intCast(inst.imm)) * 8, .size = 8 } };
                     } else {
                         const base = try asPtr(frame.regs[inst.b]);
                         frame.regs[inst.a] = .{ .ptr = .{ .zone = base.zone, .offset = base.offset + @as(u32, @intCast(inst.imm)) } };
                     }
                 },
                 .load_cell => {
-                    // On a host pointer, `imm` is a field index → byte offset *8;
-                    // host struct fields are pointer-sized (read 8 bytes).
+                    // On a host pointer: a field at its offset in the struct's layout (`c`), or of
+                    // a struct of pointer-sized fields at index * 8; the pointee itself (`imm` 0, a
+                    // load through the pointer) is as many bytes as it points at.
                     if (frame.regs[inst.b] == .host_ptr) {
                         const hp = frame.regs[inst.b].host_ptr;
-                        frame.regs[inst.a] = hostLoad(hp.addr + @as(usize, @intCast(inst.imm)) * 8, 8);
+                        frame.regs[inst.a] = if (try hostField(frame.func, inst.c, inst.imm)) |hc|
+                            try self.hostCellRead(frame.func, hp.addr + hc.offset, hc, true)
+                        else if (inst.imm == 0)
+                            hostLoad(hp.addr, hp.size)
+                        else
+                            hostLoad(hp.addr + @as(usize, @intCast(inst.imm)) * 8, 8);
                     } else {
                         const base = try asPtr(frame.regs[inst.b]);
                         frame.regs[inst.a] = try self.zone_stack.getCell(base.zone, base.offset + @as(u32, @intCast(inst.imm)));
@@ -921,10 +1008,16 @@ pub const Vm = struct {
                     // A whole aggregate stored through a pointer to one: it is copied into the
                     // block the pointer points at. A value that is no block of cells (one read
                     // from host memory) is stored as `store_cell` stores it.
-                    const dst = zoneBlock(frame.regs[inst.a]);
-                    const src = zoneBlock(frame.regs[inst.b]);
-                    if (dst != null and src != null) {
-                        try self.copyInto(frame.func, dst.?, src.?, @intCast(inst.imm));
+                    const shape: u32 = @intCast(inst.imm);
+                    if (frame.regs[inst.a] == .host_ptr) {
+                        if (!try hasHostLayout(frame.func, shape)) return error.TypeMismatch;
+                        try self.hostWrite(frame.func, frame.regs[inst.a].host_ptr.addr, frame.regs[inst.b], shape);
+                    } else if (zoneBlock(frame.regs[inst.a])) |dst| {
+                        // (a value in host memory is read into blocks first)
+                        const from = if (frame.regs[inst.b] == .host_ptr) try self.copyValue(frame.func, frame.regs[inst.b], shape) else frame.regs[inst.b];
+                        if (zoneBlock(from)) |src| {
+                            try self.copyInto(frame.func, dst, src, shape);
+                        } else try self.storeCell(frame.regs[inst.a], 0, from);
                     } else try self.storeCell(frame.regs[inst.a], 0, frame.regs[inst.b]);
                 },
                 .copy_value => frame.regs[inst.a] = try self.copyValue(frame.func, frame.regs[inst.b], @intCast(inst.imm)),
@@ -937,7 +1030,10 @@ pub const Vm = struct {
                     // In host memory the aggregate is inline: the value is stored there.
                     const cell = frame.regs[inst.a];
                     if (cell == .host_ptr) {
-                        try self.storeCell(cell, 0, frame.regs[inst.b]);
+                        // (a value host memory cannot keep, an enum with a payload, is refused, not
+                        // written as nothing)
+                        if (!try hasHostLayout(frame.func, inst.c)) return error.TypeMismatch;
+                        try self.hostWrite(frame.func, cell.host_ptr.addr, frame.regs[inst.b], inst.c);
                     } else {
                         const at = try asPtr(cell);
                         const have = try self.zone_stack.getCell(at.zone, at.offset);
@@ -967,9 +1063,15 @@ pub const Vm = struct {
                             if (i > s.len) return error.OutOfBounds;
                             frame.regs[inst.a] = .{ .host_ptr = .{ .addr = @intFromPtr(s.ptr) + i, .size = 1 } };
                         },
+                        // An array in host memory (a field of a struct in an arena): the element's
+                        // bytes are above bit 32 of `imm`.
+                        .host_ptr => |hp| {
+                            const bytes = elemBytes(inst.imm) orelse return error.TypeMismatch;
+                            frame.regs[inst.a] = .{ .host_ptr = .{ .addr = hp.addr + @as(usize, @intCast(index)) * bytes, .size = @intCast(bytes) } };
+                        },
                         else => {
                             const base = try asPtr(frame.regs[inst.b]);
-                            const stride: i128 = @intCast(inst.imm);
+                            const stride: i128 = elemCells(inst.imm);
                             frame.regs[inst.a] = .{ .ptr = .{ .zone = base.zone, .offset = base.offset + @as(u32, @intCast(index * stride)) } };
                         },
                     }
@@ -986,9 +1088,13 @@ pub const Vm = struct {
                         .host_buf => |hb| {
                             frame.regs[inst.a] = hostLoad(hb.addr + @as(usize, @intCast(index)) * hb.stride, hb.stride);
                         },
+                        .host_ptr => |hp| {
+                            const bytes = elemBytes(inst.imm) orelse return error.TypeMismatch;
+                            frame.regs[inst.a] = hostLoad(hp.addr + @as(usize, @intCast(index)) * bytes, @intCast(bytes));
+                        },
                         else => {
                             const base = try asPtr(frame.regs[inst.b]);
-                            const stride: i128 = @intCast(inst.imm);
+                            const stride: i128 = elemCells(inst.imm);
                             const off = base.offset + @as(u32, @intCast(index * stride));
                             frame.regs[inst.a] = try self.zone_stack.getCell(base.zone, off);
                         },
@@ -1079,6 +1185,13 @@ pub const Vm = struct {
                         .len = @truncate(bits >> 64),
                         .stride = @intCast(inst.imm),
                     } },
+                    else => frame.regs[inst.b],
+                },
+                .bits_to_float => frame.regs[inst.a] = switch (frame.regs[inst.b]) {
+                    .uint => |bits| .{ .float = if (inst.imm == 4)
+                        @floatCast(@as(f32, @bitCast(@as(u32, @truncate(bits)))))
+                    else
+                        @bitCast(@as(u64, @truncate(bits))) },
                     else => frame.regs[inst.b],
                 },
                 .host_buf_make => frame.regs[inst.a] = .{ .host_buf = .{
@@ -1196,6 +1309,65 @@ fn sameInt(a: Value, b: Value) bool {
     return x == y;
 }
 
+/// The cell of field `field` of a struct whose shape plus one is `shape_arg` (a `field_addr` or
+/// `load_cell` operand), when the struct has a host layout; null otherwise.
+fn hostField(func: *const BytecodeFunction, shape_arg: u32, field: i64) VmError!?instructions.HostCell {
+    if (shape_arg == 0) return null;
+    const s = try shapeIn(func, shape_arg - 1);
+    if (field < 0 or field >= s.host_len) return null;
+    return (try hostCellsOf(func, s))[@intCast(field)];
+}
+
+/// The cells of a block of shape `s` that host memory keeps, each with its place there: for a
+/// struct each field's cell at its offset; for an array each element's cell (element `i` is cell
+/// `i * stride`, the cells between unused) `host_stride` bytes apart.
+const HostCells = struct {
+    s: instructions.Shape,
+    cells: []const instructions.HostCell,
+    i: u32 = 0,
+
+    const Item = struct { index: u32, at: usize, cell: instructions.HostCell };
+
+    fn of(s: instructions.Shape, cells: []const instructions.HostCell) HostCells {
+        return .{ .s = s, .cells = cells };
+    }
+
+    fn next(self: *HostCells) ?Item {
+        if (self.s.host_stride == 0) {
+            if (self.i >= self.cells.len) return null;
+            defer self.i += 1;
+            return .{ .index = self.i, .at = self.cells[self.i].offset, .cell = self.cells[self.i] };
+        }
+        const cell_stride = if (self.s.stride == 0) 1 else self.s.stride;
+        if (self.i * cell_stride >= self.s.cells) return null;
+        defer self.i += 1;
+        return .{ .index = self.i * cell_stride, .at = @as(usize, self.i) * self.s.host_stride, .cell = self.cells[0] };
+    }
+};
+
+/// The cells per element of an `index_addr` or `index_load` `imm`.
+fn elemCells(imm: i64) i128 {
+    return imm & 0xFFFFFFFF;
+}
+
+/// The bytes per element of an `index_addr` or `index_load` `imm`, or null when it has none.
+fn elemBytes(imm: i64) ?usize {
+    const bytes: usize = @intCast(imm >> 32);
+    return if (bytes == 0) null else bytes;
+}
+
+/// Whether a value of shape `shape` of `func` can be read from and written to host memory.
+fn hasHostLayout(func: *const BytecodeFunction, shape: u32) VmError!bool {
+    if (shape >= func.shapes.len) return false;
+    return func.shapes[shape].host_len != 0;
+}
+
+/// The host cells of shape `s` of `func`.
+fn hostCellsOf(func: *const BytecodeFunction, s: instructions.Shape) VmError![]const instructions.HostCell {
+    if (s.host_len == 0 or @as(usize, s.host_first) + s.host_len > func.host_cells.len) return error.TypeMismatch;
+    return func.host_cells[s.host_first..][0..s.host_len];
+}
+
 /// Shape `index` of `func`.
 fn shapeIn(func: *const BytecodeFunction, index: u32) VmError!instructions.Shape {
     if (index >= func.shapes.len) return error.InvalidInstruction;
@@ -1309,6 +1481,8 @@ fn hostStore(addr: usize, size: u32, val: Value) void {
         .int => |x| @bitCast(x),
         .host_ptr => |hp| hp.addr,
         .bool => |b| @intFromBool(b),
+        // an f32 or an f64, as its bits
+        .float => |f| if (size == 4) @as(u32, @bitCast(@as(f32, @floatCast(f)))) else @as(u64, @bitCast(f)),
         // a slice is its address and its length, as in compiled code
         .string => |s| @as(u128, @intFromPtr(s.ptr)) | (@as(u128, s.len) << 64),
         .host_buf => |hb| @as(u128, hb.addr) | (@as(u128, hb.len) << 64),
