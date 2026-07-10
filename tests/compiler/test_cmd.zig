@@ -1074,3 +1074,108 @@ test "fels test: on the comptime VM, a test reads a global that is a struct or a
     try std.testing.expectEqual(@as(u32, 3), native.summary.passed);
     try std.testing.expect(native.summary.ok());
 }
+
+// On the comptime VM an arena's memory is host memory, which held only whole numbers: a struct
+// stored there failed with TypeMismatch, a float read back as its bits, and a pointer into an
+// array there read 8 bytes. Values there are now laid out as compiled code lays them out.
+const arena_values_source =
+    \\#import std.heap as heap;
+    \\#import std.vec as vec;
+    \\#import std.vec.{ Vec };
+    \\
+    \\E :: struct { key: i32, order: u32 }
+    \\Mixed :: struct { a: u8, b: f64, c: i16, d: bool, name: []const u8 }
+    \\Inner :: struct { x: i32, y: f32 }
+    \\Outer :: struct { tag: u8, inner: Inner, nums: [3]i32, n: i64 }
+    \\
+    \\#test
+    \\numbers :: fn(t: *Test) {
+    \\    a := heap::make();
+    \\    xs := heap::alloc(i32, &a, 2);
+    \\    xs[0] = -5;
+    \\    t.eq(xs[0], -5);
+    \\    fs := heap::alloc(f64, &a, 2);
+    \\    fs[1] = 2.5;
+    \\    t.eq(fs[1], 2.5);
+    \\    gs := heap::alloc(f32, &a, 2);
+    \\    gs[0] = -1.5;
+    \\    t.eq(gs[0], -1.5f32);
+    \\    a.deinit();
+    \\}
+    \\
+    \\#test
+    \\structs :: fn(t: *Test) {
+    \\    a := heap::make();
+    \\    es := heap::alloc(E, &a, 3);
+    \\    es[0] = .{ -5, 1 };
+    \\    es[1] = es[0];
+    \\    es[1].order = 9;
+    \\    x := es[0];
+    \\    x.key = 100;
+    \\    t.eq(es[0].key, -5);
+    \\    t.eq(es[0].order, 1u32);
+    \\    t.eq(es[1].order, 9u32);
+    \\    p := &es[2];
+    \\    p.key = 42;
+    \\    t.eq(es[2].key, 42);
+    \\    ms := heap::alloc(Mixed, &a, 1);
+    \\    ms[0] = .{ 200, -2.25, -300, true, "fels" };
+    \\    m := ms[0];
+    \\    t.eq(m.b, -2.25);
+    \\    t.eq(m.c, -300i16);
+    \\    t.expect(m.d);
+    \\    t.eq(ms[0].name, "fels");
+    \\    a.deinit();
+    \\}
+    \\
+    \\#test
+    \\nested_structs_and_arrays :: fn(t: *Test) {
+    \\    a := heap::make();
+    \\    os := heap::alloc(Outer, &a, 2);
+    \\    os[0] = .{ 7, .{ -5, 1.5 }, .{ 1, -2, 3 }, -9000000000 };
+    \\    t.eq(os[0].inner.x, -5);
+    \\    t.eq(os[0].nums[1], -2);
+    \\    t.eq(os[0].n, -9000000000i64);
+    \\    os[0].nums[2] = 30;
+    \\    o := os[0];
+    \\    o.inner.y = 9.0;
+    \\    t.eq(os[0].inner.y, 1.5f32);
+    \\    os[1] = o;
+    \\    t.eq(os[1].inner.y, 9.0f32);
+    \\    t.eq(os[1].nums[2], 30);
+    \\    a.deinit();
+    \\}
+    \\
+    \\#test
+    \\a_vec_of_structs :: fn(t: *Test) {
+    \\    a := heap::make();
+    \\    v := vec::make(E, &a);
+    \\    i: u32 = 0;
+    \\    while i < 20 {
+    \\        v.push(.{ (20 - i) as i32, i });
+    \\        i += 1;
+    \\    }
+    \\    t.eq(v.get(0).key, 20);
+    \\    t.eq(v.get(19).order, 19u32);
+    \\    a.deinit();
+    \\}
+    \\
+;
+
+test "fels test: on the comptime VM, structs, floats and arrays live in arena memory" {
+    const dir = ".zig-cache/tc_arena_values";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/main.fels", arena_values_source);
+    const vm = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(vm.text);
+    try expectHas(vm.text, "  \u{2713} numbers\n  \u{2713} structs\n  \u{2713} nested_structs_and_arrays\n  \u{2713} a_vec_of_structs\n");
+    try std.testing.expectEqual(@as(u32, 4), vm.summary.passed);
+    try std.testing.expect(vm.summary.ok());
+    if (comptime !fels.llvm_enabled) return;
+    if (comptime builtin.os.tag != .windows) return;
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try std.testing.expectEqual(@as(u32, 4), native.summary.passed);
+    try std.testing.expect(native.summary.ok());
+}

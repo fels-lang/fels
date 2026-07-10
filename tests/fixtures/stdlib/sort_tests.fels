@@ -115,8 +115,7 @@ text_sorts_byte_by_byte :: fn(t: *Test) {
 }
 
 // An entry is its key times 1000 plus where it started; only the key is compared, so entries with
-// the same key are equal to the sort and must keep their order. (Numbers, not a struct: the
-// comptime VM cannot keep a struct in arena memory yet.)
+// the same key are equal to the sort and must keep their order.
 key_less :: fn(a: i64, b: i64) -> bool { return a / 1000 < b / 1000; }
 
 #test
@@ -161,4 +160,29 @@ searching_a_sorted_slice :: fn(t: *Test) {
     t.expect(sort::search_by(i32, ys[:], 2, greater) == 3);
     t.expect(sort::is_sorted_by(i32, ys[:], greater));
     t.expect(!sort::is_sorted(i32, ys[:]));
+}
+
+Entry :: struct { key: i32, order: u32 }
+
+entry_less :: fn(a: Entry, b: Entry) -> bool { return a.key < b.key; }
+
+#test
+stable_over_structs_in_an_arena :: fn(t: *Test) {
+    a := heap::make();
+    n: usize = 60;
+    es := heap::alloc(Entry, &a, n);
+    keys := numbers(&a, n, 4, 13);
+    i: usize = 0;
+    while i < n {
+        es[i] = .{ keys[i], i as u32 };
+        i += 1;
+    }
+    sort::stable_by(Entry, es, entry_less, &a);
+    i = 1;
+    while i < n {
+        t.expect(es[i - 1].key <= es[i].key);
+        if es[i - 1].key == es[i].key { t.expect(es[i - 1].order < es[i].order); }
+        i += 1;
+    }
+    a.deinit();
 }
