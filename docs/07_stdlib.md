@@ -73,6 +73,22 @@ Formatting utilities built on top of `std.io.Writer`.
 - `write_u64_padded`, `write_hex_u64_padded`
 - `join_bytes(w: *Writer, items: []const []const u8, sep: []const u8)`
 
+It also reads numbers from text. Both fail with a `ParseError` (`.empty`, `.invalid`,
+`.overflow`):
+
+```fels
+fmt::parse_int(i32, "-42", 10)        // -42
+fmt::parse_int(u8, "0xff", 0)         // 255: base 0 reads a 0x, 0o or 0b prefix
+fmt::parse_int(u8, "256", 10)         // fails .overflow
+fmt::parse_int(usize, "1_000", 10)    // 1000: `_` may stand between digits
+fmt::parse_float("6.02e23")           // also ".5", "5.", "inf", "nan"
+```
+
+`parse_int` takes any integer type and checks its limits as it reads; the base is 2 to 36.
+`parse_float` gives the closest `f64` for up to 15 significant digits and an exponent within ±22,
+and may be off by one in the last bit beyond that. `std.json` and `std.serde` read their numbers
+with these.
+
 ## `std.mem`
 Safe, generic helpers for typed memory.
 
