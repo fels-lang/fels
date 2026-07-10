@@ -10,6 +10,7 @@
 // (recursively). Slices of non-byte elements and deserialization are next.
 
 #import std.heap.{ Arena };
+#import std.fmt as fmt;
 #import std.strings.{ StringBuilder, builder, append, append_byte, append_u64, append_i64, append_f64_min, str };
 
 // Raw reads from an Any's data pointer
@@ -206,39 +207,35 @@ is_dig :: fn(c: u8) -> bool {
     return true;
 }
 
-p_i64 :: fn(p: *Parser) -> i64 {
+// The text of the number at `p.pos`: a sign, digits, a fraction and an exponent.
+p_number :: fn(p: *Parser) -> []const u8 {
     p_skip_ws(p);
-    neg: bool = false;
-    if p_cur(p) == 45 { neg = true; p.pos += 1; }
-    v: i64 = 0;
-    while is_dig(p_cur(p)) {
-        v = v * 10 + ((p_cur(p) - 48) as i64);
+    start := p.pos;
+    if p_cur(p) == 45 || p_cur(p) == 43 { p.pos += 1; }
+    while is_dig(p_cur(p)) || p_cur(p) == 46 { p.pos += 1; }
+    if p_cur(p) == 101 || p_cur(p) == 69 {
         p.pos += 1;
+        if p_cur(p) == 45 || p_cur(p) == 43 { p.pos += 1; }
+        while is_dig(p_cur(p)) { p.pos += 1; }
     }
-    if neg { return -v; }
-    return v;
+    return p.s[start..p.pos];
+}
+
+// A number that does not fit or is no whole number makes the parse fail.
+p_i64 :: fn(p: *Parser) -> i64 {
+    text := p_number(p);
+    return fmt::parse_int(i64, text, 10) catch e {
+        p.ok = false;
+        yield 0;
+    };
 }
 
 p_f64 :: fn(p: *Parser) -> f64 {
-    p_skip_ws(p);
-    neg: bool = false;
-    if p_cur(p) == 45 { neg = true; p.pos += 1; }
-    ip: f64 = 0.0;
-    while is_dig(p_cur(p)) {
-        ip = ip * 10.0 + ((p_cur(p) - 48) as f64);
-        p.pos += 1;
-    }
-    if p_cur(p) == 46 {
-        p.pos += 1;
-        scale: f64 = 1.0;
-        while is_dig(p_cur(p)) {
-            scale = scale / 10.0;
-            ip = ip + ((p_cur(p) - 48) as f64) * scale;
-            p.pos += 1;
-        }
-    }
-    if neg { return -ip; }
-    return ip;
+    text := p_number(p);
+    return fmt::parse_float(text) catch e {
+        p.ok = false;
+        yield 0.0;
+    };
 }
 
 p_bool :: fn(p: *Parser) -> bool {
