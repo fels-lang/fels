@@ -14,6 +14,7 @@
 // UTF-8; a string without escapes is a slice of the text. Nesting deeper than 512 is refused.
 
 #import std.heap.{ Arena };
+#import std.fmt as fmt;
 #import std.vec as vec;
 #import std.vec.{ Vec };
 
@@ -68,7 +69,7 @@ pub Value :: struct {
         return null;
     }
 
-    // A number that is a whole number and fits an i64 (exact for up to 18 digits).
+    // A number that is a whole number and fits an i64 (exact over the whole range).
     pub as_i64 :: fn(self: Self) -> ?i64 {
         if self.kind != .number { return null; }
         exact := whole(self.text);
@@ -356,7 +357,8 @@ number :: fn(p: *Parser) -> Value ! JsonError {
     out := null_value();
     out.kind = .number;
     out.text = p.text[start..p.at];
-    out.number = to_f64(out.text);
+    // (the text is a JSON number, checked above, so it parses)
+    out.number = fmt::parse_float(out.text) catch e { yield 0.0; };
     return out;
 }
 
@@ -364,99 +366,9 @@ digits :: fn(p: *Parser) {
     while p.at < p.text.len && is_digit(p.text[p.at]) { p.at += 1; }
 }
 
-// The value of a number written as JSON writes it (checked before): its first 19 digits as a
-// whole number, times a power of ten.
-to_f64 :: fn(text: []const u8) -> f64 {
-    i: usize = 0;
-    negative := false;
-    if text[0] == 45 {
-        negative = true;
-        i = 1;
-    }
-    mantissa: u64 = 0;
-    kept: u32 = 0;
-    exp: i64 = 0;
-    while i < text.len && is_digit(text[i]) {
-        if kept < 19 {
-            mantissa = mantissa * 10 + ((text[i] - 48) as u64);
-            if mantissa != 0 { kept += 1; }
-        } else {
-            exp += 1;
-        }
-        i += 1;
-    }
-    if i < text.len && text[i] == 46 {
-        i += 1;
-        while i < text.len && is_digit(text[i]) {
-            if kept < 19 {
-                mantissa = mantissa * 10 + ((text[i] - 48) as u64);
-                if mantissa != 0 { kept += 1; }
-                exp -= 1;
-            }
-            i += 1;
-        }
-    }
-    if i < text.len {
-        i += 1;
-        sign: i64 = 1;
-        if text[i] == 45 {
-            sign = -1;
-            i += 1;
-        } else if text[i] == 43 {
-            i += 1;
-        }
-        e: i64 = 0;
-        while i < text.len {
-            // beyond this an f64 is infinite or 0 anyway
-            if e < 1000 { e = e * 10 + ((text[i] - 48) as i64); }
-            i += 1;
-        }
-        exp += sign * e;
-    }
-    v := mantissa as f64;
-    if mantissa != 0 {
-        // powers of ten up to 10^22 are exact, so a number of up to 15 digits is too
-        while exp > 22 {
-            v *= TEN_22;
-            exp -= 22;
-        }
-        while exp < -22 {
-            v /= TEN_22;
-            exp += 22;
-        }
-        if exp > 0 {
-            v *= power(exp);
-        } else if exp < 0 {
-            v /= power(0 - exp);
-        }
-    }
-    if negative { return 0.0 - v; }
-    return v;
-}
-
-// 10^n for n up to 22, exact.
-power :: fn(n: i64) -> f64 {
-    v: f64 = 1.0;
-    for i in 0..n {
-        v *= 10.0;
-    }
-    return v;
-}
-
-// The whole number `text` writes, when it is one of up to 18 digits.
+// The whole number `text` writes, when it is one an i64 holds.
 whole :: fn(text: []const u8) -> ?i64 {
-    i: usize = 0;
-    negative := text.len > 0 && text[0] == 45;
-    if negative { i = 1; }
-    if text.len - i == 0 || text.len - i > 18 { return null; }
-    n: i64 = 0;
-    while i < text.len {
-        if !is_digit(text[i]) { return null; }
-        n = n * 10 + ((text[i] - 48) as i64);
-        i += 1;
-    }
-    if negative { return 0 - n; }
-    return n;
+    return fmt::parse_int(i64, text, 10) catch e { return null; };
 }
 
 skip_space :: fn(p: *Parser) {
