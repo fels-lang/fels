@@ -19,6 +19,11 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- On the comptime VM (`#run`, `#assert`, `fels test --comptime`), structs, arrays and floats
+  live in arena memory, laid out as compiled code lays them out. A struct stored there stopped the
+  run with `TypeMismatch`, and so did a `Vec` of structs; a float read back as its bits; an element
+  of an array inside such a struct read 8 bytes. An enum with a payload or an optional stored
+  there is refused with `TypeMismatch`; it was written as zeros.
 - `at == 4` for an optional `at: ?usize` means "set, and equal". It stopped the build with an
   LLVM error.
 - A function of another module used as a value (`sort::by([]const u8, names, mem::less_bytes)`)
