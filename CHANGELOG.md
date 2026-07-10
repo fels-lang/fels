@@ -11,6 +11,11 @@ the major version is `0`, any minor bump may break source compatibility.
   every case), `stable_asc` and `stable_by` keep equal elements in their order (a merge sort
   with a slice from an arena), and `lower_bound`, `upper_bound` and `search` find in a sorted
   slice. `std.mem` gains `compare_bytes` and `less_bytes`, the byte order of two texts.
+- **Reading numbers from text**: `fmt::parse_int(T, text, base)` for any integer type, with
+  its limits checked, a base from 2 to 36 or a `0x`/`0o`/`0b` prefix, and `_` between digits;
+  `fmt::parse_float(text)` with exponents, `inf` and `nan`. `std.json` and `std.serde` read their
+  numbers with them: `serde` now reads an exponent (`1e5` was 1) and fails on an integer that
+  does not fit, and `Value.as_i64` is exact over the whole `i64` range.
 
 ### Fixed
 
