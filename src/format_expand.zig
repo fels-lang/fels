@@ -17,6 +17,7 @@ const parser = @import("parser.zig");
 const macroexpand = @import("macroexpand.zig");
 const diag_mod = @import("diagnostic.zig");
 const style = @import("style.zig");
+const strlit = @import("strlit.zig");
 const Span = @import("lexer/span.zig").Span;
 
 /// The node ids of the code made here: far above those of the parser and the preludes.
@@ -71,8 +72,13 @@ pub fn split(a: std.mem.Allocator, raw: []const u8, base: usize) error{OutOfMemo
     while (i < inner.len) {
         const c = inner[i];
         if (c == '\\' and i + 1 < inner.len) {
-            try text.appendSlice(a, inner[i .. i + 2]);
-            i += 2;
+            // an escape is text, `\u{e9}` with its braces
+            var n: usize = 2;
+            if (inner[i + 1] == 'u') {
+                if (strlit.unicodeEscape(inner[i + 2 ..])) |u| n += u.len;
+            }
+            try text.appendSlice(a, inner[i .. i + n]);
+            i += n;
             continue;
         }
         if (c == '}') {
@@ -509,6 +515,14 @@ test "a format splits into its text and its values" {
     try std.testing.expectEqualStrings(" has ", pieces[1].text);
     try std.testing.expectEqualStrings(">4", pieces[2].value.spec);
     try std.testing.expectEqualStrings(" items {x}\\n", pieces[3].text);
+}
+
+test "a \\u{…} escape's braces are text" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sp = try split(arena.allocator(), "\"caf\\u{e9} {n}\"", 0);
+    try std.testing.expectEqualStrings("caf\\u{e9} ", sp.pieces[0].text);
+    try std.testing.expectEqual(@as(usize, 2), sp.pieces.len);
 }
 
 test "a path with :: in a value is no spec" {

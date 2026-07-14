@@ -5,6 +5,7 @@ const Diagnostic = diag_mod.Diagnostic;
 const Span = @import("lexer/span.zig").Span;
 const lexer = @import("lexer/tokens.zig");
 const build_target = @import("build_target.zig");
+const strlit = @import("strlit.zig");
 const Token = lexer.Token;
 const TokenKind = lexer.TokenKind;
 
@@ -2840,6 +2841,11 @@ fn decodeCharLit(raw: []const u8) !u32 {
             const hi = std.fmt.charToDigit(inner[2], 16) catch return error.Invalid;
             const lo = std.fmt.charToDigit(inner[3], 16) catch return error.Invalid;
             break :blk @as(u32, hi) * 16 + lo;
+        },
+        'u' => blk: {
+            const u = strlit.unicodeEscape(inner[2..]) orelse return error.Invalid;
+            if (2 + u.len != inner.len) return error.Invalid;
+            break :blk u.rune;
         },
         else => error.Invalid,
     };
