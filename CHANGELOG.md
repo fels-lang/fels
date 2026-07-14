@@ -16,9 +16,17 @@ the major version is `0`, any minor bump may break source compatibility.
   `fmt::parse_float(text)` with exponents, `inf` and `nan`. `std.json` and `std.serde` read their
   numbers with them: `serde` now reads an exponent (`1e5` was 1) and fails on an integer that
   does not fit, and `Value.as_i64` is exact over the whole `i64` range.
+- **Going through text in parts**: `strings::split(text, sep)`, `strings::fields(text)` (the
+  words) and `strings::lines(text)` are iterators a `for` takes, on top of `mem::split`,
+  `mem::tokenize` and `mem::split_once` for any slice. `std.mem` also gains `index_of_slice`,
+  `last_index_of`, `count` and `trim`; `std.strings` gains `str_replace`, `str_join`,
+  `str_count` and `str_last_index_of`. The reference now covers `std.strings`.
 
 ### Fixed
 
+- `for x in it` over an iterator that is a generic struct (`mem::Split(u8)`, a `next` of a
+  `Each($T)`) gives `x` the element type with the struct's type arguments, and calls their
+  instance of `next`. `x` was typed `T`, and the build stopped with an internal compiler error.
 - On the comptime VM (`#run`, `#assert`, `fels test --comptime`), structs, arrays and floats
   live in arena memory, laid out as compiled code lays them out. A struct stored there stopped the
   run with `TypeMismatch`, and so did a `Vec` of structs; a float read back as its bits; an element
