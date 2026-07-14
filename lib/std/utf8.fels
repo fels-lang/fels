@@ -1,0 +1,144 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.utf8 — UTF-8 text: runes (Unicode code points) decoded from it and encoded into it, whether
+// bytes are valid UTF-8, and going through a text rune by rune.
+//
+//   for r in utf8::runes("grüß") { … }      // r: u32, a code point
+//   n := utf8::count("grüß")                 // 4 runes, in 6 bytes
+//   if utf8::valid(bytes) { … }
+//   len := utf8::encode(buf[:], 0x20AC)      // "€": 3 bytes into buf
+//
+// Decoding is strict, as the standard asks: no overlong forms, no surrogates (U+D800 to U+DFFF),
+// nothing past U+10FFFF. A byte that starts no valid sequence decodes as `REPLACEMENT` and is one
+// byte long, so going through bad text never stops or skips good text after it.
+
+/// What a byte that starts no valid sequence decodes to: U+FFFD.
+pub REPLACEMENT :: 0xFFFDu32;
+
+/// A rune decoded from the start of some bytes, and how many bytes it took.
+pub Decoded :: struct {
+    rune: u32,
+    len: usize,
+}
+
+/// The rune at the start of `s` and its length in bytes; `REPLACEMENT` and 1 for a byte that
+/// starts no valid sequence (a lone continuation byte, an overlong form, a cut-off sequence).
+/// `s` must not be empty.
+pub decode :: fn(s: []const u8) -> Decoded {
+    b0 := s[0];
+    if b0 < 0x80 { return .{ b0 as u32, 1 }; }
+    bad: Decoded = .{ REPLACEMENT, 1 };
+    // The second byte's range depends on the first: that excludes overlong forms, surrogates
+    // and runes past U+10FFFF.
+    n: usize = 0;
+    lo: u8 = 0x80;
+    hi: u8 = 0xBF;
+    first: u32 = 0;
+    if b0 >= 0xC2 && b0 <= 0xDF {
+        n = 2;
+        first = (b0 & 0x1F) as u32;
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+        n = 3;
+        first = (b0 & 0x0F) as u32;
+        if b0 == 0xE0 { lo = 0xA0; }
+        if b0 == 0xED { hi = 0x9F; }
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+        n = 4;
+        first = (b0 & 0x07) as u32;
+        if b0 == 0xF0 { lo = 0x90; }
+        if b0 == 0xF4 { hi = 0x8F; }
+    } else {
+        return bad;
+    }
+    if s.len < n { return bad; }
+    if s[1] < lo || s[1] > hi { return bad; }
+    r := (first << 6) | (s[1] & 0x3F) as u32;
+    i: usize = 2;
+    while i < n {
+        if s[i] < 0x80 || s[i] > 0xBF { return bad; }
+        r = (r << 6) | (s[i] & 0x3F) as u32;
+        i += 1;
+    }
+    return .{ r, n };
+}
+
+/// The bytes the UTF-8 form of `r` takes, 1 to 4; 0 for a value that is no rune (a surrogate,
+/// or past U+10FFFF).
+pub encoded_len :: fn(r: u32) -> usize {
+    if r < 0x80 { return 1; }
+    if r < 0x800 { return 2; }
+    if r >= 0xD800 && r <= 0xDFFF { return 0; }
+    if r < 0x10000 { return 3; }
+    if r <= 0x10FFFF { return 4; }
+    return 0;
+}
+
+/// Write the UTF-8 form of `r` at the start of `out` and return its length; 0, and nothing
+/// written, when `r` is no rune or `out` is too short.
+pub encode :: fn(out: []u8, r: u32) -> usize {
+    n := encoded_len(r);
+    if n == 0 || out.len < n { return 0; }
+    if n == 1 {
+        out[0] = r as u8;
+    } else if n == 2 {
+        out[0] = 0xC0 | (r >> 6) as u8;
+        out[1] = 0x80 | (r & 0x3F) as u8;
+    } else if n == 3 {
+        out[0] = 0xE0 | (r >> 12) as u8;
+        out[1] = 0x80 | ((r >> 6) & 0x3F) as u8;
+        out[2] = 0x80 | (r & 0x3F) as u8;
+    } else {
+        out[0] = 0xF0 | (r >> 18) as u8;
+        out[1] = 0x80 | ((r >> 12) & 0x3F) as u8;
+        out[2] = 0x80 | ((r >> 6) & 0x3F) as u8;
+        out[3] = 0x80 | (r & 0x3F) as u8;
+    }
+    return n;
+}
+
+/// Whether `s` is valid UTF-8 from start to end.
+pub valid :: fn(s: []const u8) -> bool {
+    i: usize = 0;
+    while i < s.len {
+        if s[i] < 0x80 {
+            i += 1;
+            continue;
+        }
+        d := decode(s[i..s.len]);
+        // (a REPLACEMENT that was written as such is three bytes; a bad byte is one)
+        if d.rune == REPLACEMENT && d.len == 1 { return false; }
+        i += d.len;
+    }
+    return true;
+}
+
+/// How many runes `s` holds; a byte that starts no valid sequence counts as one.
+pub count :: fn(s: []const u8) -> usize {
+    n: usize = 0;
+    i: usize = 0;
+    while i < s.len {
+        i += if s[i] < 0x80 { 1 } else { decode(s[i..s.len]).len };
+        n += 1;
+    }
+    return n;
+}
+
+/// The runes of a text, in order (`runes`).
+pub Runes :: struct {
+    rest: []const u8,
+
+    pub next :: fn(self: *Self) -> ?u32 {
+        if self.rest.len == 0 { return null; }
+        d := decode(self.rest);
+        self.rest = self.rest[d.len..self.rest.len];
+        return d.rune;
+    }
+}
+
+/// The runes of `s`: `for r in utf8::runes(text) { … }`.
+pub runes :: fn(s: []const u8) -> Runes {
+    it: Runes = .{ s };
+    return it;
+}
+
+/// Whether `b` continues a sequence (`10xxxxxx`) rather than starting one.
+pub is_continuation :: fn(b: u8) -> bool { return (b & 0xC0) == 0x80; }
