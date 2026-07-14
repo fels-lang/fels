@@ -48,8 +48,6 @@ These compile without a message and give a wrong result.
 - **`#derive(Eq)` on a struct with an enum field fails** with "no visible method or extension
   function `eq`": `fieldIsNamedStruct` in `src/parser.zig` takes any named type for a struct.
   Verified 2026-10-17.
-- **An unknown escape such as `\xZZ`** in a string is kept as literal text, with no error.
-
 - **Macro errors go to stderr only**; the language server does not show them. Reported.
 - **`std.json` and `std.serde` cannot be imported together**: both declare a `Parser`, and the
   field tables the runtime gets for reflection are named after the type alone ("`<runtime>`:

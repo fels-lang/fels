@@ -2083,3 +2083,18 @@ test "diagnostics: a keyword in an import path says to rename the file or folder
         p.diagnostics.items[0].message,
     );
 }
+
+test "diagnostics: an escape that stands for nothing is an error where it is" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Once kept as written: "a\qb" was the four bytes `a`, `\`, `q`, `b`.
+    const src = "f :: fn() { s := \"a\\qb\"; t := \"\\u{d800}\"; c := '\\q'; ok := \"\\u{e9}\\'\"; }\n";
+    var p = try fels.parser_mod.Parser.init(a, "esc.fels", src, 1);
+    _ = p.parseModule() catch {};
+    try std.testing.expectEqual(@as(usize, 3), p.diagnostics.items.len);
+    try std.testing.expect(std.mem.startsWith(u8, p.diagnostics.items[0].message, "unknown escape"));
+    try std.testing.expectEqual(std.mem.indexOf(u8, src, "\\q").?, p.diagnostics.items[0].span.start);
+    try std.testing.expect(std.mem.startsWith(u8, p.diagnostics.items[1].message, "`\\u` takes a code point"));
+    try std.testing.expect(std.mem.startsWith(u8, p.diagnostics.items[2].message, "unknown escape"));
+}

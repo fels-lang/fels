@@ -2493,12 +2493,15 @@ pub const Parser = struct {
             },
             .int_lit => return self.expr(.{ .int = tok.text(self.source) }, spanFrom(tok, tok)),
             .float_lit => return self.expr(.{ .float = tok.text(self.source) }, spanFrom(tok, tok)),
-            .string_lit => return self.expr(.{ .string = tok.text(self.source) }, spanFrom(tok, tok)),
+            .string_lit => {
+                _ = try self.checkEscapes(tok);
+                return self.expr(.{ .string = tok.text(self.source) }, spanFrom(tok, tok));
+            },
             .char_lit => {
                 // A char literal is just sugar for its integer code point — an
                 // untyped int literal that coerces to u8/rune/i32/etc. like `65`.
                 const value = decodeCharLit(tok.text(self.source)) catch {
-                    try self.errorAt(tok, "invalid character literal");
+                    if (!try self.checkEscapes(tok)) try self.errorAt(tok, "invalid character literal");
                     return error.ParseFailed;
                 };
                 const dec = std.fmt.allocPrint(self.allocator, "{d}", .{value}) catch return error.ParseFailed;
@@ -2796,6 +2799,15 @@ pub const Parser = struct {
         if (self.check(kind)) return self.advance();
         try self.errorAt(self.peek(), message);
         return error.ParseFailed;
+    }
+
+    /// Each escape in a string or character literal must stand for something; the first one that
+    /// does not is reported where it is. Whether one was.
+    fn checkEscapes(self: *Parser, tok: Token) !bool {
+        const bad = strlit.checkEscapes(tok.text(self.source)) orelse return false;
+        const at = tok.start + bad.at;
+        try self.diagnostics.append(self.allocator, Diagnostic.err(bad.msg, Span.new(at, at + bad.len), self.file_name));
+        return true;
     }
 
     fn errorAt(self: *Parser, tok: Token, message: []const u8) !void {

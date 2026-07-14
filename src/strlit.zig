@@ -71,6 +71,42 @@ pub fn unicodeEscape(s: []const u8) ?struct { rune: u21, len: usize } {
     return .{ .rune = @intCast(value), .len = close + 1 };
 }
 
+/// An escape in a literal that stands for nothing; `at` is its offset in the literal's text.
+pub const BadEscape = struct { at: usize, len: usize, msg: []const u8 };
+
+/// The first escape in a string or character literal's text that stands for nothing: an unknown
+/// letter after the backslash, `\x` without two hex digits, `\u` without a valid `{…}`.
+pub fn checkEscapes(literal: []const u8) ?BadEscape {
+    var i: usize = 0;
+    while (i < literal.len) : (i += 1) {
+        if (literal[i] != '\\') continue;
+        if (i + 1 >= literal.len) return null; // the lexer reports an unclosed literal
+        switch (literal[i + 1]) {
+            'n', 'r', 't', '\\', '"', '\'', '0' => {},
+            'x' => {
+                const ok = i + 3 < literal.len and std.ascii.isHex(literal[i + 2]) and std.ascii.isHex(literal[i + 3]);
+                if (!ok) return .{ .at = i, .len = 2, .msg = "`\\x` takes two hex digits, as in `\\x41`" };
+                i += 2;
+            },
+            'u' => {
+                const u = unicodeEscape(literal[i + 2 ..]) orelse return .{
+                    .at = i,
+                    .len = 2,
+                    .msg = "`\\u` takes a code point in braces, as in `\\u{e9}`: 1 to 6 hex digits, at most 10FFFF, no surrogate",
+                };
+                i += u.len;
+            },
+            else => return .{
+                .at = i,
+                .len = 2,
+                .msg = "unknown escape; the escapes are \\n \\r \\t \\\\ \\\" \\' \\0 \\xHH and \\u{H…}",
+            },
+        }
+        i += 1;
+    }
+    return null;
+}
+
 fn trimQuotes(text: []const u8) []const u8 {
     if (text.len >= 2 and text[0] == '"' and text[text.len - 1] == '"') return text[1 .. text.len - 1];
     return text;
@@ -89,4 +125,14 @@ test "a \\u{…} escape is the UTF-8 of its code point" {
     const got = bytes(a, "\"\\u{e9}\\u{20AC}\\u{1f600}!\"");
     defer a.free(got);
     try std.testing.expectEqualStrings("\u{e9}\u{20ac}\u{1f600}!", got);
+}
+
+test "an escape that stands for nothing is found" {
+    try std.testing.expect(checkEscapes("\"a\\n\\x41\\u{10FFFF}\\'\\\\\"") == null);
+    try std.testing.expectEqual(@as(usize, 2), checkEscapes("\"a\\qb\"").?.at);
+    try std.testing.expect(checkEscapes("\"\\xZZ\"") != null);
+    try std.testing.expect(checkEscapes("\"\\u{110000}\"") != null);
+    try std.testing.expect(checkEscapes("\"\\u{d800}\"") != null);
+    try std.testing.expect(checkEscapes("\"\\u{}\"") != null);
+    try std.testing.expect(checkEscapes("\"\\u41\"") != null);
 }
