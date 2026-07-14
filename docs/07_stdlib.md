@@ -97,10 +97,49 @@ Safe, generic helpers for typed memory.
 - `copy($T: type, dest: []T, src: []const T)`
 - `fill($T: type, slice: []T, value: T)`
 - `swap`, `reverse`
+- `index_of_slice`, `last_index_of`, `last_index_of_slice`, `count` (of a sequence, not
+  overlapping)
+- `trim`, `trim_left`, `trim_right($T, s, set)`: without the elements of `set` at the ends
 
 For bytes there are specialized aliases: `eql_bytes`, `copy_bytes` and `zero`.
 `compare_bytes(a, b) -> i32` orders two texts byte by byte (-1, 0 or 1, a prefix first), and
 `less_bytes(a, b) -> bool` is that order as a comparison, for sorting text.
+
+It also goes through the parts of a slice, as iterators a `for` takes:
+
+```fels
+for part in mem::split(u8, "a,,b", ",") { … }      // "a", "", "b": empty parts too
+for word in mem::tokenize(u8, " a  b ", " ") { … } // "a", "b": runs of delimiters skipped
+if mem::split_once(u8, "key=value", "=") |kv| {    // kv.before "key", kv.after "value"
+    …
+}
+```
+
+## `std.strings`
+A growable `StringBuilder` in an arena, and functions on text. The builder also implements
+`std.io.Writer`.
+
+```fels
+sb := strings::builder(&a);
+sb.append("x = ");
+sb.append_i64(-42);
+io::println(sb.str());
+```
+
+- On text: `str_eq`, `str_starts_with`, `str_ends_with`, `str_index_of`, `str_last_index_of`,
+  `str_contains`, `str_count`, `str_count_byte`, `str_trim` (`_left`, `_right`),
+  `str_eq_ignore_case`
+- Into an arena: `str_dup`, `str_concat`, `str_repeat`, `str_upper`, `str_lower`,
+  `str_replace(&a, s, from, to)`, `str_join(&a, parts, sep)`
+- Bytes: `is_digit`, `is_alpha`, `is_space` and the like, `to_upper_byte`, `to_lower_byte`
+
+And it goes through a text in parts:
+
+```fels
+for field in strings::split(line, ";") { … }   // the parts between separators
+for word in strings::fields(text) { … }        // the words: between spaces, tabs, line breaks
+for line in strings::lines(text) { … }         // without "\n" or "\r\n"; no empty last line
+```
 
 ## `std.bytes`
 This module reads and writes fixed-width integers at an explicit offset in a byte slice. It
