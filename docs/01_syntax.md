@@ -210,8 +210,13 @@ String literals go in double quotes, and their type is `[]const u8`.
 | `\n` | Newline (LF) |
 | `\t` | Horizontal tab |
 | `\r` | Carriage return |
+| `\'` | Single quote |
 | `\0` | Null byte |
 | `\xHH` | The byte with hex value `HH`, two hex digits (`\x41` is `A`) |
+| `\u{H…}` | The UTF-8 bytes of a Unicode code point, 1 to 6 hex digits (`\u{e9}` is `é`, two bytes) |
+
+A `\u{…}` names a code point up to `10FFFF` that is no surrogate (`D800` to `DFFF`). Any other
+backslash in a literal is an error that lists these escapes.
 
 ### Character Literals
 
@@ -226,6 +231,7 @@ code point**. It is an untyped integer literal (like `65`), so it coerces to `u8
 '\\'       // 92
 '\''       // 39
 '\x41'     // 65  — hex escape
+'\u{20ac}' // 8364, the code point of €
 ```
 
 Because it is an ordinary integer literal, it works anywhere a number does:
