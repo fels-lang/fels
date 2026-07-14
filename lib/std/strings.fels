@@ -15,6 +15,7 @@
 
 #import std.heap.{ Arena, alloc_bytes };
 #import std.io.{ Writer, IoError };
+#import std.mem as mem;
 
 // The builder
 
@@ -437,4 +438,80 @@ pub str_lower :: fn(a: *Arena, s: []const u8) -> []const u8 {
     i: usize = 0;
     while i < s.len { append_byte(&sb, to_lower_byte(s[i])); i += 1; }
     return str(&sb);
+}
+
+/// `s` with every `from` replaced by `to`, left to right and not overlapping.
+pub str_replace :: fn(a: *Arena, s: []const u8, from: []const u8, to: []const u8) -> []const u8 {
+    if from.len == 0 { return str_dup(a, s); }
+    sb: StringBuilder = builder_cap(a, s.len);
+    i: usize = 0;
+    while i < s.len {
+        if i + from.len <= s.len && str_eq(s[i..i + from.len], from) {
+            append(&sb, to);
+            i += from.len;
+        } else {
+            append_byte(&sb, s[i]);
+            i += 1;
+        }
+    }
+    return str(&sb);
+}
+
+/// `parts` one after the other, `sep` between each two: `str_join(&a, names, ", ")`.
+pub str_join :: fn(a: *Arena, parts: []const []const u8, sep: []const u8) -> []const u8 {
+    sb: StringBuilder = builder(a);
+    i: usize = 0;
+    while i < parts.len {
+        if i > 0 { append(&sb, sep); }
+        append(&sb, parts[i]);
+        i += 1;
+    }
+    return str(&sb);
+}
+
+// Searching text
+
+/// The last index where `needle` starts in `s`, or null.
+pub str_last_index_of :: fn(s: []const u8, needle: []const u8) -> ?usize {
+    return mem::last_index_of_slice(u8, s, needle);
+}
+
+/// How often `needle` is in `s`, not overlapping: `str_count("banana", "an")` is 2.
+pub str_count :: fn(s: []const u8, needle: []const u8) -> usize {
+    return mem::count(u8, s, needle);
+}
+
+// Going through the parts of a text
+
+/// The parts of `s` between occurrences of `sep`, empty ones too:
+///   for field in strings::split(line, ";") { … }
+pub split :: fn(s: []const u8, sep: []const u8) -> mem::Split(u8) {
+    return mem::split(u8, s, sep);
+}
+
+/// The words of `s`: the parts between runs of spaces, tabs and line breaks.
+pub fields :: fn(s: []const u8) -> mem::Tokens(u8) {
+    return mem::tokenize(u8, s, " \t\r\n");
+}
+
+/// The lines of a text, without their line breaks (`\n` or `\r\n`). A text that ends with a line
+/// break has no empty line after it.
+pub Lines :: struct {
+    rest: []const u8,
+
+    pub next :: fn(self: *Self) -> ?[]const u8 {
+        if self.rest.len == 0 { return null; }
+        i: usize = 0;
+        while i < self.rest.len && self.rest[i] != 10u8 { i += 1; }
+        line := self.rest[0..i];
+        self.rest = if i < self.rest.len { self.rest[i + 1..self.rest.len] } else { self.rest[i..i] };
+        if line.len > 0 && line[line.len - 1] == 13u8 { line = line[0..line.len - 1]; }
+        return line;
+    }
+}
+
+/// The lines of `s`: `for line in strings::lines(text) { … }`.
+pub lines :: fn(s: []const u8) -> Lines {
+    l: Lines = .{ s };
+    return l;
 }
