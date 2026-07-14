@@ -1,0 +1,104 @@
+// Searching, trimming and splitting slices and texts (std.mem, std.strings), as `#test` functions:
+// `fels test` runs them natively and on the comptime VM (tests/compiler/std_tests.zig).
+#import std.heap as heap;
+#import std.mem as mem;
+#import std.strings as strings;
+
+#test
+searching :: fn(t: *Test) {
+    t.expect(mem::index_of_slice(u8, "hello world", "o w") == 4);
+    t.expect(mem::index_of_slice(u8, "hello", "") == 0);
+    t.expect(mem::index_of_slice(u8, "hi", "hello") == null);
+    t.expect(mem::last_index_of(u8, "a/b/c", '/') == 3);
+    t.expect(mem::last_index_of_slice(u8, "abcabc", "bc") == 4);
+    t.expect(mem::last_index_of_slice(u8, "abc", "x") == null);
+    t.eq(mem::count(u8, "aaaa", "aa"), 2);
+    t.eq(mem::count(u8, "banana", "an"), 2);
+    t.eq(strings::str_count("one two one", "one"), 2);
+    t.expect(strings::str_last_index_of("x.tar.gz", ".") == 5);
+    xs: [5]i32 = .{ 1, 2, 3, 2, 3 };
+    ys: [2]i32 = .{ 2, 3 };
+    t.expect(mem::last_index_of_slice(i32, xs[:], ys[:]) == 3);
+}
+
+#test
+trimming :: fn(t: *Test) {
+    t.eq(mem::trim(u8, "--a-b--", "-"), "a-b");
+    t.eq(mem::trim_left(u8, "  x ", " "), "x ");
+    t.eq(mem::trim_right(u8, "  x ", " "), "  x");
+    t.eq(mem::trim(u8, "----", "-"), "");
+}
+
+#test
+splitting_keeps_empty_parts :: fn(t: *Test) {
+    s := mem::split(u8, "a,,b,", ",");
+    t.expect(s.next() == "a");
+    t.expect(s.next() == "");
+    t.expect(s.next() == "b");
+    t.expect(s.next() == "");
+    t.expect(s.next() == null);
+    n: usize = 0;
+    for part in strings::split("x::y::z", "::") {
+        n += part.len;
+    }
+    t.eq(n, 3);
+    whole := strings::split("abc", "");
+    t.expect(whole.next() == "abc");
+    t.expect(whole.next() == null);
+}
+
+#test
+tokens_skip_empty_parts :: fn(t: *Test) {
+    words: [4][]const u8 = .{ "", "", "", "" };
+    n: usize = 0;
+    for w in strings::fields("  the\tquick\n brown  fox ") {
+        if n < 4 { words[n] = w; }
+        n += 1;
+    }
+    t.eq(n, 4);
+    t.eq(words[0], "the");
+    t.eq(words[3], "fox");
+    tk := mem::tokenize(u8, ";;;", ";");
+    t.expect(tk.next() == null);
+}
+
+#test
+lines_of_a_text :: fn(t: *Test) {
+    count: usize = 0;
+    last: []const u8 = "";
+    for line in strings::lines("one\r\ntwo\n\nfour\n") {
+        count += 1;
+        last = line;
+    }
+    t.eq(count, 4);
+    t.eq(last, "four");
+    l := strings::lines("a\r\nb");
+    t.expect(l.next() == "a");
+    t.expect(l.next() == "b");
+    t.expect(l.next() == null);
+    empty := strings::lines("");
+    t.expect(empty.next() == null);
+}
+
+#test
+split_once_at_the_first :: fn(t: *Test) {
+    if mem::split_once(u8, "key=value=more", "=") |kv| {
+        t.eq(kv.before, "key");
+        t.eq(kv.after, "value=more");
+    } else {
+        t.fatal("no =");
+    }
+    t.expect(mem::split_once(u8, "novalue", "=") == null);
+}
+
+#test
+replacing_and_joining :: fn(t: *Test) {
+    a := heap::make();
+    t.eq(strings::str_replace(&a, "a-b-c", "-", "+"), "a+b+c");
+    t.eq(strings::str_replace(&a, "aaa", "aa", "b"), "ba");
+    t.eq(strings::str_replace(&a, "none", "x", "y"), "none");
+    parts: [3][]const u8 = .{ "x", "y", "z" };
+    t.eq(strings::str_join(&a, parts[:], ", "), "x, y, z");
+    t.eq(strings::str_join(&a, parts[0..1], ", "), "x");
+    a.deinit();
+}
