@@ -16,6 +16,7 @@
 #import std.heap.{ Arena, alloc_bytes };
 #import std.io.{ Writer, IoError };
 #import std.mem as mem;
+#import std.utf8 as utf8;
 
 // The builder
 
@@ -90,27 +91,13 @@ pub append_repeat :: fn(self: *StringBuilder, c: u8, n: usize) {
     }
 }
 
-// Append a Unicode code point, UTF-8 encoded (1–4 bytes).
+// Append a Unicode code point, UTF-8 encoded (1–4 bytes); U+FFFD for a value that is no code
+// point (a surrogate, or past U+10FFFF).
 pub append_rune :: fn(self: *StringBuilder, cp: u32) {
-    if cp < 0x80 {
-        append_byte(self, cp as u8);
-        return;
-    }
-    if cp < 0x800 {
-        append_byte(self, 0xC0 | ((cp >> 6) as u8));
-        append_byte(self, 0x80 | ((cp & 0x3F) as u8));
-        return;
-    }
-    if cp < 0x10000 {
-        append_byte(self, 0xE0 | ((cp >> 12) as u8));
-        append_byte(self, 0x80 | (((cp >> 6) & 0x3F) as u8));
-        append_byte(self, 0x80 | ((cp & 0x3F) as u8));
-        return;
-    }
-    append_byte(self, 0xF0 | ((cp >> 18) as u8));
-    append_byte(self, 0x80 | (((cp >> 12) & 0x3F) as u8));
-    append_byte(self, 0x80 | (((cp >> 6) & 0x3F) as u8));
-    append_byte(self, 0x80 | ((cp & 0x3F) as u8));
+    buf: [4]u8 = .{ 0, 0, 0, 0 };
+    n := utf8::encode(buf[:], cp);
+    if n == 0 { n = utf8::encode(buf[:], utf8::REPLACEMENT); }
+    append(self, buf[0..n]);
 }
 
 // Numeric formatting
