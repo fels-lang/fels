@@ -1,0 +1,73 @@
+// std.utf8, as `#test` functions: `fels test` runs them natively and on the comptime VM
+// (tests/compiler/std_tests.zig).
+#import std.heap as heap;
+#import std.utf8 as utf8;
+#import std.strings as strings;
+
+#test
+decoding :: fn(t: *Test) {
+    t.eq(utf8::decode("A").rune, 65u32);
+    d := utf8::decode("\u{e9}x");
+    t.eq(d.rune, 0xE9u32);
+    t.eq(d.len, 2usize);
+    t.eq(utf8::decode("\u{20ac}").rune, 0x20ACu32);
+    t.eq(utf8::decode("\u{20ac}").len, 3usize);
+    e := utf8::decode("\u{1f600}");
+    t.eq(e.rune, 0x1F600u32);
+    t.eq(e.len, 4usize);
+}
+
+#test
+bad_bytes_are_one_replacement_each :: fn(t: *Test) {
+    lone: [1]u8 = .{ 0x80 };
+    t.eq(utf8::decode(lone[:]).rune, utf8::REPLACEMENT);
+    t.eq(utf8::decode(lone[:]).len, 1usize);
+    // an overlong "/" (C0 AF), a surrogate (ED A0 80), past U+10FFFF (F4 90 80 80), cut off (E2 82)
+    overlong: [2]u8 = .{ 0xC0, 0xAF };
+    surrogate: [3]u8 = .{ 0xED, 0xA0, 0x80 };
+    too_big: [4]u8 = .{ 0xF4, 0x90, 0x80, 0x80 };
+    cut: [2]u8 = .{ 0xE2, 0x82 };
+    t.expect(!utf8::valid(overlong[:]));
+    t.expect(!utf8::valid(surrogate[:]));
+    t.expect(!utf8::valid(too_big[:]));
+    t.expect(!utf8::valid(cut[:]));
+    t.eq(utf8::count(cut[:]), 2usize);
+    t.expect(utf8::valid("gr\u{fc}\u{df} \u{20ac} \u{1f600}"));
+    t.expect(utf8::valid(""));
+}
+
+#test
+encoding :: fn(t: *Test) {
+    buf: [4]u8 = .{ 0, 0, 0, 0 };
+    t.eq(utf8::encode(buf[:], 0x20AC), 3usize);
+    t.eq(buf[0..3], "\u{20ac}");
+    t.eq(utf8::encode(buf[:], 0x1F600), 4usize);
+    t.eq(buf[0..4], "\u{1f600}");
+    t.eq(utf8::encode(buf[:], 0xD800), 0usize);
+    t.eq(utf8::encode(buf[:], 0x110000), 0usize);
+    t.eq(utf8::encode(buf[0..1], 0xE9), 0usize);
+    t.eq(utf8::encoded_len(65), 1usize);
+    t.eq(utf8::encoded_len(0x7FF), 2usize);
+    t.eq(utf8::encoded_len(0xFFFF), 3usize);
+}
+
+#test
+going_rune_by_rune :: fn(t: *Test) {
+    t.eq(utf8::count("gr\u{fc}\u{df}"), 4usize);
+    sum: u32 = 0;
+    n: usize = 0;
+    for r in utf8::runes("a\u{e9}\u{20ac}") {
+        sum += r;
+        n += 1;
+    }
+    t.eq(n, 3usize);
+    t.eq(sum, 97u32 + 0xE9 + 0x20AC);
+    a := heap::make();
+    sb := strings::builder(&a);
+    for r in utf8::runes("x\u{1f600}y") { strings::append_rune(&sb, r); }
+    t.eq(strings::str(&sb), "x\u{1f600}y");
+    // a value that is no code point is written as U+FFFD
+    strings::append_rune(&sb, 0xD800);
+    t.eq(strings::str(&sb), "x\u{1f600}y\u{fffd}");
+    a.deinit();
+}
