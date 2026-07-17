@@ -181,6 +181,31 @@ build :: fn(out: []u8, length: u16) -> void ! bytes::BytesError {
 
 See `tests/fixtures/stdlib/bytes_app.fels` for the module at work.
 
+## `std.utf8`
+Runes (Unicode code points, as `u32`) decoded from UTF-8 text and encoded into it.
+
+```fels
+#import std.utf8 as utf8;
+
+for r in utf8::runes("grüß") { … }      // 4 runes, from 6 bytes
+n := utf8::count(text);                  // how many runes
+if utf8::valid(bytes) { … }              // valid UTF-8 from start to end
+d := utf8::decode(text);                 // the first rune, d.rune, and its length, d.len
+len := utf8::encode(buf[:], 0x20AC);     // "€": 3 bytes at the start of buf
+```
+
+- **Decoding is strict**: no overlong forms, no surrogates (U+D800 to U+DFFF), nothing past
+  U+10FFFF. A byte that starts no valid sequence decodes as `utf8::REPLACEMENT` (U+FFFD) and is
+  one byte long, so `runes` and `count` go through bad text without stopping or skipping the
+  good text after it. `valid` says whether there is any.
+- **Encoding**: `encoded_len(r)` is 1 to 4, or 0 for a value that is no rune. `encode(out, r)`
+  writes nothing and returns 0 for such a value, or when `out` is too short.
+  `strings::append_rune` writes U+FFFD for it.
+- `is_continuation(b)` tells a byte that continues a sequence (`10xxxxxx`) from one that starts
+  one.
+- In source, a string or character literal names a code point with `\u{…}`: `"caf\u{e9}"`,
+  `'\u{20ac}'`.
+
 ## `std.utf16`
 UTF-8 ⇄ UTF-16 conversion, written in plain Fels with no OS calls, so it behaves the same on
 every target. (Windows' `MultiByteToWideChar` / `WideCharToMultiByte` do a related job.
