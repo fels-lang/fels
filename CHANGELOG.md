@@ -21,6 +21,17 @@ the major version is `0`, any minor bump may break source compatibility.
   `mem::tokenize` and `mem::split_once` for any slice. `std.mem` also gains `index_of_slice`,
   `last_index_of`, `count` and `trim`; `std.strings` gains `str_replace`, `str_join`,
   `str_count` and `str_last_index_of`. The reference now covers `std.strings`.
+- **`std.utf8`**: `runes(text)` goes through a text rune by rune, `decode`, `encode`,
+  `encoded_len`, `valid` and `count`. Decoding is strict and gives U+FFFD, one byte long, for
+  a byte that starts no valid sequence. `strings::append_rune` writes U+FFFD for a value that
+  is no code point; it wrote a surrogate or a value past U+10FFFF as broken bytes.
+- **`\u{…}` escapes** in string and character literals: `"caf\u{e9}"` holds the UTF-8 of
+  U+00E9, `'\u{20ac}'` is 8364. A string may also hold `\'`.
+
+### Changed
+
+- An escape that stands for nothing (`"\q"`, `"\xZZ"`, `"\u{d800}"`) is an error, at the
+  escape, listing the escapes there are. It was kept as written, backslash and all.
 
 ### Fixed
 
