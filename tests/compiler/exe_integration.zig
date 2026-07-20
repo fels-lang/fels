@@ -7265,3 +7265,32 @@ test "exe: an index can be a dereference" {
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_index_deref_o0", 0));
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_index_deref_o2", 2));
 }
+
+test "exe: a field written through a pointer that is itself a field" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `h.b.flag = true` with `b: *Box` took the address of the field `b` (a `**Box`) as the
+    // struct to write in: the store went to undef, lost at -O0 and a crash at -O2.
+    const src =
+        \\Box :: struct { flag: bool, n: i32 }
+        \\Holder :: struct { tag: u8, b: *Box }
+        \\Outer :: struct { h: *Holder }
+        \\set :: fn(h: *Holder) { h.b.flag = true; h.b.n += 5; }
+        \\main :: fn() -> i32 {
+        \\    bx: Box = .{ false, 1 };
+        \\    h: Holder = .{ 7u8, &bx };
+        \\    set(&h);
+        \\    if !bx.flag { return 1; }
+        \\    if bx.n != 6 { return 2; }
+        \\    h.b.n = 9;                                     // a local holding the pointer
+        \\    if bx.n != 9 { return 3; }
+        \\    o: Outer = .{ &h };
+        \\    o.h.b.n = 11;                                  // through two pointers
+        \\    if bx.n != 11 { return 4; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_ptr_field_write_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_ptr_field_write_o2", 2));
+}
