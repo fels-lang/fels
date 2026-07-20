@@ -5251,8 +5251,12 @@ const FunctionLowerer = struct {
                 // would land on a throwaway temp and be silently dropped (`a.b.c = v`,
                 // `arr[i].f = v`, `s[i].f = v`). For ident/pointer bases `lowerExpr`
                 // already yields the alloca/pointer address, so keep that; so does a
-                // computed base (`a.ptr.f = v`), which is a value.
-                const base = switch (field.base.*.kind) {
+                // computed base (`a.ptr.f = v`), which is a value. A base that is a pointer
+                // (`h.b.flag = v` with `b: *Box`) is its value too: the field is where it
+                // points, and the address of the pointer stored a field of `*Box` to undef.
+                const base = if (self.exprType(field.base.*) == .ptr)
+                    try self.lowerExpr(field.base.*)
+                else switch (field.base.*.kind) {
                     .field => |inner| if (self.isComputedField(inner))
                         try self.lowerExpr(field.base.*)
                     else
