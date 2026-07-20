@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 /// Fels Windows runtime — compiled automatically into every Windows Fels program.
-/// Provides: @panic, assert, write_stdout, write_stderr
+/// Provides: @panic, assert, write_stdout, write_stderr, read_stdin
 /// No libc. Uses kernel32.dll only (always available on Windows).
 
 // kernel32 imports
@@ -128,6 +128,8 @@ GetCommandLineA :: fn() -> [*]const u8;
 CreateFileW :: fn(name: *const u16, access: u32, share: u32, sec: ?*void, disp: u32, flags: u32, tmpl: usize) -> usize;
 #extern("kernel32", "ReadFile")
 ReadFile :: fn(h: usize, buf: *u8, len: u32, read: *u32, ov: ?*void) -> bool;
+#extern("kernel32", "GetLastError")
+GetLastError :: fn() -> u32;
 #extern("kernel32", "GetFileAttributesW")
 GetFileAttributesW :: fn(name: *const u16) -> u32;
 #extern("kernel32", "DeleteFileW")
@@ -491,6 +493,7 @@ os_cond_broadcast :: fn(c: *u64) { k_cv_wake_all(c); }
 
 // Handle constants
 
+STD_INPUT_HANDLE  :: -10;
 STD_OUTPUT_HANDLE :: -11;
 STD_ERROR_HANDLE  :: -12;
 PANIC_EXIT_CODE   :: 0xDEAD_BEEFu32;
@@ -513,6 +516,20 @@ write_stderr :: fn(data: []const u8) -> usize {
     ok := WriteFile(handle, data.ptr, core::narrow(u32, data.len), &written, null);
     if !ok { return 0; }
     return written as usize;
+}
+
+// Read from standard input into `buf`: the bytes read, 0 at its end, -1 when the read fails.
+// A pipe whose writer is gone is the end (ReadFile fails there with ERROR_BROKEN_PIPE, 109).
+read_stdin :: fn(buf: []u8) -> i64 {
+    if buf.len == 0 { return 0i64; }
+    want := buf.len;
+    if want > 0x7FFF_FFFF { want = 0x7FFF_FFFF; }
+    got := 0u32;
+    if !ReadFile(GetStdHandle(STD_INPUT_HANDLE), buf.ptr, want as u32, &got, null) {
+        if GetLastError() == 109u32 { return 0i64; }
+        return -1i64;
+    }
+    return got as i64;
 }
 
 // Core runtime functions
