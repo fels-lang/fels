@@ -2,7 +2,8 @@
 // std.io — synchronous, allocation-free I/O for Fels.
 //
 // Writer and Reader are the interfaces. Concrete writers: Stdout, Stderr, FixedBuf
-// (a 256-byte stack scratch buffer), and NullWriter (discards but counts bytes).
+// (a 256-byte stack scratch buffer), and NullWriter (discards but counts bytes). Readers:
+// Stdin and SliceReader (bytes in memory); `copy` moves a Reader's bytes to a Writer.
 // There's allocation-free number formatting (write_u64/i64, the write_hex_* family,
 // write_bool/char/repeat) and print/println-style helpers for stdout and stderr.
 
@@ -28,6 +29,8 @@ pub Writer :: interface {
 
 // Reader is the core input interface. Implement it for byte sources:
 // stdin, files, network sockets, in-memory slices, ring buffers, etc.
+// `read` gives at most `buf.len` bytes, and 0 only at the end of the source (or for an empty
+// `buf`); it may give fewer than are left, as a pipe or a socket does. std.bufio buffers one.
 pub Reader :: interface {
     read :: fn(self: *Self, buf: []u8) -> usize ! IoError;
 }
@@ -67,6 +70,59 @@ pub stdout :: fn() -> Stdout {
 
 pub stderr :: fn() -> Stderr {
     return .{ 0 };
+}
+
+// Standard input, a Reader: `bufio::reader(&stdin, buf[:])` reads it a line at a time. At its
+// end (a closed pipe, Ctrl+Z or Ctrl+D at a console) `read` gives 0.
+pub Stdin :: struct { marker: u8, }
+
+Stdin as Reader {
+    read :: fn(self: *Self, buf: []u8) -> usize ! IoError {
+        n := read_stdin(buf);
+        if n < 0 { fail .read_failed; }
+        return n as usize;
+    }
+}
+
+pub stdin :: fn() -> Stdin {
+    return .{ 0 };
+}
+
+// SliceReader
+//
+// A Reader of bytes in memory, for a parser that takes a *Reader, or a test.
+//
+//   src := io::slice_reader("one\ntwo\n");
+//   r := bufio::reader(&src, buf[:]);
+
+pub SliceReader :: struct {
+    rest: []const u8,   // the bytes not read yet
+}
+
+SliceReader as Reader {
+    read :: fn(self: *Self, buf: []u8) -> usize ! IoError {
+        n := self.rest.len;
+        if n > buf.len { n = buf.len; }
+        for i in 0..n { buf[i] = self.rest[i]; }
+        self.rest = self.rest[n..self.rest.len];
+        return n;
+    }
+}
+
+pub slice_reader :: fn(data: []const u8) -> SliceReader {
+    return .{ data };
+}
+
+// Read `src` to its end and write it all to `dst`, through `buf`. The bytes copied.
+pub copy :: fn(dst: *Writer, src: *Reader, buf: []u8) -> u64 ! IoError {
+    total: u64 = 0;
+    while true {
+        n := src.read(buf)?;
+        if n == 0 { return total; }
+        dst.write_all(buf[0..n])?;
+        total += n as u64;
+    }
+    return total;
 }
 
 // FixedBuf
