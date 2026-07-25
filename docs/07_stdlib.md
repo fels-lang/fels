@@ -10,10 +10,17 @@ The I/O interfaces and utilities. Everything here is synchronous and allocation-
 
 **Interfaces:**
 - `Writer`: `write`, `flush`
-- `Reader`: `read`
+- `Reader`: `read`, which gives at most `buf.len` bytes and 0 only at the end of the source.
+  It may give fewer than are left, as a pipe or a socket does; `std.bufio` buffers a reader.
 
 **Implementations & Tools:**
 - `stdout()`, `stderr()`: Return `Stdout` / `Stderr` structs that implement `Writer`.
+- `stdin()`: Returns `Stdin`, which implements `Reader`. At the end of the input (a closed pipe,
+  Ctrl+Z or Ctrl+D at a console) `read` gives 0.
+- `slice_reader(bytes)`: A `Reader` of bytes in memory (`SliceReader`), for a parser that takes a
+  `*Reader`, or a test.
+- `copy(dst, src, buf)`: Reads `src` to its end and writes it all to `dst`, through `buf`, and
+  returns the bytes copied.
 - `fixed_buf()`: A 256-byte buffer on the stack that implements `Writer` (`FixedBuf`).
 - `null_writer()`: A writer that discards its output but counts the bytes (`NullWriter`).
 
@@ -65,6 +72,38 @@ io::println("[{x:>8}] [{id:06}] {flags:x} {ratio:.2} {s:?}");
 
 `print_u64`, `print_i64`, `print_hex_u64`, `print_bool`, `eprint_u64` and `eprint_i64` are
 deprecated: a format says the same (`print("{n}")`).
+
+## `std.bufio`
+Buffered reading and writing over any `Reader` and `Writer`: a file, stdin, a socket, text in
+memory. The buffer is the caller's, a stack array or a slice from an arena.
+
+```fels
+#import std.bufio as bufio;
+
+f := fs::open("data.csv")?;
+buf: [4096]u8 = .{};
+r := bufio::reader(&f, buf[:]);
+for line in r.lines() { … }        // each line without "\n" or "\r\n"
+if r.failed { … }                   // a read failed, or a line was longer than the buffer
+
+out := io::stdout();
+wbuf: [4096]u8 = .{};
+w := bufio::writer(&out, wbuf[:]);
+ww: *Writer = &w;
+ww.write_all("many small writes, few calls to the OS\n")?;
+ww.flush()?;                        // what waits in wbuf, then out's own flush
+```
+
+- **`BufReader`** (`reader(src, buf)`, or `reader_in(&a, src, size)` with a buffer from an
+  arena): `read_line()` gives the next line, `read_until(delim)` the bytes before the next
+  `delim`, `read_byte()` one byte; each is `null` at the end. A line is a slice of the
+  buffer, good until the next read; one longer than the buffer fails with `buffer_full`.
+  `lines()` is the same as a `for` loop, which a failed read ends, setting `failed`.
+  `BufReader` is a `Reader` itself, and `buffered()` shows the bytes read and not yet taken.
+- **`BufWriter`** (`writer(dst, buf)`, `writer_in(&a, dst, size)`) is a `Writer`. A write waits
+  in the buffer until it is full; one as big as the buffer goes straight to `dst`. `flush`
+  writes what waits and flushes `dst`; `drain` only writes it.
+- **`read_all(&a, src)`** reads a `Reader` to its end, into memory from an arena.
 
 ## `std.fmt`
 Formatting utilities built on top of `std.io.Writer`.
