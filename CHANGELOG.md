@@ -25,6 +25,11 @@ the major version is `0`, any minor bump may break source compatibility.
   `encoded_len`, `valid` and `count`. Decoding is strict and gives U+FFFD, one byte long, for
   a byte that starts no valid sequence. `strings::append_rune` writes U+FFFD for a value that
   is no code point; it wrote a surrogate or a value past U+10FFFF as broken bytes.
+- **`std.bufio`**: `BufReader` reads any `io::Reader` a buffer at a time, with `read_line`,
+  `lines()` for a `for` loop, `read_until` and `read_byte`; `BufWriter` gathers small writes to
+  any `io::Writer`; `read_all` reads a reader to its end into an arena. `std.io` gains
+  `stdin()`, a `Reader` (there was no way to read standard input), `slice_reader` for bytes in
+  memory, and `copy` from a reader to a writer.
 - **`\u{…}` escapes** in string and character literals: `"caf\u{e9}"` holds the UTF-8 of
   U+00E9, `'\u{20ac}'` is 8364. A string may also hold `\'`.
 
@@ -35,6 +40,9 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- A field written through a pointer that is itself a field (`h.b.flag = true` with `b: *Box`)
+  reaches the struct `b` points at. The write was lost, a crash at `-O2`, and a compound
+  assignment (`h.b.n += 5`) stopped the build with an LLVM error.
 - `for x in it` over an iterator that is a generic struct (`mem::Split(u8)`, a `next` of a
   `Each($T)`) gives `x` the element type with the struct's type arguments, and calls their
   instance of `next`. `x` was typed `T`, and the build stopped with an internal compiler error.
