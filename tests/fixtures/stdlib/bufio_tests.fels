@@ -1,0 +1,138 @@
+// std.bufio, as `#test` functions: `fels test` runs them natively and on the comptime VM
+// (tests/compiler/std_tests.zig).
+#import std.heap as heap;
+#import std.io as io;
+#import std.io.{ Reader, Writer, IoError };
+#import std.bufio as bufio;
+
+// A reader that gives at most `step` bytes a call, as a pipe or a socket may.
+Trickle :: struct {
+    text: []const u8,
+    step: usize,
+
+    pub take :: fn(self: *Self, out: []u8) -> usize {
+        n := self.text.len;
+        if n > self.step { n = self.step; }
+        if n > out.len { n = out.len; }
+        for i in 0..n { out[i] = self.text[i]; }
+        self.text = self.text[n..self.text.len];
+        return n;
+    }
+}
+
+Trickle as Reader {
+    read :: fn(self: *Self, out: []u8) -> usize ! IoError { return self.take(out); }
+}
+
+// A writer that keeps what it gets, and counts its calls.
+Sink :: struct {
+    data: [256]u8,
+    n: usize,
+    calls: usize,
+    flushes: usize,
+}
+
+Sink as Writer {
+    write :: fn(self: *Self, data: []const u8) -> usize ! IoError {
+        for i in 0..data.len { self.data[self.n + i] = data[i]; }
+        self.n += data.len;
+        self.calls += 1;
+        return data.len;
+    }
+    flush :: fn(self: *Self) -> void ! IoError { self.flushes += 1; }
+}
+
+#test
+lines_of_a_text :: fn(t: *Test) {
+    src := io::slice_reader("one\r\ntwo\n\nthree");
+    buf: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 0 };
+    r := bufio::reader(&src, buf[:]);
+    n: usize = 0;
+    total: usize = 0;
+    for line in r.lines() {
+        n += 1;
+        total += line.len;
+        if n == 1 { t.eq(line, "one"); }
+        if n == 3 { t.eq(line, ""); }
+        if n == 4 { t.eq(line, "three"); }
+    }
+    t.eq(n, 4usize);
+    t.eq(total, 11usize);
+    t.expect(!r.failed);
+}
+
+#test
+lines_across_short_reads :: fn(t: *Test) {
+    src: Trickle = .{ "alpha\nbeta\ngamma\n", 3 };
+    buf: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 0 };
+    r := bufio::reader(&src, buf[:]);
+    a := r.read_line() catch err { yield null; };
+    if a |line| { t.eq(line, "alpha"); } else { t.expect(false); }
+    n: usize = 1;
+    for line in r.lines() { n += 1; }
+    t.eq(n, 3usize);
+    t.expect(!r.failed);
+}
+
+#test
+a_line_longer_than_the_buffer_fails :: fn(t: *Test) {
+    src := io::slice_reader("short\nmuch too long for it\n");
+    buf: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 0 };
+    r := bufio::reader(&src, buf[:]);
+    n: usize = 0;
+    for line in r.lines() { n += 1; }
+    t.eq(n, 1usize);
+    t.expect(r.failed);
+}
+
+#test
+bytes_and_parts :: fn(t: *Test) {
+    src := io::slice_reader("a,bc,,d");
+    buf: [4]u8 = .{ 0, 0, 0, 0 };
+    r := bufio::reader(&src, buf[:]);
+    first := r.read_byte() catch err { yield null; };
+    if first |b| { t.eq(b, 'a'); } else { t.expect(false); }
+    parts: usize = 0;
+    while true {
+        part := r.read_until(',') catch err { yield null; };
+        if part |p| { parts += 1; } else { break; }
+    }
+    // "" (after the a), "bc", "", "d"
+    t.eq(parts, 4usize);
+}
+
+#test
+reading_it_all :: fn(t: *Test) {
+    a := heap::make();
+    src: Trickle = .{ "the whole text, a few bytes at a time", 5 };
+    all := bufio::read_all(&a, &src) catch err { yield ""; };
+    t.eq(all, "the whole text, a few bytes at a time");
+    a.deinit();
+}
+
+#test
+writes_wait_for_the_buffer :: fn(t: *Test) {
+    sink: Sink = .{ .{}, 0, 0, 0 };
+    buf: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 0 };
+    w := bufio::writer(&sink, buf[:]);
+    ww: *Writer = &w;
+    ww.write_all("ab") catch err {};
+    ww.write_all("cd") catch err {};
+    t.eq(sink.calls, 0usize);
+    ww.write_all("efghij") catch err {};       // does not fit: "abcd" goes first
+    t.eq(sink.calls, 1usize);
+    ww.write_all("a long text for the buffer") catch err {};
+    ww.flush() catch err {};
+    t.eq(sink.data[0..sink.n], "abcdefghija long text for the buffer");
+    t.eq(sink.flushes, 1usize);
+}
+
+#test
+copying :: fn(t: *Test) {
+    src: Trickle = .{ "copied in pieces", 4 };
+    sink: Sink = .{ .{}, 0, 0, 0 };
+    buf: [6]u8 = .{ 0, 0, 0, 0, 0, 0 };
+    n := io::copy(&sink, &src, buf[:]) catch err { yield 0u64; };
+    t.eq(n, 16u64);
+    t.eq(sink.data[0..sink.n], "copied in pieces");
+}
