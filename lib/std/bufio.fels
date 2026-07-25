@@ -1,0 +1,218 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.bufio — buffered reading and writing over any `io::Reader` and `io::Writer`: a file,
+// stdin, a socket, text in memory.
+//
+//   f := fs::open("data.csv")?;
+//   buf: [4096]u8 = .{};
+//   r := bufio::reader(&f, buf[:]);
+//   for line in r.lines() { … }             // each line without "\n" or "\r\n"
+//   if r.failed { … }                        // a read failed, or a line did not fit in buf
+//
+//   out := io::stdout();
+//   wbuf: [4096]u8 = .{};
+//   w := bufio::writer(&out, wbuf[:]);
+//   ww: *Writer = &w;
+//   ww.write_all("many small writes, one call to the OS\n")?;
+//   ww.flush()?;                             // the bytes still in wbuf, then out's own flush
+//
+// The buffer is the caller's: a stack array, or one from an arena (`reader_in`, `writer_in`).
+// A line `read_line` gives is a slice of that buffer, good until the next read.
+
+#import std.io.{ Reader, Writer, IoError };
+#import std.heap.{ Arena, alloc_bytes };
+
+/// Reads from `src` a buffer at a time; the unread bytes are `buf[start..end]`.
+pub BufReader :: struct {
+    src: *Reader,
+    buf: []u8,
+    start: usize,
+    end: usize,
+    /// `src` has given 0 bytes: it has nothing more.
+    at_end: bool,
+    /// A read in `lines()` failed, or a line did not fit in the buffer; the loop stopped there.
+    failed: bool,
+
+    /// The bytes read from `src` and not yet taken.
+    pub buffered :: fn(self: *Self) -> []const u8 { return self.buf[self.start..self.end]; }
+
+    /// Read more from `src` behind the unread bytes (moved to the front first). The bytes it
+    /// added: 0 when `src` is at its end or the buffer is full of unread bytes.
+    pub fill :: fn(self: *Self) -> usize ! IoError {
+        if self.start > 0 {
+            n := self.end - self.start;
+            for i in 0..n { self.buf[i] = self.buf[self.start + i]; }
+            self.start = 0;
+            self.end = n;
+        }
+        if self.at_end || self.end == self.buf.len { return 0; }
+        got := self.src.read(self.buf[self.end..self.buf.len])?;
+        if got == 0 { self.at_end = true; }
+        self.end += got;
+        return got;
+    }
+
+    /// The next byte, or null at the end.
+    pub read_byte :: fn(self: *Self) -> ?u8 ! IoError {
+        if self.start == self.end {
+            if self.fill()? == 0 { return null; }
+        }
+        b := self.buf[self.start];
+        self.start += 1;
+        return b;
+    }
+
+    /// The bytes up to the next `delim`, without it; at the end, the bytes after the last
+    /// `delim` (if any), then null. Fails with `buffer_full` when no `delim` comes within the
+    /// buffer's length. The slice is in the buffer, good until the next read.
+    pub read_until :: fn(self: *Self, delim: u8) -> ?[]const u8 ! IoError {
+        scanned: usize = 0;
+        while true {
+            i := self.start + scanned;
+            while i < self.end {
+                if self.buf[i] == delim {
+                    part := self.buf[self.start..i];
+                    self.start = i + 1;
+                    return part;
+                }
+                i += 1;
+            }
+            scanned = self.end - self.start;
+            if self.at_end {
+                if self.start == self.end { return null; }
+                part := self.buf[self.start..self.end];
+                self.start = self.end;
+                return part;
+            }
+            if self.start == 0 && self.end == self.buf.len { fail .buffer_full; }
+            self.fill()?;
+        }
+        return null;
+    }
+
+    /// The next line, without its "\n" or "\r\n"; null at the end. A text that ends in "\n"
+    /// has no empty last line. As `read_until`, a line longer than the buffer is `buffer_full`.
+    pub read_line :: fn(self: *Self) -> ?[]const u8 ! IoError {
+        if self.read_until('\n')? |line| {
+            if line.len > 0 && line[line.len - 1] == '\r' { return line[0..line.len - 1]; }
+            return line;
+        }
+        return null;
+    }
+
+    /// The lines that are left: `for line in r.lines() { … }`. A read that fails ends the loop
+    /// and sets `failed`.
+    pub lines :: fn(self: *Self) -> Lines {
+        it: Lines = .{ self };
+        return it;
+    }
+}
+
+BufReader as Reader {
+    read :: fn(self: *Self, out: []u8) -> usize ! IoError {
+        if self.start == self.end {
+            // nothing buffered: a read as big as the buffer goes straight to `src`
+            if out.len >= self.buf.len { return self.src.read(out)?; }
+            if self.fill()? == 0 { return 0; }
+        }
+        n := self.end - self.start;
+        if n > out.len { n = out.len; }
+        for i in 0..n { out[i] = self.buf[self.start + i]; }
+        self.start += n;
+        return n;
+    }
+}
+
+/// The lines of a `BufReader` (`BufReader.lines`).
+pub Lines :: struct {
+    r: *BufReader,
+
+    pub next :: fn(self: *Self) -> ?[]const u8 {
+        line := self.r.read_line() catch err {
+            self.r.failed = true;
+            yield null;
+        };
+        return line;
+    }
+}
+
+/// A `BufReader` of `src`, with `buf` as its buffer.
+pub reader :: fn(src: *Reader, buf: []u8) -> BufReader {
+    r: BufReader = .{ src, buf, 0, 0, false, false };
+    return r;
+}
+
+/// A `BufReader` of `src`, with a buffer of `size` bytes from `a`.
+pub reader_in :: fn(a: *Arena, src: *Reader, size: usize) -> BufReader {
+    return reader(src, a.alloc_bytes(size));
+}
+
+/// Writes to `dst` a buffer at a time: `buf[0..n]` waits to be written. `flush` writes it.
+pub BufWriter :: struct {
+    dst: *Writer,
+    buf: []u8,
+    n: usize,
+
+    /// Write what waits in the buffer to `dst`, without flushing `dst` itself.
+    pub drain :: fn(self: *Self) -> void ! IoError {
+        if self.n == 0 { return; }
+        done: usize = 0;
+        while done < self.n {
+            got := self.dst.write(self.buf[done..self.n])?;
+            if got == 0 { fail .write_failed; }
+            done += got;
+        }
+        self.n = 0;
+    }
+}
+
+BufWriter as Writer {
+    write :: fn(self: *Self, data: []const u8) -> usize ! IoError {
+        if data.len > self.buf.len - self.n { self.drain()?; }
+        // what fills the buffer anyway goes straight to `dst`
+        if data.len >= self.buf.len {
+            done: usize = 0;
+            while done < data.len {
+                got := self.dst.write(data[done..data.len])?;
+                if got == 0 { fail .write_failed; }
+                done += got;
+            }
+            return data.len;
+        }
+        for i in 0..data.len { self.buf[self.n + i] = data[i]; }
+        self.n += data.len;
+        return data.len;
+    }
+    flush :: fn(self: *Self) -> void ! IoError {
+        self.drain()?;
+        self.dst.flush()?;
+    }
+}
+
+/// A `BufWriter` to `dst`, with `buf` as its buffer.
+pub writer :: fn(dst: *Writer, buf: []u8) -> BufWriter {
+    w: BufWriter = .{ dst, buf, 0 };
+    return w;
+}
+
+/// A `BufWriter` to `dst`, with a buffer of `size` bytes from `a`.
+pub writer_in :: fn(a: *Arena, dst: *Writer, size: usize) -> BufWriter {
+    return writer(dst, a.alloc_bytes(size));
+}
+
+/// Everything `src` has, to its end, in memory from `a`.
+pub read_all :: fn(a: *Arena, src: *Reader) -> []u8 ! IoError {
+    buf := a.alloc_bytes(4096);
+    n: usize = 0;
+    while true {
+        if n == buf.len {
+            // the arena cannot grow a block: a new one twice as big, and the bytes copied
+            bigger := a.alloc_bytes(buf.len * 2);
+            for i in 0..n { bigger[i] = buf[i]; }
+            buf = bigger;
+        }
+        got := src.read(buf[n..buf.len])?;
+        if got == 0 { return buf[0..n]; }
+        n += got;
+    }
+    return buf[0..n];
+}
