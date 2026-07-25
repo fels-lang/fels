@@ -786,3 +786,21 @@ test "e2e: slice of an array (index + len)" {
     const result = try runSource(src, "ssum", &.{});
     try std.testing.expectEqual(@as(i128, 7), result.int);
 }
+
+test "e2e: what an array or struct literal leaves out reads as zero" {
+    // `buf: [8]u8 = .{}` left the cells empty: reading one stopped the run with TypeMismatch
+    // (std.crypto's SHA-256 pads its last block in such a buffer).
+    const src =
+        \\P :: struct { x: i32, y: u8 }
+        \\zeros :: fn() -> i32 {
+        \\    buf: [8]u8 = .{};
+        \\    buf[1] = 5;
+        \\    words: [4]u32 = .{ 7 };
+        \\    ps: [2]P = .{};
+        \\    ps[1].x = 3;
+        \\    return (buf[0] as i32) + (buf[1] as i32) + (words[0] as i32) + (words[3] as i32) + ps[0].x + ps[1].x + (ps[0].y as i32);
+        \\}
+    ;
+    const result = try runSource(src, "zeros", &.{});
+    try std.testing.expectEqual(@as(i128, 15), result.int);
+}
