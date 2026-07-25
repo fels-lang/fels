@@ -1521,6 +1521,28 @@ const FnCompiler = struct {
             const vr = try self.resolveCopy(arg, part_ty);
             try self.emit(Instr.r_r_imm(.store_cell, target, vr, @intCast(i * stride)));
         }
+        // What the literal leaves out is zero (`buf: [64]u8 = .{}`): a block's cells start
+        // empty, and reading one stopped the run with TypeMismatch. A part of a type the VM
+        // cannot zero-fill stays empty, for code that writes it before reading it.
+        const why = self.why;
+        self.zeroRest(target, ty, def, args.len) catch |err| switch (err) {
+            error.Unsupported => self.why = why,
+            else => return err,
+        };
+    }
+
+    fn zeroRest(self: *FnCompiler, target: Reg, ty: ir.IrType, def: ?ir.StructDef, from: usize) CompileError!void {
+        switch (ty) {
+            .array => |arr| try self.fillZero(target, arr, from, 0),
+            else => if (def) |d| {
+                if (from >= d.fields.len) return;
+                const field_reg = try self.scratchReg(0);
+                for (d.fields[from..], from..) |field, i| {
+                    try self.materializeZero(field_reg, field.ty, 1);
+                    try self.emit(Instr.r_r_imm(.store_cell, target, field_reg, @intCast(i)));
+                }
+            },
+        }
     }
 
     /// Leave in `target` the block of the aggregate in the cell `cell` addresses, and remember
