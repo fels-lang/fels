@@ -1015,6 +1015,38 @@ escape (also a surrogate pair) becomes UTF-8. A string without escapes is a slic
 text. A byte order mark at the start is skipped, and nesting deeper than 512 is refused. The
 comptime VM cannot build the values yet (they are structs in an arena).
 
+### `std.hash`
+
+Non-cryptographic hashes of bytes: FNV-1a (32 and 64 bits), CRC-32 and XXH64. Each comes as one
+call, and as a struct that takes the bytes in parts.
+
+```fels
+#import std.hash as hash;
+
+k := hash::xxhash64(0, "key");                  // fast, 64 bits, for tables (seed 0)
+c := hash::crc32("123456789");                  // 0xcbf43926, the zip/png checksum
+f := hash::fnv1a_64("key");                     // simple and quick for short keys (and fnv1a_32)
+
+h := hash::crc32_start();                       // in parts: the same result as one call
+h.update(part1);
+h.update(part2);
+c2 := h.final();
+
+x := hash::xxhash64_start(0);
+n := hash::feed(&x, &file, buf[:])?;            // all of a Reader, through buf
+```
+
+- `fnv1a_64_start()`, `fnv1a_32_start()`, `crc32_start()` and `xxhash64_start(seed)` give the
+  structs (`Fnv1a64`, `Fnv1a32`, `Crc32`, `XxHash64`), each with `update(bytes)` and `final()`.
+  `final` leaves the state as it was, so more bytes may follow.
+- Each struct is a `Hasher`, and so is `crypto::Sha256`: `feed(h, src, buf)` reads a `Reader`
+  to its end into any of them and returns the bytes it read.
+- `mix64(x)` scrambles one integer, every bit of it reaching every bit of the result: a hash for
+  an integer key.
+- They match the reference values (Zig's `std.hash` on the same input, in
+  `tests/fixtures/stdlib/hash_tests.fels`), natively and in `#run`. None of them resists input
+  chosen to collide; use `std.crypto` for that.
+
 ### `std.crypto`
 
 Hashing and checksums, as pure computation.
@@ -1026,13 +1058,14 @@ h := crypto::to_hex(&a, d);                      // "ba7816bf8f01cfea…"
 buf: [32]u8 = .{};                               // or write into your own buffer
 crypto::sha256_into("abc", buf[0..32usize]);
 
-c := crypto::crc32("123456789");                // 0xcbf43926 (IEEE)
-k := crypto::fnv1a_64("key");                   // fast non-crypto hash (and fnv1a_32)
+s := crypto::sha256_start();                    // in parts: a file, a stream
+hash::feed(&s, &file, rbuf[:])?;
+d2 := s.final();
 ```
 
-`sha256`/`sha256_into` match the standard test vectors. It's a software SHA-256. It is fine
-for integrity checks, checksums and content addressing, but it is not audited for
-adversarial use.
+`sha256`, `sha256_into` and `Sha256` match the standard test vectors, natively and in `#run`.
+It's a software SHA-256. It is fine for integrity checks, checksums and content addressing, but
+it is not audited for adversarial use. `crc32`, `fnv1a_64` and `fnv1a_32` are `std.hash`'s.
 
 ### `std.serde`
 
