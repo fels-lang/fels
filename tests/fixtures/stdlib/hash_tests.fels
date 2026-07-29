@@ -1,0 +1,94 @@
+// std.hash, as `#test` functions: `fels test` runs them natively and on the comptime VM
+// (tests/compiler/std_tests.zig). The expected values are Zig's std.hash on the same input.
+#import std.io as io;
+#import std.hash as hash;
+#import std.hash.{ Hasher };
+
+FOX :: "The quick brown fox jumps over the lazy dog";
+DIGITS :: "12345678901234567890123456789012345678901234567890123456789012345678901234567890";
+
+#test
+xxhash64_in_one_call :: fn(t: *Test) {
+    t.eq(hash::xxhash64(0, ""), 0xEF46DB3751D8E999u64);
+    t.eq(hash::xxhash64(0, "a"), 0xD24EC4F1A98C6E5Bu64);
+    t.eq(hash::xxhash64(0, "abc"), 0x44BC2CF5AD770999u64);
+    t.eq(hash::xxhash64(0, "message digest"), 0x066ED728FCEEB3BEu64);
+    t.eq(hash::xxhash64(0, "abcdefghijklmnopqrstuvwxyz"), 0xCFE1F278FA89835Cu64);
+    t.eq(hash::xxhash64(0, DIGITS), 0xE04A477F19EE145Du64);
+    t.eq(hash::xxhash64(0, FOX), 0x0B242D361FDA71BCu64);
+    t.eq(hash::xxhash64(42, "abc"), 0x13C1D910702770E6u64);
+    t.eq(hash::xxhash64(42, FOX), 0xAA9F288A8BAA3D3Fu64);
+}
+
+#test
+xxhash64_in_parts :: fn(t: *Test) {
+    // every way to cut the 80 digits in two gives the hash of the whole
+    i: usize = 0;
+    while i <= DIGITS.len {
+        h := hash::xxhash64_start(0);
+        h.update(DIGITS[0..i]);
+        h.update(DIGITS[i..DIGITS.len]);
+        t.eq(h.final(), 0xE04A477F19EE145Du64);
+        i += 7;
+    }
+    // a byte at a time
+    h := hash::xxhash64_start(42);
+    for k in 0..FOX.len { h.update(FOX[k..k + 1]); }
+    t.eq(h.final(), 0xAA9F288A8BAA3D3Fu64);
+    e := hash::xxhash64_start(0);
+    t.eq(e.final(), 0xEF46DB3751D8E999u64);
+}
+
+#test
+crc32_and_fnv :: fn(t: *Test) {
+    t.eq(hash::crc32("123456789"), 0xCBF43926u32);
+    t.eq(hash::crc32(FOX), 0x414FA339u32);
+    t.eq(hash::crc32(""), 0u32);
+    c := hash::crc32_start();
+    c.update("12345");
+    c.update("6789");
+    t.eq(c.final(), 0xCBF43926u32);
+    t.eq(hash::fnv1a_64(FOX), 0xF3F9B7F5E7E47110u64);
+    t.eq(hash::fnv1a_64(""), 0xCBF29CE484222325u64);
+    t.eq(hash::fnv1a_32(FOX), 0x048FFF90u32);
+    f := hash::fnv1a_64_start();
+    f.update("The quick brown fox ");
+    f.update("jumps over the lazy dog");
+    t.eq(f.final(), 0xF3F9B7F5E7E47110u64);
+    g := hash::fnv1a_32_start();
+    g.update(FOX);
+    t.eq(g.final(), 0x048FFF90u32);
+}
+
+// Bytes 0, 1, … 250, 0, 1, … , 1000 of them: longer than any buffer below.
+fill :: fn(out: []u8) {
+    for i in 0..out.len { out[i] = (i % 251) as u8; }
+}
+
+#test
+a_reader_fed_to_any_hasher :: fn(t: *Test) {
+    big: [1000]u8 = .{};
+    fill(big[:]);
+    buf: [64]u8 = .{};
+    src := io::slice_reader(big[:]);
+    x := hash::xxhash64_start(0);
+    n := hash::feed(&x, &src, buf[:]) catch err { yield 0u64; };
+    t.eq(n, 1000u64);
+    t.eq(x.final(), 0xF306F04AA88B54D3u64);
+    src2 := io::slice_reader(big[:]);
+    c := hash::crc32_start();
+    m := hash::feed(&c, &src2, buf[:]) catch err { yield 0u64; };
+    t.eq(c.final(), 0x721746A6u32);
+    t.eq(hash::xxhash64(0, big[:]), 0xF306F04AA88B54D3u64);
+}
+
+#test
+mixing_an_integer :: fn(t: *Test) {
+    t.eq(hash::mix64(0), 0u64);
+    t.expect(hash::mix64(1) != hash::mix64(2));
+    // one bit in changes about half the bits out
+    d := hash::mix64(1) ^ hash::mix64(3);
+    ones: u64 = 0;
+    for k in 0..64 { ones += (d >> (k as u64)) & 1; }
+    t.expect(ones > 16 && ones < 48);
+}

@@ -1,0 +1,62 @@
+// std.crypto, as `#test` functions: `fels test` runs them natively and on the comptime VM
+// (tests/compiler/std_tests.zig). The 1000-byte digest is Zig's std.crypto on the same input.
+#import std.heap as heap;
+#import std.io as io;
+#import std.hash as hash;
+#import std.crypto as crypto;
+
+DIGITS :: "12345678901234567890123456789012345678901234567890123456789012345678901234567890";
+
+hex_of :: fn(a: *heap::Arena, d: crypto::Digest) -> []const u8 { return crypto::to_hex(a, d); }
+
+#test
+sha256_in_one_call :: fn(t: *Test) {
+    a := heap::make();
+    t.eq(hex_of(&a, crypto::sha256("")), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    t.eq(hex_of(&a, crypto::sha256("abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    t.eq(hex_of(&a, crypto::sha256(DIGITS)), "f371bc4a311f2b009eef952dd83ca80e2b60026c8e935592d0f9c308453c813e");
+    a.deinit();
+}
+
+#test
+sha256_in_parts :: fn(t: *Test) {
+    a := heap::make();
+    // every way to cut the 80 digits in two gives the digest of the whole
+    i: usize = 0;
+    while i <= DIGITS.len {
+        s := crypto::sha256_start();
+        s.update(DIGITS[0..i]);
+        s.update(DIGITS[i..DIGITS.len]);
+        t.eq(hex_of(&a, s.final()), "f371bc4a311f2b009eef952dd83ca80e2b60026c8e935592d0f9c308453c813e");
+        i += 9;
+    }
+    // final leaves the state as it was: more bytes may follow
+    s := crypto::sha256_start();
+    s.update("ab");
+    first := s.final();
+    s.update("c");
+    t.eq(hex_of(&a, s.final()), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    t.eq(hex_of(&a, first), hex_of(&a, crypto::sha256("ab")));
+    a.deinit();
+}
+
+#test
+sha256_of_a_reader :: fn(t: *Test) {
+    a := heap::make();
+    big: [1000]u8 = .{};
+    for i in 0..1000 { big[i] = (i % 251) as u8; }
+    src := io::slice_reader(big[:]);
+    buf: [100]u8 = .{};
+    s := crypto::sha256_start();
+    n := hash::feed(&s, &src, buf[:]) catch err { yield 0u64; };
+    t.eq(n, 1000u64);
+    t.eq(hex_of(&a, s.final()), "4e4c294b331f7a2099a379bec34b9f9fc03dc46ab465d998f4d683da53487e6d");
+    a.deinit();
+}
+
+#test
+the_checksums_are_std_hash :: fn(t: *Test) {
+    t.eq(crypto::crc32("123456789"), hash::crc32("123456789"));
+    t.eq(crypto::fnv1a_64("key"), hash::fnv1a_64("key"));
+    t.eq(crypto::fnv1a_32("abc"), 0x1a47e90bu32);
+}
