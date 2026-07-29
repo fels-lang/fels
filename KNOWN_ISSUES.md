@@ -100,8 +100,9 @@ These compile without a message and give a wrong result.
 - At compile time an enum with a payload, an optional or a union stored in arena memory (a
   `heap::alloc` or a `Vec` of one) stops with `TypeMismatch`: the comptime VM keeps arena memory
   as real bytes and lays structs, arrays and numbers out there, but not these. Verified 2026-10-19.
-- At compile time a write through `*Writer` into a `std.io.FixedBuf` stops with `OutOfBounds`, so
-  `tests/fixtures/stdlib/fmt_tests.fels` runs natively only. Verified 2026-10-17.
+- At compile time `std.map.AutoHashMap` stops with `OutOfBounds`: it hashes a key's bytes through
+  a pointer, and a value on the comptime VM has no bytes to read. `StrMap` works there.
+  Verified 2026-10-19.
 - A constant computed by a call or `#run` cannot be read by other compile-time code
   (`SUM :: PLAIN + 3` with `PLAIN :: plain();`). Verified 2026-10-17.
 
