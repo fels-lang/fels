@@ -30,6 +30,10 @@ the major version is `0`, any minor bump may break source compatibility.
   any `io::Writer`; `read_all` reads a reader to its end into an arena. `std.io` gains
   `stdin()`, a `Reader` (there was no way to read standard input), `slice_reader` for bytes in
   memory, and `copy` from a reader to a writer.
+- **`std.hash`**: FNV-1a, CRC-32 (now by table) and XXH64, each as one call and as a struct that
+  takes bytes in parts, all `Hasher`s that `hash::feed` fills from a `Reader`; `mix64` for an
+  integer key. `std.crypto` gains `Sha256` in parts, a `Hasher` too, and its `crc32` and
+  `fnv1a_*` are `std.hash`'s. `StrMap` hashes its keys with `std.hash`.
 - **`\u{…}` escapes** in string and character literals: `"caf\u{e9}"` holds the UTF-8 of
   U+00E9, `'\u{20ac}'` is 8364. A string may also hold `\'`.
 
@@ -40,6 +44,8 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- On the comptime VM, what an array or struct literal leaves out is zero (`buf: [64]u8 = .{}`).
+  Reading it stopped the run with `TypeMismatch`, and so did `crypto::sha256` in a `#run`.
 - A field written through a pointer that is itself a field (`h.b.flag = true` with `b: *Box`)
   reaches the struct `b` points at. The write was lost, a crash at `-O2`, and a compound
   assignment (`h.b.n += 5`) stopped the build with an LLVM error.
