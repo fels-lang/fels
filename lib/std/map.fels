@@ -15,6 +15,7 @@
 // type with padding is refused when the map type is made. Key strings with StrMap.
 
 #import std.heap.{ Arena, alloc, dupe };
+#import std.hash as hash;
 
 // Slot states.
 EMPTY :: 0u8;
@@ -23,7 +24,7 @@ TOMB  :: 2u8;   // a deleted slot — probing skips past it but doesn't stop
 
 INIT_CAP :: 8usize;   // always a power of two so `hash & (cap-1)` indexes a slot
 
-// Raw byte hashing (FNV-1a)
+// FNV-1a over a key's bytes in memory (std.hash's fnv1a_64 over a pointer and a length)
 fnv_bytes :: fn(p: *const u8, n: usize) -> u64 {
     h: u64 = 14695981039346656037;
     for i in 0..n {
@@ -220,7 +221,7 @@ pub StrMap :: struct($V: type) {
 
     place :: fn(self: *Self, k: []const u8, v: V) {
         mask: usize = self.states.len - 1;
-        i: usize = (fnv_bytes(k.ptr, k.len) as usize) & mask;
+        i: usize = (hash::fnv1a_64(k) as usize) & mask;
         tomb: usize = self.states.len;
         steps: usize = 0;
         while steps <= self.states.len {
@@ -268,7 +269,7 @@ pub StrMap :: struct($V: type) {
     // Like `place`, but the key is already region-owned (used during grow).
     place_owned :: fn(self: *Self, k: []const u8, v: V) {
         mask: usize = self.states.len - 1;
-        i: usize = (fnv_bytes(k.ptr, k.len) as usize) & mask;
+        i: usize = (hash::fnv1a_64(k) as usize) & mask;
         steps: usize = 0;
         while steps <= self.states.len {
             if self.states[i] == EMPTY {
@@ -292,7 +293,7 @@ pub StrMap :: struct($V: type) {
 
     find :: fn(self: *Self, k: []const u8) -> usize {
         mask: usize = self.states.len - 1;
-        i: usize = (fnv_bytes(k.ptr, k.len) as usize) & mask;
+        i: usize = (hash::fnv1a_64(k) as usize) & mask;
         for steps in 0..=self.states.len {
             st: u8 = self.states[i];
             if st == EMPTY { return self.states.len; }
