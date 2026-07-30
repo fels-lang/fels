@@ -8855,7 +8855,9 @@ fn foldConstExpr(
     env: FoldEnv,
 ) ?Imm {
     return switch (expr.kind) {
-        .int, .float, .bool => switch (lowerImm(env.allocator, expr)) {
+        // A string too: `CHARS :: "…"` named in a static (`S: Codec = .{ CHARS, true }`) was
+        // not known while the comptime VM's module was built, so the VM refused to read `S`.
+        .int, .float, .bool, .string => switch (lowerImm(env.allocator, expr)) {
             .null => null,
             else => |imm| imm,
         },
