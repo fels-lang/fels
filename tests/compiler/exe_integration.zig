@@ -7294,3 +7294,30 @@ test "exe: a field written through a pointer that is itself a field" {
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_ptr_field_write_o0", 0));
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_ptr_field_write_o2", 2));
 }
+
+test "exe: a string constant that names another, or comes from #run, has a length and bytes" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Typed as bare text, not a string slice: `ALIAS.len` read undef and `ALIAS[1]` stopped
+    // the build with an LLVM error. A static naming one (`C`) could not be read in a `#run`.
+    const src =
+        \\CHARS :: "ABCDEFGH";
+        \\ALIAS :: CHARS;
+        \\give :: fn() -> []const u8 { return "xyz!"; }
+        \\RUN :: #run give();
+        \\Codec :: struct { chars: []const u8, pad: bool }
+        \\C: Codec = .{ CHARS, true };
+        \\third :: fn() -> u8 { return C.chars[2]; }
+        \\#assert(third() == 67u8, "a static naming a string constant, at compile time");
+        \\main :: fn() -> i32 {
+        \\    if ALIAS.len != 8usize { return 1; }
+        \\    if ALIAS[1] != 66u8 { return 2; }
+        \\    if RUN.len != 4usize { return 3; }
+        \\    if RUN[2] != 122u8 { return 4; }
+        \\    if third() != 67u8 { return 5; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRun(arena.allocator(), src, "exe_string_const_alias"));
+}
