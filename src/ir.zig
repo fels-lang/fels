@@ -990,7 +990,9 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                     .uint => .{ .u = 64 },
                     .float => .f64,
                     .bool => .bool,
-                    .text => .text,
+                    // as a string literal's (`inferConstType`): `ALIAS :: CHARS;` or a `#run` that
+                    // gives text. Typed `.text`, `ALIAS.len` and `ALIAS[i]` read undef.
+                    .text => string_slice_ty,
                     .rune => .rune,
                     .null => .unknown,
                 };
