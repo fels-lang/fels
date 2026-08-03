@@ -20,6 +20,7 @@ const files = [_][]const u8{
     "tests/fixtures/stdlib/hash_tests.fels",
     "tests/fixtures/stdlib/crypto_tests.fels",
     "tests/fixtures/stdlib/fmt_tests.fels",
+    "tests/fixtures/stdlib/encoding_tests.fels",
 };
 
 /// Files whose tests reach the OS (folders, the environment, the command line), which

@@ -1,0 +1,95 @@
+// std.base64 and std.hex, as `#test` functions: `fels test` runs them natively and on the
+// comptime VM (tests/compiler/std_tests.zig). The base64 cases are RFC 4648's.
+#import std.heap as heap;
+#import std.base64 as base64;
+#import std.hex as hex;
+
+#test
+base64_rfc_4648 :: fn(t: *Test) {
+    a := heap::make();
+    t.eq(base64::encode_in(&a, ""), "");
+    t.eq(base64::encode_in(&a, "f"), "Zg==");
+    t.eq(base64::encode_in(&a, "fo"), "Zm8=");
+    t.eq(base64::encode_in(&a, "foo"), "Zm9v");
+    t.eq(base64::encode_in(&a, "foob"), "Zm9vYg==");
+    t.eq(base64::encode_in(&a, "fooba"), "Zm9vYmE=");
+    t.eq(base64::encode_in(&a, "foobar"), "Zm9vYmFy");
+    words: [7][]const u8 = .{ "", "f", "fo", "foo", "foob", "fooba", "foobar" };
+    for w in words {
+        back := base64::decode_in(&a, base64::encode_in(&a, w)) catch err { yield "?"; };
+        t.eq(back, w);
+    }
+    a.deinit();
+}
+
+#test
+base64_alphabets_and_padding :: fn(t: *Test) {
+    a := heap::make();
+    odd: [3]u8 = .{ 0xFB, 0xFF, 0xBF };
+    t.eq(base64::STANDARD.encode_in(&a, odd[:]), "+/+/");
+    t.eq(base64::URL.encode_in(&a, odd[:]), "-_-_");
+    t.eq(base64::URL_NO_PAD.encode_in(&a, "fo"), "Zm8");
+    t.eq(base64::STANDARD_NO_PAD.encode_in(&a, "f"), "Zg");
+    t.eq(base64::STANDARD_NO_PAD.encoded_len(4), 6usize);
+    t.eq(base64::STANDARD.encoded_len(4), 8usize);
+    back := base64::URL_NO_PAD.decode_in(&a, "Zm8") catch err { yield "?"; };
+    t.eq(back, "fo");
+    buf: [8]u8 = .{};
+    n := base64::URL.decode(buf[:], "-_-_") catch err { yield 0usize; };
+    t.eq(n, 3usize);
+    t.eq(buf[0..3], odd[:]);
+    a.deinit();
+}
+
+expect_error :: fn(t: *Test, c: *base64::Codec, text: []const u8, want: base64::Base64Error) {
+    buf: [16]u8 = .{};
+    got := c.decode(buf[:], text) catch err {
+        t.expect(err == want);
+        yield 99usize;
+    };
+    t.eq(got, 99usize);
+}
+
+#test
+base64_bad_text :: fn(t: *Test) {
+    expect_error(t, &base64::STANDARD, "Zm9", .invalid_length);       // padded codec, no padding
+    expect_error(t, &base64::STANDARD, "Zm9v!A==", .invalid_character);
+    expect_error(t, &base64::STANDARD, "Z===", .invalid_character);
+    expect_error(t, &base64::STANDARD, "-_-_", .invalid_character);   // the URL alphabet
+    expect_error(t, &base64::STANDARD_NO_PAD, "Zg==", .invalid_character);
+    expect_error(t, &base64::STANDARD_NO_PAD, "Zm9vY", .invalid_length);
+    small: [2]u8 = .{ 0, 0 };
+    r := base64::STANDARD.decode(small[:], "Zm9v") catch err {
+        t.expect(err == .buffer_too_small);
+        yield 0usize;
+    };
+    t.eq(small[0], 0u8);
+}
+
+#test
+hex_both_ways :: fn(t: *Test) {
+    a := heap::make();
+    bytes: [4]u8 = .{ 0xDE, 0xAD, 0xBE, 0xEF };
+    t.eq(hex::encode_in(&a, bytes[:]), "deadbeef");
+    t.eq(hex::encode_upper_in(&a, bytes[:]), "DEADBEEF");
+    t.eq(hex::encode_in(&a, ""), "");
+    back := hex::decode_in(&a, "DEADbeef") catch err { yield "?"; };
+    t.eq(back, bytes[:]);
+    out: [3]u8 = .{};
+    n := hex::encode(out[:], bytes[:]) catch err {
+        t.expect(err == .buffer_too_small);
+        yield 0usize;
+    };
+    t.eq(n, 0usize);
+    odd := hex::decode_in(&a, "abc") catch err {
+        t.expect(err == .odd_length);
+        yield "";
+    };
+    bad := hex::decode_in(&a, "zz") catch err {
+        t.expect(err == .invalid_character);
+        yield "";
+    };
+    t.eq(hex::digit_value('F') ?? 0, 15u8);
+    t.expect(hex::digit_value('g') == null);
+    a.deinit();
+}
