@@ -34,6 +34,8 @@ the major version is `0`, any minor bump may break source compatibility.
   takes bytes in parts, all `Hasher`s that `hash::feed` fills from a `Reader`; `mix64` for an
   integer key. `std.crypto` gains `Sha256` in parts, a `Hasher` too, and its `crc32` and
   `fnv1a_*` are `std.hash`'s. `StrMap` hashes its keys with `std.hash`.
+- **`std.base64`** (RFC 4648: the standard and URL alphabets, with and without padding, into a
+  buffer or an arena) and **`std.hex`**. `crypto::hex` is `hex::encode_in`.
 - **`\u{…}` escapes** in string and character literals: `"caf\u{e9}"` holds the UTF-8 of
   U+00E9, `'\u{20ac}'` is 8364. A string may also hold `\'`.
 
@@ -44,6 +46,10 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- A string constant that names another (`ALIAS :: CHARS;`) or comes from a `#run` has a length
+  and bytes: `ALIAS.len` read garbage, and `ALIAS[1]` stopped the build with an LLVM error. A
+  static that names a string constant (`C: Codec = .{ CHARS, true };`) can be read in a `#run`;
+  it was refused as "computed by a `#run`".
 - On the comptime VM, what an array or struct literal leaves out is zero (`buf: [64]u8 = .{}`).
   Reading it stopped the run with `TypeMismatch`, and so did `crypto::sha256` in a `#run`.
 - A field written through a pointer that is itself a field (`h.b.flag = true` with `b: *Box`)
