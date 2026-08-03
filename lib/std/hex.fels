@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.hex — bytes as hex digits, two a byte, and back.
+//
+//   text := hex::encode_in(&a, digest_bytes);        // "ba7816bf…"
+//   bytes := hex::decode_in(&a, "DEADbeef")?;        // 4 bytes; either case reads
+//   n := hex::encode(out[:], bytes)?;                // into your own buffer
+//
+// Encoding writes lowercase (`encode_upper` for uppercase); decoding takes both.
+
+#import std.heap.{ Arena, alloc_bytes };
+
+pub HexError :: errors {
+    invalid_character,   // not a hex digit
+    odd_length,          // half a byte at the end
+    buffer_too_small,    // `out` cannot hold the result; nothing was written
+}
+
+LOWER :: "0123456789abcdef";
+UPPER :: "0123456789ABCDEF";
+
+encode_with :: fn(digits: []const u8, out: []u8, src: []const u8) -> usize ! HexError {
+    if out.len / 2 < src.len { fail .buffer_too_small; }
+    for i in 0..src.len {
+        out[2 * i] = digits[(src[i] >> 4) as usize];
+        out[2 * i + 1] = digits[(src[i] & 15) as usize];
+    }
+    return 2 * src.len;
+}
+
+/// Write the hex of `src` (lowercase) at the start of `out`; its length, `2 * src.len`.
+pub encode :: fn(out: []u8, src: []const u8) -> usize ! HexError { return encode_with(LOWER, out, src); }
+
+/// `encode` with uppercase digits.
+pub encode_upper :: fn(out: []u8, src: []const u8) -> usize ! HexError { return encode_with(UPPER, out, src); }
+
+/// The hex of `src` (lowercase), in memory from `a`.
+pub encode_in :: fn(a: *Arena, src: []const u8) -> []u8 {
+    out := a.alloc_bytes(2 * src.len);
+    n := encode_with(LOWER, out, src) catch err { yield 0; };
+    return out[0..n];
+}
+
+/// The hex of `src` in uppercase, in memory from `a`.
+pub encode_upper_in :: fn(a: *Arena, src: []const u8) -> []u8 {
+    out := a.alloc_bytes(2 * src.len);
+    n := encode_with(UPPER, out, src) catch err { yield 0; };
+    return out[0..n];
+}
+
+/// The value of hex digit `c` (either case), or null.
+pub digit_value :: fn(c: u8) -> ?u8 {
+    if c >= '0' && c <= '9' { return c - '0'; }
+    if c >= 'a' && c <= 'f' { return c - 'a' + 10; }
+    if c >= 'A' && c <= 'F' { return c - 'A' + 10; }
+    return null;
+}
+
+/// The bytes the hex `text` names, written at the start of `out`; their length,
+/// `text.len / 2`. Nothing is written when `text` is not hex or `out` is too short.
+pub decode :: fn(out: []u8, text: []const u8) -> usize ! HexError {
+    if text.len % 2 != 0 { fail .odd_length; }
+    n := text.len / 2;
+    if out.len < n { fail .buffer_too_small; }
+    for c in text {
+        if digit_value(c) == null { fail .invalid_character; }
+    }
+    for i in 0..n {
+        hi := digit_value(text[2 * i]) ?? 0;
+        lo := digit_value(text[2 * i + 1]) ?? 0;
+        out[i] = (hi << 4) | lo;
+    }
+    return n;
+}
+
+/// The bytes the hex `text` names, in memory from `a`.
+pub decode_in :: fn(a: *Arena, text: []const u8) -> []u8 ! HexError {
+    if text.len % 2 != 0 { fail .odd_length; }
+    out := a.alloc_bytes(text.len / 2);
+    n := decode(out, text)?;
+    return out[0..n];
+}
