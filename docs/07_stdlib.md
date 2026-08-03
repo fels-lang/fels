@@ -1015,6 +1015,35 @@ escape (also a surrogate pair) becomes UTF-8. A string without escapes is a slic
 text. A byte order mark at the start is skipped, and nesting deeper than 512 is refused. The
 comptime VM cannot build the values yet (they are structs in an arena).
 
+### `std.base64` and `std.hex`
+
+Bytes as text, and back: base64 (RFC 4648) and hex digits.
+
+```fels
+#import std.base64 as base64;
+#import std.hex as hex;
+
+t := base64::encode_in(&a, "hello");             // "aGVsbG8="
+b := base64::decode_in(&a, t)?;                  // "hello"
+u := base64::URL_NO_PAD.encode_in(&a, token);    // "-" and "_", no "=": JWT, URL tokens
+n := base64::STANDARD.encode(out[:], bytes)?;    // into your own buffer
+
+h := hex::encode_in(&a, digest_bytes);           // "ba7816bf…" (encode_upper_in: "BA78…")
+d := hex::decode_in(&a, "DEADbeef")?;            // either case reads
+```
+
+- A `base64::Codec` is an alphabet and whether `=` pads the text to a multiple of 4: `STANDARD`
+  (`+` and `/`, padded), `STANDARD_NO_PAD`, `URL` (`-` and `_`, padded) and `URL_NO_PAD`. Each has
+  `encode`, `decode` (into a buffer), `encode_in`, `decode_in` (into an arena), `encoded_len` and
+  `decoded_len`; `base64::encode_in` and `decode_in` are `STANDARD`'s.
+- Decoding takes the codec's own form only: a padded codec wants its padding, one without refuses
+  it, and a character of the other alphabet, a space or a line break fails with
+  `.invalid_character`. A text of a length no encoding has fails with `.invalid_length`, and a
+  buffer that is too short with `.buffer_too_small`, before anything is written.
+- `hex::encode` and `decode` write into a buffer; `hex::digit_value(c)` is a digit's value or
+  null. Errors: `.invalid_character`, `.odd_length`, `.buffer_too_small`. `crypto::hex` is
+  `hex::encode_in`.
+
 ### `std.hash`
 
 Non-cryptographic hashes of bytes: FNV-1a (32 and 64 bits), CRC-32 and XXH64. Each comes as one
