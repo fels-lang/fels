@@ -16,9 +16,9 @@
 // content addressing, not audited for adversarial use.
 
 #import std.heap.{ Arena };
-#import std.strings as strings;
 #import std.hash as hash;
 #import std.hash.{ Hasher };
+#import std.hex as hexes;
 
 // FNV-1a and CRC-32, as std.hash has them
 
@@ -184,15 +184,9 @@ pub sha256 :: fn(data: []const u8) -> Digest {
     return d;
 }
 
-// Lowercase hex of a byte slice (2 characters per byte).
+// Lowercase hex of a byte slice (2 characters per byte): `hex::encode_in`.
 pub hex :: fn(a: *Arena, bytes: []const u8) -> []const u8 {
-    sb := strings::builder(a);
-    i: usize = 0;
-    while i < bytes.len {
-        strings::append_hex_byte(&sb, bytes[i]);
-        i = i + 1;
-    }
-    return strings::str(&sb);
+    return hexes::encode_in(a, bytes);
 }
 
 // Lowercase hex of a digest (64 characters) — `hex(a, d.bytes[0..32])`.
