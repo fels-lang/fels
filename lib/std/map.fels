@@ -10,6 +10,7 @@
 //
 //   m := map::auto(i32, i32, &a);
 //   m.put(7, 100); m.put(7, 101);   // overwrites → one entry; m.get(7) is 101
+//   for e in m.entries() { … e.key … e.value … }   // in no particular order
 //
 // AutoHashMap takes only keys whose bytes are their value (`ByteKey`): a float, a slice or a
 // type with padding is refused when the map type is made. Key strings with StrMap.
@@ -195,6 +196,37 @@ pub AutoHashMap :: struct($K: ByteKey, $V: type) {
         self.count = 0;
         self.tombs = 0;
     }
+
+    /// The entries, in no particular order: `for e in m.entries() { … e.key … e.value … }`.
+    /// A `put` or `remove` while going through them may skip or repeat entries.
+    pub entries :: fn(self: *Self) -> AutoEntries(K, V) {
+        it: AutoEntries(K, V) = .{ self, 0 };
+        return it;
+    }
+}
+
+/// A key and its value, as `entries()` gives them.
+pub Entry :: struct($K: type, $V: type) {
+    key: K,
+    value: V,
+}
+
+/// The entries of an `AutoHashMap` (`AutoHashMap.entries`).
+pub AutoEntries :: struct($K: ByteKey, $V: type) {
+    m: *AutoHashMap(K, V),
+    i: usize,   // the next slot to look at
+
+    pub next :: fn(self: *Self) -> ?Entry(K, V) {
+        while self.i < self.m.states.len {
+            at := self.i;
+            self.i += 1;
+            if self.m.states[at] == USED {
+                e: Entry(K, V) = .{ self.m.keys[at], self.m.vals[at] };
+                return e;
+            }
+        }
+        return null;
+    }
 }
 
 // A fresh empty `AutoHashMap` bound to region `a`.
@@ -330,6 +362,31 @@ pub StrMap :: struct($V: type) {
         self.count = 0;
         self.tombs = 0;
     }
+
+    /// The entries, in no particular order: `for e in m.entries() { … e.key … e.value … }`.
+    /// A `put` or `remove` while going through them may skip or repeat entries.
+    pub entries :: fn(self: *Self) -> StrEntries(V) {
+        it: StrEntries(V) = .{ self, 0 };
+        return it;
+    }
+}
+
+/// The entries of a `StrMap` (`StrMap.entries`); a key is the map's own copy.
+pub StrEntries :: struct($V: type) {
+    m: *StrMap(V),
+    i: usize,
+
+    pub next :: fn(self: *Self) -> ?Entry([]const u8, V) {
+        while self.i < self.m.states.len {
+            at := self.i;
+            self.i += 1;
+            if self.m.states[at] == USED {
+                e: Entry([]const u8, V) = .{ self.m.keys[at], self.m.vals[at] };
+                return e;
+            }
+        }
+        return null;
+    }
 }
 
 // A fresh empty `StrMap` bound to region `a`.
@@ -340,3 +397,4 @@ pub strmap :: fn($V: type, a: *Arena) -> StrMap(V) {
     r: StrMap(V) = .{ a, states, alloc([]const u8, a, INIT_CAP), alloc(V, a, INIT_CAP), 0, 0 };
     return r;
 }
+
