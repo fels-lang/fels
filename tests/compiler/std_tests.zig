@@ -21,6 +21,7 @@ const files = [_][]const u8{
     "tests/fixtures/stdlib/crypto_tests.fels",
     "tests/fixtures/stdlib/fmt_tests.fels",
     "tests/fixtures/stdlib/encoding_tests.fels",
+    "tests/fixtures/stdlib/containers_tests.fels",
 };
 
 /// Files whose tests reach the OS (folders, the environment, the command line), which
@@ -28,6 +29,8 @@ const files = [_][]const u8{
 const native_files = [_][]const u8{
     // JSON values are enums with payloads in an arena, which the comptime VM cannot store yet
     "tests/fixtures/stdlib/json_tests.fels",
+    // AutoHashMap hashes a key's bytes through a pointer, which the comptime VM cannot
+    "tests/fixtures/stdlib/map_tests.fels",
     "tests/fixtures/stdlib/os_tests.fels",
 };
 

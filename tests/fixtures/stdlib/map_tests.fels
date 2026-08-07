@@ -1,0 +1,67 @@
+// std.map, as `#test` functions: `fels test` runs them natively (tests/compiler/std_tests.zig).
+// AutoHashMap and AutoSet hash a key's bytes through a pointer, which the comptime VM cannot.
+#import std.heap as heap;
+#import std.map as map;
+
+#test
+auto_map_entries :: fn(t: *Test) {
+    a := heap::make();
+    m := map::auto(i32, i32, &a);
+    for i in 0..50 { m.put(i as i32, (i * i) as i32); }
+    m.put(7, -1);
+    t.expect(m.remove(10));
+    n: usize = 0;
+    key_sum: i32 = 0;
+    for e in m.entries() {
+        n += 1;
+        key_sum += e.key;
+        if e.key == 7 { t.eq(e.value, -1); } else { t.eq(e.value, e.key * e.key); }
+    }
+    t.eq(n, 49usize);
+    t.eq(key_sum, 1225 - 10);
+    a.deinit();
+}
+
+#test
+str_map_entries :: fn(t: *Test) {
+    a := heap::make();
+    m := map::strmap(i32, &a);
+    m.put("apple", 3);
+    m.put("pear", 5);
+    m.put("plum", 7);
+    m.put("pear", 6);
+    total: i32 = 0;
+    letters: usize = 0;
+    for e in m.entries() {
+        total += e.value;
+        letters += e.key.len;
+    }
+    t.eq(total, 16);
+    t.eq(letters, 13usize);
+    a.deinit();
+}
+
+#test
+sets :: fn(t: *Test) {
+    a := heap::make();
+    seen := map::strset(&a);
+    words: [6][]const u8 = .{ "a", "b", "a", "c", "b", "a" };
+    fresh: usize = 0;
+    for w in words { if seen.add(w) { fresh += 1; } }
+    t.eq(fresh, 3usize);
+    t.eq(seen.len(), 3usize);
+    t.expect(seen.contains("c"));
+    t.expect(seen.remove("c"));
+    t.expect(!seen.contains("c"));
+    n: usize = 0;
+    for w in seen.each() { n += w.len; }
+    t.eq(n, 2usize);
+
+    ids := map::autoset(u32, &a);
+    for i in 0..100 { ids.add((i % 10) as u32); }
+    t.eq(ids.len(), 10usize);
+    sum: u32 = 0;
+    for x in ids.each() { sum += x; }
+    t.eq(sum, 45u32);
+    a.deinit();
+}

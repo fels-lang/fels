@@ -1,0 +1,155 @@
+// std.pqueue, std.deque and std.bitset, as `#test` functions: `fels test` runs them natively
+// and on the comptime VM (tests/compiler/std_tests.zig).
+#import std.heap as heap;
+#import std.pqueue as pqueue;
+#import std.deque as deque;
+#import std.bitset as bitset;
+
+Job :: struct { due: i32, id: i32 }
+earlier :: fn(a: Job, b: Job) -> bool { return a.due < b.due; }
+
+#test
+smallest_first :: fn(t: *Test) {
+    a := heap::make();
+    q := pqueue::min(i32, &a);
+    t.expect(q.pop() == null);
+    xs: [10]i32 = .{ 5, 1, 9, 3, 7, 3, 0, 8, 2, 6 };
+    q.push_all(xs[:]);
+    t.eq(q.len(), 10usize);
+    t.eq(q.peek() ?? -1, 0);
+    want: [10]i32 = .{ 0, 1, 2, 3, 3, 5, 6, 7, 8, 9 };
+    i: usize = 0;
+    while q.pop() |x| {
+        t.eq(x, want[i]);
+        i += 1;
+    }
+    t.eq(i, 10usize);
+    t.expect(q.is_empty());
+    a.deinit();
+}
+
+#test
+largest_first_and_by_a_function :: fn(t: *Test) {
+    a := heap::make();
+    q := pqueue::max(i32, &a);
+    for k in 0..100 { q.push(((k * 37) % 101) as i32); }
+    prev: i32 = 1000;
+    n: usize = 0;
+    while q.pop() |x| {
+        t.expect(x <= prev);
+        prev = x;
+        n += 1;
+    }
+    t.eq(n, 100usize);
+    jobs := pqueue::by(Job, &a, earlier);
+    j1: Job = .{ 30, 1 };
+    j2: Job = .{ 10, 2 };
+    j3: Job = .{ 20, 3 };
+    jobs.push(j1);
+    jobs.push(j2);
+    jobs.push(j3);
+    if jobs.pop() |j| { t.eq(j.id, 2); } else { t.expect(false); }
+    if jobs.pop() |j| { t.eq(j.id, 3); } else { t.expect(false); }
+    a.deinit();
+}
+
+#test
+deque_both_ends :: fn(t: *Test) {
+    a := heap::make();
+    d := deque::make(i32, &a);
+    t.expect(d.pop_front() == null);
+    t.expect(d.pop_back() == null);
+    d.push_back(1);
+    d.push_back(2);
+    d.push_front(0);
+    d.push_front(-1);
+    t.eq(d.len(), 4usize);
+    t.eq(d.get(0), -1);
+    t.eq(d.get(3), 2);
+    t.eq(d.front() ?? 99, -1);
+    t.eq(d.back() ?? 99, 2);
+    sum: i32 = 0;
+    for x in d.each() { sum += x; }
+    t.eq(sum, 2);
+    t.eq(d.pop_back() ?? 99, 2);
+    t.eq(d.pop_front() ?? 99, -1);
+    t.eq(d.len(), 2usize);
+    a.deinit();
+}
+
+#test
+deque_as_a_queue_across_growth :: fn(t: *Test) {
+    a := heap::make();
+    d := deque::with_cap(i32, &a, 4);
+    // push and pop so the ring wraps, then grow while wrapped
+    next_in: i32 = 0;
+    next_out: i32 = 0;
+    for round in 0..50 {
+        for k in 0..3 {
+            d.push_back(next_in);
+            next_in += 1;
+        }
+        for k in 0..2 {
+            t.eq(d.pop_front() ?? -1, next_out);
+            next_out += 1;
+        }
+    }
+    t.eq(d.len(), 50usize);
+    while d.pop_front() |x| {
+        t.eq(x, next_out);
+        next_out += 1;
+    }
+    t.eq(next_out, 150);
+    a.deinit();
+}
+
+#test
+bits_in_a_set :: fn(t: *Test) {
+    a := heap::make();
+    s := bitset::make(&a, 200);
+    t.eq(s.count(), 0usize);
+    s.set(0);
+    s.set(63);
+    s.set(64);
+    s.set(199);
+    t.expect(s.has(63) && s.has(64) && !s.has(65));
+    t.eq(s.count(), 4usize);
+    s.toggle(63);
+    s.unset(0);
+    s.put(5, true);
+    got: [8]usize = .{};
+    n: usize = 0;
+    for i in s.ones() {
+        got[n] = i;
+        n += 1;
+    }
+    t.eq(n, 3usize);
+    t.eq(got[0], 5usize);
+    t.eq(got[1], 64usize);
+    t.eq(got[2], 199usize);
+    s.set_all();
+    t.eq(s.count(), 200usize);
+    a.deinit();
+}
+
+#test
+sets_combined :: fn(t: *Test) {
+    a := heap::make();
+    evens := bitset::make(&a, 100);
+    threes := bitset::make(&a, 100);
+    for i in 0..100 {
+        if i % 2 == 0 { evens.set(i); }
+        if i % 3 == 0 { threes.set(i); }
+    }
+    both := bitset::make(&a, 100);
+    both.union_with(&evens);
+    both.intersect_with(&threes);
+    t.eq(both.count(), 17usize);          // 0, 6, 12, … 96
+    either := bitset::make(&a, 100);
+    either.union_with(&evens);
+    either.union_with(&threes);
+    t.eq(either.count(), 67usize);        // 50 + 34 - 17
+    evens.subtract(&threes);
+    t.eq(evens.count(), 33usize);
+    a.deinit();
+}
