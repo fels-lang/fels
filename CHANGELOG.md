@@ -34,6 +34,9 @@ the major version is `0`, any minor bump may break source compatibility.
   takes bytes in parts, all `Hasher`s that `hash::feed` fills from a `Reader`; `mix64` for an
   integer key. `std.crypto` gains `Sha256` in parts, a `Hasher` too, and its `crc32` and
   `fnv1a_*` are `std.hash`'s. `StrMap` hashes its keys with `std.hash`.
+- **Containers**: `std.pqueue` (a priority queue: smallest first, largest first, or by a
+  function), `std.deque` (push and pop at both ends) and `std.bitset`. The maps gain
+  `entries()` for a `for` loop, and sets of keys, `AutoSet(K)` and `StrSet`.
 - **`std.base64`** (RFC 4648: the standard and URL alphabets, with and without padding, into a
   buffer or an arena) and **`std.hex`**. `crypto::hex` is `hex::encode_in`.
 - **`\u{…}` escapes** in string and character literals: `"caf\u{e9}"` holds the UTF-8 of
