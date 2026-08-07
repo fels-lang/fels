@@ -12,6 +12,10 @@
 //   m.put(7, 100); m.put(7, 101);   // overwrites → one entry; m.get(7) is 101
 //   for e in m.entries() { … e.key … e.value … }   // in no particular order
 //
+//   AutoSet(K) and StrSet are sets of keys, maps with nothing stored for a key:
+//   seen := map::strset(&a);
+//   if seen.add(name) { … }         // true the first time
+//
 // AutoHashMap takes only keys whose bytes are their value (`ByteKey`): a float, a slice or a
 // type with padding is refused when the map type is made. Key strings with StrMap.
 
@@ -398,3 +402,89 @@ pub strmap :: fn($V: type, a: *Arena) -> StrMap(V) {
     return r;
 }
 
+// Sets
+
+/// A set of keys of a type `AutoHashMap` takes: an `AutoHashMap(K, u8)` with nothing stored.
+pub AutoSet :: struct($K: ByteKey) {
+    m: AutoHashMap(K, u8),
+
+    pub len :: fn(self: *Self) -> usize { return self.m.count; }
+    pub is_empty :: fn(self: *Self) -> bool { return self.m.count == 0; }
+    pub contains :: fn(self: *Self, k: K) -> bool { return self.m.contains(k); }
+
+    /// Put `k` in the set; whether it was not there yet.
+    pub add :: fn(self: *Self, k: K) -> bool {
+        if self.m.contains(k) { return false; }
+        self.m.put(k, 0);
+        return true;
+    }
+
+    /// Take `k` out of the set; whether it was there.
+    pub remove :: fn(self: *Self, k: K) -> bool { return self.m.remove(k); }
+    pub clear :: fn(self: *Self) { self.m.clear(); }
+
+    /// The keys, in no particular order: `for k in s.each() { … }`.
+    pub each :: fn(self: *Self) -> AutoSetKeys(K) {
+        it: AutoSetKeys(K) = .{ self.m.entries() };
+        return it;
+    }
+}
+
+/// The keys of an `AutoSet` (`AutoSet.each`).
+pub AutoSetKeys :: struct($K: ByteKey) {
+    it: AutoEntries(K, u8),
+
+    pub next :: fn(self: *Self) -> ?K {
+        if self.it.next() |e| { return e.key; }
+        return null;
+    }
+}
+
+/// A set of strings, by their contents: a `StrMap(u8)` with nothing stored. It keeps its own
+/// copy of each string.
+pub StrSet :: struct {
+    m: StrMap(u8),
+
+    pub len :: fn(self: *Self) -> usize { return self.m.count; }
+    pub is_empty :: fn(self: *Self) -> bool { return self.m.count == 0; }
+    pub contains :: fn(self: *Self, k: []const u8) -> bool { return self.m.contains(k); }
+
+    /// Put `k` in the set; whether it was not there yet.
+    pub add :: fn(self: *Self, k: []const u8) -> bool {
+        if self.m.contains(k) { return false; }
+        self.m.put(k, 0);
+        return true;
+    }
+
+    /// Take `k` out of the set; whether it was there.
+    pub remove :: fn(self: *Self, k: []const u8) -> bool { return self.m.remove(k); }
+    pub clear :: fn(self: *Self) { self.m.clear(); }
+
+    /// The strings, in no particular order: `for k in s.each() { … }`.
+    pub each :: fn(self: *Self) -> StrSetKeys {
+        it: StrSetKeys = .{ self.m.entries() };
+        return it;
+    }
+}
+
+/// The strings of a `StrSet` (`StrSet.each`).
+pub StrSetKeys :: struct {
+    it: StrEntries(u8),
+
+    pub next :: fn(self: *Self) -> ?[]const u8 {
+        if self.it.next() |e| { return e.key; }
+        return null;
+    }
+}
+
+// A fresh empty `AutoSet` bound to region `a`.
+pub autoset :: fn($K: ByteKey, a: *Arena) -> AutoSet(K) {
+    s: AutoSet(K) = .{ auto(K, u8, a) };
+    return s;
+}
+
+// A fresh empty `StrSet` bound to region `a`.
+pub strset :: fn(a: *Arena) -> StrSet {
+    s: StrSet = .{ strmap(u8, a) };
+    return s;
+}
