@@ -808,7 +808,7 @@ and procedural generation.
 
 - `rgb`, `rgba`, `with_alpha`, `gray`, named colors (`white`/`black`/`red`/`green`/`blue`/`yellow`/`orange`/`purple`/`clear`), `lerp`, `to_u32`/`from_u32` (0xRRGGBBAA).
 
-## Containers — `std.vec` and `std.map`
+## Containers — `std.vec`, `std.map`, `std.pqueue`, `std.deque`, `std.bitset`
 
 The container library has one defining trait: every container is **region-bound**.
 It carries a borrowed `*Arena` and grows by bump-allocating from it, so there are no
@@ -875,11 +875,71 @@ sm.get("alpha");                    // hashes + compares the string bytes
   an optional's flag or an enum payload, see `core::has_padding`).
 - **`StrMap(V)`** keys `[]const u8`, hashing and comparing the string **contents**. It
   copies each key into the region, so the map owns its keys.
-- Both: `put`, `get` (→ `?V`), `contains`, `remove`, `clear`, `len`, `cap`, `is_empty`.
+- Both: `put`, `get` (→ `?V`), `contains`, `remove`, `clear`, `len`, `cap`, `is_empty`, and
+  `entries()`, which a `for` goes through: `for e in m.entries() { … e.key … e.value … }`, in no
+  particular order. A `put` or `remove` during the loop may skip or repeat entries.
+- **Sets**: `map::autoset(K, &a)` gives an `AutoSet(K)` and `map::strset(&a)` a `StrSet`, maps
+  with nothing stored for a key. `add(k)` says whether `k` was new; `contains`, `remove`,
+  `clear`, `len`, and `each()` for the keys.
+- `AutoHashMap` and `AutoSet` do not run at compile time: they hash a key's bytes through a
+  pointer, and a value on the comptime VM has none. `StrMap` and `StrSet` do.
 
 > Fels's approach to hashing: a struct that `#derive(Hash, Eq)`s gets `hash()`/`eq()` for
 > free. `AutoHashMap` doesn't even need that, because byte-hashing covers every key whose
 > bytes are its value with zero ceremony, and the compiler refuses the others.
+
+### `std.pqueue` — `PriorityQueue(T, C)`
+
+A binary heap: `pop` gives the element that comes first, `push` and `pop` take O(log n).
+
+```fels
+#import std.pqueue as pqueue;
+
+q := pqueue::min(i32, &a);           // smallest first; pqueue::max for largest first
+q.push(5); q.push(1); q.push(3);
+while q.pop() |x| { ... }            // 1, 3, 5
+
+jobs := pqueue::by(Job, &a, earlier);   // earlier :: fn(a: Job, b: Job) -> bool
+```
+
+- `push`, `push_all`, `pop` (→ `?T`), `peek` (→ `?T`, left in), `len`, `is_empty`, `clear`, and
+  `items()` (in no particular order).
+- The order is a type `C` with `less(self, a, b)`: `pqueue::Min(T)`, `Max(T)`, `By(T)` (a
+  function), or your own with `pqueue::with(T, C, &a, order)`, for an order that carries data.
+
+### `std.deque` — `Deque(T)`
+
+A ring buffer: push and pop at both ends in O(1), and index from the front.
+
+```fels
+#import std.deque as deque;
+
+d := deque::make(i32, &a);           // or with_cap(i32, &a, n)
+d.push_back(1); d.push_front(0);
+while d.pop_front() |x| { ... }      // a FIFO queue
+for x in d.each() { ... }            // front to back, left in place
+```
+
+- `push_back`, `push_front`, `pop_back`, `pop_front`, `front`, `back` (each `?T`), `get(i)`,
+  `set(i, v)`, `len`, `is_empty`, `clear`. It grows by taking a block twice as big from its
+  arena.
+
+### `std.bitset` — `BitSet`
+
+The numbers 0 to n-1, one bit each, 64 to a word.
+
+```fels
+#import std.bitset as bitset;
+
+s := bitset::make(&a, 1000);         // all clear
+s.set(3); s.set(700);
+if s.has(3) { ... }
+for i in s.ones() { ... }            // 3, 700: the set bits, in order
+s.union_with(&other);                // also intersect_with, subtract (the same length)
+```
+
+- `set`, `unset`, `toggle`, `put(i, on)`, `has`, `count` (the set bits), `set_all`,
+  `clear_all`, `len`. An index past the end panics.
 
 ## General-purpose modules
 
