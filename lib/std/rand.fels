@@ -7,6 +7,8 @@
 //   r := rand::seed(12345u64);
 //   roll := r.range_i32(1, 7);      // a d6, 1..6
 //   if r.chance(0.25f32) { ... }    // 25% of the time
+//   rand::shuffle(Card, &r, deck[:]);
+//   pick := rand::choose(Card, &r, deck[:]);
 
 pub Rng :: struct { state: u64 }
 
@@ -55,4 +57,60 @@ pub chance :: fn(self: *Rng, p: f32) -> bool { return next_f32(self) < p; }
 pub sign :: fn(self: *Rng) -> f32 {
     if (next_u64(self) & 1) == 0 { return -1.0f32; }
     return 1.0f32;
+}
+
+// A uniform integer in [0, n), with no bias toward small values (0 when `n` is 0): the
+// values past the last whole multiple of `n` are drawn again.
+pub below :: fn(self: *Rng, n: u64) -> u64 {
+    if n == 0 { return 0; }
+    // 2^64 mod n, the values at the bottom that would make the small results likelier
+    skip := (0 -% n) % n;
+    while true {
+        x := next_u64(self);
+        if x >= skip { return x % n; }
+    }
+    return 0;
+}
+
+// A uniform integer in [lo, hi) (`lo` when the range is empty).
+pub range_u64 :: fn(self: *Rng, lo: u64, hi: u64) -> u64 {
+    if hi <= lo { return lo; }
+    return lo + below(self, hi - lo);
+}
+
+// A float in [0, 1) with 53 bits of mantissa.
+pub next_f64 :: fn(self: *Rng) -> f64 {
+    return ((next_u64(self) >> 11) as f64) / 9007199254740992.0;   // / 2^53
+}
+
+// Fill `out` with random bytes.
+pub fill_bytes :: fn(self: *Rng, out: []u8) {
+    i: usize = 0;
+    while i < out.len {
+        x := next_u64(self);
+        k: usize = 0;
+        while k < 8 && i < out.len {
+            out[i] = ((x >> ((8 * k) as u64)) & 0xFF) as u8;
+            i += 1;
+            k += 1;
+        }
+    }
+}
+
+// Put `xs` in a random order, each order as likely (Fisher-Yates).
+pub shuffle :: fn($T: type, self: *Rng, xs: []T) {
+    i := xs.len;
+    while i > 1 {
+        j := below(self, i as u64) as usize;
+        i -= 1;
+        tmp := xs[i];
+        xs[i] = xs[j];
+        xs[j] = tmp;
+    }
+}
+
+// One element of `xs`, each as likely; null when it is empty.
+pub choose :: fn($T: type, self: *Rng, xs: []const T) -> ?T {
+    if xs.len == 0 { return null; }
+    return xs[below(self, xs.len as u64) as usize];
 }
