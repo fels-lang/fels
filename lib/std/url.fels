@@ -1,0 +1,250 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.url — URLs (RFC 3986): the parts of one, percent-encoding, and query strings.
+//
+//   u := url::parse("https://user@example.com:8080/a/b?q=1&r=x%20y#top")?;
+//   u.scheme   // "https"     u.host  // "example.com"     u.port  // 8080 (?u16)
+//   u.path     // "/a/b"      u.query // "q=1&r=x%20y"     u.fragment // "top"
+//
+//   for p in url::query_pairs(u.query) { … p.key … p.value … }   // still encoded
+//   v := url::decode_in(&a, "x%20y")?;                            // "x y"
+//   e := url::encode_in(&a, "a b&c", .component);                // "a%20b%26c"
+//
+// Parsing splits and checks; it does not decode. Each part is a slice of the text, as it was
+// written, and `decode_in` turns one into the bytes it stands for.
+
+#import std.heap.{ Arena, alloc_bytes };
+#import std.mem as mem;
+
+pub UrlError :: errors {
+    no_scheme,          // nothing before a ":" that is a scheme (a letter, then letters, digits, + - .)
+    bad_port,           // a port that is not a number up to 65535
+    bad_escape,         // a "%" without two hex digits after it
+}
+
+/// The parts of a URL, each a slice of the text it was parsed from. Missing parts are empty
+/// (`port` is null).
+pub Url :: struct {
+    scheme: []const u8,
+    user: []const u8,       // before the "@" of the authority, password included
+    host: []const u8,       // a name, an IPv4 address, or an IPv6 one in brackets
+    port: ?u16,
+    path: []const u8,
+    query: []const u8,      // after the "?", without it
+    fragment: []const u8,   // after the "#", without it
+    has_authority: bool,    // whether a "//" followed the scheme
+
+    /// The port, or `fallback` when the URL has none (`u.port_or(443)`).
+    pub port_or :: fn(self: *Self, fallback: u16) -> u16 { return self.port ?? fallback; }
+}
+
+is_scheme_char :: fn(c: u8, first: bool) -> bool {
+    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') { return true; }
+    if first { return false; }
+    return (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.';
+}
+
+/// The parts of `text`, an absolute URL (`scheme:…`).
+pub parse :: fn(text: []const u8) -> Url ! UrlError {
+    u: Url = .{ "", "", "", null, "", "", "", false };
+    colon := mem::index_of(u8, text, ':') ?? text.len;
+    if colon == 0 || colon == text.len { fail .no_scheme; }
+    for i in 0..colon {
+        if !is_scheme_char(text[i], i == 0) { fail .no_scheme; }
+    }
+    u.scheme = text[0..colon];
+    rest := text[colon + 1..text.len];
+    // the fragment, then the query, from the end
+    if mem::index_of(u8, rest, '#') |h| {
+        u.fragment = rest[h + 1..rest.len];
+        rest = rest[0..h];
+    }
+    if mem::index_of(u8, rest, '?') |q| {
+        u.query = rest[q + 1..rest.len];
+        rest = rest[0..q];
+    }
+    if rest.len >= 2 && rest[0] == '/' && rest[1] == '/' {
+        u.has_authority = true;
+        rest = rest[2..rest.len];
+        end := mem::index_of(u8, rest, '/') ?? rest.len;
+        auth := rest[0..end];
+        u.path = rest[end..rest.len];
+        if mem::last_index_of(u8, auth, '@') |at| {
+            u.user = auth[0..at];
+            auth = auth[at + 1..auth.len];
+        }
+        // a port after the last ":", unless it is inside an IPv6 address in brackets
+        host_end := auth.len;
+        if mem::last_index_of(u8, auth, ':') |c| {
+            close := mem::last_index_of(u8, auth, ']') ?? 0;
+            if auth.len == 0 || auth[0] != '[' || c > close {
+                digits := auth[c + 1..auth.len];
+                if digits.len > 0 {
+                    n: u32 = 0;
+                    for d in digits {
+                        if d < '0' || d > '9' { fail .bad_port; }
+                        n = n * 10 + (d - '0') as u32;
+                        if n > 65535 { fail .bad_port; }
+                    }
+                    u.port = n as u16;
+                }
+                host_end = c;
+            }
+        }
+        u.host = auth[0..host_end];
+    } else {
+        u.path = rest;
+    }
+    return u;
+}
+
+// Percent-encoding
+
+/// Which bytes `encode` keeps as they are; any other is written as `%XX`.
+pub Keep :: enum {
+    /// The unreserved characters only (letters, digits, `-` `.` `_` `~`): for a query value, a
+    /// path segment, anything that goes between separators.
+    component,
+    /// Those and `/`: for a whole path.
+    path,
+    /// A query value in a form (`application/x-www-form-urlencoded`): a space is `+`.
+    form,
+}
+
+is_unreserved :: fn(c: u8) -> bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+        c == '-' || c == '.' || c == '_' || c == '~';
+}
+
+keeps :: fn(c: u8, keep: Keep) -> bool {
+    if is_unreserved(c) { return true; }
+    if keep == .path { return c == '/'; }
+    return false;
+}
+
+/// The length `encode` writes for `s`.
+pub encoded_len :: fn(s: []const u8, keep: Keep) -> usize {
+    n: usize = 0;
+    for c in s {
+        n += if keeps(c, keep) || (keep == .form && c == ' ') { 1 } else { 3 };
+    }
+    return n;
+}
+
+HEX :: "0123456789ABCDEF";
+
+/// `s` percent-encoded into `out` (at least `encoded_len` long); the length written.
+pub encode :: fn(out: []u8, s: []const u8, keep: Keep) -> usize {
+    o: usize = 0;
+    for c in s {
+        if keeps(c, keep) {
+            out[o] = c;
+            o += 1;
+        } else if keep == .form && c == ' ' {
+            out[o] = '+';
+            o += 1;
+        } else {
+            out[o] = '%';
+            out[o + 1] = HEX[(c >> 4) as usize];
+            out[o + 2] = HEX[(c & 15) as usize];
+            o += 3;
+        }
+    }
+    return o;
+}
+
+/// `s` percent-encoded, in memory from `a`.
+pub encode_in :: fn(a: *Arena, s: []const u8, keep: Keep) -> []u8 {
+    out := a.alloc_bytes(encoded_len(s, keep));
+    n := encode(out, s, keep);
+    return out[0..n];
+}
+
+hex_value :: fn(c: u8) -> i32 {
+    if c >= '0' && c <= '9' { return (c - '0') as i32; }
+    if c >= 'a' && c <= 'f' { return (c - 'a') as i32 + 10; }
+    if c >= 'A' && c <= 'F' { return (c - 'A') as i32 + 10; }
+    return -1;
+}
+
+/// The bytes `s` stands for, `%XX` decoded, into `out` (at least `s.len` long); the length
+/// written. With `plus_is_space` (a form's query), `+` is a space.
+pub decode :: fn(out: []u8, s: []const u8, plus_is_space: bool) -> usize ! UrlError {
+    o: usize = 0;
+    i: usize = 0;
+    while i < s.len {
+        c := s[i];
+        if c == '%' {
+            if i + 2 >= s.len { fail .bad_escape; }
+            hi := hex_value(s[i + 1]);
+            lo := hex_value(s[i + 2]);
+            if hi < 0 || lo < 0 { fail .bad_escape; }
+            out[o] = (hi * 16 + lo) as u8;
+            i += 3;
+        } else {
+            out[o] = if plus_is_space && c == '+' { ' ' } else { c };
+            i += 1;
+        }
+        o += 1;
+    }
+    return o;
+}
+
+/// The bytes `s` stands for, in memory from `a`; a slice of `s` itself when it has no escape.
+pub decode_in :: fn(a: *Arena, s: []const u8) -> []const u8 ! UrlError {
+    if mem::index_of(u8, s, '%') == null { return s; }
+    out := a.alloc_bytes(s.len);
+    n := decode(out, s, false)?;
+    return out[0..n];
+}
+
+/// `decode_in` for a form's query value: `+` is a space too.
+pub decode_form_in :: fn(a: *Arena, s: []const u8) -> []const u8 ! UrlError {
+    if mem::index_of(u8, s, '%') == null && mem::index_of(u8, s, '+') == null { return s; }
+    out := a.alloc_bytes(s.len);
+    n := decode(out, s, true)?;
+    return out[0..n];
+}
+
+// Query strings
+
+/// A `key=value` of a query, both still encoded (`decode_form_in` them). A pair without `=`
+/// has an empty value.
+pub Pair :: struct {
+    key: []const u8,
+    value: []const u8,
+}
+
+/// The pairs of a query (`a=1&b=2`), in order: `for p in url::query_pairs(u.query) { … }`.
+/// Empty pairs (`a=1&&b=2`) are skipped.
+pub Pairs :: struct {
+    rest: []const u8,
+
+    pub next :: fn(self: *Self) -> ?Pair {
+        while self.rest.len > 0 {
+            end := mem::index_of(u8, self.rest, '&') ?? self.rest.len;
+            part := self.rest[0..end];
+            self.rest = if end < self.rest.len { self.rest[end + 1..self.rest.len] } else { self.rest[end..end] };
+            if part.len == 0 { continue; }
+            p: Pair = .{ part, "" };
+            if mem::index_of(u8, part, '=') |eq| {
+                p.key = part[0..eq];
+                p.value = part[eq + 1..part.len];
+            }
+            return p;
+        }
+        return null;
+    }
+}
+
+pub query_pairs :: fn(query: []const u8) -> Pairs {
+    it: Pairs = .{ query };
+    return it;
+}
+
+/// The value of the first pair named `key` (compared encoded), or null.
+pub query_get :: fn(query: []const u8, key: []const u8) -> ?[]const u8 {
+    for p in query_pairs(query) {
+        if p.key == key { return p.value; }
+    }
+    return null;
+}
