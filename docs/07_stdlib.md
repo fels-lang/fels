@@ -788,6 +788,10 @@ builtins, while `sin`/`cos`/`tan` use a fast polynomial, so there is no libm dep
 - **`Vec2`:** `v2`, `v2_zero`, `v2_splat`, `v2_add/sub/mul/scale/neg`, `v2_dot`, `v2_len`, `v2_len2`, `v2_dist`, `v2_dist2`, `v2_normalize`, `v2_lerp`, `v2_perp`, `v2_rotate`, `v2_from_angle`.
 - **`Vec3`:** `v3`, `v3_add/sub/scale`, `v3_dot`, `v3_cross`, `v3_len`, `v3_normalize`.
 - **`Rect`:** `rect`, `rect_contains`, `rect_overlaps` (AABB), `rect_center`.
+- **Integers** (`u64`; `core::min`, `max`, `abs` and `clamp` take any number): `gcd`, `lcm` and
+  `ipow` (null when the result does not fit), `isqrt`, `div_ceil`, `align_up` and `align_down`
+  (to a power of two), `log2_floor`, `next_power_of_two` (null past 2^63), and `mod_floor` for
+  `i64`, the remainder with the sign of the divisor (`mod_floor(-7, 3)` is 2, where `%` gives -1).
 
 ### `std.float`
 
@@ -800,7 +804,11 @@ For example: `float::pow(1.07, 2.5)`, `float::ln(10.0)`.
 A deterministic xorshift64\* PRNG. The same seed gives the same sequence, which suits replays
 and procedural generation.
 
-- `seed(u64) -> Rng`, `next_u64`, `next_u32`, `next_f32` (\[0,1)), `range_i32(lo,hi)`, `range_f32(lo,hi)`, `chance(p)`, `sign()`.
+- `seed(u64) -> Rng`, `next_u64`, `next_u32`, `next_f32` and `next_f64` (\[0,1)), `range_i32(lo,hi)`, `range_u64(lo,hi)`, `range_f32(lo,hi)`, `below(n)` (\[0,n)), `chance(p)`, `sign()`, `fill_bytes(out)`.
+- `rand::shuffle(T, &r, xs)` puts a slice in a random order (Fisher-Yates), and
+  `rand::choose(T, &r, xs)` gives one element (null for an empty slice).
+- The integer ranges have no bias toward small values: a draw that would favor them is drawn
+  again.
 
 ### `std.color`
 
