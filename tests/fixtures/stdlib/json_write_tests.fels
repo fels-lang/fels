@@ -1,0 +1,70 @@
+// Writing JSON with std.json's `Out`, as `#test` functions: `fels test` runs them natively and
+// on the comptime VM (tests/compiler/std_tests.zig).
+#import std.heap as heap;
+#import std.strings as strings;
+#import std.json as json;
+
+#test
+an_object_on_one_line :: fn(t: *Test) {
+    a := heap::make();
+    sb := strings::builder(&a);
+    o := json::writer(&sb);
+    o.begin_object();
+    o.key("name");
+    o.string("Ada \"the\" first\n");
+    o.key("age");
+    o.int(36);
+    o.key("big");
+    o.uint(18446744073709551615);
+    o.key("ratio");
+    o.float(0.25);
+    o.key("tags");
+    o.begin_array();
+    o.boolean(true);
+    o.null_value();
+    o.begin_object();
+    o.end_object();
+    o.begin_array();
+    o.end_array();
+    o.end_array();
+    o.end_object();
+    ok := true;
+    o.finish() catch err { ok = false; };
+    t.expect(ok);
+    t.eq(strings::str(&sb), "{\"name\":\"Ada \\\"the\\\" first\\n\",\"age\":36,\"big\":18446744073709551615,\"ratio\":0.25,\"tags\":[true,null,{},[]]}");
+    a.deinit();
+}
+
+#test
+indented :: fn(t: *Test) {
+    a := heap::make();
+    sb := strings::builder(&a);
+    o := json::pretty(&sb, 2);
+    o.begin_object();
+    o.key("a");
+    o.int(1);
+    o.key("b");
+    o.begin_array();
+    o.int(2);
+    o.int(3);
+    o.end_array();
+    o.end_object();
+    t.eq(strings::str(&sb), "{\n  \"a\": 1,\n  \"b\": [\n    2,\n    3\n  ]\n}");
+    a.deinit();
+}
+
+#test
+control_characters_and_odd_numbers :: fn(t: *Test) {
+    a := heap::make();
+    sb := strings::builder(&a);
+    o := json::writer(&sb);
+    o.begin_array();
+    tab_bell: [3]u8 = .{ 9, 7, 'x' };
+    o.string(tab_bell[:]);
+    o.float(0.0 / 0.0);
+    o.float(-2.5);
+    o.int(-9223372036854775807 - 1);
+    o.end_array();
+    t.eq(strings::str(&sb), "[\"\\t\\u0007x\",null,-2.5,-9223372036854775808]");
+    a.deinit();
+}

@@ -96,3 +96,13 @@ what_is_not_json_is_refused :: fn(t: *Test) {
     t.eq(why(deep[:]), 5);
     t.eq(why("\xEF\xBB\xBF[1]"), 0);
 }
+
+// Written back with `json::stringify` (std.json's `Out`): a number as it was read.
+#test
+a_parsed_tree_written_back :: fn(t: *Test) {
+    a := heap::make();
+    text := "{\"x\": [1, 2.50, \"y\\u00e9\"], \"z\": {\"w\": false}}";
+    doc := json::parse(text, &a) catch err { yield json::null_value(); };
+    t.eq(json::stringify(&a, doc), "{\"x\":[1,2.50,\"y\u{e9}\"],\"z\":{\"w\":false}}");
+    a.deinit();
+}
