@@ -38,6 +38,8 @@ const native_files = [_][]const u8{
     "tests/fixtures/stdlib/os_tests.fels",
     // compile-time code may not change std.log's global level
     "tests/fixtures/stdlib/log_global_tests.fels",
+    // threads, which compile-time code does not run
+    "tests/fixtures/stdlib/sync_tests.fels",
 };
 
 fn runAll(comptime_only: bool) !void {

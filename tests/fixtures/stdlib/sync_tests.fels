@@ -1,0 +1,116 @@
+// std.sync's WaitGroup, Once, RwLock and Semaphore on real threads, as `#test` functions:
+// native only (tests/compiler/std_tests.zig), as compile-time code runs no threads. Each check
+// holds for every interleaving.
+#import std.sync as sync;
+#import std.sync.{ WaitGroup, Once, RwLock, Semaphore, Mutex };
+#import std.thread as thread;
+#import std.atomics as atomics;
+
+Shared :: struct {
+    wg: WaitGroup,
+    counter: u64,
+    lock: RwLock,
+    table: [8]u64,      // every entry equal, as a writer leaves it
+    torn: u32,          // a reader saw entries that differ
+    slots: Semaphore,
+    inside: u32,        // threads between acquire and release
+    most: u32,          // the most there were at once
+}
+
+adder :: fn(p: *void) -> u32 {
+    s := unsafe (p as *Shared);
+    for i in 0..1000 { atomics::fetch_add(u64, &s.counter, 1); }
+    s.wg.done();
+    return 0;
+}
+
+#test
+a_wait_group_waits_for_every_task :: fn(t: *Test) {
+    s: Shared = .{};
+    s.wg.add(8);
+    for k in 0..8 {
+        th := thread::spawn(core::fn_ptr(adder), unsafe ((&s) as *void));
+        th.detach();
+    }
+    s.wg.wait();
+    t.eq(atomics::load(u64, &s.counter), 8000u64);
+}
+
+ONCE: Once = .{};
+RUNS: u32 = 0;
+
+init_once :: fn() { atomics::fetch_add(u32, &RUNS, 1); }
+
+once_caller :: fn(p: *void) -> u32 {
+    ONCE.call(init_once);
+    return 0;
+}
+
+#test
+once_runs_once :: fn(t: *Test) {
+    g := thread::group();
+    for k in 0..8 { g.spawn(core::fn_ptr(once_caller), unsafe ((&RUNS) as *void)); }
+    g.join_all();
+    ONCE.call(init_once);
+    t.eq(atomics::load(u32, &RUNS), 1u32);
+    t.expect(ONCE.is_done());
+}
+
+writer :: fn(p: *void) -> u32 {
+    s := unsafe (p as *Shared);
+    for round in 0..200 {
+        s.lock.lock();
+        for i in 0..8 { s.table[i] = s.table[i] + 1; }
+        s.lock.unlock();
+    }
+    return 0;
+}
+
+reader :: fn(p: *void) -> u32 {
+    s := unsafe (p as *Shared);
+    for round in 0..500 {
+        s.lock.lock_shared();
+        first := s.table[0];
+        for i in 1..8 { if s.table[i] != first { atomics::store(u32, &s.torn, 1); } }
+        s.lock.unlock_shared();
+    }
+    return 0;
+}
+
+#test
+readers_never_see_half_a_write :: fn(t: *Test) {
+    s: Shared = .{};
+    g := thread::group();
+    for k in 0..3 { g.spawn(core::fn_ptr(writer), unsafe ((&s) as *void)); }
+    for k in 0..5 { g.spawn(core::fn_ptr(reader), unsafe ((&s) as *void)); }
+    g.join_all();
+    t.eq(s.table[7], 600u64);
+    t.eq(s.torn, 0u32);
+}
+
+slot_user :: fn(p: *void) -> u32 {
+    s := unsafe (p as *Shared);
+    for round in 0..50 {
+        s.slots.acquire();
+        now := atomics::fetch_add(u32, &s.inside, 1) + 1;
+        atomics::fetch_max(u32, &s.most, now);
+        thread::yield_now();
+        atomics::fetch_sub(u32, &s.inside, 1);
+        s.slots.release();
+    }
+    return 0;
+}
+
+#test
+a_semaphore_lets_n_in :: fn(t: *Test) {
+    s: Shared = .{};
+    s.slots = sync::semaphore(3);
+    g := thread::group();
+    for k in 0..8 { g.spawn(core::fn_ptr(slot_user), unsafe ((&s) as *void)); }
+    g.join_all();
+    t.expect(s.most >= 1 && s.most <= 3);
+    t.expect(s.slots.try_acquire());
+    t.expect(s.slots.try_acquire());
+    t.expect(s.slots.try_acquire());
+    t.expect(!s.slots.try_acquire());
+}
