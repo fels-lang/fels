@@ -1132,6 +1132,26 @@ d := hex::decode_in(&a, "DEADbeef")?;            // either case reads
   null. Errors: `.invalid_character`, `.odd_length`, `.buffer_too_small`. `crypto::hex` is
   `hex::encode_in`.
 
+### `std.log`
+
+Messages by level (`debug`, `info`, `warn`, `error`), each a format, written to stderr or to any
+`io::Writer`.
+
+```fels
+#import std.log as log;
+
+log::info("listening on {port}");          // [info] listening on 8080, on stderr
+log::set_level(.debug);                     // from here on debug messages show too
+
+net := log::to(&file, "net", .debug);       // its own writer, scope and level
+net.debug("got {len} bytes");               // [debug] net: got 512 bytes
+if net.enabled(.debug) { ... }              // to skip work a message would need
+```
+
+A message below the level is dropped before its format is written, so its values are not
+read. A write that fails is dropped too: logging never stops the program. `log::debug`,
+`info`, `warn` and `error` write to stderr from `info` on, until `set_level` changes it.
+
 ### `std.url`
 
 URLs (RFC 3986): the parts of one, percent-encoding, and query strings.
