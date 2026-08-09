@@ -37,6 +37,11 @@ the major version is `0`, any minor bump may break source compatibility.
 - **Containers**: `std.pqueue` (a priority queue: smallest first, largest first, or by a
   function), `std.deque` (push and pop at both ends) and `std.bitset`. The maps gain
   `entries()` for a `for` loop, and sets of keys, `AutoSet(K)` and `StrSet`.
+- **`std.crypto`** gains SHA-512 and SHA-1 (each in one call and in parts, a `Hasher`),
+  `hmac_sha256` and `hmac_sha512`, and `equal_secure` to compare a MAC in constant time.
+- **`std.url`**: `parse` splits a URL into scheme, user, host, port, path, query and fragment;
+  percent-encoding both ways (`encode_in` with `.component`, `.path` or `.form`, `decode_in`,
+  `decode_form_in`); `query_pairs` and `query_get` for query strings.
 - **Writing JSON**: `json::writer(w)` and `json::pretty(w, indent)` write JSON to any
   `io::Writer` as the calls come (`begin_object`, `key`, `string`, `int`, `float`, `value` for a
   parsed tree, …), and `json::stringify(&a, value)` gives a tree as text.
