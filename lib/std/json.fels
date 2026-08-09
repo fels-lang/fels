@@ -17,6 +17,9 @@
 #import std.fmt as fmt;
 #import std.vec as vec;
 #import std.vec.{ Vec };
+#import std.io as io;
+#import std.io.{ Writer, IoError };
+#import std.strings as strings;
 
 pub JsonError :: errors {
     unexpected_end,     // the text ends inside a value
@@ -387,3 +390,220 @@ word :: fn(p: *Parser, w: []const u8) -> void ! JsonError {
 }
 
 is_digit :: fn(c: u8) -> bool { return c >= 48u8 && c <= 57u8; }
+
+// Writing JSON
+
+/// Writes JSON text to a `Writer` as the calls come. Commas, colons, quotes and escapes are its
+/// job; the order of the calls is yours, with `key` before each member's value.
+///
+///   o := json::writer(&out);                       // json::pretty(&out, 2) to indent
+///   o.begin_object();
+///   o.key("name"); o.string("Ada");
+///   o.key("tags"); o.begin_array(); o.int(1); o.int(2); o.end_array();
+///   o.end_object();
+///   o.finish()?;                                   // fails when a write failed
+///
+/// After a write fails, the rest are skipped, and `finish` reports it.
+pub Out :: struct {
+    w: *Writer,
+    indent: usize,     // spaces a level; 0 writes it all on one line
+    depth: usize,
+    first: bool,       // nothing written yet in the array or object open at `depth`
+    after_key: bool,   // a key was written: its value comes next
+    failed: bool,
+
+    put :: fn(self: *Self, s: []const u8) {
+        if self.failed { return; }
+        n := io::write_all(self.w, s) catch err {
+            self.failed = true;
+            yield 0usize;
+        };
+    }
+
+    newline :: fn(self: *Self) {
+        if self.indent == 0 || self.failed { return; }
+        self.put("\n");
+        n := io::write_repeat(self.w, ' ', self.depth * self.indent) catch err {
+            self.failed = true;
+            yield 0usize;
+        };
+    }
+
+    // Before a value: a comma after the value before it, and the line it goes on.
+    before :: fn(self: *Self) {
+        if self.after_key {
+            self.after_key = false;
+            return;
+        }
+        if !self.first { self.put(","); }
+        self.first = false;
+        if self.depth > 0 { self.newline(); }
+    }
+
+    pub begin_object :: fn(self: *Self) {
+        self.before();
+        self.put("{");
+        self.depth += 1;
+        self.first = true;
+    }
+
+    pub end_object :: fn(self: *Self) {
+        self.depth -= 1;
+        if !self.first { self.newline(); }
+        self.put("}");
+        self.first = false;
+    }
+
+    pub begin_array :: fn(self: *Self) {
+        self.before();
+        self.put("[");
+        self.depth += 1;
+        self.first = true;
+    }
+
+    pub end_array :: fn(self: *Self) {
+        self.depth -= 1;
+        if !self.first { self.newline(); }
+        self.put("]");
+        self.first = false;
+    }
+
+    /// The name of the next member of the object that is open.
+    pub key :: fn(self: *Self, name: []const u8) {
+        self.before();
+        self.quoted(name);
+        self.put(if self.indent > 0 { ": " } else { ":" });
+        self.after_key = true;
+    }
+
+    pub string :: fn(self: *Self, s: []const u8) {
+        self.before();
+        self.quoted(s);
+    }
+
+    pub int :: fn(self: *Self, v: i64) {
+        self.before();
+        if self.failed { return; }
+        n := io::write_i64(self.w, v) catch err {
+            self.failed = true;
+            yield 0usize;
+        };
+    }
+
+    pub uint :: fn(self: *Self, v: u64) {
+        self.before();
+        if self.failed { return; }
+        n := io::write_u64(self.w, v) catch err {
+            self.failed = true;
+            yield 0usize;
+        };
+    }
+
+    /// A number with up to 15 significant digits; `null` for NaN or an infinity, which JSON
+    /// has no way to write.
+    pub float :: fn(self: *Self, v: f64) {
+        if v != v || v > 1.7976931348623157e308 || v < -1.7976931348623157e308 {
+            self.null_value();
+            return;
+        }
+        self.before();
+        if self.failed { return; }
+        n := io::write_fmt(self.w, "{v}") catch err {
+            self.failed = true;
+            yield 0usize;
+        };
+    }
+
+    pub boolean :: fn(self: *Self, v: bool) {
+        self.before();
+        self.put(if v { "true" } else { "false" });
+    }
+
+    pub null_value :: fn(self: *Self) {
+        self.before();
+        self.put("null");
+    }
+
+    /// A whole tree that `parse` made, or one built by hand. A number is written as it was read.
+    pub value :: fn(self: *Self, v: Value) {
+        match v.kind {
+            .null_value => { self.null_value(); },
+            .boolean => { self.boolean(v.flag); },
+            .number => {
+                if v.text.len > 0 {
+                    self.before();
+                    self.put(v.text);
+                } else {
+                    self.float(v.number);
+                }
+            },
+            .string => { self.string(v.text); },
+            .array => {
+                self.begin_array();
+                for item in v.items { self.value(item); }
+                self.end_array();
+            },
+            .object => {
+                self.begin_object();
+                for i in 0..v.items.len {
+                    self.key(v.keys[i]);
+                    self.value(v.items[i]);
+                }
+                self.end_object();
+            },
+        }
+    }
+
+    /// Whether every write went through: fails with `write_failed` when one did not.
+    pub finish :: fn(self: *Self) -> void ! IoError {
+        if self.failed { fail .write_failed; }
+    }
+
+    // `s` in quotes, with `"`, `\` and the control characters escaped.
+    quoted :: fn(self: *Self, s: []const u8) {
+        self.put("\"");
+        start: usize = 0;
+        for i in 0..s.len {
+            c := s[i];
+            if c == '"' || c == '\\' || c < 0x20 {
+                self.put(s[start..i]);
+                if c == '"' { self.put("\\\""); }
+                else if c == '\\' { self.put("\\\\"); }
+                else if c == '\n' { self.put("\\n"); }
+                else if c == '\r' { self.put("\\r"); }
+                else if c == '\t' { self.put("\\t"); }
+                else if c == 8 { self.put("\\b"); }
+                else if c == 12 { self.put("\\f"); }
+                else {
+                    esc: [6]u8 = .{ '\\', 'u', '0', '0', HEX_DIGITS[(c >> 4) as usize], HEX_DIGITS[(c & 15) as usize] };
+                    self.put(esc[:]);
+                }
+                start = i + 1;
+            }
+        }
+        self.put(s[start..s.len]);
+        self.put("\"");
+    }
+}
+
+HEX_DIGITS :: "0123456789abcdef";
+
+/// An `Out` that writes everything on one line.
+pub writer :: fn(w: *Writer) -> Out {
+    o: Out = .{ w, 0, 0, true, false, false };
+    return o;
+}
+
+/// An `Out` that puts each member and element on a line of its own, `indent` spaces a level.
+pub pretty :: fn(w: *Writer, indent: usize) -> Out {
+    o: Out = .{ w, indent, 0, true, false, false };
+    return o;
+}
+
+/// The JSON text of `v`, on one line, in memory from `a`.
+pub stringify :: fn(a: *Arena, v: Value) -> []const u8 {
+    sb := strings::builder(a);
+    o := writer(&sb);
+    o.value(v);
+    return strings::str(&sb);
+}
