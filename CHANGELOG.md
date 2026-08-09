@@ -37,6 +37,8 @@ the major version is `0`, any minor bump may break source compatibility.
 - **Containers**: `std.pqueue` (a priority queue: smallest first, largest first, or by a
   function), `std.deque` (push and pop at both ends) and `std.bitset`. The maps gain
   `entries()` for a `for` loop, and sets of keys, `AutoSet(K)` and `StrSet`.
+- **`std.log`**: `log::info("…{x}…")` and the other levels to stderr, with a level to set, and
+  `log::to(w, scope, level)` for a logger of your own on any `io::Writer`.
 - **`std.crypto`** gains SHA-512 and SHA-1 (each in one call and in parts, a `Hasher`),
   `hmac_sha256` and `hmac_sha512`, and `equal_secure` to compare a MAC in constant time.
 - **`std.url`**: `parse` splits a URL into scheme, user, host, port, path, query and fragment;
