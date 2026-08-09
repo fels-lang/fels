@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.sync — mutual exclusion and waiting between threads: Mutex, CondVar, and a bounded
-// blocking Queue built on them. Thread calls go through the platform runtime (windows.fels →
+// std.sync — mutual exclusion and waiting between threads: Mutex, CondVar, and built on them a
+// bounded blocking Queue, WaitGroup, Once, RwLock and Semaphore. Thread calls go through the platform runtime (windows.fels →
 // SRWLOCK and CONDITION_VARIABLE; linux.fels → futex), so this file stays OS-agnostic. The
 // waiting is done by the kernel: a blocked thread sleeps rather than polling in a loop.
 //
@@ -24,6 +24,8 @@
 //     deadlocks; unlocking one it does not hold is undefined.
 //   - A Mutex or CondVar needs no destruction. It must not be moved or freed while a thread
 //     holds the lock or sleeps on it: join the threads first.
+
+#import std.atomics as atomics;
 
 // The seam, provided by the platform runtime:
 //   os_mutex_lock(m) / os_mutex_try_lock(m) -> bool / os_mutex_unlock(m)        m: *u64
@@ -215,4 +217,152 @@ pub Queue :: struct($T: type) {
 pub make_queue :: fn($T: type, storage: []T) -> Queue(T) {
     q: Queue(T) = .{ .{}, .{}, .{}, storage, 0, 0, false };
     return q;
+}
+
+// WaitGroup: wait until a number of tasks are done ─────────────────────────
+//
+//     wg: WaitGroup = .{};
+//     wg.add(n);                    // before the n tasks start
+//     ...                           // each task ends with wg.done()
+//     wg.wait();                    // sleeps until all n called done
+pub WaitGroup :: struct {
+    mu:      Mutex
+    cv:      CondVar
+    pending: usize
+
+    // `n` more tasks to wait for.
+    pub add :: fn(self: *Self, n: usize) {
+        self.mu.lock();
+        self.pending += n;
+        self.mu.unlock();
+    }
+
+    // One task is done; the last one wakes every waiter.
+    pub done :: fn(self: *Self) {
+        self.mu.lock();
+        self.pending -= 1;
+        if self.pending == 0 { self.cv.broadcast(); }
+        self.mu.unlock();
+    }
+
+    // Sleep until every task added has called `done`.
+    pub wait :: fn(self: *Self) {
+        self.mu.lock();
+        while self.pending > 0 { self.cv.wait(&self.mu); }
+        self.mu.unlock();
+    }
+}
+
+// Once: run something exactly once, however many threads ask ─────────────
+//
+//     INIT: Once = .{};
+//     INIT.call(load_tables);       // the first caller runs it, the rest wait for it to end
+pub Once :: struct {
+    mu:   Mutex
+    done: u32       // 1 once the function has returned
+
+    // Run `f` if no call has run it yet. Every caller returns after `f` has returned.
+    pub call :: fn(self: *Self, f: fn()) {
+        if atomics::load_acquire(u32, &self.done) == 1 { return; }
+        self.mu.lock();
+        if self.done == 0 {
+            f();
+            atomics::store_release(u32, &self.done, 1);
+        }
+        self.mu.unlock();
+    }
+
+    pub is_done :: fn(self: *Self) -> bool { return atomics::load_acquire(u32, &self.done) == 1; }
+}
+
+// RwLock: many readers or one writer ──────────────────────────────────────
+//
+//     table_lock: RwLock = .{};
+//     table_lock.lock_shared();  ... read ...  table_lock.unlock_shared();
+//     table_lock.lock();         ... write ... table_lock.unlock();
+//
+// A writer that waits goes first: readers that come after it wait too, so a stream of readers
+// cannot keep it out. Not recursive: a thread that holds it must not take it again.
+pub RwLock :: struct {
+    mu:              Mutex
+    readers_go:      CondVar
+    writer_go:       CondVar
+    readers:         usize    // threads that hold it shared
+    writer:          bool     // a thread holds it exclusively
+    writers_waiting: usize
+
+    pub lock_shared :: fn(self: *Self) {
+        self.mu.lock();
+        while self.writer || self.writers_waiting > 0 { self.readers_go.wait(&self.mu); }
+        self.readers += 1;
+        self.mu.unlock();
+    }
+
+    pub unlock_shared :: fn(self: *Self) {
+        self.mu.lock();
+        self.readers -= 1;
+        if self.readers == 0 && self.writers_waiting > 0 { self.writer_go.signal(); }
+        self.mu.unlock();
+    }
+
+    pub lock :: fn(self: *Self) {
+        self.mu.lock();
+        self.writers_waiting += 1;
+        while self.writer || self.readers > 0 { self.writer_go.wait(&self.mu); }
+        self.writers_waiting -= 1;
+        self.writer = true;
+        self.mu.unlock();
+    }
+
+    pub unlock :: fn(self: *Self) {
+        self.mu.lock();
+        self.writer = false;
+        if self.writers_waiting > 0 {
+            self.writer_go.signal();
+        } else {
+            self.readers_go.broadcast();
+        }
+        self.mu.unlock();
+    }
+}
+
+// Semaphore: at most n threads at once ─────────────────────────────────────
+//
+//     slots := sync::semaphore(4);
+//     slots.acquire();  ... at most 4 threads here ...  slots.release();
+pub Semaphore :: struct {
+    mu:      Mutex
+    cv:      CondVar
+    permits: usize
+
+    // Take a permit, sleeping until one is free.
+    pub acquire :: fn(self: *Self) {
+        self.mu.lock();
+        while self.permits == 0 { self.cv.wait(&self.mu); }
+        self.permits -= 1;
+        self.mu.unlock();
+    }
+
+    // Take a permit if one is free now; whether it did.
+    pub try_acquire :: fn(self: *Self) -> bool {
+        self.mu.lock();
+        ok := self.permits > 0;
+        if ok { self.permits -= 1; }
+        self.mu.unlock();
+        return ok;
+    }
+
+    // Give a permit back, waking one waiter.
+    pub release :: fn(self: *Self) {
+        self.mu.lock();
+        self.permits += 1;
+        self.cv.signal();
+        self.mu.unlock();
+    }
+}
+
+// A semaphore with `permits` permits. Declare it where it will live, as for a Mutex.
+pub semaphore :: fn(permits: usize) -> Semaphore {
+    s: Semaphore = .{ .{}, .{}, permits };
+    return s;
 }
