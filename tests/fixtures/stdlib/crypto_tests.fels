@@ -1,5 +1,6 @@
 // std.crypto, as `#test` functions: `fels test` runs them natively and on the comptime VM
-// (tests/compiler/std_tests.zig). The 1000-byte digest is Zig's std.crypto on the same input.
+// (tests/compiler/std_tests.zig). The expected values not from a standard are Zig's std.crypto
+// on the same input.
 #import std.heap as heap;
 #import std.io as io;
 #import std.hash as hash;
@@ -59,4 +60,68 @@ the_checksums_are_std_hash :: fn(t: *Test) {
     t.eq(crypto::crc32("123456789"), hash::crc32("123456789"));
     t.eq(crypto::fnv1a_64("key"), hash::fnv1a_64("key"));
     t.eq(crypto::fnv1a_32("abc"), 0x1a47e90bu32);
+}
+
+// SHA-1, SHA-512 and HMAC
+
+FOX :: "The quick brown fox jumps over the lazy dog";
+
+fill :: fn(out: []u8) {
+    for i in 0..out.len { out[i] = (i % 251) as u8; }
+}
+
+#test
+sha1 :: fn(t: *Test) {
+    a := heap::make();
+    t.eq(crypto::hex(&a, crypto::sha1("").bytes[:]), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+    t.eq(crypto::hex(&a, crypto::sha1("abc").bytes[:]), "a9993e364706816aba3e25717850c26c9cd0d89d");
+    t.eq(crypto::hex(&a, crypto::sha1(FOX).bytes[:]), "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12");
+    big: [1000]u8 = .{};
+    fill(big[:]);
+    t.eq(crypto::hex(&a, crypto::sha1(big[:]).bytes[:]), "c9c960a0b925474fab83942cc27d504fc24ac37b");
+    // in parts, through a reader
+    src := io::slice_reader(big[:]);
+    buf: [77]u8 = .{};
+    s := crypto::sha1_start();
+    n := hash::feed(&s, &src, buf[:]) catch err { yield 0u64; };
+    t.eq(crypto::hex(&a, s.final().bytes[:]), "c9c960a0b925474fab83942cc27d504fc24ac37b");
+    a.deinit();
+}
+
+#test
+sha512 :: fn(t: *Test) {
+    a := heap::make();
+    t.eq(crypto::hex(&a, crypto::sha512("").bytes[:]), "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e");
+    t.eq(crypto::hex(&a, crypto::sha512("abc").bytes[:]), "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f");
+    big: [1000]u8 = .{};
+    fill(big[:]);
+    want := "5096498d96f50f9a137c4db5b8b0cd38383ad55350fb5a98805fedc31fa1262f1f0cf4d6f12d7ecd8dedd933a4c9126344fe22e937a8ad35fdeae1e876ae698b";
+    t.eq(crypto::hex(&a, crypto::sha512(big[:]).bytes[:]), want);
+    i: usize = 0;
+    while i <= 1000 {
+        s := crypto::sha512_start();
+        s.update(big[0..i]);
+        s.update(big[i..1000]);
+        t.eq(crypto::hex(&a, s.final().bytes[:]), want);
+        i += 111;
+    }
+    a.deinit();
+}
+
+#test
+hmac :: fn(t: *Test) {
+    a := heap::make();
+    t.eq(crypto::to_hex(&a, crypto::hmac_sha256("key", FOX)), "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8");
+    long_key: [100]u8 = .{};
+    for i in 0..100 { long_key[i] = i as u8; }
+    t.eq(crypto::to_hex(&a, crypto::hmac_sha256(long_key[:], "msg")), "f85da02f25a44a117825adec49678dd31f98d263ba21680c07fd30c161cda4ec");
+    t.eq(crypto::hex(&a, crypto::hmac_sha512("key", FOX).bytes[:]), "b42af09057bac1e2d41708e48a902e09b5ff7f12ab428a4fe86653c73dd248fb82f948a549f7b791a5b41915ee4d1ec3935357e4e2317250d0372afa2ebeeb3a");
+    t.eq(crypto::hex(&a, crypto::hmac_sha512(long_key[:], "msg").bytes[:]), "d93bce97685885c32e32f7d8267005f7f67f42f413dba33c42fd44e7bd94d80cd6ed57609c8206af2185eac5be47e0ad02a96de42d999ddefa31fcb231502608");
+    m1 := crypto::hmac_sha256("key", FOX);
+    m2 := crypto::hmac_sha256("key", FOX);
+    m3 := crypto::hmac_sha256("kez", FOX);
+    t.expect(crypto::equal_secure(m1.bytes[:], m2.bytes[:]));
+    t.expect(!crypto::equal_secure(m1.bytes[:], m3.bytes[:]));
+    t.expect(!crypto::equal_secure("ab", "abc"));
+    a.deinit();
 }
