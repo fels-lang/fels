@@ -528,7 +528,28 @@ v := q.pop() ?? -1;                     // sleeps while it is empty; null once c
   they finish is up to the scheduler. A `Queue` over empty storage can hold nothing, so `push`
   fails and `pop` waits for `close()`.
 
-There is no reader/writer lock, semaphore, barrier, one-shot or unbounded channel yet. See
+**More, on Mutex and CondVar.** Each is all zero bits at the start (`.{}`), and is shared by
+address like a `Mutex`.
+
+```fels
+wg: WaitGroup = .{};
+wg.add(n);                  // before the n tasks start; each ends with wg.done()
+wg.wait();                  // sleeps until all n are done
+
+INIT: Once = .{};
+INIT.call(load_tables);     // the first caller runs it; every caller returns after it ended
+
+table_lock: RwLock = .{};
+table_lock.lock_shared();   // many readers at once ... table_lock.unlock_shared();
+table_lock.lock();          // or one writer ...       table_lock.unlock();
+
+slots := sync::semaphore(4);
+slots.acquire();            // at most 4 threads past here ... slots.release(); try_acquire()
+```
+
+An `RwLock` lets a waiting writer go first: readers that come after it wait too, so a stream of
+readers cannot keep it out. None of them is recursive. There is no barrier or unbounded
+channel yet. `tests/fixtures/stdlib/sync_tests.fels` runs the four on real threads. See
 `tests/fixtures/stdlib/sync_app.fels` for contention with exact totals, a two-thread hand-off
 that must alternate strictly, a broadcast, timed waits, and many producers against many
 consumers with every item delivered exactly once.
