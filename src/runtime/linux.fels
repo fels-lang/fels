@@ -260,6 +260,38 @@ os_rmdir :: fn(path: *const u8) -> i32 {
     return 0;
 }
 
+// Rename and metadata, for std.fs.
+sys_rename :: fn(from: *const u8, to: *const u8) -> i32 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(82), "{rdi}"(from), "{rsi}"(to) },
+        outputs: { "={rax}"(i32) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+
+// Rename `from` to `to`, replacing a file there. 0 = ok.
+os_rename :: fn(from: *const u8, to: *const u8) -> i32 {
+    if sys_rename(from, to) < 0 { return -1; }
+    return 0;
+}
+
+stat_u64 :: fn(st: *StatBuf, at: usize) -> u64 {
+    v: u64 = 0;
+    for k in 0..8 { v = v | ((st.data[at + k] as u64) << ((8 * k) as u64)); }
+    return v;
+}
+
+// The size, the last write time (nanoseconds since 1970) and the kind (1 = file, 2 = directory)
+// of `path`. 0 = ok, -1 = no such path.
+os_file_info :: fn(path: *const u8, size: *i64, mtime: *i64, kind: *i64) -> i32 {
+    st: StatBuf = .{};
+    if sys_newfstatat(-100, path, &st, 0) < 0 { return -1; }
+    *size = stat_u64(&st, 48) as i64;                                                    // st_size
+    *mtime = (stat_u64(&st, 88) as i64) * 1000000000i64 + (stat_u64(&st, 96) as i64);  // st_mtim
+    mode := (stat_u64(&st, 24) & 0xFFFFFFFFu64) as u32;
+    *kind = if (mode & 0xF000u32) == 0x4000u32 { 2i64 } else { 1i64 };
+    return 0;
+}
+
 // Directory iteration over getdents64. The runtime owns the per-iterator state
 // (a heap struct holding the dirfd + a read-ahead buffer); std.fs sees an opaque
 // i64 handle. linux_dirent64: d_ino@0, d_off@8, d_reclen(u16)@16, d_type(u8)@18,

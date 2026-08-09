@@ -282,6 +282,45 @@ os_dir_close :: fn(h: i64) {
     os_release(h as usize, WIN_DIR_STATE_SIZE);
 }
 
+// Rename and metadata, for std.fs.
+#extern("kernel32", "MoveFileExW")
+MoveFileExW :: fn(from: *const u16, to: *const u16, flags: u32) -> bool;
+#extern("kernel32", "GetFileAttributesExW")
+GetFileAttributesExW :: fn(name: *const u16, level: u32, data: *WIN32_FILE_ATTRIBUTE_DATA) -> bool;
+
+WIN32_FILE_ATTRIBUTE_DATA :: struct {
+    attrs:    u32,
+    ctime_lo: u32, ctime_hi: u32,
+    atime_lo: u32, atime_hi: u32,
+    wtime_lo: u32, wtime_hi: u32,
+    size_hi:  u32, size_lo:  u32,
+}
+
+// Rename `from` to `to`, replacing a file there (MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED,
+// so it also moves between volumes). 0 = ok.
+os_rename :: fn(from: *const u8, to: *const u8) -> i32 {
+    a: [1024]u16 = .{};
+    b: [1024]u16 = .{};
+    if !to_utf16(from, &a[0]) || !to_utf16(to, &b[0]) { return -1; }
+    if !MoveFileExW(&a[0], &b[0], 3u32) { return -1; }
+    return 0;
+}
+
+// The size, the last write time (nanoseconds since 1970) and the kind (1 = file, 2 = directory)
+// of `path`. 0 = ok, -1 = no such path.
+os_file_info :: fn(path: *const u8, size: *i64, mtime: *i64, kind: *i64) -> i32 {
+    w: [1024]u16 = .{};
+    if !to_utf16(path, &w[0]) { return -1; }
+    d: WIN32_FILE_ATTRIBUTE_DATA = .{};
+    if !GetFileAttributesExW(&w[0], 0u32, &d) { return -1; }   // GetFileExInfoStandard
+    *size = (((d.size_hi as u64) << 32u64) | (d.size_lo as u64)) as i64;
+    // FILETIME: 100 ns since 1601-01-01
+    ft := (((d.wtime_hi as u64) << 32u64) | (d.wtime_lo as u64)) as i64;
+    *mtime = (ft - 116444736000000000i64) * 100i64;
+    *kind = if (d.attrs & 0x10u32) != 0u32 { 2i64 } else { 1i64 };
+    return 0;
+}
+
 // OS process (backs std.process)
 // A child token is a heap ProcState holding the process + thread handles.
 
