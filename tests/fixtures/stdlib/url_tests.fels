@@ -1,0 +1,93 @@
+// std.url, as `#test` functions: `fels test` runs them natively and on the comptime VM
+// (tests/compiler/std_tests.zig).
+#import std.heap as heap;
+#import std.url as url;
+
+#test
+the_parts_of_a_url :: fn(t: *Test) {
+    u := url::parse("https://user:pw@example.com:8080/a/b?q=1&r=x%20y#top") catch err { t.fatal("parse"); return; };
+    t.eq(u.scheme, "https");
+    t.eq(u.user, "user:pw");
+    t.eq(u.host, "example.com");
+    t.eq(u.port ?? 0, 8080u16);
+    t.eq(u.path, "/a/b");
+    t.eq(u.query, "q=1&r=x%20y");
+    t.eq(u.fragment, "top");
+    t.expect(u.has_authority);
+
+    v := url::parse("http://[::1]:80/") catch err { t.fatal("ipv6"); return; };
+    t.eq(v.host, "[::1]");
+    t.eq(v.port ?? 0, 80u16);
+    w := url::parse("http://[::1]/x") catch err { t.fatal("ipv6 no port"); return; };
+    t.eq(w.host, "[::1]");
+    t.expect(w.port == null);
+    t.eq(w.port_or(80), 80u16);
+
+    m := url::parse("mailto:ada@example.com") catch err { t.fatal("mailto"); return; };
+    t.eq(m.scheme, "mailto");
+    t.expect(!m.has_authority);
+    t.eq(m.path, "ada@example.com");
+    f := url::parse("file:///etc/hosts") catch err { t.fatal("file"); return; };
+    t.eq(f.host, "");
+    t.eq(f.path, "/etc/hosts");
+}
+
+expect_parse_error :: fn(t: *Test, text: []const u8, want: url::UrlError) {
+    u := url::parse(text) catch err {
+        t.expect(err == want);
+        return;
+    };
+    t.fatal(text);
+}
+
+#test
+bad_urls :: fn(t: *Test) {
+    expect_parse_error(t, "no scheme here", .no_scheme);
+    expect_parse_error(t, ":nothing", .no_scheme);
+    expect_parse_error(t, "1http://x", .no_scheme);
+    expect_parse_error(t, "http://host:99999/", .bad_port);
+    expect_parse_error(t, "http://host:8a/", .bad_port);
+}
+
+#test
+percent_encoding :: fn(t: *Test) {
+    a := heap::make();
+    t.eq(url::encode_in(&a, "a b&c=d/é", .component), "a%20b%26c%3Dd%2F%C3%A9");
+    t.eq(url::encode_in(&a, "/a b/c", .path), "/a%20b/c");
+    t.eq(url::encode_in(&a, "x y+z", .form), "x+y%2Bz");
+    t.eq(url::encode_in(&a, "safe-._~AZaz09", .component), "safe-._~AZaz09");
+    d := url::decode_in(&a, "a%20b%2fc%C3%A9") catch err { yield "?"; };
+    t.eq(d, "a b/cé");
+    plain := "no-escapes";
+    same := url::decode_in(&a, plain) catch err { yield "?"; };
+    t.eq(same, plain);
+    form := url::decode_form_in(&a, "x+y%2Bz") catch err { yield "?"; };
+    t.eq(form, "x y+z");
+    bad := url::decode_in(&a, "100%") catch err {
+        t.expect(err == .bad_escape);
+        yield "";
+    };
+    bad2 := url::decode_in(&a, "%zz") catch err {
+        t.expect(err == .bad_escape);
+        yield "";
+    };
+    a.deinit();
+}
+
+#test
+query_strings :: fn(t: *Test) {
+    n: usize = 0;
+    keys: usize = 0;
+    for p in url::query_pairs("a=1&&b=two&flag&c=x%20y") {
+        n += 1;
+        keys += p.key.len;
+        if n == 3 {
+            t.eq(p.key, "flag");
+            t.eq(p.value, "");
+        }
+    }
+    t.eq(n, 4usize);
+    t.eq(keys, 7usize);
+    t.eq(url::query_get("a=1&b=two", "b") ?? "", "two");
+    t.expect(url::query_get("a=1&b=two", "c") == null);
+}
