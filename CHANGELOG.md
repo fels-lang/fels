@@ -37,6 +37,9 @@ the major version is `0`, any minor bump may break source compatibility.
 - **Containers**: `std.pqueue` (a priority queue: smallest first, largest first, or by a
   function), `std.deque` (push and pop at both ends) and `std.bitset`. The maps gain
   `entries()` for a `for` loop, and sets of keys, `AutoSet(K)` and `StrSet`.
+- **Writing JSON**: `json::writer(w)` and `json::pretty(w, indent)` write JSON to any
+  `io::Writer` as the calls come (`begin_object`, `key`, `string`, `int`, `float`, `value` for a
+  parsed tree, …), and `json::stringify(&a, value)` gives a tree as text.
 - **Numbers**: `std.math` gains integer helpers (`gcd`, `lcm`, `ipow`, `isqrt`, `div_ceil`,
   `align_up`, `align_down`, `log2_floor`, `next_power_of_two`, `mod_floor`), and `std.rand`
   gains `below`, `range_u64`, `next_f64`, `fill_bytes`, `shuffle` and `choose`.
