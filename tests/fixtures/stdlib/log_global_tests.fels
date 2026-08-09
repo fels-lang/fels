@@ -1,0 +1,12 @@
+// std.log's own level, as a `#test`: native only (tests/compiler/std_tests.zig), as compile-time
+// code may not change a global.
+#import std.log as log;
+
+#test
+the_global_level :: fn(t: *Test) {
+    t.expect(log::level() == .info);
+    log::set_level(.error);
+    t.expect(log::level() == .error);
+    log::info("not shown");
+    log::set_level(.info);
+}

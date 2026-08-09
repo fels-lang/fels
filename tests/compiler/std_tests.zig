@@ -25,6 +25,7 @@ const files = [_][]const u8{
     "tests/fixtures/stdlib/numbers_tests.fels",
     "tests/fixtures/stdlib/json_write_tests.fels",
     "tests/fixtures/stdlib/url_tests.fels",
+    "tests/fixtures/stdlib/log_tests.fels",
 };
 
 /// Files whose tests reach the OS (folders, the environment, the command line), which
@@ -35,6 +36,8 @@ const native_files = [_][]const u8{
     // AutoHashMap hashes a key's bytes through a pointer, which the comptime VM cannot
     "tests/fixtures/stdlib/map_tests.fels",
     "tests/fixtures/stdlib/os_tests.fels",
+    // compile-time code may not change std.log's global level
+    "tests/fixtures/stdlib/log_global_tests.fels",
 };
 
 fn runAll(comptime_only: bool) !void {

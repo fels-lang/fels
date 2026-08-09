@@ -1,0 +1,41 @@
+// std.log, as `#test` functions: `fels test` runs them natively and on the comptime VM
+// (tests/compiler/std_tests.zig).
+#import std.heap as heap;
+#import std.strings as strings;
+#import std.log as log;
+
+reads :: fn(n: *i32) -> i32 {
+    *n += 1;
+    return *n;
+}
+
+#test
+a_logger_into_a_buffer :: fn(t: *Test) {
+    a := heap::make();
+    sb := strings::builder(&a);
+    l := log::to(&sb, "net", .info);
+    port := 8080;
+    l.info("listening on {port}");
+    l.debug("not written");
+    l.warn("slow");
+    t.eq(strings::str(&sb), "[info] net: listening on 8080\n[warn] net: slow\n");
+    t.expect(!l.enabled(.debug));
+    l.set_level(.debug);
+    l.debug("now {port}");
+    t.eq(strings::str(&sb), "[info] net: listening on 8080\n[warn] net: slow\n[debug] net: now 8080\n");
+    a.deinit();
+}
+
+#test
+no_scope_and_dropped_values :: fn(t: *Test) {
+    a := heap::make();
+    sb := strings::builder(&a);
+    l := log::to(&sb, "", .warn);
+    calls: i32 = 0;
+    cp := &calls;
+    l.info("{reads(cp)}");                // below the level: the value is not read
+    l.error("{reads(cp)} failed");
+    t.eq(calls, 1);
+    t.eq(strings::str(&sb), "[error] 1 failed\n");
+    a.deinit();
+}
