@@ -37,6 +37,9 @@ the major version is `0`, any minor bump may break source compatibility.
 - **Containers**: `std.pqueue` (a priority queue: smallest first, largest first, or by a
   function), `std.deque` (push and pop at both ends) and `std.bitset`. The maps gain
   `entries()` for a `for` loop, and sets of keys, `AutoSet(K)` and `StrSet`.
+- **Numbers**: `std.math` gains integer helpers (`gcd`, `lcm`, `ipow`, `isqrt`, `div_ceil`,
+  `align_up`, `align_down`, `log2_floor`, `next_power_of_two`, `mod_floor`), and `std.rand`
+  gains `below`, `range_u64`, `next_f64`, `fill_bytes`, `shuffle` and `choose`.
 - **`std.base64`** (RFC 4648: the standard and URL alphabets, with and without padding, into a
   buffer or an arena) and **`std.hex`**. `crypto::hex` is `hex::encode_in`.
 - **`\u{…}` escapes** in string and character literals: `"caf\u{e9}"` holds the UTF-8 of
@@ -44,6 +47,9 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Changed
 
+- `rand::range_i32` draws each value as likely (it favored small ones through a modulo), and
+  takes any range: `range_i32(-2000000000, 2000000000)` overflowed. A seed gives other numbers
+  than before.
 - An escape that stands for nothing (`"\q"`, `"\xZZ"`, `"\u{d800}"`) is an error, at the
   escape, listing the escapes there are. It was kept as written, backslash and all.
 
