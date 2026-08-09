@@ -149,3 +149,101 @@ pub rect_overlaps :: fn(a: Rect, b: Rect) -> bool {
 }
 
 pub rect_center :: fn(r: Rect) -> Vec2 { c: Vec2 = .{ r.x + r.w * 0.5f32, r.y + r.h * 0.5f32 }; return c; }
+
+// Integers
+//
+// `core::min`, `core::max`, `core::abs` and `core::clamp` cover any number; these are for u64
+// (and `mod_floor` for i64).
+
+// The greatest common divisor (0 for gcd(0, 0)).
+pub gcd :: fn(a: u64, b: u64) -> u64 {
+    x := a;
+    y := b;
+    while y != 0 {
+        r := x % y;
+        x = y;
+        y = r;
+    }
+    return x;
+}
+
+// The least common multiple (0 when either is 0); null when it does not fit in a u64.
+pub lcm :: fn(a: u64, b: u64) -> ?u64 {
+    if a == 0 || b == 0 { return 0; }
+    q := a / gcd(a, b);
+    if q > 0xFFFF_FFFF_FFFF_FFFFu64 / b { return null; }
+    return q * b;
+}
+
+// `base` to the power `exp`; null when it does not fit in a u64.
+pub ipow :: fn(base: u64, exp: u32) -> ?u64 {
+    result: u64 = 1;
+    b := base;
+    e := exp;
+    while e > 0 {
+        if (e & 1) != 0 {
+            if b != 0 && result > 0xFFFF_FFFF_FFFF_FFFFu64 / b { return null; }
+            result = result * b;
+        }
+        e = e >> 1;
+        if e > 0 {
+            if b > 0xFFFF_FFFFu64 { return null; }
+            b = b * b;
+        }
+    }
+    return result;
+}
+
+// The whole part of the square root of `n`.
+pub isqrt :: fn(n: u64) -> u64 {
+    if n < 2 { return n; }
+    // Newton's method from above: x falls to floor(sqrt(n)) and stops there
+    x := n / 2 + 1;
+    y := (x + n / x) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    return x;
+}
+
+// `a / b`, rounded up (`b` not 0).
+pub div_ceil :: fn(a: u64, b: u64) -> u64 {
+    q := a / b;
+    if q * b != a { return q + 1; }
+    return q;
+}
+
+// `x` rounded up to a multiple of `align`, a power of two.
+pub align_up :: fn(x: u64, align: u64) -> u64 { return (x + align - 1) & ~(align - 1); }
+
+// `x` rounded down to a multiple of `align`, a power of two.
+pub align_down :: fn(x: u64, align: u64) -> u64 { return x & ~(align - 1); }
+
+// The position of the highest set bit: floor(log2(x)), for `x` > 0 (0 for 0).
+pub log2_floor :: fn(x: u64) -> u32 {
+    n: u32 = 0;
+    v := x;
+    while v > 1 {
+        v = v >> 1;
+        n += 1;
+    }
+    return n;
+}
+
+// The smallest power of two at least `x` (1 for 0); null past 2^63.
+pub next_power_of_two :: fn(x: u64) -> ?u64 {
+    if x <= 1 { return 1; }
+    if x > 0x8000_0000_0000_0000u64 { return null; }
+    p: u64 = 1;
+    while p < x { p = p << 1; }
+    return p;
+}
+
+// `a` modulo `b` with the sign of `b` (`b` not 0): mod_floor(-7, 3) is 2, where `%` gives -1. The
+// remainder of a division that rounds toward minus infinity, as for a position on a ring.
+pub mod_floor :: fn(a: i64, b: i64) -> i64 {
+    r := a % b;
+    if r != 0 && ((r < 0) != (b < 0)) { return r + b; }
+    return r;
+}
