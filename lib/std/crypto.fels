@@ -193,3 +193,308 @@ pub hex :: fn(a: *Arena, bytes: []const u8) -> []const u8 {
 pub to_hex :: fn(a: *Arena, d: Digest) -> []const u8 {
     return hex(a, d.bytes[0..32usize]);
 }
+
+// SHA-512 (FIPS 180-4)
+
+/// A 512-bit digest: `hex(&a, d.bytes[:])` for its text.
+pub Sha512Digest :: struct { bytes: [64]u8 }
+
+SHA512_H: [8]u64 = .{
+    0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
+    0x510e527fade682d1, 0x9b05688c2b3e6c1f, 0x1f83d9abfb41bd6b, 0x5be0cd19137e2179,
+};
+SHA512_K: [80]u64 = .{
+    0x428a2f98d728ae22, 0x7137449123ef65cd, 0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,
+    0x3956c25bf348b538, 0x59f111f1b605d019, 0x923f82a4af194f9b, 0xab1c5ed5da6d8118,
+    0xd807aa98a3030242, 0x12835b0145706fbe, 0x243185be4ee4b28c, 0x550c7dc3d5ffb4e2,
+    0x72be5d74f27b896f, 0x80deb1fe3b1696b1, 0x9bdc06a725c71235, 0xc19bf174cf692694,
+    0xe49b69c19ef14ad2, 0xefbe4786384f25e3, 0x0fc19dc68b8cd5b5, 0x240ca1cc77ac9c65,
+    0x2de92c6f592b0275, 0x4a7484aa6ea6e483, 0x5cb0a9dcbd41fbd4, 0x76f988da831153b5,
+    0x983e5152ee66dfab, 0xa831c66d2db43210, 0xb00327c898fb213f, 0xbf597fc7beef0ee4,
+    0xc6e00bf33da88fc2, 0xd5a79147930aa725, 0x06ca6351e003826f, 0x142929670a0e6e70,
+    0x27b70a8546d22ffc, 0x2e1b21385c26c926, 0x4d2c6dfc5ac42aed, 0x53380d139d95b3df,
+    0x650a73548baf63de, 0x766a0abb3c77b2a8, 0x81c2c92e47edaee6, 0x92722c851482353b,
+    0xa2bfe8a14cf10364, 0xa81a664bbc423001, 0xc24b8b70d0f89791, 0xc76c51a30654be30,
+    0xd192e819d6ef5218, 0xd69906245565a910, 0xf40e35855771202a, 0x106aa07032bbd1b8,
+    0x19a4c116b8d2d0c8, 0x1e376c085141ab53, 0x2748774cdf8eeb99, 0x34b0bcb5e19b48a8,
+    0x391c0cb3c5c95a63, 0x4ed8aa4ae3418acb, 0x5b9cca4f7763e373, 0x682e6ff3d6b2b8a3,
+    0x748f82ee5defb2fc, 0x78a5636f43172f60, 0x84c87814a1f0ab72, 0x8cc702081a6439ec,
+    0x90befffa23631e28, 0xa4506cebde82bde9, 0xbef9a3f7b2c67915, 0xc67178f2e372532b,
+    0xca273eceea26619c, 0xd186b8c721c0c207, 0xeada7dd6cde0eb1e, 0xf57d4f7fee6ed178,
+    0x06f067aa72176fba, 0x0a637dc5a2c898a6, 0x113f9804bef90dae, 0x1b710b35131c471b,
+    0x28db77f523047d84, 0x32caab7b40c72493, 0x3c9ebe0a15c9bebc, 0x431d67c49c100d4c,
+    0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817,
+};
+
+rotr64 :: fn(x: u64, n: u64) -> u64 { return (x >> n) | (x << (64 - n)); }
+
+// Mix the 128-byte block at `blk[at..at + 128]` into the running state `h` (8 words).
+sha512_block :: fn(blk: []const u8, at: usize, h: []u64) {
+    k := SHA512_K[0..80];
+    w: [80]u64 = .{};
+    for t in 0..16 {
+        v: u64 = 0;
+        for j in 0..8 { v = (v << 8) | (blk[at + t * 8 + j] as u64); }
+        w[t] = v;
+    }
+    for t in 16..80 {
+        x15 := w[t - 15];
+        x2 := w[t - 2];
+        s0 := rotr64(x15, 1) ^ rotr64(x15, 8) ^ (x15 >> 7);
+        s1 := rotr64(x2, 19) ^ rotr64(x2, 61) ^ (x2 >> 6);
+        w[t] = w[t - 16] +% s0 +% w[t - 7] +% s1;
+    }
+    a := h[0]; b := h[1]; c := h[2]; d := h[3];
+    e := h[4]; f := h[5]; g := h[6]; hh := h[7];
+    for t in 0..80 {
+        s1 := rotr64(e, 14) ^ rotr64(e, 18) ^ rotr64(e, 41);
+        ch := (e & f) ^ ((~e) & g);
+        t1 := hh +% s1 +% ch +% k[t] +% w[t];
+        s0 := rotr64(a, 28) ^ rotr64(a, 34) ^ rotr64(a, 39);
+        maj := (a & b) ^ (a & c) ^ (b & c);
+        t2 := s0 +% maj;
+        hh = g; g = f; f = e; e = d +% t1; d = c; c = b; b = a; a = t1 +% t2;
+    }
+    h[0] = h[0] +% a; h[1] = h[1] +% b; h[2] = h[2] +% c; h[3] = h[3] +% d;
+    h[4] = h[4] +% e; h[5] = h[5] +% f; h[6] = h[6] +% g; h[7] = h[7] +% hh;
+}
+
+/// SHA-512 in parts (`sha512_start`), and a `hash::Hasher`.
+pub Sha512 :: struct {
+    h: [8]u64,
+    block: [128]u8,
+    buffered: usize,
+    total: u64,     // bytes; the length is written as 128 bits, of which this gives the low 67
+
+    pub update :: fn(self: *Self, data: []const u8) { sha512_add(self, data); }
+
+    /// The digest of all the bytes given so far; `self` is left as it was.
+    pub final :: fn(self: *Self) -> Sha512Digest {
+        h: [8]u64 = self.h;
+        rem := self.buffered;
+        tail: [256]u8 = .{};
+        for i in 0..rem { tail[i] = self.block[i]; }
+        tail[rem] = 0x80;
+        nblk: usize = 1;
+        if rem >= 112 { nblk = 2; }
+        end := nblk * 128;
+        bits := self.total *% 8;
+        for j in 0..8 { tail[end - 1 - j] = ((bits >> ((j * 8) as u64)) & 0xff) as u8; }
+        tail[end - 9] = (self.total >> 61) as u8;
+        sha512_block(tail[0..256], 0, h[0..8]);
+        if nblk == 2 { sha512_block(tail[0..256], 128, h[0..8]); }
+        d: Sha512Digest = .{ .{} };
+        for o in 0..8 {
+            for j in 0..8 { d.bytes[o * 8 + j] = ((h[o] >> ((56 - 8 * j) as u64)) & 0xff) as u8; }
+        }
+        return d;
+    }
+}
+
+Sha512 as Hasher {
+    update :: fn(self: *Self, data: []const u8) { sha512_add(self, data); }
+}
+
+sha512_add :: fn(self: *Sha512, data: []const u8) {
+    self.total = self.total +% (data.len as u64);
+    i: usize = 0;
+    if self.buffered > 0 {
+        while self.buffered < 128 && i < data.len {
+            self.block[self.buffered] = data[i];
+            self.buffered += 1;
+            i += 1;
+        }
+        if self.buffered < 128 { return; }
+        sha512_block(self.block[0..128], 0, self.h[0..8]);
+        self.buffered = 0;
+    }
+    while i + 128 <= data.len {
+        sha512_block(data, i, self.h[0..8]);
+        i += 128;
+    }
+    while i < data.len {
+        self.block[self.buffered] = data[i];
+        self.buffered += 1;
+        i += 1;
+    }
+}
+
+pub sha512_start :: fn() -> Sha512 {
+    s: Sha512 = .{ SHA512_H, .{}, 0, 0 };
+    return s;
+}
+
+/// SHA-512 of `data`.
+pub sha512 :: fn(data: []const u8) -> Sha512Digest {
+    s := sha512_start();
+    sha512_add(&s, data);
+    return s.final();
+}
+
+// SHA-1 (FIPS 180-4). Broken for collisions: for what needs it (git object names, the
+// WebSocket handshake, old protocols), not for anything an attacker may choose.
+
+/// A 160-bit digest: `hex(&a, d.bytes[:])` for its text.
+pub Sha1Digest :: struct { bytes: [20]u8 }
+
+rotl32 :: fn(x: u32, n: u32) -> u32 { return (x << n) | (x >> (32 - n)); }
+
+// Mix the 64-byte block at `blk[at..at + 64]` into the running state `h` (5 words).
+sha1_block :: fn(blk: []const u8, at: usize, h: []u32) {
+    w: [80]u32 = .{};
+    for t in 0..16 {
+        o := at + t * 4;
+        w[t] = ((blk[o] as u32) << 24) | ((blk[o + 1] as u32) << 16) | ((blk[o + 2] as u32) << 8) | (blk[o + 3] as u32);
+    }
+    for t in 16..80 { w[t] = rotl32(w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16], 1); }
+    a := h[0]; b := h[1]; c := h[2]; d := h[3]; e := h[4];
+    for t in 0..80 {
+        f: u32 = 0;
+        k: u32 = 0;
+        if t < 20 {
+            f = (b & c) | ((~b) & d);
+            k = 0x5A827999;
+        } else if t < 40 {
+            f = b ^ c ^ d;
+            k = 0x6ED9EBA1;
+        } else if t < 60 {
+            f = (b & c) | (b & d) | (c & d);
+            k = 0x8F1BBCDC;
+        } else {
+            f = b ^ c ^ d;
+            k = 0xCA62C1D6;
+        }
+        tmp := rotl32(a, 5) +% f +% e +% k +% w[t];
+        e = d; d = c; c = rotl32(b, 30); b = a; a = tmp;
+    }
+    h[0] = h[0] +% a; h[1] = h[1] +% b; h[2] = h[2] +% c; h[3] = h[3] +% d; h[4] = h[4] +% e;
+}
+
+/// SHA-1 in parts (`sha1_start`), and a `hash::Hasher`.
+pub Sha1 :: struct {
+    h: [5]u32,
+    block: [64]u8,
+    buffered: usize,
+    total: u64,
+
+    pub update :: fn(self: *Self, data: []const u8) { sha1_add(self, data); }
+
+    /// The digest of all the bytes given so far; `self` is left as it was.
+    pub final :: fn(self: *Self) -> Sha1Digest {
+        h: [5]u32 = self.h;
+        rem := self.buffered;
+        tail: [128]u8 = .{};
+        for i in 0..rem { tail[i] = self.block[i]; }
+        tail[rem] = 0x80;
+        nblk: usize = 1;
+        if rem >= 56 { nblk = 2; }
+        end := nblk * 64;
+        bits := self.total *% 8;
+        for j in 0..8 { tail[end - 1 - j] = ((bits >> ((j * 8) as u64)) & 0xff) as u8; }
+        sha1_block(tail[0..128], 0, h[0..5]);
+        if nblk == 2 { sha1_block(tail[0..128], 64, h[0..5]); }
+        d: Sha1Digest = .{ .{} };
+        for o in 0..5 {
+            v := h[o];
+            d.bytes[o * 4] = (v >> 24) as u8;
+            d.bytes[o * 4 + 1] = (v >> 16) as u8;
+            d.bytes[o * 4 + 2] = (v >> 8) as u8;
+            d.bytes[o * 4 + 3] = v as u8;
+        }
+        return d;
+    }
+}
+
+Sha1 as Hasher {
+    update :: fn(self: *Self, data: []const u8) { sha1_add(self, data); }
+}
+
+sha1_add :: fn(self: *Sha1, data: []const u8) {
+    self.total = self.total +% (data.len as u64);
+    i: usize = 0;
+    if self.buffered > 0 {
+        while self.buffered < 64 && i < data.len {
+            self.block[self.buffered] = data[i];
+            self.buffered += 1;
+            i += 1;
+        }
+        if self.buffered < 64 { return; }
+        sha1_block(self.block[0..64], 0, self.h[0..5]);
+        self.buffered = 0;
+    }
+    while i + 64 <= data.len {
+        sha1_block(data, i, self.h[0..5]);
+        i += 64;
+    }
+    while i < data.len {
+        self.block[self.buffered] = data[i];
+        self.buffered += 1;
+        i += 1;
+    }
+}
+
+pub sha1_start :: fn() -> Sha1 {
+    s: Sha1 = .{ .{ 0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0 }, .{}, 0, 0 };
+    return s;
+}
+
+/// SHA-1 of `data`.
+pub sha1 :: fn(data: []const u8) -> Sha1Digest {
+    s := sha1_start();
+    sha1_add(&s, data);
+    return s.final();
+}
+
+// HMAC (RFC 2104): a hash of a message keyed by a secret, to check it came from someone who
+// holds the key and was not changed.
+
+/// HMAC-SHA256 of `msg` with `key`.
+pub hmac_sha256 :: fn(key: []const u8, msg: []const u8) -> Digest {
+    pad: [64]u8 = .{};
+    if key.len > 64 {
+        kd := sha256(key);
+        for i in 0..32 { pad[i] = kd.bytes[i]; }
+    } else {
+        for i in 0..key.len { pad[i] = key[i]; }
+    }
+    for i in 0..64 { pad[i] = pad[i] ^ 0x36; }
+    inner := sha256_start();
+    sha256_add(&inner, pad[:]);
+    sha256_add(&inner, msg);
+    id := inner.final();
+    for i in 0..64 { pad[i] = pad[i] ^ (0x36 ^ 0x5C); }
+    outer := sha256_start();
+    sha256_add(&outer, pad[:]);
+    sha256_add(&outer, id.bytes[:]);
+    return outer.final();
+}
+
+/// HMAC-SHA512 of `msg` with `key`.
+pub hmac_sha512 :: fn(key: []const u8, msg: []const u8) -> Sha512Digest {
+    pad: [128]u8 = .{};
+    if key.len > 128 {
+        kd := sha512(key);
+        for i in 0..64 { pad[i] = kd.bytes[i]; }
+    } else {
+        for i in 0..key.len { pad[i] = key[i]; }
+    }
+    for i in 0..128 { pad[i] = pad[i] ^ 0x36; }
+    inner := sha512_start();
+    sha512_add(&inner, pad[:]);
+    sha512_add(&inner, msg);
+    id := inner.final();
+    for i in 0..128 { pad[i] = pad[i] ^ (0x36 ^ 0x5C); }
+    outer := sha512_start();
+    sha512_add(&outer, pad[:]);
+    sha512_add(&outer, id.bytes[:]);
+    return outer.final();
+}
+
+/// Whether two digests (or any two byte strings) are equal, taking the same time wherever they
+/// differ: compare a MAC this way, so its timing tells nothing about the right one.
+pub equal_secure :: fn(a: []const u8, b: []const u8) -> bool {
+    if a.len != b.len { return false; }
+    diff: u8 = 0;
+    for i in 0..a.len { diff = diff | (a[i] ^ b[i]); }
+    return diff == 0;
+}
