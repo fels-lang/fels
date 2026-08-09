@@ -1132,6 +1132,34 @@ d := hex::decode_in(&a, "DEADbeef")?;            // either case reads
   null. Errors: `.invalid_character`, `.odd_length`, `.buffer_too_small`. `crypto::hex` is
   `hex::encode_in`.
 
+### `std.url`
+
+URLs (RFC 3986): the parts of one, percent-encoding, and query strings.
+
+```fels
+#import std.url as url;
+
+u := url::parse("https://user@example.com:8080/a/b?q=1&r=x%20y#top")?;
+// u.scheme "https", u.user "user", u.host "example.com", u.port 8080 (?u16),
+// u.path "/a/b", u.query "q=1&r=x%20y", u.fragment "top"
+port := u.port_or(443);
+
+for p in url::query_pairs(u.query) { ... p.key ... p.value ... }   // still encoded
+q := url::query_get(u.query, "q");                                  // ?[]const u8
+v := url::decode_form_in(&a, p.value)?;                             // "x y"
+e := url::encode_in(&a, "a b&c", .component);                       // "a%20b%26c"
+```
+
+- `parse` splits and checks an absolute URL (`scheme:…`); it does not decode. Each part is a
+  slice of the text, a missing one empty (`port` null). An IPv6 host keeps its brackets
+  (`[::1]`). Errors: `.no_scheme`, `.bad_port` (not a number up to 65535), and `.bad_escape`
+  from decoding.
+- `encode`/`encode_in` write `%XX` for every byte but the ones `Keep` names: `.component` keeps
+  only letters, digits and `- . _ ~` (a query value, a path segment), `.path` keeps `/` too,
+  and `.form` writes a space as `+` (a form's query).
+- `decode_in` gives the bytes a part stands for (the part itself when it has no `%`), and
+  `decode_form_in` reads `+` as a space too.
+
 ### `std.hash`
 
 Non-cryptographic hashes of bytes: FNV-1a (32 and 64 bits), CRC-32 and XXH64. Each comes as one
@@ -1183,6 +1211,20 @@ d2 := s.final();
 `sha256`, `sha256_into` and `Sha256` match the standard test vectors, natively and in `#run`.
 It's a software SHA-256. It is fine for integrity checks, checksums and content addressing, but
 it is not audited for adversarial use. `crc32`, `fnv1a_64` and `fnv1a_32` are `std.hash`'s.
+
+The other hashes work the same way: `sha512(data)` (a `Sha512Digest`, 64 bytes) and
+`sha512_start()`, and `sha1(data)` (a `Sha1Digest`, 20 bytes) and `sha1_start()`, each in parts
+a `hash::Hasher`. SHA-1 is broken for collisions; it is there for what needs it (git object
+names, the WebSocket handshake), not for anything an attacker may choose.
+
+```fels
+mac := crypto::hmac_sha256(key, msg);               // RFC 2104; hmac_sha512 too
+ok := crypto::equal_secure(mac.bytes[:], given);     // as long wherever they differ
+text := crypto::hex(&a, crypto::sha512(data).bytes[:]);
+```
+
+`hmac_sha256` and `hmac_sha512` key a hash with a secret, a key longer than a block hashed
+first. Compare a MAC with `equal_secure`, whose time does not depend on where the two differ.
 
 ### `std.serde`
 
