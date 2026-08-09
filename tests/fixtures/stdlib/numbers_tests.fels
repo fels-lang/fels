@@ -1,0 +1,91 @@
+// std.math's integer helpers and std.rand, as `#test` functions: `fels test` runs them natively
+// and on the comptime VM (tests/compiler/std_tests.zig).
+#import std.math as math;
+#import std.rand as rand;
+
+#test
+integers :: fn(t: *Test) {
+    t.eq(math::gcd(12, 18), 6u64);
+    t.eq(math::gcd(0, 7), 7u64);
+    t.eq(math::gcd(0, 0), 0u64);
+    t.eq(math::lcm(4, 6) ?? 0, 12u64);
+    t.expect(math::lcm(0xFFFF_FFFF_FFFF_FFFFu64, 2) == null);
+    t.eq(math::ipow(3, 4) ?? 0, 81u64);
+    t.eq(math::ipow(2, 63) ?? 0, 0x8000_0000_0000_0000u64);
+    t.expect(math::ipow(2, 64) == null);
+    t.expect(math::ipow(10, 20) == null);
+    t.eq(math::ipow(0, 0) ?? 9, 1u64);
+    t.eq(math::isqrt(0), 0u64);
+    t.eq(math::isqrt(15), 3u64);
+    t.eq(math::isqrt(16), 4u64);
+    t.eq(math::isqrt(0xFFFF_FFFF_FFFF_FFFFu64), 0xFFFF_FFFFu64);
+    t.eq(math::div_ceil(7, 2), 4u64);
+    t.eq(math::div_ceil(8, 2), 4u64);
+    t.eq(math::align_up(13, 8), 16u64);
+    t.eq(math::align_down(13, 8), 8u64);
+    t.eq(math::log2_floor(1), 0u32);
+    t.eq(math::log2_floor(1024), 10u32);
+    t.eq(math::log2_floor(1023), 9u32);
+    t.eq(math::next_power_of_two(17) ?? 0, 32u64);
+    t.eq(math::next_power_of_two(32) ?? 0, 32u64);
+    t.expect(math::next_power_of_two(0x8000_0000_0000_0001u64) == null);
+    t.eq(math::mod_floor(-7, 3), 2i64);
+    t.eq(math::mod_floor(7, -3), -2i64);
+    t.eq(math::mod_floor(7, 3), 1i64);
+    t.eq(math::mod_floor(-6, 3), 0i64);
+}
+
+#test
+random_ranges :: fn(t: *Test) {
+    r := rand::seed(42);
+    for k in 0..1000 {
+        x := r.below(7);
+        t.expect(x < 7);
+        y := r.range_i32(-5, 5);
+        t.expect(y >= -5 && y < 5);
+        f := r.next_f64();
+        t.expect(f >= 0.0 && f < 1.0);
+    }
+    // the whole i32 range: hi - lo does not fit in an i32
+    w := r.range_i32(-2000000000, 2000000000);
+    t.expect(w >= -2000000000 && w < 2000000000);
+    t.eq(r.below(0), 0u64);
+    t.eq(r.range_u64(5, 5), 5u64);
+    // every value of a small range comes up
+    seen: [6]bool = .{};
+    for k in 0..200 { seen[r.below(6) as usize] = true; }
+    for s in seen { t.expect(s); }
+}
+
+#test
+shuffle_and_choose :: fn(t: *Test) {
+    r := rand::seed(7);
+    xs: [20]i32 = .{};
+    for i in 0..20 { xs[i] = i as i32; }
+    rand::shuffle(i32, &r, xs[:]);
+    // the same numbers, in another order
+    sum: i32 = 0;
+    moved: usize = 0;
+    for i in 0..20 {
+        sum += xs[i];
+        if xs[i] != i as i32 { moved += 1; }
+    }
+    t.eq(sum, 190);
+    t.expect(moved > 10);
+    t.expect(rand::choose(i32, &r, xs[0..0]) == null);
+    c := rand::choose(i32, &r, xs[:]) ?? -1;
+    t.expect(c >= 0 && c < 20);
+    // the same seed, the same order
+    a := rand::seed(99);
+    b := rand::seed(99);
+    ys: [10]i32 = .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    zs: [10]i32 = .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    rand::shuffle(i32, &a, ys[:]);
+    rand::shuffle(i32, &b, zs[:]);
+    t.eq(ys[:], zs[:]);
+    bytes: [13]u8 = .{};
+    r.fill_bytes(bytes[:]);
+    nonzero: usize = 0;
+    for x in bytes { if x != 0 { nonzero += 1; } }
+    t.expect(nonzero > 8);
+}
