@@ -2,8 +2,8 @@
 // std.fs — minimal synchronous file I/O for Fels. OS calls go through the platform
 // runtime (windows.fels → kernel32; linux.fels → openat/read/write/..), so this file is
 // OS-agnostic. File implements std.io.Reader and Writer; there's open/create/append,
-// exists/is_dir/delete, read_all, make_dir/make_dirs/remove_dir, and DirIter for directory
-// walking, all sharing FsError.
+// exists/is_dir/delete, read_all, write_file, copy_file, rename, info (size, last write),
+// make_dir/make_dirs/remove_dir, and DirIter for directory walking, all sharing FsError.
 //
 // Paths are plain []const u8, copied into a small stack buffer and NUL-terminated for
 // the OS; anything too long fails with path_too_long.
@@ -29,6 +29,8 @@
 //   os_dir_next(h, name) -> i64       entry-name length copied into `name`, or -1 at end
 //   os_dir_is_dir(h)/os_dir_is_reparse(h) -> bool, os_dir_size(h) -> u64   (last entry)
 //   os_dir_close(h)
+//   os_rename(from, to) -> i32        0 = ok; replaces a file at `to`
+//   os_file_info(path, size, mtime, kind) -> i32   0 = ok; mtime in ns since 1970, kind 1/2
 
 FS_INVALID :: -1i64;       // a closed/invalid handle (matches the seam's failure value)
 MAX_PATH_BYTES :: 1024usize;
@@ -43,6 +45,7 @@ pub FsError :: errors {
     seek_failed,     // a seek returned an error
     delete_failed,   // delete failed (a file, or a folder that is not empty)
     path_too_long,   // path (plus NUL terminator) doesn't fit in the internal buffer
+    rename_failed,   // rename could not move the file
 }
 
 // Path helpers
@@ -254,3 +257,84 @@ pub dir_close :: fn(self: *DirIter) {
     os_dir_close(self.handle);
     self.handle = FS_INVALID;
 }
+
+// Metadata, renaming, copying
+
+/// What `info` says about a path.
+pub Info :: struct {
+    size: u64,           // bytes (0 for a folder on Linux and others)
+    modified_ns: i64,    // the last write, in nanoseconds since 1970-01-01 UTC
+    is_dir: bool,
+}
+
+/// The size, last write time and kind of `path`; `not_found` when there is nothing there.
+pub info :: fn(path: []const u8) -> Info ! FsError {
+    path_buf: [1024]u8 = .{};
+    cpath := fs_to_cstr(path, path_buf[:])?;
+    size: i64 = 0;
+    mtime: i64 = 0;
+    kind: i64 = 0;
+    if os_file_info(cpath, &size, &mtime, &kind) != 0 { fail .not_found; }
+    i: Info = .{ size as u64, mtime, kind == 2 };
+    return i;
+}
+
+/// Rename (or move) `from` to `to`, replacing a file that is there. `rename_failed` when it
+/// cannot (`from` is missing, `to` is a folder, they are on volumes that cannot move between).
+pub rename :: fn(from: []const u8, to: []const u8) -> void ! FsError {
+    a_buf: [1024]u8 = .{};
+    b_buf: [1024]u8 = .{};
+    a := fs_to_cstr(from, a_buf[:])?;
+    b := fs_to_cstr(to, b_buf[:])?;
+    if os_rename(a, b) != 0 { fail .rename_failed; }
+}
+
+/// Write `data` to the file `path`, made or emptied first.
+pub write_file :: fn(path: []const u8, data: []const u8) -> void ! FsError {
+    f := create(path)?;
+    done: usize = 0;
+    while done < data.len {
+        n := os_file_write(f.handle, &data[done], data.len - done);
+        if n <= 0 {
+            close(&f);
+            fail .write_failed;
+        }
+        done += n as usize;
+    }
+    close(&f);
+}
+
+/// Copy the file `from` to `to` (made or emptied first); the bytes copied.
+pub copy_file :: fn(from: []const u8, to: []const u8) -> u64 ! FsError {
+    src := open(from)?;
+    dst := create(to) catch err {
+        close(&src);
+        fail .create_failed;
+    };
+    buf: [16384]u8 = .{};
+    total: u64 = 0;
+    while true {
+        n := os_file_read(src.handle, &buf[0], 16384);
+        if n < 0 {
+            close(&src);
+            close(&dst);
+            fail .read_failed;
+        }
+        if n == 0 { break; }
+        done: i64 = 0;
+        while done < n {
+            w := os_file_write(dst.handle, &buf[done as usize], (n - done) as usize);
+            if w <= 0 {
+                close(&src);
+                close(&dst);
+                fail .write_failed;
+            }
+            done += w;
+        }
+        total += n as u64;
+    }
+    close(&src);
+    close(&dst);
+    return total;
+}
+
