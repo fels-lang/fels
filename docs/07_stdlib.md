@@ -1083,6 +1083,26 @@ escape (also a surrogate pair) becomes UTF-8. A string without escapes is a slic
 text. A byte order mark at the start is skipped, and nesting deeper than 512 is refused. The
 comptime VM cannot build the values yet (they are structs in an arena).
 
+**Writing JSON.** `json::writer(w)` gives an `Out` that writes JSON text to any `*Writer` (a file,
+stdout, a `StringBuilder`) as the calls come; `json::pretty(w, 2)` indents it. Commas, colons,
+quotes and escapes are its job.
+
+```fels
+o := json::pretty(&out, 2);
+o.begin_object();
+o.key("name"); o.string("Ada");
+o.key("scores"); o.begin_array(); o.int(9); o.float(7.5); o.end_array();
+o.key("tree"); o.value(doc);                    // a parsed (or built) Value
+o.end_object();
+o.finish()?;                                    // fails when a write failed
+
+text := json::stringify(&a, doc);               // a Value as text, on one line
+```
+
+Values: `string`, `int`, `uint`, `float` (up to 15 significant digits; `null` for NaN or an
+infinity), `boolean`, `null_value`, and `value(v)` for a tree, its numbers as they were read.
+A write that fails makes the rest no-ops, and `finish` reports it.
+
 ### `std.base64` and `std.hex`
 
 Bytes as text, and back: base64 (RFC 4648) and hex digits.
