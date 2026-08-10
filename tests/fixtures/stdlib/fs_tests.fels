@@ -1,0 +1,97 @@
+// std.fs's info, rename, write_file, copy_file and walk, as `#test` functions: native only
+// (tests/compiler/std_tests.zig), as compile-time code may not write files. The files are made
+// in the temp folder.
+#import std.heap as heap;
+#import std.fs as fs;
+#import std.process as process;
+#import std.strings as strings;
+#import std.time as time;
+
+// `<temp>/fels_fs_more/<leaf>`, in `a`.
+under_temp :: fn(a: *heap::Arena, leaf: []const u8) -> []const u8 {
+    buf: [200]u8 = .{};
+    temp := process::get_env("TEMP", buf[:]) ?? (process::get_env("TMPDIR", buf[:]) ?? "/tmp");
+    sb := strings::builder(a);
+    sb.append(temp);
+    sb.append("/fels_fs_more");
+    if leaf.len > 0 {
+        sb.append("/");
+        sb.append(leaf);
+    }
+    return sb.str();
+}
+
+#test
+write_info_copy_rename :: fn(t: *Test) {
+    a := heap::make();
+    dir := under_temp(&a, "");
+    fs::make_dirs(dir) catch err { t.fatal("make_dirs"); return; };
+    one := under_temp(&a, "one.txt");
+    two := under_temp(&a, "two.txt");
+    three := under_temp(&a, "three.txt");
+    fs::write_file(one, "hello, file") catch err { t.fatal("write_file"); return; };
+    i := fs::info(one) catch err { t.fatal("info"); return; };
+    t.eq(i.size, 11u64);
+    t.expect(!i.is_dir);
+    // written in the last hour
+    now := time::unix_nanos();
+    t.expect(i.modified_ns <= now + 2000000000 && i.modified_ns > now - 3600000000000);
+    d := fs::info(dir) catch err { t.fatal("info of a folder"); return; };
+    t.expect(d.is_dir);
+    n := fs::copy_file(one, two) catch err { t.fatal("copy_file"); return; };
+    t.eq(n, 11u64);
+    t.eq(fs::read_all(two, &a) catch err { yield ""; }, "hello, file");
+    fs::rename(two, three) catch err { t.fatal("rename"); return; };
+    t.expect(!fs::exists(two));
+    t.eq(fs::read_all(three, &a) catch err { yield ""; }, "hello, file");
+    // over a file that is there
+    fs::write_file(two, "other") catch err { t.fatal("write_file 2"); return; };
+    fs::rename(two, three) catch err { t.fatal("rename over"); return; };
+    t.eq(fs::read_all(three, &a) catch err { yield ""; }, "other");
+    missing := fs::info(under_temp(&a, "nothing.here")) catch err {
+        t.expect(err == .not_found);
+        yield d;
+    };
+    bad := fs::rename(under_temp(&a, "nothing.here"), two) catch err { t.expect(err == .rename_failed); };
+    fs::delete(one) catch err {};
+    fs::delete(three) catch err {};
+    fs::remove_dir(dir) catch err { t.fatal("remove the folder"); };
+    a.deinit();
+}
+
+#test
+walking_a_tree :: fn(t: *Test) {
+    a := heap::make();
+    root := under_temp(&a, "tree");
+    fs::make_dirs(under_temp(&a, "tree/sub/deeper")) catch err { t.fatal("make_dirs"); return; };
+    fs::write_file(under_temp(&a, "tree/a.txt"), "a") catch err { t.fatal("a"); return; };
+    fs::write_file(under_temp(&a, "tree/sub/b.txt"), "bb") catch err { t.fatal("b"); return; };
+    fs::write_file(under_temp(&a, "tree/sub/deeper/c.txt"), "ccc") catch err { t.fatal("c"); return; };
+    w := fs::walk(&a, root) catch err { t.fatal("walk"); return; };
+    files: usize = 0;
+    folders: usize = 0;
+    bytes: u64 = 0;
+    deepest: usize = 0;
+    for e in w {
+        if e.is_dir { folders += 1; } else {
+            files += 1;
+            none: fs::Info = .{ 0, 0, false };
+            got := fs::info(e.path) catch err { yield none; };
+            bytes += got.size;
+        }
+        if e.depth > deepest { deepest = e.depth; }
+        if e.name == "c.txt" { t.expect(strings::str_ends_with(e.path, "tree/sub/deeper/c.txt")); }
+    }
+    t.eq(files, 3usize);
+    t.eq(folders, 2usize);
+    t.eq(bytes, 6u64);
+    t.eq(deepest, 3usize);
+    fs::delete(under_temp(&a, "tree/sub/deeper/c.txt")) catch err {};
+    fs::delete(under_temp(&a, "tree/sub/b.txt")) catch err {};
+    fs::delete(under_temp(&a, "tree/a.txt")) catch err {};
+    fs::remove_dir(under_temp(&a, "tree/sub/deeper")) catch err {};
+    fs::remove_dir(under_temp(&a, "tree/sub")) catch err {};
+    fs::remove_dir(root) catch err {};
+    fs::remove_dir(under_temp(&a, "")) catch err {};
+    a.deinit();
+}
