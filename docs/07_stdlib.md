@@ -302,7 +302,12 @@ Minimal synchronous file I/O, on Windows and Linux.
 - `open(path)`: Open an existing file for reading
 - `create(path)`: Create or truncate a file for writing
 - `append(path)`: Open a file for appending
-- `read_all(path, &a)`: Read a whole file into the arena
+- `read_all(path, &a)`: Read a whole file into the arena; `write_file(path, bytes)` writes one
+- `copy_file(from, to)`: Copy a file, and give the bytes copied
+- `rename(from, to)`: Rename or move a file, replacing one at `to` (`.rename_failed` when it
+  cannot)
+- `info(path)`: An `Info` with the `size`, the last write as `modified_ns` (nanoseconds since
+  1970, UTC) and `is_dir`; `.not_found` when nothing is there
 - `delete(path)`: Remove a file
 - `exists(path)`: Check whether a file or folder exists. `is_dir(path)` checks for a folder.
 - `make_dir(path)`: Make a folder (one that is already there is fine). `make_dirs(path)` makes
@@ -311,6 +316,11 @@ Minimal synchronous file I/O, on Windows and Linux.
   entry's name (`.` and `..` included), or null at the end, and the name is valid until the
   next call. `dir_is_dir()`, `dir_size()` and `dir_is_reparse()` describe that entry, and
   `dir_close()` ends the walk. On Linux, `dir_size()` is always 0.
+- `walk(&a, root)`: A `Walker` over everything below a folder, at any depth, each folder before
+  what is in it: `for e in w { ... }` gives an `Entry` with its `path` (joined with `/`, in
+  the arena), `name`, `is_dir` and `depth` (1 in the root). Links are given but not followed.
+  A folder that cannot be opened is given, skipped, and sets `failed`; `close()` ends a walk
+  early.
 - You get back a `File` struct, which implements both `Reader` and `Writer`.
 - Paths are UTF-8, like all Fels text, and can be up to 1023 bytes long. On Windows the
   runtime turns them into the UTF-16 that the `*W` functions take. `dir_next` gives you names
