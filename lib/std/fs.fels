@@ -3,7 +3,8 @@
 // runtime (windows.fels → kernel32; linux.fels → openat/read/write/..), so this file is
 // OS-agnostic. File implements std.io.Reader and Writer; there's open/create/append,
 // exists/is_dir/delete, read_all, write_file, copy_file, rename, info (size, last write),
-// make_dir/make_dirs/remove_dir, and DirIter for directory walking, all sharing FsError.
+// make_dir/make_dirs/remove_dir, DirIter for one folder and walk for a whole tree, all sharing
+// FsError.
 //
 // Paths are plain []const u8, copied into a small stack buffer and NUL-terminated for
 // the OS; anything too long fails with path_too_long.
@@ -15,6 +16,8 @@
 
 #import std.io.{ Writer, Reader, IoError };
 #import std.heap.{ Arena };
+#import std.vec as vec;
+#import std.vec.{ Vec };
 
 // The file/dir seam, provided by the platform runtime:
 //   os_file_open(path, mode) -> i64   mode 0=read, 1=create/trunc, 2=append; -1 = fail
@@ -338,3 +341,81 @@ pub copy_file :: fn(from: []const u8, to: []const u8) -> u64 ! FsError {
     return total;
 }
 
+// Walking a folder tree
+
+/// An entry `walk` gives.
+pub Entry :: struct {
+    path: []const u8,   // the root, then each folder name below it, joined by "/"
+    name: []const u8,   // the last part of `path`
+    is_dir: bool,
+    depth: usize,       // 1 for an entry of the root folder itself
+}
+
+/// The files and folders below a folder, each folder before what is in it (`walk`). A link
+/// (a symlink, a junction) is given but not followed.
+pub Walker :: struct {
+    region: *Arena,
+    dirs: Vec(DirIter),        // the open folders, the innermost last
+    paths: Vec([]const u8),    // their paths
+    /// A folder below the root could not be opened (no access, a path too long); it was
+    /// given as an entry and skipped.
+    failed: bool,
+
+    pub next :: fn(self: *Self) -> ?Entry {
+        while self.dirs.len() > 0 {
+            top := self.dirs.at(self.dirs.len() - 1);
+            if dir_next(top) |name| {
+                if name == "." || name == ".." { continue; }
+                dir := self.paths.last();
+                path := join_path(self.region, dir, name);
+                is_folder := dir_is_dir(top) && !dir_is_reparse(top);
+                e: Entry = .{ path, path[path.len - name.len..path.len], is_folder, self.dirs.len() };
+                if is_folder {
+                    it := open_dir(path) catch err {
+                        self.failed = true;
+                        return e;
+                    };
+                    self.dirs.push(it);
+                    self.paths.push(path);
+                }
+                return e;
+            }
+            done := self.dirs.pop();
+            dir_close(&done);
+            last := self.paths.pop();
+        }
+        return null;
+    }
+
+    /// Close what is still open, when the loop stops early.
+    pub close :: fn(self: *Self) {
+        while self.dirs.len() > 0 {
+            d := self.dirs.pop();
+            dir_close(&d);
+        }
+        self.paths.clear();
+    }
+}
+
+join_path :: fn(a: *Arena, dir: []const u8, name: []const u8) -> []const u8 {
+    sep: usize = if dir.len > 0 && dir[dir.len - 1] != '/' && dir[dir.len - 1] != '\\' { 1 } else { 0 };
+    out := a.alloc_bytes(dir.len + sep + name.len);
+    for i in 0..dir.len { out[i] = dir[i]; }
+    if sep == 1 { out[dir.len] = '/'; }
+    for i in 0..name.len { out[dir.len + sep + i] = name[i]; }
+    return out;
+}
+
+/// The files and folders below `root`, at any depth:
+///
+///   w := fs::walk(&a, "src")?;
+///   for e in w { if !e.is_dir && strings::str_ends_with(e.name, ".fels") { … } }
+///
+/// The paths are in `a`. `not_found` when `root` cannot be opened.
+pub walk :: fn(a: *Arena, root: []const u8) -> Walker ! FsError {
+    it := open_dir(root)?;
+    w: Walker = .{ a, vec::make(DirIter, a), vec::make([]const u8, a), false };
+    w.dirs.push(it);
+    w.paths.push(root);
+    return w;
+}
