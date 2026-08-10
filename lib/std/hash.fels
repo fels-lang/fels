@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.hash — non-cryptographic hashes of bytes: FNV-1a (32 and 64 bits), CRC-32 and XXH64.
+// std.hash — non-cryptographic hashes of bytes: FNV-1a (32 and 64 bits), CRC-32, Adler-32 and
+// XXH64.
 // Each comes as one call, and as a struct that takes the bytes as they come:
 //
 //   k := hash::xxhash64(0, "key");                 // a fast 64-bit hash, for tables
@@ -314,6 +315,53 @@ xx_stripe :: fn(self: *XxHash64, b: []const u8, at: usize) {
 
 pub xxhash64_start :: fn(seed: u64) -> XxHash64 {
     h: XxHash64 = .{ seed, seed +% P1 +% P2, seed +% P2, seed, seed -% P1, .{}, 0, 0 };
+    return h;
+}
+
+// Adler-32 (zlib's checksum)
+
+/// Adler-32 of `data`, as zlib appends it: `adler32("Wikipedia")` is 0x11E60398.
+pub adler32 :: fn(data: []const u8) -> u32 {
+    h := adler32_start();
+    adler32_add(&h, data);
+    return h.final();
+}
+
+/// Adler-32 in parts (`adler32_start`).
+pub Adler32 :: struct {
+    a: u32,
+    b: u32,
+
+    pub update :: fn(self: *Self, data: []const u8) { adler32_add(self, data); }
+    pub final :: fn(self: *Self) -> u32 { return (self.b << 16) | self.a; }
+}
+
+Adler32 as Hasher {
+    update :: fn(self: *Self, data: []const u8) { adler32_add(self, data); }
+}
+
+adler32_add :: fn(self: *Adler32, data: []const u8) {
+    a := self.a;
+    b := self.b;
+    i: usize = 0;
+    while i < data.len {
+        // 5552 bytes keep b below 2^32 before the modulo (zlib's NMAX)
+        end := i + 5552;
+        if end > data.len { end = data.len; }
+        while i < end {
+            a += data[i] as u32;
+            b += a;
+            i += 1;
+        }
+        a = a % 65521;
+        b = b % 65521;
+    }
+    self.a = a;
+    self.b = b;
+}
+
+pub adler32_start :: fn() -> Adler32 {
+    h: Adler32 = .{ 1, 0 };
     return h;
 }
 
