@@ -181,7 +181,10 @@ os_file_open :: fn(path: *const u8, mode: i32) -> i64 {
 }
 os_file_read :: fn(h: i64, buf: *u8, len: usize) -> i64 {
     got: u32 = 0u32;
-    if !ReadFile(h as usize, buf, len as u32, &got, null) { return -1i64; }
+    if !ReadFile(h as usize, buf, len as u32, &got, null) {
+        if GetLastError() == 109u32 { return 0i64; }   // ERROR_BROKEN_PIPE: the writer is gone
+        return -1i64;
+    }
     return got as i64;
 }
 os_file_write :: fn(h: i64, buf: *const u8, len: usize) -> i64 {
@@ -433,6 +436,7 @@ os_proc_release :: fn(token: i64) {
     ignored2 := CloseHandle(st.thread);
     os_release(token as usize, 32usize);
 }
+
 
 // OS sockets (backs std.net)
 // Winsock2 passthrough — std.net already passes Windows level/option constants.
