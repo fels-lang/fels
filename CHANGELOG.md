@@ -37,6 +37,8 @@ the major version is `0`, any minor bump may break source compatibility.
 - **Containers**: `std.pqueue` (a priority queue: smallest first, largest first, or by a
   function), `std.deque` (push and pop at both ends) and `std.bitset`. The maps gain
   `entries()` for a `for` loop, and sets of keys, `AutoSet(K)` and `StrSet`.
+- **`std.flate`**: DEFLATE decompression, with `gunzip` and `unzlib` checking their
+  checksums. `std.hash` gains Adler-32.
 - **`std.fs`** gains `walk` (a whole folder tree in a `for` loop), `info` (size, last write
   time, kind), `rename`, `copy_file` and `write_file`.
 - **`std.sync`** gains `WaitGroup`, `Once`, `RwLock` (a waiting writer goes first) and
