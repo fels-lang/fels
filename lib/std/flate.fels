@@ -1,0 +1,316 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.flate — DEFLATE decompression (RFC 1951), and the gzip (RFC 1952) and zlib (RFC 1950)
+// formats around it: what .gz files, PNG images, zip entries and HTTP's `Content-Encoding:
+// gzip` hold.
+//
+//   bytes := flate::gunzip(&a, gz_file_bytes)?;      // a .gz file's content
+//   pixels := flate::unzlib(&a, png_idat)?;           // zlib, as PNG and many protocols wrap it
+//   plain := flate::inflate(&a, raw_deflate)?;        // bare DEFLATE, as zip entries hold it
+//
+// The output goes into the arena. gzip and zlib check their checksums (CRC-32, Adler-32 from
+// std.hash) and the length gzip records. There is no compression yet. The decoder follows
+// Mark Adler's puff.c: Huffman codes are decoded by their length, a bit at a time.
+
+#import std.heap.{ Arena, alloc_bytes };
+#import std.hash as hash;
+
+pub FlateError :: errors {
+    truncated,       // the data ends before the stream does
+    bad_block,       // a block type 3, or a stored block whose length check fails
+    bad_code,        // Huffman code lengths that make no code, or a code that is not in one
+    bad_distance,    // a back-reference to before the start of the output
+    bad_header,      // not gzip or zlib, or a feature they do not allow here (a zlib dictionary)
+    bad_checksum,    // the CRC-32, Adler-32 or length after the data does not match it
+}
+
+MAX_BITS :: 15;
+
+// The output as it grows: a block from the arena, twice as big when full.
+Out :: struct {
+    a: *Arena,
+    buf: []u8,
+    n: usize,
+
+    put :: fn(self: *Self, b: u8) {
+        if self.n == self.buf.len { self.grow(self.n + 1); }
+        self.buf[self.n] = b;
+        self.n += 1;
+    }
+
+    grow :: fn(self: *Self, need: usize) {
+        cap := self.buf.len * 2;
+        if cap < 1024 { cap = 1024; }
+        while cap < need { cap *= 2; }
+        bigger := self.a.alloc_bytes(cap);
+        for i in 0..self.n { bigger[i] = self.buf[i]; }
+        self.buf = bigger;
+    }
+}
+
+// Reading the input a bit at a time, least significant bit of each byte first.
+In :: struct {
+    data: []const u8,
+    pos: usize,       // the next byte to take bits from
+    bitbuf: u32,
+    bitcnt: u32,
+
+    bits :: fn(self: *Self, need: u32) -> u32 ! FlateError {
+        val := self.bitbuf;
+        while self.bitcnt < need {
+            if self.pos >= self.data.len { fail .truncated; }
+            val = val | ((self.data[self.pos] as u32) << self.bitcnt);
+            self.pos += 1;
+            self.bitcnt += 8;
+        }
+        self.bitbuf = val >> need;
+        self.bitcnt -= need;
+        return val & ((1 << need) - 1);
+    }
+}
+
+// A canonical Huffman code: how many codes of each length, and the symbols in code order.
+Huffman :: struct {
+    count: [16]u16,
+    symbol: [288]u16,
+}
+
+// Build `h` from the code length of each of `n` symbols. Fails when the lengths
+// over-subscribe the code; an incomplete code is allowed (puff.c allows one for a single
+// distance code).
+construct :: fn(h: *Huffman, lengths: []const u16, n: usize) -> void ! FlateError {
+    for len in 0..16 { h.count[len] = 0; }
+    for s in 0..n { h.count[lengths[s] as usize] += 1; }
+    if h.count[0] as usize == n { return; }   // no codes: decoding with it fails
+    left: i32 = 1;
+    for len in 1..16 {
+        left = left * 2 - (h.count[len] as i32);
+        if left < 0 { fail .bad_code; }
+    }
+    offs: [16]u16 = .{};
+    for len in 1..15 { offs[len + 1] = offs[len] + h.count[len]; }
+    for s in 0..n {
+        if lengths[s] != 0 {
+            l := lengths[s] as usize;
+            h.symbol[offs[l] as usize] = s as u16;
+            offs[l] += 1;
+        }
+    }
+}
+
+// The next symbol in the input, by the code `h`.
+decode :: fn(s: *In, h: *Huffman) -> u32 ! FlateError {
+    code: i32 = 0;
+    first: i32 = 0;
+    index: i32 = 0;
+    for len in 1..16 {
+        code = code | ((s.bits(1)?) as i32);
+        count := h.count[len] as i32;
+        if code - count < first { return h.symbol[(index + (code - first)) as usize] as u32; }
+        index += count;
+        first = (first + count) << 1;
+        code = code << 1;
+    }
+    fail .bad_code;
+}
+
+LEN_BASE: [29]u16 = .{
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
+    35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258,
+};
+LEN_EXTRA: [29]u16 = .{
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
+    3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+};
+DIST_BASE: [30]u16 = .{
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
+    257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+};
+DIST_EXTRA: [30]u16 = .{
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
+    7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
+};
+
+// The literals, lengths and distances of one block, by the codes `lencode` and `distcode`, up
+// to its end code (256).
+codes :: fn(s: *In, out: *Out, lencode: *Huffman, distcode: *Huffman) -> void ! FlateError {
+    while true {
+        sym := decode(s, lencode)?;
+        if sym < 256 {
+            out.put(sym as u8);
+        } else if sym == 256 {
+            return;
+        } else {
+            sym -= 257;
+            if sym >= 29 { fail .bad_code; }
+            len := (LEN_BASE[sym as usize] as usize) + ((s.bits(LEN_EXTRA[sym as usize] as u32)?) as usize);
+            dsym := decode(s, distcode)?;
+            if dsym >= 30 { fail .bad_distance; }
+            dist := (DIST_BASE[dsym as usize] as usize) + ((s.bits(DIST_EXTRA[dsym as usize] as u32)?) as usize);
+            if dist > out.n { fail .bad_distance; }
+            if out.n + len > out.buf.len { out.grow(out.n + len); }
+            // byte by byte: a copy may overlap what it writes (a run of one byte repeated)
+            for k in 0..len {
+                out.buf[out.n] = out.buf[out.n - dist];
+                out.n += 1;
+            }
+        }
+    }
+}
+
+// A stored block: its length, its complement, and that many bytes as they are.
+stored :: fn(s: *In, out: *Out) -> void ! FlateError {
+    s.bitbuf = 0;
+    s.bitcnt = 0;
+    if s.pos + 4 > s.data.len { fail .truncated; }
+    len := (s.data[s.pos] as usize) | ((s.data[s.pos + 1] as usize) << 8);
+    nlen := (s.data[s.pos + 2] as usize) | ((s.data[s.pos + 3] as usize) << 8);
+    s.pos += 4;
+    if len != (~nlen & 0xFFFF) { fail .bad_block; }
+    if s.pos + len > s.data.len { fail .truncated; }
+    if out.n + len > out.buf.len { out.grow(out.n + len); }
+    for k in 0..len { out.buf[out.n + k] = s.data[s.pos + k]; }
+    out.n += len;
+    s.pos += len;
+}
+
+// A block with the fixed codes of RFC 1951 3.2.6.
+fixed :: fn(s: *In, out: *Out) -> void ! FlateError {
+    lengths: [288]u16 = .{};
+    for i in 0..144 { lengths[i] = 8; }
+    for i in 144..256 { lengths[i] = 9; }
+    for i in 256..280 { lengths[i] = 7; }
+    for i in 280..288 { lengths[i] = 8; }
+    lencode: Huffman = .{};
+    construct(&lencode, lengths[:], 288)?;
+    dl: [30]u16 = .{};
+    for i in 0..30 { dl[i] = 5; }
+    distcode: Huffman = .{};
+    construct(&distcode, dl[:], 30)?;
+    codes(s, out, &lencode, &distcode)?;
+}
+
+CL_ORDER: [19]u16 = .{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
+
+// A block whose codes come first, themselves coded (RFC 1951 3.2.7).
+dynamic :: fn(s: *In, out: *Out) -> void ! FlateError {
+    nlen := ((s.bits(5)?) as usize) + 257;
+    ndist := ((s.bits(5)?) as usize) + 1;
+    ncode := ((s.bits(4)?) as usize) + 4;
+    if nlen > 286 || ndist > 30 { fail .bad_code; }
+    lengths: [320]u16 = .{};
+    for i in 0..ncode { lengths[CL_ORDER[i] as usize] = (s.bits(3)?) as u16; }
+    lencode: Huffman = .{};
+    construct(&lencode, lengths[:], 19)?;
+    // the lengths of both codes, in one run that may cross from one into the other
+    index: usize = 0;
+    while index < nlen + ndist {
+        sym := decode(s, &lencode)?;
+        if sym < 16 {
+            lengths[index] = sym as u16;
+            index += 1;
+        } else {
+            len: u16 = 0;
+            reps: usize = 0;
+            if sym == 16 {
+                if index == 0 { fail .bad_code; }   // nothing to repeat
+                len = lengths[index - 1];
+                reps = 3 + ((s.bits(2)?) as usize);
+            } else if sym == 17 {
+                reps = 3 + ((s.bits(3)?) as usize);
+            } else {
+                reps = 11 + ((s.bits(7)?) as usize);
+            }
+            if index + reps > nlen + ndist { fail .bad_code; }
+            for k in 0..reps {
+                lengths[index] = len;
+                index += 1;
+            }
+        }
+    }
+    if lengths[256] == 0 { fail .bad_code; }   // no end-of-block code
+    construct(&lencode, lengths[0..nlen], nlen)?;
+    distcode: Huffman = .{};
+    construct(&distcode, lengths[nlen..nlen + ndist], ndist)?;
+    codes(s, out, &lencode, &distcode)?;
+}
+
+// Inflate the stream at the start of `data` into `out`; the bytes of `data` it took.
+run :: fn(out: *Out, data: []const u8) -> usize ! FlateError {
+    s: In = .{ data, 0, 0, 0 };
+    last: u32 = 0;
+    while last == 0 {
+        last = s.bits(1)?;
+        kind := s.bits(2)?;
+        if kind == 0 {
+            stored(&s, out)?;
+        } else if kind == 1 {
+            fixed(&s, out)?;
+        } else if kind == 2 {
+            dynamic(&s, out)?;
+        } else {
+            fail .bad_block;
+        }
+    }
+    return s.pos;
+}
+
+/// The bytes a raw DEFLATE stream (RFC 1951) stands for, in memory from `a`. Bytes after the
+/// end of the stream are not looked at.
+pub inflate :: fn(a: *Arena, data: []const u8) -> []u8 ! FlateError {
+    out: Out = .{ a, a.alloc_bytes(0), 0 };
+    used := run(&out, data)?;
+    return out.buf[0..out.n];
+}
+
+le32 :: fn(b: []const u8, i: usize) -> u32 {
+    return (b[i] as u32) | ((b[i + 1] as u32) << 8) | ((b[i + 2] as u32) << 16) | ((b[i + 3] as u32) << 24);
+}
+
+/// The content of gzip data (a .gz file, an HTTP body with `Content-Encoding: gzip`), in memory
+/// from `a`. The CRC-32 and the length after the data are checked. Only the first member of a
+/// file of several is read.
+pub gunzip :: fn(a: *Arena, data: []const u8) -> []u8 ! FlateError {
+    if data.len < 18 || data[0] != 0x1F || data[1] != 0x8B || data[2] != 8 { fail .bad_header; }
+    flags := data[3];
+    p: usize = 10;
+    if (flags & 4) != 0 {   // FEXTRA
+        if p + 2 > data.len { fail .truncated; }
+        p += 2 + ((data[p] as usize) | ((data[p + 1] as usize) << 8));
+    }
+    if (flags & 8) != 0 {   // FNAME, zero-terminated
+        while p < data.len && data[p] != 0 { p += 1; }
+        p += 1;
+    }
+    if (flags & 16) != 0 {  // FCOMMENT, zero-terminated
+        while p < data.len && data[p] != 0 { p += 1; }
+        p += 1;
+    }
+    if (flags & 2) != 0 { p += 2; }   // FHCRC
+    if p >= data.len { fail .truncated; }
+    out: Out = .{ a, a.alloc_bytes(0), 0 };
+    used := run(&out, data[p..data.len])?;
+    end := p + used;
+    if end + 8 > data.len { fail .truncated; }
+    content := out.buf[0..out.n];
+    if le32(data, end) != hash::crc32(content) { fail .bad_checksum; }
+    if le32(data, end + 4) != ((out.n & 0xFFFFFFFF) as u32) { fail .bad_checksum; }
+    return content;
+}
+
+/// The content of zlib data (RFC 1950: PNG's image data, many protocols), in memory from `a`.
+/// The Adler-32 after the data is checked. A stream that needs a preset dictionary is refused.
+pub unzlib :: fn(a: *Arena, data: []const u8) -> []u8 ! FlateError {
+    if data.len < 6 { fail .truncated; }
+    cmf := data[0] as u32;
+    flg := data[1] as u32;
+    if (cmf & 15) != 8 || (cmf >> 4) > 7 || ((cmf << 8) | flg) % 31 != 0 { fail .bad_header; }
+    if (flg & 32) != 0 { fail .bad_header; }   // FDICT
+    out: Out = .{ a, a.alloc_bytes(0), 0 };
+    used := run(&out, data[2..data.len])?;
+    end := 2 + used;
+    if end + 4 > data.len { fail .truncated; }
+    content := out.buf[0..out.n];
+    want := ((data[end] as u32) << 24) | ((data[end + 1] as u32) << 16) | ((data[end + 2] as u32) << 8) | (data[end + 3] as u32);
+    if want != hash::adler32(content) { fail .bad_checksum; }
+    return content;
+}
