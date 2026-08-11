@@ -1211,6 +1211,26 @@ e := url::encode_in(&a, "a b&c", .component);                       // "a%20b%26
 - `decode_in` gives the bytes a part stands for (the part itself when it has no `%`), and
   `decode_form_in` reads `+` as a space too.
 
+### `std.flate`
+
+DEFLATE decompression (RFC 1951), and the gzip (RFC 1952) and zlib (RFC 1950) formats around
+it: what .gz files, PNG images, zip entries and HTTP's `Content-Encoding: gzip` hold.
+
+```fels
+#import std.flate as flate;
+
+text := flate::gunzip(&a, gz_bytes)?;       // a .gz file's content
+pixels := flate::unzlib(&a, idat)?;         // zlib, as PNG wraps its image data
+plain := flate::inflate(&a, raw)?;          // bare DEFLATE, as a zip entry holds it
+```
+
+- The output goes into the arena. `gunzip` checks the CRC-32 and the length after the data, and
+  `unzlib` the Adler-32 (both from `std.hash`).
+- Errors (`FlateError`): `.truncated`, `.bad_block`, `.bad_code`, `.bad_distance`,
+  `.bad_header` (not gzip or zlib, or a zlib stream with a preset dictionary) and
+  `.bad_checksum`.
+- There is no compression yet. Only the first member of a gzip file of several is read.
+
 ### `std.hash`
 
 Non-cryptographic hashes of bytes: FNV-1a (32 and 64 bits), CRC-32 and XXH64. Each comes as one
@@ -1232,8 +1252,10 @@ x := hash::xxhash64_start(0);
 n := hash::feed(&x, &file, buf[:])?;            // all of a Reader, through buf
 ```
 
-- `fnv1a_64_start()`, `fnv1a_32_start()`, `crc32_start()` and `xxhash64_start(seed)` give the
-  structs (`Fnv1a64`, `Fnv1a32`, `Crc32`, `XxHash64`), each with `update(bytes)` and `final()`.
+- `adler32(data)` is zlib's checksum.
+- `fnv1a_64_start()`, `fnv1a_32_start()`, `crc32_start()`, `adler32_start()` and
+  `xxhash64_start(seed)` give the structs (`Fnv1a64`, `Fnv1a32`, `Crc32`, `Adler32`, `XxHash64`),
+  each with `update(bytes)` and `final()`.
   `final` leaves the state as it was, so more bytes may follow.
 - Each struct is a `Hasher`, and so is `crypto::Sha256`: `feed(h, src, buf)` reads a `Reader`
   to its end into any of them and returns the bytes it read.
