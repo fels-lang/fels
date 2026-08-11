@@ -437,6 +437,99 @@ os_proc_release :: fn(token: i64) {
     os_release(token as usize, 32usize);
 }
 
+// Pipes to a child's standard streams, for std.process.
+#extern("kernel32", "CreatePipe")
+CreatePipe :: fn(read: *usize, write: *usize, attrs: *SecurityAttributes, size: u32) -> bool;
+#extern("kernel32", "SetHandleInformation")
+SetHandleInformation :: fn(h: usize, mask: u32, flags: u32) -> bool;
+
+SecurityAttributes :: struct { length: u32, descriptor: usize, inherit: u32 }
+
+// A pipe whose end for the child is inheritable and whose end for us is not. `child_reads`: the
+// child reads it (its stdin) and we write.
+make_pipe :: fn(child_reads: bool, ours: *usize, theirs: *usize) -> bool {
+    sa: SecurityAttributes = .{ core::sizeof(SecurityAttributes) as u32, 0usize, 1u32 };
+    r: usize = 0usize;
+    w: usize = 0usize;
+    if !CreatePipe(&r, &w, &sa, 0u32) { return false; }
+    if child_reads {
+        *ours = w;
+        *theirs = r;
+    } else {
+        *ours = r;
+        *theirs = w;
+    }
+    ignored := SetHandleInformation(*ours, 1u32, 0u32);   // HANDLE_FLAG_INHERIT off
+    return true;
+}
+
+// Spawn `cmd` with pipes for the streams `which` names (1 = stdin, 2 = stdout, 4 = stderr); the
+// others are ours. Our ends go to `in_w`, `out_r`, `err_r` (-1 for a stream not piped). The
+// child token, or -1.
+os_spawn_piped :: fn(cmd: *const u8, which: u32, in_w: *i64, out_r: *i64, err_r: *i64) -> i64 {
+    *in_w = -1i64;
+    *out_r = -1i64;
+    *err_r = -1i64;
+    cmdbuf: [1024]u8 = .{};
+    i: usize = 0usize;
+    while i + 1usize < 1024usize {
+        c := unsafe *core::ptr_from_int(*u8, (cmd as usize) + i);
+        if c == 0u8 { break; }
+        cmdbuf[i] = c;
+        i += 1usize;
+    }
+    cmdbuf[i] = 0u8;
+    c_in := GetStdHandle(-10);
+    c_out := GetStdHandle(STD_OUTPUT_HANDLE);
+    c_err := GetStdHandle(STD_ERROR_HANDLE);
+    o_in: usize = 0usize;
+    o_out: usize = 0usize;
+    o_err: usize = 0usize;
+    ok := true;
+    if (which & 1u32) != 0u32 { ok = ok && make_pipe(true, &o_in, &c_in); }
+    if ok && (which & 2u32) != 0u32 { ok = make_pipe(false, &o_out, &c_out); }
+    if ok && (which & 4u32) != 0u32 { ok = make_pipe(false, &o_err, &c_err); }
+    if !ok {
+        close_piped(which, o_in, c_in, o_out, c_out, o_err, c_err);
+        return -1i64;
+    }
+    startup: StartupInfoA = .{
+        core::sizeof(StartupInfoA) as u32, 0usize, 0usize, 0usize,
+        0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0x100u32, 0u16, 0u16,   // STARTF_USESTDHANDLES
+        0usize, c_in, c_out, c_err,
+    };
+    info: ProcessInformation = .{ 0usize, 0usize, 0u32, 0u32 };
+    made := CreateProcessA(null, &cmdbuf[0], null, null, 1u32, 0u32, null, null, &startup, &info);
+    // the child's ends are the child's now (or nobody's)
+    if (which & 1u32) != 0u32 { ignored := CloseHandle(c_in); }
+    if (which & 2u32) != 0u32 { ignored := CloseHandle(c_out); }
+    if (which & 4u32) != 0u32 { ignored := CloseHandle(c_err); }
+    if !made {
+        if (which & 1u32) != 0u32 { ignored := CloseHandle(o_in); }
+        if (which & 2u32) != 0u32 { ignored := CloseHandle(o_out); }
+        if (which & 4u32) != 0u32 { ignored := CloseHandle(o_err); }
+        return -1i64;
+    }
+    raw := os_alloc(32usize);
+    if raw == 0usize {
+        ignored := CloseHandle(info.process); ignored2 := CloseHandle(info.thread);
+        return -1i64;
+    }
+    st := unsafe core::ptr_from_int(*ProcState, raw);
+    st.process = info.process;
+    st.thread = info.thread;
+    if (which & 1u32) != 0u32 { *in_w = o_in as i64; }
+    if (which & 2u32) != 0u32 { *out_r = o_out as i64; }
+    if (which & 4u32) != 0u32 { *err_r = o_err as i64; }
+    return raw as i64;
+}
+
+// After a pipe could not be made: close the ones that were.
+close_piped :: fn(which: u32, o_in: usize, c_in: usize, o_out: usize, c_out: usize, o_err: usize, c_err: usize) {
+    if o_in != 0usize { ignored := CloseHandle(o_in); ignored2 := CloseHandle(c_in); }
+    if o_out != 0usize { ignored := CloseHandle(o_out); ignored2 := CloseHandle(c_out); }
+    if o_err != 0usize { ignored := CloseHandle(o_err); ignored2 := CloseHandle(c_err); }
+}
 
 // OS sockets (backs std.net)
 // Winsock2 passthrough — std.net already passes Windows level/option constants.

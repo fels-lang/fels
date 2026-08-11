@@ -702,6 +702,90 @@ os_wait :: fn(token: i64, block: bool) -> i64 {
 os_kill :: fn(token: i64) -> bool { return sys_kill(token, 9) == 0i64; }  // SIGKILL
 os_proc_release :: fn(token: i64) { ignored := token; }                  // no handles to free
 
+// Pipes to a child's standard streams, for std.process.
+sys_pipe2 :: fn(fds: *i32, flags: i32) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(293), "{rdi}"(fds), "{rsi}"(flags) },
+        outputs: { "={rax}"(i64) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+sys_dup2 :: fn(old: i64, new: i64) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(33), "{rdi}"(old), "{rsi}"(new) },
+        outputs: { "={rax}"(i64) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+sys_rt_sigaction :: fn(sig: i64, act: *u64, old: usize, size: usize) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(13), "{rdi}"(sig), "{rsi}"(act), "{rdx}"(old), "{r10}"(size) },
+        outputs: { "={rax}"(i64) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+
+// Spawn `cmd` (via /bin/sh -c) with pipes for the streams `which` names (1 = stdin,
+// 2 = stdout, 4 = stderr); the others are ours. Our ends go to `in_w`, `out_r`, `err_r` (-1 for a
+// stream not piped). The child's pid, or -1.
+os_spawn_piped :: fn(cmd: *const u8, which: u32, in_w: *i64, out_r: *i64, err_r: *i64) -> i64 {
+    *in_w = -1i64;
+    *out_r = -1i64;
+    *err_r = -1i64;
+    // A write to a pipe whose reader is gone fails with EPIPE instead of killing this process.
+    ign: [4]u64 = .{ 1u64, 0u64, 0u64, 0u64 };   // SIG_IGN, no flags, no restorer, empty mask
+    ignored := sys_rt_sigaction(13, &ign[0], 0usize, 8usize);   // SIGPIPE
+    pin: [2]i32 = .{ -1, -1 };
+    pout: [2]i32 = .{ -1, -1 };
+    perr: [2]i32 = .{ -1, -1 };
+    ok := true;
+    if (which & 1u32) != 0u32 { ok = sys_pipe2(&pin[0], 0x80000) == 0i64; }        // O_CLOEXEC
+    if ok && (which & 2u32) != 0u32 { ok = sys_pipe2(&pout[0], 0x80000) == 0i64; }
+    if ok && (which & 4u32) != 0u32 { ok = sys_pipe2(&perr[0], 0x80000) == 0i64; }
+    if !ok {
+        close_fds(pin[:]);
+        close_fds(pout[:]);
+        close_fds(perr[:]);
+        return -1i64;
+    }
+    pbuf: [8192]u8 = .{};
+    ebuf: [8192]u8 = .{};
+    eptr: [256]usize = .{};
+    build_child_env(pbuf[:], ebuf[:], eptr[:]);
+    pid := sys_fork();
+    if pid == 0i64 {
+        // dup2 clears close-on-exec on the copy; every other pipe end closes at execve
+        if pin[0] >= 0 { ignored2 := sys_dup2(pin[0] as i64, 0i64); }
+        if pout[1] >= 0 { ignored2 := sys_dup2(pout[1] as i64, 1i64); }
+        if perr[1] >= 0 { ignored2 := sys_dup2(perr[1] as i64, 2i64); }
+        sh: [12]u8 = .{};
+        dc: [4]u8 = .{};
+        cstrcpy(sh[:], "/bin/sh");
+        cstrcpy(dc[:], "-c");
+        p_sh: usize = unsafe ((&sh[0]) as usize);
+        p_dc: usize = unsafe ((&dc[0]) as usize);
+        p_cmd: usize = unsafe (cmd as usize);
+        argv: [4]usize = .{ p_sh, p_dc, p_cmd, 0usize };
+        ignored3 := sys_execve(&sh[0], &argv[0], &eptr[0]);
+        sys_exit(127);
+    }
+    // the child's ends are the child's now (or nobody's)
+    if pin[0] >= 0 { ignored4 := sys_close(pin[0] as i64); }
+    if pout[1] >= 0 { ignored4 := sys_close(pout[1] as i64); }
+    if perr[1] >= 0 { ignored4 := sys_close(perr[1] as i64); }
+    if pid < 0i64 {
+        if pin[1] >= 0 { ignored5 := sys_close(pin[1] as i64); }
+        if pout[0] >= 0 { ignored5 := sys_close(pout[0] as i64); }
+        if perr[0] >= 0 { ignored5 := sys_close(perr[0] as i64); }
+        return -1i64;
+    }
+    *in_w = pin[1] as i64;
+    *out_r = pout[0] as i64;
+    *err_r = perr[0] as i64;
+    return pid;
+}
+
+close_fds :: fn(fds: []i32) {
+    for fd in fds { if fd >= 0 { ignored := sys_close(fd as i64); } }
+}
+
 // OS sockets (backs std.net)
 // socket=41 connect=42 accept=43 sendto=44 recvfrom=45 shutdown=48 bind=49
 // listen=50 getsockname=51 setsockopt=54 fcntl=72. AF_INET/SOCK_*/IPPROTO_* match
