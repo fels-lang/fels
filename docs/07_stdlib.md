@@ -331,6 +331,25 @@ Process management, on Windows and Linux.
 
 - `spawn(cmd)`: Spawn a child process (returns `Child`)
 - `wait(child)`, `try_wait(child)`, `kill(child)`, `release(child)`
+- `output(&a, cmd)`: Run a command to its end and keep what it writes to stdout: an `Output`
+  with its `code` and `stdout` (in the arena). Its stdin and stderr are this process's.
+- `spawn_piped(cmd, pipes)`: Spawn with pipes for the streams a `Pipes { stdin, stdout, stderr }`
+  names. `stdin_file()`, `stdout_file()` and `stderr_file()` give the pipe ends as `fs::File`s
+  (an `io::Writer` and `io::Reader`s; a read gives 0 once the child closed its end), and
+  `close_stdin()` lets the child read the end of its input. `release` closes the pipes too.
+  Read what the child writes while it runs, as a child with a full pipe waits; with stdout
+  and stderr both piped, read one of them on another thread.
+
+```fels
+c := process::spawn_piped("sort", .{ true, true, false })?;
+w := (&c).stdin_file();
+...                                  // write to w (an io::Writer)
+(&c).close_stdin();
+r := (&c).stdout_file();
+sorted := bufio::read_all(&a, &r)?;
+code := (&c).wait()?;
+(&c).release();
+```
 - `current_pid()`
 - `get_env`, `set_env`, `unset_env`
 - `command_line`: the command line as one text
