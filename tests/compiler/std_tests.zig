@@ -42,6 +42,7 @@ const native_files = [_][]const u8{
     // threads, which compile-time code does not run
     "tests/fixtures/stdlib/sync_tests.fels",
     "tests/fixtures/stdlib/fs_tests.fels",
+    "tests/fixtures/stdlib/process_pipe_tests.fels",
 };
 
 fn runAll(comptime_only: bool) !void {

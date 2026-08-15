@@ -1,0 +1,67 @@
+// std.process's pipes to a child, as `#test` functions: native only (tests/compiler/std_tests.zig),
+// as compile-time code starts no processes. The commands are the shell's own on each OS.
+#import std.heap as heap;
+#import std.io as io;
+#import std.io.{ Writer };
+#import std.bufio as bufio;
+#import std.strings as strings;
+#import std.process as process;
+
+on_windows :: fn() -> bool { return core::os == "windows"; }
+
+#test
+output_keeps_stdout :: fn(t: *Test) {
+    a := heap::make();
+    cmd := if on_windows() { "cmd /c echo hello pipes" } else { "echo hello pipes" };
+    r := process::output(&a, cmd) catch err { t.fatal("output"); return; };
+    t.eq(r.code, 0u32);
+    t.eq(strings::str_trim(r.stdout), "hello pipes");
+    bad := if on_windows() { "cmd /c exit 3" } else { "exit 3" };
+    r2 := process::output(&a, bad) catch err { t.fatal("output of a failing command"); return; };
+    t.eq(r2.code, 3u32);
+    t.eq(r2.stdout.len, 0usize);
+    a.deinit();
+}
+
+#test
+stdin_in_and_stdout_out :: fn(t: *Test) {
+    a := heap::make();
+    p: process::Pipes = .{ true, true, false };
+    c := process::spawn_piped("sort", p) catch err { t.fatal("spawn_piped"); return; };
+    w := (&c).stdin_file();
+    ww: *Writer = &w;
+    n := io::write_all(ww, "pear\napple\nfig\n") catch err { yield 0usize; };
+    t.eq(n, 15usize);
+    (&c).close_stdin();
+    r := (&c).stdout_file();
+    out := bufio::read_all(&a, &r) catch err { yield ""; };
+    code := (&c).wait() catch err { yield 99u32; };
+    (&c).release();
+    t.eq(code, 0u32);
+    got: [3][]const u8 = .{ "", "", "" };
+    k: usize = 0;
+    for line in strings::lines(out) {
+        if k < 3 { got[k] = line; }
+        k += 1;
+    }
+    t.eq(k, 3usize);
+    t.eq(got[0], "apple");
+    t.eq(got[1], "fig");
+    t.eq(got[2], "pear");
+    a.deinit();
+}
+
+#test
+stderr_on_its_own :: fn(t: *Test) {
+    a := heap::make();
+    p: process::Pipes = .{ false, false, true };
+    cmd := if on_windows() { "cmd /c echo oops 1>&2" } else { "echo oops 1>&2" };
+    c := process::spawn_piped(cmd, p) catch err { t.fatal("spawn_piped"); return; };
+    r := (&c).stderr_file();
+    err_text := bufio::read_all(&a, &r) catch err { yield ""; };
+    code := (&c).wait() catch err { yield 99u32; };
+    (&c).release();
+    t.eq(code, 0u32);
+    t.eq(strings::str_trim(err_text), "oops");
+    a.deinit();
+}
