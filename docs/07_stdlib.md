@@ -1161,6 +1161,38 @@ Values: `string`, `int`, `uint`, `float` (up to 15 significant digits; `null` fo
 infinity), `boolean`, `null_value`, and `value(v)` for a tree, its numbers as they were read.
 A write that fails makes the rest no-ops, and `finish` reports it.
 
+### `std.decimal`
+
+Exact decimal numbers, for money and anything counted in tenths and hundredths: `0.1 + 0.2` is
+`0.3` here.
+
+```fels
+#import std.decimal as decimal;
+
+price := decimal::parse("19.99")?;
+total := decimal::mul(price, decimal::from_int(3))?;                 // 59.97
+share := decimal::div(total, decimal::from_int(7), 2, .half_even)?;  // 8.57
+io::println("{total} / 7 = {share}");
+cents := decimal::round(x, 2, .half_up)?;
+```
+
+- A `Decimal` is a whole number `coef` and a `scale`, its value `coef / 10^scale`, with up to 18
+  places and about 18 digits in all.
+- `add` and `sub` are exact, at the larger scale of the two. `mul` is exact while the result
+  fits and keeps the places of both (`1.25 * 2.5` is `3.125`); past 18 places, or a coef past
+  an `i64`, it drops the last places half to even. `div(a, b, scale, mode)` gives `scale` places
+  rounded once, by `mode`. Their work goes through 128- and 192-bit numbers, so nothing is lost
+  on the way.
+- `round(d, scale, mode)`; the modes are `.half_even` (banker's), `.half_up`, `.half_down`,
+  `.down`, `.up`, `.floor` and `.ceiling`.
+- `cmp`, `eq`, `less` compare values whatever their scales (`2.50` is `2.5`); `neg`, `abs`,
+  `normalize` (no zeros at the end), `is_zero`, `is_negative`, `sum`.
+- `parse` reads `-12.50`, `.5`, `1e3`, `2.5E-3`, keeping the places written; `to_text` writes
+  them all (`19.90`), and so does printing one in a format. `from_int`, `from_parts(coef, scale)`,
+  and `to_f64` / `from_f64(x, scale)` for floats, which are binary and so not exact.
+- A result that does not fit fails with `.overflow`; text that is no number with `.invalid`.
+  The tests check 384 results against Python's decimal module.
+
 ### `std.base64` and `std.hex`
 
 Bytes as text, and back: base64 (RFC 4648) and hex digits.
