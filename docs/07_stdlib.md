@@ -939,6 +939,14 @@ sm.get("alpha");                    // hashes + compares the string bytes
 - **Sets**: `map::autoset(K, &a)` gives an `AutoSet(K)` and `map::strset(&a)` a `StrSet`, maps
   with nothing stored for a key. `add(k)` says whether `k` was new; `contains`, `remove`,
   `clear`, `len`, and `each()` for the keys.
+- **`SortedMap(K, V, C)`** keeps its keys in order: `map::sorted(K, V, &a)` by `<`,
+  `map::sorted_by(K, V, &a, less)` by a function (`mem::less_bytes` for text), or
+  `map::sorted_with(K, V, C, &a, order)` by an order type as `std.sort` has them (`sort::Asc(K)`,
+  `sort::Desc(K)`, `sort::By(K)`). Besides `put`, `get`, `contains`, `remove`, `len` and `clear`
+  it has `entries()` in key order, `from(k)` from the first key that does not come before `k`,
+  and `first()`/`last()`. The keys and values are two sorted arrays: a lookup is a binary
+  search, and `put` and `remove` move what comes after, which suits up to some ten thousand
+  entries.
 - `AutoHashMap` and `AutoSet` do not run at compile time: they hash a key's bytes through a
   pointer, and a value on the comptime VM has none. `StrMap` and `StrSet` do.
 
