@@ -1,0 +1,355 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.cli — command-line arguments: flags, options with values and positional arguments, and the
+// help text, from one description of the command.
+//
+//   c := cli::command(&a, "report", "writes a portfolio report");
+//   c.flag("verbose", 'v', "say what happens");
+//   c.option("out", 'o', "FILE", "where to write the report");
+//   c.positional("input", "the file to read");
+//   r := c.parse(process::args(&a)) catch err {
+//       io::eprintln(c.message);                    // "unknown option --vrebose"
+//       return 2;
+//   };
+//   if r.help { io::print(c.help(&a)); return 0; }
+//   out := r.option("out") ?? "report.txt";
+//   input := r.positional(0) ?? "";
+//
+// The arguments, by the usual rules: `--out FILE`, `--out=FILE`, `-o FILE`, `-oFILE`; short flags
+// together (`-vq`); `--` ends the options, so what follows is positional even when it starts
+// with `-`; `-` alone is positional. `-h` and `--help` set `help` and stop the checks for missing
+// arguments. The first argument (the program) is skipped.
+
+#import std.heap.{ Arena };
+#import std.vec as vec;
+#import std.vec.{ Vec };
+#import std.strings as strings;
+#import std.fmt as fmt;
+
+pub CliError :: errors {
+    unknown_option,       // an option the command does not have
+    missing_value,        // an option that takes a value, at the end
+    unexpected_value,     // a value given to a flag (`--verbose=yes`)
+    missing_argument,     // fewer positional arguments than the command needs
+    too_many_arguments,   // more than it takes
+    invalid_number,       // `int_option` of a value that is no integer
+}
+
+// An option or a flag, as the command describes it.
+Spec :: struct {
+    long: []const u8,
+    short: u8,              // 0 for none
+    value_name: []const u8, // "" for a flag
+    about: []const u8,
+}
+
+// A positional argument, as the command describes it. `kind`: 0 needed, 1 may be left out,
+// 2 any number of them (the rest).
+PosSpec :: struct {
+    name: []const u8,
+    about: []const u8,
+    kind: u8,
+}
+
+/// A command's description, and what went wrong in the last `parse` (`message`).
+pub Command :: struct {
+    region: *Arena,
+    name: []const u8,
+    about: []const u8,
+    specs: Vec(Spec),
+    places: Vec(PosSpec),
+    /// What the last `parse` that failed found wrong, for the user: "unknown option --frob".
+    message: []const u8,
+
+    /// A flag, `--long` or `-s` (0 for no short form): set or not.
+    pub flag :: fn(self: *Self, long: []const u8, short: u8, about: []const u8) {
+        s: Spec = .{ long, short, "", about };
+        self.specs.push(s);
+    }
+
+    /// An option that takes a value, written `--long VALUE` or `-s VALUE` (0 for no short form).
+    /// `value_name` is what the help calls the value (`FILE`, `N`).
+    pub option :: fn(self: *Self, long: []const u8, short: u8, value_name: []const u8, about: []const u8) {
+        s: Spec = .{ long, short, value_name, about };
+        self.specs.push(s);
+    }
+
+    /// A positional argument the command needs, after the ones described before it.
+    pub positional :: fn(self: *Self, name: []const u8, about: []const u8) {
+        p: PosSpec = .{ name, about, 0 };
+        self.places.push(p);
+    }
+
+    /// A positional argument that may be left out, after the needed ones.
+    pub optional :: fn(self: *Self, name: []const u8, about: []const u8) {
+        p: PosSpec = .{ name, about, 1 };
+        self.places.push(p);
+    }
+
+    /// Any number of positional arguments after the others (`files...`).
+    pub rest :: fn(self: *Self, name: []const u8, about: []const u8) {
+        p: PosSpec = .{ name, about, 2 };
+        self.places.push(p);
+    }
+
+    // The option with long name `long`, or null.
+    by_long :: fn(self: *Self, long: []const u8) -> ?Spec {
+        for s in self.specs.items() { if s.long == long { return s; } }
+        return null;
+    }
+
+    by_short :: fn(self: *Self, c: u8) -> ?Spec {
+        for s in self.specs.items() { if s.short != 0 && s.short == c { return s; } }
+        return null;
+    }
+
+    say :: fn(self: *Self, what: []const u8, arg: []const u8) {
+        self.message = strings::str_concat(self.region, what, arg);
+    }
+
+    /// Read `args` (the program first, as `process::args` gives them) by this description.
+    pub parse :: fn(self: *Self, args: []const []const u8) -> Parsed ! CliError {
+        r: Parsed = .{ vec::make(Given, self.region), vec::make([]const u8, self.region), false };
+        self.message = "";
+        options_end := false;
+        i: usize = 1;
+        while i < args.len {
+            arg := args[i];
+            i += 1;
+            if options_end || arg.len < 2 || arg[0] != '-' {
+                r.positionals.push(arg);
+                continue;
+            }
+            if arg == "--" {
+                options_end = true;
+                continue;
+            }
+            if arg == "--help" || arg == "-h" {
+                r.help = true;
+                continue;
+            }
+            if arg[1] == '-' {
+                // --long, --long=value, --long value
+                body := arg[2..arg.len];
+                name := body;
+                value: ?[]const u8 = null;
+                for k in 0..body.len {
+                    if body[k] == '=' {
+                        name = body[0..k];
+                        value = body[k + 1..body.len];
+                        break;
+                    }
+                }
+                found := self.by_long(name);
+                if found == null {
+                    self.say("unknown option --", name);
+                    fail .unknown_option;
+                }
+                spec := found!!;
+                if spec.value_name.len == 0 {
+                    if value != null {
+                        self.say("--", strings::str_concat(self.region, name, " takes no value"));
+                        fail .unexpected_value;
+                    }
+                    g: Given = .{ spec.long, "" };
+                    r.given.push(g);
+                    continue;
+                }
+                v: []const u8 = "";
+                if value |given| {
+                    v = given;
+                } else {
+                    if i >= args.len {
+                        self.say("--", strings::str_concat(self.region, name, " needs a value"));
+                        fail .missing_value;
+                    }
+                    v = args[i];
+                    i += 1;
+                }
+                g: Given = .{ spec.long, v };
+                r.given.push(g);
+                continue;
+            }
+            // -s, -abc (flags together), -oVALUE, -o VALUE
+            k: usize = 1;
+            while k < arg.len {
+                c := arg[k];
+                k += 1;
+                found := self.by_short(c);
+                if found == null {
+                    one: [1]u8 = .{ c };
+                    self.say("unknown option -", strings::str_dup(self.region, one[:]));
+                    fail .unknown_option;
+                }
+                spec := found!!;
+                if spec.value_name.len == 0 {
+                    g: Given = .{ spec.long, "" };
+                    r.given.push(g);
+                    continue;
+                }
+                v: []const u8 = "";
+                if k < arg.len {
+                    v = arg[k..arg.len];
+                } else {
+                    if i >= args.len {
+                        one: [1]u8 = .{ c };
+                        self.say("-", strings::str_concat(self.region, strings::str_dup(self.region, one[:]), " needs a value"));
+                        fail .missing_value;
+                    }
+                    v = args[i];
+                    i += 1;
+                }
+                g: Given = .{ spec.long, v };
+                r.given.push(g);
+                break;
+            }
+        }
+        if r.help { return r; }
+        // the positional arguments against the description
+        needed: usize = 0;
+        allowed: usize = 0;
+        unbounded := false;
+        for p in self.places.items() {
+            if p.kind == 0 { needed += 1; }
+            if p.kind == 2 { unbounded = true; } else { allowed += 1; }
+        }
+        n := r.positionals.len();
+        if n < needed {
+            self.say("missing argument ", self.places.get(n).name);
+            fail .missing_argument;
+        }
+        if n > allowed && !unbounded {
+            self.say("too many arguments, starting at ", r.positionals.get(allowed));
+            fail .too_many_arguments;
+        }
+        return r;
+    }
+
+    /// The usage and options, for `--help`, in memory from `a`.
+    pub help :: fn(self: *Self, a: *Arena) -> []const u8 {
+        sb := strings::builder(a);
+        sb.append(self.name);
+        if self.about.len > 0 {
+            sb.append(" - ");
+            sb.append(self.about);
+        }
+        sb.append("\n\nusage: ");
+        sb.append(self.name);
+        sb.append(" [options]");
+        for p in self.places.items() {
+            if p.kind == 0 { sb.append(" <"); sb.append(p.name); sb.append(">"); }
+            if p.kind == 1 { sb.append(" ["); sb.append(p.name); sb.append("]"); }
+            if p.kind == 2 { sb.append(" ["); sb.append(p.name); sb.append("...]"); }
+        }
+        sb.append("\n");
+        if self.places.len() > 0 {
+            sb.append("\narguments:\n");
+            width: usize = 0;
+            for p in self.places.items() { if p.name.len > width { width = p.name.len; } }
+            for p in self.places.items() {
+                sb.append("  ");
+                sb.append(p.name);
+                sb.append_repeat(' ', width - p.name.len + 2);
+                sb.append(p.about);
+                sb.append("\n");
+            }
+        }
+        sb.append("\noptions:\n");
+        width: usize = 10;   // "-h, --help"
+        for s in self.specs.items() {
+            w := 6 + s.long.len + (if s.value_name.len > 0 { s.value_name.len + 1 } else { 0 });
+            if w > width { width = w; }
+        }
+        for s in self.specs.items() {
+            sb.append("  ");
+            if s.short != 0 {
+                sb.append("-");
+                sb.append_byte(s.short);
+                sb.append(", ");
+            } else {
+                sb.append("    ");
+            }
+            sb.append("--");
+            sb.append(s.long);
+            w := 6 + s.long.len;
+            if s.value_name.len > 0 {
+                sb.append(" ");
+                sb.append(s.value_name);
+                w += s.value_name.len + 1;
+            }
+            sb.append_repeat(' ', width - w + 2);
+            sb.append(s.about);
+            sb.append("\n");
+        }
+        sb.append("  -h, --help");
+        sb.append_repeat(' ', width - 10 + 2);
+        sb.append("show this help\n");
+        return sb.str();
+    }
+}
+
+// An option or flag as given, by its long name; "" as the value of a flag.
+Given :: struct {
+    name: []const u8,
+    value: []const u8,
+}
+
+/// What `parse` read.
+pub Parsed :: struct {
+    given: Vec(Given),
+    positionals: Vec([]const u8),
+    /// `-h` or `--help` was given.
+    help: bool,
+
+    /// Whether the flag (or option) `long` was given.
+    pub flag :: fn(self: *Self, long: []const u8) -> bool {
+        for g in self.given.items() { if g.name == long { return true; } }
+        return false;
+    }
+
+    /// How many times `long` was given (`-vvv` is 3).
+    pub count :: fn(self: *Self, long: []const u8) -> usize {
+        n: usize = 0;
+        for g in self.given.items() { if g.name == long { n += 1; } }
+        return n;
+    }
+
+    /// The value of option `long`, the last one when it was given more than once; null when it
+    /// was not given.
+    pub option :: fn(self: *Self, long: []const u8) -> ?[]const u8 {
+        found: ?[]const u8 = null;
+        for g in self.given.items() { if g.name == long { found = g.value; } }
+        return found;
+    }
+
+    /// Every value of option `long`, in order (`-I a -I b`), in memory from `a`.
+    pub all :: fn(self: *Self, a: *Arena, long: []const u8) -> []const []const u8 {
+        out := vec::make([]const u8, a);
+        for g in self.given.items() { if g.name == long { out.push(g.value); } }
+        return out.items();
+    }
+
+    /// The value of option `long` as an integer; null when it was not given, `invalid_number`
+    /// when it is no integer.
+    pub int_option :: fn(self: *Self, long: []const u8) -> ?i64 ! CliError {
+        found := self.option(long);
+        if found == null { return null; }
+        v := found!!;
+        n := fmt::parse_int(i64, v, 10) catch err { fail .invalid_number; };
+        return n;
+    }
+
+    /// Positional argument `i`, or null.
+    pub positional :: fn(self: *Self, i: usize) -> ?[]const u8 {
+        if i < self.positionals.len() { return self.positionals.get(i); }
+        return null;
+    }
+
+    /// The positional arguments, in order.
+    pub positionals_all :: fn(self: *Self) -> []const []const u8 { return self.positionals.items(); }
+}
+
+/// A command named `name` (as the help shows it), in `a`, with no options yet.
+pub command :: fn(a: *Arena, name: []const u8, about: []const u8) -> Command {
+    c: Command = .{ a, name, about, vec::make(Spec, a), vec::make(PosSpec, a), "" };
+    return c;
+}
