@@ -921,6 +921,41 @@ test "modules: `*name` in an argument is a pointer type for an imported type, a 
     try fels.ir_mod.validateModule(module);
 }
 
+test "modules: a generic type of another module is a type argument" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // `lib::Asc(i32)` in a call's type arguments was "expected a type, found a call
+    // expression"; `Asc(i32)` of the file's own module worked.
+    const lib =
+        \\pub Asc :: struct($T: type) {
+        \\    marker: u8,
+        \\    pub less :: fn(self: *Self, a: T, b: T) -> bool { return a < b; }
+        \\}
+        \\pub before :: fn($T: type, $C: type, order: C, a: T, b: T) -> bool {
+        \\    o := order;
+        \\    return o.less(a, b);
+        \\}
+    ;
+    const app =
+        \\#import lib;
+        \\run :: fn() -> i32 {
+        \\    o: lib::Asc(i32) = .{ 0 };
+        \\    if lib::before(i32, lib::Asc(i32), o, 1, 2) { return 1; }
+        \\    return 0;
+        \\}
+    ;
+
+    var fe = try fels.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "lib.fels", .source = lib },
+        .{ .file_name = "app.fels", .source = app },
+    });
+    defer fe.deinit(arena.allocator());
+
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(module);
+}
+
 test "modules: an import that only finds a .gab file says to rename it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
