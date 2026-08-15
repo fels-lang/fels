@@ -1,0 +1,86 @@
+// std.cli, as `#test` functions: `fels test` runs them natively and on the comptime VM
+// (tests/compiler/std_tests.zig).
+#import std.heap as heap;
+#import std.cli as cli;
+
+make :: fn(a: *heap::Arena) -> cli::Command {
+    c := cli::command(a, "report", "writes a portfolio report");
+    c.flag("verbose", 'v', "say what happens");
+    c.flag("quiet", 'q', "say nothing");
+    c.option("out", 'o', "FILE", "where to write the report");
+    c.option("jobs", 'j', "N", "how many at once");
+    c.option("include", 0, "DIR", "a folder to look in");
+    c.positional("input", "the file to read");
+    c.optional("output", "a second file");
+    return c;
+}
+
+#test
+options_in_every_form :: fn(t: *Test) {
+    a := heap::make();
+    c := make(&a);
+    args: [10][]const u8 = .{ "report", "-vq", "--out=x.txt", "data.csv", "-j4", "--include", "a", "--include=b", "--", "-odd" };
+    r := c.parse(args[:]) catch err { t.fatal(c.message); return; };
+    t.expect(r.flag("verbose") && r.flag("quiet"));
+    t.eq(r.option("out") ?? "", "x.txt");
+    t.eq(r.int_option("jobs") catch err { yield null; } ?? 0, 4i64);
+    inc := r.all(&a, "include");
+    t.eq(inc.len, 2usize);
+    t.eq(inc[1], "b");
+    t.eq(r.positional(0) ?? "", "data.csv");
+    t.eq(r.positional(1) ?? "", "-odd");
+    t.expect(r.positional(2) == null);
+    t.expect(!r.help);
+    args2: [5][]const u8 = .{ "report", "-o", "y.txt", "-vvv", "in.csv" };
+    r2 := c.parse(args2[:]) catch err { t.fatal(c.message); return; };
+    t.eq(r2.option("out") ?? "", "y.txt");
+    t.eq(r2.count("verbose"), 3usize);
+    a.deinit();
+}
+
+expect_failure :: fn(t: *Test, c: *cli::Command, args: []const []const u8, want: cli::CliError, message: []const u8) {
+    r := c.parse(args) catch err {
+        t.expect(err == want);
+        t.eq(c.message, message);
+        return;
+    };
+    t.fatal("parsed what it should not");
+}
+
+#test
+mistakes_say_what_is_wrong :: fn(t: *Test) {
+    a := heap::make();
+    c := make(&a);
+    a1: [3][]const u8 = .{ "report", "--vrebose", "x" };
+    expect_failure(t, &c, a1[:], .unknown_option, "unknown option --vrebose");
+    a2: [3][]const u8 = .{ "report", "x", "-z" };
+    expect_failure(t, &c, a2[:], .unknown_option, "unknown option -z");
+    a3: [3][]const u8 = .{ "report", "x", "--out" };
+    expect_failure(t, &c, a3[:], .missing_value, "--out needs a value");
+    a4: [3][]const u8 = .{ "report", "--verbose=yes", "x" };
+    expect_failure(t, &c, a4[:], .unexpected_value, "--verbose takes no value");
+    a5: [2][]const u8 = .{ "report", "-v" };
+    expect_failure(t, &c, a5[:], .missing_argument, "missing argument input");
+    a6: [4][]const u8 = .{ "report", "a", "b", "c" };
+    expect_failure(t, &c, a6[:], .too_many_arguments, "too many arguments, starting at c");
+    a7: [4][]const u8 = .{ "report", "x", "-j", "four" };
+    r := c.parse(a7[:]) catch err { t.fatal(c.message); return; };
+    n := r.int_option("jobs") catch err {
+        t.expect(err == .invalid_number);
+        yield null;
+    };
+    // help stops the check for missing arguments
+    a8: [2][]const u8 = .{ "report", "--help" };
+    h := c.parse(a8[:]) catch err { t.fatal(c.message); return; };
+    t.expect(h.help);
+    a.deinit();
+}
+
+#test
+the_help_text :: fn(t: *Test) {
+    a := heap::make();
+    c := make(&a);
+    c.rest("more", "anything after");
+    t.eq(c.help(&a), "report - writes a portfolio report\n\nusage: report [options] <input> [output] [more...]\n\narguments:\n  input   the file to read\n  output  a second file\n  more    anything after\n\noptions:\n  -v, --verbose      say what happens\n  -q, --quiet        say nothing\n  -o, --out FILE     where to write the report\n  -j, --jobs N       how many at once\n      --include DIR  a folder to look in\n  -h, --help         show this help\n");
+    a.deinit();
+}

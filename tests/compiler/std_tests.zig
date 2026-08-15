@@ -29,6 +29,7 @@ const files = [_][]const u8{
     "tests/fixtures/stdlib/flate_tests.fels",
     "tests/fixtures/stdlib/sortedmap_tests.fels",
     "tests/fixtures/stdlib/decimal_tests.fels",
+    "tests/fixtures/stdlib/cli_tests.fels",
 };
 
 /// Files whose tests reach the OS (folders, the environment, the command line), which
