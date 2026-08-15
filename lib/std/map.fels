@@ -7,6 +7,7 @@
 //                      no derive) — great for ints, enums, points, small POD structs.
 //   StrMap(V)          keys are []const u8, hashed/compared by CONTENTS, and copied
 //                      into the region so the map owns them.
+//   SortedMap(K, V, C) keys kept in an order, for going through them in it and from a key on.
 //
 //   m := map::auto(i32, i32, &a);
 //   m.put(7, 100); m.put(7, 101);   // overwrites → one entry; m.get(7) is 101
@@ -21,6 +22,7 @@
 
 #import std.heap.{ Arena, alloc, dupe };
 #import std.hash as hash;
+#import std.sort as sort;
 
 // Slot states.
 EMPTY :: 0u8;
@@ -487,4 +489,152 @@ pub autoset :: fn($K: ByteKey, a: *Arena) -> AutoSet(K) {
 pub strset :: fn(a: *Arena) -> StrSet {
     s: StrSet = .{ strmap(u8, a) };
     return s;
+}
+
+// SortedMap(K, V, C) — keys kept in order
+
+/// A map whose keys stay in order: `entries()` goes through them smallest first, `first` and
+/// `last` give the ends, and `from(k)` starts at a key. The keys and values are two sorted
+/// arrays in the region: a lookup is a binary search, and `put` and `remove` move the entries
+/// after the place they change (fine up to some ten thousand entries; a hash map for more).
+/// `C` is the order, a type with `less(self, a, b)` as std.sort has them (`sort::Asc(K)`,
+/// `sort::By(K)`).
+///
+///   m := map::sorted(i64, f64, &a);                    // by `<`
+///   names := map::sorted_by([]const u8, i32, &a, mem::less_bytes);
+pub SortedMap :: struct($K: type, $V: type, $C: type) {
+    region: *Arena,
+    keys:   []K,      // capacity == keys.len; the first `count` are in use
+    vals:   []V,
+    count:  usize,
+    order:  C,
+
+    pub len      :: fn(self: *Self) -> usize { return self.count; }
+    pub is_empty :: fn(self: *Self) -> bool  { return self.count == 0; }
+
+    // The first index whose key does not come before `k`.
+    find :: fn(self: *Self, k: K) -> usize {
+        lo: usize = 0;
+        hi := self.count;
+        while lo < hi {
+            mid := lo + (hi - lo) / 2;
+            if self.order.less(self.keys[mid], k) { lo = mid + 1; } else { hi = mid; }
+        }
+        return lo;
+    }
+
+    // Whether the key at `i` (from `find(k)`) is `k`: neither comes before the other.
+    holds :: fn(self: *Self, i: usize, k: K) -> bool {
+        return i < self.count && !self.order.less(k, self.keys[i]);
+    }
+
+    /// Put `k → v`, in its place; a value `k` had is replaced.
+    pub put :: fn(self: *Self, k: K, v: V) {
+        i := self.find(k);
+        if self.holds(i, k) {
+            self.vals[i] = v;
+            return;
+        }
+        if self.count == self.keys.len {
+            cap := self.keys.len * 2;
+            if cap < 8 { cap = 8; }
+            nk := alloc(K, self.region, cap);
+            nv := alloc(V, self.region, cap);
+            for j in 0..self.count {
+                nk[j] = self.keys[j];
+                nv[j] = self.vals[j];
+            }
+            self.keys = nk;
+            self.vals = nv;
+        }
+        j := self.count;
+        while j > i {
+            self.keys[j] = self.keys[j - 1];
+            self.vals[j] = self.vals[j - 1];
+            j -= 1;
+        }
+        self.keys[i] = k;
+        self.vals[i] = v;
+        self.count += 1;
+    }
+
+    pub get :: fn(self: *Self, k: K) -> ?V {
+        i := self.find(k);
+        if self.holds(i, k) { return self.vals[i]; }
+        return null;
+    }
+
+    pub contains :: fn(self: *Self, k: K) -> bool { return self.holds(self.find(k), k); }
+
+    /// Take `k` out; whether it was there.
+    pub remove :: fn(self: *Self, k: K) -> bool {
+        i := self.find(k);
+        if !self.holds(i, k) { return false; }
+        for j in i..self.count - 1 {
+            self.keys[j] = self.keys[j + 1];
+            self.vals[j] = self.vals[j + 1];
+        }
+        self.count -= 1;
+        return true;
+    }
+
+    /// The entry with the smallest key; null when the map is empty.
+    pub first :: fn(self: *Self) -> ?Entry(K, V) {
+        if self.count == 0 { return null; }
+        e: Entry(K, V) = .{ self.keys[0], self.vals[0] };
+        return e;
+    }
+
+    /// The entry with the largest key; null when the map is empty.
+    pub last :: fn(self: *Self) -> ?Entry(K, V) {
+        if self.count == 0 { return null; }
+        e: Entry(K, V) = .{ self.keys[self.count - 1], self.vals[self.count - 1] };
+        return e;
+    }
+
+    /// The entries, smallest key first. A `put` or `remove` while going through them may skip or
+    /// repeat entries.
+    pub entries :: fn(self: *Self) -> SortedEntries(K, V, C) {
+        it: SortedEntries(K, V, C) = .{ self, 0 };
+        return it;
+    }
+
+    /// The entries from the first key that does not come before `k` on.
+    pub from :: fn(self: *Self, k: K) -> SortedEntries(K, V, C) {
+        it: SortedEntries(K, V, C) = .{ self, self.find(k) };
+        return it;
+    }
+
+    pub clear :: fn(self: *Self) { self.count = 0; }
+}
+
+/// The entries of a `SortedMap`, in key order (`SortedMap.entries`, `SortedMap.from`).
+pub SortedEntries :: struct($K: type, $V: type, $C: type) {
+    m: *SortedMap(K, V, C),
+    i: usize,
+
+    pub next :: fn(self: *Self) -> ?Entry(K, V) {
+        if self.i >= self.m.count { return null; }
+        e: Entry(K, V) = .{ self.m.keys[self.i], self.m.vals[self.i] };
+        self.i += 1;
+        return e;
+    }
+}
+
+/// A `SortedMap` in `a` with `order` deciding which key comes first.
+pub sorted_with :: fn($K: type, $V: type, $C: type, a: *Arena, order: C) -> SortedMap(K, V, C) {
+    m: SortedMap(K, V, C) = .{ a, alloc(K, a, 0), alloc(V, a, 0), 0, order };
+    return m;
+}
+
+/// A `SortedMap` in `a`, its keys in the order of `<`.
+pub sorted :: fn($K: type, $V: type, a: *Arena) -> SortedMap(K, V, sort::Asc(K)) {
+    o: sort::Asc(K) = .{ 0 };
+    return sorted_with(K, V, sort::Asc(K), a, o);
+}
+
+/// A `SortedMap` in `a`, its keys in the order of `less` (`mem::less_bytes` for text).
+pub sorted_by :: fn($K: type, $V: type, a: *Arena, less: fn(K, K) -> bool) -> SortedMap(K, V, sort::By(K)) {
+    o: sort::By(K) = .{ less };
+    return sorted_with(K, V, sort::By(K), a, o);
 }
