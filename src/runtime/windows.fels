@@ -88,6 +88,32 @@ os_sleep_nanos :: fn(ns: i64) {
     Sleep((ns / 1000000i64) as u32);
 }
 
+// The local time zone, for std.time.
+#extern("kernel32", "FileTimeToSystemTime")
+FileTimeToSystemTime :: fn(ft: *u64, st: *SystemTime) -> bool;
+#extern("kernel32", "SystemTimeToFileTime")
+SystemTimeToFileTime :: fn(st: *SystemTime, ft: *u64) -> bool;
+#extern("kernel32", "SystemTimeToTzSpecificLocalTime")
+SystemTimeToTzSpecificLocalTime :: fn(tz: ?*void, utc: *SystemTime, local: *SystemTime) -> bool;
+
+SystemTime :: struct {
+    year: u16, month: u16, weekday: u16, day: u16,
+    hour: u16, minute: u16, second: u16, millis: u16,
+}
+
+// Seconds east of UTC of this machine's time zone at `secs` (seconds since 1970, UTC), with
+// daylight saving time as it was then; 0 when Windows cannot say.
+os_local_offset :: fn(secs: i64) -> i64 {
+    ft: u64 = ((secs + 11644473600i64) * 10000000i64) as u64;   // 100 ns since 1601
+    utc: SystemTime = .{};
+    local: SystemTime = .{};
+    if !FileTimeToSystemTime(&ft, &utc) { return 0i64; }
+    if !SystemTimeToTzSpecificLocalTime(null, &utc, &local) { return 0i64; }
+    lft: u64 = 0u64;
+    if !SystemTimeToFileTime(&local, &lft) { return 0i64; }
+    return ((lft as i64) - (ft as i64)) / 10000000i64;
+}
+
 // UTF-8 and the UTF-16 of the `*W` APIs. Fels text is UTF-8; the `*A` APIs would read it in the
 // ANSI code page and get every letter outside ASCII wrong.
 
