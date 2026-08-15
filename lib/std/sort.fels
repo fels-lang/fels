@@ -23,19 +23,19 @@
 // Comparators
 
 // Smallest first.
-Asc :: struct($T: type) {
+pub Asc :: struct($T: type) {
     marker: u8,
     pub less :: fn(self: *Self, a: T, b: T) -> bool { return a < b; }
 }
 
 // Largest first.
-Desc :: struct($T: type) {
+pub Desc :: struct($T: type) {
     marker: u8,
     pub less :: fn(self: *Self, a: T, b: T) -> bool { return b < a; }
 }
 
 // By a function: `f(a, b)` is true when `a` goes before `b`.
-By :: struct($T: type) {
+pub By :: struct($T: type) {
     f: fn(T, T) -> bool,
     pub less :: fn(self: *Self, a: T, b: T) -> bool { return self.f(a, b); }
 }
