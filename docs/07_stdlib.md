@@ -358,6 +358,36 @@ code := (&c).wait()?;
   same for any line (quotes keep spaces, and `\"` is a quote). On Linux they are exactly as
   the kernel passed them.
 
+## `std.cli`
+Command-line arguments: flags, options with values and positional arguments, and the help text,
+from one description of the command.
+
+```fels
+#import std.cli as cli;
+
+c := cli::command(&a, "report", "writes a portfolio report");
+c.flag("verbose", 'v', "say what happens");
+c.option("out", 'o', "FILE", "where to write the report");
+c.positional("input", "the file to read");      // needed; c.optional(...), c.rest(...) too
+r := c.parse(process::args(&a)) catch err {
+    io::eprintln(c.message);                     // "unknown option --vrebose"
+    return 2;
+};
+if r.help { io::print(c.help(&a)); return 0; }
+out := r.option("out") ?? "report.txt";
+input := r.positional(0) ?? "";
+```
+
+- The arguments are read by the usual rules: `--out FILE`, `--out=FILE`, `-o FILE`, `-oFILE`,
+  short flags together (`-vq`), `--` to end the options, and `-` alone as a positional
+  argument. `-h` and `--help` set `help` (and skip the check for missing arguments).
+- What was read: `flag(name)`, `count(name)` (`-vvv` is 3), `option(name)` (the last value),
+  `all(&a, name)` (every value, for `-I a -I b`), `int_option(name)`, `positional(i)` and
+  `positionals_all()`. Names are the long ones, also for what was given in the short form.
+- A mistake fails with a `CliError` (`.unknown_option`, `.missing_value`,
+  `.unexpected_value`, `.missing_argument`, `.too_many_arguments`, `.invalid_number`), and
+  `c.message` says it for the user. `c.help(&a)` lists the usage, the arguments and the options.
+
 ## `std.ptr`
 Pointer manipulation and conversions, which require `unsafe` in some contexts.
 
