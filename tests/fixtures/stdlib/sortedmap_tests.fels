@@ -1,0 +1,61 @@
+// std.map's SortedMap, as `#test` functions: `fels test` runs them natively and on the comptime
+// VM (tests/compiler/std_tests.zig).
+#import std.heap as heap;
+#import std.map as map;
+#import std.mem as mem;
+
+#test
+keys_in_order :: fn(t: *Test) {
+    a := heap::make();
+    m := map::sorted(i32, i32, &a);
+    // 0..50 in a scrambled order
+    for k in 0..50 { m.put(((k * 37) % 50) as i32, (k * 10) as i32); }
+    t.eq(m.len(), 50usize);
+    prev: i32 = -1;
+    n: usize = 0;
+    for e in m.entries() {
+        t.expect(e.key > prev);
+        prev = e.key;
+        n += 1;
+    }
+    t.eq(n, 50usize);
+    m.put(7, -7);
+    t.eq(m.get(7) ?? 0, -7);
+    t.eq(m.len(), 50usize);
+    t.expect(m.remove(0));
+    t.expect(!m.remove(0));
+    t.expect(!m.contains(0));
+    if m.first() |f| { t.eq(f.key, 1); } else { t.expect(false); }
+    if m.last() |l| { t.eq(l.key, 49); } else { t.expect(false); }
+    // from a key on, and from one that is not there
+    count: usize = 0;
+    for e in m.from(45) { count += 1; }
+    t.eq(count, 5usize);
+    m.remove(45);
+    for e in m.from(45) {
+        t.eq(e.key, 46);
+        break;
+    }
+    a.deinit();
+}
+
+#test
+text_keys :: fn(t: *Test) {
+    a := heap::make();
+    m := map::sorted_by([]const u8, i32, &a, mem::less_bytes);
+    m.put("pear", 3);
+    m.put("apple", 1);
+    m.put("fig", 2);
+    m.put("apple", 10);
+    total: i32 = 0;
+    order: usize = 0;
+    for e in m.entries() {
+        total += e.value;
+        if order == 0 { t.eq(e.key, "apple"); }
+        if order == 2 { t.eq(e.key, "pear"); }
+        order += 1;
+    }
+    t.eq(total, 15);
+    t.expect(m.get("plum") == null);
+    a.deinit();
+}
