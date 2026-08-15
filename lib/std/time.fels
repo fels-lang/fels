@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // std.time — wall-clock time, a monotonic clock, sleeping, a UTC calendar
-// breakdown, and calendar dates. Cross-platform.
+// breakdown, calendar dates, and the local time zone. Cross-platform.
 //
 //   secs := time::unix_seconds();          // seconds since 1970-01-01 UTC
 //   dt   := time::utc(secs);               // → DateTime { year, month, day, ... }
@@ -14,7 +14,13 @@
 //
 // OS clocks come through the runtime's nanosecond seam (os_wall_nanos,
 // os_monotonic_nanos, os_sleep_nanos; windows.fels → kernel32, linux.fels →
-// clock_gettime/nanosleep). The UTC breakdown is pure arithmetic (civil-from-days).
+// clock_gettime/nanosleep). The UTC breakdown is pure arithmetic (civil-from-days). The local
+// zone comes from Windows (os_local_offset), or on Linux from the TZif file `TZ` or
+// /etc/localtime names, read here.
+
+#import std.process as process;
+#import std.fs as fs;
+#import std.io.{ Reader };
 
 // Wall clock (Unix epoch)
 
@@ -255,3 +261,313 @@ put_digits :: fn(buf: []u8, at: usize, n: usize, v: i64) {
         rest = rest / 10;
     }
 }
+
+// Back to seconds
+
+/// The seconds since 1970-01-01 of `dt` read as UTC (its weekday is not looked at): the inverse
+/// of `utc`.
+pub to_unix :: fn(dt: DateTime) -> i64 {
+    days := days_from_parts(dt.year, dt.month as i64, dt.day as i64);
+    return days * 86400 + (dt.hour as i64) * 3600 + (dt.minute as i64) * 60 + (dt.second as i64);
+}
+
+// Names
+
+WEEKDAYS: [7][]const u8 = .{ "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+MONTHS: [12][]const u8 = .{
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+};
+
+/// The English name of weekday `wd` (0 = Sunday), as `DateTime` and `Date.weekday` count them.
+pub weekday_name :: fn(wd: u8) -> []const u8 { return WEEKDAYS[(wd % 7) as usize]; }
+
+/// The English name of month `m` (1 = January).
+pub month_name :: fn(m: u8) -> []const u8 { return MONTHS[((m + 11) % 12) as usize]; }
+
+// The local time zone
+
+/// What a time zone was at an instant: its offset east of UTC in seconds, and whether that is
+/// daylight saving time.
+pub ZoneOffset :: struct {
+    seconds: i64,
+    dst: bool,
+}
+
+/// Seconds east of UTC of this machine's time zone at `secs` (seconds since 1970, UTC), with
+/// daylight saving time as it was then: 3600 for Berlin in winter, 7200 in summer, -18000 for New
+/// York in winter. 0 when the zone is not known (Linux without /etc/localtime, or a `TZ` this
+/// cannot read).
+pub local_offset :: fn(secs: i64) -> i64 { return os_local_offset_of(secs); }
+
+/// `secs` as the date and time on this machine's clocks: `utc(secs + local_offset(secs))`.
+pub local :: fn(secs: i64) -> DateTime { return utc(secs + local_offset(secs)); }
+
+/// The date and time now on this machine's clocks.
+pub now_local :: fn() -> DateTime { return local(unix_seconds()); }
+
+#if TARGET.os == .windows {
+    os_local_offset_of :: fn(secs: i64) -> i64 { return os_local_offset(secs); }
+} else {
+    // `TZ` (":Area/City", "Area/City" or a path), else /etc/localtime, read as a TZif file.
+    os_local_offset_of :: fn(secs: i64) -> i64 {
+        buf: [65536]u8 = .{};
+        n := read_zone_file(buf[:]);
+        if n == 0 { return 0; }
+        z := tzif_offset(buf[0..n], secs) catch err { yield zero_offset(); };
+        return z.seconds;
+    }
+
+    read_zone_file :: fn(buf: []u8) -> usize {
+        env: [256]u8 = .{};
+        path: [300]u8 = .{};
+        p: []const u8 = "/etc/localtime";
+        if process::get_env("TZ", env[:]) |tz| {
+            name := tz;
+            if name.len > 0 && name[0] == ':' { name = name[1..name.len]; }
+            if name.len > 0 && name[0] == '/' {
+                p = name;
+            } else if name.len > 0 && name.len < 200 {
+                prefix := "/usr/share/zoneinfo/";
+                for i in 0..prefix.len { path[i] = prefix[i]; }
+                for i in 0..name.len { path[prefix.len + i] = name[i]; }
+                p = path[0..prefix.len + name.len];
+            }
+        }
+        return read_small_file(p, buf);
+    }
+
+    // As much of the file `path` as fits in `buf`; 0 when it cannot be read.
+    read_small_file :: fn(path: []const u8, buf: []u8) -> usize {
+        f := fs::open(path) catch err { return 0; };
+        rd: *Reader = &f;
+        n: usize = 0;
+        while n < buf.len {
+            got := rd.read(buf[n..buf.len]) catch err { yield 0usize; };
+            if got == 0 { break; }
+            n += got;
+        }
+        fs::close(&f);
+        return n;
+    }
+}
+
+zero_offset :: fn() -> ZoneOffset {
+    z: ZoneOffset = .{ 0, false };
+    return z;
+}
+
+pub TimeError :: errors {
+    bad_zone,     // a TZif file or POSIX TZ rule this cannot read
+}
+
+be32 :: fn(b: []const u8, at: usize) -> i64 {
+    v := ((b[at] as u32) << 24) | ((b[at + 1] as u32) << 16) | ((b[at + 2] as u32) << 8) | (b[at + 3] as u32);
+    return (v as i32) as i64;
+}
+
+be64 :: fn(b: []const u8, at: usize) -> i64 {
+    v: u64 = 0;
+    for k in 0..8 { v = (v << 8) | (b[at + k] as u64); }
+    return v as i64;
+}
+
+be_count :: fn(b: []const u8, at: usize) -> usize { return be32(b, at) as usize; }
+
+/// The offset at `secs` of the zone a TZif file (RFC 8536, as in /usr/share/zoneinfo) describes.
+/// Past its last transition the POSIX rule at its end decides.
+pub tzif_offset :: fn(data: []const u8, secs: i64) -> ZoneOffset ! TimeError {
+    if data.len < 44 || data[0] != 'T' || data[1] != 'Z' || data[2] != 'i' || data[3] != 'f' { fail .bad_zone; }
+    version := data[4];
+    // the counts: UT/local indicators, standard/wall indicators, leap seconds, transitions,
+    // local time types, abbreviation bytes
+    p: usize = 0;
+    tsize: usize = 4;
+    if version >= '2' {
+        // skip the 32-bit part to the 64-bit one
+        v1 := 44 + be_count(data, 32) * 5 + be_count(data, 36) * 6 + be_count(data, 40) +
+            be_count(data, 28) * 8 + be_count(data, 24) + be_count(data, 20);
+        if v1 + 44 > data.len { fail .bad_zone; }
+        p = v1;
+        tsize = 8;
+    }
+    isut := be_count(data, p + 20);
+    isstd := be_count(data, p + 24);
+    leap := be_count(data, p + 28);
+    timecnt := be_count(data, p + 32);
+    typecnt := be_count(data, p + 36);
+    charcnt := be_count(data, p + 40);
+    times := p + 44;
+    idx := times + timecnt * tsize;
+    types := idx + timecnt;
+    end := types + typecnt * 6 + charcnt + leap * (tsize + 4) + isstd + isut;
+    if typecnt == 0 || end > data.len { fail .bad_zone; }
+    // the last transition at or before `secs`
+    found: i64 = -1;
+    lo: usize = 0;
+    hi := timecnt;
+    while lo < hi {
+        mid := lo + (hi - lo) / 2;
+        at := if tsize == 8 { be64(data, times + mid * 8) } else { be32(data, times + mid * 4) };
+        if at <= secs { lo = mid + 1; } else { hi = mid; }
+    }
+    if lo > 0 { found = (lo - 1) as i64; }
+    // past the last one, the rule in the footer
+    if tsize == 8 && found == (timecnt as i64) - 1 && end + 2 < data.len && data[end] == '\n' {
+        f0 := end + 1;
+        f1 := f0;
+        while f1 < data.len && data[f1] != '\n' { f1 += 1; }
+        if f1 > f0 { return posix_offset(data[f0..f1], secs); }
+    }
+    ti: usize = 0;
+    if found >= 0 {
+        ti = data[idx + (found as usize)] as usize;
+    } else {
+        // before the first transition: the first standard-time type, else the first
+        for k in 0..typecnt {
+            if data[types + k * 6 + 4] == 0 {
+                ti = k;
+                break;
+            }
+        }
+    }
+    if ti >= typecnt { fail .bad_zone; }
+    z: ZoneOffset = .{ be32(data, types + ti * 6), data[types + ti * 6 + 4] != 0 };
+    return z;
+}
+
+// POSIX TZ rules: "CET-1CEST,M3.5.0,M10.5.0/3", "EST5EDT,M3.2.0,M11.1.0", "<+0530>-5:30"
+
+TzReader :: struct {
+    s: []const u8,
+    i: usize,
+
+    // A zone name: letters, or anything in <...>.
+    name :: fn(self: *Self) -> bool {
+        if self.i < self.s.len && self.s[self.i] == '<' {
+            while self.i < self.s.len && self.s[self.i] != '>' { self.i += 1; }
+            if self.i >= self.s.len { return false; }
+            self.i += 1;
+            return true;
+        }
+        start := self.i;
+        while self.i < self.s.len && ((self.s[self.i] >= 'A' && self.s[self.i] <= 'Z') || (self.s[self.i] >= 'a' && self.s[self.i] <= 'z')) { self.i += 1; }
+        return self.i - start >= 3;
+    }
+
+    number :: fn(self: *Self) -> i64 {
+        v: i64 = 0;
+        while self.i < self.s.len && self.s[self.i] >= '0' && self.s[self.i] <= '9' {
+            v = v * 10 + (self.s[self.i] - '0') as i64;
+            self.i += 1;
+        }
+        return v;
+    }
+
+    // [+-]hh[:mm[:ss]] in seconds.
+    hms :: fn(self: *Self) -> i64 {
+        sign: i64 = 1;
+        if self.i < self.s.len && (self.s[self.i] == '+' || self.s[self.i] == '-') {
+            if self.s[self.i] == '-' { sign = -1; }
+            self.i += 1;
+        }
+        v := self.number() * 3600;
+        if self.i < self.s.len && self.s[self.i] == ':' {
+            self.i += 1;
+            v += self.number() * 60;
+            if self.i < self.s.len && self.s[self.i] == ':' {
+                self.i += 1;
+                v += self.number();
+            }
+        }
+        return sign * v;
+    }
+
+    at :: fn(self: *Self, c: u8) -> bool { return self.i < self.s.len && self.s[self.i] == c; }
+}
+
+// A rule's day: Mm.w.d (kind 0), Jn (1, no Feb 29), n (2, from 0); and the time of day.
+TzRule :: struct {
+    kind: u8,
+    m: i64,
+    w: i64,
+    d: i64,
+    time: i64,
+}
+
+read_rule :: fn(r: *TzReader) -> TzRule ! TimeError {
+    out: TzRule = .{ 0, 0, 0, 0, 7200 };
+    if r.at('M') {
+        r.i += 1;
+        out.m = r.number();
+        if !r.at('.') { fail .bad_zone; }
+        r.i += 1;
+        out.w = r.number();
+        if !r.at('.') { fail .bad_zone; }
+        r.i += 1;
+        out.d = r.number();
+    } else if r.at('J') {
+        r.i += 1;
+        out.kind = 1;
+        out.d = r.number();
+    } else {
+        out.kind = 2;
+        out.d = r.number();
+    }
+    if r.at('/') {
+        r.i += 1;
+        out.time = r.hms();
+    }
+    return out;
+}
+
+// The local seconds since 1970 at which `rule` happens in `year` (in the local time then in
+// effect).
+rule_moment :: fn(rule: TzRule, year: i64) -> i64 {
+    day: i64 = 0;
+    if rule.kind == 0 {
+        first := days_from_parts(year, rule.m, 1);
+        wd := weekday_of(first) as i64;
+        dom := 1 + (rule.d - wd + 7) % 7 + (rule.w - 1) * 7;
+        last := days_in_month(year, rule.m);
+        while dom > last { dom -= 7; }
+        day = first + dom - 1;
+    } else if rule.kind == 1 {
+        // Julian 1..365, February 29 never counted
+        day = days_from_parts(year, 1, 1) + rule.d - 1;
+        if is_leap_year(year) && rule.d >= 60 { day += 1; }
+    } else {
+        day = days_from_parts(year, 1, 1) + rule.d;
+    }
+    return day * 86400 + rule.time;
+}
+
+/// The offset at `secs` of a POSIX TZ rule (`"CET-1CEST,M3.5.0,M10.5.0/3"`): standard time,
+/// and daylight saving time between the two dates of each year.
+pub posix_offset :: fn(rule: []const u8, secs: i64) -> ZoneOffset ! TimeError {
+    r: TzReader = .{ rule, 0 };
+    if !r.name() { fail .bad_zone; }
+    std_off := -r.hms();      // POSIX counts west; this, east
+    z: ZoneOffset = .{ std_off, false };
+    if r.i >= rule.len { return z; }
+    if !r.name() { fail .bad_zone; }
+    dst_off := std_off + 3600;
+    if r.i < rule.len && !r.at(',') { dst_off = -r.hms(); }
+    if !r.at(',') { return z; }   // daylight saving without rules: none is applied
+    r.i += 1;
+    start := read_rule(&r)?;
+    if !r.at(',') { fail .bad_zone; }
+    r.i += 1;
+    end := read_rule(&r)?;
+    year := utc(secs + std_off).year;
+    // the start is in standard local time, the end in daylight saving local time
+    s := rule_moment(start, year) - std_off;
+    e := rule_moment(end, year) - dst_off;
+    in_dst := if s < e { secs >= s && secs < e } else { !(secs >= e && secs < s) };
+    if in_dst {
+        z.seconds = dst_off;
+        z.dst = true;
+    }
+    return z;
+}
+
