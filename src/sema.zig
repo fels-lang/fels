@@ -1222,7 +1222,15 @@ fn exprToTypeRefWith(allocator: std.mem.Allocator, expr: ast.Expr) ?ast.TypeRef 
             break :blk .{ .pointer = .{ .inner = inner, .span = expr.span } };
         },
         .call => |call| blk: {
-            if (call.callee.kind != .ident) break :blk null;
+            // `Name(args)`, or `ns::Name(args)` of an imported module
+            const name: []const u8, const namespace: ?[]const u8 = switch (call.callee.kind) {
+                .ident => |n| .{ n, null },
+                .scope_access => |sa| switch (sa.base.kind) {
+                    .ident => |ns| .{ sa.member, ns },
+                    else => break :blk null,
+                },
+                else => break :blk null,
+            };
             var targs: std.ArrayList(ast.TypeRef) = .empty;
             for (call.args) |ca| {
                 const ae = switch (ca) {
@@ -1239,7 +1247,8 @@ fn exprToTypeRefWith(allocator: std.mem.Allocator, expr: ast.Expr) ?ast.TypeRef 
                 };
             }
             break :blk .{ .generic_inst = .{
-                .name = call.callee.kind.ident,
+                .name = name,
+                .namespace = namespace,
                 .args = targs.toOwnedSlice(allocator) catch break :blk null,
                 .span = expr.span,
             } };
@@ -5736,6 +5745,10 @@ const Checker = struct {
                             .span = expr.span,
                         });
                     }
+                }
+                // `ns::Name(args)`: a generic type of an imported module (`sort::Asc(K)`).
+                if (call.callee.kind == .scope_access) {
+                    if (self.exprToTypeRef(expr)) |ty| return try self.typeFromRef(ty);
                 }
                 self.emitError(expr.span, "expected a type, found a call expression", .{});
                 return error.SemanticFailed;
