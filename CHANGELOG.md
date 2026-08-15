@@ -37,6 +37,9 @@ the major version is `0`, any minor bump may break source compatibility.
 - **Containers**: `std.pqueue` (a priority queue: smallest first, largest first, or by a
   function), `std.deque` (push and pop at both ends) and `std.bitset`. The maps gain
   `entries()` for a `for` loop, and sets of keys, `AutoSet(K)` and `StrSet`.
+- **`std.cli`**: describe a command's flags, options and positional arguments once; `parse`
+  reads the arguments by the usual rules with a message for each mistake, and `help` writes the
+  usage text.
 - **`std.decimal`**: exact decimal numbers for money: `add`, `sub`, `mul`, `div` with a scale
   and a rounding mode (half even, half up, half down, down, up, floor, ceiling), `round`,
   comparison, and text both ways. A result that does not fit is an error, never a wrong number.
