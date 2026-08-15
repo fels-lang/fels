@@ -37,6 +37,10 @@ the major version is `0`, any minor bump may break source compatibility.
 - **Containers**: `std.pqueue` (a priority queue: smallest first, largest first, or by a
   function), `std.deque` (push and pop at both ends) and `std.bitset`. The maps gain
   `entries()` for a `for` loop, and sets of keys, `AutoSet(K)` and `StrSet`.
+- **Pipes to a child**: `process::spawn_piped` connects any of a child's stdin, stdout and
+  stderr to this process, as `fs::File`s, and `process::output(&a, cmd)` runs a command and
+  keeps its stdout. On Windows a read from a pipe whose writer is gone gives the end (0) instead
+  of failing.
 - **`std.flate`**: DEFLATE decompression, with `gunzip` and `unzlib` checking their
   checksums. `std.hash` gains Adler-32.
 - **`std.fs`** gains `walk` (a whole folder tree in a `for` loop), `info` (size, last write
