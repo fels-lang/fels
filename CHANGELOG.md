@@ -37,6 +37,9 @@ the major version is `0`, any minor bump may break source compatibility.
 - **Containers**: `std.pqueue` (a priority queue: smallest first, largest first, or by a
   function), `std.deque` (push and pop at both ends) and `std.bitset`. The maps gain
   `entries()` for a `for` loop, and sets of keys, `AutoSet(K)` and `StrSet`.
+- **`map::SortedMap`**: keys kept in order (by `<`, a function or an order type), with
+  in-order `entries()`, `from(k)`, `first` and `last`. `std.sort`'s order types `Asc`, `Desc`
+  and `By` are public.
 - **Pipes to a child**: `process::spawn_piped` connects any of a child's stdin, stdout and
   stderr to this process, as `fs::File`s, and `process::output(&a, cmd)` runs a command and
   keeps its stdout. On Windows a read from a pipe whose writer is gone gives the end (0) instead
@@ -75,6 +78,8 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- A generic type of another module is a type argument: `f(K, V, sort::Asc(K), …)` was
+  "expected a type, found a call expression", where `Asc(K)` of the file's own module worked.
 - A string constant that names another (`ALIAS :: CHARS;`) or comes from a `#run` has a length
   and bytes: `ALIAS.len` read garbage, and `ALIAS[1]` stopped the build with an LLVM error. A
   static that names a string constant (`C: Codec = .{ CHARS, true };`) can be read in a `#run`;
