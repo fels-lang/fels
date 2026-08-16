@@ -1,0 +1,950 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.regex — regular expressions, matched in time linear in the text (a Pike VM, as RE2 and
+// Go do it): no pattern can make a match take exponential time.
+//
+//   re := regex::compile(&a, "(\\d{4})-(\\d{2})-(\\d{2})")?;
+//   if re.find("due 2024-03-15!") |m| {
+//       year := m.group(1) ?? "";                  // "2024"; m.str() is "2024-03-15"
+//   }
+//   for m in re.find_all(text) { … }
+//   fixed := re.replace_all(&a, text, "$3.$2.$1");  // "15.03.2024"
+//
+// Syntax: literals; `.` (any rune but a line break); classes `[a-z_]`, `[^0-9]` and `\d \w \s` (and
+// `\D \W \S`), ASCII; anchors `^ $` (the text's start and end; of each line with `(?m)`), `\A \z`,
+// `\b \B`; groups `( )`, `(?: )` without a capture, `(?P<name> )` or `(?<name> )` with a name;
+// `|`; repeats `* + ? {n} {n,} {n,m}`, greedy, or lazy with a `?` after them. `(?i)` (ASCII case),
+// `(?m)` and `(?s)` (`.` takes line breaks too) at the start of the pattern set flags. Escapes:
+// `\n \t \r \f \v \0`, `\xHH`, `\x{H...}`, and a backslash before any punctuation.
+//
+// The text is read as UTF-8, a rune at a time: `.` and a class take a whole rune, and an index is
+// a byte offset. Matches are leftmost-first, as in Perl, Python and Go: of the matches that start
+// first, the one the pattern prefers (the left of `|`, the longer of a greedy repeat).
+//
+// A Regex keeps the memory its matching works in, so one Regex is used by one thread at a time,
+// and a `Match` is good until the next search with its Regex.
+
+#import std.heap.{ Arena, alloc };
+#import std.vec as vec;
+#import std.vec.{ Vec };
+#import std.utf8 as utf8;
+#import std.strings as strings;
+
+pub RegexError :: errors {
+    unclosed_group,     // a `(` without its `)`
+    unmatched_paren,    // a `)` without its `(`
+    bad_class,          // a `[` without its `]`, or a range backwards (`[z-a]`)
+    bad_escape,         // a backslash before a letter or digit that means nothing here
+    nothing_to_repeat,  // `*`, `+`, `?` or `{` with nothing before it
+    bad_count,          // `{n,m}` with m < n, or more than 1000
+    too_big,            // a program past 50000 instructions
+}
+
+// Instructions
+OP_RUNE :: 0u8;       // a: the rune
+OP_ANY :: 1u8;        // any rune but '\n'
+OP_ANY_NL :: 2u8;     // any rune
+OP_CLASS :: 3u8;      // a: the class
+OP_SPLIT :: 4u8;      // a first, b second
+OP_JMP :: 5u8;        // a
+OP_SAVE :: 6u8;       // a: the capture slot
+OP_ASSERT :: 7u8;     // a: the kind
+OP_MATCH :: 8u8;
+OP_LOOP :: 9u8;       // a loop's way back: to a, or out to b when a was reached at this place
+                      // already (an iteration that took nothing ends the loop)
+
+AS_BOL :: 0u32;        // ^ (multi-line: after a '\n' too)
+AS_EOL :: 1u32;        // $
+AS_TEXT_BEGIN :: 2u32; // \A
+AS_TEXT_END :: 3u32;   // \z
+AS_WORD :: 4u32;       // \b
+AS_NOT_WORD :: 5u32;   // \B
+
+Inst :: struct {
+    op: u8,
+    a: u32,
+    b: u32,
+}
+
+Range :: struct { lo: u32, hi: u32 }
+
+ClassRef :: struct {
+    first: usize,   // its ranges in `ranges`
+    count: usize,
+    negated: bool,
+}
+
+// The pattern, read into a tree first
+
+N_EMPTY :: 0u8;
+N_RUNE :: 1u8;       // a: rune
+N_ANY :: 2u8;
+N_CLASS :: 3u8;      // a: class
+N_CONCAT :: 4u8;     // kids
+N_ALT :: 5u8;        // kids
+N_REPEAT :: 6u8;     // kids[0]; a min, b max (-1 for none), greedy
+N_GROUP :: 7u8;      // kids[0]; a: capture index, -1 for none
+N_ASSERT :: 8u8;     // a: kind
+
+Node :: struct {
+    kind: u8,
+    a: i64,
+    b: i64,
+    greedy: bool,
+    kids: usize,      // first index in `Parser.kid_list`
+    nkids: usize,
+}
+
+Parser :: struct {
+    a: *Arena,
+    p: []const u8,
+    i: usize,
+    nodes: Vec(Node),
+    kid_list: Vec(usize),
+    ranges: Vec(Range),
+    classes: Vec(ClassRef),
+    ngroups: usize,
+    names: Vec([]const u8),    // "" for a group without a name; index = group - 1
+    fold: bool,                // (?i)
+    multiline: bool,           // (?m)
+    dotall: bool,              // (?s)
+
+    node :: fn(self: *Self, kind: u8, a: i64, b: i64) -> usize {
+        n: Node = .{ kind, a, b, true, 0, 0 };
+        self.nodes.push(n);
+        return self.nodes.len() - 1;
+    }
+
+    with_kids :: fn(self: *Self, kind: u8, kids: []const usize) -> usize {
+        n: Node = .{ kind, 0, 0, true, self.kid_list.len(), kids.len };
+        for k in kids { self.kid_list.push(k); }
+        self.nodes.push(n);
+        return self.nodes.len() - 1;
+    }
+
+    more :: fn(self: *Self) -> bool { return self.i < self.p.len; }
+    peek :: fn(self: *Self) -> u8 { return self.p[self.i]; }
+
+    // The next rune of the pattern.
+    rune :: fn(self: *Self) -> u32 {
+        d := utf8::decode(self.p[self.i..self.p.len]);
+        self.i += d.len;
+        return d.rune;
+    }
+
+    // alternation: concat ( '|' concat )*
+    alt :: fn(self: *Self) -> usize ! RegexError {
+        first := self.concat()?;
+        if !self.more() || self.peek() != '|' { return first; }
+        kids := vec::make(usize, self.a);
+        kids.push(first);
+        while self.more() && self.peek() == '|' {
+            self.i += 1;
+            kids.push(self.concat()?);
+        }
+        return self.with_kids(N_ALT, kids.items());
+    }
+
+    concat :: fn(self: *Self) -> usize ! RegexError {
+        kids := vec::make(usize, self.a);
+        while self.more() && self.peek() != '|' && self.peek() != ')' {
+            kids.push(self.repeat()?);
+        }
+        if kids.len() == 0 { return self.node(N_EMPTY, 0, 0); }
+        if kids.len() == 1 { return kids.get(0); }
+        return self.with_kids(N_CONCAT, kids.items());
+    }
+
+    repeat :: fn(self: *Self) -> usize ! RegexError {
+        atom := self.atom()?;
+        while self.more() {
+            c := self.peek();
+            lo: i64 = 0;
+            hi: i64 = -1;
+            if c == '*' {
+                self.i += 1;
+            } else if c == '+' {
+                self.i += 1;
+                lo = 1;
+            } else if c == '?' {
+                self.i += 1;
+                hi = 1;
+            } else if c == '{' && self.count_ahead() {
+                self.i += 1;
+                lo = self.number();
+                hi = lo;
+                if self.more() && self.peek() == ',' {
+                    self.i += 1;
+                    hi = if self.more() && self.peek() == '}' { -1 } else { self.number() };
+                }
+                self.i += 1;   // '}'
+                if (hi >= 0 && hi < lo) || lo > 1000 || hi > 1000 { fail .bad_count; }
+            } else {
+                break;
+            }
+            greedy := true;
+            if self.more() && self.peek() == '?' {
+                self.i += 1;
+                greedy = false;
+            }
+            k: [1]usize = .{ atom };
+            atom = self.with_kids(N_REPEAT, k[:]);
+            n := self.nodes.at(atom);
+            n.a = lo;
+            n.b = hi;
+            n.greedy = greedy;
+        }
+        return atom;
+    }
+
+    // Whether a `{` starts a count (`{3}`, `{2,}`, `{2,5}`); otherwise it is a literal brace.
+    count_ahead :: fn(self: *Self) -> bool {
+        j := self.i + 1;
+        digits: usize = 0;
+        while j < self.p.len && self.p[j] >= '0' && self.p[j] <= '9' {
+            j += 1;
+            digits += 1;
+        }
+        if digits == 0 { return false; }
+        if j < self.p.len && self.p[j] == ',' {
+            j += 1;
+            while j < self.p.len && self.p[j] >= '0' && self.p[j] <= '9' { j += 1; }
+        }
+        return j < self.p.len && self.p[j] == '}';
+    }
+
+    number :: fn(self: *Self) -> i64 {
+        v: i64 = 0;
+        while self.more() && self.peek() >= '0' && self.peek() <= '9' {
+            if v < 100000 { v = v * 10 + (self.peek() - '0') as i64; }
+            self.i += 1;
+        }
+        return v;
+    }
+
+    atom :: fn(self: *Self) -> usize ! RegexError {
+        c := self.peek();
+        if c == '*' || c == '+' || c == '?' { fail .nothing_to_repeat; }
+        if c == '{' && self.count_ahead() { fail .nothing_to_repeat; }
+        if c == '(' {
+            self.i += 1;
+            cap: i64 = -1;
+            if self.i + 1 < self.p.len && self.p[self.i] == '?' {
+                k := self.p[self.i + 1];
+                if k == ':' {
+                    self.i += 2;
+                } else if k == 'P' || k == '<' {
+                    self.i += if k == 'P' { 3 } else { 2 };
+                    start := self.i;
+                    while self.more() && self.peek() != '>' { self.i += 1; }
+                    if !self.more() { fail .unclosed_group; }
+                    self.ngroups += 1;
+                    cap = self.ngroups as i64;
+                    self.names.push(self.p[start..self.i]);
+                    self.i += 1;
+                } else {
+                    fail .bad_escape;
+                }
+            } else {
+                self.ngroups += 1;
+                cap = self.ngroups as i64;
+                self.names.push("");
+            }
+            inner := self.alt()?;
+            if !self.more() || self.peek() != ')' { fail .unclosed_group; }
+            self.i += 1;
+            k: [1]usize = .{ inner };
+            g := self.with_kids(N_GROUP, k[:]);
+            self.nodes.at(g).a = cap;
+            return g;
+        }
+        if c == ')' { fail .unmatched_paren; }
+        if c == '[' { return self.class(); }
+        if c == '.' {
+            self.i += 1;
+            return self.node(N_ANY, 0, 0);
+        }
+        if c == '^' {
+            self.i += 1;
+            return self.node(N_ASSERT, AS_BOL as i64, 0);
+        }
+        if c == '$' {
+            self.i += 1;
+            return self.node(N_ASSERT, AS_EOL as i64, 0);
+        }
+        if c == '\\' {
+            self.i += 1;
+            if !self.more() { fail .bad_escape; }
+            e := self.peek();
+            if e == 'A' { self.i += 1; return self.node(N_ASSERT, AS_TEXT_BEGIN as i64, 0); }
+            if e == 'z' { self.i += 1; return self.node(N_ASSERT, AS_TEXT_END as i64, 0); }
+            if e == 'b' { self.i += 1; return self.node(N_ASSERT, AS_WORD as i64, 0); }
+            if e == 'B' { self.i += 1; return self.node(N_ASSERT, AS_NOT_WORD as i64, 0); }
+            if e == 'd' || e == 'D' || e == 'w' || e == 'W' || e == 's' || e == 'S' {
+                self.i += 1;
+                first := self.ranges.len();
+                self.add_perl(e);
+                cr: ClassRef = .{ first, self.ranges.len() - first, e == 'D' || e == 'W' || e == 'S' };
+                self.classes.push(cr);
+                return self.node(N_CLASS, (self.classes.len() - 1) as i64, 0);
+            }
+            r := self.escape()?;
+            return self.literal(r);
+        }
+        return self.literal(self.rune());
+    }
+
+    // A rune to match, both ASCII cases with (?i).
+    literal :: fn(self: *Self, r: u32) -> usize {
+        if self.fold && ((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+            first := self.ranges.len();
+            lower := r | 0x20;
+            a: Range = .{ lower, lower };
+            b: Range = .{ lower - 32, lower - 32 };
+            self.ranges.push(a);
+            self.ranges.push(b);
+            cr: ClassRef = .{ first, 2, false };
+            self.classes.push(cr);
+            return self.node(N_CLASS, (self.classes.len() - 1) as i64, 0);
+        }
+        return self.node(N_RUNE, r as i64, 0);
+    }
+
+    // After a backslash: the rune an escape names.
+    escape :: fn(self: *Self) -> u32 ! RegexError {
+        e := self.peek();
+        self.i += 1;
+        if e == 'n' { return '\n'; }
+        if e == 't' { return '\t'; }
+        if e == 'r' { return '\r'; }
+        if e == 'f' { return 12; }
+        if e == 'v' { return 11; }
+        if e == '0' { return 0; }
+        if e == 'x' {
+            if self.more() && self.peek() == '{' {
+                self.i += 1;
+                v: u32 = 0;
+                n: usize = 0;
+                while self.more() && self.peek() != '}' {
+                    h := hex_digit(self.peek());
+                    if h < 0 || n >= 6 { fail .bad_escape; }
+                    v = v * 16 + (h as u32);
+                    n += 1;
+                    self.i += 1;
+                }
+                if !self.more() || n == 0 { fail .bad_escape; }
+                self.i += 1;
+                return v;
+            }
+            if self.i + 2 > self.p.len { fail .bad_escape; }
+            h1 := hex_digit(self.p[self.i]);
+            h2 := hex_digit(self.p[self.i + 1]);
+            if h1 < 0 || h2 < 0 { fail .bad_escape; }
+            self.i += 2;
+            return (h1 * 16 + h2) as u32;
+        }
+        if (e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z') || (e >= '0' && e <= '9') { fail .bad_escape; }
+        // punctuation as itself; a rune past ASCII too
+        self.i -= 1;
+        return self.rune();
+    }
+
+    // The ranges of \d \w \s (their negations are the class negated).
+    add_perl :: fn(self: *Self, e: u8) {
+        if e == 'd' || e == 'D' {
+            self.push_range('0', '9');
+        } else if e == 'w' || e == 'W' {
+            self.push_range('0', '9');
+            self.push_range('A', 'Z');
+            self.push_range('_', '_');
+            self.push_range('a', 'z');
+        } else {
+            self.push_range('\t', '\r');    // \t \n \v \f \r
+            self.push_range(' ', ' ');
+        }
+    }
+
+    push_range :: fn(self: *Self, lo: u32, hi: u32) {
+        r: Range = .{ lo, hi };
+        self.ranges.push(r);
+    }
+
+    class :: fn(self: *Self) -> usize ! RegexError {
+        self.i += 1;   // '['
+        negated := false;
+        if self.more() && self.peek() == '^' {
+            negated = true;
+            self.i += 1;
+        }
+        first := self.ranges.len();
+        // the class's own \D \W \S go in as classes of their own: [^\d] is the same as \D
+        start := self.i;
+        while true {
+            if !self.more() { fail .bad_class; }
+            c := self.peek();
+            if c == ']' && self.i > start {
+                self.i += 1;
+                break;
+            }
+            lo: u32 = 0;
+            if c == '\\' {
+                self.i += 1;
+                if !self.more() { fail .bad_class; }
+                e := self.peek();
+                if e == 'd' || e == 'w' || e == 's' {
+                    self.i += 1;
+                    self.add_perl(e);
+                    continue;
+                }
+                if e == 'D' || e == 'W' || e == 'S' {
+                    // the complement, written out as ranges
+                    self.i += 1;
+                    mark := self.ranges.len();
+                    self.add_perl(e);
+                    self.complement_from(mark);
+                    continue;
+                }
+                lo = self.escape()?;
+            } else {
+                lo = self.rune();
+            }
+            hi := lo;
+            if self.i + 1 < self.p.len && self.peek() == '-' && self.p[self.i + 1] != ']' {
+                self.i += 1;
+                if self.peek() == '\\' {
+                    self.i += 1;
+                    if !self.more() { fail .bad_class; }
+                    hi = self.escape()?;
+                } else {
+                    hi = self.rune();
+                }
+                if hi < lo { fail .bad_class; }
+            }
+            self.push_range(lo, hi);
+            if self.fold { self.fold_range(lo, hi); }
+        }
+        cr: ClassRef = .{ first, self.ranges.len() - first, negated };
+        self.classes.push(cr);
+        return self.node(N_CLASS, (self.classes.len() - 1) as i64, 0);
+    }
+
+    // With (?i), the other ASCII case of the letters in lo..hi.
+    fold_range :: fn(self: *Self, lo: u32, hi: u32) {
+        a := if lo > 'a' { lo } else { 'a' };
+        b := if hi < 'z' { hi } else { 'z' };
+        if a <= b { self.push_range(a - 32, b - 32); }
+        c := if lo > 'A' { lo } else { 'A' };
+        d := if hi < 'Z' { hi } else { 'Z' };
+        if c <= d { self.push_range(c + 32, d + 32); }
+    }
+
+    // Replace the ranges from `mark` on (sorted, not overlapping) by their complement.
+    complement_from :: fn(self: *Self, mark: usize) {
+        n := self.ranges.len();
+        tmp := alloc(Range, self.a, n - mark);
+        for k in mark..n { tmp[k - mark] = self.ranges.get(k); }
+        while self.ranges.len() > mark { r := self.ranges.pop(); }
+        next: u32 = 0;
+        for r in tmp {
+            if r.lo > next { self.push_range(next, r.lo - 1); }
+            next = r.hi + 1;
+        }
+        self.push_range(next, 0x10FFFF);
+    }
+}
+
+hex_digit :: fn(c: u8) -> i32 {
+    if c >= '0' && c <= '9' { return (c - '0') as i32; }
+    if c >= 'a' && c <= 'f' { return (c - 'a') as i32 + 10; }
+    if c >= 'A' && c <= 'F' { return (c - 'A') as i32 + 10; }
+    return -1;
+}
+
+// The tree, as instructions
+
+Compiler :: struct {
+    prog: Vec(Inst),
+    nodes: []Node,
+    kids: []usize,
+    dotall: bool,
+    too_big: bool,
+
+    emit :: fn(self: *Self, op: u8, a: u32, b: u32) -> usize {
+        if self.prog.len() >= 50000 { self.too_big = true; }
+        i: Inst = .{ op, a, b };
+        self.prog.push(i);
+        return self.prog.len() - 1;
+    }
+
+    here :: fn(self: *Self) -> u32 { return self.prog.len() as u32; }
+
+    patch_a :: fn(self: *Self, at: usize, to: u32) { self.prog.at(at).a = to; }
+    patch_b :: fn(self: *Self, at: usize, to: u32) { self.prog.at(at).b = to; }
+
+    node :: fn(self: *Self, id: usize) {
+        if self.too_big { return; }
+        n := self.nodes[id];
+        if n.kind == N_EMPTY { return; }
+        if n.kind == N_RUNE { self.emit(OP_RUNE, n.a as u32, 0); return; }
+        if n.kind == N_ANY { self.emit(if self.dotall { OP_ANY_NL } else { OP_ANY }, 0, 0); return; }
+        if n.kind == N_CLASS { self.emit(OP_CLASS, n.a as u32, 0); return; }
+        if n.kind == N_ASSERT { self.emit(OP_ASSERT, n.a as u32, 0); return; }
+        if n.kind == N_CONCAT {
+            for k in 0..n.nkids { self.node(self.kids[n.kids + k]); }
+            return;
+        }
+        if n.kind == N_GROUP {
+            if n.a >= 0 { self.emit(OP_SAVE, (2 * n.a) as u32, 0); }
+            self.node(self.kids[n.kids]);
+            if n.a >= 0 { self.emit(OP_SAVE, (2 * n.a + 1) as u32, 0); }
+            return;
+        }
+        if n.kind == N_ALT {
+            // split L1, next; L1: x; jmp end; next: split L2, next2; ... last
+            jumps := vec::make(usize, self.prog.region);
+            for k in 0..n.nkids {
+                if k + 1 < n.nkids {
+                    split := self.emit(OP_SPLIT, 0, 0);
+                    self.patch_a(split, self.here());
+                    self.node(self.kids[n.kids + k]);
+                    jumps.push(self.emit(OP_JMP, 0, 0));
+                    self.patch_b(split, self.here());
+                } else {
+                    self.node(self.kids[n.kids + k]);
+                }
+            }
+            for j in jumps.items() { self.patch_a(j, self.here()); }
+            return;
+        }
+        // N_REPEAT: the body `lo` times, then up to `hi - lo` optional ones, or a loop
+        body := self.kids[n.kids];
+        for k in 0..(n.a as usize) { self.node(body); }
+        if n.b < 0 {
+            // L: split body, out; body; loop L, out
+            l := self.here();
+            split := self.emit(OP_SPLIT, 0, 0);
+            self.node(body);
+            back := self.emit(OP_LOOP, l, 0);
+            self.patch_b(back, self.here());
+            self.order(split, l + 1, self.here(), n.greedy);
+            return;
+        }
+        splits := vec::make(usize, self.prog.region);
+        for k in (n.a as usize)..(n.b as usize) {
+            split := self.emit(OP_SPLIT, 0, 0);
+            splits.push(split);
+            self.node(body);
+            self.patch_a(split, (split + 1) as u32);
+        }
+        end := self.here();
+        for s in splits.items() { self.order(s, (s + 1) as u32, end, n.greedy); }
+    }
+
+    // A split to `take` (the body) and `skip`, the preferred one first.
+    order :: fn(self: *Self, split: usize, take: u32, skip: u32, greedy: bool) {
+        if greedy {
+            self.patch_a(split, take);
+            self.patch_b(split, skip);
+        } else {
+            self.patch_a(split, skip);
+            self.patch_b(split, take);
+        }
+    }
+}
+
+/// A compiled pattern (`compile`), and the memory its matching works in.
+pub Regex :: struct {
+    prog: []Inst,
+    ranges: []Range,
+    classes: []ClassRef,
+    names: []const []const u8,
+    ncap: usize,             // capture slots: 2 per group, group 0 the whole match
+    multiline: bool,
+    // working memory, made once
+    clist: []u32,
+    nlist: []u32,
+    ccaps: []usize,          // a thread at slot k has its captures at k * ncap
+    ncaps: []usize,
+    mark: []u32,             // the generation a pc was last added in
+    gen: u32,
+    stack: []u64,            // for adding threads: pc << 1, or (slot << 33 | old << 1 | 1)
+    work: []usize,           // the captures being followed
+    result: []usize,         // the last match's captures
+    region: *Arena,
+
+    /// Whether `text` has a match anywhere.
+    pub is_match :: fn(self: *Self, text: []const u8) -> bool { return self.search(text, 0, false); }
+
+    /// The leftmost match in `text`, or null.
+    pub find :: fn(self: *Self, text: []const u8) -> ?Match { return self.find_at(text, 0); }
+
+    /// The leftmost match in `text` that starts at `start` or later, or null.
+    pub find_at :: fn(self: *Self, text: []const u8, start: usize) -> ?Match {
+        if !self.search(text, start, false) { return null; }
+        m: Match = .{ self, text };
+        return m;
+    }
+
+    /// The matches in `text` that do not overlap, left to right: `for m in re.find_all(text)`.
+    pub find_all :: fn(self: *Self, text: []const u8) -> Matches {
+        it: Matches = .{ self, text, 0, false, false };
+        return it;
+    }
+
+    /// The groups of the match, with `group(0)` the whole of it.
+    pub group_count :: fn(self: *Self) -> usize { return self.ncap / 2 - 1; }
+
+    /// The number of the group named `name`, or null.
+    pub group_index :: fn(self: *Self, name: []const u8) -> ?usize {
+        for k in 0..self.names.len {
+            if self.names[k] == name { return k + 1; }
+        }
+        return null;
+    }
+
+    /// `text` with each match replaced by `with`, in memory from `a`: `$0` the match, `$1` … a
+    /// group (`${1}` and `${name}` too), `$$` a `$`.
+    pub replace_all :: fn(self: *Self, a: *Arena, text: []const u8, with: []const u8) -> []const u8 {
+        sb := strings::builder(a);
+        last: usize = 0;
+        for m in self.find_all(text) {
+            sb.append(text[last..m.start()]);
+            expand(&sb, &m, with);
+            last = m.end();
+        }
+        sb.append(text[last..text.len]);
+        return sb.str();
+    }
+
+    /// The parts of `text` between the matches, in memory from `a`.
+    pub split :: fn(self: *Self, a: *Arena, text: []const u8) -> []const []const u8 {
+        out := vec::make([]const u8, a);
+        last: usize = 0;
+        for m in self.find_all(text) {
+            if m.end() == 0 { continue; }   // an empty match at the start splits nothing
+            out.push(text[last..m.start()]);
+            last = m.end();
+        }
+        out.push(text[last..text.len]);
+        return out.items();
+    }
+
+    // Run from `start`; true with `result` filled when there is a match. `no_empty_at_start`:
+    // a match that is empty and starts at `start` does not count (after an empty match, the
+    // next must move on).
+    search :: fn(self: *Self, text: []const u8, start: usize, no_empty_at_start: bool) -> bool {
+        n_c: usize = 0;
+        matched := false;
+        pos := start;
+        self.next_gen();
+        while true {
+            // a new thread at each position, until a match is found; after the threads already
+            // in clist, which started earlier, and in their generation
+            if !matched {
+                for k in 0..self.ncap { self.work[k] = 0xFFFFFFFFFFFFFFFF; }
+                n_c = self.add(self.clist, self.ccaps, n_c, 0, text, pos);
+            }
+            if n_c == 0 && matched { break; }
+            d: utf8::Decoded = .{ 0, 0 };
+            at_end := pos >= text.len;
+            if !at_end { d = utf8::decode(text[pos..text.len]); }
+            self.next_gen();
+            n_n: usize = 0;
+            k: usize = 0;
+            while k < n_c {
+                pc := self.clist[k] as usize;
+                caps := self.ccaps[k * self.ncap..(k + 1) * self.ncap];
+                inst := self.prog[pc];
+                if inst.op == OP_MATCH {
+                    empty := caps[0] == pos;
+                    if !(no_empty_at_start && empty && caps[0] == start) {
+                        for j in 0..self.ncap { self.result[j] = caps[j]; }
+                        self.result[1] = pos;
+                        matched = true;
+                        break;   // the threads after this one have lower priority
+                    }
+                    k += 1;
+                    continue;
+                }
+                if !at_end && self.step_ok(inst, d.rune) {
+                    for j in 0..self.ncap { self.work[j] = caps[j]; }
+                    n_n = self.add(self.nlist, self.ncaps, n_n, pc + 1, text, pos + d.len);
+                }
+                k += 1;
+            }
+            // swap the lists
+            tl := self.clist;
+            self.clist = self.nlist;
+            self.nlist = tl;
+            tc := self.ccaps;
+            self.ccaps = self.ncaps;
+            self.ncaps = tc;
+            n_c = n_n;
+            if at_end { break; }
+            pos += d.len;
+        }
+        return matched;
+    }
+
+    // Whether instruction `inst` takes rune `r`.
+    step_ok :: fn(self: *Self, inst: Inst, r: u32) -> bool {
+        if inst.op == OP_RUNE { return r == inst.a; }
+        if inst.op == OP_ANY { return r != '\n'; }
+        if inst.op == OP_ANY_NL { return true; }
+        if inst.op == OP_CLASS {
+            c := self.classes[inst.a as usize];
+            inside := false;
+            for k in c.first..c.first + c.count {
+                rg := self.ranges[k];
+                if r >= rg.lo && r <= rg.hi {
+                    inside = true;
+                    break;
+                }
+            }
+            return inside != c.negated;
+        }
+        return false;
+    }
+
+    // A new generation of marks; they all start over when the counter wraps.
+    next_gen :: fn(self: *Self) {
+        self.gen = self.gen +% 1;
+        if self.gen == 0 {
+            for k in 0..self.mark.len { self.mark[k] = 0; }
+            self.gen = 1;
+        }
+    }
+
+    // Add the thread at `pc` with the captures in `work`, following jumps, splits, saves and
+    // assertions at `pos`, to `list` (and `caps`) after its `n` threads; the new count.
+    add :: fn(self: *Self, list: []u32, caps: []usize, n: usize, pc0: usize, text: []const u8, pos: usize) -> usize {
+        count := n;
+        sp: usize = 0;
+        self.stack[sp] = (pc0 as u64) << 1;
+        sp += 1;
+        while sp > 0 {
+            sp -= 1;
+            top := self.stack[sp];
+            if (top & 1) == 1 {
+                // put a capture back as it was before a save
+                slot := (top >> 33) as usize;
+                self.work[slot] = ((top >> 1) & 0xFFFFFFFF) as usize;
+                if ((top >> 1) & 0xFFFFFFFF) == 0xFFFFFFFF { self.work[slot] = 0xFFFFFFFFFFFFFFFF; }
+                continue;
+            }
+            pc := (top >> 1) as usize;
+            if self.mark[pc] == self.gen { continue; }
+            self.mark[pc] = self.gen;
+            inst := self.prog[pc];
+            if inst.op == OP_JMP {
+                self.stack[sp] = (inst.a as u64) << 1;
+                sp += 1;
+            } else if inst.op == OP_LOOP {
+                to := if self.mark[inst.a as usize] == self.gen { inst.b } else { inst.a };
+                self.stack[sp] = (to as u64) << 1;
+                sp += 1;
+            } else if inst.op == OP_SPLIT {
+                // the second after the first: push it first
+                self.stack[sp] = (inst.b as u64) << 1;
+                self.stack[sp + 1] = (inst.a as u64) << 1;
+                sp += 2;
+            } else if inst.op == OP_SAVE {
+                slot := inst.a as usize;
+                if slot < self.ncap {
+                    old := self.work[slot];
+                    old32: u64 = if old == 0xFFFFFFFFFFFFFFFF { 0xFFFFFFFF } else { old as u64 };
+                    self.stack[sp] = ((slot as u64) << 33) | (old32 << 1) | 1;
+                    sp += 1;
+                    self.work[slot] = pos;
+                }
+                self.stack[sp] = ((pc + 1) as u64) << 1;
+                sp += 1;
+            } else if inst.op == OP_ASSERT {
+                if self.holds(inst.a, text, pos) {
+                    self.stack[sp] = ((pc + 1) as u64) << 1;
+                    sp += 1;
+                }
+            } else {
+                list[count] = pc as u32;
+                for j in 0..self.ncap { caps[count * self.ncap + j] = self.work[j]; }
+                count += 1;
+            }
+        }
+        return count;
+    }
+
+    holds :: fn(self: *Self, kind: u32, text: []const u8, pos: usize) -> bool {
+        if kind == AS_TEXT_BEGIN { return pos == 0; }
+        if kind == AS_TEXT_END { return pos == text.len; }
+        if kind == AS_BOL { return pos == 0 || (self.multiline && text[pos - 1] == '\n'); }
+        if kind == AS_EOL { return pos == text.len || (self.multiline && text[pos] == '\n'); }
+        before := pos > 0 && is_word(text[pos - 1]);
+        after := pos < text.len && is_word(text[pos]);
+        if kind == AS_WORD { return before != after; }
+        return before == after;
+    }
+}
+
+is_word :: fn(c: u8) -> bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+// `$1`, `${name}`, `$$` in a replacement
+expand :: fn(sb: *strings::StringBuilder, m: *Match, with: []const u8) {
+    i: usize = 0;
+    while i < with.len {
+        c := with[i];
+        if c != '$' || i + 1 >= with.len {
+            sb.append_byte(c);
+            i += 1;
+            continue;
+        }
+        n := with[i + 1];
+        if n == '$' {
+            sb.append_byte('$');
+            i += 2;
+            continue;
+        }
+        name: []const u8 = "";
+        if n == '{' {
+            j := i + 2;
+            while j < with.len && with[j] != '}' { j += 1; }
+            if j >= with.len {
+                sb.append_byte(c);
+                i += 1;
+                continue;
+            }
+            name = with[i + 2..j];
+            i = j + 1;
+        } else if n >= '0' && n <= '9' {
+            j := i + 1;
+            while j < with.len && with[j] >= '0' && with[j] <= '9' { j += 1; }
+            name = with[i + 1..j];
+            i = j;
+        } else {
+            sb.append_byte(c);
+            i += 1;
+            continue;
+        }
+        g: ?usize = null;
+        if name.len > 0 && name[0] >= '0' && name[0] <= '9' {
+            v: usize = 0;
+            for d in name { v = v * 10 + (d - '0') as usize; }
+            g = v;
+        } else {
+            g = m.re.group_index(name);
+        }
+        if g |gi| {
+            if m.group(gi) |part| { sb.append(part); }
+        }
+    }
+}
+
+/// Where a group is in the text: bytes `start` to `end`.
+pub Span :: struct {
+    start: usize,
+    end: usize,
+}
+
+/// A match: the text it is in, and the places of its groups (`Regex.find`). Good until the next
+/// search with its Regex.
+pub Match :: struct {
+    re: *Regex,
+    text: []const u8,
+
+    pub start :: fn(self: *Self) -> usize { return self.re.result[0]; }
+    pub end :: fn(self: *Self) -> usize { return self.re.result[1]; }
+
+    /// The text of the whole match.
+    pub str :: fn(self: *Self) -> []const u8 { return self.text[self.re.result[0]..self.re.result[1]]; }
+
+    /// The text of group `i` (0: the whole match), or null when it took no part in the match.
+    pub group :: fn(self: *Self, i: usize) -> ?[]const u8 {
+        if 2 * i + 1 >= self.re.ncap { return null; }
+        s := self.re.result[2 * i];
+        e := self.re.result[2 * i + 1];
+        if s == 0xFFFFFFFFFFFFFFFF || e == 0xFFFFFFFFFFFFFFFF { return null; }
+        return self.text[s..e];
+    }
+
+    /// Where group `i` (0: the whole match) is in the text, as byte offsets; null when it took
+    /// no part in the match.
+    pub span :: fn(self: *Self, i: usize) -> ?Span {
+        if 2 * i + 1 >= self.re.ncap { return null; }
+        s := self.re.result[2 * i];
+        e := self.re.result[2 * i + 1];
+        if s == 0xFFFFFFFFFFFFFFFF || e == 0xFFFFFFFFFFFFFFFF { return null; }
+        sp: Span = .{ s, e };
+        return sp;
+    }
+
+    /// The text of the group named `name`, or null.
+    pub named :: fn(self: *Self, name: []const u8) -> ?[]const u8 {
+        if self.re.group_index(name) |i| { return self.group(i); }
+        return null;
+    }
+}
+
+/// The matches of a text that do not overlap (`Regex.find_all`). An empty match right after the
+/// one before it is allowed, two at one place are not, as in Python.
+pub Matches :: struct {
+    re: *Regex,
+    text: []const u8,
+    pos: usize,
+    last_empty: bool,
+    done: bool,
+
+    pub next :: fn(self: *Self) -> ?Match {
+        if self.done || self.pos > self.text.len { return null; }
+        if !self.re.search(self.text, self.pos, self.last_empty) {
+            self.done = true;
+            return null;
+        }
+        s := self.re.result[0];
+        e := self.re.result[1];
+        self.last_empty = s == e;
+        self.pos = e;
+        m: Match = .{ self.re, self.text };
+        return m;
+    }
+}
+
+/// The pattern compiled, its working memory from `a`.
+pub compile :: fn(a: *Arena, pattern: []const u8) -> Regex ! RegexError {
+    p: Parser = .{ a, pattern, 0, vec::make(Node, a), vec::make(usize, a), vec::make(Range, a),
+        vec::make(ClassRef, a), 0, vec::make([]const u8, a), false, false, false };
+    // flags at the start: (?i) (?m) (?s), together as (?ims)
+    if pattern.len >= 4 && pattern[0] == '(' && pattern[1] == '?' {
+        j: usize = 2;
+        while j < pattern.len && (pattern[j] == 'i' || pattern[j] == 'm' || pattern[j] == 's') { j += 1; }
+        if j > 2 && j < pattern.len && pattern[j] == ')' {
+            for k in 2..j {
+                if pattern[k] == 'i' { p.fold = true; }
+                if pattern[k] == 'm' { p.multiline = true; }
+                if pattern[k] == 's' { p.dotall = true; }
+            }
+            p.i = j + 1;
+        }
+    }
+    root := p.alt()?;
+    if p.more() {
+        if p.peek() == ')' { fail .unmatched_paren; }
+        fail .unclosed_group;
+    }
+    c: Compiler = .{ vec::make(Inst, a), p.nodes.items(), p.kid_list.items(), p.dotall, false };
+    c.emit(OP_SAVE, 0, 0);
+    c.node(root);
+    c.emit(OP_SAVE, 1, 0);
+    c.emit(OP_MATCH, 0, 0);
+    if c.too_big { fail .too_big; }
+    prog := c.prog.items();
+    ncap := 2 * (p.ngroups + 1);
+    n := prog.len;
+    re: Regex = .{
+        prog, p.ranges.items(), p.classes.items(), p.names.items(), ncap, p.multiline,
+        alloc(u32, a, n), alloc(u32, a, n), alloc(usize, a, n * ncap), alloc(usize, a, n * ncap),
+        alloc(u32, a, n), 1, alloc(u64, a, 3 * n + 2 * ncap + 4), alloc(usize, a, ncap),
+        alloc(usize, a, ncap), a,
+    };
+    for k in 0..n { re.mark[k] = 0; }
+    return re;
+}
