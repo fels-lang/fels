@@ -1,0 +1,16 @@
+// std.time's local zone, as a `#test`: native only (tests/compiler/std_tests.zig), as it asks the
+// OS (Windows) or reads the zone file (Linux). What the zone is depends on the machine, so this
+// checks only what holds for every zone.
+#import std.time as time;
+
+#test
+the_local_zone :: fn(t: *Test) {
+    now := time::unix_seconds();
+    off := time::local_offset(now);
+    t.expect(off >= -14 * 3600 && off <= 14 * 3600 && off % 900 == 0);
+    t.eq(time::to_unix(time::local(now)), now + off);
+    // a winter and a summer day: the same offset, or one an hour apart
+    w := time::local_offset(1705320000);
+    s := time::local_offset(1719792000);
+    t.expect(w == s || w - s == 3600 || s - w == 3600);
+}

@@ -30,6 +30,7 @@ const files = [_][]const u8{
     "tests/fixtures/stdlib/sortedmap_tests.fels",
     "tests/fixtures/stdlib/decimal_tests.fels",
     "tests/fixtures/stdlib/cli_tests.fels",
+    "tests/fixtures/stdlib/time_more_tests.fels",
 };
 
 /// Files whose tests reach the OS (folders, the environment, the command line), which
@@ -46,6 +47,7 @@ const native_files = [_][]const u8{
     "tests/fixtures/stdlib/sync_tests.fels",
     "tests/fixtures/stdlib/fs_tests.fels",
     "tests/fixtures/stdlib/process_pipe_tests.fels",
+    "tests/fixtures/stdlib/time_local_tests.fels",
 };
 
 fn runAll(comptime_only: bool) !void {
