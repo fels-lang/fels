@@ -1119,6 +1119,33 @@ text := time::format_date(e, buf[:]);  // "2024-02-29"
 
 `is_leap_year(year)` and `days_in_month(year, month)` answer the calendar questions.
 
+**Local time.** `local_offset(secs)` is this machine's offset east of UTC at that instant, in
+seconds, with daylight saving time as it was then (3600 for Berlin in winter, 7200 in summer).
+Windows says it; on Linux it comes from the zone file that `TZ` (`Area/City`, `:Area/City` or
+a path) or else /etc/localtime names, and the POSIX rule at its end for years past its last
+transition. `local(secs)` and `now_local()` give the `DateTime` on this machine's clocks, and
+`to_unix(dt)` turns a `DateTime` back into seconds.
+
+```fels
+now := time::unix_seconds();
+buf: [64]u8 = .{};
+text := time::format_datetime(time::local(now), time::local_offset(now), "%a %e %b %Y, %H:%M %z", buf[:]);
+                                       // "Fri  1 Mar 2024, 15:07 +0100"
+stamp := time::format_rfc3339(now, 0, buf[:]);              // "2024-03-01T14:07:29Z"
+if time::parse_rfc3339("2024-03-01T15:07:29+01:00") |s| { ... s.secs, s.nanos, s.offset ... }
+d := time::format_duration(4250000000, buf[:]);             // "4.25s"; also "1h 0m 12s", "350ms"
+ns := time::parse_duration("1h30m") ?? 0;                     // in nanoseconds
+```
+
+- `format_datetime(dt, offset, pattern, out)` knows `%Y %y %m %d %e %j %H %I %p %M %S %a %A %b
+  %B %z` (`+0100`) `%Z` (`+01:00`) and `%%`; `offset` is what `%z` writes. What does not fit in
+  `out` is cut. `weekday_name` and `month_name` give the English names.
+- `parse_rfc3339` takes `T`, `t` or a space between date and time, fractions of a second, and
+  `Z`, `z` or `±hh:mm`; it gives null for anything else (also a day that does not exist).
+- Durations read and write the units `d h m s ms us ns`, with fractions (`1.5s`).
+- `tzif_offset(file_bytes, secs)` and `posix_offset("CET-1CEST,M3.5.0,M10.5.0/3", secs)` give
+  the offset of any zone, from a TZif file (as in /usr/share/zoneinfo) or a POSIX rule.
+
 ### `std.csv`
 
 This module reads CSV text: records of fields between separators, with fields in quotes as
