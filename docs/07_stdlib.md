@@ -1379,7 +1379,38 @@ plain := flate::inflate(&a, raw)?;          // bare DEFLATE, as a zip entry hold
 - Errors (`FlateError`): `.truncated`, `.bad_block`, `.bad_code`, `.bad_distance`,
   `.bad_header` (not gzip or zlib, or a zlib stream with a preset dictionary) and
   `.bad_checksum`.
-- There is no compression yet. Only the first member of a gzip file of several is read.
+- Compressing: `deflate(&a, bytes, level)`, `gzip(&a, bytes, level)` and `zlib(&a, bytes, level)`,
+  with `level` 0 (stored) to 9 (smallest); 6 is a good balance. Matches are found by hash
+  chains as zlib finds them, and each block is written stored, with the fixed codes or with its
+  own, whichever is smallest: the output is within about half a percent of zlib's at the same
+  level, and Python's zlib reads it.
+- Only the first member of a gzip file of several is read.
+
+### `std.zip`
+
+.zip archives, read and written: also .docx, .xlsx, .jar and .epub, which are zip inside.
+
+```fels
+#import std.zip as zip;
+
+ar := zip::open(&a, fs::read_all("book.zip", &a)?)?;
+for e in ar.entries { if !e.is_dir { bytes := ar.read(&a, e)?; ... } }
+if ar.find("word/document.xml") |e| { xml := ar.read(&a, e)?; }
+
+w := zip::writer(&a);
+w.add("hello.txt", "Hello!", 6);              // level 0 stores, 1-9 compress
+w.add_at("log.txt", log, 6, time::unix_seconds());
+w.add_dir("img");
+fs::write_file("out.zip", w.finish())?;
+```
+
+- An `Entry` has its `name` (UTF-8), `method` (0 stored, 8 DEFLATE), `size`, `compressed_size`,
+  `crc`, `is_dir`, and `modified()` in seconds since 1970 (zip keeps a date and time with no
+  zone, to two seconds). `read` checks the CRC-32 and the size.
+- `add` stores a file when compressing would not make it smaller. Files are dated 1980-01-01
+  unless added with `add_at`.
+- Errors (`ZipError`): `.not_zip`, `.corrupt`, `.bad_checksum`, and `.unsupported` for zip64
+  (past 4 GB or 65535 entries), encryption, or methods other than stored and DEFLATE.
 
 ### `std.hash`
 
