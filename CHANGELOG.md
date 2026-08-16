@@ -37,6 +37,9 @@ the major version is `0`, any minor bump may break source compatibility.
 - **Containers**: `std.pqueue` (a priority queue: smallest first, largest first, or by a
   function), `std.deque` (push and pop at both ends) and `std.bitset`. The maps gain
   `entries()` for a `for` loop, and sets of keys, `AutoSet(K)` and `StrSet`.
+- **Compression**: `flate::deflate`, `flate::gzip` and `flate::zlib` at levels 0 to 9, within
+  about half a percent of zlib's output. **`std.zip`** reads and writes .zip archives (stored
+  and DEFLATE entries, CRC-32 checked, UTF-8 names, modification times).
 - **`std.regex`**: regular expressions in linear time (a Pike VM): classes, anchors, groups
   with names, greedy and lazy repeats, flags, over UTF-8 runes; `find`, `find_all`,
   `replace_all` with `$1` and `${name}`, `split`.
