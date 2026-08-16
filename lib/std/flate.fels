@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.flate — DEFLATE decompression (RFC 1951), and the gzip (RFC 1952) and zlib (RFC 1950)
+// std.flate — DEFLATE (RFC 1951), both ways, and the gzip (RFC 1952) and zlib (RFC 1950)
 // formats around it: what .gz files, PNG images, zip entries and HTTP's `Content-Encoding:
 // gzip` hold.
 //
@@ -7,12 +7,19 @@
 //   pixels := flate::unzlib(&a, png_idat)?;           // zlib, as PNG and many protocols wrap it
 //   plain := flate::inflate(&a, raw_deflate)?;        // bare DEFLATE, as zip entries hold it
 //
-// The output goes into the arena. gzip and zlib check their checksums (CRC-32, Adler-32 from
-// std.hash) and the length gzip records. There is no compression yet. The decoder follows
-// Mark Adler's puff.c: Huffman codes are decoded by their length, a bit at a time.
+//   packed := flate::gzip(&a, bytes, 6);              // level 0 stores, 1 fastest, 9 smallest
+//
+// The output goes into the arena. gunzip and unzlib check their checksums (CRC-32, Adler-32 from
+// std.hash) and the length gzip records. The decoder follows Mark Adler's puff.c: Huffman codes
+// are decoded by their length, a bit at a time. The encoder finds matches by hash chains, as
+// zlib does at the same levels, and writes each block stored, with the fixed codes or with its
+// own, whichever is smallest.
 
 #import std.heap.{ Arena, alloc_bytes };
 #import std.hash as hash;
+#import std.heap.{ alloc };
+#import std.vec as vec;
+#import std.vec.{ Vec };
 
 pub FlateError :: errors {
     truncated,       // the data ends before the stream does
@@ -313,4 +320,505 @@ pub unzlib :: fn(a: *Arena, data: []const u8) -> []u8 ! FlateError {
     want := ((data[end] as u32) << 24) | ((data[end + 1] as u32) << 16) | ((data[end + 2] as u32) << 8) | (data[end + 3] as u32);
     if want != hash::adler32(content) { fail .bad_checksum; }
     return content;
+}
+
+// Compressing
+
+// Bits out, least significant first, into an `Out`.
+BitOut :: struct {
+    out: *Out,
+    acc: u64,
+    n: u32,
+
+    put :: fn(self: *Self, bits: u64, count: u32) {
+        if count == 0 { return; }
+        self.acc = self.acc | (bits << (self.n as u64));
+        self.n += count;
+        while self.n >= 8 {
+            self.out.put((self.acc & 0xFF) as u8);
+            self.acc = self.acc >> 8;
+            self.n -= 8;
+        }
+    }
+
+    // To the next byte, with zero bits.
+    align :: fn(self: *Self) {
+        if self.n > 0 {
+            self.out.put((self.acc & 0xFF) as u8);
+            self.acc = 0;
+            self.n = 0;
+        }
+    }
+}
+
+// A code for writing: each symbol's length and its code, bits reversed (DEFLATE writes a Huffman
+// code from its first bit, into a stream that fills bytes from their low bit).
+Code :: struct {
+    lens: [288]u8,
+    codes: [288]u16,
+}
+
+reverse_bits :: fn(v: u32, n: u32) -> u32 {
+    r: u32 = 0;
+    for k in 0..n { r = r | (((v >> k) & 1) << (n - 1 - k)); }
+    return r;
+}
+
+// The codes of `n` symbols from their lengths (RFC 1951 3.2.2).
+canonical :: fn(c: *Code, n: usize) {
+    count: [16]u32 = .{};
+    for s in 0..n { count[c.lens[s] as usize] += 1; }
+    count[0] = 0;
+    next: [16]u32 = .{};
+    code: u32 = 0;
+    for len in 1..16 {
+        code = (code + count[len - 1]) << 1;
+        next[len] = code;
+    }
+    for s in 0..n {
+        len := c.lens[s] as u32;
+        if len != 0 {
+            c.codes[s] = reverse_bits(next[len], len) as u16;
+            next[len] += 1;
+        }
+    }
+}
+
+// Code lengths for the `n` symbols with frequencies `freq`, none longer than `limit`: a Huffman
+// tree, rebuilt from flattened frequencies until it is short enough. A lone symbol gets a
+// partner, so that the code is complete.
+lengths_for :: fn(a: *Arena, freq_in: []const u32, n: usize, limit: u32, lens: []u8) {
+    freq := alloc(u32, a, n);
+    for s in 0..n { freq[s] = freq_in[s]; }
+    used: usize = 0;
+    for s in 0..n { if freq[s] > 0 { used += 1; } }
+    if used == 0 {
+        for s in 0..n { lens[s] = 0; }
+        return;
+    }
+    if used == 1 {
+        other: usize = if freq[0] == 0 { 0 } else { 1 };
+        freq[other] = 1;
+    }
+    weight := alloc(u64, a, 2 * n);
+    parent := alloc(u32, a, 2 * n);
+    alive := alloc(bool, a, 2 * n);
+    leaf := alloc(u32, a, n);
+    while true {
+        m: usize = 0;
+        for s in 0..n {
+            if freq[s] > 0 {
+                leaf[m] = s as u32;
+                weight[m] = freq[s] as u64;
+                alive[m] = true;
+                m += 1;
+            }
+        }
+        total := m;
+        live := m;
+        while live > 1 {
+            // the two lightest
+            x: usize = 0xFFFFFFFF;
+            y: usize = 0xFFFFFFFF;
+            for k in 0..total {
+                if !alive[k] { continue; }
+                if x == 0xFFFFFFFF || weight[k] < weight[x] {
+                    y = x;
+                    x = k;
+                } else if y == 0xFFFFFFFF || weight[k] < weight[y] {
+                    y = k;
+                }
+            }
+            weight[total] = weight[x] + weight[y];
+            alive[total] = true;
+            alive[x] = false;
+            alive[y] = false;
+            parent[x] = total as u32;
+            parent[y] = total as u32;
+            total += 1;
+            live -= 1;
+        }
+        root := total - 1;
+        longest: u32 = 0;
+        for s in 0..n { lens[s] = 0; }
+        for k in 0..m {
+            d: u32 = 0;
+            node := k;
+            while node != root {
+                node = parent[node] as usize;
+                d += 1;
+            }
+            lens[leaf[k] as usize] = d as u8;
+            if d > longest { longest = d; }
+        }
+        if longest <= limit { return; }
+        for s in 0..n { if freq[s] > 0 { freq[s] = (freq[s] >> 1) | 1; } }
+    }
+}
+
+// The length code of a match length 3..258 (index into LEN_BASE), and of a distance.
+len_index :: fn(len: usize) -> usize {
+    i: usize = 28;
+    while (LEN_BASE[i] as usize) > len { i -= 1; }
+    return i;
+}
+
+dist_index :: fn(dist: usize) -> usize {
+    i: usize = 29;
+    while (DIST_BASE[i] as usize) > dist { i -= 1; }
+    return i;
+}
+
+// A literal (dist 0, len the byte) or a match.
+Token :: struct {
+    len: u16,
+    dist: u16,
+}
+
+// Write the tokens of one block, by codes `lit` and `dist`.
+write_tokens :: fn(w: *BitOut, toks: []const Token, lit: *Code, dist: *Code) {
+    for t in toks {
+        if t.dist == 0 {
+            s := t.len as usize;
+            w.put(lit.codes[s] as u64, lit.lens[s] as u32);
+        } else {
+            li := len_index(t.len as usize);
+            w.put(lit.codes[257 + li] as u64, lit.lens[257 + li] as u32);
+            w.put(((t.len as usize) - (LEN_BASE[li] as usize)) as u64, LEN_EXTRA[li] as u32);
+            di := dist_index(t.dist as usize);
+            w.put(dist.codes[di] as u64, dist.lens[di] as u32);
+            w.put(((t.dist as usize) - (DIST_BASE[di] as usize)) as u64, DIST_EXTRA[di] as u32);
+        }
+    }
+    w.put(lit.codes[256] as u64, lit.lens[256] as u32);
+}
+
+// The run-length coded code lengths of a dynamic block's header: (symbol, extra) pairs.
+ClSym :: struct { sym: u8, extra: u8 }
+
+rle_lengths :: fn(lens: []const u8, out: *Vec(ClSym)) {
+    i: usize = 0;
+    while i < lens.len {
+        l := lens[i];
+        run: usize = 1;
+        while i + run < lens.len && lens[i + run] == l { run += 1; }
+        if l == 0 && run >= 3 {
+            r := if run > 138 { 138 } else { run };
+            if r >= 11 {
+                s: ClSym = .{ 18, (r - 11) as u8 };
+                out.push(s);
+            } else {
+                s: ClSym = .{ 17, (r - 3) as u8 };
+                out.push(s);
+            }
+            i += r;
+            continue;
+        }
+        if l != 0 && run >= 4 {
+            first: ClSym = .{ l, 0 };
+            out.push(first);
+            i += 1;
+            left := run - 1;
+            while left >= 3 {
+                r := if left > 6 { 6 } else { left };
+                s: ClSym = .{ 16, (r - 3) as u8 };
+                out.push(s);
+                left -= r;
+                i += r;
+            }
+            continue;
+        }
+        one: ClSym = .{ l, 0 };
+        out.push(one);
+        i += 1;
+    }
+}
+
+// Compress one block: tokens `toks` that stand for `raw`. `last`: the final block.
+write_block :: fn(a: *Arena, w: *BitOut, toks: []const Token, raw: []const u8, last: bool) {
+    lf: [288]u32 = .{};
+    df: [30]u32 = .{};
+    extra_bits: u64 = 0;
+    for t in toks {
+        if t.dist == 0 {
+            lf[t.len as usize] += 1;
+        } else {
+            li := len_index(t.len as usize);
+            lf[257 + li] += 1;
+            di := dist_index(t.dist as usize);
+            df[di] += 1;
+            extra_bits += (LEN_EXTRA[li] + DIST_EXTRA[di]) as u64;
+        }
+    }
+    lf[256] = 1;
+    // dynamic codes
+    lit: Code = .{};
+    dst: Code = .{};
+    lengths_for(a, lf[:], 286, 15, lit.lens[:]);
+    lengths_for(a, df[:], 30, 15, dst.lens[:]);
+    canonical(&lit, 286);
+    canonical(&dst, 30);
+    hlit: usize = 286;
+    while hlit > 257 && lit.lens[hlit - 1] == 0 { hlit -= 1; }
+    hdist: usize = 30;
+    while hdist > 1 && dst.lens[hdist - 1] == 0 { hdist -= 1; }
+    all: [316]u8 = .{};
+    for k in 0..hlit { all[k] = lit.lens[k]; }
+    for k in 0..hdist { all[hlit + k] = dst.lens[k]; }
+    cl := vec::make(ClSym, a);
+    rle_lengths(all[0..hlit + hdist], &cl);
+    cf: [19]u32 = .{};
+    for s in cl.items() { cf[s.sym as usize] += 1; }
+    clc: Code = .{};
+    lengths_for(a, cf[:], 19, 7, clc.lens[:]);
+    canonical(&clc, 19);
+    hclen: usize = 19;
+    while hclen > 4 && clc.lens[CL_ORDER[hclen - 1] as usize] == 0 { hclen -= 1; }
+    // the sizes, in bits, of each kind of block
+    dyn_bits: u64 = 3 + 14 + 3 * (hclen as u64) + extra_bits;
+    for s in cl.items() {
+        dyn_bits += clc.lens[s.sym as usize] as u64;
+        if s.sym == 16 { dyn_bits += 2; }
+        if s.sym == 17 { dyn_bits += 3; }
+        if s.sym == 18 { dyn_bits += 7; }
+    }
+    for s in 0..286 { dyn_bits += (lf[s] as u64) * (lit.lens[s] as u64); }
+    for s in 0..30 { dyn_bits += (df[s] as u64) * (dst.lens[s] as u64); }
+    fix: Code = .{};
+    for s in 0..144 { fix.lens[s] = 8; }
+    for s in 144..256 { fix.lens[s] = 9; }
+    for s in 256..280 { fix.lens[s] = 7; }
+    for s in 280..288 { fix.lens[s] = 8; }
+    canonical(&fix, 288);
+    fdist: Code = .{};
+    for s in 0..30 { fdist.lens[s] = 5; }
+    canonical(&fdist, 30);
+    fix_bits: u64 = 3 + extra_bits;
+    for s in 0..286 { fix_bits += (lf[s] as u64) * (fix.lens[s] as u64); }
+    for s in 0..30 { fix_bits += (df[s] as u64) * 5; }
+    stored_bits: u64 = ((raw.len as u64) + 5 * ((raw.len as u64) / 65535 + 1)) * 8 + 8;
+    final_bit: u64 = if last { 1 } else { 0 };
+    if stored_bits <= fix_bits && stored_bits <= dyn_bits {
+        // stored, in pieces of up to 65535 bytes
+        at: usize = 0;
+        while true {
+            n := raw.len - at;
+            if n > 65535 { n = 65535; }
+            end_piece := at + n == raw.len;
+            w.put(if last && end_piece { 1 } else { 0 }, 1);
+            w.put(0, 2);
+            w.align();
+            w.put(n as u64, 16);
+            w.put((~n & 0xFFFF) as u64, 16);
+            for k in 0..n { w.out.put(raw[at + k]); }
+            at += n;
+            if end_piece { break; }
+        }
+        return;
+    }
+    if fix_bits <= dyn_bits {
+        w.put(final_bit, 1);
+        w.put(1, 2);
+        write_tokens(w, toks, &fix, &fdist);
+        return;
+    }
+    w.put(final_bit, 1);
+    w.put(2, 2);
+    w.put((hlit - 257) as u64, 5);
+    w.put((hdist - 1) as u64, 5);
+    w.put((hclen - 4) as u64, 4);
+    for k in 0..hclen { w.put(clc.lens[CL_ORDER[k] as usize] as u64, 3); }
+    for s in cl.items() {
+        w.put(clc.codes[s.sym as usize] as u64, clc.lens[s.sym as usize] as u32);
+        if s.sym == 16 { w.put(s.extra as u64, 2); }
+        if s.sym == 17 { w.put(s.extra as u64, 3); }
+        if s.sym == 18 { w.put(s.extra as u64, 7); }
+    }
+    write_tokens(w, toks, &lit, &dst);
+}
+
+// How hard each level looks for matches: the chain length, a match long enough to stop at, and
+// whether to look one place ahead (lazy matching).
+LEVEL_CHAIN: [10]u16 = .{ 0, 4, 8, 16, 16, 32, 128, 256, 1024, 4096 };
+LEVEL_NICE: [10]u16 = .{ 0, 8, 16, 32, 16, 32, 128, 128, 258, 258 };
+
+WINDOW :: 32768usize;
+HASH_SIZE :: 32768usize;
+BLOCK_TOKENS :: 16384usize;
+
+hash3 :: fn(d: []const u8, i: usize) -> usize {
+    return ((((d[i] as u32) << 10) ^ ((d[i + 1] as u32) << 5) ^ (d[i + 2] as u32)) & 0x7FFF) as usize;
+}
+
+Matcher :: struct {
+    data: []const u8,
+    head: []u32,     // the last position + 1 with each hash; 0 for none
+    prev: []u32,     // the position + 1 before it with the same hash, by position in the window
+    chain: usize,
+    nice: usize,
+
+    insert :: fn(self: *Self, i: usize) {
+        if i + 2 >= self.data.len { return; }
+        h := hash3(self.data, i);
+        self.prev[i % WINDOW] = self.head[h];
+        self.head[h] = (i + 1) as u32;
+    }
+
+    // The longest match for position `i` (inserted already) in the window before it: its length
+    // (0 for none shorter than 3) in `best`, its distance returned.
+    longest :: fn(self: *Self, i: usize, best: *usize) -> usize {
+        *best = 0;
+        dist: usize = 0;
+        if i + 2 >= self.data.len { return 0; }
+        max := self.data.len - i;
+        if max > 258 { max = 258; }
+        cand := self.prev[i % WINDOW] as usize;
+        steps: usize = 0;
+        while cand > 0 && steps < self.chain {
+            j := cand - 1;
+            if i - j > WINDOW { break; }
+            // the bytes at the current best length first: most candidates fail there
+            if self.data[j + *best] == self.data[i + *best] && self.data[j] == self.data[i] {
+                n: usize = 0;
+                while n < max && self.data[j + n] == self.data[i + n] { n += 1; }
+                if n > *best {
+                    *best = n;
+                    dist = i - j;
+                    if n >= self.nice || n == max { break; }
+                }
+            }
+            next := self.prev[j % WINDOW] as usize;
+            if next >= cand { break; }   // the chain left the window and wrapped
+            cand = next;
+            steps += 1;
+        }
+        if *best < 3 { *best = 0; }
+        return dist;
+    }
+}
+
+/// `data` compressed as raw DEFLATE (RFC 1951), in memory from `a`. `level` 0 stores the data
+/// as it is; 1 is fastest, 9 smallest, 6 a good balance.
+pub deflate :: fn(a: *Arena, data: []const u8, level: u32) -> []u8 {
+    lv: usize = if level > 9 { 9 } else { level as usize };
+    out: Out = .{ a, a.alloc_bytes(0), 0 };
+    w: BitOut = .{ &out, 0, 0 };
+    if lv == 0 || data.len == 0 {
+        toks: [0]Token = .{};
+        if data.len == 0 {
+            write_block(a, &w, toks[:], data, true);
+        } else {
+            // stored only
+            at: usize = 0;
+            while true {
+                n := data.len - at;
+                if n > 65535 { n = 65535; }
+                end_piece := at + n == data.len;
+                w.put(if end_piece { 1 } else { 0 }, 1);
+                w.put(0, 2);
+                w.align();
+                w.put(n as u64, 16);
+                w.put((~n & 0xFFFF) as u64, 16);
+                for k in 0..n { out.put(data[at + k]); }
+                at += n;
+                if end_piece { break; }
+            }
+        }
+        w.align();
+        return out.buf[0..out.n];
+    }
+    m: Matcher = .{ data, alloc(u32, a, HASH_SIZE), alloc(u32, a, WINDOW), LEVEL_CHAIN[lv] as usize, LEVEL_NICE[lv] as usize };
+    for k in 0..HASH_SIZE { m.head[k] = 0; }
+    for k in 0..WINDOW { m.prev[k] = 0; }
+    lazy := lv >= 4;
+    toks := alloc(Token, a, BLOCK_TOKENS + 2);
+    nt: usize = 0;
+    block_start: usize = 0;
+    i: usize = 0;
+    while i < data.len {
+        m.insert(i);
+        len: usize = 0;
+        dist := m.longest(i, &len);
+        if len > 0 && lazy && len < m.nice && i + 1 < data.len {
+            // a longer match one place on: this byte goes as a literal
+            m.insert(i + 1);
+            len2: usize = 0;
+            dist2 := m.longest(i + 1, &len2);
+            if len2 > len {
+                lt: Token = .{ data[i] as u16, 0 };
+                toks[nt] = lt;
+                nt += 1;
+                i += 1;
+                t: Token = .{ len2 as u16, dist2 as u16 };
+                toks[nt] = t;
+                nt += 1;
+                for k in i + 1..i + len2 { m.insert(k); }
+                i += len2;
+            } else {
+                t: Token = .{ len as u16, dist as u16 };
+                toks[nt] = t;
+                nt += 1;
+                for k in i + 2..i + len { m.insert(k); }
+                i += len;
+            }
+        } else if len > 0 {
+            t: Token = .{ len as u16, dist as u16 };
+            toks[nt] = t;
+            nt += 1;
+            for k in i + 1..i + len { m.insert(k); }
+            i += len;
+        } else {
+            t: Token = .{ data[i] as u16, 0 };
+            toks[nt] = t;
+            nt += 1;
+            i += 1;
+        }
+        if nt >= BLOCK_TOKENS {
+            write_block(a, &w, toks[0..nt], data[block_start..i], i >= data.len);
+            block_start = i;
+            nt = 0;
+        }
+    }
+    if nt > 0 || block_start < data.len {
+        write_block(a, &w, toks[0..nt], data[block_start..data.len], true);
+    }
+    w.align();
+    return out.buf[0..out.n];
+}
+
+put_le32 :: fn(o: *Out, v: u32) {
+    for k in 0..4 { o.put(((v >> ((8 * k) as u32)) & 0xFF) as u8); }
+}
+
+/// `data` as gzip (a .gz file, or `Content-Encoding: gzip`), in memory from `a`: a header with no
+/// name or time, DEFLATE at `level`, the CRC-32 and the length.
+pub gzip :: fn(a: *Arena, data: []const u8, level: u32) -> []u8 {
+    body := deflate(a, data, level);
+    out: Out = .{ a, a.alloc_bytes(body.len + 18), 0 };
+    head: [10]u8 = .{ 0x1F, 0x8B, 8, 0, 0, 0, 0, 0, 0, 255 };
+    for b in head { out.put(b); }
+    for b in body { out.put(b); }
+    put_le32(&out, hash::crc32(data));
+    put_le32(&out, (data.len & 0xFFFFFFFF) as u32);
+    return out.buf[0..out.n];
+}
+
+/// `data` as zlib (RFC 1950), in memory from `a`: a two-byte header, DEFLATE at `level`, the
+/// Adler-32.
+pub zlib :: fn(a: *Arena, data: []const u8, level: u32) -> []u8 {
+    body := deflate(a, data, level);
+    out: Out = .{ a, a.alloc_bytes(body.len + 6), 0 };
+    // CMF 0x78: deflate with a 32 KB window; FLG so that CMF * 256 + FLG is a multiple of 31
+    lvl: u32 = if level <= 1 { 0 } else if level <= 5 { 1 } else if level == 6 { 2 } else { 3 };
+    flg := lvl << 6;
+    flg += 31 - ((0x78 * 256 + flg) % 31);
+    out.put(0x78);
+    out.put(flg as u8);
+    for b in body { out.put(b); }
+    ad := hash::adler32(data);
+    out.put((ad >> 24) as u8);
+    out.put(((ad >> 16) & 0xFF) as u8);
+    out.put(((ad >> 8) & 0xFF) as u8);
+    out.put((ad & 0xFF) as u8);
+    return out.buf[0..out.n];
 }
