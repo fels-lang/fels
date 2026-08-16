@@ -1299,6 +1299,40 @@ A message below the level is dropped before its format is written, so its values
 read. A write that fails is dropped too: logging never stops the program. `log::debug`,
 `info`, `warn` and `error` write to stderr from `info` on, until `set_level` changes it.
 
+### `std.regex`
+
+Regular expressions, matched in time linear in the text (a Pike VM, as RE2 and Go do it): no
+pattern can make a match take exponential time.
+
+```fels
+#import std.regex as regex;
+
+re := regex::compile(&a, "(?P<y>\\d{4})-(\\d{2})-(\\d{2})")?;
+if re.find("due 2024-03-15!") |m| {
+    year := m.named("y") ?? "";              // also m.group(2), m.str(), m.start(), m.span(i)
+}
+for m in re.find_all(text) { ... }
+fixed := re.replace_all(&a, text, "$3.$2.${y}");
+parts := re.split(&a, text);
+```
+
+- Syntax: literals; `.` (any rune but a line break); classes `[a-z_]`, `[^0-9]`, and `\d \w \s`
+  with `\D \W \S`, all ASCII; anchors `^ $` (of the text; of each line with `(?m)`), `\A \z`,
+  `\b \B`; groups `( )`, `(?: )`, `(?P<name> )` or `(?<name> )`; `|`; repeats `* + ? {n} {n,}
+  {n,m}`, greedy or lazy (`*?`). `(?i)` (ASCII case), `(?m)` and `(?s)` (`.` takes line breaks
+  too) at the start of the pattern. Escapes: `\n \t \r \f \v \0`, `\xHH`, `\x{H...}`, and a
+  backslash before punctuation.
+- The text is UTF-8, read a rune at a time: `.` and a class take a whole rune; places are byte
+  offsets. Matches are leftmost-first, as in Perl, Python and Go. `find_all` gives matches that
+  do not overlap; an empty match may follow a match, two at one place may not (as Python).
+- The tests compare with Python's `re` on hand-picked and 391 random patterns. Where a repeat's
+  body can match empty in more than one way (`(\w??|x)*`), the groups (and sometimes the
+  matches) can differ from a backtracking engine's, as RE2's and Go's do.
+- A `Regex` keeps the memory it matches in, so it is used by one thread at a time, and a
+  `Match` holds until the next search with its `Regex`. `compile` fails with a `RegexError`:
+  `.unclosed_group`, `.unmatched_paren`, `.bad_class`, `.bad_escape`, `.nothing_to_repeat`,
+  `.bad_count` (`{n,m}` past 1000, or backwards) or `.too_big`.
+
 ### `std.url`
 
 URLs (RFC 3986): the parts of one, percent-encoding, and query strings.
