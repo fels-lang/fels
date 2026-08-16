@@ -1,0 +1,248 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.zip — .zip archives: the files in one read out, and new ones written, stored or compressed
+// with DEFLATE (std.flate). Also the formats built on zip: .docx, .xlsx, .jar, .epub.
+//
+//   ar := zip::open(&a, fs::read_all("book.zip", &a)?)?;
+//   for e in ar.entries { if !e.is_dir { bytes := ar.read(&a, e)?; … } }
+//   if ar.find("notes.txt") |e| { text := ar.read(&a, e)?; }
+//
+//   w := zip::writer(&a);
+//   w.add("hello.txt", "Hello!", 6);              // level 0 stores, 1-9 compress
+//   w.add_dir("img/");
+//   fs::write_file("out.zip", w.finish())?;
+//
+// Not read: archives past 4 GB or 65535 entries (zip64), encrypted entries, methods other than
+// stored and DEFLATE; they fail with `unsupported`. Names are UTF-8.
+
+#import std.heap.{ Arena, alloc_bytes };
+#import std.vec as vec;
+#import std.vec.{ Vec };
+#import std.hash as hash;
+#import std.flate as flate;
+#import std.time as time;
+
+pub ZipError :: errors {
+    not_zip,        // no end-of-archive record: not a zip, or cut short
+    corrupt,        // a record that points outside the data, or has the wrong signature
+    unsupported,    // zip64, encryption, or a method other than stored and DEFLATE
+    bad_checksum,   // an entry whose CRC-32 or size does not match what it holds
+}
+
+/// A file or folder in an archive, as its central directory lists it.
+pub Entry :: struct {
+    name: []const u8,
+    method: u16,             // 0 stored, 8 DEFLATE
+    crc: u32,
+    compressed_size: u64,
+    size: u64,
+    header_offset: u64,      // where its local header is
+    is_dir: bool,            // a name that ends in "/"
+    flags: u16,
+    dos_time: u16,
+    dos_date: u16,
+
+    /// When it was last changed, in seconds since 1970, from the DOS date and time zip keeps
+    /// (local time, to two seconds).
+    pub modified :: fn(self: *Self) -> i64 {
+        dt: time::DateTime = .{
+            1980 + ((self.dos_date >> 9) as i64), ((self.dos_date >> 5) & 15) as u8, (self.dos_date & 31) as u8,
+            (self.dos_time >> 11) as u8, ((self.dos_time >> 5) & 63) as u8, ((self.dos_time & 31) * 2) as u8, 0,
+        };
+        return time::to_unix(dt);
+    }
+}
+
+le16 :: fn(b: []const u8, at: usize) -> u64 { return (b[at] as u64) | ((b[at + 1] as u64) << 8); }
+le32 :: fn(b: []const u8, at: usize) -> u64 { return le16(b, at) | (le16(b, at + 2) << 16); }
+
+/// An archive read with `open`: its entries, in the order of its central directory.
+pub Archive :: struct {
+    data: []const u8,
+    entries: []Entry,
+
+    /// The entry named `name`, or null.
+    pub find :: fn(self: *Self, name: []const u8) -> ?Entry {
+        for e in self.entries { if e.name == name { return e; } }
+        return null;
+    }
+
+    /// What entry `e` holds, in memory from `a`, its CRC-32 and size checked.
+    pub read :: fn(self: *Self, a: *Arena, e: Entry) -> []const u8 ! ZipError {
+        if (e.flags & 1) != 0 { fail .unsupported; }   // encrypted
+        at := e.header_offset as usize;
+        if at + 30 > self.data.len || le32(self.data, at) != 0x04034b50 { fail .corrupt; }
+        start := at + 30 + (le16(self.data, at + 26) as usize) + (le16(self.data, at + 28) as usize);
+        end := start + (e.compressed_size as usize);
+        if end > self.data.len { fail .corrupt; }
+        raw := self.data[start..end];
+        out: []const u8 = raw;
+        if e.method == 8 {
+            out = flate::inflate(a, raw) catch err { fail .corrupt; };
+        } else if e.method != 0 {
+            fail .unsupported;
+        }
+        if (out.len as u64) != e.size || (hash::crc32(out) as u64) != (e.crc as u64) { fail .bad_checksum; }
+        return out;
+    }
+}
+
+/// The archive in `data` (the whole .zip, in memory), its entries listed in memory from `a`.
+pub open :: fn(a: *Arena, data: []const u8) -> Archive ! ZipError {
+    // the end-of-archive record: 22 bytes and a comment of up to 65535, at the very end
+    if data.len < 22 { fail .not_zip; }
+    eocd: usize = data.len;
+    i := data.len - 22;
+    lowest: usize = if data.len > 22 + 65535 { data.len - 22 - 65535 } else { 0 };
+    while true {
+        if le32(data, i) == 0x06054b50 {
+            eocd = i;
+            break;
+        }
+        if i == lowest { break; }
+        i -= 1;
+    }
+    if eocd == data.len { fail .not_zip; }
+    count := le16(data, eocd + 10) as usize;
+    cd_size := le32(data, eocd + 12);
+    cd_off := le32(data, eocd + 16);
+    if count == 0xFFFF || cd_size == 0xFFFFFFFF || cd_off == 0xFFFFFFFF { fail .unsupported; }
+    if cd_off + cd_size > data.len as u64 { fail .corrupt; }
+    entries := vec::make(Entry, a);
+    p := cd_off as usize;
+    for k in 0..count {
+        if p + 46 > data.len || le32(data, p) != 0x02014b50 { fail .corrupt; }
+        n := le16(data, p + 28) as usize;
+        extra := le16(data, p + 30) as usize;
+        comment := le16(data, p + 32) as usize;
+        if p + 46 + n > data.len { fail .corrupt; }
+        name := data[p + 46..p + 46 + n];
+        e: Entry = .{
+            name, le16(data, p + 10) as u16, le32(data, p + 16) as u32, le32(data, p + 20), le32(data, p + 24),
+            le32(data, p + 42), n > 0 && name[n - 1] == '/', le16(data, p + 8) as u16,
+            le16(data, p + 12) as u16, le16(data, p + 14) as u16,
+        };
+        if e.compressed_size == 0xFFFFFFFF || e.size == 0xFFFFFFFF || e.header_offset == 0xFFFFFFFF { fail .unsupported; }
+        entries.push(e);
+        p += 46 + n + extra + comment;
+    }
+    ar: Archive = .{ data, entries.items() };
+    return ar;
+}
+
+// Writing
+
+/// A new archive being written (`writer`); `finish` gives its bytes.
+pub Writer :: struct {
+    region: *Arena,
+    out: Vec(u8),
+    entries: Vec(Entry),
+
+    put16 :: fn(self: *Self, v: u64) {
+        self.out.push((v & 0xFF) as u8);
+        self.out.push(((v >> 8) & 0xFF) as u8);
+    }
+
+    put32 :: fn(self: *Self, v: u64) {
+        self.put16(v & 0xFFFF);
+        self.put16((v >> 16) & 0xFFFF);
+    }
+
+    /// Add a file `name` holding `data`, compressed at `level` (0 stores it), dated 1980-01-01.
+    pub add :: fn(self: *Self, name: []const u8, data: []const u8, level: u32) {
+        self.add_entry(name, data, level, 0, 0x21);
+    }
+
+    /// Add a file dated `unix_secs` (zip keeps a local date and time to two seconds, with no
+    /// zone: pass `secs + time::local_offset(secs)` for the local time).
+    pub add_at :: fn(self: *Self, name: []const u8, data: []const u8, level: u32, unix_secs: i64) {
+        dt := time::utc(unix_secs);
+        y := if dt.year < 1980 { 0 } else { dt.year - 1980 };
+        tm := ((dt.hour as u64) << 11) | ((dt.minute as u64) << 5) | ((dt.second as u64) / 2);
+        dd := ((y as u64) << 9) | ((dt.month as u64) << 5) | (dt.day as u64);
+        self.add_entry(name, data, level, tm as u16, dd as u16);
+    }
+
+    /// Add a folder (its name ends in "/"; one is added when it does not).
+    pub add_dir :: fn(self: *Self, name: []const u8) {
+        if name.len > 0 && name[name.len - 1] == '/' {
+            self.add_entry(name, "", 0, 0, 0x21);
+            return;
+        }
+        full := self.region.alloc_bytes(name.len + 1);
+        for k in 0..name.len { full[k] = name[k]; }
+        full[name.len] = '/';
+        self.add_entry(full, "", 0, 0, 0x21);
+    }
+
+    add_entry :: fn(self: *Self, name: []const u8, data: []const u8, level: u32, dos_time: u16, dos_date: u16) {
+        body: []const u8 = data;
+        method: u16 = 0;
+        if level > 0 && data.len > 0 {
+            packed := flate::deflate(self.region, data, level);
+            if packed.len < data.len {
+                body = packed;
+                method = 8;
+            }
+        }
+        e: Entry = .{
+            name, method, hash::crc32(data), body.len as u64, data.len as u64, self.out.len() as u64,
+            name.len > 0 && name[name.len - 1] == '/', 0x0800, dos_time, dos_date,
+        };
+        // the local header
+        self.put32(0x04034b50);
+        self.put16(20);
+        self.put16(0x0800);              // the name is UTF-8
+        self.put16(method as u64);
+        self.put16(dos_time as u64);
+        self.put16(dos_date as u64);
+        self.put32(e.crc as u64);
+        self.put32(e.compressed_size);
+        self.put32(e.size);
+        self.put16(name.len as u64);
+        self.put16(0);
+        self.out.extend(name);
+        self.out.extend(body);
+        self.entries.push(e);
+    }
+
+    /// The archive's bytes: what was added, then the central directory and the end record.
+    pub finish :: fn(self: *Self) -> []const u8 {
+        cd_off := self.out.len();
+        for e in self.entries.items() {
+            self.put32(0x02014b50);
+            self.put16(20);              // made by: version 2.0
+            self.put16(20);              // needed to read
+            self.put16(e.flags as u64);
+            self.put16(e.method as u64);
+            self.put16(e.dos_time as u64);
+            self.put16(e.dos_date as u64);
+            self.put32(e.crc as u64);
+            self.put32(e.compressed_size);
+            self.put32(e.size);
+            self.put16(e.name.len as u64);
+            self.put16(0);
+            self.put16(0);
+            self.put16(0);
+            self.put16(0);
+            self.put32(if e.is_dir { 0x10 } else { 0 });
+            self.put32(e.header_offset);
+            self.out.extend(e.name);
+        }
+        cd_size := self.out.len() - cd_off;
+        self.put32(0x06054b50);
+        self.put16(0);
+        self.put16(0);
+        self.put16(self.entries.len() as u64);
+        self.put16(self.entries.len() as u64);
+        self.put32(cd_size as u64);
+        self.put32(cd_off as u64);
+        self.put16(0);
+        return self.out.items();
+    }
+}
+
+/// A new, empty archive to add files to, in memory from `a`.
+pub writer :: fn(a: *Arena) -> Writer {
+    w: Writer = .{ a, vec::make(u8, a), vec::make(Entry, a) };
+    return w;
+}
