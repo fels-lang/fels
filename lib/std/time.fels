@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // std.time — wall-clock time, a monotonic clock, sleeping, a UTC calendar
-// breakdown, calendar dates, and the local time zone. Cross-platform.
+// breakdown, calendar dates, the local time zone, patterns (`%Y-%m-%d`), RFC 3339 and durations
+// as text. Cross-platform.
 //
 //   secs := time::unix_seconds();          // seconds since 1970-01-01 UTC
 //   dt   := time::utc(secs);               // → DateTime { year, month, day, ... }
@@ -571,3 +572,294 @@ pub posix_offset :: fn(rule: []const u8, secs: i64) -> ZoneOffset ! TimeError {
     return z;
 }
 
+// Text
+
+// Writing into a buffer, cutting what does not fit.
+Put :: struct {
+    out: []u8,
+    n: usize,
+
+    text :: fn(self: *Self, s: []const u8) {
+        for c in s {
+            if self.n < self.out.len {
+                self.out[self.n] = c;
+                self.n += 1;
+            }
+        }
+    }
+
+    num :: fn(self: *Self, v: i64, width: usize, pad: u8) {
+        digits: [24]u8 = .{};
+        neg := v < 0;
+        m: u64 = if neg { (0 - v) as u64 } else { v as u64 };
+        k: usize = 0;
+        while m > 0 || k == 0 {
+            digits[k] = '0' + (m % 10) as u8;
+            m = m / 10;
+            k += 1;
+        }
+        if neg { self.text("-"); }
+        w := k;
+        while w < width {
+            one: [1]u8 = .{ pad };
+            self.text(one[:]);
+            w += 1;
+        }
+        while k > 0 {
+            k -= 1;
+            self.text(digits[k..k + 1]);
+        }
+    }
+
+    // +hhmm, or +hh:mm with `colon`
+    offset :: fn(self: *Self, secs: i64, colon: bool) {
+        self.text(if secs < 0 { "-" } else { "+" });
+        a := if secs < 0 { -secs } else { secs };
+        self.num(a / 3600, 2, '0');
+        if colon { self.text(":"); }
+        self.num((a / 60) % 60, 2, '0');
+    }
+}
+
+/// `dt` written as `pattern` says, into `out`; the slice of `out` used (what does not fit is
+/// cut). `offset` (seconds east of UTC) is what `%z` writes; 0 for a UTC time.
+///
+///   %Y 2024   %y 24   %m 01   %d 05   %e  5   %j 005 (day of the year)
+///   %H 13   %I 01   %p PM   %M 07   %S 09
+///   %a Fri   %A Friday   %b Jan   %B January
+///   %z +0100   %Z +01:00   %% %
+///
+/// Anything else is written as it is.
+pub format_datetime :: fn(dt: DateTime, offset: i64, pattern: []const u8, out: []u8) -> []const u8 {
+    w: Put = .{ out, 0 };
+    i: usize = 0;
+    while i < pattern.len {
+        c := pattern[i];
+        if c != '%' || i + 1 >= pattern.len {
+            w.text(pattern[i..i + 1]);
+            i += 1;
+            continue;
+        }
+        k := pattern[i + 1];
+        i += 2;
+        if k == 'Y' { w.num(dt.year, 4, '0'); }
+        else if k == 'y' { w.num(((dt.year % 100) + 100) % 100, 2, '0'); }
+        else if k == 'm' { w.num(dt.month as i64, 2, '0'); }
+        else if k == 'd' { w.num(dt.day as i64, 2, '0'); }
+        else if k == 'e' { w.num(dt.day as i64, 2, ' '); }
+        else if k == 'j' {
+            doy := days_from_parts(dt.year, dt.month as i64, dt.day as i64) - days_from_parts(dt.year, 1, 1) + 1;
+            w.num(doy, 3, '0');
+        }
+        else if k == 'H' { w.num(dt.hour as i64, 2, '0'); }
+        else if k == 'I' { w.num(((dt.hour as i64) + 11) % 12 + 1, 2, '0'); }
+        else if k == 'p' { w.text(if dt.hour < 12 { "AM" } else { "PM" }); }
+        else if k == 'M' { w.num(dt.minute as i64, 2, '0'); }
+        else if k == 'S' { w.num(dt.second as i64, 2, '0'); }
+        else if k == 'a' { w.text(weekday_name(dt.weekday)[0..3]); }
+        else if k == 'A' { w.text(weekday_name(dt.weekday)); }
+        else if k == 'b' { w.text(month_name(dt.month)[0..3]); }
+        else if k == 'B' { w.text(month_name(dt.month)); }
+        else if k == 'z' { w.offset(offset, false); }
+        else if k == 'Z' { w.offset(offset, true); }
+        else if k == '%' { w.text("%"); }
+        else { w.text(pattern[i - 2..i]); }
+    }
+    return out[0..w.n];
+}
+
+/// `secs` as RFC 3339 / ISO 8601 (`2024-01-31T12:34:56+01:00`), at `offset` seconds east of UTC
+/// (`Z` for 0), into `out` (32 bytes are enough).
+pub format_rfc3339 :: fn(secs: i64, offset: i64, out: []u8) -> []const u8 {
+    dt := utc(secs + offset);
+    w: Put = .{ out, 0 };
+    w.num(dt.year, 4, '0');
+    w.text("-");
+    w.num(dt.month as i64, 2, '0');
+    w.text("-");
+    w.num(dt.day as i64, 2, '0');
+    w.text("T");
+    w.num(dt.hour as i64, 2, '0');
+    w.text(":");
+    w.num(dt.minute as i64, 2, '0');
+    w.text(":");
+    w.num(dt.second as i64, 2, '0');
+    if offset == 0 { w.text("Z"); } else { w.offset(offset, true); }
+    return out[0..w.n];
+}
+
+/// An instant read from text: seconds since 1970 (UTC), the nanoseconds after them, and the
+/// offset east of UTC it was written with.
+pub Stamp :: struct {
+    secs: i64,
+    nanos: u32,
+    offset: i64,
+}
+
+/// The instant an RFC 3339 date and time names: `2024-01-31T12:34:56Z`,
+/// `2024-01-31 12:34:56.250+01:00` (`T`, `t` or a space between; `Z` or `z` for UTC); null when
+/// `text` is not one.
+pub parse_rfc3339 :: fn(text: []const u8) -> ?Stamp {
+    if text.len < 20 { return null; }
+    od := parse_date(text[0..10]);
+    if od == null { return null; }
+    d := od!!;
+    sep := text[10];
+    if sep != 'T' && sep != 't' && sep != ' ' { return null; }
+    if text[13] != ':' || text[16] != ':' { return null; }
+    h := digits_at(text, 11, 2);
+    mi := digits_at(text, 14, 2);
+    s := digits_at(text, 17, 2);
+    if h < 0 || h > 23 || mi < 0 || mi > 59 || s < 0 || s > 60 { return null; }
+    i: usize = 19;
+    nanos: u32 = 0;
+    if i < text.len && text[i] == '.' {
+        i += 1;
+        scale: u32 = 100000000;
+        start := i;
+        while i < text.len && text[i] >= '0' && text[i] <= '9' {
+            nanos += ((text[i] - '0') as u32) * scale;
+            scale = scale / 10;
+            i += 1;
+        }
+        if i == start { return null; }
+    }
+    if i >= text.len { return null; }
+    offset: i64 = 0;
+    z := text[i];
+    if z == 'Z' || z == 'z' {
+        i += 1;
+    } else if z == '+' || z == '-' {
+        if i + 6 != text.len || text[i + 3] != ':' { return null; }
+        oh := digits_at(text, i + 1, 2);
+        om := digits_at(text, i + 4, 2);
+        if oh < 0 || om < 0 || oh > 23 || om > 59 { return null; }
+        offset = oh * 3600 + om * 60;
+        if z == '-' { offset = -offset; }
+        i += 6;
+    } else {
+        return null;
+    }
+    if i != text.len { return null; }
+    local := d.days * 86400 + h * 3600 + mi * 60 + s;
+    st: Stamp = .{ local - offset, nanos, offset };
+    return st;
+}
+
+// Durations
+
+/// `ns` nanoseconds as people read them, into `out` (32 bytes are enough): `2d 3h 5m`,
+/// `1h 0m 12s`, `4.25s`, `350ms`, `1.5ms`, `12us`, `80ns`.
+pub format_duration :: fn(ns: i64, out: []u8) -> []const u8 {
+    w: Put = .{ out, 0 };
+    v := ns;
+    if v < 0 {
+        w.text("-");
+        v = -v;
+    }
+    if v >= 60000000000 {
+        secs := v / 1000000000;
+        days := secs / 86400;
+        hours := (secs / 3600) % 24;
+        mins := (secs / 60) % 60;
+        rest := secs % 60;
+        if days > 0 {
+            w.num(days, 1, ' ');
+            w.text("d ");
+        }
+        if days > 0 || hours > 0 {
+            w.num(hours, 1, ' ');
+            w.text("h ");
+        }
+        w.num(mins, 1, ' ');
+        w.text("m");
+        if rest > 0 && days == 0 {
+            w.text(" ");
+            w.num(rest, 1, ' ');
+            w.text("s");
+        }
+        return out[0..w.n];
+    }
+    unit: i64 = 1000000000;
+    name: []const u8 = "s";
+    if v < 1000 {
+        unit = 1;
+        name = "ns";
+    } else if v < 1000000 {
+        unit = 1000;
+        name = "us";
+    } else if v < 1000000000 {
+        unit = 1000000;
+        name = "ms";
+    }
+    w.num(v / unit, 1, ' ');
+    if unit > 1 {
+        // up to three places, no zeros at the end
+        frac := (v % unit) * 1000 / unit;
+        if frac > 0 {
+            w.text(".");
+            places: i64 = 100;
+            while frac > 0 {
+                w.num(frac / places, 1, ' ');
+                frac = frac % places;
+                places = places / 10;
+            }
+        }
+    }
+    w.text(name);
+    return out[0..w.n];
+}
+
+/// The nanoseconds a duration written as numbers and units names: `1h30m`, `1.5s`, `250ms`,
+/// `2d 4h`, `-3m`, `90s`. The units are d, h, m, s, ms, us and ns; null for anything else.
+pub parse_duration :: fn(text: []const u8) -> ?i64 {
+    i: usize = 0;
+    negative := false;
+    if i < text.len && (text[i] == '-' || text[i] == '+') {
+        negative = text[i] == '-';
+        i += 1;
+    }
+    total: i64 = 0;
+    parts: usize = 0;
+    while i < text.len {
+        if text[i] == ' ' {
+            i += 1;
+            continue;
+        }
+        whole: i64 = 0;
+        frac: i64 = 0;
+        frac_scale: i64 = 1;
+        start := i;
+        while i < text.len && text[i] >= '0' && text[i] <= '9' {
+            whole = whole * 10 + (text[i] - '0') as i64;
+            i += 1;
+        }
+        if i < text.len && text[i] == '.' {
+            i += 1;
+            while i < text.len && text[i] >= '0' && text[i] <= '9' {
+                if frac_scale < 1000000000 {
+                    frac = frac * 10 + (text[i] - '0') as i64;
+                    frac_scale *= 10;
+                }
+                i += 1;
+            }
+        }
+        if i == start { return null; }
+        u0 := i;
+        while i < text.len && text[i] >= 'a' && text[i] <= 'z' { i += 1; }
+        unit_text := text[u0..i];
+        unit: i64 = 0;
+        if unit_text == "d" { unit = 86400000000000; }
+        else if unit_text == "h" { unit = 3600000000000; }
+        else if unit_text == "m" { unit = 60000000000; }
+        else if unit_text == "s" { unit = 1000000000; }
+        else if unit_text == "ms" { unit = 1000000; }
+        else if unit_text == "us" { unit = 1000; }
+        else if unit_text == "ns" { unit = 1; }
+        else { return null; }
+        total += whole * unit + frac * unit / frac_scale;
+        parts += 1;
+    }
+    if parts == 0 { return null; }
+    return if negative { -total } else { total };
+}
