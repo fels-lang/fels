@@ -37,6 +37,9 @@ the major version is `0`, any minor bump may break source compatibility.
 - **Containers**: `std.pqueue` (a priority queue: smallest first, largest first, or by a
   function), `std.deque` (push and pop at both ends) and `std.bitset`. The maps gain
   `entries()` for a `for` loop, and sets of keys, `AutoSet(K)` and `StrSet`.
+- **`std.regex`**: regular expressions in linear time (a Pike VM): classes, anchors, groups
+  with names, greedy and lazy repeats, flags, over UTF-8 runes; `find`, `find_all`,
+  `replace_all` with `$1` and `${name}`, `split`.
 - **`std.time`** gains the local time zone (`local_offset`, `local`, `now_local`: from Windows,
   or on Linux from the zone file `TZ` or /etc/localtime names, with its POSIX rule for later
   years), `to_unix`, `format_datetime` with `%Y-%m-%d %H:%M`-style patterns, RFC 3339 both ways,
