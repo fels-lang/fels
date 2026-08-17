@@ -1386,6 +1386,28 @@ plain := flate::inflate(&a, raw)?;          // bare DEFLATE, as a zip entry hold
   level, and Python's zlib reads it.
 - Only the first member of a gzip file of several is read.
 
+### `std.png`
+
+PNG images, read into RGBA pixels and written from them.
+
+```fels
+#import std.png as png;
+
+img := png::decode(&a, fs::read_all("icon.png", &a)?)?;
+// img.width, img.height, img.pixels: 4 bytes a pixel (red, green, blue, alpha), rows top to bottom
+c := img.at(3, 5);                          // r | g << 8 | b << 16 | a << 24
+out := png::image(&a, 64, 48);              // transparent black; set out.pixels
+fs::write_file("out.png", png::encode(&a, out, 6))?;
+```
+
+- `decode` reads every PNG: gray, gray with alpha, RGB, RGBA and palette images, at every bit
+  depth (16-bit samples keep their high byte, smaller ones are scaled to 0..255), interlaced
+  (Adam7) or not, with transparency from `tRNS`. Each chunk's CRC-32 is checked.
+- `encode` writes 8-bit RGB when every pixel is opaque, else RGBA, each row with the filter
+  whose bytes sum smallest, compressed with `std.flate` at the level given.
+- Errors (`PngError`): `.not_png`, `.corrupt`, `.unsupported` and `.too_big` (past 2^28
+  pixels).
+
 ### `std.zip`
 
 .zip archives, read and written: also .docx, .xlsx, .jar and .epub, which are zip inside.
