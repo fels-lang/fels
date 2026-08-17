@@ -1,0 +1,352 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.png — PNG images (RFC 2083), read into RGBA pixels and written from them.
+//
+//   img := png::decode(&a, fs::read_all("icon.png", &a)?)?;
+//   // img.width, img.height, img.pixels: 4 bytes a pixel (red, green, blue, alpha), rows top to
+//   // bottom, img.at(x, y) for one
+//   bytes := png::encode(&a, img, 6);                 // zlib level 6
+//
+// Every PNG reads: gray, gray with alpha, RGB, RGBA and palette images, of every bit depth (16-bit
+// samples keep their high byte), interlaced or not, with transparency from a tRNS chunk. Each
+// chunk's CRC-32 is checked. Writing makes 8-bit RGBA, or RGB when every pixel is opaque, each row
+// with the filter that suits it best.
+
+#import std.heap.{ Arena, alloc_bytes };
+#import std.vec as vec;
+#import std.vec.{ Vec };
+#import std.hash as hash;
+#import std.flate as flate;
+
+pub PngError :: errors {
+    not_png,        // no PNG signature
+    corrupt,        // a chunk cut short, a CRC that does not match, image data that does not inflate
+    unsupported,    // a color type, bit depth or method the PNG standard does not have
+    too_big,        // past 2^28 pixels
+}
+
+/// An image: `width` × `height` pixels of 4 bytes, red, green, blue and alpha, rows top to bottom.
+pub Image :: struct {
+    width: u32,
+    height: u32,
+    pixels: []u8,
+
+    /// The pixel at (`x`, `y`), 0 0 top left, as `r | g << 8 | b << 16 | a << 24`.
+    pub at :: fn(self: *Self, x: u32, y: u32) -> u32 {
+        i := ((y as usize) * (self.width as usize) + (x as usize)) * 4;
+        return (self.pixels[i] as u32) | ((self.pixels[i + 1] as u32) << 8) |
+            ((self.pixels[i + 2] as u32) << 16) | ((self.pixels[i + 3] as u32) << 24);
+    }
+}
+
+/// A new image, every pixel transparent black.
+pub image :: fn(a: *Arena, width: u32, height: u32) -> Image {
+    px := a.alloc_bytes((width as usize) * (height as usize) * 4);
+    for k in 0..px.len { px[k] = 0; }
+    img: Image = .{ width, height, px };
+    return img;
+}
+
+be32 :: fn(b: []const u8, at: usize) -> u32 {
+    return ((b[at] as u32) << 24) | ((b[at + 1] as u32) << 16) | ((b[at + 2] as u32) << 8) | (b[at + 3] as u32);
+}
+
+be16 :: fn(b: []const u8, at: usize) -> u32 { return ((b[at] as u32) << 8) | (b[at + 1] as u32); }
+
+// What a header says.
+Header :: struct {
+    width: u32,
+    height: u32,
+    depth: u32,
+    color: u32,
+    interlaced: bool,
+}
+
+// Samples a pixel has, by color type.
+channels :: fn(color: u32) -> u32 {
+    if color == 0 { return 1; }
+    if color == 2 { return 3; }
+    if color == 3 { return 1; }
+    if color == 4 { return 2; }
+    return 4;
+}
+
+valid_depth :: fn(color: u32, depth: u32) -> bool {
+    if color == 0 { return depth == 1 || depth == 2 || depth == 4 || depth == 8 || depth == 16; }
+    if color == 3 { return depth == 1 || depth == 2 || depth == 4 || depth == 8; }
+    if color == 2 || color == 4 || color == 6 { return depth == 8 || depth == 16; }
+    return false;
+}
+
+paeth :: fn(a: i32, b: i32, c: i32) -> i32 {
+    p := a + b - c;
+    pa := if p > a { p - a } else { a - p };
+    pb := if p > b { p - b } else { b - p };
+    pc := if p > c { p - c } else { c - p };
+    if pa <= pb && pa <= pc { return a; }
+    if pb <= pc { return b; }
+    return c;
+}
+
+// Undo the filters of `rows` rows of `stride` bytes (each after its filter byte), in place in
+// `data` from `at`, where a pixel takes `bpp` bytes (1 for less than a byte). The bytes of the
+// row before the first are zero.
+unfilter :: fn(data: []u8, at: usize, rows: usize, stride: usize, bpp: usize) -> void ! PngError {
+    prev: usize = 0;      // where the row before is, 0 for none
+    p := at;
+    for r in 0..rows {
+        kind := data[p];
+        row := p + 1;
+        if kind > 4 { fail .corrupt; }
+        for i in 0..stride {
+            left: i32 = if i >= bpp { data[row + i - bpp] as i32 } else { 0 };
+            up: i32 = if r > 0 { data[prev + i] as i32 } else { 0 };
+            ul: i32 = if r > 0 && i >= bpp { data[prev + i - bpp] as i32 } else { 0 };
+            add: i32 = 0;
+            if kind == 1 { add = left; }
+            else if kind == 2 { add = up; }
+            else if kind == 3 { add = (left + up) / 2; }
+            else if kind == 4 { add = paeth(left, up, ul); }
+            data[row + i] = ((data[row + i] as i32 + add) & 0xFF) as u8;
+        }
+        prev = row;
+        p = row + stride;
+    }
+}
+
+// Sample `i` of a row of `depth`-bit samples, as a 0..65535 value for 16 bits, else as is.
+sample :: fn(row: []const u8, i: usize, depth: u32) -> u32 {
+    if depth == 8 { return row[i] as u32; }
+    if depth == 16 { return be16(row, 2 * i); }
+    per := 8 / (depth as usize);
+    byte := row[i / per] as u32;
+    shift := 8 - depth * (((i % per) + 1) as u32);
+    return (byte >> shift) & ((1 << depth) - 1);
+}
+
+// A sample as 8 bits: the high byte of 16, a fraction of 255 for less than 8.
+to8 :: fn(v: u32, depth: u32) -> u8 {
+    if depth == 8 { return v as u8; }
+    if depth == 16 { return (v >> 8) as u8; }
+    return (v * 255 / ((1 << depth) - 1)) as u8;
+}
+
+// The pixels of one (sub-)image of `w` × `h`, unfiltered at `data[at..]`, into `img` at x0 + i *
+// dx, y0 + j * dy.
+place :: fn(img: *Image, h: Header, data: []const u8, at: usize, w: usize, rows: usize, x0: usize, y0: usize, dx: usize, dy: usize, plte: []const u8, trns: []const u8) {
+    ch := channels(h.color) as usize;
+    stride := (w * ch * (h.depth as usize) + 7) / 8;
+    for j in 0..rows {
+        row := data[at + j * (stride + 1) + 1..at + (j + 1) * (stride + 1)];
+        y := y0 + j * dy;
+        for i in 0..w {
+            x := x0 + i * dx;
+            o := (y * (img.width as usize) + x) * 4;
+            r: u8 = 0;
+            g: u8 = 0;
+            b: u8 = 0;
+            alpha: u8 = 255;
+            if h.color == 0 {
+                v := sample(row, i, h.depth);
+                r = to8(v, h.depth);
+                g = r;
+                b = r;
+                if trns.len >= 2 && v == be16(trns, 0) { alpha = 0; }
+            } else if h.color == 2 {
+                vr := sample(row, 3 * i, h.depth);
+                vg := sample(row, 3 * i + 1, h.depth);
+                vb := sample(row, 3 * i + 2, h.depth);
+                r = to8(vr, h.depth);
+                g = to8(vg, h.depth);
+                b = to8(vb, h.depth);
+                if trns.len >= 6 && vr == be16(trns, 0) && vg == be16(trns, 2) && vb == be16(trns, 4) { alpha = 0; }
+            } else if h.color == 3 {
+                k := sample(row, i, h.depth) as usize;
+                if 3 * k + 2 < plte.len {
+                    r = plte[3 * k];
+                    g = plte[3 * k + 1];
+                    b = plte[3 * k + 2];
+                }
+                if k < trns.len { alpha = trns[k]; }
+            } else if h.color == 4 {
+                r = to8(sample(row, 2 * i, h.depth), h.depth);
+                g = r;
+                b = r;
+                alpha = to8(sample(row, 2 * i + 1, h.depth), h.depth);
+            } else {
+                r = to8(sample(row, 4 * i, h.depth), h.depth);
+                g = to8(sample(row, 4 * i + 1, h.depth), h.depth);
+                b = to8(sample(row, 4 * i + 2, h.depth), h.depth);
+                alpha = to8(sample(row, 4 * i + 3, h.depth), h.depth);
+            }
+            img.pixels[o] = r;
+            img.pixels[o + 1] = g;
+            img.pixels[o + 2] = b;
+            img.pixels[o + 3] = alpha;
+        }
+    }
+}
+
+// Adam7: where each of the seven passes starts, and how far apart its pixels are.
+PASS_X: [7]u8 = .{ 0, 4, 0, 2, 0, 1, 0 };
+PASS_Y: [7]u8 = .{ 0, 0, 4, 0, 2, 0, 1 };
+PASS_DX: [7]u8 = .{ 8, 8, 4, 4, 2, 2, 1 };
+PASS_DY: [7]u8 = .{ 8, 8, 8, 4, 4, 2, 2 };
+
+/// The image a PNG file holds, its pixels in memory from `a`.
+pub decode :: fn(a: *Arena, data: []const u8) -> Image ! PngError {
+    sig: [8]u8 = .{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    if data.len < 8 { fail .not_png; }
+    for k in 0..8 { if data[k] != sig[k] { fail .not_png; } }
+    h: Header = .{ 0, 0, 0, 0, false };
+    have_header := false;
+    plte: []const u8 = "";
+    trns: []const u8 = "";
+    idat := vec::make(u8, a);
+    p: usize = 8;
+    while true {
+        if p + 12 > data.len { fail .corrupt; }
+        len := be32(data, p) as usize;
+        if p + 12 + len > data.len { fail .corrupt; }
+        kind := data[p + 4..p + 8];
+        body := data[p + 8..p + 8 + len];
+        if hash::crc32(data[p + 4..p + 8 + len]) != be32(data, p + 8 + len) { fail .corrupt; }
+        p += 12 + len;
+        if kind == "IHDR" {
+            if len != 13 { fail .corrupt; }
+            h.width = be32(body, 0);
+            h.height = be32(body, 4);
+            h.depth = body[8] as u32;
+            h.color = body[9] as u32;
+            if body[10] != 0 || body[11] != 0 || body[12] > 1 { fail .unsupported; }
+            h.interlaced = body[12] == 1;
+            if !valid_depth(h.color, h.depth) { fail .unsupported; }
+            if h.width == 0 || h.height == 0 { fail .corrupt; }
+            if (h.width as u64) * (h.height as u64) > 0x10000000 { fail .too_big; }
+            have_header = true;
+        } else if kind == "PLTE" {
+            plte = body;
+        } else if kind == "tRNS" {
+            trns = body;
+        } else if kind == "IDAT" {
+            idat.extend(body);
+        } else if kind == "IEND" {
+            break;
+        }
+    }
+    if !have_header { fail .corrupt; }
+    if h.color == 3 && plte.len == 0 { fail .corrupt; }
+    raw := flate::unzlib(a, idat.items()) catch err { fail .corrupt; };
+    img := image(a, h.width, h.height);
+    ch := channels(h.color) as usize;
+    bits := ch * (h.depth as usize);
+    bpp := if bits < 8 { 1 } else { bits / 8 };
+    if !h.interlaced {
+        w := h.width as usize;
+        rows := h.height as usize;
+        stride := (w * bits + 7) / 8;
+        if raw.len < rows * (stride + 1) { fail .corrupt; }
+        unfilter(raw, 0, rows, stride, bpp)?;
+        place(&img, h, raw, 0, w, rows, 0, 0, 1, 1, plte, trns);
+        return img;
+    }
+    at: usize = 0;
+    for pass in 0..7 {
+        x0 := PASS_X[pass] as usize;
+        y0 := PASS_Y[pass] as usize;
+        dx := PASS_DX[pass] as usize;
+        dy := PASS_DY[pass] as usize;
+        if x0 >= h.width as usize || y0 >= h.height as usize { continue; }
+        w := ((h.width as usize) - x0 + dx - 1) / dx;
+        rows := ((h.height as usize) - y0 + dy - 1) / dy;
+        stride := (w * bits + 7) / 8;
+        if at + rows * (stride + 1) > raw.len { fail .corrupt; }
+        unfilter(raw, at, rows, stride, bpp)?;
+        place(&img, h, raw, at, w, rows, x0, y0, dx, dy, plte, trns);
+        at += rows * (stride + 1);
+    }
+    return img;
+}
+
+// Writing
+
+put_chunk :: fn(out: *Vec(u8), kind: []const u8, body: []const u8) {
+    n := body.len as u32;
+    out.push((n >> 24) as u8);
+    out.push(((n >> 16) & 0xFF) as u8);
+    out.push(((n >> 8) & 0xFF) as u8);
+    out.push((n & 0xFF) as u8);
+    start := out.len();
+    out.extend(kind);
+    out.extend(body);
+    c := hash::crc32(out.items()[start..out.len()]);
+    out.push((c >> 24) as u8);
+    out.push(((c >> 16) & 0xFF) as u8);
+    out.push(((c >> 8) & 0xFF) as u8);
+    out.push((c & 0xFF) as u8);
+}
+
+/// `img` as a PNG file, in memory from `a`, its image data compressed at zlib `level` (0 to 9).
+/// 8-bit RGB when every pixel is opaque, else RGBA; each row with the filter whose bytes sum
+/// smallest (the usual heuristic).
+pub encode :: fn(a: *Arena, img: Image, level: u32) -> []const u8 {
+    solid := true;
+    for k in 0..(img.width as usize) * (img.height as usize) {
+        if img.pixels[4 * k + 3] != 255 {
+            solid = false;
+            break;
+        }
+    }
+    bpp: usize = if solid { 3 } else { 4 };
+    w := img.width as usize;
+    stride := w * bpp;
+    rows := img.height as usize;
+    raw := a.alloc_bytes(rows * (stride + 1));
+    line := a.alloc_bytes(stride);
+    prev := a.alloc_bytes(stride);
+    best := a.alloc_bytes(stride);
+    trial := a.alloc_bytes(stride);
+    for k in 0..stride { prev[k] = 0; }
+    for y in 0..rows {
+        for x in 0..w {
+            for c in 0..bpp { line[x * bpp + c] = img.pixels[(y * w + x) * 4 + c]; }
+        }
+        best_kind: u8 = 0;
+        best_sum: u64 = 0xFFFFFFFFFFFFFFFF;
+        for kind in 0..5 {
+            sum: u64 = 0;
+            for i in 0..stride {
+                left: i32 = if i >= bpp { line[i - bpp] as i32 } else { 0 };
+                up: i32 = prev[i] as i32;
+                ul: i32 = if i >= bpp { prev[i - bpp] as i32 } else { 0 };
+                pred: i32 = 0;
+                if kind == 1 { pred = left; }
+                else if kind == 2 { pred = up; }
+                else if kind == 3 { pred = (left + up) / 2; }
+                else if kind == 4 { pred = paeth(left, up, ul); }
+                v := ((line[i] as i32 - pred) & 0xFF) as u8;
+                trial[i] = v;
+                sum += if v < 128 { v as u64 } else { (256 - (v as u32)) as u64 };
+            }
+            if sum < best_sum {
+                best_sum = sum;
+                best_kind = kind as u8;
+                for i in 0..stride { best[i] = trial[i]; }
+            }
+        }
+        raw[y * (stride + 1)] = best_kind;
+        for i in 0..stride { raw[y * (stride + 1) + 1 + i] = best[i]; }
+        for i in 0..stride { prev[i] = line[i]; }
+    }
+    out := vec::make(u8, a);
+    sig: [8]u8 = .{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    out.extend(sig[:]);
+    ihdr: [13]u8 = .{
+        (img.width >> 24) as u8, ((img.width >> 16) & 0xFF) as u8, ((img.width >> 8) & 0xFF) as u8, (img.width & 0xFF) as u8,
+        (img.height >> 24) as u8, ((img.height >> 16) & 0xFF) as u8, ((img.height >> 8) & 0xFF) as u8, (img.height & 0xFF) as u8,
+        8, if solid { 2 } else { 6 }, 0, 0, 0,
+    };
+    put_chunk(&out, "IHDR", ihdr[:]);
+    put_chunk(&out, "IDAT", flate::zlib(a, raw, level));
+    put_chunk(&out, "IEND", "");
+    return out.items();
+}
