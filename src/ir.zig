@@ -2059,11 +2059,15 @@ fn lowerInterfaceMethod(
     defer type_scope = outer_scope;
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
+    // `Self` is the type by its link name: a type whose name another module uses too
+    // (`tcp::TcpStream`, which std.net names again) has a qualified one, and by the bare name
+    // the IR found no struct, so every field read through `self` was undef.
+    const self_name = linkNameFor(symbols, impl.file_name, impl.type_name);
     for (decl.params) |param| try params.append(allocator, .{
         .name = param.name,
-        .ty = try lowerTypeReplacingSelf(allocator, param.ty, impl.type_name, types, symbols),
+        .ty = try lowerTypeReplacingSelf(allocator, param.ty, self_name, types, symbols),
     });
-    const return_ty = try lowerTypeReplacingSelf(allocator, decl.return_ty, impl.type_name, types, symbols);
+    const return_ty = try lowerTypeReplacingSelf(allocator, decl.return_ty, self_name, types, symbols);
     const blocks = if (decl.body) |body| blk: {
         var lowerer = FunctionLowerer.init(allocator, types, symbols, decl, error_codes);
         lowerer.module = module;
