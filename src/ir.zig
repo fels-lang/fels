@@ -6408,7 +6408,22 @@ const FunctionLowerer = struct {
         } });
     }
 
-    fn concretePointerExprName(self: FunctionLowerer, expr: ast.Expr) ?[]const u8 {
+    fn concretePointerExprName(self: *FunctionLowerer, expr: ast.Expr) ?[]const u8 {
+        // A local or a param that holds the pointer: its IR type names the struct by its link
+        // name, also through an alias of another module's type (`net::TcpStream`, which is
+        // `tcp::TcpStream`). The checker's type for the name is the one it was coerced to (the
+        // interface), so it had none, and a param's declared name dropped its namespace.
+        if (expr.kind == .ident) {
+            const name = expr.kind.ident;
+            if (self.local_types.get(self.curLocal(name))) |lt| {
+                if (structPointee(lt)) |n| return n;
+            }
+            for (self.ir_params) |p| {
+                if (std.mem.eql(u8, p.name, name)) {
+                    if (structPointee(p.ty)) |n| return n;
+                }
+            }
+        }
         if (self.types.expr_types.get(expr.id)) |ty| {
             if (concretePointerName(ty, self.symbols)) |name| return name;
         }
@@ -6969,6 +6984,17 @@ fn lowerSemaTypeWithEnv(allocator: std.mem.Allocator, ty: sema.Ty, types: sema.T
         }
     }
     return lowerSemaType(allocator, ty, symbols);
+}
+
+// The struct a pointer type points at, by its IR (link) name.
+fn structPointee(ty: IrType) ?[]const u8 {
+    return switch (ty) {
+        .ptr => |inner| switch (inner.*) {
+            .struct_type => |n| n,
+            else => null,
+        },
+        else => null,
+    };
 }
 
 fn concretePointerName(ty: sema.Ty, symbols: sema.SymbolTable) ?[]const u8 {
