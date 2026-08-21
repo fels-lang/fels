@@ -504,6 +504,59 @@ test "fels test: natively, a struct holding a generic of its module's type named
     try expectHas(native.text, "  \u{2713} both_items\n");
 }
 
+test "fels test: natively, an interface method of a type named like another module's" {
+    // std.http: `TcpStream as Reader` in std.net.tcp, which std.net names again. `Self` in the
+    // impl's methods was the bare name the IR has no struct for, so `self.sock.fd` read undef;
+    // and a pointer local coerced to the interface had "no concrete type".
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const dir = ".zig-cache/tc_same_name_impl";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/a.fels",
+        \\pub Source :: interface {
+        \\    take :: fn(self: *Self, n: i32) -> i32;
+        \\}
+        \\
+        \\Sock :: struct { fd: i32, open: bool }
+        \\pub Stream :: struct { sock: Sock, read: i32 }
+        \\
+        \\pub stream :: fn(fd: i32) -> Stream { return .{ .{ fd, true }, 0 }; }
+        \\
+        \\Stream as Source {
+        \\    take :: fn(self: *Self, n: i32) -> i32 {
+        \\        self.read = self.read + n;
+        \\        return self.sock.fd * 100 + self.read;
+        \\    }
+        \\}
+        \\
+    );
+    try write(dir, "src/b.fels",
+        \\#import app.a;
+        \\pub Stream :: a::Stream;
+        \\
+    );
+    try write(dir, "src/use_tests.fels",
+        \\#import app.a;
+        \\#import app.b;
+        \\
+        \\#test
+        \\through_the_interface :: fn(t: *Test) {
+        \\    s := a::stream(7);
+        \\    src: *a::Source = &s;
+        \\    t.eq(src.take(2), 702);
+        \\    p: *a::Stream = &s;
+        \\    again: *a::Source = p;
+        \\    t.eq(again.take(3), 705);
+        \\    t.eq(s.read, 5);
+        \\}
+        \\
+    );
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try expectHas(native.text, "  \u{2713} through_the_interface\n");
+}
+
 test "fels test: a match on an enum named like a type of another module" {
     // Strata: an enum `Mark` next to std.heap's struct `Mark`. The match named the enum by its
     // bare name, not by the qualified one the IR knows it by, and took no arm (`unreachable`).
