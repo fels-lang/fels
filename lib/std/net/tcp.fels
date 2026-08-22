@@ -15,6 +15,7 @@
 #import std.net.os.{NetError};
 #import std.net.addr as addr;
 #import std.net.socket as socket;
+#import std.io.{ Reader, Writer, IoError };
 
 // TcpStream — a connected TCP socket
 pub TcpStream :: struct {
@@ -79,6 +80,27 @@ pub TcpStream :: struct {
     pub shutdown_write :: fn(self: *Self) -> void ! NetError { self.sock.shutdown(os::SHUT_SEND)?; return; }
 
     pub close :: fn(self: *Self) { self.sock.close(); }
+}
+
+// A stream is an io.Reader (0 once the peer has closed) and an io.Writer, so std.bufio,
+// io::copy and the rest work on it.
+TcpStream as Reader {
+    read :: fn(self: *Self, buf: []u8) -> usize ! IoError {
+        if buf.len == 0 { return 0; }
+        n := os::sys_recv(self.sock.fd, buf.ptr, buf.len as i32, 0);
+        if n < 0 { fail .read_failed; }
+        return n as usize;
+    }
+}
+
+TcpStream as Writer {
+    write :: fn(self: *Self, data: []const u8) -> usize ! IoError {
+        if data.len == 0 { return 0; }
+        n := os::sys_send(self.sock.fd, data.ptr, data.len as i32, 0);
+        if n <= 0 { fail .write_failed; }
+        return n as usize;
+    }
+    flush :: fn(self: *Self) -> void ! IoError { return; }
 }
 
 // TcpListener — a bound, listening TCP socket
