@@ -578,6 +578,27 @@ close_piped :: fn(which: u32, o_in: usize, c_in: usize, o_out: usize, c_out: usi
 #extern("ws2_32", "ioctlsocket") ws_ioctlsocket :: fn(s: usize, cmd: u32, argp: *u32) -> i32;
 #extern("ws2_32", "shutdown") ws_shutdown :: fn(s: usize, how: i32) -> i32;
 
+// The IPv4 address the system finds for `name` (as sockaddr_in keeps it), 0 for none.
+#extern("ws2_32", "getaddrinfo")
+GetAddrInfoA :: fn(node: *const u8, service: ?*const u8, hints: *AddrInfoA, res: *usize) -> i32;
+#extern("ws2_32", "freeaddrinfo")
+FreeAddrInfoA :: fn(ai: usize);
+AddrInfoA :: struct {
+    flags: i32, family: i32, socktype: i32, protocol: i32,
+    addrlen: usize, canonname: usize, addr: usize, next: usize,
+}
+os_net_resolve :: fn(name: *const u8) -> u32 {
+    hints: AddrInfoA = .{ 0, 2, 1, 0, 0usize, 0usize, 0usize, 0usize };   // AF_INET, SOCK_STREAM
+    res: usize = 0usize;
+    if GetAddrInfoA(name, null, &hints, &res) != 0 || res == 0usize { return 0u32; }
+    ai := unsafe core::ptr_from_int(*AddrInfoA, res);
+    v: u32 = 0u32;
+    if ai.addr != 0usize {
+        v = unsafe *core::ptr_from_int(*u32, ai.addr + 4usize);   // sin_addr, after family and port
+    }
+    FreeAddrInfoA(res);
+    return v;
+}
 os_net_init :: fn() -> i32 { data: [512]u8 = .{}; return ws_startup(0x0202u16, &data[0]); }
 os_net_cleanup :: fn() -> i32 { return ws_cleanup(); }
 os_net_lasterr :: fn() -> i32 { return ws_lasterr(); }
