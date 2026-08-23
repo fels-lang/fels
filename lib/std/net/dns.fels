@@ -1,0 +1,143 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.net.dns — names to IPv4 addresses, the way std.net.resolve does it where there is no C
+// library to ask (Linux): the hosts file first, then an A query over UDP to the name server
+// /etc/resolv.conf names. Its query and answer are plain bytes, built and read here.
+
+#import std.heap.{ Arena };
+#import std.net.addr as addr;
+#import std.net.addr.{ IpV4 };
+#import std.strings as strings;
+
+/// The query for the A record of `host` with id `id`, in `out` (512 bytes are enough); its
+/// length, 0 for a name that cannot be one (a label longer than 63 bytes, a name past 253).
+pub build_query :: fn(host: []const u8, id: u16, out: []u8) -> usize {
+    if host.len == 0 || host.len > 253 || out.len < host.len + 18 { return 0; }
+    head: [12]u8 = .{ (id >> 8) as u8, (id & 0xFF) as u8, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0 };
+    for k in 0..12 { out[k] = head[k]; }
+    o: usize = 12;
+    start: usize = 0;
+    for i in 0..host.len + 1 {
+        if i == host.len || host[i] == '.' {
+            n := i - start;
+            if n == 0 || n > 63 {
+                if i == host.len && n == 0 && i > 0 { break; }   // a final dot
+                return 0;
+            }
+            out[o] = n as u8;
+            o += 1;
+            for k in start..i {
+                out[o] = host[k];
+                o += 1;
+            }
+            start = i + 1;
+        }
+    }
+    out[o] = 0;
+    out[o + 1] = 0;
+    out[o + 2] = 1;   // type A
+    out[o + 3] = 0;
+    out[o + 4] = 1;   // class IN
+    return o + 5;
+}
+
+// The place after the name at `at` (labels, or a pointer that ends it), or 0 when it runs off.
+skip_name :: fn(msg: []const u8, at: usize) -> usize {
+    p := at;
+    while p < msg.len {
+        n := msg[p];
+        if n == 0 { return p + 1; }
+        if (n & 0xC0) == 0xC0 { return if p + 2 <= msg.len { p + 2 } else { 0 }; }
+        p += 1 + (n as usize);
+    }
+    return 0;
+}
+
+be16 :: fn(b: []const u8, at: usize) -> usize { return ((b[at] as usize) << 8) | (b[at + 1] as usize); }
+
+/// The first A record in the answer `msg` to the query with id `id`; null when it is no answer
+/// to it, an error answer, or has no A record (only a CNAME, say).
+pub parse_answer :: fn(msg: []const u8, id: u16) -> ?IpV4 {
+    if msg.len < 12 || be16(msg, 0) != (id as usize) { return null; }
+    if (msg[2] & 0x80) == 0 || (msg[3] & 0x0F) != 0 { return null; }   // not a response, or an error
+    qd := be16(msg, 4);
+    an := be16(msg, 6);
+    p: usize = 12;
+    for k in 0..qd {
+        p = skip_name(msg, p);
+        if p == 0 || p + 4 > msg.len { return null; }
+        p += 4;
+    }
+    for k in 0..an {
+        p = skip_name(msg, p);
+        if p == 0 || p + 10 > msg.len { return null; }
+        kind := be16(msg, p);
+        class := be16(msg, p + 2);
+        len := be16(msg, p + 8);
+        p += 10;
+        if p + len > msg.len { return null; }
+        if kind == 1 && class == 1 && len == 4 {
+            return addr::ipv4(msg[p], msg[p + 1], msg[p + 2], msg[p + 3]);
+        }
+        p += len;
+    }
+    return null;
+}
+
+/// The address `name` has in a hosts file's text (`127.0.0.1 localhost`), or null.
+pub from_hosts :: fn(text: []const u8, name: []const u8) -> ?IpV4 {
+    i: usize = 0;
+    while i < text.len {
+        end := i;
+        while end < text.len && text[end] != '\n' { end += 1; }
+        line := text[i..end];
+        i = end + 1;
+        // words up to a '#'
+        words: [16][]const u8 = .{};
+        nw: usize = 0;
+        k: usize = 0;
+        while k < line.len && nw < 16 {
+            while k < line.len && (line[k] == ' ' || line[k] == '\t' || line[k] == '\r') { k += 1; }
+            if k >= line.len || line[k] == '#' { break; }
+            s := k;
+            while k < line.len && line[k] != ' ' && line[k] != '\t' && line[k] != '\r' && line[k] != '#' { k += 1; }
+            words[nw] = line[s..k];
+            nw += 1;
+        }
+        if nw < 2 { continue; }
+        for w in 1..nw {
+            if strings::str_eq_ignore_case(words[w], name) {
+                ip := addr::parse(words[0]) catch err { break; };
+                return ip;
+            }
+        }
+    }
+    return null;
+}
+
+/// The name servers a resolv.conf's text lists (`nameserver 10.0.0.1`), IPv4 ones, up to 3.
+pub servers :: fn(text: []const u8, out: []IpV4) -> usize {
+    n: usize = 0;
+    i: usize = 0;
+    while i < text.len && n < out.len {
+        end := i;
+        while end < text.len && text[end] != '\n' { end += 1; }
+        line := text[i..end];
+        i = end + 1;
+        if line.len > 11 && strings::str_starts_with(line, "nameserver") {
+            k: usize = 10;
+            while k < line.len && (line[k] == ' ' || line[k] == '\t') { k += 1; }
+            e := k;
+            while e < line.len && line[e] != ' ' && line[e] != '\t' && line[e] != '\r' { e += 1; }
+            ok := true;
+            ip := addr::parse(line[k..e]) catch err {
+                ok = false;
+                yield addr::any();
+            };
+            if ok {
+                out[n] = ip;
+                n += 1;
+            }
+        }
+    }
+    return n;
+}
