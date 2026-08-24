@@ -17,6 +17,11 @@
 #import std.net.addr as addr;
 #import std.net.tcp as tcp;
 #import std.net.udp as udp;
+#import std.net.dns as dns;
+#import std.strings as strings;
+#import std.heap.{ Arena };
+#import std.fs as fs;
+#import std.time as time;
 
 pub NetError    :: os::NetError;
 pub SocketAddr  :: addr::SocketAddr;
@@ -48,6 +53,67 @@ pub connect :: fn(sa: SocketAddr) -> TcpStream ! NetError {
 // Bind + listen on `sa`, returning a `TcpListener` (server side, backlog 16).
 pub listen :: fn(sa: SocketAddr) -> TcpListener ! NetError {
     return tcp::listen(sa)?;
+}
+
+// Names
+
+/// The IPv4 address of `host`: a dotted address as it is, `localhost`, or a name looked up
+/// (after `init`). On Windows the system resolves it; on Linux the hosts file is read, then the
+/// name servers of /etc/resolv.conf are asked, two seconds each. Files are read into `a`.
+pub resolve :: fn(a: *Arena, host: []const u8) -> addr::IpV4 ! NetError {
+    ok := true;
+    ip := addr::parse(host) catch err {
+        ok = false;
+        yield addr::any();
+    };
+    if ok { return ip; }
+    if strings::str_eq_ignore_case(host, "localhost") { return addr::localhost(); }
+    return resolve_os(a, host);
+}
+
+/// `resolve(host)` and a connection to it at `port`.
+pub connect_host :: fn(a: *Arena, host: []const u8, port: u16) -> TcpStream ! NetError {
+    ip := resolve(a, host)?;
+    return connect(addr::socket_addr(ip, port));
+}
+
+#if TARGET.os == .windows {
+    resolve_os :: fn(a: *Arena, host: []const u8) -> addr::IpV4 ! NetError {
+        name: [300]u8 = .{};
+        if host.len >= 300 { fail .unknown_host; }
+        for k in 0..host.len { name[k] = host[k]; }
+        v := os_net_resolve(&name[0]);
+        if v == 0 { fail .unknown_host; }
+        return addr::from_net(v);
+    }
+} else {
+    resolve_os :: fn(a: *Arena, host: []const u8) -> addr::IpV4 ! NetError {
+        hosts := fs::read_all("/etc/hosts", a) catch err { yield a.alloc_bytes(0); };
+        if dns::from_hosts(hosts, host) |found| { return found; }
+        conf := fs::read_all("/etc/resolv.conf", a) catch err { yield a.alloc_bytes(0); };
+        list: [3]addr::IpV4 = .{};
+        n := dns::servers(conf, list[:]);
+        id := (time::unix_nanos() & 0xFFFF) as u16;
+        query: [512]u8 = .{};
+        len := dns::build_query(host, id, query[:]);
+        if len == 0 { fail .unknown_host; }
+        for k in 0..n {
+            s := udp::unbound() catch err { continue; };
+            s.set_read_timeout(2000) catch err {};
+            sent := s.send_to(query[0..len], addr::socket_addr(list[k], 53)) catch err {
+                s.close();
+                continue;
+            };
+            answer: [1500]u8 = .{};
+            d := s.recv_from(answer[:]) catch err {
+                s.close();
+                continue;
+            };
+            s.close();
+            if dns::parse_answer(answer[0..d.len], id) |found| { return found; }
+        }
+        fail .unknown_host;
+    }
 }
 
 // UDP convenience

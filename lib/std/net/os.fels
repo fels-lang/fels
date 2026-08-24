@@ -80,6 +80,7 @@ pub NetError :: errors {
     addr_failed,      // getsockname()
     would_block,      // a non-blocking call had no data ready
     closed,           // peer closed the connection
+    unknown_host,     // a name with no address (`resolve`)
 }
 
 // The wire address: `sockaddr_in` (16 bytes)
