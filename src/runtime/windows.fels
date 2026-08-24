@@ -186,7 +186,8 @@ WIN32_FIND_DATAW :: struct {
     alt_name:  [14]u16,
 }
 
-// mode: 0 = read existing, 1 = create/truncate write, 2 = open/create append.
+// mode: 0 = read existing, 1 = create/truncate write, 2 = open/create append, 3 = create a new
+// file to write (fails when there is one).
 os_file_open :: fn(path: *const u8, mode: i32) -> i64 {
     w: [1024]u16 = .{};
     if !to_utf16(path, &w[0]) { return -1i64; }
@@ -195,6 +196,8 @@ os_file_open :: fn(path: *const u8, mode: i32) -> i64 {
         h = CreateFileW(&w[0], 0x80000000u32, 0x3u32, null, 3u32, 0x80u32, 0usize); // GENERIC_READ, SHARE RW, OPEN_EXISTING
     } else if mode == 1 {
         h = CreateFileW(&w[0], 0x40000000u32, 0x1u32, null, 2u32, 0x80u32, 0usize); // GENERIC_WRITE, SHARE_READ, CREATE_ALWAYS
+    } else if mode == 3 {
+        h = CreateFileW(&w[0], 0x40000000u32, 0x1u32, null, 1u32, 0x80u32, 0usize); // CREATE_NEW
     } else {
         h = CreateFileW(&w[0], 0x40000000u32, 0x1u32, null, 4u32, 0x80u32, 0usize); // OPEN_ALWAYS
         if h != WIN32_INVALID_HANDLE {

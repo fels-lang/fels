@@ -213,12 +213,18 @@ sys_newfstatat :: fn(dirfd: i32, path: *const u8, st: *StatBuf, flags: i32) -> i
         clobbers: { "rcx", "r11", "memory" });
 }
 
-// mode: 0 = read existing, 1 = create/truncate write, 2 = open/create append.
+// mode: 0 = read existing, 1 = create/truncate write, 2 = open/create append, 3 = create a new
+// file to write (fails when there is one), for the owner only.
 os_file_open :: fn(path: *const u8, mode: i32) -> i64 {
     flags: i32 = 0;                       // O_RDONLY
+    perm: i32 = 420;                      // 0644
     if mode == 1 { flags = 577; }         // O_WRONLY|O_CREAT|O_TRUNC
     if mode == 2 { flags = 1089; }        // O_WRONLY|O_CREAT|O_APPEND
-    fd := sys_openat(-100, path, flags, 420);   // AT_FDCWD, 0644
+    if mode == 3 {
+        flags = 193;                      // O_WRONLY|O_CREAT|O_EXCL
+        perm = 384;                       // 0600
+    }
+    fd := sys_openat(-100, path, flags, perm);   // AT_FDCWD
     if fd < 0i64 { return -1i64; }
     return fd;
 }
