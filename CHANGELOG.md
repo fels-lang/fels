@@ -7,6 +7,12 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **`std.http`**: an HTTP/1.1 client (`get`, `request` with any method, headers and body;
+  bodies by length or in chunks, gzip unpacked, redirects followed) and the parts of a server
+  (`read_request`, `respond`). Plain HTTP only: an https:// URL fails with `tls_unsupported`.
+  `std.net` gains `resolve` and `connect_host` for host names (the system's lookup on Windows;
+  /etc/hosts and a DNS query on Linux, from `std.net.dns`), and a `TcpStream` is an
+  `io.Reader` and an `io.Writer`.
 - **`std.sort`**: `asc`, `desc` and `by` sort a slice in place (an introsort, O(n log n) in
   every case), `stable_asc` and `stable_by` keep equal elements in their order (a merge sort
   with a slice from an arena), and `lower_bound`, `upper_bound` and `search` find in a sorted
@@ -120,6 +126,9 @@ the major version is `0`, any minor bump may break source compatibility.
   LLVM error.
 - A function of another module used as a value (`sort::by([]const u8, names, mem::less_bytes)`)
   is a closure, as a function of the file's own is. It stopped the build with an LLVM error.
+- An interface method of a type whose name another module uses too (`pub Stream :: a::Stream`)
+  reads the fields of `self`. They read as garbage, a crash. A pointer local coerced to an
+  interface (`r: *Reader = p;`) stopped the build with an internal compiler error.
 
 ## 0.12.0 — 2026-10-19
 
