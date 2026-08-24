@@ -1,0 +1,108 @@
+// std.http against itself, as `#test` functions: native only (tests/compiler/std_tests.zig), as
+// compile-time code opens no sockets. A server thread on a port of 127.0.0.1 answers what the
+// client asks.
+#import std.heap as heap;
+#import std.strings as strings;
+#import std.flate as flate;
+#import std.thread as thread;
+#import std.net as net;
+#import std.net.addr as addr;
+#import std.http as http;
+
+Server :: struct {
+    listener: net::TcpListener,
+    requests: usize,       // how many connections to answer
+}
+
+serve :: fn(p: *void) -> u32 {
+    s := unsafe (p as *Server);
+    a := heap::make();
+    for k in 0..s.requests {
+        c := s.listener.accept_stream() catch err { return 1; };
+        req := http::read_request(&a, &c) catch err {
+            c.close();
+            continue;
+        };
+        path := req.path();
+        if path == "/hello" {
+            http::respond(&c, 200, "text/plain", "hello world") catch err {};
+        } else if path == "/echo" {
+            kind := req.header("content-type") ?? "?";
+            http::respond(&c, 200, kind, req.body) catch err {};
+        } else if path == "/chunked" {
+            c.send_all("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n7;ext=1\r\n, world\r\n0\r\nX-Trailer: 1\r\n\r\n") catch err {};
+        } else if path == "/gzip" {
+            hs: [1]http::Header = .{ .{ "Content-Encoding", "gzip" } };
+            http::respond_with(&c, 200, "text/plain", hs[:], flate::gzip(&a, "packed body, packed body, packed body", 6)) catch err {};
+        } else if path == "/redirect" {
+            hs: [1]http::Header = .{ .{ "Location", "/hello" } };
+            http::respond_with(&c, 302, "text/plain", hs[:], "") catch err {};
+        } else if path == "/query" {
+            http::respond(&c, 200, "text/plain", req.query()) catch err {};
+        } else {
+            http::respond(&c, 404, "text/plain", "no such page") catch err {};
+        }
+        c.close();
+    }
+    a.deinit();
+    return 0;
+}
+
+link :: fn(a: *heap::Arena, port: u16, path: []const u8) -> []const u8 {
+    sb := strings::builder(a);
+    sb.append("http://127.0.0.1:");
+    sb.append_u64(port as u64);
+    sb.append(path);
+    return sb.str();
+}
+
+#test
+a_client_and_a_server :: fn(t: *Test) {
+    a := heap::make();
+    net::init() catch err { t.fatal("init"); return; };
+    l := net::listen(addr::socket_addr(addr::localhost(), 0)) catch err { t.fatal("listen"); return; };
+    port := (l.local_addr() catch err { t.fatal("port"); return; }).port;
+    s: Server = .{ l, 8 };
+    th := thread::spawn(core::fn_ptr(serve), unsafe ((&s) as *void));
+
+    r1 := http::get(&a, link(&a, port, "/hello")) catch err { t.fatal("get"); return; };
+    t.eq(r1.status, 200u16);
+    t.eq(r1.reason, "OK");
+    t.eq(r1.body, "hello world");
+    t.eq(r1.header("CONTENT-TYPE") ?? "", "text/plain");
+
+    hs: [1]http::Header = .{ .{ "Content-Type", "application/json" } };
+    r2 := http::request(&a, "POST", link(&a, port, "/echo"), hs[:], "{\"a\":1}") catch err { t.fatal("post"); return; };
+    t.eq(r2.body, "{\"a\":1}");
+    t.eq(r2.header("content-type") ?? "", "application/json");
+
+    r3 := http::get(&a, link(&a, port, "/chunked")) catch err { t.fatal("chunked"); return; };
+    t.eq(r3.body, "hello, world");
+
+    r4 := http::get(&a, link(&a, port, "/gzip")) catch err { t.fatal("gzip"); return; };
+    t.eq(r4.body, "packed body, packed body, packed body");
+
+    r5 := http::get(&a, link(&a, port, "/redirect")) catch err { t.fatal("redirect"); return; };
+    t.eq(r5.status, 200u16);           // followed to /hello: two connections
+    t.eq(r5.body, "hello world");
+
+    r6 := http::get(&a, link(&a, port, "/query?x=1&y=two")) catch err { t.fatal("query"); return; };
+    t.eq(r6.body, "x=1&y=two");
+
+    r7 := http::get(&a, link(&a, port, "/nothing")) catch err { t.fatal("404"); return; };
+    t.eq(r7.status, 404u16);
+    t.eq(r7.body, "no such page");
+
+    t.eq(th.join(), 0u32);
+    l.close();
+
+    https := http::get(&a, "https://example.com/") catch err {
+        t.expect(err == .tls_unsupported);
+        yield r7;
+    };
+    nohost := http::get(&a, "http://no-such-host.invalid/") catch err {
+        t.expect(err == .unknown_host);
+        yield r7;
+    };
+    a.deinit();
+}

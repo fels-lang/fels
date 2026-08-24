@@ -1,0 +1,49 @@
+// std.net.dns, as `#test` functions: `fels test` runs them natively and on the comptime VM
+// (tests/compiler/std_tests.zig). ANSWER is a response for www.example.com with a CNAME before
+// the A record and names compressed, as servers send them.
+#import std.net.dns as dns;
+#import std.net.addr as addr;
+
+#test
+a_query :: fn(t: *Test) {
+    q: [512]u8 = .{};
+    n := dns::build_query("www.example.com", 0x1234, q[:]);
+    t.eq(n, 33usize);
+    t.eq(q[0], 0x12u8);
+    t.eq(q[1], 0x34u8);
+    t.eq(q[2], 0x01u8);                  // recursion desired
+    t.eq(q[12], 3u8);
+    t.eq(q[13..16], "www");
+    t.eq(q[16], 7u8);
+    t.eq(q[28], 0u8);                    // the name ends
+    t.eq(q[30], 1u8);                    // type A
+    t.eq(q[32], 1u8);                    // class IN
+    t.eq(dns::build_query("a..b", 1, q[:]), 0usize);
+    t.eq(dns::build_query("example.com.", 1, q[:]), 29usize);   // a final dot is allowed
+}
+
+#test
+an_answer :: fn(t: *Test) {
+    if dns::parse_answer(ANSWER[:], 0x1234) |ip| {
+        t.eq(ip.a, 93u8);
+        t.eq(ip.d, 34u8);
+    } else { t.expect(false); }
+    t.expect(dns::parse_answer(ANSWER[:], 0x4321) == null);         // another query's
+    t.expect(dns::parse_answer(ANSWER[0..40], 0x1234) == null);     // cut short
+}
+
+#test
+hosts_and_servers :: fn(t: *Test) {
+    hosts := "# comment\n127.0.0.1\tlocalhost\n10.1.2.3  build build.lan # the box\n::1 localhost\n";
+    if dns::from_hosts(hosts, "BUILD.lan") |ip| { t.eq(ip.b, 1u8); } else { t.expect(false); }
+    t.expect(dns::from_hosts(hosts, "nothere") == null);
+    conf := "search lan\nnameserver 192.168.1.1\nnameserver fe80::1\nnameserver 8.8.8.8\n";
+    list: [3]addr::IpV4 = .{};
+    n := dns::servers(conf, list[:]);
+    t.eq(n, 2usize);
+    t.eq(list[1].a, 8u8);
+}
+
+// The response
+
+ANSWER: [68]u8 = .{ 0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x03, 0x77, 0x77, 0x77, 0x07, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x03, 0x63, 0x6f, 0x6d, 0x00, 0x00, 0x01, 0x00, 0x01, 0xc0, 0x0c, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x07, 0x04, 0x65, 0x64, 0x67, 0x65, 0xc0, 0x10, 0xc0, 0x2d, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x04, 0x5d, 0xb8, 0xd8, 0x22 };
