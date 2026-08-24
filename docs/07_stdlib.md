@@ -796,7 +796,8 @@ from the bottom up:
 | `std.net.socket` | `Socket`: the typed handle and the options shared by every protocol (`set_recv_timeout`/`set_send_timeout`, `set_reuse_addr`, `set_broadcast`, `set_nonblocking`, `shutdown`, `bind_to`, `local_addr`). |
 | `std.net.tcp` | `TcpStream` / `TcpListener`: streams plus `send_all` / `recv_exact`, `set_nodelay`, and `accept` returning the peer address. |
 | `std.net.udp` | `UdpSocket`: datagrams (`send_to` / `recv_from`) and the connected `connect`+`send`/`recv` shortcut. |
-| `std.net` | A thin facade re-exporting the lifecycle (`init` / `shutdown` / `last_error`) and the constructors (`connect` / `listen` / `udp_bind`). |
+| `std.net.dns` | The pieces of a lookup without a C library: an A query (`build_query`), the address in an answer (`parse_answer`), a name in a hosts file (`from_hosts`), the name servers of a resolv.conf (`servers`). |
+| `std.net` | A thin facade re-exporting the lifecycle (`init` / `shutdown` / `last_error`) and the constructors (`connect` / `listen` / `udp_bind`), plus names: `resolve` and `connect_host`. |
 
 It leans on the newer language features throughout: in-struct methods, `#derive`, and
 `!`-fallible returns. Every layer that works with sockets fails with the one shared
@@ -829,6 +830,15 @@ ln := net::listen(sa) catch e { return; };
 a  := ln.accept() catch e { return; };   // a.stream + a.peer (blocks for a client)
 ```
 
+**Names**: `resolve` gives the IPv4 address of a host, and `connect_host` connects to one:
+```fels
+ip := net::resolve(&a, "example.com") catch e { return; };   // NetError.unknown_host
+s  := net::connect_host(&a, "example.com", 80u16) catch e { return; };
+```
+A dotted address is taken as it is, and `localhost` is 127.0.0.1. Other names go to the system
+on Windows (`getaddrinfo`); on Linux /etc/hosts is read, then the name servers of
+/etc/resolv.conf are asked over UDP, two seconds each. The arena holds the files read.
+
 **UDP**: connectionless datagrams, or `connect` to pin a default peer:
 ```fels
 #import std.net.udp as udp;
@@ -839,7 +849,9 @@ ignored := srv.send_to("pong", d.from) catch e { return; };  // reply to sender
 ```
 
 - **`TcpStream`**: `send`/`send_all`, `recv`/`recv_exact`, `set_nodelay`,
-  `set_read_timeout`/`set_write_timeout`, `local_addr`, `shutdown_write`, `close`.
+  `set_read_timeout`/`set_write_timeout`, `local_addr`, `shutdown_write`, `close`. It is an
+  `io.Reader` (0 once the peer has closed) and an `io.Writer`, so `std.bufio` and `io::copy`
+  work on a connection.
 - **`TcpListener`**: `accept() -> Accepted{stream, peer}`, `accept_stream()`, `local_addr`, `close`.
 - **`UdpSocket`**: `send_to`/`recv_from`, `connect`+`send`/`recv`, `set_broadcast`,
   `set_read_timeout`, `local_addr`, `close`.
@@ -852,7 +864,7 @@ ignored := srv.send_to("pong", d.from) catch e { return; };  // reply to sender
 
 > Loopback round-trips that combine net, thread and addr are in
 > `tests/fixtures/stdlib/net_echo_app.fels` (TCP echo) and `net_udp_app.fels` (UDP echo).
-> DNS (`getaddrinfo`) and a small HTTP client are the natural next additions.
+> HTTP is in `std.http`. Names resolve to IPv4 addresses only, as the sockets are IPv4.
 
 ## Game & graphics modules
 
@@ -1360,6 +1372,48 @@ e := url::encode_in(&a, "a b&c", .component);                       // "a%20b%26
   and `.form` writes a space as `+` (a form's query).
 - `decode_in` gives the bytes a part stands for (the part itself when it has no `%`), and
   `decode_form_in` reads `+` as a space too.
+
+### `std.http`
+
+HTTP/1.1 over `std.net`: a client, and the parts of a server. Plain HTTP only, as there is no
+TLS yet.
+
+```fels
+#import std.http as http;
+
+net::init()?;
+r := http::get(&a, "http://example.com/")?;
+if r.status == 200 { io::print(r.body); }
+kind := r.header("content-type") ?? "";            // any case
+
+hs: [1]http::Header = .{ .{ "Content-Type", "application/json" } };
+r2 := http::request(&a, "POST", "http://localhost:8080/api", hs[:], body)?;
+
+// a server, one connection at a time
+l := net::listen(addr::socket_addr(addr::any(), 8080u16))?;
+while true {
+    c := l.accept_stream()?;
+    req := http::read_request(&a, &c)?;             // req.method, req.target, req.body
+    if req.path() == "/" { http::respond(&c, 200, "text/plain", "hello")?; }
+    c.close();
+}
+```
+
+- `request` sends `method` with the headers and body given, plus `Host`, `User-Agent`,
+  `Content-Length` (for a body, and for any POST, PUT or PATCH), `Accept-Encoding: gzip` and
+  `Connection: close` (one request a connection). It reads the
+  body by its length, in chunks, or to the end, and unpacks a gzip or deflate one. Redirects
+  (301, 302, 303, 307, 308) are followed up to five times; 303, and 301 and 302 of a POST, go
+  on as a GET without the body, as browsers do.
+- A `Response` has `status`, `reason`, `headers` (as they came) and `body`. A `Request` has
+  `method`, `target` ("/search?q=x"), `headers` and `body`, plus `path()` and `query()`.
+  Both find a header with `header(name)`.
+- `respond` writes a whole response: the status line (`reason_phrase`), `Content-Type`,
+  `Content-Length` and `Connection: close`; `respond_with` adds headers of your own (a
+  `Location`, say).
+- Errors (`HttpError`): `.bad_url`, `.tls_unsupported` (https://), `.unknown_host`,
+  `.connect_failed`, `.send_failed`, `.recv_failed`, `.bad_response`, `.bad_request` (what a
+  server read) and `.too_many_redirects`.
 
 ### `std.flate`
 
