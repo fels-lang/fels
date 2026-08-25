@@ -353,6 +353,26 @@ os_file_info :: fn(path: *const u8, size: *i64, mtime: *i64, kind: *i64) -> i32 
     return 0;
 }
 
+// The current folder, for std.fs.
+#extern("kernel32", "GetCurrentDirectoryW")
+GetCurrentDirectoryW :: fn(len: u32, buf: *u16) -> u32;
+#extern("kernel32", "SetCurrentDirectoryW")
+SetCurrentDirectoryW :: fn(path: *const u16) -> bool;
+
+// The current folder as UTF-8 in `out`: how many bytes, or -1.
+os_cwd :: fn(out: []u8) -> i64 {
+    w: [1024]u16 = .{};
+    n := GetCurrentDirectoryW(1024u32, &w[0]);
+    if n == 0u32 || n >= 1024u32 { return -1i64; }
+    return to_utf8(&w[0], out);
+}
+// Make `path` the current folder. 0 = ok.
+os_chdir :: fn(path: *const u8) -> i32 {
+    w: [1024]u16 = .{};
+    if !to_utf16(path, &w[0]) || !SetCurrentDirectoryW(&w[0]) { return -1; }
+    return 0;
+}
+
 // OS process (backs std.process)
 // A child token is a heap ProcState holding the process + thread handles.
 
@@ -414,6 +434,51 @@ os_unset_env :: fn(name: *const u8) -> bool {
     w: [1024]u16 = .{};
     if !to_utf16(name, &w[0]) { return false; }
     return SetEnvironmentVariableW(&w[0], null);
+}
+
+#extern("kernel32", "GetEnvironmentStringsW")
+GetEnvironmentStringsW :: fn() -> usize;
+#extern("kernel32", "FreeEnvironmentStringsW")
+FreeEnvironmentStringsW :: fn(block: usize) -> bool;
+
+// Every variable as `NAME=value` and a NUL, in UTF-8, into `out`: how many bytes they take (only
+// what fits is written; a caller with too small a buffer asks again). The hidden `=C:=C:\…`
+// entries, the folder of each drive, are left out.
+os_env_block :: fn(out: []u8) -> i64 {
+    block := GetEnvironmentStringsW();
+    if block == 0usize { return -1i64; }
+    total: usize = 0usize;
+    p := block;
+    while unsafe *core::ptr_from_int(*u16, p) != 0u16 {
+        len: usize = 0usize;
+        while unsafe *core::ptr_from_int(*u16, p + len * 2usize) != 0u16 { len += 1usize; }
+        if unsafe *core::ptr_from_int(*u16, p) != 61u16 {        // '='
+            text := unsafe core::ptr_from_int(*const u16, p);
+            // with no room given, the bytes it needs
+            n := WideCharToMultiByte(CP_UTF8, 0u32, text, len as i32, out.ptr, 0, null, null);
+            if n > 0 {
+                if total + (n as usize) + 1usize <= out.len {
+                    put := WideCharToMultiByte(CP_UTF8, 0u32, text, len as i32, &out[total], n, null, null);
+                    out[total + (n as usize)] = 0u8;
+                }
+                total += (n as usize) + 1usize;
+            }
+        }
+        p += (len + 1usize) * 2usize;
+    }
+    ignored := FreeEnvironmentStringsW(block);
+    return total as i64;
+}
+
+#extern("kernel32", "GetModuleFileNameW")
+GetModuleFileNameW :: fn(module: usize, buf: *u16, size: u32) -> u32;
+
+// The path of this program's .exe as UTF-8 in `out`: how many bytes, or -1.
+os_exe_path :: fn(out: []u8) -> i64 {
+    w: [1024]u16 = .{};
+    n := GetModuleFileNameW(0usize, &w[0], 1024u32);
+    if n == 0u32 || n >= 1024u32 { return -1i64; }
+    return to_utf8(&w[0], out);
 }
 
 os_spawn :: fn(cmd: *const u8) -> i64 {

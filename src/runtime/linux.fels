@@ -266,6 +266,46 @@ os_rmdir :: fn(path: *const u8) -> i32 {
     return 0;
 }
 
+// The current folder, for std.fs.
+sys_getcwd :: fn(buf: *u8, size: usize) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(79), "{rdi}"(buf), "{rsi}"(size) },
+        outputs: { "={rax}"(i64) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+sys_chdir :: fn(path: *const u8) -> i32 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(80), "{rdi}"(path) },
+        outputs: { "={rax}"(i32) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+sys_readlink :: fn(path: *const u8, buf: *u8, size: usize) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs:  { "{rax}"(89), "{rdi}"(path), "{rsi}"(buf), "{rdx}"(size) },
+        outputs: { "={rax}"(i64) },
+        clobbers: { "rcx", "r11", "memory" });
+}
+
+// The current folder in `out`: how many bytes, or -1.
+os_cwd :: fn(out: []u8) -> i64 {
+    if out.len == 0usize { return -1i64; }
+    n := sys_getcwd(out.ptr, out.len);    // the length with its NUL
+    if n <= 0i64 { return -1i64; }
+    return n - 1i64;
+}
+// Make `path` the current folder. 0 = ok.
+os_chdir :: fn(path: *const u8) -> i32 {
+    if sys_chdir(path) < 0 { return -1; }
+    return 0;
+}
+// The path of this program in `out`: how many bytes, or -1.
+os_exe_path :: fn(out: []u8) -> i64 {
+    p: [16]u8 = .{ 47u8, 112u8, 114u8, 111u8, 99u8, 47u8, 115u8, 101u8, 108u8, 102u8, 47u8, 101u8, 120u8, 101u8, 0u8, 0u8 };  // /proc/self/exe
+    n := sys_readlink(&p[0], out.ptr, out.len);
+    if n < 0i64 || (n as usize) >= out.len { return -1i64; }
+    return n;
+}
+
 // Rename and metadata, for std.fs.
 sys_rename :: fn(from: *const u8, to: *const u8) -> i32 {
     return unsafe core::asm(volatile, "syscall",
@@ -662,6 +702,29 @@ build_child_env :: fn(pbuf: []u8, ebuf: []u8, eptr: []usize) {
         }
     }
     eptr[cnt] = 0usize;   // NULL-terminate the char** array
+}
+
+// Every variable as `NAME=value` and a NUL into `out` (the inherited ones with set_env and
+// unset_env applied, as a child gets them): how many bytes they take (only what fits is written).
+os_env_block :: fn(out: []u8) -> i64 {
+    pbuf: [8192]u8 = .{};
+    ebuf: [8192]u8 = .{};
+    eptr: [256]usize = .{};
+    build_child_env(pbuf[:], ebuf[:], eptr[:]);
+    total: usize = 0usize;
+    i: usize = 0usize;
+    while eptr[i] != 0usize {
+        s := eptr[i];
+        n := cstrlen(unsafe core::ptr_from_int(*const u8, s));
+        if total + n + 1usize <= out.len {
+            k: usize = 0usize;
+            while k < n { out[total + k] = unsafe *core::ptr_from_int(*u8, s + k); k += 1usize; }
+            out[total + n] = 0u8;
+        }
+        total += n + 1usize;
+        i += 1usize;
+    }
+    return total as i64;
 }
 
 // fork + execve `/bin/sh -c <cmd>`; the child token is its pid (-1 on failure).
