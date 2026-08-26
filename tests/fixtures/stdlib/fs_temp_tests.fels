@@ -1,0 +1,114 @@
+// std.fs's current folder, absolute paths, temporary files and folders and remove_tree, and
+// std.process's env_vars and exe_path, as `#test` functions: native only
+// (tests/compiler/std_tests.zig), as compile-time code may not reach the OS.
+#import std.heap as heap;
+#import std.fs as fs;
+#import std.path as path;
+#import std.process as process;
+#import std.strings as strings;
+#import std.io.{ Writer };
+
+#test
+temp_folders_and_files :: fn(t: *Test) {
+    a := heap::make();
+    tmp := fs::temp_dir(&a);
+    t.expect(tmp.len > 0 && fs::is_dir(tmp));
+    t.expect(!path::is_sep(tmp[tmp.len - 1]));
+
+    d := fs::make_temp_dir(&a, "", "fels-*-test") catch err { t.fatal("make_temp_dir"); return; };
+    t.expect(fs::is_dir(d));
+    t.expect(strings::str_starts_with(d, tmp));
+    name := path::basename(d);
+    t.eq(name.len, 26usize);                          // "fels-", 16 digits, "-test"
+    t.expect(strings::str_starts_with(name, "fels-") && strings::str_ends_with(name, "-test"));
+    d2 := fs::make_temp_dir(&a, "", "fels-") catch err { t.fatal("make_temp_dir 2"); return; };
+    t.expect(!strings::str_eq(d, d2));
+
+    // a file in it, and in a folder in it
+    tf := fs::create_temp(&a, d, "*.txt") catch err { t.fatal("create_temp"); return; };
+    w: *Writer = &tf.file;
+    w.write_all("temp") catch err { t.fatal("write"); };
+    fs::close(&tf.file);
+    t.expect(strings::str_ends_with(tf.path, ".txt"));
+    t.eq(fs::read_all(tf.path, &a) catch err { yield ""; }, "temp");
+    inner := path::join(&a, d, "inner");
+    fs::make_dirs(path::join(&a, inner, "deeper")) catch err { t.fatal("make_dirs"); };
+    fs::write_file(path::join(&a, inner, "deeper/x.bin"), "x") catch err { t.fatal("write_file"); };
+    fs::write_file(path::join(&a, inner, "y.bin"), "y") catch err { t.fatal("write_file 2"); };
+
+    fs::remove_tree(d) catch err { t.fatal("remove_tree"); };
+    t.expect(!fs::exists(d));
+    fs::remove_tree(d2) catch err { t.fatal("remove_tree 2"); };
+    gone := false;
+    fs::remove_tree(d) catch err { gone = err == .not_found; };
+    t.expect(gone);
+
+    // a file by itself
+    f := fs::create_temp(&a, "", "single") catch err { t.fatal("create_temp 2"); return; };
+    fs::close(&f.file);
+    t.expect(strings::str_starts_with(path::basename(f.path), "single"));
+    fs::remove_tree(f.path) catch err { t.fatal("remove_tree file"); };
+    t.expect(!fs::exists(f.path));
+
+    refused := false;
+    bad := fs::create_temp(&a, path::join(&a, tmp, "no-such-folder-fels"), "x") catch err {
+        refused = err == .create_failed;
+        yield f;
+    };
+    t.expect(refused);
+    a.deinit();
+}
+
+#test
+current_folder_and_absolute :: fn(t: *Test) {
+    a := heap::make();
+    here := fs::cwd(&a) catch err { t.fatal("cwd"); return; };
+    t.expect(path::is_absolute(here));
+    t.eq(fs::absolute(&a, "") catch err { yield ""; }, path::normalize(&a, here));
+    t.eq(fs::absolute(&a, "x/../y/./z") catch err { yield ""; }, path::normalize(&a, path::join(&a, here, "y/z")));
+    t.eq(fs::absolute(&a, "..") catch err { yield ""; }, path::normalize(&a, path::dirname(here)));
+    abs := path::normalize(&a, path::join(&a, here, "q"));
+    t.eq(fs::absolute(&a, abs) catch err { yield ""; }, abs);
+
+    d := fs::make_temp_dir(&a, "", "fels-cwd-") catch err { t.fatal("make_temp_dir"); return; };
+    fs::write_file(path::join(&a, d, "note.txt"), "here") catch err { t.fatal("write"); };
+    fs::set_cwd(d) catch err { t.fatal("set_cwd"); };
+    now := fs::cwd(&a) catch err { yield ""; };
+    t.eq(path::basename(now), path::basename(d));
+    t.eq(fs::read_all("note.txt", &a) catch err { yield ""; }, "here");
+    t.eq(fs::absolute(&a, "note.txt") catch err { yield ""; }, path::normalize(&a, path::join(&a, now, "note.txt")));
+    fs::set_cwd(here) catch err { t.fatal("set_cwd back"); };
+    t.eq(fs::cwd(&a) catch err { yield ""; }, here);
+    fs::remove_tree(d) catch err { t.fatal("remove_tree"); };
+    missing := false;
+    fs::set_cwd(d) catch err { missing = err == .not_found; };
+    t.expect(missing);
+    a.deinit();
+}
+
+#test
+home_environment_and_program :: fn(t: *Test) {
+    a := heap::make();
+    if fs::home_dir(&a) |h| { t.expect(fs::is_dir(h)); } else { t.expect(false); }
+
+    t.expect(process::set_env("FELS_ENV_VARS_TEST", "a=b c"));
+    vars := process::env_vars(&a);
+    t.expect(vars.len > 2);
+    found := false;
+    for v in vars {
+        t.expect(v.name.len > 0);
+        if v.name == "FELS_ENV_VARS_TEST" {
+            t.eq(v.value, "a=b c");
+            found = true;
+        }
+    }
+    t.expect(found);
+    t.expect(process::unset_env("FELS_ENV_VARS_TEST"));
+    for v in process::env_vars(&a) { t.expect(v.name != "FELS_ENV_VARS_TEST"); }
+
+    if process::exe_path(&a) |exe| {
+        t.expect(path::is_absolute(exe));
+        t.expect(fs::exists(exe));
+    } else { t.expect(false); }
+    a.deinit();
+}

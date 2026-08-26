@@ -1,0 +1,56 @@
+// std.path, as `#test` functions: `fels test` runs them natively and on the comptime VM
+// (tests/compiler/std_tests.zig). Expected paths are written with `/` and `sep` makes them the
+// platform's.
+#import std.heap as heap;
+#import std.heap.{ Arena };
+#import std.path as path;
+
+// `p` with each `/` the platform's separator.
+sep :: fn(a: *Arena, p: []const u8) -> []const u8 {
+    out := a.alloc_bytes(p.len);
+    for k in 0..p.len { out[k] = if p[k] == '/' { path::SEP } else { p[k] }; }
+    return out;
+}
+
+#test
+normalize_relative :: fn(t: *Test) {
+    a := heap::make();
+    t.eq(path::normalize(&a, "a/./b/../c"), sep(&a, "a/c"));
+    t.eq(path::normalize(&a, "a//b\\\\c/"), sep(&a, "a/b/c"));
+    t.eq(path::normalize(&a, "./a"), "a");
+    t.eq(path::normalize(&a, "a/.."), ".");
+    t.eq(path::normalize(&a, ""), ".");
+    t.eq(path::normalize(&a, "."), ".");
+    t.eq(path::normalize(&a, "../a"), sep(&a, "../a"));
+    t.eq(path::normalize(&a, "a/../../b"), sep(&a, "../b"));
+    t.eq(path::normalize(&a, "../../x/.."), sep(&a, "../.."));
+    t.eq(path::normalize(&a, "a/b/c/../../d"), sep(&a, "a/d"));
+    t.eq(path::normalize(&a, "..a/b.."), sep(&a, "..a/b.."));      // names, not `..`
+    a.deinit();
+}
+
+#test
+normalize_rooted :: fn(t: *Test) {
+    a := heap::make();
+    t.eq(path::normalize(&a, "/"), sep(&a, "/"));
+    t.eq(path::normalize(&a, "/.."), sep(&a, "/"));
+    t.eq(path::normalize(&a, "/../a/./b/"), sep(&a, "/a/b"));
+    t.eq(path::normalize(&a, "//"), sep(&a, "//"));
+    t.eq(path::normalize(&a, "C:\\x\\..\\..\\y"), sep(&a, "C:/y"));
+    t.eq(path::normalize(&a, "c:/"), sep(&a, "c:/"));
+    t.eq(path::normalize(&a, "C:"), "C:");
+    t.eq(path::normalize(&a, "C:a/../.."), sep(&a, "C:.."));       // from C:'s current folder
+    t.eq(path::normalize(&a, "\\\\server\\share\\a\\..\\..\\b"), sep(&a, "//server/share/b"));
+    t.eq(path::normalize(&a, "//server/share"), sep(&a, "//server/share/"));
+    a.deinit();
+}
+
+#test
+join_and_sep :: fn(t: *Test) {
+    a := heap::make();
+    t.eq(path::join(&a, "b", "c.txt"), sep(&a, "b/c.txt"));
+    t.eq(path::join(&a, "a\\", "c"), sep(&a, "a/c"));
+    t.eq(path::join(&a, "a", "/c"), "/c");                        // an absolute one as it is
+    t.expect(path::is_sep(path::SEP));
+    a.deinit();
+}
