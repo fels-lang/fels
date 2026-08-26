@@ -527,3 +527,84 @@ pub home_dir :: fn(a: *Arena) -> ?[]const u8 {
     if home_default(a) |h| { return trim_sep(h); }
     return null;
 }
+
+// Temporary files and folders
+
+/// A file `create_temp` made, open to write, and its path.
+pub TempFile :: struct {
+    file: File,
+    path: []const u8,
+}
+
+/// Make a new, empty file in `dir` ("" for `temp_dir()`), open to write, named by `pattern`
+/// with its last `*` replaced by 16 random hex digits (put at the end when there is no `*`):
+/// `create_temp(&a, "", "report-*.csv")`. It is made only if no file has the name, so two
+/// programs never get one file; on Linux only its owner may read it. Close the file and
+/// `delete` its path when done. `create_failed` when no name worked.
+pub create_temp :: fn(a: *Arena, dir: []const u8, pattern: []const u8) -> TempFile ! FsError {
+    folder := if dir.len == 0 { temp_dir(a) } else { dir };
+    for attempt in 0..100 {
+        p := temp_name(a, folder, pattern, attempt);
+        path_buf: [1024]u8 = .{};
+        cpath := fs_to_cstr(p, path_buf[:])?;
+        h := os_file_open(cpath, 3);
+        if h != FS_INVALID {
+            t: TempFile = .{ .{ h }, p };
+            return t;
+        }
+        if os_path_kind(cpath) == 0 { break; }      // not a name taken: the folder is not there
+    }
+    fail .create_failed;
+}
+
+/// Make a new, empty folder in `dir` ("" for `temp_dir()`), named as `create_temp` names a file:
+/// its path, in `a`. `remove_tree` takes it away with what was put in it. `create_failed` when
+/// no name worked.
+pub make_temp_dir :: fn(a: *Arena, dir: []const u8, pattern: []const u8) -> []const u8 ! FsError {
+    folder := if dir.len == 0 { temp_dir(a) } else { dir };
+    for attempt in 0..100 {
+        p := temp_name(a, folder, pattern, attempt);
+        path_buf: [1024]u8 = .{};
+        cpath := fs_to_cstr(p, path_buf[:])?;
+        if os_mkdir(cpath) == 0 { return p; }
+        if os_path_kind(cpath) == 0 { break; }
+    }
+    fail .create_failed;
+}
+
+// `dir`, a separator, and `pattern` with 16 hex digits for its last `*` (or after it).
+temp_name :: fn(a: *Arena, dir: []const u8, pattern: []const u8, attempt: usize) -> []const u8 {
+    star: usize = pattern.len;
+    for k in 0..pattern.len { if pattern[k] == '*' { star = k; } }
+    after: usize = if star < pattern.len { star + 1 } else { pattern.len };
+    // what differs between two programs, two calls, two attempts
+    local: u64 = 0;
+    seed := (os_wall_nanos() as u64) ^ ((os_monotonic_nanos() as u64) << 17)
+        ^ ((os_pid() as u64) << 40) ^ (unsafe ((&local) as usize) as u64) ^ ((attempt as u64) *% 0x9E3779B97F4A7C15u64);
+    r := hash::mix64(seed);
+    digits := "0123456789abcdef";
+    sep: usize = if dir.len > 0 && !path::is_sep(dir[dir.len - 1]) { 1 } else { 0 };
+    out := a.alloc_bytes(dir.len + sep + star + 16 + (pattern.len - after));
+    n: usize = 0;
+    for c in dir {
+        out[n] = c;
+        n += 1;
+    }
+    if sep == 1 {
+        out[n] = path::SEP;
+        n += 1;
+    }
+    for c in pattern[0..star] {
+        out[n] = c;
+        n += 1;
+    }
+    for k in 0..16 {
+        out[n] = digits[((r >> ((60 - 4 * k) as u64)) & 15) as usize];
+        n += 1;
+    }
+    for c in pattern[after..pattern.len] {
+        out[n] = c;
+        n += 1;
+    }
+    return out;
+}
