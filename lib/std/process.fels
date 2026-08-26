@@ -24,6 +24,7 @@
 //                                          has only one command-line text (Windows)
 //   os_get_env(name, out) -> i64           value length, or -1 if unset
 //   os_set_env(name, value) -> bool / os_unset_env(name) -> bool
+//   os_env_block(out) -> i64               every `NAME=value` and a NUL; the bytes they take
 //   os_spawn(cmd) -> i64                   opaque child token, or -1
 //   os_wait(token, block) -> i64           exit code, -2 if still running, -1 error
 //   os_kill(token) -> bool / os_proc_release(token)
@@ -191,6 +192,43 @@ pub unset_env :: fn(name: []const u8) -> bool {
     name_buf: [128]u8 = .{};
     cname := proc_to_cstr(name, name_buf[:]) catch err { return false; };
     return os_unset_env(cname);
+}
+
+/// A variable of the environment (`env_vars`).
+pub EnvVar :: struct {
+    name: []const u8,
+    value: []const u8,
+}
+
+/// Every variable of the environment, in `a`, in the order the system keeps them, with
+/// `set_env` and `unset_env` applied. On Linux they are what the program started with (as far
+/// as the first 8 KB of them) and what `set_env` added.
+pub env_vars :: fn(a: *Arena) -> []EnvVar {
+    out := vec::make(EnvVar, a);
+    size: usize = 16384;
+    for attempt in 0..4 {
+        buf := a.alloc_bytes(size);
+        n := os_env_block(buf);
+        if n < 0 { break; }
+        if (n as usize) > size {
+            size = n as usize;           // more than fit: once more, with room for all of it
+            continue;
+        }
+        i: usize = 0;
+        while i < (n as usize) {
+            start := i;
+            while i < (n as usize) && buf[i] != 0 { i += 1; }
+            entry := buf[start..i];
+            i += 1;
+            eq: usize = 0;
+            while eq < entry.len && entry[eq] != '=' { eq += 1; }
+            if eq == 0 || eq == entry.len { continue; }
+            v: EnvVar = .{ entry[0..eq], entry[eq + 1..entry.len] };
+            out.push(v);
+        }
+        break;
+    }
+    return out.items();
 }
 
 // Child processes
