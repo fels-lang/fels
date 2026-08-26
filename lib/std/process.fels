@@ -25,6 +25,7 @@
 //   os_get_env(name, out) -> i64           value length, or -1 if unset
 //   os_set_env(name, value) -> bool / os_unset_env(name) -> bool
 //   os_env_block(out) -> i64               every `NAME=value` and a NUL; the bytes they take
+//   os_exe_path(out) -> i64                the program's path, or -1
 //   os_spawn(cmd) -> i64                   opaque child token, or -1
 //   os_wait(token, block) -> i64           exit code, -2 if still running, -1 error
 //   os_kill(token) -> bool / os_proc_release(token)
@@ -229,6 +230,16 @@ pub env_vars :: fn(a: *Arena) -> []EnvVar {
         break;
     }
     return out.items();
+}
+
+/// The path of this program's executable, in `a`; null when the system does not say.
+pub exe_path :: fn(a: *Arena) -> ?[]const u8 {
+    buf: [1024]u8 = .{};
+    n := os_exe_path(buf[:]);
+    if n <= 0 { return null; }
+    out := a.alloc_bytes(n as usize);
+    for i in 0..out.len { out[i] = buf[i]; }
+    return out;
 }
 
 // Child processes
