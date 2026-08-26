@@ -481,3 +481,49 @@ concat :: fn(a: *Arena, x: []const u8, y: []const u8) -> []const u8 {
 }
 
 lower :: fn(c: u8) -> u8 { return if c >= 'A' && c <= 'Z' { c + 32 } else { c }; }
+
+// The value of the environment variable `name` in `a`; null when it is not set or empty.
+env_value :: fn(a: *Arena, name: []const u8) -> ?[]const u8 {
+    name_buf: [128]u8 = .{};
+    cname := fs_to_cstr(name, name_buf[:]) catch err { return null; };
+    value: [4096]u8 = .{};
+    n := os_get_env(cname, value[:]);
+    if n <= 0 { return null; }
+    return copy_text(a, value[0..(n as usize)]);
+}
+
+// A path without the separator at its end, unless that is all of a root ("/", "C:\").
+trim_sep :: fn(p: []const u8) -> []const u8 {
+    n := p.len;
+    while n > 1 && path::is_sep(p[n - 1]) && !(n == 3 && p[1] == ':') { n -= 1; }
+    return p[0..n];
+}
+
+#if TARGET.os == .windows {
+    temp_default :: fn(a: *Arena) -> []const u8 {
+        if env_value(a, "TMP") |v| { return v; }
+        if env_value(a, "TEMP") |v| { return v; }
+        if env_value(a, "USERPROFILE") |v| { return v; }
+        return "C:\\Windows\\Temp";
+    }
+    home_default :: fn(a: *Arena) -> ?[]const u8 { return env_value(a, "USERPROFILE"); }
+} else {
+    temp_default :: fn(a: *Arena) -> []const u8 {
+        if env_value(a, "TMPDIR") |v| { return v; }
+        return "/tmp";
+    }
+    home_default :: fn(a: *Arena) -> ?[]const u8 { return env_value(a, "HOME"); }
+}
+
+// Folders of the user
+
+/// The folder for temporary files: on Windows the first of `TMP`, `TEMP` and `USERPROFILE`
+/// that is set, else C:\Windows\Temp; elsewhere `TMPDIR`, else /tmp. Without a separator at the
+/// end.
+pub temp_dir :: fn(a: *Arena) -> []const u8 { return trim_sep(temp_default(a)); }
+
+/// The user's home folder: `USERPROFILE` on Windows, `HOME` elsewhere; null when it is not set.
+pub home_dir :: fn(a: *Arena) -> ?[]const u8 {
+    if home_default(a) |h| { return trim_sep(h); }
+    return null;
+}
