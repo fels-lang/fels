@@ -13,6 +13,11 @@ the major version is `0`, any minor bump may break source compatibility.
   `std.net` gains `resolve` and `connect_host` for host names (the system's lookup on Windows;
   /etc/hosts and a DNS query on Linux, from `std.net.dns`), and a `TcpStream` is an
   `io.Reader` and an `io.Writer`.
+- **Folders and the environment**: `fs::cwd` and `fs::set_cwd`, `fs::absolute`,
+  `path::normalize`, `fs::temp_dir` and `fs::home_dir`, `fs::create_temp` and
+  `fs::make_temp_dir` (a new name every time, never one that is taken), `fs::remove_tree` (a
+  folder and all in it, not following links), `process::env_vars` (every variable) and
+  `process::exe_path`.
 - **`std.sort`**: `asc`, `desc` and `by` sort a slice in place (an introsort, O(n log n) in
   every case), `stable_asc` and `stable_by` keep equal elements in their order (a merge sort
   with a slice from an arena), and `lower_bound`, `upper_bound` and `search` find in a sorted
@@ -126,6 +131,8 @@ the major version is `0`, any minor bump may break source compatibility.
   LLVM error.
 - A function of another module used as a value (`sort::by([]const u8, names, mem::less_bytes)`)
   is a closure, as a function of the file's own is. It stopped the build with an LLVM error.
+- On Linux, `path::join` writes `/`: `path::SEP` was `\` on every system, which Linux takes as
+  part of a name.
 - An interface method of a type whose name another module uses too (`pub Stream :: a::Stream`)
   reads the fields of `self`. They read as garbage, a crash. A pointer local coerced to an
   interface (`r: *Reader = p;`) stopped the build with an internal compiler error.
