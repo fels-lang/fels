@@ -3,8 +3,8 @@
 // runtime (windows.fels → kernel32; linux.fels → openat/read/write/..), so this file is
 // OS-agnostic. File implements std.io.Reader and Writer; there's open/create/append,
 // exists/is_dir/delete, read_all, write_file, copy_file, rename, info (size, last write),
-// make_dir/make_dirs/remove_dir, DirIter for one folder and walk for a whole tree, all sharing
-// FsError.
+// make_dir/make_dirs/remove_dir/remove_tree, DirIter for one folder and walk for a whole tree,
+// cwd/set_cwd/absolute, temp_dir/make_temp_dir/create_temp and home_dir, all sharing FsError.
 //
 // Paths are plain []const u8, copied into a small stack buffer and NUL-terminated for
 // the OS; anything too long fails with path_too_long.
@@ -18,6 +18,8 @@
 #import std.heap.{ Arena };
 #import std.vec as vec;
 #import std.vec.{ Vec };
+#import std.path as path;
+#import std.hash as hash;
 
 // The file/dir seam, provided by the platform runtime:
 //   os_file_open(path, mode) -> i64   mode 0=read, 1=create/trunc, 2=append; -1 = fail
@@ -34,6 +36,9 @@
 //   os_dir_close(h)
 //   os_rename(from, to) -> i32        0 = ok; replaces a file at `to`
 //   os_file_info(path, size, mtime, kind) -> i32   0 = ok; mtime in ns since 1970, kind 1/2
+//   os_cwd(out) -> i64                bytes of the current folder copied into `out`, or -1
+//   os_chdir(path) -> i32             0 = ok
+//   os_file_open(path, 3)             a new file to write; -1 when there is one
 
 FS_INVALID :: -1i64;       // a closed/invalid handle (matches the seam's failure value)
 MAX_PATH_BYTES :: 1024usize;
@@ -419,3 +424,60 @@ pub walk :: fn(a: *Arena, root: []const u8) -> Walker ! FsError {
     w.paths.push(root);
     return w;
 }
+
+// The current folder and absolute paths
+
+/// The current folder, an absolute path in `a`. `not_found` when it cannot be read (it was
+/// removed, or its path is too long).
+pub cwd :: fn(a: *Arena) -> []const u8 ! FsError {
+    buf: [1024]u8 = .{};
+    n := os_cwd(buf[:]);
+    if n < 0 { fail .not_found; }
+    return copy_text(a, buf[0..(n as usize)]);
+}
+
+/// Make `path` the current folder, for every thread: relative paths start from it from now on.
+/// `not_found` when it is no folder.
+pub set_cwd :: fn(path: []const u8) -> void ! FsError {
+    path_buf: [1024]u8 = .{};
+    cpath := fs_to_cstr(path, path_buf[:])?;
+    if os_chdir(cpath) != 0 { fail .not_found; }
+}
+
+/// `p` as an absolute path in `a`, by `path::normalize`: a relative one starts from the current
+/// folder. On Windows `\x` is on the current folder's drive, and `D:x` starts from the current
+/// folder when that is on D:, else from D:'s root. Nothing else is read from the disk, so the path
+/// need not exist, and `..` after a link goes back over the link's name.
+pub absolute :: fn(a: *Arena, p: []const u8) -> []const u8 ! FsError {
+    if p.len >= 2 && path::is_sep(p[0]) && path::is_sep(p[1]) { return path::normalize(a, p); }
+    if p.len >= 1 && path::is_sep(p[0]) {
+        here := cwd(a)?;
+        if here.len >= 2 && here[1] == ':' { return path::normalize(a, concat(a, here[0..2], p)); }
+        return path::normalize(a, p);
+    }
+    if p.len >= 2 && p[1] == ':' {
+        if p.len >= 3 && path::is_sep(p[2]) { return path::normalize(a, p); }
+        here := cwd(a)?;
+        if here.len >= 2 && here[1] == ':' && lower(here[0]) == lower(p[0]) {
+            return path::normalize(a, path::join(a, here, p[2..p.len]));
+        }
+        return path::normalize(a, concat(a, p[0..2], concat(a, "/", p[2..p.len])));
+    }
+    here := cwd(a)?;
+    return path::normalize(a, path::join(a, here, p));
+}
+
+copy_text :: fn(a: *Arena, s: []const u8) -> []const u8 {
+    out := a.alloc_bytes(s.len);
+    for i in 0..s.len { out[i] = s[i]; }
+    return out;
+}
+
+concat :: fn(a: *Arena, x: []const u8, y: []const u8) -> []const u8 {
+    out := a.alloc_bytes(x.len + y.len);
+    for i in 0..x.len { out[i] = x[i]; }
+    for i in 0..y.len { out[x.len + i] = y[i]; }
+    return out;
+}
+
+lower :: fn(c: u8) -> u8 { return if c >= 'A' && c <= 'Z' { c + 32 } else { c }; }
