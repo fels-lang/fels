@@ -7787,21 +7787,22 @@ const Checker = struct {
     /// followed to the ones it is computed from, which are then folded as usual.
     fn noteUnresolvedLen(self: *Checker, expr: ast.Expr, depth: u8) SemanticError!void {
         if (depth > 16) return; // a cycle (`A :: B + 1; B :: A + 1;`)
-        switch (expr.kind) {
-            .ident => |name| {
-                if (self.env.const_ints.contains(name)) return;
-                const value = self.const_exprs.get(name) orelse return;
-                if (isArrayLenShape(value))
-                    try self.noteUnresolvedLen(value, depth + 1)
-                else
-                    try self.env.unresolved_len_consts.put(self.allocator, name, {});
-            },
+        const name = switch (expr.kind) {
+            .ident => |n| n,
+            .scope_access => |sa| if (sa.base.kind == .ident) sa.member else return,
             .binary => |binary| {
                 try self.noteUnresolvedLen(binary.left.*, depth + 1);
                 try self.noteUnresolvedLen(binary.right.*, depth + 1);
+                return;
             },
-            else => {},
-        }
+            else => return,
+        };
+        if (self.env.const_ints.contains(name)) return;
+        const value = self.const_exprs.get(name) orelse return;
+        if (isArrayLenShape(value))
+            try self.noteUnresolvedLen(value, depth + 1)
+        else
+            try self.env.unresolved_len_consts.put(self.allocator, name, {});
     }
 
     /// An integer literal or a constant's name as it was written, minus signs included.
@@ -8400,7 +8401,8 @@ fn parseArrayLen(expr: ast.Expr) u64 {
 }
 
 /// Evaluate an array-size expression to a length: an integer literal, a named
-/// integer constant (`N :: 29`), or simple arithmetic over those (`2*W + 1`).
+/// integer constant (`N :: 29`, or another module's `ns::N`), or simple arithmetic over
+/// those (`2*W + 1`).
 /// Falls back to 0 for anything it can't fold at this stage.
 pub fn resolveArrayLen(expr: ast.Expr, const_ints: std.StringHashMap(u64)) u64 {
     return tryResolveArrayLen(expr, const_ints) orelse 0;
@@ -8412,6 +8414,8 @@ fn tryResolveArrayLen(expr: ast.Expr, const_ints: std.StringHashMap(u64)) ?u64 {
     return switch (expr.kind) {
         .int => |text| @intCast(@max(parseIntLiteral(text), 0)),
         .ident => |name| const_ints.get(name),
+        // the constants are folded by their names (`leb128::MAX_LEN` was 0, an empty array)
+        .scope_access => |sa| if (sa.base.kind == .ident) const_ints.get(sa.member) else null,
         .binary => |b| blk: {
             const l = tryResolveArrayLen(b.left.*, const_ints) orelse break :blk null;
             const r = tryResolveArrayLen(b.right.*, const_ints) orelse break :blk null;
@@ -8432,6 +8436,7 @@ fn tryResolveArrayLen(expr: ast.Expr, const_ints: std.StringHashMap(u64)) ?u64 {
 fn isArrayLenShape(expr: ast.Expr) bool {
     return switch (expr.kind) {
         .int, .ident => true,
+        .scope_access => |sa| sa.base.kind == .ident,
         .binary => |b| switch (b.op) {
             .add, .sub, .mul, .div, .rem => isArrayLenShape(b.left.*) and isArrayLenShape(b.right.*),
             else => false,
