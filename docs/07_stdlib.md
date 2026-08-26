@@ -321,6 +321,28 @@ Minimal synchronous file I/O, on Windows and Linux.
   the arena), `name`, `is_dir` and `depth` (1 in the root). Links are given but not followed.
   A folder that cannot be opened is given, skipped, and sets `failed`; `close()` ends a walk
   early.
+- `remove_tree(path)`: Delete a file, or a folder with everything in it. A link inside (a
+  symlink, a junction) is deleted, not what it points at. `.not_found` when nothing is there,
+  `.delete_failed` when something stayed (open, read-only, not yours).
+- `cwd(&a)` gives the current folder, and `set_cwd(path)` changes it for every thread.
+  `absolute(&a, path)` makes a path absolute from the current folder and normalizes it
+  (`path::normalize`). Nothing else is read from the disk, so the path need not exist. On
+  Windows `\x` is on the current folder's drive.
+- `temp_dir(&a)`: the folder for temporary files (`TMP`, `TEMP` or `USERPROFILE` on Windows,
+  `TMPDIR` or /tmp on Linux). `home_dir(&a)` gives the user's home folder (`USERPROFILE`,
+  `HOME`), or null.
+- `create_temp(&a, dir, pattern)` makes a new file and opens it to write: a `TempFile` with
+  `file` and `path`. `make_temp_dir(&a, dir, pattern)` makes a new folder and gives its path.
+  `dir` "" means `temp_dir()`. The last `*` of `pattern` becomes 16 random hex digits
+  (`"report-*.csv"`), or they go at the end. A name that is taken is never reused, and on Linux
+  a temp file is readable by its owner only.
+
+```fels
+d := fs::make_temp_dir(&a, "", "build-*")?;
+fs::write_file(path::join(&a, d, "out.txt"), text)?;
+...
+fs::remove_tree(d)?;
+```
 - You get back a `File` struct, which implements both `Reader` and `Writer`.
 - Paths are UTF-8, like all Fels text, and can be up to 1023 bytes long. On Windows the
   runtime turns them into the UTF-16 that the `*W` functions take. `dir_next` gives you names
@@ -352,6 +374,10 @@ code := (&c).wait()?;
 ```
 - `current_pid()`
 - `get_env`, `set_env`, `unset_env`
+- `env_vars(&a)`: every variable of the environment, each an `EnvVar` with `name` and `value`,
+  with `set_env` and `unset_env` applied. On Linux, these are what the program started with
+  (up to the first 8 KB of them) plus what `set_env` added.
+- `exe_path(&a)`: the path of this program's executable, or null
 - `command_line`: the command line as one text
 - `args(&a)`: the arguments, with the program first. On Windows they are split from the
   command line the way the C runtime splits it, and `split_command_line(line, &a)` does the
@@ -1078,8 +1104,9 @@ arena gives them a second slice as long as `xs`. Every search has a `_by` form t
 ### `std.path`
 
 Filesystem path strings, with pure manipulation and no I/O. Both `/` and `\` are accepted
-as separators, and `join` writes `SEP`, which is `\` on every target. Query functions return
-sub-slices and allocate nothing, while builders take an `*Arena`.
+as separators, and `join` and `normalize` write `SEP`, which is `\` on Windows and `/`
+elsewhere. Query functions return sub-slices and allocate nothing, while builders take an
+`*Arena`.
 
 ```fels
 path::basename("a/b/c.txt")            // "c.txt"
@@ -1088,11 +1115,17 @@ path::extension("c.txt")               // ".txt"  (with the dot; "" if none)
 path::stem("c.txt")                    // "c"
 path::is_absolute("/x")                // true (also "C:\…" and "\unc")
 path::has_extension("c.fels", "fels")    // true (leading dot optional)
-path::join(&a, "a/b", "c.txt")         // "a/b\c.txt"
+path::join(&a, "a/b", "c.txt")         // "a/b\c.txt" on Windows
 path::with_extension(&a, "c.txt", "md")// "c.md"
+path::normalize(&a, "a/./b/../c/")     // "a\c" on Windows, "a/c" elsewhere
 ```
 
 One invariant holds: `basename(p)` == `stem(p)` ++ `extension(p)`.
+
+`normalize` drops `.` parts and doubled separators, and each `..` takes out the part before it.
+A root (`/`, `C:\`, `\\server\share\`) stays, and a `..` at the root is dropped. A relative
+path keeps its leading `..`s, and an empty result is `.`. It reads nothing from the disk, so a
+`..` after a link goes back over the link's name; `fs::absolute` builds on it.
 
 ### `std.time`
 
