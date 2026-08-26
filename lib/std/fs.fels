@@ -608,3 +608,53 @@ temp_name :: fn(a: *Arena, dir: []const u8, pattern: []const u8, attempt: usize)
     }
     return out;
 }
+
+/// Delete `path`: a file, or a folder with all that is in it. A link in it (a symlink, a
+/// junction) is deleted, not what it points at. `not_found` when there is nothing at `path`;
+/// `delete_failed` when something could not be deleted (it is open, read-only, or not ours), after
+/// deleting what could be.
+pub remove_tree :: fn(path: []const u8) -> void ! FsError {
+    path_buf: [1024]u8 = .{};
+    cpath := fs_to_cstr(path, path_buf[:])?;
+    // a file or a link; then an empty folder, or a link to a folder on Windows: never what a
+    // link points at
+    if os_unlink(cpath) == 0 || os_rmdir(cpath) == 0 { return; }
+    kind := os_path_kind(cpath);
+    if kind == 0 { fail .not_found; }
+    if kind == 1 || !remove_folder(path) { fail .delete_failed; }
+}
+
+// Empty the folder `dir` and delete it; false when something stayed.
+remove_folder :: fn(dir: []const u8) -> bool {
+    it := open_dir(dir) catch err { return false; };
+    ok := true;
+    while true {
+        if dir_next(&it) |name| {
+            if !remove_entry(&it, dir, name) { ok = false; }
+        } else {
+            break;
+        }
+    }
+    dir_close(&it);
+    path_buf: [1024]u8 = .{};
+    cpath := fs_to_cstr(dir, path_buf[:]) catch err { return false; };
+    if os_rmdir(cpath) != 0 { return false; }
+    return ok;
+}
+
+// Delete the entry `name` of `dir`, which `it` is at; false when something stayed.
+remove_entry :: fn(it: *DirIter, dir: []const u8, name: []const u8) -> bool {
+    if name == "." || name == ".." { return true; }
+    if name.len == 0 { return false; }             // a name too long to read
+    buf: [1024]u8 = .{};
+    sep: usize = if path::is_sep(dir[dir.len - 1]) { 0 } else { 1 };
+    len := dir.len + sep + name.len;
+    if len + 1 > buf.len { return false; }
+    for k in 0..dir.len { buf[k] = dir[k]; }
+    if sep == 1 { buf[dir.len] = '/'; }
+    for k in 0..name.len { buf[dir.len + sep + k] = name[k]; }
+    buf[len] = 0;
+    if dir_is_dir(it) && !dir_is_reparse(it) { return remove_folder(buf[0..len]); }
+    if dir_is_dir(it) { return os_rmdir(&buf[0]) == 0; }     // a junction, or a link to a folder
+    return os_unlink(&buf[0]) == 0;
+}
