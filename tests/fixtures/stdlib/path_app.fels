@@ -15,7 +15,7 @@ main :: fn() -> i32 {
     if path::is_absolute("/x") && !path::is_absolute("x/y") && path::is_absolute("C:foo") { ok = ok + 1; }
     if path::has_extension("c.txt", "txt") && path::has_extension("c.txt", ".txt") { ok = ok + 1; }
     jp := path::join(&a, "a/b", "c.txt");
-    if jp.len == 9usize && str_eq(path::basename(jp), "c.txt") && jp[3] == 92u8 { ok = ok + 1; }
+    if jp.len == 9usize && str_eq(path::basename(jp), "c.txt") && jp[3] == path::SEP { ok = ok + 1; }
     if str_eq(path::with_extension(&a, "c.txt", "md"), "c.md") { ok = ok + 1; }
     if str_eq(path::extension(".gitignore"), "") { ok = ok + 1; }
     if ok == 11 { return 42; }

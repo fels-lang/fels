@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // std.path — filesystem path manipulation (pure string ops, no I/O).
 //
-// Paths are plain []const u8. Both / and \ count as separators on input, while join
-// writes the platform SEP (\ on Windows). The query functions (basename, dirname,
-// extension, stem) allocate nothing — they return sub-slices; the builders (join,
-// with_extension) take an *Arena.
+// Paths are plain []const u8. Both / and \ count as separators on input, while join and
+// normalize write the platform SEP (\ on Windows, / elsewhere). The query functions (basename,
+// dirname, extension, stem) allocate nothing — they return sub-slices; the builders (join,
+// with_extension, normalize) take an *Arena.
 //
 //   base := path::basename("src\\std\\io.fels");     // "io.fels"
 //   ext  := path::extension("io.fels");               // ".fels"  (with the dot)
@@ -15,8 +15,12 @@
 #import std.heap.{ Arena };
 #import std.strings as strings;
 
-// Platform path separator written by `join` / `with_extension`.
-pub SEP :: 92u8;   // '\'
+// Platform path separator written by `join` and `normalize`.
+#if TARGET.os == .windows {
+    pub SEP :: 92u8;   // '\'
+} else {
+    pub SEP :: 47u8;   // '/'
+}
 
 // True for either separator byte, so paths using `/` or `\` both parse.
 pub is_sep :: fn(c: u8) -> bool { return c == 47u8 || c == 92u8; }   // '/' or '\'
@@ -144,3 +148,82 @@ pub with_extension :: fn(a: *Arena, p: []const u8, new_ext: []const u8) -> []con
     }
     return strings::str(&sb);
 }
+// `p` with its `.` parts and doubled separators taken out, and each `..` taking out the part
+// before it, written with `SEP`: "a/./b/../c" is "a\c" on Windows. Nothing is read from the
+// disk, so a `..` after a link goes back over the link's name. A root ("/", "C:\",
+// "\\server\share\") stays, and a `..` at a root is dropped; a relative path keeps the `..`s it
+// starts with ("../x"). A separator at the end goes, and nothing at all is ".".
+pub normalize :: fn(a: *Arena, p: []const u8) -> []const u8 {
+    out := a.alloc_bytes(p.len + 2);
+    n: usize = 0;
+    i: usize = 0;
+    rooted := false;
+    if p.len >= 2 && is_sep(p[0]) && is_sep(p[1]) {
+        // \\server\share
+        out[0] = SEP;
+        out[1] = SEP;
+        n = 2;
+        i = 2;
+        parts: usize = 0;
+        for part in 0..2 {
+            while i < p.len && is_sep(p[i]) { i += 1; }
+            if i >= p.len { break; }
+            parts += 1;
+            if part == 1 {
+                out[n] = SEP;
+                n += 1;
+            }
+            while i < p.len && !is_sep(p[i]) {
+                out[n] = p[i];
+                n += 1;
+                i += 1;
+            }
+        }
+        rooted = parts > 0;
+    } else if p.len >= 2 && p[1] == ':' && is_letter(p[0]) {
+        out[0] = p[0];
+        out[1] = ':';
+        n = 2;
+        i = 2;
+        rooted = i < p.len && is_sep(p[i]);
+    } else if p.len >= 1 && is_sep(p[0]) {
+        rooted = true;
+    }
+    if rooted {
+        out[n] = SEP;
+        n += 1;
+    }
+    base := n;      // where the parts start
+    while i < p.len {
+        while i < p.len && is_sep(p[i]) { i += 1; }
+        if i >= p.len { break; }
+        s := i;
+        while i < p.len && !is_sep(p[i]) { i += 1; }
+        part := p[s..i];
+        if part == "." { continue; }
+        if part == ".." {
+            if n > base {
+                k := n;
+                while k > base && out[k - 1] != SEP { k -= 1; }
+                if !(n - k == 2 && out[k] == '.' && out[k + 1] == '.') {
+                    n = if k > base { k - 1 } else { base };
+                    continue;
+                }
+            } else if rooted {
+                continue;
+            }
+        }
+        if n > base {
+            out[n] = SEP;
+            n += 1;
+        }
+        for c in part {
+            out[n] = c;
+            n += 1;
+        }
+    }
+    if n == 0 { return "."; }
+    return out[0..n];
+}
+
+is_letter :: fn(c: u8) -> bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
