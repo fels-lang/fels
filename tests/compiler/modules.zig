@@ -784,6 +784,43 @@ test "modules: two modules may each declare an alias of a name, as two types may
     try fels.ir_mod.validateModule(module);
 }
 
+test "modules: an array sized by another module's constant" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `buf: [leb128::MAX_LEN]u8` was an array of 0 bytes: a length was folded from an integer,
+    // a constant's name or arithmetic over them, not from `ns::NAME`.
+    const lib =
+        \\pub MAX_LEN :: 10usize;
+        \\pub WIDE :: 3;
+    ;
+    const main =
+        \\#import lib;
+        \\DOUBLE :: lib::WIDE * 2;
+        \\Row :: struct { cells: [lib::WIDE]i32 }
+        \\run :: fn() -> i32 {
+        \\    buf: [lib::MAX_LEN]u8 = .{};
+        \\    two: [DOUBLE + 1]u8 = .{};
+        \\    r: Row = .{ .{ 1, 2, 3 } };
+        \\    buf[9] = 5;
+        \\    return (buf.len + two.len) as i32 * 100 + r.cells[2] + buf[9] as i32;
+        \\}
+        \\R :: #run run();
+    ;
+    var fe = try fels.compileMulti(a, &.{
+        .{ .file_name = "lib.fels", .source = lib },
+        .{ .file_name = "main.fels", .source = main },
+    });
+    defer fe.deinit(a);
+    const module = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(module);
+    for (module.globals) |g| if (std.mem.eql(u8, g.name, "R")) {
+        try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 1708 }, g.init.imm);
+        return;
+    };
+    return error.TestUnexpectedResult;
+}
+
 test "modules: a pub alias re-exports a type of another module" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
