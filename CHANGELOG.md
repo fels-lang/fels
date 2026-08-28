@@ -133,6 +133,10 @@ the major version is `0`, any minor bump may break source compatibility.
   is a closure, as a function of the file's own is. It stopped the build with an LLVM error.
 - On Linux, `path::join` writes `/`: `path::SEP` was `\` on every system, which Linux takes as
   part of a name.
+- An array may be sized by another module's constant (`buf: [leb128::MAX_LEN]u8`). It had 0
+  elements.
+- `-x` of a float flips its sign in native code, so `-0.0` is negative zero. It was `0.0 - x`,
+  which is +0.0 for a zero (the comptime VM had it right).
 - An interface method of a type whose name another module uses too (`pub Stream :: a::Stream`)
   reads the fields of `self`. They read as garbage, a crash. A pointer local coerced to an
   interface (`r: *Reader = p;`) stopped the build with an internal compiler error.
