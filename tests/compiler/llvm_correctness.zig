@@ -55,6 +55,32 @@ test "LLVM lowering selects signed, unsigned, and floating-point operations" {
     }
 }
 
+test "LLVM lowering negates a float with fneg, so a zero gets its sign" {
+    if (comptime !fels.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // `-x` was `0.0 - x`: +0.0 for x = 0.0, so `-0.0` was positive and std.cbor wrote it as 0.
+    const src =
+        \\flip :: fn(x: f64) -> f64 { return -x; }
+        \\flip32 :: fn(x: f32) -> f32 { return -x; }
+    ;
+
+    var fe = try fels.compile(arena.allocator(), "llvm_fneg.fels", src);
+    defer fe.deinit(arena.allocator());
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+
+    var backend = fels.LlvmBackend.init(arena.allocator(), "llvm_fneg");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "fneg double") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "fneg float") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "fsub") == null);
+}
+
 test "LLVM lowering accepts full-width u64 constants" {
     if (comptime !fels.llvm_enabled) return;
 
