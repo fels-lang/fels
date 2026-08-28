@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.base32 — bytes as text in 32 characters, and back (RFC 4648): what TOTP secrets, onion
+// addresses and case-insensitive file names use.
+//
+//   text := base32::encode_in(&a, bytes);              // "MZXW6===" for "foo"
+//   back := base32::decode_in(&a, text)?;              // the bytes again
+//
+//   n := base32::HEX_NO_PAD.encode(out[:], bytes);     // into your own buffer
+//   m := base32::HEX_NO_PAD.decode(out[:], text)?;
+//
+// A `Codec` is an alphabet and whether `=` pads the text to a multiple of 8: `STANDARD` (A-Z
+// and 2-7, padded), `STANDARD_NO_PAD`, `HEX` (0-9 and A-V, which sorts as the bytes do, padded)
+// and `HEX_NO_PAD`. Decoding takes lowercase letters too. Otherwise it takes the codec's own
+// form only: a padded codec wants the padding, one without refuses it, and a space or a line
+// break is `invalid_character`.
+
+#import std.heap.{ Arena, alloc_bytes };
+
+pub Base32Error :: errors {
+    invalid_character,   // not in the alphabet, or `=` where it does not belong
+    invalid_length,      // a length no encoding has
+    buffer_too_small,    // `out` cannot hold the result; nothing was written
+}
+
+/// An alphabet and its padding.
+pub Codec :: struct {
+    /// The 32 characters, for the values 0 to 31, uppercase.
+    chars: []const u8,
+    /// Whether the text is padded with `=` to a multiple of 8.
+    pad: bool,
+
+    /// The length of the text for `n` bytes.
+    pub encoded_len :: fn(self: *Self, n: usize) -> usize {
+        if self.pad { return (n + 4) / 5 * 8; }
+        return (n * 8 + 4) / 5;
+    }
+
+    /// The length of the bytes `text` decodes to, when it is well formed.
+    pub decoded_len :: fn(self: *Self, text: []const u8) -> usize ! Base32Error {
+        n := text.len;
+        if self.pad {
+            if n % 8 != 0 { fail .invalid_length; }
+            while n >= 1 && text[n - 1] == '=' { n -= 1; }
+            // as many `=` as the last group needs: 6, 4, 3 or 1
+            if n % 8 != 0 && text.len - n != 8 - n % 8 { fail .invalid_length; }
+            if n % 8 == 0 && text.len != n { fail .invalid_length; }
+        }
+        r := n % 8;
+        if r == 1 || r == 3 || r == 6 { fail .invalid_length; }
+        return n * 5 / 8;
+    }
+
+    /// Write the text of `src` at the start of `out`; its length (`encoded_len`).
+    pub encode :: fn(self: *Self, out: []u8, src: []const u8) -> usize ! Base32Error {
+        need := self.encoded_len(src.len);
+        if out.len < need { fail .buffer_too_small; }
+        o: usize = 0;
+        acc: u32 = 0;
+        bits: u32 = 0;
+        for b in src {
+            acc = ((acc << 8) | (b as u32)) & 0xFFF;
+            bits += 8;
+            while bits >= 5 {
+                bits -= 5;
+                out[o] = self.chars[((acc >> bits) & 31) as usize];
+                o += 1;
+            }
+        }
+        if bits > 0 {
+            out[o] = self.chars[((acc << (5 - bits)) & 31) as usize];
+            o += 1;
+        }
+        if self.pad {
+            while o % 8 != 0 {
+                out[o] = '=';
+                o += 1;
+            }
+        }
+        return o;
+    }
+
+    /// The bytes of `text`, written at the start of `out`; their length (`decoded_len`). The
+    /// bits past the last whole byte are not looked at.
+    pub decode :: fn(self: *Self, out: []u8, text: []const u8) -> usize ! Base32Error {
+        need := self.decoded_len(text)?;
+        if out.len < need { fail .buffer_too_small; }
+        n := text.len;
+        if self.pad {
+            while n >= 1 && text[n - 1] == '=' { n -= 1; }
+        }
+        o: usize = 0;
+        acc: u32 = 0;
+        bits: u32 = 0;
+        for i in 0..n {
+            d := self.value_of(text[i]);
+            if d < 0 { fail .invalid_character; }
+            acc = ((acc << 5) | (d as u32)) & 0x1FFF;
+            bits += 5;
+            if bits >= 8 {
+                bits -= 8;
+                out[o] = ((acc >> bits) & 0xFF) as u8;
+                o += 1;
+            }
+        }
+        return o;
+    }
+
+    /// The text of `src`, in memory from `a`.
+    pub encode_in :: fn(self: *Self, a: *Arena, src: []const u8) -> []u8 {
+        out := a.alloc_bytes(self.encoded_len(src.len));
+        n := self.encode(out, src) catch err { yield 0; };
+        return out[0..n];
+    }
+
+    /// The bytes of `text`, in memory from `a`.
+    pub decode_in :: fn(self: *Self, a: *Arena, text: []const u8) -> []u8 ! Base32Error {
+        out := a.alloc_bytes(self.decoded_len(text)?);
+        n := self.decode(out, text)?;
+        return out[0..n];
+    }
+
+    // The value of character `c` (either case), or -1 for one not in the alphabet.
+    value_of :: fn(self: *Self, c: u8) -> i32 {
+        u := if c >= 'a' && c <= 'z' { c - 32 } else { c };
+        for k in 0..32 { if self.chars[k] == u { return k as i32; } }
+        return -1;
+    }
+}
+
+STANDARD_CHARS :: "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+HEX_CHARS :: "0123456789ABCDEFGHIJKLMNOPQRSTUV";
+
+/// A-Z and 2-7, padded with `=`: RFC 4648's base32.
+pub STANDARD: Codec = .{ STANDARD_CHARS, true };
+/// A-Z and 2-7 without padding: TOTP secrets, onion addresses.
+pub STANDARD_NO_PAD: Codec = .{ STANDARD_CHARS, false };
+/// 0-9 and A-V, padded: "base32hex", whose text sorts as its bytes do.
+pub HEX: Codec = .{ HEX_CHARS, true };
+pub HEX_NO_PAD: Codec = .{ HEX_CHARS, false };
+
+/// `STANDARD.encode_in`: the text of `src`, in memory from `a`.
+pub encode_in :: fn(a: *Arena, src: []const u8) -> []u8 {
+    c := STANDARD;
+    return c.encode_in(a, src);
+}
+
+/// `STANDARD.decode_in`: the bytes of `text`, in memory from `a`.
+pub decode_in :: fn(a: *Arena, text: []const u8) -> []u8 ! Base32Error {
+    c := STANDARD;
+    return c.decode_in(a, text);
+}
