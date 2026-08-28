@@ -1632,12 +1632,8 @@ fn renderTy(v: *const View, o: *Out, ty: Ty, hint: ?ast.TypeRef) void {
             o.s("?");
             renderTy(v, o, inner.*, refInner(hint));
         },
-        .slice => |inner| {
-            o.s("[]");
-            if (hint) |h| switch (h) {
-                .slice => |sl| if (sl.is_const) o.s("const "),
-                else => {},
-            };
+        .slice, .const_slice => |inner| {
+            o.s(if (ty == .const_slice) "[]const " else "[]");
             renderTy(v, o, inner.*, refInner(hint));
         },
         .borrow => |inner| {

@@ -219,7 +219,7 @@ pub fn isFormatSym(symbols: SymbolTable, ty: Ty) bool {
 fn isByteText(ty: Ty) bool {
     return switch (ty) {
         .text => true,
-        .slice => |inner| inner.* == .u8 or inner.* == .byte,
+        .slice, .const_slice => |inner| inner.* == .u8 or inner.* == .byte,
         else => false,
     };
 }
@@ -314,6 +314,7 @@ pub const Ty = union(enum) {
     const_ptr: *const Ty, // *const T — read-only pointer
     optional: *const Ty,
     slice: *const Ty,
+    const_slice: *const Ty, // []const T — read-only slice
     borrow: *const Ty,
     array: ArrayTy,
     range: *const Ty,
@@ -1849,6 +1850,7 @@ const Checker = struct {
             .optional => |inner| std.fmt.allocPrint(self.allocator, "?{s}", .{self.formatTy(inner.*)}) catch "?T",
             .pointer => |inner| std.fmt.allocPrint(self.allocator, "*{s}", .{self.formatTy(inner.*)}) catch "*T",
             .const_ptr => |inner| std.fmt.allocPrint(self.allocator, "*const {s}", .{self.formatTy(inner.*)}) catch "*const T",
+            .const_slice => |inner| std.fmt.allocPrint(self.allocator, "[]const {s}", .{self.formatTy(inner.*)}) catch "[]const T",
             .slice => |inner| std.fmt.allocPrint(self.allocator, "[]{s}", .{self.formatTy(inner.*)}) catch "[]T",
             .array => |array| std.fmt.allocPrint(self.allocator, "[{d}]{s}", .{ array.len, self.formatTy(array.elem.*) }) catch "[N]T",
             .borrow => |inner| std.fmt.allocPrint(self.allocator, "borrow {s}", .{self.formatTy(inner.*)}) catch "borrow T",
@@ -2039,7 +2041,7 @@ const Checker = struct {
                 break :blk switch (base_ty) {
                     .pointer, .const_ptr, .borrow => self.pointerTarget(field.base.*),
                     // `.len` and `.ptr` of a slice are values, not storage.
-                    .slice => temporary,
+                    .slice, .const_slice => temporary,
                     .named, .array => self.addressTarget(field.base.*),
                     else => null,
                 };
@@ -2048,7 +2050,7 @@ const Checker = struct {
                 const base_ty = self.checkedType(index.base.*) orelse break :blk null;
                 break :blk switch (base_ty) {
                     .array => self.addressTarget(index.base.*),
-                    .pointer, .const_ptr, .borrow, .slice => self.pointerTarget(index.base.*),
+                    .pointer, .const_ptr, .borrow, .slice, .const_slice => self.pointerTarget(index.base.*),
                     else => null,
                 };
             },
@@ -2069,7 +2071,7 @@ const Checker = struct {
             .unsafe_expr, .force_unwrap => |inner| self.pointerTarget(inner.*),
             // Only a cast to another pointer keeps the address one.
             .as_cast => |cast| switch (self.checkedType(expr) orelse .unknown) {
-                .pointer, .const_ptr, .slice, .optional => self.pointerTarget(cast.value.*),
+                .pointer, .const_ptr, .slice, .const_slice, .optional => self.pointerTarget(cast.value.*),
                 else => null,
             },
             .nil_coalesce => |coalesce| self.pointerTarget(coalesce.value.*) orelse self.pointerTarget(coalesce.default.*),
@@ -2081,7 +2083,7 @@ const Checker = struct {
                     // returns the bytes it built that way, and the VM copies them into the
                     // image (docs/09_comptime.md). Called at run time, it would dangle.
                     .array => null,
-                    .pointer, .const_ptr, .borrow, .slice => self.pointerTarget(slice.base.*),
+                    .pointer, .const_ptr, .borrow, .slice, .const_slice => self.pointerTarget(slice.base.*),
                     else => null,
                 };
             },
@@ -2090,7 +2092,7 @@ const Checker = struct {
                 const base_ty = self.checkedType(field.base.*) orelse break :blk null;
                 break :blk switch (base_ty) {
                     .array => self.addressTarget(field.base.*),
-                    .slice => self.pointerTarget(field.base.*),
+                    .slice, .const_slice => self.pointerTarget(field.base.*),
                     else => null,
                 };
             },
@@ -2162,7 +2164,7 @@ const Checker = struct {
         // A struct (an optional, an array) that holds borrowed data is passed as a borrow by
         // value, as a pointer or a slice is: `peek :: fn(p: borrow Parser)`.
         switch (ty.borrow.*) {
-            .pointer, .const_ptr, .slice, .named, .optional, .array => {},
+            .pointer, .const_ptr, .slice, .const_slice, .named, .optional, .array => {},
             else => {
                 self.emitError(span, "`borrow {s}` borrows nothing: a borrow parameter is a pointer, a slice, or a value that holds one (a struct, an optional, an array)", .{self.formatTy(ty.borrow.*)});
                 return error.SemanticFailed;
@@ -3457,7 +3459,7 @@ const Checker = struct {
             .for_slice => |for_stmt| {
                 const iter_ty = try self.inferExpr(for_stmt.iter);
                 const elem_ty = switch (iter_ty) {
-                    .slice => |elem| elem.*,
+                    .slice, .const_slice => |elem| elem.*,
                     .array => |array| array.elem.*,
                     else => blk: {
                         // Iterator protocol: a `next(self: *Self) -> ?T` method.
@@ -3489,14 +3491,15 @@ const Checker = struct {
                 };
                 try self.pushScope();
                 defer self.popScope();
-                const binding_ty = if (for_stmt.by_ref) try self.ptrTo(elem_ty) else elem_ty;
+                const read_only = iter_ty == .const_slice or (iter_ty == .array and self.isReadOnlyPlace(for_stmt.iter));
+                const binding_ty = if (!for_stmt.by_ref) elem_ty else if (read_only) try self.constPtrTo(elem_ty) else try self.ptrTo(elem_ty);
                 try self.declareLocal(for_stmt.binding, binding_ty);
                 self.noteLocal(.{ .name = for_stmt.binding, .file = "", .kind = .for_binding, .decl = for_stmt.span, .scope_end = for_stmt.body.span.end, .ty = binding_ty });
                 if (for_stmt.by_ref) try self.setLocalZoneOwner(for_stmt.binding, self.exprZoneOwner(for_stmt.iter));
                 // `for &x in arr` over a local array: `x` points into this frame.
                 if (for_stmt.by_ref) try self.setLocalFramePtr(for_stmt.binding, switch (self.checkedType(for_stmt.iter) orelse .unknown) {
                     .array => self.addressTarget(for_stmt.iter),
-                    .slice, .pointer, .const_ptr, .borrow => self.pointerTarget(for_stmt.iter),
+                    .slice, .const_slice, .pointer, .const_ptr, .borrow => self.pointerTarget(for_stmt.iter),
                     else => null,
                 });
                 if (for_stmt.index_binding) |name| {
@@ -3687,7 +3690,7 @@ const Checker = struct {
                     self.emitError(expr.span, "`#embed` reads its file when the program is compiled from files", .{});
                     return error.SemanticFailed;
                 }
-                break :blk try self.sliceOf(.u8);
+                break :blk try self.constSliceOf(.u8);
             },
             // The macroexpand pass replaced every `#insert macro(…)` in an expression.
             .insert_expr => |inner| {
@@ -3815,7 +3818,7 @@ const Checker = struct {
                     self.emitError(expr.span, "unsupported float width `{s}`: fels floats are `f32` or `f64`", .{suffix});
                 break :blk floatLiteralType(text);
             },
-            .string => try self.sliceOf(.u8),
+            .string => try self.constSliceOf(.u8),
             .bool => .bool,
             .null => .null_ptr,
             .compound_literal => |values| blk: {
@@ -3868,8 +3871,9 @@ const Checker = struct {
                     // which still adapts to its context when read) and a temporary for a literal
                     // (`&5`, `&f()`), so `&x` and `&5` are `*i32` and `&2.5` is `*f64`.
                     const pointee = defaultLiteralType(try self.inferExpr(unary.expr.*));
-                    // A constant is read-only data: what points at it cannot write it.
-                    if (self.constantRoot(unary.expr.*) != null) break :blk try self.constPtrTo(pointee);
+                    // A constant is read-only data, and so is what a `*const` or a `[]const`
+                    // reaches: what points at it cannot write it.
+                    if (self.isReadOnlyPlace(unary.expr.*)) break :blk try self.constPtrTo(pointee);
                     break :blk try self.ptrTo(pointee);
                 },
                 .deref => blk: {
@@ -3878,7 +3882,7 @@ const Checker = struct {
                     if (inner == .unknown and self.infer.active) break :blk .unknown;
                     break :blk switch (inner) {
                         .pointer, .const_ptr => |p| p.*,
-                        .slice => |p| p.*,
+                        .slice, .const_slice => |p| p.*,
                         else => {
                             // `take(*Node)`, `Node` a type: a pointer type, which is an argument
                             // only where one is asked for, never a value.
@@ -4090,7 +4094,8 @@ const Checker = struct {
                 if (std.mem.eql(u8, field.name, "len") and !self.structHasField(base_ty, "len")) break :blk .usize;
                 if (std.mem.eql(u8, field.name, "ptr") and !self.structHasField(base_ty, "ptr")) break :blk switch (base_ty) {
                     .slice => |inner| try self.ptrTo(inner.*),
-                    .array => |array| try self.ptrTo(array.elem.*),
+                    .const_slice => |inner| try self.constPtrTo(inner.*),
+                    .array => |array| if (self.isReadOnlyPlace(field.base.*)) try self.constPtrTo(array.elem.*) else try self.ptrTo(array.elem.*),
                     else => {
                         self.emitError(expr.span, "`.ptr` is only valid on slices and arrays, found `{s}`", .{self.formatTy(base_ty)});
                         return error.SemanticFailed;
@@ -4110,7 +4115,7 @@ const Checker = struct {
                     if (std.mem.eql(u8, m, "line") or std.mem.eql(u8, m, "column")) break :blk .i32;
                     if (std.mem.eql(u8, m, "file") or std.mem.eql(u8, m, "func") or std.mem.eql(u8, m, "module") or
                         std.mem.eql(u8, m, "os") or std.mem.eql(u8, m, "arch"))
-                        break :blk try self.sliceOf(.u8);
+                        break :blk try self.constSliceOf(.u8);
                     self.emitError(expr.span, "unknown core builtin `{s}`", .{m});
                     return error.SemanticFailed;
                 }
@@ -4133,7 +4138,7 @@ const Checker = struct {
                 }
                 break :blk switch (base_ty) {
                     .array => |array| array.elem.*,
-                    .slice => |inner| inner.*,
+                    .slice, .const_slice => |inner| inner.*,
                     .pointer, .const_ptr => |inner| inner.*,
                     .unknown => .unknown,
                     else => {
@@ -4147,8 +4152,8 @@ const Checker = struct {
                 if (slice.start) |start| _ = try self.inferExpr(start.*);
                 if (slice.end) |end| _ = try self.inferExpr(end.*);
                 break :blk switch (base_ty) {
-                    .array => |array| .{ .slice = array.elem },
-                    .slice => base_ty,
+                    .array => |array| if (self.isReadOnlyPlace(slice.base.*)) Ty{ .const_slice = array.elem } else Ty{ .slice = array.elem },
+                    .slice, .const_slice => base_ty,
                     else => {
                         self.emitError(slice.base.span, "cannot slice value of type `{s}`", .{self.formatTy(base_ty)});
                         return error.SemanticFailed;
@@ -4530,7 +4535,7 @@ const Checker = struct {
         // Reflection builtins: only meaningful inside compile-time contexts
         // (#run / #if), where the comptime interpreter produces a concrete
         // value. Their static type is deferred, like the TARGET pseudo-module.
-        if (std.mem.eql(u8, name, "type_name")) return try self.sliceOf(.u8);
+        if (std.mem.eql(u8, name, "type_name")) return try self.constSliceOf(.u8);
         // `reject("msg")` — used in a `where` block to reject the instantiation.
         if (std.mem.eql(u8, name, "reject")) return .void;
         // `any(x)` wraps any value into a type-erased `Any` (the prelude struct).
@@ -5229,7 +5234,7 @@ const Checker = struct {
 
     fn matchSubjectIsString(ty: Ty) bool {
         return switch (ty) {
-            .slice => |elem| elem.* == .u8 or elem.* == .byte,
+            .slice, .const_slice => |elem| elem.* == .u8 or elem.* == .byte,
             else => false,
         };
     }
@@ -5987,8 +5992,8 @@ const Checker = struct {
                 .pointer, .const_ptr => |a| a.*,
                 else => arg_ty,
             }, binding),
-            .slice => |elem| try self.bindTypeVars(elem.*, switch (arg_ty) {
-                .slice => |e| e.*,
+            .slice, .const_slice => |elem| try self.bindTypeVars(elem.*, switch (arg_ty) {
+                .slice, .const_slice => |e| e.*,
                 .array => |a| a.elem.*,
                 else => arg_ty,
             }, binding),
@@ -6063,6 +6068,11 @@ const Checker = struct {
                 const sub = self.allocator.create(Ty) catch return ty;
                 sub.* = self.substituteTy(inner.*, binding);
                 break :blk .{ .slice = sub };
+            },
+            .const_slice => |inner| blk: {
+                const sub = self.allocator.create(Ty) catch return ty;
+                sub.* = self.substituteTy(inner.*, binding);
+                break :blk .{ .const_slice = sub };
             },
             .array => |arr| blk: {
                 const sub = self.allocator.create(Ty) catch return ty;
@@ -6140,8 +6150,8 @@ const Checker = struct {
                 try buf.appendSlice(self.allocator, "opt_");
                 try self.appendTyMangle(buf, inner.*);
             },
-            .slice => |inner| {
-                try buf.appendSlice(self.allocator, "slice_");
+            .slice, .const_slice => |inner| {
+                try buf.appendSlice(self.allocator, if (ty == .const_slice) "cslice_" else "slice_");
                 try self.appendTyMangle(buf, inner.*);
             },
             else => try buf.appendSlice(self.allocator, tyMangle(ty)),
@@ -6591,7 +6601,10 @@ const Checker = struct {
                 return if (ptr.is_const) try self.constPtrTo(inner) else try self.ptrTo(inner);
             },
             .optional => |optional| return try self.optionalOf(try self.typeFromRef(optional.inner.*)),
-            .slice => |slice| return try self.sliceOf(try self.typeFromRef(slice.inner.*)),
+            .slice => |slice| {
+                const elem = try self.typeFromRef(slice.inner.*);
+                return if (slice.is_const) try self.constSliceOf(elem) else try self.sliceOf(elem);
+            },
             .array => |array| {
                 _ = try self.inferExpr(array.len.*);
                 try self.noteUnresolvedLen(array.len.*, 0);
@@ -6986,7 +6999,7 @@ const Checker = struct {
     fn checkUnionPointerRead(self: *Checker, base: ast.Expr, base_ty: Ty) SemanticError!void {
         if (!self.writing_place or self.unsafe_depth > 0) return;
         switch (base_ty) {
-            .pointer, .const_ptr, .slice, .borrow => {},
+            .pointer, .const_ptr, .slice, .const_slice, .borrow => {},
             else => return,
         }
         if (base.kind != .field) return;
@@ -7203,6 +7216,41 @@ const Checker = struct {
         };
     }
 
+    /// Why `place` may not be written, when it is reached through a `*const` pointer or a
+    /// `[]const` slice: the text for an error. Null when it may be (a constant is
+    /// `constantRoot`'s).
+    fn readOnlyReason(self: *Checker, place: ast.Expr) ?[]const u8 {
+        return switch (place.kind) {
+            .unary => |u| blk: {
+                if (u.op != .deref) break :blk null;
+                const ty = self.inferExpr(u.expr.*) catch break :blk null;
+                break :blk if (ty == .const_ptr) "a `*const` pointer" else null;
+            },
+            .field => |f| blk: {
+                const base_ty = self.inferExpr(f.base.*) catch break :blk null;
+                if (base_ty == .const_ptr) break :blk "a `*const` pointer";
+                if (isPointerTy(base_ty)) break :blk null;
+                break :blk self.readOnlyReason(f.base.*);
+            },
+            .index => |i| blk: {
+                const base_ty = self.inferExpr(i.base.*) catch break :blk null;
+                break :blk switch (base_ty) {
+                    .const_slice => "a `[]const` slice",
+                    .const_ptr => "a `*const` pointer",
+                    .slice, .pointer => null,
+                    else => self.readOnlyReason(i.base.*),
+                };
+            },
+            else => null,
+        };
+    }
+
+    /// Whether `place` may not be written: part of a constant, or behind a `*const` pointer or a
+    /// `[]const` slice.
+    fn isReadOnlyPlace(self: *Checker, place: ast.Expr) bool {
+        return self.constantRoot(place) != null or self.readOnlyReason(place) != null;
+    }
+
     /// The top-level constant (`NAME :: value`, `NAME : T : value`) a place is part of: the
     /// constant itself, one of its fields, or an element of an array or slice it holds. Not what
     /// a pointer in it points to, which a write may change.
@@ -7288,10 +7336,22 @@ const Checker = struct {
             },
             else => {},
         }
+        // An element of a `[]const` slice, or a field of one, or what a `*const` further in
+        // reaches.
+        if (self.readOnlyReason(target)) |why| {
+            self.emitErrorRich(target.span, "cannot assign here: this is reached through {s}, which is read-only", .{why}, .{
+                .help = "take a `[]T` (or a `*T`) where the memory is to be written; a string literal is read-only data",
+            });
+            return error.SemanticFailed;
+        }
     }
 
     fn sliceOf(self: *Checker, ty: Ty) !Ty {
         return .{ .slice = try self.boxTy(ty) };
+    }
+
+    fn constSliceOf(self: *Checker, ty: Ty) !Ty {
+        return .{ .const_slice = try self.boxTy(ty) };
     }
 
     fn optionalOf(self: *Checker, ty: Ty) !Ty {
@@ -7349,8 +7409,11 @@ const Checker = struct {
         // *T is implicitly usable as *const T (const promotion).
         if (actual == .pointer and expected == .const_ptr)
             return sameTy(actual.pointer.*, expected.const_ptr.*);
+        // []T is usable as []const T the same way.
+        if (actual == .slice and expected == .const_slice)
+            return sameTy(actual.slice.*, expected.const_slice.*);
         if (actual == .null_ptr) return switch (expected) {
-            .pointer, .const_ptr, .slice, .named, .optional => true,
+            .pointer, .const_ptr, .slice, .const_slice, .named, .optional => true,
             else => false,
         };
         if (actual == .error_ty and self.isErrorType(expected)) return true;
@@ -7648,7 +7711,7 @@ const Checker = struct {
                         }
                         for (values) |value| try self.requireIntLitFits(value, array.elem.*);
                     },
-                    .slice => |elem| for (values) |value| try self.requireIntLitFits(value, elem.*),
+                    .slice, .const_slice => |elem| for (values) |value| try self.requireIntLitFits(value, elem.*),
                     else => if (self.structFieldInfos(expected)) |fields| for (values, 0..) |value, i| {
                         if (i >= fields.len) break;
                         try self.requireIntLitFits(value, fields[i].ty);
@@ -7881,6 +7944,7 @@ fn substituteInterfaceSelf(checker: *Checker, ty: Ty, interface_id: SymbolId, co
         .const_ptr => |inner| .{ .const_ptr = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
         .optional => |inner| .{ .optional = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
         .slice => |inner| .{ .slice = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
+        .const_slice => |inner| .{ .const_slice = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
         .borrow => |inner| .{ .borrow = try checker.boxTy(try substituteInterfaceSelf(checker, inner.*, interface_id, concrete_id)) },
         else => ty,
     };
@@ -8029,6 +8093,7 @@ pub fn tyMangle(ty: Ty) []const u8 {
         .const_ptr => "cptr",
         .optional => "opt",
         .slice => "slice",
+        .const_slice => "cslice",
         .borrow => "borrow",
         .named => "named",
         .type_param => |n| n,
@@ -8041,7 +8106,7 @@ pub fn tyMangle(ty: Ty) []const u8 {
 fn tyContainsTypeParam(ty: Ty) bool {
     return switch (ty) {
         .type_param => true,
-        .pointer, .const_ptr, .optional, .slice, .borrow, .list, .map, .range => |inner| tyContainsTypeParam(inner.*),
+        .pointer, .const_ptr, .optional, .slice, .const_slice, .borrow, .list, .map, .range => |inner| tyContainsTypeParam(inner.*),
         .array => |arr| tyContainsTypeParam(arr.elem.*),
         .generic_app => |app| {
             for (app.args) |arg| if (tyContainsTypeParam(arg)) return true;
@@ -8059,6 +8124,7 @@ fn sameTy(a: Ty, b: Ty) bool {
         .const_ptr => |pa| sameTy(pa.*, b.const_ptr.*),
         .optional => |oa| sameTy(oa.*, b.optional.*),
         .slice => |sa| sameTy(sa.*, b.slice.*),
+        .const_slice => |sa| sameTy(sa.*, b.const_slice.*),
         .borrow => |ba| sameTy(ba.*, b.borrow.*),
         .array => |aa| sameTy(aa.elem.*, b.array.elem.*) and aa.len == b.array.len,
         .named => |id| id == b.named,
@@ -8071,7 +8137,7 @@ fn sameTy(a: Ty, b: Ty) bool {
 fn tyCanCarryZoneOwner(ty: Ty) bool {
     return switch (ty) {
         // (a function value too: a closure's environment may hold zone memory)
-        .pointer, .const_ptr, .slice, .borrow, .optional, .fallible, .named, .fn_ptr, .unknown => true,
+        .pointer, .const_ptr, .slice, .const_slice, .borrow, .optional, .fallible, .named, .fn_ptr, .unknown => true,
         else => false,
     };
 }
@@ -8079,7 +8145,7 @@ fn tyCanCarryZoneOwner(ty: Ty) bool {
 fn containsBorrow(ty: Ty) bool {
     return switch (ty) {
         .borrow => true,
-        .pointer, .const_ptr, .optional, .slice => |inner| containsBorrow(inner.*),
+        .pointer, .const_ptr, .optional, .slice, .const_slice => |inner| containsBorrow(inner.*),
         .array => |array| containsBorrow(array.elem.*),
         .fallible => |fallible| containsBorrow(fallible.ok.*) or containsBorrow(fallible.err.*),
         else => false,
