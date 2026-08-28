@@ -447,9 +447,9 @@ fn lowerUnary(cg: *ModuleCg, fncg: anytype, u: ir.UnaryInstr, ty: ir.IrType, loc
     const bl = cg.builder;
     return switch (u.op) {
         .neg => if (isFloat(ty))
-            // Float negation: `0.0 - v` (LLVMBuildNeg is integer-only and would
-            // emit an invalid `sub double`).
-            llvm.LLVMBuildFSub(bl, llvm.LLVMConstNull(llvm.LLVMTypeOf(v)), v, "")
+            // `fneg` flips the sign bit: `-0.0` is negative zero, and `0.0 - v` was +0.0 for a
+            // zero (LLVMBuildNeg is integer-only and would emit an invalid `sub double`).
+            llvm.LLVMBuildFNeg(bl, v, "")
         else if (cg.safety)
             lowerOverflowingBinary(cg, fncg.llvm_fn, llvm.LLVMConstNull(llvm.LLVMTypeOf(v)), v, "llvm.ssub.with.overflow", location)
         else
