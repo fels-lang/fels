@@ -13,6 +13,10 @@ the major version is `0`, any minor bump may break source compatibility.
   `std.net` gains `resolve` and `connect_host` for host names (the system's lookup on Windows;
   /etc/hosts and a DNS query on Linux, from `std.net.dns`), and a `TcpStream` is an
   `io.Reader` and an `io.Writer`.
+- **Encodings**: `std.base32` (RFC 4648's two alphabets, padded or not), `std.leb128` (the
+  varints of WebAssembly, DWARF and Protocol Buffers), and `std.cbor`, a CBOR writer
+  (preferred serialization, floats in their shortest exact form) and a pull reader that
+  allocates nothing.
 - **Folders and the environment**: `fs::cwd` and `fs::set_cwd`, `fs::absolute`,
   `path::normalize`, `fs::temp_dir` and `fs::home_dir`, `fs::create_temp` and
   `fs::make_temp_dir` (a new name every time, never one that is taken), `fs::remove_tree` (a
