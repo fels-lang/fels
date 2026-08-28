@@ -1324,6 +1324,88 @@ d := hex::decode_in(&a, "DEADbeef")?;            // either case reads
   null. Errors: `.invalid_character`, `.odd_length`, `.buffer_too_small`. `crypto::hex` is
   `hex::encode_in`.
 
+### `std.base32`
+
+Bytes as text in 32 characters (RFC 4648), as TOTP secrets and onion addresses write them.
+Its API is the same as `std.base64`'s.
+
+```fels
+#import std.base32 as base32;
+
+t := base32::encode_in(&a, "foo");               // "MZXW6==="
+b := base32::decode_in(&a, "mzxw6===")?;         // "foo": lowercase reads too
+s := base32::STANDARD_NO_PAD.encode_in(&a, key); // a TOTP secret
+```
+
+- The codecs are `STANDARD` (A-Z and 2-7, padded with `=` to a multiple of 8),
+  `STANDARD_NO_PAD`, `HEX` (0-9 and A-V, "base32hex", whose text sorts as its bytes do) and
+  `HEX_NO_PAD`. Each has `encode`, `decode`, `encode_in`, `decode_in`, `encoded_len` and
+  `decoded_len`.
+- Decoding takes either case. A padded codec wants exactly the padding the length needs, and
+  one without refuses `=`. The errors are base64's: `.invalid_character`, `.invalid_length`
+  and `.buffer_too_small`.
+
+### `std.leb128`
+
+Integers in 7-bit groups, small ones in few bytes (LEB128), as WebAssembly, DWARF and Protocol
+Buffers' varints write them.
+
+```fels
+#import std.leb128 as leb128;
+
+buf: [leb128::MAX_LEN]u8 = .{};
+n := leb128::encode_u64(buf[:], 624485)?;        // e5 8e 26: 3 bytes
+d := leb128::decode_u64(buf[0..n])?;             // d.value 624485, d.len 3
+m := leb128::encode_i64(buf[:], -123456)?;       // c0 bb 78
+s := leb128::decode_i64(buf[0..m])?;             // s.value -123456
+```
+
+- `len_u64` and `len_i64` give the bytes a number takes, 10 at most (`MAX_LEN`).
+- Decoding reads from the start of the bytes and gives the number with how many bytes it took
+  (`Unsigned`, `Signed`). A longer form than needed (`80 00` for 0) reads, as most readers allow.
+- Errors (`LebError`): `.buffer_too_small` (nothing written), `.truncated` and `.overflow` (a
+  number past 64 bits).
+
+### `std.cbor`
+
+CBOR (RFC 8949): JSON's shapes in compact binary, plus byte strings and tags. COSE, WebAuthn
+and many devices use it. A writer writes items as the calls come, and a reader reads them one
+at a time without allocating.
+
+```fels
+#import std.cbor as cbor;
+
+sb := strings::builder(&a);                      // or any io::Writer
+e := cbor::writer(&sb);
+e.begin_map(2);
+e.text("name"); e.text("Ada");
+e.text("ids"); e.begin_array(2); e.uint(1); e.int(-2);
+e.finish()?;
+bytes := strings::str(&sb);
+
+r := cbor::reader(bytes);
+m := r.next()?;                                  // m.kind .map, m.value 2 (pairs)
+k := r.next()?;                                  // .text, k.data "name"
+r.skip()?;                                       // over the value, whatever it holds
+```
+
+- The writer has `uint`, `int`, `bytes`, `text`, `float`, `boolean`, `null_value`,
+  `undefined`, `simple`, `tag`, and `begin_array(n)` and `begin_map(n)`, which the next `n`
+  items (pairs) fill. `begin_array_indefinite` and `begin_map_indefinite` take items up to an
+  `end`, and `raw` writes bytes that are CBOR already. As RFC 8949's preferred serialization
+  says, numbers take their shortest form, and a float takes the shortest of half, single and
+  double precision that holds it exactly (NaN as half). After a write fails the rest are
+  skipped, and `finish` reports it.
+- `next` gives an `Item`: its `kind` (`.uint`, `.negint`, `.bytes`, `.text`, `.array`, `.map`,
+  `.tag`, `.simple`, `.boolean`, `.null_value`, `.undefined`, `.float`, or `.end`, the break
+  after an indefinite item), `value` (the number, a count, or a tag), `data` (a string's bytes,
+  a slice of the input), `number` (a float) and `indefinite`. `as_i64()` gives an integer of
+  either sign that fits. An array's items, a map's keys and values, and a tag's item come next.
+- `skip` reads over the next item and all it holds, and `skip_contents(it)` over what an item
+  just read holds. `at_end` says whether all bytes are read.
+- Errors (`CborError`): `.truncated`, `.malformed` (a header no item has, or a misplaced
+  break), `.bad_text` (a text that is not UTF-8) and `.too_deep` (`skip` past 1000 levels).
+
 ### `std.log`
 
 Messages by level (`debug`, `info`, `warn`, `error`), each a format, written to stderr or to any
