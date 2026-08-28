@@ -1,0 +1,405 @@
+// std.cbor, as `#test` functions: `fels test` runs them natively and on the comptime VM
+// (tests/compiler/std_tests.zig). The data at the end is from Python: an encoder of RFC 8949's
+// preferred serialization (checked against the RFC's examples) and struct's packing of floats.
+#import std.heap as heap;
+#import std.hex as hex;
+#import std.strings as strings;
+#import std.cbor as cbor;
+
+IntCase :: struct { v: i64, cbor: []const u8 }
+// `special`: 1 infinity, 2 minus infinity, 3 -0.0, 4 NaN; else `v`
+FloatCase :: struct { v: f64, special: u8, cbor: []const u8 }
+TextCase :: struct { text: []const u8, cbor: []const u8 }
+
+float_of :: fn(c: FloatCase) -> f64 {
+    big := 1e308;
+    if c.special == 1 { return big * 10.0; }
+    if c.special == 2 { return -(big * 10.0); }
+    if c.special == 3 { return -c.v; }
+    if c.special == 4 { return big * 10.0 - big * 10.0; }
+    return c.v;
+}
+
+#test
+integers :: fn(t: *Test) {
+    a := heap::make();
+    for c in INTS {
+        sb := strings::builder(&a);
+        e := cbor::writer(&sb);
+        e.int(c.v);
+        t.eq(hex::encode_in(&a, strings::str(&sb)), c.cbor);
+        bytes := hex::decode_in(&a, c.cbor) catch err { yield ""; };
+        r := cbor::reader(bytes);
+        it := r.next() catch err { t.fatal("next"); return; };
+        t.eq(it.as_i64() ?? 7, c.v);
+        t.expect(it.kind == (if c.v >= 0 { cbor::Kind.uint } else { cbor::Kind.negint }));
+        t.expect(r.at_end());
+    }
+    sb := strings::builder(&a);
+    e := cbor::writer(&sb);
+    e.uint(18446744073709551615u64);
+    t.eq(hex::encode_in(&a, strings::str(&sb)), "1bffffffffffffffff");
+    r := cbor::reader(strings::str(&sb));
+    it := r.next() catch err { t.fatal("next"); return; };
+    t.eq(it.value, 18446744073709551615u64);
+    t.expect(it.as_i64() == null);
+    a.deinit();
+}
+
+#test
+floats :: fn(t: *Test) {
+    a := heap::make();
+    for c in FLOATS {
+        v := float_of(c);
+        sb := strings::builder(&a);
+        e := cbor::writer(&sb);
+        e.float(v);
+        t.eq(hex::encode_in(&a, strings::str(&sb)), c.cbor);
+        bytes := hex::decode_in(&a, c.cbor) catch err { yield ""; };
+        r := cbor::reader(bytes);
+        it := r.next() catch err { t.fatal("next"); return; };
+        t.expect(it.kind == .float);
+        if c.special == 4 {
+            t.expect(it.number != it.number);
+        } else {
+            t.expect(it.number == v);
+            t.expect((1.0 / it.number < 0.0) == (1.0 / v < 0.0));     // the sign of a zero too
+        }
+    }
+    a.deinit();
+}
+
+#test
+texts_and_bytes :: fn(t: *Test) {
+    a := heap::make();
+    for c in TEXTS {
+        sb := strings::builder(&a);
+        e := cbor::writer(&sb);
+        e.text(c.text);
+        t.eq(hex::encode_in(&a, strings::str(&sb)), c.cbor);
+        r := cbor::reader(strings::str(&sb));
+        it := r.next() catch err { t.fatal("next"); return; };
+        t.expect(it.kind == .text);
+        t.eq(it.data, c.text);
+    }
+    sb := strings::builder(&a);
+    e := cbor::writer(&sb);
+    raw: [4]u8 = .{ 1, 2, 3, 4 };
+    e.bytes(raw[:]);
+    t.eq(hex::encode_in(&a, strings::str(&sb)), "4401020304");
+    a.deinit();
+}
+
+#test
+nested_and_skipped :: fn(t: *Test) {
+    a := heap::make();
+    sb := strings::builder(&a);
+    e := cbor::writer(&sb);
+    // {"a": 1, "b": [2, 3], "c": 1(1363896240), "d": [_ true, null, undefined, simple(16)], "e": h'00ff'}
+    e.begin_map(5);
+    e.text("a"); e.uint(1);
+    e.text("b"); e.begin_array(2); e.uint(2); e.uint(3);
+    e.text("c"); e.tag(1); e.uint(1363896240);
+    e.text("d"); e.begin_array_indefinite(); e.boolean(true); e.null_value(); e.undefined(); e.simple(16); e.end();
+    e.text("e");
+    eb: [2]u8 = .{ 0x00, 0xff };
+    e.bytes(eb[:]);
+    e.finish() catch err { t.fatal("finish"); };
+    t.eq(hex::encode_in(&a, strings::str(&sb)), "a561610161628202036163c11a514b67b061649ff5f6f7f0ff61654200ff");
+
+    r := cbor::reader(strings::str(&sb));
+    m := r.next() catch err { t.fatal("map"); return; };
+    t.expect(m.kind == .map && m.value == 5 && !m.indefinite);
+    seen: usize = 0;
+    for k in 0..5 {
+        key := r.next() catch err { t.fatal("key"); return; };
+        t.expect(key.kind == .text);
+        if key.data == "c" {
+            tg := r.next() catch err { t.fatal("tag"); return; };
+            t.expect(tg.kind == .tag && tg.value == 1);
+            n := r.next() catch err { t.fatal("tagged"); return; };
+            t.eq(n.value, 1363896240u64);
+            seen += 1;
+        } else if key.data == "d" {
+            arr := r.next() catch err { t.fatal("array"); return; };
+            t.expect(arr.kind == .array && arr.indefinite);
+            b := r.next() catch err { t.fatal("bool"); return; };
+            t.expect(b.kind == .boolean && b.value == 1);
+            r.skip_contents(arr) catch err { t.fatal("rest"); };        // the rest, and the break
+            seen += 1;
+        } else {
+            r.skip() catch err { t.fatal("skip"); };
+        }
+    }
+    t.eq(seen, 2usize);
+    t.expect(r.at_end());
+
+    // RFC 8949's indefinite examples, read over whole
+    for x in INDEFINITE {
+        bytes := hex::decode_in(&a, x) catch err { yield ""; };
+        r2 := cbor::reader(bytes);
+        r2.skip() catch err { t.fatal("skip indefinite"); };
+        t.expect(r2.at_end());
+    }
+    a.deinit();
+}
+
+#test
+refused :: fn(t: *Test) {
+    a := heap::make();
+    for c in BAD {
+        bytes := hex::decode_in(&a, c.cbor) catch err { yield ""; };
+        r := cbor::reader(bytes);
+        got: u8 = 0;
+        r.skip() catch err {
+            got = if err == .truncated { 1u8 } else if err == .malformed { 2u8 } else if err == .bad_text { 3u8 } else { 4u8 };
+        };
+        t.eq(got, c.err);
+    }
+    deep := a.alloc_bytes(1100);
+    for k in 0..1100 { deep[k] = 0x81; }        // [[[[…
+    r := cbor::reader(deep);
+    too_deep := false;
+    r.skip() catch err { too_deep = err == .too_deep; };
+    t.expect(too_deep);
+    a.deinit();
+}
+
+INDEFINITE: [5][]const u8 = .{
+    "5f42010243030405ff",                                   // (_ h'0102', h'030405')
+    "7f657374726561646d696e67ff",                           // (_ "strea", "ming")
+    "9fff",                                                 // [_ ]
+    "9f018202039f0405ffff",                                 // [_ 1, [2, 3], [_ 4, 5]]
+    "bf61610161629f0203ffff",                               // {_ "a": 1, "b": [_ 2, 3]}
+};
+
+// bytes that are no CBOR, and the error: 1 truncated, 2 malformed, 3 bad_text
+BadCase :: struct { cbor: []const u8, err: u8 }
+BAD: [10]BadCase = .{
+    .{ "", 1 },
+    .{ "19", 1 },                   // a 2-byte number, cut off
+    .{ "1c", 2 },                   // additional information 28
+    .{ "1f", 2 },                   // an unsigned number of indefinite length
+    .{ "ff", 2 },                   // a break with nothing open
+    .{ "f818", 2 },                 // a simple value under 32 in two bytes
+    .{ "62c328", 3 },               // not UTF-8
+    .{ "44010203", 1 },             // 4 bytes, 3 given
+    .{ "830102", 1 },               // an array short of an item
+    .{ "a1", 1 },                   // a map with nothing in it
+};
+
+// integers and their CBOR in hex
+INTS: [61]IntCase = .{
+    .{ 0i64, "00" },
+    .{ 1i64, "01" },
+    .{ 23i64, "17" },
+    .{ 24i64, "1818" },
+    .{ 255i64, "18ff" },
+    .{ 256i64, "190100" },
+    .{ 65535i64, "19ffff" },
+    .{ 65536i64, "1a00010000" },
+    .{ 4294967295i64, "1affffffff" },
+    .{ 4294967296i64, "1b0000000100000000" },
+    .{ 9223372036854775807i64, "1b7fffffffffffffff" },
+    .{ -1i64, "20" },
+    .{ -24i64, "37" },
+    .{ -25i64, "3818" },
+    .{ -256i64, "38ff" },
+    .{ -257i64, "390100" },
+    .{ -65536i64, "39ffff" },
+    .{ -65537i64, "3a00010000" },
+    .{ -4294967296i64, "3affffffff" },
+    .{ -4294967297i64, "3b0000000100000000" },
+    .{ -9223372036854775807i64 - 1i64, "3b7fffffffffffffff" },
+    .{ -41271990157i64, "3b000000099c00978c" },
+    .{ -88843205963i64, "3b00000014af77bd4a" },
+    .{ 599170928314813i64, "1b000220f15a5789bd" },
+    .{ -386994724i64, "3a17111223" },
+    .{ -91297333i64, "3a05711634" },
+    .{ 36486483964204i64, "1b0000212f2bea712c" },
+    .{ -70177i64, "3a00011220" },
+    .{ -4380i64, "39111b" },
+    .{ -423986667519i64, "3b00000062b7931ffe" },
+    .{ 511673667004077340i64, "1b0719d47d3ab3151c" },
+    .{ -30850454587576187i64, "3b006d9a5332da0f7a" },
+    .{ -27722325024i64, "3b0000000674611c1f" },
+    .{ -7841i64, "391ea0" },
+    .{ -4268504016968530i64, "3b000f2a2e89a75b51" },
+    .{ 1088971936i64, "1a40e864a0" },
+    .{ 6i64, "06" },
+    .{ -24804i64, "3960e3" },
+    .{ 3889464296282i64, "1b000003899623435a" },
+    .{ 0i64, "00" },
+    .{ 20463961488203i64, "1b0000129ca327bb4b" },
+    .{ 27i64, "181b" },
+    .{ 129889946922687600i64, "1b01cd7637f2389c70" },
+    .{ -6661731i64, "3a0065a662" },
+    .{ -455i64, "3901c6" },
+    .{ -5720112479875495307i64, "3b4f61ebfe7641f58a" },
+    .{ -5002780728502201983i64, "3b456d7291138b2e7e" },
+    .{ -387920i64, "3a0005eb4f" },
+    .{ 1i64, "01" },
+    .{ 290362594173i64, "1b000000439af5937d" },
+    .{ -5i64, "24" },
+    .{ -125254046264426380i64, "3b01bcfde436457f8b" },
+    .{ -1i64, "20" },
+    .{ -228521391938079037i64, "3b032bdefec60c093c" },
+    .{ -722023241127272651i64, "3b0a05244ff6f7a0ca" },
+    .{ -171241i64, "3a00029ce8" },
+    .{ 3i64, "03" },
+    .{ 2458591509414354i64, "1b0008bc13719101d2" },
+    .{ -488871105488109446i64, "3b06c8d1ae27923f85" },
+    .{ -25833i64, "3964e8" },
+    .{ 31284917978627i64, "1b00001c74166c4603" },
+};
+
+// floats and their CBOR in hex: the shortest exact form
+FLOATS: [134]FloatCase = .{
+    .{ 0.0, 4, "f97e00" },
+    .{ 0.0, 0, "f90000" },
+    .{ 0.0, 3, "f98000" },
+    .{ 1.0, 0, "f93c00" },
+    .{ 1.1, 0, "fb3ff199999999999a" },
+    .{ 1.5, 0, "f93e00" },
+    .{ 65504.0, 0, "f97bff" },
+    .{ 65505.0, 0, "fa477fe100" },
+    .{ 65520.0, 0, "fa477ff000" },
+    .{ 100000.0, 0, "fa47c35000" },
+    .{ 3.4028234663852886e38, 0, "fa7f7fffff" },
+    .{ 3.4028235677973366e38, 0, "fb47effffff0000000" },
+    .{ 1e300, 0, "fb7e37e43c8800759c" },
+    .{ 5.960464477539063e-08, 0, "f90001" },
+    .{ 2.9802322387695312e-08, 0, "fa33000000" },
+    .{ 6.103515625e-05, 0, "f90400" },
+    .{ 6.097555160522461e-05, 0, "f903ff" },
+    .{ -4.0, 0, "f9c400" },
+    .{ -4.1, 0, "fbc010666666666666" },
+    .{ 0.0, 1, "f97c00" },
+    .{ 0.0, 2, "f9fc00" },
+    .{ 1e-45, 0, "fb3696d601ad376ab9" },
+    .{ 1.401298464324817e-45, 0, "fa00000001" },
+    .{ 1.1754943508222875e-38, 0, "fa00800000" },
+    .{ 5e-324, 0, "fb0000000000000001" },
+    .{ 2.2250738585072014e-308, 0, "fb0010000000000000" },
+    .{ 2.225073858507201e-308, 0, "fb000fffffffffffff" },
+    .{ 1.7976931348623157e308, 0, "fb7fefffffffffffff" },
+    .{ 0.1, 0, "fb3fb999999999999a" },
+    .{ 0.5, 0, "f93800" },
+    .{ 0.25, 0, "f93400" },
+    .{ 0.3333333333333333, 0, "fb3fd5555555555555" },
+    .{ 1024.5, 0, "fa44801000" },
+    .{ 2048.5, 0, "fa45000800" },
+    .{ 0.0086212158203125, 0, "f9206a" },
+    .{ 0.1578369140625, 0, "f9310d" },
+    .{ -14016.0, 0, "f9f2d8" },
+    .{ 13856.0, 0, "f972c4" },
+    .{ -0.22509765625, 0, "f9b334" },
+    .{ -225.0, 0, "f9db08" },
+    .{ 0.1976318359375, 0, "f93253" },
+    .{ -8.374452590942383e-05, 0, "f9857d" },
+    .{ -3.0703125, 0, "f9c224" },
+    .{ 66.25, 0, "f95424" },
+    .{ -0.442138671875, 0, "f9b713" },
+    .{ 14.3203125, 0, "f94b29" },
+    .{ 66.1875, 0, "f95423" },
+    .{ 3.431640625, 0, "f942dd" },
+    .{ -0.0180511474609375, 0, "f9a49f" },
+    .{ -5.140625, 0, "f9c524" },
+    .{ 0.39794921875, 0, "f9365e" },
+    .{ -14.4375, 0, "f9cb38" },
+    .{ -37.59375, 0, "f9d0b3" },
+    .{ -3.486328125, 0, "f9c2f9" },
+    .{ -0.008392333984375, 0, "f9a04c" },
+    .{ -0.0026607513427734375, 0, "f99973" },
+    .{ 0.0006604194641113281, 0, "f91169" },
+    .{ 8140.0, 0, "f96ff3" },
+    .{ -0.0005521774291992188, 0, "f99086" },
+    .{ 71.0625, 0, "f95471" },
+    .{ 6.651878356933594e-05, 0, "f9045c" },
+    .{ 243.375, 0, "f95b9b" },
+    .{ -4272.0, 0, "f9ec2c" },
+    .{ 50.875, 0, "f9525c" },
+    .{ 1.1270019762414034e-32, 0, "fa0a6a11b4" },
+    .{ -4.5302541355549253e-32, 0, "fa8b6b3968" },
+    .{ 1.255778059316981e-08, 0, "fa3257bdb4" },
+    .{ -7.06213542004762e-34, 0, "fa886aae01" },
+    .{ 23431.43359375, 0, "fa46b70ede" },
+    .{ -5.453646090428111e-32, 0, "fa8b8d95b2" },
+    .{ -27459666.0, 0, "facbd18029" },
+    .{ 1.9073185774295367e-31, 0, "fa0c779588" },
+    .{ 6.542116146978431e-19, 0, "fa214116d5" },
+    .{ -6.630268185152263e-17, 0, "faa498e232" },
+    .{ -0.00046733312774449587, 0, "fab9f50464" },
+    .{ 7860076.5, 0, "fa4aefded9" },
+    .{ -2.8216635560746233e-38, 0, "fa8119a040" },
+    .{ -50476093440.0, 0, "fad13c09c1" },
+    .{ -2.94905906844464e-32, 0, "fa8b191fb8" },
+    .{ -22.62725830078125, 0, "fac1b504a0" },
+    .{ 2.5342952020800114e-13, 0, "fa2a8eab0b" },
+    .{ -9.684365637240392e30, 0, "faf2f477bf" },
+    .{ 22.098087310791016, 0, "fa41b0c8e2" },
+    .{ -1.6536017492695538e-24, 0, "fa97ffe1ea" },
+    .{ -7.292538053003864e26, 0, "faec16ce60" },
+    .{ -390.48126220703125, 0, "fac3c33d9a" },
+    .{ 2.3226499739517364e-20, 0, "fa1edb5e3b" },
+    .{ 3.0252693082402135e-37, 0, "fa02cde3a0" },
+    .{ -3.3149959158646874e-25, 0, "fa96cd3035" },
+    .{ 2.1023784845284242e23, 0, "fa66321411" },
+    .{ -7702582784.0, 0, "facfe58e0b" },
+    .{ -2.1796440774540258e36, 0, "fafbd1e460" },
+    .{ -3.895548899564308e-32, 0, "fa8b4a44ba" },
+    .{ -1.743287444114685, 0, "fabfdf240b" },
+    .{ -2.5395720630254655e-154, 0, "fba00b3d75977698f8" },
+    .{ 4.753879130087646e223, 0, "fb6e6070710cc0e864" },
+    .{ -6.02442761477091e-90, 0, "fbad688b4069167bd5" },
+    .{ 6.668896498528748e-197, 0, "fb1733f0b5d48d9b51" },
+    .{ -8.489588561654815e-166, 0, "fb9da907e0ad758862" },
+    .{ -3.6201275180228995e190, 0, "fbe7804007ec1f1ca4" },
+    .{ 7.926707881767328e235, 0, "fb70e8ee2359dcebf9" },
+    .{ 1.0398362079121903e-102, 0, "fb2ac2a1b9ce839fbb" },
+    .{ -5.368647021256091e-11, 0, "fbbdcd83b2f01db049" },
+    .{ 3.41431596262652e-19, 0, "fb3c193175e3b0ceee" },
+    .{ 8.138553922739988e-93, 0, "fb2cd0f9f61f758cbb" },
+    .{ 4.52099286722186e-185, 0, "fb19a896c9bdc9b183" },
+    .{ 2.6447773209593217e35, 0, "fb474977e1252cdfd6" },
+    .{ -4.497398266526558e-32, 0, "fbb96d3095a8ada711" },
+    .{ 4.415917694341295e41, 0, "fb489446e2e4c77d2b" },
+    .{ 2.082156143347763e270, 0, "fb780f87bd494b48be" },
+    .{ -1.9104028384051845e-117, 0, "fba7b3452332f9a1c2" },
+    .{ -4.068429437327475e-308, 0, "fb801d41518e03a42c" },
+    .{ -1.5525757799548668e243, 0, "fbf26d1adb814c8852" },
+    .{ -5.783795520910778e-58, 0, "fbb40d0b5c60adf7ac" },
+    .{ 8.757887208448087e186, 0, "fb66c01a3a51685918" },
+    .{ 1.5816067548497748e-240, 0, "fb0e2517a477e1e849" },
+    .{ 3.9452343461497196e-161, 0, "fb1ea1bfd01b96f5d3" },
+    .{ 1.3541743523257876e238, 0, "fb7160a300ced36152" },
+    .{ -5.235849125069671e249, 0, "fbf3c766be208b9633" },
+    .{ 1.639275682660261e276, 0, "fb7947ac76f1af4ae9" },
+    .{ -1.2489058936958582e-272, 0, "fb877b0666b511f4c4" },
+    .{ 2.98221199140017e207, 0, "fb6b0293e2d9530610" },
+    .{ -1.8100375364445665e123, 0, "fbd985e7a11f44b2cb" },
+    .{ -7.640180680599049e-304, 0, "fb8100c4180758346e" },
+    .{ 1.7297213289665675e-280, 0, "fb05d91e4fe9932b87" },
+    .{ -1.053794950369793e198, 0, "fbe90c31de196d7947" },
+    .{ 1.4925798400375567e274, 0, "fb78db973309fcac1d" },
+    .{ 6.6975929635023206e-124, 0, "fb265c55fd4da814dd" },
+    .{ 3.133244187438894e106, 0, "fb560b52a54cce79bc" },
+    .{ -31828.168159599183, 0, "fbc0df150ac3207ac0" },
+    .{ 1.4948050459471692e175, 0, "fb644e38028f48a723" },
+    .{ 4.4844948267166085e142, 0, "fb5d8d6b91f62f398f" },
+    .{ -3.1171073762671307e79, 0, "fbd070d32da8898513" },
+    .{ -8.417214809039822e138, 0, "fbdcc69e4a623177b8" },
+};
+
+// texts and their CBOR in hex
+TEXTS: [9]TextCase = .{
+    .{ "", "60" },
+    .{ "a", "6161" },
+    .{ "IETF", "6449455446" },
+    .{ "caf\u{e9}", "65636166c3a9" },
+    .{ "\u{6c34}", "63e6b0b4" },
+    .{ "\u{10151}", "64f0908591" },
+    .{ "xxxxxxxxxxxxxxxxxxxxxxx", "777878787878787878787878787878787878787878787878" },
+    .{ "yyyyyyyyyyyyyyyyyyyyyyyy", "7818797979797979797979797979797979797979797979797979" },
+    .{ "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", "79012c7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a" },
+};
