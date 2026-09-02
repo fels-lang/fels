@@ -104,6 +104,11 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Changed
 
+- **`[]const T` is read-only.** It was read as `[]T`: it converted to `[]T` without a word, and
+  a write through it compiled. Now a write through a `[]const` slice is an error, a `[]const T`
+  goes only where a `[]const T` is taken, and string literals are `[]const u8`, so a function
+  that takes a `[]u8` no longer takes one. A `[]T` still goes everywhere a `[]const T` does,
+  and the two meet as `[]const T` in a generic call and in a `catch`.
 - `rand::range_i32` draws each value as likely (it favored small ones through a modulo), and
   takes any range: `range_i32(-2000000000, 2000000000)` overflowed. A seed gives other numbers
   than before.
