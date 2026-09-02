@@ -1231,6 +1231,55 @@ test "diagnostics: arithmetic on integer literals has to fit the type it goes to
     try expectNoError(a, "", "main :: fn() -> i32 { w: u8 = 200 +% 100; return w as i32; }");
 }
 
+test "diagnostics: a []const slice is read-only" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `[]const T` was read as `[]T`: it converted to `[]T` without a word, and a write through
+    // it compiled (and wrote a string literal's read-only bytes).
+    const decls =
+        \\Point :: struct { x: i32, y: i32 }
+        \\take :: fn(s: []u8) { s[0] = 1; }
+        \\first :: fn(s: []const u8) -> u8 { return s[0]; }
+        \\TABLE : [3]u8 : .{ 1, 2, 3 };
+        \\
+    ;
+    const cases = [_]struct { body: []const u8, needle: []const u8 }{
+        .{ .body = "f :: fn(s: []const u8) { t: []u8 = s; }", .needle = "expected `[]u8`, found `[]const u8`" },
+        .{ .body = "f :: fn(s: []const u8) { take(s); }", .needle = "expected `[]u8`, found `[]const u8`" },
+        .{ .body = "f :: fn() { take(\"abc\"); }", .needle = "expected `[]u8`, found `[]const u8`" },
+        .{ .body = "f :: fn(s: []const u8) { s[0] = 1; }", .needle = "reached through a `[]const` slice" },
+        .{ .body = "f :: fn(s: []const u8) { s[0] += 1; }", .needle = "reached through a `[]const` slice" },
+        .{ .body = "f :: fn(ps: []const Point) { ps[0].x = 1; }", .needle = "reached through a `[]const` slice" },
+        .{ .body = "f :: fn(s: []const u8) { t := s[1..2]; t[0] = 1; }", .needle = "reached through a `[]const` slice" },
+        .{ .body = "f :: fn(s: []const u8) { p: *u8 = &s[0]; }", .needle = "expected `*u8`, found `*const u8`" },
+        .{ .body = "f :: fn(ps: []const Point) { for &p in ps { p.x = 1; } }", .needle = "through `*const` pointer" },
+        .{ .body = "f :: fn() { t := TABLE[0..2]; t[0] = 1; }", .needle = "reached through a `[]const` slice" },
+    };
+    for (cases) |case| {
+        const src = try std.mem.concat(a, u8, &.{ decls, case.body, "\nmain :: fn() -> i32 { return 0; }\n" });
+        try expectFirstError(a, src, &.{case.needle});
+    }
+    // `[]T` is a `[]const T`; reading through one is fine; a literal mixed with a `[]u8` is
+    // `[]const u8`, in a generic call and in a `catch`.
+    try expectNoError(a, decls,
+        \\eq :: fn(x: $T, y: T) -> bool { return x.len == y.len; }
+        \\E :: errors { no }
+        \\get :: fn(ok: bool, buf: []u8) -> []u8 ! E { if ok { return buf; } fail .no; }
+        \\main :: fn() -> i32 {
+        \\    buf: [4]u8 = .{ 1, 2, 3, 4 };
+        \\    m: []u8 = buf[:];
+        \\    m[0] = 9;
+        \\    c: []const u8 = m;
+        \\    n := first(c) + first(m) + first("x");
+        \\    same := eq(m[0..1], "z");
+        \\    t := get(false, m) catch err { yield ""; };
+        \\    for x in c { n += x; }
+        \\    return if same && t.len == 0 { n as i32 } else { 0 };
+        \\}
+    );
+}
+
 test "diagnostics: a constant is not written to" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
