@@ -940,6 +940,7 @@ fn substWith(v: *const View, ty: Ty, names: []const []const u8, args: []const Ty
         .pointer => |inner| return .{ .pointer = box(v, substWith(v, inner.*, names, args)) orelse return ty },
         .const_ptr => |inner| return .{ .const_ptr = box(v, substWith(v, inner.*, names, args)) orelse return ty },
         .slice => |inner| return .{ .slice = box(v, substWith(v, inner.*, names, args)) orelse return ty },
+        .const_slice => |inner| return .{ .const_slice = box(v, substWith(v, inner.*, names, args)) orelse return ty },
         .optional => |inner| return .{ .optional = box(v, substWith(v, inner.*, names, args)) orelse return ty },
         else => return ty,
     }
@@ -1041,7 +1042,7 @@ fn step(v: *const View, val: Val, post: Post) ?Val {
             };
             return switch (t.ty) {
                 .array => |arr| .{ .value = .{ .ty = arr.elem.*, .hint = refInner(t.hint) } },
-                .slice, .pointer, .const_ptr => |inner| .{ .value = .{ .ty = inner.*, .hint = refInner(t.hint) } },
+                .slice, .const_slice, .pointer, .const_ptr => |inner| .{ .value = .{ .ty = inner.*, .hint = refInner(t.hint) } },
                 else => null,
             };
         },
@@ -1163,8 +1164,8 @@ fn looseEq(v: *const View, a: Ty, b: Ty) bool {
             .named => |ib| templateOf(v, ib) == g.template,
             else => false,
         },
-        .slice => |ia| return switch (b) {
-            .slice => |ib| looseEq(v, ia.*, ib.*),
+        .slice, .const_slice => |ia| return switch (b) {
+            .slice, .const_slice => |ib| looseEq(v, ia.*, ib.*),
             .array => |arr| looseEq(v, ia.*, arr.elem.*),
             else => false,
         },
@@ -1229,9 +1230,9 @@ fn collectMembers(v: *const View, ty: Ty, static: bool, out: *MemberList) void {
             out.add(v, .{ .name = "ok", .kind = .builtin, .ty = f.ok.* });
             out.add(v, .{ .name = "err", .kind = .builtin, .ty = f.err.* });
         },
-        .slice => |elem| {
+        .slice, .const_slice => |elem| {
             out.add(v, .{ .name = "len", .kind = .builtin, .ty = .usize });
-            if (box(v, elem.*)) |e| out.add(v, .{ .name = "ptr", .kind = .builtin, .ty = .{ .pointer = e } });
+            if (box(v, elem.*)) |e| out.add(v, .{ .name = "ptr", .kind = .builtin, .ty = if (ty == .const_slice) .{ .const_ptr = e } else .{ .pointer = e } });
         },
         .array => |arr| {
             out.add(v, .{ .name = "len", .kind = .builtin, .ty = .usize });

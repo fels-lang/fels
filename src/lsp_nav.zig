@@ -976,11 +976,11 @@ const Walker = struct {
     fn elemType(w: *Walker, e: ast.Expr) ?SymbolId {
         if (w.cx.env.expr_types.get(e.id)) |ty| {
             const inner: ?sema.Ty = switch (ty) {
-                .slice => |p| p.*,
+                .slice, .const_slice => |p| p.*,
                 .array => |a| a.elem.*,
                 .pointer, .const_ptr => |p| switch (p.*) {
                     .array => |a| a.elem.*,
-                    .slice => |q| q.*,
+                    .slice, .const_slice => |q| q.*,
                     else => p.*,
                 },
                 else => null,
