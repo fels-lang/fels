@@ -22,10 +22,6 @@ These compile without a message and give a wrong result.
   without an overflow panic. (In a `#packed` struct the field keeps only its bits.)
 - **A `#run { }` block inside a function runs when the program runs**, as ordinary code, not on the
   comptime VM. `#run expr` runs at compile time. Verified 2026-10-17.
-- **`[]const T` converts to `[]T` without a word**, in an assignment and as an argument, and a
-  write through a `[]const T` compiles (`s[0] = x` for `s: []const u8` writes). The type checker
-  has no const slice: it reads `[]const T` as `[]T`. (`*const T` to `*T` is refused.) Verified
-  2026-10-19.
 - **On the comptime VM, a copy of an optional struct shares its payload with the original**:
   after `b := a;` for `a: ?P`, a write to `b`'s payload changes `a`'s. (Copies of structs,
   arrays and enum values are their own since 2026-10-19.) Reported 2026-10-19.
