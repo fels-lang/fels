@@ -1607,7 +1607,34 @@ const YieldTarget = struct {
     /// The success type of the call: what the `catch` expression is.
     ty: Ty,
     kind: enum { value, no_value, discarded, defer_body },
+    /// A `yield` of the read-only kind of `ty` (`[]const T` for a `[]T`): the expression is
+    /// that, which both values fit.
+    widened: ?Ty = null,
 };
+
+/// The type both `a` and `b` fit when they differ only in being read-only: `[]const T` for
+/// `[]T` and `[]const T`, `*const T` for `*T` and `*const T`. Null otherwise.
+fn readOnlyPeer(a: Ty, b: Ty) ?Ty {
+    return switch (a) {
+        .slice => |x| switch (b) {
+            .const_slice => |y| if (sameTy(x.*, y.*)) b else null,
+            else => null,
+        },
+        .const_slice => |x| switch (b) {
+            .slice => |y| if (sameTy(x.*, y.*)) a else null,
+            else => null,
+        },
+        .pointer => |x| switch (b) {
+            .const_ptr => |y| if (sameTy(x.*, y.*)) b else null,
+            else => null,
+        },
+        .const_ptr => |x| switch (b) {
+            .pointer => |y| if (sameTy(x.*, y.*)) a else null,
+            else => null,
+        },
+        else => null,
+    };
+}
 
 const Checker = struct {
     allocator: std.mem.Allocator,
@@ -4054,7 +4081,7 @@ const Checker = struct {
                     self.emitError(expr.span, "this `catch` handler can run to its end, but the call produces a `{s}`: end the handler with `yield` and the value to use, or leave with `return`, `fail`, `break` or `continue`", .{self.formatTy(ok_ty)});
                     return error.SemanticFailed;
                 }
-                break :blk ok_ty;
+                break :blk self.yield_targets.items[self.yield_targets.items.len - 1].widened orelse ok_ty;
             },
             .call => |call| blk: {
                 // `.circle(r)` read against its type already (`coerceVariantCall`): an element
@@ -5985,7 +6012,11 @@ const Checker = struct {
     fn bindTypeVars(self: *Checker, param_ty: Ty, arg_ty: Ty, binding: *std.StringHashMap(Ty)) error{OutOfMemory}!void {
         switch (param_ty) {
             .type_param => |tp| {
-                if (binding.contains(tp)) return;
+                if (binding.get(tp)) |bound| {
+                    // `eq(buf[0..3], "abc")`: both are `[]const u8`.
+                    if (readOnlyPeer(bound, arg_ty)) |peer| try binding.put(tp, peer);
+                    return;
+                }
                 try binding.put(tp, defaultLiteralType(arg_ty));
             },
             .pointer, .const_ptr => |inner| try self.bindTypeVars(inner.*, switch (arg_ty) {
@@ -6754,6 +6785,11 @@ const Checker = struct {
         try self.coerceLiteralFields(y.value, target.ty);
         const actual_ty = try self.inferExprExpecting(y.value, target.ty);
         if (target.ty == .unknown) return;
+        if (readOnlyPeer(target.ty, actual_ty)) |peer| {
+            // `read_all(…) catch err { yield ""; }`: the expression is read-only text.
+            self.yield_targets.items[self.yield_targets.items.len - 1].widened = peer;
+            return;
+        }
         if (!try self.compatible(actual_ty, target.ty)) {
             self.emitError(y.span, "`yield` type mismatch: the call produces `{s}`, found `{s}`", .{ self.formatTy(target.ty), self.formatTy(actual_ty) });
             return error.SemanticFailed;
