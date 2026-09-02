@@ -6635,8 +6635,8 @@ fn appendSemaTyMangle(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), ty:
             try buf.appendSlice(allocator, "opt_");
             try appendSemaTyMangle(allocator, buf, inner.*, symbols);
         },
-        .slice => |inner| {
-            try buf.appendSlice(allocator, "slice_");
+        .slice, .const_slice => |inner| {
+            try buf.appendSlice(allocator, if (ty == .const_slice) "cslice_" else "slice_");
             try appendSemaTyMangle(allocator, buf, inner.*, symbols);
         },
         else => try buf.appendSlice(allocator, sema.tyMangle(ty)),
@@ -6687,7 +6687,7 @@ fn appendGenericArgMangle(
             try appendGenericArgMangle(allocator, buf, o.inner.*, binding, types, symbols);
         },
         .slice => |s| {
-            try buf.appendSlice(allocator, "slice_");
+            try buf.appendSlice(allocator, if (s.is_const) "cslice_" else "slice_");
             try appendGenericArgMangle(allocator, buf, s.inner.*, binding, types, symbols);
         },
         // An instance as the argument (`Pair(Pair(i32))`): the instance's own name, as sema
@@ -6937,7 +6937,7 @@ fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.Symbol
         .isize => .isize,
         .pointer, .const_ptr => |inner| .{ .ptr = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
         .optional => |inner| .{ .optional = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
-        .slice => |inner| .{ .slice = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
+        .slice, .const_slice => |inner| .{ .slice = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
         .borrow => |inner| try lowerSemaType(allocator, inner.*, symbols),
         .array => |array| .{ .array = .{
             .elem = try boxType(allocator, try lowerSemaType(allocator, array.elem.*, symbols)),
