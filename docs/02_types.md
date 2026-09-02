@@ -632,6 +632,28 @@ String literals in Fels have the type `[]const u8`:
 greeting: []const u8 = "hello, world";
 ```
 
+A `[]const T` is read-only: you can read its elements, but not write them, and neither can
+anything you take from it. A slice of it (`s[1..3]`) is a `[]const T`, its `.ptr` and `&s[i]`
+are `*const T`, and `for &x in s` gives `x` as a `*const T`. A slice of a constant
+(`TABLE :: …`) is read-only in the same way.
+
+A `[]T` converts to a `[]const T` wherever one is expected, as a `*T` converts to a
+`*const T`, but not the other way round:
+
+```fels
+show :: fn(text: []const u8) { … }     // takes both kinds
+fill :: fn(buf: []u8) { … }            // takes only writable memory
+
+buf: [16]u8 = .{};
+show(buf[:]);                          // fine: []u8 is a []const u8
+show("hi");                            // fine
+fill("hi");                            // error: expected `[]u8`, found `[]const u8`
+```
+
+Where a `[]T` and a `[]const T` meet, the result is a `[]const T`: a generic `$T` bound by
+both (`eq(buf[0..2], "ab")`), and a `catch` whose call gives a `[]u8` and whose handler
+yields a literal (`read_all(…) catch err { yield ""; }`).
+
 ### Comparing strings
 
 `==` and `!=` on `[]const u8` (and `[]u8`) compare **contents**, not slice identity. The
