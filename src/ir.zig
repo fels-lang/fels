@@ -3944,8 +3944,16 @@ const FunctionLowerer = struct {
                     }
                 }
                 if (binary.op == .and_and or binary.op == .or_or) break :blk try self.lowerShortCircuit(binary);
-                const lhs = try self.lowerExpr(binary.left.*);
-                const rhs = try self.lowerExpr(binary.right.*);
+                // Operands of two number types meet in one: the result's for arithmetic
+                // (`i32 + i64` is `i64`), one that holds both for a comparison (`i32 < usize`
+                // compares in `i128`, so a negative `i32` is less). A literal takes the other's.
+                const operand_ty: ?IrType = switch (binary.op) {
+                    .add, .sub, .mul, .div, .rem, .wrap_add, .wrap_sub, .wrap_mul, .bit_and, .bit_or, .bit_xor => if (isIrNumber(self.exprType(expr))) self.exprType(expr) else null,
+                    .less, .le, .gt, .ge, .equal, .not_equal => self.comparedAs(binary.left.*, binary.right.*),
+                    else => null,
+                };
+                const lhs = if (operand_ty) |t| try self.lowerExprAs(binary.left.*, t) else try self.lowerExpr(binary.left.*);
+                const rhs = if (operand_ty) |t| try self.lowerExprAs(binary.right.*, t) else try self.lowerExpr(binary.right.*);
                 break :blk try self.emitAt(self.exprType(expr), .{ .binary = .{ .op = lowerBinOp(binary.op), .lhs = lhs, .rhs = rhs } }, expr.span);
             },
             .try_expr => |try_expr| blk: {
@@ -4728,6 +4736,32 @@ const FunctionLowerer = struct {
         } });
     }
 
+    /// The type two numbers are compared in: null when they already have one (or one is no
+    /// number). A literal takes the other operand's type.
+    fn comparedAs(self: *FunctionLowerer, a: ast.Expr, b: ast.Expr) ?IrType {
+        const lit_a = self.isLiteralNumber(a);
+        const lit_b = self.isLiteralNumber(b);
+        if (lit_a and lit_b) return null;
+        const ta = self.exprType(a);
+        const tb = self.exprType(b);
+        if (lit_a) return if (isIrNumber(tb)) tb else null;
+        if (lit_b) return if (isIrNumber(ta)) ta else null;
+        if (!isIrNumber(ta) or !isIrNumber(tb) or sameIrNumber(ta, tb)) return null;
+        if (ta == .f64 or tb == .f64) return .f64;
+        const ia = irIntInfo(ta) orelse return null;
+        const ib = irIntInfo(tb) orelse return null;
+        if (ia.signed == ib.signed) return if (ib.bits > ia.bits) tb else ta;
+        const s_bits = if (ia.signed) ia.bits else ib.bits;
+        const u_bits = if (ia.signed) ib.bits else ia.bits;
+        if (s_bits > u_bits) return if (ia.signed) ta else tb;
+        return .{ .i = @min(128, 2 * @max(s_bits, u_bits)) };
+    }
+
+    fn isLiteralNumber(self: *FunctionLowerer, e: ast.Expr) bool {
+        const t = self.types.expr_types.get(e.id) orelse return false;
+        return t == .int_lit or t == .float_lit;
+    }
+
     fn lowerExprAs(self: *FunctionLowerer, expr: ast.Expr, expected_ty: IrType) LowerError!Value {
         // A `match` in value position threads the expected type into its arms, so
         // untyped arm values (`.{ … }`, `.variant`) get the right target type.
@@ -4809,7 +4843,15 @@ const FunctionLowerer = struct {
                 break :blk try self.emit(expected_ty, .{ .builtin = .{ .name = "compound_literal", .args = try args.toOwnedSlice(self.allocator) } });
             },
             .struct_literal => |inits| try self.lowerStructLiteral(inits, expected_ty, expr.span),
-            else => try self.lowerExpr(expr),
+            else => blk: {
+                // A number where a wider one is expected (`total += small`, an operand of
+                // `i32 + i64`): the checker allowed it as no value is lost, and it is converted.
+                const v = try self.lowerExpr(expr);
+                const actual = self.exprType(expr);
+                if (isIrNumber(actual) and isIrNumber(expected_ty) and !sameIrNumber(actual, expected_ty))
+                    break :blk try self.emit(expected_ty, .{ .cast = .{ .kind = .as, .value = v } });
+                break :blk v;
+            },
         };
     }
 
@@ -7055,6 +7097,32 @@ fn isByteSliceTy(ty: IrType) bool {
         .text => true,
         else => false,
     };
+}
+
+const IrIntInfo = struct { bits: u16, signed: bool };
+
+fn irIntInfo(ty: IrType) ?IrIntInfo {
+    return switch (ty) {
+        .i => |w| .{ .bits = w, .signed = true },
+        .u => |w| .{ .bits = w, .signed = false },
+        .byte => .{ .bits = 8, .signed = false },
+        .isize => .{ .bits = 64, .signed = true },
+        .usize, .addr => .{ .bits = 64, .signed = false },
+        else => null,
+    };
+}
+
+fn isIrNumber(ty: IrType) bool {
+    return irIntInfo(ty) != null or ty == .f32 or ty == .f64;
+}
+
+/// Whether two number types are one in the machine: the same width, and signedness for
+/// integers (`usize` and `u64` are; `i32` and `u32` are not).
+fn sameIrNumber(a: IrType, b: IrType) bool {
+    if (a == .f32 or a == .f64 or b == .f32 or b == .f64) return std.meta.activeTag(a) == std.meta.activeTag(b);
+    const ia = irIntInfo(a) orelse return false;
+    const ib = irIntInfo(b) orelse return false;
+    return ia.bits == ib.bits and ia.signed == ib.signed;
 }
 
 fn assignBinOp(op: ast.AssignOp) ?BinOp {
