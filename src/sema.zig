@@ -626,6 +626,10 @@ pub const TypeEnv = struct {
     /// expr's NodeId -> the `next(self: *Self) -> ?T` method's symbol. IR lowers
     /// these as a `while it.next() |x|` loop.
     iterator_fors: std.AutoHashMap(ast.NodeId, SymbolId),
+    /// `for x in v` where `v` is a collection with an `items(self) -> []T` method (`Vec`): the
+    /// iter expr's NodeId -> that method. IR loops over the slice it returns, which is in
+    /// `iterator_next_types` (and a generic method's instance in `generic_call_insts`).
+    items_fors: std.AutoHashMap(ast.NodeId, SymbolId),
     /// The same iter expr's NodeId -> what its `next` returns, with a generic struct's type
     /// parameters bound by the iterator's type (`?[]u8` for `mem::Split(u8)`). The instance of
     /// such a `next` is in `generic_call_insts` under the same NodeId.
@@ -701,6 +705,7 @@ pub const TypeEnv = struct {
             .extension_calls = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .impl_method_calls = std.AutoHashMap(ast.NodeId, ImplMethodCall).init(allocator),
             .iterator_fors = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
+            .items_fors = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .iterator_next_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .receiver_auto_addr = std.AutoHashMap(ast.NodeId, void).init(allocator),
             .call_type_args = std.AutoHashMap(ast.NodeId, TypeArgs).init(allocator),
@@ -735,6 +740,7 @@ pub const TypeEnv = struct {
         self.extension_calls.deinit();
         self.impl_method_calls.deinit();
         self.iterator_fors.deinit();
+        self.items_fors.deinit();
         self.iterator_next_types.deinit();
         self.receiver_auto_addr.deinit();
         self.call_type_args.deinit();
@@ -3534,6 +3540,8 @@ const Checker = struct {
             },
             .for_slice => |for_stmt| {
                 const iter_ty = try self.inferExpr(for_stmt.iter);
+                // the slice `items()` gives, for a collection
+                var items_slice: ?Ty = null;
                 const elem_ty = switch (iter_ty) {
                     .slice, .const_slice => |elem| elem.*,
                     .array => |array| array.elem.*,
@@ -3561,13 +3569,32 @@ const Checker = struct {
                                 break :blk ret.optional.*;
                             }
                         }
-                        self.emitError(for_stmt.iter.span, "for loop requires a slice, an array, or a type with a `next(self: *Self) -> ?T` method", .{});
+                        // A collection: an `items(self) -> []T` method (`Vec`). `for x in v`
+                        // loops over `v.items()`, so `for x, i` and `for &x` work as on a slice.
+                        if (self.resolveExtensionMethod("items", iter_ty)) |m| if (m.sig.params.len == 1) {
+                            var binding = std.StringHashMap(Ty).init(self.allocator);
+                            defer binding.deinit();
+                            try self.bindTypeVars(m.sig.params[0].ty, iter_ty, &binding);
+                            const ret = if (binding.count() > 0) self.substituteTy(m.sig.return_ty, &binding) else m.sig.return_ty;
+                            if (ret == .slice or ret == .const_slice) {
+                                try self.env.items_fors.put(for_stmt.iter.id, m.id);
+                                if (m.sig.type_params.len > 0) try self.instantiateIteratorNext(m.id, m.sig, &binding, for_stmt.iter);
+                                try self.env.iterator_next_types.put(for_stmt.iter.id, ret);
+                                items_slice = ret;
+                                break :blk switch (ret) {
+                                    .slice, .const_slice => |e| e.*,
+                                    else => unreachable,
+                                };
+                            }
+                        };
+                        self.emitError(for_stmt.iter.span, "for loop requires a slice, an array, a type with an `items(self) -> []T` method, or one with a `next(self: *Self) -> ?T` method", .{});
                         return error.SemanticFailed;
                     },
                 };
                 try self.pushScope();
                 defer self.popScope();
-                const read_only = iter_ty == .const_slice or (iter_ty == .array and self.isReadOnlyPlace(for_stmt.iter));
+                const read_only = iter_ty == .const_slice or (items_slice != null and items_slice.? == .const_slice) or
+                    (iter_ty == .array and self.isReadOnlyPlace(for_stmt.iter));
                 const binding_ty = if (!for_stmt.by_ref) elem_ty else if (read_only) try self.constPtrTo(elem_ty) else try self.ptrTo(elem_ty);
                 try self.declareLocal(for_stmt.binding, binding_ty);
                 self.noteLocal(.{ .name = for_stmt.binding, .file = "", .kind = .for_binding, .decl = for_stmt.span, .scope_end = for_stmt.body.span.end, .ty = binding_ty });
