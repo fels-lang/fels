@@ -1612,6 +1612,44 @@ const YieldTarget = struct {
     widened: ?Ty = null,
 };
 
+fn isPlainFloat(ty: Ty) bool {
+    return ty == .f32 or ty == .f64;
+}
+
+const IntInfo = struct { bits: u16, signed: bool };
+
+/// The width and signedness of a plain integer type; null for anything else (a literal, a type
+/// parameter, a distinct type).
+fn intInfo(ty: Ty) ?IntInfo {
+    return switch (ty) {
+        .i8 => .{ .bits = 8, .signed = true },
+        .i16 => .{ .bits = 16, .signed = true },
+        .i32 => .{ .bits = 32, .signed = true },
+        .i64, .isize => .{ .bits = 64, .signed = true },
+        .u8, .byte => .{ .bits = 8, .signed = false },
+        .u16 => .{ .bits = 16, .signed = false },
+        .u32 => .{ .bits = 32, .signed = false },
+        .u64, .usize, .addr => .{ .bits = 64, .signed = false },
+        else => null,
+    };
+}
+
+/// The type of `a op b` for two numbers of different plain types, when one of them holds every
+/// value of the other: the wider of the same signedness (`i32 + i64` is `i64`), a signed type
+/// wider than an unsigned one (`u8 + i32` is `i32`), `f64` for `f32` and `f64`. Null when
+/// neither holds the other (`i32 + u32`, an integer and a float).
+fn widerNumber(a: Ty, b: Ty) ?Ty {
+    if (a == .f32 and b == .f64) return b;
+    if (a == .f64 and b == .f32) return a;
+    const ia = intInfo(a) orelse return null;
+    const ib = intInfo(b) orelse return null;
+    if (ia.signed == ib.signed) return if (ib.bits > ia.bits) b else a;
+    const signed = if (ia.signed) a else b;
+    const s_bits = if (ia.signed) ia.bits else ib.bits;
+    const u_bits = if (ia.signed) ib.bits else ia.bits;
+    return if (s_bits > u_bits) signed else null;
+}
+
 /// The type both `a` and `b` fit when they differ only in being read-only: `[]const T` for
 /// `[]T` and `[]const T`, `*const T` for `*T` and `*const T`. Null otherwise.
 fn readOnlyPeer(a: Ty, b: Ty) ?Ty {
@@ -3261,7 +3299,11 @@ const Checker = struct {
                 const value_ty = try self.inferExpr(assign.value);
                 // (a shift amount is no value of the target's type)
                 if (self.infer.active and assign.op != .shl and assign.op != .shr) self.notePendingAssign(assign.target, assign.value, value_ty);
-                if (!try self.compatible(value_ty, target_ty)) {
+                // `total += small` with `total: u64` and `small: u32`: the operand widens into
+                // the target, as it would in `total + small`.
+                const widens = assign.op != .assign and assign.op != .shl and assign.op != .shr and
+                    if (widerNumber(target_ty, value_ty)) |w| sameTy(w, target_ty) else false;
+                if (!widens and !try self.compatible(value_ty, target_ty)) {
                     self.emitErrorRich(assign.value.span, "type mismatch in assignment: expected `{s}`, found `{s}`", .{
                         self.formatTy(target_ty), self.formatTy(value_ty),
                     }, .{ .primary_label = std.fmt.allocPrint(self.allocator, "expected `{s}`", .{self.formatTy(target_ty)}) catch null });
@@ -3986,11 +4028,17 @@ const Checker = struct {
                     try self.refuseTaggedErrorEquality(binary, left, right, expr.span);
                 }
                 const result: Ty = switch (binary.op) {
-                    .equal, .not_equal => if ((left.isNumeric() and right.isNumeric()) or left == .error_ty or right == .error_ty or try self.compatible(left, right) or try self.compatible(right, left)) .bool else {
+                    .equal, .not_equal => if (left.isNumeric() and right.isNumeric()) eq: {
+                        try self.refuseIntFloatMix(left, right, op_sym, expr.span);
+                        break :eq .bool;
+                    } else if (left == .error_ty or right == .error_ty or try self.compatible(left, right) or try self.compatible(right, left)) .bool else {
                         self.emitError(expr.span, "operator `{s}` cannot be applied to types `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
                         return error.SemanticFailed;
                     },
-                    .less, .le, .gt, .ge => if (left.isNumeric() and right.isNumeric()) .bool else {
+                    .less, .le, .gt, .ge => if (left.isNumeric() and right.isNumeric()) cmp: {
+                        try self.refuseIntFloatMix(left, right, op_sym, expr.span);
+                        break :cmp .bool;
+                    } else {
                         self.emitError(expr.span, "operator `{s}` requires numeric operands, found `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
                         return error.SemanticFailed;
                     },
@@ -3998,16 +4046,21 @@ const Checker = struct {
                         self.emitError(expr.span, "operator `{s}` requires `bool` operands, found `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
                         return error.SemanticFailed;
                     },
-                    .bit_and, .bit_or, .bit_xor, .shl, .shr => if (left.isInteger() and right.isInteger()) left else {
+                    // (a shift amount is no value of the shifted one's type)
+                    .shl, .shr => if (left.isInteger() and right.isInteger()) left else {
                         self.emitError(expr.span, "operator `{s}` requires integer operands, found `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
                         return error.SemanticFailed;
                     },
-                    .add, .sub, .mul, .div, .rem => if (left.isNumeric() and right.isNumeric()) left else {
+                    .bit_and, .bit_or, .bit_xor => if (left.isInteger() and right.isInteger()) try self.operandsType(left, right, op_sym, expr.span) else {
+                        self.emitError(expr.span, "operator `{s}` requires integer operands, found `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
+                        return error.SemanticFailed;
+                    },
+                    .add, .sub, .mul, .div, .rem => if (left.isNumeric() and right.isNumeric()) try self.operandsType(left, right, op_sym, expr.span) else {
                         self.emitError(expr.span, "operator `{s}` requires numeric operands, found `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
                         return error.SemanticFailed;
                     },
                     // Wrapping arithmetic is integer-only (two's-complement).
-                    .wrap_add, .wrap_sub, .wrap_mul => if (left.isInteger() and right.isInteger()) left else {
+                    .wrap_add, .wrap_sub, .wrap_mul => if (left.isInteger() and right.isInteger()) try self.operandsType(left, right, op_sym, expr.span) else {
                         self.emitError(expr.span, "operator `{s}` requires integer operands, found `{s}` and `{s}`", .{ op_sym, self.formatTy(left), self.formatTy(right) });
                         return error.SemanticFailed;
                     },
@@ -7422,6 +7475,30 @@ const Checker = struct {
     /// program declares.
     pub fn isFormatTy(self: *Checker, ty: Ty) bool {
         return isFormatSym(self.symbols, ty);
+    }
+
+    /// The type of `left op right` for an arithmetic or bitwise operator: the operands' type,
+    /// the wider one when one holds every value of the other, the typed one next to a literal.
+    /// Two types neither of which holds the other are an error: a value could be lost.
+    fn operandsType(self: *Checker, left: Ty, right: Ty, op_sym: []const u8, span: Span) SemanticError!Ty {
+        if (sameTy(left, right) or intInfo(left) == null and !isPlainFloat(left) or intInfo(right) == null and !isPlainFloat(right)) return left;
+        if (widerNumber(left, right)) |w| return w;
+        try self.refuseIntFloatMix(left, right, op_sym, span);
+        self.emitErrorRich(span, "`{s}` on `{s}` and `{s}`: neither type holds every value of the other, so the result could be wrong", .{ op_sym, self.formatTy(left), self.formatTy(right) }, .{
+            .help = "convert one of them with `as` to the type the result should have",
+        });
+        return error.SemanticFailed;
+    }
+
+    /// An integer and a float (both typed) in one operation are an error: an `f64` does not hold
+    /// every `i64`, nor an integer any fraction.
+    fn refuseIntFloatMix(self: *Checker, left: Ty, right: Ty, op_sym: []const u8, span: Span) SemanticError!void {
+        const int_float = (intInfo(left) != null and isPlainFloat(right)) or (isPlainFloat(left) and intInfo(right) != null);
+        if (!int_float) return;
+        self.emitErrorRich(span, "`{s}` on `{s}` and `{s}` mixes an integer and a float", .{ op_sym, self.formatTy(left), self.formatTy(right) }, .{
+            .help = "convert one of them with `as`",
+        });
+        return error.SemanticFailed;
     }
 
     fn compatible(self: *Checker, actual: Ty, expected: Ty) !bool {
