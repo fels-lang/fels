@@ -1689,6 +1689,9 @@ const Checker = struct {
     current_return_ty: Ty = .void,
     current_error_ty: ?Ty = null,
     loop_depth: usize = 0,
+    /// The labels of the loops around the code being checked, innermost last (null for a loop
+    /// without one).
+    loop_labels: std.ArrayList(?[]const u8) = .empty,
     current_type_params: []const []const u8 = &.{},
     current_type_binding: []const TypeArg = &.{},
     current_self_ty: ?Ty = null,
@@ -3477,8 +3480,8 @@ const Checker = struct {
                     self.emitError(while_stmt.condition.span, "`while … |x|` requires an optional condition, found `{s}`", .{self.formatTy(cond_ty)});
                     return error.SemanticFailed;
                 }
-                self.loop_depth += 1;
-                defer self.loop_depth -= 1;
+                try self.enterLoop(while_stmt.label, while_stmt.span);
+                defer self.leaveLoop();
                 try self.pushScope();
                 defer self.popScope();
                 if (while_stmt.payload_binding) |payload_name| {
@@ -3525,8 +3528,8 @@ const Checker = struct {
                 }
                 try self.declareLocal(for_stmt.binding, loop_ty);
                 self.noteLocal(.{ .name = for_stmt.binding, .file = "", .kind = .for_binding, .decl = for_stmt.span, .scope_end = for_stmt.body.span.end, .ty = loop_ty });
-                self.loop_depth += 1;
-                defer self.loop_depth -= 1;
+                try self.enterLoop(for_stmt.label, for_stmt.span);
+                defer self.leaveLoop();
                 try self.checkBlock(for_stmt.body);
             },
             .for_slice => |for_stmt| {
@@ -3579,8 +3582,8 @@ const Checker = struct {
                     try self.declareLocal(name, .usize);
                     self.noteLocal(.{ .name = name, .file = "", .kind = .for_binding, .decl = for_stmt.span, .scope_end = for_stmt.body.span.end, .ty = .usize });
                 }
-                self.loop_depth += 1;
-                defer self.loop_depth -= 1;
+                try self.enterLoop(for_stmt.label, for_stmt.span);
+                defer self.leaveLoop();
                 try self.checkBlock(for_stmt.body);
             },
             .unsafe_block => |unsafe_block| {
@@ -3588,14 +3591,8 @@ const Checker = struct {
                 defer self.unsafe_depth -= 1;
                 try self.checkBlock(unsafe_block);
             },
-            .break_stmt => |span| if (self.loop_depth == 0) {
-                self.emitError(span, "`break` outside of a loop", .{});
-                return error.SemanticFailed;
-            },
-            .continue_stmt => |span| if (self.loop_depth == 0) {
-                self.emitError(span, "`continue` outside of a loop", .{});
-                return error.SemanticFailed;
-            },
+            .break_stmt => |jump| try self.checkJump(jump, "break"),
+            .continue_stmt => |jump| try self.checkJump(jump, "continue"),
             .zone_block => |zb| {
                 if (!std.mem.eql(u8, zb.kind, "Arena")) {
                     self.emitError(zb.span, "unsupported zone kind `{s}`; only `Arena` is currently defined", .{zb.kind});
@@ -6868,6 +6865,36 @@ const Checker = struct {
             return error.SemanticFailed;
         }
         try self.requireIntLitFits(y.value, target.ty);
+    }
+
+    /// Inside a loop from here on: its label, which no loop around it may have too.
+    fn enterLoop(self: *Checker, label: ?[]const u8, span: Span) SemanticError!void {
+        if (label) |name| for (self.loop_labels.items) |outer| if (outer) |o| if (std.mem.eql(u8, o, name)) {
+            self.emitError(span, "a loop around this one is already named `{s}`", .{name});
+            return error.SemanticFailed;
+        };
+        try self.loop_labels.append(self.allocator, label);
+        self.loop_depth += 1;
+    }
+
+    fn leaveLoop(self: *Checker) void {
+        _ = self.loop_labels.pop();
+        self.loop_depth -= 1;
+    }
+
+    /// `break` or `continue` (`what`), which needs a loop around it, and the loop of its label
+    /// when it names one.
+    fn checkJump(self: *Checker, jump: ast.Jump, what: []const u8) SemanticError!void {
+        if (self.loop_depth == 0) {
+            self.emitError(jump.span, "`{s}` outside of a loop", .{what});
+            return error.SemanticFailed;
+        }
+        const name = jump.label orelse return;
+        for (self.loop_labels.items) |outer| if (outer) |o| if (std.mem.eql(u8, o, name)) return;
+        self.emitErrorRich(jump.span, "`{s} {s}`: no loop around it is named `{s}`", .{ what, name, name }, .{
+            .help = "name a loop with a label before it: `outer: for … { … }`",
+        });
+        return error.SemanticFailed;
     }
 
     fn checkFail(self: *Checker, fail: ast.FailStmt) SemanticError!void {
