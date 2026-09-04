@@ -172,6 +172,12 @@ In a `#packed` struct each of them takes only its bits, so `StatusBits` is one b
 [Packed structs](#packed-structs) below). Anywhere else, such as in a local, a parameter or a
 field of a plain struct, a sub-byte value takes a whole byte.
 
+Wherever it is kept, a sub-byte integer holds only the values of its width: a `u3` 0 to 7, an
+`i3` -4 to 3. A literal has to fit (`priority: u3 = 9` is an error), arithmetic on it is done
+at its width (a `u3` 7 + 1 overflows as any other integer does; `+%` wraps at 8), and a wider
+integer goes into it only with `as`, which keeps the low bits (`205 as u3` is 5). It goes
+wherever an integer that holds all its values is taken: a `u3` into a `u8` or an `i32`.
+
 ### Float Types
 
 | Type  | Size   | Precision        |
