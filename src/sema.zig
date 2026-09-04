@@ -3629,8 +3629,12 @@ const Checker = struct {
             .match_stmt => |m| try self.checkMatch(m),
             .comptime_if => |ci| try self.checkComptimeIf(ci),
             .comptime_run => |block| {
-                // Type-check the block for correctness even if we don't execute it yet.
-                try self.checkBlock(block);
+                // It was checked and then compiled as ordinary code: it ran when the program
+                // ran. A statement at compile time has nothing to give the function.
+                self.emitErrorRich(block.span, "`#run` as a statement would run when the program runs, not while it compiles", .{}, .{
+                    .help = "write `#run expr` where a value is to be computed while compiling (`n := #run count();`), or `#assert` to check something then; plain statements run at run time",
+                });
+                return error.SemanticFailed;
             },
             .insert_stmt => |ins| try self.checkInsert(ins),
             // Expanded away by the macroexpand pass; reaching sema means the
