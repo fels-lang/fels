@@ -17,11 +17,6 @@ These compile without a message and give a wrong result.
   2026-10-19. The slice is left unchecked on purpose: a function that a `#run` calls returns the
   bytes it built that way, and telling those calls from run-time ones is not done yet.
 
-- **A sub-byte value is not kept in its range** outside a `#packed` struct: the type checker reads
-  `i1`–`i7` and `u1`–`u7` as `i8` and `u8`, so `x: i3 = -5` is accepted and a `u3` counts past 7
-  without an overflow panic. (In a `#packed` struct the field keeps only its bits.)
-- **A `#run { }` block inside a function runs when the program runs**, as ordinary code, not on the
-  comptime VM. `#run expr` runs at compile time. Verified 2026-10-17.
 - **On the comptime VM, a copy of an optional struct shares its payload with the original**:
   after `b := a;` for `a: ?P`, a write to `b`'s payload changes `a`'s. (Copies of structs,
   arrays and enum values are their own since 2026-10-19.) Reported 2026-10-19.
