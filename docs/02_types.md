@@ -53,11 +53,44 @@ asks for one. With `prices: []i64`, `total := 0; for p in prices { total += p; }
 and `i := 0; … v.get(i)` makes `i` a `usize`.
 
 The uses that count are an assignment to or from the local, a typed local or field it
-initializes, an argument, a `return`, and a pointer it is given to (`p: *i64 = &n;`). And
-`m := n;` gives `m` the same type. Being an operand next to a typed one (`i < xs.len`,
-`n + w`) does not count, because the operators take operands of mixed widths. A later use
-that asks for another type is an error, and the literal has to fit the type
+initializes, an argument, a `return`, a pointer it is given to (`p: *i64 = &n;`), and an
+operand of arithmetic next to a typed one: with `at: usize`, `at + t * 8 + j` makes `t` and `j`
+`usize`. And `m := n;` gives `m` the same type. A comparison does not count (`i < xs.len`
+leaves `i` as it is), because it takes two integer types and compares them exactly. A later
+use that asks for another type is an error, and the literal has to fit the type
 (`x := 300; b: u8 = x;` is an error).
+
+### Arithmetic on two number types
+
+When the operands of `+`, `-`, `*`, `/`, `%`, the wrapping operators or `&`, `|`, `^` have two
+different types, the result has the type that holds every value of both:
+
+- two integers of the same signedness: the wider one (`i32 + i64` is `i64`, `u8 + u32` is
+  `u32`)
+- an unsigned integer and a wider signed one: the signed one (`u8 + i32` is `i32`)
+- `f32` and `f64`: `f64`
+
+When neither type holds every value of the other, the operation is an error, and you say with
+`as` which type the result should have: `i32 + u32`, `i64 + u64` (or `usize`), and any
+integer with a float.
+
+```fels
+a: i32 = -5;
+b: i64 = 10000000000;
+c := a + b;                 // i64: 9999999995
+n: u32 = 7;
+d := a + n;                 // error: neither `i32` nor `u32` holds every value of the other
+e := a + (n as i32);        // fine
+```
+
+A compound assignment takes an operand that widens into the target (`total += part` with
+`total: u64`, `part: u32`), but not one wider than it (`small += big` with `small: i32`,
+`big: i64` is an error). A plain `=` still wants the target's type.
+
+A comparison (`<`, `==`, …) takes any two integer types and compares their values exactly:
+`-1 < xs.len` is true, and an `i64` is compared with a `u64` in 128 bits. An integer compared
+with a float is an error, as an `f64` does not hold every `i64`. A shift has the type of the
+value being shifted, whatever the amount's type.
 
 When no use asks for a type, the local is an `i32`, so `&x` is a `*i32`. A cast reads it as
 another type (`w: i64 = x as i64;`), or you can give it its type up front (`x := 42i64` or
