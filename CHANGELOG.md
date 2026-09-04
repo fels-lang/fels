@@ -116,6 +116,14 @@ the major version is `0`, any minor bump may break source compatibility.
   error. Comparisons take any two integer types and compare exactly (`-1 < xs.len` is true; it
   was false). In arithmetic, a local from a literal now takes the other operand's type
   (`at + i` with `at: usize` makes `i` a `usize`).
+- **A sub-byte integer holds only the values of its width.** The type checker read `u1`–`u7`
+  and `i1`–`i7` as `u8` and `i8`: `x: i3 = -5` was accepted and a `u3` counted past 7. Now a
+  literal must fit, arithmetic is done at the width (a `u3` 7 + 1 is an overflow), and a wider
+  integer goes in only with `as`, which keeps the low bits. A sub-byte value still goes where a
+  wider integer is taken, and is still kept in a byte outside `#packed` structs.
+- **`#run` as a statement is an error.** `#run { … }` (and `#run f();`) inside a function was
+  checked and then compiled as ordinary code: it ran when the program ran. `#run expr` is
+  unchanged; use `#assert` to check something while compiling.
 - `rand::range_i32` draws each value as likely (it favored small ones through a modulo), and
   takes any range: `range_i32(-2000000000, 2000000000)` overflowed. A seed gives other numbers
   than before.
