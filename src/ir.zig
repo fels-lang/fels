@@ -2452,14 +2452,14 @@ const FunctionLowerer = struct {
                         if (gvar) |link| {
                             if (bin_op) |op| {
                                 const current: Value = .{ .global = link };
-                                const result = try self.emitAt(self.exprType(assign.target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } }, assign.span);
+                                const result = try self.assignArith(op, current, value, assign.target, assign.span);
                                 try self.emitNoResult(self.exprType(assign.target), .{ .global_store = .{ .name = link, .value = result } });
                             } else {
                                 try self.emitNoResult(self.exprType(assign.target), .{ .global_store = .{ .name = link, .value = value } });
                             }
                         } else if (bin_op) |op| {
                             const current: Value = .{ .local = ir_name };
-                            const result = try self.emitAt(self.exprType(assign.target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } }, assign.span);
+                            const result = try self.assignArith(op, current, value, assign.target, assign.span);
                             try self.emitNoResult(self.exprType(assign.target), .{ .store_local = .{ .name = ir_name, .value = result } });
                         } else {
                             try self.emitNoResult(self.exprType(assign.target), .{ .store_local = .{ .name = ir_name, .value = value } });
@@ -2469,7 +2469,7 @@ const FunctionLowerer = struct {
                         const target = try self.lowerLValueAddress(assign.target);
                         if (bin_op) |op| {
                             const current = try self.emitAt(self.exprType(assign.target), .{ .unary = .{ .op = .deref, .value = target } }, assign.span);
-                            const result = try self.emitAt(self.exprType(assign.target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } }, assign.span);
+                            const result = try self.assignArith(op, current, value, assign.target, assign.span);
                             try self.emitNoResult(self.exprType(assign.target), .{ .store = .{ .target = target, .value = result } });
                         } else {
                             try self.emitNoResult(self.exprType(assign.target), .{ .store = .{ .target = target, .value = value } });
@@ -3805,11 +3805,14 @@ const FunctionLowerer = struct {
             .nil_coalesce => |nc| try self.lowerNilCoalesce(nc, expr),
             .as_cast => |cast| if (self.exprType(expr) == .interface_value)
                 try self.lowerInterfaceCoercion(cast.value.*, self.exprType(expr).interface_value)
-            else
-                try self.emit(self.exprType(expr), .{ .cast = .{
-                    .kind = .as,
-                    .value = try self.lowerExpr(cast.value.*),
-                } }),
+            else if (self.subByteWidth(expr)) |narrow| sb: {
+                // `x as u3` keeps the 3 bits of `x`, in the byte a `u3` is kept in
+                const n = try self.emit(narrow, .{ .cast = .{ .kind = .as, .value = try self.lowerExpr(cast.value.*) } });
+                break :sb try self.emit(self.exprType(expr), .{ .cast = .{ .kind = .as, .value = n } });
+            } else try self.emit(self.exprType(expr), .{ .cast = .{
+                .kind = .as,
+                .value = try self.lowerExpr(cast.value.*),
+            } }),
             .int => |text| .{ .imm = .{ .int = parseIntLiteral(text) } },
             .float => |text| .{ .imm = .{ .float = parseFloatLiteral(text) } },
             .string => |text| .{ .imm = .{ .text = strlit.bytes(self.allocator, text) } },
@@ -3847,7 +3850,12 @@ const FunctionLowerer = struct {
                 break :blk switch (unary.op) {
                     .address_of => try self.emitRef(self.exprType(expr), value, expr.span),
                     .deref => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .deref, .value = value } }, expr.span),
-                    .neg => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .neg, .value = value } }, expr.span),
+                    .neg => if (self.subByteWidth(expr)) |narrow| sb: {
+                        // `-x` of an `i3` overflows as an `i3` does (-(-4))
+                        const n = try self.emit(narrow, .{ .cast = .{ .kind = .as, .value = value } });
+                        const r = try self.emitAt(narrow, .{ .unary = .{ .op = .neg, .value = n } }, expr.span);
+                        break :sb try self.emit(self.exprType(expr), .{ .cast = .{ .kind = .as, .value = r } });
+                    } else try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .neg, .value = value } }, expr.span),
                     .not => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .not, .value = value } }, expr.span),
                     .bit_not => try self.emitAt(self.exprType(expr), .{ .unary = .{ .op = .bit_not, .value = value } }, expr.span),
                 };
@@ -3954,6 +3962,8 @@ const FunctionLowerer = struct {
                 };
                 const lhs = if (operand_ty) |t| try self.lowerExprAs(binary.left.*, t) else try self.lowerExpr(binary.left.*);
                 const rhs = if (operand_ty) |t| try self.lowerExprAs(binary.right.*, t) else try self.lowerExpr(binary.right.*);
+                if (operand_ty != null and !isComparison(binary.op)) if (self.subByteWidth(expr)) |narrow|
+                    break :blk try self.narrowBinary(lowerBinOp(binary.op), lhs, rhs, narrow, self.exprType(expr), expr.span);
                 break :blk try self.emitAt(self.exprType(expr), .{ .binary = .{ .op = lowerBinOp(binary.op), .lhs = lhs, .rhs = rhs } }, expr.span);
             },
             .try_expr => |try_expr| blk: {
@@ -4734,6 +4744,31 @@ const FunctionLowerer = struct {
             .name = "compound_literal",
             .args = try self.allocator.dupe(Value, &.{ ptr, id_val, name_val }),
         } });
+    }
+
+    /// The width a sub-byte integer expression (`u3`, `i5`) is computed at; null for any other.
+    /// Its value is kept in a byte, which holds only the values of that width.
+    fn subByteWidth(self: *FunctionLowerer, e: ast.Expr) ?IrType {
+        const t = self.types.expr_types.get(e.id) orelse return null;
+        return switch (t) {
+            .small_int => |si| if (si.signed) IrType{ .i = si.bits } else IrType{ .u = si.bits },
+            else => null,
+        };
+    }
+
+    /// `op` on two sub-byte values at their width, the result kept in a byte again: `u3` 7 + 1
+    /// overflows as a `u3` does, not as the byte would.
+    fn narrowBinary(self: *FunctionLowerer, op: BinOp, lhs: Value, rhs: Value, narrow: IrType, kept: IrType, span: Span) LowerError!Value {
+        const l = try self.emit(narrow, .{ .cast = .{ .kind = .as, .value = lhs } });
+        const r = try self.emit(narrow, .{ .cast = .{ .kind = .as, .value = rhs } });
+        const res = try self.emitAt(narrow, .{ .binary = .{ .op = op, .lhs = l, .rhs = r } }, span);
+        return self.emit(kept, .{ .cast = .{ .kind = .as, .value = res } });
+    }
+
+    /// The new value of `target op= value`.
+    fn assignArith(self: *FunctionLowerer, op: BinOp, current: Value, value: Value, target: ast.Expr, span: Span) LowerError!Value {
+        if (self.subByteWidth(target)) |narrow| return self.narrowBinary(op, current, value, narrow, self.exprType(target), span);
+        return self.emitAt(self.exprType(target), .{ .binary = .{ .op = op, .lhs = current, .rhs = value } }, span);
     }
 
     /// The type two numbers are compared in: null when they already have one (or one is no
@@ -6981,6 +7016,8 @@ fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.Symbol
         .optional => |inner| .{ .optional = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
         .slice, .const_slice => |inner| .{ .slice = try boxType(allocator, try lowerSemaType(allocator, inner.*, symbols)) },
         .borrow => |inner| try lowerSemaType(allocator, inner.*, symbols),
+        // kept in a byte, as a written `u3` outside a #packed struct is
+        .small_int => |si| if (si.signed) .{ .i = 8 } else .{ .u = 8 },
         .array => |array| .{ .array = .{
             .elem = try boxType(allocator, try lowerSemaType(allocator, array.elem.*, symbols)),
             .len = array.len,
@@ -7109,6 +7146,13 @@ fn irIntInfo(ty: IrType) ?IrIntInfo {
         .isize => .{ .bits = 64, .signed = true },
         .usize, .addr => .{ .bits = 64, .signed = false },
         else => null,
+    };
+}
+
+fn isComparison(op: ast.BinaryOp) bool {
+    return switch (op) {
+        .less, .le, .gt, .ge, .equal, .not_equal => true,
+        else => false,
     };
 }
 
