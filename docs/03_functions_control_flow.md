@@ -605,6 +605,25 @@ while true {
 }
 ```
 
+A loop can have a name, written before it with a colon. `break name;` leaves that loop, and
+`continue name;` goes on with its next iteration, however many loops are in between:
+
+```fels
+outer: for i in 0..rows {
+    for j in 0..cols {
+        if grid[i][j] == target {
+            found = .{ i, j };
+            break outer;            // leaves both loops
+        }
+        if grid[i][j] < 0 { continue outer; }   // the next row
+    }
+}
+```
+
+The `defer`s of the loops being left run on the way out, as with a plain `break`. A name has to
+belong to a loop around the `break` or `continue`, and a loop inside one may not take the same
+name. Loops one after the other may.
+
 ### Defer
 
 `defer` schedules code to run when the current scope exits. That guarantees the cleanup no
