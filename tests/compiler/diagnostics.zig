@@ -1901,16 +1901,50 @@ test "diagnostics: a local from a literal has the type its first use asks for" {
     try expectFirstError(a, "main :: fn() -> i32 { n := 0; x: f32 = n; return 0; }", &.{"expected `f32`, found `i32`"});
 }
 
+test "diagnostics: numbers of two types that could lose values need a cast" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Mixed operands took the left one's type: `i32 + i64` cut the `i64` to an `i32`, and
+    // `i32 + f64` an `f64` to an integer, without a word.
+    const cases = [_]struct { body: []const u8, needle: []const u8 }{
+        .{ .body = "a: i32 = 1; b: u32 = 2; c := a + b;", .needle = "`+` on `i32` and `u32`: neither type holds every value of the other" },
+        .{ .body = "a: i64 = 1; b: u64 = 2; c := a * b;", .needle = "`*` on `i64` and `u64`" },
+        .{ .body = "a: u8 = 1; b: i8 = 2; c := a & b;", .needle = "`&` on `u8` and `i8`" },
+        .{ .body = "a: i32 = 1; f: f64 = 2.0; c := a + f;", .needle = "mixes an integer and a float" },
+        .{ .body = "a: i32 = 1; f: f64 = 2.0; c := a < f;", .needle = "mixes an integer and a float" },
+        .{ .body = "a: i32 = 1; b: i64 = 2; a += b;", .needle = "expected `i32`, found `i64`" },
+        .{ .body = "a: i32 = 1; b: i64 = 2; c: i32 = a + b;", .needle = "expected `i32`, found `i64`" },
+    };
+    for (cases) |case| {
+        const src = try std.mem.concat(a, u8, &.{ "main :: fn() -> i32 { ", case.body, " return 0; }\n" });
+        try expectFirstError(a, src, &.{case.needle});
+    }
+    // What holds every value of the other widens; integers of any two types compare; a
+    // literal takes the other operand's type; a shift amount is no value of the shifted type.
+    try expectNoError(a, "",
+        \\main :: fn() -> i32 {
+        \\    a: i32 = 1; b: i64 = 2; c: i64 = a + b;
+        \\    u: u8 = 3; d: i32 = u + a;
+        \\    t: u64 = 1; p: u32 = 2; t += p;
+        \\    n: usize = 4; less := a < n; same := b == t;
+        \\    f: f32 = 1.0; h: f64 = 2.0; g: f64 = f + h;
+        \\    k := 1; m := n + k;
+        \\    s: u64 = 1; s = s << a;
+        \\    return if less && !same { 0 } else { 1 };
+        \\}
+    );
+}
+
 test "diagnostics: a local from a literal leaves alone what compiled before" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
     const accepted = [_][]const u8{
-        // An operand next to a typed one gives no type: the operators take mixed widths, and
-        // `i < xs.len` made `i` a `usize` that `return i` then refused.
+        // A comparison next to a typed operand gives no type: it compares any two integer
+        // types, and `i < xs.len` made `i` a `usize` that `return i` then refused.
         "main :: fn() -> i32 { xs: []const u8 = \"ab\"; i := 0; while i < xs.len { i += 1; } return i; }",
-        "main :: fn() -> i32 { n := 1; m: u8 = 5; m = m + n; return n; }",
         // through `p := &n`, and a range to such a local
         "main :: fn() -> i32 { n := 0; k := 0; p := &n; *p = 3; big: i64 = 5000000000; k += big; return 0; }",
         "main :: fn() -> i32 { n := 3; total := 0; for i in 0..n { total += i; } m: u64 = n; return 0; }",
@@ -1923,6 +1957,9 @@ test "diagnostics: a local from a literal leaves alone what compiled before" {
             return error.TestUnexpectedResult;
         }
     }
+    // Arithmetic does give one: `m + n` with `m: u8` makes `n` a `u8` (it compiled before only
+    // because the `+` cut an `i32` `n` to the left operand's `u8`).
+    try expectFirstError(a, "main :: fn() -> i32 { n := 1; m: u8 = 5; m = m + n; return n; }", &.{"expected `i32`, found `u8`"});
     // A shift amount is no value of the shifted one's type.
     try expectFirstError(a, "main :: fn() -> i32 { n := 1; s: u8 = 10; n <<= s; return n; }", &.{"expected `i32`, found `u8`"});
     // An error the first pass met outside the body (a generic struct it instantiated first) stays.

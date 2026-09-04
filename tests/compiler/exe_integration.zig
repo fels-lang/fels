@@ -2988,6 +2988,45 @@ test "exe: a zone handle is a real std.heap.Arena (full library API)" {
     try std.testing.expectEqual(@as(u32, 11), code);
 }
 
+test "exe: numbers of two types widen, and compare exactly" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `i32 + i64` took the left operand's type, so the `i64` was cut to an `i32`; `i32 < usize`
+    // compared a negative `i32` as a huge unsigned number. Each check below is a bit of the
+    // exit code, and the same program runs at compile time (`R`) and must agree.
+    const src =
+        \\checks :: fn() -> i32 {
+        \\    a: i32 = -5;
+        \\    b: i64 = 10000000000;
+        \\    small: u8 = 200;
+        \\    total: u64 = 1;
+        \\    part: u32 = 4000000000;
+        \\    total += part;
+        \\    xs: [3]u8 = .{ 1, 2, 3 };
+        \\    big: u64 = 18446744073709551615;
+        \\    s: i64 = -1;
+        \\    f: f32 = 1.5;
+        \\    g: f64 = 2.25;
+        \\    bits: i32 = 0;
+        \\    if a + b == 9999999995 { bits = bits | 1; }
+        \\    if small + a == 195 { bits = bits | 2; }
+        \\    if total == 4000000001 { bits = bits | 4; }
+        \\    if a < xs.len { bits = bits | 8; }
+        \\    if s < big { bits = bits | 16; }
+        \\    if !(s == big) { bits = bits | 32; }
+        \\    if f + g == 3.75 { bits = bits | 64; }
+        \\    // a literal local takes its type from the arithmetic it is in
+        \\    for t in 0..2 { for j in 0..2 { if xs.len + t * 2 + j == 6 { bits = bits | 128; } } }
+        \\    return bits;
+        \\}
+        \\R :: #run checks();
+        \\main :: fn() -> i32 { return if R == checks() { checks() } else { 0 }; }
+    ;
+    try std.testing.expectEqual(@as(u32, 255), try compileAndRun(arena.allocator(), src, "exe_mixed_widths"));
+    try std.testing.expectEqual(@as(u32, 255), try compileAndRunAt(arena.allocator(), src, "exe_mixed_widths_o2", 2));
+}
+
 test "exe: a local shadows a top-level function of the same name" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
