@@ -221,10 +221,10 @@ shows their braces as they are.
 ### Compile-time Run (`#run`)
 
 `#run` executes Fels code on the comptime VM while the program compiles, and folds the result
-to a constant. `#run expr` is an expression, and it may initialise a top-level constant. The
-block form `#run { … }` is a statement. Unlike `#if`, it works only inside a function, not at
-the top level. Today the compiler type-checks the block and then compiles it as ordinary code,
-so its statements run when the program runs, not on the comptime VM.
+to a constant. `#run expr` is an expression, and it may initialise a top-level constant or a
+local. As a statement (`#run { … }` or `#run f();`) it is an error: a statement run while
+compiling would have nothing to give the function, and it used to run with the program
+instead. To check something while compiling, use `#assert`.
 
 ```fels
 compute_size :: fn() -> i32 { return 16 * 4; }
@@ -239,20 +239,16 @@ make_crc_table :: fn() -> [256]u32 {
     return table;
 }
 
-warm_up :: fn() { _ := make_crc_table(); }
-
 // As an expression, including at the top level
 SIZE :: #run compute_size();
 
 // A whole table or struct: the result becomes the global's initial value, as data in the image
 CRC: [256]u32 = #run make_crc_table();
 
-// As a block statement, inside a function
+// And in a function, for a value
 main :: fn() -> i32 {
-    #run {
-        warm_up();
-    }
-    return SIZE + (CRC[1] & 0) as i32;
+    n := #run compute_size();
+    return SIZE + n + (CRC[1] & 0) as i32;
 }
 ```
 
