@@ -4067,16 +4067,28 @@ const Checker = struct {
                 };
                 // A literal operand takes the other operand's type: with `b: u8`,
                 // `b < 256` would compare with 0. A shift amount is no such value.
-                if (binary.op != .shl and binary.op != .shr) {
+                // In arithmetic, a literal local takes it as its own too (`i + k` with
+                // `i: usize` and `k` from `0..8` makes `k` a `usize`): two other types would be
+                // an error there. A comparison of two types is not, so it gives none.
+                const arithmetic = switch (binary.op) {
+                    .add, .sub, .mul, .div, .rem, .wrap_add, .wrap_sub, .wrap_mul, .bit_and, .bit_or, .bit_xor => true,
+                    else => false,
+                };
+                if (arithmetic) {
+                    try self.requireIntLitFits(binary.left.*, right);
+                    try self.requireIntLitFits(binary.right.*, left);
+                } else if (binary.op != .shl and binary.op != .shr) {
                     try self.requireOperandIntLitFits(binary.left.*, right);
                     try self.requireOperandIntLitFits(binary.right.*, left);
                 }
                 // `5 + big` has the type of `big`, as `big + 5` has. Typed by its left
                 // operand alone it stayed a literal, and `x := 5 + big` made `x` an `i32`.
-                // In the first pass over literal locals, arithmetic on one of them has no type
-                // yet either: the second pass gives it one from the local's (`n + w` has `n`'s),
-                // which the other operand's would not match.
-                if (self.infer.active and result != .bool and (self.containsPending(binary.left.*) or self.containsPending(binary.right.*))) {
+                // In the first pass over literal locals, arithmetic on them alone has no type
+                // yet either. Next to a typed operand it has that one's, which the literal
+                // locals in it take (`at + t * 8 + j` with `at: usize` makes `t` and `j` `usize`).
+                const untyped_left = left == .int_lit or left == .float_lit;
+                const untyped_right = right == .int_lit or right == .float_lit;
+                if (self.infer.active and result != .bool and untyped_left and untyped_right and (self.containsPending(binary.left.*) or self.containsPending(binary.right.*))) {
                     break :blk if (result.isFloat()) .float_lit else .int_lit;
                 }
                 if (result == .int_lit and binary.op != .shl and binary.op != .shr and right.isInteger()) break :blk right;
@@ -7535,9 +7547,9 @@ const Checker = struct {
         return false;
     }
 
-    /// `requireIntLitFits` for an operand next to a typed one, which gives no literal local in
-    /// it a type: the operators take operands of mixed widths (`i < xs.len` with an `i32` `i`),
-    /// so a type from them would change what programs that compile already do.
+    /// `requireIntLitFits` for an operand of a comparison, which gives no literal local in it a
+    /// type: a comparison takes integers of two types and compares them exactly (`i < xs.len`
+    /// with an `i32` `i`), so a type from it would change what programs that compile already do.
     fn requireOperandIntLitFits(self: *Checker, expr: ast.Expr, other: Ty) SemanticError!void {
         const active = self.infer.active;
         self.infer.active = false;
