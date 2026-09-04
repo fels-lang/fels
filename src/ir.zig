@@ -2142,6 +2142,8 @@ fn interfaceVTableName(allocator: std.mem.Allocator, type_name: []const u8, inte
 }
 
 const LoopContext = struct {
+    /// `outer: for …`: the name a `break` or `continue` gives it.
+    label: ?[]const u8 = null,
     cond_id: BlockId,
     continue_id: BlockId,
     after_id: BlockId,
@@ -2590,8 +2592,8 @@ const FunctionLowerer = struct {
                 }
                 try self.terminate(.{ .branch = ctx.after_id });
             },
-            .break_stmt => {
-                const ctx = self.loop_stack.items[self.loop_stack.items.len - 1];
+            .break_stmt => |jump| {
+                const ctx = self.loopOf(jump);
                 try self.emitDefersDown(ctx.defer_floor, .ok);
                 var i = self.active_zones.items.len;
                 while (i > ctx.zone_depth) {
@@ -2600,8 +2602,8 @@ const FunctionLowerer = struct {
                 }
                 try self.terminate(.{ .branch = ctx.after_id });
             },
-            .continue_stmt => {
-                const ctx = self.loop_stack.items[self.loop_stack.items.len - 1];
+            .continue_stmt => |jump| {
+                const ctx = self.loopOf(jump);
                 try self.emitDefersDown(ctx.defer_floor, .ok);
                 var i = self.active_zones.items.len;
                 while (i > ctx.zone_depth) {
@@ -2697,12 +2699,24 @@ const FunctionLowerer = struct {
         self.startBlock(after_id, "if.after");
     }
 
+    /// The loop a `break` or `continue` leaves or goes on with: the innermost, or the one of its
+    /// label (the checker made sure there is one).
+    fn loopOf(self: *FunctionLowerer, jump: ast.Jump) LoopContext {
+        var i = self.loop_stack.items.len;
+        if (jump.label) |name| while (i > 0) {
+            i -= 1;
+            if (self.loop_stack.items[i].label) |l| if (std.mem.eql(u8, l, name)) return self.loop_stack.items[i];
+        };
+        return self.loop_stack.items[self.loop_stack.items.len - 1];
+    }
+
     fn lowerWhile(self: *FunctionLowerer, while_stmt: ast.WhileStmt) LowerError!void {
         const cond_id = self.allocBlockId();
         const body_id = self.allocBlockId();
         const after_id = self.allocBlockId();
 
         try self.loop_stack.append(self.allocator, .{
+            .label = while_stmt.label,
             .cond_id = cond_id,
             .continue_id = cond_id,
             .after_id = after_id,
@@ -2769,6 +2783,7 @@ const FunctionLowerer = struct {
         const increment_id = self.allocBlockId();
         const after_id = self.allocBlockId();
         try self.loop_stack.append(self.allocator, .{
+            .label = for_stmt.label,
             .cond_id = cond_id,
             .continue_id = increment_id,
             .after_id = after_id,
@@ -2848,6 +2863,7 @@ const FunctionLowerer = struct {
         const increment_id = self.allocBlockId();
         const after_id = self.allocBlockId();
         try self.loop_stack.append(self.allocator, .{
+            .label = for_stmt.label,
             .cond_id = cond_id,
             .continue_id = increment_id,
             .after_id = after_id,
@@ -2940,6 +2956,7 @@ const FunctionLowerer = struct {
         const incr_id = self.allocBlockId();
         const after_id = self.allocBlockId();
         try self.loop_stack.append(self.allocator, .{
+            .label = for_stmt.label,
             .cond_id = cond_id,
             .continue_id = incr_id,
             .after_id = after_id,
@@ -7989,9 +8006,9 @@ const Reifier = struct {
         } else if (eq(u8, name, "unsafe_blk")) {
             return .{ .unsafe_block = try self.reifyBlock(payload) };
         } else if (eq(u8, name, "brk")) {
-            return .{ .break_stmt = self.span };
+            return .{ .break_stmt = .{ .span = self.span } };
         } else if (eq(u8, name, "cont")) {
-            return .{ .continue_stmt = self.span };
+            return .{ .continue_stmt = .{ .span = self.span } };
         } else if (eq(u8, name, "expr")) {
             return .{ .expr = try self.reifyExpr(payload) };
         }
