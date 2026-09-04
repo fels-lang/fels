@@ -3027,6 +3027,43 @@ test "exe: numbers of two types widen, and compare exactly" {
     try std.testing.expectEqual(@as(u32, 255), try compileAndRunAt(arena.allocator(), src, "exe_mixed_widths_o2", 2));
 }
 
+test "exe: a sub-byte integer holds only the values of its width" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // A `u3` was a `u8` to the type checker: it counted past 7 without a word. Its arithmetic is
+    // done at its width now, `as u3` keeps three bits, and it still goes where a `u8` is taken.
+    const src =
+        \\#noinline
+        \\byte :: fn(n: u8) -> u8 { return n; }
+        \\main :: fn() -> i32 {
+        \\    z: u3 = byte(205) as u3;        // 0b11001101: 101
+        \\    s: i3 = (byte(6) as i3);        // 110 as a signed 3-bit value
+        \\    w: u3 = 6;
+        \\    w = w +% 3;                     // wraps at 8
+        \\    big: u8 = z;
+        \\    if z != 5 || s != -2 || w != 1 || big != 5 { return 1; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(a, src, "exe_sub_byte_width", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(a, src, "exe_sub_byte_width_o2", 2, true));
+    // Past its width is an overflow, a panic (0xDEADBEEF, whose low byte the test sees).
+    const pre = "#noinline\nbyte :: fn(n: u8) -> u8 { return n; }\n";
+    const faults = [_][]const u8{
+        "main :: fn() -> i32 { u: u3 = byte(7) as u3; u = u + 1; return u as i32; }",
+        "main :: fn() -> i32 { u: u3 = byte(7) as u3; u += 1; return u as i32; }",
+        "main :: fn() -> i32 { n: i3 = (byte(4) as i3); m := -n; return m as i32; }",
+        "main :: fn() -> i32 { u: u3 = byte(0) as u3; u -= 1; return u as i32; }",
+    };
+    for (faults, 0..) |body, i| {
+        const fault_src = try std.mem.concat(a, u8, &.{ pre, body });
+        const label = try std.fmt.allocPrint(a, "exe_sub_byte_fault_{d}", .{i});
+        try std.testing.expectEqual(@as(u32, 0xEF), try compileAndRunChecked(a, fault_src, label, 0, true));
+    }
+}
+
 test "exe: a local shadows a top-level function of the same name" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

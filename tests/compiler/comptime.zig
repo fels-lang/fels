@@ -61,10 +61,12 @@ test "comptime: #run expression as value" {
     try fels.ir_mod.validateModule(m);
 }
 
-test "comptime: #run block at statement level" {
+test "comptime: #run as a statement is an error" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
+    // The block was checked and compiled as ordinary code, so `result = setup()` ran when the
+    // program ran: nothing in it ran at compile time.
     const src =
         \\setup :: fn() -> i32 { return 42; }
         \\
@@ -76,10 +78,7 @@ test "comptime: #run block at statement level" {
         \\    return result;
         \\}
     ;
-    var fe = try fels.compile(arena.allocator(), "ct3.fels", src);
-    defer fe.deinit(arena.allocator());
-    const m = try fels.lowerFrontend(arena.allocator(), fe);
-    try fels.ir_mod.validateModule(m);
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "ct3.fels", src));
 }
 
 test "#run: constant computed at compile time, not runtime" {

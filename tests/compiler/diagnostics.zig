@@ -1936,6 +1936,21 @@ test "diagnostics: numbers of two types that could lose values need a cast" {
     );
 }
 
+test "diagnostics: a sub-byte integer takes only the values of its width" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `x: i3 = -5` was accepted: the checker read `i3` as `i8`.
+    try expectFirstError(a, "main :: fn() -> i32 { x: i3 = -5; return 0; }", &.{"integer literal `-5` does not fit in `i3`"});
+    try expectFirstError(a, "main :: fn() -> i32 { u: u3 = 8; return 0; }", &.{"integer literal `8` does not fit in `u3`"});
+    try expectFirstError(a, "#packed\nR :: struct { mode: u3, rest: u5 }\nmain :: fn() -> i32 { r: R = .{}; r.mode = 9; return 0; }", &.{"does not fit in `u3`"});
+    // A wider integer goes in only with `as`, which keeps the low bits.
+    try expectFirstError(a, "main :: fn() -> i32 { y: u8 = 200; z: u3 = y; return 0; }", &.{"expected `u3`, found `u8`"});
+    try expectNoError(a, "", "main :: fn() -> i32 { y: u8 = 200; z: u3 = y as u3; b: u8 = z; c: i8 = (3 as i3); return 0; }");
+    // `#run` as a statement compiled as ordinary code and ran with the program.
+    try expectFirstError(a, "main :: fn() -> i32 { #run { x := 1; } return 0; }", &.{"`#run` as a statement would run when the program runs"});
+}
+
 test "diagnostics: a local from a literal leaves alone what compiled before" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
