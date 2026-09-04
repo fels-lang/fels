@@ -3064,6 +3064,47 @@ test "exe: a sub-byte integer holds only the values of its width" {
     }
 }
 
+test "exe: labeled break and continue leave the loop they name" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `outer: for …` with `break outer;` and `continue outer;`, through a `for` over a range, a
+    // `while` and a `for` over a slice, with a `defer` in the inner loop run on the way out. The
+    // same program runs at compile time (`R`) and must agree.
+    const src =
+        \\pairs :: fn() -> i32 {
+        \\    xs: [5]i32 = .{ 3, 8, 4, 6, 1 };
+        \\    found := -1;
+        \\    outer: for i in 0..5 {
+        \\        for j in i + 1..5 {
+        \\            if xs[i] + xs[j] == 10 {
+        \\                found = i * 10 + j;
+        \\                break outer;
+        \\            }
+        \\        }
+        \\    }
+        \\    sum := 0;
+        \\    rows: while sum < 1000 {
+        \\        for v in xs[:] {
+        \\            if v == 4 { continue rows; }
+        \\            sum += v;
+        \\        }
+        \\    }
+        \\    log := 0;
+        \\    grid: for r in 0..3 {
+        \\        for c in 0..3 {
+        \\            defer { log += 1; }
+        \\            if r == 1 && c == 1 { break grid; }
+        \\        }
+        \\    }
+        \\    return found * 10000 + sum * 10 + log;
+        \\}
+        \\R :: #run pairs();
+        \\main :: fn() -> i32 { return if R == pairs() && R == 240015 { 42 } else { 1 }; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_labels"));
+}
+
 test "exe: a local shadows a top-level function of the same name" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

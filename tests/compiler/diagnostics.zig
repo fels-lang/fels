@@ -1951,6 +1951,17 @@ test "diagnostics: a sub-byte integer takes only the values of its width" {
     try expectFirstError(a, "main :: fn() -> i32 { #run { x := 1; } return 0; }", &.{"`#run` as a statement would run when the program runs"});
 }
 
+test "diagnostics: a labeled break or continue needs a loop of that name around it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFirstError(a, "main :: fn() -> i32 { for i in 0..3 { break nope; } return 0; }", &.{"`break nope`: no loop around it is named `nope`"});
+    try expectFirstError(a, "main :: fn() -> i32 { outer: for i in 0..3 { } for j in 0..3 { continue outer; } return 0; }", &.{"`continue outer`: no loop around it is named `outer`"});
+    try expectFirstError(a, "main :: fn() -> i32 { outer: for i in 0..3 { outer: while true { break; } } return 0; }", &.{"a loop around this one is already named `outer`"});
+    // Two loops one after the other may share a name; a typed local is no label.
+    try expectNoError(a, "", "main :: fn() -> i32 { a: for i in 0..2 { break a; } a: for j in 0..2 { continue a; } n: i32 = 3; return n; }");
+}
+
 test "diagnostics: a local from a literal leaves alone what compiled before" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
