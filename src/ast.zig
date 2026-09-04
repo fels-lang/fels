@@ -316,8 +316,8 @@ pub const Stmt = union(enum) {
     for_range: ForRangeStmt,
     for_slice: ForSliceStmt,
     unsafe_block: Block,
-    break_stmt: Span,
-    continue_stmt: Span,
+    break_stmt: Jump,
+    continue_stmt: Jump,
     zone_block: ZoneBlock,
     defer_stmt: DeferStmt,
     match_stmt: MatchStmt,
@@ -495,7 +495,16 @@ pub const IfBinding = struct {
     value: Expr,
 };
 
+/// `break` or `continue`, with the label of the loop it leaves or goes on with
+/// (`break outer;`); null for the innermost loop.
+pub const Jump = struct {
+    label: ?[]const u8 = null,
+    span: Span,
+};
+
 pub const WhileStmt = struct {
+    /// `outer: while …`: the name a `break` or `continue` inside may give it.
+    label: ?[]const u8 = null,
     condition: Expr,
     /// `while opt |x| { … }` — loops while `condition` is a non-null optional,
     /// binding the unwrapped payload to `x` each iteration.
@@ -505,6 +514,7 @@ pub const WhileStmt = struct {
 };
 
 pub const ForRangeStmt = struct {
+    label: ?[]const u8 = null,
     binding: []const u8,
     start: Expr,
     end: Expr,
@@ -514,6 +524,7 @@ pub const ForRangeStmt = struct {
 };
 
 pub const ForSliceStmt = struct {
+    label: ?[]const u8 = null,
     binding: []const u8,
     index_binding: ?[]const u8,
     by_ref: bool,

@@ -1844,13 +1844,31 @@ pub const Parser = struct {
         }
         if (self.match(.keyword_break)) {
             const tok = self.previous();
+            const label: ?[]const u8 = if (self.check(.ident)) self.advance().text(self.source) else null;
             const semi = try self.expect(.semicolon, "expected ; after break");
-            return .{ .break_stmt = spanFrom(tok, semi) };
+            return .{ .break_stmt = .{ .label = label, .span = spanFrom(tok, semi) } };
         }
         if (self.match(.keyword_continue)) {
             const tok = self.previous();
+            const label: ?[]const u8 = if (self.check(.ident)) self.advance().text(self.source) else null;
             const semi = try self.expect(.semicolon, "expected ; after continue");
-            return .{ .continue_stmt = spanFrom(tok, semi) };
+            return .{ .continue_stmt = .{ .label = label, .span = spanFrom(tok, semi) } };
+        }
+        // `outer: for …` / `outer: while …`: a loop with a name (`for` and `while` are no
+        // types, so this is no typed local).
+        if (self.check(.ident) and self.peekKind(1) == .colon and
+            (self.peekKind(2) == .keyword_for or self.peekKind(2) == .keyword_while))
+        {
+            const label = self.advance().text(self.source);
+            _ = self.advance();
+            var loop = try self.parseStmt();
+            switch (loop) {
+                .while_stmt => |*w| w.label = label,
+                .for_range => |*f| f.label = label,
+                .for_slice => |*f| f.label = label,
+                else => unreachable,
+            }
+            return loop;
         }
         if (self.match(.keyword_defer)) return .{ .defer_stmt = try self.parseDefer(self.previous()) };
         if (self.match(.keyword_match)) return .{ .match_stmt = try self.parseMatch(self.previous()) };
