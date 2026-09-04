@@ -109,6 +109,13 @@ the major version is `0`, any minor bump may break source compatibility.
   goes only where a `[]const T` is taken, and string literals are `[]const u8`, so a function
   that takes a `[]u8` no longer takes one. A `[]T` still goes everywhere a `[]const T` does,
   and the two meet as `[]const T` in a generic call and in a `catch`.
+- **Arithmetic on two number types widens, or asks for a cast.** It took the left operand's
+  type: `i32 + i64` cut the `i64` to an `i32`, and `i32 + f64` cut the float. Now the result is
+  the type that holds both (`i32 + i64` is `i64`, `u8 + i32` is `i32`, `f32 + f64` is `f64`),
+  and a mix that could lose values (`i32 + u32`, `i64 + u64`, an integer with a float) is an
+  error. Comparisons take any two integer types and compare exactly (`-1 < xs.len` is true; it
+  was false). In arithmetic, a local from a literal now takes the other operand's type
+  (`at + i` with `at: usize` makes `i` a `usize`).
 - `rand::range_i32` draws each value as likely (it favored small ones through a modulo), and
   takes any range: `range_i32(-2000000000, 2000000000)` overflowed. A seed gives other numbers
   than before.
