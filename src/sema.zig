@@ -279,6 +279,16 @@ pub const SymbolKind = enum {
     }
 };
 
+/// A sub-byte integer type, `u1` to `u7` and `i1` to `i7`: kept in a byte, but holding only the
+/// values of its width.
+pub const SmallInt = struct { bits: u8, signed: bool };
+
+const small_int_names = [_][]const u8{ "u1", "u2", "u3", "u4", "u5", "u6", "u7", "i1", "i2", "i3", "i4", "i5", "i6", "i7" };
+
+pub fn smallIntName(si: SmallInt) []const u8 {
+    return small_int_names[si.bits - 1 + (if (si.signed) @as(usize, 7) else 0)];
+}
+
 pub const Ty = union(enum) {
     i8,
     i16,
@@ -313,6 +323,7 @@ pub const Ty = union(enum) {
     pointer: *const Ty, // *T  — mutable pointer
     const_ptr: *const Ty, // *const T — read-only pointer
     optional: *const Ty,
+    small_int: SmallInt, // u1–u7, i1–i7
     slice: *const Ty,
     const_slice: *const Ty, // []const T — read-only slice
     borrow: *const Ty,
@@ -339,7 +350,7 @@ pub const Ty = union(enum) {
 
     pub fn isInteger(self: Ty) bool {
         return switch (self) {
-            .i8, .i16, .i32, .i64, .u8, .u16, .u32, .u64, .byte, .usize, .isize, .addr, .int_lit, .type_param => true,
+            .i8, .i16, .i32, .i64, .u8, .u16, .u32, .u64, .byte, .usize, .isize, .addr, .int_lit, .type_param, .small_int => true,
             else => false,
         };
     }
@@ -865,21 +876,9 @@ fn findOutputAssign(stmts: []const ast.Stmt, pname: []const u8, node_id: u64) ?a
 }
 
 pub fn fromBuiltinName(name: []const u8) ?Ty {
-    // Sub-byte integers — stored as u8/i8 in sema; IR uses correct bit width
-    if (std.mem.eql(u8, name, "u1")) return .u8;
-    if (std.mem.eql(u8, name, "u2")) return .u8;
-    if (std.mem.eql(u8, name, "u3")) return .u8;
-    if (std.mem.eql(u8, name, "u4")) return .u8;
-    if (std.mem.eql(u8, name, "u5")) return .u8;
-    if (std.mem.eql(u8, name, "u6")) return .u8;
-    if (std.mem.eql(u8, name, "u7")) return .u8;
-    if (std.mem.eql(u8, name, "i1")) return .i8;
-    if (std.mem.eql(u8, name, "i2")) return .i8;
-    if (std.mem.eql(u8, name, "i3")) return .i8;
-    if (std.mem.eql(u8, name, "i4")) return .i8;
-    if (std.mem.eql(u8, name, "i5")) return .i8;
-    if (std.mem.eql(u8, name, "i6")) return .i8;
-    if (std.mem.eql(u8, name, "i7")) return .i8;
+    // Sub-byte integers: a type of their own, kept in a byte.
+    if (name.len == 2 and (name[0] == 'u' or name[0] == 'i') and name[1] >= '1' and name[1] <= '7')
+        return .{ .small_int = .{ .bits = name[1] - '0', .signed = name[0] == 'i' } };
     if (std.mem.eql(u8, name, "i8")) return .i8;
     if (std.mem.eql(u8, name, "i16")) return .i16;
     if (std.mem.eql(u8, name, "i32")) return .i32;
@@ -1630,6 +1629,7 @@ fn intInfo(ty: Ty) ?IntInfo {
         .u16 => .{ .bits = 16, .signed = false },
         .u32 => .{ .bits = 32, .signed = false },
         .u64, .usize, .addr => .{ .bits = 64, .signed = false },
+        .small_int => |si| .{ .bits = si.bits, .signed = si.signed },
         else => null,
     };
 }
@@ -1890,6 +1890,7 @@ const Checker = struct {
     /// Format a Ty as a human-readable string (caller owns result).
     fn formatTy(self: *Checker, ty: Ty) []const u8 {
         return switch (ty) {
+            .small_int => |si| smallIntName(si),
             .i8 => "i8",
             .i16 => "i16",
             .i32 => "i32",
@@ -3294,6 +3295,9 @@ const Checker = struct {
                     try self.checkAssignTarget(assign.target);
                     break :blk try self.inferExpr(assign.target);
                 };
+                // A local's name is not recorded by `inferExpr`; lowering `u += 1` for a `u: u3`
+                // reads the target's type to compute at its width.
+                if (assign.op != .assign and target_ty == .small_int) try self.env.expr_types.put(assign.target.id, target_ty);
                 if (try self.coerceEnumLiteral(assign.value, target_ty)) return;
                 try self.coerceLiteralFields(assign.value, target_ty);
                 const value_ty = try self.inferExpr(assign.value);
@@ -7534,6 +7538,10 @@ const Checker = struct {
         // *T is implicitly usable as *const T (const promotion).
         if (actual == .pointer and expected == .const_ptr)
             return sameTy(actual.pointer.*, expected.const_ptr.*);
+        // A sub-byte value is usable as any integer that holds all of its values (a `u3` as a
+        // `u8`): it is kept in a byte as one.
+        if (actual == .small_int and intInfo(expected) != null)
+            if (widerNumber(actual, expected)) |w| return sameTy(w, expected);
         // []T is usable as []const T the same way.
         if (actual == .slice and expected == .const_slice)
             return sameTy(actual.slice.*, expected.const_slice.*);
@@ -8198,6 +8206,7 @@ fn isRuntimeNoReturnName(name: []const u8) bool {
 
 pub fn tyMangle(ty: Ty) []const u8 {
     return switch (ty) {
+        .small_int => |si| smallIntName(si),
         .i8 => "i8",
         .i16 => "i16",
         .i32 => "i32",
@@ -8250,6 +8259,7 @@ fn sameTy(a: Ty, b: Ty) bool {
         .optional => |oa| sameTy(oa.*, b.optional.*),
         .slice => |sa| sameTy(sa.*, b.slice.*),
         .const_slice => |sa| sameTy(sa.*, b.const_slice.*),
+        .small_int => |sa| sa.bits == b.small_int.bits and sa.signed == b.small_int.signed,
         .borrow => |ba| sameTy(ba.*, b.borrow.*),
         .array => |aa| sameTy(aa.elem.*, b.array.elem.*) and aa.len == b.array.len,
         .named => |id| id == b.named,
@@ -8355,6 +8365,10 @@ fn intTypeRange(ty: Ty) ?IntRange {
         .u16 => IntRange.of(u16),
         .u32 => IntRange.of(u32),
         .u64, .usize, .addr => IntRange.of(u64),
+        .small_int => |si| if (si.signed)
+            .{ .min = -(@as(i128, 1) << @intCast(si.bits - 1)), .max = (@as(i128, 1) << @intCast(si.bits - 1)) - 1 }
+        else
+            .{ .min = 0, .max = (@as(i128, 1) << @intCast(si.bits)) - 1 },
         else => null,
     };
 }

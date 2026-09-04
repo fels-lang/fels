@@ -1608,6 +1608,7 @@ fn renderTy(v: *const View, o: *Out, ty: Ty, hint: ?ast.TypeRef) void {
     if (hint) |h| if (isAliasRef(v, h, ty)) return renderRef(o, h);
     switch (ty) {
         .i8, .i16, .i32, .i64, .u8, .u16, .u32, .u64, .f32, .f64, .bool, .byte, .usize, .isize, .addr, .void => o.s(@tagName(ty)),
+        .small_int => |si| o.s(sema.smallIntName(si)),
         .text => o.s("Text"),
         .rune => o.s("Rune"),
         .system => o.s("System"),
