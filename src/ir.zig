@@ -2827,7 +2827,12 @@ const FunctionLowerer = struct {
         if (self.types.iterator_fors.get(for_stmt.iter.id)) |next_sym| {
             return self.lowerForIterator(for_stmt, next_sym);
         }
-        const iter_ty = self.exprType(for_stmt.iter);
+        // `for x in v` over a collection: the loop goes over the slice `v.items()` returns.
+        const items_sym = self.types.items_fors.get(for_stmt.iter.id);
+        const iter_ty: IrType = if (items_sym != null)
+            try lowerSemaTypeWithEnv(self.allocator, self.types.iterator_next_types.get(for_stmt.iter.id) orelse .unknown, self.types, self.symbols)
+        else
+            self.exprType(for_stmt.iter);
         const elem_ty: IrType = switch (iter_ty) {
             .slice => |elem| elem.*,
             .array => |array| array.elem.*,
@@ -2845,7 +2850,9 @@ const FunctionLowerer = struct {
         // `arr[:]` does: a copy of the array in the loop's own local took the writes.
         const in_place = for_stmt.by_ref and iter_ty == .array;
         const iter_local_ty: IrType = if (in_place) .{ .slice = try boxType(self.allocator, elem_ty) } else iter_ty;
-        const iter_value: Value = if (in_place)
+        const iter_value: Value = if (items_sym) |sym|
+            try self.callItems(for_stmt.iter, sym, iter_ty)
+        else if (in_place)
             try self.emit(iter_local_ty, .{ .slice_expr = .{
                 .ptr = try self.lowerLValueAddress(for_stmt.iter),
                 .len = .{ .imm = .{ .uint = iter_ty.array.len } },
@@ -2920,6 +2927,26 @@ const FunctionLowerer = struct {
 
         _ = self.loop_stack.pop();
         self.startBlock(after_id, "for.slice.after");
+    }
+
+    /// `v.items()` for `for x in v`: the method called on `v` where it is (its address, or a
+    /// temporary's for a value that has none), or on a copy when it takes `self` by value.
+    fn callItems(self: *FunctionLowerer, iter: ast.Expr, sym: sema.SymbolId, slice_ty: IrType) LowerError!Value {
+        const sig = self.types.fn_sigs.get(sym) orelse return error.LoweringFailed;
+        const link = self.types.generic_call_insts.get(iter.id) orelse self.symbols.symbol(sym).link_name;
+        const by_ptr = sig.params.len > 0 and (sig.params[0].ty == .pointer or sig.params[0].ty == .const_ptr);
+        const recv: Value = if (!by_ptr) try self.lowerExpr(iter) else switch (iter.kind) {
+            .ident, .field, .index => try self.lowerLValueAddress(iter),
+            else => blk: {
+                const obj_ty = self.exprType(iter);
+                self.temp_id += 1;
+                const name = try std.fmt.allocPrint(self.allocator, "__items_recv_{d}", .{self.temp_id});
+                try self.local_types.put(name, obj_ty);
+                try self.emitNoResult(obj_ty, .{ .store_local = .{ .name = name, .value = try self.lowerExpr(iter) } });
+                break :blk try self.emit(.{ .ptr = try boxType(self.allocator, obj_ty) }, .{ .unary = .{ .op = .ref, .value = .{ .local = name } } });
+            },
+        };
+        return self.emit(slice_ty, .{ .call = .{ .callee = link, .args = try self.allocator.dupe(Value, &.{recv}) } });
     }
 
     /// `for x in it` over an iterator: store `it` in a local, then each iteration
