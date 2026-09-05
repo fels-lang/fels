@@ -7,6 +7,9 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **`for x in v` over a collection**: a type with an `items(self) -> []T` method, such as
+  `Vec`, loops over the slice it returns, with `for x, i in v` and `for &x in v` as on a slice.
+  It took `v.items()` before.
 - **Labeled `break` and `continue`**: `outer: for … { … break outer; … continue outer; }` leaves
   or goes on with the loop of that name, through any loops in between (`for` and `while`).
 - **`std.http`**: an HTTP/1.1 client (`get`, `request` with any method, headers and body;
