@@ -557,6 +557,57 @@ test "fels test: natively, an interface method of a type named like another modu
     try expectHas(native.text, "  \u{2713} through_the_interface\n");
 }
 
+test "fels test: for over a collection loops over what its items() gives" {
+    // `for x in v` with `v: Vec(i32)` was "for loop requires a slice": it needed `v.items()`. By
+    // value, with an index, by reference (writing into the Vec), and over a Vec a call returns,
+    // on the comptime VM and natively.
+    const dir = ".zig-cache/tc_for_items";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/walk_tests.fels",
+        \\#import std.heap as heap;
+        \\#import std.vec as vec;
+        \\#import std.vec.{ Vec };
+        \\
+        \\make :: fn(a: *heap::Arena) -> Vec(i32) {
+        \\    v := vec::make(i32, a);
+        \\    v.push(4);
+        \\    v.push(5);
+        \\    return v;
+        \\}
+        \\
+        \\#test
+        \\for_over_a_vec :: fn(t: *Test) {
+        \\    a := heap::make();
+        \\    v := vec::make(i32, &a);
+        \\    v.push(10);
+        \\    v.push(20);
+        \\    v.push(30);
+        \\    sum := 0;
+        \\    for x in v { sum += x; }
+        \\    t.eq(sum, 60);
+        \\    weighted := 0;
+        \\    for x, i in v { weighted += x * (i as i32); }
+        \\    t.eq(weighted, 80);
+        \\    for &x in v { *x = *x + 1; }
+        \\    t.eq(v.items()[2], 31);
+        \\    from_call := 0;
+        \\    for x in make(&a) { from_call += x; }
+        \\    t.eq(from_call, 9);
+        \\    a.deinit();
+        \\}
+        \\
+    );
+    const vm = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(vm.text);
+    try expectHas(vm.text, "  \u{2713} for_over_a_vec\n");
+    if (comptime !fels.llvm_enabled) return;
+    if (comptime builtin.os.tag != .windows) return;
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try expectHas(native.text, "  \u{2713} for_over_a_vec\n");
+}
+
 test "fels test: a match on an enum named like a type of another module" {
     // Strata: an enum `Mark` next to std.heap's struct `Mark`. The match named the enum by its
     // bare name, not by the qualified one the IR knows it by, and took no arm (`unreachable`).
