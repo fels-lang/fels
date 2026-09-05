@@ -494,6 +494,23 @@ The index form `for x, i in it` is available too, and `i` counts iterations from
 Iterating by reference (`for &x in it`) is not allowed, because a `next` method yields
 values, not addresses.
 
+### For Collections
+
+A collection, a value whose type has a method `items(self) -> []T` such as `Vec`, loops over
+the slice `items()` returns. So `for x in v` is `for x in v.items()`, and the index and
+by-reference forms work as they do on a slice:
+
+```fels
+v := vec::make(i32, &a);
+v.push(10);
+v.push(20);
+for x in v { total += x; }
+for x, i in v { println("v[{i}] = {x}"); }
+for &x in v { *x = *x * 2; }      // writes into the Vec
+```
+
+A type with a `next` method loops as an iterator, even if it has an `items` method too.
+
 ### Match
 
 `match` does pattern matching on enums and integers. An arm is `pattern => body,`. In a
