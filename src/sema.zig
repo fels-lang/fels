@@ -511,7 +511,7 @@ pub const FnSig = struct {
     error_ty: ?Ty,
     extern_name: ?[]const u8,
     /// `fn(fmt: [*]const u8, ...)`, an `#extern` C function: a call passes more arguments
-    /// after `params`.
+    /// after `params`, each as C receives it (`TypeEnv.vararg_types`).
     variadic: bool = false,
     inline_hint: bool,
     no_inline: bool,
@@ -633,6 +633,9 @@ pub const TypeEnv = struct {
     /// iter expr's NodeId -> that method. IR loops over the slice it returns, which is in
     /// `iterator_next_types` (and a generic method's instance in `generic_call_insts`).
     items_fors: std.AutoHashMap(ast.NodeId, SymbolId),
+    /// An argument a variadic C function takes after its parameters (its `...`): the
+    /// argument's NodeId -> the type it is passed as (`varargType`).
+    vararg_types: std.AutoHashMap(ast.NodeId, Ty),
     /// The same iter expr's NodeId -> what its `next` returns, with a generic struct's type
     /// parameters bound by the iterator's type (`?[]u8` for `mem::Split(u8)`). The instance of
     /// such a `next` is in `generic_call_insts` under the same NodeId.
@@ -709,6 +712,7 @@ pub const TypeEnv = struct {
             .impl_method_calls = std.AutoHashMap(ast.NodeId, ImplMethodCall).init(allocator),
             .iterator_fors = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .items_fors = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
+            .vararg_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .iterator_next_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .receiver_auto_addr = std.AutoHashMap(ast.NodeId, void).init(allocator),
             .call_type_args = std.AutoHashMap(ast.NodeId, TypeArgs).init(allocator),
@@ -744,6 +748,7 @@ pub const TypeEnv = struct {
         self.impl_method_calls.deinit();
         self.iterator_fors.deinit();
         self.items_fors.deinit();
+        self.vararg_types.deinit();
         self.iterator_next_types.deinit();
         self.receiver_auto_addr.deinit();
         self.call_type_args.deinit();
@@ -5011,7 +5016,11 @@ const Checker = struct {
         for (sig.params) |p| {
             if (!p.is_type_param) value_param_count += 1;
         }
-        if (call.args.len != value_param_count) {
+        if (sig.variadic and call.args.len < value_param_count) {
+            self.emitError(call.callee.span, "`{s}` expects at least {d} argument(s), but {d} were provided", .{ name, value_param_count, call.args.len });
+            return error.SemanticFailed;
+        }
+        if (!sig.variadic and call.args.len != value_param_count) {
             self.emitError(call.callee.span, "`{s}` expects {d} argument(s), but {d} were provided", .{ name, value_param_count, call.args.len });
             return error.SemanticFailed;
         }
@@ -5044,6 +5053,10 @@ const Checker = struct {
             try self.requireIntLitFits(arg_expr, param.ty);
             arg_i += 1;
         }
+        for (call.args[arg_i..]) |arg| try self.checkVararg(name, switch (arg) {
+            .positional => |e| e,
+            .named => |n| n.value,
+        });
         // Emit a warning when calling a deprecated function.
         if (sig.deprecated) |msg| {
             if (msg.len > 0) {
@@ -5057,6 +5070,19 @@ const Checker = struct {
             return .{ .fallible = .{ .ok = try self.boxTy(sig.return_ty), .err = try self.boxTy(err_ty) } };
         }
         return sig.return_ty;
+    }
+
+    /// An argument of the C function `name` past its parameters, where its `...` takes it: a
+    /// number, a bool or a pointer. The type it is passed as is recorded for IR.
+    fn checkVararg(self: *Checker, name: []const u8, expr: ast.Expr) SemanticError!void {
+        const ty = try self.inferExpr(expr);
+        const passed = varargType(ty, self.untypedIntValue(expr)) orelse {
+            const hint = if (ty == .slice or ty == .const_slice) ": pass a C string as `.ptr`" else "";
+            self.emitError(expr.span, "`{s}` takes a number, a bool or a pointer after its parameters, not `{s}`{s}", .{ name, self.formatTy(ty), hint });
+            return error.SemanticFailed;
+        };
+        try self.requireIntLitFits(expr, passed);
+        try self.env.vararg_types.put(expr.id, passed);
     }
 
     /// If `expr` is a bare enum literal `.variant` and `expected` is an enum type
@@ -8789,6 +8815,24 @@ fn externName(attrs: []const ast.Attribute) ?[]const u8 {
         };
     }
     return null;
+}
+
+/// The type C receives a `...` argument of type `ty` as: an integer narrower than an `int`,
+/// and a bool, as an `i32`, and an `f32` as an `f64`, as C promotes them; an integer literal
+/// as an `i32`, or an `i64` when it needs one (`value`); a wider number or a pointer as it is.
+/// Null for what C takes no `...` argument as (a slice, a struct, a Fels function).
+fn varargType(ty: Ty, value: UntypedIntLit) ?Ty {
+    return switch (ty) {
+        .int_lit => switch (value) {
+            .value => |v| if (IntRange.of(i32).holds(v)) .i32 else .i64,
+            else => .i32,
+        },
+        .float_lit, .f32, .f64 => .f64,
+        .bool, .i8, .i16, .u8, .u16, .byte, .small_int => .i32,
+        .i32, .u32, .i64, .u64, .usize, .isize, .pointer, .const_ptr => ty,
+        .optional => |inner| if (inner.* == .pointer or inner.* == .const_ptr) ty else null,
+        else => null,
+    };
 }
 
 fn trimQuotes(text: []const u8) []const u8 {
