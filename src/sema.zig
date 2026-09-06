@@ -510,6 +510,9 @@ pub const FnSig = struct {
     return_ty: Ty,
     error_ty: ?Ty,
     extern_name: ?[]const u8,
+    /// `fn(fmt: [*]const u8, ...)`, an `#extern` C function: a call passes more arguments
+    /// after `params`.
+    variadic: bool = false,
     inline_hint: bool,
     no_inline: bool,
     no_return: bool,
@@ -2656,6 +2659,10 @@ const Checker = struct {
                         self.emitError(decl.span, "`#{s}` names the library and the symbol: `#{s}(\"kernel32\", \"{s}\")`", .{ attr.name, attr.name, decl.name });
                         return error.SemanticFailed;
                     }
+                    if (decl.is_variadic and externName(decl.attrs) == null) {
+                        self.emitError(decl.span, "only an `#extern` C function takes `...`: a Fels function takes any number of values as a slice", .{});
+                        return error.SemanticFailed;
+                    }
 
                     var params = std.ArrayList(ParamSig).empty;
                     errdefer params.deinit(self.allocator);
@@ -2676,6 +2683,7 @@ const Checker = struct {
                         .return_ty = ret,
                         .error_ty = err_ty,
                         .extern_name = externName(decl.attrs),
+                        .variadic = decl.is_variadic,
                         .inline_hint = hasAttr(decl.attrs, "inline"),
                         .no_inline = hasAttr(decl.attrs, "noinline"),
                         .no_return = hasAttr(decl.attrs, "noreturn"),
