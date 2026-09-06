@@ -281,6 +281,9 @@ pub const FunctionDecl = struct {
     output_type_params: []const []const u8 = &.{},
     type_constraints: []const TypeConstraint = &.{}, // $T: Interface constraints
     params: []const Param,
+    /// `fn(fmt: [*]const u8, ...)`: the function takes more arguments after `params`, as a C
+    /// variadic function does. Only an `#extern` function may.
+    is_variadic: bool = false,
     return_ty: TypeRef,
     error_ty: ?ErrorSpec,
     /// Optional `where { … }` clause: a comptime predicate run per generic

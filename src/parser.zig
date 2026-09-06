@@ -1627,9 +1627,19 @@ pub const Parser = struct {
         errdefer type_params.deinit(self.allocator);
         var type_constraints: std.ArrayList(ast.TypeConstraint) = .empty;
         errdefer type_constraints.deinit(self.allocator);
+        var is_variadic = false;
 
         if (!self.check(.r_paren)) {
             while (true) {
+                // `...` after the parameters: a C variadic function. Nothing comes after it.
+                if (self.match(.dot_dot_dot)) {
+                    is_variadic = true;
+                    if (!self.check(.r_paren)) {
+                        try self.errorAt(self.peek(), "`...` is the last parameter");
+                        return error.ParseFailed;
+                    }
+                    break;
+                }
                 if (self.match(.dollar)) {
                     // $T                  — bare type param (a `where T: …` clause may constrain it)
                     // $T: type            — unconstrained type param
@@ -1748,6 +1758,7 @@ pub const Parser = struct {
             .output_type_params = try output_type_params.toOwnedSlice(self.allocator),
             .type_constraints = try type_constraints.toOwnedSlice(self.allocator),
             .params = try params.toOwnedSlice(self.allocator),
+            .is_variadic = is_variadic,
             .return_ty = return_ty,
             .error_ty = error_ty,
             .where_clause = where_clause,
