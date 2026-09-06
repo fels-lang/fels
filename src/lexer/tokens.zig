@@ -34,6 +34,7 @@ pub const TokenKind = enum {
     dot_lbrace, // .{
     dot_dot, // ..
     dot_dot_eq, // ..=
+    dot_dot_dot, // ...  (a C function's variadic parameters)
     l_bracket_star, // [*
     l_bracket_colon, // [:
 
@@ -193,6 +194,7 @@ pub const Lexer = struct {
                 if (self.match('{')) return token(.dot_lbrace, start, self.index);
                 if (self.match('.')) {
                     if (self.match('=')) return token(.dot_dot_eq, start, self.index);
+                    if (self.match('.')) return token(.dot_dot_dot, start, self.index);
                     return token(.dot_dot, start, self.index);
                 }
                 return token(.dot, start, self.index);
