@@ -3739,6 +3739,10 @@ const Checker = struct {
                 if (self.resolveTypeParam(name)) |type_param_ty| return type_param_ty;
                 if (self.resolveSymbol(name)) |id| {
                     try self.env.expr_symbols.put(expr.id, id);
+                    if (self.env.fn_sigs.get(id)) |sig| if (sig.variadic) {
+                        self.emitError(expr.span, "`{s}` takes `...`, so it is called, not taken as a value: a Fels function value has a fixed number of parameters", .{name});
+                        return error.SemanticFailed;
+                    };
                     // A top-level constant declared further down than the one being typed.
                     if (self.env.get(id) == null) try self.typePendingConst(id, expr.span);
                     // Record the resolved type for this reference. The `.ident`
