@@ -120,6 +120,8 @@ pub const IrFunction = struct {
     /// Library for an `#extern("lib", "symbol")` function — used by the comptime
     /// FFI bridge to know which DLL to load. Null for non-extern functions.
     extern_lib: ?[]const u8 = null,
+    /// `fn(fmt: [*]const u8, ...)`: a C function a call passes more arguments than `params`.
+    variadic: bool = false,
     inline_hint: bool,
     no_inline: bool,
     no_return: bool,
@@ -425,6 +427,10 @@ pub const CastInstr = struct {
 pub const CallInstr = struct {
     callee: []const u8,
     args: []const Value,
+    /// The types of the arguments past a variadic C function's parameters, in order, as C
+    /// receives them. The backend passes each as its type: those arguments have no parameter
+    /// to take one from, and an untyped `.imm` would be a zero-width `i0`.
+    vararg_tys: []const IrType = &.{},
 };
 
 pub const CallIndirectInstr = struct {
@@ -1444,6 +1450,7 @@ fn foldFunctionConstants(allocator: std.mem.Allocator, function: IrFunction) !Ir
         .blocks = try blocks.toOwnedSlice(allocator),
         .extern_name = function.extern_name,
         .extern_lib = function.extern_lib,
+        .variadic = function.variadic,
         .inline_hint = function.inline_hint,
         .no_inline = function.no_inline,
         .no_return = function.no_return,
@@ -1584,6 +1591,7 @@ fn simplifyBranches(allocator: std.mem.Allocator, module: *IrModule) !void {
             .blocks = try blocks.toOwnedSlice(allocator),
             .extern_name = function.extern_name,
             .extern_lib = function.extern_lib,
+        .variadic = function.variadic,
             .inline_hint = function.inline_hint,
             .no_inline = function.no_inline,
             .no_return = function.no_return,
@@ -1650,6 +1658,7 @@ fn eliminateFunctionDeadCode(allocator: std.mem.Allocator, function: IrFunction)
         .blocks = try blocks.toOwnedSlice(allocator),
         .extern_name = function.extern_name,
         .extern_lib = function.extern_lib,
+        .variadic = function.variadic,
         .inline_hint = function.inline_hint,
         .no_inline = function.no_inline,
         .no_return = function.no_return,
@@ -2017,6 +2026,7 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
         .blocks = blocks,
         .extern_name = externName(decl.attrs),
         .extern_lib = externLibName(decl.attrs),
+        .variadic = decl.is_variadic,
         .inline_hint = hasAttr(decl.attrs, "inline"),
         .no_inline = hasAttr(decl.attrs, "noinline"),
         .no_return = hasAttr(decl.attrs, "noreturn"),
@@ -4489,6 +4499,12 @@ const FunctionLowerer = struct {
                             // pointer (no closure/env) — C cannot call a fat closure.
                             if (sig.extern_name != null and pty == .fn_ptr) raw_fn_ptr = true;
                             value_param_index += 1;
+                        } else if (self.types.vararg_types.get(value.id)) |passed| {
+                            // An argument of a C function's `...`, as C receives it.
+                            const ty = try lowerSemaTypeWithEnv(self.allocator, passed, self.types, self.symbols);
+                            try args.append(self.allocator, try self.lowerVararg(value, ty));
+                            try arg_tys.append(self.allocator, ty);
+                            continue;
                         }
                     } else if (indirect_params) |params| {
                         if (arg_idx < params.len)
@@ -4659,7 +4675,9 @@ const FunctionLowerer = struct {
                 // (module-qualified on a collision), else the bare name.
                 const call_callee = self.types.generic_call_insts.get(call.callee.id) orelse
                     (if (callee_sym) |id| self.symbols.symbol(id).link_name else callee_name);
-                break :blk try self.emit(self.exprType(expr), .{ .call = .{ .callee = call_callee, .args = arg_slice } });
+                const fixed = if (direct_sig) |sig| sig.params.len else arg_ty_slice.len;
+                const vararg_tys = if (direct_sig != null and direct_sig.?.variadic and arg_ty_slice.len > fixed) arg_ty_slice[fixed..] else &.{};
+                break :blk try self.emit(self.exprType(expr), .{ .call = .{ .callee = call_callee, .args = arg_slice, .vararg_tys = vararg_tys } });
             },
             .field => |field| blk: {
                 // `ParseError.eof`: an error, the number of its variant or, for a set whose
@@ -4932,6 +4950,14 @@ const FunctionLowerer = struct {
                 break :blk v;
             },
         };
+    }
+
+    /// An argument of a variadic C function's `...`, at the type C receives it as
+    /// (`sema.varargType`): a narrower number widened to it, a bool as an `i32`.
+    fn lowerVararg(self: *FunctionLowerer, expr: ast.Expr, ty: IrType) LowerError!Value {
+        const v = try self.lowerExprAs(expr, ty);
+        if (self.exprType(expr) == .bool) return self.emit(ty, .{ .cast = .{ .kind = .as, .value = v } });
+        return v;
     }
 
     /// A bare `.variant` that sema did not type, lowered into a slot of enum type: an element
