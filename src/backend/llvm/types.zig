@@ -102,7 +102,7 @@ pub fn fnType(cg: *ModuleCg, func: ir.IrFunction) !llvm.LLVMTypeRef {
     else
         fallibleReturnType(cg, func);
     if (!is_extern and returnsIndirect(cg, ret_lty)) return try sretFnType(cg, param_tys);
-    return llvm.LLVMFunctionType(ret_lty, param_tys.ptr, @intCast(param_tys.len), 0);
+    return llvm.LLVMFunctionType(ret_lty, param_tys.ptr, @intCast(param_tys.len), @intFromBool(func.variadic));
 }
 
 /// Aggregates larger than this many bytes are returned through a hidden `sret` pointer.

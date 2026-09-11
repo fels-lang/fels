@@ -872,7 +872,7 @@ fn lowerCall(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrType
         const v = if (i < n_param) switch (arg) {
             .imm => |imm| values.lowerImmAs(cg, imm, param_tys[i]),
             else => values.coerce(cg.builder, cg.ctx, resolveVal(cg, fncg, arg, .unknown), param_tys[i]),
-        } else resolveVal(cg, fncg, arg, .unknown);
+        } else lowerVararg(cg, fncg, arg, varargTy(call, i - n_param));
         args[lead + i] = v;
     }
 
@@ -883,6 +883,20 @@ fn lowerCall(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrType
         return llvm.LLVMBuildLoad2(cg.builder, ty, args[0], "");
     }
     return if (ret_ty == .void) null else result;
+}
+
+/// The type of argument `i` past a variadic C function's parameters, as C receives it.
+fn varargTy(call: ir.CallInstr, i: usize) ir.IrType {
+    return if (i < call.vararg_tys.len) call.vararg_tys[i] else .unknown;
+}
+
+/// An argument past a variadic C function's parameters: a literal at its type, as there is no
+/// parameter to give it one.
+fn lowerVararg(cg: *ModuleCg, fncg: anytype, arg: ir.Value, ty: ir.IrType) llvm.LLVMValueRef {
+    return switch (arg) {
+        .imm => |imm| if (ty == .unknown) resolveVal(cg, fncg, arg, ty) else values.lowerImmAs(cg, imm, types.lower(cg, ty)),
+        else => resolveVal(cg, fncg, arg, ty),
+    };
 }
 
 /// Win64 C-ABI call to an `#extern` function: small by-value structs are
@@ -908,7 +922,7 @@ fn lowerCallAbi(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrT
         const p: abi.ParamAbi = if (i < sig.params.len)
             sig.params[i]
         else
-            .{ .class = .direct, .ir_ty = .unknown };
+            .{ .class = .direct, .ir_ty = varargTy(call, i - sig.params.len) };
         args[ai] = switch (p.class) {
             .direct => switch (arg) {
                 .imm => |imm| values.lowerImmAs(cg, imm, types.lower(cg, p.ir_ty)),

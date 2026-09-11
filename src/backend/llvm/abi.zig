@@ -246,7 +246,7 @@ pub fn externFnType(cg: *ModuleCg, func: ir.IrFunction, sig: FnAbi) !llvm.LLVMTy
         .coerce => |as| as,
         .indirect => llvm.LLVMVoidTypeInContext(cg.ctx),
     };
-    return llvm.LLVMFunctionType(ret_lty, tys.ptr, @intCast(n), 0);
+    return llvm.LLVMFunctionType(ret_lty, tys.ptr, @intCast(n), @intFromBool(func.variadic));
 }
 
 /// Attach `sret`/`byval` type attributes so LLVM's own Win64 lowering matches
