@@ -251,6 +251,7 @@ pub const fn_flag = struct {
     pub const cold: u32 = 1 << 5;
     pub const weak: u32 = 1 << 6;
     pub const keep: u32 = 1 << 7;
+    pub const variadic: u32 = 1 << 8;
 };
 
 /// A function: its names and flags, its return and error types (`err` is `none` when it cannot
@@ -632,6 +633,11 @@ const Builder = struct {
                 op = .call;
                 a = try self.intern(call.callee);
                 b = try self.values(call.args);
+                if (call.vararg_tys.len > 0) {
+                    c = @intCast(self.extra.items.len);
+                    try self.extra.append(self.gpa, @intCast(call.vararg_tys.len));
+                    for (call.vararg_tys) |t| try self.extra.append(self.gpa, try self.typeId(t));
+                }
             },
             .call_indirect => |call| {
                 op = .call_indirect;
@@ -836,6 +842,7 @@ const Builder = struct {
         if (f.cold) flags |= fn_flag.cold;
         if (f.weak) flags |= fn_flag.weak;
         if (f.keep) flags |= fn_flag.keep;
+        if (f.variadic) flags |= fn_flag.variadic;
 
         const params_start: u32 = @intCast(self.params.items.len);
         for (f.params, 0..) |p, i| {
@@ -1240,6 +1247,7 @@ const Rebuilder = struct {
             .cold = f.flags & fn_flag.cold != 0,
             .weak = f.flags & fn_flag.weak != 0,
             .keep = f.flags & fn_flag.keep != 0,
+            .variadic = f.flags & fn_flag.variadic != 0,
             .section = self.optStr(f.section),
             .link_name = self.optStr(f.link_name),
         };
@@ -1262,7 +1270,13 @@ const Rebuilder = struct {
             .unary => .{ .unary = .{ .op = @enumFromInt(sub), .value = self.value(a) } },
             .binary => .{ .binary = .{ .op = @enumFromInt(sub), .lhs = self.value(a), .rhs = self.value(b) } },
             .cast => .{ .cast = .{ .kind = @enumFromInt(sub), .value = self.value(a) } },
-            .call => .{ .call = .{ .callee = s.str(a), .args = try self.values(b) } },
+            .call => blk: {
+                const vtys = try self.a.alloc(ir.IrType, if (c == none) 0 else s.extra[c]);
+                if (c != none) {
+                    for (s.extra[c + 1 ..][0..vtys.len], vtys) |t, *to| to.* = (try self.ty(t)).*;
+                }
+                break :blk .{ .call = .{ .callee = s.str(a), .args = try self.values(b), .vararg_tys = vtys } };
+            },
             .call_indirect => blk: {
                 const args = try self.values(b);
                 const after = b + 1 + s.extra[b];
