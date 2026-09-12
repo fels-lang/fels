@@ -1761,6 +1761,7 @@ fn renderParams(v: *const View, o: *Out, c: Callable, ranges: ?*std.ArrayList([2
             if (ranges) |r| r.append(v.a, .{ st, o.len() }) catch {};
             n += 1;
         }
+        if (d.is_variadic) o.s(if (n > 0) ", ..." else "...");
         o.s(")");
         if (!isVoidRef(d.return_ty)) {
             o.s(" -> ");
