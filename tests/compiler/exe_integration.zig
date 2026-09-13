@@ -2177,6 +2177,78 @@ test "exe: comptime FFI with a string arg is rejected from #run too" {
     } else |_| {}
 }
 
+const variadic_c_source =
+    \\// The kinds of the arguments after `kinds` ('i' an int, 'l' a long long, 'd' a double, 'p' a
+    \\// pointer to an int), read as C reads them, and their sum.
+    \\double mix(const char *kinds, ...) {
+    \\    __builtin_va_list ap;
+    \\    __builtin_va_start(ap, kinds);
+    \\    double sum = 0;
+    \\    for (const char *k = kinds; *k; k++) {
+    \\        if (*k == 'i') sum += __builtin_va_arg(ap, int);
+    \\        else if (*k == 'l') sum += (double)__builtin_va_arg(ap, long long);
+    \\        else if (*k == 'd') sum += __builtin_va_arg(ap, double);
+    \\        else if (*k == 'p') sum += *__builtin_va_arg(ap, int *);
+    \\    }
+    \\    __builtin_va_end(ap);
+    \\    return sum;
+    \\}
+    \\
+;
+
+test "exe: a variadic C function takes its arguments past the parameters as C promotes them" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+
+    // `...` could not be declared: bindgen bound only the fixed parameters of such a function.
+    // A `u8`, an `i16` and a bool go as an `int`, an `f32` as a `double`, a literal as an `int`,
+    // a `double` or, too big for an `int`, a `long long`. The C side is compiled by the LLVM's
+    // own clang, without headers or a C runtime.
+    const windows = builtin.os.tag == .windows;
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ".zig-cache/felsvar.c", .data = variadic_c_source });
+    const tools = [_][]const []const u8{
+        if (windows)
+            &.{ fels.llvm_path ++ "/bin/clang.exe", "-c", "--target=x86_64-pc-windows-msvc", "-O1", "-ffreestanding", "-fno-stack-protector", "-o", ".zig-cache/felsvar.obj", ".zig-cache/felsvar.c" }
+        else
+            &.{ fels.llvm_path ++ "/bin/clang", "-c", "-O1", "-fno-pic", "-ffreestanding", "-fno-stack-protector", "-o", ".zig-cache/felsvar.o", ".zig-cache/felsvar.c" },
+        if (windows)
+            &.{ fels.llvm_path ++ "/bin/llvm-lib.exe", "/out:.zig-cache/felsvar.lib", ".zig-cache/felsvar.obj" }
+        else
+            &.{ fels.llvm_path ++ "/bin/llvm-ar", "rcs", ".zig-cache/libfelsvar.a", ".zig-cache/felsvar.o" },
+    };
+    for (tools) |argv| {
+        var tool = std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .inherit, .stderr = .inherit }) catch return error.SkipZigTest; // this LLVM has no clang
+        switch (try tool.wait(io)) {
+            .exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
+            else => return error.CompileFailed,
+        }
+    }
+    const src =
+        \\#extern("felsvar", "mix") mix :: fn(kinds: [*]const u8, ...) -> f64;
+        \\main :: fn() -> i32 {
+        \\    small: u8 = 200;
+        \\    neg: i16 = -3;
+        \\    f: f32 = 1.5;
+        \\    big: i64 = -5000000000;
+        \\    n: i32 = 7;
+        \\    yes := true;
+        \\    if mix("".ptr) != 0.0 { return 1; }
+        \\    // 200 - 3 + 1 + 4, then 1.5 + 0.25, then -5000000000 + 6000000000, then 7
+        \\    if mix("iiiiddllp".ptr, small, neg, yes, 4, f, 0.25, big, 6000000000, &n) != 1000000210.75 { return 2; }
+        \\    return 42;
+        \\}
+    ;
+    const sdk = fels.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (sdk.len > 0) &.{ sdk, ".zig-cache" } else &.{".zig-cache"};
+    for ([_]u2{ 0, 2 }) |opt| {
+        const label = try std.fmt.allocPrint(a, "exe_variadic_c_o{d}", .{opt});
+        try std.testing.expectEqual(@as(u32, 42), try compileAndRunLinked(a, src, label, opt, true, lib_paths));
+    }
+}
+
 test "exe: main returning 42 propagates exit code" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

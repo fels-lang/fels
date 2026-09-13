@@ -1962,6 +1962,23 @@ test "diagnostics: a labeled break or continue needs a loop of that name around 
     try expectNoError(a, "", "main :: fn() -> i32 { a: for i in 0..2 { break a; } a: for j in 0..2 { continue a; } n: i32 = 3; return n; }");
 }
 
+test "diagnostics: `...` is for a C function, after its parameters, with what C takes there" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const printf = "#extern(\"c\", \"printf\") printf :: fn(fmt: [*]const u8, ...) -> i32;\n";
+    var p = try fels.parser_mod.Parser.init(a, "va.fels", "#extern(\"c\", \"f\") f :: fn(..., n: i32);\n", 1);
+    try std.testing.expectError(error.ParseFailed, p.parseModule());
+    try std.testing.expectEqualStrings("`...` is the last parameter", p.diagnostics.items[0].message);
+    try expectFirstError(a, "sum :: fn(n: i32, ...) -> i32 { return n; }\nmain :: fn() -> i32 { return sum(1, 2); }", &.{"only an `#extern` C function takes `...`"});
+    try expectFirstError(a, printf ++ "main :: fn() -> i32 { return printf(); }", &.{"`printf` expects at least 1 argument(s), but 0 were provided"});
+    try expectFirstError(a, printf ++ "main :: fn() -> i32 { return printf(\"%s\".ptr, \"text\"); }", &.{ "`printf` takes a number, a bool or a pointer after its parameters", "pass a C string as `.ptr`" });
+    try expectFirstError(a, printf ++ "P :: struct { x: i32 }\nmain :: fn() -> i32 { p: P = .{ 1 }; return printf(\"%d\".ptr, p); }", &.{"not `P`"});
+    try expectFirstError(a, printf ++ "main :: fn() -> i32 { return printf(\"%d\".ptr, 99999999999999999999); }", &.{"does not fit"});
+    try expectFirstError(a, printf ++ "main :: fn() -> i32 { f := printf; return 0; }", &.{"`printf` takes `...`, so it is called, not taken as a value"});
+    try expectNoError(a, printf, "main :: fn() -> i32 { s: u8 = 1; f: f32 = 2.0; p: ?*i32 = null; return printf(\"%d %f %p %d %lld\\n\".ptr, s, f, p, true, 5000000000); }");
+}
+
 test "diagnostics: a local from a literal leaves alone what compiled before" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
