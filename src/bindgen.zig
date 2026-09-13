@@ -1,7 +1,8 @@
 //! `fels bindgen` — generate Fels FFI bindings from a C header using libclang.
 //!
 //! Parses an arbitrary C header into a clang AST, then emits idiomatic Fels:
-//!   * C functions  → `#extern("<lib>", "<name>") name :: fn(...) -> ...;`
+//!   * C functions  → `#extern("<lib>", "<name>") name :: fn(...) -> ...;`, a variadic one's
+//!     `...` as it is
 //!   * C structs    → `Name :: struct { ... }`
 //!   * C enums      → `pub CONST :: <value>;` (+ a `Name :: i32` alias)
 //!   * C typedefs   → `Name :: <type>;` aliases
@@ -13,7 +14,7 @@
 //! v1 maps the common scalar/pointer/struct/enum/array shapes. Not yet handled
 //! (emitted best-effort, refined later): preprocessor `#define` constants,
 //! C unions with bitfields (emitted as an opaque byte blob of the right size), function-pointer
-//! typedefs (mapped to a raw pointer), bitfields, and variadics.
+//! typedefs (mapped to a raw pointer), and bitfields.
 
 const std = @import("std");
 const cc = @import("clang_c.zig");
@@ -337,6 +338,9 @@ const Generator = struct {
             else
                 try params.print(self.arena, "arg{d}: {s}", .{ i, pty });
         }
+        // A C variadic function takes its `...` as it is.
+        if (cl.clang_isFunctionTypeVariadic(cl.clang_getCursorType(cursor)) != 0)
+            try params.appendSlice(self.arena, if (n > 0) ", ..." else "...");
 
         const ret = cl.clang_getCursorResultType(cursor);
         const ret_str = try self.mapType(ret);
@@ -344,10 +348,6 @@ const Generator = struct {
             ""
         else
             try std.fmt.allocPrint(self.arena, " -> {s}", .{ret_str});
-
-        // C variadics aren't representable; bind the fixed parameters and flag it.
-        if (cl.clang_isFunctionTypeVariadic(cl.clang_getCursorType(cursor)) != 0)
-            try self.out.appendSlice(self.arena, "// note: C variadic function — only the fixed parameters are bound\n");
 
         try self.out.print(self.arena,
             \\#extern("{s}", "{s}")

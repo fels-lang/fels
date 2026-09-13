@@ -573,7 +573,7 @@ test "bindgen: C header lowers to Fels structs, enum consts, and #extern fns" {
         "pub use_opaque :: fn(o: *Opaque);",
         // a C function pointer is a thin `extern fn` (a plain `fn` is a Fels closure)
         "pub reduce :: fn(op: extern fn(i32, i32) -> i32, a: i32) -> i32;",
-        "// note: C variadic function",
+        "pub variadic :: fn(n: i32, ...) -> i32;",
     }) |needle| {
         std.testing.expect(std.mem.indexOf(u8, out, needle) != null) catch |err| {
             std.debug.print("bindgen output missing '{s}'\n--- full output ---\n{s}\n", .{ needle, out });
