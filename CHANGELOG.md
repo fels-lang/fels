@@ -7,6 +7,10 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **C variadic functions**: `#extern("c", "printf") printf :: fn(fmt: [*]const u8, ...) -> i32;`
+  takes any number of arguments after its parameters, each passed as C passes it (a narrower
+  integer and a bool as an `int`, an `f32` as a `double`, a number or a pointer otherwise as
+  it is). `fels bindgen` keeps a header's `...` instead of dropping it.
 - **`for x in v` over a collection**: a type with an `items(self) -> []T` method, such as
   `Vec`, loops over the slice it returns, with `for x, i in v` and `for &x in v` as on a slice.
   It took `v.items()` before.
