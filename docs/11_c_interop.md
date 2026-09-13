@@ -74,6 +74,40 @@ a `BOOL` can be `i32` in one module and `bool` in another.
 CloseHandle :: fn(handle: usize) -> i32;      // the C header's BOOL
 ```
 
+### Variadic functions
+
+A C function that takes `...` is declared with `...` after its parameters:
+
+```fels
+#extern("c", "printf")
+printf :: fn(fmt: [*]const u8, ...) -> i32;
+
+main :: fn() -> i32 {
+    count: u8 = 3;
+    printf("%s: %d at %.2f\n".ptr, "apples".ptr, count, 0.5);
+    return 0;
+}
+```
+
+A call can pass any number of arguments after the parameters. Each one goes the way a C caller
+passes it:
+
+| argument                                          | C receives it as                              |
+|---------------------------------------------------|-----------------------------------------------|
+| `i8`, `i16`, `u8`, `u16`, `i1`–`i7`, `u1`–`u7`, `bool` | an `int`                                 |
+| an integer literal                                | an `int`, or a `long long` if it does not fit |
+| `i32`, `u32`, `i64`, `u64`, `isize`, `usize`      | itself                                        |
+| `f32`, `f64`, a float literal                     | a `double`                                    |
+| a pointer (`*T`, `[*]T`, `?*T`)                   | itself                                        |
+
+Any other argument is an error: a slice, a struct, or a Fels function. Pass a C string as its
+`.ptr`. The compiler doesn't read the format string, so its `%` codes have to match these
+types: `%d` for an `int`, `%lld` for an `i64`, `%zu` for a `usize`, `%f` for a `double`.
+
+Only an `#extern` function can take `...`. A Fels function takes any number of values as a
+slice. You can only call a variadic function. Taking one as a value is an error, because a
+Fels function value has a fixed number of parameters.
+
 ## Passing structs by value (the raylib pattern)
 
 C UI and graphics libraries pass small aggregates by value everywhere. Declare the struct on the
@@ -507,10 +541,10 @@ bindgen handles the awkward parts of real headers too:
   ABI-correct, and you read the contents via casts.
 - **Opaque / forward-declared types** (`typedef struct Foo Foo;` handles) become
   `pub Foo :: opaque;`, so `*Foo` resolves and the module always compiles.
-- **Variadic** functions bind their fixed parameters and carry a `// note:` flag, since the
-  `...` itself isn't representable.
+- **Variadic** functions keep their `...` (see "Variadic functions" above):
+  `int log_msg(int level, const char *fmt, ...)` → `pub log_msg :: fn(level: i32, fmt: [*]const u8, ...) -> i32;`.
 - `long double` maps to `f64` (they're identical on Win64).
 
 **Still not handled:** function-like / expression `#define` macros (such as
-`#define DEG2RAD (PI/180.0)`) and the variadic `...`. If a header is unusually complex, skim the
-generated bindings before you rely on them.
+`#define DEG2RAD (PI/180.0)`). If a header is unusually complex, skim the generated bindings
+before you rely on them.
