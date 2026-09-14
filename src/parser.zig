@@ -1208,6 +1208,19 @@ pub const Parser = struct {
         errdefer variants.deinit(self.allocator);
 
         while (!self.check(.r_brace) and !self.check(.eof)) {
+            // A method, as in a struct: `[pub] name :: fn(self: Self) { … }`. It is hoisted to
+            // `Enum.name` and called on a value as `c.name()`.
+            if (self.check(.hash) or self.check(.keyword_pub) or (self.check(.ident) and self.peekKind(1) == .colon_colon)) {
+                const method_attrs = try self.parseAttributes();
+                const is_pub = self.match(.keyword_pub);
+                const method_name = try self.expect(.ident, "expected a method name");
+                _ = try self.expect(.colon_colon, "expected `::` after the method name");
+                _ = try self.expect(.keyword_fn, "expected fn after `::` in an enum body");
+                var method = try self.finishFunction(method_attrs, method_name, false);
+                method.is_public = is_pub;
+                try self.hoisted_methods.append(self.allocator, try self.hoistMethod(name, &.{}, &.{}, method));
+                continue;
+            }
             const start = self.peek();
             _ = self.match(.dot); // optional leading dot
             const variant_name = try self.expect(.ident, "expected variant name");
