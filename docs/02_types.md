@@ -470,6 +470,28 @@ move :: fn(dir: Direction) -> void { /* ... */ }
 move(.east);
 ```
 
+#### Methods
+
+An enum's body can hold its methods, as a struct's does. You call them on a value:
+
+```fels
+Direction :: enum {
+    north,
+    south,
+    east,
+    west,
+
+    opposite :: fn(self: Self) -> Direction {
+        return match self { .north => .south, .south => .north, .east => .west, .west => .east };
+    }
+    turn_around :: fn(self: *Self) { *self = (*self).opposite(); }
+}
+
+d := Direction.north;
+back := d.opposite();       // .south
+d.turn_around();            // d is .south
+```
+
 The context can be a typed local, an assignment, a call argument, the declared return type,
 or a field of a struct literal (positional or named):
 
