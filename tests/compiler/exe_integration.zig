@@ -3136,6 +3136,49 @@ test "exe: a sub-byte integer holds only the values of its width" {
     }
 }
 
+test "exe: an enum's body holds its methods, called on a value" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // An enum's body held variants only: its methods were functions outside it. By value
+    // (`Self` and the enum's name), by pointer, on an enum with payloads, and at compile time.
+    const src =
+        \\Color :: enum {
+        \\    red,
+        \\    green,
+        \\    blue,
+        \\
+        \\    is_red :: fn(self: Self) -> bool { return self == .red; }
+        \\    pub next :: fn(self: Color) -> Color {
+        \\        return match self { .red => .green, .green => .blue, .blue => .red };
+        \\    }
+        \\    #inline
+        \\    paint :: fn(self: *Self) { *self = (*self).next(); }
+        \\}
+        \\Shape :: enum {
+        \\    circle: f64,
+        \\    square: f64,
+        \\    area :: fn(self: Self) -> f64 {
+        \\        return match self { .circle |r| => 3.0 * r * r, .square |s| => s * s };
+        \\    }
+        \\}
+        \\check :: fn() -> i32 {
+        \\    c: Color = .red;
+        \\    if !c.is_red() { return 1; }
+        \\    if c.next() != .green { return 2; }
+        \\    c.paint();
+        \\    c.paint();
+        \\    if c != .blue || c.is_red() { return 3; }
+        \\    s: Shape = .square(3.0);
+        \\    if s.area() != 9.0 { return 4; }
+        \\    return 42;
+        \\}
+        \\R :: #run check();
+        \\main :: fn() -> i32 { return if R == 42 { check() } else { R }; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_enum_methods"));
+}
+
 test "exe: labeled break and continue leave the loop they name" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
