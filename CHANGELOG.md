@@ -7,6 +7,8 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **Methods in an enum's body**, as in a struct's: `Color :: enum { red, green,
+  is_red :: fn(self: Self) -> bool { … } }`, called as `c.is_red()`.
 - **C variadic functions**: `#extern("c", "printf") printf :: fn(fmt: [*]const u8, ...) -> i32;`
   takes any number of arguments after its parameters, each passed as C passes it (a narrower
   integer and a bool as an `int`, an `f32` as a `double`, a number or a pointer otherwise as
