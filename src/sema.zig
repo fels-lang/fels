@@ -644,6 +644,10 @@ pub const TypeEnv = struct {
     /// address-of'd because the method takes a `*Self`/`*const Self` (UFCS auto-ref).
     /// IR lowers these receivers via `lowerLValueAddress`.
     receiver_auto_addr: std.AutoHashMap(ast.NodeId, void),
+    /// The other way round: method-call NodeIds whose pointer receiver is dereferenced, as
+    /// the method takes the value (`self.get()` with `self: *Self`, `get(self: Self)`). IR
+    /// passes `*receiver`.
+    receiver_auto_deref: std.AutoHashMap(ast.NodeId, void),
     /// The type arguments a call of a generic function passes (by its callee's node id),
     /// where they are not the `$T: type` parameters: all of them, or none.
     call_type_args: std.AutoHashMap(ast.NodeId, TypeArgs),
@@ -715,6 +719,7 @@ pub const TypeEnv = struct {
             .vararg_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .iterator_next_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .receiver_auto_addr = std.AutoHashMap(ast.NodeId, void).init(allocator),
+            .receiver_auto_deref = std.AutoHashMap(ast.NodeId, void).init(allocator),
             .call_type_args = std.AutoHashMap(ast.NodeId, TypeArgs).init(allocator),
             .enum_lits = std.AutoHashMap(ast.NodeId, EnumLit).init(allocator),
             .literal_types = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
@@ -751,6 +756,7 @@ pub const TypeEnv = struct {
         self.vararg_types.deinit();
         self.iterator_next_types.deinit();
         self.receiver_auto_addr.deinit();
+        self.receiver_auto_deref.deinit();
         self.call_type_args.deinit();
         self.enum_lits.deinit();
         self.literal_types.deinit();
@@ -5050,6 +5056,11 @@ const Checker = struct {
                 arg_i += 1;
                 continue;
             }
+            if (is_method and arg_i == 0 and self.receiverNeedsDeref(arg_ty, param.ty)) {
+                try self.env.receiver_auto_deref.put(call.callee.id, {});
+                arg_i += 1;
+                continue;
+            }
             if (!try self.compatible(arg_ty, param.ty)) {
                 self.emitError(arg_expr.span, "argument {d} of `{s}`: expected `{s}`, found `{s}`", .{ arg_i + 1, name, self.formatTy(param.ty), self.formatTy(arg_ty) });
                 return error.SemanticFailed;
@@ -5363,6 +5374,23 @@ const Checker = struct {
         // a discarded temporary is harmless. Addressable receivers point in place.
         _ = recv_expr;
         return self.compatible(recv_ty, pointee) catch false;
+    }
+
+    /// UFCS auto-deref, the other way round from `receiverNeedsAddress`: a pointer receiver
+    /// (`self.get()` with `self: *Self`) for a method that takes the value it points at. Not
+    /// for a parameter that is a type parameter itself (`x.show()` with `show :: fn(v: $T)`
+    /// takes the pointer).
+    fn receiverNeedsDeref(self: *Checker, recv_ty: Ty, param_ty: Ty) bool {
+        const pointee = switch (recv_ty) {
+            .pointer, .const_ptr => |p| p.*,
+            else => return false,
+        };
+        switch (param_ty) {
+            .pointer, .const_ptr, .type_param, .unknown, .borrow => return false,
+            else => {},
+        }
+        if (self.compatible(recv_ty, param_ty) catch false) return false;
+        return self.compatible(pointee, param_ty) catch false;
     }
 
     fn checkComptimeIf(self: *Checker, ci: ast.ComptimeIfStmt) SemanticError!void {
@@ -5999,7 +6027,12 @@ const Checker = struct {
             else
                 try self.inferExpr(arg_expr);
             try arg_tys.append(self.allocator, arg_ty);
-            try self.bindTypeVars(param.ty, arg_ty, &binding);
+            // A pointer receiver of a method that takes the value binds by what it points at.
+            const bound_by = if (is_method and arg_i == firstValueArg(sig, given) + 1 and (param.ty == .named or param.ty == .generic_app)) switch (arg_ty) {
+                .pointer, .const_ptr => |p| p.*,
+                else => arg_ty,
+            } else arg_ty;
+            try self.bindTypeVars(param.ty, bound_by, &binding);
         }
         // A `$T: type` left to inference must be decided by the values.
         if (given == .none) for (sig.params) |param| {
@@ -6028,6 +6061,10 @@ const Checker = struct {
                 receiver_seen = true;
                 if (self.receiverNeedsAddress(arg_ty, expected, arg_expr)) {
                     try self.env.receiver_auto_addr.put(call.callee.id, {});
+                    continue;
+                }
+                if (self.receiverNeedsDeref(arg_ty, expected)) {
+                    try self.env.receiver_auto_deref.put(call.callee.id, {});
                     continue;
                 }
             }
@@ -8837,6 +8874,17 @@ fn varargType(ty: Ty, value: UntypedIntLit) ?Ty {
         .optional => |inner| if (inner.* == .pointer or inner.* == .const_ptr) ty else null,
         else => null,
     };
+}
+
+/// The index among a generic call's arguments of the first value, the receiver of a method
+/// call: after the type arguments the call passes (`given`).
+fn firstValueArg(sig: FnSig, given: TypeArgs) usize {
+    var i: usize = 0;
+    for (sig.params) |p| {
+        if (!p.is_type_param) return i;
+        if (given.gives(sig, p)) i += 1;
+    }
+    return i;
 }
 
 fn trimQuotes(text: []const u8) []const u8 {
