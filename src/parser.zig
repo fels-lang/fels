@@ -1325,13 +1325,13 @@ pub const Parser = struct {
     fn parseMatchPattern(self: *Parser) ParseError!ast.MatchPattern {
         if (self.match(.keyword_else)) return .else_arm;
 
-        if (self.check(.string_lit)) {
+        if (isString(self.peekKind(0))) {
             var values: std.ArrayList([]const u8) = .empty;
             errdefer values.deinit(self.allocator);
-            try values.append(self.allocator, self.advance().text(self.source));
-            while (self.check(.comma) and self.peekKind(1) == .string_lit) {
+            try values.append(self.allocator, try self.stringLiteral(self.advance()));
+            while (self.check(.comma) and isString(self.peekKind(1))) {
                 _ = self.advance(); // comma
-                try values.append(self.allocator, self.advance().text(self.source));
+                try values.append(self.allocator, try self.stringLiteral(self.advance()));
             }
             return .{ .strings = try values.toOwnedSlice(self.allocator) };
         }
@@ -1834,7 +1834,7 @@ pub const Parser = struct {
         if (first or i + 1 >= self.tokens.len or self.tokens[i].kind != .colon_colon) return false;
         return switch (self.tokens[i + 1].kind) {
             .keyword_fn, .keyword_struct, .keyword_union, .keyword_enum, .keyword_interface, .keyword_errors, .keyword_distinct => true,
-            .int_lit, .float_lit, .string_lit => true,
+            .int_lit, .float_lit, .string_lit, .raw_string_lit, .multiline_string_lit => true,
             else => false,
         };
     }
@@ -2535,10 +2535,7 @@ pub const Parser = struct {
             },
             .int_lit => return self.expr(.{ .int = tok.text(self.source) }, spanFrom(tok, tok)),
             .float_lit => return self.expr(.{ .float = tok.text(self.source) }, spanFrom(tok, tok)),
-            .string_lit => {
-                _ = try self.checkEscapes(tok);
-                return self.expr(.{ .string = tok.text(self.source) }, spanFrom(tok, tok));
-            },
+            .string_lit, .raw_string_lit, .multiline_string_lit => return self.expr(.{ .string = try self.stringLiteral(tok) }, spanFrom(tok, tok)),
             .char_lit => {
                 // A char literal is just sugar for its integer code point — an
                 // untyped int literal that coerces to u8/rune/i32/etc. like `65`.
@@ -2852,10 +2849,97 @@ pub const Parser = struct {
         return true;
     }
 
+    /// A string literal token's text as an ordinary `"…"` literal, which is what the AST holds
+    /// and the passes after the parser read (`strlit.bytes`, formats): a raw string `r"…"` with
+    /// its backslashes escaped, a `"""` block as its lines joined by `\n`.
+    fn stringLiteral(self: *Parser, tok: Token) ParseError![]const u8 {
+        const text = tok.text(self.source);
+        switch (tok.kind) {
+            .raw_string_lit => {
+                var out: std.ArrayList(u8) = .empty;
+                try out.append(self.allocator, '"');
+                for (text[2 .. text.len - 1]) |c| {
+                    if (c == '\\') try out.append(self.allocator, '\\');
+                    try out.append(self.allocator, c);
+                }
+                try out.append(self.allocator, '"');
+                return out.toOwnedSlice(self.allocator);
+            },
+            .multiline_string_lit => return self.multilineLiteral(tok),
+            else => {
+                _ = try self.checkEscapes(tok);
+                return text;
+            },
+        }
+    }
+
+    /// A `"""` block: its lines start on the line after the opening `"""`, and the closing `"""`
+    /// is on a line of its own. Every line starts with the indentation in front of the closing
+    /// `"""`, which it drops, and the newline before the closing line is no part of the string.
+    /// A `"` in it needs no backslash; the escapes are those of any string.
+    fn multilineLiteral(self: *Parser, tok: Token) ParseError![]const u8 {
+        if (try self.checkEscapes(tok)) return error.ParseFailed;
+        const text = tok.text(self.source);
+        const body = text[3 .. text.len - 3];
+        const first_nl = std.mem.indexOfScalar(u8, body, '\n') orelse body.len;
+        if (first_nl == body.len or std.mem.trim(u8, body[0..first_nl], " \t\r").len != 0) {
+            try self.errorAt(tok, "the lines of a `\"\"\"` string start on the line after the opening `\"\"\"`");
+            return error.ParseFailed;
+        }
+        const last_nl = std.mem.lastIndexOfScalar(u8, body, '\n').?;
+        const indent = body[last_nl + 1 ..];
+        if (std.mem.trim(u8, indent, " \t").len != 0) {
+            const at = tok.start + 3 + last_nl + 1;
+            try self.diagnostics.append(self.allocator, Diagnostic.err("the closing `\"\"\"` of a string is on a line of its own", Span.new(at, tok.start + tok.len), self.file_name));
+            return error.ParseFailed;
+        }
+        var out: std.ArrayList(u8) = .empty;
+        try out.append(self.allocator, '"');
+        if (first_nl < last_nl) {
+            var lines = std.mem.splitScalar(u8, body[first_nl + 1 .. last_nl], '\n');
+            var line_at = tok.start + 3 + first_nl + 1;
+            var first = true;
+            while (lines.next()) |raw| : (line_at += raw.len + 1) {
+                if (!first) try out.appendSlice(self.allocator, "\\n");
+                first = false;
+                const line = std.mem.trimEnd(u8, raw, "\r");
+                const kept = if (std.mem.startsWith(u8, line, indent))
+                    line[indent.len..]
+                else if (std.mem.trim(u8, line, " \t").len == 0)
+                    ""
+                else {
+                    try self.diagnostics.append(self.allocator, Diagnostic.err(
+                        "this line of the string does not start with the indentation of its closing `\"\"\"`",
+                        Span.new(line_at, line_at + line.len),
+                        self.file_name,
+                    ));
+                    return error.ParseFailed;
+                };
+                var i: usize = 0;
+                while (i < kept.len) : (i += 1) {
+                    const c = kept[i];
+                    if (c == '\\' and i + 1 < kept.len) {
+                        try out.appendSlice(self.allocator, kept[i .. i + 2]);
+                        i += 1;
+                    } else if (c == '"') {
+                        try out.appendSlice(self.allocator, "\\\"");
+                    } else try out.append(self.allocator, c);
+                }
+            }
+        }
+        try out.append(self.allocator, '"');
+        return out.toOwnedSlice(self.allocator);
+    }
+
     fn errorAt(self: *Parser, tok: Token, message: []const u8) !void {
         try self.diagnostics.append(self.allocator, Diagnostic.err(message, spanFrom(tok, tok), self.file_name));
     }
 };
+
+/// A string literal token of any of its three kinds.
+fn isString(kind: TokenKind) bool {
+    return kind == .string_lit or kind == .raw_string_lit or kind == .multiline_string_lit;
+}
 
 /// `TARGET.<name>`.
 fn isTargetField(f: ast.FieldExpr, name: []const u8) bool {
