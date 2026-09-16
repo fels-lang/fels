@@ -4294,6 +4294,13 @@ const FunctionLowerer = struct {
                             // is lowered as `&receiver` (sema flagged it).
                             if (is_receiver and self.types.receiver_auto_addr.contains(call.callee.id)) {
                                 try args.append(self.allocator, try self.lowerLValueAddress(value));
+                            } else if (is_receiver and self.types.receiver_auto_deref.contains(call.callee.id)) {
+                                // A pointer receiver of a method that takes the value: `*receiver`.
+                                const pointee: IrType = switch (self.exprType(value)) {
+                                    .ptr => |p| p.*,
+                                    else => .unknown,
+                                };
+                                try args.append(self.allocator, try self.emit(pointee, .{ .unary = .{ .op = .deref, .value = try self.lowerExpr(value) } }));
                             } else {
                                 var expected = try lowerSemaTypeWithEnv(self.allocator, param.ty, self.types, self.symbols);
                                 // A param typed as the struct's own type param (`key: K`)
