@@ -91,7 +91,9 @@ d := p.distance();      // auto-referenced to `&p`; same as distance(&p)
 
 A `*Self` method auto-references its receiver, so you call it on a plain value, without an
 explicit `&`. It works on a **temporary** too: the value is spilled to a stack slot, and the
-method gets a pointer to it. Methods also chain on returned values:
+method gets a pointer to it. The other way round, a method that takes the value is called
+through a pointer as it is: `self.get()` in a `*Self` method passes `*self`. Methods also chain
+on returned values:
 
 ```fels
 n := make_point(3, 4).distance();        // call on a temporary

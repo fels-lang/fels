@@ -484,7 +484,7 @@ Direction :: enum {
     opposite :: fn(self: Self) -> Direction {
         return match self { .north => .south, .south => .north, .east => .west, .west => .east };
     }
-    turn_around :: fn(self: *Self) { *self = (*self).opposite(); }
+    turn_around :: fn(self: *Self) { *self = self.opposite(); }
 }
 
 d := Direction.north;
