@@ -3179,6 +3179,54 @@ test "exe: an enum's body holds its methods, called on a value" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_enum_methods"));
 }
 
+test "exe: a method that takes the value is called through a pointer" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `self.get()` in a `*Self` method, with `get(self: Self)`, was "expected `P`, found `*P`":
+    // it took `(*self).get()`. On a struct, a generic struct and an enum, and at compile time.
+    const src =
+        \\P :: struct {
+        \\    x: i32,
+        \\    get :: fn(self: Self) -> i32 { return self.x; }
+        \\    plus :: fn(self: Self, n: i32) -> i32 { return self.x + n; }
+        \\    bump :: fn(self: *Self) { self.x = self.get() + self.plus(10); }
+        \\}
+        \\Box :: struct($T: type) {
+        \\    v: T,
+        \\    peek :: fn(self: Self) -> T { return self.v; }
+        \\    set :: fn(self: *Self, v: T) { self.v = v; }
+        \\    twice :: fn(self: *Self) { self.set(self.peek() + self.peek()); }
+        \\}
+        \\Mode :: enum {
+        \\    on,
+        \\    off,
+        \\    flip :: fn(self: Self) -> Mode { return if self == .on { .off } else { .on }; }
+        \\    toggle :: fn(self: *Self) { *self = self.flip(); }
+        \\}
+        \\show :: fn(self: $T) -> T { return self; }
+        \\check :: fn() -> i32 {
+        \\    p: P = .{ 1 };
+        \\    p.bump();
+        \\    pp := &p;
+        \\    if pp.get() != 12 { return 1; }
+        \\    // a method on any type takes the pointer itself
+        \\    if pp.show().x != 12 { return 2; }
+        \\    b: Box(i32) = .{ 5 };
+        \\    b.twice();
+        \\    bp := &b;
+        \\    if bp.peek() != 10 { return 3; }
+        \\    m: Mode = .on;
+        \\    m.toggle();
+        \\    if m != .off { return 4; }
+        \\    return 42;
+        \\}
+        \\R :: #run check();
+        \\main :: fn() -> i32 { return if R == 42 { check() } else { R }; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_method_through_pointer"));
+}
+
 test "exe: labeled break and continue leave the loop they name" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
