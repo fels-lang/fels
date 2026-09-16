@@ -2677,7 +2677,17 @@ pub const Parser = struct {
                 return self.expr(.{ .compound_literal = &.{} }, spanFrom(tok, self.previous()));
             },
             else => {
-                try self.errorAt(tok, "expected expression");
+                const text = tok.text(self.source);
+                try self.errorAt(tok, if (tok.kind != .invalid)
+                    "expected expression"
+                else if (std.mem.startsWith(u8, text, "\"\"\""))
+                    "this `\"\"\"` string has no closing `\"\"\"`"
+                else if (std.mem.startsWith(u8, text, "r\""))
+                    "this raw string has no closing `\"` on its line"
+                else if (std.mem.startsWith(u8, text, "\""))
+                    "this string has no closing `\"`"
+                else
+                    "expected expression");
                 return error.ParseFailed;
             },
         }
