@@ -218,6 +218,39 @@ String literals go in double quotes, and their type is `[]const u8`.
 A `\u{…}` names a code point up to `10FFFF` that is no surrogate (`D800` to `DFFF`). Any other
 backslash in a literal is an error that lists these escapes.
 
+#### Raw Strings
+
+A raw string, `r"…"`, is its bytes as written: a backslash in it is a backslash. It is for
+Windows paths and regular expressions. It ends at the next `"` on its line, so it cannot hold a
+`"`.
+
+```fels
+dir := r"C:\Users\fels\new";      // the same as "C:\\Users\\fels\\new"
+number := r"\d+\.\d+";
+```
+
+#### Multi-line Strings
+
+A string of several lines goes between `"""` delimiters. Its lines start on the line after the
+opening `"""`, and the closing `"""` is on a line of its own. The indentation in front of the
+closing `"""` is taken off every line, so the text can be indented with the code around it.
+The newline before the closing line is no part of the string.
+
+```fels
+usage :: fn() -> []const u8 {
+    return """
+        usage: tool [options] <file>
+
+          -o <out>   write to "out"
+        """;
+}
+```
+
+That string is `"usage: tool [options] <file>\n\n  -o <out>   write to \"out\""`. A `"` needs
+no backslash in it. The escapes are those of any string, and a `{name}` in a `"""` string
+passed to `println` is printed as in any other string. A line that does not start with the
+closing delimiter's indentation is an error, unless it is blank.
+
 ### Character Literals
 
 A character literal is written in single quotes and is **sugar for its integer
