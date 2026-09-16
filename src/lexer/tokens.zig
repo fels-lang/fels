@@ -9,6 +9,8 @@ pub const TokenKind = enum {
     int_lit,
     float_lit,
     string_lit,
+    raw_string_lit, // r"C:\dir": the bytes as written, no escapes
+    multiline_string_lit, // """ … """: lines, less the closing delimiter's indentation
     char_lit, // 'a', '\n', '\x41' — decoded to an integer literal in the parser
 
     // Delimiters
@@ -277,9 +279,19 @@ pub const Lexer = struct {
                 if (self.match('=')) return token(.gt_eq, start, self.index);
                 return token(.gt, start, self.index);
             },
-            '"' => return self.string(start),
+            '"' => {
+                if (self.index + 1 < self.source.len and self.source[self.index] == '"' and self.source[self.index + 1] == '"') {
+                    self.index += 2;
+                    return self.multilineString(start);
+                }
+                return self.string(start);
+            },
             '\'' => return self.charLit(start),
             else => {
+                if (ch == 'r' and self.index < self.source.len and self.source[self.index] == '"') {
+                    self.index += 1;
+                    return self.rawString(start);
+                }
                 if (isIdentStart(ch)) return self.ident(start);
                 if (std.ascii.isDigit(ch)) return self.number(start);
                 return token(.invalid, start, self.index);
@@ -411,6 +423,34 @@ pub const Lexer = struct {
             if (ch == '"') return token(.string_lit, start, self.index);
         }
 
+        return token(.invalid, start, self.index);
+    }
+
+    /// `r"…"`, the opening `r"` consumed: to the next `"`, on the same line. A backslash is a
+    /// byte like any other.
+    fn rawString(self: *Lexer, start: usize) Token {
+        while (self.index < self.source.len) {
+            const ch = self.advance();
+            if (ch == '"') return token(.raw_string_lit, start, self.index);
+            if (ch == '\n') break;
+        }
+        return token(.invalid, start, self.index);
+    }
+
+    /// `"""` … `"""`, the opening `"""` consumed: to the next `"""` that no backslash escapes.
+    /// The parser checks the lines and takes the indentation off.
+    fn multilineString(self: *Lexer, start: usize) Token {
+        while (self.index < self.source.len) {
+            const ch = self.advance();
+            if (ch == '\\' and self.index < self.source.len) {
+                self.index += 1;
+                continue;
+            }
+            if (ch == '"' and self.index + 1 < self.source.len and self.source[self.index] == '"' and self.source[self.index + 1] == '"') {
+                self.index += 2;
+                return token(.multiline_string_lit, start, self.index);
+            }
+        }
         return token(.invalid, start, self.index);
     }
 
