@@ -81,6 +81,9 @@ pub fn parseEmbedded(
     start: usize,
     end: usize,
     next_id: ast.NodeId,
+    /// The constants of the function the text is in (`ast.LocalConst`): those in effect at
+    /// `start` are what their names mean in it.
+    local_consts: []const ast.LocalConst,
 ) ParseError!EmbeddedResult {
     var lex = lexer.Lexer.init(source[start..end]);
     const tokens = try lex.all(allocator);
@@ -88,6 +91,12 @@ pub fn parseEmbedded(
     // Its lambdas are numbered apart from those of the file, which has a `__lambda_0` too.
     var p: Parser = .{ .allocator = allocator, .file_name = file_name, .source = source, .tokens = tokens, .next_id = next_id, .lambda_counter = embedded_lambdas };
     defer p.diagnostics.deinit(allocator);
+    defer p.local_consts.deinit(allocator);
+    defer p.local_const_scopes.deinit(allocator);
+    for (local_consts) |c| if (c.start <= start and start < c.end) {
+        try p.local_consts.append(allocator, @intCast(p.local_const_scopes.items.len));
+        try p.local_const_scopes.append(allocator, c);
+    };
     const e = try p.parseExpr(0);
     embedded_lambdas = p.lambda_counter;
     if (!p.check(.eof) or p.diagnostics.items.len != 0) return error.ParseFailed;
@@ -154,6 +163,20 @@ pub const Parser = struct {
     /// resolved to the struct and its type params inherited). Appended to the
     /// module's items at the end of `parseModule`, just like `lifted_lambdas`.
     hoisted_methods: std.ArrayList(ast.FunctionDecl) = .empty,
+    /// The constants of the blocks being read (`N :: 4;` in a function body), innermost last,
+    /// as indexes into `local_const_scopes`: a use of such a name is a use of its hoisted
+    /// constant (`ast.LocalConst`).
+    local_consts: std.ArrayList(u32) = .empty,
+    /// Every constant of a function body read so far, with where its name means it.
+    local_const_scopes: std.ArrayList(ast.LocalConst) = .empty,
+    /// The constants hoisted out of function bodies, appended to the module's items at the end
+    /// of `parseModule`, like `lifted_lambdas`.
+    hoisted_consts: std.ArrayList(ast.ConstDecl) = .empty,
+    const_counter: u32 = 0,
+    /// In a function's body, where `N :: 4;` is a constant of its block, and in a `#quote { }`,
+    /// where it is a declaration the quote holds.
+    body_depth: u32 = 0,
+    quote_depth: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, file_name: []const u8, source: []const u8, next_id: ast.NodeId) !Parser {
         var lex = lexer.Lexer.init(source);
@@ -171,6 +194,9 @@ pub const Parser = struct {
         self.diagnostics.deinit(self.allocator);
         self.lifted_lambdas.deinit(self.allocator);
         self.hoisted_methods.deinit(self.allocator);
+        self.local_consts.deinit(self.allocator);
+        self.local_const_scopes.deinit(self.allocator);
+        self.hoisted_consts.deinit(self.allocator);
     }
 
     pub fn parseModule(self: *Parser) ParseError!ast.Module {
@@ -186,6 +212,10 @@ pub const Parser = struct {
         // Append functions hoisted out of struct bodies (in-struct methods).
         for (self.hoisted_methods.items) |decl| {
             try items.append(self.allocator, .{ .function = decl });
+        }
+        // And the constants of function bodies.
+        for (self.hoisted_consts.items) |decl| {
+            try items.append(self.allocator, .{ .const_decl = decl });
         }
 
         return .{
@@ -337,6 +367,7 @@ pub const Parser = struct {
         _ = try self.expect(.l_brace, "expected { after the condition of a top-level #if");
         const lambdas = self.lifted_lambdas.items.len;
         const methods = self.hoisted_methods.items.len;
+        const consts = self.hoisted_consts.items.len;
         var dropped: std.ArrayList(ast.Item) = .empty;
         defer dropped.deinit(self.allocator);
         while (!self.check(.r_brace) and !self.check(.eof)) try self.parseTopLevelItem(if (keep) items else &dropped);
@@ -344,6 +375,7 @@ pub const Parser = struct {
         if (!keep) {
             self.lifted_lambdas.shrinkRetainingCapacity(lambdas);
             self.hoisted_methods.shrinkRetainingCapacity(methods);
+            self.hoisted_consts.shrinkRetainingCapacity(consts);
         }
     }
 
@@ -1077,6 +1109,7 @@ pub const Parser = struct {
             .error_ty = m.error_ty,
             .where_clause = m.where_clause,
             .body = m.body,
+            .local_consts = m.local_consts,
             .span = m.span,
         };
     }
@@ -1359,6 +1392,7 @@ pub const Parser = struct {
         }
 
         const id = try self.expect(.ident, "expected a match pattern (`.variant`, an integer or character, a string, a name, or `else`)");
+        try self.checkLocalName(id);
         return .{ .binding = id.text(self.source) };
     }
 
@@ -1376,6 +1410,7 @@ pub const Parser = struct {
     fn parseMatchBinding(self: *Parser) ParseError!?[]const u8 {
         if (self.match(.pipe)) {
             const bname = try self.expect(.ident, "expected binding name");
+            try self.checkLocalName(bname);
             _ = try self.expect(.pipe, "expected closing | after binding");
             return bname.text(self.source);
         }
@@ -1604,6 +1639,7 @@ pub const Parser = struct {
         if (!self.check(.r_paren)) {
             while (true) {
                 const pname = try self.expect(.ident, "expected parameter name");
+                try self.checkLocalName(pname);
                 _ = try self.expect(.colon, "expected : after parameter name");
                 const ty = try self.parseType();
                 try params.append(self.allocator, .{ .name = pname.text(self.source), .ty = ty, .span = ty.span() });
@@ -1613,7 +1649,7 @@ pub const Parser = struct {
         }
         _ = try self.expect(.r_paren, "expected ) after lambda parameters");
         const return_ty = if (self.match(.arrow)) try self.parseType() else namedType("void", spanFrom(fn_tok, fn_tok));
-        const body = try self.parseBlock();
+        const body = try self.parseBody();
         const name = try std.fmt.allocPrint(self.allocator, "__lambda_{d}", .{self.lambda_counter});
         self.lambda_counter += 1;
         try self.lifted_lambdas.append(self.allocator, .{
@@ -1626,6 +1662,7 @@ pub const Parser = struct {
             .return_ty = return_ty,
             .error_ty = null,
             .body = body,
+            .local_consts = try self.localConstsWithin(Span.new(fn_tok.start, body.span.end)),
             .span = Span.new(fn_tok.start, body.span.end),
         });
         return self.expr(.{ .ident = name }, Span.new(fn_tok.start, body.span.end));
@@ -1756,7 +1793,7 @@ pub const Parser = struct {
                 }
             }
         }
-        const body = if (self.check(.l_brace)) try self.parseBlock() else null;
+        const body = if (self.check(.l_brace)) try self.parseBody() else null;
         const end = if (body) |b| b.span else blk: {
             const semi = try self.expect(.semicolon, "expected ; after external function declaration");
             break :blk spanFrom(name, semi);
@@ -1776,6 +1813,7 @@ pub const Parser = struct {
             .error_ty = error_ty,
             .where_clause = where_clause,
             .body = body,
+            .local_consts = try self.localConstsWithin(Span.new(name.start, end.end)),
             .span = Span.new(name.start, end.end),
         };
     }
@@ -1784,12 +1822,16 @@ pub const Parser = struct {
         const open = try self.expect(.l_brace, "expected {");
         var statements: std.ArrayList(ast.Stmt) = .empty;
         errdefer statements.deinit(self.allocator);
+        const consts = self.local_consts.items.len;
+        defer self.local_consts.shrinkRetainingCapacity(consts);
 
         while (!self.check(.r_brace) and !self.check(.eof)) {
             try statements.append(self.allocator, try self.parseStmt());
         }
 
         const close = try self.expect(.r_brace, "expected } after block");
+        // The block's constants mean their names up to its end.
+        for (self.local_consts.items[consts..]) |i| self.local_const_scopes.items[i].end = close.start;
         return .{
             .statements = try statements.toOwnedSlice(self.allocator),
             .span = spanFrom(open, close),
@@ -1839,7 +1881,98 @@ pub const Parser = struct {
         };
     }
 
+    /// A function's body: a block whose `N :: value;` statements are constants.
+    fn parseBody(self: *Parser) ParseError!ast.Block {
+        self.body_depth += 1;
+        defer self.body_depth -= 1;
+        return self.parseBlock();
+    }
+
+    /// `N :: value;` in a function body (and not in a quote there): a constant of the block.
+    /// After the `::` comes a value, not a declaration (`fn`, `struct`, …); a name after it is
+    /// a value only when a space comes before the `::`, as `io::println(x);` is no constant.
+    fn localConstAhead(self: *Parser) bool {
+        if (self.body_depth == 0 or self.quote_depth != 0) return false;
+        if (!self.check(.ident) or self.peekKind(1) != .colon_colon) return false;
+        const name = self.tokens[self.index];
+        const sep = self.tokens[self.index + 1];
+        return switch (self.peekKind(2)) {
+            .keyword_fn, .keyword_struct, .keyword_union, .keyword_enum, .keyword_interface, .keyword_errors, .keyword_distinct, .keyword_opaque, .semicolon, .eof => false,
+            .ident => sep.start > name.start + name.len,
+            else => true,
+        };
+    }
+
+    /// `N :: value;`: hoisted to a top-level constant of a name of its own (`N__local0`,
+    /// `ast.isBodyConstName`), and
+    /// the block's uses of `N` after it are uses of that. Its value is read first, so a `N` in
+    /// it is what `N` meant before. The statement left in its place names the constant, which
+    /// checks it there and does nothing when the function runs.
+    fn parseLocalConst(self: *Parser) ParseError!ast.Stmt {
+        const name_tok = self.advance();
+        _ = self.advance(); // ::
+        const name = name_tok.text(self.source);
+        if (self.localConstName(name) != null) {
+            const msg = try std.fmt.allocPrint(self.allocator, "`{s}` is a constant here already; give this one a name of its own", .{name});
+            try self.errorAt(name_tok, msg);
+            return error.ParseFailed;
+        }
+        const value = try self.parseExpr(0);
+        const semi = try self.expect(.semicolon, "expected ; after the value of a constant");
+        const hoisted = try std.fmt.allocPrint(self.allocator, "{s}__local{d}", .{ name, self.const_counter });
+        self.const_counter += 1;
+        try self.hoisted_consts.append(self.allocator, .{
+            .attrs = &.{},
+            .name = hoisted,
+            .file_name = self.file_name,
+            .source = self.source,
+            .value = value,
+            .span = spanFrom(name_tok, semi),
+        });
+        try self.local_consts.append(self.allocator, @intCast(self.local_const_scopes.items.len));
+        try self.local_const_scopes.append(self.allocator, .{
+            .name = name,
+            .hoisted = hoisted,
+            .start = semi.start + semi.len,
+            .end = std.math.maxInt(u32),
+        });
+        return .{ .expr = try self.expr(.{ .ident = hoisted }, spanFrom(name_tok, name_tok)) };
+    }
+
+    /// The hoisted constant a use of `name` here is a use of, if a block around declares it.
+    fn localConstName(self: *Parser, name: []const u8) ?[]const u8 {
+        var i = self.local_consts.items.len;
+        while (i > 0) {
+            i -= 1;
+            const c = self.local_const_scopes.items[self.local_consts.items[i]];
+            if (std.mem.eql(u8, c.name, name)) return c.hoisted;
+        }
+        return null;
+    }
+
+    /// A local named `tok` in a block whose constant has that name would hide the constant,
+    /// and the uses of the name would still be the constant's: an error.
+    fn checkLocalName(self: *Parser, tok: Token) ParseError!void {
+        if (self.local_consts.items.len == 0) return;
+        const name = tok.text(self.source);
+        if (self.localConstName(name) == null) return;
+        const msg = try std.fmt.allocPrint(self.allocator, "`{s}` is a constant here: a local of the same name would hide it; rename one of them", .{name});
+        try self.errorAt(tok, msg);
+        return error.ParseFailed;
+    }
+
+    /// The body constants in effect somewhere in `span` (a function's, or a lambda's, which
+    /// sees those of the blocks around it), for the formats read later.
+    fn localConstsWithin(self: *Parser, span: Span) ParseError![]const ast.LocalConst {
+        var out: std.ArrayList(ast.LocalConst) = .empty;
+        for (self.local_const_scopes.items) |c| {
+            if (c.start <= span.end and c.end > span.start) try out.append(self.allocator, c);
+        }
+        return out.toOwnedSlice(self.allocator);
+    }
+
     fn parseStmt(self: *Parser) ParseError!ast.Stmt {
+        if (self.localConstAhead()) return self.parseLocalConst();
         // A declaration, as a declaration quote holds them (`#quote { f :: fn() { … } }`).
         if (self.declAhead()) {
             const hoisted = self.hoisted_methods.items.len;
@@ -1906,6 +2039,7 @@ pub const Parser = struct {
 
         if (self.check(.ident) and self.peekKind(1) == .colon_eq) {
             const name = self.advance();
+            try self.checkLocalName(name);
             _ = self.advance();
             const value = try self.parseExpr(0);
             const semi = try self.expect(.semicolon, "expected ; after local");
@@ -1917,6 +2051,7 @@ pub const Parser = struct {
         }
         if (self.check(.ident) and self.peekKind(1) == .colon) {
             const name = self.advance();
+            try self.checkLocalName(name);
             _ = self.advance();
             const ty = try self.parseType();
             _ = try self.expect(.eq, "expected = after typed local");
@@ -1955,6 +2090,7 @@ pub const Parser = struct {
 
         if (self.check(.ident) and self.peekKind(1) == .colon_eq) {
             const name = self.advance();
+            try self.checkLocalName(name);
             _ = self.advance();
             const value = try self.parseExpr(0);
             binding = .{ .name = name.text(self.source), .value = value };
@@ -1965,6 +2101,7 @@ pub const Parser = struct {
 
         if (self.match(.pipe)) {
             const name = try self.expect(.ident, "expected error payload binding");
+            try self.checkLocalName(name);
             _ = try self.expect(.pipe, "expected | after error payload binding");
             payload_binding = name.text(self.source);
         }
@@ -2069,6 +2206,7 @@ pub const Parser = struct {
         var payload_binding: ?[]const u8 = null;
         if (self.match(.pipe)) {
             const name = try self.expect(.ident, "expected binding name after `|`");
+            try self.checkLocalName(name);
             _ = try self.expect(.pipe, "expected `|` after the binding name");
             payload_binding = name.text(self.source);
         }
@@ -2079,9 +2217,11 @@ pub const Parser = struct {
     fn parseFor(self: *Parser, start: Token) ParseError!ast.Stmt {
         const by_ref = self.match(.amp);
         const binding = try self.expect(.ident, "expected loop binding");
+        try self.checkLocalName(binding);
         var index_binding: ?[]const u8 = null;
         if (self.match(.comma)) {
             const index = try self.expect(.ident, "expected index binding");
+            try self.checkLocalName(index);
             index_binding = index.text(self.source);
         }
         _ = try self.expect(.keyword_in, "expected `in` after loop binding");
@@ -2289,8 +2429,9 @@ pub const Parser = struct {
                 .span = spanFrom(name, close),
             } };
         }
+        const type_name = type_tok.text(self.source);
         return .{ .named = .{
-            .name = type_tok.text(self.source),
+            .name = if (namespace == null) self.localConstName(type_name) orelse type_name else type_name,
             .namespace = namespace,
             .span = spanFrom(name, type_tok),
         } };
@@ -2479,6 +2620,7 @@ pub const Parser = struct {
             }
             if (self.match(.keyword_catch)) {
                 const err_name = try self.expect(.ident, "expected error binding after catch");
+                try self.checkLocalName(err_name);
                 const handler = try self.parseBlock();
                 left = try self.expr(.{ .catch_expr = .{ .value = try self.allocExpr(left), .err_name = err_name.text(self.source), .handler = handler } }, Span.new(left.span.start, handler.span.end));
                 continue;
@@ -2509,7 +2651,8 @@ pub const Parser = struct {
                     const name = try self.parseSplicedName(tok);
                     return self.expr(.{ .ident = name.text }, Span.new(tok.start, name.end));
                 }
-                return self.expr(.{ .ident = tok.text(self.source) }, spanFrom(tok, tok));
+                const name = tok.text(self.source);
+                return self.expr(.{ .ident = self.localConstName(name) orelse name }, spanFrom(tok, tok));
             },
             .keyword_bool,
             .keyword_void,
@@ -2598,6 +2741,8 @@ pub const Parser = struct {
                         const close = try self.expect(.r_paren, "expected ) after #quote expression");
                         return self.expr(.{ .quote_expr = try self.allocExpr(inner) }, Span.new(tok.start, close.start + close.len));
                     }
+                    self.quote_depth += 1;
+                    defer self.quote_depth -= 1;
                     const block = try self.parseBlock();
                     return self.expr(.{ .quote = block }, Span.new(tok.start, block.span.end));
                 }
