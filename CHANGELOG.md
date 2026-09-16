@@ -143,6 +143,8 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- A method that takes the value is called through a pointer: `self.get()` in a `*Self` method,
+  with `get :: fn(self: Self)`, was "expected `P`, found `*P`" and took `(*self).get()`.
 - A generic type of another module is a type argument: `f(K, V, sort::Asc(K), …)` was
   "expected a type, found a call expression", where `Asc(K)` of the file's own module worked.
 - A string constant that names another (`ALIAS :: CHARS;`) or comes from a `#run` has a length
