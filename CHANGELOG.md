@@ -7,6 +7,9 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **Raw and multi-line strings**: `r"C:\dir\new"` is its bytes as written, with no escapes. A
+  `"""` block holds lines, less the indentation of its closing `"""`, and a `"` needs no
+  backslash in it. A string with no closing quote now says so instead of "expected expression".
 - **Methods in an enum's body**, as in a struct's: `Color :: enum { red, green,
   is_red :: fn(self: Self) -> bool { … } }`, called as `c.is_red()`.
 - **C variadic functions**: `#extern("c", "printf") printf :: fn(fmt: [*]const u8, ...) -> i32;`
