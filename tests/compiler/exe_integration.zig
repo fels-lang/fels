@@ -3227,6 +3227,39 @@ test "exe: a method that takes the value is called through a pointer" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_method_through_pointer"));
 }
 
+test "exe: raw strings and multi-line strings" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `r"C:\dir"` is its bytes as written; a `"""` block is its lines less the closing
+    // delimiter's indentation, joined by `\n`, with `"` unescaped and the escapes of any string.
+    // A blank line may be shorter than the indentation, and a CRLF file's lines end in `\n`.
+    // The same strings at compile time (`R`) and natively.
+    const src =
+        "same :: fn(a: []const u8, b: []const u8) -> bool {\n" ++
+        "    if a.len != b.len { return false; }\n" ++
+        "    for c, i in a { if b[i] != c { return false; } }\n" ++
+        "    return true;\n" ++
+        "}\n" ++
+        "check :: fn() -> i32 {\n" ++
+        "    if !same(r\"C:\\new\\table\", \"C:\\\\new\\\\table\") { return 1; }\n" ++
+        "    if !same(r\"\", \"\") { return 2; }\n" ++
+        "    text := \"\"\"\n" ++
+        "        first \"line\"\n" ++
+        "\n" ++
+        "          indented\\tand\\x41\r\n" ++
+        "        \"\"\";\n" ++
+        "    if !same(text, \"first \\\"line\\\"\\n\\n  indented\\tandA\") { return 3; }\n" ++
+        "    empty := \"\"\"\n" ++
+        "        \"\"\";\n" ++
+        "    if empty.len != 0 { return 4; }\n" ++
+        "    return 42;\n" ++
+        "}\n" ++
+        "R :: #run check();\n" ++
+        "main :: fn() -> i32 { return if R == 42 { check() } else { R }; }\n";
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_raw_multiline_strings"));
+}
+
 test "exe: labeled break and continue leave the loop they name" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

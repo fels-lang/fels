@@ -1979,6 +1979,29 @@ test "diagnostics: `...` is for a C function, after its parameters, with what C 
     try expectNoError(a, printf, "main :: fn() -> i32 { s: u8 = 1; f: f32 = 2.0; p: ?*i32 = null; return printf(\"%d %f %p %d %lld\\n\".ptr, s, f, p, true, 5000000000); }");
 }
 
+test "diagnostics: a raw or multi-line string is closed, and a `\"\"\"` block's lines are indented" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { src: []const u8, msg: []const u8 }{
+        .{ .src = "X :: \"\"\"abc\n    x\n    \"\"\";\n", .msg = "the lines of a `\"\"\"` string start on the line after the opening `\"\"\"`" },
+        .{ .src = "X :: \"\"\"\n    x\n    y\"\"\";\n", .msg = "the closing `\"\"\"` of a string is on a line of its own" },
+        .{ .src = "X :: \"\"\"\n    x\n  y\n    \"\"\";\n", .msg = "this line of the string does not start with the indentation of its closing `\"\"\"`" },
+        .{ .src = "X :: \"\"\"\n    a \\q b\n    \"\"\";\n", .msg = "unknown escape" },
+        .{ .src = "X :: \"\"\"\n    abc\n", .msg = "this `\"\"\"` string has no closing `\"\"\"`" },
+        .{ .src = "X :: r\"abc\n\";\n", .msg = "this raw string has no closing `\"` on its line" },
+        .{ .src = "X :: \"abc\n", .msg = "this string has no closing `\"`" },
+    };
+    for (cases) |c| {
+        var p = try fels.parser_mod.Parser.init(a, "strings.fels", c.src, 1);
+        try std.testing.expectError(error.ParseFailed, p.parseModule());
+        std.testing.expect(std.mem.indexOf(u8, p.diagnostics.items[0].message, c.msg) != null) catch |err| {
+            std.debug.print("for:\n{s}\nexpected `{s}`, got `{s}`\n", .{ c.src, c.msg, p.diagnostics.items[0].message });
+            return err;
+        };
+    }
+}
+
 test "diagnostics: a local from a literal leaves alone what compiled before" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
