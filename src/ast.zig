@@ -1,3 +1,4 @@
+const std = @import("std");
 const Span = @import("lexer/span.zig").Span;
 
 pub const NodeId = u32;
@@ -128,6 +129,22 @@ pub const Attribute = struct {
     args: []const Expr,
     span: Span,
 };
+
+/// A constant declared in a function body (`N :: 4;`). The parser makes it the top-level
+/// constant `hoisted`, and the block's uses of `name` after it uses of that. `start..end` is
+/// where the name means it, from the declaration to the end of its block: a format's `{N}`,
+/// read after the parser (`format_expand`), takes the constants in effect where it is.
+pub const LocalConst = struct {
+    name: []const u8,
+    hoisted: []const u8,
+    start: u32,
+    end: u32,
+};
+
+/// Whether `name` is that of a constant hoisted out of a function body (`N__local0`).
+pub fn isBodyConstName(name: []const u8) bool {
+    return std.mem.indexOf(u8, name, "__local") != null;
+}
 
 pub const ConstDecl = struct {
     attrs: []const Attribute,
@@ -290,6 +307,8 @@ pub const FunctionDecl = struct {
     /// instantiation that may `reject("msg")` the type binding. Null when absent.
     where_clause: ?Block = null,
     body: ?Block,
+    /// The constants declared in the body (`LocalConst`).
+    local_consts: []const LocalConst = &.{},
     span: Span,
 };
 
