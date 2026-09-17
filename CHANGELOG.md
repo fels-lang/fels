@@ -7,6 +7,9 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **Constants in a function body**: `N :: 4;` and `N : u16 : 4;` belong to their block and are
+  computed while compiling, so one can be an array's length (`xs: [N]i32`). A format's `{N}`
+  prints it, and a lambda in the block sees it.
 - **Raw and multi-line strings**: `r"C:\dir\new"` is its bytes as written, with no escapes. A
   `"""` block holds lines, less the indentation of its closing `"""`, and a `"` needs no
   backslash in it. A string with no closing quote now says so instead of "expected expression".
