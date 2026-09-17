@@ -827,7 +827,7 @@ pub fn cursorOffset(doc: *Doc, params: json.Value) ?usize {
 /// True for names that are not meant to be offered or listed: hoisted methods
 /// (`Vec.push`) and `_`-prefixed names.
 pub fn hiddenName(name: []const u8) bool {
-    return name.len == 0 or name[0] == '_' or std.mem.indexOfScalar(u8, name, '.') != null;
+    return name.len == 0 or name[0] == '_' or std.mem.indexOfScalar(u8, name, '.') != null or ast.isBodyConstName(name);
 }
 
 pub fn topLevelKind(k: sema.SymbolKind) bool {
@@ -1105,6 +1105,7 @@ fn handleDocumentSymbol(self: *Server, id: ?json.Value, params: json.Value) void
             if (!topLevelKind(sym.kind)) continue;
             if (!std.mem.eql(u8, sym.file_name, doc.path)) continue;
             if (hiddenName(sym.name) and std.mem.indexOfScalar(u8, sym.name, '.') != null) continue; // hoisted methods
+            if (ast.isBodyConstName(sym.name)) continue; // a function body's constants
             appendDocSymbol(self, &b, &first, doc.text, sym.name, symbolKind(sym.kind), sym.span, nameSpan(doc.text, sym.span, sym.name), null);
         }
         // The names its imports bring in, placed on the `#import` line.

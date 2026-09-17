@@ -2601,7 +2601,7 @@ fn parseTops(gpa: Allocator, path: []const u8, text: []const u8) ?*TopList {
         if (p.parseModule()) |m| {
             for (m.items) |item| {
                 const name = item.name() orelse continue;
-                if (isLambda(name)) continue;
+                if (isLambda(name) or ast.isBodyConstName(name)) continue;
                 const short = shortName(name);
                 const span = item.span();
                 if (!wordAt(text, nameStart(text, span, short), short)) continue;
