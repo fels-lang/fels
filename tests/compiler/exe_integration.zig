@@ -3260,6 +3260,50 @@ test "exe: raw strings and multi-line strings" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_raw_multiline_strings"));
 }
 
+test "exe: a constant in a function body, of its block" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `N :: 4;` in a function body was "a declaration in a function body". As an array's
+    // length, in another constant, in a nested block, in a lambda, a string, at another width,
+    // the same name in two functions, with a type (`N : T : value;`), and at compile time.
+    const src =
+        \\LIMIT :: 100;
+        \\area :: fn(w: i32) -> i32 {
+        \\    N :: 3;
+        \\    return w * N;
+        \\}
+        \\check :: fn() -> i32 {
+        \\    N :: 4;
+        \\    TWICE :: N * 2;
+        \\    NAME :: "grid";
+        \\    xs: [N]i32 = .{ 1, 2, 3, 4 };
+        \\    ys: [TWICE]u8 = .{};
+        \\    total := 0;
+        \\    for x in xs { total += x; }
+        \\    if total != 10 || ys.len != 8 { return 1; }
+        \\    if total > 0 {
+        \\        INNER :: LIMIT + N;
+        \\        if INNER != 104 { return 2; }
+        \\    }
+        \\    f := fn(k: i32) -> i32 { return k * N; };
+        \\    if f(3) != 12 { return 3; }
+        \\    if NAME.len != 4 { return 4; }
+        \\    if area(2) != 6 { return 5; }
+        \\    big: i64 = N;
+        \\    if big != 4 { return 6; }
+        \\    HUGE : i64 : 5000000000;
+        \\    SMALL : u8 : 3;
+        \\    zs: [SMALL]i32 = .{};
+        \\    if HUGE / 1000000000 != 5 || zs.len != 3 { return 7; }
+        \\    return 42;
+        \\}
+        \\R :: #run check();
+        \\main :: fn() -> i32 { return if R == 42 { check() } else { R }; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_body_consts"));
+}
+
 test "exe: labeled break and continue leave the loop they name" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

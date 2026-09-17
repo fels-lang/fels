@@ -40,6 +40,26 @@ fn refused(a: std.mem.Allocator, src: []const u8, label: []const u8) !void {
     return error.TestExpectedError;
 }
 
+test "format: a constant of the function body is printed by its name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A format's `{N}` is read after the parser made `N :: 7;` a constant of its own: it names
+    // the constant in effect where the format is, and a lambda's format too.
+    const out = try printed(arena.allocator(),
+        \\#import std.io;
+        \\N :: 1;
+        \\main :: fn() -> i32 {
+        \\    io::println("before {N}") catch e {};
+        \\    N :: 7;
+        \\    io::println("N is {N}, {N * 2}") catch e {};
+        \\    show := fn() { io::println("in a lambda {N}") catch e {}; };
+        \\    show();
+        \\    return 0;
+        \\}
+    , "fmt_body_const");
+    try std.testing.expectEqualStrings("before 1\nN is 7, 14\nin a lambda 7\n", out);
+}
+
 test "format: the values in the braces print by their type" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

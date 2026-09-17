@@ -2002,6 +2002,32 @@ test "diagnostics: a raw or multi-line string is closed, and a `\"\"\"` block's 
     }
 }
 
+test "diagnostics: a constant in a function body is computed while compiling, and has a name of its own" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFirstError(a, "main :: fn() -> i32 { n := 3; K :: n * 2; return K; }", &.{ "unknown name `n`", "a constant in a function body is computed while compiling" });
+    try expectFirstError(a, "size :: fn($T: type) -> usize { S :: core::sizeof(T); return S; }\nmain :: fn() -> i32 { return size(i32) as i32; }", &.{"a constant in a function body is computed while compiling"});
+    try expectFirstError(a, "main :: fn() -> i32 { if true { N :: 4; } return N; }", &.{"unknown name `N`"});
+    try expectFirstError(a, "main :: fn() -> i32 { N :: N + 1; return N; }", &.{"unknown name `N`"});
+    const refused = [_]struct { src: []const u8, msg: []const u8 }{
+        .{ .src = "main :: fn() -> i32 { N :: 4; N :: 5; return N; }", .msg = "`N` is a constant here already" },
+        .{ .src = "main :: fn() -> i32 { N :: 4; N := 5; return N; }", .msg = "`N` is a constant here: a local of the same name would hide it" },
+        .{ .src = "main :: fn() -> i32 { N :: 4; xs: [2]i32 = .{ 1, 2 }; for N in xs { } return 0; }", .msg = "`N` is a constant here: a local of the same name would hide it" },
+        .{ .src = "main :: fn() -> i32 { N :: 4; f := fn(N: i32) -> i32 { return N; }; return 0; }", .msg = "`N` is a constant here: a local of the same name would hide it" },
+    };
+    for (refused) |c| {
+        var p = try fels.parser_mod.Parser.init(a, "body_const.fels", c.src, 1);
+        try std.testing.expectError(error.ParseFailed, p.parseModule());
+        std.testing.expect(std.mem.indexOf(u8, p.diagnostics.items[0].message, c.msg) != null) catch |err| {
+            std.debug.print("for:\n{s}\nexpected `{s}`, got `{s}`\n", .{ c.src, c.msg, p.diagnostics.items[0].message });
+            return err;
+        };
+    }
+    // A call through a namespace is no constant.
+    try expectNoError(a, "", "stop :: fn() { core::panic(\"x\"); }\nmain :: fn() -> i32 { return 0; }");
+}
+
 test "diagnostics: a local from a literal leaves alone what compiled before" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
