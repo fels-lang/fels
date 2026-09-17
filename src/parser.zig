@@ -1911,6 +1911,11 @@ pub const Parser = struct {
     fn parseLocalConst(self: *Parser) ParseError!ast.Stmt {
         const name_tok = self.advance();
         _ = self.advance(); // ::
+        return self.finishLocalConst(name_tok, null);
+    }
+
+    /// The rest of a body constant after its `::`, or after the `: T :` of one with a type.
+    fn finishLocalConst(self: *Parser, name_tok: Token, ty: ?ast.TypeRef) ParseError!ast.Stmt {
         const name = name_tok.text(self.source);
         if (self.localConstName(name) != null) {
             const msg = try std.fmt.allocPrint(self.allocator, "`{s}` is a constant here already; give this one a name of its own", .{name});
@@ -1927,6 +1932,7 @@ pub const Parser = struct {
             .file_name = self.file_name,
             .source = self.source,
             .value = value,
+            .ty = ty,
             .span = spanFrom(name_tok, semi),
         });
         try self.local_consts.append(self.allocator, @intCast(self.local_const_scopes.items.len));
@@ -2051,9 +2057,11 @@ pub const Parser = struct {
         }
         if (self.check(.ident) and self.peekKind(1) == .colon) {
             const name = self.advance();
-            try self.checkLocalName(name);
             _ = self.advance();
             const ty = try self.parseType();
+            // `N : T : value;`: a body constant with a type.
+            if (self.body_depth != 0 and self.quote_depth == 0 and self.match(.colon)) return self.finishLocalConst(name, ty);
+            try self.checkLocalName(name);
             _ = try self.expect(.eq, "expected = after typed local");
             const value = try self.parseExpr(0);
             const semi = try self.expect(.semicolon, "expected ; after typed local");
