@@ -47,8 +47,6 @@ These compile without a message and give a wrong result.
 
 ## 3. Decisions to make
 
-- **`&x as usize` parses as `&(x as usize)`**; the cast of an address needs parentheses. Intended
-  or not?
 - **`heap.dupe` takes no `borrow` parameter**, so a zone-owned slice cannot be duplicated into
   another arena ("zone-owned value from `scratch` can only be passed to a `borrow` parameter").
   Not a one-line fix: `dupe` copies shallowly, so with a borrowed source every element it copies
