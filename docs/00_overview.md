@@ -171,6 +171,18 @@ main :: fn() -> i32 {
 - **Simple module system**: each file is a module, and `pub` controls visibility
 - **Growing incrementally**: the semantics get completed before more syntax is added
 
+## Stability
+
+From version 0.13 on, the syntax is settled: what the [syntax reference](01_syntax.md) shows keeps
+its form and its meaning. A new feature comes as a form no program uses today, an attribute
+(`#name`) or a builtin, not as a new meaning for something you can already write.
+
+The checks go on getting stricter where the compiler accepted something it should not have, as
+0.13 did for writing through a `[]const T`, for numbers of two types that could lose a value,
+and for sub-byte integers. The [CHANGELOG](../CHANGELOG.md) lists each such change with what to
+write instead. While the major version is 0, the standard library's functions may still change
+in a minor version.
+
 ## Where to Go Next
 
 - [01_syntax.md](01_syntax.md) - Syntax Reference
