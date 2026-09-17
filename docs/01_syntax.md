@@ -382,21 +382,23 @@ The table lists operators from **highest** to **lowest** precedence:
 
 | Precedence | Operators | Associativity |
 |:----------:|-----------|:-------------:|
-| 1 (highest) | `?`, `!!`, `as`, `catch` (postfix), calls, `.` field access, indexing | Left-to-right |
+| 1 (highest) | `?`, `!!`, `catch` (postfix), calls, `.` field access, indexing | Left-to-right |
 | 2 | `!`, `~`, `&`, `*`, `-` (prefix) | Right-to-left |
-| 3 | `*`, `/`, `%`, `*%` | Left-to-right |
-| 4 | `+`, `-`, `+%`, `-%` | Left-to-right |
-| 5 | `<<`, `>>` | Left-to-right |
-| 6 | `&` (bitwise) | Left-to-right |
-| 7 | `^` | Left-to-right |
-| 8 | `\|` | Left-to-right |
-| 9 | `==`, `!=`, `<`, `<=`, `>`, `>=` | Left-to-right |
-| 10 | `&&` | Left-to-right |
-| 11 (lowest) | `\|\|` | Left-to-right |
+| 3 | `as` | Left-to-right |
+| 4 | `*`, `/`, `%`, `*%` | Left-to-right |
+| 5 | `+`, `-`, `+%`, `-%` | Left-to-right |
+| 6 | `<<`, `>>` | Left-to-right |
+| 7 | `&` (bitwise) | Left-to-right |
+| 8 | `^` | Left-to-right |
+| 9 | `\|` | Left-to-right |
+| 10 | `==`, `!=`, `<`, `<=`, `>`, `>=` | Left-to-right |
+| 11 | `&&` | Left-to-right |
+| 12 (lowest) | `\|\|` | Left-to-right |
 
-The postfix operators bind tighter than everything else, the prefix operators included. So
-`-x as u8` is `-(x as u8)`, `*p as i32` is `*(p as i32)`, and `a == b as i64` is
-`a == (b as i64)`. Write `(*p) as i32` when you want to cast the value that `*p` loads.
+The postfix operators bind tighter than the prefix ones, so `-a.b` is `-(a.b)` and `*p.next` is
+`*(p.next)`. A prefix operator binds tighter than `as`: `-x as u8` is `(-x) as u8`, `*p as i32`
+casts the value `*p` loads, and `&x as usize` is the address of `x` as a number. `as` binds
+tighter than the binary operators, so `a == b as i64` is `a == (b as i64)`.
 
 `??` has no single row, because it binds tightly on its left and loosely on its right. Its left
 operand is only the operand just before it, so `x + o ?? 0` is `x + (o ?? 0)`. Its right operand
