@@ -254,6 +254,8 @@ const Rewriter = struct {
     source: []const u8 = "",
     /// The function the literals are in is generic (or a method of a generic struct).
     generic: bool = false,
+    /// The constants of its body, which a `{N}` names as the code around it does.
+    local_consts: []const ast.LocalConst = &.{},
     added: std.ArrayList(ast.Item) = .empty,
     failed: bool = false,
     candidates: bool = false,
@@ -265,6 +267,8 @@ const Rewriter = struct {
         r.source = decl.source;
         r.generic = decl.type_params.len != 0;
         defer r.generic = false;
+        r.local_consts = decl.local_consts;
+        defer r.local_consts = &.{};
         if (decl.body) |b| try r.block(b);
     }
 
@@ -433,7 +437,7 @@ const Rewriter = struct {
                     return null;
                 }
                 // The parser numbers from the id it is given, and `newId` gave `next_id` last.
-                const parsed = parser.parseEmbedded(r.a, r.file, text_source, ph.start, ph.end, next_id + 1) catch |err| switch (err) {
+                const parsed = parser.parseEmbedded(r.a, r.file, text_source, ph.start, ph.end, next_id + 1, if (verbatim) r.local_consts else &.{}) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     else => {
                         r.report("this is not a value the format can print: the braces hold one expression, and no string literal (a brace in the text is `{{`)", at);
