@@ -126,6 +126,10 @@ These compile without a message and give a wrong result.
 - Stricter than the parser: commas are required between aggregate literal elements; `#run <stmt>;`
   is only supported as `#run { }` or an expression statement; `if a | b | c {` cannot be parsed;
   `where` cannot be an error type name.
+- Not parsed: names with splices in them (`set_$(f.name)`, `$(f.ty)` as a type), which macro
+  templates use. A constant in a function body whose value starts with a name (`N :: K * 2;`)
+  parses as a scope access (`io::println(x);`), which the compiler tells apart by the space in
+  front of the `::`.
 - Highlighting: `.name` in expressions is always an enum literal (never an error variant); a use of
   `T` in a body is a plain type; constants are recognized only by ALL_CAPS names.
 - `scripts/parse_doc_blocks.py` keeps the `> ` prefix of fences inside block quotes, and its line
