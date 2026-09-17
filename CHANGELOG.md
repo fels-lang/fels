@@ -121,6 +121,9 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Changed
 
+- **The syntax is settled.** What the syntax reference shows keeps its form and meaning from
+  this version on; new features come as new forms, attributes or builtins (docs/00_overview.md,
+  "Stability").
 - **A prefix operator binds tighter than `as`**: `-x as u8` is `(-x) as u8`, `~x as u64`
   complements `x` and then widens it, and `&x as usize` is the address of `x` as a number. They
   were `-(x as u8)`, `~(x as u64)` and `&(x as usize)`. `as` still binds tighter than the binary
