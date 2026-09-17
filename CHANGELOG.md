@@ -121,6 +121,10 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Changed
 
+- **A prefix operator binds tighter than `as`**: `-x as u8` is `(-x) as u8`, `~x as u64`
+  complements `x` and then widens it, and `&x as usize` is the address of `x` as a number. They
+  were `-(x as u8)`, `~(x as u64)` and `&(x as usize)`. `as` still binds tighter than the binary
+  operators.
 - **`[]const T` is read-only.** It was read as `[]T`: it converted to `[]T` without a word, and
   a write through it compiled. Now a write through a `[]const` slice is an error, a `[]const T`
   goes only where a `[]const T` is taken, and string literals are `[]const u8`, so a function
