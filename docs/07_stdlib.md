@@ -957,7 +957,7 @@ v.push(10); v.push(20);
 v.insert(1, 15);                    // order-preserving (O(n))
 g := v.remove(0);                   // order-preserving removal
 s := v.remove_swap(i);             // O(1) unordered removal
-for x in v.items() { ... }          // []T view until the next growth
+for x in v { ... }                  // over v.items(), a []T view until the next growth
 
 b := heap::make();
 w := v.clone_into(&b);             // deep-copy into ANOTHER region (data escapes)
