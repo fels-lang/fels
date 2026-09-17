@@ -3304,6 +3304,35 @@ test "exe: a constant in a function body, of its block" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_body_consts"));
 }
 
+test "exe: a prefix operator binds tighter than as" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `-x as u8` was `-(x as u8)`, `~x as u64` complemented the wide value, and `&x as usize`
+    // took the address of a cast. Now the prefix operator comes first, and `as` still binds
+    // tighter than a binary operator. At compile time too.
+    const src =
+        \\check :: fn() -> i32 {
+        \\    x: i32 = 5;
+        \\    p := &x;
+        \\    if *p as i64 != 5 { return 2; }
+        \\    small: u32 = 1;
+        \\    if ~small as u64 != 4294967294 { return 3; }
+        \\    if -x as i64 != -5 { return 4; }
+        \\    if !true as u8 != 0 { return 5; }
+        \\    if 3 * x as i64 != 15 { return 6; }
+        \\    b: u8 = 200;
+        \\    if -(b as i32) != -200 { return 7; }
+        \\    return 42;
+        \\}
+        \\R :: #run check();
+        \\// (the comptime VM has no addresses to give as numbers)
+        \\addr :: fn() -> i32 { x: i32 = 5; return if (unsafe &x as usize) == 0 { 1 } else { 42 }; }
+        \\main :: fn() -> i32 { return if R == 42 && addr() == 42 { check() } else { R }; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_as_precedence"));
+}
+
 test "exe: labeled break and continue leave the loop they name" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
