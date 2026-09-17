@@ -1783,6 +1783,9 @@ const Checker = struct {
     /// names a constant declared further down types that one first. A constant is
     /// `.in_progress` while its own initializer is inferred: meeting it again is a cycle.
     top_consts: std.AutoHashMapUnmanaged(SymbolId, TopConst) = .empty,
+    /// The value being typed is that of a constant declared in a function body (`N :: 4;`, which
+    /// the parser hoisted): an unknown name in it says it cannot be the function's.
+    in_body_const: bool = false,
 
     /// The integer literal under the unary minus being checked: `-128i8` is `-`
     /// applied to `128i8`, and the literal is checked as -128.
@@ -2772,6 +2775,9 @@ const Checker = struct {
         };
         try self.top_consts.put(self.allocator, id, .in_progress);
         defer _ = self.top_consts.remove(id);
+        const saved_body_const = self.in_body_const;
+        self.in_body_const = ast.isBodyConstName(decl.name);
+        defer self.in_body_const = saved_body_const;
         // The initializer is resolved in the file that declares the constant.
         const use_site = self.file;
         self.file = decl.file_name;
@@ -3768,7 +3774,10 @@ const Checker = struct {
                 if (fromBuiltinName(name)) |builtin_ty| return builtin_ty;
                 self.emitErrorRich(expr.span, "unknown name `{s}`", .{name}, .{
                     .primary_label = "not found in this scope",
-                    .help = self.valueNameHelp(name),
+                    .help = if (self.in_body_const)
+                        "a constant in a function body is computed while compiling, from literals and other constants: it cannot use the function's locals or parameters; a local `name := ...` is computed when the function runs"
+                    else
+                        self.valueNameHelp(name),
                 });
                 return error.SemanticFailed;
             },
