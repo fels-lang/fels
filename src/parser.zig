@@ -2609,7 +2609,9 @@ pub const Parser = struct {
                 left = try self.expr(.{ .force_unwrap = try self.allocExpr(left) }, Span.new(left.span.start, end.start + end.len));
                 continue;
             }
-            if (self.match(.keyword_as)) {
+            // `as` binds looser than the prefix operators (`-x as u8` is `(-x) as u8`, `&x as
+            // usize` is `(&x) as usize`) and tighter than the binary ones.
+            if (min_bp <= as_bp and self.match(.keyword_as)) {
                 const dest_ty = try self.parseType();
                 left = try self.expr(.{ .as_cast = .{
                     .value = try self.allocExpr(left),
@@ -2790,15 +2792,15 @@ pub const Parser = struct {
                 return self.expr(.{ .ident = self.source[tok.start .. name.start + name.len] }, spanFrom(tok, name));
             },
             .bang => {
-                const operand = try self.parseExpr(18);
+                const operand = try self.parseExpr(prefix_bp);
                 return self.expr(.{ .unary = .{ .op = .not, .expr = try self.allocExpr(operand) } }, Span.new(tok.start, operand.span.end));
             },
             .tilde => {
-                const operand = try self.parseExpr(18);
+                const operand = try self.parseExpr(prefix_bp);
                 return self.expr(.{ .unary = .{ .op = .bit_not, .expr = try self.allocExpr(operand) } }, Span.new(tok.start, operand.span.end));
             },
             .amp => {
-                const operand = try self.parseExpr(18);
+                const operand = try self.parseExpr(prefix_bp);
                 return self.expr(.{ .unary = .{ .op = .address_of, .expr = try self.allocExpr(operand) } }, Span.new(tok.start, operand.span.end));
             },
             .star => {
@@ -2812,11 +2814,11 @@ pub const Parser = struct {
                 // is unambiguously a load.
                 // Bind as tightly as the other prefix operators (`&`, `-`, `!`),
                 // so `*p + 1` is `(*p) + 1`, not `*(p + 1)`.
-                const operand = try self.parseExpr(18);
+                const operand = try self.parseExpr(prefix_bp);
                 return self.expr(.{ .unary = .{ .op = .deref, .expr = try self.allocExpr(operand) } }, Span.new(tok.start, operand.span.end));
             },
             .minus => {
-                const operand = try self.parseExpr(18);
+                const operand = try self.parseExpr(prefix_bp);
                 return self.expr(.{ .unary = .{ .op = .neg, .expr = try self.allocExpr(operand) } }, Span.new(tok.start, operand.span.end));
             },
             .l_paren => {
@@ -3169,6 +3171,11 @@ const Infix = struct {
     right_bp: u8,
     op: ast.BinaryOp,
 };
+
+/// The binding power of `as`: above every binary operator (`a * b as i64` is
+/// `a * (b as i64)`), below the prefix operators, whose operand is parsed at `prefix_bp`.
+const as_bp = 19;
+const prefix_bp = 20;
 
 fn infixInfo(kind: TokenKind) ?Infix {
     return switch (kind) {
