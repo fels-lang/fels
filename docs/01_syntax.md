@@ -451,6 +451,24 @@ elements is a compile error. `&ORIGIN` is a `*const Point`, so nothing can write
 through a pointer either. (A pointer that a constant holds may still point at something
 writable.)
 
+A constant can also be declared in a function body. It belongs to its block, from the
+declaration to the end of the block. Its value is computed while compiling, as any
+constant's is, so it can be the length of an array:
+
+```fels
+draw :: fn() {
+    CELLS :: 16;
+    WIDTH : u16 : CELLS * 8;
+    grid: [CELLS]u8 = .{};
+    // ...
+}
+```
+
+Its value can use literals and other constants. It cannot use the function's locals or
+parameters, because those have no value until the function runs: for that, use a local
+(`width := cells * 8;`). A local in the same block, or in a block inside it, cannot reuse the
+constant's name.
+
 Constants can also bind functions, types, and other compile-time constructs:
 
 ```fels
