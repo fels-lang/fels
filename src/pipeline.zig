@@ -945,9 +945,9 @@ fn strictPass(
         var cvm = ir_mod.ComptimeVm.init(allocator, fe1);
         cvm.current_file = file;
         defer cvm.deinit();
-        var len_consts = std.StringHashMap(u64).init(allocator);
+        var len_consts = std.AutoHashMap(sema.SymbolId, u64).init(allocator);
         defer len_consts.deinit();
-        try evalArrayLenConsts(module, pass.types, &cvm, &len_consts);
+        try evalArrayLenConsts(module, pass.types, pass.symbols, &cvm, &len_consts);
         pass = try strictSema(allocator, module, source, file, where_ctx, &len_consts);
     }
     const fe: FrontEnd = .{ .module = module, .symbols = pass.symbols, .types = pass.types, .arena = arena };
@@ -984,7 +984,7 @@ fn strictSema(
     source: []const u8,
     file: []const u8,
     where_cvm: ?*ir_mod.ComptimeVm,
-    len_consts: ?*const std.StringHashMap(u64),
+    len_consts: ?*const std.AutoHashMap(sema.SymbolId, u64),
 ) CompileError!SemaResult {
     return runSemaResolved(
         allocator,
@@ -1046,16 +1046,20 @@ fn whereTypeEvalThunk(
 /// Evaluate on the comptime VM each constant a sema pass found in an array length
 /// without a value (`TypeEnv.unresolved_len_consts`), so the next pass sizes `[N]i32`
 /// with it instead of 0 (an empty array that panicked on the first index). A constant
-/// that does not evaluate to a length is an error at its declaration.
+/// that does not evaluate to a length is an error at its declaration. The values are
+/// kept by the constants' symbols, which the next pass over the module collects alike.
 fn evalArrayLenConsts(
     module: ast.Module,
     types: sema.TypeEnv,
+    symbols: sema.SymbolTable,
     cvm: *ir_mod.ComptimeVm,
-    out: *std.StringHashMap(u64),
+    out: *std.AutoHashMap(sema.SymbolId, u64),
 ) CompileError!void {
-    for (types.unresolved_len_consts.keys()) |name| {
+    for (types.unresolved_len_consts.keys()) |id| {
+        const sym = symbols.symbol(id);
         const decl = for (module.items) |item| switch (item) {
-            .const_decl => |d| if (!d.is_mutable and std.mem.eql(u8, d.name, name)) break d,
+            .const_decl => |d| if (!d.is_mutable and std.mem.eql(u8, d.name, sym.name) and
+                std.mem.eql(u8, d.file_name, sym.file_name)) break d,
             else => {},
         } else continue;
         const value = cvm.evalConstInt(decl.value, decl.file_name) orelse {
@@ -1066,7 +1070,7 @@ fn evalArrayLenConsts(
             diag_mod.printErrorAt("this constant is the length of an array, but its value is negative", decl.file_name, decl.source, decl.value.span);
             return error.SemanticFailed;
         };
-        try out.put(name, len);
+        try out.put(id, len);
     }
 }
 
@@ -2042,7 +2046,7 @@ fn runSemaResolved(
     where_ctx: ?*anyopaque,
     where_fn: ?sema.WhereEvalFn,
     where_type_fn: ?sema.WhereTypeEvalFn,
-    const_seeds: ?*const std.StringHashMap(u64),
+    const_seeds: ?*const std.AutoHashMap(sema.SymbolId, u64),
 ) CompileError!SemaResult {
     var symbols = sema.collectSymbols(allocator, module) catch |err| switch (err) {
         error.SemanticFailed => return error.SemanticFailed,

@@ -671,14 +671,15 @@ pub const TypeEnv = struct {
     /// `*Atomic(u32)` when the parameter is `*Atomic(T)` (see inferGenericCallImpl).
     generic_struct_instance_args: std.AutoHashMap(SymbolId, GenericApp) = undefined,
     interface_impls: std.StringHashMap(ast.InterfaceImpl) = undefined,
-    /// Integer-valued top-level constants by name — so a `[N]T` array size can
-    /// resolve a named const (`N :: 29`) or simple arithmetic over them.
-    const_ints: std.StringHashMap(u64) = undefined,
+    /// Integer-valued top-level constants by their symbols — so a `[N]T` array size can
+    /// resolve a named const (`N :: 29`) or simple arithmetic over them. By symbol, not by
+    /// name: two modules may each declare an `N` (`resolveArrayLen`).
+    const_ints: std.AutoHashMap(SymbolId, u64) = undefined,
     /// Top-level constants used in an array length whose value only the comptime VM
     /// can compute (`N :: #run four();`, `N :: four();`): `const_ints` has no entry
     /// for them, so the length is 0 here. The pipeline evaluates them and passes the
     /// values to the strict pass as `const_ints` seeds (`checkTypesWithResolution`).
-    unresolved_len_consts: std.StringArrayHashMapUnmanaged(void) = .empty,
+    unresolved_len_consts: std.AutoArrayHashMapUnmanaged(SymbolId, void) = .empty,
     /// Lifted-lambda link name → the free-variable names in its body (candidates
     /// for capture). Populated at registration; resolved to actual captures at
     /// each definition site (see `lambda_captures`).
@@ -728,7 +729,7 @@ pub const TypeEnv = struct {
             .generic_struct_instances = std.StringHashMap(SymbolId).init(allocator),
             .generic_struct_instance_args = std.AutoHashMap(SymbolId, GenericApp).init(allocator),
             .interface_impls = std.StringHashMap(ast.InterfaceImpl).init(allocator),
-            .const_ints = std.StringHashMap(u64).init(allocator),
+            .const_ints = std.AutoHashMap(SymbolId, u64).init(allocator),
             .lambda_free = std.StringHashMap([]const []const u8).init(allocator),
             .lambda_captures = std.StringHashMap([]const Capture).init(allocator),
         };
@@ -1515,7 +1516,8 @@ pub fn checkTypesWithContext(
 /// Strict type-check with an optional resolution-time `where`-predicate evaluator
 /// (the two-pass rail). The callbacks are non-null only for pass-2 of a module
 /// that has `where` clauses. `const_seeds` holds the values of constants that are
-/// used as array lengths and that only the comptime VM could compute.
+/// used as array lengths and that only the comptime VM could compute, by their symbols
+/// (a pass over the same module collects the same symbols).
 pub fn checkTypesWithResolution(
     allocator: std.mem.Allocator,
     module: ast.Module,
@@ -1525,7 +1527,7 @@ pub fn checkTypesWithResolution(
     where_ctx: ?*anyopaque,
     where_fn: ?WhereEvalFn,
     where_type_fn: ?WhereTypeEvalFn,
-    const_seeds: ?*const std.StringHashMap(u64),
+    const_seeds: ?*const std.AutoHashMap(SymbolId, u64),
 ) SemanticError!TypeEnv {
     var checker = Checker.init(allocator, symbols.*);
     checker.source = source;
@@ -1793,9 +1795,9 @@ const Checker = struct {
     /// The initializers of the top-level constants without a type (`N :: 300;`),
     /// so a use of one is checked against its target type like the literal.
     const_values: std.AutoHashMapUnmanaged(SymbolId, ast.Expr) = .empty,
-    /// The initializers of the immutable top-level constants by name, for finding which
-    /// constant behind an array length needs the comptime VM (`noteUnresolvedLen`).
-    const_exprs: std.StringHashMapUnmanaged(ast.Expr) = .empty,
+    /// The initializers of the immutable top-level constants by their symbols, for finding
+    /// which constant behind an array length needs the comptime VM (`noteUnresolvedLen`).
+    const_exprs: std.AutoHashMapUnmanaged(SymbolId, ast.Expr) = .empty,
 
     const TopConst = union(enum) { pending: ast.ConstDecl, in_progress };
 
@@ -2384,17 +2386,20 @@ const Checker = struct {
         // Pre-fold integer-valued top-level constants FIRST (before collecting
         // struct layouts), so a `[N]T` array field/local resolves its named-const
         // size (`N :: 29`) or simple arithmetic over them. A few passes let a const
-        // reference an earlier one (`GW :: 2*W + 1`).
+        // reference an earlier one (`GW :: 2*W + 1`). Each is folded in its own file, so
+        // its `W` is the one declared or imported there.
         {
             var pass: usize = 0;
             while (pass < 4) : (pass += 1) {
                 var changed = false;
                 for (module.items) |item| switch (item) {
                     .const_decl => |decl| {
-                        if (pass == 0 and !decl.is_mutable) try self.const_exprs.put(self.allocator, decl.name, decl.value);
-                        if (self.env.const_ints.contains(decl.name)) continue;
-                        if (tryResolveArrayLen(decl.value, self.env.const_ints)) |v| {
-                            self.env.const_ints.put(decl.name, v) catch {};
+                        const id = self.symbols.resolveVisible(decl.file_name, decl.name) orelse
+                            self.symbols.resolve(self.symbols.root_scope, decl.name) orelse continue;
+                        if (pass == 0 and !decl.is_mutable) try self.const_exprs.put(self.allocator, id, decl.value);
+                        if (self.env.const_ints.contains(id)) continue;
+                        if (tryResolveArrayLen(decl.value, self.env.const_ints, self.symbols, decl.file_name)) |v| {
+                            self.env.const_ints.put(id, v) catch {};
                             changed = true;
                         }
                     },
@@ -6819,10 +6824,10 @@ const Checker = struct {
             },
             .array => |array| {
                 _ = try self.inferExpr(array.len.*);
-                try self.noteUnresolvedLen(array.len.*, 0);
+                try self.noteUnresolvedLen(array.len.*, self.file, 0);
                 return .{ .array = .{
                     .elem = try self.boxTy(try self.typeFromRef(array.inner.*)),
-                    .len = resolveArrayLen(array.len.*, self.env.const_ints),
+                    .len = resolveArrayLen(array.len.*, self.env.const_ints, self.symbols, self.file),
                 } };
             },
             .atomic => |atomic| return try self.typeFromRef(atomic.inner.*),
@@ -8119,28 +8124,28 @@ const Checker = struct {
         }
     }
 
-    /// Record in `env.unresolved_len_consts` each constant in the array length `expr`
-    /// that has no value in `const_ints` because only the comptime VM can compute it
-    /// (`N :: #run four();`). A constant computed from others (`M :: N * 2;`) is
-    /// followed to the ones it is computed from, which are then folded as usual.
-    fn noteUnresolvedLen(self: *Checker, expr: ast.Expr, depth: u8) SemanticError!void {
+    /// Record in `env.unresolved_len_consts` each constant in the array length `expr`,
+    /// written in `file`, that has no value in `const_ints` because only the comptime VM
+    /// can compute it (`N :: #run four();`). A constant computed from others (`M :: N * 2;`)
+    /// is followed, in the file that declares it, to the ones it is computed from, which are
+    /// then folded as usual.
+    fn noteUnresolvedLen(self: *Checker, expr: ast.Expr, file: []const u8, depth: u8) SemanticError!void {
         if (depth > 16) return; // a cycle (`A :: B + 1; B :: A + 1;`)
-        const name = switch (expr.kind) {
-            .ident => |n| n,
-            .scope_access => |sa| if (sa.base.kind == .ident) sa.member else return,
+        const id = switch (expr.kind) {
+            .ident, .scope_access => arrayLenConst(self.symbols, file, expr) orelse return,
             .binary => |binary| {
-                try self.noteUnresolvedLen(binary.left.*, depth + 1);
-                try self.noteUnresolvedLen(binary.right.*, depth + 1);
+                try self.noteUnresolvedLen(binary.left.*, file, depth + 1);
+                try self.noteUnresolvedLen(binary.right.*, file, depth + 1);
                 return;
             },
             else => return,
         };
-        if (self.env.const_ints.contains(name)) return;
-        const value = self.const_exprs.get(name) orelse return;
+        if (self.env.const_ints.contains(id)) return;
+        const value = self.const_exprs.get(id) orelse return;
         if (isArrayLenShape(value))
-            try self.noteUnresolvedLen(value, depth + 1)
+            try self.noteUnresolvedLen(value, self.symbols.symbol(id).file_name, depth + 1)
         else
-            try self.env.unresolved_len_consts.put(self.allocator, name, {});
+            try self.env.unresolved_len_consts.put(self.allocator, id, {});
     }
 
     /// An integer literal or a constant's name as it was written, minus signs included.
@@ -8747,25 +8752,24 @@ fn parseArrayLen(expr: ast.Expr) u64 {
     };
 }
 
-/// Evaluate an array-size expression to a length: an integer literal, a named
-/// integer constant (`N :: 29`, or another module's `ns::N`), or simple arithmetic over
-/// those (`2*W + 1`).
-/// Falls back to 0 for anything it can't fold at this stage.
-pub fn resolveArrayLen(expr: ast.Expr, const_ints: std.StringHashMap(u64)) u64 {
-    return tryResolveArrayLen(expr, const_ints) orelse 0;
+/// Evaluate an array-size expression written in `file` to a length: an integer literal, a
+/// named integer constant (`N :: 29`, or another module's `ns::N`), or simple arithmetic
+/// over those (`2*W + 1`).
+/// Falls back to 0 for anything it can't fold at this stage. Sema and the IR both size
+/// arrays with it, so they agree on every length.
+pub fn resolveArrayLen(expr: ast.Expr, const_ints: std.AutoHashMap(SymbolId, u64), symbols: SymbolTable, file: []const u8) u64 {
+    return tryResolveArrayLen(expr, const_ints, symbols, file) orelse 0;
 }
 
 /// `resolveArrayLen`, but null for anything it can't fold. A part it can't fold
 /// makes the whole unknown: `(#run four()) + 2` is not 2.
-fn tryResolveArrayLen(expr: ast.Expr, const_ints: std.StringHashMap(u64)) ?u64 {
+fn tryResolveArrayLen(expr: ast.Expr, const_ints: std.AutoHashMap(SymbolId, u64), symbols: SymbolTable, file: []const u8) ?u64 {
     return switch (expr.kind) {
         .int => |text| @intCast(@max(parseIntLiteral(text), 0)),
-        .ident => |name| const_ints.get(name),
-        // the constants are folded by their names (`leb128::MAX_LEN` was 0, an empty array)
-        .scope_access => |sa| if (sa.base.kind == .ident) const_ints.get(sa.member) else null,
+        .ident, .scope_access => const_ints.get(arrayLenConst(symbols, file, expr) orelse return null),
         .binary => |b| blk: {
-            const l = tryResolveArrayLen(b.left.*, const_ints) orelse break :blk null;
-            const r = tryResolveArrayLen(b.right.*, const_ints) orelse break :blk null;
+            const l = tryResolveArrayLen(b.left.*, const_ints, symbols, file) orelse break :blk null;
+            const r = tryResolveArrayLen(b.right.*, const_ints, symbols, file) orelse break :blk null;
             break :blk switch (b.op) {
                 .add => l +% r,
                 .sub => if (l >= r) l - r else 0,
@@ -8774,6 +8778,20 @@ fn tryResolveArrayLen(expr: ast.Expr, const_ints: std.StringHashMap(u64)) ?u64 {
                 .rem => if (r != 0) l % r else 0,
                 else => null,
             };
+        },
+        else => null,
+    };
+}
+
+/// The constant an array length written in `file` names: `N` as that file sees it (its own,
+/// or one it imported), `ns::N` in the module the file imported as `ns`. Two modules may each
+/// declare an `N`, so a constant is known by its symbol, not by its name.
+fn arrayLenConst(symbols: SymbolTable, file: []const u8, expr: ast.Expr) ?SymbolId {
+    return switch (expr.kind) {
+        .ident => |name| symbols.resolveVisible(file, name),
+        .scope_access => |sa| switch (sa.base.kind) {
+            .ident => |ns| symbols.resolveScoped(file, ns, sa.member),
+            else => null,
         },
         else => null,
     };

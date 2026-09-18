@@ -821,6 +821,77 @@ test "modules: an array sized by another module's constant" {
     return error.TestUnexpectedResult;
 }
 
+test "modules: arrays sized by same-named constants of two modules" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The folded constants were kept by their bare names, the first module's winning: `[b::N]u8`
+    // was as long as `a::N`, and `[N]u8` took another module's `N` over the file's own.
+    const mod_a =
+        \\pub N :: 4;
+        \\pub K :: #run five();
+        \\five :: fn() -> usize { return 5; }
+        \\pub Cells :: struct { cells: [N]u8 }
+        \\pub Ring :: struct($T: type) { items: [N]T }
+    ;
+    const mod_b =
+        \\pub N :: 8;
+        \\pub M :: N * 2;
+        \\pub K :: #run seven();
+        \\seven :: fn() -> usize { return 7; }
+        \\pub Cells :: struct { cells: [N]u8 }
+    ;
+    const main =
+        \\#import a;
+        \\#import b;
+        \\N :: 3;
+        \\run :: fn() -> i32 {
+        \\    x: [a::N]u8 = .{};
+        \\    y: [b::N]u8 = .{};
+        \\    z: [N]u8 = .{};
+        \\    m: [b::M]u8 = .{};
+        \\    four: [4]u8 = x;
+        \\    eight: [8]u8 = y;
+        \\    three: [3]u8 = z;
+        \\    y[7] = 1;
+        \\    m[15] = 2;
+        \\    return (x.len + y.len * 100 + z.len * 10000 + m.len * 1000000 + four.len + eight.len + three.len) as i32 * 10 + (y[7] + m[15]) as i32;
+        \\}
+        \\sizes :: fn() -> i32 {
+        \\    ka: [a::K]u8 = .{};
+        \\    kb: [b::K]u8 = .{};
+        \\    ra: a::Cells = .{ .cells = .{} };
+        \\    rb: b::Cells = .{ .cells = .{} };
+        \\    g: a::Ring(u16) = .{ .items = .{} };
+        \\    rb.cells[7] = 1;
+        \\    return (ka.len + kb.len * 100 + ra.cells.len * 10000 + rb.cells.len * 1000000 + g.items.len * 100000000) as i32 + rb.cells[7] as i32;
+        \\}
+        \\R :: #run run();
+        \\S :: #run sizes();
+    ;
+    var fe = try fels.compileMulti(a, &.{
+        .{ .file_name = "a.fels", .source = mod_a },
+        .{ .file_name = "b.fels", .source = mod_b },
+        .{ .file_name = "main.fels", .source = main },
+    });
+    defer fe.deinit(a);
+    const module = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(module);
+    var seen: u8 = 0;
+    for (module.globals) |g| {
+        if (std.mem.eql(u8, g.name, "R")) {
+            // 4 + 8*100 + 3*10_000 + 16*1_000_000 + 4 + 8 + 3, times 10, plus 1 + 2
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 160_308_193 }, g.init.imm);
+            seen += 1;
+        } else if (std.mem.eql(u8, g.name, "S")) {
+            // 5 + 7*100 + 4*10_000 + 8*1_000_000 + 4*100_000_000, plus 1
+            try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 408_040_706 }, g.init.imm);
+            seen += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(u8, 2), seen);
+}
+
 test "modules: a pub alias re-exports a type of another module" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

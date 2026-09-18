@@ -1968,7 +1968,7 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
         .borrow => |b| return lowerTypeWithBindingAndSymbols(allocator, b.inner.*, binding, types, symbols),
         .array => |arr| return .{ .array = .{
             .elem = try boxType(allocator, try lowerTypeWithBindingAndSymbols(allocator, arr.inner.*, binding, types, symbols)),
-            .len = sema.resolveArrayLen(arr.len.*, types.const_ints),
+            .len = arrayTypeLen(arr.len.*, types, symbols),
         } },
         // `Box(T)` inside an instantiated generic body must resolve to the concrete
         // INSTANCE (`Box__T_i32`), not the template `Box` (whose `T`-typed fields are
@@ -6735,6 +6735,15 @@ fn typeLinkName(name: []const u8, namespace: ?[]const u8) []const u8 {
     return type_scope.?.symbols.symbol(id).link_name;
 }
 
+/// The length of the array type `[len]T` written in the file being lowered, as sema sized
+/// it there (`sema.resolveArrayLen`): its `N` is the one that file sees, not another module's.
+fn arrayTypeLen(len: ast.Expr, types: sema.TypeEnv, symbols: sema.SymbolTable) u64 {
+    // A type is lowered in the scope of its file. Outside one, a constant is found by its
+    // bare name, as `resolveTypeName` finds a type: `<runtime>` sees every top-level name.
+    const file = if (type_scope) |scope| scope.file else "<runtime>";
+    return sema.resolveArrayLen(len, types.const_ints, symbols, file);
+}
+
 fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
     return switch (ty) {
         .type_param => .unknown,
@@ -7006,7 +7015,7 @@ fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, written: ast.TypeRef, types
     if (ty == .array) {
         return .{ .array = .{
             .elem = try boxType(allocator, try lowerAstTypeWithEnv(allocator, ty.array.inner.*, types, symbols)),
-            .len = sema.resolveArrayLen(ty.array.len.*, types.const_ints),
+            .len = arrayTypeLen(ty.array.len.*, types, symbols),
         } };
     }
     // A concrete instantiation in a NON-generic context (`p: Pair(i32)`, a field, a
