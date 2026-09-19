@@ -9221,8 +9221,12 @@ fn layoutQueryNamedType(allocator: std.mem.Allocator, types: sema.TypeEnv, symbo
     if (resolveTopLevel(symbols, file, name)) |id| {
         if (types.distinct_types.get(id)) |underlying|
             return lowerSemaTypeWithEnv(allocator, underlying, types, symbols) catch lowerNamedType(name);
-        if (types.alias_refs.get(id)) |target|
+        if (types.alias_refs.get(id)) |target| {
+            // What the alias stands for is read in its own file, as sema reads it.
+            const outer_scope = enterTypeScope(symbols, types, symbols.symbol(id).file_name);
+            defer type_scope = outer_scope;
             return lowerAstTypeWithEnv(allocator, target, types, symbols) catch lowerNamedType(name);
+        }
     }
     return lowerNamedType(name);
 }
@@ -9368,7 +9372,12 @@ fn foldLayoutCall(call: ast.CallExpr, file: []const u8, env: FoldEnv) ?Imm {
         .named => return null,
     };
     const ty: IrType = switch (first.kind) {
-        .type_ref => |t| lowerAstTypeWithEnv(env.allocator, t, env.types, env.symbols) catch return null,
+        .type_ref => |t| blk: {
+            // Read in the file of the call, as sema reads it: `[N]u8` is that file's `N`.
+            const outer_scope = enterTypeScope(env.symbols, env.types, file);
+            defer type_scope = outer_scope;
+            break :blk lowerAstTypeWithEnv(env.allocator, t, env.types, env.symbols) catch return null;
+        },
         .ident => |name| layoutQueryNamedType(env.allocator, env.types, env.symbols, file, name),
         else => return null,
     };

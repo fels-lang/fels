@@ -892,6 +892,51 @@ test "modules: arrays sized by same-named constants of two modules" {
     try std.testing.expectEqual(@as(u8, 2), seen);
 }
 
+test "modules: core::sizeof in a constant sizes [N]T with its module's N" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The IR folded a constant's `core::sizeof([N]u16)` with no file, or with the file of
+    // whichever item was being lowered, so the constants computed from it in the module the
+    // comptime VM runs were off: `b::DS` read 16 in a `#run`, `b::PER` 8. What an alias
+    // passed to `core::sizeof` stands for is read in the alias's module.
+    const mod_a =
+        \\pub N :: 4;
+        \\pub SIZE :: core::sizeof([N]u16);
+        \\pub DS :: SIZE * 2;
+    ;
+    const mod_b =
+        \\pub N :: 8;
+        \\Pair :: [N]u16;
+        \\pub SIZE :: core::sizeof([N]u16);
+        \\pub DS :: SIZE * 2;
+        \\pub PER: usize = 64 / SIZE;
+        \\pub PAIR :: core::sizeof(Pair);
+        \\pub DPAIR :: PAIR * 2;
+    ;
+    const main =
+        \\#import a;
+        \\#import b;
+        \\N :: 2;
+        \\run :: fn() -> i32 { return (a::DS * 100 + b::DS) as i32 * 10000 + (b::DPAIR * 100 + b::PER) as i32; }
+        \\R :: #run run();
+    ;
+    var fe = try fels.compileMulti(a, &.{
+        .{ .file_name = "a.fels", .source = mod_a },
+        .{ .file_name = "b.fels", .source = mod_b },
+        .{ .file_name = "main.fels", .source = main },
+    });
+    defer fe.deinit(a);
+    const module = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(module);
+    for (module.globals) |g| if (std.mem.eql(u8, g.name, "R")) {
+        // (16*100 + 32) * 10_000 + 32*100 + 4
+        try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 16_323_204 }, g.init.imm);
+        return;
+    };
+    return error.TestUnexpectedResult;
+}
+
 test "modules: a pub alias re-exports a type of another module" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
