@@ -8910,6 +8910,9 @@ fn lowerExprToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEn
         .body = null,
         .span = expr.span,
     };
+    // The types in the expression are read in its file, as a function's are.
+    const outer_scope = enterTypeScope(front_end.symbols, front_end.types, file);
+    defer type_scope = outer_scope;
     var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, dummy, error_codes);
     lowerer.module = front_end.module;
     lowerer.current_return_ty = lowerer.exprType(expr);
@@ -8956,6 +8959,8 @@ fn whereDummyDecl(file: []const u8, span: Span) ast.FunctionDecl {
 }
 
 fn lowerWhereToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, where_block: ast.Block, type_args: []const sema.TypeArg, output_params: []const []const u8, file: []const u8, error_codes: *ErrorCodes) !IrFunction {
+    const outer_scope = enterTypeScope(front_end.symbols, front_end.types, file);
+    defer type_scope = outer_scope;
     var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, whereDummyDecl(file, where_block.span), error_codes);
     lowerer.module = front_end.module;
     lowerer.type_binding = type_args;
@@ -8985,6 +8990,8 @@ fn lowerWhereToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontE
 /// assignment returns the node id of `<type>` (sema maps it back to a concrete
 /// type for this instantiation). Falling off the end returns 0 ("not assigned").
 fn lowerWhereTypeToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, where_block: ast.Block, type_args: []const sema.TypeArg, output_params: []const []const u8, file: []const u8, error_codes: *ErrorCodes) !IrFunction {
+    const outer_scope = enterTypeScope(front_end.symbols, front_end.types, file);
+    defer type_scope = outer_scope;
     var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, whereDummyDecl(file, where_block.span), error_codes);
     lowerer.module = front_end.module;
     lowerer.type_binding = type_args;

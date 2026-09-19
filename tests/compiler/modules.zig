@@ -937,6 +937,52 @@ test "modules: core::sizeof in a constant sizes [N]T with its module's N" {
     return error.TestUnexpectedResult;
 }
 
+test "modules: a #run expression and a where predicate size [N]T with their module's N" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The IR lowered an expression for the comptime VM, and a `where` predicate, with no
+    // file, where `N` (two modules have one) was none: `[a::RUN]u8` was a `[1]u8`, and
+    // `small` rejected a `u32` as bigger than `[N]u8`.
+    const mod_a =
+        \\pub N :: 4;
+        \\one :: fn() -> usize { return 1; }
+        \\pub RUN :: #run core::sizeof([N]u16) + one();
+        \\pub small :: fn(x: $T) -> i32
+        \\where { if core::sizeof(T) > core::sizeof([N]u8) { core::reject("too big"); } }
+        \\{ return 1; }
+    ;
+    const mod_b =
+        \\pub N :: 8;
+    ;
+    const main =
+        \\#import a;
+        \\#import b;
+        \\N :: 2;
+        \\run :: fn() -> i32 {
+        \\    v: u32 = 7;
+        \\    buf: [a::RUN]u8 = .{};
+        \\    buf[8] = 5;
+        \\    return (buf.len * 100) as i32 + a::small(v) * 10 + buf[8] as i32;
+        \\}
+        \\R :: #run run();
+    ;
+    var fe = try fels.compileMulti(a, &.{
+        .{ .file_name = "a.fels", .source = mod_a },
+        .{ .file_name = "b.fels", .source = mod_b },
+        .{ .file_name = "main.fels", .source = main },
+    });
+    defer fe.deinit(a);
+    const module = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(module);
+    for (module.globals) |g| if (std.mem.eql(u8, g.name, "R")) {
+        // 9*100 + 1*10 + 5
+        try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 915 }, g.init.imm);
+        return;
+    };
+    return error.TestUnexpectedResult;
+}
+
 test "modules: a pub alias re-exports a type of another module" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
