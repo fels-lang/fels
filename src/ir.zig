@@ -1957,7 +1957,7 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
                 }
             }
             // Transparent alias: lower what it stands for (it may name a type param).
-            if (try dealiased(allocator, ty, types, symbols, 0)) |aliased|
+            if (try dealiased(allocator, ty, types, symbols, 0, null)) |aliased|
                 return lowerTypeWithBindingAndSymbols(allocator, aliased, binding, types, symbols);
             return lowerNamedType(named.name);
         },
@@ -2130,7 +2130,7 @@ fn lowerTypeReplacingSelf(allocator: std.mem.Allocator, ty: ast.TypeRef, concret
                 }
             }
             // Transparent alias: lower what it stands for.
-            if (try dealiased(allocator, ty, types, symbols, 0)) |aliased|
+            if (try dealiased(allocator, ty, types, symbols, 0, null)) |aliased|
                 break :blk try lowerTypeReplacingSelf(allocator, aliased, concrete_name, types, symbols);
             break :blk lowerNamedType(named.name);
         },
@@ -6907,60 +6907,69 @@ fn mangleGenericInst(
 /// alias is a name with no layout of its own: `Node` is a struct, `node_t` only points
 /// at one. Allocation-free when `ty` holds no alias.
 fn dealias(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable) !ast.TypeRef {
-    return (try dealiased(allocator, ty, types, symbols, 0)) orelse ty;
+    return (try dealiased(allocator, ty, types, symbols, 0, null)) orelse ty;
 }
 
 /// `dealias`'s worker: the rewritten type, or null when nothing in `ty` is an alias.
-fn dealiased(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable, depth: u32) error{OutOfMemory}!?ast.TypeRef {
+/// `sized_in` is the file an alias's target was written in, when `ty` is (part of) one:
+/// its array lengths are sized with that file's constants, as sema sized them.
+fn dealiased(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable, depth: u32, sized_in: ?[]const u8) error{OutOfMemory}!?ast.TypeRef {
     // Sema rejects a cyclic alias, but the tolerant pass of a `#compiler` hook lets one by.
     if (depth > 32) return null;
     switch (ty) {
         .named => |named| {
             const id = resolveTypeName(symbols, named.name) orelse return null;
             const aliased = types.alias_refs.get(id) orelse return null;
-            return (try dealiased(allocator, aliased, types, symbols, depth + 1)) orelse aliased;
+            // `lib::Buf` standing for `[N]u8` is sized by lib's `N`, not by one of the file
+            // that names it.
+            const home = symbols.symbol(id).file_name;
+            return (try dealiased(allocator, aliased, types, symbols, depth + 1, home)) orelse aliased;
         },
         .pointer => |p| {
             var out = p;
-            out.inner = (try dealiasedBox(allocator, p.inner, types, symbols, depth)) orelse return null;
+            out.inner = (try dealiasedBox(allocator, p.inner, types, symbols, depth, sized_in)) orelse return null;
             return .{ .pointer = out };
         },
         .many_pointer => |p| {
             var out = p;
-            out.inner = (try dealiasedBox(allocator, p.inner, types, symbols, depth)) orelse return null;
+            out.inner = (try dealiasedBox(allocator, p.inner, types, symbols, depth, sized_in)) orelse return null;
             return .{ .many_pointer = out };
         },
         .optional => |o| {
             var out = o;
-            out.inner = (try dealiasedBox(allocator, o.inner, types, symbols, depth)) orelse return null;
+            out.inner = (try dealiasedBox(allocator, o.inner, types, symbols, depth, sized_in)) orelse return null;
             return .{ .optional = out };
         },
         .slice => |s| {
             var out = s;
-            out.inner = (try dealiasedBox(allocator, s.inner, types, symbols, depth)) orelse return null;
+            out.inner = (try dealiasedBox(allocator, s.inner, types, symbols, depth, sized_in)) orelse return null;
             return .{ .slice = out };
         },
         .array => |a| {
+            const inner = try dealiasedBox(allocator, a.inner, types, symbols, depth, sized_in);
+            const len = if (sized_in) |file| try sizedArrayLen(allocator, a.len, types, symbols, file) else null;
+            if (inner == null and len == null) return null;
             var out = a;
-            out.inner = (try dealiasedBox(allocator, a.inner, types, symbols, depth)) orelse return null;
+            out.inner = inner orelse a.inner;
+            out.len = len orelse a.len;
             return .{ .array = out };
         },
         .atomic => |a| {
             var out = a;
-            out.inner = (try dealiasedBox(allocator, a.inner, types, symbols, depth)) orelse return null;
+            out.inner = (try dealiasedBox(allocator, a.inner, types, symbols, depth, sized_in)) orelse return null;
             return .{ .atomic = out };
         },
         .borrow => |b| {
             var out = b;
-            out.inner = (try dealiasedBox(allocator, b.inner, types, symbols, depth)) orelse return null;
+            out.inner = (try dealiasedBox(allocator, b.inner, types, symbols, depth, sized_in)) orelse return null;
             return .{ .borrow = out };
         },
         .fn_type => |f| {
-            const ret = try dealiasedBox(allocator, f.ret, types, symbols, depth);
+            const ret = try dealiasedBox(allocator, f.ret, types, symbols, depth, sized_in);
             const params = try allocator.dupe(ast.TypeRef, f.params);
             var changed = ret != null;
             for (params) |*param| {
-                if (try dealiased(allocator, param.*, types, symbols, depth)) |rewritten| {
+                if (try dealiased(allocator, param.*, types, symbols, depth, sized_in)) |rewritten| {
                     param.* = rewritten;
                     changed = true;
                 }
@@ -6979,11 +6988,21 @@ fn dealiased(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sema.TypeEnv,
 }
 
 /// `dealiased` for a boxed inner type: the rewritten type, boxed anew, or null.
-fn dealiasedBox(allocator: std.mem.Allocator, inner: *const ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable, depth: u32) error{OutOfMemory}!?*const ast.TypeRef {
-    const rewritten = (try dealiased(allocator, inner.*, types, symbols, depth)) orelse return null;
+fn dealiasedBox(allocator: std.mem.Allocator, inner: *const ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable, depth: u32, sized_in: ?[]const u8) error{OutOfMemory}!?*const ast.TypeRef {
+    const rewritten = (try dealiased(allocator, inner.*, types, symbols, depth, sized_in)) orelse return null;
     const box = try allocator.create(ast.TypeRef);
     box.* = rewritten;
     return box;
+}
+
+/// The array length `len` of a type written in `file`, folded there and spelled as the
+/// number: `dealias` moves an alias's target into the type of another file, where `N`
+/// may be another constant or none.
+fn sizedArrayLen(allocator: std.mem.Allocator, len: *const ast.Expr, types: sema.TypeEnv, symbols: sema.SymbolTable, file: []const u8) error{OutOfMemory}!*const ast.Expr {
+    const value = sema.resolveArrayLen(len.*, types.const_ints, symbols, file);
+    const out = try allocator.create(ast.Expr);
+    out.* = .{ .id = len.id, .span = len.span, .kind = .{ .int = try std.fmt.allocPrint(allocator, "{d}", .{value}) } };
+    return out;
 }
 
 fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, written: ast.TypeRef, types: sema.TypeEnv, symbols: sema.SymbolTable) !IrType {

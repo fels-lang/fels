@@ -983,6 +983,47 @@ test "modules: a #run expression and a where predicate size [N]T with their modu
     return error.TestUnexpectedResult;
 }
 
+test "modules: an alias of an array type is sized by its own module's constant" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The IR read what an alias stands for in the file that names the alias: `lib::Buf`, the
+    // `[N]u8` of lib's `N`, was a `[9]u8` with main's.
+    const lib =
+        \\N :: 4;
+        \\pub Buf :: [N]u8;
+        \\pub Wide :: [N * 2]i32;
+    ;
+    const main =
+        \\#import lib;
+        \\N :: 9;
+        \\Local :: [N]u8;
+        \\run :: fn() -> i32 {
+        \\    b: lib::Buf = .{};
+        \\    w: lib::Wide = .{};
+        \\    l: Local = .{};
+        \\    four: [4]u8 = b;
+        \\    b[3] = 7;
+        \\    w[7] = 5;
+        \\    return (b.len * 10000 + w.len * 100 + l.len + four.len - 4) as i32 * 100 + b[3] as i32 + w[7];
+        \\}
+        \\R :: #run run();
+    ;
+    var fe = try fels.compileMulti(a, &.{
+        .{ .file_name = "lib.fels", .source = lib },
+        .{ .file_name = "main.fels", .source = main },
+    });
+    defer fe.deinit(a);
+    const module = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(module);
+    for (module.globals) |g| if (std.mem.eql(u8, g.name, "R")) {
+        // (4*10_000 + 8*100 + 9) * 100 + 7 + 5
+        try std.testing.expectEqual(fels.ir_mod.Imm{ .int = 4_080_912 }, g.init.imm);
+        return;
+    };
+    return error.TestUnexpectedResult;
+}
+
 test "modules: a pub alias re-exports a type of another module" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
