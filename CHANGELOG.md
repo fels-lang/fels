@@ -190,6 +190,12 @@ the major version is `0`, any minor bump may break source compatibility.
 - An interface method of a type whose name another module uses too (`pub Stream :: a::Stream`)
   reads the fields of `self`. They read as garbage, a crash. A pointer local coerced to an
   interface (`r: *Reader = p;`) stopped the build with an internal compiler error.
+- An array length may name another module's constant (`buf: [leb128::MAX_LEN]u8` was an array
+  of 0 bytes), and the constant is the one of the file the array is written in: where two
+  modules each declare an `N`, `[b::N]u8` was as long as `a::N`, and a file's own `N` could
+  lose to an imported one, so indexing ran past the end. The same holds for `[N]T` in
+  `core::sizeof` of a constant, in a `#run` expression, in a `where` predicate and in an alias
+  of another module (`lib::Buf`).
 
 ## 0.12.0 — 2026-10-19
 
