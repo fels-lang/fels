@@ -345,7 +345,14 @@ pub fn linkLinux(
         .stdin = .ignore,
         .stdout = .inherit,
         .stderr = .inherit,
-    }) catch return error.SpawnFailed;
+    }) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        var buf: [256]u8 = undefined;
+        const stderr = std.debug.lockStderr(&buf);
+        defer std.debug.unlockStderr();
+        writeLdLldUnstartable(&stderr.file_writer.interface, err, found, opts.llvm_bin, exe_dir) catch {};
+        return error.SpawnFailed;
+    };
     const term = child.wait(io) catch return error.WaitFailed;
     switch (term) {
         .exited => |code| if (code != 0) return error.ExitCodeFailure,
@@ -355,6 +362,7 @@ pub fn linkLinux(
 
 /// The ELF linker `linkLinux` runs.
 const ld_lld = if (builtin.os.tag == .windows) "ld.lld.exe" else "ld.lld";
+const fels_exe = if (builtin.os.tag == .windows) "fels.exe" else "fels";
 
 /// Where `linkLinux` finds ld.lld: in `llvm_bin` (the LLVM folder: `--llvm-path`, or the one fels
 /// was built with or found beside itself), else in `exe_dir`, the folder of fels itself, so an
@@ -371,6 +379,24 @@ fn findLdLld(allocator: std.mem.Allocator, io: std.Io, llvm_bin: []const u8, exe
         return path;
     }
     return null;
+}
+
+/// Why ld.lld did not start (`err`), where it was looked for, and how to give fels one. `found`
+/// is the ld.lld that was run, null when it was run by name from PATH.
+fn writeLdLldUnstartable(w: *std.Io.Writer, err: anyerror, found: ?[]const u8, llvm_bin: []const u8, exe_dir: ?[]const u8) std.Io.Writer.Error!void {
+    if (found) |path| {
+        try w.print("error: cannot link for Linux: the linker {s} does not start ({s})\n", .{ path, @errorName(err) });
+    } else if (err == error.FileNotFound) {
+        try w.print("error: cannot link for Linux: the linker {s} is not ", .{ld_lld});
+        // (the LLVM folder is the folder of fels when fels found its LLVM-C.dll there)
+        const beside = if (exe_dir) |d| std.mem.eql(u8, d, llvm_bin) else false;
+        if (llvm_bin.len != 0 and !beside) try w.print("in {s}, not ", .{llvm_bin});
+        if (exe_dir) |d| try w.print("next to {s} in {s}, not ", .{ fels_exe, d });
+        try w.print("on PATH\n", .{});
+    } else {
+        try w.print("error: cannot link for Linux: the linker {s} on PATH does not start ({s})\n", .{ ld_lld, @errorName(err) });
+    }
+    try w.print("  pass `--llvm-path <llvm>` with an LLVM that has bin/{s}, or put {s} on PATH or next to {s}\n", .{ ld_lld, ld_lld, fels_exe });
 }
 
 /// A concrete reason the fast felsld path can't be used (null = it *would* have
@@ -430,4 +456,36 @@ test "link: ld.lld is looked for in the LLVM folder, then next to fels" {
     try std.testing.expectEqualStrings(base ++ "/fels/" ++ ld_lld, (try findLdLld(a, io, "", base ++ "/fels")).?);
     try std.testing.expectEqual(null, try findLdLld(a, io, base ++ "/empty", base ++ "/empty"));
     try std.testing.expectEqual(null, try findLdLld(a, io, "", null));
+}
+
+test "link: an ld.lld that does not start says where it was looked for and how to give fels one" {
+    var buf: [1024]u8 = undefined;
+    const fix = "  pass `--llvm-path <llvm>` with an LLVM that has bin/" ++ ld_lld ++ ", or put " ++ ld_lld ++ " on PATH or next to " ++ fels_exe ++ "\n";
+
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeLdLldUnstartable(&w, error.FileNotFound, null, "C:/llvm/bin", "C:/fels/bin");
+    try std.testing.expectEqualStrings("error: cannot link for Linux: the linker " ++ ld_lld ++
+        " is not in C:/llvm/bin, not next to " ++ fels_exe ++ " in C:/fels/bin, not on PATH\n" ++ fix, w.buffered());
+
+    // The LLVM folder fels found beside itself is named once.
+    w = .fixed(&buf);
+    try writeLdLldUnstartable(&w, error.FileNotFound, null, "C:/fels/bin", "C:/fels/bin");
+    try std.testing.expectEqualStrings("error: cannot link for Linux: the linker " ++ ld_lld ++
+        " is not next to " ++ fels_exe ++ " in C:/fels/bin, not on PATH\n" ++ fix, w.buffered());
+
+    w = .fixed(&buf);
+    try writeLdLldUnstartable(&w, error.InvalidExe, "C:/llvm/bin/" ++ ld_lld, "C:/llvm/bin", null);
+    try std.testing.expectEqualStrings("error: cannot link for Linux: the linker C:/llvm/bin/" ++ ld_lld ++
+        " does not start (InvalidExe)\n" ++ fix, w.buffered());
+}
+
+test "link: an ld.lld that does not start fails the link, without trying the one on PATH" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    const cwd = std.Io.Dir.cwd();
+    const base = ".zig-cache/ld_lld_broken";
+    cwd.deleteTree(io, base) catch {};
+    try cwd.createDirPath(io, base);
+    try cwd.writeFile(io, .{ .sub_path = base ++ "/" ++ ld_lld, .data = "not a program" });
+    try std.testing.expectError(error.SpawnFailed, linkLinux(a, io, base ++ "/x.o", "", .{ .llvm_bin = base, .output = base ++ "/x" }));
 }
