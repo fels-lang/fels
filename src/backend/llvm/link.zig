@@ -259,7 +259,8 @@ fn linkWithLld(allocator: std.mem.Allocator, io: std.Io, opts: WindowsLinkOption
 // Linux / ELF linking
 
 pub const LinuxLinkOptions = struct {
-    /// Directory containing `ld.lld[.exe]` (e.g. <llvm>/bin). Empty = use PATH.
+    /// Directory containing `ld.lld[.exe]` (e.g. <llvm>/bin). Empty, or without one: the folder
+    /// of fels, then PATH.
     llvm_bin: []const u8 = "",
     output: []const u8,
     lib_paths: []const []const u8 = &.{},
@@ -301,11 +302,10 @@ pub fn linkLinux(
         }
     }.one;
 
-    const ld_name = if (builtin.os.tag == .windows) "ld.lld.exe" else "ld.lld";
-    if (opts.llvm_bin.len > 0)
-        try argv.append(allocator, std.fmt.allocPrint(allocator, "{s}/{s}", .{ opts.llvm_bin, ld_name }) catch return error.OutOfMemory)
-    else
-        try append(allocator, &argv, ld_name);
+    const exe_dir = std.process.executableDirPathAlloc(io, allocator) catch null;
+    defer if (exe_dir) |d| allocator.free(d);
+    const found = try findLdLld(allocator, io, opts.llvm_bin, exe_dir);
+    try argv.append(allocator, found orelse (allocator.dupe(u8, ld_lld) catch return error.OutOfMemory));
 
     try append(allocator, &argv, obj_path);
     if (opts.link_libc) {
@@ -353,6 +353,26 @@ pub fn linkLinux(
     }
 }
 
+/// The ELF linker `linkLinux` runs.
+const ld_lld = if (builtin.os.tag == .windows) "ld.lld.exe" else "ld.lld";
+
+/// Where `linkLinux` finds ld.lld: in `llvm_bin` (the LLVM folder: `--llvm-path`, or the one fels
+/// was built with or found beside itself), else in `exe_dir`, the folder of fels itself, so an
+/// install can carry ld.lld in its bin folder. Null when neither has it: then it is run by name,
+/// from PATH. The path is the caller's to free.
+fn findLdLld(allocator: std.mem.Allocator, io: std.Io, llvm_bin: []const u8, exe_dir: ?[]const u8) error{OutOfMemory}!?[]const u8 {
+    for ([_][]const u8{ llvm_bin, exe_dir orelse "" }) |dir| {
+        if (dir.len == 0) continue;
+        const path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, ld_lld });
+        std.Io.Dir.cwd().access(io, path, .{}) catch {
+            allocator.free(path);
+            continue;
+        };
+        return path;
+    }
+    return null;
+}
+
 /// A concrete reason the fast felsld path can't be used (null = it *would* have
 /// been eligible, so the only explanation is felsld.dll being absent/failing —
 /// not worth warning about, e.g. in the test runner). Used to explain the
@@ -392,4 +412,22 @@ pub fn windowsMem(allocator: std.mem.Allocator, io: std.Io, obj_bytes: []const u
     // Spill the object so LLD can read it, then take the LLD path.
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = opts.obj_files[0], .data = obj_bytes }) catch return error.OutOfMemory;
     return linkWithLld(allocator, io, opts);
+}
+
+test "link: ld.lld is looked for in the LLVM folder, then next to fels" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const cwd = std.Io.Dir.cwd();
+    const base = ".zig-cache/ld_lld_find";
+    cwd.deleteTree(io, base) catch {};
+    for ([_][]const u8{ "llvm", "fels", "empty" }) |d| try cwd.createDirPath(io, try std.fmt.allocPrint(a, "{s}/{s}", .{ base, d }));
+    for ([_][]const u8{ "llvm", "fels" }) |d| try cwd.writeFile(io, .{ .sub_path = try std.fmt.allocPrint(a, "{s}/{s}/{s}", .{ base, d, ld_lld }), .data = "" });
+
+    try std.testing.expectEqualStrings(base ++ "/llvm/" ++ ld_lld, (try findLdLld(a, io, base ++ "/llvm", base ++ "/fels")).?);
+    try std.testing.expectEqualStrings(base ++ "/fels/" ++ ld_lld, (try findLdLld(a, io, base ++ "/empty", base ++ "/fels")).?);
+    try std.testing.expectEqualStrings(base ++ "/fels/" ++ ld_lld, (try findLdLld(a, io, "", base ++ "/fels")).?);
+    try std.testing.expectEqual(null, try findLdLld(a, io, base ++ "/empty", base ++ "/empty"));
+    try std.testing.expectEqual(null, try findLdLld(a, io, "", null));
 }
