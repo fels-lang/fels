@@ -107,6 +107,15 @@ README.txt
 These two files sit at the top of the zip, with no folder around them, so `ld.lld.exe` lands
 right next to `fels.exe`. The compiler looks for it there when it links for `--target linux`.
 
+`ld.lld` is looked up in this order:
+
+1. the LLVM `bin` folder fels links with (`--llvm-path`; an installed fels uses its own
+   folder, where it finds `LLVM-C.dll`)
+2. next to `fels.exe`
+3. `PATH`
+
+When none has it, the build names the folders it looked in and the ways to give it one.
+
 ## Packaging — `scripts/package.ps1`
 
 The script makes a ReleaseSafe build with `-Din-process-lld` and writes these into `dist/`:
