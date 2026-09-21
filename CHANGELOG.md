@@ -196,6 +196,10 @@ the major version is `0`, any minor bump may break source compatibility.
   lose to an imported one, so indexing ran past the end. The same holds for `[N]T` in
   `core::sizeof` of a constant, in a `#run` expression, in a `where` predicate and in an alias
   of another module (`lib::Buf`).
+- `--target linux` finds `ld.lld` in the LLVM folder, then next to `fels.exe`, then on PATH. An
+  installed fels looked only in its own folder, and when `ld.lld` was not there the build said
+  just "did not link". Now it says where it looked and how to give fels an `ld.lld`, and what
+  `ld.lld` reports no longer lands on the lines of the progress tree.
 
 ## 0.12.0 — 2026-10-19
 
