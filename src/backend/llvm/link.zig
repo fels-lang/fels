@@ -340,12 +340,10 @@ pub fn linkLinux(
     }
     for (opts.extra_flags) |f| try append(allocator, &argv, f);
 
-    var child = std.process.spawn(io, .{
-        .argv = argv.items,
-        .stdin = .ignore,
-        .stdout = .inherit,
-        .stderr = .inherit,
-    }) catch |err| {
+    // What ld.lld says is collected and printed through `std.debug.print`, which takes the live
+    // progress tree off the terminal first: written straight to the terminal, it landed on the
+    // lines of the tree and kept pieces of them.
+    const result = std.process.run(allocator, io, .{ .argv = argv.items }) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
         var buf: [256]u8 = undefined;
         const stderr = std.debug.lockStderr(&buf);
@@ -353,8 +351,11 @@ pub fn linkLinux(
         writeLdLldUnstartable(&stderr.file_writer.interface, err, found, opts.llvm_bin, exe_dir) catch {};
         return error.SpawnFailed;
     };
-    const term = child.wait(io) catch return error.WaitFailed;
-    switch (term) {
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.stdout.len != 0) std.debug.print("{s}", .{result.stdout});
+    if (result.stderr.len != 0) std.debug.print("{s}", .{result.stderr});
+    switch (result.term) {
         .exited => |code| if (code != 0) return error.ExitCodeFailure,
         .signal, .stopped, .unknown => return error.ProcessTerminated,
     }
