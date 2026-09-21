@@ -79,6 +79,7 @@ pub const Opcode = enum(u8) {
     bits_to_slice, // a = dst; b = a slice read from host memory as 16 bytes; imm = byte stride → host_buf
     bits_to_float, // a = dst; b = an f32 or f64 read from host memory as its bits; imm = its bytes, 4 or 8 → the float
     opt_is_some, // a = dst; b = optional value → bool (non-null)
+    opt_ptr, // a = dst; b = optional pointer → the pointer it holds, or null
     interface_method, // a = dst; b = interface value; imm = method slot → fn_ref
     call_indirect, // a = dst; b = callee fn_ref reg; c = arg base reg; imm = arg count
     closure_make, // a = dst; b = env ptr reg; c = takes_env (0/1); imm = fn index → closure

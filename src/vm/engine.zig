@@ -1212,6 +1212,14 @@ pub const Vm = struct {
                     .null_ptr => false,
                     else => true,
                 } },
+                // `some(p)` is a block [p]: the pointer is its cell.
+                .opt_ptr => frame.regs[inst.a] = switch (frame.regs[inst.b]) {
+                    .null_ptr => .null_ptr,
+                    else => |some| blk: {
+                        const block = zoneBlock(some) orelse return error.TypeMismatch;
+                        break :blk try self.zone_stack.getCell(block.zone, block.offset);
+                    },
+                },
                 .interface_method => {
                     const mod = self.module orelse return error.NoModule;
                     const iface = try asPtr(frame.regs[inst.b]);

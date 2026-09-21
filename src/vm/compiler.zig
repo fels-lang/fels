@@ -945,6 +945,15 @@ const FnCompiler = struct {
         return false;
     }
 
+    /// The register of the pointer an optional pointer in `r` holds, or of null; `r` itself when
+    /// `ty` is no optional pointer.
+    fn heldPointer(self: *FnCompiler, r: Reg, ty: ir.IrType) CompileError!Reg {
+        if (!isOptionalPointer(ty)) return r;
+        const p = self.newReg();
+        try self.emit(Instr.r_r_imm(.opt_ptr, p, r, 0));
+        return p;
+    }
+
     // Instruction lowering
 
     fn lowerInstr(self: *FnCompiler, inst: ir.Instr) CompileError!void {
@@ -1011,6 +1020,16 @@ const FnCompiler = struct {
                     try self.emit(Instr.r_r_imm(.load_cell, lt, lr, 0));
                     try self.emit(Instr.r_r_imm(.load_cell, rt, rr, 0));
                     try self.emit(Instr.r_r_r(if (bin.op == .eq) .eq_i else .ne_i, target, lt, rt));
+                    return;
+                }
+                // An optional pointer is the pointer itself, null or not, as at run time. Here
+                // `some(p)` is a block [p], so it compares as the pointer it holds, not as its block.
+                if ((bin.op == .eq or bin.op == .ne) and
+                    (isOptionalPointer(self.typeOf(bin.lhs)) or isOptionalPointer(self.typeOf(bin.rhs))))
+                {
+                    const lp = try self.heldPointer(lr, self.typeOf(bin.lhs));
+                    const rp = try self.heldPointer(rr, self.typeOf(bin.rhs));
+                    try self.emit(Instr.r_r_r(if (bin.op == .eq) .eq_i else .ne_i, target, lp, rp));
                     return;
                 }
                 // For arithmetic the result type tells us int vs float; for
@@ -2028,6 +2047,10 @@ const not_built = std.math.maxInt(u32);
 
 fn isFloat(ty: ir.IrType) bool {
     return ty == .f32 or ty == .f64;
+}
+
+fn isOptionalPointer(ty: ir.IrType) bool {
+    return ty == .optional and ty.optional.* == .ptr;
 }
 
 /// Width and signedness of an integer type that is narrower than the VM's 128-bit arithmetic,
