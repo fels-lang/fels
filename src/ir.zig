@@ -4651,6 +4651,10 @@ const FunctionLowerer = struct {
                 if (!is_direct and callee_name.len > 0 and callee_name[0] != '<') {
                     // Function-pointer call: resolve the callee as a Value (param or local).
                     const callee_val: Value = cv: {
+                        // A function value a lambda captured is read from its environment.
+                        for (self.lambda_captures) |c| {
+                            if (std.mem.eql(u8, c.name, callee_name)) break :cv try self.lowerExpr(call.callee.*);
+                        }
                         for (self.params) |p| {
                             if (std.mem.eql(u8, p.name, callee_name)) break :cv .{ .param = callee_name };
                         }
