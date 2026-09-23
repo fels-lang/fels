@@ -831,6 +831,13 @@ pub const Vm = struct {
 
                 // Comparison (int)
                 .eq_i, .ne_i, .lt_i, .le_i, .gt_i, .ge_i => {
+                    // `==` on two pointers asks whether they point at the same cell: they are no numbers.
+                    if (inst.op == .eq_i or inst.op == .ne_i) {
+                        if (samePointer(frame.regs[inst.b], frame.regs[inst.c])) |same| {
+                            frame.regs[inst.a] = .{ .bool = same == (inst.op == .eq_i) };
+                            continue;
+                        }
+                    }
                     const l = frame.regs[inst.b].asI128() orelse return error.TypeMismatch;
                     const r = frame.regs[inst.c].asI128() orelse return error.TypeMismatch;
                     frame.regs[inst.a] = .{ .bool = switch (inst.op) {
@@ -1412,6 +1419,26 @@ fn zoneBlock(v: Value) ?Value.Ptr {
         .struct_ref => |r| .{ .zone = r.zone, .offset = r.offset },
         else => null,
     };
+}
+
+/// What a pointer points at: a cell in a zone, or an address in host memory (`null` is 0).
+const PointerTarget = union(enum) { cell: Value.Ptr, host: usize };
+
+fn pointerTarget(v: Value) ?PointerTarget {
+    if (zoneBlock(v)) |p| return .{ .cell = p };
+    return switch (v) {
+        .host_ptr => |hp| .{ .host = hp.addr },
+        .null_ptr => .{ .host = 0 },
+        else => null,
+    };
+}
+
+/// Do `a` and `b` point at the same cell? Null when either is no pointer. A cell in a zone has no
+/// host address, so it is never the target of a host pointer, nor null.
+fn samePointer(a: Value, b: Value) ?bool {
+    const x = pointerTarget(a) orelse return null;
+    const y = pointerTarget(b) orelse return null;
+    return std.meta.eql(x, y);
 }
 
 /// A raw host address from an int/uint/host pointer (for `ptr_from_int` etc.).
