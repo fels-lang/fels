@@ -158,6 +158,10 @@ the major version is `0`, any minor bump may break source compatibility.
 
 - A method that takes the value is called through a pointer: `self.get()` in a `*Self` method,
   with `get :: fn(self: Self)`, was "expected `P`, found `*P`" and took `(*self).get()`.
+- On the comptime VM, `==` and `!=` on two pointers ask whether they point at the same place, as
+  in compiled code: pointers into the VM's memory, host pointers (`core::ptr_from_int`), `null`,
+  and optional pointers, which compare as the pointer they hold. A `#run` that compared two
+  pointers "could not be evaluated at compile time".
 - A generic type of another module is a type argument: `f(K, V, sort::Asc(K), …)` was
   "expected a type, found a call expression", where `Asc(K)` of the file's own module worked.
 - A string constant that names another (`ALIAS :: CHARS;`) or comes from a `#run` has a length
