@@ -2465,17 +2465,31 @@ const Checker = struct {
             else => {},
         };
 
+        // The lifted lambdas come last, and the latest lifted first. A lambda's captures are
+        // found where it is written, as the body around it is checked (`resolveLambdaCaptures`),
+        // so that body goes first: a method's (hoisted after the lambdas) and an outer lambda's
+        // (lifted after the lambdas in it). A lambda checked before had no captures.
         for (module.items) |item| {
-            self.file = item.fileName();
-            // Tolerant mode (the `#compiler` hook pre-pass): a failure in one
-            // declaration (e.g. `main` referencing a not-yet-generated symbol)
-            // must not abort the whole module — the rest still needs typing so
-            // imported std functions lower cleanly into the comptime VM cache.
-            self.checkItem(item) catch |err| switch (err) {
-                error.SemanticFailed => if (self.tolerant) continue else return err,
-                error.OutOfMemory => return error.OutOfMemory,
-            };
+            if (isLiftedLambda(item)) continue;
+            try self.checkItemTolerant(item);
         }
+        var i = module.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (isLiftedLambda(module.items[i])) try self.checkItemTolerant(module.items[i]);
+        }
+    }
+
+    fn checkItemTolerant(self: *Checker, item: ast.Item) SemanticError!void {
+        self.file = item.fileName();
+        // Tolerant mode (the `#compiler` hook pre-pass): a failure in one
+        // declaration (e.g. `main` referencing a not-yet-generated symbol)
+        // must not abort the whole module — the rest still needs typing so
+        // imported std functions lower cleanly into the comptime VM cache.
+        self.checkItem(item) catch |err| switch (err) {
+            error.SemanticFailed => if (!self.tolerant) return err,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
     }
 
     fn checkItem(self: *Checker, item: ast.Item) SemanticError!void {
@@ -8883,6 +8897,11 @@ fn externName(attrs: []const ast.Attribute) ?[]const u8 {
         };
     }
     return null;
+}
+
+/// A lambda the parser lifted to a function of its own (`__lambda_N`).
+fn isLiftedLambda(item: ast.Item) bool {
+    return item == .function and std.mem.startsWith(u8, item.function.name, "__lambda_");
 }
 
 /// The type C receives a `...` argument of type `ty` as: an integer narrower than an `int`,
