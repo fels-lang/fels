@@ -5456,6 +5456,64 @@ test "exe: struct == folds at comptime (#run)" {
     try std.testing.expectEqual(@as(u32, 11), code);
 }
 
+test "exe: `==` on two pointers compares identity, natively and in #run" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The comptime VM compared pointers as numbers, which a pointer into a zone is not: the
+    // `#run` could not be evaluated. A set optional pointer is a block there, and must compare
+    // as the pointer it holds. `f` returns the number of the first check that fails.
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct { x: i32, y: i32 }
+        \\Link :: struct { to: *P, n: i32 }
+        \\Maybe :: struct { to: ?*P }
+        \\same :: fn(a: *P, b: *P) -> bool { return a == b; }
+        \\pick :: fn(a: *P, b: *P, first: bool) -> ?*P { if first { return a; } return b; }
+        \\f :: fn() -> i32 {
+        \\    p: P = .{ 1, 2 };
+        \\    q: P = .{ 1, 2 };
+        \\    a := &p;
+        \\    b := &p;
+        \\    if a != b { return 1; }
+        \\    if a == &q { return 2; }                         // equal contents, another cell
+        \\    if !same(a, b) || same(a, &q) { return 3; }
+        \\    v: i32 = 5;
+        \\    w: i32 = 5;
+        \\    pv := &v;
+        \\    if pv != &v || pv == &w { return 4; }
+        \\    if &p.x == &p.y || &p.x != &a.x { return 5; }
+        \\    arr: [3]i32 = .{ 1, 2, 3 };
+        \\    if &arr[0] == &arr[1] { return 6; }
+        \\    n1: ?*P = null;
+        \\    n2: ?*P = null;
+        \\    s1: ?*P = &p;
+        \\    s2: ?*P = &p;
+        \\    s3: ?*P = &q;
+        \\    if n1 != n2 || n1 == s1 { return 7; }
+        \\    if s1 != s2 || s1 == s3 { return 8; }
+        \\    if a != s1 || &q == s1 || n1 == a { return 9; }  // a pointer and an optional one
+        \\    if pick(a, &q, true) != s1 || pick(a, &q, false) == s1 { return 10; }
+        \\    l1: Link = .{ &p, 1 };
+        \\    l2: Link = .{ &p, 1 };
+        \\    l3: Link = .{ &q, 1 };
+        \\    if l1 != l2 || l1 == l3 { return 11; }           // fields that are pointers
+        \\    m1: Maybe = .{ &p };
+        \\    m2: Maybe = .{ &p };
+        \\    m3: Maybe = .{ null };
+        \\    if m1 != m2 || m1 == m3 { return 12; }
+        \\    h1 := unsafe core::ptr_from_int(*P, 4096usize);
+        \\    h2 := unsafe core::ptr_from_int(*P, 4096usize);
+        \\    h3 := unsafe core::ptr_from_int(*P, 8192usize);
+        \\    if h1 != h2 || h1 == h3 { return 13; }           // host pointers, by address
+        \\    if h1 == a { return 14; }
+        \\    return 0;
+        \\}
+        \\R :: #run f();
+        \\main :: fn() -> i32 { return R * 100 + f(); }
+    , "exe_ptr_eq_comptime");
+    try std.testing.expectEqual(@as(u32, 0), code);
+}
+
 test "exe: interface-through-interface dispatch" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
