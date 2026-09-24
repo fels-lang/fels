@@ -2437,6 +2437,7 @@ const Checker = struct {
         }
 
         try self.collectTopLevelTypes(module);
+        try self.addNestedLambdaFrees(module);
 
         // What each alias stands for, so a module's `pub` alias of a type of another module
         // (a re-export) is that type to every module that names it.
@@ -2537,6 +2538,40 @@ const Checker = struct {
                     return error.SemanticFailed;
                 }
             },
+        }
+    }
+
+    /// A lambda written in another one was lifted out of it first, so the outer one's body
+    /// names only `__lambda_N` where the inner one's names were. What the inner one uses from
+    /// around the outer one is used by the outer one too: the outer one captures it, and the
+    /// inner one captures it from there. (A name the outer one binds itself is found first
+    /// where the inner one is written; capturing the outer one's too is only a spare copy.)
+    fn addNestedLambdaFrees(self: *Checker, module: ast.Module) SemanticError!void {
+        var changed = true;
+        var rounds: usize = 0;
+        while (changed and rounds < 16) : (rounds += 1) {
+            changed = false;
+            for (module.items) |item| {
+                if (!isLiftedLambda(item)) continue;
+                const decl = item.function;
+                const id = self.symbols.resolveVisible(decl.file_name, decl.name) orelse continue;
+                const link = self.symbols.symbol(id).link_name;
+                const frees = self.env.lambda_free.get(link) orelse continue;
+                var more = std.ArrayList([]const u8).empty;
+                for (frees) |name| {
+                    if (!std.mem.startsWith(u8, name, "__lambda_")) continue;
+                    const inner_id = self.symbols.resolveVisible(decl.file_name, name) orelse continue;
+                    const inner = self.env.lambda_free.get(self.symbols.symbol(inner_id).link_name) orelse continue;
+                    for (inner) |n| {
+                        if (containsName(frees, n) or containsName(more.items, n)) continue;
+                        try more.append(self.allocator, n);
+                    }
+                }
+                if (more.items.len == 0) continue;
+                try more.appendSlice(self.allocator, frees);
+                try self.env.lambda_free.put(link, try more.toOwnedSlice(self.allocator));
+                changed = true;
+            }
         }
     }
 
@@ -8897,6 +8932,11 @@ fn externName(attrs: []const ast.Attribute) ?[]const u8 {
         };
     }
     return null;
+}
+
+fn containsName(names: []const []const u8, name: []const u8) bool {
+    for (names) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
 }
 
 /// A lambda the parser lifted to a function of its own (`__lambda_N`).
