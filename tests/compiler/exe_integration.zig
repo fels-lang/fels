@@ -3333,6 +3333,36 @@ test "exe: a prefix operator binds tighter than as" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_as_precedence"));
 }
 
+test "exe: a lambda calls a function value it captured, in a method and in another lambda" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `g(i)` on a captured `g` read `g` as a local of the lambda, and LLVM stopped on it. In a
+    // struct's method the lambda was checked before the method, with no captures: "unknown
+    // function `g`". A lambda in a lambda captures what the outer one captured.
+    const src =
+        \\run :: fn(n: usize, f: fn(usize)) { for i in 0..n { f(i); } }
+        \\S :: struct {
+        \\    k: usize,
+        \\    go :: fn(self: *Self, n: usize, g: fn(usize)) { run(n, fn(i: usize) { g(i + self.k - 1); }); }
+        \\}
+        \\free_go :: fn(n: usize, g: fn(usize)) { h := g; run(n, fn(i: usize) { h(i); }); }
+        \\check :: fn() -> i32 {
+        \\    total: usize = 0;
+        \\    p := &total;
+        \\    s: S = .{ 1 };
+        \\    s.go(3, fn(i: usize) { *p = *p + i; });
+        \\    free_go(4, fn(i: usize) { *p = *p + i; });
+        \\    outer := fn(n: usize) { run(n, fn(i: usize) { *p = *p + 10 * i; }); };
+        \\    outer(3);
+        \\    return total as i32;
+        \\}
+        \\R :: #run check();
+        \\main :: fn() -> i32 { return if R == 39 { check() } else { R }; }
+    ;
+    try std.testing.expectEqual(@as(u32, 39), try compileAndRun(arena.allocator(), src, "exe_lambda_calls_capture"));
+}
+
 test "exe: labeled break and continue leave the loop they name" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
