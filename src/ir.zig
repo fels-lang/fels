@@ -6434,10 +6434,21 @@ const FunctionLowerer = struct {
         for (caps, 0..) |c, i| {
             const cty = lowerSemaTypeWithEnv(self.allocator, c.ty, self.types, self.symbols) catch .unknown;
             // The captured variable may be a parameter or a local of the enclosing
-            // function — read whichever it is (a param isn't a local alloca).
+            // function — read whichever it is (a param isn't a local alloca) — or, in a
+            // lambda, one that lambda captured: it is in its environment.
             const val: Value = vblk: {
                 for (self.params) |p| if (std.mem.eql(u8, p.name, c.name)) break :vblk Value{ .param = c.name };
-                break :vblk Value{ .local = self.curLocal(c.name) };
+                const cur = self.curLocal(c.name);
+                if (self.local_types.contains(cur)) break :vblk Value{ .local = cur };
+                for (self.lambda_captures, 0..) |outer, idx| if (std.mem.eql(u8, outer.name, c.name)) {
+                    const tys = try self.captureFieldTys();
+                    break :vblk try self.emit(tys[idx], .{ .closure_env_load = .{
+                        .env = .{ .param = "__env" },
+                        .index = @intCast(idx),
+                        .fields = tys,
+                    } });
+                };
+                break :vblk Value{ .local = cur };
             };
             fields[i] = .{ .value = val, .ty = cty };
         }
