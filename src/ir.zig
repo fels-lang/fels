@@ -4920,6 +4920,12 @@ const FunctionLowerer = struct {
         if (expected_ty == .slice and expr.kind == .compound_literal) {
             const values = expr.kind.compound_literal;
             const elem_ty = expected_ty.slice.*;
+            // `.{}`: an empty slice. (Its element 0, of an array of none, failed the bounds
+            // check: `xs: []i64 = .{}` as a field's default panicked.)
+            if (values.len == 0) return self.emit(expected_ty, .{ .slice_expr = .{
+                .ptr = .{ .imm = .null },
+                .len = .{ .imm = .{ .uint = 0 } },
+            } });
             const arr_ty: IrType = .{ .array = .{ .elem = try boxType(self.allocator, elem_ty), .len = values.len } };
             var arr_args = std.ArrayList(Value).empty;
             errdefer arr_args.deinit(self.allocator);
