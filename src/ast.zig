@@ -449,6 +449,10 @@ pub const DeferMode = enum {
 pub const ZoneBlock = struct {
     name: []const u8,
     kind: []const u8,
+    /// `zone s: thread::Scope { }`: the module the kind is named through.
+    kind_ns: ?[]const u8 = null,
+    /// Under which sema records a kind that is not `Arena` (`TypeEnv.zone_kinds`).
+    id: NodeId = 0,
     body: Block,
     span: Span,
 };

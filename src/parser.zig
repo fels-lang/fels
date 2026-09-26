@@ -2198,11 +2198,22 @@ pub const Parser = struct {
     fn parseZoneBlock(self: *Parser, start: Token) ParseError!ast.ZoneBlock {
         const name = try self.expect(.ident, "expected zone name");
         _ = try self.expect(.colon, "expected : after zone name");
-        const kind = try self.expect(.ident, "expected zone kind (Arena, Pool, ...)");
+        const kind = try self.expect(.ident, "expected zone kind (`Arena`, or a type such as `thread::Scope`)");
+        // `thread::Scope`: a kind named through its module.
+        var kind_ns: ?[]const u8 = null;
+        var kind_name = kind.text(self.source);
+        if (self.match(.colon_colon)) {
+            kind_ns = kind_name;
+            kind_name = (try self.expect(.ident, "expected a type name after `::`")).text(self.source);
+        }
+        const id = self.next_id;
+        self.next_id += 1;
         const body = try self.parseBlock();
         return .{
             .name = name.text(self.source),
-            .kind = kind.text(self.source),
+            .kind = kind_name,
+            .kind_ns = kind_ns,
+            .id = id,
             .body = body,
             .span = spanFrom(start, body.span),
         };
