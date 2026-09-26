@@ -16,6 +16,12 @@
 //     code := t.join();   // blocks; returns worker's exit code
 //
 // Linux note: an exit code is only 8 bits, so return 0..255 if you read it via join.
+//
+// Most programs need none of that: a `zone` of kind `Scope` runs Fels closures on threads and
+// joins them where the block ends (see Scope below).
+
+#import std.heap as heap;
+#import std.heap.{ Arena };
 
 // The thread seam, provided by the platform runtime:
 //   os_thread_spawn(entry, arg) -> i64   opaque token, -1 on failure
@@ -107,3 +113,73 @@ pub ThreadGroup :: struct {
 
 // A fresh, empty thread group: `g := thread::group();`.
 pub group :: fn() -> ThreadGroup { return .{ }; }
+
+// Scope: threads that end with a block ─────────────────────────────────────
+//
+//     zone s: thread::Scope {
+//         for i in 0..4 { s.spawn(fn() { work(i); }); }
+//     }   // every thread is joined here, then the zone's memory is freed
+//
+// A `zone` of this kind runs each closure given to `spawn` on a thread of its own, and joins
+// them all on every way out of the block (its end, `return`, `break`, an error). The function
+// the block is in is still there until then, so a closure may use its locals through pointers
+// it captured. The captures are kept in the zone: a closure spawned in a loop has its own.
+pub Scope :: struct {
+    arena:   Arena
+    tasks:   ?*ScopeTask // the spawned closures, the newest first
+    spawned: usize
+
+    // Open the zone. Nothing is reserved until the first `spawn`.
+    pub make :: fn() -> Scope { return .{ heap::make(), null, 0 }; }
+
+    // Run `f` on a thread of its own. When no thread can be started, `f` runs here, now.
+    pub spawn :: fn(self: *Self, f: fn()) {
+        task := self.arena.alloc_one(ScopeTask);
+        task.f = f;
+        task.next = self.tasks;
+        task.token = os_thread_spawn(core::fn_ptr(run_scope_task), unsafe (task as *void));
+        if task.token == THREAD_INVALID { f(); }
+        self.tasks = task;
+        self.spawned += 1;
+    }
+
+    // Wait for every thread spawned so far. The zone does this where it ends; call it to wait
+    // sooner, and spawn more after it if you like.
+    pub join :: fn(self: *Self) {
+        t := self.tasks;
+        while t |task| {
+            if task.token != THREAD_INVALID {
+                code := os_thread_join(task.token);
+                task.token = THREAD_INVALID;
+            }
+            t = task.next;
+        }
+    }
+
+    // How many closures were spawned in the zone.
+    pub count :: fn(self: *Self) -> usize { return self.spawned; }
+
+    // The zone protocol: the memory of the closures made in the zone, ...
+    pub alloc_bytes :: fn(self: *Self, n: usize) -> []u8 { return self.arena.alloc_bytes(n); }
+
+    // ... and its end: join every thread, then free that memory.
+    pub deinit :: fn(self: *Self) {
+        self.join();
+        self.arena.deinit();
+    }
+}
+
+// A closure a Scope runs, and its thread.
+ScopeTask :: struct {
+    f:     fn()
+    token: i64
+    next:  ?*ScopeTask
+}
+
+// The entry of a Scope's thread: run the task's closure.
+run_scope_task :: fn(p: *void) -> u32 {
+    task := unsafe (p as *ScopeTask);
+    f := task.f;
+    f();
+    return 0;
+}
