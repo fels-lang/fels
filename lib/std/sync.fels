@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // std.sync — mutual exclusion and waiting between threads: Mutex, CondVar, and built on them a
-// bounded blocking Queue, WaitGroup, Once, RwLock and Semaphore. Thread calls go through the platform runtime (windows.fels →
+// bounded blocking Queue, a Channel that keeps its storage, WaitGroup, Once, RwLock and Semaphore. Thread calls go through the platform runtime (windows.fels →
 // SRWLOCK and CONDITION_VARIABLE; linux.fels → futex), so this file stays OS-agnostic. The
 // waiting is done by the kernel: a blocked thread sleeps rather than polling in a loop.
 //
@@ -26,6 +26,8 @@
 //     holds the lock or sleeps on it: join the threads first.
 
 #import std.atomics as atomics;
+#import std.heap as heap;
+#import std.heap.{ Arena };
 
 // The seam, provided by the platform runtime:
 //   os_mutex_lock(m) / os_mutex_try_lock(m) -> bool / os_mutex_unlock(m)        m: *u64
@@ -217,6 +219,52 @@ pub Queue :: struct($T: type) {
 pub make_queue :: fn($T: type, storage: []T) -> Queue(T) {
     q: Queue(T) = .{ .{}, .{}, .{}, storage, 0, 0, false };
     return q;
+}
+
+// Channel(T): a queue between threads that keeps its own storage ───────────
+//
+//     ch := sync::channel(Job, &a, 64);          // room for 64 jobs, taken from `a`
+//     c := &ch;
+//     zone s: thread::Scope {
+//         s.spawn(fn() { while c.recv() |job| { run(job); } });
+//         for job in jobs { c.send(job); }
+//         c.close();                             // the thread drains what is left, then stops
+//     }
+//
+// `send` waits while the channel is full and `recv` while it is empty. After `close`, `send`
+// gives false and `recv` gives what is left and then null. Threads share a channel through a
+// pointer to it, and it stays where it is until they are done, as a Queue does.
+pub Channel :: struct($T: type) {
+    queue: Queue(T)
+
+    // Send `item`, waiting while the channel is full. False if it is closed.
+    pub send :: fn(self: *Self, item: T) -> bool { return self.queue.push(item); }
+
+    // Send `item` if there is room now. False if the channel is full or closed.
+    pub try_send :: fn(self: *Self, item: T) -> bool { return self.queue.try_push(item); }
+
+    // The next item, waiting while the channel is empty. Null once it is closed and empty.
+    pub recv :: fn(self: *Self) -> ?T { return self.queue.pop(); }
+
+    // The next item if there is one now, else null.
+    pub try_recv :: fn(self: *Self) -> ?T { return self.queue.try_pop(); }
+
+    // No more sends: wake every thread that waits on the channel. Safe to call twice.
+    pub close :: fn(self: *Self) { self.queue.close(); }
+
+    // Items in the channel now (it may change before the caller looks).
+    pub len :: fn(self: *Self) -> usize { return self.queue.len(); }
+
+    // Most items it holds.
+    pub capacity :: fn(self: *Self) -> usize { return self.queue.capacity(); }
+
+    pub is_closed :: fn(self: *Self) -> bool { return self.queue.is_closed(); }
+}
+
+// A channel with room for `capacity` items, its storage taken from `a`.
+pub channel :: fn($T: type, a: *Arena, capacity: usize) -> Channel(T) {
+    ch: Channel(T) = .{ make_queue(T, heap::alloc(T, a, capacity)) };
+    return ch;
 }
 
 // WaitGroup: wait until a number of tasks are done ─────────────────────────
