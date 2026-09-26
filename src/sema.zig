@@ -3194,7 +3194,7 @@ const Checker = struct {
     /// At a lifted lambda's definition site, resolve which of its free variables
     /// are enclosing locals — those become its captures (recorded by-value with
     /// their types). Resolved once per lambda.
-    fn resolveLambdaCaptures(self: *Checker, link: []const u8) SemanticError!void {
+    fn resolveLambdaCaptures(self: *Checker, link: []const u8, at: Span) SemanticError!void {
         // Not in the first pass over literal locals: their types are not known yet, and the
         // captures are resolved once.
         if (self.infer.active) return;
@@ -3204,6 +3204,14 @@ const Checker = struct {
         errdefer caps.deinit(self.allocator);
         for (frees) |fname| {
             if (self.lookupLocal(fname)) |fty| {
+                // A copy of a zone's handle is a second allocator over the same memory (or a
+                // second pool of threads) that the zone never closes.
+                if (self.isActiveZone(fname)) {
+                    self.emitErrorRich(at, "this closure uses the zone handle `{s}`, and a closure keeps a copy of what it uses", .{fname}, .{
+                        .help = std.fmt.allocPrint(self.allocator, "take its address before the closure, `p := &{s};`, and use `p` in it", .{fname}) catch null,
+                    });
+                    return error.SemanticFailed;
+                }
                 try caps.append(self.allocator, .{ .name = fname, .ty = fty });
             }
         }
@@ -3865,7 +3873,7 @@ const Checker = struct {
                     // A reference to a lifted lambda is its definition site:
                     // resolve which of its free vars are enclosing locals (the
                     // captures) against THIS scope, for the body check + IR env.
-                    try self.resolveLambdaCaptures(self.symbols.symbol(id).link_name);
+                    try self.resolveLambdaCaptures(self.symbols.symbol(id).link_name, expr.span);
                     return sym_ty;
                 }
                 if (fromBuiltinName(name)) |builtin_ty| return builtin_ty;
