@@ -3363,6 +3363,24 @@ test "exe: a lambda calls a function value it captured, in a method and in anoth
     try std.testing.expectEqual(@as(u32, 39), try compileAndRun(arena.allocator(), src, "exe_lambda_calls_capture"));
 }
 
+test "exe: an empty .{} where a slice goes" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // It took element 0 of an array of none, and the bounds check stopped the program: a
+    // struct's `xs: []i64 = .{}` panicked in every literal that left `xs` out.
+    const src =
+        \\W :: struct { a: u64, xs: []i64 = .{} }
+        \\count :: fn(xs: []const u8) -> usize { return xs.len; }
+        \\main :: fn() -> i32 {
+        \\    w: W = .{ .a = 7 };
+        \\    e: []u8 = .{};
+        \\    return (w.xs.len + e.len + count(.{}) + w.a) as i32 + 35;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_empty_slice_literal"));
+}
+
 test "exe: labeled break and continue leave the loop they name" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
