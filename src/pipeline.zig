@@ -842,13 +842,15 @@ fn preparePipeline(
     // (and std.ptr, which it uses) so zones work in every compile path — even the
     // inline `compile(source)` path that never reads disk. Skipped when the
     // module already provides `Arena` (explicit `#import std.heap`).
-    const with_heap = if (moduleUsesZone(with_nav) and !moduleProvidesArena(with_nav))
+    const with_heap = if (!moduleUsesZone(with_nav))
+        with_nav
+    else if (!moduleProvidesArena(with_nav))
         prependHeapPrelude(allocator, with_nav) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,
         }
     else
-        with_nav;
+        try addLoadedZoneImports(allocator, with_nav);
 
     // `#test` functions take a `*Test` context; inject the `Test` type (and its
     // assertion methods) when the module declares any test, so tests compile with
@@ -1266,6 +1268,43 @@ fn appendZoneImports(allocator: std.mem.Allocator, out: *std.ArrayList(ast.Item)
             .for_zone = true,
         } });
     }
+}
+
+/// The zone imports of `appendZoneImports` when std.heap is in the module already, imported
+/// by a module the program uses (`std.thread` imports it): each file with a `zone` that does
+/// not import std.heap itself gets `#import std.heap.*;` of the loaded one. (A file that
+/// imports std.heap names what it uses, as before.)
+fn addLoadedZoneImports(allocator: std.mem.Allocator, module: ast.Module) !ast.Module {
+    var heap_file: ?[]const u8 = null;
+    var importers = std.StringHashMap(void).init(allocator);
+    defer importers.deinit();
+    for (module.items) |item| switch (item) {
+        .import => |imp| if (isStdImport(imp, "heap")) {
+            try importers.put(imp.file_name, {});
+            if (heap_file == null) heap_file = imp.resolved_file;
+        },
+        else => {},
+    };
+    const loaded = heap_file orelse return module;
+    var items: std.ArrayList(ast.Item) = .empty;
+    var files = std.StringHashMap(void).init(allocator);
+    defer files.deinit();
+    for (module.items) |item| {
+        const span = itemZoneSpan(item) orelse continue;
+        if (importers.contains(item.fileName())) continue;
+        if ((try files.getOrPut(item.fileName())).found_existing) continue;
+        try items.append(allocator, .{ .import = .{
+            .path = &.{ "std", "heap" },
+            .glob = true,
+            .file_name = item.fileName(),
+            .resolved_file = loaded,
+            .span = span,
+            .for_zone = true,
+        } });
+    }
+    if (items.items.len == 0) return module;
+    try items.appendSlice(allocator, module.items);
+    return .{ .file_name = module.file_name, .items = try items.toOwnedSlice(allocator) };
 }
 
 /// True when the module already declares a top-level function `name`.
