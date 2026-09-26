@@ -2028,6 +2028,15 @@ test "diagnostics: a constant in a function body is computed while compiling, an
     try expectNoError(a, "", "stop :: fn() { core::panic(\"x\"); }\nmain :: fn() -> i32 { return 0; }");
 }
 
+test "diagnostics: a zone kind keeps the zone protocol, and a closure does not copy a zone's handle" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFirstError(a, "P :: struct { x: i32 }\nmain :: fn() -> i32 { zone z: P { } return 0; }", &.{ "`P` is no zone kind", "`make() -> T`, `deinit(self: *T)` and `alloc_bytes(self: *T, n: usize) -> []u8`" });
+    try expectFirstError(a, "main :: fn() -> i32 { zone z: Nope { } return 0; }", &.{"unknown type `Nope`"});
+    try expectFirstError(a, "main :: fn() -> i32 { zone z: Arena { f := fn() -> usize { return z.alloc_bytes(4).len; }; } return 0; }", &.{ "this closure uses the zone handle `z`", "`p := &z;`" });
+}
+
 test "diagnostics: a local from a literal leaves alone what compiled before" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

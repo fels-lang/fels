@@ -3381,6 +3381,47 @@ test "exe: an empty .{} where a slice goes" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_empty_slice_literal"));
 }
 
+test "exe: a zone kind of the program's own" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `Arena` was the only kind. A type with `make`, `deinit` and `alloc_bytes` is one: the
+    // zone opens with `make`, closes with `deinit` on every way out (here `continue`), and
+    // keeps the closures made in it through `alloc_bytes`.
+    const src =
+        \\// (a file with a zone sees std.heap's names: `Arena`, `make`, `alloc_bytes`)
+        \\closed: i32 = 0;
+        \\Log :: struct {
+        \\    arena: Arena,
+        \\    bytes: usize,
+        \\    make :: fn() -> Log { return .{ make(), 0 }; }
+        \\    alloc_bytes :: fn(self: *Self, n: usize) -> []u8 {
+        \\        self.bytes += n;
+        \\        return self.arena.alloc_bytes(n);
+        \\    }
+        \\    deinit :: fn(self: *Self) {
+        \\        if self.bytes > 0 { closed += 10; }
+        \\        closed += 1;
+        \\        self.arena.deinit();
+        \\    }
+        \\}
+        \\main :: fn() -> i32 {
+        \\    total := 0;
+        \\    for i in 0..3 {
+        \\        zone z: Log {
+        \\            k := i + 1;
+        \\            f := fn() -> i32 { return k * 2; };
+        \\            total += f();
+        \\            if i == 1 { continue; }
+        \\        }
+        \\    }
+        \\    return closed + total;
+        \\}
+    ;
+    // three zones closed, each with a closure in it: 3 * 11, and 2 + 4 + 6
+    try std.testing.expectEqual(@as(u32, 45), try compileAndRun(arena.allocator(), src, "exe_zone_kind_own"));
+}
+
 test "exe: labeled break and continue leave the loop they name" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
