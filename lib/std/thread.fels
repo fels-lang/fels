@@ -22,6 +22,8 @@
 
 #import std.heap as heap;
 #import std.heap.{ Arena };
+#import std.sync.{ Mutex, CondVar };
+#import std.atomics as atomics;
 
 // The thread seam, provided by the platform runtime:
 //   os_thread_spawn(entry, arg) -> i64   opaque token, -1 on failure
@@ -182,4 +184,151 @@ run_scope_task :: fn(p: *void) -> u32 {
     f := task.f;
     f();
     return 0;
+}
+
+// Pool: worker threads for loops whose steps can run at once ──────────────────
+//
+//     zone pool: thread::Pool {
+//         pool.range(0, n, fn(i: usize) { out[i] = work(i); });
+//         pool.each(f64, prices, fn(p: *f64) { *p = *p * rate; });
+//     }   // the workers stop here
+//
+// `range` calls `f(i)` once for each `i` from `start` up to `end`, on several threads at once,
+// and returns when every call has returned. The workers start at the first job and wait
+// between jobs, one per core but one: the thread that calls `range` works too. `each` gives
+// `f` a pointer to each item, so the calls can write their own item and no other.
+pub Pool :: struct {
+    arena:    Arena
+    mu:       Mutex = .{}
+    wake:     CondVar = .{} // a job is posted, or the pool stops
+    finished: CondVar = .{} // the last worker is done with the job
+    workers:  []i64 = .{}   // their threads, started at the first job
+    started:  bool = false
+    stopping: bool = false
+    job:      fn(usize)
+    round:    u64 = 0       // jobs posted so far
+    next:     usize = 0     // the next index to take
+    end:      usize = 0
+    chunk:    usize = 1
+    working:  usize = 0     // workers not yet done with the job
+
+    // Open the zone. No thread starts until the first job.
+    pub make :: fn() -> Pool { return .{ .arena = heap::make(), .job = idle_job }; }
+
+    // Call `f(i)` for each `i` in `start..end`, spread over the pool's threads.
+    pub range :: fn(self: *Self, start: usize, end: usize, f: fn(usize)) {
+        if end <= start { return; }
+        self.start_workers();
+        n := self.workers.len;
+        chunk := (end - start) / ((n + 1) * 8);
+        self.mu.lock();
+        self.job = f;
+        self.next = start;
+        self.end = end;
+        self.chunk = if chunk == 0 { 1 } else { chunk };
+        self.working = n;
+        self.round += 1;
+        self.mu.unlock();
+        self.wake.broadcast();
+        self.work(f);
+        self.mu.lock();
+        while self.working != 0 { self.finished.wait(&self.mu); }
+        self.mu.unlock();
+    }
+
+    // Call `f` with a pointer to each of `items`, spread over the pool's threads.
+    pub each :: fn($T: type, self: *Self, items: borrow []T, f: fn(*T)) {
+        unsafe { self.each_bytes(items.ptr as [*]u8, items.len, core::sizeof(T), f as fn(*u8)); }
+    }
+
+    // `each` with the item type taken out: items of `size` bytes from `base`.
+    each_bytes :: fn(self: *Self, base: borrow [*]u8, n: usize, size: usize, f: fn(*u8)) {
+        self.range(0, n, fn(i: usize) { f(&base[i * size]); });
+    }
+
+    // How many threads a job runs on: the workers, and the caller.
+    pub threads :: fn(self: *Self) -> usize {
+        self.start_workers();
+        return self.workers.len + 1;
+    }
+
+    // Take chunks of the job's indexes until none is left.
+    work :: fn(self: *Self, f: fn(usize)) {
+        while true {
+            from := atomics::fetch_add(usize, &self.next, self.chunk);
+            if from >= self.end { return; }
+            to := from + self.chunk;
+            if to > self.end { to = self.end; }
+            for i in from..to { f(i); }
+        }
+    }
+
+    start_workers :: fn(self: *Self) {
+        if self.started { return; }
+        self.started = true;
+        cpus := os_cpu_count() as usize;
+        n: usize = if cpus > 64 { 63 } else if cpus > 1 { cpus - 1 } else { 0 };
+        all := self.arena.alloc(i64, n);
+        // a thread that does not start takes no part
+        k: usize = 0;
+        for i in 0..n {
+            t := os_thread_spawn(core::fn_ptr(run_pool_worker), unsafe (self as *void));
+            if t != THREAD_INVALID {
+                all[k] = t;
+                k += 1;
+            }
+        }
+        self.workers = all[0..k];
+    }
+
+    // The zone protocol: the memory of the closures made in the zone, ...
+    pub alloc_bytes :: fn(self: *Self, n: usize) -> []u8 { return self.arena.alloc_bytes(n); }
+
+    // ... and its end: stop the workers, then free that memory.
+    pub deinit :: fn(self: *Self) {
+        if self.started {
+            self.mu.lock();
+            self.stopping = true;
+            self.mu.unlock();
+            self.wake.broadcast();
+            for t in self.workers { code := os_thread_join(t); }
+        }
+        self.arena.deinit();
+    }
+}
+
+// A Pool's job before the first one.
+idle_job :: fn(i: usize) {}
+
+// A Pool's worker: wait for a job, take part in it, tell the pool, wait for the next.
+run_pool_worker :: fn(p: *void) -> u32 {
+    pool := unsafe (p as *Pool);
+    seen: u64 = 0;
+    while true {
+        pool.mu.lock();
+        while pool.round == seen && !pool.stopping { pool.wake.wait(&pool.mu); }
+        if pool.stopping {
+            pool.mu.unlock();
+            return 0;
+        }
+        seen = pool.round;
+        f := pool.job;
+        pool.mu.unlock();
+        pool.work(f);
+        pool.mu.lock();
+        pool.working -= 1;
+        last := pool.working == 0;
+        pool.mu.unlock();
+        if last { pool.finished.broadcast(); }
+    }
+    return 0;
+}
+
+// One loop on threads of a pool of its own: `thread::parallel(0, n, fn(i: usize) { … })`.
+// A pool costs a thread start per core, so a program that runs many loops keeps one in a
+// `zone pool: thread::Pool { … }` instead.
+pub parallel :: fn(start: usize, end: usize, f: fn(usize)) {
+    pool := Pool::make();
+    pool.range(start, end, f);
+    pool.deinit();
 }
