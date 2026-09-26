@@ -636,6 +636,9 @@ pub const TypeEnv = struct {
     /// An argument a variadic C function takes after its parameters (its `...`): the
     /// argument's NodeId -> the type it is passed as (`varargType`).
     vararg_types: std.AutoHashMap(ast.NodeId, Ty),
+    /// A `zone` of a kind other than `Arena` (`zone s: thread::Scope { }`): the zone's NodeId ->
+    /// the kind's type, whose `make`, `deinit` and `alloc_bytes` IR calls (`zoneHandleTy`).
+    zone_kinds: std.AutoHashMap(ast.NodeId, SymbolId),
     /// The same iter expr's NodeId -> what its `next` returns, with a generic struct's type
     /// parameters bound by the iterator's type (`?[]u8` for `mem::Split(u8)`). The instance of
     /// such a `next` is in `generic_call_insts` under the same NodeId.
@@ -718,6 +721,7 @@ pub const TypeEnv = struct {
             .iterator_fors = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .items_fors = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .vararg_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
+            .zone_kinds = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .iterator_next_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .receiver_auto_addr = std.AutoHashMap(ast.NodeId, void).init(allocator),
             .receiver_auto_deref = std.AutoHashMap(ast.NodeId, void).init(allocator),
@@ -755,6 +759,7 @@ pub const TypeEnv = struct {
         self.iterator_fors.deinit();
         self.items_fors.deinit();
         self.vararg_types.deinit();
+        self.zone_kinds.deinit();
         self.iterator_next_types.deinit();
         self.receiver_auto_addr.deinit();
         self.receiver_auto_deref.deinit();
@@ -2234,6 +2239,47 @@ const Checker = struct {
         return .{ .named = id };
     }
 
+    /// The type of a `zone`'s handle: `Arena`, or a type that keeps the zone protocol, as
+    /// `thread::Scope` does. `T.make() -> T` opens the zone, `deinit(self: *T)` closes it on
+    /// every way out of the block, and `alloc_bytes(self: *T, n: usize) -> []u8` holds the
+    /// closures made in it. Such a kind is recorded for IR.
+    fn zoneHandleTy(self: *Checker, zb: ast.ZoneBlock) SemanticError!Ty {
+        if (zb.kind_ns == null and std.mem.eql(u8, zb.kind, "Arena")) return self.arenaTy();
+        const ty = try self.typeFromRef(.{ .named = .{ .name = zb.kind, .namespace = zb.kind_ns, .span = zb.span } });
+        const id = switch (ty) {
+            .named => |id| id,
+            else => return self.badZoneKind(zb),
+        };
+        const kind = self.symbols.symbol(id);
+        const self_ptr = try self.ptrTo(ty);
+        const make = self.zoneMethod(kind, "make") orelse return self.badZoneKind(zb);
+        const close = self.zoneMethod(kind, "deinit") orelse return self.badZoneKind(zb);
+        const alloc = self.zoneMethod(kind, "alloc_bytes") orelse return self.badZoneKind(zb);
+        const ok = make.params.len == 0 and sameTy(make.return_ty, ty) and
+            close.params.len == 1 and sameTy(close.params[0].ty, self_ptr) and
+            alloc.params.len == 2 and sameTy(alloc.params[0].ty, self_ptr) and alloc.params[1].ty == .usize and
+            sameTy(alloc.return_ty, try self.sliceOf(.u8));
+        if (!ok) return self.badZoneKind(zb);
+        try self.env.zone_kinds.put(zb.id, id);
+        return ty;
+    }
+
+    /// The method `name` of the zone kind `kind` (a struct's method is the top-level function
+    /// `Kind.name` of the kind's file), with no error set.
+    fn zoneMethod(self: *Checker, kind: Symbol, name: []const u8) ?FnSig {
+        const full = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ kind.name, name }) catch return null;
+        const id = self.symbols.resolveVisible(kind.file_name, full) orelse return null;
+        const sig = self.env.fn_sigs.get(id) orelse return null;
+        return if (sig.error_ty == null) sig else null;
+    }
+
+    fn badZoneKind(self: *Checker, zb: ast.ZoneBlock) SemanticError {
+        self.emitErrorRich(zb.span, "`{s}` is no zone kind", .{zb.kind}, .{
+            .help = "a zone kind is `Arena`, or a type `T` with `make() -> T`, `deinit(self: *T)` and `alloc_bytes(self: *T, n: usize) -> []u8`, as `thread::Scope` has",
+        });
+        return error.SemanticFailed;
+    }
+
     /// True when `name` is a live `zone X: Arena {}` handle (vs. a manually
     /// managed `Arena` local, which has no escape restrictions).
     fn isActiveZone(self: Checker, name: []const u8) bool {
@@ -3700,10 +3746,7 @@ const Checker = struct {
             .break_stmt => |jump| try self.checkJump(jump, "break"),
             .continue_stmt => |jump| try self.checkJump(jump, "continue"),
             .zone_block => |zb| {
-                if (!std.mem.eql(u8, zb.kind, "Arena")) {
-                    self.emitError(zb.span, "unsupported zone kind `{s}`; only `Arena` is currently defined", .{zb.kind});
-                    return error.SemanticFailed;
-                }
+                const handle_ty = try self.zoneHandleTy(zb);
                 for (self.active_zones.items) |zone| {
                     if (std.mem.eql(u8, zone.name, zb.name)) {
                         self.emitError(zb.span, "nested zone name `{s}` shadows an active zone", .{zb.name});
@@ -3712,11 +3755,11 @@ const Checker = struct {
                 }
                 try self.pushScope();
                 defer self.popScope();
-                // The handle is a real `std.heap.Arena`, so every Arena method
-                // (alloc/alloc_bytes/dupe/new/…) resolves by ordinary UFCS; the
+                // The handle is a real `std.heap.Arena` (or the kind's own type), so every
+                // method (alloc/alloc_bytes/dupe/new/…) resolves by ordinary UFCS; the
                 // escape checker still keys ownership off the zone name.
-                try self.declareLocal(zb.name, self.arenaTy());
-                self.noteLocal(.{ .name = zb.name, .file = "", .kind = .zone, .decl = zb.span, .scope_end = zb.body.span.end, .ty = self.arenaTy() });
+                try self.declareLocal(zb.name, handle_ty);
+                self.noteLocal(.{ .name = zb.name, .file = "", .kind = .zone, .decl = zb.span, .scope_end = zb.body.span.end, .ty = handle_ty });
                 try self.active_zones.append(self.allocator, .{
                     .name = zb.name,
                     .scope_depth = self.scope_stack.items.len - 1,
