@@ -110,6 +110,16 @@ pub const ConstFieldInit = struct {
     value: ConstInit,
 };
 
+/// A `zone`'s kind as IR uses it: its handle's type and the functions that open it, close it
+/// and allocate the closures made in it (std.heap's `make`, `deinit` and `alloc_bytes` for an
+/// `Arena`).
+const ZoneKind = struct {
+    ty: IrType,
+    make: []const u8,
+    deinit: []const u8,
+    alloc_bytes: []const u8,
+};
+
 pub const IrFunction = struct {
     name: []const u8,
     params: []const IrParam,
@@ -2240,6 +2250,9 @@ const FunctionLowerer = struct {
     local_types: std.StringHashMap(IrType),
     current_return_ty: IrType = .void,
     active_zones: std.ArrayList([]const u8) = .empty,
+    /// The kind of each zone in `active_zones` that is not `Arena`, by its name (an active
+    /// zone's name is unique: sema refuses one that hides another).
+    zone_kinds: std.StringHashMapUnmanaged(ZoneKind) = .empty,
     defers: std.ArrayList(ast.DeferStmt) = .empty,
     type_binding: []const sema.TypeArg = &.{},
     /// True while lowering a `where { … }` predicate: a `reject(msg)` call
@@ -2377,18 +2390,47 @@ const FunctionLowerer = struct {
     // lowered as ordinary UFCS/extension calls (sema resolved them against the
     // Arena type), so the handle just needs to be a real Arena local here.
     fn lowerZoneEnter(self: *FunctionLowerer, name: []const u8) LowerError!void {
-        const arena_ty = self.arenaIrType();
-        const made = try self.emit(arena_ty, .{ .call = .{ .callee = self.arenaFunction("make"), .args = &.{} } });
-        try self.local_types.put(name, arena_ty);
-        try self.emitNoResult(arena_ty, .{ .store_local = .{ .name = name, .value = made } });
+        const kind = self.zoneKind(name);
+        const made = try self.emit(kind.ty, .{ .call = .{ .callee = kind.make, .args = &.{} } });
+        try self.local_types.put(name, kind.ty);
+        try self.emitNoResult(kind.ty, .{ .store_local = .{ .name = name, .value = made } });
     }
 
     fn lowerZoneExit(self: *FunctionLowerer, name: []const u8) LowerError!void {
-        const arena_ty = self.arenaIrType();
-        const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, arena_ty) };
+        const kind = self.zoneKind(name);
+        const ptr_ty: IrType = .{ .ptr = try boxType(self.allocator, kind.ty) };
         const addr = try self.emit(ptr_ty, .{ .unary = .{ .op = .ref, .value = .{ .local = name } } });
         const args = try self.allocator.dupe(Value, &[_]Value{addr});
-        try self.emitNoResult(.void, .{ .call = .{ .callee = self.arenaFunction("deinit"), .args = args } });
+        try self.emitNoResult(.void, .{ .call = .{ .callee = kind.deinit, .args = args } });
+    }
+
+    /// The kind of the active zone `name`: std.heap's `Arena`, unless sema recorded another.
+    fn zoneKind(self: *const FunctionLowerer, name: []const u8) ZoneKind {
+        if (self.zone_kinds.get(name)) |kind| return kind;
+        return .{
+            .ty = self.arenaIrType(),
+            .make = self.arenaFunction("make"),
+            .deinit = self.arenaFunction("deinit"),
+            .alloc_bytes = self.arenaFunction("alloc_bytes"),
+        };
+    }
+
+    /// A zone kind of the zone protocol (`thread::Scope`), as `sema.zoneHandleTy` checked it:
+    /// its methods are the top-level functions `Kind.make` and so on of the kind's file.
+    fn zoneKindOf(self: *const FunctionLowerer, id: sema.SymbolId) ZoneKind {
+        const sym = self.symbols.symbol(id);
+        const method = struct {
+            fn link(fl: *const FunctionLowerer, kind: sema.Symbol, name: []const u8) []const u8 {
+                const full = std.fmt.allocPrint(fl.allocator, "{s}.{s}", .{ kind.name, name }) catch return name;
+                return linkNameFor(fl.symbols, kind.file_name, full);
+            }
+        }.link;
+        return .{
+            .ty = .{ .struct_type = sym.link_name },
+            .make = method(self, sym, "make"),
+            .deinit = method(self, sym, "deinit"),
+            .alloc_bytes = method(self, sym, "alloc_bytes"),
+        };
     }
 
     /// The `Arena` type the function being lowered sees, as sema's `arenaTy` finds it: the
@@ -2580,6 +2622,7 @@ const FunctionLowerer = struct {
             // Expanded away by the macroexpand pass before lowering.
             .comptime_for => return error.LoweringFailed,
             .zone_block => |zb| {
+                if (self.types.zone_kinds.get(zb.id)) |kind| try self.zone_kinds.put(self.allocator, zb.name, self.zoneKindOf(kind));
                 try self.lowerZoneEnter(zb.name);
                 try self.active_zones.append(self.allocator, zb.name);
                 try self.lowerBlock(zb.body.statements, null);
@@ -6461,15 +6504,18 @@ const FunctionLowerer = struct {
         // Allocate the env on a region so the closure can escape the current
         // frame: the innermost enclosing `zone`, else a caller-supplied `*Arena`
         // parameter, else the stack (non-escaping).
+        var alloc_fn = self.arenaFunction("alloc_bytes");
         const arena: Value = if (self.active_zones.items.len > 0) blk: {
             const handle = self.active_zones.items[self.active_zones.items.len - 1];
-            const arena_ty: IrType = .{ .ptr = try boxType(self.allocator, self.arenaIrType()) };
+            const kind = self.zoneKind(handle);
+            alloc_fn = kind.alloc_bytes;
+            const arena_ty: IrType = .{ .ptr = try boxType(self.allocator, kind.ty) };
             break :blk try self.emit(arena_ty, .{ .unary = .{ .op = .ref, .value = .{ .local = handle } } });
         } else if (self.arenaParam()) |pname| Value{ .param = pname } else Value{ .imm = .null };
         return try self.emit(.{ .ptr = try boxType(self.allocator, .void) }, .{ .closure_env_make = .{
             .fields = fields,
             .arena = arena,
-            .alloc_fn = self.arenaFunction("alloc_bytes"),
+            .alloc_fn = alloc_fn,
         } });
     }
 
