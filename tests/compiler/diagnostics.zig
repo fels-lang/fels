@@ -2037,6 +2037,31 @@ test "diagnostics: a zone kind keeps the zone protocol, and a closure does not c
     try expectFirstError(a, "main :: fn() -> i32 { zone z: Arena { f := fn() -> usize { return z.alloc_bytes(4).len; }; } return 0; }", &.{ "this closure uses the zone handle `z`", "`p := &z;`" });
 }
 
+test "diagnostics: a closure that runs on another thread captures only what threads may share" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const decls =
+        \\#sync
+        \\Shared :: struct { n: i32 }
+        \\Plain :: struct { n: i32, xs: []u8 }
+        \\#spawns
+        \\run :: fn(f: fn()) { f(); }
+        \\#spawns
+        \\forward :: fn(f: fn()) { run(f); }
+        \\helper :: fn() {}
+        \\
+    ;
+    try expectFirstError(a, decls ++ "main :: fn() -> i32 { x := 1; p := &x; run(fn() { *p = 2; }); return 0; }", &.{ "`run` runs this closure on another thread, and the `p` it captures, `*i32`", "#sync" });
+    try expectFirstError(a, decls ++ "main :: fn() -> i32 { arr: [2]u8 = .{}; s := arr[:]; run(fn() { s[0] = 1; }); return 0; }", &.{"the `s` it captures, `[]u8`"});
+    try expectFirstError(a, decls ++ "main :: fn() -> i32 { arr: [2]u8 = .{}; v: Plain = .{ 1, arr[:] }; run(fn() { k := v.n; }); return 0; }", &.{"the `v` it captures, `Plain`"});
+    try expectFirstError(a, decls ++ "main :: fn() -> i32 { f := fn() {}; run(f); return 0; }", &.{"what it captures is not known here"});
+    // A value, a `*const`, a pointer to a `#sync` type, a function's name, `unsafe`, and a
+    // `#spawns` function passing its own closure on.
+    try expectNoError(a, decls, "main :: fn() -> i32 { x := 1; c: *const i32 = &x; sh: Shared = .{ 0 }; q := &sh; run(fn() { k := x + *c + q.n; }); run(helper); return 0; }");
+    try expectNoError(a, decls, "main :: fn() -> i32 { x := 1; p := &x; unsafe { run(fn() { *p = 2; }); } forward(fn() {}); return 0; }");
+}
+
 test "diagnostics: a local from a literal leaves alone what compiled before" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
