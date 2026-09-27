@@ -26,7 +26,8 @@ zone scratch: Arena {
 }
 ```
 
-- For now, `Arena` is the only supported zone kind.
+- `Arena` is the kind for memory. `thread::Scope` and `thread::Pool` are kinds too, and so is
+  a type of your own (see [Other zone kinds](#other-zone-kinds)).
 - You cannot nest zones with the same name.
 - Memory allocated in a zone lives exactly as long as the zone's block.
 
@@ -60,6 +61,30 @@ zone z: Arena {
 `new`/`new_slice` stay as the zone-flavored spellings of `alloc_one`/`alloc`. `free` is a
 no-op that the compiler checks. A bump arena reclaims everything at once when the zone exits,
 so freeing a single allocation only verifies ownership.
+
+### Other zone kinds
+
+`Arena` is one kind of zone. A zone of kind `thread::Scope` runs closures on threads and
+joins them where the block ends, and one of kind `thread::Pool` keeps worker threads for the
+loops in it (see [std.thread](07_stdlib.md#stdthread)):
+
+```fels
+#import std.thread as thread;
+
+zone s: thread::Scope {
+    for i in 0..4 { s.spawn(fn() { work(i); }); }
+}   // every thread has finished here
+```
+
+Any type `T` with these three methods is a zone kind:
+
+- `make() -> T` opens the zone.
+- `deinit(self: *T)` closes it on every way out of the block, as `deinit` closes an `Arena`.
+- `alloc_bytes(self: *T, n: usize) -> []u8` gives the memory of the closures made in the zone.
+
+A closure made in a zone keeps what it captured in the zone's memory, so each closure made in a
+loop has its own. A closure may not capture the zone's handle itself: it would keep a copy,
+a second handle that the zone never closes. Capture its address instead (`p := &s;`).
 
 ## Ownership and Escape Analysis
 
