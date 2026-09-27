@@ -135,6 +135,8 @@ pub Scope :: struct {
     pub make :: fn() -> Scope { return .{ heap::make(), null, 0 }; }
 
     // Run `f` on a thread of its own. When no thread can be started, `f` runs here, now.
+    // What `f` captures is shared with the thread, so it is checked (see `#spawns`).
+    #spawns
     pub spawn :: fn(self: *Self, f: fn()) {
         task := self.arena.alloc_one(ScopeTask);
         task.f = f;
@@ -216,6 +218,7 @@ pub Pool :: struct {
     pub make :: fn() -> Pool { return .{ .arena = heap::make(), .job = idle_job }; }
 
     // Call `f(i)` for each `i` in `start..end`, spread over the pool's threads.
+    #spawns
     pub range :: fn(self: *Self, start: usize, end: usize, f: fn(usize)) {
         if end <= start { return; }
         self.start_workers();
@@ -237,13 +240,15 @@ pub Pool :: struct {
     }
 
     // Call `f` with a pointer to each of `items`, spread over the pool's threads.
+    #spawns
     pub each :: fn($T: type, self: *Self, items: borrow []T, f: fn(*T)) {
         unsafe { self.each_bytes(items.ptr as [*]u8, items.len, core::sizeof(T), f as fn(*u8)); }
     }
 
     // `each` with the item type taken out: items of `size` bytes from `base`.
     each_bytes :: fn(self: *Self, base: borrow [*]u8, n: usize, size: usize, f: fn(*u8)) {
-        self.range(0, n, fn(i: usize) { f(&base[i * size]); });
+        // (each call has an item of its own: `each` checked `f` where it was called)
+        unsafe { self.range(0, n, fn(i: usize) { f(&base[i * size]); }); }
     }
 
     // How many threads a job runs on: the workers, and the caller.
@@ -327,6 +332,7 @@ run_pool_worker :: fn(p: *void) -> u32 {
 // One loop on threads of a pool of its own: `thread::parallel(0, n, fn(i: usize) { … })`.
 // A pool costs a thread start per core, so a program that runs many loops keeps one in a
 // `zone pool: thread::Pool { … }` instead.
+#spawns
 pub parallel :: fn(start: usize, end: usize, f: fn(usize)) {
     pool := Pool::make();
     pool.range(start, end, f);
