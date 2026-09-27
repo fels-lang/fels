@@ -7,6 +7,22 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **Threads that end with a block**: `zone s: thread::Scope { s.spawn(fn() { … }); }` runs
+  each closure on a thread of its own and joins them all on every way out of the block, so a
+  closure may use the function's locals. Each keeps its captures in the zone: a closure spawned
+  in a loop has its own.
+- **A thread pool**: `zone pool: thread::Pool { pool.range(0, n, fn(i: usize) { … });
+  pool.each(T, items, fn(x: *T) { … }); }` spreads a loop over one worker per core, and
+  `thread::parallel(start, end, f)` runs one loop so. **`sync::Channel(T)`** is a queue between
+  threads that keeps its own storage (`send`, `recv`, `close`).
+- **What a closure on another thread captures is checked.** A function marked `#spawns`
+  (`spawn`, `range`, `each`, `parallel`) runs its closures on other threads: they may capture
+  values, `*const T`, `[]const T` and pointers to `#sync` types (the `std.sync` types,
+  `atomics::Atomic(T)`), and a `*T` or `[]T` needs `unsafe`. An `Arena` is not `#sync`: each
+  thread makes its own.
+- **Zone kinds of your own**: a type with `make() -> T`, `deinit(self: *T)` and
+  `alloc_bytes(self: *T, n: usize) -> []u8` is a zone kind, as `thread::Scope` and
+  `thread::Pool` are; `zone z: ns::Kind { }` names one through its module.
 - **Constants in a function body**: `N :: 4;` and `N : u16 : 4;` belong to their block and are
   computed while compiling, so one can be an array's length (`xs: [N]i32`). A format's `{N}`
   prints it, and a lambda in the block sees it.
@@ -156,6 +172,16 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- A lambda that calls a function value it captured (`g(i)` with `g` captured) stopped the build
+  in LLVM. In a struct's method such a lambda was "unknown function `g`", as lambdas were
+  checked before the method around them, and a lambda in a lambda could not use what the outer
+  one captured.
+- An empty `.{}` where a slice goes is an empty slice: a field's default `xs: []i64 = .{}` made
+  every literal that left `xs` out panic with "index out of bounds".
+- A file with a `zone` sees std.heap's names when another module of the program imports
+  std.heap (`std.thread` does): `z.alloc(…)` was "no visible method".
+- A closure may not capture a zone's handle: it kept a copy, a second allocator (or pool of
+  threads) the zone never closed. The error says to capture its address.
 - A method that takes the value is called through a pointer: `self.get()` in a `*Self` method,
   with `get :: fn(self: Self)`, was "expected `P`, found `*P`" and took `(*self).get()`.
 - On the comptime VM, `==` and `!=` on two pointers ask whether they point at the same place, as
