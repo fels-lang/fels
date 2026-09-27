@@ -177,6 +177,14 @@ pub const Parser = struct {
     /// where it is a declaration the quote holds.
     body_depth: u32 = 0,
     quote_depth: u32 = 0,
+    /// The type parameters of the generic function (or generic struct's method) whose body is
+    /// being read, its struct's first. A lambda lifted from it takes them too: it is made
+    /// once per instantiation of the function, which binds them.
+    body_type_params: []const []const u8 = &.{},
+    body_type_constraints: []const ast.TypeConstraint = &.{},
+    /// While a generic struct's body is read: its type parameters, for its methods' bodies.
+    struct_type_params: []const []const u8 = &.{},
+    struct_type_constraints: []const ast.TypeConstraint = &.{},
 
     pub fn init(allocator: std.mem.Allocator, file_name: []const u8, source: []const u8, next_id: ast.NodeId) !Parser {
         var lex = lexer.Lexer.init(source);
@@ -700,6 +708,14 @@ pub const Parser = struct {
         }
 
         _ = try self.expect(.l_brace, "expected { after struct");
+        const outer_struct_tps = self.struct_type_params;
+        const outer_struct_tcs = self.struct_type_constraints;
+        self.struct_type_params = type_params.items;
+        self.struct_type_constraints = type_constraints.items;
+        defer {
+            self.struct_type_params = outer_struct_tps;
+            self.struct_type_constraints = outer_struct_tcs;
+        }
         var fields: std.ArrayList(ast.FieldDecl) = .empty;
         errdefer fields.deinit(self.allocator);
         var methods: std.ArrayList(ast.FunctionDecl) = .empty;
@@ -1657,7 +1673,9 @@ pub const Parser = struct {
             .name = name,
             .file_name = self.file_name,
             .source = self.source,
-            .type_params = &.{},
+            // in a generic function, a lambda is made per instantiation (`body_type_params`)
+            .type_params = self.body_type_params,
+            .type_constraints = self.body_type_constraints,
             .params = try params.toOwnedSlice(self.allocator),
             .return_ty = return_ty,
             .error_ty = null,
@@ -1793,7 +1811,17 @@ pub const Parser = struct {
                 }
             }
         }
-        const body = if (self.check(.l_brace)) try self.parseBody() else null;
+        const body = if (self.check(.l_brace)) blk: {
+            const outer_tps = self.body_type_params;
+            const outer_tcs = self.body_type_constraints;
+            defer {
+                self.body_type_params = outer_tps;
+                self.body_type_constraints = outer_tcs;
+            }
+            self.body_type_params = try std.mem.concat(self.allocator, []const u8, &.{ self.struct_type_params, type_params.items });
+            self.body_type_constraints = try std.mem.concat(self.allocator, ast.TypeConstraint, &.{ self.struct_type_constraints, type_constraints.items });
+            break :blk try self.parseBody();
+        } else null;
         const end = if (body) |b| b.span else blk: {
             const semi = try self.expect(.semicolon, "expected ; after external function declaration");
             break :blk spanFrom(name, semi);
