@@ -16,6 +16,9 @@
 //     lock.unlock();                    lock.unlock();
 //                                       cv.signal();
 //
+// Every type here is `#sync`: a closure that runs on another thread (`thread::Scope.spawn`,
+// `thread::Pool`) may capture a pointer to one.
+//
 // Rules that hold for everything here:
 //   - Share by address. A Mutex, CondVar or Queue is the lock; copying one while a thread uses
 //     it copies a lock that is held, not the lock. Declare it where it will live (a local that
@@ -38,6 +41,7 @@
 WAIT_FOREVER :: 0xFFFFFFFFu32;
 
 // Mutex: one thread at a time inside the code it guards ───────────────────
+#sync
 pub Mutex :: struct {
     word: u64   // OS lock state; all zero bits is the unlocked state
 
@@ -62,6 +66,7 @@ pub Mutex :: struct {
 //
 // signal() and broadcast() may be called with or without the lock held. A signal sent while
 // nobody waits is forgotten, which is why the condition lives in the data, not in the signal.
+#sync
 pub CondVar :: struct {
     word: u64   // OS condition state; all zero bits is "nobody waiting"
 
@@ -105,6 +110,7 @@ pub CondVar :: struct {
 //
 // A Queue made over empty storage can never hold an item: push and try_push return false, and
 // pop waits for close().
+#sync
 pub Queue :: struct($T: type) {
     mu:        Mutex
     not_empty: CondVar
@@ -234,6 +240,7 @@ pub make_queue :: fn($T: type, storage: []T) -> Queue(T) {
 // `send` waits while the channel is full and `recv` while it is empty. After `close`, `send`
 // gives false and `recv` gives what is left and then null. Threads share a channel through a
 // pointer to it, and it stays where it is until they are done, as a Queue does.
+#sync
 pub Channel :: struct($T: type) {
     queue: Queue(T)
 
@@ -273,6 +280,7 @@ pub channel :: fn($T: type, a: *Arena, capacity: usize) -> Channel(T) {
 //     wg.add(n);                    // before the n tasks start
 //     ...                           // each task ends with wg.done()
 //     wg.wait();                    // sleeps until all n called done
+#sync
 pub WaitGroup :: struct {
     mu:      Mutex
     cv:      CondVar
@@ -305,6 +313,7 @@ pub WaitGroup :: struct {
 //
 //     INIT: Once = .{};
 //     INIT.call(load_tables);       // the first caller runs it, the rest wait for it to end
+#sync
 pub Once :: struct {
     mu:   Mutex
     done: u32       // 1 once the function has returned
@@ -331,6 +340,7 @@ pub Once :: struct {
 //
 // A writer that waits goes first: readers that come after it wait too, so a stream of readers
 // cannot keep it out. Not recursive: a thread that holds it must not take it again.
+#sync
 pub RwLock :: struct {
     mu:              Mutex
     readers_go:      CondVar
@@ -378,6 +388,7 @@ pub RwLock :: struct {
 //
 //     slots := sync::semaphore(4);
 //     slots.acquire();  ... at most 4 threads here ...  slots.release();
+#sync
 pub Semaphore :: struct {
     mu:      Mutex
     cv:      CondVar
