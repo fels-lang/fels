@@ -65,6 +65,18 @@ Attributes change the behavior or the layout of a declaration, and each one star
 - `#maybe_unused`: marks a declaration as possibly unused. The compiler accepts it, and it
   suppresses any future unused-declaration warning.
 
+### Threads
+
+- `#spawns` on a function: the closures it takes run on other threads while the caller goes on
+  (`thread::Scope.spawn`, `thread::Pool.range`). What such a closure captures is checked where
+  the function is called: a value, a `*const T` or `[]const T`, a pointer to a `#sync` type, or a
+  struct of such. A `*T` or `[]T` is an error, since two threads could write through it at once,
+  and so is a closure held in a variable, whose captures are not known there. Inside
+  `unsafe { }` nothing is checked. See [std.thread](07_stdlib.md#stdthread).
+- `#sync` on a type: threads may use one at once through a pointer to it, as its methods
+  synchronize (`sync::Mutex`, `sync::Channel(T)`, `atomics::Atomic(T)`). A closure that runs on
+  another thread may capture a `*` to it.
+
 ## Builtins — the `core::` namespace
 
 Builtins live in the reserved **`core::`** namespace. They are operations the compiler
