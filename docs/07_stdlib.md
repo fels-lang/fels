@@ -494,10 +494,91 @@ clear compile error.
 > and `atomic_cell_app.fels` for the `Atomic(T)` method API.
 
 ## `std.thread`
-Native OS threads and structured helpers. Fels favours *real threads* over async/await.
-There is no function colouring, no hidden executor and no heap-allocated coroutine frame:
-a thread is a stack plus an entry point. An entry has the shape `fn(*void) -> u32`. It
-receives a single context pointer and returns an exit code.
+Native OS threads. Fels favours *real threads* over async/await. There is no function
+colouring, no hidden executor and no heap-allocated coroutine frame: a thread is a stack plus
+an entry point.
+
+### Threads that end with a block: `Scope`
+
+A `zone` of kind `thread::Scope` runs each closure given to `spawn` on a thread of its own,
+and joins them all on every way out of the block: its end, a `return`, a `break` or an error.
+The function the block is in is still there until then, so a closure may use the function's
+locals. Each closure keeps its captures in the zone, so a closure spawned in a loop has its own
+`i`.
+
+```fels
+#import std.thread as thread;
+#import std.atomics.{ Atomic };
+
+total: Atomic(u64) = .{ 0 };
+t := &total;
+zone s: thread::Scope {
+    for i in 0..8 {
+        s.spawn(fn() { ign := t.add(i as u64); });
+    }
+}   // all eight threads have finished here
+```
+
+`s.join()` waits sooner, and `s.count()` tells how many closures were spawned. When no thread
+can be started, `spawn` runs the closure on the calling thread.
+
+### A pool for loops: `Pool` and `parallel`
+
+A `zone` of kind `thread::Pool` keeps worker threads for the loops in it, one per core but
+one, as the thread that runs the loop works too. They start at the first loop.
+
+```fels
+zone pool: thread::Pool {
+    pool.range(0, n, fn(i: usize) { ign := sum.add(score(i)); });
+    pool.each(f64, prices, fn(p: *f64) { *p = *p * rate; });
+}   // the workers stop here
+```
+
+- **`range(start, end, f)`** calls `f(i)` once for each `i` in `start..end`, on several threads
+  at once, and returns when every call has returned.
+- **`each(T, items, f)`** calls `f` with a pointer to each item. Each call has an item of its
+  own, so it may write it.
+- **`threads()`** is how many threads a loop runs on.
+- **`thread::parallel(start, end, f)`** is one `range` on a pool of its own. A pool costs a
+  thread start per core, so a program that runs many loops keeps one in a zone instead.
+
+### What a closure on another thread may capture
+
+`spawn`, `range`, `each` and `parallel` are `#spawns`: the closures they take run on other
+threads while the caller goes on, so the compiler checks what each captures. A value, a
+`*const T` or `[]const T`, a pointer to a `#sync` type (`Atomic(T)`, `sync::Mutex`,
+`sync::Channel(T)`, …) and a struct of such are fine. A `*T` or `[]T` is an error, because two
+threads could write through it at once:
+
+```
+error: `spawn` runs this closure on another thread, and the `out` it captures, `[]u64`,
+       lets two threads write the same memory at once
+```
+
+Share a counter through an `Atomic`, results through a `Channel`, or write each item with
+`Pool.each`. When the threads really write places of their own, say so with `unsafe`:
+
+```fels
+o := out[:];
+zone s: thread::Scope {
+    for i in 0..8 { unsafe { s.spawn(fn() { o[i] = compute(i); }); } }
+}
+```
+
+A closure held in a variable cannot be checked where it is passed, so pass the `fn` literal
+itself, or a function's name.
+
+### One arena per thread
+
+An `Arena` is not `#sync`: two threads that allocate from one at once break it. The check above
+refuses a `*Arena` in a closure that runs on another thread. Let each thread make its own
+(`a := heap::make(); defer a.deinit();`), and hand results back through a `Channel` or into
+an item of its own.
+
+### Threads by hand
+
+`thread::spawn(entry, arg)` starts an OS thread on a thin entry function, of the shape
+`fn(*void) -> u32`. It receives a single context pointer and returns an exit code.
 
 An ordinary function value in Fels is a fat `{fn, env}` closure, which a C ABI can't call.
 So you hand the entry over as **`core::fn_ptr(worker)`**, the raw thin function pointer.
@@ -535,8 +616,9 @@ while i < thread::cpu_count() as usize { g.spawn(core::fn_ptr(worker), cp); i +=
 g.join_all();                    // wait for all
 ```
 
-> Locks, waiting and a blocking queue are in [`std.sync`](#stdsync), while counters and
-> flags need only `std.atomics`. See `tests/fixtures/stdlib/thread_app.fels`.
+> Locks, waiting, a blocking queue and channels are in [`std.sync`](#stdsync), while counters
+> and flags need only `std.atomics`. See `tests/fixtures/stdlib/thread_scope_app.fels` and
+> `tests/fixtures/stdlib/thread_app.fels`.
 
 ## `std.sync`
 Mutual exclusion and waiting between threads, built on the operating system's own
@@ -612,6 +694,26 @@ v := q.pop() ?? -1;                     // sleeps while it is empty; null once c
 - Items leave the queue in the order they went in. With several consumers, the order in which
   they finish is up to the scheduler. A `Queue` over empty storage can hold nothing, so `push`
   fails and `pop` waits for `close()`.
+
+**`Channel(T)`** is a `Queue` that keeps its own storage, taken from an arena, with the names of
+a channel: `send(item) -> bool` waits while it is full, `recv() -> ?T` waits while it is empty,
+and after `close()` a `recv` gives what is left and then `null`. `try_send`, `try_recv`, `len`,
+`capacity` and `is_closed` are there too.
+
+```fels
+#import std.sync as sync;
+
+jobs := sync::channel(u64, &a, 64);     // room for 64, from the arena `a`
+j := &jobs;
+zone s: thread::Scope {
+    for w in 0..4 { s.spawn(fn() { while j.recv() |n| { handle(n); } }); }
+    for n in inputs { ok := j.send(n); }
+    j.close();                          // the workers drain it, then stop
+}
+```
+
+Every type in `std.sync` is `#sync` (see [attributes](08_attributes_builtins.md#threads)), so a
+closure that runs on another thread may capture a pointer to one.
 
 **More, on Mutex and CondVar.** Each is all zero bits at the start (`.{}`), and is shared by
 address like a `Mutex`.
