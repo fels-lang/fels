@@ -513,6 +513,8 @@ pub const FnSig = struct {
     /// `fn(fmt: [*]const u8, ...)`, an `#extern` C function: a call passes more arguments
     /// after `params`, each as C receives it (`TypeEnv.vararg_types`).
     variadic: bool = false,
+    /// `#spawns`: the closures it takes run on other threads (`checkSpawnedClosures`).
+    spawns: bool = false,
     inline_hint: bool,
     no_inline: bool,
     no_return: bool,
@@ -639,6 +641,9 @@ pub const TypeEnv = struct {
     /// A `zone` of a kind other than `Arena` (`zone s: thread::Scope { }`): the zone's NodeId ->
     /// the kind's type, whose `make`, `deinit` and `alloc_bytes` IR calls (`zoneHandleTy`).
     zone_kinds: std.AutoHashMap(ast.NodeId, SymbolId),
+    /// The types declared `#sync` (`Mutex`, `Channel`, `Atomic`, …): threads may use one at
+    /// once through a pointer to it. A generic one's instances are by their template.
+    sync_types: std.AutoHashMap(SymbolId, void),
     /// The same iter expr's NodeId -> what its `next` returns, with a generic struct's type
     /// parameters bound by the iterator's type (`?[]u8` for `mem::Split(u8)`). The instance of
     /// such a `next` is in `generic_call_insts` under the same NodeId.
@@ -722,6 +727,7 @@ pub const TypeEnv = struct {
             .items_fors = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .vararg_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .zone_kinds = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
+            .sync_types = std.AutoHashMap(SymbolId, void).init(allocator),
             .iterator_next_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .receiver_auto_addr = std.AutoHashMap(ast.NodeId, void).init(allocator),
             .receiver_auto_deref = std.AutoHashMap(ast.NodeId, void).init(allocator),
@@ -760,6 +766,7 @@ pub const TypeEnv = struct {
         self.items_fors.deinit();
         self.vararg_types.deinit();
         self.zone_kinds.deinit();
+        self.sync_types.deinit();
         self.iterator_next_types.deinit();
         self.receiver_auto_addr.deinit();
         self.receiver_auto_deref.deinit();
@@ -1723,6 +1730,9 @@ const Checker = struct {
     current_type_binding: []const TypeArg = &.{},
     current_self_ty: ?Ty = null,
     unsafe_depth: usize = 0,
+    /// The function being checked is `#spawns`: a closure parameter it passes on to another
+    /// `#spawns` function was checked where it was called.
+    in_spawns_fn: bool = false,
     /// While the target of an assignment is checked: a union field there is written, not read.
     writing_place: bool = false,
     /// Recursion guard for resolving (possibly cyclic) type aliases.
@@ -2501,6 +2511,9 @@ const Checker = struct {
         self.must_use_fns = std.StringHashMap(void).init(self.allocator);
         self.capturing_locals = std.StringHashMap(void).init(self.allocator);
         for (module.items) |item| switch (item) {
+            .type_decl => |d| if (hasAttr(d.attrs, "sync")) {
+                if (self.symbols.resolveVisible(d.file_name, d.name)) |id| try self.env.sync_types.put(id, {});
+            },
             .function => |f| {
                 if (hasAttr(f.attrs, "must_use")) try self.must_use_fns.put(f.name, {});
                 // Pre-register every `constraint Name($T) { … }` so a `$T: Name`
@@ -2798,6 +2811,7 @@ const Checker = struct {
                         .error_ty = err_ty,
                         .extern_name = externName(decl.attrs),
                         .variadic = decl.is_variadic,
+                        .spawns = hasAttr(decl.attrs, "spawns"),
                         .inline_hint = hasAttr(decl.attrs, "inline"),
                         .no_inline = hasAttr(decl.attrs, "noinline"),
                         .no_return = hasAttr(decl.attrs, "noreturn"),
@@ -3237,6 +3251,9 @@ const Checker = struct {
         defer self.current_type_binding = saved_binding;
 
         self.current_error_ty = if (decl.error_ty) |err| try self.typeFromErrorSpec(err) else null;
+        const saved_spawns = self.in_spawns_fn;
+        defer self.in_spawns_fn = saved_spawns;
+        self.in_spawns_fn = hasAttr(decl.attrs, "spawns");
         self.capturing_locals.clearRetainingCapacity();
         self.current_has_arena_param = false;
         try self.pushScope();
@@ -5186,6 +5203,7 @@ const Checker = struct {
             .positional => |e| e,
             .named => |n| n.value,
         });
+        if (sig.spawns) try self.checkSpawnedClosures(call, name);
         // Emit a warning when calling a deprecated function.
         if (sig.deprecated) |msg| {
             if (msg.len > 0) {
@@ -5199,6 +5217,102 @@ const Checker = struct {
             return .{ .fallible = .{ .ok = try self.boxTy(sig.return_ty), .err = try self.boxTy(err_ty) } };
         }
         return sig.return_ty;
+    }
+
+    /// The closures given to the `#spawns` function `name` run on other threads while the
+    /// caller goes on, so what each captures is shared with them (`isSend`). A closure is the
+    /// `fn` literal itself, whose captures are known here, or a function's name, which
+    /// captures nothing. Inside `unsafe` nothing is checked.
+    fn checkSpawnedClosures(self: *Checker, call: ast.CallExpr, name: []const u8) SemanticError!void {
+        if (self.unsafe_depth > 0) return;
+        for (call.args) |arg| {
+            const expr = switch (arg) {
+                .positional => |e| e,
+                .named => |n| n.value,
+            };
+            // (a local's type is not kept per expression)
+            const ty = self.env.expr_types.get(expr.id) orelse switch (expr.kind) {
+                .ident => |n| self.lookupLocal(n) orelse continue,
+                else => continue,
+            };
+            if (ty != .fn_ptr) continue;
+            try self.checkSpawnedClosure(expr, name);
+        }
+    }
+
+    fn checkSpawnedClosure(self: *Checker, expr: ast.Expr, callee: []const u8) SemanticError!void {
+        const name = switch (expr.kind) {
+            .ident => |n| n,
+            else => return self.refuseUncheckedClosure(expr, callee),
+        };
+        if (std.mem.startsWith(u8, name, "__lambda_")) {
+            const id = self.resolveSymbol(name) orelse return;
+            const caps = self.env.lambda_captures.get(self.symbols.symbol(id).link_name) orelse return;
+            for (caps) |cap| {
+                if (self.isSend(cap.ty, 0)) continue;
+                self.emitErrorRich(expr.span, "`{s}` runs this closure on another thread, and the `{s}` it captures, `{s}`, lets two threads write the same memory at once", .{ callee, cap.name, self.formatTy(cap.ty) }, .{
+                    .help = "share it through a `#sync` type (`atomics::Atomic(T)`, `sync::Mutex`, `sync::Channel(T)`), capture a `*const` or `[]const` view, give each call its own item with `Pool.each`, or write the call in `unsafe { }` if no two threads write the same place",
+                });
+                return error.SemanticFailed;
+            }
+            return;
+        }
+        if (self.lookupLocal(name) != null) {
+            // A `#spawns` function passing on its own closure parameter: its caller's closure
+            // was checked at that call.
+            if (self.in_spawns_fn) if (self.current_frame) |frame| for (frame.params) |p| {
+                if (std.mem.eql(u8, p.name, name)) return;
+            };
+            return self.refuseUncheckedClosure(expr, callee);
+        }
+    }
+
+    fn refuseUncheckedClosure(self: *Checker, expr: ast.Expr, callee: []const u8) SemanticError {
+        self.emitErrorRich(expr.span, "`{s}` runs this closure on other threads, and what it captures is not known here", .{callee}, .{
+            .help = "pass the `fn` literal itself, or a function's name, so its captures are checked; or write the call in `unsafe { }` if they are safe to share",
+        });
+        return error.SemanticFailed;
+    }
+
+    /// Whether a value of `ty`, captured by a closure that runs on another thread, gives no way
+    /// for two threads to write the same memory but through a `#sync` type: a number, a
+    /// `*const T` or `[]const T`, a pointer to a `#sync` type, or a struct, array or optional
+    /// of such. A `*T` or `[]T` is not, and nor is a closure, whose captures are not known.
+    fn isSend(self: *Checker, ty: Ty, depth: u8) bool {
+        if (depth > 8) return true;
+        return switch (ty) {
+            .pointer => |inner| self.isSyncTy(inner.*),
+            .slice, .fn_ptr => false,
+            .const_ptr, .const_slice => true,
+            .borrow, .optional => |inner| self.isSend(inner.*, depth + 1),
+            .array => |a| self.isSend(a.elem.*, depth + 1),
+            .named => |id| blk: {
+                if (self.isSyncTy(ty)) break :blk true;
+                const layout = self.env.layouts.get(id) orelse break :blk true;
+                break :blk switch (layout.kind) {
+                    .struct_type => |fields| for (fields) |f| {
+                        if (!self.isSend(f.ty, depth + 1)) break false;
+                    } else true,
+                    .variant_type => |variants| for (variants) |v| {
+                        if (v.payload) |p| if (!self.isSend(p, depth + 1)) break false;
+                    } else true,
+                    .interface_type => false,
+                    else => true,
+                };
+            },
+            else => true,
+        };
+    }
+
+    /// A type declared `#sync`, or an instance of one (`Channel(u64)`).
+    fn isSyncTy(self: *Checker, ty: Ty) bool {
+        const id = switch (ty) {
+            .named => |id| id,
+            else => return false,
+        };
+        if (self.env.sync_types.contains(id)) return true;
+        const app = self.env.generic_struct_instance_args.get(id) orelse return false;
+        return self.env.sync_types.contains(app.template);
     }
 
     /// An argument of the C function `name` past its parameters, where its `...` takes it: a
@@ -6190,6 +6304,7 @@ const Checker = struct {
             }
             try self.requireIntLitFits(arg_expr, expected);
         }
+        if (sig.spawns) try self.checkSpawnedClosures(call, fn_name);
 
         // Check static constraints: `$T: Numeric` (built-in predicate) or
         // `$T: Interface` (conformance). Built-ins are checked by type kind here,
