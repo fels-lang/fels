@@ -135,6 +135,7 @@ test "exe: the portable fixtures cross-compile to static Linux ELF executables" 
         .{ "tests/fixtures/lang/try_defer_app.fels", "elf_try_defer" },
         .{ "tests/fixtures/lang/inferred_error_set_app.fels", "elf_inferred_error_set" },
         .{ "tests/fixtures/stdlib/sync_app.fels", "elf_sync" },
+        .{ "tests/fixtures/stdlib/thread_scope_app.fels", "elf_thread_scope" },
         .{ "tests/fixtures/stdlib/com_app.fels", "elf_com" },
     }) |c| {
         const obj_path = try std.fmt.allocPrint(a, ".zig-cache/{s}.o", .{c[1]});
@@ -3849,6 +3850,7 @@ test "exe: std.path / std.time / std.crypto / std.serde run correctly cross-modu
         .{ "tests/fixtures/lang/try_defer_app.fels", "exe_try_defer_app" },
         .{ "tests/fixtures/lang/zone_names_app.fels", "exe_zone_names_app" },
         .{ "tests/fixtures/stdlib/sync_app.fels", "exe_sync_app" },
+        .{ "tests/fixtures/stdlib/thread_scope_app.fels", "exe_thread_scope_app" },
         .{ "tests/fixtures/stdlib/com_app.fels", "exe_com_app" },
     }) |c| {
         const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);
