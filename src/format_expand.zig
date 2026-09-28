@@ -252,8 +252,10 @@ const Rewriter = struct {
     noted: ?*const std.AutoHashMapUnmanaged(ast.NodeId, void),
     file: []const u8 = "",
     source: []const u8 = "",
-    /// The function the literals are in is generic (or a method of a generic struct).
-    generic: bool = false,
+    /// The type parameters of the function the literals are in (a generic one, or a method of
+    /// a generic struct): a format's lambda takes them, and is made per instantiation.
+    type_params: []const []const u8 = &.{},
+    type_constraints: []const ast.TypeConstraint = &.{},
     /// The constants of its body, which a `{N}` names as the code around it does.
     local_consts: []const ast.LocalConst = &.{},
     added: std.ArrayList(ast.Item) = .empty,
@@ -265,8 +267,12 @@ const Rewriter = struct {
     fn function(r: *Rewriter, decl: ast.FunctionDecl) Error!void {
         r.file = decl.file_name;
         r.source = decl.source;
-        r.generic = decl.type_params.len != 0;
-        defer r.generic = false;
+        r.type_params = decl.type_params;
+        r.type_constraints = decl.type_constraints;
+        defer {
+            r.type_params = &.{};
+            r.type_constraints = &.{};
+        }
         r.local_consts = decl.local_consts;
         defer r.local_consts = &.{};
         if (decl.body) |b| try r.block(b);
@@ -421,12 +427,6 @@ const Rewriter = struct {
             .pieces => |ps| ps,
         };
         const span = lit.span;
-        // The code of a format is a lambda, and a lambda in a generic function cannot use the
-        // function's values yet (KNOWN_ISSUES).
-        if (r.generic) for (pieces) |piece| if (piece == .value) {
-            r.report("a format in a generic function cannot print values yet: its code is a lambda, and a lambda there cannot use the function's values; print from a function that is not generic", Span.new(piece.value.start, piece.value.end));
-            return null;
-        };
         var stmts: std.ArrayList(ast.Stmt) = .empty;
         for (pieces) |piece| switch (piece) {
             .text => |t| try stmts.append(r.a, .{ .expr = try r.call("text", &.{try r.string(t, span)}, span) }),
@@ -467,7 +467,8 @@ const Rewriter = struct {
             .name = name,
             .file_name = r.file,
             .source = r.source,
-            .type_params = &.{},
+            .type_params = r.type_params,
+            .type_constraints = r.type_constraints,
             .params = params,
             .return_ty = .{ .named = .{ .name = "void", .span = span } },
             .error_ty = null,
