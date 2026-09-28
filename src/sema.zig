@@ -1728,6 +1728,9 @@ const Checker = struct {
     loop_labels: std.ArrayList(?[]const u8) = .empty,
     current_type_params: []const []const u8 = &.{},
     current_type_binding: []const TypeArg = &.{},
+    /// The mangled name of the generic instantiation being checked: a lambda made per
+    /// instantiation (`liftedLambdaInstance`) keeps its captures under it.
+    current_inst_name: ?[]const u8 = null,
     current_self_ty: ?Ty = null,
     unsafe_depth: usize = 0,
     /// The function being checked is `#spawns`: a closure parameter it passes on to another
@@ -3208,12 +3211,14 @@ const Checker = struct {
     /// At a lifted lambda's definition site, resolve which of its free variables
     /// are enclosing locals — those become its captures (recorded by-value with
     /// their types). Resolved once per lambda.
-    fn resolveLambdaCaptures(self: *Checker, link: []const u8, at: Span) SemanticError!void {
+    /// `key` is what the captures go under: `link`, or a generic function's instantiation of the
+    /// lambda (`liftedLambdaInstance`).
+    fn resolveLambdaCaptures(self: *Checker, link: []const u8, key: []const u8, at: Span) SemanticError!void {
         // Not in the first pass over literal locals: their types are not known yet, and the
         // captures are resolved once.
         if (self.infer.active) return;
         const frees = self.env.lambda_free.get(link) orelse return;
-        if (self.env.lambda_captures.contains(link)) return;
+        if (self.env.lambda_captures.contains(key)) return;
         var caps = std.ArrayList(Capture).empty;
         errdefer caps.deinit(self.allocator);
         for (frees) |fname| {
@@ -3229,7 +3234,7 @@ const Checker = struct {
                 try caps.append(self.allocator, .{ .name = fname, .ty = fty });
             }
         }
-        try self.env.lambda_captures.put(link, try caps.toOwnedSlice(self.allocator));
+        try self.env.lambda_captures.put(key, try caps.toOwnedSlice(self.allocator));
     }
 
     fn checkFunction(self: *Checker, decl: ast.FunctionDecl) SemanticError!void {
@@ -3295,7 +3300,9 @@ const Checker = struct {
         var captures: []const Capture = &.{};
         if (std.mem.startsWith(u8, decl.name, "__lambda_")) {
             if (self.resolveSymbol(decl.name)) |id| {
-                if (self.env.lambda_captures.get(self.symbols.symbol(id).link_name)) |caps| {
+                // (one written in a generic function is checked per instantiation, under its name)
+                const key = if (decl.type_params.len > 0) self.current_inst_name orelse self.symbols.symbol(id).link_name else self.symbols.symbol(id).link_name;
+                if (self.env.lambda_captures.get(key)) |caps| {
                     for (caps) |c| try self.declareLocal(c.name, c.ty);
                     captures = caps;
                 }
@@ -3885,12 +3892,19 @@ const Checker = struct {
                     // carries no recorded type — IR lowering then falls back to
                     // `.unknown`, which becomes a pointer (e.g. `to := SA` for a
                     // `usize` const mistyped `to` as a pointer → `add ptr` ICE).
-                    const sym_ty = self.env.get(id) orelse Ty{ .named = id };
+                    var sym_ty = self.env.get(id) orelse Ty{ .named = id };
+                    // A lambda written in a generic function: the one made for this
+                    // instantiation, of the types it binds.
+                    var captures_key = self.symbols.symbol(id).link_name;
+                    if (try self.liftedLambdaInstance(id, expr)) |mangled| {
+                        captures_key = mangled;
+                        sym_ty = try self.withCurrentBinding(sym_ty);
+                    }
                     try self.env.expr_types.put(expr.id, sym_ty);
                     // A reference to a lifted lambda is its definition site:
                     // resolve which of its free vars are enclosing locals (the
                     // captures) against THIS scope, for the body check + IR env.
-                    try self.resolveLambdaCaptures(self.symbols.symbol(id).link_name, expr.span);
+                    try self.resolveLambdaCaptures(self.symbols.symbol(id).link_name, captures_key, expr.span);
                     return sym_ty;
                 }
                 if (fromBuiltinName(name)) |builtin_ty| return builtin_ty;
@@ -5247,7 +5261,7 @@ const Checker = struct {
         };
         if (std.mem.startsWith(u8, name, "__lambda_")) {
             const id = self.resolveSymbol(name) orelse return;
-            const caps = self.env.lambda_captures.get(self.symbols.symbol(id).link_name) orelse return;
+            const caps = self.env.lambda_captures.get(self.lambdaCapturesKey(expr, id)) orelse return;
             for (caps) |cap| {
                 if (self.isSend(cap.ty, 0)) continue;
                 self.emitErrorRich(expr.span, "`{s}` runs this closure on another thread, and the `{s}` it captures, `{s}`, lets two threads write the same memory at once", .{ callee, cap.name, self.formatTy(cap.ty) }, .{
@@ -6040,7 +6054,7 @@ const Checker = struct {
     fn closureZoneOwner(self: Checker, expr: ast.Expr) ?ZoneOwner {
         if (expr.kind != .ident) return null;
         const id = self.resolveSymbol(expr.kind.ident) orelse return null;
-        const caps = self.env.lambda_captures.get(self.symbols.symbol(id).link_name) orelse return null;
+        const caps = self.env.lambda_captures.get(self.lambdaCapturesKey(expr, id)) orelse return null;
         for (caps) |cap| if (self.lookupZoneOwner(cap.name)) |owner| return owner;
         return null;
     }
@@ -6598,6 +6612,55 @@ const Checker = struct {
         }
     }
 
+    /// A lambda written in a generic function took its type parameters (the parser lifted it
+    /// so): it is made once per instantiation of the function, here where the function's
+    /// instantiation names it, with the same types. Its instantiation (recorded for IR under
+    /// this name, `generic_call_insts`) is checked after this one, its captures by then
+    /// resolved under its mangled name. Null for any other name.
+    fn liftedLambdaInstance(self: *Checker, id: SymbolId, expr: ast.Expr) SemanticError!?[]const u8 {
+        const sym = self.symbols.symbol(id);
+        if (sym.kind != .function or !std.mem.startsWith(u8, sym.name, "__lambda_")) return null;
+        const sig = self.env.fn_sigs.get(id) orelse return null;
+        if (sig.type_params.len == 0 or self.current_type_binding.len == 0) return null;
+        var type_args = std.ArrayList(TypeArg).empty;
+        for (sig.type_params) |tp| {
+            for (self.current_type_binding) |arg| if (std.mem.eql(u8, arg.name, tp)) {
+                try type_args.append(self.allocator, arg);
+                break;
+            };
+        }
+        const mangled = try self.mangleInstantiation(sym.link_name, type_args.items);
+        try self.env.generic_call_insts.put(expr.id, mangled);
+        for (self.env.generic_instantiations.items) |gi| {
+            if (std.mem.eql(u8, gi.mangled_name, mangled)) return mangled;
+        }
+        try self.env.generic_instantiations.append(self.allocator, .{
+            .sym_id = id,
+            .fn_name = sym.name,
+            .mangled_name = mangled,
+            .type_args = try type_args.toOwnedSlice(self.allocator),
+            .expr_types = std.AutoHashMap(NodeId, Ty).init(self.allocator),
+            .call_insts = std.AutoHashMap(NodeId, []const u8).init(self.allocator),
+            .origin_span = expr.span,
+        });
+        return mangled;
+    }
+
+    /// `ty` with the type parameters the instantiation being checked binds put in.
+    fn withCurrentBinding(self: *Checker, ty: Ty) SemanticError!Ty {
+        var binding = std.StringHashMap(Ty).init(self.allocator);
+        defer binding.deinit();
+        for (self.current_type_binding) |arg| try binding.put(arg.name, arg.ty);
+        return self.substituteTy(ty, &binding);
+    }
+
+    /// The key a lambda's captures are under: its name, or for one written in a generic
+    /// function, its instantiation's (`liftedLambdaInstance`), which the definition site of
+    /// `expr` names.
+    fn lambdaCapturesKey(self: *const Checker, expr: ast.Expr, id: SymbolId) []const u8 {
+        return self.env.generic_call_insts.get(expr.id) orelse self.symbols.symbol(id).link_name;
+    }
+
     /// Type-check a previously recorded generic instantiation, filling its per-instance expr_types.
     fn checkGenericInstantiation(self: *Checker, module: ast.Module, inst_idx: usize) SemanticError!void {
         const inst = &self.env.generic_instantiations.items[inst_idx];
@@ -6620,6 +6683,7 @@ const Checker = struct {
                     self.env.generic_call_insts = inst.call_insts;
                     self.current_type_binding = inst.type_args;
                     self.current_inst_span = inst.origin_span;
+                    self.current_inst_name = inst.mangled_name;
                     defer {
                         self.env.generic_instantiations.items[inst_idx].expr_types = self.env.expr_types;
                         self.env.generic_instantiations.items[inst_idx].call_insts = self.env.generic_call_insts;
@@ -6627,6 +6691,7 @@ const Checker = struct {
                         self.env.generic_call_insts = saved_calls;
                         self.current_type_binding = &.{};
                         self.current_inst_span = null;
+                        self.current_inst_name = null;
                     }
 
                     try self.checkFunction(decl);
