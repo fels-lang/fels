@@ -6516,6 +6516,14 @@ const Checker = struct {
                 sub.* = self.substituteTy(inner.*, binding);
                 break :blk .{ .borrow = sub };
             },
+            // `fn(x: T) -> T`, the type of a lambda in a generic function
+            .fn_ptr => |fp| blk: {
+                const params = self.allocator.alloc(Ty, fp.params.len) catch return ty;
+                for (fp.params, params) |p, *out| out.* = self.substituteTy(p, binding);
+                const ret = self.allocator.create(Ty) catch return ty;
+                ret.* = self.substituteTy(fp.ret.*, binding);
+                break :blk .{ .fn_ptr = .{ .params = params, .ret = ret, .thin = fp.thin } };
+            },
             else => ty,
         };
     }
