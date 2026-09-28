@@ -1907,6 +1907,10 @@ fn lowerFunctionInstantiation(
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
 
+    // A lambda written in a generic function, made for this instantiation: it takes its
+    // environment first, as every lifted lambda does (`lowerFunction`).
+    const is_lambda = std.mem.startsWith(u8, decl.name, "__lambda_");
+    if (is_lambda) try params.append(allocator, .{ .name = "__env", .ty = .{ .ptr = try boxType(allocator, .void) } });
     for (decl.params) |param| {
         if (param.is_type_param) continue;
         try params.append(allocator, .{
@@ -1921,6 +1925,8 @@ fn lowerFunctionInstantiation(
         lowerer.cvm = cvm;
         lowerer.ir_params = params.items;
         lowerer.type_binding = type_args;
+        // (its captures are this instantiation's, under its name)
+        if (is_lambda) lowerer.lambda_captures = types.lambda_captures.get(mangled_name) orelse &.{};
         // Without this the body lowers returns against `.void` and never wraps a
         // fallible return — generic `fn(...) -> T ! Err` then miscompiles.
         lowerer.current_return_ty = ret_ty;
@@ -3831,9 +3837,11 @@ const FunctionLowerer = struct {
                     // values — keep them as a bare symbol reference.
                     if (kind == .function and !self.isTemplateFn(fn_name)) {
                         const is_lambda = std.mem.startsWith(u8, fn_name, "__lambda_");
+                        // a lambda in a generic function: the one made for this instantiation
+                        const fn_link = if (is_lambda) self.types.generic_call_insts.get(expr.id) orelse link else link;
                         break :blk try self.emit(self.fnPtrTypeOf(expr), .{ .closure_make = .{
-                            .fn_link = link,
-                            .env = if (is_lambda) try self.buildCaptureEnv(link) else .{ .imm = .null },
+                            .fn_link = fn_link,
+                            .env = if (is_lambda) try self.buildCaptureEnv(fn_link) else .{ .imm = .null },
                             .fn_takes_env = is_lambda,
                         } });
                     }
