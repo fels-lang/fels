@@ -56,11 +56,6 @@ These compile without a message and give a wrong result.
 
 ## 4. Missing features and limits
 
-- **A lambda in a generic function cannot use the function's values**: `fn(v: $T) { g := fn()
-  -> i32 { return v as i32; }; … }` is "unknown name `v`". The lifted lambda is checked and built
-  once, not per instantiation. So a format with values cannot be in a generic function either
-  (its code is such a lambda); that is refused with the reason.
-
 - **`std.fs` does not read files in a `#run`**, even where the `read` capability allows it: its
   platform functions pass local arrays (`w: [1024]u16`) to the host, and the comptime FFI passes a
   pointer into compile-time memory as one scratch word. `#embed("path")` reads a file at compile
