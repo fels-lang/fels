@@ -3423,6 +3423,58 @@ test "exe: a zone kind of the program's own" {
     try std.testing.expectEqual(@as(u32, 45), try compileAndRun(arena.allocator(), src, "exe_zone_kind_own"));
 }
 
+test "exe: a lambda in a generic function uses its values and type parameters" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A lambda in a generic function was checked and built once, not per instantiation: a use
+    // of the function's values in it was "unknown name". A lambda of type `fn(T) -> T`, one in
+    // another, `core::sizeof(T)` in one, one in a generic struct's method, two instantiations
+    // of each, and at compile time.
+    const src =
+        \\apply :: fn(n: usize, f: fn(usize)) { for i in 0..n { f(i); } }
+        \\map_into :: fn($T: type, xs: []T, out: []T, scale: T) {
+        \\    g := fn(x: T) -> T { return x * scale; };
+        \\    apply(xs.len, fn(i: usize) { out[i] = g(xs[i]); });
+        \\}
+        \\size_sum :: fn($T: type, n: usize) -> usize {
+        \\    total: usize = 0;
+        \\    p := &total;
+        \\    apply(n, fn(i: usize) {
+        \\        apply(2, fn(k: usize) { *p = *p + core::sizeof(T); });
+        \\    });
+        \\    return total;
+        \\}
+        \\Box :: struct($T: type) {
+        \\    items: []T,
+        \\    sum :: fn(self: *Self, start: T) -> T {
+        \\        acc := start;
+        \\        a := &acc;
+        \\        apply(self.items.len, fn(i: usize) { *a = *a + self.items[i]; });
+        \\        return acc;
+        \\    }
+        \\}
+        \\small: [3]i32 = .{ 1, 2, 3 };
+        \\check :: fn() -> i32 {
+        \\    xs: [3]i64 = .{ 1, 2, 3 };
+        \\    out: [3]i64 = .{};
+        \\    map_into(i64, xs[:], out[:], 5);
+        \\    if out[2] != 15 { return 1; }
+        \\    fs: [2]f64 = .{ 1.5, 2.5 };
+        \\    fo: [2]f64 = .{};
+        \\    map_into(f64, fs[:], fo[:], 2.0);
+        \\    if fo[1] != 5.0 { return 2; }
+        \\    if size_sum(i64, 3) != 48 || size_sum(u8, 3) != 6 { return 3; }
+        \\    b: Box(i32) = .{ small[:] };
+        \\    if b.sum(100) != 106 { return 4; }
+        \\    return 42;
+        \\}
+        \\R :: #run check();
+        \\main :: fn() -> i32 { return if R == 42 { check() } else { R }; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_generic_lambdas"));
+}
+
 test "exe: labeled break and continue leave the loop they name" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
