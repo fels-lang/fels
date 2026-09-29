@@ -172,6 +172,10 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- A lambda in a generic function (or a generic struct's method) uses the function's values
+  and type parameters: it was "unknown name", as it was checked and built once and not per
+  instantiation. A format in a generic function prints its values; it was refused. (`Pool.each`
+  is a plain generic method now.)
 - A lambda that calls a function value it captured (`g(i)` with `g` captured) stopped the build
   in LLVM. In a struct's method such a lambda was "unknown function `g`", as lambdas were
   checked before the method around them, and a lambda in a lambda could not use what the outer
