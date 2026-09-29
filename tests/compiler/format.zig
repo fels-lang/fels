@@ -40,6 +40,33 @@ fn refused(a: std.mem.Allocator, src: []const u8, label: []const u8) !void {
     return error.TestExpectedError;
 }
 
+test "format: a format in a generic function prints its values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Its code is a lambda, which a generic function could not have with values in it: the
+    // format was refused. In a generic struct's method too.
+    const out = try printed(arena.allocator(),
+        \\#import std.io;
+        \\show :: fn($T: type, label: []const u8, v: T) {
+        \\    io::println("{label} = {v}") catch e {};
+        \\}
+        \\Pair :: struct($T: type) {
+        \\    a: T,
+        \\    b: T,
+        \\    print :: fn(self: *Self) { io::println("({self.a}, {self.b})") catch e {}; }
+        \\}
+        \\main :: fn() -> i32 {
+        \\    show(i32, "int", 42);
+        \\    show(f64, "float", 2.5);
+        \\    show([]const u8, "text", "hi");
+        \\    p: Pair(i64) = .{ 3, 4 };
+        \\    p.print();
+        \\    return 0;
+        \\}
+    , "fmt_generic");
+    try std.testing.expectEqualStrings("int = 42\nfloat = 2.5\ntext = hi\n(3, 4)\n", out);
+}
+
 test "format: a constant of the function body is printed by its name" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -359,14 +386,16 @@ test "format: a mistake in a format is an error at its place in the string" {
     }
 }
 
-test "format: a format with values in a generic function is refused with the reason" {
+test "format: a format with values in a generic function whose type parameter is inferred" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    try refused(arena.allocator(),
+    // It was refused: a lambda in a generic function could not use the function's values.
+    const out = try printed(arena.allocator(),
         \\#import std.io;
         \\describe :: fn(v: $T) { io::println("value {v}") catch e {}; }
-        \\main :: fn() -> i32 { describe(42); return 0; }
-    , "fmt_generic");
+        \\main :: fn() -> i32 { describe(42); describe(true); return 0; }
+    , "fmt_generic_inferred");
+    try std.testing.expectEqualStrings("value 42\nvalue true\n", out);
 }
 
 test "a lambda that captures an optional tests its flag" {
