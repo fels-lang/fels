@@ -191,6 +191,17 @@ main :: fn() -> i32 {
 }
 ```
 
+A lambda in a generic function may use the function's values and its type parameters, as
+the rest of its body may. It is made once per instantiation of the function:
+
+```fels
+apply :: fn(n: usize, f: fn(usize)) { for i in 0..n { f(i); } }
+
+scale_all :: fn($T: type, xs: []T, out: []T, by: T) {
+    apply(xs.len, fn(i: usize) { out[i] = xs[i] * by; });
+}
+```
+
 A function value is a **fat closure** `{ fn, env }`: a function pointer plus a pointer to
 its captured environment. A plain (non-capturing) function or lambda has an empty
 environment, so it costs no more than a bare pointer. A capturing lambda copies the captured

@@ -67,8 +67,6 @@ io::println("[{x:>8}] [{id:06}] {flags:x} {ratio:.2} {s:?}");
   message reads none.
 - Any other `[]const u8` passed as a `Format` prints as it is, braces and all, so text from data
   is never read as a format.
-- A format in a generic function cannot print values yet: its code is a lambda, and a lambda
-  there cannot use the function's values (KNOWN_ISSUES).
 
 `print_u64`, `print_i64`, `print_hex_u64`, `print_bool`, `eprint_u64` and `eprint_i64` are
 deprecated: a format says the same (`print("{n}")`).
