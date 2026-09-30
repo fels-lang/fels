@@ -187,4 +187,5 @@ pub const format_expand = @import("format_expand.zig");
 pub const new_cmd = @import("new_cmd.zig");
 pub const coff_archive = @import("coff_archive.zig");
 pub const strlit = @import("strlit.zig");
+pub const lsp_snippets = @import("lsp_snippets.zig");
 pub const pkg = @import("pkg.zig");
