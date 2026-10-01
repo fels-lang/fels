@@ -1063,6 +1063,15 @@ fn handleCompletion(self: *Server, id: ?json.Value, params: json.Value) void {
         escapeInto(&b, self.gpa, kw);
         b.appendSlice(self.gpa, "\",\"kind\":14}") catch {}; // Keyword
     }
+    // Snippets for the usual statements and declarations, after the keywords they start with.
+    if (self.snippet_support) for (lsp_snippets.statement_snippets) |sn| {
+        appendCompletionItemExtra(self, &b, &seen, &first, sn.label, 15, .{
+            .detail = sn.detail,
+            .snippet = sn.body,
+            .filter = sn.filter,
+            .sort = sn.filter,
+        });
+    };
     b.append(self.gpa, ']') catch {};
     sendResult(self, id, b.items);
 }
