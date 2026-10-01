@@ -44,6 +44,7 @@ const clock = @import("clock.zig");
 const lsp_nav = @import("lsp_nav.zig");
 const Span = @import("lexer/span.zig").Span;
 const lsp_assist = @import("lsp_assist.zig");
+const lsp_snippets = @import("lsp_snippets.zig");
 
 const json = std.json;
 
@@ -201,6 +202,9 @@ pub const Server = struct {
     /// Files that currently have published, non-empty diagnostics: key -> URI.
     published: std.StringHashMapUnmanaged([]u8) = .{},
     workspace_root: ?[]u8 = null,
+    /// The editor takes snippets in completions (`completionItem.snippetSupport`): a function
+    /// completes as a call with a tab stop per argument.
+    snippet_support: bool = false,
     shutdown_requested: bool = false,
     timing: bool = false,
     /// The project reference indexes of references, rename and workspace symbols.
@@ -806,9 +810,18 @@ fn handleInitialize(self: *Server, id: ?json.Value, params: json.Value) void {
     } else if (getStr(params, "rootPath")) |p| {
         self.workspace_root = self.gpa.dupe(u8, p) catch null;
     }
+    self.snippet_support = snippetSupport(params);
     sendResult(self, id,
         \\{"capabilities":{"textDocumentSync":1,"completionProvider":{"triggerCharacters":[".",":"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"signatureHelpProvider":{"triggerCharacters":["(",","],"retriggerCharacters":[","]},"inlayHintProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"documentHighlightProvider":true,"workspaceSymbolProvider":true},"serverInfo":{"name":"fels-lsp","version":"
     ++ @import("build_options").version ++ "\"}}");
+}
+
+/// `capabilities.textDocument.completion.completionItem.snippetSupport` of the initialize request.
+fn snippetSupport(params: json.Value) bool {
+    var v = objGet(params, "capabilities") orelse return false;
+    for ([_][]const u8{ "textDocument", "completion", "completionItem" }) |key| v = objGet(v, key) orelse return false;
+    const flag = objGet(v, "snippetSupport") orelse return false;
+    return flag == .bool and flag.bool;
 }
 
 pub fn docFromParams(self: *Server, params: json.Value) ?*Doc {
@@ -859,6 +872,112 @@ pub fn appendCompletionItem(
         b.append(self.gpa, '"') catch {};
     }
     b.append(self.gpa, '}') catch {};
+}
+
+/// What a completion item says beyond its name and kind: the text it inserts (a snippet), the
+/// parameters and the module beside its name (`labelDetails`), and its documentation.
+pub const ItemExtra = struct {
+    detail: ?[]const u8 = null,
+    snippet: ?[]const u8 = null,
+    label_detail: ?[]const u8 = null,
+    label_description: ?[]const u8 = null,
+    documentation: ?[]const u8 = null,
+    filter: ?[]const u8 = null,
+    sort: ?[]const u8 = null,
+};
+
+/// A completion item with `extra` (see `appendCompletionItem`).
+pub fn appendCompletionItemExtra(
+    self: *Server,
+    b: *std.ArrayList(u8),
+    seen: *std.StringHashMapUnmanaged(void),
+    first: *bool,
+    name: []const u8,
+    kind: u8,
+    extra: ItemExtra,
+) void {
+    if (seen.contains(name)) return;
+    seen.put(self.gpa, name, {}) catch {};
+    if (!first.*) b.append(self.gpa, ',') catch {};
+    first.* = false;
+    b.appendSlice(self.gpa, "{\"label\":\"") catch {};
+    escapeInto(b, self.gpa, name);
+    b.print(self.gpa, "\",\"kind\":{d}", .{kind}) catch {};
+    appendItemExtra(b, self.gpa, extra);
+    b.append(self.gpa, '}') catch {};
+}
+
+/// The JSON members of `extra`, each with a leading comma.
+pub fn appendItemExtra(b: *std.ArrayList(u8), gpa: std.mem.Allocator, extra: ItemExtra) void {
+    const members = [_]struct { key: []const u8, value: ?[]const u8 }{
+        .{ .key = "detail", .value = extra.detail },
+        .{ .key = "filterText", .value = extra.filter },
+        .{ .key = "sortText", .value = extra.sort },
+    };
+    for (members) |m| if (m.value) |value| {
+        b.print(gpa, ",\"{s}\":\"", .{m.key}) catch {};
+        escapeInto(b, gpa, value);
+        b.append(gpa, '"') catch {};
+    };
+    if (extra.snippet) |snippet| {
+        // insertTextFormat 2 is a snippet; insertTextMode 2 indents its lines as the first one is
+        b.appendSlice(gpa, ",\"insertTextFormat\":2,\"insertTextMode\":2,\"insertText\":\"") catch {};
+        escapeInto(b, gpa, snippet);
+        b.append(gpa, '"') catch {};
+    }
+    if (extra.label_detail != null or extra.label_description != null) {
+        b.appendSlice(gpa, ",\"labelDetails\":{") catch {};
+        if (extra.label_detail) |d| {
+            b.appendSlice(gpa, "\"detail\":\"") catch {};
+            escapeInto(b, gpa, d);
+            b.append(gpa, '"') catch {};
+        }
+        if (extra.label_description) |d| {
+            if (extra.label_detail != null) b.append(gpa, ',') catch {};
+            b.appendSlice(gpa, "\"description\":\"") catch {};
+            escapeInto(b, gpa, d);
+            b.append(gpa, '"') catch {};
+        }
+        b.append(gpa, '}') catch {};
+    }
+    if (extra.documentation) |text| {
+        b.appendSlice(gpa, ",\"documentation\":{\"kind\":\"markdown\",\"value\":\"") catch {};
+        escapeInto(b, gpa, text);
+        b.appendSlice(gpa, "\"}") catch {};
+    }
+}
+
+/// The parameters and return type of `decl` as completion shows them beside its name:
+/// `(a: i32, b: i32) -> i32`, without a receiver when `drop_self`.
+pub fn signatureLabel(a: std.mem.Allocator, decl: ast.FunctionDecl, drop_self: bool) []const u8 {
+    var out = std.ArrayList(u8).empty;
+    out.append(a, '(') catch {};
+    var n: usize = 0;
+    var receiver_done = !drop_self;
+    for (decl.params) |p| {
+        if (!p.is_type_param and !receiver_done) {
+            receiver_done = true;
+            continue;
+        }
+        if (n > 0) out.appendSlice(a, ", ") catch {};
+        n += 1;
+        const end = @min(p.span.end, decl.source.len);
+        const start = @min(p.span.start, end);
+        if (p.is_type_param) {
+            out.print(a, "${s}", .{p.name}) catch {};
+        } else {
+            out.print(a, "{s}: {s}", .{ p.name, decl.source[start..end] }) catch {};
+        }
+    }
+    if (decl.is_variadic) out.appendSlice(a, if (n > 0) ", ..." else "...") catch {};
+    out.append(a, ')') catch {};
+    const ret = decl.return_ty.span();
+    if (!(decl.return_ty == .named and std.mem.eql(u8, decl.return_ty.named.name, "void"))) {
+        const end = @min(ret.end, decl.source.len);
+        const start = @min(ret.start, end);
+        out.print(a, " -> {s}", .{decl.source[start..end]}) catch {};
+    }
+    return out.items;
 }
 
 /// The module name a file path stands for, for a completion detail: its file name without
