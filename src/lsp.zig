@@ -1020,12 +1020,24 @@ fn handleCompletion(self: *Server, id: ?json.Value, params: json.Value) void {
 
         // The names in scope in this file: its own declarations and what its imports bring in.
         if (syms.visible_names.get(doc.path)) |visible| {
+            var arena = std.heap.ArenaAllocator.init(self.gpa);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const decls = functionDecls(a, analysis);
+            const word_end = if (cursorOffset(doc, params)) |off| identRangeAt(doc.text, off).end else doc.text.len;
+            const as_call = self.snippet_support and !lsp_snippets.parenFollows(doc.text, word_end);
             var it = visible.iterator();
             while (it.next()) |e| {
                 const sym = syms.symbol(e.value_ptr.*);
                 if (!topLevelKind(sym.kind) or hiddenName(sym.name)) continue;
-                const detail: ?[]const u8 = if (std.mem.eql(u8, sym.file_name, doc.path)) null else moduleLabel(sym.file_name);
-                appendCompletionItem(self, &b, &seen, &first, sym.name, completionKind(sym.kind), detail);
+                const module: ?[]const u8 = if (std.mem.eql(u8, sym.file_name, doc.path)) null else moduleLabel(sym.file_name);
+                var extra: ItemExtra = .{ .detail = module, .label_description = module };
+                if (analysis.fileNamed(sym.file_name)) |f| extra.documentation = lsp_snippets.docComment(a, f.source, sym.span.start);
+                if (sym.kind == .function) if (decls.get(declKey(a, sym.file_name, sym.name))) |decl| {
+                    extra.label_detail = signatureLabel(a, decl, false);
+                    if (as_call) extra.snippet = lsp_snippets.callSnippet(a, sym.name, lsp_snippets.callArgs(a, decl, false), decl.is_variadic);
+                };
+                appendCompletionItemExtra(self, &b, &seen, &first, sym.name, completionKind(sym.kind), extra);
             }
         }
         // Namespace aliases (`#import a.b as c;`).
@@ -1053,6 +1065,20 @@ fn handleCompletion(self: *Server, id: ?json.Value, params: json.Value) void {
     }
     b.append(self.gpa, ']') catch {};
     sendResult(self, id, b.items);
+}
+
+/// The top-level functions of the analysis by `declKey`, for their parameters.
+fn functionDecls(a: std.mem.Allocator, analysis: pipeline.Analysis) std.StringHashMapUnmanaged(ast.FunctionDecl) {
+    var map: std.StringHashMapUnmanaged(ast.FunctionDecl) = .{};
+    for (analysis.module.items) |item| switch (item) {
+        .function => |f| map.put(a, declKey(a, f.file_name, f.name), f) catch {},
+        else => {},
+    };
+    return map;
+}
+
+fn declKey(a: std.mem.Allocator, file: []const u8, name: []const u8) []const u8 {
+    return std.fmt.allocPrint(a, "{s}\x00{s}", .{ file, name }) catch name;
 }
 
 /// Find the symbol whose name matches the identifier under the cursor: a name in scope
