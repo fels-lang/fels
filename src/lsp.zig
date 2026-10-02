@@ -1209,6 +1209,14 @@ fn handleHover(self: *Server, id: ?json.Value, params: json.Value) void {
         escapeInto(&b, self.gpa, sym.name);
     }
     b.appendSlice(self.gpa, "\\n```") catch {};
+    if (analysis.fileNamed(sym.file_name)) |f| {
+        var arena = std.heap.ArenaAllocator.init(self.gpa);
+        defer arena.deinit();
+        if (lsp_snippets.docComment(arena.allocator(), f.source, sym.span.start)) |text| {
+            b.appendSlice(self.gpa, "\\n\\n") catch {};
+            escapeInto(&b, self.gpa, text);
+        }
+    }
     if (!std.mem.eql(u8, sym.file_name, doc.path) and !std.mem.eql(u8, sym.file_name, "<runtime>")) {
         b.appendSlice(self.gpa, "\\n\\nfrom `") catch {};
         escapeInto(&b, self.gpa, moduleLabel(sym.file_name));
