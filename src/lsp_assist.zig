@@ -25,6 +25,7 @@ const sema = @import("sema.zig");
 const ast = @import("ast.zig");
 const pipeline = @import("pipeline.zig");
 const lsp = @import("lsp.zig");
+const lsp_snippets = @import("lsp_snippets.zig");
 const Span = @import("lexer/span.zig").Span;
 
 const json = std.json;
@@ -1966,6 +1967,78 @@ fn itemJsonExtra(o: *Out, first: *bool, label: []const u8, kind: u8, detail: ?[]
     o.s("}");
 }
 
+/// A member's completion item: its call as a snippet (`as_call`), its parameters beside its name,
+/// and the comment above its declaration.
+fn memberItem(v: *const View, o: *Out, first: *bool, m: Member, sort: []const u8, raw: ?[]const u8, as_call: bool) void {
+    if (!first.*) o.s(",");
+    first.* = false;
+    o.s("{\"label\":\"");
+    o.esc(m.name);
+    o.f("\",\"kind\":{d}", .{memberKind(m.kind)});
+    const detail = memberDetail(v, m);
+    var extra: lsp.ItemExtra = .{ .sort = sort, .documentation = memberDoc(v, m) };
+    if (detail.len > 0) extra.detail = detail;
+    switch (m.kind) {
+        .method, .ext, .assoc, .iface => {
+            // `fn(by: i32) -> Point` beside the name as `(by: i32) -> Point`
+            if (std.mem.startsWith(u8, detail, "fn")) extra.label_detail = detail[2..];
+            if (as_call) extra.snippet = memberSnippet(v, m);
+        },
+        else => {},
+    }
+    lsp.appendItemExtra(&o.list, o.a, extra);
+    if (raw) |x| {
+        o.s(",");
+        o.s(x);
+    }
+    o.s("}");
+}
+
+/// A call of the method or function `m` as a snippet, a tab stop at each argument: the receiver
+/// is left out of a method called on a value.
+fn memberSnippet(v: *const View, m: Member) ?[]const u8 {
+    const c = switch (memberVal(v, m) orelse return null) {
+        .callable => |c| c,
+        else => return null,
+    };
+    if (c.decl) |decl| return lsp_snippets.callSnippet(v.a, m.name, lsp_snippets.callArgs(v.a, decl, c.drop_self), decl.is_variadic);
+    if (c.iface) |im| {
+        var names = std.ArrayList([]const u8).empty;
+        for (im.params, 0..) |p, i| {
+            if (c.drop_self and i == 0) continue;
+            names.append(v.a, p.name) catch {};
+        }
+        return lsp_snippets.callSnippet(v.a, m.name, names.items, false);
+    }
+    return null;
+}
+
+/// The comment above a member's declaration: a method's or function's, a field's or a variant's.
+fn memberDoc(v: *const View, m: Member) ?[]const u8 {
+    switch (m.kind) {
+        .method, .ext, .assoc, .iface => {
+            const decl = m.decl orelse (if (m.sym) |sid| fnDecl(v, sid) else null) orelse return null;
+            return lsp_snippets.docComment(v.a, decl.source, decl.span.start);
+        },
+        .field, .variant => {
+            const owner = m.owner orelse return null;
+            const td = typeDecl(v, owner) orelse return null;
+            const file = v.an.fileNamed(td.file_name) orelse return null;
+            const at: usize = switch (td.kind) {
+                .struct_type => |st| for (st.fields) |f| {
+                    if (std.mem.eql(u8, f.name, m.name)) break f.span.start;
+                } else return null,
+                .enum_type => |et| for (et.variants) |variant| {
+                    if (std.mem.eql(u8, variant.name, m.name)) break variant.span.start;
+                } else return null,
+                else => return null,
+            };
+            return lsp_snippets.docComment(v.a, file.source, at);
+        },
+        .builtin => return null,
+    }
+}
+
 fn memberKind(k: MemberKind) u8 {
     return switch (k) {
         .field, .builtin => 5, // Field
@@ -1976,7 +2049,7 @@ fn memberKind(k: MemberKind) u8 {
 }
 
 /// The members after the `.` at `dot` (an offset in the current text).
-fn listMembers(v: *const View, val: Val, dot: usize, o: *Out, first: *bool) void {
+fn listMembers(v: *const View, val: Val, dot: usize, o: *Out, first: *bool, as_call: bool) void {
     var list = MemberList{};
     switch (val) {
         .value => |t| collectMembers(v, t.ty, false, &list),
@@ -1995,7 +2068,7 @@ fn listMembers(v: *const View, val: Val, dot: usize, o: *Out, first: *bool) void
             var key = Out{ .a = v.a };
             key.s("2");
             key.s(m.name);
-            itemJsonExtra(o, first, m.name, memberKind(m.kind), memberDetail(v, m), key.list.items, to_colons.list.items);
+            memberItem(v, o, first, m, key.list.items, to_colons.list.items, as_call);
             continue;
         }
         // Fields first, then methods, then the rest.
@@ -2008,7 +2081,7 @@ fn listMembers(v: *const View, val: Val, dot: usize, o: *Out, first: *bool) void
         var key = Out{ .a = v.a };
         key.s(sort);
         key.s(m.name);
-        itemJson(o, first, m.name, memberKind(m.kind), memberDetail(v, m), key.list.items);
+        memberItem(v, o, first, m, key.list.items, null, as_call);
     }
 }
 
@@ -2043,12 +2116,14 @@ pub fn completeMember(self: *lsp.Server, doc: *lsp.Doc, id: ?json.Value, params:
     var o = Out{ .a = a };
     o.s("[");
     var first = true;
+    // a call written already keeps its `(`
+    const as_call = self.snippet_support and !lsp_snippets.parenFollows(text, lsp.identRangeAt(text, off).end);
     if (viewOf(doc, a)) |view| {
         const v = &view;
         const dot = start - 1;
         const pos = v.map.anchor(dot);
         if (chainBefore(code.text, dot)) |chain| {
-            if (resolveChain(v, &chain, pos)) |val| listMembers(v, val, dot, &o, &first);
+            if (resolveChain(v, &chain, pos)) |val| listMembers(v, val, dot, &o, &first, as_call);
         } else if (enumContext(code.text, dot)) |ctx| {
             if (expectedEnum(v, ctx, code.text, pos)) |eid| {
                 var list = MemberList{};
@@ -2080,9 +2155,10 @@ fn completeAssoc(self: *lsp.Server, doc: *lsp.Doc, id: ?json.Value, colons: usiz
     var o = Out{ .a = a };
     o.s("[");
     var first = true;
+    const as_call = self.snippet_support and !lsp_snippets.parenFollows(doc.text, lsp.identRangeAt(doc.text, colons + 2).end);
     var list = MemberList{};
     typeFunctions(v, tid, false, &list);
-    for (list.items.items) |m| itemJson(&o, &first, m.name, 3, memberDetail(v, m), null);
+    for (list.items.items) |m| memberItem(v, &o, &first, m, m.name, null, as_call);
     o.s("]");
     lsp.sendResult(self, id, o.list.items);
     return true;
