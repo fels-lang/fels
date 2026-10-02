@@ -2198,9 +2198,18 @@ pub fn addLocalNames(
 }
 
 fn hoverJson(o: *Out, code_text: []const u8, note: ?[]const u8) void {
+    hoverDocJson(o, code_text, null, note);
+}
+
+/// A hover: the declaration as code, its documentation, and a note (where it is from).
+fn hoverDocJson(o: *Out, code_text: []const u8, doc_text: ?[]const u8, note: ?[]const u8) void {
     o.s("{\"contents\":{\"kind\":\"markdown\",\"value\":\"```fels\\n");
     o.esc(code_text);
     o.s("\\n```");
+    if (doc_text) |d| {
+        o.s("\\n\\n");
+        o.esc(d);
+    }
     if (note) |n| {
         o.s("\\n\\n");
         o.esc(n);
@@ -2251,7 +2260,7 @@ pub fn hover(self: *lsp.Server, doc: *lsp.Doc, id: ?json.Value, params: json.Val
             .field, .builtin => {
                 const text = std.fmt.allocPrint(a, "{s}: {s}", .{ name, memberDetail(v, m) }) catch return false;
                 const note: ?[]const u8 = if (m.owner) |ow| (std.fmt.allocPrint(a, "field of `{s}`", .{tyText(v, .{ .named = ow }, null)}) catch null) else null;
-                hoverJson(&o, text, note);
+                hoverDocJson(&o, text, memberDoc(v, m), note);
             },
             .variant => {
                 const owner = v.syms.symbol(m.owner.?).name;
@@ -2259,7 +2268,7 @@ pub fn hover(self: *lsp.Server, doc: *lsp.Doc, id: ?json.Value, params: json.Val
                     std.fmt.allocPrint(a, "{s}.{s}({s})", .{ owner, name, tyText(v, p, null) }) catch return false
                 else
                     std.fmt.allocPrint(a, "{s}.{s}", .{ owner, name }) catch return false;
-                hoverJson(&o, text, null);
+                hoverDocJson(&o, text, memberDoc(v, m), null);
             },
             .method, .ext, .assoc, .iface => {
                 const c = (memberVal(v, m) orelse return false).callable;
@@ -2270,7 +2279,7 @@ pub fn hover(self: *lsp.Server, doc: *lsp.Doc, id: ?json.Value, params: json.Val
                     (std.fmt.allocPrint(a, "method of interface `{s}`", .{v.syms.symbol(m.owner.?).name}) catch null)
                 else
                     null;
-                hoverJson(&o, fnText(v, full, label), note);
+                hoverDocJson(&o, fnText(v, full, label), memberDoc(v, m), note);
             },
         }
         lsp.sendResult(self, id, o.list.items);
@@ -2304,7 +2313,7 @@ pub fn hover(self: *lsp.Server, doc: *lsp.Doc, id: ?json.Value, params: json.Val
         (std.fmt.allocPrint(a, "from `{s}`", .{lsp.moduleLabel(sym.file_name)}) catch null)
     else
         null;
-    hoverJson(&o, decl, note);
+    hoverDocJson(&o, decl, lsp_snippets.docComment(a, file.source, sym.span.start), note);
     lsp.sendResult(self, id, o.list.items);
     return true;
 }
