@@ -2373,7 +2373,13 @@ pub fn handleSignatureHelp(self: *lsp.Server, id: ?json.Value, params: json.Valu
             var o = Out{ .a = a };
             o.s("{\"signatures\":[{\"label\":\"");
             o.esc(label.list.items);
-            o.s("\",\"parameters\":[");
+            o.s("\"");
+            if (c.decl) |decl| if (lsp_snippets.docComment(a, decl.source, decl.span.start)) |text| {
+                o.s(",\"documentation\":{\"kind\":\"markdown\",\"value\":\"");
+                o.esc(text);
+                o.s("\"}");
+            };
+            o.s(",\"parameters\":[");
             for (ranges.items, 0..) |rg, i| {
                 if (i > 0) o.s(",");
                 const s16 = utf16Len(label.list.items[0..rg[0]]);
