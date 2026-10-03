@@ -1032,7 +1032,10 @@ fn handleCompletion(self: *Server, id: ?json.Value, params: json.Value) void {
                 if (!topLevelKind(sym.kind) or hiddenName(sym.name)) continue;
                 const module: ?[]const u8 = if (std.mem.eql(u8, sym.file_name, doc.path)) null else moduleLabel(sym.file_name);
                 var extra: ItemExtra = .{ .detail = module, .label_description = module };
-                if (analysis.fileNamed(sym.file_name)) |f| extra.documentation = lsp_snippets.docComment(a, f.source, sym.span.start);
+                if (analysis.fileNamed(sym.file_name)) |f| {
+                    extra.documentation = lsp_snippets.docComment(a, f.source, sym.span.start);
+                    if (sym.kind == .global_var or sym.kind == .const_symbol) extra.label_detail = declarationTail(f.source, sym);
+                }
                 if (sym.kind == .function) if (decls.get(declKey(a, sym.file_name, sym.name))) |decl| {
                     extra.label_detail = signatureLabel(a, decl, false);
                     if (as_call) extra.snippet = lsp_snippets.callSnippet(a, sym.name, lsp_snippets.callArgs(a, decl, false), decl.is_variadic);
@@ -1074,6 +1077,20 @@ fn handleCompletion(self: *Server, id: ?json.Value, params: json.Value) void {
     };
     b.append(self.gpa, ']') catch {};
     sendResult(self, id, b.items);
+}
+
+/// What the declaration of a global or a constant says after its name, beside the name in a
+/// completion: `: i32 = 0` of `counter: i32 = 0;`, ` :: 10` of `LIMIT :: 10;`. Null when it goes
+/// on past the line or a `{`, or is long.
+fn declarationTail(source: []const u8, sym: sema.Symbol) ?[]const u8 {
+    const start = @min(sym.span.start, source.len);
+    const rest = source[start..];
+    if (!std.mem.startsWith(u8, rest, sym.name)) return null;
+    const line_end = std.mem.indexOfAny(u8, rest, ";\r\n") orelse return null;
+    if (rest[line_end] != ';') return null;
+    const tail = std.mem.trimEnd(u8, rest[sym.name.len..line_end], " \t");
+    if (tail.len == 0 or tail.len > 60 or std.mem.indexOfScalar(u8, tail, '{') != null) return null;
+    return tail;
 }
 
 /// The top-level functions of the analysis by `declKey`, for their parameters.
