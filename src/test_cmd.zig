@@ -39,6 +39,8 @@ pub const Options = struct {
     palette: style.Palette = .plain,
     /// Run the tests on the comptime VM, also when native test programs can be built.
     comptime_only: bool = false,
+    /// Only the `#test` functions whose name contains this text.
+    filter: ?[]const u8 = null,
     /// For linking the test programs: the LLVM bin folder and the library folders, as
     /// `fels build` gets them.
     llvm_bin: []const u8 = "",
@@ -110,6 +112,9 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
     const saved_roots = pipeline.module_roots;
     pipeline.module_roots = roots.items;
     defer pipeline.module_roots = saved_roots;
+    const saved_filter = pipeline.test_filter;
+    pipeline.test_filter = opts.filter;
+    defer pipeline.test_filter = saved_filter;
     const saved_caps = ir.package_caps;
     ir.package_caps = caps;
     defer ir.package_caps = saved_caps;
@@ -170,7 +175,10 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
     }
 
     if (summary.passed + summary.failed + summary.skipped + summary.broken == 0) {
-        try out.writeAll("no #test functions found\n");
+        if (opts.filter) |text|
+            try out.print("no #test functions match `{s}`\n", .{text})
+        else
+            try out.writeAll("no #test functions found\n");
     } else {
         try out.print("\n{s}Test Summary:{s} ", .{ ui.pal.bold(), ui.pal.reset() });
         try ui.writeCounts(out, &.{
@@ -442,7 +450,7 @@ fn testFile(
         return;
     }
 
-    const selected: ir.TestOptions = .{ .only_file = path };
+    const selected: ir.TestOptions = .{ .only_file = path, .name_filter = pipeline.test_filter };
     if (ir.countTestDecls(fe.module, selected) == 0) return;
     if (native) |n| return n.testFile(gpa, io, out, fe, path, display, stages, summary);
     stages.stage("running");

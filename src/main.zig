@@ -144,6 +144,7 @@ pub fn main(init: std.process.Init) u8 {
         const ra = init.arena.allocator();
         var paths: std.ArrayList([]const u8) = .empty;
         var std_flag: []const u8 = "";
+        var filter: ?[]const u8 = null;
         var comptime_only = false;
         var worker = false;
         // As many files at once as there are cores, each in a worker process.
@@ -153,6 +154,9 @@ pub fn main(init: std.process.Init) u8 {
             if (std.mem.eql(u8, args[k], "--std-path") and k + 1 < args.len) {
                 k += 1;
                 std_flag = args[k];
+            } else if (std.mem.eql(u8, args[k], "--filter") and k + 1 < args.len) {
+                k += 1;
+                filter = args[k];
             } else if (std.mem.eql(u8, args[k], "--comptime")) {
                 comptime_only = true;
             } else if (std.mem.eql(u8, args[k], "--worker")) {
@@ -171,16 +175,19 @@ pub fn main(init: std.process.Init) u8 {
         if (resolveStdRoot(ra, io, init.environ_map, std_flag, exe_dir)) |root|
             fels.pipeline_mod.stdlib_root_override = root;
         const link = linkPaths(ra, io) catch return 1;
-        const worker_args: []const []const u8 = if (std_flag.len != 0) &.{ "--std-path", std_flag } else &.{};
+        var worker_args: std.ArrayList([]const u8) = .empty;
+        if (std_flag.len != 0) worker_args.appendSlice(ra, &.{ "--std-path", std_flag }) catch return 1;
+        if (filter) |text| worker_args.appendSlice(ra, &.{ "--filter", text }) catch return 1;
         return fels.test_cmd.cmd(allocator, io, .{
             .paths = paths.items,
             .environ = init.environ_map,
             .comptime_only = comptime_only,
+            .filter = filter,
             .llvm_bin = link.llvm_bin,
             .lib_paths = link.lib_paths,
             .jobs = jobs,
             .self_exe = std.process.executablePathAlloc(io, ra) catch "",
-            .worker_args = worker_args,
+            .worker_args = worker_args.items,
             .worker = worker,
         });
     }
@@ -887,6 +894,7 @@ fn printUsage() void {
         \\  test     [path...]     run the #test functions (default: the .fels files in src/)
         \\  test     --comptime    run them on the comptime VM: nothing is built or linked
         \\  test     -j<n>         test n files at once (default: one per core; -j1 one by one)
+        \\  test     --filter <text>  run only the #test functions whose name contains the text
         \\  object   <file.fels>     compile to an object file (.o)
         \\  ir       <file.fels>     print LLVM IR to stdout
         \\  bindgen  <header.h>    generate Fels FFI bindings from a C header
