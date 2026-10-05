@@ -106,6 +106,32 @@ test "fels test: the tests of each file run, a failing one says why" {
     try expectHas(r.text, "\n\nTest Summary: 2 passed, 1 failed \u{00b7} ");
 }
 
+test "fels test: --filter runs the tests whose name contains the text" {
+    const dir = try library("tc_filter");
+    const r = try runTests(.{ .project_dir = dir, .filter = "clamp" });
+    defer std.testing.allocator.free(r.text);
+    try std.testing.expectEqual(@as(u32, 1), r.summary.passed);
+    try std.testing.expectEqual(@as(u32, 0), r.summary.failed);
+    try expectHas(r.text, "/src/mathx.fels\n  \u{2713} clamp_works\n\nTest Summary: 1 passed \u{00b7} ");
+
+    const none = try runTests(.{ .project_dir = dir, .filter = "nothing" });
+    defer std.testing.allocator.free(none.text);
+    try std.testing.expect(none.summary.ok());
+    try std.testing.expectEqualStrings("no #test functions match `nothing`\n", none.text);
+}
+
+test "fels test: natively, --filter builds a program of the tests whose name contains the text" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const dir = try library("tc_native_filter");
+    const r = try runNative(.{ .project_dir = dir, .filter = "lerp" });
+    defer std.testing.allocator.free(r.text);
+    try std.testing.expectEqual(@as(u32, 0), r.summary.passed);
+    try std.testing.expectEqual(@as(u32, 1), r.summary.failed);
+    try expectHas(r.text, "  \u{2717} lerp_works");
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "clamp_works") == null);
+}
+
 test "fels test: on the comptime VM, a test named like a function of another file runs" {
     const dir = try library("tc_same_name");
     try write(dir, "src/mathx.fels", "pub helper :: fn() -> i32 { return 1; }\n");
