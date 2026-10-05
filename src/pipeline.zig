@@ -130,6 +130,10 @@ pub var module_roots: []const ModuleRoot = &.{};
 /// dropped, so the generated one is the program's entry.
 pub var test_runner: bool = false;
 
+/// Set by `fels test --filter`: the generated `main` of `test_runner` runs only the `#test`
+/// functions whose name contains this text.
+pub var test_filter: ?[]const u8 = null;
+
 // Public entry points
 
 /// Compile source text directly (no file I/O).
@@ -1385,7 +1389,7 @@ fn addTestRunner(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
             copy.attrs = try attrs.toOwnedSlice(allocator);
         }
         try items.append(allocator, .{ .function = copy });
-        if (!ir_mod.isTestFn(f)) continue;
+        if (!ir_mod.isTestFn(f) or !ir_mod.testNameMatches(f.name, test_filter)) continue;
 
         try src.print(allocator, "__fels_test_case_{d} :: fn() -> i32 {{\n    __fels_test_begin(\"{s}\");\n", .{ index, f.name });
         if (f.type_params.len != 0 or f.params.len != 1) {
