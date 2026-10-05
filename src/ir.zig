@@ -8610,10 +8610,19 @@ pub const TestOptions = struct {
     /// Only the tests declared in this file (as the compile names it); null runs every test
     /// of the module, those of the imported files too.
     only_file: ?[]const u8 = null,
+    /// Only the tests whose name contains this text (`fels test --filter`).
+    name_filter: ?[]const u8 = null,
 };
+
+/// The test `name` is one `fels test --filter <filter>` runs: its name contains the text.
+pub fn testNameMatches(name: []const u8, filter: ?[]const u8) bool {
+    const text = filter orelse return true;
+    return std.mem.indexOf(u8, name, text) != null;
+}
 
 fn testSelected(f: ast.FunctionDecl, opts: TestOptions) bool {
     if (!isTestFn(f)) return false;
+    if (!testNameMatches(f.name, opts.name_filter)) return false;
     const file = opts.only_file orelse return true;
     return std.mem.eql(u8, f.file_name, file);
 }
