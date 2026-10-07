@@ -38,6 +38,7 @@ fels test src/parser.fels     the tests of one file
 fels test examples tests      the tests of the files in these folders
 fels test --comptime          run them on the comptime VM instead
 fels test -j4                 test four files at once (default: one per core; -j1 one by one)
+fels test --filter parse      only the tests whose name contains `parse`
 ```
 
 Each file is compiled on its own, and the tests declared in that file run. The tests of the

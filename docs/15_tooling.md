@@ -155,8 +155,8 @@ two ways:
 - `fels build` runs them **at compile time on the comptime VM** (instant, hermetic), and a
   failed one fails the build. A test that needs the running program is skipped there.
 
-Still to come: a filter (`fels test --filter substr`), a time limit, and a TAP or JSON report
-for CI.
+`fels test --filter <text>` runs only the tests whose name contains the text. Still to come:
+a time limit, and a TAP or JSON report for CI.
 
 ## 5. `fels repl` — interactive evaluation
 
