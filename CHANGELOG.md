@@ -7,6 +7,14 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **Completion writes the call**: in an editor that takes snippets, choosing a function or a
+  method in `fels lsp`'s completion writes the call with a tab stop at each argument, and the
+  item shows the parameters and the result beside the name. Hover, completion and signature
+  help show the `//` lines above a declaration as its documentation, and `for`, `if`, `match`,
+  `zone`, `#test` and other statements and declarations complete as snippets.
+- **`fels run <file.fels> [-- args]`** builds a single file into `.fels-cache/run/` and runs it
+  on this terminal. The program's exit code is the command's.
+- **`fels test --filter <text>`** runs only the tests whose name contains the text.
 - **Threads that end with a block**: `zone s: thread::Scope { s.spawn(fn() { … }); }` runs
   each closure on a thread of its own and joins them all on every way out of the block, so a
   closure may use the function's locals. Each keeps its captures in the zone: a closure spawned
