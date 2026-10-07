@@ -53,6 +53,8 @@ const Options = struct {
     safety: bool = true,
     quiet: bool = false,
     show_time: bool = false,
+    /// The line of the finished build; `fels run` prints it only with -t.
+    done_line: bool = true,
     dll: bool = false,
     /// `--no-entry`: emit a freestanding library object (no `mainCRTStartup` /
     /// `_fltused`), for embedding into another binary.
@@ -248,10 +250,15 @@ pub fn main(init: std.process.Init) u8 {
         opts.lib_paths.append(allocator, p) catch return 1;
     }
 
+    // `fels run <file.fels> [options] -- <args>`: the program's arguments.
+    var run_args: []const []const u8 = &.{};
     var i: usize = 3;
     while (i < args.len) : (i += 1) {
         const a = args[i];
-        if (std.mem.eql(u8, a, "-o") and i + 1 < args.len) {
+        if (std.mem.eql(u8, a, "--") and std.mem.eql(u8, cmd, "run")) {
+            run_args = args[i + 1 ..];
+            break;
+        } else if (std.mem.eql(u8, a, "-o") and i + 1 < args.len) {
             i += 1;
             opts.out_path = args[i];
         } else if (std.mem.eql(u8, a, "--llvm-path") and i + 1 < args.len) {
@@ -373,6 +380,7 @@ pub fn main(init: std.process.Init) u8 {
         defer allocator.free(obj);
         return cmdBuild(allocator, io, src_path, source, obj, exe, &opts);
     }
+    if (std.mem.eql(u8, cmd, "run")) return cmdRun(allocator, io, init.arena.allocator(), src_path, source, &opts, run_args);
 
     std.debug.print("fels: unknown command '{s}'\n\n", .{cmd});
     printUsage();
@@ -608,7 +616,7 @@ fn buildFailed(stages: *ui.Stages, path: []const u8, err: anyerror) u8 {
 fn buildDone(io: std.Io, stages: *ui.Stages, out: []const u8, timings: fels.Timings, opts: *Options) u8 {
     const ns = stages.end();
     ui.finish();
-    if (opts.quiet) return 0;
+    if (opts.quiet or !(opts.done_line or opts.show_time)) return 0;
     var d: [48]u8 = undefined;
     var b: [160]u8 = undefined;
     const breakdown = ui.stageBreakdown(&b, timings);
@@ -645,6 +653,48 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
         .timings = &timings,
     }) catch |err| return buildFailed(&stages, path, err);
     return buildDone(io, &stages, exe_path, timings, opts);
+}
+
+/// `fels run <file.fels> [options] [-- args...]`: build the file into `.fels-cache/run/` and run
+/// the program with `args`, in this folder and on this terminal. Its exit code is the command's.
+fn cmdRun(allocator: std.mem.Allocator, io: std.Io, a: std.mem.Allocator, path: []const u8, source: []const u8, opts: *Options, run_args: []const []const u8) u8 {
+    if (opts.dll or opts.no_entry) {
+        std.debug.print("fels run: a library does not run; build it with `fels build`\n", .{});
+        return 1;
+    }
+    if (opts.target_os != builtin.os.tag) {
+        std.debug.print("fels run: a program for another system does not run here; build it with `fels build`\n", .{});
+        return 1;
+    }
+    const dir = std.fs.path.join(a, &.{ ".fels-cache", "run" }) catch return 1;
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    const ext = if (opts.target_os == .windows) ".exe" else "";
+    const exe = opts.out_path orelse (std.fmt.allocPrint(a, "{s}{c}{s}{s}", .{ dir, std.fs.path.sep, std.fs.path.stem(path), ext }) catch return 1);
+    const obj = std.fmt.allocPrint(a, "{s}.o", .{exe}) catch return 1;
+    opts.done_line = false;
+    const built = cmdBuild(allocator, io, path, source, obj, exe, opts);
+    if (built != 0) return built;
+
+    const cwd = std.process.currentPathAlloc(io, a) catch return 1;
+    const program = std.fs.path.resolve(a, &.{ cwd, exe }) catch return 1;
+    const argv = std.mem.concat(a, []const u8, &.{ &.{program}, run_args }) catch return 1;
+    var child = std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch |err| {
+        std.debug.print("fels run: cannot run {s}: {s}\n", .{ exe, @errorName(err) });
+        return 1;
+    };
+    const term = child.wait(io) catch return 1;
+    return switch (term) {
+        .exited => |code| @intCast(@min(code, 255)),
+        else => {
+            std.debug.print("{s} {s} did not exit normally\n", .{ ui.mark(.fail), std.fs.path.basename(exe) });
+            return 1;
+        },
+    };
 }
 
 // Build system (`fels build` with a build.fels)
@@ -890,6 +940,7 @@ fn printUsage() void {
         \\  build                  run ./build.fels (the build system) — see below
         \\  build    <name>        build a named artifact, or `run`/a step
         \\  build    <file.fels>     compile and link a single file directly
+        \\  run      <file.fels>     compile a single file and run it (-- <args> passes arguments)
         \\  check    <file.fels>     parse and type-check only
         \\  test     [path...]     run the #test functions (default: the .fels files in src/)
         \\  test     --comptime    run them on the comptime VM: nothing is built or linked
