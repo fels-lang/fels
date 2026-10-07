@@ -138,8 +138,10 @@ The build file is a Fels program as well, and the compiler runs it at compile ti
 - `fels test` runs every `#test` function.
 - `fels add imgui github.com/fels-lang/imgui` adds a package from a Git repository, and a lock
   file pins its version.
-- `fels lsp` gives your editor errors, completion, hover and go to definition. There is an
-  extension for [Zed](https://github.com/fels-lang/zed-fels) and a
+- `fels lsp` gives your editor errors, completion, hover and go to definition. Completion
+  writes the whole call, with a tab stop at each argument, and hover shows the comment above a
+  declaration. There is an extension for [Zed](https://github.com/fels-lang/zed-fels), with run
+  buttons beside `main` and each test, and a
   [tree-sitter grammar](https://github.com/fels-lang/tree-sitter-fels) for other editors.
 - `fels bindgen` turns a C header into Fels bindings.
 

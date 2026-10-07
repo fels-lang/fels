@@ -4,8 +4,8 @@
 symbols, find references, rename, document highlight and workspace symbols, and §8 shows how to
 wire it into your editor. `fels test` and the `#test` comptime lane work too
 ([docs/17](17_testing.md)), and `fels new` starts a project from a template (§9). A tree-sitter
-grammar (`tree-sitter-fels`) and a Zed extension (`zed-fels`) are being written in their own
-repositories. The formatter, the doc generator and the REPL aren't built yet.
+grammar (`tree-sitter-fels`) and a Zed extension (`zed-fels`) live in their own repositories.
+The formatter, the doc generator and the REPL aren't built yet.
 
 ## 0. The principle: the compiler is a library
 
@@ -235,6 +235,22 @@ What it does:
   none.
 - **Hover** on a local, a parameter or a field shows `name: Type`, and on a method it shows the
   signature.
+- **Completion writes the call.** When the editor takes snippets, choosing a function or a
+  method writes the whole call with a tab stop at each argument: `add` becomes
+  `add(a, b)` with `a` selected, Tab goes to `b`, and the next Tab to after the `)`. A
+  method called on a value leaves out its receiver. A type parameter the arguments give
+  (`first :: fn(xs: []$T)`) is not an argument, and one they do not give
+  (`make :: fn($T: type, n: usize)`) is. Where the call is written already (a `(` follows the
+  name) only the name is put in. Beside each name you see its parameters and result
+  (`(a: i32, b: i32) -> i32`), for a global or a constant the rest of its declaration
+  (`: i32 = 0`, ` :: 10`), and the module it comes from.
+- **Documentation.** The `//` lines right above a declaration, above its attributes too, are
+  its documentation. Hover shows them under the declaration, and so do the completion item and
+  signature help. A field or a variant may have its comment at the end of its line instead. A
+  rule of `─` that ends a comment line (a section heading) is left out.
+- **Snippets** for the usual statements and declarations: `for … in`, `for … in a..b`, `if`,
+  `if … else`, `if … |x|`, `while`, `match`, `defer`, `zone … Arena`, `zone … thread::Scope`,
+  `fn`, `struct`, `enum`, `#test`, `main` and `#import`, each with tab stops.
 - **While typing.** Code is broken most of the time while you type (`p.` alone does not parse).
   So the server keeps the last analysis whose text parsed. While the current text does not
   parse, it answers completion, hover, signature help and inlay hints from that analysis. A
@@ -307,10 +323,12 @@ vim.api.nvim_create_autocmd("FileType", {
 })
 ```
 
-**Zed**: a Zed extension (`zed-fels`) is being written in its own repository. It declares the
-server and launches `fels lsp` from your `PATH`, and it is not part of this repository. The
-tree-sitter grammar (`tree-sitter-fels`) lives in a separate repository too. VS Code support
-will be a thin client wrapper, later.
+**Zed**: the extension [zed-fels](https://github.com/fels-lang/zed-fels) runs `fels lsp` from
+your `PATH`, or downloads a release of Fels when there is none. It colors completion items as
+Fels code (`add(a: i32, b: i32) -> i32`), and it puts a run button beside `main` (`fels run`
+the file, or `fels build run`) and beside each `#test` function (`fels test --filter` that
+test, or the tests of the file). The tree-sitter grammar (`tree-sitter-fels`) lives in a
+separate repository too. VS Code support will be a thin client wrapper, later.
 
 > You can smoke-test the protocol without an editor. `python tests/lsp_smoke.py` drives an
 > `initialize`, `didOpen`, `completion`/`hover`/`definition`/`documentSymbol` exchange against
@@ -321,7 +339,9 @@ will be a thin client wrapper, later.
 > rejected programs still give an error at the right line.
 > `python tests/lsp_perf.py <fels.exe> <file.fels>` times repeated edits.
 > `python tests/lsp_assist_test.py` checks member completion, signature help, inlay hints and
-> hover, also while the file does not parse.
+> hover, also while the file does not parse. `python tests/lsp_editing_test.py` checks the
+> calls completion writes, the documentation in hover, completion and signature help, and the
+> snippets.
 
 ## 9. Starting a project: `fels new` and `fels init`
 
