@@ -31,14 +31,14 @@ Fels runs on 64-bit Windows and Linux, and builds programs for both. The
 
 On Windows:
 
-1. Download `fels-0.12.0-x86_64-windows.zip`.
+1. Download `fels-0.13.0-x86_64-windows.zip`.
 2. Unpack it and run `install.ps1` in that folder. It copies Fels to `%LOCALAPPDATA%\fels` and
    puts it on your PATH.
 3. Open a new terminal and type `fels version` to check that it works.
 
 On Linux:
 
-1. Download `fels-0.12.0-x86_64-linux.tar.gz` and unpack it.
+1. Download `fels-0.13.0-x86_64-linux.tar.gz` and unpack it.
 2. Run `./install.sh` in that folder. It copies Fels to `~/.fels` and puts it on your PATH.
 3. Open a new terminal and type `fels version`. Fels needs the C++ runtime of GCC 11 or newer
    (Ubuntu 22.04, Debian 12, Fedora 35 and later).
@@ -195,7 +195,7 @@ all.
 - Linux x64 works from end to end too: the compiler runs there and builds static executables.
 - There is no macOS support and no formatter yet.
 - Programs carry no debug info yet, so a debugger shows no source lines.
-- The compiler has 793 tests, and CI runs them on Windows and Linux on every push.
+- The compiler has 844 tests, and CI runs them on Windows and Linux on every push.
 
 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) lists what is still rough, and the
 [changelog](CHANGELOG.md) shows what changed in each release.

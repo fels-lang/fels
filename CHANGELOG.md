@@ -3,7 +3,16 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.13.0 — 2026-10-20
+
+The syntax is settled: from this version on, what the syntax reference shows keeps its form and
+meaning. To get there, the last holes are closed (`[]const T` is read-only, two number types
+widen or ask for a cast, a sub-byte integer holds only its values) and the missing forms are in:
+labeled loops, `for` over a collection, raw and multi-line strings, constants in a body, methods
+in an enum and C variadics. Threads come as zones (`thread::Scope`, `thread::Pool`) with
+channels, and what a closure on another thread captures is checked. The standard library gains
+HTTP, regular expressions, PNG, compression, decimals and more. And in the editor, completion
+writes the whole call, hover shows the documentation, and `fels run` runs a single file.
 
 ### Added
 
