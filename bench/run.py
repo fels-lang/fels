@@ -69,6 +69,33 @@ def first_line(text):
     return (text.strip().splitlines() or [''])[0].strip()
 
 
+def portable(arg):
+    """`arg` as the results record it: a path in the repository relative to it, with `/`, and a
+    path outside it by its file name, so that the results name no folder of this machine."""
+    if '=' in arg and not os.path.isabs(arg):
+        key, _, value = arg.partition('=')
+        return key + '=' + portable(value)
+    if not os.path.isabs(arg):
+        return arg
+    full = os.path.normpath(arg)
+    try:
+        rel = os.path.relpath(full, REPO)
+    except ValueError:  # on another drive
+        rel = os.pardir
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return os.path.basename(full)
+    return rel.replace(os.sep, '/')
+
+
+def recorded(results):
+    """`results` with each program's path made `portable`, for the .json file."""
+    out = {}
+    for name, r in results.items():
+        variants = {v: dict(e, exe=portable(e['exe'])) if 'exe' in e else e for v, e in r['variants'].items()}
+        out[name] = dict(r, variants=variants)
+    return out
+
+
 # Toolchains
 
 def msvc_env():
@@ -239,7 +266,7 @@ def main():
                 build_s = time.perf_counter() - start
                 if p.returncode == 0 or not re.search(r"unable to load '[^']+': Unexpected", p.stderr or ''):
                     break
-            entry = {'exe': exe, 'build_s': build_s, 'command': ' '.join(cmd)}
+            entry = {'exe': exe, 'build_s': build_s, 'command': ' '.join(portable(c) for c in cmd)}
             if p.returncode != 0 or not os.path.exists(exe):
                 entry['error'] = 'build failed: ' + (p.stderr or p.stdout).strip()[:2000]
                 print(f'  {name:15} {v:10} BUILD FAILED')
@@ -304,7 +331,7 @@ def main():
     with open(md_path, 'w', encoding='utf-8', newline='\n') as f:
         f.write(report)
     raw = {'date': stamp, 'machine': info, 'versions': versions, 'runs': args.runs, 'warmup': args.warmup,
-           'seed': args.seed, 'variants': {v: DESCRIBE[v] for v in variants}, 'benchmarks': results}
+           'seed': args.seed, 'variants': {v: DESCRIBE[v] for v in variants}, 'benchmarks': recorded(results)}
     with open(os.path.splitext(md_path)[0] + '.json', 'w', encoding='utf-8', newline='\n') as f:
         json.dump(raw, f, indent=1)
     print('\n' + report)
@@ -317,7 +344,7 @@ def render(results, variants, versions, info, args):
     lines.append('')
     lines.append(f'- Machine: {info["cpu"]}, {info["cores"]} threads, {info.get("memory_gb", "?")} GB RAM')
     lines.append(f'- OS: {info["os"]}')
-    std_note = f', std from {args.fels_std}' if args.fels_std else ''
+    std_note = f', std from {portable(args.fels_std)}' if args.fels_std else ''
     lines.append(f'- Compilers: {versions["clang"]}; Zig {versions["zig"]}; {versions["fels"]}{std_note} (repository at commit {info["fels_commit"]})')
     lines.append(f'- Runs: {args.warmup} warm-up, then {args.runs} timed runs of each program, the variants '
                  f'interleaved in a shuffled order every round (seed {args.seed}). Times are wall-clock '
