@@ -347,6 +347,7 @@ fels build --rebuild        build every artifact, also the ones that are up to d
 fels build --prefix <dir>   the install prefix for `fels build install` (default: dist)
 fels build -q, --quiet      print no progress: no live tree, no ✓ and up-to-date lines
 fels build <file.fels>        direct single-file build (back-compat, today's behavior)
+fels run <file.fels> [-- args]  build one file into .fels-cache/run and run it
 ```
 
 The path without a `build.fels` is the built-in default metaprogram, as in Jai

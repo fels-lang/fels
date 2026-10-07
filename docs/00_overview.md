@@ -28,6 +28,7 @@ fels check <file>     Parse and type-check
 fels ir <file>        Print LLVM IR
 fels object <file>    Emit object file
 fels build <file>     Build an executable for the host OS, or for --target linux / windows
+fels run <file>       Build it and run it (-- <args> passes arguments to the program)
 ```
 
 ## Hello World

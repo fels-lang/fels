@@ -134,7 +134,8 @@ The build file is a Fels program as well, and the compiler runs it at compile ti
 
 <p align="center"><img src="docs/images/build.png" width="560" alt="A build.fels that makes a windowed executable"></p>
 
-- `fels build` builds your project, and `fels build run` runs it.
+- `fels build` builds your project, and `fels build run` runs it. `fels run hello.fels` builds
+  and runs a single file.
 - `fels test` runs every `#test` function, and `fels test --filter parse` the ones with `parse`
   in their name.
 - `fels add imgui github.com/fels-lang/imgui` adds a package from a Git repository, and a lock
