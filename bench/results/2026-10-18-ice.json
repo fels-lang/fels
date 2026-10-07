@@ -28,9 +28,9 @@
    "size": "20000000",
    "variants": {
     "c": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\nbody-c.exe",
+     "exe": "bench/out/nbody-c.exe",
      "build_s": 0.16035720000218134,
-     "command": "Y:/SDK/llvm/bin/clang.exe -O3 -march=native -ffp-contract=off -std=c11 C:\\dev\\gabbro\\bench\\nbody\\main.c -o C:\\dev\\gabbro\\bench\\out\\nbody-c.exe",
+     "command": "clang.exe -O3 -march=native -ffp-contract=off -std=c11 bench/nbody/main.c -o bench/out/nbody-c.exe",
      "bytes": 153600,
      "output": "-0.169075164\n-0.169031665\n",
      "times": [
@@ -51,9 +51,9 @@
      "stdev_s": 0.0011629127377695448
     },
     "zig-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\nbody-zig-fast.exe",
+     "exe": "bench/out/nbody-zig-fast.exe",
      "build_s": 5.14591179999843,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseFast C:\\dev\\gabbro\\bench\\nbody\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\nbody-zig-fast.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseFast bench/nbody/main.zig -femit-bin=bench/out/nbody-zig-fast.exe --cache-dir bench/out/zig-cache",
      "bytes": 854528,
      "output": "-0.169075164\n-0.169031665\n",
      "times": [
@@ -74,9 +74,9 @@
      "stdev_s": 0.0028217382685146526
     },
     "fels-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\nbody-fels-fast.exe",
+     "exe": "bench/out/nbody-fels-fast.exe",
      "build_s": 0.39566089999789256,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\nbody\\main.fels -o C:\\dev\\gabbro\\bench\\out\\nbody-fels-fast.exe -q -O3 --unchecked --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/nbody/main.fels -o bench/out/nbody-fels-fast.exe -q -O3 --unchecked --std-path lib",
      "bytes": 53760,
      "output": "-0.169075164\n-0.169031665\n",
      "times": [
@@ -97,9 +97,9 @@
      "stdev_s": 0.0016063235863299846
     },
     "zig-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\nbody-zig-safe.exe",
+     "exe": "bench/out/nbody-zig-safe.exe",
      "build_s": 6.32056250000096,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseSafe C:\\dev\\gabbro\\bench\\nbody\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\nbody-zig-safe.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseSafe bench/nbody/main.zig -femit-bin=bench/out/nbody-zig-safe.exe --cache-dir bench/out/zig-cache",
      "bytes": 950784,
      "output": "-0.169075164\n-0.169031665\n",
      "times": [
@@ -120,9 +120,9 @@
      "stdev_s": 0.002086362592993946
     },
     "fels-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\nbody-fels-safe.exe",
+     "exe": "bench/out/nbody-fels-safe.exe",
      "build_s": 0.4319802999998501,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\nbody\\main.fels -o C:\\dev\\gabbro\\bench\\out\\nbody-fels-safe.exe -q -O3 --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/nbody/main.fels -o bench/out/nbody-fels-safe.exe -q -O3 --std-path lib",
      "bytes": 62976,
      "output": "-0.169075164\n-0.169031665\n",
      "times": [
@@ -149,9 +149,9 @@
    "size": "3000",
    "variants": {
     "c": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\spectral-norm-c.exe",
+     "exe": "bench/out/spectral-norm-c.exe",
      "build_s": 0.1631984999985434,
-     "command": "Y:/SDK/llvm/bin/clang.exe -O3 -march=native -ffp-contract=off -std=c11 C:\\dev\\gabbro\\bench\\spectral-norm\\main.c -o C:\\dev\\gabbro\\bench\\out\\spectral-norm-c.exe",
+     "command": "clang.exe -O3 -march=native -ffp-contract=off -std=c11 bench/spectral-norm/main.c -o bench/out/spectral-norm-c.exe",
      "bytes": 155136,
      "output": "1.274224153\n",
      "times": [
@@ -172,9 +172,9 @@
      "stdev_s": 0.0007578399896342817
     },
     "zig-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\spectral-norm-zig-fast.exe",
+     "exe": "bench/out/spectral-norm-zig-fast.exe",
      "build_s": 5.235256100000697,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseFast C:\\dev\\gabbro\\bench\\spectral-norm\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\spectral-norm-zig-fast.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseFast bench/spectral-norm/main.zig -femit-bin=bench/out/spectral-norm-zig-fast.exe --cache-dir bench/out/zig-cache",
      "bytes": 856576,
      "output": "1.274224153\n",
      "times": [
@@ -195,9 +195,9 @@
      "stdev_s": 0.0015036123260704947
     },
     "fels-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\spectral-norm-fels-fast.exe",
+     "exe": "bench/out/spectral-norm-fels-fast.exe",
      "build_s": 0.39301550000163843,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\spectral-norm\\main.fels -o C:\\dev\\gabbro\\bench\\out\\spectral-norm-fels-fast.exe -q -O3 --unchecked --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/spectral-norm/main.fels -o bench/out/spectral-norm-fels-fast.exe -q -O3 --unchecked --std-path lib",
      "bytes": 53760,
      "output": "1.274224153\n",
      "times": [
@@ -218,9 +218,9 @@
      "stdev_s": 0.0007113684508669889
     },
     "zig-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\spectral-norm-zig-safe.exe",
+     "exe": "bench/out/spectral-norm-zig-safe.exe",
      "build_s": 6.304094999999506,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseSafe C:\\dev\\gabbro\\bench\\spectral-norm\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\spectral-norm-zig-safe.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseSafe bench/spectral-norm/main.zig -femit-bin=bench/out/spectral-norm-zig-safe.exe --cache-dir bench/out/zig-cache",
      "bytes": 948736,
      "output": "1.274224153\n",
      "times": [
@@ -241,9 +241,9 @@
      "stdev_s": 0.0011468106528300399
     },
     "fels-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\spectral-norm-fels-safe.exe",
+     "exe": "bench/out/spectral-norm-fels-safe.exe",
      "build_s": 0.4032970000007481,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\spectral-norm\\main.fels -o C:\\dev\\gabbro\\bench\\out\\spectral-norm-fels-safe.exe -q -O3 --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/spectral-norm/main.fels -o bench/out/spectral-norm-fels-safe.exe -q -O3 --std-path lib",
      "bytes": 60416,
      "output": "1.274224153\n",
      "times": [
@@ -270,9 +270,9 @@
    "size": "11",
    "variants": {
     "c": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\fannkuch-redux-c.exe",
+     "exe": "bench/out/fannkuch-redux-c.exe",
      "build_s": 0.14859630000137258,
-     "command": "Y:/SDK/llvm/bin/clang.exe -O3 -march=native -ffp-contract=off -std=c11 C:\\dev\\gabbro\\bench\\fannkuch-redux\\main.c -o C:\\dev\\gabbro\\bench\\out\\fannkuch-redux-c.exe",
+     "command": "clang.exe -O3 -march=native -ffp-contract=off -std=c11 bench/fannkuch-redux/main.c -o bench/out/fannkuch-redux-c.exe",
      "bytes": 152576,
      "output": "556355\nPfannkuchen(11) = 51\n",
      "times": [
@@ -293,9 +293,9 @@
      "stdev_s": 0.002520843513940869
     },
     "zig-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\fannkuch-redux-zig-fast.exe",
+     "exe": "bench/out/fannkuch-redux-zig-fast.exe",
      "build_s": 5.021321299998817,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseFast C:\\dev\\gabbro\\bench\\fannkuch-redux\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\fannkuch-redux-zig-fast.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseFast bench/fannkuch-redux/main.zig -femit-bin=bench/out/fannkuch-redux-zig-fast.exe --cache-dir bench/out/zig-cache",
      "bytes": 833536,
      "output": "556355\nPfannkuchen(11) = 51\n",
      "times": [
@@ -316,9 +316,9 @@
      "stdev_s": 0.002108574714746085
     },
     "fels-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\fannkuch-redux-fels-fast.exe",
+     "exe": "bench/out/fannkuch-redux-fels-fast.exe",
      "build_s": 0.38516579999850364,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\fannkuch-redux\\main.fels -o C:\\dev\\gabbro\\bench\\out\\fannkuch-redux-fels-fast.exe -q -O3 --unchecked --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/fannkuch-redux/main.fels -o bench/out/fannkuch-redux-fels-fast.exe -q -O3 --unchecked --std-path lib",
      "bytes": 51200,
      "output": "556355\nPfannkuchen(11) = 51\n",
      "times": [
@@ -339,9 +339,9 @@
      "stdev_s": 0.0025907445372582256
     },
     "zig-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\fannkuch-redux-zig-safe.exe",
+     "exe": "bench/out/fannkuch-redux-zig-safe.exe",
      "build_s": 6.1166714999999385,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseSafe C:\\dev\\gabbro\\bench\\fannkuch-redux\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\fannkuch-redux-zig-safe.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseSafe bench/fannkuch-redux/main.zig -femit-bin=bench/out/fannkuch-redux-zig-safe.exe --cache-dir bench/out/zig-cache",
      "bytes": 932864,
      "output": "556355\nPfannkuchen(11) = 51\n",
      "times": [
@@ -362,9 +362,9 @@
      "stdev_s": 0.003789732565234655
     },
     "fels-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\fannkuch-redux-fels-safe.exe",
+     "exe": "bench/out/fannkuch-redux-fels-safe.exe",
      "build_s": 0.424050100002205,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\fannkuch-redux\\main.fels -o C:\\dev\\gabbro\\bench\\out\\fannkuch-redux-fels-safe.exe -q -O3 --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/fannkuch-redux/main.fels -o bench/out/fannkuch-redux-fels-safe.exe -q -O3 --std-path lib",
      "bytes": 61952,
      "output": "556355\nPfannkuchen(11) = 51\n",
      "times": [
@@ -391,9 +391,9 @@
    "size": "4000",
    "variants": {
     "c": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\mandelbrot-c.exe",
+     "exe": "bench/out/mandelbrot-c.exe",
      "build_s": 0.14264750000074855,
-     "command": "Y:/SDK/llvm/bin/clang.exe -O3 -march=native -ffp-contract=off -std=c11 C:\\dev\\gabbro\\bench\\mandelbrot\\main.c -o C:\\dev\\gabbro\\bench\\out\\mandelbrot-c.exe",
+     "command": "clang.exe -O3 -march=native -ffp-contract=off -std=c11 bench/mandelbrot/main.c -o bench/out/mandelbrot-c.exe",
      "bytes": 150528,
      "output": "4000 3191382506\n",
      "times": [
@@ -414,9 +414,9 @@
      "stdev_s": 0.0023192882740664775
     },
     "zig-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\mandelbrot-zig-fast.exe",
+     "exe": "bench/out/mandelbrot-zig-fast.exe",
      "build_s": 4.97749400000248,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseFast C:\\dev\\gabbro\\bench\\mandelbrot\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\mandelbrot-zig-fast.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseFast bench/mandelbrot/main.zig -femit-bin=bench/out/mandelbrot-zig-fast.exe --cache-dir bench/out/zig-cache",
      "bytes": 832512,
      "output": "4000 3191382506\n",
      "times": [
@@ -437,9 +437,9 @@
      "stdev_s": 0.0011556915370845686
     },
     "fels-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\mandelbrot-fels-fast.exe",
+     "exe": "bench/out/mandelbrot-fels-fast.exe",
      "build_s": 0.3816545000008773,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\mandelbrot\\main.fels -o C:\\dev\\gabbro\\bench\\out\\mandelbrot-fels-fast.exe -q -O3 --unchecked --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/mandelbrot/main.fels -o bench/out/mandelbrot-fels-fast.exe -q -O3 --unchecked --std-path lib",
      "bytes": 50176,
      "output": "4000 3191382506\n",
      "times": [
@@ -460,9 +460,9 @@
      "stdev_s": 0.00095556387053229
     },
     "zig-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\mandelbrot-zig-safe.exe",
+     "exe": "bench/out/mandelbrot-zig-safe.exe",
      "build_s": 6.101057700001547,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseSafe C:\\dev\\gabbro\\bench\\mandelbrot\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\mandelbrot-zig-safe.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseSafe bench/mandelbrot/main.zig -femit-bin=bench/out/mandelbrot-zig-safe.exe --cache-dir bench/out/zig-cache",
      "bytes": 930816,
      "output": "4000 3191382506\n",
      "times": [
@@ -483,9 +483,9 @@
      "stdev_s": 0.0006933672604680014
     },
     "fels-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\mandelbrot-fels-safe.exe",
+     "exe": "bench/out/mandelbrot-fels-safe.exe",
      "build_s": 0.4090872999986459,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\mandelbrot\\main.fels -o C:\\dev\\gabbro\\bench\\out\\mandelbrot-fels-safe.exe -q -O3 --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/mandelbrot/main.fels -o bench/out/mandelbrot-fels-safe.exe -q -O3 --std-path lib",
      "bytes": 59392,
      "output": "4000 3191382506\n",
      "times": [
@@ -512,9 +512,9 @@
    "size": "19",
    "variants": {
     "c": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\binary-trees-c.exe",
+     "exe": "bench/out/binary-trees-c.exe",
      "build_s": 0.1407852999982424,
-     "command": "Y:/SDK/llvm/bin/clang.exe -O3 -march=native -ffp-contract=off -std=c11 C:\\dev\\gabbro\\bench\\binary-trees\\main.c -o C:\\dev\\gabbro\\bench\\out\\binary-trees-c.exe",
+     "command": "clang.exe -O3 -march=native -ffp-contract=off -std=c11 bench/binary-trees/main.c -o bench/out/binary-trees-c.exe",
      "bytes": 151552,
      "output": "stretch tree of depth 20\t check: 2097151\n524288\t trees of depth 4\t check: 16252928\n131072\t trees of depth 6\t check: 16646144\n32768\t trees of depth 8\t check: 16744448\n8192\t trees of depth 10\t check: 16769024\n2048\t trees of depth 12\t check: 16775168\n512\t trees of depth 14\t check: 16776704\n128\t trees of depth 16\t check: 16777088\n32\t trees of depth 18\t check: 16777184\nlong lived tree of depth 19\t check: 1048575\n",
      "times": [
@@ -535,9 +535,9 @@
      "stdev_s": 0.0017337174145299584
     },
     "zig-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\binary-trees-zig-fast.exe",
+     "exe": "bench/out/binary-trees-zig-fast.exe",
      "build_s": 5.096239599999535,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseFast C:\\dev\\gabbro\\bench\\binary-trees\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\binary-trees-zig-fast.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseFast bench/binary-trees/main.zig -femit-bin=bench/out/binary-trees-zig-fast.exe --cache-dir bench/out/zig-cache",
      "bytes": 835584,
      "output": "stretch tree of depth 20\t check: 2097151\n524288\t trees of depth 4\t check: 16252928\n131072\t trees of depth 6\t check: 16646144\n32768\t trees of depth 8\t check: 16744448\n8192\t trees of depth 10\t check: 16769024\n2048\t trees of depth 12\t check: 16775168\n512\t trees of depth 14\t check: 16776704\n128\t trees of depth 16\t check: 16777088\n32\t trees of depth 18\t check: 16777184\nlong lived tree of depth 19\t check: 1048575\n",
      "times": [
@@ -558,9 +558,9 @@
      "stdev_s": 0.003041620844385442
     },
     "fels-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\binary-trees-fels-fast.exe",
+     "exe": "bench/out/binary-trees-fels-fast.exe",
      "build_s": 0.37391550000029383,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\binary-trees\\main.fels -o C:\\dev\\gabbro\\bench\\out\\binary-trees-fels-fast.exe -q -O3 --unchecked --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/binary-trees/main.fels -o bench/out/binary-trees-fels-fast.exe -q -O3 --unchecked --std-path lib",
      "bytes": 50688,
      "output": "stretch tree of depth 20\t check: 2097151\n524288\t trees of depth 4\t check: 16252928\n131072\t trees of depth 6\t check: 16646144\n32768\t trees of depth 8\t check: 16744448\n8192\t trees of depth 10\t check: 16769024\n2048\t trees of depth 12\t check: 16775168\n512\t trees of depth 14\t check: 16776704\n128\t trees of depth 16\t check: 16777088\n32\t trees of depth 18\t check: 16777184\nlong lived tree of depth 19\t check: 1048575\n",
      "times": [
@@ -581,9 +581,9 @@
      "stdev_s": 0.0037919222719559518
     },
     "zig-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\binary-trees-zig-safe.exe",
+     "exe": "bench/out/binary-trees-zig-safe.exe",
      "build_s": 6.134000100002595,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseSafe C:\\dev\\gabbro\\bench\\binary-trees\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\binary-trees-zig-safe.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseSafe bench/binary-trees/main.zig -femit-bin=bench/out/binary-trees-zig-safe.exe --cache-dir bench/out/zig-cache",
      "bytes": 931328,
      "output": "stretch tree of depth 20\t check: 2097151\n524288\t trees of depth 4\t check: 16252928\n131072\t trees of depth 6\t check: 16646144\n32768\t trees of depth 8\t check: 16744448\n8192\t trees of depth 10\t check: 16769024\n2048\t trees of depth 12\t check: 16775168\n512\t trees of depth 14\t check: 16776704\n128\t trees of depth 16\t check: 16777088\n32\t trees of depth 18\t check: 16777184\nlong lived tree of depth 19\t check: 1048575\n",
      "times": [
@@ -604,9 +604,9 @@
      "stdev_s": 0.0026702574474508425
     },
     "fels-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\binary-trees-fels-safe.exe",
+     "exe": "bench/out/binary-trees-fels-safe.exe",
      "build_s": 0.4067185999992944,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\binary-trees\\main.fels -o C:\\dev\\gabbro\\bench\\out\\binary-trees-fels-safe.exe -q -O3 --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/binary-trees/main.fels -o bench/out/binary-trees-fels-safe.exe -q -O3 --std-path lib",
      "bytes": 61440,
      "output": "stretch tree of depth 20\t check: 2097151\n524288\t trees of depth 4\t check: 16252928\n131072\t trees of depth 6\t check: 16646144\n32768\t trees of depth 8\t check: 16744448\n8192\t trees of depth 10\t check: 16769024\n2048\t trees of depth 12\t check: 16775168\n512\t trees of depth 14\t check: 16776704\n128\t trees of depth 16\t check: 16777088\n32\t trees of depth 18\t check: 16777184\nlong lived tree of depth 19\t check: 1048575\n",
      "times": [
@@ -633,9 +633,9 @@
    "size": "200000000",
    "variants": {
     "c": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\sieve-c.exe",
+     "exe": "bench/out/sieve-c.exe",
      "build_s": 0.14299359999859007,
-     "command": "Y:/SDK/llvm/bin/clang.exe -O3 -march=native -ffp-contract=off -std=c11 C:\\dev\\gabbro\\bench\\sieve\\main.c -o C:\\dev\\gabbro\\bench\\out\\sieve-c.exe",
+     "command": "clang.exe -O3 -march=native -ffp-contract=off -std=c11 bench/sieve/main.c -o bench/out/sieve-c.exe",
      "bytes": 151552,
      "output": "11078937\n",
      "times": [
@@ -656,9 +656,9 @@
      "stdev_s": 0.007880341627225184
     },
     "zig-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\sieve-zig-fast.exe",
+     "exe": "bench/out/sieve-zig-fast.exe",
      "build_s": 4.98754800000097,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseFast C:\\dev\\gabbro\\bench\\sieve\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\sieve-zig-fast.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseFast bench/sieve/main.zig -femit-bin=bench/out/sieve-zig-fast.exe --cache-dir bench/out/zig-cache",
      "bytes": 832000,
      "output": "11078937\n",
      "times": [
@@ -679,9 +679,9 @@
      "stdev_s": 0.009152603160582853
     },
     "fels-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\sieve-fels-fast.exe",
+     "exe": "bench/out/sieve-fels-fast.exe",
      "build_s": 0.3819244999976945,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\sieve\\main.fels -o C:\\dev\\gabbro\\bench\\out\\sieve-fels-fast.exe -q -O3 --unchecked --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/sieve/main.fels -o bench/out/sieve-fels-fast.exe -q -O3 --unchecked --std-path lib",
      "bytes": 50176,
      "output": "11078937\n",
      "times": [
@@ -702,9 +702,9 @@
      "stdev_s": 0.012747211421679637
     },
     "zig-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\sieve-zig-safe.exe",
+     "exe": "bench/out/sieve-zig-safe.exe",
      "build_s": 6.074506400000246,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseSafe C:\\dev\\gabbro\\bench\\sieve\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\sieve-zig-safe.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseSafe bench/sieve/main.zig -femit-bin=bench/out/sieve-zig-safe.exe --cache-dir bench/out/zig-cache",
      "bytes": 930304,
      "output": "11078937\n",
      "times": [
@@ -725,9 +725,9 @@
      "stdev_s": 0.009371211462084873
     },
     "fels-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\sieve-fels-safe.exe",
+     "exe": "bench/out/sieve-fels-safe.exe",
      "build_s": 0.4022709999990184,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\sieve\\main.fels -o C:\\dev\\gabbro\\bench\\out\\sieve-fels-safe.exe -q -O3 --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/sieve/main.fels -o bench/out/sieve-fels-safe.exe -q -O3 --std-path lib",
      "bytes": 58880,
      "output": "11078937\n",
      "times": [
@@ -754,9 +754,9 @@
    "size": "1000",
    "variants": {
     "c": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\matmul-c.exe",
+     "exe": "bench/out/matmul-c.exe",
      "build_s": 0.1501356000007945,
-     "command": "Y:/SDK/llvm/bin/clang.exe -O3 -march=native -ffp-contract=off -std=c11 C:\\dev\\gabbro\\bench\\matmul\\main.c -o C:\\dev\\gabbro\\bench\\out\\matmul-c.exe",
+     "command": "clang.exe -O3 -march=native -ffp-contract=off -std=c11 bench/matmul/main.c -o bench/out/matmul-c.exe",
      "bytes": 152576,
      "output": "1599998000\n",
      "times": [
@@ -777,9 +777,9 @@
      "stdev_s": 0.002165396281027768
     },
     "zig-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\matmul-zig-fast.exe",
+     "exe": "bench/out/matmul-zig-fast.exe",
      "build_s": 5.004521500002738,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseFast C:\\dev\\gabbro\\bench\\matmul\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\matmul-zig-fast.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseFast bench/matmul/main.zig -femit-bin=bench/out/matmul-zig-fast.exe --cache-dir bench/out/zig-cache",
      "bytes": 833536,
      "output": "1599998000\n",
      "times": [
@@ -800,9 +800,9 @@
      "stdev_s": 0.0008284211518840483
     },
     "fels-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\matmul-fels-fast.exe",
+     "exe": "bench/out/matmul-fels-fast.exe",
      "build_s": 0.4031131000010646,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\matmul\\main.fels -o C:\\dev\\gabbro\\bench\\out\\matmul-fels-fast.exe -q -O3 --unchecked --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/matmul/main.fels -o bench/out/matmul-fels-fast.exe -q -O3 --unchecked --std-path lib",
      "bytes": 51712,
      "output": "1599998000\n",
      "times": [
@@ -823,9 +823,9 @@
      "stdev_s": 0.0024115048107169737
     },
     "zig-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\matmul-zig-safe.exe",
+     "exe": "bench/out/matmul-zig-safe.exe",
      "build_s": 6.101382299999386,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseSafe C:\\dev\\gabbro\\bench\\matmul\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\matmul-zig-safe.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseSafe bench/matmul/main.zig -femit-bin=bench/out/matmul-zig-safe.exe --cache-dir bench/out/zig-cache",
      "bytes": 931840,
      "output": "1599998000\n",
      "times": [
@@ -846,9 +846,9 @@
      "stdev_s": 0.0025912586456092058
     },
     "fels-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\matmul-fels-safe.exe",
+     "exe": "bench/out/matmul-fels-safe.exe",
      "build_s": 0.41159350000089034,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\matmul\\main.fels -o C:\\dev\\gabbro\\bench\\out\\matmul-fels-safe.exe -q -O3 --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/matmul/main.fels -o bench/out/matmul-fels-safe.exe -q -O3 --std-path lib",
      "bytes": 60928,
      "output": "1599998000\n",
      "times": [
@@ -875,9 +875,9 @@
    "size": "15000000",
    "variants": {
     "c": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\quicksort-c.exe",
+     "exe": "bench/out/quicksort-c.exe",
      "build_s": 0.1547260000006645,
-     "command": "Y:/SDK/llvm/bin/clang.exe -O3 -march=native -ffp-contract=off -std=c11 C:\\dev\\gabbro\\bench\\quicksort\\main.c -o C:\\dev\\gabbro\\bench\\out\\quicksort-c.exe",
+     "command": "clang.exe -O3 -march=native -ffp-contract=off -std=c11 bench/quicksort/main.c -o bench/out/quicksort-c.exe",
      "bytes": 152576,
      "output": "true 204 4294967242 6115271436076867766\n",
      "times": [
@@ -898,9 +898,9 @@
      "stdev_s": 0.002076835091725465
     },
     "zig-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\quicksort-zig-fast.exe",
+     "exe": "bench/out/quicksort-zig-fast.exe",
      "build_s": 5.042425499999808,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseFast C:\\dev\\gabbro\\bench\\quicksort\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\quicksort-zig-fast.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseFast bench/quicksort/main.zig -femit-bin=bench/out/quicksort-zig-fast.exe --cache-dir bench/out/zig-cache",
      "bytes": 834048,
      "output": "true 204 4294967242 6115271436076867766\n",
      "times": [
@@ -921,9 +921,9 @@
      "stdev_s": 0.0027876487810020332
     },
     "fels-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\quicksort-fels-fast.exe",
+     "exe": "bench/out/quicksort-fels-fast.exe",
      "build_s": 0.39556470000025,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\quicksort\\main.fels -o C:\\dev\\gabbro\\bench\\out\\quicksort-fels-fast.exe -q -O3 --unchecked --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/quicksort/main.fels -o bench/out/quicksort-fels-fast.exe -q -O3 --unchecked --std-path lib",
      "bytes": 51200,
      "output": "true 204 4294967242 6115271436076867766\n",
      "times": [
@@ -944,9 +944,9 @@
      "stdev_s": 0.0028368431168192035
     },
     "zig-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\quicksort-zig-safe.exe",
+     "exe": "bench/out/quicksort-zig-safe.exe",
      "build_s": 6.095411800000875,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseSafe C:\\dev\\gabbro\\bench\\quicksort\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\quicksort-zig-safe.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseSafe bench/quicksort/main.zig -femit-bin=bench/out/quicksort-zig-safe.exe --cache-dir bench/out/zig-cache",
      "bytes": 932864,
      "output": "true 204 4294967242 6115271436076867766\n",
      "times": [
@@ -967,9 +967,9 @@
      "stdev_s": 0.0024669825758291083
     },
     "fels-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\quicksort-fels-safe.exe",
+     "exe": "bench/out/quicksort-fels-safe.exe",
      "build_s": 0.41535799999837764,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\quicksort\\main.fels -o C:\\dev\\gabbro\\bench\\out\\quicksort-fels-safe.exe -q -O3 --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/quicksort/main.fels -o bench/out/quicksort-fels-safe.exe -q -O3 --std-path lib",
      "bytes": 63488,
      "output": "true 204 4294967242 6115271436076867766\n",
      "times": [
@@ -996,9 +996,9 @@
    "size": "8000000",
    "variants": {
     "c": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\hashmap-c.exe",
+     "exe": "bench/out/hashmap-c.exe",
      "build_s": 0.1486828000015521,
-     "command": "Y:/SDK/llvm/bin/clang.exe -O3 -march=native -ffp-contract=off -std=c11 C:\\dev\\gabbro\\bench\\hashmap\\main.c -o C:\\dev\\gabbro\\bench\\out\\hashmap-c.exe",
+     "command": "clang.exe -O3 -march=native -ffp-contract=off -std=c11 bench/hashmap/main.c -o bench/out/hashmap-c.exe",
      "bytes": 152064,
      "output": "8000000 31999996000000\n",
      "times": [
@@ -1019,9 +1019,9 @@
      "stdev_s": 0.005328873325374594
     },
     "zig-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\hashmap-zig-fast.exe",
+     "exe": "bench/out/hashmap-zig-fast.exe",
      "build_s": 5.028068899999198,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseFast C:\\dev\\gabbro\\bench\\hashmap\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\hashmap-zig-fast.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseFast bench/hashmap/main.zig -femit-bin=bench/out/hashmap-zig-fast.exe --cache-dir bench/out/zig-cache",
      "bytes": 834048,
      "output": "8000000 31999996000000\n",
      "times": [
@@ -1042,9 +1042,9 @@
      "stdev_s": 0.008773774744113524
     },
     "fels-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\hashmap-fels-fast.exe",
+     "exe": "bench/out/hashmap-fels-fast.exe",
      "build_s": 0.38597289999961504,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\hashmap\\main.fels -o C:\\dev\\gabbro\\bench\\out\\hashmap-fels-fast.exe -q -O3 --unchecked --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/hashmap/main.fels -o bench/out/hashmap-fels-fast.exe -q -O3 --unchecked --std-path lib",
      "bytes": 51200,
      "output": "8000000 31999996000000\n",
      "times": [
@@ -1065,9 +1065,9 @@
      "stdev_s": 0.0040832351596905726
     },
     "zig-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\hashmap-zig-safe.exe",
+     "exe": "bench/out/hashmap-zig-safe.exe",
      "build_s": 6.164657100001932,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseSafe C:\\dev\\gabbro\\bench\\hashmap\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\hashmap-zig-safe.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseSafe bench/hashmap/main.zig -femit-bin=bench/out/hashmap-zig-safe.exe --cache-dir bench/out/zig-cache",
      "bytes": 933888,
      "output": "8000000 31999996000000\n",
      "times": [
@@ -1088,9 +1088,9 @@
      "stdev_s": 0.006626257404565231
     },
     "fels-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\hashmap-fels-safe.exe",
+     "exe": "bench/out/hashmap-fels-safe.exe",
      "build_s": 0.4216195999979391,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\hashmap\\main.fels -o C:\\dev\\gabbro\\bench\\out\\hashmap-fels-safe.exe -q -O3 --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/hashmap/main.fels -o bench/out/hashmap-fels-safe.exe -q -O3 --std-path lib",
      "bytes": 60928,
      "output": "8000000 31999996000000\n",
      "times": [
@@ -1117,9 +1117,9 @@
    "size": "40",
    "variants": {
     "c": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\crc32-c.exe",
+     "exe": "bench/out/crc32-c.exe",
      "build_s": 0.14917029999924125,
-     "command": "Y:/SDK/llvm/bin/clang.exe -O3 -march=native -ffp-contract=off -std=c11 C:\\dev\\gabbro\\bench\\crc32\\main.c -o C:\\dev\\gabbro\\bench\\out\\crc32-c.exe",
+     "command": "clang.exe -O3 -march=native -ffp-contract=off -std=c11 bench/crc32/main.c -o bench/out/crc32-c.exe",
      "bytes": 152576,
      "output": "408524148\n",
      "times": [
@@ -1140,9 +1140,9 @@
      "stdev_s": 0.004353740604596368
     },
     "zig-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\crc32-zig-fast.exe",
+     "exe": "bench/out/crc32-zig-fast.exe",
      "build_s": 4.994792299999972,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseFast C:\\dev\\gabbro\\bench\\crc32\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\crc32-zig-fast.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseFast bench/crc32/main.zig -femit-bin=bench/out/crc32-zig-fast.exe --cache-dir bench/out/zig-cache",
      "bytes": 832000,
      "output": "408524148\n",
      "times": [
@@ -1163,9 +1163,9 @@
      "stdev_s": 0.003526038975394355
     },
     "fels-fast": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\crc32-fels-fast.exe",
+     "exe": "bench/out/crc32-fels-fast.exe",
      "build_s": 0.38024070000028587,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\crc32\\main.fels -o C:\\dev\\gabbro\\bench\\out\\crc32-fels-fast.exe -q -O3 --unchecked --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/crc32/main.fels -o bench/out/crc32-fels-fast.exe -q -O3 --unchecked --std-path lib",
      "bytes": 51200,
      "output": "408524148\n",
      "times": [
@@ -1186,9 +1186,9 @@
      "stdev_s": 0.002721604345091732
     },
     "zig-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\crc32-zig-safe.exe",
+     "exe": "bench/out/crc32-zig-safe.exe",
      "build_s": 6.036343300002045,
-     "command": "C:\\Users\\chris\\scoop\\shims\\zig.EXE build-exe -OReleaseSafe C:\\dev\\gabbro\\bench\\crc32\\main.zig -femit-bin=C:\\dev\\gabbro\\bench\\out\\crc32-zig-safe.exe --cache-dir C:\\dev\\gabbro\\bench\\out\\zig-cache",
+     "command": "zig.EXE build-exe -OReleaseSafe bench/crc32/main.zig -femit-bin=bench/out/crc32-zig-safe.exe --cache-dir bench/out/zig-cache",
      "bytes": 931328,
      "output": "408524148\n",
      "times": [
@@ -1209,9 +1209,9 @@
      "stdev_s": 0.004080601002643811
     },
     "fels-safe": {
-     "exe": "C:\\dev\\gabbro\\bench\\out\\crc32-fels-safe.exe",
+     "exe": "bench/out/crc32-fels-safe.exe",
      "build_s": 0.4205244999975548,
-     "command": "C:/Users/chris/AppData/Local/Temp/claude/C--dev-gabbro/6f01ae2a-4a9d-49f7-94cc-11b39f1761b6/scratchpad/opt1/bin/fels.exe build C:\\dev\\gabbro\\bench\\crc32\\main.fels -o C:\\dev\\gabbro\\bench\\out\\crc32-fels-safe.exe -q -O3 --std-path C:/dev/gabbro/lib",
+     "command": "fels.exe build bench/crc32/main.fels -o bench/out/crc32-fels-safe.exe -q -O3 --std-path lib",
      "bytes": 60928,
      "output": "408524148\n",
      "times": [
