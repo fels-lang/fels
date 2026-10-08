@@ -14,10 +14,10 @@ plan.
 Use `--target linux` to cross-compile from a Windows host:
 
 ```
-fels build hello.fels -o hello --target linux --llvm-path Y:/SDK/LLVM
+fels build hello.fels -o hello --target linux --llvm-path path/to/llvm
 # → a static, non-PIE ELF; runs under Linux/WSL with no shared-library deps
 
-fels build app.fels -o app --target linux --libc --sysroot <dir-with-libc.so.6> --llvm-path Y:/SDK/LLVM
+fels build app.fels -o app --target linux --libc --sysroot <dir-with-libc.so.6> --llvm-path path/to/llvm
 # → a normal dynamically-linked glibc ELF (ldd → libc.so.6); _start hands off to
 #   __libc_start_main, which initializes glibc. `#extern("c", …)` now resolves
 #   against libc.so.6 (verified: getpid, and puts via glibc stdio). The whole fels

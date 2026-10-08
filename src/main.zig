@@ -6,7 +6,7 @@
 //!   fels ir     <file.fels>                    — dump LLVM IR to stdout
 //!   fels object <file.fels> [-o out.o]         — emit object file only
 //!
-//! Build with LLVM:  zig build -Dllvm-path=Y:/SDK/clang+llvm-22.1.6-x86_64-pc-windows-msvc
+//! Build with LLVM:  zig build -Dllvm-path=path/to/llvm
 
 const std = @import("std");
 const builtin = @import("builtin");
