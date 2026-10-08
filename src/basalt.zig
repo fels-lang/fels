@@ -2,14 +2,9 @@ const std = @import("std");
 const backend = @import("backend.zig");
 const ir = @import("ir.zig");
 
-pub const default_source_path = "C:\\Users\\chris\\backend\\basalt";
-pub const default_lib_dir = default_source_path ++ "\\bin";
 pub const static_lib_name = "basalt";
 
 pub const BasaltBackend = struct {
-    source_path: []const u8 = default_source_path,
-    lib_dir: []const u8 = default_lib_dir,
-
     pub fn init() BasaltBackend {
         return .{};
     }
