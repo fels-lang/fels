@@ -260,10 +260,10 @@ code point**. It is an untyped integer literal (like `65`), so it coerces to `u8
 ```fels
 'A'        // 65
 '.'        // 46
-'\n'       // 10  — same escapes as strings
+'\n'       // 10, same escapes as strings
 '\\'       // 92
 '\''       // 39
-'\x41'     // 65  — hex escape
+'\x41'     // 65, hex escape
 '\u{20ac}' // 8364, the code point of €
 ```
 
@@ -370,8 +370,8 @@ null  // for optionals
 | `.` | Infix | Field access / method call |
 | `::` | Infix | Constant or declaration binding |
 | `:=` | Infix | Variable binding (type-inferred) |
-| `->` | — | Return type arrow (in function signatures) |
-| `=>` | — | Match arm arrow |
+| `->` |  | Return type arrow (in function signatures) |
+| `=>` |  | Match arm arrow |
 | `..` | Infix | Exclusive range (e.g., `0..10`) |
 | `..=` | Infix | Inclusive range (e.g., `0..=9`) |
 | `$` | Prefix | Type parameter prefix (e.g., `$T`) |

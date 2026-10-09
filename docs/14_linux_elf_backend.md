@@ -36,14 +36,14 @@ This is what works end to end, verified under WSL:
 
 | Area | Status | How |
 | --- | --- | --- |
-| Codegen / object | ✅ | `emit.initTarget(.linux, …)` builds an `x86_64-unknown-linux-musl` `TargetMachine` (static reloc) and emits an ELF `.o` |
-| Linking | ✅ | `link.linkLinux` invokes `ld.lld -static -e _start` (cross-links from Windows, **no libc, no crt1.o**) |
-| Entry point | ✅ | a `#naked #entry _start` in the runtime: clears `%rbp`, aligns `%rsp`, `call main`, then the `exit` syscall, with no `mainCRTStartup` |
-| Syscalls | ✅ | inline asm with explicit register constraints (`{rax}`,`{rdi}`,…; `r10` for the 4th arg); `write`, `exit`, `mmap`, `mprotect`, `munmap` |
-| I/O (`std.io`) | ✅ | `write_stdout`/`write_stderr` route through the `write` syscall (already portable) |
-| Allocator (`std.heap`) | ✅ | `Arena` reserve/commit/release go through runtime `os_reserve`/`os_commit`/`os_alloc`/`os_release`, and Linux backs them with `mmap`(PROT_NONE)/`mprotect`/`mmap`(RW)/`munmap` |
-| `Vec`, strings, fmt | ✅ | fall out of the allocator + I/O above |
-| `__chkstk`, `_fltused`, Windows entry | ✅ gated off | `context.applyTargetStubs` and `llvm.lower` emit them only when `target_os == .windows` |
+| Codegen / object | done | `emit.initTarget(.linux, …)` builds an `x86_64-unknown-linux-musl` `TargetMachine` (static reloc) and emits an ELF `.o` |
+| Linking | done | `link.linkLinux` invokes `ld.lld -static -e _start` (cross-links from Windows, **no libc, no crt1.o**) |
+| Entry point | done | a `#naked #entry _start` in the runtime: clears `%rbp`, aligns `%rsp`, `call main`, then the `exit` syscall, with no `mainCRTStartup` |
+| Syscalls | done | inline asm with explicit register constraints (`{rax}`,`{rdi}`,…; `r10` for the 4th arg); `write`, `exit`, `mmap`, `mprotect`, `munmap` |
+| I/O (`std.io`) | done | `write_stdout`/`write_stderr` route through the `write` syscall (already portable) |
+| Allocator (`std.heap`) | done | `Arena` reserve/commit/release go through runtime `os_reserve`/`os_commit`/`os_alloc`/`os_release`, and Linux backs them with `mmap`(PROT_NONE)/`mprotect`/`mmap`(RW)/`munmap` |
+| `Vec`, strings, fmt | done | fall out of the allocator + I/O above |
+| `__chkstk`, `_fltused`, Windows entry | gated off | `context.applyTargetStubs` and `llvm.lower` emit them only when `target_os == .windows` |
 
 All of `std` is ported, apart from the Windows-only `std.winrt`. `std.fs`, `std.time`,
 `std.process`, `std.net` and `std.thread` sit behind the same runtime/stdlib seam that the

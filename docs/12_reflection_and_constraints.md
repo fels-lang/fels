@@ -29,15 +29,9 @@ is enough for reflection-driven serialization with no per-type code, which `std.
 
 ## Design thesis
 
-Jai exposes reflection and metaprogramming through many special-purpose pieces that don't
-compose. There is `#modify` (a code block bolted onto a signature), the
-`Type_Info` / `Type_Info_Integer` / `Type_Info_Struct` cast hierarchy, `get_type_table`,
-`for_expansion` and `#insert -> string`. Each does its job, but together they're a grab-bag.
-
-Fels already has a structural advantage that Jai lacks: **the comptime VM executes the same IR
-as the runtime backend**. Comptime and runtime therefore behave identically, and an `#run`
-FNV-1a hash equals its runtime value bit-for-bit. We lean on that to make *one* reflection
-surface serve both phases.
+**The comptime VM executes the same IR as the runtime backend.** Comptime and runtime
+therefore behave the same, and an `#run` FNV-1a hash equals its runtime value bit for bit. That
+lets *one* reflection surface serve both phases.
 
 The design rests on five orthogonal primitives. Each is type-safe, and each composes with the
 rest:
@@ -58,7 +52,7 @@ rest:
 Reflection-driven serialization, custom iteration and code generation all fall out of these,
 with no new directives.
 
-## 1. `TypeInfo` — reflection as a matchable value
+## 1. `TypeInfo`: reflection as a matchable value
 
 `core::type_info(T)` returns a real tagged enum, not a set of ad-hoc fields. It has the same
 shape as the `ast.*` metaprogramming surface, and the compiler injects it as a prelude when a
@@ -122,12 +116,10 @@ describe :: fn(info: TypeInfo) -> []const u8 {
 }
 ```
 
-> **✦ Beyond Jai.** Jai forces `if t.type == .INTEGER { info := cast(*Type_Info_Integer) t; … }`,
-> which is a tag check followed by an unchecked pointer cast. Fels's `match info { .int |i| => … }`
-> is exhaustive, payload-bound and impossible to mis-cast. The compiler also checks that you
-> handled (or `else`'d) every kind.
+> **Why a match.** `match info { .int |i| => … }` binds the payload, so there is no cast to
+> get wrong, and the compiler checks that you handled every kind or wrote an `else`.
 
-## 2. `typeid` — cheap runtime identity
+## 2. `typeid`: cheap runtime identity
 
 > **Implemented today:** `core::type_id(T) -> usize`, a stable runtime id for a type. It folds
 > at IR lowering to an **FNV-1a content hash** of the type's canonical spelling. Identical types
@@ -144,8 +136,8 @@ describe :: fn(info: TypeInfo) -> []const u8 {
 
 ```fels
 core::type_id(T) -> usize        // a stable id (content hash); IMPLEMENTED
-core::type_id(any_value) -> usize   // value form — design (needs Any)
-info_of(id) -> *TypeInfo        // table lookup — design (§4)
+core::type_id(any_value) -> usize   // value form: design (needs Any)
+info_of(id) -> *TypeInfo        // table lookup: design (§4)
 ```
 
 Two identical types always share one id, so an identity test is a single integer compare:
@@ -154,11 +146,10 @@ Two identical types always share one id, so an identity test is a single integer
 if core::type_id(T) == core::type_id(Vector3) { … }
 ```
 
-> **✦ Beyond Jai.** Jai compares `*Type_Info` pointers and bakes the whole table
-> unconditionally. A `typeid` is cheaper to compare and stable across compilation units. With
-> §4's tree-shaking, it also costs a table slot only when it is actually used.
+> **Why an id.** A `typeid` is an integer: cheap to compare, and stable across compilation
+> units. With §4's tree-shaking, it costs a table slot only when it is used.
 
-## 3. `Any` — safe dynamic values
+## 3. `Any`: safe dynamic values
 
 `Any` is the workhorse of runtime reflection. It is a fat value that carries a pointer to data
 and the data's type metadata.
@@ -212,16 +203,14 @@ sum_field :: fn(v: Any) -> i32 {
 }
 ```
 
-> **✦ Beyond Jai.** Jai's `Any` is `{ value_pointer, type }`, and you cast it yourself,
-> unchecked. In Fels, `.as(T)` is an `?T`, `.field`/`.elem` are bounds- and name-checked, and
-> you pattern-match `.info()`. You cannot read an `Any` as the wrong type without the compiler
-> handing you a `null` to deal with.
+> **Why checked.** `.as(T)` gives a `?T`, `.field` and `.elem` check names and bounds, and
+> you pattern-match `.info()`. Reading an `Any` as the wrong type gives you a `null` to deal
+> with, never a wrong value.
 
-## 4. The type table — opt-in, tree-shaken
+## 4. The type table: opt-in, tree-shaken
 
-Runtime reflection needs `TypeInfo` baked into the binary's data segment. Jai bakes
-**everything** and then offers `runtime_storageless_type_info` to turn it off. Fels inverts the
-default: a type's info reaches the binary **only if it can be reached at runtime**. That means
+Runtime reflection needs `TypeInfo` baked into the binary's data segment. In Fels a type's
+info reaches the binary **only if it can be reached at runtime**. That means
 some runtime code calls `core::type_info(T)`, takes `core::type_id(T)`, or wraps a `T` into an
 `Any`. The compiler already tracks the comptime/runtime split (the VM vs the LLVM backend), so
 this is a reachability pass over those roots.
@@ -233,12 +222,11 @@ type_table() -> []TypeInfo     // every type that was baked (debuggers, tooling)
 The result is that a hello-world binary bakes **zero** type info. A program that serializes
 three structs bakes exactly those three, plus their transitive field types.
 
-> **✦ Beyond Jai.** You get smaller binaries by default, with no global switch to remember.
-> Reflection you don't use costs nothing, which is the opposite of Jai's bake-all-then-strip
-> model. A capability (§7) can also gate *who* may read the table, so a sandboxed plugin can't
-> enumerate the host's types.
+> **Why opt-in.** Binaries are small by default, with no switch to remember: reflection you
+> don't use costs nothing. A capability (§7) can also gate *who* may read the table, so a
+> sandboxed plugin can't list the host's types.
 
-## 5. Serialization — one source, two speeds
+## 5. Serialization: one source, two speeds
 
 > Planned: this section is design. The `Any` navigation it uses (`.info()`, `.as()`,
 > `.field()`, `.elem()`) is not built yet, and today `#for` takes an integer range `a..b`, not
@@ -288,16 +276,14 @@ to_json_of :: fn($T: type, v: T, w: *StringBuilder) {
 }
 ```
 
-> **✦ Beyond Jai.** Jai makes you pick *up front*. You either write a string-codegen serializer
-> (`#insert -> string` + `String_Builder`, see its `for_each_member`), **or** you walk
-> `Type_Info` at runtime, and those are different code. Fels's single `match`-on-`TypeInfo`
-> function *is* both. Comptime folds it to specialized code, runtime executes it dynamically,
-> and the shared IR guarantees that the two are identical.
+> **Why one function.** A single function that matches on `TypeInfo` serves both: at compile
+> time it folds to specialized code, at run time it runs as written, and the shared IR makes
+> the two behave the same.
 
-## 6. `constraint` and `where` — resolve-time generics
+## 6. `constraint` and `where`: resolve-time generics
 
-This replaces Jai's `#modify`. It comes in two layers: **named constraints** for the common,
-composable case, and a **`where` block** as the escape hatch that can rewrite and reject.
+Constraints come in two layers: **named constraints** for the common, composable case, and a
+**`where` block** as the escape hatch that can rewrite and reject.
 
 ### 6.1 Named constraints
 
@@ -339,13 +325,10 @@ use the *same* `$T: C` syntax:
 serialize :: fn($T: Struct & HasField("id"), v: T) { … }   // composed
 ```
 
-> **✦ Beyond Jai.** Jai's `#modify` is an anonymous code block (or a proc returning `bool`)
-> glued to one signature. You can't name it or compose it, and it is orthogonal to interface
-> constraints. Fels makes the predicate a named, reusable, composable value, and *unifies*
-> interface conformance with arbitrary predicates. That leaves one concept (`$T: C`) instead of
-> two (`#modify` + interface `/Type`).
+> **Why named.** A constraint is a value you can name, reuse and combine, and conforming to
+> an interface is one more constraint, so `$T: C` covers both.
 
-### 6.2 The `where` block — inspect, rewrite, reject
+### 6.2 The `where` block: inspect, rewrite, reject
 
 > **Implemented today (inspect + reject + output types).** A `where { … }` block after a
 > generic function signature is an arbitrary comptime predicate. It runs **once per
@@ -369,7 +352,7 @@ serialize :: fn($T: Struct & HasField("id"), v: T) { … }   // composed
 > `` `dbl` rejected for this type: dbl needs a numeric type``. The *binding rewrite*
 > (`T = u32`) and *overload fallback* parts remain design (see `§6.3`).
 
-When you need to *change* the bindings (Jai's `T = s64`) or compute an output type, attach a
+When you need to *change* the bindings or compute an output type, attach a
 `where` block. It runs once per instantiation, after type matching, with the type parameters as
 mutable comptime values. The example below computes an output type, and it compiles and runs
 today. Changing `T` itself is still design.
@@ -395,8 +378,7 @@ where {
 ```
 
 - `$Acc` is an **output type parameter**. It is declared in the return position and *computed*
-  by `where`. (Jai bolts this on with a separate `$R` and assigns it inside `#modify`. Here it
-  reads as "the return type is whatever `where` decided.")
+  by `where`, so it reads as "the return type is whatever `where` decided."
 - `core::reject("…")` takes a message, and the plan is for it to take part in **overload
   resolution**. A rejected instantiation would then *not yet* be an error, and the compiler
   would try the next overload. Only when every candidate rejects would it report, listing each
@@ -412,13 +394,11 @@ push :: fn($T: type, xs: *List(T), v: T)        where { … }   { … }
 push :: fn($T: type, xs: *List(T), vs: []T)     where { … }   { … }
 ```
 
-> **✦ Beyond Jai.** There are three improvements. (1) `core::reject` comes with a real message,
-> and the planned **overload fallback** will turn a rejection into "try the next candidate".
-> Jai's `#modify` returning false is always fatal. (2) Output types are *declared where they
-> belong* (`-> $Acc`) and computed in `where`, instead of a magic `$R` mutated in a side block.
-> (3) The `where` body uses matchable `TypeInfo`, not `cast(*Type_Info_*)`.
+> **Why a block.** `core::reject` comes with a message, and the planned **overload fallback**
+> will turn a rejection into "try the next candidate". Output types are declared where they
+> belong (`-> $Acc`) and computed in `where`, whose body works on matchable `TypeInfo`.
 
-### 6.3 How `where` is wired — the two-pass resolution rail
+### 6.3 How `where` is wired: two passes of resolution
 
 The predicate runs **during generic resolution**, not after. That sounds like a chicken-and-egg
 problem: "run comptime code during resolution, but the VM only exists post-sema". Fels dissolves
@@ -453,22 +433,21 @@ zero new VM value machinery.)
 candidate on reject). Fallback is moot until Fels grows same-name overloading. Rewrite is a
 small extension of the same `evalWhereType` mechanism.
 
-## 7. Where it all pays off (broad feature parity, Fels-style)
+## 7. What the five primitives cover
 
-The same five primitives subsume the rest of Jai's metaprogramming toolkit, without new
+The same five primitives cover the rest of what metaprogramming usually needs, without new
 directives:
 
-| Jai feature | Fels realization | Improvement |
-|---|---|---|
-| `for_expansion` (custom iterators) | `for x in c` calls `c.next()` until it returns `null`, for any type with a `next :: fn(self: *Self) -> ?T` method. Built (see [03](03_functions_control_flow.md#for-iterators)); an `Iter` interface for it is design. | Works at runtime *and* comptime, composes with dynamic dispatch, and is not a macro you reimplement per container. A `#for_expansion` macro stays available for zero-cost unrolling when you want it. |
-| `#insert -> string` building **struct fields** (SOA, `Matrix(N)`) | A macro with `#for f in fields(T)` makes declarations from a struct's fields: functions among the declarations and methods with an `#insert` in the struct's body (built, see [13](13_metaprogramming.md#declarations)). Fields in a struct's body are design. | Generated code is type-checked where it lands, with no `.added_strings.jai` to eyeball. |
-| `#caller_code` (call-site AST) | `#caller` builtin yielding a typed `ast.Call` you `match` on. | Typed AST, not `cast(*Code_Procedure_Call)`. |
-| `compiler_get_nodes` / `compiler_get_code` (arbitrary code AST round-trip) | Typed macro params: a macro takes `body: ast.Block` (matchable) instead of opaque `Code`, and you rebuild and `#insert`. | Type-safe AST surgery: match on `ast.*`, never cast `Code_Node*`. |
-| `get_type_table` | `type_table()`, but tree-shaken and capability-gated. | Smaller binaries, sandboxable. |
-| `#compile_time` | `#phase` builtin (`.comptime` / `.runtime`), foldable in `#if`. | — |
-| (none) | **Capability-sandboxed reflection + FFI** | The structural supply-chain fix: a plugin gets `Reflect`/`FileSys` capabilities or it physically can't reach the host. Jai has no equivalent. |
+| Need | In Fels |
+|---|---|
+| Iterating over your own types | `for x in c` calls `c.next()` until it returns `null`, for any type with a `next :: fn(self: *Self) -> ?T` method. Built (see [03](03_functions_control_flow.md#for-iterators)); an `Iter` interface for it is design. |
+| Declarations made from a struct's fields (SOA, `Matrix(N)`) | A macro with `#for f in fields(T)` makes declarations from a struct's fields: functions among the declarations and methods with an `#insert` in the struct's body (built, see [13](13_metaprogramming.md#declarations)). Fields in a struct's body are design. |
+| The call site's code | `#caller` builtin yielding a typed `ast.Call` you `match` on. |
+| Taking code apart and putting it back | Typed macro params: a macro takes `body: ast.Block` (matchable) instead of opaque `Code`, and you rebuild and `#insert`. |
+| Every type of the program | `type_table()`, tree-shaken and gated by a capability. |
+| Whether code runs at compile time | `#phase` builtin (`.comptime` / `.runtime`), foldable in `#if`. |
+| Keeping a plugin away from the host | Reflection and FFI behind capabilities: a plugin gets `Reflect`/`FileSys` capabilities, or it cannot reach the host. |
 
-The unifying idea is this: **reflection is a value, constraints are predicates over it, `Any`
-is reflection plus a pointer, iteration is an interface, and code generation is a `#for` over
-reflected fields.** That gives five composable pieces instead of a dozen special forms, and all
-of them are type-checked, phase-unified and sandboxable.
+So **reflection is a value, constraints are predicates over it, `Any` is reflection plus a
+pointer, iteration is an interface, and code generation is a `#for` over reflected fields.**
+Each piece is type-checked, and each works the same at compile time and at run time.

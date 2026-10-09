@@ -1,10 +1,10 @@
-# ecs_game — a headless ECS asteroids simulation
+# ecs_game: a headless ECS asteroids simulation
 
 A bigger, multi-module Fels program that exercises the language end to end: local
 modules, a struct-of-arrays ECS, generics-free data-oriented systems, enums,
 fixed-capacity arrays sized by constants, float math, and a deterministic RNG.
 
-It is **headless and deterministic** — no graphics, no input. A turret at the
+It is **headless and deterministic**: no graphics, no input. A turret at the
 centre of the field auto-fires at the nearest asteroid; asteroids drift, bounce
 off the walls, and split into fragments when destroyed. It runs 90 ticks,
 renders an ASCII snapshot every 30 ticks, and prints a final report.
@@ -50,11 +50,11 @@ World :: struct {
 `spawn` allocates an entity (reusing a dead slot when possible) and `kill` frees
 one. Each tick the systems sweep the live entities:
 
-- **spawner** — drops a new drifting asteroid on a cadence.
-- **fire** — the turret targets the nearest asteroid and emits a bullet.
-- **movement** — integrates positions; asteroids bounce, bullets expire off-field.
-- **collisions** — O(n²) bullet↔asteroid checks; a destroyed asteroid splits.
-- **lifetime** — bullets carry a frame countdown in `hp`.
+- **spawner**: drops a new drifting asteroid on a cadence.
+- **fire**: the turret targets the nearest asteroid and emits a bullet.
+- **movement**: integrates positions; asteroids bounce, bullets expire off-field.
+- **collisions**: O(n²) bullet↔asteroid checks; a destroyed asteroid splits.
+- **lifetime**: bullets carry a frame countdown in `hp`.
 
-Everything is plain data + functions over `*World` — the data-oriented style an
+Everything is plain data + functions over `*World`, the data-oriented style an
 ECS encourages, with zero per-tick allocation.

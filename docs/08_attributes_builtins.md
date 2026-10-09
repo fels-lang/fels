@@ -53,8 +53,8 @@ Attributes change the behavior or the layout of a declaration, and each one star
 - `#foreign`: an alias for `#extern`.
 - `#system_library("libname")`: a top-level directive that tells the linker to link against the
   named system library.
-- `#link_name("name")`: sets the function's external symbol name **without** exporting it, which
-  is what sets it apart from `#export`.
+- `#link_name("name")`: sets the function's external symbol name **without** exporting it
+  (`#export` does both).
 - `#weak`: emits a weak symbol, which another definition can override at link time.
 
 ### Diagnostics
@@ -77,14 +77,14 @@ Attributes change the behavior or the layout of a declaration, and each one star
   synchronize (`sync::Mutex`, `sync::Channel(T)`, `atomics::Atomic(T)`). A closure that runs on
   another thread may capture a `*` to it.
 
-## Builtins — the `core::` namespace
+## Builtins: the `core::` namespace
 
 Builtins live in the reserved **`core::`** namespace. They are operations the compiler
 provides, and they are always in scope, with no import. The `core::` prefix makes a builtin
 call look different from an ordinary function call:
 
 ```fels
-n   := core::sizeof(Point);          // a builtin — you can see the compiler is involved
+n   := core::sizeof(Point);          // a builtin: you can see the compiler is involved
 name := core::type_name(Point);      // "Point"
 buf := unsafe core::slice_raw(u8, p, len);
 if bad { core::panic("invalid state"); }   // no-return

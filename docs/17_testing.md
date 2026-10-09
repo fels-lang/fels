@@ -226,6 +226,3 @@ parse, preludes, sema (Test added if a #test exists)
   rather than an inline closure, because Fels lambdas don't capture.)
 - **Snapshots**: `t.snapshot(value, "name")` serializes any value through serde and diffs it
   against a stored snapshot, and `fels test --update` rewrites the snapshot.
-
-The idea that runs through all of this: tests are found by their attribute, assertions and
-generators come from reflection, and the comptime lane makes a failing test a failing build.

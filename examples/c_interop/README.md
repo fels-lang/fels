@@ -1,7 +1,7 @@
 # C interop: by-value structs
 
 Demonstrates calling a C library from Fels with structs passed/returned **by
-value** — the calling pattern raylib (and most C UI/graphics libraries) use for
+value**, the calling pattern raylib (and most C UI/graphics libraries) use for
 `Vector2`, `Color`, `Rectangle`, and friends.
 
 Fels applies the Win64 C ABI at the `#extern` boundary automatically:
@@ -26,16 +26,16 @@ llvm-lib /out:cabi.lib cabi.obj
 #    --lib-path tells the linker where to find it.
 fels build main.fels -o demo.exe --lib-path .
 
-# 3. Run it — the exit code is 132 if every struct crossed the ABI correctly.
+# 3. Run it. The exit code is 132 if every struct crossed the ABI correctly.
 ./demo.exe ; echo $?
 ```
 
 `132 = 7 + 100 + 10 + 11 + 4`, summing the round-trips through each struct shape.
 
-For a real library you wouldn't hand-write the `#extern` block — generate it from
+For a real library you wouldn't hand-write the `#extern` block; generate it from
 the C header with `fels bindgen cabi.h --lib cabi -o cabi.fels`, then `#import cabi.*;`.
 See [docs/11_c_interop.md](../../docs/11_c_interop.md) for the full story.
 
 > Linking a non-system import library currently routes through LLD (the
 > self-hosted `felsld` doesn't read `.lib` archives yet), so this needs the LLVM
-> toolchain's `lld-link` on the search path — which `fels` already configures.
+> toolchain's `lld-link` on the search path, which `fels` already configures.

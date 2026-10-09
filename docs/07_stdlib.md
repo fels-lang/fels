@@ -464,7 +464,7 @@ error: type `f64` does not satisfy `Integer`: expected an integer type
 - **Flags / spinlock:** `is_set`, `test_and_set`, `clear`, `wait_until_set`,
   `wait_until_eq`, `spin_lock`, `spin_unlock`
 
-### `Atomic(T)` — a typed atomic cell
+### `Atomic(T)`: a typed atomic cell
 
 The free functions act on a raw `*T`. `Atomic(T)` *wraps* the value instead, so the type
 itself documents that the value is shared, and the operations read as methods. The element
@@ -739,7 +739,7 @@ channel yet. `tests/fixtures/stdlib/sync_tests.fels` runs the four on real threa
 that must alternate strictly, a broadcast, timed waits, and many producers against many
 consumers with every item delivered exactly once.
 
-## `std.com` — COM and Windows Runtime types
+## `std.com`: COM and Windows Runtime types
 The data types of COM and the Windows Runtime. The module makes no operating-system call, so it
 compiles for every target. It has `Guid`, `HRESULT`, `IUnknown` and `IInspectable` with their
 vtables, and a reference counter for objects you implement.
@@ -834,7 +834,7 @@ main :: fn() -> i32 {
 }
 ```
 
-## `std.winrt` — calling COM and the Windows Runtime (Windows only)
+## `std.winrt`: calling COM and the Windows Runtime (Windows only)
 This is the part of the COM and Windows Runtime story that calls Windows. It starts COM and the
 Runtime on a thread, creates objects, activates runtime classes, and handles `HSTRING`. It is
 thin on purpose. Each function that mirrors an OS call keeps the call's shape and returns its
@@ -910,7 +910,7 @@ generated projection of a runtime class, so you declare the interfaces you call.
 smart pointer: a release is a call you write, with `defer`. And there is no marshalling across
 apartments.
 
-## `std.net` — networking
+## `std.net`: networking
 TCP and UDP, over Winsock2 on Windows and over the socket system calls on Linux. The code is
 layered across a subdirectory module, so each piece stays small and focused. Here are the layers
 from the bottom up:
@@ -1034,7 +1034,7 @@ and procedural generation.
 
 - `rgb`, `rgba`, `with_alpha`, `gray`, named colors (`white`/`black`/`red`/`green`/`blue`/`yellow`/`orange`/`purple`/`clear`), `lerp`, `to_u32`/`from_u32` (0xRRGGBBAA).
 
-## Containers — `std.vec`, `std.map`, `std.pqueue`, `std.deque`, `std.bitset`
+## Containers: `std.vec`, `std.map`, `std.pqueue`, `std.deque`, `std.bitset`
 
 The container library has one defining trait: every container is **region-bound**.
 It carries a borrowed `*Arena` and grows by bump-allocating from it, so there are no
@@ -1043,7 +1043,7 @@ container that lived in it is gone at once. That's the whole memory story, and i
 what makes Fels's containers different from Rust's owning collections or Zig's
 allocator-injected ones.
 
-### `std.vec` — `Vec(T)`
+### `std.vec`: `Vec(T)`
 
 A growable array with in-struct methods (UFCS):
 
@@ -1073,7 +1073,7 @@ the `*Arena` explicitly (`u.push(&a, x)`). Use it when one vector is filled from
 regions or stored in bulk. To copy unmanaged data into the managed API, use
 `vec::from(T, a, u.items())`.
 
-### `std.map` — `AutoHashMap(K, V)` and `StrMap(V)`
+### `std.map`: `AutoHashMap(K, V)` and `StrMap(V)`
 
 Open-addressed hash maps with linear probing. They are region-bound too.
 
@@ -1122,7 +1122,7 @@ sm.get("alpha");                    // hashes + compares the string bytes
 > free. `AutoHashMap` doesn't even need that, because byte-hashing covers every key whose
 > bytes are its value with zero ceremony, and the compiler refuses the others.
 
-### `std.pqueue` — `PriorityQueue(T, C)`
+### `std.pqueue`: `PriorityQueue(T, C)`
 
 A binary heap: `pop` gives the element that comes first, `push` and `pop` take O(log n).
 
@@ -1141,7 +1141,7 @@ jobs := pqueue::by(Job, &a, earlier);   // earlier :: fn(a: Job, b: Job) -> bool
 - The order is a type `C` with `less(self, a, b)`: `pqueue::Min(T)`, `Max(T)`, `By(T)` (a
   function), or your own with `pqueue::with(T, C, &a, order)`, for an order that carries data.
 
-### `std.deque` — `Deque(T)`
+### `std.deque`: `Deque(T)`
 
 A ring buffer: push and pop at both ends in O(1), and index from the front.
 
@@ -1158,7 +1158,7 @@ for x in d.each() { ... }            // front to back, left in place
   `set(i, v)`, `len`, `is_empty`, `clear`. It grows by taking a block twice as big from its
   arena.
 
-### `std.bitset` — `BitSet`
+### `std.bitset`: `BitSet`
 
 The numbers 0 to n-1, one bit each, 64 to a word.
 

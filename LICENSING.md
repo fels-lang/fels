@@ -1,17 +1,17 @@
-fels-lang — licensing
+Fels licensing
 ===================
 
 Copyright (c) 2026 Christian Brendlin.
 
 fels-lang is licensed per component. Which license applies to a given file is
 recorded in that file's `SPDX-License-Identifier` header; this document explains
-the split and, most importantly, what it means for programs you compile with fels.
+the split and what it means for programs you compile with fels.
 
-The compiler — GPLv3
+The compiler: GPLv3
 --------------------
 
-The fels compiler itself — the Zig sources under `src/` (lexer, parser, semantic
-analysis, IR, comptime VM, and the LLVM/felsld backends) — is licensed under the
+The fels compiler itself, the Zig sources under `src/` (lexer, parser, semantic
+analysis, IR, comptime VM, and the LLVM/felsld backends), is licensed under the
 GNU General Public License, version 3. See `LICENSE-GPLv3.txt`.
 
   SPDX-License-Identifier: GPL-3.0-or-later
@@ -19,15 +19,15 @@ GNU General Public License, version 3. See `LICENSE-GPLv3.txt`.
 If you distribute a modified fels *compiler*, the GPLv3 applies: you must make your
 changes to the compiler available under the same terms.
 
-The runtime, standard library, and everything emitted into your program — Apache-2.0
+The runtime, standard library, and everything emitted into your program: Apache-2.0
 ------------------------------------------------------------------------------------
 
 Every component that the compiler injects into, links into, or generates inside a
 compiled program is licensed under the Apache License, version 2.0. See
 `LICENSE-APACHE-2.0.txt` and `NOTICE`. This covers:
 
-  * `lib/`               — the fels standard library
-  * `src/runtime/`       — the embedded platform runtime (`windows.fels`, `linux.fels`)
+  * `lib/`: the fels standard library
+  * `src/runtime/`: the embedded platform runtime (`windows.fels`, `linux.fels`)
   * the compiler-injected prelude sources (heap, ptr, reflection, `Any`, the
     `Test` testing context, …), including those embedded as string data inside
     `src/std_prelude.zig` and `src/ast_prelude.zig`
@@ -40,7 +40,7 @@ What this means for your programs
 ---------------------------------
 
 **Programs you compile with fels are NOT covered by the GPL.** A compiled fels program
-contains your own source plus the Apache-2.0 runtime and standard library — it is
+contains your own source plus the Apache-2.0 runtime and standard library. It is
 not a derivative work of the GPL-licensed compiler, and it carries no GPL
 obligation. You may license and distribute your fels programs however you wish,
 including as proprietary software.

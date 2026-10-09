@@ -19,7 +19,7 @@ A Fels project lists the packages it uses in `fels.pkg`, which sits next to `bui
 #import mathlib;
 ```
 
-What sets Fels apart is the `may` part. A package's compile-time code (its `#run`, its
+The `may` part limits what a package may do. Its compile-time code (its `#run`, its
 `#compiler` hooks) can only reach the host when `fels.pkg` grants it, and the compiler enforces
 that. If a new version of a package wants more, the update stops until you grant it.
 

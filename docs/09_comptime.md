@@ -143,7 +143,7 @@ any `#run` has a value.
 
 ## Caching
 
-This is where purity pays off. A pure `#run` is a deterministic function of its bytecode, so its
+A pure `#run` is a deterministic function of its bytecode, so its
 result is content-addressable. The cache hashes the thunk together with its call closure, names a
 file after that hash, and skips the run when the file already exists. `FELS_CACHE=1` turns it on.
 It is opt-in while it is young.

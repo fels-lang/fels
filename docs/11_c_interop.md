@@ -340,7 +340,7 @@ fels build game.fels --libc --lib-path <raylib-lib-dir>
 > `app.link("gdi32")` and so on. The **DLL** distribution of a library avoids all of this,
 > because the `.dll` already contains its CRT and dependencies. Prefer it when it is available.
 
-### Static vs dynamic — automatic
+### Static or dynamic, chosen automatically
 
 You don't rename or swap library files to switch the link mode, and in the common case you don't
 even say which mode you want. **The build peeks inside each `.lib` you link** and reacts to what
@@ -381,7 +381,7 @@ explicit instead:
 - **`game.runtime_file("…/extra.dll")`**: copy an extra DLL that the detector can't infer.
 - **`game.link_libc()`**: the low-level "link the C runtime" that `static_link` uses.
 
-#### System dependencies — pulled in automatically
+#### System dependencies, pulled in automatically
 
 A static C library also needs *its own* system deps (static raylib wants
 `opengl32`/`gdi32`/…). You normally **don't list them**. When a static C library is linked, Fels

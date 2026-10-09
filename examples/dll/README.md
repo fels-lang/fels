@@ -1,4 +1,4 @@
-# dll — a shared library with exported symbols
+# dll: a shared library with exported symbols
 
 Proves the plumbing a native plugin needs: `b.shared` emits a real DLL, `#export`
 puts functions **and data** in its export table under the names you gave, and a
@@ -38,14 +38,14 @@ dll.gab_add(20, 22)                           # 42
 
 entry = Entry.in_dll(dll, "gab_entry")        # a struct, read straight out of the image
 entry.version.major, entry.version.minor      # 1, 2
-entry.scale(14)                               # 42 — through a function pointer in the struct
-ctypes.c_int32.in_dll(dll, "gab_calls").value # 1 — a global the library wrote and the host reads
+entry.scale(14)                               # 42, through a function pointer in the struct
+ctypes.c_int32.in_dll(dll, "gab_calls").value # 1, a global the library wrote and the host reads
 ```
 
 ## What a plugin entry point needs
 
-A CLAP or VST3 plugin's entry point is an exported **data** symbol —
-`extern const clap_plugin_entry_t clap_entry;` — a static struct of version numbers and
+A CLAP or VST3 plugin's entry point is an exported **data** symbol,
+`extern const clap_plugin_entry_t clap_entry;`, a static struct of version numbers and
 function pointers that the host reads and calls through. `gab_entry` is that shape:
 
 ```fels

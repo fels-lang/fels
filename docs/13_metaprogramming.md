@@ -4,7 +4,7 @@ Fels gives you two ways to generate code at compile time.
 
 Template macros are a syntactic, hygienic substitution engine. A macro stamps out a shape with
 its holes filled in. Programmatic generation runs real Fels in the comptime VM, builds an AST as
-a first-class value and splices it into the program. Reach for it when the structure of the code
+a first-class value and splices it into the program. Use it when the structure of the code
 depends on logic, such as a loop over fields or a branch on a type. This page covers macros
 first and the programmatic path at the end.
 
@@ -174,7 +174,7 @@ methods cannot be written in a quote yet: give it an `#insert` in its body inste
 another file makes its declarations in the file of the `#insert`; an error in one points at the
 `#insert`.
 
-## 3. `#for` — compile-time unrolling
+## 3. `#for`: compile-time unrolling
 
 Inside a template, `#for i in a..b { ... }` is **unrolled** at expansion time. The body is
 emitted once per index, and the loop variable is available as a *comptime value* that you
@@ -267,8 +267,8 @@ accumulate :: macro(out: Expr, n: Expr) {
 
 #entry
 main :: fn() -> i32 {
-    tmp: i32 = 100;   // untouched — the macro's `tmp` is a different variable
-    k: i32 = 7;       // untouched — the macro's `k` is a different variable
+    tmp: i32 = 100;   // untouched: the macro's `tmp` is a different variable
+    k: i32 = 7;       // untouched: the macro's `k` is a different variable
     r: i32 = 0;
     #insert accumulate(r, 9);          // 0+1+…+8 = 36 → r
     return r + (tmp - 100) + (k - 7);  // 36 (proves no capture)
@@ -279,7 +279,7 @@ When you want a binding the caller can name, write to a variable the caller pass
 `Expr` parameter, like `$out` above). Or use a bare `#insert #quote { ... }`, whose locals are
 *not* hygienic.
 
-## 5. `#parse` — the string escape hatch
+## 5. `#parse`: the string escape hatch
 
 `#parse(string_expr)` evaluates a string at compile time and parses it as code. As an `#insert`
 operand, it splices that code into the program. This is the untyped escape hatch out of
@@ -327,7 +327,7 @@ compound literals and declarations. Reflection-driven code generation and `#comp
 built on it. The reflection helpers that pair well with it (`core::type_info`, `core::type_id`,
 `Any`, field navigation) are documented in [12](12_reflection_and_constraints.md).
 
-## 8. `#derive` — generated impls from a type's shape
+## 8. `#derive`: generated impls from a type's shape
 
 Tag a struct with `#derive(...)` and the compiler writes the mechanical, field-by-field
 implementation for you, so there is no boilerplate to write for each type:

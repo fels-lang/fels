@@ -1,4 +1,4 @@
-# Tooling & the language server — design
+# Tooling and the language server
 
 `fels lsp` works today. It gives you diagnostics, completion, hover, go-to-definition, document
 symbols, find references, rename, document highlight and workspace symbols, and §8 shows how to
@@ -10,7 +10,7 @@ The formatter, the doc generator and the REPL aren't built yet.
 ## 0. The principle: the compiler is a library
 
 The Fels tooling does **not** parse or model the language a second time. The compiler is
-already a library (`fels_compiler`), and its frontend is reusable and, most importantly,
+already a library (`fels_compiler`), and its frontend is reusable and
 *tolerant*:
 
 - `parseSource(alloc, file, src) -> ast.Module` builds the AST.
@@ -35,7 +35,7 @@ The `TypeEnv` already carries everything the tools below need, keyed by AST node
 So every tool is a *thin* consumer of the frontend, and they all share one model of the
 language. There is no second parser that could drift apart from the first.
 
-## 1. `fels lsp` — the language server
+## 1. `fels lsp`: the language server
 
 `fels lsp` is a subcommand that speaks LSP (JSON-RPC over stdio). One server serves every
 editor, and Zed, Neovim, Helix and VS Code each need only a few lines of client config.
@@ -83,10 +83,9 @@ fixes:
 - "`fail` used in a function without a `!` error return type" → add the `! Err`.
 - A struct with hand-written `eq`/`hash` → offer `#derive(Eq, Hash)` instead.
 
-This is where reusing the compiler pays off, because the analysis that produces the error
-already knows the fix.
+The analysis that produces the error already knows the fix.
 
-### 1.5 The fels differentiators
+### 1.5 What needs the compiler
 
 These are things a generic LSP over tree-sitter can't do, but the reusable, comptime-capable
 Fels frontend can:
@@ -119,7 +118,7 @@ already show up in completion and hover.
 Next: semantic tokens, code actions, formatting (it waits for `fels fmt`) and the rest of the
 comptime-aware indexing.
 
-## 2. `fels fmt` — the canonical formatter
+## 2. `fels fmt`: the canonical formatter
 
 The formatter is opinionated and **config-free** (the gofmt/`zig fmt` philosophy). There is one
 true style and no bikeshedding. It is idempotent: `fmt(fmt(x)) == fmt(x)`.
@@ -132,7 +131,7 @@ true style and no bikeshedding. It is idempotent: `fmt(fmt(x)) == fmt(x)`.
 - It drives the LSP `formatting`/`rangeFormatting` requests and a `--check` mode for CI
   (`fels fmt --check` exits non-zero on unformatted files).
 
-## 3. `fels doc` — reflection-driven documentation
+## 3. `fels doc`: reflection-driven documentation
 
 Here the reflection of Fels is the unfair advantage. `core::compiler_decls()` and
 `core::type_info` already expose the shape of every declaration. Doc generation reads those and
@@ -158,7 +157,7 @@ two ways:
 `fels test --filter <text>` runs only the tests whose name contains the text. Still to come:
 a time limit, and a TAP or JSON report for CI.
 
-## 5. `fels repl` — interactive evaluation
+## 5. `fels repl`: interactive evaluation
 
 The comptime VM (`src/vm/`) already evaluates Fels to real values over a modeled host memory. A
 REPL is an interactive driver on top of it. You enter a decl or an expression, the VM evaluates
@@ -166,7 +165,7 @@ it, and the result prints. What makes it distinctive is that it's the *same engi
 `#run`/`#compiler`, so the REPL is comptime Fels, live. It is good for exploring `std`,
 prototyping a generic or inspecting `core::type_info`.
 
-## 6. Editor integrations — one grammar, one server
+## 6. Editor integrations: one grammar, one server
 
 - **Syntax**: `grammar.js` in the separate `tree-sitter-fels` repository is the single
   syntactic source of truth. It is meant to feed the Zed extension, and the same grammar and

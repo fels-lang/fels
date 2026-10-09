@@ -1,7 +1,7 @@
 # Targets, ABIs & support tiers
 
 This page explains how Fels decides *what machine* it compiles for, *what it links against*,
-and *how much we guarantee* for each target. It is the architecture for cross-compiling beyond
+and *how well tested* each target is. It is the architecture for cross-compiling beyond
 the original Windows-only backend.
 
 ## 1. The target model
@@ -29,7 +29,7 @@ describe *computation*, not a platform, so every language feature works on every
 tiers (below) are **not** about language features. They are about how complete the codegen,
 the runtime and the stdlib are.
 
-## 2. Where platform differences live — the runtime ABI seam
+## 2. Where platform differences live: the runtime ABI seam
 
 The architectural decision is this: **all OS-specific behaviour goes through a small,
 fixed set of `os_*` primitives provided by the platform runtime**. The standard library is
@@ -104,10 +104,10 @@ boundaries need a classifier.
 
 | Arch | LLVM | Syscall ABI (nr / args / insn) | Aggregate ABI | Status |
 | --- | --- | --- | --- | --- |
-| **x86_64** | ✅ | `rax` / `rdi rsi rdx r10 r8 r9` / `syscall` | Win64 done, SysV AMD64 not done | **implemented**, except by-value structs at C calls on Linux |
-| **aarch64** | ✅ | `x8` / `x0…x5` / `svc #0` | AAPCS64 | Tier 3, not implemented yet: needs runtime + classifier + `--target` support |
-| **riscv64** | ✅ | `a7` / `a0…a5` / `ecall` | RV calling conv | Tier 3, emerging |
-| **wasm32** | ✅ | no syscalls, WASI imports | wasm ABI | Tier 3, different seam (WASI), no `_start` asm |
+| **x86_64** | yes | `rax` / `rdi rsi rdx r10 r8 r9` / `syscall` | Win64 done, SysV AMD64 not done | **implemented**, except by-value structs at C calls on Linux |
+| **aarch64** | yes | `x8` / `x0…x5` / `svc #0` | AAPCS64 | Tier 3, not implemented yet: needs runtime + classifier + `--target` support |
+| **riscv64** | yes | `a7` / `a0…a5` / `ecall` | RV calling conv | Tier 3, emerging |
+| **wasm32** | yes | no syscalls, WASI imports | wasm ABI | Tier 3, different seam (WASI), no `_start` asm |
 
 The x86_64 classifier knows only the Win64 rules, and `abi.zig` applies them on every target.
 So on Linux, a struct passed by value to an `#extern` C function, or returned by value from
@@ -131,21 +131,19 @@ future Tier 3.
 
 ## 5. Support tiers
 
-The tiers are borrowed from Rust's model and adapted to the seam architecture of Fels.
+The tiers follow Rust's, adapted to how Fels keeps platform code behind the runtime seam.
 
-- **Tier 1 — guaranteed.** A first-class target that Fels commits to and gates releases on. The
-  language, codegen and runtime build and run, and the test suite passes in CI. The stdlib is
-  expected to be complete, and any remaining gap is a **release blocker**, not a reason to
-  demote the target. *Regressions block a release.*
-- **Tier 2 — supported.** The target builds and runs, and its stdlib is complete or nearly
-  complete. It is smoke-tested, but not every module runs in CI. *Best-effort fixes.*
-- **Tier 3 — experimental.** Codegen exists and may build, but the runtime and stdlib are
-  partial or unverified, and there are no guarantees. *Community / opportunistic.*
+- **Tier 1: tested.** The language, codegen and runtime build and run, and the test suite passes
+  in CI on every push. A gap in the stdlib is a bug to fix, and a failing test stops a release.
+- **Tier 2: works.** The target builds and runs, and its stdlib is complete or nearly so. It is
+  smoke-tested, but not every module runs in CI.
+- **Tier 3: experimental.** Codegen exists and may build, but the runtime and stdlib are partial
+  or untested.
 
 | Target | Tier | Notes |
 | --- | --- | --- |
 | `x86_64-windows-msvc` | **1** | original host target, full stdlib |
-| `x86_64-linux-none` (static) | **1** | first-class target that cross-compiles from Windows. Language, codegen and every `std` module work on it (see §6). By-value structs at C calls do not follow SysV yet (see §4) |
+| `x86_64-linux-none` (static) | **1** | Cross-compiles from Windows, and builds on Linux itself. Language, codegen and every `std` module work on it (see §6). By-value structs at C calls do not follow SysV yet (see §4) |
 | `x86_64-linux-gnu` (glibc) | **2** | implemented: `--target linux-gnu` + `--sysroot`. Our `_start` → `__libc_start_main`, links `libc.so.6` directly. Needs a sysroot with `libc.so.6` at link time |
 | `aarch64-linux` | **3** | not implemented yet, the compiler emits x86_64 only. Planned for Tier 2 once the aarch64 runtime + ABI arm exist |
 | `riscv64-linux`, `wasm32-wasi` | **3** | LLVM-ready, runtime/seam not yet written |
@@ -155,19 +153,19 @@ The tiers are borrowed from Rust's model and adapted to the seam architecture of
 
 | Module | Status | Seam needed on Linux |
 | --- | --- | --- |
-| `std.io` | ✅ ported | `write` (done) |
-| `std.heap` | ✅ ported | `mmap`/`mprotect`/`munmap` (done) |
-| `std.time` | ✅ ported | `clock_gettime`/`nanosleep` (done) |
-| `std.fs` | ✅ ported | `openat`/`read`/`write`/`close`/`lseek`/`newfstatat`/`unlink`/`getdents64` (done) |
-| `std.process` (all, incl. `set_env`) | ✅ ported | `getpid` + `/proc/self/{cmdline,environ}` + `fork`/`execve`(`/bin/sh -c`)/`wait4`/`kill`; `set_env`/`unset_env` via a runtime env overlay (done) |
-| `std.net` | ✅ ported | socket syscalls (41/42/43/44/45/48/49/50/51/54) + SOL_SOCKET option translation + `fcntl` (done) |
-| `std.thread` | ✅ ported | `clone` (allocated child stack, asm child-entry) + `wait4` join + `sched_getaffinity`/`sched_yield` (done) |
-| `std.sync` | ✅ ported | `futex` (syscall 202, shared `FUTEX_WAIT`/`FUTEX_WAKE`) under a three-state mutex and a sequence-number condition variable (done) |
+| `std.io` | ported | `write` (done) |
+| `std.heap` | ported | `mmap`/`mprotect`/`munmap` (done) |
+| `std.time` | ported | `clock_gettime`/`nanosleep` (done) |
+| `std.fs` | ported | `openat`/`read`/`write`/`close`/`lseek`/`newfstatat`/`unlink`/`getdents64` (done) |
+| `std.process` (all, incl. `set_env`) | ported | `getpid` + `/proc/self/{cmdline,environ}` + `fork`/`execve`(`/bin/sh -c`)/`wait4`/`kill`; `set_env`/`unset_env` via a runtime env overlay (done) |
+| `std.net` | ported | socket syscalls (41/42/43/44/45/48/49/50/51/54) + SOL_SOCKET option translation + `fcntl` (done) |
+| `std.thread` | ported | `clone` (allocated child stack, asm child-entry) + `wait4` join + `sched_getaffinity`/`sched_yield` (done) |
+| `std.sync` | ported | `futex` (syscall 202, shared `FUTEX_WAIT`/`FUTEX_WAKE`) under a three-state mutex and a sequence-number condition variable (done) |
 
 **Every `std` module runs on Linux, in full parity with Windows.** The static
 `x86_64-linux-none` target has a complete stdlib, so it is Tier 1 in full.
 
-> **Note — mutable globals + the env overlay.** `command_line`/`get_env` read
+> **Note: mutable globals and the env overlay.** `command_line`/`get_env` read
 > `/proc/self/{cmdline,environ}`, so no captured `argv`/`envp` pointer is needed.
 > `set_env`/`unset_env` were blocked at first, because Fels had no mutable top-level globals to
 > anchor a process-wide environ. That language feature has since been added (`name: T = init;`,

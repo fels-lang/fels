@@ -3,7 +3,7 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## 0.13.0 — 2026-10-20
+## 0.13.0 - 2026-10-20
 
 The syntax is settled: from this version on, what the syntax reference shows keeps its form and
 meaning. To get there, the last holes are closed (`[]const T` is read-only, two number types
@@ -252,11 +252,11 @@ writes the whole call, hover shows the documentation, and `fels run` runs a sing
   just "did not link". Now it says where it looked and how to give fels an `ld.lld`, and what
   `ld.lld` reports no longer lands on the lines of the progress tree.
 
-## 0.12.0 — 2026-10-19
+## 0.12.0 - 2026-10-19
 
 Programs built with `-O1` to `-O3` (and `fels build` of a single file, which is `-O2`) go
-through LLVM's optimiser now: they run as fast as the same C or Zig, where before they took
-1.5 to 3.5 times as long. The compiler runs on Linux, and the release has a Linux archive. And a
+through LLVM's optimiser now. Over the ten programs in `bench/` they take 1.07 times as long
+as the same C (geometric mean; Zig takes 1.13), where before they took 1.5 to 3.5 times as long. The compiler runs on Linux, and the release has a Linux archive. And a
 round of fixes for programs that compiled but ran wrong: `byte` layout, `for &x` over an array,
 sub-byte locals, structs passed to C on Linux, and escapes the zone and frame checks missed.
 
@@ -363,7 +363,7 @@ sub-byte locals, structs passed to C on Linux, and escapes the zone and frame ch
   new value. A copy of a global is the code's own to change; the write was refused as one to
   the global.
 
-## 0.11.0 — 2026-10-18
+## 0.11.0 - 2026-10-18
 
 Macros write code from a type's shape: `#for f in fields(T)` goes through a struct's fields, names
 are built from splices (`get_$(f.name)`), a quote of declarations adds functions among the
@@ -433,7 +433,7 @@ docs: printing with two method calls, generic struct names, lambda captures, err
   so; the build failed with no reason. An `#insert #run gen()` whose generator does not compile
   shows the generator's errors, not only "did not evaluate to an `AstBlock`".
 
-## 0.10.0 — 2026-10-18
+## 0.10.0 - 2026-10-18
 
 Text prints with its values: `io::println("{name} has {n} items")` shows any value by its type,
 and a type can say how it prints. Builds and tests are much faster (Strata builds in 3 s, not
@@ -494,7 +494,7 @@ their work and end with a summary.
 - On Linux and macOS every time read 0 (`-t` showed `0.00 ms` for every stage): the clock was
   only built for Windows.
 
-## 0.9.0 — 2026-10-17
+## 0.9.0 - 2026-10-17
 
 Errors are values, and more of what a program means has a spelling: a `catch` gives a value, and
 an error is compared, matched, kept, built and raised again anywhere; the runtime checks stay in
@@ -639,7 +639,7 @@ now work or are errors.
 - **An interface implemented on an alias** (`P as Show { … }` for `P :: Point;`) was registered
   for the name `P`, so `Point` did not implement it. It is an error that names the type.
 
-## 0.8.0 — 2026-10-17
+## 0.8.0 - 2026-10-17
 
 Less to write and fewer surprises: a local from a literal takes the type its uses ask for, so
 `0i64` and `0usize` are rarely needed, and the standard library reads that way too; and two
@@ -686,7 +686,7 @@ programs.
   a word and its calls after that point went nowhere (Strata died at start). It reads the real
   count now.
 
-## 0.7.0 — 2026-10-11
+## 0.7.0 - 2026-10-11
 
 What a desktop program needed (Strata, a portfolio program written in Fels): JSON and CSV
 readers, calendar dates, `exp`/`ln`/`pow`, folders, the program's arguments, and file paths
@@ -785,7 +785,7 @@ different modules and a negative float literal in an `f32`.
   compile, and failed on the comptime VM. Both null is equal, one null is not, both set
   compares the values.
 
-## 0.6.1 — 2026-10-11
+## 0.6.1 - 2026-10-11
 
 Fixes: `fels test` works on a project with files that have no tests, and a
 "did you mean" hint no longer offers the name that was not found.
@@ -801,7 +801,7 @@ Fixes: `fels test` works on a project with files that have no tests, and a
 - **`fels new --license Apache-2.0` wrote the LICENSE with Windows line ends**; it has LF like
   the other files now.
 
-## 0.6.0 — 2026-10-11
+## 0.6.0 - 2026-10-11
 
 `fels test` runs the tests of a project as programs, so they can read files and call C, and
 `fels new` starts a project from a template.
@@ -831,7 +831,7 @@ Fixes: `fels test` works on a project with files that have no tests, and a
 
 - **A denied or failed compile-time FFI call leaked its message.**
 
-## 0.5.0 — 2026-10-11
+## 0.5.0 - 2026-10-11
 
 The editor knows the packages, the package manager gets its remaining commands, and the build
 system gets test steps, targets and up-to-date builds.
@@ -864,7 +864,7 @@ system gets test steps, targets and up-to-date builds.
 - **An error in an imported file was shown at 1:1** with an empty line; it shows the file's own
   line now.
 
-## 0.4.0 — 2026-10-10
+## 0.4.0 - 2026-10-10
 
 **Gabbro is now called Fels.** The compiler is `fels.exe`, source files end in `.fels`, the
 build script is `build.fels`, the environment variables are `FELS_*` (`FELS_HOME`, `FELS_STD`,
@@ -914,7 +914,7 @@ Fels gets a package manager, and the build system gets most of its API.
   7 bytes instead of 5, and a string a `#run` computed kept its backslashes. `s == "a\n"` also
   compared against the backslash and the `n`.
 
-## 0.3.1 — 2026-10-10
+## 0.3.1 - 2026-10-10
 
 Fixes for programs that compiled without a message and gave a wrong result: integer literals of
 types other than `i32`, `p == .green` on an enum, and arrays sized by a `#run` constant.
@@ -957,7 +957,7 @@ workflow on GitHub.
   dropped the fourth element without a word; it is now an error that names the array type
   (messages about an array type used to print it as `T`). A shorter literal is still zero filled.
 
-## 0.3.0 — 2026-10-10
+## 0.3.0 - 2026-10-10
 
 Editor support and a stricter rule for integer literals.
 
@@ -1081,7 +1081,7 @@ Editor support and a stricter rule for integer literals.
   The runtime's panic exit code and `std.net`'s `INVALID_SOCKET` got the suffixes they needed, and
   messages no longer call `byte` and `addr` `T`.
 
-## 0.2.2 — 2026-10-10
+## 0.2.2 - 2026-10-10
 
 A release for editor support and five fixes. `gabbro lsp` now understands imports, so the language
 server in Zed and other editors no longer reports errors on files that import `std` or other
@@ -1121,7 +1121,7 @@ modules. The tree-sitter grammar and a Zed extension live in their own repositor
   register; a variable argument worked. The call now takes each argument's type from the
   interface method's signature, as a call through a `fn` pointer does. Broken in 0.2.1.
 
-## 0.2.1 — 2026-10-10
+## 0.2.1 - 2026-10-10
 
 ### Fixed
 
@@ -1130,7 +1130,7 @@ modules. The tree-sitter grammar and a Zed extension live in their own repositor
   (exit code 0xC000001D) on any CPU without it, for example on some GitHub Actions runners. The release
   is now built for the baseline x86-64-v2 CPU. If you downloaded 0.2.0 and it does not start, replace it.
 
-## 0.2.0 — 2026-10-10
+## 0.2.0 - 2026-10-10
 
 A feature release. It adds what a real Windows program needs: aggregate data in the image,
 compile-time tables, a thread/lock/COM standard library, and layout queries; and it fixes
@@ -1142,7 +1142,7 @@ several miscompilations found while building one (`?` skipping `defer`, arrays o
 - **Static aggregates.** A top-level global can now hold a struct, an array, a function
   pointer, the address of another global, `null`, a string or a payload-less enum
   variant, nested to any depth: `VT: Vtbl = .{ add, 7u32 };`, `A: Node = .{ 1, &B };`.
-  The initializer is data in the image — laid out by the compiler, placed by the linker —
+  The initializer is data in the image, laid out by the compiler and placed by the linker,
   and nothing runs at startup. A literal reads exactly as it does for a local; a mistake
   (a value that does not fit, an unknown or duplicate field, a missing field, a lambda or
   generic function, a pointer to a non-global) is a compile error pointing at the value.
@@ -1152,7 +1152,7 @@ several miscompilations found while building one (`?` skipping `defer`, arrays o
   saying "ok" and leaving the mistake for the build. A value that needs the compile-time
   evaluator (a `#run`) is still checked at build time.
 - **A `#run` can return a whole table, struct, enum value, function pointer or string**, and it
-  becomes the global's initial value — data in the image, laid out like a literal, nothing run at
+  becomes the global's initial value: data in the image, laid out like a literal, nothing run at
   startup: `CRC: [256]u32 = #run make_crc_table();`, `SQUARES :: #run make_squares();` (an
   untyped constant takes the type of the call), `W: Wrap = .{ #run origin(), #run primes(), 5 }`.
   Before, only a number could ("a `#run` constant must evaluate to a scalar value"). A result
@@ -1171,16 +1171,16 @@ several miscompilations found while building one (`?` skipping `defer`, arrays o
   loaded from Python. On Linux the global gets a global symbol of that name.
 - **Calling through a function-pointer expression:** `HANDLERS[i](x)`, `make()(x)`,
   `(addr as extern fn(i32) -> i32)(x)`. A global function pointer is callable by name,
-  and a call through any function pointer — local, global, field or element — now checks
+  and a call through any function pointer (local, global, field or element) now checks
   its argument count and types. Before, `table[0](21)` type-checked as `unknown` and
   returned 16 instead of 42, and `f(1, 2)` on a one-parameter pointer compiled.
-- **`core::offset_of(T, "field")`, `core::align_of(T)` and `#assert(cond, "message")`** —
+- **`core::offset_of(T, "field")`, `core::align_of(T)` and `#assert(cond, "message")`**:
   layout queries and compile-time assertions. The answers were compared with clang for
   `x86_64-pc-windows-msvc`. See [`docs/11`](docs/11_c_interop.md#checking-a-layout).
-- **`std.bytes`** — fixed-width little- and big-endian reads and writes at an explicit
+- **`std.bytes`**: fixed-width little- and big-endian reads and writes at an explicit
   offset in a byte slice; an out-of-range access fails with `out_of_bounds` and touches
   nothing.
-- **`std.com` and `std.winrt`** — COM and Windows Runtime primitives. `std.com` is the data,
+- **`std.com` and `std.winrt`**: COM and Windows Runtime primitives. `std.com` is the data,
   portable to every target: `Guid` (text form, parser, `eq`), `HRESULT` helpers and `check`,
   which turns a failure into a named error; `IUnknown`, `IInspectable` and
   `IActivationFactory` with their vtables; `RefCount` for objects you write. `std.winrt` is the
@@ -1191,12 +1191,12 @@ several miscompilations found while building one (`?` skipping `defer`, arrays o
   through a hand-declared vtable, a COM object written in Gabbro that the OS calls back, and
   `Windows.Foundation.Uri` activated and read. A DLL name `combase` links through the SDK's
   `runtimeobject.lib` (the SDK has no `combase.lib`).
-- **`std.sync`** — `Mutex`, `CondVar` (`wait`, `wait_timeout`, `signal`, `broadcast`) and a
+- **`std.sync`**: `Mutex`, `CondVar` (`wait`, `wait_timeout`, `signal`, `broadcast`) and a
   bounded blocking `Queue(T)` with `close()`. They sit on the operating system's own
-  primitives — `SRWLOCK` and `CONDITION_VARIABLE` on Windows, `futex(2)` on Linux — so a
+  primitives (`SRWLOCK` and `CONDITION_VARIABLE` on Windows, `futex(2)` on Linux), so a
   blocked thread sleeps instead of polling; each is one word in your own struct, all zero
   bits is the unlocked state, and there is nothing to allocate or destroy.
-- **`std.utf16`** — UTF-8 ⇄ UTF-16 with surrogate pairs and strict validation; a malformed
+- **`std.utf16`**: UTF-8 ⇄ UTF-16 with surrogate pairs and strict validation; a malformed
   input is an error, never silently replaced. Sizes are computed first, buffers are the
   caller's.
 
@@ -1216,7 +1216,7 @@ several miscompilations found while building one (`?` skipping `defer`, arrays o
 - **A local array of `fn` values crashed the code generator.** `c: [2]fn(i32) -> i32 = .{ dbl, neg };`
   stored bare function pointers into slots that are 16-byte `{ fn, env }` closures, and LLVM
   segfaulted emitting the object, at `-O0` and `-O2` and in 0.1.1. The thin pointer a `fn`
-  struct field holds was applied to array elements too — which is also why a lambda or a
+  struct field holds was applied to array elements too, which is also why a lambda or a
   local as an element was refused as "a C callback argument". An element is now an ordinary
   function value, so `c[i](x)` calls it and `f := c[i]` copies it out. A `fn` struct field
   and an `extern fn` element are still thin pointers.
@@ -1224,7 +1224,7 @@ several miscompilations found while building one (`?` skipping `defer`, arrays o
   computes in 128 bits and kept what a narrower type would have lost, so `0xFFFFFFFFu32 +% 1`
   was `4294967296`, `300u32 as u8` was `300`, and a xorshift generator or an FNV hash run in a
   `#run` fed the lost high bits back through the next `>>` and produced a different number than
-  the program computes — [`docs/02`](docs/02_types.md#overflow-policy) said they behave
+  the program computes, while [`docs/02`](docs/02_types.md#overflow-policy) said they behave
   identically at compile time. `+%`, `-%`, `*%`, `<<`, `~` and `as` now wrap to the operand type's width and
   signedness; 550 casts between all ten integer types and 50 wrapping operations were compared
   with the machine's results. A plain `+ - *` that overflows still keeps the exact result.
@@ -1244,7 +1244,7 @@ several miscompilations found while building one (`?` skipping `defer`, arrays o
   behaves the same.
 - **A `catch` handler that ran to its end ran off into other code.** It was lowered as
   `unreachable`, which happened to continue after the `catch` at `-O0` and, once optimised,
-  fell through into whatever followed: `f() catch e {};` — the usual way to ignore an error —
+  fell through into whatever followed: `f() catch e {};`, the usual way to ignore an error,
   crashed at `-O2` as soon as `f` failed. A handler that ends now continues after the `catch`.
   Because a handler produces no value, a `catch` whose value is used (`v := f() catch e { … }`)
   must end its handler with `return`, `fail`, `break` or `continue`, and is an error otherwise;
@@ -1256,13 +1256,13 @@ several miscompilations found while building one (`?` skipping `defer`, arrays o
   `ptr_from_int(5usize, …)` is one: the builtins that take a type as their first argument now
   say what they expected.
 - **Reading an array field of a struct in a loop overflowed the stack.** `b.order[i]` copied the
-  whole array into a fresh stack slot on every pass — a dynamic allocation nothing released —
+  whole array into a fresh stack slot on every pass, a dynamic allocation nothing released,
   so a loop over a 4000-byte field crashed after about 250 iterations (`STATUS_STACK_OVERFLOW`).
   It also affected the address of a slice or fallible field read from a value. The scratch
   slots now live in the function's entry block and are reused.
 - **gabld produced DLLs that broke when not loaded at their preferred address.** gabld
   writes no base-relocation table, so an absolute address in a DLL's data (a vtable, now
-  a static table of pointers) kept pointing into the first image loaded at that address —
+  a static table of pointers) kept pointing into the first image loaded at that address,
   and every gabld DLL asks for the same one. gabld now hands such a DLL to LLD, which
   writes the table; a DLL with no absolute address is still linked by gabld. A bare
   `#export` on a function is now in gabld's export table as well.
@@ -1272,8 +1272,8 @@ several miscompilations found while building one (`?` skipping `defer`, arrays o
   function's own error set) and `Enum.variant` typos are an error. The comptime VM numbers
   errors the same way.
 - **A program could not bind a Win32 function the runtime also declares.** Declaring
-  `#extern("kernel32", "CloseHandle")` under that name — or a `STD_OUTPUT_HANDLE`
-  constant, or the same API in two modules — failed with `duplicate top-level
+  `#extern("kernel32", "CloseHandle")` under that name (or a `STD_OUTPUT_HANDLE`
+  constant, or the same API in two modules) failed with `duplicate top-level
   declaration` for something the program never wrote. It broke both `examples/diskscan`
   executables. A program's own declarations now shadow the runtime's inside its own
   file. Bindings of one C symbol also keep their own signatures: LLVM holds one function
@@ -1287,8 +1287,8 @@ several miscompilations found while building one (`?` skipping `defer`, arrays o
   a struct) misread it, and a bare literal default such as `.{ 9, 9 }` was lowered with
   no type.
 - **`#align(N)` only aligned the variable holding the struct.** Its size stayed natural
-  and a struct field of that type was not moved, so `#align(8)` over `[8]u8` — what
-  `gabbro bindgen` emits for a C union — sat at offset 4 inside its parent, not 8. It is
+  and a struct field of that type was not moved, so `#align(8)` over `[8]u8` (what
+  `gabbro bindgen` emits for a C union) sat at offset 4 inside its parent, not 8. It is
   now `alignas(N)`: the struct is aligned and its size rounded up wherever it appears,
   including generic structs and `#packed` structs. `N` must be a power of two.
 - **Comptime `core::sizeof` ignored padding.** The VM summed field sizes, so
@@ -1337,7 +1337,7 @@ several miscompilations found while building one (`?` skipping `defer`, arrays o
   `take :: fn(p: *Node)`, compiled and passed a null pointer; it is now an error that says
   `Node` is a type, so `*Node` is a pointer type and not a value.
 
-## 0.1.1 — 2026-09-08
+## 0.1.1 - 2026-09-08
 
 A bug-fix release. **If you have 0.1.0, replace it:** its build system does not work
 outside the machine that built it.
@@ -1354,13 +1354,13 @@ outside the machine that built it.
 
 ### Added
 
-- `examples/mandel` — a Mandelbrot set drawn entirely by the comptime VM. `render`
+- `examples/mandel`: a Mandelbrot set drawn entirely by the comptime VM. `render`
   runs at compile time and returns Gabbro source, which `#insert #parse` splices into
   `main`; raising the resolution slows the build and leaves the run flat.
-- `examples/raycaster` — a twelve-line text map walked in 3D in the terminal at
+- `examples/raycaster`: a twelve-line text map walked in 3D in the terminal at
   roughly 22 fps.
 
-## 0.1.0 — 2026-09-08
+## 0.1.0 - 2026-09-08
 
 First tagged release. Gabbro compiles end-to-end on two targets, ships a standard
 library and its own linker, and installs by unzipping.
@@ -1398,8 +1398,8 @@ repository, `skarn-lang/skarn`, is superseded by `gabbro-lang/gabbro`.
   `std.serde` with no per-type code.
 - A bare `#run` is capability-pure: it cannot call host DLLs at compile time, which
   closes the comptime side of the `build.rs` supply-chain surface. The grant is
-  per-library rather than all-or-nothing — a run holds `.none`, an allowlist of
-  libraries, or `.all` — and capabilities handed to a nested run can only narrow,
+  per-library rather than all-or-nothing (a run holds `.none`, an allowlist of
+  libraries, or `.all`), and capabilities handed to a nested run can only narrow,
   failing closed when two allowlists are disjoint. The comptime heap's page
   primitives stay available to a pure run, so allocation still works.
 - Content-addressed caching for pure `#run` results, behind `GABBRO_CACHE`.
@@ -1417,10 +1417,10 @@ repository, `skarn-lang/skarn`, is superseded by `gabbro-lang/gabbro`.
 
 ### Targets
 
-- `x86_64-windows-msvc` — the original host target, full standard library.
-- `x86_64-linux-none` (static) — cross-compiles from Windows, no libc, no crt1.o.
+- `x86_64-windows-msvc`: the original host target, full standard library.
+- `x86_64-linux-none` (static): cross-compiles from Windows, no libc, no crt1.o.
   Full standard library parity with Windows.
-- `x86_64-linux-gnu` — behind `--target linux-gnu` with a `--sysroot`.
+- `x86_64-linux-gnu`: behind `--target linux-gnu` with a `--sysroot`.
 - No macOS backend.
 
 ### Standard library

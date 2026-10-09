@@ -49,7 +49,7 @@ in-process. `link.zig` spawns `lld-link.exe` from the LLVM `bin` folder only whe
 cannot be loaded or lacks its `fels_lld_link_coff` export. When the in-process link runs and
 fails, that error is reported, and there is no second try with the exe.
 
-## felsld — the native linker
+## felsld, the native linker
 
 `felsld.dll` is a PE/COFF linker written in Fels (`linker/felsld.fels`). It is the default for
 the programs it can handle, and LLD links the rest.
@@ -116,7 +116,7 @@ right next to `fels.exe`. The compiler looks for it there when it links for `--t
 
 When none has it, the build names the folders it looked in and the ways to give it one.
 
-## Packaging — `scripts/package.ps1`
+## Packaging: `scripts/package.ps1`
 
 The script makes a ReleaseSafe build with `-Din-process-lld` and writes these into `dist/`:
 

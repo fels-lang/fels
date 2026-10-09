@@ -13,20 +13,20 @@ library starts with `std.`, and a path into a package starts with the package's 
 [Packages](16_packages.md)). You can import in four forms:
 
 ```fels
-// 1. Namespace import — bind the module under its last path segment.
+// 1. Namespace import: bind the module under its last path segment.
 //    Members are reached with `::`; the module's names are NOT pulled into scope.
 #import std.io;
 ... io::println("hi");   io::Writer ...
 
-// 2. Aliased namespace — choose the namespace name yourself.
+// 2. Aliased namespace: choose the namespace name yourself.
 #import std.io as term;
 ... term::println("hi");
 
-// 3. Selective — bring just the listed names in unqualified.
+// 3. Selective: bring just the listed names in unqualified.
 #import std.io.{ Writer, println };
 ... println("hi");
 
-// 4. Glob — bring every public name in unqualified.
+// 4. Glob: bring every public name in unqualified.
 #import std.io.*;
 ... println("hi");
 

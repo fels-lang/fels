@@ -49,6 +49,6 @@ jobs:
             ${{ steps.pkg.outputs.bindgen_archive }}
             ${{ steps.pkg.outputs.linux_cross_archive }}
           body: |
-            Automated build from the latest `main` — version `${{ steps.pkg.outputs.version }}`.
+            Automated build from the latest `main`, version `${{ steps.pkg.outputs.version }}`.
             Download `${{ steps.pkg.outputs.archive_name }}`, extract, and run `bin/fels`
             (the standard library + linker travel with it). Refreshed on every push.

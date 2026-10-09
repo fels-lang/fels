@@ -156,7 +156,7 @@ function that you can pass directly to a higher-order function or store in a var
 return type is optional and defaults to `void`.
 
 ```fels
-// As an argument — no need to declare a named predicate.
+// As an argument: no need to declare a named predicate.
 n := slice::count_where(i32, xs, fn(x: i32) -> bool { return x < 0; });
 
 // Stored in a local, then called.
@@ -232,7 +232,7 @@ values into a small environment when it is created.
 
   zone z: Arena {
       add5 := make_adder(&z, 5);
-      r := add5(10); // 15 — `add5` outlives `make_adder`, valid for the zone
+      r := add5(10); // 15: `add5` outlives `make_adder`, valid for the zone
   }
   ```
 
@@ -584,7 +584,7 @@ match value {
     else => return 0;
 }
 
-// Match as an expression — each arm yields a value, the whole match is that value
+// Match as an expression: each arm yields a value, the whole match is that value
 sign := match n {
     .neg  => -1,
     .zero => 0,

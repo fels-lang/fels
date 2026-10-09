@@ -140,7 +140,7 @@ When you *want* wraparound in every build, for hashing, PRNGs, checksums or fixe
 counters, use the explicit wrapping operators `+%`, `-%` and `*%`. They never trap:
 
 ```fels
-a := 250u8 +% 10u8;   // 4   — wraps at 256, never traps
+a := 250u8 +% 10u8;   // 4, wraps at 256, never traps
 h := h *% 16777619u32; // FNV-style hash step
 
 fnv1a :: fn(s: []const u8) -> u32 {
@@ -235,7 +235,7 @@ Point :: struct {
 #### Construction
 
 ```fels
-// Named-field literal — order doesn't matter
+// Named-field literal: order doesn't matter
 p: Point = .{ .x = 10, .y = 20 };
 
 // Positional compound literal (fields filled in declaration order)
@@ -402,10 +402,10 @@ out `$T` again:
 Vec2 :: struct {
     x: i32, y: i32
 
-    // Associated function (no receiver) — called `Vec2::new(...)`:
+    // Associated function (no receiver), called `Vec2::new(...)`:
     new :: fn(a: i32, b: i32) -> Self { return .{ a, b }; }
 
-    // Methods (receiver `self: *Self`) — called `v.method(...)` via UFCS:
+    // Methods (receiver `self: *Self`), called `v.method(...)` via UFCS:
     dot  :: fn(self: *Self, o: *Self) -> i32 { return self.x * o.x + self.y * o.y; }
     len2 :: fn(self: *Self) -> i32 { return self.dot(self); }
 }
@@ -724,10 +724,10 @@ comparison checks the length first and then the bytes, so it never reads past ei
 a: []const u8 = "abc";
 b: []const u8 = "abc";
 
-a == b        // true  — same contents
-a == "abc"    // true  — either side may be a literal
+a == b        // true, same contents
+a == "abc"    // true, either side may be a literal
 a != "abd"    // true
-"ab" == "abc" // false — different length
+"ab" == "abc" // false, different length
 ```
 
 This is the same byte-wise lowering that `match` string patterns use. It runs in the
@@ -794,7 +794,7 @@ none: ?i32 = null;
 `!!` extracts the value and **panics at runtime** if the optional is `null`:
 
 ```fels
-val := maybe!!;    // 42 — or panic if null
+val := maybe!!;    // 42, or a panic if null
 ```
 
 #### Nil Coalesce (`??`)
@@ -912,7 +912,7 @@ Pair    :: struct($T: type) { a: T, b: T }
 IntPair :: Pair(i32);   // an alias of a generic type's instance
 
 LIMIT :: 8;
-MAX   :: LIMIT;         // names a constant, so a constant — not an alias
+MAX   :: LIMIT;         // names a constant, so a constant, not an alias
 ```
 
 You can use an alias wherever its type can be written: in annotations, parameters, returns,
@@ -941,7 +941,7 @@ Foo :: opaque;
 ```
 
 ```fels
-// Only *Foo is usable — you cannot create or inspect a Foo value directly
+// Only *Foo is usable: you cannot create or inspect a Foo value directly
 get_handle :: fn() -> *Foo { /* ... */ }
 use_handle :: fn(h: *Foo) -> void { /* ... */ }
 ```

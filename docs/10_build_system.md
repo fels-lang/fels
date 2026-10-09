@@ -29,22 +29,22 @@ When you run `fels build` without a file argument, it finds `./build.fels` and *
 `build(b)` inside the comptime VM**. That is the same engine behind `#run` and `#compiler`.
 There is no separate "build binary": the build script never touches the disk to compile
 itself, because it executes as compile-time Fels. While it runs, each builder method records
-its call in the compiler's build plan through a `__build_*` intrinsic (see section 9). After
+its call in the compiler's build plan through a `__build_*` intrinsic (see section 8). After
 `build(b)` returns, the compiler executes that plan.
 
-This is Jai's model (`#run build()`) without the boilerplate. If you come from Jai,
+The idea comes from Jai, where the build is a program that runs at compile time.
 `#run build();` is also accepted, but the idiom in Fels is a bare `fels build`.
 
 **Four layers:**
 
 | Layer | Audience | Surface |
 | --- | --- | --- |
-| **0 — default** | `fels build main.fels` | No `build.fels`, CLI flags become options. (Exists today.) |
-| **1 — declarative builder** | 90% of projects | `Build`/`Artifact`/`Step` + methods. Pure data. |
-| **2 — workspaces & options** | power users | Jai-parity `Workspace`, full `Options` struct, `add_file`/`add_source`/`add_quote`. |
-| **3 — compiler intercept** | tooling, codegen | the message loop: `wait_message`, typed `Message`, `set_status`. |
+| **0: default** | `fels build main.fels` | No `build.fels`, CLI flags become options. (Exists today.) |
+| **1: declarative builder** | 90% of projects | `Build`/`Artifact`/`Step` + methods. Pure data. |
+| **2: workspaces and options** | power users | `Workspace`, full `Options` struct, `add_file`/`add_source`/`add_quote`. |
+| **3: compiler intercept** | tooling, codegen | the message loop: `wait_message`, typed `Message`, `set_status`. |
 
-## 2. Layer 1 — the declarative builder
+## 2. Layer 1: the declarative builder
 
 Layer 1 is the everyday API. It is a set of methods on `Build` and `Artifact` (UFCS) that
 only populate data, while the compiler performs the effects. That split is what makes the
@@ -120,12 +120,12 @@ Two more enums are planned, for `use_backend` and the Layer 2 `Options`: `Backen
 | `b.default(artifact)` | the default target |
 | `b.option(key) -> bool` · `b.option_str(key, default) -> []const u8` | read a `-Dkey` / `-Dkey=value` CLI override |
 
-## 3. Layer 2 — workspaces & build options (Jai parity)
+## 3. Layer 2: workspaces and build options
 
-A workspace is an isolated compilation environment, as in Jai. Layer 1 makes one for each
+A workspace is an isolated compilation environment. Layer 1 makes one for each
 artifact, and in Layer 2 you drive them yourself.
 
-> Planned: Layer 2 is not built yet (see the plan in section 9). Today
+> Planned: Layer 2 is not built yet (see the plan in section 8). Today
 > `b.workspace(name)` only names the build. A `#quote { … }` holds statements, so quoting
 > a top-level declaration such as `build_id :: 0xC0FFEE;` is part of this plan too.
 
@@ -147,12 +147,12 @@ build :: fn(b: Build) {
     w.add_file("main.fels");
     // add generated code as text …
     w.add_source("VERSION :: 3;");
-    // … or as TYPED AST (validated at the generation site — better than a string)
+    // … or as typed AST, checked where it is made
     w.add_quote(#quote { build_id :: 0xC0FFEE; });
 }
 ```
 
-### `Options` — the full knob set (Jai's `Build_Options`, modernized)
+### `Options`: every setting of a compile
 
 ```fels
 pub Options :: struct {
@@ -162,7 +162,7 @@ pub Options :: struct {
     backend:         Backend,      // llvm | native
     optimize:        Optimize,
 
-    // safety checks (debug on; release off)  — values: off | on | always/fatal
+    // safety checks (debug on, release off); values: off | on | always/fatal
     bounds_check:    Check,
     cast_check:      Check,
     null_check:      Check,
@@ -182,7 +182,7 @@ pub Options :: struct {
 
     // hermetic / reproducible
     frozen:          bool,         // fail if the lockfile would change
-    text_output:     bool,         // compiler chatter (Jai's text_output_flags)
+    text_output:     bool,         // what the compiler prints
 }
 
 pub Check    :: enum { off, on, always }
@@ -190,16 +190,16 @@ pub DeadCode :: enum { none, used, all }
 ```
 
 `set_optimization(o, .release_fast)` is sugar that flips the whole safety and codegen block
-at once, like Jai's `set_optimization`.
+at once.
 
-## 4. Layer 3 — the compiler intercept (message loop)
+## 4. Layer 3: the compiler intercept (message loop)
 
-This is the Jai message loop, built on Fels's `#compiler` hook and `core::compiler_decls()`,
+This is a message loop built on Fels's `#compiler` hook and `core::compiler_decls()`,
 which are already implemented. You register interest in a workspace and then pull typed
 messages as each phase finishes a unit. That lets you **inspect or alter the program** before
 it lowers.
 
-> Planned: the Layer 3 surface below is not built yet (see the plan in section 9).
+> Planned: the Layer 3 surface below is not built yet (see the plan in section 8).
 
 ```fels
 build :: fn(b: Build) {
@@ -234,7 +234,7 @@ pub MessageKind :: enum { file_parsed, typechecked, phase, complete, error }
 pub Message :: struct {
     kind:      MessageKind,
     workspace: u32,
-    // typechecked payload (Jai gives you syntax trees + types here; Fels too):
+    // the type-checked payload:
     decl_name: []const u8,
     decl_kind: []const u8,   // "fn" | "struct" | ...  (from core::compiler_decls())
     // …typed AST handle + type_info handle (Layer-3 extensions)
@@ -249,36 +249,33 @@ typed-AST and type-info handles.
 
 > Planned: this section is design. Three parts of it are built so far: the gating of
 > comptime FFI, the ordering and up-to-date check described in 5.2, and the target loop of
-> 5.4 (see the plan in section 9). `*Caps`, `#provided`, `add_quote`, `--watch` and
+> 5.4 (see the plan in section 8). `*Caps`, `#provided`, `add_quote`, `--watch` and
 > `b.codegen` do not exist yet.
 
-### 5.1 Capability-sandboxed dependency builds — the supply-chain fix
-In Jai, the build is arbitrary code with full access to the host, and the same is true of
-`build.rs`. **Fels hands every build hook a capability set.** A dependency's `build.fels`
+### 5.1 Dependency builds in a capability sandbox
+A build script usually runs with full access to the host. **Fels hands every build hook a
+capability set.** A dependency's `build.fels`
 receives a `*Caps` that it cannot forge or widen:
 
 ```fels
-// vendor/raylib/build.fels  — runs sandboxed
+// vendor/raylib/build.fels: runs sandboxed
 build :: fn(b: Build, caps: *Caps) {
     lib := b.static("raylib", "src/raylib.fels");
     lib.optimize(.release_fast);
 
-    caps.read_dir(".");          // ALLOWED — granted its own folder
-    // caps.shell("curl ...");   // DENIED at the VM — no ambient OS authority
+    caps.read_dir(".");          // allowed: it was granted its own folder
+    // caps.shell("curl ...");   // denied by the VM: it was not granted the shell
     b.default(lib);
 }
 ```
 
 The root build grants capabilities explicitly, as in
 `b.require_path("raylib", "vendor/raylib").allow(.read_self)`. A dependency that never
-received `shell`, `net` or `write` *physically cannot* reach them. The VM's capability table
-enforces this, so it does not rest on policy. This is the structural answer to the
-build-script supply-chain hole.
+received `shell`, `net` or `write` cannot reach them: the VM's capability table enforces it.
 
 ### 5.2 Content-hashed, parallel build graph
 Steps and artifacts form a DAG. Each step declares its inputs and outputs and is
 **content-hashed**, so unchanged steps are skipped and independent steps run in parallel.
-Jai's build is largely linear, while the one in Fels is incremental by construction.
 `fels build --explain` prints the graph and tells you why each step ran or was cached.
 
 What is built today is smaller. Steps and artifacts run in the order of their edges, and a
@@ -326,7 +323,7 @@ Each artifact needs its own name, because its up-to-date stamp is kept under tha
 ### 5.6 Bindings generation, on typed AST
 A `b.codegen` step can read C/C++ headers, or introspect Fels natively through
 `core::compiler_decls()` and `core::type_info`. From either it emits **typed AST** bindings
-into a workspace, which makes it the safer, faster cousin of Jai's `generate_bindings`.
+into a workspace.
 
 ## 6. CLI surface
 
@@ -350,8 +347,7 @@ fels build <file.fels>        direct single-file build (back-compat, today's beh
 fels run <file.fels> [-- args]  build one file into .fels-cache/run and run it
 ```
 
-The path without a `build.fels` is the built-in default metaprogram, as in Jai
-(`-- meta Build`) with its Default_Metaprogram. All it does is turn flags into `Options`.
+The path without a `build.fels` is the built-in default build: it turns flags into `Options`.
 
 ## 7. Source locations
 
@@ -366,59 +362,41 @@ you write them (see [Builtins](08_attributes_builtins.md#source-location--target
 | `core::line` | the line it is written on |
 | `core::column` | the column |
 
-Compared with Jai, three things are not there yet: the folder of the file (`#filepath`), the
+Three things are not there yet: the folder of the file (`#filepath`), the
 location of a piece of code (`#location(x)`), and the caller's location as a default argument
 (`#caller_location`).
 
-## 8. Jai → Fels mapping (and the extensions)
-
-| Jai | Fels |
-| --- | --- |
-| `build.jai` / `first.jai`, `#run build()` | `build.fels`, bare `fels build` (or `#run build()`) |
-| module `Compiler`, `#compiler` proc | `std.build`, `#compiler` hook (built) |
-| `compiler_create_workspace()` | `b.workspace(name)` |
-| `get_build_options` / `set_build_options` | `w.options()` / `w.set_options(o)` |
-| `set_optimization(*o, .OPTIMIZED)` | `set_optimization(o, .release_fast)` |
-| `add_build_file` / `add_build_string` | `w.add_file` / `w.add_source` **+ `w.add_quote` (typed)** |
-| `#placeholder` | `#provided` (typed) |
-| `compiler_begin_intercept` / `wait_for_message` / `end_intercept` | `w.intercept()` / `w.wait_message()` / `w.end_intercept()` |
-| `compiler_set_workspace_status(.FAILED)` | `w.set_status(.failed)` |
-| `set_build_options_dc(.{do_output=false})` | implicit: the build script never self-compiles to an exe |
-| Default_Metaprogram | `fels build` with no `build.fels` |
-| `generate_bindings` | `b.codegen` step emitting typed AST |
-| — | **capabilities/sandbox, content-hashed parallel graph, `--watch`, target matrix, hermetic/`--frozen`** |
-
-## 9. Implementation plan
+## 8. Implementation plan
 
 Here is what the build system needs, set against what already exists:
 
 | Piece | Status |
 | --- | --- |
-| Comptime VM that runs IR | ✅ done |
-| `#compiler` hook + `core::compiler_decls()` (program introspection) | ✅ done |
-| Driver `compileFileWithLlvm` (exe/dll/obj) + `felsld` linker | ✅ done |
-| **`fels build` dir-mode**: find `build.fels`, run `build(b)` in the VM | ✅ done |
-| **Config capture**: `host_call` opcode → `__build_*` intrinsics → host `BuildPlan` | ✅ done |
-| **Plan executor**: per-artifact `compileFileWithLlvm`, wired outputs/libs/opt | ✅ done |
-| Layer 1 surface: `executable`/`shared`/`static`/`object`, `link`/`lib_path`/`output`/`optimize`/`define`, `require_*`/`depend`, `run_step`/`test_dir`/`default` | ✅ done |
-| CLI: `fels build` / `run` / `<name>` / `--list` / `--release` / `-q` | ✅ done |
-| `test_dir` step execution | ✅ done |
-| Build order: steps and artifacts run in the order of their edges (`after`, `depends_on`, `link_artifact`), with cycle detection | ✅ done |
-| Incremental builds: an input stamp per artifact (settings key + a hash of every file it read), "up to date", `--rebuild` | ✅ done |
+| Comptime VM that runs IR | done |
+| `#compiler` hook + `core::compiler_decls()` (program introspection) | done |
+| Driver `compileFileWithLlvm` (exe/dll/obj) + `felsld` linker | done |
+| **`fels build` dir-mode**: find `build.fels`, run `build(b)` in the VM | done |
+| **Config capture**: `host_call` opcode → `__build_*` intrinsics → host `BuildPlan` | done |
+| **Plan executor**: per-artifact `compileFileWithLlvm`, wired outputs/libs/opt | done |
+| Layer 1 surface: `executable`/`shared`/`static`/`object`, `link`/`lib_path`/`output`/`optimize`/`define`, `require_*`/`depend`, `run_step`/`test_dir`/`default` | done |
+| CLI: `fels build` / `run` / `<name>` / `--list` / `--release` / `-q` | done |
+| `test_dir` step execution | done |
+| Build order: steps and artifacts run in the order of their edges (`after`, `depends_on`, `link_artifact`), with cycle detection | done |
+| Incremental builds: an input stamp per artifact (settings key + a hash of every file it read), "up to date", `--rebuild` | done |
 | Parallel builds, `--explain`, `--watch` | later |
 | `e.depend(dep)` edges (accepted, but ignored for now) | later |
 | Capabilities / `*Caps` sandbox + VM capability table | ⏳ slices 1–2 done: comptime FFI is gated in `src/vm/engine.zig`, and the grant is per-library with conservative narrowing. The `*Caps` surface in `build.fels` is open |
-| `define` injection: `define`/`define_int`/`define_bool` write a `build_options` module | ✅ done |
+| `define` injection: `define`/`define_int`/`define_bool` write a `build_options` module | done |
 | `add_quote` typed codegen / `#provided` | later (extends `#quote`/`#insert`) |
 | Layer 2 (`workspace`/`Options`) + Layer 3 (intercept) surface | later |
-| Cross-compile targets | ✅ Linux x86-64 (`a.target(.linux)`, `.linux_gnu`), macOS later |
+| Cross-compile targets | Linux x86-64 (`a.target(.linux)`, `.linux_gnu`), macOS later |
 
 **Execution mechanism (as built):** the compiler does not read the `Build` struct back out
 of VM memory. Instead, the builder methods call `__build_*` compiler intrinsics, which lower
 (in the VM) to a new `host_call` opcode. The VM's `Vm.host` bridge forwards each call to the
 build driver, and the driver records it into a `BuildPlan`. So the config is captured
-imperatively while the script runs. That is robust, needs no fragile offset math, and is the
-model Jai itself uses. `Build`/`Artifact` are tiny value handles that carry an id, and all
+imperatively while the script runs, with no offsets into VM memory to get right.
+`Build`/`Artifact` are tiny value handles that carry an id, and all
 the state lives in the driver.
 
 **Build order from here:** first the rest of the build graph (`e.depend` edges, parallel
