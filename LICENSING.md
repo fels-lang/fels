@@ -55,7 +55,8 @@ Notes
   * GPLv3 (not GPLv2) is used deliberately: the compiler embeds the Apache-2.0
     runtime/stdlib sources, and Apache-2.0 is compatible with GPLv3 but not with
     GPLv2. The compiler also links LLVM/LLD (Apache-2.0-with-LLVM-exception),
-    which is likewise GPLv3-compatible.
+    which is likewise GPLv3-compatible. Its license is in `LICENSE-LLVM.txt`, and
+    the release archives carry it.
   * The tree-sitter grammar (`tree-sitter-fels`) and the Zed extension (`zed-fels`)
     live in separate repositories under their own licenses and are not covered
     here.
