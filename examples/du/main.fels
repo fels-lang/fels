@@ -1,14 +1,5 @@
-// du — a WinDirStat-style disk-usage scanner.
-//
-//   du [dir]      recursively sum sizes under `dir` (default: current dir),
-//                 print the biggest top-level items, and report scan throughput.
-//
-// The size of each file comes FREE with the directory listing (it's in the
-// WIN32_FIND_DATA the FindNextFile iterator already returns) — so there is one
-// syscall per directory entry and no per-file `stat`. A single reusable path
-// buffer is appended in place during recursion, so the scan does ZERO per-entry
-// heap allocation. Native code: the wall-clock cost is essentially the OS's
-// directory enumeration, which is the same ceiling C hits.
+// du: sum sizes under a dir, print the biggest top-level items + scan rate
+// run: du [dir]   (default: current dir)
 
 #import std.fs;
 #import std.heap.{ Arena, make, new_slice };
@@ -24,9 +15,7 @@ Entry :: struct { name: []const u8, size: u64, is_dir: bool }
 MAXENT :: 16384;
 PATHCAP :: 4096;
 
-// Recursively sum the bytes under the directory in `buf[0..plen]`. The buffer is
-// reused: we append "\<child>" in place before recursing and the next sibling
-// overwrites it. Returns the subtree total; accumulates global counts in `s`.
+// bytes under buf[0..plen]; appends "\<child>" in place (buf reused); counts into `s`
 scan :: fn(buf: []u8, plen: usize, s: *Scan) -> u64 {
     if plen + 3usize >= buf.len { return 0u64; }
     buf[plen] = '\\';        // '\'
@@ -40,7 +29,7 @@ scan :: fn(buf: []u8, plen: usize, s: *Scan) -> u64 {
             skip: bool = name_dot(name);
             if !skip {
                 if (&it).dir_is_reparse() {
-                    // skip symlinks/junctions — avoid cycles + double counting
+                    // skip symlinks/junctions: cycles, double counting
                 } else {
                     if (&it).dir_is_dir() {
                         s.dirs = s.dirs + 1u64;
@@ -104,7 +93,7 @@ main :: fn() -> i32 {
     line_buf: [1024]u8 = .{};
     root := first_arg(process::command_line(line_buf[:]), ".");
 
-    // Working path buffer (reused throughout the scan).
+    // path buffer, reused for the whole scan
     buf: [PATHCAP]u8 = .{};
     rlen: usize = 0usize;
     while rlen < root.len { buf[rlen] = root[rlen]; rlen = rlen + 1usize; }
@@ -115,7 +104,7 @@ main :: fn() -> i32 {
 
     t0: Instant = now();
 
-    // Top level: record each immediate child with its (recursive) size.
+    // top level: each child with its recursive size
     buf[rlen] = '\\'; buf[rlen + 1usize] = '*';
     it := fs::open_dir(buf[0usize..(rlen + 2usize)]) catch err {
         print("du: cannot open "); print(root); print("\n"); return 1;
@@ -152,7 +141,7 @@ main :: fn() -> i32 {
 
     ms: i64 = since_millis(t0);
 
-    // Biggest top-level items (repeated max-selection)
+    // biggest top-level items, repeated max-selection
     sb := builder(&a);
     append(&sb, "Disk usage for "); append(&sb, root); append(&sb, "\n\n");
 
@@ -182,7 +171,7 @@ main :: fn() -> i32 {
         shown = shown + 1usize;
     }
 
-    // Throughput report
+    // throughput
     append(&sb, "\n");
     append(&sb, "total:    "); fmt_size(&sb, s.bytes); append(&sb, "\n");
     append(&sb, "files:    "); append_u64(&sb, s.files); append(&sb, "\n");
@@ -196,7 +185,7 @@ main :: fn() -> i32 {
     return 0;
 }
 
-// Right-align a percentage in a 3-wide field (e.g. " 42%").
+// percent right-aligned in 3 chars, e.g. " 42%"
 pad_pct :: fn(sb: *StringBuilder, p: u64) {
     if p < 10u64 { append(sb, "  "); } else { if p < 100u64 { append(sb, " "); } }
     append_u64(sb, p);

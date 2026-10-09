@@ -10,6 +10,6 @@ main :: fn() -> i32 {
         println("trace: on");
     }
     threads: i32 = build_options::THREADS as i32;
-    // 0 when the static library linked and answers.
+    // 0 if the static lib linked and works
     return square(threads) - threads * threads;
 }

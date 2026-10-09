@@ -1,7 +1,6 @@
-// win32 — the Win32 bindings the scanner needs: bulk directory reads
-// (GetFileInformationByHandleEx), threading, and a CPU-count query.
+// win32: scanner bindings; bulk dir reads, threads, cpu count
 
-// Directory handles + bulk enumeration
+// dir handles + bulk enumeration
 pub GENERIC_READ            :: 0x80000000u32;
 pub FILE_SHARE_READ         :: 0x1u32;
 pub FILE_SHARE_WRITE        :: 0x2u32;
@@ -16,7 +15,7 @@ pub FILE_ATTRIBUTE_REPARSE   :: 0x400u32;
 // FILE_INFO_BY_HANDLE_CLASS::FileFullDirectoryInfo
 pub FileFullDirectoryInfo :: 14u32;
 
-// Field offsets inside FILE_FULL_DIR_INFO (variable-length, name inline at end).
+// FILE_FULL_DIR_INFO offsets; variable length, name inline at end
 pub OFF_NEXT      :: 0usize;    // u32  NextEntryOffset (0 = last)
 pub OFF_ENDOFFILE :: 40usize;   // i64  EndOfFile (size in bytes)
 pub OFF_ATTRS     :: 56usize;   // u32  FileAttributes
@@ -29,20 +28,18 @@ pub CreateFileA :: fn(name: *const u8, access: u32, share: u32, sec: ?*void, dis
 #extern("kernel32", "GetFileInformationByHandleEx")
 pub GetFileInformationByHandleEx :: fn(handle: usize, class: u32, buf: *void, size: u32) -> bool;
 
-// NOTE: CloseHandle is already provided globally by the runtime prelude
-// (src/runtime/windows.fels) — call it bare, don't redeclare it.
+// CloseHandle comes from the runtime prelude; don't redeclare it
 
 #extern("kernel32", "WideCharToMultiByte")
 pub WideCharToMultiByte :: fn(cp: u32, flags: u32, wstr: *const u16, wlen: i32, out: *u8, outlen: i32, def: ?*const u8, used: ?*bool) -> i32;
 
 pub CP_ACP :: 0u32;
 
-// Threading
+// threads
 #extern("kernel32", "CreateThread")
 pub CreateThread :: fn(attrs: ?*void, stack: usize, start: fn(*void) -> u32, param: ?*void, flags: u32, tid: ?*u32) -> usize;
 
-// WaitForMultipleObjects (not WaitForSingleObject, which std.process already
-// declares as a kernel32 import) — wait on every worker handle in one call.
+// not WaitForSingleObject: std.process already declares it
 #extern("kernel32", "WaitForMultipleObjects")
 pub WaitForMultipleObjects :: fn(count: u32, handles: *const usize, wait_all: bool, ms: u32) -> u32;
 
@@ -57,7 +54,7 @@ pub SYSTEM_INFO :: struct {
 #extern("kernel32", "GetSystemInfo")
 pub GetSystemInfo :: fn(info: *SYSTEM_INFO);
 
-// Number of logical processors (clamped to a sane range by the caller).
+// logical cpus; caller clamps
 pub cpu_count :: fn() -> u32 {
     si: SYSTEM_INFO = .{ 0u32, 0u32, 0usize, 0usize, 0usize, 1u32, 0u32, 0u32, 0u16, 0u16 };
     GetSystemInfo(&si);

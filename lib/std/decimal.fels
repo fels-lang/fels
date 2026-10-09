@@ -1,35 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.decimal — exact decimal numbers, for money and anything else counted in tenths and
-// hundredths: 0.1 + 0.2 is 0.3 here, not 0.30000000000000004.
-//
-//   price := decimal::parse("19.99")?;
-//   qty := decimal::from_int(3);
-//   total := decimal::mul(price, qty)?;                    // 59.97
-//   share := decimal::div(total, decimal::from_int(7), 2, .half_even)?;   // 8.57
-//   io::println("{total} / 7 = {share}");
-//
-// A `Decimal` is a whole number `coef` and a `scale`: its value is coef / 10^scale, with up to 18
-// digits after the point and about 18 in all (coef is an i64). Adding and subtracting are exact.
-// Multiplying is exact as long as the result fits, and keeps the digits of both sides (1.25 *
-// 2.5 is 3.125); `round` then brings it to the places wanted. Dividing takes the places of the
-// result and a rounding mode. A result that does not fit fails with `overflow` instead of
-// wrapping or losing digits silently.
+// std.decimal: exact decimals (money); coef / 10^scale, i64 coef, max 18 places
 
 pub DecimalError :: errors {
     invalid,            // text that is no decimal number
-    overflow,           // a result past about 9.2 * 10^18 / 10^scale, or more than 18 places
+    overflow,           // coef past i64, or more than 18 places
     division_by_zero,
 }
 
-/// How a result drops digits it cannot keep.
 pub Rounding :: enum {
-    half_even,     // to the nearest, a tie to the even digit (banker's rounding): 2.5 → 2, 3.5 → 4
-    half_up,       // to the nearest, a tie away from zero: 2.5 → 3, -2.5 → -3
-    half_down,     // to the nearest, a tie toward zero: 2.5 → 2
-    down,          // toward zero: 2.9 → 2, -2.9 → -2
-    up,            // away from zero: 2.1 → 3, -2.1 → -3
-    floor,         // toward minus infinity: -2.1 → -3
-    ceiling,       // toward plus infinity: 2.1 → 3
+    half_even,     // ties to even (banker's): 2.5 -> 2, 3.5 -> 4
+    half_up,       // ties away from zero: 2.5 -> 3, -2.5 -> -3
+    half_down,     // ties toward zero: 2.5 -> 2
+    down,          // toward zero: 2.9 -> 2, -2.9 -> -2
+    up,            // away from zero: 2.1 -> 3, -2.1 -> -3
+    floor,         // toward -inf: -2.1 -> -3
+    ceiling,       // toward +inf: 2.1 -> 3
 }
 
 pub MAX_SCALE :: 18u32;
@@ -38,7 +23,7 @@ pub Decimal :: struct {
     coef: i64,
     scale: u32,
 
-    /// Writes it in a format: `io::println("{price}")` gives `19.99`.
+    // for "{d}" in format strings; keeps all places
     pub format :: fn(self: Decimal, f: *Formatter) {
         buf: [48]u8 = .{};
         n := write_text(self, buf[:]);
@@ -55,16 +40,15 @@ POW10: [19]u64 = .{
 I64_MAX_MAG :: 9223372036854775807u64;    // the largest magnitude of a positive coef
 I64_MIN_MAG :: 9223372036854775808u64;    // of a negative one
 
-// Building
+// building
 
-/// `coef` / 10^`scale`: `from_parts(1999, 2)` is 19.99.
+// coef / 10^scale; .overflow if scale > 18
 pub from_parts :: fn(coef: i64, scale: u32) -> Decimal ! DecimalError {
     if scale > MAX_SCALE { fail .overflow; }
     d: Decimal = .{ coef, scale };
     return d;
 }
 
-/// The whole number `n`.
 pub from_int :: fn(n: i64) -> Decimal {
     d: Decimal = .{ n, 0 };
     return d;
@@ -72,7 +56,7 @@ pub from_int :: fn(n: i64) -> Decimal {
 
 pub zero :: fn() -> Decimal { return from_int(0); }
 
-// Magnitudes and signs
+// magnitudes and signs
 
 magnitude :: fn(c: i64) -> u64 {
     if c >= 0 { return c as u64; }
@@ -80,7 +64,7 @@ magnitude :: fn(c: i64) -> u64 {
     return (-c) as u64;
 }
 
-// The coef of magnitude `m` and sign `negative`, if it fits.
+// coef from magnitude and sign; .overflow if it doesn't fit
 signed :: fn(m: u64, negative: bool) -> i64 ! DecimalError {
     if negative {
         if m > I64_MIN_MAG { fail .overflow; }
@@ -91,7 +75,7 @@ signed :: fn(m: u64, negative: bool) -> i64 ! DecimalError {
     return m as i64;
 }
 
-// 128-bit arithmetic on magnitudes, as two u64 halves
+// 128-bit magnitudes as two u64 halves
 
 U128 :: struct { hi: u64, lo: u64 }
 
@@ -109,8 +93,7 @@ mul64 :: fn(a: u64, b: u64) -> U128 {
     return r;
 }
 
-// `n` / `d` (d not 0): the quotient, which must fit in 128 bits (it does: d >= 1), and the
-// remainder.
+// n / d (d != 0): 128-bit quotient and remainder
 DivResult :: struct { q: U128, rem: u64 }
 
 div128 :: fn(n: U128, d: u64) -> DivResult {
@@ -133,10 +116,10 @@ div128 :: fn(n: U128, d: u64) -> DivResult {
     return r;
 }
 
-// 192 bits, for a numerator scaled by up to 10^36: `a` the top word, `c` the bottom.
+// numerator scaled by up to 10^36; a = top word, c = bottom
 U192 :: struct { a: u64, b: u64, c: u64 }
 
-// `x` * `f`.
+// x * f
 mul3 :: fn(x: U128, f: u64) -> U192 {
     lo := mul64(x.lo, f);
     hi := mul64(x.hi, f);
@@ -148,7 +131,7 @@ mul3 :: fn(x: U128, f: u64) -> U192 {
 
 Div3Result :: struct { q: U192, rem: u64 }
 
-// `n` / `d` (d not 0), a bit at a time.
+// n / d (d != 0), a bit at a time
 div3 :: fn(n: U192, d: u64) -> Div3Result {
     q: U192 = .{ 0, 0, 0 };
     rem: u64 = 0;
@@ -169,8 +152,7 @@ div3 :: fn(n: U192, d: u64) -> Div3Result {
     return r;
 }
 
-// Whether to add one to a quotient `q` (its last digit kept) whose dropped part was `half`
-// (-1 below a half, 0 exactly a half, 1 above) and not zero when `inexact`.
+// bump q? half: dropped part -1 below, 0 at, 1 above a half; inexact: dropped part != 0
 round_up :: fn(mode: Rounding, negative: bool, q_odd: bool, half: i32, inexact: bool) -> bool {
     if !inexact { return false; }
     match mode {
@@ -184,8 +166,7 @@ round_up :: fn(mode: Rounding, negative: bool, q_odd: bool, half: i32, inexact: 
     }
 }
 
-// `m` (a 128-bit magnitude) divided by 10^k, rounded by `mode`, as a coef of sign `negative`.
-// `sticky`: digits below `m` that were already dropped and are not all zero.
+// m / 10^k rounded by mode, as a signed coef; sticky: nonzero digits already dropped
 shrink :: fn(m: U128, k: u32, negative: bool, mode: Rounding, sticky: bool) -> i64 ! DecimalError {
     q := m;
     half: i32 = -1;
@@ -195,7 +176,7 @@ shrink :: fn(m: U128, k: u32, negative: bool, mode: Rounding, sticky: bool) -> i
         step: u32 = if left > 18 { 18 } else { left };
         d := POW10[step as usize];
         r := div128(q, d);
-        // the part dropped in this step, against a half of 10^step
+        // this step's dropped part vs half of 10^step
         if left == step {
             if r.rem > d / 2 { half = 1; } else if r.rem == d / 2 && !inexact { half = 0; } else if r.rem == d / 2 { half = 1; } else { half = -1; }
         } else if r.rem != 0 {
@@ -211,14 +192,14 @@ shrink :: fn(m: U128, k: u32, negative: bool, mode: Rounding, sticky: bool) -> i
     return signed(m2, negative);
 }
 
-// Arithmetic
+// arithmetic
 
-/// The scale both get when added: the larger of the two.
+// d's magnitude at a larger scale
 widen :: fn(d: Decimal, scale: u32) -> U128 {
     return mul64(magnitude(d.coef), POW10[(scale - d.scale) as usize]);
 }
 
-/// `a` + `b`, exact, at the larger scale of the two.
+// exact, at the larger scale
 pub add :: fn(a: Decimal, b: Decimal) -> Decimal ! DecimalError {
     scale := if a.scale > b.scale { a.scale } else { b.scale };
     x := widen(a, scale);
@@ -239,19 +220,17 @@ pub add :: fn(a: Decimal, b: Decimal) -> Decimal ! DecimalError {
     return r;
 }
 
-/// `a` - `b`, exact, at the larger scale of the two.
+// exact, at the larger scale
 pub sub :: fn(a: Decimal, b: Decimal) -> Decimal ! DecimalError {
     return add(a, neg(b)?);
 }
 
-/// `a` * `b`, exact, with the places of both (`1.25 * 2.5` is `3.125`). When those are more than
-/// 18, or the coef does not fit, the last places are dropped with `half_even`; `overflow` when
-/// even the whole part does not fit.
+// scale = a.scale + b.scale; past 18 or too big: drops places (half_even), then .overflow
 pub mul :: fn(a: Decimal, b: Decimal) -> Decimal ! DecimalError {
     p := mul64(magnitude(a.coef), magnitude(b.coef));
     negative := (a.coef < 0) != (b.coef < 0) && a.coef != 0 && b.coef != 0;
     scale := a.scale + b.scale;
-    // drop places until the scale is at most 18 and the coef fits
+    // drop places until scale <= 18 and the coef fits
     k: u32 = 0;
     if scale > MAX_SCALE { k = scale - MAX_SCALE; }
     while k <= scale {
@@ -269,13 +248,12 @@ pub mul :: fn(a: Decimal, b: Decimal) -> Decimal ! DecimalError {
     fail .overflow;
 }
 
-/// `a` / `b` with `scale` places, rounded by `mode`.
+// a / b at scale places, rounded by mode
 pub div :: fn(a: Decimal, b: Decimal, scale: u32, mode: Rounding) -> Decimal ! DecimalError {
     if b.coef == 0 { fail .division_by_zero; }
     if scale > MAX_SCALE { fail .overflow; }
     negative := (a.coef < 0) != (b.coef < 0) && a.coef != 0;
-    // a / b at `scale` places is a.coef * 10^(scale + b.scale - a.scale) / b.coef. With more
-    // places to take than to give (e < 0), divide at the exact scale and drop the rest after.
+    // a.coef * 10^(scale + b.scale - a.scale) / b.coef; e < 0: divide exact, drop after
     e: i64 = (scale as i64) + (b.scale as i64) - (a.scale as i64);
     up: u32 = if e > 0 { e as u32 } else { 0 };
     drop: u32 = if e < 0 { (-e) as u32 } else { 0 };
@@ -299,8 +277,7 @@ pub div :: fn(a: Decimal, b: Decimal, scale: u32, mode: Rounding) -> Decimal ! D
     return out;
 }
 
-/// `d` with `scale` places: more places are exact, fewer drop digits by `mode`
-/// (`round(2.345, 2, .half_up)` is 2.35).
+// more places is exact; fewer rounds by mode
 pub round :: fn(d: Decimal, scale: u32, mode: Rounding) -> Decimal ! DecimalError {
     if scale > MAX_SCALE { fail .overflow; }
     if scale >= d.scale {
@@ -314,20 +291,18 @@ pub round :: fn(d: Decimal, scale: u32, mode: Rounding) -> Decimal ! DecimalErro
     return r;
 }
 
-/// `-d`.
 pub neg :: fn(d: Decimal) -> Decimal ! DecimalError {
     if d.coef == -9223372036854775807 - 1 { fail .overflow; }
     r: Decimal = .{ -d.coef, d.scale };
     return r;
 }
 
-/// `d` without its sign.
 pub abs :: fn(d: Decimal) -> Decimal ! DecimalError {
     if d.coef < 0 { return neg(d); }
     return d;
 }
 
-/// The same value with no zeros at the end of its places: 2.500 → 2.5, 3.00 → 3.
+// strips trailing zeros: 2.500 -> 2.5, 3.00 -> 3
 pub normalize :: fn(d: Decimal) -> Decimal {
     r := d;
     while r.scale > 0 && r.coef % 10 == 0 {
@@ -337,10 +312,9 @@ pub normalize :: fn(d: Decimal) -> Decimal {
     return r;
 }
 
-// Comparing
+// comparing
 
-/// -1, 0 or 1 as `a` is less than, equal to or greater than `b` (whatever their scales: 2.50 is
-/// 2.5).
+// -1, 0, 1; ignores scale (2.50 == 2.5)
 pub cmp :: fn(a: Decimal, b: Decimal) -> i32 {
     na := a.coef < 0;
     nb := b.coef < 0;
@@ -359,11 +333,9 @@ pub less :: fn(a: Decimal, b: Decimal) -> bool { return cmp(a, b) < 0; }
 pub is_zero :: fn(d: Decimal) -> bool { return d.coef == 0; }
 pub is_negative :: fn(d: Decimal) -> bool { return d.coef < 0; }
 
-// Text
+// text
 
-/// The decimal number `text` writes: an optional sign, digits with at most one point, and an
-/// optional exponent (`-12.50`, `.5`, `1e3`, `2.5E-3`). Its places are those written: "2.50" has
-/// scale 2. `overflow` for more than 18 places or a coef that does not fit.
+// sign, digits, one point, optional exponent; scale = places written; .invalid, .overflow
 pub parse :: fn(text: []const u8) -> Decimal ! DecimalError {
     i: usize = 0;
     negative := false;
@@ -410,7 +382,7 @@ pub parse :: fn(text: []const u8) -> Decimal ! DecimalError {
         scale = if eneg { scale + ev } else { scale - ev };
     }
     if i != text.len { fail .invalid; }
-    // a negative scale is a coef with zeros added: 1e3 is 1000
+    // negative scale: append zeros (1e3 -> 1000)
     while scale < 0 {
         if m > 0xFFFFFFFFFFFFFFFFu64 / 10 { fail .overflow; }
         m = m * 10;
@@ -421,7 +393,7 @@ pub parse :: fn(text: []const u8) -> Decimal ! DecimalError {
     return r;
 }
 
-// Write `d` into `out` (48 bytes are always enough); the length.
+// writes d to out (48 bytes always enough); returns the length
 write_text :: fn(d: Decimal, out: []u8) -> usize {
     digits: [24]u8 = .{};
     m := magnitude(d.coef);
@@ -449,20 +421,18 @@ write_text :: fn(d: Decimal, out: []u8) -> usize {
     return o;
 }
 
-/// `d` as text, all its places written (`19.90` stays `19.90`), into `out`; the slice of it
-/// used. 48 bytes always suffice.
+// keeps all places (19.90 stays 19.90); slice of out; 48 bytes always enough
 pub to_text :: fn(d: Decimal, out: []u8) -> []const u8 {
     n := write_text(d, out);
     return out[0..n];
 }
 
-/// The nearest `f64` (exact up to about 15 significant digits).
+// nearest f64; exact to ~15 significant digits
 pub to_f64 :: fn(d: Decimal) -> f64 {
     return (d.coef as f64) / (POW10[d.scale as usize] as f64);
 }
 
-/// `x` with `scale` places, rounded half to even. A float is binary: 0.1 is a little more than
-/// a tenth, so this is for numbers that came as floats, not for exact work.
+// rounds half-even to scale places; floats are binary, not for exact work
 pub from_f64 :: fn(x: f64, scale: u32) -> Decimal ! DecimalError {
     if scale > MAX_SCALE || x != x { fail .overflow; }
     y := x * (POW10[scale as usize] as f64);
@@ -475,7 +445,7 @@ pub from_f64 :: fn(x: f64, scale: u32) -> Decimal ! DecimalError {
     return r;
 }
 
-/// The sum of `xs`, exact, at the largest scale among them.
+// exact, at the largest scale
 pub sum :: fn(xs: []const Decimal) -> Decimal ! DecimalError {
     total := zero();
     for x in xs { total = add(total, x)?; }

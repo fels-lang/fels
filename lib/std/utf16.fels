@@ -1,38 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.utf16 - convert between UTF-8 and UTF-16.
-//
-// Pure Fels: no OS calls, so it behaves the same on every target. (On Windows,
-// MultiByteToWideChar / WideCharToMultiByte do a related job, but they are a separate API
-// with their own treatment of malformed input; nothing here depends on them.)
-//
-// Representations. UTF-8 text is a `[]const u8`, as everywhere in Fels; nothing
-// guarantees a string is valid UTF-8, which is why every conversion here validates.
-// UTF-16 text is a `[]const u16` of code units in the machine's own order: no byte-order
-// mark, no serialisation. A supplementary character (above U+FFFF) is a surrogate pair.
-//
-// Malformed input is an error, never repaired. There is no replacement character.
-//   UTF-8 is malformed if it has: a byte that cannot start a sequence (a stray
-//   continuation byte 80..BF, C0, C1, F5..FF); a sequence cut short by the end of the
-//   input or by a byte that is not a continuation; an overlong encoding (E0 80..9F, F0
-//   80..8F, C0/C1); an encoded surrogate (ED A0..BF); or a value above U+10FFFF
-//   (F4 90..BF). -> `.invalid_utf8`
-//   UTF-16 is malformed if it has a high surrogate (D800..DBFF) not immediately followed
-//   by a low one (DC00..DFFF), or a low surrogate not preceded by a high one.
-//   -> `.invalid_utf16`
-// U+0000 is an ordinary character, converted like any other.
-//
-// Sizing and capacity are explicit. `utf16_len` / `utf8_len` validate the input and give
-// the exact size of the result. The conversion functions write into a buffer you provide:
-// they validate and count first, and if the buffer is too small they fail with
-// `.buffer_too_small`. On any error the destination is not modified.
-//
-//     n := utf16::utf16_len(text)?;
-//     buf := a.alloc(u16, n + 1);                 // room for a terminating 0 if you want one
-//     utf16::utf8_to_utf16(text, buf[0..n])?;
-//     buf[n] = 0u16;
-//
-// `alloc_utf16`, `alloc_utf16z` and `alloc_utf8` do that sizing and allocation from an
-// `*Arena` for you. The memory belongs to the arena; nothing here frees it.
+// std.utf16: utf-8 <-> utf-16 (native order, no bom); malformed input fails, never repaired
 
 #import std.heap.{ Arena, try_alloc };
 
@@ -43,16 +10,14 @@ pub Utf16Error :: errors {
     out_of_memory,      // the arena could not supply the result's storage
 }
 
-// One decoded code point and the number of input units it used. `len == 0` means the input
-// at that position is malformed.
+// code point + input units used; len 0 = malformed
 Decoded :: struct { cp: u32, len: usize }
 
 malformed :: fn() -> Decoded {
     return .{ 0, 0 };
 }
 
-// Decode the UTF-8 sequence that starts at src[i] (i < src.len). Every continuation byte
-// and every bound is checked before it is read.
+// utf-8 sequence at src[i] (i < src.len); bounds checked before every read
 decode_utf8 :: fn(src: []const u8, i: usize) -> Decoded {
     b0 := src[i] as u32;
     if b0 < 0x80 { return .{ b0, 1 }; }
@@ -93,7 +58,7 @@ decode_utf8 :: fn(src: []const u8, i: usize) -> Decoded {
     return malformed();                                  // F5..FF never start a sequence
 }
 
-// Decode the UTF-16 code point that starts at src[i] (i < src.len).
+// utf-16 code point at src[i] (i < src.len)
 decode_utf16 :: fn(src: []const u16, i: usize) -> Decoded {
     u := src[i] as u32;
     if u < 0xD800 || u > 0xDFFF { return .{ u, 1 }; }
@@ -116,7 +81,7 @@ bytes_utf8 :: fn(cp: u32) -> usize {
     return 4;
 }
 
-// The exact number of UTF-16 code units that encode `src`, or `.invalid_utf8`.
+// exact utf-16 length in units; .invalid_utf8
 pub utf16_len :: fn(src: []const u8) -> usize ! Utf16Error {
     n := 0usize;
     i := 0usize;
@@ -129,7 +94,7 @@ pub utf16_len :: fn(src: []const u8) -> usize ! Utf16Error {
     return n;
 }
 
-// The exact number of bytes that encode `src` as UTF-8, or `.invalid_utf16`.
+// exact utf-8 length in bytes; .invalid_utf16
 pub utf8_len :: fn(src: []const u16) -> usize ! Utf16Error {
     n := 0usize;
     i := 0usize;
@@ -142,9 +107,7 @@ pub utf8_len :: fn(src: []const u16) -> usize ! Utf16Error {
     return n;
 }
 
-// Convert UTF-8 `src` to UTF-16 in `dst` and return the number of code units written
-// (`utf16_len(src)`). Fails with `.invalid_utf8` or `.buffer_too_small`; on failure `dst`
-// is untouched. `dst` may be longer than needed; the rest is left as it was.
+// returns units written; .invalid_utf8, .buffer_too_small; dst untouched on error
 pub utf8_to_utf16 :: fn(src: []const u8, dst: []u16) -> usize ! Utf16Error {
     need := utf16_len(src)?;
     if dst.len < need { fail .buffer_too_small; }
@@ -166,9 +129,7 @@ pub utf8_to_utf16 :: fn(src: []const u8, dst: []u16) -> usize ! Utf16Error {
     return need;
 }
 
-// Convert UTF-16 `src` to UTF-8 in `dst` and return the number of bytes written
-// (`utf8_len(src)`). Fails with `.invalid_utf16` or `.buffer_too_small`; on failure `dst`
-// is untouched. `dst` may be longer than needed; the rest is left as it was.
+// returns bytes written; .invalid_utf16, .buffer_too_small; dst untouched on error
 pub utf16_to_utf8 :: fn(src: []const u16, dst: []u8) -> usize ! Utf16Error {
     need := utf8_len(src)?;
     if dst.len < need { fail .buffer_too_small; }
@@ -201,8 +162,7 @@ pub utf16_to_utf8 :: fn(src: []const u16, dst: []u8) -> usize ! Utf16Error {
     return need;
 }
 
-// UTF-16 copy of `src`, in storage taken from `a`. The result has exactly `utf16_len(src)`
-// units. Fails with `.invalid_utf8` or `.out_of_memory`.
+// in `a`; .invalid_utf8, .out_of_memory
 pub alloc_utf16 :: fn(a: *Arena, src: []const u8) -> []u16 ! Utf16Error {
     n := utf16_len(src)?;
     out := try_alloc(u16, a, n) catch e { fail .out_of_memory; };
@@ -210,9 +170,7 @@ pub alloc_utf16 :: fn(a: *Arena, src: []const u8) -> []u16 ! Utf16Error {
     return out;
 }
 
-// Like `alloc_utf16`, but the storage has one more unit after the end, set to 0, so
-// `result.ptr` is a NUL-terminated wide string (a Win32 `LPCWSTR`). The returned slice's
-// length does not count the terminator.
+// alloc_utf16 plus a 0 unit after the end (LPCWSTR); len excludes it
 pub alloc_utf16z :: fn(a: *Arena, src: []const u8) -> []u16 ! Utf16Error {
     n := utf16_len(src)?;
     out := try_alloc(u16, a, n + 1) catch e { fail .out_of_memory; };
@@ -221,8 +179,7 @@ pub alloc_utf16z :: fn(a: *Arena, src: []const u8) -> []u16 ! Utf16Error {
     return out[0..n];
 }
 
-// UTF-8 copy of `src`, in storage taken from `a`. The result has exactly `utf8_len(src)`
-// bytes. Fails with `.invalid_utf16` or `.out_of_memory`.
+// in `a`; .invalid_utf16, .out_of_memory
 pub alloc_utf8 :: fn(a: *Arena, src: []const u16) -> []u8 ! Utf16Error {
     n := utf8_len(src)?;
     out := try_alloc(u8, a, n) catch e { fail .out_of_memory; };

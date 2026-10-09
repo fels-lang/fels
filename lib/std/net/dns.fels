@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.net.dns — names to IPv4 addresses, the way std.net.resolve does it where there is no C
-// library to ask (Linux): the hosts file first, then an A query over UDP to the name server
-// /etc/resolv.conf names. Its query and answer are plain bytes, built and read here.
+// std.net.dns: hosts file + A queries over udp; std.net.resolve's path on linux (no libc)
 
 #import std.heap.{ Arena };
 #import std.net.addr as addr;
 #import std.net.addr.{ IpV4 };
 #import std.strings as strings;
 
-/// The query for the A record of `host` with id `id`, in `out` (512 bytes are enough); its
-/// length, 0 for a name that cannot be one (a label longer than 63 bytes, a name past 253).
+// A-record query for `host` into `out` (512 bytes suffice); len, 0 if the name is invalid
 pub build_query :: fn(host: []const u8, id: u16, out: []u8) -> usize {
     if host.len == 0 || host.len > 253 || out.len < host.len + 18 { return 0; }
     head: [12]u8 = .{ (id >> 8) as u8, (id & 0xFF) as u8, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0 };
@@ -40,7 +37,7 @@ pub build_query :: fn(host: []const u8, id: u16, out: []u8) -> usize {
     return o + 5;
 }
 
-// The place after the name at `at` (labels, or a pointer that ends it), or 0 when it runs off.
+// offset past the name at `at`; 0 if it runs off
 skip_name :: fn(msg: []const u8, at: usize) -> usize {
     p := at;
     while p < msg.len {
@@ -54,8 +51,7 @@ skip_name :: fn(msg: []const u8, at: usize) -> usize {
 
 be16 :: fn(b: []const u8, at: usize) -> usize { return ((b[at] as usize) << 8) | (b[at + 1] as usize); }
 
-/// The first A record in the answer `msg` to the query with id `id`; null when it is no answer
-/// to it, an error answer, or has no A record (only a CNAME, say).
+// first A record answering query `id`; null on id mismatch, error, or no A record
 pub parse_answer :: fn(msg: []const u8, id: u16) -> ?IpV4 {
     if msg.len < 12 || be16(msg, 0) != (id as usize) { return null; }
     if (msg[2] & 0x80) == 0 || (msg[3] & 0x0F) != 0 { return null; }   // not a response, or an error
@@ -83,7 +79,7 @@ pub parse_answer :: fn(msg: []const u8, id: u16) -> ?IpV4 {
     return null;
 }
 
-/// The address `name` has in a hosts file's text (`127.0.0.1 localhost`), or null.
+// address of `name` in hosts-file text, or null
 pub from_hosts :: fn(text: []const u8, name: []const u8) -> ?IpV4 {
     i: usize = 0;
     while i < text.len {
@@ -114,7 +110,7 @@ pub from_hosts :: fn(text: []const u8, name: []const u8) -> ?IpV4 {
     return null;
 }
 
-/// The name servers a resolv.conf's text lists (`nameserver 10.0.0.1`), IPv4 ones, up to 3.
+// ipv4 nameservers from resolv.conf text, up to `out.len`
 pub servers :: fn(text: []const u8, out: []IpV4) -> usize {
     n: usize = 0;
     i: usize = 0;

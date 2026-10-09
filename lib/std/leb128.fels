@@ -1,30 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.leb128 — integers in 7-bit groups, small ones in few bytes (LEB128): what WebAssembly,
-// DWARF and Protocol Buffers' varints use.
-//
-//   buf: [leb128::MAX_LEN]u8 = .{};
-//   n := leb128::encode_u64(buf[:], 624485)?;      // e5 8e 26: 3 bytes
-//   d := leb128::decode_u64(buf[0..n])?;            // d.value 624485, d.len 3
-//   m := leb128::encode_i64(buf[:], -123456)?;     // c0 bb 78
-//
-// Each byte holds 7 bits, the lowest first, with its top bit set when more follow. The signed
-// form extends the sign of its last group. Decoding takes a longer form than needed (`80 00`
-// for 0) as most readers do, but no value past the 64 bits.
+// std.leb128: 7-bit varints (wasm, dwarf, protobuf); padded forms ok, >64 bits fails
 
 pub LebError :: errors {
-    buffer_too_small,   // `out` cannot hold the bytes; nothing was written
+    buffer_too_small,   // `out` too small; nothing written
     truncated,          // the bytes end in the middle of a number
     overflow,           // more than 64 bits
 }
 
-/// The most bytes a 64-bit number takes.
+// max bytes for a 64-bit value
 pub MAX_LEN :: 10usize;
 
-/// A number read, and how many bytes it took.
+// decoded value + bytes used
 pub Unsigned :: struct { value: u64, len: usize }
 pub Signed :: struct { value: i64, len: usize }
 
-/// How many bytes `v` takes.
+// encoded size of `v`
 pub len_u64 :: fn(v: u64) -> usize {
     n: usize = 1;
     x := v >> 7;
@@ -35,7 +25,7 @@ pub len_u64 :: fn(v: u64) -> usize {
     return n;
 }
 
-/// How many bytes `v` takes, signed.
+// encoded size of `v`, signed
 pub len_i64 :: fn(v: i64) -> usize {
     n: usize = 1;
     x := v;
@@ -46,7 +36,7 @@ pub len_i64 :: fn(v: i64) -> usize {
     return n;
 }
 
-/// Write `v` at the start of `out`; how many bytes (`len_u64`).
+// encode `v` into `out`; returns len_u64(v)
 pub encode_u64 :: fn(out: []u8, v: u64) -> usize ! LebError {
     if out.len < len_u64(v) { fail .buffer_too_small; }
     n: usize = 0;
@@ -64,7 +54,7 @@ pub encode_u64 :: fn(out: []u8, v: u64) -> usize ! LebError {
     return n;
 }
 
-/// Write `v` at the start of `out`, signed; how many bytes (`len_i64`).
+// encode signed `v` into `out`; returns len_i64(v)
 pub encode_i64 :: fn(out: []u8, v: i64) -> usize ! LebError {
     if out.len < len_i64(v) { fail .buffer_too_small; }
     n: usize = 0;
@@ -83,7 +73,7 @@ pub encode_i64 :: fn(out: []u8, v: i64) -> usize ! LebError {
     return n;
 }
 
-/// The number at the start of `bytes`, and how many bytes it took.
+// decode from the start of `bytes`
 pub decode_u64 :: fn(bytes: []const u8) -> Unsigned ! LebError {
     v: u64 = 0;
     for i in 0..bytes.len {
@@ -99,7 +89,7 @@ pub decode_u64 :: fn(bytes: []const u8) -> Unsigned ! LebError {
     fail .truncated;
 }
 
-/// The signed number at the start of `bytes`, and how many bytes it took.
+// decode signed from the start of `bytes`
 pub decode_i64 :: fn(bytes: []const u8) -> Signed ! LebError {
     v: u64 = 0;
     for i in 0..bytes.len {

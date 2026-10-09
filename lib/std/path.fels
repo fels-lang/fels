@@ -1,32 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.path — filesystem path manipulation (pure string ops, no I/O).
-//
-// Paths are plain []const u8. Both / and \ count as separators on input, while join and
-// normalize write the platform SEP (\ on Windows, / elsewhere). The query functions (basename,
-// dirname, extension, stem) allocate nothing — they return sub-slices; the builders (join,
-// with_extension, normalize) take an *Arena.
-//
-//   base := path::basename("src\\std\\io.fels");     // "io.fels"
-//   ext  := path::extension("io.fels");               // ".fels"  (with the dot)
-//   full := path::join(&a, "src\\std", "io.fels");    // "src\std\io.fels"
-//
-// Invariant: basename(p) == stem(p) ++ extension(p).
+// std.path: pure path string ops; reads / and \, writes SEP; builders take an *Arena
 
 #import std.heap.{ Arena };
 #import std.strings as strings;
 
-// Platform path separator written by `join` and `normalize`.
+// separator written by join and normalize
 #if TARGET.os == .windows {
     pub SEP :: 92u8;   // '\'
 } else {
     pub SEP :: 47u8;   // '/'
 }
 
-// True for either separator byte, so paths using `/` or `\` both parse.
+// either separator
 pub is_sep :: fn(c: u8) -> bool { return c == 47u8 || c == 92u8; }   // '/' or '\'
 
-// The final component of `p` (everything after the last separator). For a path
-// with no separator, that's `p` itself; for a trailing separator, "".
+// after the last separator; `p` if none, "" on a trailing separator
 pub basename :: fn(p: []const u8) -> []const u8 {
     i: usize = p.len;
     while i > 0 {
@@ -36,9 +24,7 @@ pub basename :: fn(p: []const u8) -> []const u8 {
     return p;
 }
 
-// Everything up to (but not including) the last separator, with any trailing
-// separators trimmed. "." when `p` has no separator; the root ("\" or "/") when
-// the only separator is a leading one.
+// up to the last separator, trailing ones trimmed; "." if none; a lone root stays
 pub dirname :: fn(p: []const u8) -> []const u8 {
     i: usize = p.len;
     while i > 0 {
@@ -55,11 +41,10 @@ pub dirname :: fn(p: []const u8) -> []const u8 {
     return ".";
 }
 
-// `dirname`, spelled the way most people say it.
+// alias of dirname
 pub parent :: fn(p: []const u8) -> []const u8 { return dirname(p); }
 
-// The extension INCLUDING the leading dot (".txt"), or "" when there is none.
-// A dotfile with no other dot (".gitignore") has no extension.
+// includes the dot (".txt"); "" if none; ".gitignore" has none
 pub extension :: fn(p: []const u8) -> []const u8 {
     b := basename(p);
     i: usize = b.len;
@@ -74,41 +59,39 @@ pub extension :: fn(p: []const u8) -> []const u8 {
     return "";
 }
 
-// The basename with its extension removed: `basename` minus `extension`.
+// basename minus extension
 pub stem :: fn(p: []const u8) -> []const u8 {
     b := basename(p);
     e := extension(p);
     return b[0..(b.len - e.len)];
 }
 
-// True if `p` starts with a separator, a `\\` UNC prefix, or a `X:` drive.
+// leading separator, \ UNC prefix, or X: drive
 pub is_absolute :: fn(p: []const u8) -> bool {
     if p.len == 0 { return false; }
     if is_sep(p[0]) { return true; }
     if p.len >= 2 {
-        if p[1] == 58 { return true; }               // ':' → drive letter
+        if p[1] == 58 { return true; }               // ':' -> drive letter
     }
     return false;
 }
 
 pub is_relative :: fn(p: []const u8) -> bool { return !is_absolute(p); }
 
-// True if `p`'s extension equals `want` (a leading dot in `want` is optional, so
-// both `has_extension(p, "sk")` and `has_extension(p, ".fels")` work).
+// leading dot in `want` optional
 pub has_extension :: fn(p: []const u8, want: []const u8) -> bool {
     e := extension(p);
     if want.len > 0 {
         if want[0] == 46 { return strings::str_eq(e, want); }
     }
-    // `want` has no leading dot — compare against the extension sans dot.
+    // `want` has no dot: compare without it
     if e.len == 0 { return want.len == 0; }
     return strings::str_eq(e[1..e.len], want);
 }
 
-// Builders (need an arena)
+// builders (need an arena)
 
-// Join two path segments with a single `SEP`. Trailing separators on `x` and
-// leading ones on `y` are collapsed. An absolute `y` replaces `x` entirely.
+// one SEP between; extra separators collapsed; an absolute `y` wins
 pub join :: fn(a: *Arena, x: []const u8, y: []const u8) -> []const u8 {
     if x.len == 0 { return strings::str_dup(a, y); }
     if y.len == 0 { return strings::str_dup(a, x); }
@@ -130,13 +113,11 @@ pub join :: fn(a: *Arena, x: []const u8, y: []const u8) -> []const u8 {
     return strings::str(&sb);
 }
 
-// Join three segments: `join(a, join(a, x, y), z)`.
 pub join3 :: fn(a: *Arena, x: []const u8, y: []const u8, z: []const u8) -> []const u8 {
     return join(a, join(a, x, y), z);
 }
 
-// `p` with its extension replaced by `new_ext` (a leading dot in `new_ext` is
-// optional). Removing the extension is `with_extension(a, p, "")`.
+// leading dot optional; "" removes the extension
 pub with_extension :: fn(a: *Arena, p: []const u8, new_ext: []const u8) -> []const u8 {
     e := extension(p);
     base := p[0..(p.len - e.len)];
@@ -148,11 +129,8 @@ pub with_extension :: fn(a: *Arena, p: []const u8, new_ext: []const u8) -> []con
     }
     return strings::str(&sb);
 }
-// `p` with its `.` parts and doubled separators taken out, and each `..` taking out the part
-// before it, written with `SEP`: "a/./b/../c" is "a\c" on Windows. Nothing is read from the
-// disk, so a `..` after a link goes back over the link's name. A root ("/", "C:\",
-// "\\server\share\") stays, and a `..` at a root is dropped; a relative path keeps the `..`s it
-// starts with ("../x"). A separator at the end goes, and nothing at all is ".".
+// lexical clean-up: drops `.`, doubled seps and `x/..`; writes SEP; empty -> "."
+// no disk access, so `..` past a symlink is lexical; leading `..` kept, root `..` dropped
 pub normalize :: fn(a: *Arena, p: []const u8) -> []const u8 {
     out := a.alloc_bytes(p.len + 2);
     n: usize = 0;

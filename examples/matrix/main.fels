@@ -1,6 +1,4 @@
-// matrix — a generic dense-matrix library, `Mat(T)`, exercised on i32 and f64.
-// The operations (make/get/set/mul/transpose) are fully generic over `T`; only
-// the pretty-printers are type-specific.
+// matrix: generic dense Mat(T) on i32 and f64; only the printers are type-specific
 
 #import std.heap.{ Arena, make };
 #import std.strings.{ StringBuilder, builder, str, append, append_i64, append_f64_min, append_byte };
@@ -16,7 +14,7 @@ mat_make :: fn($T: type, a: *Arena, rows: usize, cols: usize) -> Mat(T) {
 mat_get :: fn($T: type, m: *Mat(T), r: usize, c: usize) -> T { return m.data[r * m.cols + c]; }
 mat_set :: fn($T: type, m: *Mat(T), r: usize, c: usize, v: T) { m.data[r * m.cols + c] = v; }
 
-// out = x · y  (no literal zero needed: seed the sum with the k=0 product).
+// x * y; sum seeded with the k=0 product, so no literal zero needed
 mat_mul :: fn($T: type, a: *Arena, x: *Mat(T), y: *Mat(T)) -> Mat(T) {
     out := mat_make(T, a, x.rows, y.cols);
     i: usize = 0usize;
@@ -86,7 +84,7 @@ print_f64_mat :: fn(m: *Mat(f64), a: *Arena) {
 main :: fn() -> i32 {
     a := make();
 
-    // i32: a 2x3 times a 3x2 → 2x2.
+    // i32: 2x3 times 3x2 -> 2x2
     x := mat_make(i32, &a, 2usize, 3usize);
     xv: [6]i32 = .{ 1, 2, 3, 4, 5, 6 };
     fill_i32(&x, xv[0..6usize]);
@@ -101,7 +99,7 @@ main :: fn() -> i32 {
     xyt := mat_transpose(i32, &a, &xy);
     print_i32_mat(&xyt, &a);
 
-    // f64: same code path, different element type.
+    // f64: same code, other element type
     p := mat_make(f64, &a, 2usize, 2usize);
     pv: [4]f64 = .{ 1.5, 0.0, 0.0, 2.0 };
     fill_f64(&p, pv[0..4usize]);

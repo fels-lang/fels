@@ -1,7 +1,5 @@
-// diskscan (CLI) — scan a directory tree and print the biggest items, sorted,
-// with scan throughput. The GUI (gui.fels) shares the same scanner.
-//
-//   diskscan [dir]      default: current directory
+// diskscan cli: biggest items under a dir, sorted, plus scan rate
+// run: diskscan [dir]   (default: current dir)
 
 #import std.heap.{ Arena, make };
 #import std.strings.{ StringBuilder, builder, str, append, append_byte, append_u64 };
@@ -15,14 +13,14 @@
 
 first_arg :: fn(line: []const u8, def: []const u8) -> []const u8 {
     i: usize = 0usize;
-    // skip arg0 (the program path), respecting quotes
+    // skip arg0, respecting quotes
     if line.len > 0usize {
         if line[0] == 34u8 { i = 1usize; while i < line.len { q: bool = line[i] == 34u8; i += 1usize; if q { break; } } }
         else { while i < line.len { if line[i] == 32u8 { break; } i += 1usize; } }
     }
     while i < line.len { if line[i] != 32u8 { break; } i += 1usize; }
     if i >= line.len { return def; }
-    // the argument, stripping surrounding quotes
+    // the arg, quotes stripped
     if line[i] == 34u8 {
         i = i + 1usize;
         start: usize = i;

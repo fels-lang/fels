@@ -1,8 +1,5 @@
-// bf — a complete Brainfuck interpreter (30000-cell wrapping tape).
-//
-//   bf "<program>"     run a BF program (default: "Hello World!")
-//
-// Commands: > < + - . [ ]  (',' input is treated as 0 for non-interactive use.)
+// bf: brainfuck interpreter, 30000-cell wrapping tape; ',' reads 0
+// run: bf "<program>" (default: hello world)
 
 #import std.heap.{ Arena, make };
 #import std.io.{ print };
@@ -13,7 +10,7 @@ out :: fn(c: u8) {
     print(buf[0usize..1usize]);
 }
 
-// From the '[' at `pc`, return the index of the matching ']'.
+// index of the ']' matching the '[' at `pc`
 match_fwd :: fn(prog: []const u8, pc: usize) -> usize {
     depth: i32 = 1;
     i: usize = pc + 1usize;
@@ -25,7 +22,7 @@ match_fwd :: fn(prog: []const u8, pc: usize) -> usize {
     return prog.len;
 }
 
-// From the ']' at `pc`, return the index of the matching '['.
+// index of the '[' matching the ']' at `pc`
 match_bwd :: fn(prog: []const u8, pc: usize) -> usize {
     depth: i32 = 1;
     i: usize = pc;

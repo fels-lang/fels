@@ -1,17 +1,5 @@
-// A dependency's code, in your project. It wants to run on your machine while you
-// build — read an environment variable, phone home, drop a file. This is the
-// `build.rs` surface, and it is how supply-chain attacks actually land.
-//
-// In Fels it cannot. A bare `#run` is pure: it holds no capabilities, so the
-// compiler refuses to let it reach the host at all.
-//
-// Uncomment the `PID` line below and run `fels build` again:
-//
-//   error: comptime FFI to `GetCurrentProcessId` (in `kernel32`) is not allowed
-//   here: this ran as a pure `#run`, which has no host access — only `build.fels`
-//   is granted it.
-//
-// Then look at build.fels, which makes the same call and is allowed to.
+// capability: a bare #run is pure; dep code can't reach the host while you build
+// try: uncomment `PID` below, `fels build` -> comptime FFI error; build.fels may call it
 
 #import std.io.{ println };
 

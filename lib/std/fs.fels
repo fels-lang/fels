@@ -1,18 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.fs — minimal synchronous file I/O for Fels. OS calls go through the platform
-// runtime (windows.fels → kernel32; linux.fels → openat/read/write/..), so this file is
-// OS-agnostic. File implements std.io.Reader and Writer; there's open/create/append,
-// exists/is_dir/delete, read_all, write_file, copy_file, rename, info (size, last write),
-// make_dir/make_dirs/remove_dir/remove_tree, DirIter for one folder and walk for a whole tree,
-// cwd/set_cwd/absolute, temp_dir/make_temp_dir/create_temp and home_dir, all sharing FsError.
-//
-// Paths are plain []const u8, copied into a small stack buffer and NUL-terminated for
-// the OS; anything too long fails with path_too_long.
-//
-//   f := fs.create("out.txt") catch err { return 1; };
-//   w: *Writer = &f;
-//   w.write_all("hello\n") catch err {};
-//   (&f).close();
+// std.fs: sync files and folders; paths over 1023 bytes fail with path_too_long
 
 #import std.io.{ Writer, Reader, IoError };
 #import std.heap.{ Arena };
@@ -21,45 +8,28 @@
 #import std.path as path;
 #import std.hash as hash;
 
-// The file/dir seam, provided by the platform runtime:
-//   os_file_open(path, mode) -> i64   mode 0=read, 1=create/trunc, 2=append; -1 = fail
-//   os_file_read(h, buf, len) -> i64  bytes read, or -1
-//   os_file_write(h, buf, len) -> i64 bytes written, or -1
-//   os_file_close(h)
-//   os_file_seek(h, off, whence) -> i64   whence 0=set, 1=cur, 2=end; new pos or -1
-//   os_path_kind(path) -> i32         0=missing, 1=file, 2=directory
-//   os_unlink(path) -> i32            0 = ok
-//   os_mkdir(path) / os_rmdir(path) -> i32    0 = ok
-//   os_dir_open(path) -> i64          opaque iterator handle, or -1
-//   os_dir_next(h, name) -> i64       entry-name length copied into `name`, or -1 at end
-//   os_dir_is_dir(h)/os_dir_is_reparse(h) -> bool, os_dir_size(h) -> u64   (last entry)
-//   os_dir_close(h)
-//   os_rename(from, to) -> i32        0 = ok; replaces a file at `to`
-//   os_file_info(path, size, mtime, kind) -> i32   0 = ok; mtime in ns since 1970, kind 1/2
-//   os_cwd(out) -> i64                bytes of the current folder copied into `out`, or -1
-//   os_chdir(path) -> i32             0 = ok
-//   os_file_open(path, 3)             a new file to write; -1 when there is one
+// seam: os_file_open mode 0 read, 1 trunc, 2 append, 3 new-only; i64 results -1 = fail
+// os_path_kind 0 missing, 1 file, 2 dir; i32 results 0 = ok; seek whence 0 set, 2 end
 
-FS_INVALID :: -1i64;       // a closed/invalid handle (matches the seam's failure value)
+FS_INVALID :: -1i64;       // closed/invalid handle; the seam's failure value
 MAX_PATH_BYTES :: 1024usize;
 
-// Errors
+// errors
 
 pub FsError :: errors {
-    not_found,       // open of an existing file failed — the path doesn't exist (or access denied)
+    not_found,       // missing path (or access denied)
     create_failed,   // create/append failed
     read_failed,     // a read returned an error
     write_failed,    // a write returned an error
     seek_failed,     // a seek returned an error
-    delete_failed,   // delete failed (a file, or a folder that is not empty)
-    path_too_long,   // path (plus NUL terminator) doesn't fit in the internal buffer
+    delete_failed,   // delete failed (or folder not empty)
+    path_too_long,   // path + NUL over 1024 bytes
     rename_failed,   // rename could not move the file
 }
 
-// Path helpers
+// path helpers
 
-// Copy `path` into `buf`, append a NUL terminator, and return a pointer to the
-// start of `buf` for the OS calls (UTF-8; on Windows the runtime makes UTF-16 of it).
+// `path` + NUL into `buf` for OS calls; UTF-8 (windows runtime converts to UTF-16)
 fs_to_cstr :: fn(path: []const u8, buf: []u8) -> *const u8 ! FsError {
     if path.len + 1 > buf.len { fail .path_too_long; }
     for i in 0..path.len {
@@ -69,10 +39,9 @@ fs_to_cstr :: fn(path: []const u8, buf: []u8) -> *const u8 ! FsError {
     return buf.ptr;
 }
 
-// File
+// file
 
-// An open OS file handle. Implements both `Reader` and `Writer`, so it works
-// anywhere a `*Reader`/`*Writer` is expected — pipelines, formatters, loggers.
+// open OS file; a Reader and a Writer
 pub File :: struct {
     handle: i64,
 }
@@ -98,21 +67,18 @@ File as Writer {
     }
 }
 
-// True while the handle is open. Call as `(&file).is_open()`.
 pub is_open :: fn(self: *File) -> bool {
     return self.handle != FS_INVALID;
 }
 
-// Close the underlying OS handle. Safe to call more than once. Call as
-// `(&file).close()`.
+// close the handle; idempotent
 pub close :: fn(self: *File) {
     if self.handle == FS_INVALID { return; }
     os_file_close(self.handle);
     self.handle = FS_INVALID;
 }
 
-// Open an existing file for reading. Fails with `not_found` if it can't be
-// opened for read access.
+// open for reading; not_found if it can't be
 pub open :: fn(path: []const u8) -> File ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -121,7 +87,7 @@ pub open :: fn(path: []const u8) -> File ! FsError {
     return .{ h };
 }
 
-// Create a file for writing, truncating it if it already exists (`fopen(…,"w")`).
+// create for writing; truncates an existing file
 pub create :: fn(path: []const u8) -> File ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -130,7 +96,7 @@ pub create :: fn(path: []const u8) -> File ! FsError {
     return .{ h };
 }
 
-// Open a file for appending, creating it if it doesn't exist (`fopen(…,"a")`).
+// open for appending; creates it if missing
 pub append :: fn(path: []const u8) -> File ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -139,21 +105,20 @@ pub append :: fn(path: []const u8) -> File ! FsError {
     return .{ h };
 }
 
-// True if `path` refers to an existing file or directory. Never fails.
+// file or dir exists; never fails
 pub exists :: fn(path: []const u8) -> bool {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:]) catch err { return false; };
     return os_path_kind(cpath) != 0;
 }
 
-// True if `path` is a directory.
 pub is_dir :: fn(path: []const u8) -> bool {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:]) catch err { return false; };
     return os_path_kind(cpath) == 2;
 }
 
-// Remove a file. Fails with `delete_failed` if it can't be removed.
+// remove a file; delete_failed if it can't
 pub delete :: fn(path: []const u8) -> void ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -161,8 +126,7 @@ pub delete :: fn(path: []const u8) -> void ! FsError {
     return;
 }
 
-// Make the folder `path`. A folder that is there already is fine; `create_failed` when it
-// cannot be made (the folder above it is missing, or a file has the name).
+// make folder `path` (ok if it exists); create_failed if no parent or a file is there
 pub make_dir :: fn(path: []const u8) -> void ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -170,7 +134,7 @@ pub make_dir :: fn(path: []const u8) -> void ! FsError {
     return;
 }
 
-// Make the folder `path` and every folder above it that is missing (`a/b/c`, with `/` or `\`).
+// make `path` and any missing parents (`/` or `\` separators)
 pub make_dirs :: fn(path: []const u8) -> void ! FsError {
     for i in 1..path.len {
         c := path[i];
@@ -183,7 +147,7 @@ pub make_dirs :: fn(path: []const u8) -> void ! FsError {
     return;
 }
 
-// Remove the folder `path`, which must be empty. Fails with `delete_failed`.
+// remove empty folder `path`; delete_failed otherwise
 pub remove_dir :: fn(path: []const u8) -> void ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -191,14 +155,14 @@ pub remove_dir :: fn(path: []const u8) -> void ! FsError {
     return;
 }
 
-// Read an entire file into a fresh buffer allocated in `a`. Returns the bytes.
+// whole file into a new buffer in `a`
 pub read_all :: fn(path: []const u8, a: *Arena) -> []u8 ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
     h := os_file_open(cpath, 0);
     if h == FS_INVALID { fail .not_found; }
-    sz := os_file_seek(h, 0, 2);     // SEEK_END → size
-    back := os_file_seek(h, 0, 0);   // SEEK_SET → rewind
+    sz := os_file_seek(h, 0, 2);     // SEEK_END -> size
+    back := os_file_seek(h, 0, 0);   // SEEK_SET -> rewind
     if sz < 0 || back < 0 { os_file_close(h); fail .seek_failed; }
     buf: []u8 = a.alloc_bytes(sz as usize);
     total: usize = 0;
@@ -212,10 +176,7 @@ pub read_all :: fn(path: []const u8, a: *Arena) -> []u8 ! FsError {
     return buf[0..total];
 }
 
-// Directory iteration
-// `open_dir` takes a directory PATH (each platform adds its own glob/listing
-// mechanism). `dir_next` yields each entry name (including "." and ".."), valid
-// only until the following `dir_next` call.
+// dir iteration; names include "." and "..", valid only until the next dir_next
 pub DirIter :: struct {
     handle:  i64,
     namebuf: [1024]u8,
@@ -231,7 +192,7 @@ pub open_dir :: fn(path: []const u8) -> DirIter ! FsError {
     return iter;
 }
 
-// The next entry name, or null at the end. Call as `(&it).dir_next()`.
+// next entry name, or null at the end
 pub dir_next :: fn(self: *DirIter) -> ?[]const u8 {
     if self.handle == FS_INVALID { return null; }
     n := os_dir_next(self.handle, self.namebuf[:]);
@@ -240,21 +201,19 @@ pub dir_next :: fn(self: *DirIter) -> ?[]const u8 {
     return self.namebuf[0..self.namelen];
 }
 
-// Whether the entry most recently returned by `dir_next` is a subdirectory.
+// last entry is a dir
 pub dir_is_dir :: fn(self: *DirIter) -> bool {
     if self.handle == FS_INVALID { return false; }
     return os_dir_is_dir(self.handle);
 }
 
-// Size in bytes of the most recent entry (free on Windows; 0 on Linux, whose
-// getdents64 doesn't carry it — stat the path if you need it there).
+// last entry's size in bytes; always 0 on linux (stat the path)
 pub dir_size :: fn(self: *DirIter) -> u64 {
     if self.handle == FS_INVALID { return 0; }
     return os_dir_size(self.handle);
 }
 
-// True if the most recent entry is a symlink/reparse point — skip these when
-// scanning to avoid cycles and double-counting.
+// last entry is a symlink/reparse point; skip these to avoid cycles
 pub dir_is_reparse :: fn(self: *DirIter) -> bool {
     if self.handle == FS_INVALID { return false; }
     return os_dir_is_reparse(self.handle);
@@ -266,16 +225,16 @@ pub dir_close :: fn(self: *DirIter) {
     self.handle = FS_INVALID;
 }
 
-// Metadata, renaming, copying
+// metadata, rename, copy
 
-/// What `info` says about a path.
+// result of `info`
 pub Info :: struct {
     size: u64,           // bytes (0 for a folder on Linux and others)
-    modified_ns: i64,    // the last write, in nanoseconds since 1970-01-01 UTC
+    modified_ns: i64,    // last write, ns since the unix epoch
     is_dir: bool,
 }
 
-/// The size, last write time and kind of `path`; `not_found` when there is nothing there.
+// size, mtime, kind of `path`; not_found if nothing is there
 pub info :: fn(path: []const u8) -> Info ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -287,8 +246,7 @@ pub info :: fn(path: []const u8) -> Info ! FsError {
     return i;
 }
 
-/// Rename (or move) `from` to `to`, replacing a file that is there. `rename_failed` when it
-/// cannot (`from` is missing, `to` is a folder, they are on volumes that cannot move between).
+// rename/move; replaces a file at `to`; rename_failed (missing, dir target, cross-volume)
 pub rename :: fn(from: []const u8, to: []const u8) -> void ! FsError {
     a_buf: [1024]u8 = .{};
     b_buf: [1024]u8 = .{};
@@ -297,7 +255,7 @@ pub rename :: fn(from: []const u8, to: []const u8) -> void ! FsError {
     if os_rename(a, b) != 0 { fail .rename_failed; }
 }
 
-/// Write `data` to the file `path`, made or emptied first.
+// write `data` to `path`, created or truncated
 pub write_file :: fn(path: []const u8, data: []const u8) -> void ! FsError {
     f := create(path)?;
     done: usize = 0;
@@ -312,7 +270,7 @@ pub write_file :: fn(path: []const u8, data: []const u8) -> void ! FsError {
     close(&f);
 }
 
-/// Copy the file `from` to `to` (made or emptied first); the bytes copied.
+// copy a file, `to` created or truncated; returns bytes copied
 pub copy_file :: fn(from: []const u8, to: []const u8) -> u64 ! FsError {
     src := open(from)?;
     dst := create(to) catch err {
@@ -346,24 +304,22 @@ pub copy_file :: fn(from: []const u8, to: []const u8) -> u64 ! FsError {
     return total;
 }
 
-// Walking a folder tree
+// tree walk
 
-/// An entry `walk` gives.
+// a `walk` entry
 pub Entry :: struct {
-    path: []const u8,   // the root, then each folder name below it, joined by "/"
+    path: []const u8,   // root + names below it, joined by "/"
     name: []const u8,   // the last part of `path`
     is_dir: bool,
     depth: usize,       // 1 for an entry of the root folder itself
 }
 
-/// The files and folders below a folder, each folder before what is in it (`walk`). A link
-/// (a symlink, a junction) is given but not followed.
+// recursive walk, folders before their contents; links listed but not followed
 pub Walker :: struct {
     region: *Arena,
     dirs: Vec(DirIter),        // the open folders, the innermost last
     paths: Vec([]const u8),    // their paths
-    /// A folder below the root could not be opened (no access, a path too long); it was
-    /// given as an entry and skipped.
+    // set if a subfolder couldn't be opened; it was returned but not entered
     failed: bool,
 
     pub next :: fn(self: *Self) -> ?Entry {
@@ -392,7 +348,7 @@ pub Walker :: struct {
         return null;
     }
 
-    /// Close what is still open, when the loop stops early.
+    // close what's still open if the loop stops early
     pub close :: fn(self: *Self) {
         while self.dirs.len() > 0 {
             d := self.dirs.pop();
@@ -411,12 +367,7 @@ join_path :: fn(a: *Arena, dir: []const u8, name: []const u8) -> []const u8 {
     return out;
 }
 
-/// The files and folders below `root`, at any depth:
-///
-///   w := fs::walk(&a, "src")?;
-///   for e in w { if !e.is_dir && strings::str_ends_with(e.name, ".fels") { … } }
-///
-/// The paths are in `a`. `not_found` when `root` cannot be opened.
+// recursive walk; paths live in `a`
 pub walk :: fn(a: *Arena, root: []const u8) -> Walker ! FsError {
     it := open_dir(root)?;
     w: Walker = .{ a, vec::make(DirIter, a), vec::make([]const u8, a), false };
@@ -425,10 +376,9 @@ pub walk :: fn(a: *Arena, root: []const u8) -> Walker ! FsError {
     return w;
 }
 
-// The current folder and absolute paths
+// cwd and absolute paths
 
-/// The current folder, an absolute path in `a`. `not_found` when it cannot be read (it was
-/// removed, or its path is too long).
+// current folder, absolute, in `a`; not_found if removed or path too long
 pub cwd :: fn(a: *Arena) -> []const u8 ! FsError {
     buf: [1024]u8 = .{};
     n := os_cwd(buf[:]);
@@ -436,18 +386,14 @@ pub cwd :: fn(a: *Arena) -> []const u8 ! FsError {
     return copy_text(a, buf[0..(n as usize)]);
 }
 
-/// Make `path` the current folder, for every thread: relative paths start from it from now on.
-/// `not_found` when it is no folder.
+// set the current folder, process-wide (all threads); not_found if not a folder
 pub set_cwd :: fn(path: []const u8) -> void ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
     if os_chdir(cpath) != 0 { fail .not_found; }
 }
 
-/// `p` as an absolute path in `a`, by `path::normalize`: a relative one starts from the current
-/// folder. On Windows `\x` is on the current folder's drive, and `D:x` starts from the current
-/// folder when that is on D:, else from D:'s root. Nothing else is read from the disk, so the path
-/// need not exist, and `..` after a link goes back over the link's name.
+// absolute `p` in `a` via path::normalize; only cwd is read, so `..` is lexical
 pub absolute :: fn(a: *Arena, p: []const u8) -> []const u8 ! FsError {
     if p.len >= 2 && path::is_sep(p[0]) && path::is_sep(p[1]) { return path::normalize(a, p); }
     if p.len >= 1 && path::is_sep(p[0]) {
@@ -482,7 +428,7 @@ concat :: fn(a: *Arena, x: []const u8, y: []const u8) -> []const u8 {
 
 lower :: fn(c: u8) -> u8 { return if c >= 'A' && c <= 'Z' { c + 32 } else { c }; }
 
-// The value of the environment variable `name` in `a`; null when it is not set or empty.
+// env var `name` in `a`; null if unset or empty
 env_value :: fn(a: *Arena, name: []const u8) -> ?[]const u8 {
     name_buf: [128]u8 = .{};
     cname := fs_to_cstr(name, name_buf[:]) catch err { return null; };
@@ -492,7 +438,7 @@ env_value :: fn(a: *Arena, name: []const u8) -> ?[]const u8 {
     return copy_text(a, value[0..(n as usize)]);
 }
 
-// A path without the separator at its end, unless that is all of a root ("/", "C:\").
+// `p` without a trailing separator, unless it is a root ("/", "C:\")
 trim_sep :: fn(p: []const u8) -> []const u8 {
     n := p.len;
     while n > 1 && path::is_sep(p[n - 1]) && !(n == 3 && p[1] == ':') { n -= 1; }
@@ -515,32 +461,27 @@ trim_sep :: fn(p: []const u8) -> []const u8 {
     home_default :: fn(a: *Arena) -> ?[]const u8 { return env_value(a, "HOME"); }
 }
 
-// Folders of the user
+// user folders
 
-/// The folder for temporary files: on Windows the first of `TMP`, `TEMP` and `USERPROFILE`
-/// that is set, else C:\Windows\Temp; elsewhere `TMPDIR`, else /tmp. Without a separator at the
-/// end.
+// temp folder, no trailing sep (windows: TMP, TEMP, USERPROFILE; else TMPDIR or /tmp)
 pub temp_dir :: fn(a: *Arena) -> []const u8 { return trim_sep(temp_default(a)); }
 
-/// The user's home folder: `USERPROFILE` on Windows, `HOME` elsewhere; null when it is not set.
+// USERPROFILE on windows, HOME elsewhere; null if unset
 pub home_dir :: fn(a: *Arena) -> ?[]const u8 {
     if home_default(a) |h| { return trim_sep(h); }
     return null;
 }
 
-// Temporary files and folders
+// temp files and folders
 
-/// A file `create_temp` made, open to write, and its path.
+// from create_temp: the file, open to write, and its path
 pub TempFile :: struct {
     file: File,
     path: []const u8,
 }
 
-/// Make a new, empty file in `dir` ("" for `temp_dir()`), open to write, named by `pattern`
-/// with its last `*` replaced by 16 random hex digits (put at the end when there is no `*`):
-/// `create_temp(&a, "", "report-*.csv")`. It is made only if no file has the name, so two
-/// programs never get one file; on Linux only its owner may read it. Close the file and
-/// `delete` its path when done. `create_failed` when no name worked.
+// new exclusive file in `dir` ("" = temp_dir()); last `*` of `pattern` -> 16 hex digits
+// caller closes and deletes it; owner-only on linux; create_failed if no name worked
 pub create_temp :: fn(a: *Arena, dir: []const u8, pattern: []const u8) -> TempFile ! FsError {
     folder := if dir.len == 0 { temp_dir(a) } else { dir };
     for attempt in 0..100 {
@@ -557,9 +498,7 @@ pub create_temp :: fn(a: *Arena, dir: []const u8, pattern: []const u8) -> TempFi
     fail .create_failed;
 }
 
-/// Make a new, empty folder in `dir` ("" for `temp_dir()`), named as `create_temp` names a file:
-/// its path, in `a`. `remove_tree` takes it away with what was put in it. `create_failed` when
-/// no name worked.
+// new temp folder, named like create_temp; path in `a`; create_failed if none worked
 pub make_temp_dir :: fn(a: *Arena, dir: []const u8, pattern: []const u8) -> []const u8 ! FsError {
     folder := if dir.len == 0 { temp_dir(a) } else { dir };
     for attempt in 0..100 {
@@ -572,12 +511,12 @@ pub make_temp_dir :: fn(a: *Arena, dir: []const u8, pattern: []const u8) -> []co
     fail .create_failed;
 }
 
-// `dir`, a separator, and `pattern` with 16 hex digits for its last `*` (or after it).
+// `dir` + sep + `pattern` with 16 hex digits for its last `*` (or appended)
 temp_name :: fn(a: *Arena, dir: []const u8, pattern: []const u8, attempt: usize) -> []const u8 {
     star: usize = pattern.len;
     for k in 0..pattern.len { if pattern[k] == '*' { star = k; } }
     after: usize = if star < pattern.len { star + 1 } else { pattern.len };
-    // what differs between two programs, two calls, two attempts
+    // seed differs per program, call and attempt
     local: u64 = 0;
     seed := (os_wall_nanos() as u64) ^ ((os_monotonic_nanos() as u64) << 17)
         ^ ((os_pid() as u64) << 40) ^ (unsafe ((&local) as usize) as u64) ^ ((attempt as u64) *% 0x9E3779B97F4A7C15u64);
@@ -609,22 +548,19 @@ temp_name :: fn(a: *Arena, dir: []const u8, pattern: []const u8, attempt: usize)
     return out;
 }
 
-/// Delete `path`: a file, or a folder with all that is in it. A link in it (a symlink, a
-/// junction) is deleted, not what it points at. `not_found` when there is nothing at `path`;
-/// `delete_failed` when something could not be deleted (it is open, read-only, or not ours), after
-/// deleting what could be.
+// delete a file or a whole folder tree; links are removed, not followed
+// not_found if missing; delete_failed (open, read-only) after deleting what it could
 pub remove_tree :: fn(path: []const u8) -> void ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
-    // a file or a link; then an empty folder, or a link to a folder on Windows: never what a
-    // link points at
+    // file or link, else empty folder or windows dir link; never a link's target
     if os_unlink(cpath) == 0 || os_rmdir(cpath) == 0 { return; }
     kind := os_path_kind(cpath);
     if kind == 0 { fail .not_found; }
     if kind == 1 || !remove_folder(path) { fail .delete_failed; }
 }
 
-// Empty the folder `dir` and delete it; false when something stayed.
+// empty `dir` and delete it; false if anything stayed
 remove_folder :: fn(dir: []const u8) -> bool {
     it := open_dir(dir) catch err { return false; };
     ok := true;
@@ -642,7 +578,7 @@ remove_folder :: fn(dir: []const u8) -> bool {
     return ok;
 }
 
-// Delete the entry `name` of `dir`, which `it` is at; false when something stayed.
+// delete entry `name` of `dir` (where `it` is); false if anything stayed
 remove_entry :: fn(it: *DirIter, dir: []const u8, name: []const u8) -> bool {
     if name == "." || name == ".." { return true; }
     if name.len == 0 { return false; }             // a name too long to read

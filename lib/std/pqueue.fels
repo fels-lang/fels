@@ -1,32 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.pqueue — a priority queue: `pop` gives the smallest element (or the largest, or the first
-// by any order), `push` and `pop` take O(log n). A binary heap in an arena, region-bound like
-// std.vec: it grows by taking a bigger block from its arena, and goes when the arena does.
-//
-//   q := pqueue::min(i32, &a);           // smallest first (`max` for largest first)
-//   q.push(5); q.push(1); q.push(3);
-//   while q.pop() |x| { … }              // 1, 3, 5
-//
-//   jobs := pqueue::by(Job, &a, earlier); // earlier :: fn(a: Job, b: Job) -> bool
-//
-// The order is a type with `less(self, a, b)` (`Min(T)`, `Max(T)`, `By(T)`, or one of yours with
-// `pqueue::with`), so the queue calls it directly.
+// std.pqueue: arena binary heap; O(log n) push/pop; order = any type with less()
 
 #import std.heap.{ Arena, alloc };
 
-/// Smallest first: `a < b`.
+// smallest first
 pub Min :: struct($T: type) {
     marker: u8,
     pub less :: fn(self: *Self, a: T, b: T) -> bool { return a < b; }
 }
 
-/// Largest first: `a > b`.
+// largest first
 pub Max :: struct($T: type) {
     marker: u8,
     pub less :: fn(self: *Self, a: T, b: T) -> bool { return a > b; }
 }
 
-/// First by a function: `f(a, b)` says whether `a` comes before `b`.
+// first by `f(a, b)`: true if a comes before b
 pub By :: struct($T: type) {
     f: fn(T, T) -> bool,
     pub less :: fn(self: *Self, a: T, b: T) -> bool { return self.f(a, b); }
@@ -34,14 +23,14 @@ pub By :: struct($T: type) {
 
 pub PriorityQueue :: struct($T: type, $C: type) {
     region: *Arena,   // where it grows (borrowed)
-    data: []T,        // the heap: data[0] comes first; capacity == data.len
+    data: []T,        // heap, data[0] first; cap == data.len
     count: usize,
     order: C,
 
     pub len :: fn(self: *Self) -> usize { return self.count; }
     pub is_empty :: fn(self: *Self) -> bool { return self.count == 0; }
 
-    /// The element `pop` would give, left in the queue; null when it is empty.
+    // next `pop` result, left in place; null if empty
     pub peek :: fn(self: *Self) -> ?T {
         if self.count == 0 { return null; }
         return self.data[0];
@@ -55,7 +44,7 @@ pub PriorityQueue :: struct($T: type, $C: type) {
             for i in 0..self.count { bigger[i] = self.data[i]; }
             self.data = bigger;
         }
-        // up from the end while it comes before its parent
+        // sift up
         i := self.count;
         self.count += 1;
         while i > 0 {
@@ -67,18 +56,18 @@ pub PriorityQueue :: struct($T: type, $C: type) {
         self.data[i] = item;
     }
 
-    /// Every element of `items`.
+    // push each of `items`
     pub push_all :: fn(self: *Self, items: []const T) {
         for x in items { self.push(x); }
     }
 
-    /// The element that comes first, taken out; null when the queue is empty.
+    // take the first; null if empty
     pub pop :: fn(self: *Self) -> ?T {
         if self.count == 0 { return null; }
         top := self.data[0];
         self.count -= 1;
         if self.count > 0 {
-            // the last element goes down from the top while a child comes before it
+            // sift the last element down from the top
             item := self.data[self.count];
             i: usize = 0;
             while true {
@@ -94,31 +83,31 @@ pub PriorityQueue :: struct($T: type, $C: type) {
         return top;
     }
 
-    /// The elements, in no particular order (valid until the next push).
+    // unordered; valid until the next push
     pub items :: fn(self: *Self) -> []T { return self.data[0..self.count]; }
 
     pub clear :: fn(self: *Self) { self.count = 0; }
 }
 
-/// A queue in `a` with `order` deciding what comes first.
+// queue in `a`; `order` decides what comes first
 pub with :: fn($T: type, $C: type, a: *Arena, order: C) -> PriorityQueue(T, C) {
     q: PriorityQueue(T, C) = .{ a, alloc(T, a, 0), 0, order };
     return q;
 }
 
-/// Smallest first.
+// smallest first
 pub min :: fn($T: type, a: *Arena) -> PriorityQueue(T, Min(T)) {
     o: Min(T) = .{ 0 };
     return with(T, Min(T), a, o);
 }
 
-/// Largest first.
+// largest first
 pub max :: fn($T: type, a: *Arena) -> PriorityQueue(T, Max(T)) {
     o: Max(T) = .{ 0 };
     return with(T, Max(T), a, o);
 }
 
-/// First by `less`: `less(a, b)` says whether `a` comes before `b`.
+// first by `less(a, b)`: true if a comes before b
 pub by :: fn($T: type, a: *Arena, less: fn(T, T) -> bool) -> PriorityQueue(T, By(T)) {
     o: By(T) = .{ less };
     return with(T, By(T), a, o);

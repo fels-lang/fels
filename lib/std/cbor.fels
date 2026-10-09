@@ -1,24 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.cbor — CBOR (RFC 8949): JSON's shapes in compact binary, with byte strings and tags too,
-// as COSE, WebAuthn and many devices use it.
-//
-//   sb := strings::builder(&a);                // or any io.Writer
-//   e := cbor::writer(&sb);
-//   e.begin_map(2);
-//   e.text("name"); e.text("Ada");
-//   e.text("ids"); e.begin_array(2); e.uint(1); e.int(-2);
-//   e.finish()?;                               // fails when a write failed
-//   bytes := strings::str(&sb);
-//
-//   r := cbor::reader(bytes);
-//   m := r.next()?;                            // .map, m.value 2 (pairs)
-//   k := r.next()?;                            // .text, k.data "name"
-//   r.skip()?;                                 // over the value, whatever it holds
-//
-// The writer writes each number in its shortest form, and a float as the shortest of half,
-// single and double precision that holds it exactly (NaN as half precision), as RFC 8949's
-// preferred serialization says. The reader takes every form, and allocates nothing: a string's
-// bytes are a slice of the input.
+// std.cbor: rfc 8949; writer emits preferred (shortest) forms, reader allocates nothing
 
 #import std.io as io;
 #import std.io.{ Writer, IoError };
@@ -26,12 +7,11 @@
 
 pub CborError :: errors {
     truncated,      // the bytes end in the middle of an item
-    malformed,      // a header no item has, or a `break` where none belongs
+    malformed,      // invalid header, or a stray `break`
     bad_text,       // a text string that is not UTF-8
-    too_deep,       // `skip` met 1000 levels of arrays, maps and tags in one another
+    too_deep,       // `skip` hit 1000 nesting levels
 }
 
-/// What an item is.
 pub Kind :: enum {
     uint,           // `value`
     negint,         // -1 - `value`
@@ -40,25 +20,24 @@ pub Kind :: enum {
     array,          // `value` items follow
     map,            // `value` pairs follow, each a key and its value
     tag,            // the tag `value`; the item it tags follows
-    simple,         // a simple value with no meaning of its own, its number in `value`
+    simple,         // unassigned simple value, number in `value`
     boolean,        // `value` 1 for true, 0 for false
     null_value,
     undefined,
     float,          // `number`
-    end,            // the `break` after the items of an `indefinite` one
+    end,            // `break` closing an `indefinite` item
 }
 
-/// An item `Reader.next` read: its kind and what it holds.
+// from Reader.next; `data` slices the input
 pub Item :: struct {
     kind: Kind,
     value: u64,
     data: []const u8,
     number: f64,
-    /// An array, map, byte or text string of indefinite length: its items (for a string, its
-    /// parts, each a string of the same kind) follow until an item of kind `end`.
+    // items (string parts) follow until a kind `end` item
     indefinite: bool,
 
-    /// The number of a `uint` or `negint` item, when an i64 holds it.
+    // uint/negint as i64; null if it doesn't fit
     pub as_i64 :: fn(self: *Self) -> ?i64 {
         if self.kind == .uint && self.value <= 0x7FFFFFFFFFFFFFFFu64 { return self.value as i64; }
         if self.kind == .negint && self.value <= 0x7FFFFFFFFFFFFFFFu64 { return -1 - (self.value as i64); }
@@ -66,12 +45,9 @@ pub Item :: struct {
     }
 }
 
-// Writing
+// writing
 
-/// Writes CBOR to a `Writer` as the calls come. The order of the calls is yours: the number of
-/// items `begin_array` and `begin_map` were given must follow (a key and a value for each pair
-/// of a map), and an `end` closes each `begin_array_indefinite` and `begin_map_indefinite`.
-/// After a write fails, the rest are skipped, and `finish` reports it.
+// caller keeps item counts right; `end` closes indefinites; write errors show in finish
 pub Out :: struct {
     w: *Writer,
     failed: bool,
@@ -84,7 +60,7 @@ pub Out :: struct {
         };
     }
 
-    // The head of an item: its major type and a number, in 1, 2, 3, 5 or 9 bytes.
+    // item head: major type + number, in 1, 2, 3, 5 or 9 bytes
     head :: fn(self: *Self, major: u8, v: u64) {
         b: [9]u8 = .{};
         m := major << 5;
@@ -109,49 +85,46 @@ pub Out :: struct {
         self.put(b[0..n]);
     }
 
-    /// A number of 0 or more.
     pub uint :: fn(self: *Self, v: u64) { self.head(0, v); }
 
-    /// A number, of either sign.
     pub int :: fn(self: *Self, v: i64) {
         if v >= 0 { self.head(0, v as u64); } else { self.head(1, (-1 - v) as u64); }
     }
 
-    /// A byte string.
     pub bytes :: fn(self: *Self, b: []const u8) {
         self.head(2, b.len as u64);
         self.put(b);
     }
 
-    /// A text string (UTF-8, which is not checked).
+    // utf-8 not checked
     pub text :: fn(self: *Self, s: []const u8) {
         self.head(3, s.len as u64);
         self.put(s);
     }
 
-    /// An array of `n` items: write them next.
+    // write n items next
     pub begin_array :: fn(self: *Self, n: usize) { self.head(4, n as u64); }
 
-    /// A map of `n` pairs: write each key and its value next.
+    // write n key/value pairs next
     pub begin_map :: fn(self: *Self, n: usize) { self.head(5, n as u64); }
 
-    /// An array of items still to be counted: write them, then `end`.
+    // write the items, then `end`
     pub begin_array_indefinite :: fn(self: *Self) { self.put("\x9f"); }
 
-    /// A map of pairs still to be counted: write them, then `end`.
+    // write the pairs, then `end`
     pub begin_map_indefinite :: fn(self: *Self) { self.put("\xbf"); }
 
-    /// The end of the array or map `begin_array_indefinite` or `begin_map_indefinite` began.
+    // closes an indefinite array or map
     pub end :: fn(self: *Self) { self.put("\xff"); }
 
-    /// A tag: what the item written next is (1 for a time in seconds since 1970, 32 for a URI…).
+    // tags the next item (1 = epoch seconds, 32 = uri, ...)
     pub tag :: fn(self: *Self, t: u64) { self.head(6, t); }
 
     pub boolean :: fn(self: *Self, v: bool) { self.put(if v { "\xf5" } else { "\xf4" }); }
     pub null_value :: fn(self: *Self) { self.put("\xf6"); }
     pub undefined :: fn(self: *Self) { self.put("\xf7"); }
 
-    /// A simple value: 0 to 19, or 32 to 255.
+    // 0..19 or 32..255; anything else writes nothing
     pub simple :: fn(self: *Self, v: u8) {
         if v < 20 { self.head(7, v as u64); }
         else if v >= 32 {
@@ -160,7 +133,7 @@ pub Out :: struct {
         }
     }
 
-    /// A float, in the fewest bytes that hold it exactly.
+    // shortest exact width; NaN as half
     pub float :: fn(self: *Self, v: f64) {
         if v != v {
             self.put("\xf9\x7e\x00");
@@ -182,32 +155,29 @@ pub Out :: struct {
         self.put(b[0..n + 1]);
     }
 
-    /// Bytes that are CBOR already, as they are.
+    // pre-encoded cbor, as is
     pub raw :: fn(self: *Self, b: []const u8) { self.put(b); }
 
-    /// Whether every write went through: fails with `write_failed` when one did not.
+    // .write_failed if any write failed
     pub finish :: fn(self: *Self) -> void ! IoError {
         if self.failed { fail .write_failed; }
     }
 }
 
-/// An `Out` that writes to `w`.
 pub writer :: fn(w: *Writer) -> Out {
     o: Out = .{ w, false };
     return o;
 }
 
-// Reading
+// reading
 
-/// Reads the items of CBOR bytes one at a time: an array's or a map's items follow it.
+// one item at a time; a container's items follow its header
 pub Reader :: struct {
     data: []const u8,
     pos: usize,
 
-    /// Whether every byte has been read.
     pub at_end :: fn(self: *Self) -> bool { return self.pos >= self.data.len; }
 
-    /// The next item.
     pub next :: fn(self: *Self) -> Item ! CborError {
         it: Item = .{ .uint, 0, "", 0.0, false };
         if self.pos >= self.data.len { fail .truncated; }
@@ -274,19 +244,18 @@ pub Reader :: struct {
         return it;
     }
 
-    /// Read over the next item, and all it holds.
+    // skips the next item and everything in it
     pub skip :: fn(self: *Self) -> void ! CborError {
         self.skip_items(1)?;
     }
 
-    /// Read over what the item `it`, just read, holds: an array's items, a map's pairs, a tag's
-    /// item, the parts of an indefinite string.
+    // skips what `it` (just read) holds: items, pairs, tagged item, string parts
     pub skip_contents :: fn(self: *Self, it: Item) -> void ! CborError {
         n := self.held(it)?;
         if n != 0 { self.skip_items(n)?; }
     }
 
-    // How many items `it` holds; UNTIL_BREAK when they end at a `break`.
+    // item count inside `it`; UNTIL_BREAK if indefinite
     held :: fn(self: *Self, it: Item) -> u64 ! CborError {
         if it.indefinite { return UNTIL_BREAK; }
         if it.kind == .tag { return 1; }
@@ -298,8 +267,7 @@ pub Reader :: struct {
         return 0;
     }
 
-    // Read over `n` items (UNTIL_BREAK: up to a `break`, and it), and what they hold, with a
-    // stack of what is left at each level open instead of a call for each.
+    // skips n items (UNTIL_BREAK: through the break); explicit stack, no recursion
     skip_items :: fn(self: *Self, n: u64) -> void ! CborError {
         left: [MAX_DEPTH]u64 = .{};
         top: usize = 0;
@@ -331,7 +299,7 @@ pub Reader :: struct {
         }
     }
 
-    // The next `n` bytes as a big-endian number.
+    // next n bytes, big-endian
     take :: fn(self: *Self, n: usize) -> u64 ! CborError {
         if self.data.len - self.pos < n { fail .truncated; }
         v: u64 = 0;
@@ -344,18 +312,16 @@ pub Reader :: struct {
 MAX_DEPTH :: 1000usize;
 UNTIL_BREAK :: 0xFFFFFFFFFFFFFFFFu64;
 
-/// A `Reader` of `data`.
 pub reader :: fn(data: []const u8) -> Reader {
     r: Reader = .{ data, 0 };
     return r;
 }
 
-// Floats, computed exactly from and into their bits (scaling by a power of two is exact), so
-// that compile-time code reads and writes them too.
+// float bits via exact pow2 scaling, so compile-time code can use them too
 
 TWO64 :: 18446744073709551616.0;
 
-// `x` times 2^k, exact while each step's result holds `x`'s bits.
+// x * 2^k; exact while each step holds x's bits
 scale2 :: fn(x: f64, k: i32) -> f64 {
     v := x;
     e := k;
@@ -378,8 +344,7 @@ scale2 :: fn(x: f64, k: i32) -> f64 {
     return v;
 }
 
-// The float that `bits` stand for in a format of `exp_bits` exponent and `mant_bits` fraction
-// bits after a sign bit (half: 5 and 10, single: 8 and 23, double: 11 and 52).
+// float from bits; exp/mant bits: half 5/10, single 8/23, double 11/52
 from_bits :: fn(bits: u64, exp_bits: u32, mant_bits: u32) -> f64 {
     e_all := (1u64 << (exp_bits as u64)) - 1;
     bias := ((1u64 << ((exp_bits - 1) as u64)) - 1) as i32;
@@ -398,8 +363,7 @@ from_bits :: fn(bits: u64, exp_bits: u32, mant_bits: u32) -> f64 {
     return if neg { -v } else { v };
 }
 
-// The bits of `v` in that format, when it holds `v` exactly; null when it does not, or `v` is
-// NaN.
+// v's bits in that format if exact; null if not, or v is NaN
 float_bits :: fn(v: f64, exp_bits: u32, mant_bits: u32) -> ?u64 {
     if v != v { return null; }
     total := (exp_bits + mant_bits) as u64;
@@ -435,7 +399,7 @@ float_bits :: fn(v: f64, exp_bits: u32, mant_bits: u32) -> ?u64 {
         if (fm as f64) != f { return null; }
         return sign | (((e + bias) as u64) << (mant_bits as u64)) | fm;
     }
-    // below the format's normal numbers: a multiple of its smallest one
+    // subnormal: a multiple of the smallest one
     f := scale2(a, (mant_bits as i32) - (1 - bias));
     fm := f as u64;
     if (fm as f64) != f { return null; }

@@ -1,12 +1,10 @@
-// components — the entity "kinds" and world dimensions shared across systems.
+// components: entity kinds + field size shared by systems
 
-// What an entity is. The simulation is a tiny asteroids field: a fixed turret
-// at the centre fires bullets at drifting asteroids, which split when hit.
 pub Kind :: enum { None, Turret, Asteroid, Bullet }
 
-// Playfield size, in world units. The renderer maps this onto an ASCII grid.
+// playfield size in world units; the renderer maps it to an ascii grid
 pub FIELD_W :: 80;
 pub FIELD_H :: 30;
 
-// Maximum live entities (component arrays are sized to this).
+// max live entities; sizes the component arrays
 pub MAX_ENTITIES :: 256;

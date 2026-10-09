@@ -1,23 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.cli — command-line arguments: flags, options with values and positional arguments, and the
-// help text, from one description of the command.
-//
-//   c := cli::command(&a, "report", "writes a portfolio report");
-//   c.flag("verbose", 'v', "say what happens");
-//   c.option("out", 'o', "FILE", "where to write the report");
-//   c.positional("input", "the file to read");
-//   r := c.parse(process::args(&a)) catch err {
-//       io::eprintln(c.message);                    // "unknown option --vrebose"
-//       return 2;
-//   };
-//   if r.help { io::print(c.help(&a)); return 0; }
-//   out := r.option("out") ?? "report.txt";
-//   input := r.positional(0) ?? "";
-//
-// The arguments, by the usual rules: `--out FILE`, `--out=FILE`, `-o FILE`, `-oFILE`; short flags
-// together (`-vq`); `--` ends the options, so what follows is positional even when it starts
-// with `-`; `-` alone is positional. `-h` and `--help` set `help` and stop the checks for missing
-// arguments. The first argument (the program) is skipped.
+// std.cli: flags, options, positionals and help text from one command description
 
 #import std.heap.{ Arena };
 #import std.vec as vec;
@@ -29,12 +11,12 @@ pub CliError :: errors {
     unknown_option,       // an option the command does not have
     missing_value,        // an option that takes a value, at the end
     unexpected_value,     // a value given to a flag (`--verbose=yes`)
-    missing_argument,     // fewer positional arguments than the command needs
+    missing_argument,     // too few positional arguments
     too_many_arguments,   // more than it takes
     invalid_number,       // `int_option` of a value that is no integer
 }
 
-// An option or a flag, as the command describes it.
+// option or flag spec
 Spec :: struct {
     long: []const u8,
     short: u8,              // 0 for none
@@ -42,56 +24,52 @@ Spec :: struct {
     about: []const u8,
 }
 
-// A positional argument, as the command describes it. `kind`: 0 needed, 1 may be left out,
-// 2 any number of them (the rest).
+// kind: 0 required, 1 optional, 2 rest
 PosSpec :: struct {
     name: []const u8,
     about: []const u8,
     kind: u8,
 }
 
-/// A command's description, and what went wrong in the last `parse` (`message`).
 pub Command :: struct {
     region: *Arena,
     name: []const u8,
     about: []const u8,
     specs: Vec(Spec),
     places: Vec(PosSpec),
-    /// What the last `parse` that failed found wrong, for the user: "unknown option --frob".
+    // user-facing reason the last parse failed
     message: []const u8,
 
-    /// A flag, `--long` or `-s` (0 for no short form): set or not.
+    // short 0 = none
     pub flag :: fn(self: *Self, long: []const u8, short: u8, about: []const u8) {
         s: Spec = .{ long, short, "", about };
         self.specs.push(s);
     }
 
-    /// An option that takes a value, written `--long VALUE` or `-s VALUE` (0 for no short form).
-    /// `value_name` is what the help calls the value (`FILE`, `N`).
+    // takes a value; short 0 = none; value_name shows in help (FILE, N)
     pub option :: fn(self: *Self, long: []const u8, short: u8, value_name: []const u8, about: []const u8) {
         s: Spec = .{ long, short, value_name, about };
         self.specs.push(s);
     }
 
-    /// A positional argument the command needs, after the ones described before it.
+    // required; positionals match in declaration order
     pub positional :: fn(self: *Self, name: []const u8, about: []const u8) {
         p: PosSpec = .{ name, about, 0 };
         self.places.push(p);
     }
 
-    /// A positional argument that may be left out, after the needed ones.
+    // may be omitted; goes after the required ones
     pub optional :: fn(self: *Self, name: []const u8, about: []const u8) {
         p: PosSpec = .{ name, about, 1 };
         self.places.push(p);
     }
 
-    /// Any number of positional arguments after the others (`files...`).
+    // any number after the others (files...)
     pub rest :: fn(self: *Self, name: []const u8, about: []const u8) {
         p: PosSpec = .{ name, about, 2 };
         self.places.push(p);
     }
 
-    // The option with long name `long`, or null.
     by_long :: fn(self: *Self, long: []const u8) -> ?Spec {
         for s in self.specs.items() { if s.long == long { return s; } }
         return null;
@@ -106,7 +84,7 @@ pub Command :: struct {
         self.message = strings::str_concat(self.region, what, arg);
     }
 
-    /// Read `args` (the program first, as `process::args` gives them) by this description.
+    // skips args[0]; --x V, --x=V, -o V, -oV, -vq; `--` ends options; -h skips checks
     pub parse :: fn(self: *Self, args: []const []const u8) -> Parsed ! CliError {
         r: Parsed = .{ vec::make(Given, self.region), vec::make([]const u8, self.region), false };
         self.message = "";
@@ -204,7 +182,7 @@ pub Command :: struct {
             }
         }
         if r.help { return r; }
-        // the positional arguments against the description
+        // check positional counts
         needed: usize = 0;
         allowed: usize = 0;
         unbounded := false;
@@ -224,7 +202,7 @@ pub Command :: struct {
         return r;
     }
 
-    /// The usage and options, for `--help`, in memory from `a`.
+    // usage and options text, in `a`
     pub help :: fn(self: *Self, a: *Arena) -> []const u8 {
         sb := strings::builder(a);
         sb.append(self.name);
@@ -287,49 +265,46 @@ pub Command :: struct {
     }
 }
 
-// An option or flag as given, by its long name; "" as the value of a flag.
+// by long name; value "" for a flag
 Given :: struct {
     name: []const u8,
     value: []const u8,
 }
 
-/// What `parse` read.
 pub Parsed :: struct {
     given: Vec(Given),
     positionals: Vec([]const u8),
-    /// `-h` or `--help` was given.
+    // -h or --help given
     help: bool,
 
-    /// Whether the flag (or option) `long` was given.
+    // flag or option given at all
     pub flag :: fn(self: *Self, long: []const u8) -> bool {
         for g in self.given.items() { if g.name == long { return true; } }
         return false;
     }
 
-    /// How many times `long` was given (`-vvv` is 3).
+    // times given (-vvv is 3)
     pub count :: fn(self: *Self, long: []const u8) -> usize {
         n: usize = 0;
         for g in self.given.items() { if g.name == long { n += 1; } }
         return n;
     }
 
-    /// The value of option `long`, the last one when it was given more than once; null when it
-    /// was not given.
+    // last value if repeated; null if not given
     pub option :: fn(self: *Self, long: []const u8) -> ?[]const u8 {
         found: ?[]const u8 = null;
         for g in self.given.items() { if g.name == long { found = g.value; } }
         return found;
     }
 
-    /// Every value of option `long`, in order (`-I a -I b`), in memory from `a`.
+    // all values in order (-I a -I b), in `a`
     pub all :: fn(self: *Self, a: *Arena, long: []const u8) -> []const []const u8 {
         out := vec::make([]const u8, a);
         for g in self.given.items() { if g.name == long { out.push(g.value); } }
         return out.items();
     }
 
-    /// The value of option `long` as an integer; null when it was not given, `invalid_number`
-    /// when it is no integer.
+    // null if not given; .invalid_number if not an integer
     pub int_option :: fn(self: *Self, long: []const u8) -> ?i64 ! CliError {
         found := self.option(long);
         if found == null { return null; }
@@ -338,17 +313,15 @@ pub Parsed :: struct {
         return n;
     }
 
-    /// Positional argument `i`, or null.
     pub positional :: fn(self: *Self, i: usize) -> ?[]const u8 {
         if i < self.positionals.len() { return self.positionals.get(i); }
         return null;
     }
 
-    /// The positional arguments, in order.
     pub positionals_all :: fn(self: *Self) -> []const []const u8 { return self.positionals.items(); }
 }
 
-/// A command named `name` (as the help shows it), in `a`, with no options yet.
+// name as help shows it; everything lives in `a`
 pub command :: fn(a: *Arena, name: []const u8, about: []const u8) -> Command {
     c: Command = .{ a, name, about, vec::make(Spec, a), vec::make(PosSpec, a), "" };
     return c;

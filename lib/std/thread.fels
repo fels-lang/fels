@@ -1,51 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.thread — native OS threads. Thread calls go through the platform runtime
-// (windows.fels → CreateThread; linux.fels → clone with a child stack), so this file
-// stays OS-agnostic.
-//
-// Real OS threads, not async/await — a thread is a stack plus an entry point. The
-// entry is `fn(*void) -> u32` and its return value is the thread's exit code. A
-// normal fels function is a fat closure a C ABI can't call, so pass the entry as
-// a thin pointer with core::fn_ptr, and keep the context pointer alive:
-//
-//     worker :: fn(p: *void) -> u32 {
-//         data := unsafe (p as *MyData);
-//         return 0u32;
-//     }
-//     t := thread::spawn(core::fn_ptr(worker), unsafe ((&data) as *void));
-//     code := t.join();   // blocks; returns worker's exit code
-//
-// Linux note: an exit code is only 8 bits, so return 0..255 if you read it via join.
-//
-// Most programs need none of that: a `zone` of kind `Scope` runs Fels closures on threads and
-// joins them where the block ends (see Scope below).
+// std.thread: OS threads, Scope (joined at block end), Pool (parallel loops)
 
 #import std.heap as heap;
 #import std.heap.{ Arena };
 #import std.sync.{ Mutex, CondVar };
 #import std.atomics as atomics;
 
-// The thread seam, provided by the platform runtime:
-//   os_thread_spawn(entry, arg) -> i64   opaque token, -1 on failure
-//   os_thread_join(token) -> u32         block, return exit code
-//   os_thread_detach(token) / os_thread_running(token) -> bool
-//   os_thread_id() -> u32 / os_thread_yield() / os_cpu_count() -> u32
+// os_thread_* and os_cpu_count come from the platform runtime; spawn gives -1 on failure
 
 THREAD_INVALID :: -1i64;
 MAX_GROUP :: 64;
 
-// A thread entry has the shape `fn(*void) -> u32`. Spawn it with
-// `core::fn_ptr(an_entry)`.
-
-// Thread
 pub Thread :: struct {
     token: i64
 
-    // Did the thread start successfully?
+    // false if spawn failed
     pub ok :: fn(self: *Self) -> bool { return self.token != THREAD_INVALID; }
 
-    // Block until the thread finishes, returning its exit code. A joined Thread
-    // must not be reused.
+    // blocks, returns the exit code (8 bits on linux); don't reuse after
     pub join :: fn(self: *Self) -> u32 {
         if self.token == THREAD_INVALID { return 0; }
         code := os_thread_join(self.token);
@@ -53,58 +25,52 @@ pub Thread :: struct {
         return code;
     }
 
-    // Release the thread without waiting; it runs to completion on its own.
+    // no wait; it runs to completion on its own
     pub detach :: fn(self: *Self) {
         if self.token == THREAD_INVALID { return; }
         os_thread_detach(self.token);
         self.token = THREAD_INVALID;
     }
 
-    // True while the thread is still executing (a non-blocking poll).
+    // non-blocking poll
     pub is_running :: fn(self: *Self) -> bool {
         if self.token == THREAD_INVALID { return false; }
         return os_thread_running(self.token);
     }
 }
 
-// Spawn a thread that runs `entry(arg)`. `entry` is a raw thread-entry pointer
-// (`core::fn_ptr(worker)`); `arg` is the single context pointer it receives.
+// `entry` is `fn(*void) -> u32` via core::fn_ptr; `arg` must outlive the thread
 pub spawn :: fn(entry: *void, arg: *void) -> Thread {
     return .{ os_thread_spawn(entry, arg) };
 }
 
-// Free helpers ───────────────────────────────────────────────────────────--
+// ---- helpers ----
 
-// The calling thread's OS id.
 pub current_id :: fn() -> u32 { return os_thread_id(); }
 
-// Suspend the calling thread for at least `ms` milliseconds.
+// at least `ms` ms
 pub sleep :: fn(ms: u32) { os_sleep_nanos((ms as i64) * 1000000i64); }
 
-// Hint the scheduler to run another ready thread now (cooperative back-off).
+// scheduler hint, cooperative back-off
 pub yield_now :: fn() { os_thread_yield(); }
 
-// Number of logical processors available — a sensible default thread count.
+// logical cpus; a sane default thread count
 pub cpu_count :: fn() -> u32 { return os_cpu_count(); }
 
-// ThreadGroup: fan out, then join the whole batch (structured) ─────────────-
-// Spawn several threads as a unit and wait for all of them. The group owns its
-// tokens; `join_all` blocks until every thread has finished. The batch cannot
-// outlive the `join_all` call site.
+// ---- ThreadGroup ----
+// up to MAX_GROUP threads; join_all blocks until all are done
 pub ThreadGroup :: struct {
     tokens: [64]i64 // MAX_GROUP slots
     count: usize
 
-    // Add a thread running `entry(arg)` to the group. Silently ignored past
-    // MAX_GROUP threads.
+    // silently ignored past MAX_GROUP
     pub spawn :: fn(self: *Self, entry: *void, arg: *void) {
         if self.count >= 64 { return; }
         self.tokens[self.count] = os_thread_spawn(entry, arg);
         self.count += 1;
     }
 
-    // Block until every thread in the group has finished, then reset the group
-    // so it can be reused.
+    // blocks until all are done, then resets for reuse
     pub join_all :: fn(self: *Self) {
         for i in 0..self.count {
             if self.tokens[i] != THREAD_INVALID { ig := os_thread_join(self.tokens[i]); }
@@ -113,29 +79,19 @@ pub ThreadGroup :: struct {
     }
 }
 
-// A fresh, empty thread group: `g := thread::group();`.
 pub group :: fn() -> ThreadGroup { return .{ }; }
 
-// Scope: threads that end with a block ─────────────────────────────────────
-//
-//     zone s: thread::Scope {
-//         for i in 0..4 { s.spawn(fn() { work(i); }); }
-//     }   // every thread is joined here, then the zone's memory is freed
-//
-// A `zone` of this kind runs each closure given to `spawn` on a thread of its own, and joins
-// them all on every way out of the block (its end, `return`, `break`, an error). The function
-// the block is in is still there until then, so a closure may use its locals through pointers
-// it captured. The captures are kept in the zone: a closure spawned in a loop has its own.
+// ---- Scope ----
+// zone kind; joined on every exit from the block, so captured locals stay valid
 pub Scope :: struct {
     arena:   Arena
     tasks:   ?*ScopeTask // the spawned closures, the newest first
     spawned: usize
 
-    // Open the zone. Nothing is reserved until the first `spawn`.
+    // reserves nothing until the first spawn
     pub make :: fn() -> Scope { return .{ heap::make(), null, 0 }; }
 
-    // Run `f` on a thread of its own. When no thread can be started, `f` runs here, now.
-    // What `f` captures is shared with the thread, so it is checked (see `#spawns`).
+    // runs `f` inline if no thread starts; captures are shared, checked by #spawns
     #spawns
     pub spawn :: fn(self: *Self, f: fn()) {
         task := self.arena.alloc_one(ScopeTask);
@@ -147,8 +103,7 @@ pub Scope :: struct {
         self.spawned += 1;
     }
 
-    // Wait for every thread spawned so far. The zone does this where it ends; call it to wait
-    // sooner, and spawn more after it if you like.
+    // waits for all spawned so far; zone end does it anyway, spawning after is fine
     pub join :: fn(self: *Self) {
         t := self.tasks;
         while t |task| {
@@ -160,27 +115,26 @@ pub Scope :: struct {
         }
     }
 
-    // How many closures were spawned in the zone.
     pub count :: fn(self: *Self) -> usize { return self.spawned; }
 
-    // The zone protocol: the memory of the closures made in the zone, ...
+    // zone protocol: closure memory
     pub alloc_bytes :: fn(self: *Self, n: usize) -> []u8 { return self.arena.alloc_bytes(n); }
 
-    // ... and its end: join every thread, then free that memory.
+    // zone end: join all, then free
     pub deinit :: fn(self: *Self) {
         self.join();
         self.arena.deinit();
     }
 }
 
-// A closure a Scope runs, and its thread.
+// one Scope closure and its thread
 ScopeTask :: struct {
     f:     fn()
     token: i64
     next:  ?*ScopeTask
 }
 
-// The entry of a Scope's thread: run the task's closure.
+// thread entry for a ScopeTask
 run_scope_task :: fn(p: *void) -> u32 {
     task := unsafe (p as *ScopeTask);
     f := task.f;
@@ -188,17 +142,8 @@ run_scope_task :: fn(p: *void) -> u32 {
     return 0;
 }
 
-// Pool: worker threads for loops whose steps can run at once ──────────────────
-//
-//     zone pool: thread::Pool {
-//         pool.range(0, n, fn(i: usize) { out[i] = work(i); });
-//         pool.each(f64, prices, fn(p: *f64) { *p = *p * rate; });
-//     }   // the workers stop here
-//
-// `range` calls `f(i)` once for each `i` from `start` up to `end`, on several threads at once,
-// and returns when every call has returned. The workers start at the first job and wait
-// between jobs, one per core but one: the thread that calls `range` works too. `each` gives
-// `f` a pointer to each item, so the calls can write their own item and no other.
+// ---- Pool ----
+// zone kind for parallel loops; cores-1 workers plus the caller, started at the first job
 pub Pool :: struct {
     arena:    Arena
     mu:       Mutex = .{}
@@ -214,10 +159,10 @@ pub Pool :: struct {
     chunk:    usize = 1
     working:  usize = 0     // workers not yet done with the job
 
-    // Open the zone. No thread starts until the first job.
+    // no thread starts until the first job
     pub make :: fn() -> Pool { return .{ .arena = heap::make(), .job = idle_job }; }
 
-    // Call `f(i)` for each `i` in `start..end`, spread over the pool's threads.
+    // f(i) for i in start..end across the pool; returns when every call is done
     #spawns
     pub range :: fn(self: *Self, start: usize, end: usize, f: fn(usize)) {
         if end <= start { return; }
@@ -239,20 +184,20 @@ pub Pool :: struct {
         self.mu.unlock();
     }
 
-    // Call `f` with a pointer to each of `items`, spread over the pool's threads.
+    // f(&items[i]) across the pool; each call writes only its own item
     #spawns
     pub each :: fn($T: type, self: *Self, items: borrow []T, f: fn(*T)) {
-        // (each call has an item of its own: `f` was checked where `each` was called)
+        // one item per call; `f` was checked at the call site
         unsafe { self.range(0, items.len, fn(i: usize) { f(&items[i]); }); }
     }
 
-    // How many threads a job runs on: the workers, and the caller.
+    // workers + the caller
     pub threads :: fn(self: *Self) -> usize {
         self.start_workers();
         return self.workers.len + 1;
     }
 
-    // Take chunks of the job's indexes until none is left.
+    // grab index chunks until none left
     work :: fn(self: *Self, f: fn(usize)) {
         while true {
             from := atomics::fetch_add(usize, &self.next, self.chunk);
@@ -281,10 +226,10 @@ pub Pool :: struct {
         self.workers = all[0..k];
     }
 
-    // The zone protocol: the memory of the closures made in the zone, ...
+    // zone protocol: closure memory
     pub alloc_bytes :: fn(self: *Self, n: usize) -> []u8 { return self.arena.alloc_bytes(n); }
 
-    // ... and its end: stop the workers, then free that memory.
+    // zone end: stop the workers, then free
     pub deinit :: fn(self: *Self) {
         if self.started {
             self.mu.lock();
@@ -297,10 +242,10 @@ pub Pool :: struct {
     }
 }
 
-// A Pool's job before the first one.
+// placeholder until the first job
 idle_job :: fn(i: usize) {}
 
-// A Pool's worker: wait for a job, take part in it, tell the pool, wait for the next.
+// worker loop: wait for a job, work it, signal, repeat
 run_pool_worker :: fn(p: *void) -> u32 {
     pool := unsafe (p as *Pool);
     seen: u64 = 0;
@@ -324,9 +269,7 @@ run_pool_worker :: fn(p: *void) -> u32 {
     return 0;
 }
 
-// One loop on threads of a pool of its own: `thread::parallel(0, n, fn(i: usize) { … })`.
-// A pool costs a thread start per core, so a program that runs many loops keeps one in a
-// `zone pool: thread::Pool { … }` instead.
+// one loop on a throwaway pool (a thread start per core); reuse a Pool for many loops
 #spawns
 pub parallel :: fn(start: usize, end: usize, f: fn(usize)) {
     pool := Pool::make();

@@ -1,14 +1,5 @@
-// Calling a C library from Fels with by-value structs (the raylib pattern).
-//
-// The structs are declared on the Fels side to match the C layout; `#extern`
-// binds each C function and pulls `cabi.lib` into the link. On Win64 the
-// compiler coerces small structs (Vector2, Color) into registers and passes
-// large ones (Rectangle) by pointer — automatically, matching the C ABI.
-//
-//   fels build main.fels -o demo.exe --lib-path .
-//   ./demo.exe   # exit code 132
-//
-// See README.md for the full build (compiling cabi.c first).
+// c_interop: pass structs by value to a C lib (raylib pattern); C abi handled for you
+// run: build cabi.c (README.md), then fels build main.fels -o demo.exe --lib-path .
 
 Vector2   :: struct { x: f32, y: f32 }
 Color     :: struct { r: u8, g: u8, b: u8, a: u8 }

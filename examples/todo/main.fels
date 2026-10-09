@@ -1,6 +1,4 @@
-// todo — a persistent todo list. Real serialization round-trip: build a list,
-// save it as JSON with std.serde, read it back from disk, mutate, and re-save.
-// This is exactly a CLI todo app's persistence layer, dogfooded end-to-end.
+// todo: json round-trip with std.serde; save, reload, mutate, re-save
 
 #import std.fs;
 #import std.heap.{ Arena, make };
@@ -43,13 +41,13 @@ main :: fn() -> i32 {
     if !write_file("todos.json", json) { print("todo: cannot write todos.json\n"); return 1; }
     print("saved todos.json:\n  "); print(json); print("\n\n");
 
-    // Reload from disk and verify the round-trip.
+    // reload and verify the round-trip
     bytes := fs::read_all("todos.json", &a) catch err { print("todo: cannot read back\n"); return 2; };
     if serde::from_json(Store, bytes, &a) |loaded| {
         print("loaded "); print_count(loaded.tasks.len); print(" tasks:\n");
         print_store(loaded);
 
-        // Complete the first task and re-save (mutating the deserialized value).
+        // complete the first task, re-save
         loaded.tasks[0].done = true;
         print("\nafter completing #1:\n");
         print_store(loaded);

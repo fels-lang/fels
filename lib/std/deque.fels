@@ -1,12 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.deque — a double-ended queue: push and pop at both ends in O(1), and index from the
-// front. A ring buffer in an arena, region-bound like std.vec: it grows by taking a block twice
-// as big from its arena, and goes when the arena does.
-//
-//   d := deque::make(i32, &a);
-//   d.push_back(1); d.push_back(2); d.push_front(0);   // 0 1 2
-//   while d.pop_front() |x| { … }                       // a FIFO queue
-//   for x in d.each() { … }                             // front to back, left in place
+// std.deque: ring-buffer deque in an arena; O(1) push/pop at both ends; grows 2x
 
 #import std.heap.{ Arena, alloc };
 
@@ -19,7 +12,7 @@ pub Deque :: struct($T: type) {
     pub len :: fn(self: *Self) -> usize { return self.count; }
     pub is_empty :: fn(self: *Self) -> bool { return self.count == 0; }
 
-    // The slot of element `i` from the front.
+    // ring slot of element `i`
     slot :: fn(self: *Self, i: usize) -> usize {
         s := self.head + i;
         if s >= self.data.len { s -= self.data.len; }
@@ -48,7 +41,7 @@ pub Deque :: struct($T: type) {
         self.count += 1;
     }
 
-    /// The front element, taken out; null when the deque is empty.
+    // take the front; null if empty
     pub pop_front :: fn(self: *Self) -> ?T {
         if self.count == 0 { return null; }
         item := self.data[self.head];
@@ -57,7 +50,7 @@ pub Deque :: struct($T: type) {
         return item;
     }
 
-    /// The back element, taken out; null when the deque is empty.
+    // take the back; null if empty
     pub pop_back :: fn(self: *Self) -> ?T {
         if self.count == 0 { return null; }
         self.count -= 1;
@@ -74,11 +67,11 @@ pub Deque :: struct($T: type) {
         return self.data[self.slot(self.count - 1)];
     }
 
-    /// Element `i` from the front (`i < len()`).
+    // element `i` from the front; `i < len()`
     pub get :: fn(self: *Self, i: usize) -> T { return self.data[self.slot(i)]; }
     pub set :: fn(self: *Self, i: usize, v: T) { self.data[self.slot(i)] = v; }
 
-    /// The elements front to back, left in place: `for x in d.each() { … }`.
+    // front to back, left in place
     pub each :: fn(self: *Self) -> Each(T) {
         it: Each(T) = .{ self, 0 };
         return it;
@@ -90,7 +83,7 @@ pub Deque :: struct($T: type) {
     }
 }
 
-/// The elements of a `Deque`, front to back (`Deque.each`).
+// iterator from Deque.each
 pub Each :: struct($T: type) {
     d: *Deque(T),
     i: usize,
@@ -108,7 +101,7 @@ pub make :: fn($T: type, a: *Arena) -> Deque(T) {
     return d;
 }
 
-/// A deque in `a` with room for `cap` elements before it grows.
+// deque in `a` with room for `cap` before it grows
 pub with_cap :: fn($T: type, a: *Arena, cap: usize) -> Deque(T) {
     d: Deque(T) = .{ a, alloc(T, a, cap), 0, 0 };
     return d;

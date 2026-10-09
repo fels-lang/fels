@@ -1,9 +1,4 @@
-// The smallest shared library Fels can produce. No `#entry`, no `main` — a DLL
-// is a bag of exported symbols, and a host resolves them by name.
-//
-// This exists to prove the plumbing a native plugin needs: `b.shared` emits a real DLL,
-// `#export` puts a symbol in its export table, and a host process can find it and use it.
-// Both kinds of symbol are exported here: functions, and data.
+// dll: minimal shared lib; no #entry, just #export'ed fns + data a host finds by name
 
 #export("gab_add")
 gab_add :: fn(a: i32, b: i32) -> i32 { return a + b; }
@@ -11,15 +6,11 @@ gab_add :: fn(a: i32, b: i32) -> i32 { return a + b; }
 #export("gab_version")
 gab_version :: fn() -> u32 { return 101u32; }
 
-// A plain exported global. The host reads it through the address it resolves; the functions
-// below write it.
+// exported global; the host reads it, the fns below write it
 #export("gab_calls")
 calls: i32 = 0;
 
-// An entry point that is data. A plugin host looks up one name and reads a struct of version
-// numbers and function pointers from it (that is what CLAP's `clap_entry` is). The struct is
-// laid out in the image at build time — the function addresses are fixed by the linker and
-// the loader — and nothing in this library runs to build the table.
+// data entry point (like CLAP's `clap_entry`); table laid out at build time, no init code
 Version :: struct { major: u32, minor: u32, revision: u32 }
 
 PluginEntry :: struct {

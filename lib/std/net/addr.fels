@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.net.addr — IP addresses and socket addresses.
-//
-// Showcases the language's newer additions: `#derive` for equality, in-struct
-// methods, and `!`-fallible parsing.
+// std.net.addr: ipv4 and socket addresses
 
 #import std.strings.{StringBuilder};
 
@@ -11,26 +8,25 @@ pub AddrError :: errors {
     octet_range,  // an octet was > 255
 }
 
-// An IPv4 address. `#derive(Eq)` gives `a.eq(&b)`; `format` is hand-written so it
-// renders `127.0.0.1` rather than the generic struct dump.
+// ipv4 address; #derive(Eq) gives a.eq(&b); format prints 127.0.0.1
 #derive(Eq)
 pub IpV4 :: struct {
     a: u8, b: u8, c: u8, d: u8
 
-    // The packed 32-bit value in NETWORK byte order, as stored in `sockaddr_in`.
+    // packed u32 in network byte order, as in sockaddr_in
     pub to_net :: fn(self: *Self) -> u32 {
         return (self.a as u32) | ((self.b as u32) << 8) | ((self.c as u32) << 16) | ((self.d as u32) << 24);
     }
 
-    // True for 127.x.x.x (the loopback block).
+    // 127.x.x.x
     pub is_loopback :: fn(self: *Self) -> bool { return self.a == 127u8; }
 
-    // True for 0.0.0.0 (the unspecified / "any interface" address).
+    // 0.0.0.0, "any interface"
     pub is_unspecified :: fn(self: *Self) -> bool {
         return self.a == 0 && self.b == 0 && self.c == 0 && self.d == 0;
     }
 
-    // Render as a dotted quad into a StringBuilder: `a.format(&sb)` → "127.0.0.1".
+    // dotted quad into `sb`
     pub format :: fn(self: *Self, sb: *StringBuilder) {
         sb.append_u64(self.a as u64); sb.append(".");
         sb.append_u64(self.b as u64); sb.append(".");
@@ -39,20 +35,19 @@ pub IpV4 :: struct {
     }
 }
 
-// Construct an address from its four octets: `net::ipv4(127, 0, 0, 1)`.
+// address from four octets
 pub ipv4 :: fn(a: u8, b: u8, c: u8, d: u8) -> IpV4 { return .{ a, b, c, d }; }
 
-// The loopback address, 127.0.0.1.
+// 127.0.0.1
 pub localhost :: fn() -> IpV4 { return .{ 127u8, 0u8, 0u8, 1u8 }; }
 
-// The unspecified address, 0.0.0.0 (bind to every interface).
+// 0.0.0.0; bind to every interface
 pub any :: fn() -> IpV4 { return .{ 0u8, 0u8, 0u8, 0u8 }; }
 
-// The limited broadcast address, 255.255.255.255.
+// 255.255.255.255, limited broadcast
 pub broadcast :: fn() -> IpV4 { return .{ 255u8, 255u8, 255u8, 255u8 }; }
 
-// Unpack a NETWORK-byte-order 32-bit `in_addr` (as stored in `sockaddr_in`) back
-// into octets — the inverse of `to_net`. Used to decode peer addresses.
+// network-order in_addr -> octets; inverse of to_net
 pub from_net :: fn(n: u32) -> IpV4 {
     return .{
         (n & 0xFF) as u8,
@@ -62,7 +57,7 @@ pub from_net :: fn(n: u32) -> IpV4 {
     };
 }
 
-// Parse a dotted-quad string (`"127.0.0.1"`) into an `IpV4`.
+// parse a dotted quad
 pub parse :: fn(s: []const u8) -> IpV4 ! AddrError {
     octets: [4]u32 = .{ 0, 0, 0, 0 };
     idx: usize = 0;       // which octet
@@ -84,7 +79,7 @@ pub parse :: fn(s: []const u8) -> IpV4 ! AddrError {
     return .{ octets[0] as u8, octets[1] as u8, octets[2] as u8, octets[3] as u8 };
 }
 
-// An IPv4 address + port — what you connect to or listen on.
+// ipv4 address + port
 #derive(Eq)
 pub SocketAddr :: struct {
     ip: IpV4, port: u16
@@ -96,5 +91,4 @@ pub SocketAddr :: struct {
     }
 }
 
-// `net::socket_addr(net::localhost(), 8080)`.
 pub socket_addr :: fn(ip: IpV4, port: u16) -> SocketAddr { return .{ ip, port }; }

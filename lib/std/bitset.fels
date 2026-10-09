@@ -1,14 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.bitset — a set of the numbers 0 to n-1, one bit each, 64 to a word, in an arena.
-//
-//   s := bitset::make(&a, 1000);        // 1000 bits, all clear
-//   s.set(3); s.set(700);
-//   if s.has(3) { … }
-//   n := s.count();                      // 2
-//   for i in s.ones() { … }              // 3, 700: the set bits, in order
-//   s.union_with(&other);                // also intersect_with, subtract
-//
-// An index past the end is a mistake: it panics.
+// std.bitset: bits 0..n-1, 64 per word, in an arena; index past the end panics
 
 #import std.heap.{ Arena, alloc };
 #import std.bits as bits;
@@ -39,12 +30,12 @@ pub BitSet :: struct {
         self.words[i / 64] = self.words[i / 64] ^ ((1 as u64) << ((i % 64) as u64));
     }
 
-    /// Set bit `i` when `on`, clear it when not.
+    // set or clear bit `i`
     pub put :: fn(self: *Self, i: usize, on: bool) {
         if on { self.set(i); } else { self.unset(i); }
     }
 
-    /// How many bits are set.
+    // number of set bits
     pub count :: fn(self: *Self) -> usize {
         total: usize = 0;
         for w in self.words { total += bits::count_ones_u64(w) as usize; }
@@ -60,28 +51,28 @@ pub BitSet :: struct {
         for i in 0..self.words.len { self.words[i] = 0; }
     }
 
-    /// Every bit set in `other` is set here too. The two have the same length.
+    // self |= other; same length required
     pub union_with :: fn(self: *Self, other: *BitSet) {
         for i in 0..self.words.len { self.words[i] = self.words[i] | other.words[i]; }
     }
 
-    /// Only the bits set in both stay set.
+    // self &= other
     pub intersect_with :: fn(self: *Self, other: *BitSet) {
         for i in 0..self.words.len { self.words[i] = self.words[i] & other.words[i]; }
     }
 
-    /// The bits set in `other` are cleared here.
+    // self &= ~other
     pub subtract :: fn(self: *Self, other: *BitSet) {
         for i in 0..self.words.len { self.words[i] = self.words[i] & ~other.words[i]; }
     }
 
-    /// The set bits, smallest first: `for i in s.ones() { … }`.
+    // set bits, smallest first
     pub ones :: fn(self: *Self) -> Ones {
         it: Ones = .{ self, 0, if self.words.len > 0 { self.words[0] } else { 0 } };
         return it;
     }
 
-    // The bits past `n` in the last word stay clear, so `count` and `ones` never see them.
+    // keep bits past `n` clear so `count`/`ones` skip them
     trim :: fn(self: *Self) {
         extra := self.n % 64;
         if extra != 0 && self.words.len > 0 {
@@ -91,7 +82,7 @@ pub BitSet :: struct {
     }
 }
 
-/// The set bits of a `BitSet`, smallest first (`BitSet.ones`).
+// iterator from BitSet.ones
 pub Ones :: struct {
     s: *BitSet,
     word: usize,   // the word being looked at
@@ -109,7 +100,7 @@ pub Ones :: struct {
     }
 }
 
-/// A set of `n` bits in `a`, all clear.
+// `n` clear bits in `a`
 pub make :: fn(a: *Arena, n: usize) -> BitSet {
     words := alloc(u64, a, (n + 63) / 64);
     for i in 0..words.len { words[i] = 0; }

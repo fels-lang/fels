@@ -1,10 +1,6 @@
 #import std.build.{ Build, executable, default };
 
-// The same host call main.fels is refused. This one runs.
-//
-// build.fels is the privileged root: it is the one file granted the `ffi`
-// capability, and it is the one file you wrote yourself. Everything a dependency
-// contributes runs pure unless your build script hands it something.
+// same host call main.fels is refused; build.fels is the only file granted `ffi`
 #extern("kernel32", "GetCurrentProcessId")
 current_pid :: fn() -> u32;
 

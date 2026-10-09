@@ -1,35 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.bytes - read and write fixed-width integers at an explicit offset in a byte slice.
-//
-// For parsing and building wire formats (a BLE notification packet, a file header, a
-// network frame) where the data is a run of bytes and the integers sit at known offsets
-// with a stated byte order:
-//
-//     v := bytes::read_u32_le(packet, 4)?;        // bytes 4..8, least significant first
-//     bytes::write_u16_be(out, 0, length)?;       // bytes 0..2, most significant first
-//
-// Naming: `read_<width>_<order>` / `write_<width>_<order>`, width `u8` `u16` `u32` `u64`,
-// order `le` (little-endian) or `be` (big-endian). `u8` has no order. A signed value is the
-// unsigned one cast: `read_u16_le(b, 0)? as i16`.
-//
-// Bounds. Every call is checked, in every build mode: an integer that would not lie
-// wholly inside the slice fails with `.out_of_bounds`, and then nothing was read or
-// written. (Plain slice indexing is checked only at -O0.) The offset may be any `usize`;
-// the check cannot overflow. When a bound is already proven, `core::unaligned_read` is the
-// unchecked primitive underneath.
-//
-// Alignment. The integers are assembled from single bytes, so `off` may be odd and the
-// slice may start anywhere; nothing here reads memory as a wider type.
-//
-// The first parameter is named `self`, so a function imported by name also reads as a
-// method: after `#import std.bytes.{ read_u32_le };`, `packet.read_u32_le(4)?` works.
+// std.bytes: le/be fixed-width ints at any offset in a byte slice; no alignment needed
+// checked in every build mode: .out_of_bounds, and nothing read or written
 
 pub BytesError :: errors {
-    out_of_bounds,      // the integer would extend past the end of the slice
+    out_of_bounds,      // value would run past the slice end
 }
 
-// Does an `n`-byte value at `off` lie wholly inside a slice of `len` bytes? Phrased so
-// that no sum can overflow, whatever `off` is: `len - off` is only formed once `off <= len`.
+// `n` bytes at `off` fit in `len`; no overflow for any `off`
 fits :: fn(len: usize, off: usize, n: usize) -> bool {
     if off > len { return false; }
     return len - off >= n;

@@ -1,11 +1,10 @@
-// world — the ECS core: a struct-of-arrays component store with entity
-// allocation (free-slot reuse) and a few queries. Systems operate on `*World`.
+// world: ecs core; struct-of-arrays store, free-slot reuse, a few queries
 
 #import vec.{ Vec2 };
 #import components.{ Kind, MAX_ENTITIES };
 
 pub World :: struct {
-    // components (parallel arrays, indexed by entity id)
+    // components: parallel arrays indexed by entity id
     pos:    [MAX_ENTITIES]Vec2,
     vel:    [MAX_ENTITIES]Vec2,
     radius: [MAX_ENTITIES]f32,
@@ -30,8 +29,7 @@ pub init :: fn(w: *World) {
     w.hits = 0u32;
 }
 
-// Allocate an entity (reusing a dead slot when possible). Returns its id, or
-// MAX_ENTITIES if the world is full.
+// new entity id, reusing a dead slot; MAX_ENTITIES when full
 pub spawn :: fn(w: *World, k: Kind, p: Vec2, vl: Vec2, rad: f32, life: i32) -> usize {
     e: usize = MAX_ENTITIES;
     i: usize = 0usize;

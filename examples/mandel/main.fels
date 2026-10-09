@@ -1,8 +1,4 @@
-// mandel.fels — a Mandelbrot set that is finished before the program starts.
-//
-// `render` never runs in the built binary. It runs on the comptime VM, and what
-// it returns is Fels source: one `println` per row. `#insert #parse` splices
-// that back in, so `main` ends up holding the picture, not the maths.
+// mandel: mandelbrot drawn at comptime; `#insert #parse` splices one println per row
 
 #import std.heap.{ Arena, make };
 #import std.io.{ println };
@@ -12,11 +8,10 @@ W :: 120;
 H :: 48;
 ITER :: 120;
 
-// Darkest to lightest. No quote and no backslash, so the source we generate
-// needs no escaping.
+// dark to light; no quote or backslash, so the generated source needs no escaping
 RAMP :: " .,:-=+*#%@";
 
-// Iterations until the orbit at (cx, cy) escapes. 0 means it never did.
+// iterations until (cx, cy) escapes; 0 = never
 escape :: fn(cx: f64, cy: f64) -> i32 {
     zx: f64 = 0.0f64;
     zy: f64 = 0.0f64;
@@ -32,7 +27,7 @@ escape :: fn(cx: f64, cy: f64) -> i32 {
     return 0;
 }
 
-// Runs on the comptime VM. Returns Fels source code, not a picture.
+// comptime only; returns Fels source, not a picture
 render :: fn() -> []const u8 {
     a := make();
     sb := strings::builder(&a);

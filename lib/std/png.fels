@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.png — PNG images (RFC 2083), read into RGBA pixels and written from them.
-//
-//   img := png::decode(&a, fs::read_all("icon.png", &a)?)?;
-//   // img.width, img.height, img.pixels: 4 bytes a pixel (red, green, blue, alpha), rows top to
-//   // bottom, img.at(x, y) for one
-//   bytes := png::encode(&a, img, 6);                 // zlib level 6
-//
-// Every PNG reads: gray, gray with alpha, RGB, RGBA and palette images, of every bit depth (16-bit
-// samples keep their high byte), interlaced or not, with transparency from a tRNS chunk. Each
-// chunk's CRC-32 is checked. Writing makes 8-bit RGBA, or RGB when every pixel is opaque, each row
-// with the filter that suits it best.
+// std.png: rfc 2083 decode to RGBA8 and encode; all color types, depths, interlace, tRNS
 
 #import std.heap.{ Arena, alloc_bytes };
 #import std.vec as vec;
@@ -19,18 +9,18 @@
 
 pub PngError :: errors {
     not_png,        // no PNG signature
-    corrupt,        // a chunk cut short, a CRC that does not match, image data that does not inflate
-    unsupported,    // a color type, bit depth or method the PNG standard does not have
+    corrupt,        // truncated chunk, bad CRC, or bad image data
+    unsupported,    // color type, depth or method not in the spec
     too_big,        // past 2^28 pixels
 }
 
-/// An image: `width` × `height` pixels of 4 bytes, red, green, blue and alpha, rows top to bottom.
+// width * height RGBA pixels, 4 bytes each, rows top to bottom
 pub Image :: struct {
     width: u32,
     height: u32,
     pixels: []u8,
 
-    /// The pixel at (`x`, `y`), 0 0 top left, as `r | g << 8 | b << 16 | a << 24`.
+    // 0,0 is top left; returns r | g << 8 | b << 16 | a << 24
     pub at :: fn(self: *Self, x: u32, y: u32) -> u32 {
         i := ((y as usize) * (self.width as usize) + (x as usize)) * 4;
         return (self.pixels[i] as u32) | ((self.pixels[i + 1] as u32) << 8) |
@@ -38,7 +28,7 @@ pub Image :: struct {
     }
 }
 
-/// A new image, every pixel transparent black.
+// all pixels transparent black; in `a`
 pub image :: fn(a: *Arena, width: u32, height: u32) -> Image {
     px := a.alloc_bytes((width as usize) * (height as usize) * 4);
     for k in 0..px.len { px[k] = 0; }
@@ -52,7 +42,7 @@ be32 :: fn(b: []const u8, at: usize) -> u32 {
 
 be16 :: fn(b: []const u8, at: usize) -> u32 { return ((b[at] as u32) << 8) | (b[at + 1] as u32); }
 
-// What a header says.
+// IHDR fields
 Header :: struct {
     width: u32,
     height: u32,
@@ -61,7 +51,7 @@ Header :: struct {
     interlaced: bool,
 }
 
-// Samples a pixel has, by color type.
+// samples per pixel by color type
 channels :: fn(color: u32) -> u32 {
     if color == 0 { return 1; }
     if color == 2 { return 3; }
@@ -87,9 +77,7 @@ paeth :: fn(a: i32, b: i32, c: i32) -> i32 {
     return c;
 }
 
-// Undo the filters of `rows` rows of `stride` bytes (each after its filter byte), in place in
-// `data` from `at`, where a pixel takes `bpp` bytes (1 for less than a byte). The bytes of the
-// row before the first are zero.
+// undo row filters in place at data[at..]; bpp is 1 for sub-byte pixels; row -1 is zeros
 unfilter :: fn(data: []u8, at: usize, rows: usize, stride: usize, bpp: usize) -> void ! PngError {
     prev: usize = 0;      // where the row before is, 0 for none
     p := at;
@@ -113,7 +101,7 @@ unfilter :: fn(data: []u8, at: usize, rows: usize, stride: usize, bpp: usize) ->
     }
 }
 
-// Sample `i` of a row of `depth`-bit samples, as a 0..65535 value for 16 bits, else as is.
+// sample `i`; 16-bit as 0..65535, smaller depths as is
 sample :: fn(row: []const u8, i: usize, depth: u32) -> u32 {
     if depth == 8 { return row[i] as u32; }
     if depth == 16 { return be16(row, 2 * i); }
@@ -123,15 +111,14 @@ sample :: fn(row: []const u8, i: usize, depth: u32) -> u32 {
     return (byte >> shift) & ((1 << depth) - 1);
 }
 
-// A sample as 8 bits: the high byte of 16, a fraction of 255 for less than 8.
+// to 8 bits: high byte of 16, scaled up from < 8
 to8 :: fn(v: u32, depth: u32) -> u8 {
     if depth == 8 { return v as u8; }
     if depth == 16 { return (v >> 8) as u8; }
     return (v * 255 / ((1 << depth) - 1)) as u8;
 }
 
-// The pixels of one (sub-)image of `w` × `h`, unfiltered at `data[at..]`, into `img` at x0 + i *
-// dx, y0 + j * dy.
+// one (sub-)image of w x h at data[at..] into img at (x0 + i*dx, y0 + j*dy)
 place :: fn(img: *Image, h: Header, data: []const u8, at: usize, w: usize, rows: usize, x0: usize, y0: usize, dx: usize, dy: usize, plte: []const u8, trns: []const u8) {
     ch := channels(h.color) as usize;
     stride := (w * ch * (h.depth as usize) + 7) / 8;
@@ -186,13 +173,13 @@ place :: fn(img: *Image, h: Header, data: []const u8, at: usize, w: usize, rows:
     }
 }
 
-// Adam7: where each of the seven passes starts, and how far apart its pixels are.
+// Adam7 pass starts and pixel spacing
 PASS_X: [7]u8 = .{ 0, 4, 0, 2, 0, 1, 0 };
 PASS_Y: [7]u8 = .{ 0, 0, 4, 0, 2, 0, 1 };
 PASS_DX: [7]u8 = .{ 8, 8, 4, 4, 2, 2, 1 };
 PASS_DY: [7]u8 = .{ 8, 8, 8, 4, 4, 2, 2 };
 
-/// The image a PNG file holds, its pixels in memory from `a`.
+// pixels in `a`
 pub decode :: fn(a: *Arena, data: []const u8) -> Image ! PngError {
     sig: [8]u8 = .{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
     if data.len < 8 { fail .not_png; }
@@ -267,7 +254,7 @@ pub decode :: fn(a: *Arena, data: []const u8) -> Image ! PngError {
     return img;
 }
 
-// Writing
+// writing
 
 put_chunk :: fn(out: *Vec(u8), kind: []const u8, body: []const u8) {
     n := body.len as u32;
@@ -285,9 +272,7 @@ put_chunk :: fn(out: *Vec(u8), kind: []const u8, body: []const u8) {
     out.push((c & 0xFF) as u8);
 }
 
-/// `img` as a PNG file, in memory from `a`, its image data compressed at zlib `level` (0 to 9).
-/// 8-bit RGB when every pixel is opaque, else RGBA; each row with the filter whose bytes sum
-/// smallest (the usual heuristic).
+// file bytes in `a`; zlib `level` 0..9; RGB8 if all opaque, else RGBA8
 pub encode :: fn(a: *Arena, img: Image, level: u32) -> []const u8 {
     solid := true;
     for k in 0..(img.width as usize) * (img.height as usize) {

@@ -1,29 +1,21 @@
-// A tour of the std.build API. Run from this directory:
-//
-//   fels build                     # the default step `all`: the app, its libraries, the assets
-//   fels build run                 # build, then run the app
-//   fels build --list              # artifacts, steps and options
-//   fels build -Dtrace -Dthreads=8 -Dgreeting=Hi
-//   fels build -Dmode=fast         # optimize the app for speed
-//   fels build install             # copy the app, its DLL and the assets to dist/
-//   fels build clean               # remove what the build made
-//
+// std.build tour
+// run here: fels build [run|install|clean|--list] [-Dtrace -Dthreads=8 -Dmode=fast]
 #import std.build.{ Build };
 
 build :: fn(b: Build) {
     b.workspace("showcase");
     b.out_root("bin");                 // every artifact goes in bin/
 
-    // Typed options, read at the top so --list shows all of them.
+    // typed options; read up top so --list shows them all
     trace := b.option_bool("trace", false, "print a trace line");
     threads := b.option_int("threads", 4, "worker threads");
     greeting := b.option_string("greeting", "hello from the showcase", "the first line the app prints");
     mode := b.option_choice("mode", "debug|fast|small", "debug", "how to optimize the app");
 
-    // A static library the app links. It is built first.
+    // static lib the app links; built first
     mathutil := b.static("mathutil", "src/mathutil.fels");
 
-    // A companion DLL, installed next to the app.
+    // companion dll, installed next to the app
     plugin := b.shared("plugin", "src/plugin.fels");
     plugin.release_small();
     plugin.install();
@@ -37,13 +29,13 @@ build :: fn(b: Build) {
     app.link_artifact(mathutil);
     app.link("user32");                // a system library, one call each
 
-    // Constants the app reads with `#import build_options;`.
+    // consts the app reads via `#import build_options;`
     app.define("GREETING", greeting);
     app.define_bool("TRACE", trace);
     app.define_int("THREADS", threads);
     app.install();
 
-    // Steps
+    // steps
     assets := b.step("assets", "copy the assets next to the app");
     assets.copy_dir("assets", "bin/assets");
 
@@ -61,7 +53,7 @@ build :: fn(b: Build) {
     clean.remove("dist");
     clean.remove(".fels-cache");
 
-    // What `fels build install` copies besides the installed artifacts.
+    // extra files for `fels build install`
     b.install_dir("assets", "bin/assets");
     b.summary();                       // print a summary when done
 }

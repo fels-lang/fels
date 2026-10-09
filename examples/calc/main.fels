@@ -1,10 +1,5 @@
-// calc — an integer expression evaluator (recursive descent with precedence).
-//
-//   calc "2 + 3 * (4 - 1)"     →  11
-//
-// Grammar:   expr = term (('+'|'-') term)*
-//            term = factor (('*'|'/'|'%') factor)*
-//            factor = number | '(' expr ')' | '-' factor
+// calc: integer expression evaluator (+ - * / %, parens, unary -), recursive descent
+// run: calc "2 + 3 * (4 - 1)"   -> 11
 
 #import std.io.{ print };
 #import std.process;

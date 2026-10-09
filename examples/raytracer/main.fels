@@ -1,6 +1,4 @@
-// raytracer — a path tracer that renders spheres into a 24-bit BMP.
-// Diffuse, metal, and glass materials; gamma-corrected; antialiased.
-// Pure compute: one arena holds the framebuffer, the hot loop touches no OS.
+// raytracer: path-traced spheres (diffuse, metal, glass) into a 24-bit bmp
 
 #import std.fs;
 #import std.heap.{ Arena, make, alloc, alloc_bytes };
@@ -9,7 +7,7 @@
 #import std.rand.{ Rng, seed, next_f32, range_f32 };
 #import std.time;
 
-W         :: 800;   // image width  (multiple of 4 keeps BMP rows unpadded)
+W         :: 800;   // width; multiple of 4 keeps bmp rows unpadded
 H         :: 450;   // image height
 SAMPLES   :: 32;    // rays per pixel
 MAX_DEPTH :: 12;    // bounces before a ray gives up
@@ -17,7 +15,7 @@ MAX_DEPTH :: 12;    // bounces before a ray gives up
 STRIDE :: W * 3;    // bytes per row
 HDR    :: 54;       // 14-byte file header + 40-byte DIB header
 
-// ---------------------------------------------------------------- vectors
+// ---- vectors ----
 
 v3_mul  :: fn(a: Vec3, b: Vec3) -> Vec3 { r: Vec3 = .{ a.x * b.x, a.y * b.y, a.z * b.z }; return r; }
 v3_neg  :: fn(a: Vec3) -> Vec3 { r: Vec3 = .{ -a.x, -a.y, -a.z }; return r; }
@@ -36,7 +34,7 @@ refract :: fn(uv: Vec3, n: Vec3, ratio: f32) -> Vec3 {
     return v3_add(perp, v3_scale(n, -core::sqrt(k)));
 }
 
-// Schlick approximation of Fresnel reflectance.
+// schlick approximation of fresnel reflectance
 reflectance :: fn(cosine: f32, ior: f32) -> f32 {
     r0 := (1.0f32 - ior) / (1.0f32 + ior);
     r0 = r0 * r0;
@@ -45,7 +43,7 @@ reflectance :: fn(cosine: f32, ior: f32) -> f32 {
     return r0 + (1.0f32 - r0) * m2 * m2 * m;
 }
 
-// A random direction on the unit sphere, by rejection sampling.
+// random unit-sphere direction, rejection sampling
 random_unit :: fn(rng: *Rng) -> Vec3 {
     i: i32 = 0;
     while i < 64 {
@@ -59,7 +57,7 @@ random_unit :: fn(rng: *Rng) -> Vec3 {
     return v3(0.0f32, 1.0f32, 0.0f32);
 }
 
-// ---------------------------------------------------------------- scene
+// ---- scene ----
 
 Mat :: enum { lambert, metal, glass }
 
@@ -84,8 +82,7 @@ hit_none :: fn() -> Hit {
     return r;
 }
 
-// Quadratic ray-sphere intersection. A negative radius flips the normal,
-// which is how the hollow glass shell is built.
+// ray-sphere hit; a negative radius flips the normal (hollow glass shell)
 sphere_hit :: fn(s: Sphere, r: Ray, tmin: f32, tmax: f32, h: *Hit) -> bool {
     oc := v3_sub(r.o, s.center);
     a := v3_len2(r.d);
@@ -129,7 +126,7 @@ world_hit :: fn(scene: []Sphere, r: Ray, tmin: f32, tmax: f32, h: *Hit) -> bool 
     return found;
 }
 
-// ---------------------------------------------------------------- shading
+// ---- shading ----
 
 ray_color :: fn(r: Ray, scene: []Sphere, rng: *Rng, depth: i32) -> Vec3 {
     black := v3(0.0f32, 0.0f32, 0.0f32);
@@ -172,7 +169,7 @@ ray_color :: fn(r: Ray, scene: []Sphere, rng: *Rng, depth: i32) -> Vec3 {
         return v3_mul(atten, ray_color(scattered, scene, rng, depth - 1));
     }
 
-    // Sky: a vertical gradient from white to blue.
+    // sky: white-to-blue vertical gradient
     ud := v3_normalize(r.d);
     t := 0.5f32 * (ud.y + 1.0f32);
     white := v3(1.0f32, 1.0f32, 1.0f32);
@@ -180,7 +177,7 @@ ray_color :: fn(r: Ray, scene: []Sphere, rng: *Rng, depth: i32) -> Vec3 {
     return v3_add(v3_scale(white, 1.0f32 - t), v3_scale(blue, t));
 }
 
-// ---------------------------------------------------------------- camera
+// ---- camera ----
 
 Camera :: struct { origin: Vec3, lower_left: Vec3, horizontal: Vec3, vertical: Vec3 }
 
@@ -207,7 +204,7 @@ camera_ray :: fn(c: Camera, s: f32, t: f32) -> Ray {
     return ray(c.origin, v3_sub(p, c.origin));
 }
 
-// ---------------------------------------------------------------- BMP
+// ---- bmp ----
 
 put_u16 :: fn(b: []u8, off: usize, v: u16) {
     b[off] = (v & 0x00FFu16) as u8;
@@ -236,7 +233,7 @@ bmp_header :: fn(b: []u8) {
     put_u32(b, 42usize, 2835u32);
 }
 
-// Gamma-correct (sqrt) and clamp one channel into a byte.
+// gamma (sqrt) + clamp one channel to a byte
 to_byte :: fn(c: f32) -> u8 {
     g := core::sqrt(c);
     if g < 0.0f32 { g = 0.0f32; }
@@ -244,7 +241,7 @@ to_byte :: fn(c: f32) -> u8 {
     return (g * 256.0f32) as u8;
 }
 
-// ---------------------------------------------------------------- main
+// ---- main ----
 
 #entry
 main :: fn() -> i32 {
@@ -257,7 +254,7 @@ main :: fn() -> i32 {
     scene[0usize] = .{ v3(0.0f32, -100.5f32, -1.0f32), 100.0f32, v3(0.75f32, 0.7f32, 0.3f32), .lambert, 0.0f32, 0.0f32 };
     // centre diffuse
     scene[1usize] = .{ v3(0.0f32, 0.0f32, -1.2f32), 0.5f32, v3(0.1f32, 0.2f32, 0.5f32), .lambert, 0.0f32, 0.0f32 };
-    // hollow glass: an outer shell and an inner sphere with a negative radius
+    // hollow glass: outer shell + inner sphere with a negative radius
     scene[2usize] = .{ v3(-1.0f32, 0.0f32, -1.0f32), 0.5f32, ZERO, .glass, 0.0f32, 1.5f32 };
     scene[3usize] = .{ v3(-1.0f32, 0.0f32, -1.0f32), -0.4f32, ZERO, .glass, 0.0f32, 1.5f32 };
     // polished metal

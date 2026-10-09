@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.net.tcp — TCP streams and listeners.
-//
-// Built on `socket.Socket`, so timeouts / reuse-addr / non-blocking all come for
-// free via the embedded socket. On top of the raw `send`/`recv` (which may do a
-// short read or write) this adds the verbs you actually want: `send_all` (keep
-// writing until every byte is gone) and `recv_exact` (keep reading until the
-// buffer is full or the peer closes).
-//
-//   tcp::connect(sa)            -> TcpStream     (client)
-//   tcp::listen(sa)             -> TcpListener   (server)
-//   listener.accept()          -> Accepted { stream, peer }
+// std.net.tcp: TCP streams and listeners over socket.Socket
 
 #import std.net.os as os;
 #import std.net.os.{NetError};
@@ -17,20 +7,18 @@
 #import std.net.socket as socket;
 #import std.io.{ Reader, Writer, IoError };
 
-// TcpStream — a connected TCP socket
+// connected TCP socket
 pub TcpStream :: struct {
     sock: socket::Socket
 
-    // Send up to `data.len` bytes; returns how many were actually written (a
-    // single `send` may be short). Use `send_all` to write everything.
+    // may write fewer than data.len; returns bytes sent
     pub send :: fn(self: *Self, data: []const u8) -> usize ! NetError {
         n := os::sys_send(self.sock.fd, data.ptr, data.len as i32, 0);
         if n < 0 { fail .send_failed; }
         return n as usize;
     }
 
-    // Write the whole buffer, looping over short writes. Fails `send_failed` on a
-    // socket error and `closed` if the socket accepts zero bytes mid-write.
+    // loops over short writes; send_failed on error, closed if 0 bytes go out
     pub send_all :: fn(self: *Self, data: []const u8) -> void ! NetError {
         sent: usize = 0;
         while sent < data.len {
@@ -42,15 +30,14 @@ pub TcpStream :: struct {
         return;
     }
 
-    // Receive into `buf`; returns bytes read (0 = the peer closed the connection).
+    // returns bytes read; 0 = peer closed
     pub recv :: fn(self: *Self, buf: []u8) -> usize ! NetError {
         n := os::sys_recv(self.sock.fd, buf.ptr, buf.len as i32, 0);
         if n < 0 { fail .recv_failed; }
         return n as usize;
     }
 
-    // Fill `buf` completely, looping over short reads. Fails `closed` if the peer
-    // hangs up before `buf.len` bytes arrive (i.e. a truncated message).
+    // fills `buf`; closed if the peer hangs up first (truncated message)
     pub recv_exact :: fn(self: *Self, buf: []u8) -> void ! NetError {
         got: usize = 0;
         while got < buf.len {
@@ -62,8 +49,7 @@ pub TcpStream :: struct {
         return;
     }
 
-    // Disable Nagle's algorithm — send small packets immediately (latency over
-    // throughput; good for request/response protocols).
+    // disables Nagle: small packets go out at once
     pub set_nodelay :: fn(self: *Self, on: bool) -> void ! NetError {
         v: i32 = 0; if on { v = 1; }
         self.sock.set_opt_int(os::IPPROTO_TCP, os::TCP_NODELAY, v)?;
@@ -73,17 +59,15 @@ pub TcpStream :: struct {
     pub set_read_timeout  :: fn(self: *Self, ms: i32) -> void ! NetError { self.sock.set_recv_timeout(ms)?; return; }
     pub set_write_timeout :: fn(self: *Self, ms: i32) -> void ! NetError { self.sock.set_send_timeout(ms)?; return; }
 
-    // This end's local address.
     pub local_addr :: fn(self: *Self) -> addr::SocketAddr ! NetError { return self.sock.local_addr()?; }
 
-    // Half-close the write side (signals EOF to the peer while still reading).
+    // half-close: EOF to the peer, reads still work
     pub shutdown_write :: fn(self: *Self) -> void ! NetError { self.sock.shutdown(os::SHUT_SEND)?; return; }
 
     pub close :: fn(self: *Self) { self.sock.close(); }
 }
 
-// A stream is an io.Reader (0 once the peer has closed) and an io.Writer, so std.bufio,
-// io::copy and the rest work on it.
+// io.Reader (0 once the peer closed) and io.Writer, for std.bufio, io::copy
 TcpStream as Reader {
     read :: fn(self: *Self, buf: []u8) -> usize ! IoError {
         if buf.len == 0 { return 0; }
@@ -103,15 +87,15 @@ TcpStream as Writer {
     flush :: fn(self: *Self) -> void ! IoError { return; }
 }
 
-// TcpListener — a bound, listening TCP socket
+// bound, listening TCP socket
 
-// The result of `accept`: the new stream and who connected.
+// stream and peer address from accept
 pub Accepted :: struct { stream: TcpStream, peer: addr::SocketAddr }
 
 pub TcpListener :: struct {
     sock: socket::Socket
 
-    // Block until a client connects; returns the stream plus the peer's address.
+    // blocks until a client connects
     pub accept :: fn(self: *Self) -> Accepted ! NetError {
         raw: os::RawSockaddr = .{ 0, 0, 0, 0 };
         len: i32 = os::SOCKADDR_LEN as i32;
@@ -120,21 +104,21 @@ pub TcpListener :: struct {
         return .{ .{ socket::from_fd(c) }, os::addr_from_raw(raw) };
     }
 
-    // Like `accept` but drops the peer address — convenient when you don't care.
+    // accept without the peer address
     pub accept_stream :: fn(self: *Self) -> TcpStream ! NetError {
         a := self.accept()?;
         return a.stream;
     }
 
-    // The address this listener is bound to (resolves an ephemeral port).
+    // bound address; resolves an ephemeral port
     pub local_addr :: fn(self: *Self) -> addr::SocketAddr ! NetError { return self.sock.local_addr()?; }
 
     pub close :: fn(self: *Self) { self.sock.close(); }
 }
 
-// Free constructors
+// constructors
 
-// Connect to `sa` and return a ready stream (client side).
+// client side
 pub connect :: fn(sa: addr::SocketAddr) -> TcpStream ! NetError {
     s := socket::tcp()?;
     raw := os::raw_from(sa);
@@ -145,8 +129,7 @@ pub connect :: fn(sa: addr::SocketAddr) -> TcpStream ! NetError {
     return .{ s };
 }
 
-// Bind to `sa` and start listening with the given backlog (server side). Sets
-// `SO_REUSEADDR` first so a restart doesn't trip over a lingering TIME_WAIT.
+// sets SO_REUSEADDR first so a restart survives TIME_WAIT
 pub listen_backlog :: fn(sa: addr::SocketAddr, backlog: i32) -> TcpListener ! NetError {
     s := socket::tcp()?;
     s.set_reuse_addr(true) catch e { s.close(); fail .option_failed; };
@@ -158,7 +141,7 @@ pub listen_backlog :: fn(sa: addr::SocketAddr, backlog: i32) -> TcpListener ! Ne
     return .{ s };
 }
 
-// Bind to `sa` and start listening with a sensible default backlog (16).
+// backlog 16
 pub listen :: fn(sa: addr::SocketAddr) -> TcpListener ! NetError {
     return listen_backlog(sa, 16)?;
 }

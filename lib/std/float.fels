@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.float — exp, ln and pow for f64, written in Fels so that a program needs no math library
-// for them (`core::pow` becomes a call of the C library's `pow`, which a Fels program does not
-// link). Good to about 1e-15 relative, which is what money and rates of return need. A module of
-// its own, with no types, so that it meets no other module's `Vec2`.
-//
-//   y := float::pow(1.07, 2.5);           // 1.1843...
-//   x := float::exp(float::ln(2.0) * 3.0); // 8
+// std.float: exp, ln, pow for f64 without libm (core::pow needs C's pow); ~1e-15 relative
 
 LN2 :: 0.6931471805599453094;
 
-// e to the power of `x`: 0 below about -745, and infinity above about 709.
+// e^x; 0 below ~-745, inf above ~709
 pub exp :: fn(x: f64) -> f64 {
     if x < -745.2 { return 0.0; }
     // x = k ln 2 + r, with |r| at most half of ln 2
@@ -27,13 +21,13 @@ pub exp :: fn(x: f64) -> f64 {
     return scale2(sum, k as i64);
 }
 
-// The natural logarithm of `x`; minus infinity for 0 and below.
+// natural log; -inf for x <= 0
 pub ln :: fn(x: f64) -> f64 {
     if x <= 0.0 {
         zero := 0.0;
         return -1.0 / zero;
     }
-    // x = m 2^e, with m between the square root of 1/2 and that of 2
+    // x = m 2^e, m in [sqrt(1/2), sqrt(2)]
     m := x;
     e: i64 = 0;
     while m > 1.4142135623730951 {
@@ -58,7 +52,7 @@ pub ln :: fn(x: f64) -> f64 {
     return 2.0 * sum + (e as f64) * LN2;
 }
 
-// `x` to the power of `y`. For a negative `x`, `y` must be a whole number (else this returns 0).
+// x^y; a negative `x` needs a whole `y`, else 0
 pub pow :: fn(x: f64, y: f64) -> f64 {
     if y == 0.0 { return 1.0; }
     if x == 0.0 { return 0.0; }
@@ -71,7 +65,7 @@ pub pow :: fn(x: f64, y: f64) -> f64 {
     return v;
 }
 
-// `v` times 2 to the power of `k`.
+// v * 2^k
 scale2 :: fn(v: f64, k: i64) -> f64 {
     out := v;
     n := k;

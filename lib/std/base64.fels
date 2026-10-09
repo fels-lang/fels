@@ -1,40 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.base64 — bytes as text in 64 characters, and back (RFC 4648).
-//
-//   text := base64::encode_in(&a, bytes);              // "aGVsbG8=" for "hello"
-//   back := base64::decode_in(&a, text)?;              // the bytes again
-//
-//   n := base64::URL_NO_PAD.encode(out[:], bytes);     // into your own buffer, for a URL
-//   m := base64::URL_NO_PAD.decode(out[:], text)?;
-//
-// A `Codec` is an alphabet and whether `=` pads the text to a multiple of 4: `STANDARD` (`+`
-// and `/`, padded), `STANDARD_NO_PAD`, `URL` (`-` and `_`, for URLs and file names, padded) and
-// `URL_NO_PAD`. Decoding takes the codec's own form only: a padded codec wants the padding, one
-// without refuses it, and a character of the other alphabet, a space or a line break is
-// `invalid_character`.
+// std.base64: rfc 4648; strict: padding as the codec says, one alphabet, no whitespace
 
 #import std.heap.{ Arena, alloc_bytes };
 
 pub Base64Error :: errors {
-    invalid_character,   // not in the alphabet, or `=` where it does not belong
-    invalid_length,      // a length no encoding has (a padded text not a multiple of 4)
-    buffer_too_small,    // `out` cannot hold the result; nothing was written
+    invalid_character,   // not in the alphabet, or a stray `=`
+    invalid_length,      // impossible length (padded, not a multiple of 4)
+    buffer_too_small,    // `out` too small; nothing written
 }
 
-/// An alphabet and its padding.
+// alphabet and padding
 pub Codec :: struct {
-    /// The 64 characters, for the values 0 to 63.
+    // 64 chars for values 0..63
     chars: []const u8,
-    /// Whether the text is padded with `=` to a multiple of 4.
+    // pad with `=` to a multiple of 4
     pad: bool,
 
-    /// The length of the text for `n` bytes.
+    // text length for `n` bytes
     pub encoded_len :: fn(self: *Self, n: usize) -> usize {
         if self.pad { return (n + 2) / 3 * 4; }
         return n / 3 * 4 + (n % 3 * 4 + 2) / 3;
     }
 
-    /// The length of the bytes `text` decodes to, when it is well formed.
+    // byte length of well-formed `text`
     pub decoded_len :: fn(self: *Self, text: []const u8) -> usize ! Base64Error {
         n := text.len;
         if self.pad {
@@ -46,7 +34,7 @@ pub Codec :: struct {
         return n / 4 * 3 + (n % 4 * 3) / 4;
     }
 
-    /// Write the text of `src` at the start of `out`; its length (`encoded_len`).
+    // into `out`; returns the length (encoded_len)
     pub encode :: fn(self: *Self, out: []u8, src: []const u8) -> usize ! Base64Error {
         need := self.encoded_len(src.len);
         if out.len < need { fail .buffer_too_small; }
@@ -83,8 +71,7 @@ pub Codec :: struct {
         return o;
     }
 
-    /// The bytes of `text`, written at the start of `out`; their length (`decoded_len`). The
-    /// bits past the last whole byte are not looked at.
+    // into `out`; returns the length; bits past the last whole byte ignored
     pub decode :: fn(self: *Self, out: []u8, text: []const u8) -> usize ! Base64Error {
         need := self.decoded_len(text)?;
         if out.len < need { fail .buffer_too_small; }
@@ -110,21 +97,21 @@ pub Codec :: struct {
         return o;
     }
 
-    /// The text of `src`, in memory from `a`.
+    // in `a`
     pub encode_in :: fn(self: *Self, a: *Arena, src: []const u8) -> []u8 {
         out := a.alloc_bytes(self.encoded_len(src.len));
         n := self.encode(out, src) catch err { yield 0; };
         return out[0..n];
     }
 
-    /// The bytes of `text`, in memory from `a`.
+    // in `a`
     pub decode_in :: fn(self: *Self, a: *Arena, text: []const u8) -> []u8 ! Base64Error {
         out := a.alloc_bytes(self.decoded_len(text)?);
         n := self.decode(out, text)?;
         return out[0..n];
     }
 
-    // The value of character `c`, or -1 for one not in the alphabet.
+    // value of `c`, or -1 if not in the alphabet
     value_of :: fn(self: *Self, c: u8) -> i32 {
         if c >= 'A' && c <= 'Z' { return (c - 'A') as i32; }
         if c >= 'a' && c <= 'z' { return (c - 'a') as i32 + 26; }
@@ -138,21 +125,21 @@ pub Codec :: struct {
 STANDARD_CHARS :: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 URL_CHARS :: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-/// `+` and `/`, padded with `=`: MIME, PEM, data: URLs.
+// `+` and `/`, padded: MIME, PEM, data: URLs
 pub STANDARD: Codec = .{ STANDARD_CHARS, true };
 pub STANDARD_NO_PAD: Codec = .{ STANDARD_CHARS, false };
-/// `-` and `_`, padded with `=`: safe in a URL or a file name.
+// `-` and `_`, padded: safe in URLs and file names
 pub URL: Codec = .{ URL_CHARS, true };
-/// `-` and `_` without padding: JWT, most URL tokens.
+// `-` and `_`, unpadded: JWT, most URL tokens
 pub URL_NO_PAD: Codec = .{ URL_CHARS, false };
 
-/// `STANDARD.encode_in`: the text of `src`, in memory from `a`.
+// STANDARD.encode_in; in `a`
 pub encode_in :: fn(a: *Arena, src: []const u8) -> []u8 {
     c := STANDARD;
     return c.encode_in(a, src);
 }
 
-/// `STANDARD.decode_in`: the bytes of `text`, in memory from `a`.
+// STANDARD.decode_in; in `a`
 pub decode_in :: fn(a: *Arena, text: []const u8) -> []u8 ! Base64Error {
     c := STANDARD;
     return c.decode_in(a, text);

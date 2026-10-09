@@ -1,6 +1,5 @@
-// wordfreq — top word frequencies in a text.
-//
-//   wordfreq [file]    count words; print the 8 most frequent (default: embedded text)
+// wordfreq: print the 8 most frequent words
+// run: wordfreq [file]   (default: embedded text)
 
 #import std.fs;
 #import std.heap.{ Arena, make };
@@ -81,7 +80,7 @@ main :: fn() -> i32 {
     n: usize = 0usize;
     tally(text, words[0..MAXW], &n);
 
-    // Print the 8 most frequent (destructive selection — zero each as printed).
+    // top 8, destructive: each count zeroed once printed
     limit: usize = 8usize;
     if n < limit { limit = n; }
     shown: usize = 0usize;

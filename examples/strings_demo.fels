@@ -1,5 +1,5 @@
-// std.strings showcase: a growable StringBuilder + byte-string utilities.
-// Build:  fels build examples/strings_demo.fels && strings_demo.exe
+// std.strings showcase: StringBuilder + byte-string utils
+// run: fels build examples/strings_demo.fels && strings_demo.exe
 
 #import std.heap;
 #import std.strings;
@@ -8,7 +8,7 @@
 main :: fn() -> i32 {
     a := heap::make();
 
-    // StringBuilder: append text + formatted numbers (grows on demand)
+    // StringBuilder: text + formatted numbers, grows on demand
     sb := strings::builder(&a);
     sb.append("count=");
     sb.append_u64(7u64);
@@ -30,5 +30,5 @@ main :: fn() -> i32 {
     io::print("\n");
 
     heap::deinit(&a);
-    return strings::str_count_byte(trimmed, 108u8) as i32;   // 'l' count → 3
+    return strings::str_count_byte(trimmed, 108u8) as i32;   // 'l' count -> 3
 }

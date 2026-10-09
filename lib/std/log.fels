@@ -1,20 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.log — messages by level, written to stderr or any `io::Writer`, each a format.
-//
-//   log::info("listening on {port}");             // [info] listening on 8080
-//   log::warn("{n} retries left");
-//   log::set_level(.debug);                        // from here on debug messages show too
-//
-//   net := log::to(&file, "net", .debug);           // its own writer, scope and level
-//   net.debug("got {len} bytes");                   // [debug] net: got 512 bytes
-//
-// A message below the level is dropped before its format is written, so its values are not
-// read. A write that fails is dropped too: logging never stops the program.
+// std.log: leveled format logging to stderr or any io::Writer
+// below-level messages are never formatted; failed writes are dropped, never fatal
 
 #import std.io as io;
 #import std.io.{ Writer, Stderr };
 
-/// How much a message matters, least first.
+// severity, lowest first
 pub Level :: enum { debug, info, warn, error }
 
 level_name :: fn(l: Level) -> []const u8 {
@@ -35,14 +26,13 @@ level_rank :: fn(l: Level) -> u8 {
     }
 }
 
-/// Writes messages of `min` and above to `w`, each on a line of its own, after the level and
-/// the scope (when it has one).
+// writes `min` and above to `w`, one line each: `[level] scope: msg`
 pub Logger :: struct {
     w: *Writer,
     scope: []const u8,
     min: Level,
 
-    /// Whether a message of level `l` is written.
+    // would level `l` be written
     pub enabled :: fn(self: *Self, l: Level) -> bool { return level_rank(l) >= level_rank(self.min); }
 
     pub log :: fn(self: *Self, l: Level, f: Format) {
@@ -55,11 +45,11 @@ pub Logger :: struct {
     pub warn :: fn(self: *Self, f: Format) { self.log(.warn, f); }
     pub error :: fn(self: *Self, f: Format) { self.log(.error, f); }
 
-    /// From here on messages of `l` and above are written.
+    // write `l` and above from now on
     pub set_level :: fn(self: *Self, l: Level) { self.min = l; }
 }
 
-// `[level] scope: message`, then a line break. A failed write is dropped.
+// `[level] scope: message` + newline; a failed write is dropped
 write_line :: fn(w: *Writer, l: Level, scope: []const u8, f: Format) {
     put(w, "[");
     put(w, level_name(l));
@@ -75,20 +65,20 @@ put :: fn(w: *Writer, s: []const u8) {
     n := io::write_all(w, s) catch err { yield 0usize; };
 }
 
-/// A logger that writes to `w`, its messages after `scope` (none when empty), from level `min` on.
+// logger to `w`; empty `scope` for none; writes `min` and above
 pub to :: fn(w: *Writer, scope: []const u8, min: Level) -> Logger {
     l: Logger = .{ w, scope, min };
     return l;
 }
 
-// The logger of `log::info` and the rest: stderr, no scope, from `info` on.
+// global logger: stderr, no scope, `info` and up by default
 
 LEVEL: Level = .info;
 
-/// From here on `log::debug` and the rest write messages of `l` and above.
+// global level: log::debug etc. write `l` and above from now on
 pub set_level :: fn(l: Level) { LEVEL = l; }
 
-/// The level `log::debug` and the rest write from.
+// current global level
 pub level :: fn() -> Level { return LEVEL; }
 
 global_log :: fn(l: Level, f: Format) {

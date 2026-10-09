@@ -1,27 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.regex — regular expressions, matched in time linear in the text (a Pike VM, as RE2 and
-// Go do it): no pattern can make a match take exponential time.
-//
-//   re := regex::compile(&a, "(\\d{4})-(\\d{2})-(\\d{2})")?;
-//   if re.find("due 2024-03-15!") |m| {
-//       year := m.group(1) ?? "";                  // "2024"; m.str() is "2024-03-15"
-//   }
-//   for m in re.find_all(text) { … }
-//   fixed := re.replace_all(&a, text, "$3.$2.$1");  // "15.03.2024"
-//
-// Syntax: literals; `.` (any rune but a line break); classes `[a-z_]`, `[^0-9]` and `\d \w \s` (and
-// `\D \W \S`), ASCII; anchors `^ $` (the text's start and end; of each line with `(?m)`), `\A \z`,
-// `\b \B`; groups `( )`, `(?: )` without a capture, `(?P<name> )` or `(?<name> )` with a name;
-// `|`; repeats `* + ? {n} {n,} {n,m}`, greedy, or lazy with a `?` after them. `(?i)` (ASCII case),
-// `(?m)` and `(?s)` (`.` takes line breaks too) at the start of the pattern set flags. Escapes:
-// `\n \t \r \f \v \0`, `\xHH`, `\x{H...}`, and a backslash before any punctuation.
-//
-// The text is read as UTF-8, a rune at a time: `.` and a class take a whole rune, and an index is
-// a byte offset. Matches are leftmost-first, as in Perl, Python and Go: of the matches that start
-// first, the one the pattern prefers (the left of `|`, the longer of a greedy repeat).
-//
-// A Regex keeps the memory its matching works in, so one Regex is used by one thread at a time,
-// and a `Match` is good until the next search with its Regex.
+// std.regex: linear-time Pike VM; UTF-8 runes, byte offsets, leftmost-first
+// not thread-safe: one thread per Regex; a Match is valid until the next search
 
 #import std.heap.{ Arena, alloc };
 #import std.vec as vec;
@@ -32,14 +11,14 @@
 pub RegexError :: errors {
     unclosed_group,     // a `(` without its `)`
     unmatched_paren,    // a `)` without its `(`
-    bad_class,          // a `[` without its `]`, or a range backwards (`[z-a]`)
-    bad_escape,         // a backslash before a letter or digit that means nothing here
+    bad_class,          // unclosed `[`, or a backwards range (`[z-a]`)
+    bad_escape,         // unknown escape letter or digit
     nothing_to_repeat,  // `*`, `+`, `?` or `{` with nothing before it
     bad_count,          // `{n,m}` with m < n, or more than 1000
     too_big,            // a program past 50000 instructions
 }
 
-// Instructions
+// VM instructions
 OP_RUNE :: 0u8;       // a: the rune
 OP_ANY :: 1u8;        // any rune but '\n'
 OP_ANY_NL :: 2u8;     // any rune
@@ -49,8 +28,7 @@ OP_JMP :: 5u8;        // a
 OP_SAVE :: 6u8;       // a: the capture slot
 OP_ASSERT :: 7u8;     // a: the kind
 OP_MATCH :: 8u8;
-OP_LOOP :: 9u8;       // a loop's way back: to a, or out to b when a was reached at this place
-                      // already (an iteration that took nothing ends the loop)
+OP_LOOP :: 9u8;       // back to a; out to b after an empty iteration
 
 AS_BOL :: 0u32;        // ^ (multi-line: after a '\n' too)
 AS_EOL :: 1u32;        // $
@@ -73,7 +51,7 @@ ClassRef :: struct {
     negated: bool,
 }
 
-// The pattern, read into a tree first
+// parse tree
 
 N_EMPTY :: 0u8;
 N_RUNE :: 1u8;       // a: rune
@@ -103,7 +81,7 @@ Parser :: struct {
     ranges: Vec(Range),
     classes: Vec(ClassRef),
     ngroups: usize,
-    names: Vec([]const u8),    // "" for a group without a name; index = group - 1
+    names: Vec([]const u8),    // "" if unnamed; index = group - 1
     fold: bool,                // (?i)
     multiline: bool,           // (?m)
     dotall: bool,              // (?s)
@@ -124,7 +102,7 @@ Parser :: struct {
     more :: fn(self: *Self) -> bool { return self.i < self.p.len; }
     peek :: fn(self: *Self) -> u8 { return self.p[self.i]; }
 
-    // The next rune of the pattern.
+    // next pattern rune
     rune :: fn(self: *Self) -> u32 {
         d := utf8::decode(self.p[self.i..self.p.len]);
         self.i += d.len;
@@ -196,7 +174,7 @@ Parser :: struct {
         return atom;
     }
 
-    // Whether a `{` starts a count (`{3}`, `{2,}`, `{2,5}`); otherwise it is a literal brace.
+    // `{` starts a count ({3}, {2,}, {2,5}), else it's a literal brace
     count_ahead :: fn(self: *Self) -> bool {
         j := self.i + 1;
         digits: usize = 0;
@@ -293,7 +271,7 @@ Parser :: struct {
         return self.literal(self.rune());
     }
 
-    // A rune to match, both ASCII cases with (?i).
+    // with (?i), both ASCII cases
     literal :: fn(self: *Self, r: u32) -> usize {
         if self.fold && ((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
             first := self.ranges.len();
@@ -309,7 +287,7 @@ Parser :: struct {
         return self.node(N_RUNE, r as i64, 0);
     }
 
-    // After a backslash: the rune an escape names.
+    // after a backslash: the rune it names
     escape :: fn(self: *Self) -> u32 ! RegexError {
         e := self.peek();
         self.i += 1;
@@ -348,7 +326,7 @@ Parser :: struct {
         return self.rune();
     }
 
-    // The ranges of \d \w \s (their negations are the class negated).
+    // \d \w \s ranges; negations negate the class
     add_perl :: fn(self: *Self, e: u8) {
         if e == 'd' || e == 'D' {
             self.push_range('0', '9');
@@ -376,7 +354,7 @@ Parser :: struct {
             self.i += 1;
         }
         first := self.ranges.len();
-        // the class's own \D \W \S go in as classes of their own: [^\d] is the same as \D
+        // [^\d] is the same as \D
         start := self.i;
         while true {
             if !self.more() { fail .bad_class; }
@@ -427,7 +405,7 @@ Parser :: struct {
         return self.node(N_CLASS, (self.classes.len() - 1) as i64, 0);
     }
 
-    // With (?i), the other ASCII case of the letters in lo..hi.
+    // (?i): the other ASCII case of letters in lo..hi
     fold_range :: fn(self: *Self, lo: u32, hi: u32) {
         a := if lo > 'a' { lo } else { 'a' };
         b := if hi < 'z' { hi } else { 'z' };
@@ -437,7 +415,7 @@ Parser :: struct {
         if c <= d { self.push_range(c + 32, d + 32); }
     }
 
-    // Replace the ranges from `mark` on (sorted, not overlapping) by their complement.
+    // complement the ranges from `mark` on (sorted, non-overlapping)
     complement_from :: fn(self: *Self, mark: usize) {
         n := self.ranges.len();
         tmp := alloc(Range, self.a, n - mark);
@@ -459,7 +437,7 @@ hex_digit :: fn(c: u8) -> i32 {
     return -1;
 }
 
-// The tree, as instructions
+// tree -> instructions
 
 Compiler :: struct {
     prog: Vec(Inst),
@@ -515,7 +493,7 @@ Compiler :: struct {
             for j in jumps.items() { self.patch_a(j, self.here()); }
             return;
         }
-        // N_REPEAT: the body `lo` times, then up to `hi - lo` optional ones, or a loop
+        // N_REPEAT: body lo times, then hi-lo optional copies, or a loop
         body := self.kids[n.kids];
         for k in 0..(n.a as usize) { self.node(body); }
         if n.b < 0 {
@@ -539,7 +517,7 @@ Compiler :: struct {
         for s in splits.items() { self.order(s, (s + 1) as u32, end, n.greedy); }
     }
 
-    // A split to `take` (the body) and `skip`, the preferred one first.
+    // preferred branch first
     order :: fn(self: *Self, split: usize, take: u32, skip: u32, greedy: bool) {
         if greedy {
             self.patch_a(split, take);
@@ -551,13 +529,13 @@ Compiler :: struct {
     }
 }
 
-/// A compiled pattern (`compile`), and the memory its matching works in.
+// compiled pattern plus its match memory; one thread at a time
 pub Regex :: struct {
     prog: []Inst,
     ranges: []Range,
     classes: []ClassRef,
     names: []const []const u8,
-    ncap: usize,             // capture slots: 2 per group, group 0 the whole match
+    ncap: usize,             // 2 slots per group; group 0 = whole match
     multiline: bool,
     // working memory, made once
     clist: []u32,
@@ -566,34 +544,34 @@ pub Regex :: struct {
     ncaps: []usize,
     mark: []u32,             // the generation a pc was last added in
     gen: u32,
-    stack: []u64,            // for adding threads: pc << 1, or (slot << 33 | old << 1 | 1)
+    stack: []u64,            // pc << 1, or restore: slot << 33 | old << 1 | 1
     work: []usize,           // the captures being followed
     result: []usize,         // the last match's captures
     region: *Arena,
 
-    /// Whether `text` has a match anywhere.
+    // match anywhere
     pub is_match :: fn(self: *Self, text: []const u8) -> bool { return self.search(text, 0, false); }
 
-    /// The leftmost match in `text`, or null.
+    // leftmost match, or null
     pub find :: fn(self: *Self, text: []const u8) -> ?Match { return self.find_at(text, 0); }
 
-    /// The leftmost match in `text` that starts at `start` or later, or null.
+    // leftmost match starting at or after `start`
     pub find_at :: fn(self: *Self, text: []const u8, start: usize) -> ?Match {
         if !self.search(text, start, false) { return null; }
         m: Match = .{ self, text };
         return m;
     }
 
-    /// The matches in `text` that do not overlap, left to right: `for m in re.find_all(text)`.
+    // non-overlapping matches, left to right
     pub find_all :: fn(self: *Self, text: []const u8) -> Matches {
         it: Matches = .{ self, text, 0, false, false };
         return it;
     }
 
-    /// The groups of the match, with `group(0)` the whole of it.
+    // capture groups, not counting group 0
     pub group_count :: fn(self: *Self) -> usize { return self.ncap / 2 - 1; }
 
-    /// The number of the group named `name`, or null.
+    // number of the group `name`, or null
     pub group_index :: fn(self: *Self, name: []const u8) -> ?usize {
         for k in 0..self.names.len {
             if self.names[k] == name { return k + 1; }
@@ -601,8 +579,7 @@ pub Regex :: struct {
         return null;
     }
 
-    /// `text` with each match replaced by `with`, in memory from `a`: `$0` the match, `$1` … a
-    /// group (`${1}` and `${name}` too), `$$` a `$`.
+    // result in `a`; `$0` match, `$1` / `${1}` / `${name}` group, `$$` a `$`
     pub replace_all :: fn(self: *Self, a: *Arena, text: []const u8, with: []const u8) -> []const u8 {
         sb := strings::builder(a);
         last: usize = 0;
@@ -615,7 +592,7 @@ pub Regex :: struct {
         return sb.str();
     }
 
-    /// The parts of `text` between the matches, in memory from `a`.
+    // pieces between matches, in `a`
     pub split :: fn(self: *Self, a: *Arena, text: []const u8) -> []const []const u8 {
         out := vec::make([]const u8, a);
         last: usize = 0;
@@ -628,17 +605,14 @@ pub Regex :: struct {
         return out.items();
     }
 
-    // Run from `start`; true with `result` filled when there is a match. `no_empty_at_start`:
-    // a match that is empty and starts at `start` does not count (after an empty match, the
-    // next must move on).
+    // true with `result` filled; `no_empty_at_start` skips an empty match at `start`
     search :: fn(self: *Self, text: []const u8, start: usize, no_empty_at_start: bool) -> bool {
         n_c: usize = 0;
         matched := false;
         pos := start;
         self.next_gen();
         while true {
-            // a new thread at each position, until a match is found; after the threads already
-            // in clist, which started earlier, and in their generation
+            // a new thread per pos until matched; after clist's older ones, same gen
             if !matched {
                 for k in 0..self.ncap { self.work[k] = 0xFFFFFFFFFFFFFFFF; }
                 n_c = self.add(self.clist, self.ccaps, n_c, 0, text, pos);
@@ -685,7 +659,7 @@ pub Regex :: struct {
         return matched;
     }
 
-    // Whether instruction `inst` takes rune `r`.
+    // does `inst` take rune `r`
     step_ok :: fn(self: *Self, inst: Inst, r: u32) -> bool {
         if inst.op == OP_RUNE { return r == inst.a; }
         if inst.op == OP_ANY { return r != '\n'; }
@@ -705,7 +679,7 @@ pub Regex :: struct {
         return false;
     }
 
-    // A new generation of marks; they all start over when the counter wraps.
+    // new mark generation; all marks reset on wrap
     next_gen :: fn(self: *Self) {
         self.gen = self.gen +% 1;
         if self.gen == 0 {
@@ -714,8 +688,7 @@ pub Regex :: struct {
         }
     }
 
-    // Add the thread at `pc` with the captures in `work`, following jumps, splits, saves and
-    // assertions at `pos`, to `list` (and `caps`) after its `n` threads; the new count.
+    // push thread `pc0` onto `list` past `n`, following jmp/split/save/assert; new count
     add :: fn(self: *Self, list: []u32, caps: []usize, n: usize, pc0: usize, text: []const u8, pos: usize) -> usize {
         count := n;
         sp: usize = 0;
@@ -839,14 +812,13 @@ expand :: fn(sb: *strings::StringBuilder, m: *Match, with: []const u8) {
     }
 }
 
-/// Where a group is in the text: bytes `start` to `end`.
+// byte offsets
 pub Span :: struct {
     start: usize,
     end: usize,
 }
 
-/// A match: the text it is in, and the places of its groups (`Regex.find`). Good until the next
-/// search with its Regex.
+// valid until the next search with its Regex
 pub Match :: struct {
     re: *Regex,
     text: []const u8,
@@ -854,10 +826,10 @@ pub Match :: struct {
     pub start :: fn(self: *Self) -> usize { return self.re.result[0]; }
     pub end :: fn(self: *Self) -> usize { return self.re.result[1]; }
 
-    /// The text of the whole match.
+    // whole match
     pub str :: fn(self: *Self) -> []const u8 { return self.text[self.re.result[0]..self.re.result[1]]; }
 
-    /// The text of group `i` (0: the whole match), or null when it took no part in the match.
+    // group `i` (0 = whole match); null if it took no part
     pub group :: fn(self: *Self, i: usize) -> ?[]const u8 {
         if 2 * i + 1 >= self.re.ncap { return null; }
         s := self.re.result[2 * i];
@@ -866,8 +838,7 @@ pub Match :: struct {
         return self.text[s..e];
     }
 
-    /// Where group `i` (0: the whole match) is in the text, as byte offsets; null when it took
-    /// no part in the match.
+    // byte offsets of group `i`; null if it took no part
     pub span :: fn(self: *Self, i: usize) -> ?Span {
         if 2 * i + 1 >= self.re.ncap { return null; }
         s := self.re.result[2 * i];
@@ -877,15 +848,14 @@ pub Match :: struct {
         return sp;
     }
 
-    /// The text of the group named `name`, or null.
+    // group `name`, or null
     pub named :: fn(self: *Self, name: []const u8) -> ?[]const u8 {
         if self.re.group_index(name) |i| { return self.group(i); }
         return null;
     }
 }
 
-/// The matches of a text that do not overlap (`Regex.find_all`). An empty match right after the
-/// one before it is allowed, two at one place are not, as in Python.
+// non-overlapping; an empty match right after another is ok, two at one place aren't
 pub Matches :: struct {
     re: *Regex,
     text: []const u8,
@@ -908,7 +878,7 @@ pub Matches :: struct {
     }
 }
 
-/// The pattern compiled, its working memory from `a`.
+// working memory in `a`
 pub compile :: fn(a: *Arena, pattern: []const u8) -> Regex ! RegexError {
     p: Parser = .{ a, pattern, 0, vec::make(Node, a), vec::make(usize, a), vec::make(Range, a),
         vec::make(ClassRef, a), 0, vec::make([]const u8, a), false, false, false };

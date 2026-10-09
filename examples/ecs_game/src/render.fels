@@ -1,4 +1,4 @@
-// render — rasterize the World into an ASCII frame.
+// render: world -> ascii frame
 
 #import world.{ World };
 #import components.{ Kind, FIELD_W, FIELD_H };
@@ -16,7 +16,7 @@ glyph :: fn(k: Kind, r: f32) -> u8 {
     }
 }
 
-// Append a bordered ASCII rendering of the field to `sb`.
+// bordered ascii frame of the field into `sb`
 pub render :: fn(w: *World, sb: *StringBuilder) {
     cells: [GH * GW]u8 = .{};
     i: usize = 0usize;

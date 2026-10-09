@@ -1,30 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.hash — non-cryptographic hashes of bytes: FNV-1a (32 and 64 bits), CRC-32, Adler-32 and
-// XXH64.
-// Each comes as one call, and as a struct that takes the bytes as they come:
-//
-//   k := hash::xxhash64(0, "key");                 // a fast 64-bit hash, for tables
-//   c := hash::crc32("123456789");                 // 0xCBF43926, the zip/png checksum
-//
-//   h := hash::crc32_start();
-//   h.update(part1);
-//   h.update(part2);
-//   c := h.final();                                // the same as crc32 of both parts
-//
-// Each of these structs is a `Hasher`, and so is std.crypto's `Sha256`: `feed(&h, src, buf)`
-// hashes all of a Reader (a file, stdin) with any of them. `mix64` scrambles one integer, as a
-// key of a table of integers wants.
-//
-// None of these is meant to resist someone who picks the input: for that, use std.crypto.
+// std.hash: non-crypto hashes (FNV-1a, CRC-32, Adler-32, XXH64), one-shot or streaming
+// not attack-resistant; use std.crypto for adversarial input
 
 #import std.io.{ Reader, IoError };
 
-/// What takes bytes to hash, in parts: every hasher here and std.crypto's `Sha256`.
+// incremental hasher; all of these plus std.crypto's Sha256
 pub Hasher :: interface {
     update :: fn(self: *Self, data: []const u8);
 }
 
-/// Hash all of `src`, to its end, with `h`, reading through `buf`. The bytes hashed.
+// hashes all of `src` through `buf`; returns bytes hashed
 pub feed :: fn(h: *Hasher, src: *Reader, buf: []u8) -> u64 ! IoError {
     total: u64 = 0;
     while true {
@@ -43,21 +28,20 @@ FNV64_PRIME :: 0x100000001B3u64;
 FNV32_START :: 0x811C9DC5u32;
 FNV32_PRIME :: 0x01000193u32;
 
-/// FNV-1a, 64 bits, of `data`: simple and quick for short keys.
+// quick for short keys
 pub fnv1a_64 :: fn(data: []const u8) -> u64 {
     h := FNV64_START;
     for b in data { h = (h ^ (b as u64)) *% FNV64_PRIME; }
     return h;
 }
 
-/// FNV-1a, 32 bits, of `data`.
 pub fnv1a_32 :: fn(data: []const u8) -> u32 {
     h := FNV32_START;
     for b in data { h = (h ^ (b as u32)) *% FNV32_PRIME; }
     return h;
 }
 
-/// FNV-1a, 64 bits, in parts (`fnv1a_64_start`).
+// streaming; from fnv1a_64_start
 pub Fnv1a64 :: struct {
     state: u64,
 
@@ -80,7 +64,7 @@ pub fnv1a_64_start :: fn() -> Fnv1a64 {
     return h;
 }
 
-/// FNV-1a, 32 bits, in parts (`fnv1a_32_start`).
+// streaming; from fnv1a_32_start
 pub Fnv1a32 :: struct {
     state: u32,
 
@@ -103,7 +87,7 @@ pub fnv1a_32_start :: fn() -> Fnv1a32 {
     return h;
 }
 
-// CRC-32 (IEEE 802.3: zip, png, gzip, ethernet), a byte at a time through a table
+// CRC-32 (IEEE 802.3: zip, png, gzip, ethernet), table-driven
 
 CRC_TABLE: [256]u32 = .{
     0x00000000, 0x77073096, 0xEE0E612C, 0x990951BA, 0x076DC419, 0x706AF48F, 0xE963A535, 0x9E6495A3,
@@ -140,14 +124,14 @@ CRC_TABLE: [256]u32 = .{
     0xB3667A2E, 0xC4614AB8, 0x5D681B02, 0x2A6F2B94, 0xB40BBE37, 0xC30C8EA1, 0x5A05DF1B, 0x2D02EF8D,
 };
 
-/// CRC-32 of `data`: `crc32("123456789")` is 0xCBF43926.
+// crc32("123456789") == 0xCBF43926
 pub crc32 :: fn(data: []const u8) -> u32 {
     h := crc32_start();
     crc32_add(&h, data);
     return h.final();
 }
 
-/// CRC-32 in parts (`crc32_start`).
+// streaming; from crc32_start
 pub Crc32 :: struct {
     crc: u32,
 
@@ -170,7 +154,7 @@ pub crc32_start :: fn() -> Crc32 {
     return h;
 }
 
-// XXH64 (xxHash, 64 bits): 32 bytes a round, in four lanes
+// XXH64: 32-byte rounds in four lanes
 
 P1 :: 0x9E3779B185EBCA87u64;
 P2 :: 0xC2B2AE3D27D4EB4Fu64;
@@ -200,7 +184,7 @@ xx_merge :: fn(acc: u64, lane: u64) -> u64 {
     return ((acc ^ xx_round(0, lane)) *% P1) +% P4;
 }
 
-// The four lanes after one or more rounds, as one value.
+// fold the four lanes into one value
 xx_converge :: fn(v1: u64, v2: u64, v3: u64, v4: u64) -> u64 {
     h := rotl(v1, 1) +% rotl(v2, 7) +% rotl(v3, 12) +% rotl(v4, 18);
     h = xx_merge(h, v1);
@@ -209,7 +193,7 @@ xx_converge :: fn(v1: u64, v2: u64, v3: u64, v4: u64) -> u64 {
     return xx_merge(h, v4);
 }
 
-// The bytes after the last round (fewer than 32), and the final mix.
+// tail (< 32 bytes) and final mix
 xx_finish :: fn(start: u64, rest: []const u8) -> u64 {
     h := start;
     i: usize = 0;
@@ -230,8 +214,7 @@ xx_finish :: fn(start: u64, rest: []const u8) -> u64 {
     return h ^ (h >> 32);
 }
 
-/// XXH64 of `data` with `seed` (0 for the usual one): fast for long and short input, and good
-/// for hash tables. `xxhash64(0, "")` is 0xEF46DB3751D8E999.
+// seed 0 is the usual; xxhash64(0, "") == 0xEF46DB3751D8E999
 pub xxhash64 :: fn(seed: u64, data: []const u8) -> u64 {
     i: usize = 0;
     h: u64 = 0;
@@ -254,7 +237,7 @@ pub xxhash64 :: fn(seed: u64, data: []const u8) -> u64 {
     return xx_finish(h +% (data.len as u64), data[i..data.len]);
 }
 
-/// XXH64 in parts (`xxhash64_start`): the bytes of a round that is not complete wait in `buf`.
+// streaming; from xxhash64_start; a partial round waits in `buf`
 pub XxHash64 :: struct {
     seed: u64,
     v1: u64,
@@ -318,16 +301,16 @@ pub xxhash64_start :: fn(seed: u64) -> XxHash64 {
     return h;
 }
 
-// Adler-32 (zlib's checksum)
+// Adler-32 (zlib)
 
-/// Adler-32 of `data`, as zlib appends it: `adler32("Wikipedia")` is 0x11E60398.
+// as zlib appends it; adler32("Wikipedia") == 0x11E60398
 pub adler32 :: fn(data: []const u8) -> u32 {
     h := adler32_start();
     adler32_add(&h, data);
     return h.final();
 }
 
-/// Adler-32 in parts (`adler32_start`).
+// streaming; from adler32_start
 pub Adler32 :: struct {
     a: u32,
     b: u32,
@@ -345,7 +328,7 @@ adler32_add :: fn(self: *Adler32, data: []const u8) {
     b := self.b;
     i: usize = 0;
     while i < data.len {
-        // 5552 bytes keep b below 2^32 before the modulo (zlib's NMAX)
+        // 5552-byte blocks keep b < 2^32 before the modulo (zlib's NMAX)
         end := i + 5552;
         if end > data.len { end = data.len; }
         while i < end {
@@ -365,10 +348,9 @@ pub adler32_start :: fn() -> Adler32 {
     return h;
 }
 
-// One integer
+// one integer
 
-/// `x` with its bits scrambled, every bit of it reaching every bit of the result (MurmurHash3's
-/// finalizer): a hash for an integer key, where nearby keys should land far apart.
+// MurmurHash3 finalizer: full avalanche, for integer keys
 pub mix64 :: fn(x: u64) -> u64 {
     h := (x ^ (x >> 33)) *% 0xFF51AFD7ED558CCDu64;
     h = (h ^ (h >> 33)) *% 0xC4CEB9FE1A85EC53u64;

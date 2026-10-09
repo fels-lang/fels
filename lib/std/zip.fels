@@ -1,18 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.zip — .zip archives: the files in one read out, and new ones written, stored or compressed
-// with DEFLATE (std.flate). Also the formats built on zip: .docx, .xlsx, .jar, .epub.
-//
-//   ar := zip::open(&a, fs::read_all("book.zip", &a)?)?;
-//   for e in ar.entries { if !e.is_dir { bytes := ar.read(&a, e)?; … } }
-//   if ar.find("notes.txt") |e| { text := ar.read(&a, e)?; }
-//
-//   w := zip::writer(&a);
-//   w.add("hello.txt", "Hello!", 6);              // level 0 stores, 1-9 compress
-//   w.add_dir("img/");
-//   fs::write_file("out.zip", w.finish())?;
-//
-// Not read: archives past 4 GB or 65535 entries (zip64), encrypted entries, methods other than
-// stored and DEFLATE; they fail with `unsupported`. Names are UTF-8.
+// std.zip: read and write .zip (stored or DEFLATE); also .docx, .xlsx, .jar, .epub
+// no zip64 (> 4 GB or 65535 entries), encryption or other methods: `unsupported`
 
 #import std.heap.{ Arena, alloc_bytes };
 #import std.vec as vec;
@@ -22,13 +10,13 @@
 #import std.time as time;
 
 pub ZipError :: errors {
-    not_zip,        // no end-of-archive record: not a zip, or cut short
-    corrupt,        // a record that points outside the data, or has the wrong signature
-    unsupported,    // zip64, encryption, or a method other than stored and DEFLATE
-    bad_checksum,   // an entry whose CRC-32 or size does not match what it holds
+    not_zip,        // no end record: not a zip, or truncated
+    corrupt,        // record out of bounds or bad signature
+    unsupported,    // zip64, encryption, or not stored/DEFLATE
+    bad_checksum,   // CRC-32 or size mismatch
 }
 
-/// A file or folder in an archive, as its central directory lists it.
+// file or folder, as the central directory lists it
 pub Entry :: struct {
     name: []const u8,
     method: u16,             // 0 stored, 8 DEFLATE
@@ -41,8 +29,7 @@ pub Entry :: struct {
     dos_time: u16,
     dos_date: u16,
 
-    /// When it was last changed, in seconds since 1970, from the DOS date and time zip keeps
-    /// (local time, to two seconds).
+    // unix seconds from the DOS date/time: local time, 2 s resolution
     pub modified :: fn(self: *Self) -> i64 {
         dt: time::DateTime = .{
             1980 + ((self.dos_date >> 9) as i64), ((self.dos_date >> 5) & 15) as u8, (self.dos_date & 31) as u8,
@@ -55,18 +42,17 @@ pub Entry :: struct {
 le16 :: fn(b: []const u8, at: usize) -> u64 { return (b[at] as u64) | ((b[at + 1] as u64) << 8); }
 le32 :: fn(b: []const u8, at: usize) -> u64 { return le16(b, at) | (le16(b, at + 2) << 16); }
 
-/// An archive read with `open`: its entries, in the order of its central directory.
+// entries in central-directory order
 pub Archive :: struct {
     data: []const u8,
     entries: []Entry,
 
-    /// The entry named `name`, or null.
     pub find :: fn(self: *Self, name: []const u8) -> ?Entry {
         for e in self.entries { if e.name == name { return e; } }
         return null;
     }
 
-    /// What entry `e` holds, in memory from `a`, its CRC-32 and size checked.
+    // contents in `a`; CRC-32 and size checked
     pub read :: fn(self: *Self, a: *Arena, e: Entry) -> []const u8 ! ZipError {
         if (e.flags & 1) != 0 { fail .unsupported; }   // encrypted
         at := e.header_offset as usize;
@@ -86,9 +72,9 @@ pub Archive :: struct {
     }
 }
 
-/// The archive in `data` (the whole .zip, in memory), its entries listed in memory from `a`.
+// `data` is the whole .zip in memory; entries listed in `a`
 pub open :: fn(a: *Arena, data: []const u8) -> Archive ! ZipError {
-    // the end-of-archive record: 22 bytes and a comment of up to 65535, at the very end
+    // end record: 22 bytes plus up to a 65535-byte comment, at the very end
     if data.len < 22 { fail .not_zip; }
     eocd: usize = data.len;
     i := data.len - 22;
@@ -129,9 +115,9 @@ pub open :: fn(a: *Arena, data: []const u8) -> Archive ! ZipError {
     return ar;
 }
 
-// Writing
+// writing
 
-/// A new archive being written (`writer`); `finish` gives its bytes.
+// archive being written; `finish` gives its bytes
 pub Writer :: struct {
     region: *Arena,
     out: Vec(u8),
@@ -147,13 +133,12 @@ pub Writer :: struct {
         self.put16((v >> 16) & 0xFFFF);
     }
 
-    /// Add a file `name` holding `data`, compressed at `level` (0 stores it), dated 1980-01-01.
+    // level 0 stores; dated 1980-01-01
     pub add :: fn(self: *Self, name: []const u8, data: []const u8, level: u32) {
         self.add_entry(name, data, level, 0, 0x21);
     }
 
-    /// Add a file dated `unix_secs` (zip keeps a local date and time to two seconds, with no
-    /// zone: pass `secs + time::local_offset(secs)` for the local time).
+    // zip dates are local, no zone, 2 s steps: pass secs + time::local_offset(secs)
     pub add_at :: fn(self: *Self, name: []const u8, data: []const u8, level: u32, unix_secs: i64) {
         dt := time::utc(unix_secs);
         y := if dt.year < 1980 { 0 } else { dt.year - 1980 };
@@ -162,7 +147,7 @@ pub Writer :: struct {
         self.add_entry(name, data, level, tm as u16, dd as u16);
     }
 
-    /// Add a folder (its name ends in "/"; one is added when it does not).
+    // appends "/" if missing
     pub add_dir :: fn(self: *Self, name: []const u8) {
         if name.len > 0 && name[name.len - 1] == '/' {
             self.add_entry(name, "", 0, 0, 0x21);
@@ -205,7 +190,7 @@ pub Writer :: struct {
         self.entries.push(e);
     }
 
-    /// The archive's bytes: what was added, then the central directory and the end record.
+    // added data, then the central directory and end record
     pub finish :: fn(self: *Self) -> []const u8 {
         cd_off := self.out.len();
         for e in self.entries.items() {
@@ -241,7 +226,7 @@ pub Writer :: struct {
     }
 }
 
-/// A new, empty archive to add files to, in memory from `a`.
+// empty archive in `a`
 pub writer :: fn(a: *Arena) -> Writer {
     w: Writer = .{ a, vec::make(u8, a), vec::make(Entry, a) };
     return w;

@@ -1,19 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.net.os — the raw OS networking layer (Winsock2 / ws2_32.dll).
-//
-// The foundation the rest of std.net sits on: raw #extern bindings, protocol
-// constants, the sockaddr_in wire struct, the shared NetError, and the conversions
-// between std.net.addr types and the wire format. socket.fels/tcp.fels/udp.fels wrap it
-// into typed handles — reach for this layer directly only for options the higher
-// layers don't expose. Each binding's fels name is decoupled from the C symbol (the
-// #extern 2nd arg is the real link name), so raw calls keep a sys_ prefix.
+// std.net.os: raw socket layer under std.net; for options the higher layers lack
 
 #import std.net.addr as addr;
 
-// OS socket layer
-// Thin wrappers over the platform runtime's socket seam (windows.fels → Winsock2;
-// linux.fels → socket syscalls, translating these Windows option constants). The
-// `sys_` names are kept so the wrappers above are unchanged.
+// os socket seam: Winsock on windows, syscalls on linux (Windows constants translated)
 pub sys_wsa_startup  :: fn(version: u16, data: *u8) -> i32 { ignored := version; ignored2 := data; return os_net_init(); }
 pub sys_wsa_cleanup  :: fn() -> i32 { return os_net_cleanup(); }
 pub sys_wsa_lasterr  :: fn() -> i32 { return os_net_lasterr(); }
@@ -31,11 +21,11 @@ pub sys_setsockopt   :: fn(s: usize, level: i32, opt: i32, val: *const u8, len: 
 pub sys_getsockname  :: fn(s: usize, name: *u8, namelen: *i32) -> i32 { return os_net_getsockname(s, name, namelen); }
 pub sys_ioctlsocket  :: fn(s: usize, cmd: u32, argp: *u32) -> i32 { return os_net_ioctlsocket(s, cmd, argp); }
 pub sys_shutdown     :: fn(s: usize, how: i32) -> i32 { return os_net_shutdown(s, how); }
-// Host order ↔ network order for a 16-bit port (x86 is little-endian on both OSes).
+// host <-> network order for a 16-bit port (x86 little-endian)
 pub sys_htons        :: fn(x: u16) -> u16 { return (x << 8u16) | (x >> 8u16); }
 pub sys_ntohs        :: fn(x: u16) -> u16 { return (x << 8u16) | (x >> 8u16); }
 
-// Protocol constants
+// protocol constants
 pub AF_INET        :: 2;
 pub SOCK_STREAM    :: 1;        // TCP
 pub SOCK_DGRAM     :: 2;        // UDP
@@ -45,15 +35,15 @@ pub INVALID_SOCKET :: 0xFFFFFFFFFFFFFFFFusize;   // (SOCKET)(~0)
 pub SOCKET_ERROR   :: -1;
 pub SOCKADDR_LEN   :: 16;       // sizeof(sockaddr_in)
 
-// setsockopt levels / options
+// setsockopt levels and options
 pub SOL_SOCKET     :: 0xFFFF;
 pub SO_REUSEADDR   :: 0x0004;
 pub SO_BROADCAST   :: 0x0020;
 pub SO_RCVTIMEO    :: 0x1006;   // receive timeout, DWORD milliseconds
 pub SO_SNDTIMEO    :: 0x1005;   // send timeout, DWORD milliseconds
-pub TCP_NODELAY    :: 0x0001;   // at level IPPROTO_TCP — disable Nagle
+pub TCP_NODELAY    :: 0x0001;   // at level IPPROTO_TCP; disables Nagle
 
-// ioctlsocket command: non-blocking mode (argp != 0 → non-blocking)
+// ioctlsocket non-blocking mode; argp != 0 enables
 pub FIONBIO        :: 0x8004667Eu32;
 
 // shutdown() directions
@@ -61,12 +51,10 @@ pub SHUT_RECV      :: 0;        // SD_RECEIVE
 pub SHUT_SEND      :: 1;        // SD_SEND
 pub SHUT_BOTH      :: 2;        // SD_BOTH
 
-// WSAGetLastError codes we care about
+// WSAGetLastError codes
 pub WSAEWOULDBLOCK :: 10035;
 
-// Shared error type
-// Every layer of std.net fails with this. Where a specific syscall failed is in
-// the variant name; the numeric Winsock code is available via `last_error()`.
+// shared by all of std.net; the variant names the failed call, last_error() has the code
 pub NetError :: errors {
     startup_failed,   // WSAStartup
     socket_failed,    // socket()
@@ -83,33 +71,31 @@ pub NetError :: errors {
     unknown_host,     // a name with no address (`resolve`)
 }
 
-// The wire address: `sockaddr_in` (16 bytes)
-// family(2) port(2, network order) addr(4, network order) zero(8).
+// sockaddr_in, 16 bytes: family, port and addr in network order, 8 zero bytes
 pub RawSockaddr :: struct { family: u16, port: u16, addr: u32, zero: u64 }
 
-// Build the wire form from a friendly `SocketAddr` (host order → network order).
+// host order -> network order
 pub raw_from :: fn(sa: addr::SocketAddr) -> RawSockaddr {
     return .{ AF_INET as u16, sys_htons(sa.port), sa.ip.to_net(), 0 };
 }
 
-// Decode the wire form back to a friendly `SocketAddr` (network → host order).
+// network order -> host order
 pub addr_from_raw :: fn(r: RawSockaddr) -> addr::SocketAddr {
     return .{ addr::from_net(r.addr), sys_ntohs(r.port) };
 }
 
-// Library lifecycle
-// Initialise Winsock — must be called once before any socket call in a process.
+// must be called once per process before any socket call
 pub init :: fn() -> void ! NetError {
     data: [512]u8 = .{};                 // WSADATA
     if sys_wsa_startup(0x0202, &data[0]) != 0 { fail .startup_failed; }
     return;
 }
 
-// Tear Winsock down (optional, at process exit).
+// optional, at process exit
 pub cleanup :: fn() { ignored := sys_wsa_cleanup(); }
 
-// The last Winsock error code on this thread (`WSAGetLastError`).
+// last Winsock error on this thread
 pub last_error :: fn() -> i32 { return sys_wsa_lasterr(); }
 
-// True if `WSAGetLastError()` indicates a non-blocking call would have blocked.
+// last error was WSAEWOULDBLOCK
 pub is_would_block :: fn() -> bool { return sys_wsa_lasterr() == WSAEWOULDBLOCK; }

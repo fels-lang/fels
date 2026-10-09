@@ -1,4 +1,4 @@
-// ray.fels — the world is twelve lines of text. The camera walks it in 3D.
+// raycaster: a 3d walk through a twelve-line text map
 
 #import std.heap.{ Arena, make };
 #import std.io.{ print };
@@ -13,7 +13,7 @@ MH :: 12;         // map height
 FOV :: 1.05f32;   // ~60 degrees
 FRAMES :: 600;   // ~27 s at 22 fps; raise it for a longer demo
 
-// Far to near. A wall gets denser as it gets closer.
+// far to near; closer walls are denser
 RAMP :: "..::--==++**##%%@@";
 
 row :: fn(y: i32) -> []const u8 {
@@ -41,7 +41,7 @@ wall :: fn(x: i32, y: i32) -> bool {
     return row(y)[x as usize] == 35u8;
 }
 
-// March a ray until it hits something. Returns the distance it travelled.
+// distance a ray travels until it hits a wall
 march :: fn(px: f32, py: f32, ang: f32) -> f32 {
     d: f32 = 0.0f32;
     dx := cos(ang);
@@ -64,7 +64,7 @@ main :: fn() -> i32 {
 
     frame: i32 = 0;
     while frame < FRAMES {
-        // One ray per column, with the fisheye taken back out.
+        // one ray per column, fisheye corrected
         c: i32 = 0;
         while c < SW {
             off := FOV * ((c as f32) / (SW as f32) - 0.5f32);
@@ -73,7 +73,7 @@ main :: fn() -> i32 {
         }
 
         strings::clear(&sb);
-        strings::append_byte(&sb, 27u8);      // ESC [ H — home, no clear, no flicker
+        strings::append_byte(&sb, 27u8);      // ESC [ H: home, no clear, no flicker
         strings::append(&sb, "[H");
         y: i32 = 0;
         while y < SH {
@@ -97,7 +97,7 @@ main :: fn() -> i32 {
         }
         print(strings::str(&sb));
 
-        // Autopilot: walk forward, turn when the wall gets close.
+        // autopilot: walk forward, turn near walls
         if march(px, py, ang) < 0.8f32 { ang += 0.22f32; }
         else { px += cos(ang) * 0.06f32; py += sin(ang) * 0.06f32; }
         sleep_ms(33u32);

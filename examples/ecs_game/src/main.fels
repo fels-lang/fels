@@ -1,10 +1,4 @@
-// ecs_game — a headless, deterministic ECS asteroids simulation.
-//
-// A turret at the centre of the field auto-fires at the nearest asteroid;
-// asteroids drift, bounce off the walls, and split into fragments when destroyed.
-// The world is a struct-of-arrays component store (see world.fels); each tick runs
-// the spawner / fire / movement / collision / lifetime systems (see systems.fels).
-// Every 30 frames it renders an ASCII snapshot, then prints a final report.
+// ecs_game: headless, deterministic ecs asteroids sim; ascii snapshot every 30 frames
 
 #import std.heap.{ Arena, make, new };
 #import std.rand.{ Rng, seed, range_f32 };
@@ -31,12 +25,12 @@ main :: fn() -> i32 {
 
     rng := seed(0xC0FFEE1234u64);
 
-    // The turret sits at the centre.
+    // turret at the centre
     cx: f32 = (FIELD_W as f32) * 0.5f32;
     cy: f32 = (FIELD_H as f32) * 0.5f32;
     turret := spawn(w, Kind.Turret, v2(cx, cy), v2(0.0f32, 0.0f32), 1.5f32, 0);
 
-    // Seed an initial asteroid belt.
+    // initial asteroid belt
     k: i32 = 0;
     while k < 6 {
         p: Vec2 = .{ range_f32(&rng, 3.0f32, (FIELD_W - 3) as f32), range_f32(&rng, 3.0f32, (FIELD_H - 3) as f32) };

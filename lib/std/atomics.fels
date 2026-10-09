@@ -1,28 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.atomics — atomic operations over shared memory: the foundation for lock-free
-// code and synchronising threads. Every op is generic over the value type and takes
-// a pointer to it (&counter); read-modify-write helpers return the PREVIOUS value,
-// like C/LLVM.
-//
-// Type safety is checked at compile time via core::type_info reflection — a bitwise
-// op on a float, or any atomic op on a non-scalar, is a clear compile error, not a
-// backend crash. All helpers use sequentially-consistent ordering; for finer control
-// call the core::atomic_* builtins with one of the ordering constants below (the
-// ordering must be compile-time known).
+// std.atomics: atomic ops; rmw returns the previous value; helpers are seq-cst
 
-// Memory orderings (for the `core::atomic_*` builtins)
+// orderings for core::atomic_*; must be comptime-known
 pub Relaxed :: 0; // atomicity only, no ordering between threads
-pub Acquire :: 1; // later memory accesses can't move before this load
-pub Release :: 2; // earlier memory accesses can't move after this store
+pub Acquire :: 1; // later accesses can't move before this load
+pub Release :: 2; // earlier accesses can't move after this store
 pub AcqRel  :: 3; // acquire + release (for a read-modify-write)
-pub SeqCst  :: 4; // a single total order across all seq-cst operations
+pub SeqCst  :: 4; // single total order over all seq-cst ops
 
-// Compile-time type contracts
-// These run during generic resolution: an unsuitable `T` is rejected at the call
-// site before any code is generated.
+// type contracts; a bad T is rejected at the call site
 
-// A value that the hardware can operate on atomically: an integer, float, bool,
-// or pointer no wider than a machine word.
+// int, float, bool or pointer, at most word-sized
 pub Native :: constraint($T) {
     match core::type_info(T) {
         .int => {}
@@ -33,8 +21,7 @@ pub Native :: constraint($T) {
     }
 }
 
-// Numeric — for arithmetic (add/sub/mul/div). Integers use native instructions;
-// floats are handled too (add/sub natively, mul/div via a CAS loop).
+// int or float, for add/sub/mul/div
 pub Numeric :: constraint($T) {
     match core::type_info(T) {
         .int => {}
@@ -43,7 +30,7 @@ pub Numeric :: constraint($T) {
     }
 }
 
-// Integer — for bitwise (and/or/xor/nand), shifts, and min/max.
+// int only: bitwise, shifts, min/max
 pub Integer :: constraint($T) {
     match core::type_info(T) {
         .int => {}
@@ -51,7 +38,7 @@ pub Integer :: constraint($T) {
     }
 }
 
-// Boolean — for flag helpers.
+// for flag helpers
 pub Boolean :: constraint($T) {
     match core::type_info(T) {
         .boolean => {}
@@ -59,47 +46,40 @@ pub Boolean :: constraint($T) {
     }
 }
 
-// Load / store
+// load / store
 
-// Atomically read the current value.
 pub load :: fn($T: Native, p: *T) -> T { return core::atomic_load(p, 4); }
 
-// Atomically write `v`.
 pub store :: fn($T: Native, p: *T, v: T) { core::atomic_store(p, v, 4); }
 
-// Acquire-ordered load — pairs with a `store_release` so that everything written
-// before the release becomes visible to whoever observes this acquire.
+// acquire load; pairs with store_release
 pub load_acquire :: fn($T: Native, p: *T) -> T { return core::atomic_load(p, 1); }
 
-// Release-ordered store (see `load_acquire`).
+// release store; pairs with load_acquire
 pub store_release :: fn($T: Native, p: *T, v: T) { core::atomic_store(p, v, 2); }
 
-// Atomically replace the value with `v`; returns the previous value.
+// returns the previous value
 pub swap :: fn($T: Native, p: *T, v: T) -> T { return core::atomic_exchange(p, v, 4); }
 
-// Compare-exchange
+// compare-exchange
 
-// If `*p` equals `expected`, atomically replace it with `desired` and return true;
-// otherwise leave it and return false. The core building block for lock-free
-// algorithms and spinlocks.
+// true if *p was `expected` and is now `desired`
 pub compare_exchange :: fn($T: Native, p: *T, expected: T, desired: T) -> bool {
     return core::atomic_cas(p, expected, desired, 4) == expected;
 }
 
-// Like `compare_exchange`, but returns the value actually observed (equal to
-// `expected` on success), so a caller can retry with the fresh value.
+// returns the observed value (== expected on success)
 pub compare_exchange_value :: fn($T: Native, p: *T, expected: T, desired: T) -> T {
     return core::atomic_cas(p, expected, desired, 4);
 }
 
-// Arithmetic (return the previous value)
+// arithmetic; returns the previous value
 
-// Integer add/sub use native instructions; float add/sub use native float atomics.
+// native for ints and floats
 pub fetch_add :: fn($T: Numeric, p: *T, v: T) -> T { return core::atomic_add(p, v, 4); }
 pub fetch_sub :: fn($T: Numeric, p: *T, v: T) -> T { return core::atomic_sub(p, v, 4); }
 
-// Multiply/divide have no hardware atomic — implemented with a compare-and-swap
-// retry loop (works for integers and floats).
+// no hardware atomic; cas retry loop
 pub fetch_mul :: fn($T: Numeric, p: *T, v: T) -> T {
     while true {
         old := core::atomic_load(p, 4);
@@ -116,17 +96,17 @@ pub fetch_div :: fn($T: Numeric, p: *T, v: T) -> T {
     return core::atomic_load(p, 4); // unreachable
 }
 
-// Min / max (integers; signed vs unsigned chosen from `T`)
+// min / max (ints; signedness from T)
 pub fetch_max :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_max(p, v, 4); }
 pub fetch_min :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_min(p, v, 4); }
 
-// Bitwise (integers; return the previous value)
+// bitwise (ints; returns the previous value)
 pub fetch_and  :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_and(p, v, 4); }
 pub fetch_or   :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_or(p, v, 4); }
 pub fetch_xor  :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_xor(p, v, 4); }
 pub fetch_nand :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_nand(p, v, 4); }
 
-// Shifts have no hardware atomic — compare-and-swap retry loops.
+// no hardware atomic; cas retry loops
 pub fetch_shl :: fn($T: Integer, p: *T, bits: T) -> T {
     while true {
         old := core::atomic_load(p, 4);
@@ -143,77 +123,58 @@ pub fetch_shr :: fn($T: Integer, p: *T, bits: T) -> T {
     return core::atomic_load(p, 4); // unreachable
 }
 
-// Fences
+// fences
 
-// A sequentially-consistent fence (orders all surrounding atomic accesses).
+// seq-cst fence
 pub fence :: fn() { core::atomic_fence(4); }
 
-// An acquire fence — no load/store after it may move before it.
+// nothing after it moves before it
 pub fence_acquire :: fn() { core::atomic_fence(1); }
 
-// A release fence — no load/store before it may move after it.
+// nothing before it moves after it
 pub fence_release :: fn() { core::atomic_fence(2); }
 
-// 32-bit flag helpers (the common ready/done signal between threads)
-// A 0/non-zero `u32` is the simplest cross-thread flag.
+// u32 flags: 0 = clear, non-zero = set
 
-// True if the flag currently holds a non-zero value.
 pub is_set :: fn(flag: *u32) -> bool { return load(flag) != 0u32; }
 
-// Atomically set the flag to 1, returning whether it was already set (the
-// textbook test-and-set lock primitive).
+// sets to 1; returns whether it was already set
 pub test_and_set :: fn(flag: *u32) -> bool { return swap(flag, 1u32) != 0u32; }
 
-// Atomically clear the flag to 0.
 pub clear :: fn(flag: *u32) { store(flag, 0u32); }
 
-// Busy-wait until the flag becomes non-zero.
+// busy-waits
 pub wait_until_set :: fn(flag: *u32) {
     while load(flag) == 0 {}
 }
 
-// Busy-wait until the flag holds exactly `value`.
+// busy-waits until *flag == value
 pub wait_until_eq :: fn(flag: *u32, value: u32) {
     while load(flag) != value {}
 }
 
-// Acquire a spinlock: spin on `test_and_set` until we win the 0 → 1 transition.
+// spins on test_and_set until it wins 0 -> 1
 pub spin_lock :: fn(lock: *u32) {
     while test_and_set(lock) {}
 }
 
-// Release a spinlock previously taken with `spin_lock`.
 pub spin_unlock :: fn(lock: *u32) { store_release(lock, 0u32); }
 
-// Atomic(T): a typed cell you may only touch atomically
-// The free functions above act on a raw `*T`; `Atomic(T)` wraps the value so the
-// type itself documents "this is shared, access it atomically", and the methods
-// (declared *inside* the struct) read naturally. The element type is recovered
-// from the receiver, so neither `$T` nor `*Atomic(T)` is ever spelled out:
-//
-//     counter: Atomic(u32) = .{ 0u32 };   // or: counter := atomics::Atomic::make(0u32);
-//     counter.add(1);                      // returns the previous value
-//     if counter.cas(1u32, 100u32) { ... } // compare-and-swap
-//     n := counter.get();
-//
-// For compile-time type contracts (e.g. rejecting a bitwise op on a float), use
-// the constrained free functions above (`fetch_and`, …); the cell methods are
-// thin ergonomic delegates.
+// typed atomic cell; methods skip the Integer/Numeric checks the free fns do
 #sync
 pub Atomic :: struct($T: Native) {
     value: T
 
-    // Build an Atomic holding `v`: `Atomic::make(0u32)`.
     pub make :: fn(v: T) -> Self { return .{ v }; }
 
-    // Read / write.
+    // read / write
     pub get :: fn(self: *Self) -> T { return core::atomic_load(&self.value, 4); }
     pub set :: fn(self: *Self, v: T) { core::atomic_store(&self.value, v, 4); }
     pub get_acquire :: fn(self: *Self) -> T { return core::atomic_load(&self.value, 1); }
     pub set_release :: fn(self: *Self, v: T) { core::atomic_store(&self.value, v, 2); }
     pub exchange :: fn(self: *Self, v: T) -> T { return core::atomic_exchange(&self.value, v, 4); }
 
-    // Compare-and-swap — boolean (succeeded?) and value-returning variants.
+    // cas: bool and observed-value variants
     pub cas :: fn(self: *Self, expected: T, desired: T) -> bool {
         return core::atomic_cas(&self.value, expected, desired, 4) == expected;
     }
@@ -221,7 +182,7 @@ pub Atomic :: struct($T: Native) {
         return core::atomic_cas(&self.value, expected, desired, 4);
     }
 
-    // Arithmetic (return the previous value).
+    // arithmetic; returns the previous value
     pub add :: fn(self: *Self, v: T) -> T { return core::atomic_add(&self.value, v, 4); }
     pub sub :: fn(self: *Self, v: T) -> T { return core::atomic_sub(&self.value, v, 4); }
     pub mul :: fn(self: *Self, v: T) -> T {
@@ -239,7 +200,7 @@ pub Atomic :: struct($T: Native) {
         return core::atomic_load(&self.value, 4); // unreachable
     }
 
-    // Min / max + bitwise (return the previous value).
+    // min / max + bitwise; returns the previous value
     pub max  :: fn(self: *Self, v: T) -> T { return core::atomic_max(&self.value, v, 4); }
     pub min  :: fn(self: *Self, v: T) -> T { return core::atomic_min(&self.value, v, 4); }
     pub and  :: fn(self: *Self, v: T) -> T { return core::atomic_and(&self.value, v, 4); }

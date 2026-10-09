@@ -1,26 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.http — HTTP/1.1 over std.net: a client (any method; bodies by length or in chunks; gzip;
-// redirects) and the parts of a server (read a request, write a response). Plain HTTP only:
-// there is no TLS yet, so an https:// URL fails with `tls_unsupported`.
-//
-//   net::init()?;
-//   r := http::get(&a, "http://example.com/")?;
-//   if r.status == 200 { io::print(r.body); }
-//   kind := r.header("content-type") ?? "";
-//
-//   hs: [1]http::Header = .{ .{ "Content-Type", "application/json" } };
-//   r2 := http::request(&a, "POST", "http://localhost:8080/api", hs[:], body)?;
-//
-//   // a server, one connection at a time
-//   l := net::listen(addr::socket_addr(addr::any(), 8080))?;
-//   while true {
-//       c := l.accept_stream()?;
-//       req := http::read_request(&a, &c)?;            // req.method, req.target, req.body
-//       http::respond(&c, 200, "text/plain", "hello")?;
-//       c.close();
-//   }
-//
-// Every request the client sends has `Connection: close`: one request a connection.
+// std.http: http/1.1 client and server bits over std.net; no tls; one request per connection
 
 #import std.heap.{ Arena };
 #import std.vec as vec;
@@ -48,24 +27,22 @@ pub HttpError :: errors {
     too_many_redirects,   // more than 5
 }
 
-/// A header, as it was written.
+// name case kept as written; lookups ignore case
 pub Header :: struct {
     name: []const u8,
     value: []const u8,
 }
 
-/// What came back.
 pub Response :: struct {
     status: u16,
     reason: []const u8,
     headers: []const Header,
     body: []const u8,
 
-    /// The value of the header `name`, any case (the first of that name); null when there is none.
+    // case-insensitive, first match; null if none
     pub header :: fn(self: *Self, name: []const u8) -> ?[]const u8 { return find_header(self.headers, name); }
 }
 
-/// A request, as a server reads it.
 pub Request :: struct {
     method: []const u8,
     target: []const u8,     // the path and the query: "/search?q=x"
@@ -74,13 +51,13 @@ pub Request :: struct {
 
     pub header :: fn(self: *Self, name: []const u8) -> ?[]const u8 { return find_header(self.headers, name); }
 
-    /// The path of the target, without its query.
+    // target without the query
     pub path :: fn(self: *Self) -> []const u8 {
         for k in 0..self.target.len { if self.target[k] == '?' { return self.target[0..k]; } }
         return self.target;
     }
 
-    /// The query of the target (after the `?`), "" when it has none; `url::query_pairs` reads it.
+    // after the `?`, "" if none; parse with url::query_pairs
     pub query :: fn(self: *Self) -> []const u8 {
         for k in 0..self.target.len { if self.target[k] == '?' { return self.target[k + 1..self.target.len]; } }
         return "";
@@ -92,15 +69,13 @@ find_header :: fn(headers: []const Header, name: []const u8) -> ?[]const u8 {
     return null;
 }
 
-/// `GET` of `link`, its redirects followed.
+// follows redirects
 pub get :: fn(a: *Arena, link: []const u8) -> Response ! HttpError {
     none: [0]Header = .{};
     return request(a, "GET", link, none[:], "");
 }
 
-/// `method` on `link` with `headers` and `body`, in memory from `a`. A redirect (301, 302,
-/// 303, 307, 308) is followed up to 5 times; 303, and 301 and 302 of a POST, go on as a GET
-/// without the body, as browsers do. A gzip or deflate body is unpacked.
+// in `a`; up to 5 redirects (303, POST 301/302 become GET); unpacks gzip/deflate
 pub request :: fn(a: *Arena, method: []const u8, link: []const u8, headers: []const Header, body: []const u8) -> Response ! HttpError {
     m := method;
     b := body;
@@ -123,7 +98,7 @@ pub request :: fn(a: *Arena, method: []const u8, link: []const u8, headers: []co
     fail .too_many_redirects;
 }
 
-// `loc` (a Location) against `base`: an absolute URL, or a path on the same host.
+// resolves a Location: absolute url, or a path on base's host
 resolve_link :: fn(a: *Arena, base: []const u8, loc: []const u8) -> []const u8 {
     if strings::str_starts_with(loc, "http://") || strings::str_starts_with(loc, "https://") { return loc; }
     u := url::parse(base) catch err { return loc; };
@@ -140,7 +115,7 @@ resolve_link :: fn(a: *Arena, base: []const u8, loc: []const u8) -> []const u8 {
     return sb.str();
 }
 
-// One request on its own connection.
+// one request, own connection
 once :: fn(a: *Arena, method: []const u8, link: []const u8, headers: []const Header, body: []const u8) -> Response ! HttpError {
     u := url::parse(link) catch err { fail .bad_url; };
     if u.scheme == "https" { fail .tls_unsupported; }
@@ -218,7 +193,7 @@ once :: fn(a: *Arena, method: []const u8, link: []const u8, headers: []const Hea
     if strings::str_eq_ignore_case(enc, "gzip") {
         raw = flate::gunzip(a, raw) catch err { fail .bad_response; };
     } else if strings::str_eq_ignore_case(enc, "deflate") {
-        // properly zlib, but some servers send bare DEFLATE
+        // should be zlib; some servers send raw deflate
         ok := true;
         z := flate::unzlib(a, raw) catch err {
             ok = false;
@@ -230,15 +205,14 @@ once :: fn(a: *Arena, method: []const u8, link: []const u8, headers: []const Hea
     return r;
 }
 
-// The next line (without "\r\n"), copied into `a`: a line from a BufReader lasts only until its
-// next read. Null at the end of the stream.
+// next line without \r\n, copied into `a` (BufReader reuses its buffer); .recv_failed at eof
 line_copy :: fn(a: *Arena, br: *BufReader) -> []const u8 ! HttpError {
     l := br.read_line() catch err { fail .recv_failed; };
     if l |text| { return strings::str_dup(a, text); }
     fail .recv_failed;
 }
 
-// Header lines up to the empty one.
+// header lines up to the blank one
 read_headers :: fn(a: *Arena, br: *BufReader) -> []const Header ! HttpError {
     out := vec::make(Header, a);
     while true {
@@ -258,7 +232,7 @@ read_headers :: fn(a: *Arena, br: *BufReader) -> []const Header ! HttpError {
     return out.items();
 }
 
-// Exactly `n` bytes.
+// exactly n bytes, in `a`
 read_exact :: fn(a: *Arena, br: *BufReader, n: usize) -> []u8 ! HttpError {
     out := a.alloc_bytes(n);
     got: usize = 0;
@@ -271,8 +245,7 @@ read_exact :: fn(a: *Arena, br: *BufReader, n: usize) -> []u8 ! HttpError {
     return out;
 }
 
-// The body after `headers`: in chunks, by its length, or (`to_end`, a response) to the end of
-// the connection.
+// chunked, by content-length, or (to_end, responses) until the connection closes
 read_body :: fn(a: *Arena, br: *BufReader, headers: []const Header, to_end: bool) -> []const u8 ! HttpError {
     te := find_header(headers, "transfer-encoding") ?? "";
     if strings::str_eq_ignore_case(te, "chunked") {
@@ -309,10 +282,9 @@ read_body :: fn(a: *Arena, br: *BufReader, headers: []const Header, to_end: bool
     return bufio::read_all(a, rd) catch err { fail .recv_failed; };
 }
 
-// Server side
+// server side
 
-/// The request that comes in on `conn`: its request line, headers and body (by its length, or
-/// in chunks), in memory from `a`.
+// request line, headers, body (by length or chunked), in `a`
 pub read_request :: fn(a: *Arena, conn: *net::TcpStream) -> Request ! HttpError {
     br := bufio::reader_in(a, conn, 16384);
     first := line_copy(a, &br) catch err { fail .bad_request; };
@@ -340,7 +312,7 @@ pub read_request :: fn(a: *Arena, conn: *net::TcpStream) -> Request ! HttpError 
     return r;
 }
 
-/// The usual phrase of a status code ("OK" for 200, "Not Found" for 404).
+// standard reason phrase; "Status" if unknown
 pub reason_phrase :: fn(status: u16) -> []const u8 {
     if status == 200 { return "OK"; }
     if status == 201 { return "Created"; }
@@ -361,14 +333,13 @@ pub reason_phrase :: fn(status: u16) -> []const u8 {
     return "Status";
 }
 
-/// Write a whole response to `conn`: the status, `content_type`, the length, `Connection: close`,
-/// and `body`.
+// whole response: status, content type, length, Connection: close, body
 pub respond :: fn(conn: *net::TcpStream, status: u16, content_type: []const u8, body: []const u8) -> void ! HttpError {
     none: [0]Header = .{};
     respond_with(conn, status, content_type, none[:], body)?;
 }
 
-/// `respond`, with `headers` of your own too (`Location` for a redirect, say).
+// respond plus your own headers; .send_failed if the head exceeds 1024 bytes
 pub respond_with :: fn(conn: *net::TcpStream, status: u16, content_type: []const u8, headers: []const Header, body: []const u8) -> void ! HttpError {
     head: [1024]u8 = .{};
     w: Put = .{ head[:], 0, false };
@@ -393,7 +364,7 @@ pub respond_with :: fn(conn: *net::TcpStream, status: u16, content_type: []const
     if body.len > 0 { conn.send_all(body) catch err { fail .send_failed; }; }
 }
 
-// Text into a fixed buffer; `cut` when it did not fit.
+// writes into a fixed buffer; `cut` set on overflow
 Put :: struct {
     out: []u8,
     n: usize,

@@ -1,11 +1,9 @@
-// Example project build script. Run with `fels build` (once dir-mode lands).
-// See docs/10_build_system.md for the full design.
+// example build script for `fels build`; design in docs/10_build_system.md
 
 #import std.build.{ Build, executable, shared, release, debug, link, lib_path,
                     output, define, require_path, depend, run_step, test_dir, default };
 
 build :: fn(b: Build) {
-    // The main executable.
     game := b.executable("game", "src/main.fels");
     game.release();
     game.link("raylib");
@@ -14,19 +12,19 @@ build :: fn(b: Build) {
     game.output("bin/game.exe");
     game.define("MAX_ENTITIES", "4096");
 
-    // A build-time dependency (its own build.fels runs sandboxed).
+    // build-time dep; its build.fels runs sandboxed
     rl := b.require_path("raylib", "vendor/raylib");
     game.depend(rl);
 
-    // A second artifact: a hot-reloadable gameplay DLL.
+    // hot-reloadable gameplay dll
     logic := b.shared("logic", "src/logic.fels");
     logic.debug();
     logic.output("bin/logic.dll");
 
-    // Steps: `fels build run`, `fels build test`.
+    // `fels build run`, `fels build test`
     b.run_step("run", game);
     b.test_dir("test", "tests/");
 
-    // What bare `fels build` produces.
+    // bare `fels build`
     b.default(game);
 }

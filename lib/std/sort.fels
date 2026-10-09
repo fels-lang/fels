@@ -1,133 +1,114 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.sort — sorting slices in place, and searching sorted ones.
-//
-//   sort::asc(i32, xs);                              // smallest first, by `<`
-//   sort::desc(f64, ys);                             // largest first
-//   sort::by(Person, people, by_age);                // `less(a, b)`: a goes before b
-//   sort::by([]const u8, names, mem::less_bytes);    // text, byte by byte
-//   sort::stable_by(Row, rows, by_date, &scratch);   // equal rows keep their order
-//   at := sort::lower_bound(i32, xs, 42);            // where 42 goes in a sorted slice
-//
-// `asc`, `desc` and `by` are an introsort: a quicksort that splits into less, equal and
-// greater (so many equal elements cost nothing extra), insertion sort for short pieces, and a
-// heapsort when the splits go badly. O(n log n) always, in place, and not stable. The `stable`
-// ones are a merge sort, which needs a second slice as long as the input: it comes from an
-// arena you pass.
-//
-// Sorting compares through a comparator type, not a function value, so `asc` and `desc`
-// compare with `<` directly and the compiler can inline it.
+// std.sort: in-place sorts (introsort, not stable; stable_* merge) and binary search
 
 #import std.heap.{ Arena };
 #import std.heap as heap;
 
-// Comparators
+// comparators
 
-// Smallest first.
+// smallest first
 pub Asc :: struct($T: type) {
     marker: u8,
     pub less :: fn(self: *Self, a: T, b: T) -> bool { return a < b; }
 }
 
-// Largest first.
+// largest first
 pub Desc :: struct($T: type) {
     marker: u8,
     pub less :: fn(self: *Self, a: T, b: T) -> bool { return b < a; }
 }
 
-// By a function: `f(a, b)` is true when `a` goes before `b`.
+// `f(a, b)` true when `a` goes before `b`
 pub By :: struct($T: type) {
     f: fn(T, T) -> bool,
     pub less :: fn(self: *Self, a: T, b: T) -> bool { return self.f(a, b); }
 }
 
-// Sorting
+// sorting
 
-// Sort `xs` smallest first.
+// in place, smallest first; not stable
 pub asc :: fn($T: type, xs: []T) {
     c: Asc(T) = .{ 0 };
     introsort(T, Asc(T), xs, &c, depth_limit(xs.len));
 }
 
-// Sort `xs` largest first.
+// in place, largest first; not stable
 pub desc :: fn($T: type, xs: []T) {
     c: Desc(T) = .{ 0 };
     introsort(T, Desc(T), xs, &c, depth_limit(xs.len));
 }
 
-// Sort `xs` so that no element comes after one it is `less` than.
+// in place by `less`; not stable
 pub by :: fn($T: type, xs: []T, less: fn(T, T) -> bool) {
     c: By(T) = .{ less };
     introsort(T, By(T), xs, &c, depth_limit(xs.len));
 }
 
-// Sort `xs` smallest first, keeping equal elements in the order they had. `scratch` gives the
-// merge sort its second slice.
+// stable, smallest first; allocates an xs.len buffer in `scratch`
 pub stable_asc :: fn($T: type, xs: []T, scratch: *Arena) {
     c: Asc(T) = .{ 0 };
     merge_sort(T, Asc(T), xs, heap::alloc(T, scratch, xs.len), &c);
 }
 
-// Sort `xs` by `less`, keeping equal elements in the order they had.
+// stable by `less`; allocates an xs.len buffer in `scratch`
 pub stable_by :: fn($T: type, xs: []T, less: fn(T, T) -> bool, scratch: *Arena) {
     c: By(T) = .{ less };
     merge_sort(T, By(T), xs, heap::alloc(T, scratch, xs.len), &c);
 }
 
-// Whether `xs` is sorted smallest first.
+// true when ascending
 pub is_sorted :: fn($T: type, xs: []const T) -> bool {
     c: Asc(T) = .{ 0 };
     return sorted_with(T, Asc(T), xs, &c);
 }
 
-// Whether `xs` is sorted by `less`.
+// true when sorted by `less`
 pub is_sorted_by :: fn($T: type, xs: []const T, less: fn(T, T) -> bool) -> bool {
     c: By(T) = .{ less };
     return sorted_with(T, By(T), xs, &c);
 }
 
-// Searching a sorted slice
+// binary search on sorted slices
 
-// The first index whose element is not less than `key`: where `key` goes to keep `xs` sorted,
-// before any element equal to it. `xs.len` when every element is less.
+// first index with xs[i] >= key; xs.len if none
 pub lower_bound :: fn($T: type, xs: []const T, key: T) -> usize {
     c: Asc(T) = .{ 0 };
     return lower_with(T, Asc(T), xs, key, &c);
 }
 
-// `lower_bound` for a slice sorted by `less`.
+// lower_bound by `less`
 pub lower_bound_by :: fn($T: type, xs: []const T, key: T, less: fn(T, T) -> bool) -> usize {
     c: By(T) = .{ less };
     return lower_with(T, By(T), xs, key, &c);
 }
 
-// The first index whose element is greater than `key`: where `key` goes after any element
-// equal to it.
+// first index with xs[i] > key; xs.len if none
 pub upper_bound :: fn($T: type, xs: []const T, key: T) -> usize {
     c: Asc(T) = .{ 0 };
     return upper_with(T, Asc(T), xs, key, &c);
 }
 
-// `upper_bound` for a slice sorted by `less`.
+// upper_bound by `less`
 pub upper_bound_by :: fn($T: type, xs: []const T, key: T, less: fn(T, T) -> bool) -> usize {
     c: By(T) = .{ less };
     return upper_with(T, By(T), xs, key, &c);
 }
 
-// The index of an element equal to `key` (the first such), or null.
+// index of the first element equal to `key`, or null
 pub search :: fn($T: type, xs: []const T, key: T) -> ?usize {
     c: Asc(T) = .{ 0 };
     return search_with(T, Asc(T), xs, key, &c);
 }
 
-// `search` in a slice sorted by `less`; equal means neither is less than the other.
+// search by `less`; equal means neither is less
 pub search_by :: fn($T: type, xs: []const T, key: T, less: fn(T, T) -> bool) -> ?usize {
     c: By(T) = .{ less };
     return search_with(T, By(T), xs, key, &c);
 }
 
-// The algorithms, for any comparator `C` with `less(a, b)`
+// internals; C is any type with less(a, b)
 
-// How deep the quicksort may split before it hands a piece to heapsort: twice log2(n).
+// quicksort depth before falling back to heapsort: 2*log2(n)
 depth_limit :: fn(n: usize) -> u32 {
     limit: u32 = 0;
     m := n;
@@ -145,7 +126,7 @@ introsort :: fn($T: type, $C: type, xs: []T, c: *C, limit: u32) {
         }
         depth -= 1;
         pivot := median3(T, C, s[0], s[s.len / 2], s[s.len - 1], c);
-        // [0, lt) less than the pivot, [lt, i) equal to it, [gt, len) greater
+        // [0,lt) < pivot, [lt,i) == pivot, [gt,len) > pivot
         lt: usize = 0;
         i: usize = 0;
         gt := s.len;
@@ -161,7 +142,7 @@ introsort :: fn($T: type, $C: type, xs: []T, c: *C, limit: u32) {
                 i += 1;
             }
         }
-        // The smaller side by recursion, the larger by the loop: the stack stays O(log n).
+        // recurse into the smaller side, loop on the larger: O(log n) stack
         if lt < s.len - gt {
             introsort(T, C, s[0..lt], c, depth);
             s = s[gt..s.len];
@@ -173,7 +154,7 @@ introsort :: fn($T: type, $C: type, xs: []T, c: *C, limit: u32) {
     insertion(T, C, s, c);
 }
 
-// Stable, and the fastest for a few elements.
+// stable; fastest for few elements
 insertion :: fn($T: type, $C: type, xs: []T, c: *C) {
     i: usize = 1;
     while i < xs.len {
@@ -214,7 +195,6 @@ sift_down :: fn($T: type, $C: type, xs: []T, start: usize, end: usize, c: *C) {
     }
 }
 
-// The middle one of three values.
 median3 :: fn($T: type, $C: type, a: T, b: T, d: T, c: *C) -> T {
     if c.less(a, b) {
         if c.less(b, d) { return b; }
@@ -232,8 +212,7 @@ swap :: fn($T: type, xs: []T, i: usize, j: usize) {
     xs[j] = tmp;
 }
 
-// Runs of 16 sorted by insertion, then merged in rounds of doubling width, back and forth
-// between `xs` and `buf`.
+// insertion-sorted runs of 16, then merged ping-pong between xs and buf
 merge_sort :: fn($T: type, $C: type, xs: []T, buf: []T, c: *C) {
     n := xs.len;
     run: usize = 16;
@@ -264,7 +243,7 @@ merge_sort :: fn($T: type, $C: type, xs: []T, buf: []T, c: *C) {
     }
 }
 
-// `a` and `b` merged into `out`; on a tie `a`'s element goes first, which keeps it stable.
+// ties take `a` first, which keeps it stable
 merge :: fn($T: type, $C: type, a: []T, b: []T, out: []T, c: *C) {
     i: usize = 0;
     j: usize = 0;

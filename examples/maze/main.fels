@@ -1,5 +1,4 @@
-// maze — recursive-backtracker generator + breadth-first solver, in ASCII.
-// Carves a grid maze with std.rand, then BFS-solves it and marks the path with '+'.
+// maze: recursive-backtracker generator + bfs solver in ascii; path marked with '+'
 
 #import std.heap.{ Arena, make };
 #import std.rand.{ Rng, seed, next_u64 };
@@ -19,7 +18,7 @@ carve :: fn(grid: []u8, x: i32, y: i32, rng: *Rng) {
     dy: [4]i32 = .{ -1, 1, 0, 0 };
     order: [4]i32 = .{ 0, 1, 2, 3 };
     k: i32 = 3;
-    while k > 0 {                                  // Fisher–Yates shuffle
+    while k > 0 {                                  // Fisher-Yates shuffle
         j: i32 = (next_u64(rng) % ((k + 1) as u64)) as i32;
         tmp := order[k]; order[k] = order[j]; order[j] = tmp;
         k -= 1;

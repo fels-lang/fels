@@ -1,50 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.com - the types of COM and WinRT, as data: GUID, HRESULT, IUnknown and IInspectable
-// with their vtables, and a reference counter for implementing your own objects.
-//
-// Pure Fels, no OS calls, so it compiles on every target (and the layouts can be tested
-// anywhere). Calling the operating system - initialising COM or WinRT, creating objects,
-// HSTRINGs - is std.winrt, which is Windows only.
-//
-// What is checked against what. Every layout, GUID and constant here was compared with the
-// official Windows SDK headers (guiddef.h, winerror.h, unknwn.h, inspectable.h, activation.h)
-// by compiling them with clang for x86_64-pc-windows-msvc and printing sizeof, offsetof, the
-// __uuidof of each interface and the value of each constant; the `#assert`s below fix the
-// layouts so a mistake here is a build error, not a crash in someone else's process.
-//
-// The ABI, in short. On x86-64 Windows every COM method is an ordinary call in the one
-// calling convention there is (`__stdcall` is the same as the default), with the interface
-// pointer as the first argument. A COM interface pointer points to an object whose first
-// word points to a table of function pointers - the vtable - so a call is
-// `p.vtbl.method(p, ...)`. The first three entries of every vtable are those of IUnknown.
-//
-// Ownership. COM counts references and nothing else owns anything:
-//   - An interface pointer you receive from a function (an out-parameter, or what
-//     query_interface hands back) comes with one reference that belongs to you. Release it
-//     exactly once, `defer p.release();` being the usual way.
-//   - A pointer you are only lent (a parameter) is not yours to release; add_ref it if you
-//     keep it past the call.
-//   - Releasing the last reference destroys the object. Using the pointer afterwards is a
-//     crash, and nothing here can prevent it.
-//
-// Errors. A COM function returns an HRESULT: negative is failure, zero or positive is
-// success (S_FALSE, 1, is a success that means "no"). `succeeded(hr)` / `failed(hr)` test it,
-// and `check(hr)` turns a failure into the error `ComError` so `?` and `catch` apply:
-// the common codes get their own names; any other failure becomes `.other`, which no longer
-// says which code it was - keep the HRESULT around if you need it, or call the function
-// whose result you are checking through its raw form and `check` only for the verdict.
+// std.com: COM/WinRT types as data (GUID, HRESULT, IUnknown, vtables); no OS calls
+// out-pointers carry one ref, release exactly once; lent pointers aren't yours
 
-// GUID ───────────────────────────────────────────────────────────────────────
-// 16 bytes, aligned to 4: {Data1 u32, Data2 u16, Data3 u16, Data4 [8]u8}. An IID (interface
-// id) and a CLSID (class id) are GUIDs. The text form is the registry's:
-// {00000000-0000-0000-C000-000000000046}, groups of 8-4-4-4-12 hex digits.
+// ---- GUID ----
+// 16 bytes, align 4; IIDs and CLSIDs are GUIDs
 pub Guid :: struct {
     data1: u32
     data2: u16
     data3: u16
     data4: [8]u8
 
-    // Are the two GUIDs the same value?
     pub eq :: fn(self: *const Self, other: *const Guid) -> bool {
         if self.data1 != other.data1 { return false; }
         if self.data2 != other.data2 { return false; }
@@ -57,7 +22,7 @@ pub Guid :: struct {
         return true;
     }
 
-    // Is every byte zero? (GUID_NULL, "no GUID".)
+    // all zero (GUID_NULL)
     pub is_null :: fn(self: *const Self) -> bool {
         if self.data1 != 0 { return false; }
         if self.data2 != 0 { return false; }
@@ -70,9 +35,7 @@ pub Guid :: struct {
         return true;
     }
 
-    // Write the text form, "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" (upper-case, braces),
-    // into `out` and return its length, always GUID_TEXT_LEN (38). `out` must hold that
-    // many bytes, else `.buffer_too_small` and `out` is untouched.
+    // upper-case "{8-4-4-4-12}" into `out`, returns 38; `.buffer_too_small` if shorter
     pub format :: fn(self: *const Self, out: []u8) -> usize ! GuidError {
         if out.len < 38 { fail .buffer_too_small; }
         out[0] = 123;                                  // '{'
@@ -96,17 +59,17 @@ pub Guid :: struct {
     }
 }
 
-// Length of the text form with braces.
+// text form length, with braces
 pub GUID_TEXT_LEN :: 38;
 
 pub GuidError :: errors {
-    invalid_format,     // not 8-4-4-4-12 hex digits (with or without braces)
+    invalid_format,     // not 8-4-4-4-12 hex, braces optional
     buffer_too_small,   // the output buffer is shorter than GUID_TEXT_LEN
 }
 
 HEX_DIGITS :: "0123456789ABCDEF";
 
-// Write `digits` hex digits of `v` (most significant first, upper-case) at out[at..].
+// `digits` upper-case hex digits of `v` at out[at..], msb first
 put_hex :: fn(out: []u8, at: usize, v: u64, digits: usize) {
     for i in 0..digits {
         shift: u64 = ((digits - 1 - i) as u64) * 4;
@@ -114,7 +77,7 @@ put_hex :: fn(out: []u8, at: usize, v: u64, digits: usize) {
     }
 }
 
-// The value of a hex digit, or 255 if `c` is not one (either case).
+// hex digit value, either case; 255 if not hex
 hex_val :: fn(c: u8) -> u8 {
     if c >= 48 && c <= 57 { return c - 48; }        // 0-9
     if c >= 65 && c <= 70 { return c - 55; }        // A-F
@@ -122,7 +85,7 @@ hex_val :: fn(c: u8) -> u8 {
     return 255;
 }
 
-// Read `digits` hex digits of s starting at `at`; false if any is not one.
+// `digits` hex digits at s[at..]; false on a non-hex byte
 read_hex :: fn(s: []const u8, at: usize, digits: usize, out: *u64) -> bool {
     v: u64 = 0;
     for i in 0..digits {
@@ -134,9 +97,7 @@ read_hex :: fn(s: []const u8, at: usize, digits: usize, out: *u64) -> bool {
     return true;
 }
 
-// Parse the text form: exactly 8-4-4-4-12 hex digits (either case), with the surrounding
-// braces or without them. Nothing else is accepted - no spaces, no extra text, no other
-// separators.
+// strict 8-4-4-4-12 hex, either case, braces optional; no spaces or extra text
 pub parse_guid :: fn(text: []const u8) -> Guid ! GuidError {
     start: usize = 0;
     if text.len == 38 {
@@ -164,22 +125,21 @@ pub parse_guid :: fn(text: []const u8) -> Guid ! GuidError {
     return g;
 }
 
-// Layout: sizeof 16, alignment 4, fields at 0, 4, 6, 8 - guiddef.h's GUID.
+// guiddef.h GUID layout
 #assert(core::sizeof(Guid) == 16, "GUID is 16 bytes");
 #assert(core::align_of(Guid) == 4, "GUID is aligned to 4");
 #assert(core::offset_of(Guid, "data2") == 4);
 #assert(core::offset_of(Guid, "data3") == 6);
 #assert(core::offset_of(Guid, "data4") == 8);
 
-// Well-known interface ids, as constants: pass their address (`&IID_IUnknown`, a `*const Guid`).
+// well-known IIDs; pass by address (`&IID_IUnknown`)
 pub IID_IUnknown : Guid : .{ 0x00000000, 0x0000, 0x0000, .{ 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };   // {00000000-0000-0000-C000-000000000046}
 pub IID_IInspectable : Guid : .{ 0xAF86E2E0, 0xB12D, 0x4C6A, .{ 0x9C, 0x5A, 0xD7, 0xAA, 0x65, 0x10, 0x1E, 0x90 } };   // {AF86E2E0-B12D-4C6A-9C5A-D7AA65101E90}
 pub IID_IAgileObject : Guid : .{ 0x94EA2B94, 0xE9CC, 0x49E0, .{ 0xC0, 0xFF, 0xEE, 0x64, 0xCA, 0x8F, 0x5B, 0x90 } };   // {94EA2B94-E9CC-49E0-C0FF-EE64CA8F5B90}
 pub IID_IActivationFactory : Guid : .{ 0x00000035, 0x0000, 0x0000, .{ 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };   // {00000035-0000-0000-C000-000000000046}
 
-// HRESULT ────────────────────────────────────────────────────────────────────
-// A signed 32-bit result code. Bit 31 is the severity (set = failure), bits 16-26 the
-// facility (which component), bits 0-15 the code. The values below are those of winerror.h.
+// ---- HRESULT ----
+// bit 31 failure, bits 16-26 facility, bits 0-15 code; values from winerror.h
 pub Hresult :: i32;
 
 pub S_OK                   :: 0;
@@ -211,26 +171,21 @@ pub FACILITY_ITF     :: 4;
 pub FACILITY_WIN32   :: 7;
 pub FACILITY_WINDOWS :: 8;
 
-// Did the call succeed? (zero or positive.)
 pub succeeded :: fn(hr: i32) -> bool { return hr >= 0; }
 
-// Did it fail? (negative.)
 pub failed :: fn(hr: i32) -> bool { return hr < 0; }
 
-// The facility field, bits 16-26.
 pub facility :: fn(hr: i32) -> u32 { return (((hr as u32) >> 16u32) & 0x7FFu32); }
 
-// The code field, bits 0-15.
 pub code :: fn(hr: i32) -> u32 { return (hr as u32) & 0xFFFFu32; }
 
-// HRESULT_FROM_WIN32: a Win32 error number as an HRESULT. Zero stays zero (success); an
-// HRESULT that is already negative passes through unchanged.
+// HRESULT_FROM_WIN32; 0 stays 0, negative passes through
 pub from_win32 :: fn(err: u32) -> i32 {
     if (err as i32) <= 0 { return err as i32; }
     return (((err & 0xFFFF) | 0x80070000) as i32);
 }
 
-// A failure, by name. The common codes have their own; any other is `.other`.
+// common failures by name; the rest are `.other`
 pub ComError :: errors {
     not_implemented,        // E_NOTIMPL
     no_interface,           // E_NOINTERFACE
@@ -245,13 +200,13 @@ pub ComError :: errors {
     bounds,                 // E_BOUNDS
     changed_state,          // E_CHANGED_STATE
     illegal_call,           // E_ILLEGAL_METHOD_CALL
-    changed_mode,           // RPC_E_CHANGED_MODE: COM/WinRT already initialised the other way
+    changed_mode,           // RPC_E_CHANGED_MODE: already initialised the other way
     class_not_registered,   // REGDB_E_CLASSNOTREG
     not_initialized,        // CO_E_NOTINITIALIZED
     other,                  // any other failure
 }
 
-// Succeed on a success HRESULT (S_OK and S_FALSE alike); fail on a failure one.
+// ok on any success (S_FALSE too); `.other` loses the code, keep hr if you need it
 pub check :: fn(hr: i32) -> void ! ComError {
     if hr >= 0 { return; }
     if hr == E_NOTIMPL { fail .not_implemented; }
@@ -273,21 +228,8 @@ pub check :: fn(hr: i32) -> void ! ComError {
     fail .other;
 }
 
-// The other direction, from a failure back to an HRESULT, is written where the error is
-// caught - an error is not yet a value that can be handed to another function - and says
-// what the method you are implementing should return:
-//
-//     read_header(self) catch e {
-//         if e == .no_interface { return E_NOINTERFACE; }
-//         return E_FAIL;
-//     };
-//     return S_OK;
-
-// IUnknown and IInspectable ───────────────────────────────────────────────────
-// The vtable lists the methods in the order the header does, each taking the interface
-// pointer first. Declare an interface of your own the same way: the three IUnknown entries,
-// then the interface's methods in declaration order, then `#assert` the offsets against the
-// header (see the ones below).
+// ---- IUnknown and IInspectable ----
+// vtables in header order, self first; your own: IUnknown's 3 first, then #assert
 
 pub IUnknownVtbl :: struct {
     query_interface: extern fn(*IUnknown, *const Guid, **void) -> i32
@@ -298,22 +240,19 @@ pub IUnknownVtbl :: struct {
 pub IUnknown :: struct {
     vtbl: *IUnknownVtbl
 
-    // Ask for another interface of the same object. On success `*out` holds a new interface
-    // pointer with a reference of its own to release; on E_NOINTERFACE it holds null.
+    // on success `*out` has its own ref to release; null on E_NOINTERFACE
     pub query_interface :: fn(self: *Self, iid: *const Guid, out: **void) -> i32 {
         return self.vtbl.query_interface(self, iid, out);
     }
 
-    // Take another reference; returns the count (for diagnostics only - do not branch on it).
+    // returns the count; diagnostics only, don't branch on it
     pub add_ref :: fn(self: *Self) -> u32 { return self.vtbl.add_ref(self); }
 
-    // Give up a reference; the object destroys itself when the last goes. Returns the count
-    // that remains (for diagnostics only).
+    // last ref destroys the object, pointer is dead after; count is diagnostics only
     pub release :: fn(self: *Self) -> u32 { return self.vtbl.release(self); }
 }
 
-// IInspectable: the base of every WinRT interface. The HSTRING it returns is std.winrt's
-// to read and release.
+// base of every WinRT interface; read/release its HSTRING with std.winrt
 pub IInspectableVtbl :: struct {
     query_interface:        extern fn(*IInspectable, *const Guid, **void) -> i32
     add_ref:                extern fn(*IInspectable) -> u32
@@ -332,11 +271,11 @@ pub IInspectable :: struct {
         return self.vtbl.query_interface(self, iid, out);
     }
 
-    // The same object as an IUnknown (the first three vtable entries are identical).
+    // same object; first three vtable entries match
     pub as_unknown :: fn(self: *Self) -> *IUnknown { return unsafe (self as *IUnknown); }
 }
 
-// IActivationFactory: what a WinRT class's factory object offers for default construction.
+// WinRT class factory, default construction
 pub IActivationFactoryVtbl :: struct {
     query_interface:  extern fn(*IActivationFactory, *const Guid, **void) -> i32
     add_ref:          extern fn(*IActivationFactory) -> u32
@@ -353,8 +292,7 @@ pub IActivationFactory :: struct {
     pub add_ref :: fn(self: *Self) -> u32 { return self.vtbl.add_ref(self); }
     pub release :: fn(self: *Self) -> u32 { return self.vtbl.release(self); }
 
-    // Construct an instance with the class's default constructor. `*out` receives an owned
-    // IInspectable.
+    // default ctor; `*out` gets an owned IInspectable
     pub activate_instance :: fn(self: *Self, out: **IInspectable) -> i32 {
         return self.vtbl.activate_instance(self, out);
     }
@@ -369,31 +307,27 @@ pub IActivationFactory :: struct {
 #assert(core::offset_of(IInspectableVtbl, "get_trust_level") == 40);
 #assert(core::offset_of(IActivationFactoryVtbl, "activate_instance") == 48);
 
-// TrustLevel values (inspectable.h).
+// TrustLevel (inspectable.h)
 pub BASE_TRUST    :: 0;
 pub PARTIAL_TRUST :: 1;
 pub FULL_TRUST    :: 2;
 
-// RefCount: the counter for a COM object you implement ────────────────────────
-// One 32-bit atomic counter. Embed it in your object, start it at 1 (the reference the
-// creator holds), call add() from your add_ref and release() from your release; when
-// release() returns 0 the object is unreferenced and yours to free. Atomic, because the
-// calls may arrive from any thread.
+// ---- RefCount ----
+// atomic, thread-safe; start at 1, free your object when release() returns 0
 pub RefCount :: struct {
     n: u32
 
-    // One more reference. Returns the new count.
+    // returns the new count
     pub add :: fn(self: *Self) -> u32 { return core::atomic_add(&self.n, 1u32, 4) + 1u32; }
 
-    // One fewer. Returns the new count. Releasing at zero is a bug in the caller; it traps
-    // in a checked build rather than wrapping.
+    // returns the new count; release at zero is a caller bug, traps in checked builds
     pub release :: fn(self: *Self) -> u32 { return core::atomic_sub(&self.n, 1u32, 4) - 1u32; }
 
-    // The current count (a snapshot).
+    // snapshot
     pub get :: fn(self: *Self) -> u32 { return core::atomic_load(&self.n, 4); }
 }
 
-// A counter holding the creator's reference.
+// starts at 1, the creator's ref
 pub new_refcount :: fn() -> RefCount {
     r: RefCount = .{ 1 };
     return r;

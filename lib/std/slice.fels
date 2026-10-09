@@ -1,23 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.slice — higher-order helpers over `[]T` (find, count_where, any, all, …).
-//
-// fels has no closures yet, but it does pass function pointers, so these take a
-// plain `fn(T) -> …`. They replace the hand-written `while i < s.len { … }`
-// scan loops that otherwise pile up:
-//
-//   if slice::find(i32, xs, is_neg) |i| { … }      // instead of a manual loop
-//   n := slice::count_where(u8, bytes, is_space);
+// std.slice: fn-pointer predicate helpers over []T (find, count_where, any, all, ...)
 
-// higher-order helpers (generic over the element type)
-
-// Index of the first element matching `pred`, or null.
+// index of the first match, or null
 pub find :: fn($T: type, s: []T, pred: fn(T) -> bool) -> ?usize {
     i: usize = 0;
     while i < s.len { if pred(s[i]) { return i; } i += 1; }
     return null;
 }
 
-// How many elements match `pred`.
+// number of matches
 pub count_where :: fn($T: type, s: []T, pred: fn(T) -> bool) -> usize {
     n: usize = 0;
     i: usize = 0;
@@ -25,28 +16,24 @@ pub count_where :: fn($T: type, s: []T, pred: fn(T) -> bool) -> usize {
     return n;
 }
 
-// Does any element match `pred`?
 pub any :: fn($T: type, s: []T, pred: fn(T) -> bool) -> bool {
     i: usize = 0;
     while i < s.len { if pred(s[i]) { return true; } i += 1; }
     return false;
 }
 
-// Do all elements match `pred`?
 pub all :: fn($T: type, s: []T, pred: fn(T) -> bool) -> bool {
     i: usize = 0;
     while i < s.len { if !pred(s[i]) { return false; } i += 1; }
     return true;
 }
 
-// Apply `f` to every element (for its side effects).
 pub each :: fn($T: type, s: []T, f: fn(T)) {
     i: usize = 0;
     while i < s.len { f(s[i]); i += 1; }
 }
 
-// Write `f(src[i])` into `dst[i]` for the overlapping length. Returns the count
-// written (min of the two lengths).
+// dst[i] = f(src[i]) over the shorter length; returns that length
 pub map_into :: fn($T: type, $U: type, dst: []U, src: []T, f: fn(T) -> U) -> usize {
     n: usize = src.len;
     if dst.len < n { n = dst.len; }
@@ -55,12 +42,11 @@ pub map_into :: fn($T: type, $U: type, dst: []U, src: []T, f: fn(T) -> U) -> usi
     return n;
 }
 
-// Index of the last element matching `pred`, or null.
+// index of the last match, or null
 pub rfind :: fn($T: type, s: []T, pred: fn(T) -> bool) -> ?usize {
     i: usize = s.len;
     while i > 0 { i -= 1; if pred(s[i]) { return i; } }
     return null;
 }
 
-// For plain element search / equality (`eql`, `index_of`, `contains`,
-// `starts_with`, `ends_with`) without a predicate, use std.mem.
+// plain search/equality (eql, index_of, contains, ...): see std.mem

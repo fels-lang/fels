@@ -1,20 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.fmt — formatting on top of std.io.Writer: padding/alignment, width-justified
-// numbers, joining. Fels has no varargs or format strings, so you compose *Writer
-// calls directly and reach for these helpers for the fiddly parts (padding to a
-// column, right-justifying a number, joining with a separator). Width-aware padding
-// measures the value with a NullWriter first, then pads — allocation-free.
-//
-// No Display interface for now: dynamic dispatch to an interface method that itself
-// takes another interface pointer trips a compiler bug (bad bitcast / segfault), so
-// implement Writer directly on your type instead.
+// std.fmt: padding, justified numbers and joining over io.Writer; number parsing
+// no Display interface: dispatch that passes another interface pointer hits a compiler bug
 
 #import std.io.{ Writer, IoError, null_writer };
 
-// Byte-slice padding
-//
-// If `data` is already at least `width` bytes, it is written as-is — these
-// never truncate.
+// byte-slice padding; never truncates
 
 pub write_padded_left :: fn(w: *Writer, data: []const u8, width: usize, fill: u8) -> usize ! IoError {
     if data.len >= width {
@@ -34,7 +24,7 @@ pub write_padded_right :: fn(w: *Writer, data: []const u8, width: usize, fill: u
     return a + b;
 }
 
-// Centers `data`, putting any odd leftover padding on the right.
+// odd leftover padding goes right
 pub write_padded_center :: fn(w: *Writer, data: []const u8, width: usize, fill: u8) -> usize ! IoError {
     if data.len >= width {
         return w.write_all(data)?;
@@ -48,12 +38,7 @@ pub write_padded_center :: fn(w: *Writer, data: []const u8, width: usize, fill: 
     return a + b + c;
 }
 
-// Width-justified numbers
-//
-// Right-justify a number within `width`, padding on the left with `fill`
-// (spaces for column alignment, '0' for fixed-width fields like "007").
-// The value is measured with a NullWriter first so the padding can precede it
-// without ever buffering or allocating the rendered text.
+// right-justified numbers; measured with a NullWriter first, no allocation
 
 pub write_u64_padded :: fn(w: *Writer, value: u64, width: usize, fill: u8) -> usize ! IoError {
     measure := null_writer();
@@ -91,10 +76,9 @@ pub write_hex_u64_padded :: fn(w: *Writer, value: u64, width: usize, fill: u8) -
     return a + b;
 }
 
-// Joining
+// joining
 
-// Write each byte slice in `items`, separated by `sep`.
-//   join_bytes(w, .{"a", "b", "c"}[:], ", ")  ->  "a, b, c"
+// `items` separated by `sep`
 pub join_bytes :: fn(w: *Writer, items: []const []const u8, sep: []const u8) -> usize ! IoError {
     written := 0usize;
     for i in 0..items.len {
@@ -105,20 +89,15 @@ pub join_bytes :: fn(w: *Writer, items: []const []const u8, sep: []const u8) -> 
     }
     return written;
 }
-// Parsing numbers
+// parsing numbers
 
 pub ParseError :: errors {
     empty,      // no digits
-    invalid,    // a character that is no digit of the base, or a sign or `_` out of place
+    invalid,    // non-digit for the base, or a misplaced sign or `_`
     overflow,   // the number does not fit the type
 }
 
-/// The integer `text` writes, as a `T` (any integer type). `base` is 2 to 36, or 0 to take it
-/// from a prefix: `0x` hexadecimal, `0o` octal, `0b` binary, decimal without one. A `+` may
-/// lead, and a `-` for a signed type; `_` may stand between digits (`1_000_000`).
-///   fmt::parse_int(i32, "-42", 10)      // -42
-///   fmt::parse_int(u8, "0xff", 0)       // 255
-///   fmt::parse_int(u8, "256", 10)       // fails .overflow
+// any integer T; base 2..36, or 0 to read a 0x/0o/0b prefix; `_` allowed between digits
 pub parse_int :: fn($T: type, text: []const u8, base: u8) -> T ! ParseError {
     i: usize = 0;
     negative := false;
@@ -146,7 +125,7 @@ pub parse_int :: fn($T: type, text: []const u8, base: u8) -> T ! ParseError {
     if b < 2 || b > 36 { fail .invalid; }
     signed := ~(0 as T) < (0 as T);
     if negative && !signed { fail .invalid; }
-    // The largest magnitude a `T` holds: its maximum, or for a negative number its minimum's.
+    // largest magnitude T holds; one more for negatives
     bits := (core::sizeof(T) * 8) as u64;
     limit: u64 = 0;
     if signed {
@@ -181,7 +160,7 @@ pub parse_int :: fn($T: type, text: []const u8, base: u8) -> T ! ParseError {
     return value as T;
 }
 
-/// The value of a digit in any base up to 36 (`0`–`9`, then `a`/`A` for 10 up to `z`/`Z`), or 99.
+// digit value in bases up to 36, or 99
 digit_value :: fn(c: u8) -> u64 {
     if c >= '0' && c <= '9' { return (c - '0') as u64; }
     if c >= 'a' && c <= 'z' { return (c - 'a') as u64 + 10; }
@@ -189,10 +168,8 @@ digit_value :: fn(c: u8) -> u64 {
     return 99;
 }
 
-/// The number `text` writes, as an `f64`: an optional sign, digits with an optional `.` (`2.5`,
-/// `.5`, `5.`), and an optional exponent (`1e-3`, `6.02E23`); also `inf`, `infinity` and `nan`.
-/// Too large is an infinity, too small zero. It is the closest `f64` for up to 15 significant
-/// digits and an exponent within ±22; beyond that it may be off by one in the last bit.
+// sign, digits, optional `.` and exponent; inf/infinity/nan; too large -> inf
+// exact for <= 15 digits and |exp| <= 22; beyond that may be off by one ulp
 pub parse_float :: fn(text: []const u8) -> f64 ! ParseError {
     i: usize = 0;
     negative := false;
@@ -203,7 +180,7 @@ pub parse_float :: fn(text: []const u8) -> f64 ! ParseError {
     rest := text[i..text.len];
     if eq_lower(rest, "inf") || eq_lower(rest, "infinity") { return if negative { -1.0 / 0.0 } else { 1.0 / 0.0 }; }
     if eq_lower(rest, "nan") { return 0.0 / 0.0; }
-    // The first 19 significant digits as a whole number, and the power of ten it is scaled by.
+    // first 19 significant digits and their power of ten
     mantissa: u64 = 0;
     kept: u32 = 0;
     exp10: i64 = 0;
@@ -253,9 +230,7 @@ pub parse_float :: fn(text: []const u8) -> f64 ! ParseError {
     return if negative { -value } else { value };
 }
 
-/// `mantissa` times ten to `exp10`. A mantissa below 2^53 and a power of ten up to 10^22 are both
-/// exact as doubles, so one multiplication or division rounds once and is exact; otherwise the
-/// powers are applied in steps.
+// mantissa * 10^exp10; one exact op if mantissa < 2^53 and |exp10| <= 22, else in steps
 scale :: fn(mantissa: u64, exp10: i64) -> f64 {
     if mantissa == 0 { return 0.0; }
     m := mantissa as f64;
@@ -278,7 +253,7 @@ scale :: fn(mantissa: u64, exp10: i64) -> f64 {
     return m / pow10((-e) as u32);
 }
 
-/// Ten to the `n`, for `n` up to 22: every one of them is exact as an `f64`.
+// 10^n, exact for n <= 22
 pow10 :: fn(n: u32) -> f64 {
     p: f64 = 1.0;
     k: u32 = 0;
@@ -289,7 +264,7 @@ pow10 :: fn(n: u32) -> f64 {
     return p;
 }
 
-/// Whether `text` is `word` (lower case) in any case.
+// `text` equals lowercase `word`, ignoring case
 eq_lower :: fn(text: []const u8, word: []const u8) -> bool {
     if text.len != word.len { return false; }
     i: usize = 0;

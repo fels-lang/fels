@@ -1,22 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.serde — reflection-driven serialization: turn any value into JSON with no
-// per-type code. The serializer walks the type's type_info for structure and an Any
-// for the field values.
-//
-//   p := Point.{ 3, 4, "hi" };
-//   js := serde::to_json(Point, p, &arena);   // {"x":3,"y":4,"label":"hi"}
-//
-// Today: ints, floats, bool, []const u8/[]u8 (as JSON strings), and structs
-// (recursively). Slices of non-byte elements and deserialization are next.
+// std.serde: JSON to and from any value via type_info; no per-type code
 
 #import std.heap.{ Arena };
 #import std.fmt as fmt;
 #import std.strings.{ StringBuilder, builder, append, append_byte, append_u64, append_i64, append_f64_min, str };
 
-// Raw reads from an Any's data pointer
-// An `Any` carries `data: *const u8` pointing at the value. We read the scalar
-// bytes directly (width from the `TypeInfo`), which sidesteps `usize`-vs-`u64`
-// id ambiguity and needs no per-type downcast.
+// raw scalar reads through Any.data; width from TypeInfo, dodges usize vs u64 ids
 
 read_unsigned :: fn(d: *const u8, bits: u16) -> u64 {
     unsafe {
@@ -36,13 +25,12 @@ read_signed :: fn(d: *const u8, bits: u16) -> i64 {
     }
 }
 
-// True when a slice's element type is an 8-bit integer (`[]const u8`/`[]u8`), i.e.
-// it should render as a JSON string rather than an array.
+// 8-bit elements: the slice renders as a JSON string, not an array
 is_byte :: fn(ti: TypeInfo) -> bool {
     match ti { .int |i| => return i.bits == 8; else => return false; }
 }
 
-// Length of a slice whose value `v.data` points at a `{ptr,len}` header.
+// len of the {ptr,len} slice at v.data
 slice_len :: fn(v: Any) -> usize {
     unsafe {
         base: usize = v.data as usize;
@@ -50,8 +38,7 @@ slice_len :: fn(v: Any) -> usize {
     }
 }
 
-// Write a `[]const u8`/`[]u8` (whose value `v.data` points at a `{ptr,len}` slice)
-// as a quoted, minimally-escaped JSON string.
+// byte slice at v.data as a quoted JSON string; minimal escaping
 write_string :: fn(v: Any, w: *StringBuilder) {
     unsafe {
         base: usize = v.data as usize;
@@ -72,10 +59,7 @@ write_string :: fn(v: Any, w: *StringBuilder) {
     }
 }
 
-// The recursive walker
-// `v` is the value (type-erased); `ti` is its static shape. Both come from the
-// generic entry point, and the struct case threads each field's `Any` + `TypeInfo`
-// back into this same function.
+// recursive walker; `v` is the value, `ti` its shape
 write_val :: fn(v: Any, ti: TypeInfo, w: *StringBuilder) {
     match ti {
         .int |i| => {
@@ -92,12 +76,11 @@ write_val :: fn(v: Any, ti: TypeInfo, w: *StringBuilder) {
             unsafe { if *(v.data as *const bool) { append(w, "true"); } else { append(w, "false"); } }
         }
         .slice |e| => {
-            et: TypeInfo = *e;           // deref to a typed local (unambiguous vs `*e` as a type)
+            et: TypeInfo = *e;           // typed local; bare `*e` reads as a type
             if is_byte(et) { write_string(v, w); }
             else {
                 append_byte(w, 91);    // [
-                // Walk the elements directly (handles scalar, struct, AND nested-slice
-                // elements uniformly): stride from `ti_size`, element id from `ti_id`.
+                // any element kind: stride from ti_size, id from ti_id
                 unsafe {
                     base: usize = v.data as usize;
                     ptr:  usize = *(base as *const usize);
@@ -144,8 +127,7 @@ write_val :: fn(v: Any, ti: TypeInfo, w: *StringBuilder) {
             }
         }
         .enum_ |en| => {
-            // Tagged enum → the variant name as a JSON string ("Red"). Payloads, if
-            // any, aren't emitted (TiVariant carries no payload type).
+            // variant name as a JSON string; payloads not emitted
             unsafe {
                 disc: i32 = *(v.data as *const i32);
                 append_byte(w, 34);
@@ -161,20 +143,14 @@ write_val :: fn(v: Any, ti: TypeInfo, w: *StringBuilder) {
     }
 }
 
-// Serialize `v` (of type `T`) to a JSON string allocated in `a`.
+// JSON string in `a`
 pub to_json :: fn($T: type, v: T, a: *Arena) -> []const u8 {
     sb := builder(a);
     write_val(core::any(v), core::type_info(T), &sb);
     return str(&sb);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Deserialize — JSON text → a value of type T, via reflective construction.
-// ═══════════════════════════════════════════════════════════════════════════
-// Build a zeroed `result: T`, wrap a *mutable* `Any` over its address, and walk
-// `type_info(T)` writing each parsed field through the field's real address:
-// `any_field_at` hands back `&result.field` (typed `*const u8`), which we cast
-// to mutable and store into. No per-type code, mirroring the serializer.
+// deserialize: parse into a zeroed T through each field's address
 
 Parser :: struct { s: []const u8, pos: usize, ok: bool }
 
@@ -207,7 +183,7 @@ is_dig :: fn(c: u8) -> bool {
     return true;
 }
 
-// The text of the number at `p.pos`: a sign, digits, a fraction and an exponent.
+// number text at p.pos: sign, digits, fraction, exponent
 p_number :: fn(p: *Parser) -> []const u8 {
     p_skip_ws(p);
     start := p.pos;
@@ -221,7 +197,7 @@ p_number :: fn(p: *Parser) -> []const u8 {
     return p.s[start..p.pos];
 }
 
-// A number that does not fit or is no whole number makes the parse fail.
+// fails the parse on overflow or a non-integer
 p_i64 :: fn(p: *Parser) -> i64 {
     text := p_number(p);
     return fmt::parse_int(i64, text, 10) catch e {
@@ -245,7 +221,7 @@ p_bool :: fn(p: *Parser) -> bool {
     return false;
 }
 
-// Parse a JSON string (minimal unescaping) into a fresh arena-backed buffer.
+// JSON string into `a`; minimal unescaping
 p_str :: fn(p: *Parser, a: *Arena) -> []const u8 {
     p_skip_ws(p);
     sb := builder(a);
@@ -263,7 +239,7 @@ p_str :: fn(p: *Parser, a: *Arena) -> []const u8 {
                     e: u8 = p.s[p.pos];
                     if e == 110 { append_byte(&sb, 10); }    // \n
                     else { if e == 116 { append_byte(&sb, 9); }  // \t
-                    else { append_byte(&sb, e); } }              // \" \\ etc → literal
+                    else { append_byte(&sb, e); } }              // \" \ etc -> literal
                     p.pos += 1;
                 }
             } else {
@@ -275,7 +251,7 @@ p_str :: fn(p: *Parser, a: *Arena) -> []const u8 {
     return str(&sb);
 }
 
-// Field writers (cast away const, store the parsed value)
+// field writers: cast away const, store
 set_int :: fn(d: *const u8, ti: TiInt, val: i64) {
     unsafe {
         if ti.bits == 8 { *(d as *u8) = val as u8; }
@@ -306,7 +282,7 @@ set_empty :: fn(d: *const u8) {
     }
 }
 
-// Byte size + type id of an element TypeInfo (for allocating + wrapping arrays).
+// element byte size and type id
 ti_size :: fn(et: TypeInfo) -> usize {
     match et {
         .int |i| => return (i.bits as usize) / 8;
@@ -321,9 +297,7 @@ ti_size :: fn(et: TypeInfo) -> usize {
 ti_id :: fn(et: TypeInfo) -> usize {
     match et { .struct_ |s| => return s.id; else => return 0; }
 }
-// Alignment of a type — needed to find an optional's payload offset (`?T` lays out
-// as `{ i1 is_some, T payload }`, payload at offset `align(T)`). A struct's alignment
-// is the max of its fields', computed straight from `type_info` (no `align_of` builtin).
+// alignment; ?T is { i1 is_some, T payload } with payload at align(T)
 ti_align :: fn(et: TypeInfo) -> usize {
     match et {
         .int |i| => {
@@ -365,7 +339,7 @@ find_field :: fn(s: TiStruct, key: []const u8) -> usize {
     return s.fields.len;   // not found
 }
 
-// Skipping (for unknown object keys + counting array elements)
+// skipping unknown keys and counting array elements
 p_skip_scalar :: fn(p: *Parser) {
     cont: bool = true;
     while cont {
@@ -418,7 +392,7 @@ p_skip_arr :: fn(p: *Parser, a: *Arena) {
     p_eat(p, 93);
 }
 
-// The recursive parser
+// recursive parser
 parse_value :: fn(p: *Parser, target: Any, ti: TypeInfo, a: *Arena) {
     match ti {
         .int |i| => set_int(target.data, i, p_i64(p));
@@ -433,7 +407,7 @@ parse_value :: fn(p: *Parser, target: Any, ti: TypeInfo, a: *Arena) {
         .optional |inner| => {
             pt: TypeInfo = *inner;
             p_skip_ws(p);
-            if p_cur(p) == 110 {              // 'n' → null → leave is_some = 0
+            if p_cur(p) == 110 {              // 'n': null, is_some stays 0
                 p.pos += 4;
                 unsafe { *(target.data as *u8) = 0; }
             } else {
@@ -484,7 +458,7 @@ parse_array :: fn(p: *Parser, target: Any, et: TypeInfo, a: *Arena) {
     if !p_eat(p, 91) { p.ok = false; return; }   // [
     p_skip_ws(p);
     if p_cur(p) == 93 { p.pos += 1; set_empty(target.data); return; }   // []
-    // Pass 1: count elements (so we can allocate exactly).
+    // pass 1: count elements to allocate exactly
     start: usize = p.pos;
     count: usize = 0;
     cont: bool = true;
@@ -497,7 +471,7 @@ parse_array :: fn(p: *Parser, target: Any, et: TypeInfo, a: *Arena) {
     esz: usize = ti_size(et);
     eid: usize = ti_id(et);
     buf: []u8 = a.alloc_bytes(count * esz);
-    // Pass 2: parse each element into its slot.
+    // pass 2: parse each element into its slot
     p.pos = start;
     i: usize = 0;
     while i < count {
@@ -519,8 +493,7 @@ set_arr :: fn(d: *const u8, buf: []u8, count: usize) {
     }
 }
 
-// Deserialize `text` into a value of type `T`. Returns null on a structural
-// parse error. Allocations (strings, arrays) live in `a`.
+// null on a parse error; strings and arrays live in `a`
 pub from_json :: fn($T: type, text: []const u8, a: *Arena) -> ?T {
     result: T = .{};
     dp: *const u8 = unsafe (&result) as *const u8;

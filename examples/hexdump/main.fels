@@ -1,6 +1,5 @@
-// hexdump — a classic xxd-style hex viewer.
-//
-//   hexdump [file]     16 bytes/line: offset | hex | ascii  (default: build.fels)
+// hexdump: xxd-style viewer, 16 bytes/line: offset | hex | ascii
+// run: hexdump [file]   (default: build.fels)
 
 #import std.fs;
 #import std.heap.{ make };

@@ -1,25 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.math — vectors, rectangles, and scalar helpers for games & graphics.
-//
-// Vectors are `f32` (matching most graphics APIs, e.g. raylib's `Vector2`).
-// Component math wraps the `core::` math builtins (`core::sqrt`, `core::sin`, …),
-// which map to fast CPU instructions and fold at compile time where possible.
-//
-// Naming: there is no function overloading, so per-type ops are prefixed —
-// `v2_*` for Vec2, `v3_*` for Vec3. All work with UFCS: `a.v2_add(b)`.
+// std.math: f32 vectors, rects and scalar helpers for games; v2_*/v3_* prefixes
 
-// Constants
+// constants
 pub PI      :: 3.14159265f32;
-pub TAU     :: 6.28318531f32;     // 2π
-pub DEG2RAD :: 0.01745329f32;     // π/180
-pub RAD2DEG :: 57.2957795f32;     // 180/π
+pub TAU     :: 6.28318531f32;     // 2pi
+pub DEG2RAD :: 0.01745329f32;     // pi/180
+pub RAD2DEG :: 57.2957795f32;     // 180/pi
 
-// Scalar helpers
+// scalar helpers
 
-// Linear interpolation: `a` at t=0, `b` at t=1.
+// `a` at t=0, `b` at t=1
 pub lerp :: fn(a: f32, b: f32, t: f32) -> f32 { return a + (b - a) * t; }
 
-// Move `cur` toward `tgt` by at most `step` (no overshoot).
+// toward `tgt` by at most `step`; no overshoot
 pub approach :: fn(cur: f32, tgt: f32, step: f32) -> f32 {
     if cur < tgt { d := tgt - cur; if d <= step { return tgt; } return cur + step; }
     d := cur - tgt;
@@ -27,7 +20,7 @@ pub approach :: fn(cur: f32, tgt: f32, step: f32) -> f32 {
     return cur - step;
 }
 
-// -1, 0, or +1 by sign.
+// -1, 0 or +1
 pub signf :: fn(x: f32) -> f32 {
     if x > 0.0f32 { return 1.0f32; }
     if x < 0.0f32 { return -1.0f32; }
@@ -37,21 +30,19 @@ pub signf :: fn(x: f32) -> f32 {
 pub deg2rad :: fn(deg: f32) -> f32 { return deg * DEG2RAD; }
 pub rad2deg :: fn(rad: f32) -> f32 { return rad * RAD2DEG; }
 
-// sin/cos via a fast minimax polynomial (~0.001 max error) — no libm dependency,
-// so programs link without a math library. (`core::sin`/`core::cos` are the exact
-// hardware/libm versions, but require linking libm.)
+// minimax sin, ~0.001 max error, no libm; core::sin/cos are exact but need libm
 sin_poly :: fn(x: f32) -> f32 {
-    // x reduced to [-π, π]
-    b := 1.27323954f32;     // 4/π
-    c := -0.40528473f32;    // -4/π²
+    // x in [-pi, pi]
+    b := 1.27323954f32;     // 4/pi
+    c := -0.40528473f32;    // -4/pi^2
     y := b * x + c * x * core::abs(x);
     return 0.225f32 * (y * core::abs(y) - y) + y;
 }
 pub sin :: fn(x: f32) -> f32 { return sin_poly(wrapf(x + PI, 0.0f32, TAU) - PI); }
-pub cos :: fn(x: f32) -> f32 { return sin(x + 1.57079633f32); }       // cos(x) = sin(x + π/2)
+pub cos :: fn(x: f32) -> f32 { return sin(x + 1.57079633f32); }       // sin(x + pi/2)
 pub tan :: fn(x: f32) -> f32 { return sin(x) / cos(x); }
 
-// Wrap `x` into the half-open range [lo, hi).
+// into [lo, hi)
 pub wrapf :: fn(x: f32, lo: f32, hi: f32) -> f32 {
     span := hi - lo;
     if span <= 0.0f32 { return lo; }
@@ -61,7 +52,7 @@ pub wrapf :: fn(x: f32, lo: f32, hi: f32) -> f32 {
     return lo + t;
 }
 
-// Vec2 (2D)
+// Vec2
 pub Vec2 :: struct { x: f32, y: f32 }
 
 pub v2 :: fn(x: f32, y: f32) -> Vec2 { r: Vec2 = .{ x, y }; return r; }
@@ -85,7 +76,7 @@ pub v2_dist2 :: fn(a: Vec2, b: Vec2) -> f32 {
 }
 pub v2_dist :: fn(a: Vec2, b: Vec2) -> f32 { return core::sqrt(v2_dist2(a, b)); }
 
-// Unit vector (returns the zero vector if `a` is ~zero).
+// zero vector if `a` is ~zero
 pub v2_normalize :: fn(a: Vec2) -> Vec2 {
     l := v2_len(a);
     if l <= 0.0001f32 { return v2_zero(); }
@@ -99,10 +90,10 @@ pub v2_lerp :: fn(a: Vec2, b: Vec2, t: f32) -> Vec2 {
     return r;
 }
 
-// 90° counter-clockwise perpendicular.
+// 90 deg counter-clockwise
 pub v2_perp :: fn(a: Vec2) -> Vec2 { r: Vec2 = .{ -a.y, a.x }; return r; }
 
-// Rotate by `rad` radians.
+// by `rad` radians
 pub v2_rotate :: fn(a: Vec2, rad: f32) -> Vec2 {
     c := cos(rad);
     s := sin(rad);
@@ -110,10 +101,10 @@ pub v2_rotate :: fn(a: Vec2, rad: f32) -> Vec2 {
     return r;
 }
 
-// A unit vector at angle `rad` (0 = +x).
+// unit vector at `rad`; 0 = +x
 pub v2_from_angle :: fn(rad: f32) -> Vec2 { r: Vec2 = .{ cos(rad), sin(rad) }; return r; }
 
-// Vec3 (3D)
+// Vec3
 pub Vec3 :: struct { x: f32, y: f32, z: f32 }
 
 pub v3 :: fn(x: f32, y: f32, z: f32) -> Vec3 { r: Vec3 = .{ x, y, z }; return r; }
@@ -134,7 +125,7 @@ pub v3_normalize :: fn(a: Vec3) -> Vec3 {
     return r;
 }
 
-// Rect (axis-aligned, for sprites / UI / collisions)
+// axis-aligned rect for sprites, UI, collisions
 pub Rect :: struct { x: f32, y: f32, w: f32, h: f32 }
 
 pub rect :: fn(x: f32, y: f32, w: f32, h: f32) -> Rect { r: Rect = .{ x, y, w, h }; return r; }
@@ -143,19 +134,16 @@ pub rect_contains :: fn(r: Rect, px: f32, py: f32) -> bool {
     return px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h;
 }
 
-// AABB overlap test.
+// AABB overlap
 pub rect_overlaps :: fn(a: Rect, b: Rect) -> bool {
     return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
 pub rect_center :: fn(r: Rect) -> Vec2 { c: Vec2 = .{ r.x + r.w * 0.5f32, r.y + r.h * 0.5f32 }; return c; }
 
-// Integers
-//
-// `core::min`, `core::max`, `core::abs` and `core::clamp` cover any number; these are for u64
-// (and `mod_floor` for i64).
+// integers; core::min/max/abs/clamp cover any number, these are u64 (mod_floor i64)
 
-// The greatest common divisor (0 for gcd(0, 0)).
+// gcd(0, 0) is 0
 pub gcd :: fn(a: u64, b: u64) -> u64 {
     x := a;
     y := b;
@@ -167,7 +155,7 @@ pub gcd :: fn(a: u64, b: u64) -> u64 {
     return x;
 }
 
-// The least common multiple (0 when either is 0); null when it does not fit in a u64.
+// 0 when either is 0; null on u64 overflow
 pub lcm :: fn(a: u64, b: u64) -> ?u64 {
     if a == 0 || b == 0 { return 0; }
     q := a / gcd(a, b);
@@ -175,7 +163,7 @@ pub lcm :: fn(a: u64, b: u64) -> ?u64 {
     return q * b;
 }
 
-// `base` to the power `exp`; null when it does not fit in a u64.
+// null on u64 overflow
 pub ipow :: fn(base: u64, exp: u32) -> ?u64 {
     result: u64 = 1;
     b := base;
@@ -194,10 +182,10 @@ pub ipow :: fn(base: u64, exp: u32) -> ?u64 {
     return result;
 }
 
-// The whole part of the square root of `n`.
+// floor(sqrt(n))
 pub isqrt :: fn(n: u64) -> u64 {
     if n < 2 { return n; }
-    // Newton's method from above: x falls to floor(sqrt(n)) and stops there
+    // newton from above; stops at floor(sqrt(n))
     x := n / 2 + 1;
     y := (x + n / x) / 2;
     while y < x {
@@ -207,20 +195,20 @@ pub isqrt :: fn(n: u64) -> u64 {
     return x;
 }
 
-// `a / b`, rounded up (`b` not 0).
+// rounds up; `b` != 0
 pub div_ceil :: fn(a: u64, b: u64) -> u64 {
     q := a / b;
     if q * b != a { return q + 1; }
     return q;
 }
 
-// `x` rounded up to a multiple of `align`, a power of two.
+// `align` must be a power of two
 pub align_up :: fn(x: u64, align: u64) -> u64 { return (x + align - 1) & ~(align - 1); }
 
-// `x` rounded down to a multiple of `align`, a power of two.
+// `align` must be a power of two
 pub align_down :: fn(x: u64, align: u64) -> u64 { return x & ~(align - 1); }
 
-// The position of the highest set bit: floor(log2(x)), for `x` > 0 (0 for 0).
+// floor(log2(x)); 0 for 0
 pub log2_floor :: fn(x: u64) -> u32 {
     n: u32 = 0;
     v := x;
@@ -231,7 +219,7 @@ pub log2_floor :: fn(x: u64) -> u32 {
     return n;
 }
 
-// The smallest power of two at least `x` (1 for 0); null past 2^63.
+// smallest power of two >= x (1 for 0); null past 2^63
 pub next_power_of_two :: fn(x: u64) -> ?u64 {
     if x <= 1 { return 1; }
     if x > 0x8000_0000_0000_0000u64 { return null; }
@@ -240,8 +228,7 @@ pub next_power_of_two :: fn(x: u64) -> ?u64 {
     return p;
 }
 
-// `a` modulo `b` with the sign of `b` (`b` not 0): mod_floor(-7, 3) is 2, where `%` gives -1. The
-// remainder of a division that rounds toward minus infinity, as for a position on a ring.
+// remainder with the sign of `b`: mod_floor(-7, 3) == 2; `b` != 0
 pub mod_floor :: fn(a: i64, b: i64) -> i64 {
     r := a % b;
     if r != 0 && ((r < 0) != (b < 0)) { return r + b; }

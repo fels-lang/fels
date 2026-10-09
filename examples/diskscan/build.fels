@@ -1,11 +1,5 @@
-// Build script for diskscan — a fast, multithreaded disk-usage analyzer with a
-// native Win32 GUI. Two artifacts share one scanner:
-//
-//   fels build              build both (CLI + GUI) into ./out, release
-//   fels build run          build + run the CLI on the current directory
-//   fels build gui          build + launch the GUI
-//   fels build -Ddebug      unoptimized build with safety checks
-//
+// diskscan: multithreaded disk-usage analyzer; cli + win32 gui share one scanner
+// run: fels build [run|gui] [-Ddebug]; output in ./out
 #import std.build.{ Build, Optimize, executable, optimize, release, debug,
                     subsystem, console, windowed, version, description,
                     install, out_dir, run_step, option, summary };
@@ -15,7 +9,7 @@ VERSION :: "0.1.0";
 build :: fn(b: Build) {
     dev: bool = b.option("debug");
 
-    // CLI: console subsystem
+    // cli: console subsystem
     cli := b.executable("diskscan", "src/cli.fels");
     cli.description("Fast multithreaded disk-usage analyzer (CLI)");
     cli.version(VERSION);
@@ -24,7 +18,7 @@ build :: fn(b: Build) {
     if dev { cli.debug(); } else { cli.release(); }
     cli.install();
 
-    // GUI: windowed subsystem (no console window)
+    // gui: windowed, no console
     gui := b.executable("diskscan-gui", "src/gui.fels");
     gui.description("Disk-usage analyzer with a native browser GUI");
     gui.version(VERSION);
@@ -33,10 +27,8 @@ build :: fn(b: Build) {
     if dev { gui.debug(); } else { gui.release(); }
     gui.install();
 
-    // steps
-    // No `default` is set, so a bare `fels build` builds *both* artifacts; the
-    // named steps build-and-run one of them.
-    b.run_step("run", cli);     // fels build run   → CLI on the current dir
-    b.run_step("gui", gui);     // fels build gui   → launch the GUI
+    // no default: bare `fels build` builds both
+    b.run_step("run", cli);     // cli on the current dir
+    b.run_step("gui", gui);     // launch the gui
     b.summary();
 }

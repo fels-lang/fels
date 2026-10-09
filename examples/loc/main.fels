@@ -1,10 +1,5 @@
-// loc — a recursive lines-of-code counter for Windows.
-//
-//   loc [dir]      count .fels/.zig/.c/.h files under `dir` (default: current dir)
-//
-// Walks the directory tree with std.fs's FindFirstFile iterator, reads each
-// source file with fs::read_all, and tallies total / code / comment / blank
-// lines. A real CLI tool — no per-line allocation, just slices over the bytes.
+// loc: total/code/comment/blank lines of .fels/.zig/.c/.h files under a dir; windows
+// run: loc [dir]   (default: current dir)
 
 #import std.fs;
 #import std.heap.{ Arena, make };
@@ -66,7 +61,7 @@ walk :: fn(dir: []const u8, a: *Arena, c: *Counts) {
     (&it).dir_close();
 }
 
-// Extract the first CLI argument (after the program path), or `def`.
+// first cli arg after the exe path, else `def`
 first_arg :: fn(line: []const u8, def: []const u8) -> []const u8 {
     i: usize = 0usize;
     if line.len > 0usize {

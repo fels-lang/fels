@@ -1,37 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.map — hash maps with a fels flavour. Both are open-addressed (linear probing)
-// and region-bound like the rest of fels's containers: the tables live in an Arena,
-// so there are no per-entry frees — reset/deinit the region to reclaim the whole map.
-//
-//   AutoHashMap(K, V)  keys any value type, hashing the key's raw bytes (no Hash/Eq,
-//                      no derive) — great for ints, enums, points, small POD structs.
-//   StrMap(V)          keys are []const u8, hashed/compared by CONTENTS, and copied
-//                      into the region so the map owns them.
-//   SortedMap(K, V, C) keys kept in an order, for going through them in it and from a key on.
-//
-//   m := map::auto(i32, i32, &a);
-//   m.put(7, 100); m.put(7, 101);   // overwrites → one entry; m.get(7) is 101
-//   for e in m.entries() { … e.key … e.value … }   // in no particular order
-//
-//   AutoSet(K) and StrSet are sets of keys, maps with nothing stored for a key:
-//   seen := map::strset(&a);
-//   if seen.add(name) { … }         // true the first time
-//
-// AutoHashMap takes only keys whose bytes are their value (`ByteKey`): a float, a slice or a
-// type with padding is refused when the map type is made. Key strings with StrMap.
+// std.map: open-addressed maps/sets and SortedMap, all in an Arena; no per-entry frees
 
 #import std.heap.{ Arena, alloc, dupe };
 #import std.hash as hash;
 #import std.sort as sort;
 
-// Slot states.
+// slot states
 EMPTY :: 0u8;
 USED  :: 1u8;
-TOMB  :: 2u8;   // a deleted slot — probing skips past it but doesn't stop
+TOMB  :: 2u8;   // deleted; probing continues past it
 
-INIT_CAP :: 8usize;   // always a power of two so `hash & (cap-1)` indexes a slot
+INIT_CAP :: 8usize;   // power of two: `hash & (cap-1)` is a slot
 
-// FNV-1a over a key's bytes in memory (std.hash's fnv1a_64 over a pointer and a length)
+// FNV-1a over raw key bytes
 fnv_bytes :: fn(p: *const u8, n: usize) -> u64 {
     h: u64 = 14695981039346656037;
     for i in 0..n {
@@ -47,11 +28,7 @@ eq_bytes :: fn(a: *const u8, b: *const u8, n: usize) -> bool {
     return true;
 }
 
-// A key AutoHashMap can hash and compare by its bytes: one whose bytes are its value. No
-// float (`-0.0` and `0.0` are equal and differ in their bytes, a NaN is equal to nothing), no
-// slice (it would compare an address and a length, not the contents), and no bytes that no
-// value sets (padding, an optional's flag, the bytes a smaller enum payload leaves), which
-// differ between equal keys.
+// keys whose bytes are their value: no floats, slices, unions or padding
 pub ByteKey :: constraint($K) {
     if core::has_padding(K) { core::reject("it has bytes no value sets (padding, an optional's flag or an enum payload), which differ between equal keys"); }
     why := byte_key_problem(core::type_info(K));
@@ -75,7 +52,7 @@ byte_key_problem :: fn(ti: TypeInfo) -> []const u8 {
     }
 }
 
-// AutoHashMap(K, V) — byte-hashed, any value-type key
+// keys hashed and compared by their raw bytes
 pub AutoHashMap :: struct($K: ByteKey, $V: type) {
     region: *Arena,
     states: []u8,
@@ -88,21 +65,20 @@ pub AutoHashMap :: struct($K: ByteKey, $V: type) {
     pub cap      :: fn(self: *Self) -> usize { return self.states.len; }
     pub is_empty :: fn(self: *Self) -> bool  { return self.count == 0usize; }
 
-    // hash a key by its raw bytes (copied to a local so its address is stable).
+    // copied to a local for a stable address
     hash_of :: fn(self: *Self, k: K) -> u64 {
         kk: K = k;
         return fnv_bytes(unsafe ((&kk) as *const u8), core::sizeof(K));
     }
 
-    // does slot `i` hold a key byte-equal to `k`?
+    // slot `i` byte-equal to `k`
     same_key :: fn(self: *Self, i: usize, k: K) -> bool {
         sk: K = self.keys[i];
         kk: K = k;
         return eq_bytes(unsafe ((&sk) as *const u8), unsafe ((&kk) as *const u8), core::sizeof(K));
     }
 
-    // Insert/overwrite into the CURRENT table (no growth). Reuses a tombstone if
-    // one was passed on the way to an empty slot. Manages count/tombs.
+    // insert/overwrite without growing; reuses the first tombstone on the probe path
     place :: fn(self: *Self, k: K, v: V) {
         mask: usize = self.states.len - 1;
         i: usize = (self.hash_of(k) as usize) & mask;
@@ -129,7 +105,7 @@ pub AutoHashMap :: struct($K: ByteKey, $V: type) {
         }
     }
 
-    // Double the table and re-insert every live entry (drops tombstones).
+    // doubles the table, drops tombstones
     grow :: fn(self: *Self) {
         old_states: []u8 = self.states;
         old_keys:   []K  = self.keys;
@@ -148,8 +124,7 @@ pub AutoHashMap :: struct($K: ByteKey, $V: type) {
         }
     }
 
-    // Insert `k → v`, overwriting any existing value for `k`. Grows past a 0.75
-    // load factor (live + tombstones) so probe chains stay short.
+    // overwrites; grows past 0.75 load (live + tombstones)
     pub put :: fn(self: *Self, k: K, v: V) {
         if (self.count + self.tombs + 1) * 4 >= self.states.len * 3 {
             self.grow();
@@ -157,7 +132,7 @@ pub AutoHashMap :: struct($K: ByteKey, $V: type) {
         self.place(k, v);
     }
 
-    // The index of `k`, or `cap` if absent. Stops at the first EMPTY slot.
+    // index of `k`, or `cap` if absent
     find :: fn(self: *Self, k: K) -> usize {
         mask: usize = self.states.len - 1;
         i: usize = (self.hash_of(k) as usize) & mask;
@@ -174,7 +149,6 @@ pub AutoHashMap :: struct($K: ByteKey, $V: type) {
         return self.states.len;
     }
 
-    // The value for `k`, or `null`.
     pub get :: fn(self: *Self, k: K) -> ?V {
         i: usize = self.find(k);
         if i == self.states.len { return null; }
@@ -185,7 +159,7 @@ pub AutoHashMap :: struct($K: ByteKey, $V: type) {
         return self.find(k) != self.states.len;
     }
 
-    // Remove `k`; returns whether it was present. Leaves a tombstone.
+    // false if absent; leaves a tombstone
     pub remove :: fn(self: *Self, k: K) -> bool {
         i: usize = self.find(k);
         if i == self.states.len { return false; }
@@ -195,7 +169,7 @@ pub AutoHashMap :: struct($K: ByteKey, $V: type) {
         return true;
     }
 
-    // Empty the map, keeping the backing tables for reuse.
+    // keeps the tables for reuse
     pub clear :: fn(self: *Self) {
         c: usize = 0;
         while c < self.states.len { self.states[c] = EMPTY; c += 1; }
@@ -203,21 +177,19 @@ pub AutoHashMap :: struct($K: ByteKey, $V: type) {
         self.tombs = 0;
     }
 
-    /// The entries, in no particular order: `for e in m.entries() { … e.key … e.value … }`.
-    /// A `put` or `remove` while going through them may skip or repeat entries.
+    // no particular order; put/remove while iterating may skip or repeat
     pub entries :: fn(self: *Self) -> AutoEntries(K, V) {
         it: AutoEntries(K, V) = .{ self, 0 };
         return it;
     }
 }
 
-/// A key and its value, as `entries()` gives them.
 pub Entry :: struct($K: type, $V: type) {
     key: K,
     value: V,
 }
 
-/// The entries of an `AutoHashMap` (`AutoHashMap.entries`).
+// AutoHashMap.entries iterator
 pub AutoEntries :: struct($K: ByteKey, $V: type) {
     m: *AutoHashMap(K, V),
     i: usize,   // the next slot to look at
@@ -235,7 +207,7 @@ pub AutoEntries :: struct($K: ByteKey, $V: type) {
     }
 }
 
-// A fresh empty `AutoHashMap` bound to region `a`.
+// empty map in `a`
 pub auto :: fn($K: ByteKey, $V: type, a: *Arena) -> AutoHashMap(K, V) {
     states: []u8 = alloc(u8, a, INIT_CAP);
     i: usize = 0;
@@ -244,7 +216,7 @@ pub auto :: fn($K: ByteKey, $V: type, a: *Arena) -> AutoHashMap(K, V) {
     return r;
 }
 
-// StrMap(V) — string keys, hashed and compared by CONTENT
+// string keys by content; keys are copied into the arena
 pub StrMap :: struct($V: type) {
     region: *Arena,
     states: []u8,
@@ -298,13 +270,13 @@ pub StrMap :: struct($V: type) {
         self.tombs = 0;
         for j in 0..old_states.len {
             if old_states[j] == USED {
-                // re-place without re-duping: insert the already-owned key.
+                // key is already owned, don't dupe
                 self.place_owned(old_keys[j], old_vals[j]);
             }
         }
     }
 
-    // Like `place`, but the key is already region-owned (used during grow).
+    // `place` for an already-owned key (grow)
     place_owned :: fn(self: *Self, k: []const u8, v: V) {
         mask: usize = self.states.len - 1;
         i: usize = (hash::fnv1a_64(k) as usize) & mask;
@@ -369,15 +341,14 @@ pub StrMap :: struct($V: type) {
         self.tombs = 0;
     }
 
-    /// The entries, in no particular order: `for e in m.entries() { … e.key … e.value … }`.
-    /// A `put` or `remove` while going through them may skip or repeat entries.
+    // no particular order; put/remove while iterating may skip or repeat
     pub entries :: fn(self: *Self) -> StrEntries(V) {
         it: StrEntries(V) = .{ self, 0 };
         return it;
     }
 }
 
-/// The entries of a `StrMap` (`StrMap.entries`); a key is the map's own copy.
+// StrMap.entries iterator; keys are the map's own copies
 pub StrEntries :: struct($V: type) {
     m: *StrMap(V),
     i: usize,
@@ -395,7 +366,7 @@ pub StrEntries :: struct($V: type) {
     }
 }
 
-// A fresh empty `StrMap` bound to region `a`.
+// empty map in `a`
 pub strmap :: fn($V: type, a: *Arena) -> StrMap(V) {
     states: []u8 = alloc(u8, a, INIT_CAP);
     i: usize = 0;
@@ -404,9 +375,9 @@ pub strmap :: fn($V: type, a: *Arena) -> StrMap(V) {
     return r;
 }
 
-// Sets
+// ---- sets ----
 
-/// A set of keys of a type `AutoHashMap` takes: an `AutoHashMap(K, u8)` with nothing stored.
+// AutoHashMap(K, u8) with nothing stored
 pub AutoSet :: struct($K: ByteKey) {
     m: AutoHashMap(K, u8),
 
@@ -414,25 +385,25 @@ pub AutoSet :: struct($K: ByteKey) {
     pub is_empty :: fn(self: *Self) -> bool { return self.m.count == 0; }
     pub contains :: fn(self: *Self, k: K) -> bool { return self.m.contains(k); }
 
-    /// Put `k` in the set; whether it was not there yet.
+    // true if newly added
     pub add :: fn(self: *Self, k: K) -> bool {
         if self.m.contains(k) { return false; }
         self.m.put(k, 0);
         return true;
     }
 
-    /// Take `k` out of the set; whether it was there.
+    // true if it was there
     pub remove :: fn(self: *Self, k: K) -> bool { return self.m.remove(k); }
     pub clear :: fn(self: *Self) { self.m.clear(); }
 
-    /// The keys, in no particular order: `for k in s.each() { … }`.
+    // no particular order
     pub each :: fn(self: *Self) -> AutoSetKeys(K) {
         it: AutoSetKeys(K) = .{ self.m.entries() };
         return it;
     }
 }
 
-/// The keys of an `AutoSet` (`AutoSet.each`).
+// AutoSet.each iterator
 pub AutoSetKeys :: struct($K: ByteKey) {
     it: AutoEntries(K, u8),
 
@@ -442,8 +413,7 @@ pub AutoSetKeys :: struct($K: ByteKey) {
     }
 }
 
-/// A set of strings, by their contents: a `StrMap(u8)` with nothing stored. It keeps its own
-/// copy of each string.
+// strings by content; keeps its own copies
 pub StrSet :: struct {
     m: StrMap(u8),
 
@@ -451,25 +421,25 @@ pub StrSet :: struct {
     pub is_empty :: fn(self: *Self) -> bool { return self.m.count == 0; }
     pub contains :: fn(self: *Self, k: []const u8) -> bool { return self.m.contains(k); }
 
-    /// Put `k` in the set; whether it was not there yet.
+    // true if newly added
     pub add :: fn(self: *Self, k: []const u8) -> bool {
         if self.m.contains(k) { return false; }
         self.m.put(k, 0);
         return true;
     }
 
-    /// Take `k` out of the set; whether it was there.
+    // true if it was there
     pub remove :: fn(self: *Self, k: []const u8) -> bool { return self.m.remove(k); }
     pub clear :: fn(self: *Self) { self.m.clear(); }
 
-    /// The strings, in no particular order: `for k in s.each() { … }`.
+    // no particular order
     pub each :: fn(self: *Self) -> StrSetKeys {
         it: StrSetKeys = .{ self.m.entries() };
         return it;
     }
 }
 
-/// The strings of a `StrSet` (`StrSet.each`).
+// StrSet.each iterator
 pub StrSetKeys :: struct {
     it: StrEntries(u8),
 
@@ -479,32 +449,25 @@ pub StrSetKeys :: struct {
     }
 }
 
-// A fresh empty `AutoSet` bound to region `a`.
+// empty set in `a`
 pub autoset :: fn($K: ByteKey, a: *Arena) -> AutoSet(K) {
     s: AutoSet(K) = .{ auto(K, u8, a) };
     return s;
 }
 
-// A fresh empty `StrSet` bound to region `a`.
+// empty set in `a`
 pub strset :: fn(a: *Arena) -> StrSet {
     s: StrSet = .{ strmap(u8, a) };
     return s;
 }
 
-// SortedMap(K, V, C) — keys kept in order
+// ---- SortedMap ----
 
-/// A map whose keys stay in order: `entries()` goes through them smallest first, `first` and
-/// `last` give the ends, and `from(k)` starts at a key. The keys and values are two sorted
-/// arrays in the region: a lookup is a binary search, and `put` and `remove` move the entries
-/// after the place they change (fine up to some ten thousand entries; a hash map for more).
-/// `C` is the order, a type with `less(self, a, b)` as std.sort has them (`sort::Asc(K)`,
-/// `sort::By(K)`).
-///
-///   m := map::sorted(i64, f64, &a);                    // by `<`
-///   names := map::sorted_by([]const u8, i32, &a, mem::less_bytes);
+// sorted arrays in the arena; binary-search get, put/remove shift (fine to ~10k entries)
+// `C` has `less(self, a, b)`, like sort::Asc(K) or sort::By(K)
 pub SortedMap :: struct($K: type, $V: type, $C: type) {
     region: *Arena,
-    keys:   []K,      // capacity == keys.len; the first `count` are in use
+    keys:   []K,      // first `count` in use
     vals:   []V,
     count:  usize,
     order:  C,
@@ -512,7 +475,7 @@ pub SortedMap :: struct($K: type, $V: type, $C: type) {
     pub len      :: fn(self: *Self) -> usize { return self.count; }
     pub is_empty :: fn(self: *Self) -> bool  { return self.count == 0; }
 
-    // The first index whose key does not come before `k`.
+    // first index whose key is not before `k`
     find :: fn(self: *Self, k: K) -> usize {
         lo: usize = 0;
         hi := self.count;
@@ -523,12 +486,12 @@ pub SortedMap :: struct($K: type, $V: type, $C: type) {
         return lo;
     }
 
-    // Whether the key at `i` (from `find(k)`) is `k`: neither comes before the other.
+    // key at `i` (from find) equals `k`
     holds :: fn(self: *Self, i: usize, k: K) -> bool {
         return i < self.count && !self.order.less(k, self.keys[i]);
     }
 
-    /// Put `k → v`, in its place; a value `k` had is replaced.
+    // replaces an existing value
     pub put :: fn(self: *Self, k: K, v: V) {
         i := self.find(k);
         if self.holds(i, k) {
@@ -566,7 +529,7 @@ pub SortedMap :: struct($K: type, $V: type, $C: type) {
 
     pub contains :: fn(self: *Self, k: K) -> bool { return self.holds(self.find(k), k); }
 
-    /// Take `k` out; whether it was there.
+    // true if it was there
     pub remove :: fn(self: *Self, k: K) -> bool {
         i := self.find(k);
         if !self.holds(i, k) { return false; }
@@ -578,28 +541,27 @@ pub SortedMap :: struct($K: type, $V: type, $C: type) {
         return true;
     }
 
-    /// The entry with the smallest key; null when the map is empty.
+    // smallest key; null if empty
     pub first :: fn(self: *Self) -> ?Entry(K, V) {
         if self.count == 0 { return null; }
         e: Entry(K, V) = .{ self.keys[0], self.vals[0] };
         return e;
     }
 
-    /// The entry with the largest key; null when the map is empty.
+    // largest key; null if empty
     pub last :: fn(self: *Self) -> ?Entry(K, V) {
         if self.count == 0 { return null; }
         e: Entry(K, V) = .{ self.keys[self.count - 1], self.vals[self.count - 1] };
         return e;
     }
 
-    /// The entries, smallest key first. A `put` or `remove` while going through them may skip or
-    /// repeat entries.
+    // smallest first; put/remove while iterating may skip or repeat
     pub entries :: fn(self: *Self) -> SortedEntries(K, V, C) {
         it: SortedEntries(K, V, C) = .{ self, 0 };
         return it;
     }
 
-    /// The entries from the first key that does not come before `k` on.
+    // from the first key not before `k`
     pub from :: fn(self: *Self, k: K) -> SortedEntries(K, V, C) {
         it: SortedEntries(K, V, C) = .{ self, self.find(k) };
         return it;
@@ -608,7 +570,7 @@ pub SortedMap :: struct($K: type, $V: type, $C: type) {
     pub clear :: fn(self: *Self) { self.count = 0; }
 }
 
-/// The entries of a `SortedMap`, in key order (`SortedMap.entries`, `SortedMap.from`).
+// SortedMap.entries/from iterator, key order
 pub SortedEntries :: struct($K: type, $V: type, $C: type) {
     m: *SortedMap(K, V, C),
     i: usize,
@@ -621,19 +583,19 @@ pub SortedEntries :: struct($K: type, $V: type, $C: type) {
     }
 }
 
-/// A `SortedMap` in `a` with `order` deciding which key comes first.
+// map in `a` ordered by `order`
 pub sorted_with :: fn($K: type, $V: type, $C: type, a: *Arena, order: C) -> SortedMap(K, V, C) {
     m: SortedMap(K, V, C) = .{ a, alloc(K, a, 0), alloc(V, a, 0), 0, order };
     return m;
 }
 
-/// A `SortedMap` in `a`, its keys in the order of `<`.
+// keys ordered by `<`
 pub sorted :: fn($K: type, $V: type, a: *Arena) -> SortedMap(K, V, sort::Asc(K)) {
     o: sort::Asc(K) = .{ 0 };
     return sorted_with(K, V, sort::Asc(K), a, o);
 }
 
-/// A `SortedMap` in `a`, its keys in the order of `less` (`mem::less_bytes` for text).
+// keys ordered by `less` (mem::less_bytes for text)
 pub sorted_by :: fn($K: type, $V: type, a: *Arena, less: fn(K, K) -> bool) -> SortedMap(K, V, sort::By(K)) {
     o: sort::By(K) = .{ less };
     return sorted_with(K, V, sort::By(K), a, o);

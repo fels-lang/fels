@@ -1,6 +1,5 @@
-// sha — file checksum utility (SHA-256 + CRC-32).
-//
-//   sha [file]      print digests of `file` (default: build.fels)
+// sha: file checksums (sha-256 + crc-32)
+// run: sha [file]   (default: build.fels)
 
 #import std.fs;
 #import std.heap.{ Arena, make };

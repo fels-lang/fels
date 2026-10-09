@@ -1,41 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.io — synchronous, allocation-free I/O for Fels.
-//
-// Writer and Reader are the interfaces. Concrete writers: Stdout, Stderr, FixedBuf
-// (a 256-byte stack scratch buffer), and NullWriter (discards but counts bytes). Readers:
-// Stdin and SliceReader (bytes in memory); `copy` moves a Reader's bytes to a Writer.
-// There's allocation-free number formatting (write_u64/i64, the write_hex_* family,
-// write_bool/char/repeat) and print/println-style helpers for stdout and stderr.
+// std.io: Reader/Writer, std streams, FixedBuf, NullWriter, printing; no allocation
 
-// Error set
+// errors
 
 pub IoError :: errors {
     write_failed,   // The underlying write call returned zero bytes
-    short_write,    // A partial write occurred where a full write was required
+    short_write,    // A partial write where a full write was required
     read_failed,    // The underlying read call failed
     end_of_stream,  // The reader reached the end of available data
     buffer_full,    // A FixedBuf ran out of space mid-write
 }
 
-// Interfaces
+// interfaces
 
-// Writer is the core output interface. Any type that can receive bytes
-// implements Writer. The dynamic version (*Writer) enables generic output
-// pipelines: loggers, buffered writers, hex dumpers, null sinks, etc.
+// byte sink; use *Writer for dynamic dispatch
 pub Writer :: interface {
     write :: fn(self: *Self, data: []const u8) -> usize ! IoError;
     flush :: fn(self: *Self) -> void ! IoError;
 }
 
-// Reader is the core input interface. Implement it for byte sources:
-// stdin, files, network sockets, in-memory slices, ring buffers, etc.
-// `read` gives at most `buf.len` bytes, and 0 only at the end of the source (or for an empty
-// `buf`); it may give fewer than are left, as a pipe or a socket does. std.bufio buffers one.
+// byte source; read gives <= buf.len, may give fewer; 0 only at end (or for an empty buf)
 pub Reader :: interface {
     read :: fn(self: *Self, buf: []u8) -> usize ! IoError;
 }
 
-// Standard streams
+// standard streams
 
 pub Stdout :: struct { marker: u8, }
 pub Stderr :: struct { marker: u8, }
@@ -72,8 +61,7 @@ pub stderr :: fn() -> Stderr {
     return .{ 0 };
 }
 
-// Standard input, a Reader: `bufio::reader(&stdin, buf[:])` reads it a line at a time. At its
-// end (a closed pipe, Ctrl+Z or Ctrl+D at a console) `read` gives 0.
+// stdin as a Reader; read gives 0 at end (closed pipe, Ctrl+Z / Ctrl+D)
 pub Stdin :: struct { marker: u8, }
 
 Stdin as Reader {
@@ -88,12 +76,7 @@ pub stdin :: fn() -> Stdin {
     return .{ 0 };
 }
 
-// SliceReader
-//
-// A Reader of bytes in memory, for a parser that takes a *Reader, or a test.
-//
-//   src := io::slice_reader("one\ntwo\n");
-//   r := bufio::reader(&src, buf[:]);
+// Reader over bytes in memory
 
 pub SliceReader :: struct {
     rest: []const u8,   // the bytes not read yet
@@ -113,7 +96,7 @@ pub slice_reader :: fn(data: []const u8) -> SliceReader {
     return .{ data };
 }
 
-// Read `src` to its end and write it all to `dst`, through `buf`. The bytes copied.
+// copy all of `src` to `dst` via `buf`; returns bytes copied
 pub copy :: fn(dst: *Writer, src: *Reader, buf: []u8) -> u64 ! IoError {
     total: u64 = 0;
     while true {
@@ -125,20 +108,7 @@ pub copy :: fn(dst: *Writer, src: *Reader, buf: []u8) -> u64 ! IoError {
     return total;
 }
 
-// FixedBuf
-//
-// A 256-byte stack-allocated write buffer. Use it to format numbers and
-// strings without heap allocation, then flush to any *Writer or directly
-// to stdout/stderr.
-//
-//   buf := fixed_buf();
-//   w: *Writer = &buf;
-//   w.write_i64(-42i64) catch err {};
-//   w.write_all(", ") catch err {};
-//   w.write_u64(100u64) catch err {};
-//   buf.buf_flush_stdout() catch err {};
-//
-// Writes that exceed 256 bytes fail with IoError.buffer_full.
+// 256-byte stack write buffer; overflow fails with buffer_full
 
 pub FixedBuf :: struct {
     data: [256]u8,
@@ -162,27 +132,26 @@ FixedBuf as Writer {
     }
 }
 
-// Create a new empty FixedBuf.
 pub fixed_buf :: fn() -> FixedBuf {
     return .{ .{}, 0 };
 }
 
-// Number of bytes written into the buffer.
+// bytes written
 pub buf_len :: fn(self: *FixedBuf) -> usize {
     return self.pos;
 }
 
-// Number of bytes still available before the buffer is full.
+// bytes left
 pub buf_remaining :: fn(self: *FixedBuf) -> usize {
     return 256 - self.pos;
 }
 
-// Clear the buffer so it can be reused.
+// clear for reuse
 pub buf_reset :: fn(self: *FixedBuf) {
     self.pos = 0;
 }
 
-// Flush the buffer contents to stdout in a single syscall.
+// flush to stdout in one syscall
 pub buf_flush_stdout :: fn(self: *FixedBuf) -> usize ! IoError {
     pending := self.data[0..self.pos];
     if pending.len == 0 { return 0; }
@@ -191,7 +160,7 @@ pub buf_flush_stdout :: fn(self: *FixedBuf) -> usize ! IoError {
     return n;
 }
 
-// Flush the buffer contents to stderr in a single syscall.
+// flush to stderr in one syscall
 pub buf_flush_stderr :: fn(self: *FixedBuf) -> usize ! IoError {
     pending := self.data[0..self.pos];
     if pending.len == 0 { return 0; }
@@ -200,24 +169,14 @@ pub buf_flush_stderr :: fn(self: *FixedBuf) -> usize ! IoError {
     return n;
 }
 
-// Flush the buffer contents to an arbitrary *Writer in a single call.
+// flush to any *Writer in one call
 pub buf_flush :: fn(self: *FixedBuf, sink: *Writer) -> usize ! IoError {
     pending := self.data[0..self.pos];
     if pending.len == 0 { return 0; }
     return sink.write_all(pending)?;
 }
 
-// NullWriter
-//
-// NullWriter discards all output but accumulates a count of bytes written.
-// Use it to measure formatted output size before allocating or sending.
-//
-//   sink := null_writer();
-//   w: *Writer = &sink;
-//   w.write_u64(some_value) catch err {};
-//   w.write_all(", ") catch err {};
-//   w.write_i64(other_value) catch err {};
-//   size := sink.count;   // total bytes that would have been written
+// discards output, counts bytes; for measuring output size
 
 pub NullWriter :: struct {
     count: usize,
@@ -233,41 +192,38 @@ NullWriter as Writer {
     }
 }
 
-// Create a new NullWriter with a zero byte counter.
 pub null_writer :: fn() -> NullWriter {
     return .{ 0 };
 }
 
-// Reset the byte counter to zero.
+// zero the byte count
 pub null_reset :: fn(self: *NullWriter) {
     self.count = 0;
 }
 
-// Writer extension methods
+// Writer helpers
 
-// Write the entire slice or fail. Turns a short write into an error.
+// all of `data` or fail; a short write is short_write
 pub write_all :: fn(self: *Writer, data: []const u8) -> usize ! IoError {
     written := self.write(data)?;
     if written != data.len { fail .short_write; }
     return written;
 }
 
-// Write the slice followed by a newline ("\n").
+// `data` then "\n"
 pub write_line :: fn(self: *Writer, data: []const u8) -> usize ! IoError {
     a := self.write_all(data)?;
     b := self.write_all("\n")?;
     return a + b;
 }
 
-// Write a single byte.
 pub write_char :: fn(self: *Writer, ch: u8) -> usize ! IoError {
     tmp: [1]u8 = .{};
     tmp[0] = ch;
     return self.write_all(tmp[:])?;
 }
 
-// Write `count` copies of the byte `ch`.
-// Common uses: padding with spaces (32u8), horizontal rules with '=' (61u8).
+// `count` copies of `ch`
 pub write_repeat :: fn(self: *Writer, ch: u8, count: usize) -> usize ! IoError {
     tmp: [1]u8 = .{};
     tmp[0] = ch;
@@ -279,23 +235,21 @@ pub write_repeat :: fn(self: *Writer, ch: u8, count: usize) -> usize ! IoError {
     return written;
 }
 
-// Write "true" or "false".
 pub write_bool :: fn(self: *Writer, value: bool) -> usize ! IoError {
     if value { return self.write_all("true")?; }
     return self.write_all("false")?;
 }
 
-// Decimal output
+// decimal
 
-// Internal: write a single decimal digit 0..9 as its ASCII character.
+// one digit 0..9
 write_decimal_digit :: fn(self: *Writer, digit: u64) -> usize ! IoError {
     tmp: [1]u8 = .{};
     tmp[0] = 48 + (digit as u8);   // 48 == '0'
     return self.write_all(tmp[:])?;
 }
 
-// Write an unsigned 64-bit integer in decimal.
-// Allocation-free; recursion depth is bounded to 20 (u64 has at most 20 digits).
+// decimal; recursion depth <= 20
 pub write_u64 :: fn(self: *Writer, value: u64) -> usize ! IoError {
     if value < 10 {
         return self.write_decimal_digit(value)?;
@@ -305,10 +259,7 @@ pub write_u64 :: fn(self: *Writer, value: u64) -> usize ! IoError {
     return a + b;
 }
 
-// Write a signed 64-bit integer in decimal.
-// Handles all values including i64 minimum (-9223372036854775808) without
-// triggering signed overflow. Uses the identity abs(n) = -(n+1) + 1 which
-// keeps all intermediate values inside the valid i64 range when n is negative.
+// decimal; i64 min is safe: abs via -(n+1)+1, no overflow
 pub write_i64 :: fn(self: *Writer, value: i64) -> usize ! IoError {
     if value >= 0 {
         return self.write_u64(value as u64)?;
@@ -319,9 +270,9 @@ pub write_i64 :: fn(self: *Writer, value: i64) -> usize ! IoError {
     return a + b;
 }
 
-// Hexadecimal output
+// hex
 
-// Internal: ASCII character for a hex nibble in the range 0..15.
+// ASCII for a nibble 0..15
 hex_char :: fn(n: u8) -> u8 {
     if n < 10 {
         return 48 + n;          // '0'..'9'
@@ -329,26 +280,21 @@ hex_char :: fn(n: u8) -> u8 {
     return 97 + (n - 10);     // 'a'..'f'
 }
 
-// Internal: write one hex nibble as a single character.
+// one hex digit
 write_hex_nibble :: fn(self: *Writer, n: u8) -> usize ! IoError {
     tmp: [1]u8 = .{};
     tmp[0] = hex_char(n);
     return self.write_all(tmp[:])?;
 }
 
-// Write a single byte as exactly two lowercase hex digits.
-//   0x00 -> "00",  0xAB -> "ab",  0xFF -> "ff"
+// two lowercase hex digits
 pub write_hex_byte :: fn(self: *Writer, value: u8) -> usize ! IoError {
     a := self.write_hex_nibble(value >> 4)?;
     b := self.write_hex_nibble(value & 15)?;
     return a + b;
 }
 
-// Write a u64 as compact lowercase hex with no leading zeros and no prefix.
-//   0          -> "0"
-//   255        -> "ff"
-//   3735928559 -> "deadbeef"
-// Recursion depth is bounded to 16 (u64 has at most 16 hex digits).
+// lowercase hex, no leading zeros, no prefix; recursion depth <= 16
 pub write_hex_u64 :: fn(self: *Writer, value: u64) -> usize ! IoError {
     if value < 16 {
         return self.write_hex_nibble(value as u8)?;
@@ -358,9 +304,7 @@ pub write_hex_u64 :: fn(self: *Writer, value: u64) -> usize ! IoError {
     return a + b;
 }
 
-// Write a u64 as exactly 16 lowercase hex digits with no prefix.
-//   0x0102030405060708 -> "0102030405060708"
-// Useful for memory addresses and binary data dumps.
+// exactly 16 lowercase hex digits, no prefix
 pub write_hex_u64_full :: fn(self: *Writer, value: u64) -> usize ! IoError {
     a := self.write_hex_byte((value >> 56) as u8)?;
     b := self.write_hex_byte((value >> 48) as u8)?;
@@ -373,24 +317,7 @@ pub write_hex_u64_full :: fn(self: *Writer, value: u64) -> usize ! IoError {
     return a + b + c + d + e + f + g + h;
 }
 
-// Printing
-//
-// `print`, `println`, `eprint`, `eprintln` and `w.write_fmt` take a `Format`. A string literal
-// passed to one is read by the compiler: text, `{expr}` or `{expr:spec}` for a value, and
-// `{{` and `}}` for a brace. Any other `[]const u8` is printed as it is.
-//
-//   io::println("{name} has {n} items");
-//   io::println("{p}");                         // Point{ x: 1, y: 2 }
-//   io::println("{x:8} {id:06} {flags:x} {ratio:.2}");
-//
-// A spec is `[[fill]align][0][width][.precision][kind]`. Align is `<` left, `>` right or `^`
-// centered (numbers go right, the rest left by themselves); `0` pads a number with zeros after
-// its sign; the precision is the digits after a float's point; the kind is `x` or `X` for hex,
-// `b` binary, `o` octal, `?` text in quotes. The width counts bytes.
-//
-// Every type prints: numbers, bool, text, an enum as its variant, an optional as its value or
-// `null`, slices and arrays as `[1, 2]`, structs as `Point{ x: 1, y: 2 }` (text inside a value
-// in quotes), pointers as their address.
+// printing; spec: [[fill]align][0][width][.precision][x|X|b|o|?], width in bytes
 
 pub print :: fn(f: Format) -> usize ! IoError {
     out := stdout();
@@ -448,18 +375,17 @@ pub eprint_i64 :: fn(value: i64) -> usize ! IoError {
     return (&out).write_i64(value)?;
 }
 
-// Write `f` to the writer: its text, or what the compiler made of the literal. The bytes go
-// through a buffer of 512, so a line is one write.
+// write `f` through a 512-byte buffer, so a line is one write
 pub write_fmt :: fn(self: *Writer, f: Format) -> usize ! IoError {
     return write_format(self, f, false)?;
 }
 
-// `write_fmt`, then a newline.
+// write_fmt + newline
 pub write_fmt_line :: fn(self: *Writer, f: Format) -> usize ! IoError {
     return write_format(self, f, true)?;
 }
 
-// Where a `Formatter` of `write_fmt` puts its bytes: a buffer in front of the writer.
+// write_fmt's Formatter sink: a buffer in front of the writer
 FmtSink :: struct {
     w: *Writer,
     buf: []u8,
@@ -499,7 +425,7 @@ sink_flush :: fn(sink: *FmtSink) -> bool {
     return true;
 }
 
-// What a spec asks for.
+// parsed format spec
 Spec :: struct {
     fill: u8,
     align: u8,       // 0 (by the type), '<', '>' or '^'
@@ -518,7 +444,7 @@ is_digit :: fn(c: u8) -> bool {
     return c >= 48 && c <= 57;
 }
 
-// The compiler has checked the spec, so this only reads it.
+// spec already checked by the compiler
 parse_spec :: fn(s: []const u8) -> Spec {
     sp: Spec = .{ 32, 0, false, 0, 0, false, 0 };
     i: usize = 0;
@@ -561,13 +487,12 @@ parse_spec :: fn(s: []const u8) -> Spec {
     return sp;
 }
 
-// `Formatter.show` of std.io: write the value at `d`, of the type `ti` (`id` its type id), as
-// `spec` says.
+// Formatter.show for std.io: the value at `d` (type `ti`, type id `id`) per `spec`
 pub show_value :: fn(f: *Formatter, d: *const u8, id: usize, ti: TypeInfo, spec: []const u8) {
     put_value(f, d, id, ti, parse_spec(spec), false);
 }
 
-// `c`, `n` times.
+// `c`, `n` times
 put_fill :: fn(f: *Formatter, c: u8, n: usize) {
     chunk: [16]u8 = .{};
     for i in 0..16 { chunk[i] = c; }
@@ -579,7 +504,7 @@ put_fill :: fn(f: *Formatter, c: u8, n: usize) {
     }
 }
 
-// `s` padded to the spec's width; `numeric` text goes to the right by itself.
+// `s` padded to width; `numeric` right-aligns by default
 put_padded :: fn(f: *Formatter, s: []const u8, sp: Spec, numeric: bool) {
     if sp.width <= s.len {
         f.text(s);
@@ -601,7 +526,7 @@ put_padded :: fn(f: *Formatter, s: []const u8, sp: Spec, numeric: bool) {
     }
 }
 
-// The digits of `n` in `base`, written backwards from the end of `buf`; where they start.
+// digits of `n` in `base`, backwards from the end of `buf`; returns their start
 put_digits :: fn(buf: []u8, n: u64, base: u64, upper: bool) -> usize {
     i: usize = buf.len;
     x: u64 = n;
@@ -639,9 +564,7 @@ put_int :: fn(f: *Formatter, neg: bool, mag: u64, sp: Spec) {
     put_padded(f, buf[start..72], sp, true);
 }
 
-// The text of `x` at the start of `buf`; its length. Without a precision 15 significant
-// digits at most (as many as a decimal number keeps through an f64), with the zeros at the
-// end left out (`3.14159265`, `0.1`, `2`); `debug` keeps a `.0`.
+// `x` into `buf`, returns len; default <= 15 sig digits, zeros cut; `debug` keeps `.0`
 float_text :: fn(buf: []u8, x: f64, sp: Spec, debug: bool) -> usize {
     i: usize = 0;
     v: f64 = x;
@@ -668,8 +591,7 @@ float_text :: fn(buf: []u8, x: f64, sp: Spec, debug: bool) -> usize {
         while v < 1.0 { v = v * 10.0; exp -= 1; }
     }
     if !sp.has_prec {
-        // 15 significant digits: those of the integer part, then the rest after the point
-        // (behind the zeros that lead a number below 1).
+        // 15 sig digits: integer part, then fraction past any leading zeros
         int_digits: usize = 0;
         w: f64 = v;
         while w >= 1.0 {
@@ -754,7 +676,7 @@ put_float :: fn(f: *Formatter, x: f64, sp: Spec, debug: bool) {
     put_padded(f, buf[0..n], sp, true);
 }
 
-// Text in quotes, with `\n`, `\t`, `\"` and `\\` escaped.
+// in quotes; escapes \n \t \r \" \\
 put_quoted :: fn(f: *Formatter, s: []const u8) {
     f.text("\"");
     start: usize = 0;
@@ -776,13 +698,12 @@ put_quoted :: fn(f: *Formatter, s: []const u8) {
     f.text("\"");
 }
 
-// What `Formatter.text` counts, for the width of a value made of several pieces.
+// counts only; measures a multi-piece value's width
 count_out :: fn(ctx: *void, bytes: []const u8) -> bool {
     return true;
 }
 
-// The value at `d`, of type `ti`. A value of several pieces is measured first when the spec
-// has a width.
+// value at `d` of type `ti`; multi-piece values are measured first when padded
 put_value :: fn(f: *Formatter, d: *const u8, id: usize, ti: TypeInfo, sp: Spec, nested: bool) {
     if sp.width == 0 || is_simple(ti) {
         put_bare(f, d, id, ti, sp, nested);
@@ -801,7 +722,7 @@ put_value :: fn(f: *Formatter, d: *const u8, id: usize, ti: TypeInfo, sp: Spec, 
     if align == 94 { put_fill(f, sp.fill, n - n / 2); }
 }
 
-// A value written as one piece of text, which pads itself.
+// printed as one piece, pads itself
 is_simple :: fn(ti: TypeInfo) -> bool {
     match ti {
         .int => return true;
@@ -837,7 +758,7 @@ read_signed :: fn(d: *const u8, bits: u16) -> i64 {
     }
 }
 
-// A type's name without the module part of its link name.
+// type name without the module part of its link name
 short_name :: fn(name: []const u8) -> []const u8 {
     start: usize = 0;
     for i in 0..name.len {
@@ -846,7 +767,7 @@ short_name :: fn(name: []const u8) -> []const u8 {
     return name[start..name.len];
 }
 
-// The bytes a value of type `ti` takes in a slice or an array.
+// element size of `ti` in a slice or array
 value_size :: fn(ti: TypeInfo) -> usize {
     match ti {
         .int |i| => {
@@ -874,7 +795,7 @@ value_size :: fn(ti: TypeInfo) -> usize {
     }
 }
 
-// Where a value of type `ti` may start: the size of its largest scalar.
+// alignment: size of the largest scalar
 value_align :: fn(ti: TypeInfo) -> usize {
     match ti {
         .int |i| => {
@@ -907,7 +828,7 @@ value_align :: fn(ti: TypeInfo) -> usize {
     }
 }
 
-// The type id of a value of type `ti`, for a type's own `format`: a struct's.
+// type id for a custom `format`; 0 unless struct or union
 value_id :: fn(ti: TypeInfo) -> usize {
     match ti {
         .struct_ |st| => return st.id;
@@ -923,7 +844,7 @@ is_pointer :: fn(ti: TypeInfo) -> bool {
     }
 }
 
-// The elements of a slice or an array: `count` of them from `base`, `elem` their type.
+// `count` elements of type `elem` from `base`
 put_list :: fn(f: *Formatter, base: usize, count: usize, elem: TypeInfo, sp: Spec) {
     f.text("[");
     size := value_size(elem);
@@ -936,7 +857,7 @@ put_list :: fn(f: *Formatter, base: usize, count: usize, elem: TypeInfo, sp: Spe
     f.text("]");
 }
 
-// The bits `bit..bit + bits` from `d` (a field of a bit-packed struct), as an unsigned number.
+// bits bit..bit+bits from `d` (bit-packed field), unsigned
 read_bits :: fn(d: *const u8, bit: u32, bits: u16) -> u64 {
     x: u64 = 0;
     for k in 0..(bits as usize) {
@@ -948,7 +869,7 @@ read_bits :: fn(d: *const u8, bit: u32, bits: u16) -> u64 {
 }
 
 put_bare :: fn(f: *Formatter, d: *const u8, id: usize, ti: TypeInfo, sp: Spec, nested: bool) {
-    // A type with its own `format :: fn(self, f: *Formatter)` prints itself.
+    // a custom `format :: fn(self, f: *Formatter)` wins
     if __fmt_custom(id, d, f) { return; }
     match ti {
         .int |i| => {
@@ -1004,7 +925,7 @@ put_bare :: fn(f: *Formatter, d: *const u8, id: usize, ti: TypeInfo, sp: Spec, n
         }
         .optional |inner| => {
             pt: TypeInfo = *inner;
-            // `?*T` is the pointer itself, null when 0; any other `?T` is a flag, then the value.
+            // ?*T is the pointer, null when 0; any other ?T is a flag, then the value
             if is_pointer(pt) {
                 addr := unsafe *(d as *const usize);
                 if addr == 0 { f.text("null"); } else { put_value(f, d, 0, pt, sp, nested); }
@@ -1032,7 +953,7 @@ put_bare :: fn(f: *Formatter, d: *const u8, id: usize, ti: TypeInfo, sp: Spec, n
                 fld := st.fields[k];
                 ft: TypeInfo = *fld.ty;
                 if fld.bits != 0 {
-                    // A field of a bit-packed struct: its bits, signed or not.
+                    // bit-packed field: its bits, signed or not
                     raw := read_bits(d, fld.bit, fld.bits);
                     neg := false;
                     match ft {
