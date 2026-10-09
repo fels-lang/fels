@@ -173,7 +173,9 @@ In the in-tree [`lib/std/`](lib/std/) directory.
 | `std.io` | `Writer`/`Reader` interfaces; `Stdout`, `Stderr`, `FixedBuf`; numeric formatters; `print`/`println`. |
 | `std.fmt` | Width-justified output, padding, integer columns, joined slices. |
 | `std.mem` | Typed-slice helpers: `eql`, `copy`, `fill`, `index_of`, `contains`; byte search. |
+| `std.bytes` | Fixed-width little- and big-endian reads and writes at an explicit offset, bounds-checked. |
 | `std.strings` | Arena-backed growable `StringBuilder` + byte utilities. |
+| `std.utf16` | UTF-8 ⇄ UTF-16 with surrogate pairs and strict validation; sizes first, caller's buffers. |
 | `std.slice` | Higher-order helpers: `map`, `filter`, `any`, `all`, `find`/`rfind`. |
 | `std.vec` | Growable `Vec(T)` and `VecUnmanaged(T)` (region-bound). |
 | `std.map` | `AutoHashMap` (byte-hash any key) and `StrMap` (content-keyed). |
@@ -191,6 +193,9 @@ In the in-tree [`lib/std/`](lib/std/) directory.
 | `std.net` | TCP + UDP over Winsock, layered (`os`/`socket`/`tcp`/`udp`). |
 | `std.atomics` | Atomic load/store/swap/`compare_exchange`/fetch-ops; `Atomic(T)` cell. |
 | `std.thread` | OS thread `spawn`/`join`. |
+| `std.sync` | `Mutex`, `CondVar` and a bounded blocking `Queue(T)` on the OS's own lock and futex primitives. |
+| `std.com` | The data types of COM and the Windows Runtime: `Guid`, `HRESULT`, `IUnknown`/`IInspectable` and their vtables, a reference counter. No OS calls, so portable. |
+| `std.winrt` | Windows only: start COM / the Windows Runtime, create objects, activate runtime classes, `HSTRING`. |
 | `std.fs` | `File` implementing `Reader` + `Writer`; `open`/`create`/`append`/`delete`/`exists`. |
 | `std.process` | PID, command line, env vars, child spawn/wait/kill. |
 | `std.c` | C ABI types for `#extern` FFI. |
@@ -222,7 +227,7 @@ frontend is platform-independent.
 | Build system (`build.gab` in the comptime VM → real exes/DLLs) | done |
 | Native linker (`gabld`, single-object PE/COFF, self-hosting) | done |
 | Interfaces (dynamic + interface-through-interface dispatch, `$T: Iface` bounds) | done |
-| Standard library (25 modules) | done |
+| Standard library (30 modules) | done |
 | Atomics + concurrency | done |
 | Testing | `#test` comptime lane (a failed assertion fails the build); runtime lane planned |
 | Tooling | `check`/`ir`/`object`/`build`, `gabbro lsp`, tree-sitter grammar + Zed extension, `gabbro bindgen`. No formatter, doc gen, REPL, or package manager yet |

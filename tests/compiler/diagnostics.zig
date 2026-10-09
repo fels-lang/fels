@@ -280,3 +280,115 @@ test "diagnostics: the address of a #packed struct's field is rejected" {
         fe.deinit(arena.allocator());
     }
 }
+
+test "diagnostics: comparing an error with a variant its set does not have is rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `e == .secnd` used to compile and compare against garbage; the misspelling is now
+    // an error, found against the error set the caught value belongs to.
+    const bad =
+        \\E :: errors { first, second }
+        \\f :: fn() -> i32 ! E { fail .first; }
+        \\g :: fn() -> i32 { v := f() catch e { if e == .secnd { return 1; } return 0; }; return 9; }
+    ;
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_variant.gab", bad));
+    const good =
+        \\E :: errors { first, second }
+        \\f :: fn() -> i32 ! E { fail .first; }
+        \\g :: fn() -> i32 { v := f() catch e { if e == .second { return 1; } return 0; }; return 9; }
+    ;
+    var fe = try gabbro.compile(arena.allocator(), "good_variant.gab", good);
+    fe.deinit(arena.allocator());
+}
+
+test "diagnostics: a catch handler may only run to its end when the value is not used" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const decls =
+        \\E :: errors { first }
+        \\num :: fn() -> i32 ! E { fail .first; }
+        \\nothing :: fn() -> void ! E { fail .first; return; }
+        \\
+    ;
+    // The call produces an i32 and the catch is used for it: a handler that can fall off its
+    // end leaves the expression with no value, so it is refused.
+    const refused = [_][]const u8{
+        "g :: fn() -> i32 { v := num() catch e { }; return v; }",
+        "g :: fn() -> i32 { v := num() catch e { if e == .first { return 1; } }; return v; }",
+        "g :: fn() -> i32 { return num() catch e { }; }",
+        "g :: fn(n: i32) -> i32 { v := num() catch e { n = 3; }; return v; }",
+    };
+    for (refused) |body| {
+        const src = try std.mem.concat(arena.allocator(), u8, &.{ decls, body });
+        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "catch_refused.gab", src));
+    }
+    // Fine: the handler always leaves the expression, the call has no value, or the whole
+    // `catch` is a statement and its value is thrown away.
+    const accepted = [_][]const u8{
+        "g :: fn() -> i32 { v := num() catch e { return 1; }; return v; }",
+        "g :: fn() -> i32 ! E { v := num() catch e { fail .first; }; return v; }",
+        "g :: fn() -> i32 { n := 0; while true { v := num() catch e { break; }; n += v; } return n; }",
+        "g :: fn() -> i32 { v := num() catch e { if e == .first { return 1; } else { return 2; } }; return v; }",
+        "g :: fn() -> i32 { n := 0; nothing() catch e { n = 1; }; return n; }",
+        "g :: fn() -> i32 { n := 0; num() catch e { n = 1; }; return n; }",
+        "g :: fn() -> i32 { num() catch e {}; return 0; }",
+    };
+    for (accepted) |body| {
+        const src = try std.mem.concat(arena.allocator(), u8, &.{ decls, body });
+        var fe = gabbro.compile(arena.allocator(), "catch_ok.gab", src) catch |err| {
+            std.debug.print("\nthis catch should be accepted:\n  {s}\n", .{body});
+            return err;
+        };
+        fe.deinit(arena.allocator());
+    }
+}
+
+test "diagnostics: a type argument that is not a one-level pointer type has a message" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `**G` in the argument list is read as an expression, not a type; that used to fail the
+    // build without saying why.
+    const bad =
+        \\G :: struct { a: u32 }
+        \\f :: fn() -> i32 { p: **G = unsafe (core::ptr_from_int(**G, 0usize)); return 0; }
+    ;
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "ptrptr.gab", bad));
+    const good =
+        \\G :: struct { a: u32 }
+        \\f :: fn() -> i32 { p: *G = unsafe (core::ptr_from_int(*G, 0usize)); return 0; }
+    ;
+    var fe = try gabbro.compile(arena.allocator(), "ptr.gab", good);
+    fe.deinit(arena.allocator());
+}
+
+test "diagnostics: an error is compared with a variant only where it was caught" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // An error handed to another function was compared against the wrong variants (every error
+    // looked like the first one), so comparing anything but the name `catch` bound is refused.
+    const bad = [_][]const u8{
+        "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> i32 { if e == .b { return 2; } return 1; }",
+        "Oops :: errors { a, b }\nfails :: fn() -> void ! Oops { fail .b; return; }\ng :: fn() -> i32 { r: i32 = 1; fails() catch e { copy := e; if copy == .b { r = 2; } }; return r; }",
+        "Oops :: errors { a, b }\nh :: fn(e: Oops) -> bool { return .a != e; }",
+    };
+    for (bad) |src| {
+        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "err_param.gab", src));
+    }
+    // A function may still take an error and pass it on; it just cannot look inside it.
+    const passes =
+        \\Oops :: errors { a, b }
+        \\show :: fn(e: Oops) {}
+        \\fails :: fn() -> void ! Oops { fail .b; return; }
+        \\g :: fn() { fails() catch e { show(e); }; }
+    ;
+    var passed = try gabbro.compile(arena.allocator(), "err_passes.gab", passes);
+    passed.deinit(arena.allocator());
+    // Inspecting the error where it is caught is the supported way.
+    const good =
+        \\Oops :: errors { a, b }
+        \\fails :: fn() -> void ! Oops { fail .b; return; }
+        \\code :: fn() -> i32 { r: i32 = 1; fails() catch e { if e == .b { r = 2; } }; return r; }
+    ;
+    var fe = try gabbro.compile(arena.allocator(), "err_caught.gab", good);
+    fe.deinit(arena.allocator());
+}

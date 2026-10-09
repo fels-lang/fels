@@ -140,7 +140,9 @@ test "milestone syntax parses and checks" {
     try std.testing.expectEqual(@as(usize, 1), module.globals.len);
 
     const write_stdout = findFunction(module, "write_stdout").?;
-    try std.testing.expect(write_stdout.blocks.len == 1);
+    // `return ok && written == text.len;` branches: the comparison runs only when `ok` is true.
+    try std.testing.expect(write_stdout.blocks.len == 3);
+    try std.testing.expect(hasCondBranch(write_stdout));
     try std.testing.expect(write_stdout.blocks[0].instrs.len > 0);
 
     const main = findFunction(module, "main").?;

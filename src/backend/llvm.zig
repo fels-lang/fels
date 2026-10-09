@@ -58,8 +58,10 @@ pub const LlvmBackend = struct {
         try vars_mod.declareAll(&self.cg, module.variants);
         try structs.lowerAll(&self.cg, module.structs);
         try vars_mod.bodyAll(&self.cg, module.variants);
-        try globals.lowerAll(&self.cg, module.globals);
+        // Functions are declared before globals so a static initializer can hold a function's
+        // address; function bodies are defined last, once every global exists.
         try fns.declareAll(&self.cg, module.functions);
+        try globals.lowerAll(&self.cg, module.globals);
         try vtables.lowerAll(&self.cg, module.vtables);
         try fns.defineAll(&self.cg, module.functions);
 
@@ -197,16 +199,18 @@ fn emitImportMap(cg: *ctx_mod.ModuleCg, module: ir.IrModule) !void {
 }
 
 /// Emit the gabld export map as a `.skexp` section: a flat list of `name\0`
-/// records, one per `#export`ed function. gabld reads it to build a DLL's export
+/// records, one per `#export`ed function or global. gabld reads it to build a DLL's export
 /// directory (.edata) — no `/EXPORT:` linker directives, no .drectve parsing.
 fn emitExportMap(cg: *ctx_mod.ModuleCg, module: ir.IrModule) !void {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(cg.allocator);
     for (module.functions) |f| {
-        const name = f.export_sym orelse continue;
-        if (name.len == 0) continue;
-        try buf.appendSlice(cg.allocator, name);
-        try buf.append(cg.allocator, 0);
+        const sym = f.export_sym orelse continue;
+        try appendExportName(cg, &buf, sym, f.name);
+    }
+    for (module.globals) |g| {
+        const sym = g.export_sym orelse continue;
+        try appendExportName(cg, &buf, sym, g.name);
     }
     if (buf.items.len == 0) return; // nothing exported
 
@@ -218,6 +222,14 @@ fn emitExportMap(cg: *ctx_mod.ModuleCg, module: ir.IrModule) !void {
     llvm_c.LLVMSetLinkage(g, llvm_c.LLVMExternalLinkage);
     llvm_c.LLVMSetGlobalConstant(g, 1);
     llvm_c.LLVMSetSection(g, ".skexp");
+}
+
+/// One export-map record: the name the symbol is exported under — the explicit
+/// `#export("name")`, or (bare `#export`) the symbol's own link name.
+fn appendExportName(cg: *ctx_mod.ModuleCg, buf: *std.ArrayList(u8), explicit: []const u8, own: []const u8) !void {
+    const name = if (explicit.len > 0) explicit else own;
+    try buf.appendSlice(cg.allocator, name);
+    try buf.append(cg.allocator, 0);
 }
 
 fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {

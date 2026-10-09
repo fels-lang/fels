@@ -9,6 +9,8 @@ pub const ZoneError = error{
     ZoneUnderflow,
     OutOfBounds,
     OutOfMemory,
+    /// A write into the zone that holds static data.
+    ReadOnly,
 };
 
 /// A single arena. Storage is an array of `Value` *cells* rather than raw
@@ -31,6 +33,15 @@ const Arena = struct {
 pub const ZoneStack = struct {
     allocator: std.mem.Allocator,
     arenas: std.ArrayList(Arena) = .empty,
+    /// The zone that holds the program's static data (a table, a struct constant), which a run
+    /// builds the first time it reads one. It sits under every other zone, so a static outlives
+    /// the calls that use it, and it is read-only once built: static data is what the image holds,
+    /// and code that runs at compile time can read it but cannot change it.
+    static_zone: ?ZoneId = null,
+    /// True only while one static is being built, the one time its zone can be written.
+    static_open: bool = false,
+    /// Where `alloc` puts cells instead of in the top zone (set while a static is built).
+    alloc_zone: ?ZoneId = null,
 
     pub fn init(allocator: std.mem.Allocator) ZoneStack {
         return .{ .allocator = allocator };
@@ -58,6 +69,7 @@ pub const ZoneStack = struct {
         if (self.arenas.items.len == 0) return error.ZoneUnderflow;
         var arena = self.arenas.pop().?;
         arena.deinit(self.allocator);
+        self.forgetStaticZone();
     }
 
     /// Unwind down to `watermark` zones (used on function return / error).
@@ -66,13 +78,21 @@ pub const ZoneStack = struct {
             var arena = self.arenas.pop().?;
             arena.deinit(self.allocator);
         }
+        self.forgetStaticZone();
+    }
+
+    fn forgetStaticZone(self: *ZoneStack) void {
+        if (self.static_zone) |z| if (z >= self.arenas.items.len) {
+            self.static_zone = null;
+        };
     }
 
     /// Reserve `count` zeroed (`.void`) cells in the top zone, returning a
     /// pointer to the first one.
     pub fn alloc(self: *ZoneStack, count: usize) ZoneError!Value {
         if (self.arenas.items.len == 0) return error.NoActiveZone;
-        const zone_id: ZoneId = @intCast(self.arenas.items.len - 1);
+        const zone_id: ZoneId = self.alloc_zone orelse @intCast(self.arenas.items.len - 1);
+        if (zone_id >= self.arenas.items.len) return error.NoActiveZone;
         const top = &self.arenas.items[zone_id];
         const start = top.cells.items.len;
         try top.cells.appendNTimes(self.allocator, .void, @max(count, 1));
@@ -88,6 +108,7 @@ pub const ZoneStack = struct {
 
     pub fn setCell(self: *ZoneStack, zone: ZoneId, offset: u32, val: Value) ZoneError!void {
         if (zone >= self.arenas.items.len) return error.OutOfBounds;
+        if (self.static_zone) |sz| if (zone == sz and !self.static_open) return error.ReadOnly;
         const cells = self.arenas.items[zone].cells.items;
         if (offset >= cells.len) return error.OutOfBounds;
         cells[offset] = val;

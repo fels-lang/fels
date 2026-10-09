@@ -27,7 +27,7 @@ Attributes modify the behavior or layout of declarations. They are prefixed with
 
 ### FFI & Linkage
 
-- `#export("name")`: exports the symbol with external linkage. If no string is provided, exports it using its Gabbro name.
+- `#export("name")`: exports the symbol with external linkage. If no string is provided, exports it using its Gabbro name. It applies to a function and to a top-level global (`#export("gab_entry") ENTRY: PluginEntry = .{ ... };`) — see [11_c_interop](11_c_interop.md#exporting-data).
 - `#extern("library_name", "symbol_name")`: declares an external function binding (FFI).
   The second argument is the **real link symbol** — the Gabbro declaration name is free to
   differ from the C symbol — a binding can take an idiomatic Gabbro name:
@@ -77,7 +77,9 @@ error). Some builtins require an `unsafe` block (last column).
 
 | Builtin | Signature | Unsafe? | Description |
 |---------|-----------|---------|-------------|
-| `core::sizeof` | `core::sizeof($T: type) -> usize` | No | Size of `T` in bytes. |
+| `core::sizeof` | `core::sizeof($T: type) -> usize` | No | Size of `T` in bytes, padding included. |
+| `core::align_of` | `core::align_of($T: type) -> usize` | No | Alignment `T` requires, in bytes. Folds at compile time. |
+| `core::offset_of` | `core::offset_of($T: type, "field") -> usize` | No | Byte offset of `field` in struct `T`; the field is a string literal. Folds at compile time. |
 | `core::narrow` | `core::narrow($T: type, val) -> T` | No | Truncate a wider integer into a narrower `T`. |
 | `core::type_name` | `core::type_name($T: type) -> []const u8` | No | The type's name as a string. |
 | `core::type_info` | `core::type_info($T: type) -> TypeInfo` | No | Compile-time reflection data (fields, variants, …). |
@@ -113,8 +115,8 @@ Compile-time constants (no parens) that fold to a literal at the use site:
 | `core::func` | `[]const u8` | the enclosing function's name |
 | `core::line` | `i32` | the line of the `core::line` reference |
 | `core::column` | `i32` | the column |
-| `core::os` | `[]const u8` | target OS (`"windows"`, `"linux"`, …) |
-| `core::arch` | `[]const u8` | target architecture (`"x86_64"`, …) |
+| `core::os` | `[]const u8` | the OS of the machine the compiler runs on (`"windows"`, `"linux"`, …) — not the build target, see the `TARGET` warning below |
+| `core::arch` | `[]const u8` | the architecture of the machine the compiler runs on (`"x86_64"`, …) |
 
 ```gabbro
 log :: fn(msg: []const u8) { print(core::file); print(core::line); print(msg); }
@@ -147,29 +149,77 @@ the low-level primitives the standard library wraps.
 ### Compile-time If (`#if`)
 
 Evaluates a condition at compile time and includes only the active branch in the IR.
+`#if` is a **statement**: it appears inside a function body, not at the top level, so it
+chooses code, not declarations.
 
 ```gabbro
-#if core::sizeof(usize) == 8 {
-    // 64-bit code
-} else {
-    // 32-bit code
+width :: fn() -> i32 {
+    #if core::sizeof(usize) == 8 {
+        return 64;
+    } else {
+        return 32;
+    }
 }
 ```
 
 ### Compile-time Run (`#run`)
 
-Executes Gabbro code during compilation via the AST interpreter.
+Executes Gabbro code during compilation on the comptime VM and folds the result to a
+constant. `#run expr` is an expression and may initialise a top-level constant; the
+block form `#run { … }` is a statement and, like `#if`, only appears inside a function.
 
 ```gabbro
-// As a block
-#run {
-    compute_lookup_tables();
-}
+// As an expression, including at the top level
+SIZE :: #run compute_size();
 
-// As an expression
-size := #run compute_size();
+// A whole table or struct: the result becomes the global's initial value, as data in the image
+CRC: [256]u32 = #run make_crc_table();
+
+// As a block statement, inside a function
+main :: fn() -> i32 {
+    #run {
+        compute_lookup_tables();
+    }
+    return 0;
+}
 ```
-*Note: The compile-time interpreter supports many standard language features but may be limited when interfacing with external or deeply complex types.*
+What a `#run` can return, what it can read (static data, read-only) and what is refused is in
+[09_comptime](09_comptime.md#data-at-compile-time).
+*Note: the comptime VM supports many standard language features but may be limited when interfacing with external or deeply complex types.*
+
+### Compile-time assertions (`#assert`)
+
+```gabbro
+#assert(condition);
+#assert(condition, "message");
+```
+
+A standalone top-level directive (like `#system_library`) that fails the build when
+`condition` is `false`. The condition is evaluated on the comptime VM, so it can use
+constants, `core::sizeof`, `core::align_of`, `core::offset_of` and calls the VM can run.
+It is the way to pin down a layout that something outside Gabbro depends on:
+
+```gabbro
+Header :: struct { kind: u8, len: u32, id: u64 }
+
+#assert(core::sizeof(Header) == 16, "Header is sent as-is over the wire");
+#assert(core::offset_of(Header, "len") == 4);
+#assert(core::align_of(Header) == 8);
+```
+
+A failing assertion reports the message and the condition as written:
+
+```
+header.gab:3:9: error: static assertion failed: Header is sent as-is over the wire (`core::sizeof(Header) == 16`)
+```
+
+- The condition must be a `bool` (a type error otherwise) and must fold at compile time;
+  one that needs the host, such as a call into a DLL, is an error, not a pass.
+- `#assert` is evaluated when the program is lowered, i.e. by `gabbro build`, `object` and
+  `ir`. `gabbro check` only type-checks, so it does not run assertions.
+- Top level only. Inside a function, use `#if` with `core::trap()` or an ordinary check.
+
+### The `TARGET` Pseudo-module
 
 ### The `TARGET` Pseudo-module
 
@@ -180,8 +230,25 @@ The compiler provides compile-time target information via the virtual `TARGET` i
 - `TARGET.debug`: Returns `true` if compiling in debug mode, `false` otherwise.
 
 ```gabbro
-#if TARGET.os == .windows {
-    #extern("kernel32", "ExitProcess")
-    ExitProcess :: fn(code: u32);
+describe :: fn() -> i32 {
+    #if TARGET.os == .windows {
+        return 1;
+    } else {
+        return 2;
+    }
 }
 ```
+
+> [!WARNING]
+> Verified against the current compiler, these do **not** yet behave as described above:
+>
+> - A comparison with `TARGET.os` or `TARGET.arch` is never true. On a native Windows build
+>   both `TARGET.os == .windows` and `TARGET.os == .linux` take the `else` branch, as does
+>   `TARGET.arch == .x86_64`.
+> - `TARGET.debug` reports how the *compiler* was built, not the program's `-O` level.
+> - `core::os` and `core::arch` are the strings for the machine the compiler runs on: a
+>   `--target linux` build made on Windows still reports `"windows"`.
+>
+> None of them can choose between platforms in a cross-compiled program today. A
+> conditional *declaration* (a platform-specific `#extern` inside `#if`) is not supported
+> either, because `#if` is a statement.

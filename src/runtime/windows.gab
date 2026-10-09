@@ -413,6 +413,33 @@ os_thread_id :: fn() -> u32 { return k_thread_id(); }
 os_thread_yield :: fn() { ignored := k_switch(); }
 os_cpu_count :: fn() -> u32 { return k_cpus(0xFFFFu16); }
 
+// Mutex and condition variable (back std.sync)
+// A slim reader/writer lock (SRWLOCK) used exclusively, and a CONDITION_VARIABLE, both
+// one pointer wide and used in place: the caller owns the 8-byte word. All zero bits is
+// the initial state of each (RTL_SRWLOCK_INIT and RTL_CONDITION_VARIABLE_INIT are {0} in
+// winnt.h), so nothing is initialised, and neither needs destroying. Neither is
+// recursive, and releasing a lock the caller does not hold is undefined.
+// Signatures are those of synchapi.h: TryAcquireSRWLockExclusive returns a BOOLEAN (one
+// byte), SleepConditionVariableSRW a BOOL (an int).
+
+#extern("kernel32", "AcquireSRWLockExclusive") k_srw_acquire :: fn(lock: *u64);
+#extern("kernel32", "ReleaseSRWLockExclusive") k_srw_release :: fn(lock: *u64);
+#extern("kernel32", "TryAcquireSRWLockExclusive") k_srw_try :: fn(lock: *u64) -> u8;
+#extern("kernel32", "SleepConditionVariableSRW") k_cv_sleep :: fn(cv: *u64, lock: *u64, ms: u32, flags: u32) -> i32;
+#extern("kernel32", "WakeConditionVariable") k_cv_wake :: fn(cv: *u64);
+#extern("kernel32", "WakeAllConditionVariable") k_cv_wake_all :: fn(cv: *u64);
+
+os_mutex_lock :: fn(m: *u64) { k_srw_acquire(m); }
+os_mutex_try_lock :: fn(m: *u64) -> bool { return k_srw_try(m) != 0u8; }
+os_mutex_unlock :: fn(m: *u64) { k_srw_release(m); }
+
+// Atomically release `m` and sleep on `c`; `m` is held again when this returns. `ms` is a
+// timeout in milliseconds, 0xFFFFFFFF for none. True when woken (a wake-up may be
+// spurious), false when the timeout elapsed.
+os_cond_wait :: fn(c: *u64, m: *u64, ms: u32) -> bool { return k_cv_sleep(c, m, ms, 0u32) != 0; }
+os_cond_signal :: fn(c: *u64) { k_cv_wake(c); }
+os_cond_broadcast :: fn(c: *u64) { k_cv_wake_all(c); }
+
 // Handle constants
 
 STD_OUTPUT_HANDLE :: -11;

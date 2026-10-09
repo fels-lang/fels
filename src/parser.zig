@@ -153,6 +153,15 @@ pub const Parser = struct {
                 continue;
             }
 
+            // `#assert(cond, "msg");` — a standalone compile-time assertion, like
+            // `#system_library` not an attribute of the next declaration.
+            if (self.check(.hash) and self.checkIdentAt(1, "assert")) {
+                const hash = self.advance();
+                _ = self.advance(); // consume "assert"
+                try items.append(self.allocator, .{ .static_assert = try self.finishStaticAssert(hash) });
+                continue;
+            }
+
             var attrs = try self.parseAttributes();
             if (self.match(.hash)) {
                 try items.append(self.allocator, .{ .import = try self.parseImport(self.previous()) });
@@ -215,6 +224,27 @@ pub const Parser = struct {
         }
         const semi = try self.expect(.semicolon, "expected ; after import");
         return .{ .path = path, .names = names, .glob = glob, .alias = alias, .file_name = self.file_name, .span = spanFrom(hash, semi) };
+    }
+
+    /// Parses the remainder of `#assert(condition[, "message"]);` after `#` and the
+    /// `assert` identifier have already been consumed.
+    fn finishStaticAssert(self: *Parser, hash: Token) ParseError!ast.StaticAssertDecl {
+        _ = try self.expect(.l_paren, "expected ( after #assert");
+        const condition = try self.parseExpr(0);
+        var message: ?[]const u8 = null;
+        if (self.match(.comma)) {
+            const lit = try self.expect(.string_lit, "expected the assertion message as a string literal");
+            message = trimQuotes(lit.text(self.source));
+        }
+        _ = try self.expect(.r_paren, "expected ) after #assert");
+        const semi = try self.expect(.semicolon, "expected ; after #assert");
+        return .{
+            .condition = condition,
+            .message = message,
+            .file_name = self.file_name,
+            .source = self.source,
+            .span = spanFrom(hash, semi),
+        };
     }
 
     /// Parses the remainder of `#system_library("name");` after `#` and the

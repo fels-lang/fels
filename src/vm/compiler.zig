@@ -76,13 +76,120 @@ pub fn compileModule(allocator: std.mem.Allocator, module: ir.IrModule) CompileE
         vtables[i] = slots;
     }
 
-    return .{ .functions = funcs, .vtables = vtables };
+    // Static data: a global that is more than one immediate (a struct, an array, a function
+    // pointer…) gets the function that builds it the first time code reads it.
+    const globals = try allocator.alloc(instructions.BytecodeGlobal, module.globals.len);
+    errdefer allocator.free(globals);
+    var owned: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (owned.items) |m| allocator.free(m);
+        owned.deinit(allocator);
+    }
+    for (module.globals, 0..) |g, i| {
+        globals[i] = .{ .name = g.name, .init = switch (g.init) {
+            .imm => null,
+            else => blk: {
+                var why: []const u8 = "";
+                break :blk compileGlobalInit(allocator, g, &func_map, module, &why) catch |e| switch (e) {
+                    // A shape the VM cannot build (a pointer to another global, a value that is
+                    // still to be computed): reading this one global stops the run with the
+                    // reason; nothing else does.
+                    error.Unsupported => stop: {
+                        const message = try std.fmt.allocPrint(
+                            allocator,
+                            "global `{s}` cannot be read by compile-time code: {s}",
+                            .{ g.name, if (why.len > 0) why else "its value has a shape the comptime VM cannot build" },
+                        );
+                        try owned.append(allocator, message);
+                        break :stop try haltFunction(allocator, g.name, message);
+                    },
+                    else => return e,
+                };
+            },
+        } };
+    }
+
+    return .{ .functions = funcs, .vtables = vtables, .globals = globals, .owned_strings = try owned.toOwnedSlice(allocator) };
+}
+
+/// The most cells one static may occupy. A table is built whole the first time it is read, so
+/// this keeps a mistyped length (`[1 << 40]u8`) from asking the compiler for all the memory.
+const max_static_cells: usize = 1 << 20;
+
+/// The function that builds static `g`: straight-line code that allocates its blocks and returns
+/// the root, run once per compile-time evaluation by `Vm.loadStatic`.
+fn compileGlobalInit(
+    allocator: std.mem.Allocator,
+    g: ir.IrGlobal,
+    func_map: *const std.StringHashMap(u32),
+    module: ir.IrModule,
+    why: *[]const u8,
+) CompileError!BytecodeFunction {
+    const shell: ir.IrFunction = .{
+        .name = g.name,
+        .params = &.{},
+        .return_ty = g.ty,
+        .error_ty = null,
+        .blocks = &.{},
+        .extern_name = null,
+        .inline_hint = false,
+        .no_inline = false,
+        .no_return = false,
+        .entry = false,
+        .naked = false,
+        .export_sym = null,
+    };
+    var c = FnCompiler.init(allocator, shell, func_map, module);
+    defer c.deinit();
+    const root = c.newReg();
+    c.materializeInto(root, g.init, g.ty, 0) catch |e| {
+        why.* = c.why;
+        return e;
+    };
+    try c.emit(Instr.r_imm(.ret, root, 0));
+    return .{
+        .name = g.name,
+        .instrs = try c.out.toOwnedSlice(allocator),
+        .num_regs = c.next_reg,
+        .num_locals = 0,
+        .constants = try c.constants.toOwnedSlice(allocator),
+    };
+}
+
+/// Number of cells a value of `ty` occupies in zone memory: what an array of `ty` strides by.
+/// Public so code that reads a VM result back (the static-data decoder) agrees with the layout
+/// the instructions write.
+pub fn cellCountOf(module: ir.IrModule, ty: ir.IrType) usize {
+    return switch (ty) {
+        .array => |arr| @as(usize, @intCast(arr.len)) * cellCountOf(module, arr.elem.*),
+        else => blk: {
+            if (structName(ty)) |sname| {
+                for (module.structs) |s| {
+                    if (std.mem.eql(u8, s.name, sname)) break :blk s.fields.len;
+                }
+            }
+            break :blk 1;
+        },
+    };
 }
 
 fn stubFunction(allocator: std.mem.Allocator, name: []const u8) CompileError!BytecodeFunction {
     const instrs = try allocator.alloc(Instr, 1);
     instrs[0] = Instr.with_imm(.trap, -1);
     return .{ .name = name, .instrs = instrs, .num_regs = 1, .num_locals = 0 };
+}
+
+/// A function that stops the run with `message` (as `compiler_error(message)` does) when it is
+/// entered: what reading a global the VM cannot build runs, so the build says why.
+fn haltFunction(allocator: std.mem.Allocator, name: []const u8, message: []const u8) CompileError!BytecodeFunction {
+    const instrs = try allocator.alloc(Instr, 3);
+    errdefer allocator.free(instrs);
+    instrs[0] = Instr.r_imm(.load_const, 0, 0);
+    instrs[1] = Instr.r_imm(.halt_msg, 0, 0);
+    instrs[2] = Instr.with_imm(.trap, -1);
+    const constants = try allocator.alloc(Value, 1);
+    constants[0] = .{ .string = message };
+    return .{ .name = name, .instrs = instrs, .num_regs = 1, .num_locals = 0, .constants = constants };
 }
 
 /// Lower a single IR function. `func_map` resolves `call` targets; `module`
@@ -124,6 +231,12 @@ const FnCompiler = struct {
     /// hold a cell pointer, so they're never spilled here.)
     addressed: std.StringHashMap(void),
     next_reg: Reg = 0,
+    /// Scratch registers for building static data, one per nesting depth of the value.
+    scratch: std.ArrayList(Reg) = .empty,
+    /// Cells the static being built has allocated so far (against `max_static_cells`).
+    static_cells: usize = 0,
+    /// Why the static being built was refused, for the message of the run that reads it.
+    why: []const u8 = "",
 
     fn init(
         allocator: std.mem.Allocator,
@@ -154,6 +267,7 @@ const FnCompiler = struct {
         self.name_types.deinit();
         self.type_info_nodes.deinit();
         self.addressed.deinit();
+        self.scratch.deinit(self.allocator);
     }
 
     fn compile(self: *FnCompiler) CompileError!BytecodeFunction {
@@ -300,8 +414,18 @@ const FnCompiler = struct {
             // Numeric widths stay `.unknown` (the instruction's result type
             // carries them), so this doesn't perturb arithmetic.
             .imm => |imm| if (imm == .text) .text else .unknown,
-            .global => .unknown,
+            // A global's declared type, so a field, an index or a comparison on it lowers like
+            // the same operation on a local (an aggregate global needs it to find its fields).
+            .global => |name| if (self.globalIndex(name)) |gi| self.module.globals[gi].ty else .unknown,
         };
+    }
+
+    /// Position of the module's global called `name` (the index `load_global` carries).
+    fn globalIndex(self: *FnCompiler, name: []const u8) ?usize {
+        for (self.module.globals, 0..) |g, i| {
+            if (std.mem.eql(u8, g.name, name)) return i;
+        }
+        return null;
     }
 
     // Operand resolution
@@ -341,24 +465,34 @@ const FnCompiler = struct {
                 return dst;
             },
             .global => |name| {
-                // A top-level const's folded value is already in the module.
-                for (self.module.globals) |g| {
-                    if (!std.mem.eql(u8, g.name, name)) continue;
-                    switch (g.init) {
-                        .imm => |imm| {
-                            const dst = self.newReg();
-                            try self.materializeImm(dst, imm);
-                            return dst;
-                        },
-                        // Unreachable today: the const lowering only ever emits
-                        // `.imm` globals, and an aggregate top-level constant is
-                        // rejected with a clear diagnostic at the const decl
-                        // (`effectiveConstImm` in ir.zig). If aggregate consts are
-                        // added, materialize the struct_init into cells here.
-                        .struct_init => return error.Unsupported,
-                    }
+                const gi = self.globalIndex(name) orelse {
+                    // Not data: the name of a function used as a value (a `fn` field of a struct
+                    // literal, a callback argument). It is called through the same closure value
+                    // a function pointer is.
+                    if (self.func_map) |map| if (map.get(name)) |fidx| {
+                        const dst = self.newReg();
+                        try self.loadConst(dst, .{ .closure = .{ .fn_idx = @intCast(fidx), .takes_env = false } });
+                        return dst;
+                    };
+                    return error.Unsupported;
+                };
+                switch (self.module.globals[gi].init) {
+                    // A top-level const's folded value is already in the module.
+                    .imm => |imm| {
+                        const dst = self.newReg();
+                        try self.materializeImm(dst, imm);
+                        return dst;
+                    },
+                    // Anything bigger than one immediate — a struct, an array, a function
+                    // pointer, an enum value — is static data. The VM builds it the first time it
+                    // is read and every later read in the run sees that one copy, which is
+                    // read-only (`Vm.loadStatic`).
+                    else => {
+                        const dst = self.newReg();
+                        try self.emit(Instr.r_imm(.load_global, dst, @intCast(gi)));
+                        return dst;
+                    },
                 }
-                return error.Unsupported;
             },
         }
     }
@@ -377,6 +511,14 @@ const FnCompiler = struct {
         }
     }
 
+    /// Wrap the integer in `reg` to the width and signedness of `ty`, when `ty` is an integer
+    /// type narrower than the VM's 128 bits (anything else is left as it is).
+    fn emitNarrow(self: *FnCompiler, reg: Reg, ty: ir.IrType) CompileError!void {
+        const shape = intShape(ty) orelse return;
+        const flag: i64 = if (shape.signed) 0x100 else 0;
+        try self.emit(.{ .op = .narrow, .a = reg, .b = reg, .imm = @as(i64, shape.bits) | flag });
+    }
+
     fn loadConst(self: *FnCompiler, dst: Reg, val: Value) CompileError!void {
         const idx = try self.addConst(val);
         try self.emit(Instr.r_imm(.load_const, dst, idx));
@@ -386,6 +528,184 @@ const FnCompiler = struct {
         const idx: i64 = @intCast(self.constants.items.len);
         try self.constants.append(self.allocator, val);
         return idx;
+    }
+
+    // Static data
+    // The value of a struct/array/enum/function-pointer global is built by a function of its own
+    // (`compileGlobalInit`), laid out exactly as the instructions that read it expect.
+
+    /// A scratch register private to nesting depth `depth`: the children of an aggregate at that
+    /// depth are built in it, so a table of a thousand elements does not use a thousand registers.
+    fn scratchReg(self: *FnCompiler, depth: usize) CompileError!Reg {
+        while (self.scratch.items.len <= depth) try self.scratch.append(self.allocator, self.newReg());
+        return self.scratch.items[depth];
+    }
+
+    /// Refuse to build the static, saying why.
+    fn unsupported(self: *FnCompiler, why: []const u8) CompileError {
+        self.why = why;
+        return error.Unsupported;
+    }
+
+    /// Allocate a block of `cells` cells in `dst`, within the budget one static may use.
+    fn allocBlock(self: *FnCompiler, dst: Reg, cells: usize) CompileError!void {
+        self.static_cells +|= @max(cells, 1);
+        if (self.static_cells > max_static_cells)
+            return self.unsupported("it is larger than the 1 Mi cells a compile-time run builds for one global");
+        try self.emit(Instr.r_imm(.zone_alloc, dst, @intCast(cells)));
+    }
+
+    /// Emit the code that leaves in `dst` the value of static initializer `data`, whose type is
+    /// `ty`. A struct is one cell per field; an array is `len * stride` cells with element `i` at
+    /// `i * stride`; an aggregate inside either is a pointer to a block of its own; an enum value
+    /// is `[tag, payload]`.
+    fn materializeInto(self: *FnCompiler, dst: Reg, data: ir.ConstInit, ty: ir.IrType, depth: usize) CompileError!void {
+        switch (data) {
+            .imm => |imm| try self.materializeStaticImm(dst, imm, ty),
+            .zero => try self.materializeZero(dst, ty, depth),
+            .variant_tag => |tag| {
+                try self.allocBlock(dst, 2);
+                const tag_reg = try self.scratchReg(depth);
+                try self.emit(Instr.r_imm(.load_imm, tag_reg, tag));
+                try self.emit(Instr.r_r_imm(.store_cell, dst, tag_reg, 0));
+            },
+            .func_ref => |link| {
+                const map = self.func_map orelse return self.unsupported("it names a function and there is no function table");
+                const fidx = map.get(link) orelse return self.unsupported("it names a function the comptime VM does not have");
+                try self.loadConst(dst, .{ .closure = .{ .fn_idx = @intCast(fidx), .takes_env = false } });
+            },
+            .struct_init => |si| {
+                const def = self.structDef(si.ty_name) orelse return self.unsupported("its struct type has no known fields");
+                try self.allocBlock(dst, def.fields.len);
+                const field_reg = try self.scratchReg(depth);
+                for (def.fields, 0..) |field, i| {
+                    if (fieldInit(si, field.name)) |given| {
+                        try self.materializeInto(field_reg, given, field.ty, depth + 1);
+                    } else {
+                        try self.materializeZero(field_reg, field.ty, depth + 1);
+                    }
+                    try self.emit(Instr.r_r_imm(.store_cell, dst, field_reg, @intCast(i)));
+                }
+            },
+            .array_init => |items| {
+                const arr = switch (ty) {
+                    .array => |a| a,
+                    else => return self.unsupported("an array initializer for a value that is not an array"),
+                };
+                const len = std.math.cast(usize, arr.len) orelse return self.unsupported("the array is too long");
+                if (items.len > len) return self.unsupported("the array has more initializers than elements");
+                const stride = self.cellCount(arr.elem.*);
+                try self.allocBlock(dst, std.math.mul(usize, len, stride) catch return self.unsupported("the array is too long"));
+                const elem_reg = try self.scratchReg(depth);
+                for (items, 0..) |item, i| {
+                    try self.materializeInto(elem_reg, item, arr.elem.*, depth + 1);
+                    try self.emit(Instr.r_r_imm(.store_cell, dst, elem_reg, @intCast(i * stride)));
+                }
+                try self.fillZero(dst, arr, items.len, depth);
+            },
+            // The address of another global would need that one built first (and a cycle of them,
+            // `A: &B`, `B: &A`, has no first); a value still to be computed has no value yet.
+            .global_addr => return self.unsupported("it holds the address of another global"),
+            .pending => return self.unsupported("its value is itself computed by a `#run`, which no other compile-time code can read yet"),
+        }
+    }
+
+    /// An immediate in a static, converted to the form its declared type has: `x: f64 = 1;`
+    /// holds the float 1, not the integer.
+    fn materializeStaticImm(self: *FnCompiler, dst: Reg, imm: ir.Imm, ty: ir.IrType) CompileError!void {
+        if (ty == .f32 or ty == .f64) switch (imm) {
+            .int => |v| return self.loadConst(dst, .{ .float = @floatFromInt(v) }),
+            .uint => |v| return self.loadConst(dst, .{ .float = @floatFromInt(v) }),
+            else => {},
+        };
+        try self.materializeImm(dst, imm);
+    }
+
+    /// Leave the zero of `ty` in `dst`: the value `.{}` gives it, and what an omitted field or a
+    /// short array literal's tail holds. A scalar is 0 / 0.0 / false / null, an empty string is
+    /// `""`, an aggregate is a block whose every part is zero (an enum is its first variant).
+    fn materializeZero(self: *FnCompiler, dst: Reg, ty: ir.IrType, depth: usize) CompileError!void {
+        switch (ty) {
+            .i, .u, .byte, .usize, .isize, .addr, .rune => try self.emit(Instr.r_imm(.load_imm, dst, 0)),
+            .f32, .f64 => try self.loadConst(dst, .{ .float = 0 }),
+            .bool => try self.loadConst(dst, .{ .bool = false }),
+            .ptr, .optional, .fn_ptr => try self.loadConst(dst, .null_ptr),
+            .text => try self.loadConst(dst, .{ .string = "" }),
+            .slice => |elem| {
+                // The only slice a static holds is a string; the VM has no empty slice of
+                // anything else to point at.
+                if (!isByteType(elem.*)) return self.unsupported("it holds an empty slice of something other than bytes");
+                try self.loadConst(dst, .{ .string = "" });
+            },
+            .array => |arr| {
+                const len = std.math.cast(usize, arr.len) orelse return self.unsupported("the array is too long");
+                const stride = self.cellCount(arr.elem.*);
+                try self.allocBlock(dst, std.math.mul(usize, len, stride) catch return self.unsupported("the array is too long"));
+                try self.fillZero(dst, arr, 0, depth);
+            },
+            .struct_type => |name| {
+                if (self.structDef(name)) |def| {
+                    try self.allocBlock(dst, def.fields.len);
+                    const field_reg = try self.scratchReg(depth);
+                    for (def.fields, 0..) |field, i| {
+                        try self.materializeZero(field_reg, field.ty, depth + 1);
+                        try self.emit(Instr.r_r_imm(.store_cell, dst, field_reg, @intCast(i)));
+                    }
+                } else if (self.isEnum(name)) {
+                    try self.allocBlock(dst, 2);
+                    const tag_reg = try self.scratchReg(depth);
+                    try self.emit(Instr.r_imm(.load_imm, tag_reg, 0));
+                    try self.emit(Instr.r_r_imm(.store_cell, dst, tag_reg, 0));
+                } else return self.unsupported("it has a type whose layout the comptime VM does not know");
+            },
+            else => return self.unsupported("it has a type the comptime VM cannot zero-fill"),
+        }
+    }
+
+    /// Give elements `from..` of the array block in `base` the zero of the element type.
+    fn fillZero(self: *FnCompiler, base: Reg, arr: ir.ArrayType, from: usize, depth: usize) CompileError!void {
+        const len: usize = @intCast(arr.len);
+        if (from >= len) return;
+        const stride = self.cellCount(arr.elem.*);
+        const elem_reg = try self.scratchReg(depth);
+        if (stride == 1 and isSingleValue(arr.elem.*)) {
+            // One value repeated: a single `zone_fill`, however long the tail is.
+            const start_reg = try self.scratchReg(depth + 1);
+            try self.materializeZero(elem_reg, arr.elem.*, depth + 1);
+            try self.emit(Instr.r_r_imm(.field_addr, start_reg, base, @intCast(from)));
+            try self.emit(.{ .op = .zone_fill, .a = start_reg, .b = elem_reg, .imm = @intCast(len - from) });
+            return;
+        }
+        var i = from;
+        while (i < len) : (i += 1) {
+            try self.materializeZero(elem_reg, arr.elem.*, depth + 1);
+            try self.emit(Instr.r_r_imm(.store_cell, base, elem_reg, @intCast(i * stride)));
+        }
+    }
+
+    fn isEnum(self: *FnCompiler, name: []const u8) bool {
+        for (self.module.variants) |v| {
+            if (std.mem.eql(u8, v.name, name)) return true;
+        }
+        return false;
+    }
+
+    /// Is `ty` an enum none of whose variants carries a payload — one whose values compare by tag?
+    /// (An enum is `.struct_type` when it comes from a declaration and `.variant_type` when it
+    /// comes from a variant literal.)
+    fn isPlainEnum(self: *FnCompiler, ty: ir.IrType) bool {
+        const name = switch (ty) {
+            .struct_type, .variant_type => |n| n,
+            else => return false,
+        };
+        for (self.module.variants) |v| {
+            if (!std.mem.eql(u8, v.name, name)) continue;
+            for (v.variants) |case| {
+                if (case.payload != null) return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     // Instruction lowering
@@ -435,11 +755,25 @@ const FnCompiler = struct {
                     .ref, .deref => return error.Unsupported,
                 };
                 try self.emit(Instr.r_r_imm(op, target, vr, 0));
+                // `~x` of an unsigned type is the bit pattern within its width, not a negative number.
+                if (un.op == .bit_not) try self.emitNarrow(target, inst.ty);
             },
 
             .binary => |bin| {
                 const lr = try self.resolveReg(bin.lhs);
                 const rr = try self.resolveReg(bin.rhs);
+                // Two values of an enum that carries no payload are equal when their tags are:
+                // each is a block `[tag, payload]` here, so compare the tags, not the blocks.
+                if ((bin.op == .eq or bin.op == .ne) and
+                    (self.isPlainEnum(self.typeOf(bin.lhs)) or self.isPlainEnum(self.typeOf(bin.rhs))))
+                {
+                    const lt = self.newReg();
+                    const rt = self.newReg();
+                    try self.emit(Instr.r_r_imm(.load_cell, lt, lr, 0));
+                    try self.emit(Instr.r_r_imm(.load_cell, rt, rr, 0));
+                    try self.emit(Instr.r_r_r(if (bin.op == .eq) .eq_i else .ne_i, target, lt, rt));
+                    return;
+                }
                 // For arithmetic the result type tells us int vs float; for
                 // comparisons (result `bool`) we must look at the operands,
                 // whose types we tracked in the type pre-pass.
@@ -447,12 +781,21 @@ const FnCompiler = struct {
                     isFloat(self.typeOf(bin.lhs)) or isFloat(self.typeOf(bin.rhs));
                 const op = try mapBinOp(bin.op, op_float);
                 try self.emit(Instr.r_r_r(op, target, lr, rr));
+                // The VM computes in 128 bits. A wrapping operation and a left shift must drop
+                // what the operand type cannot hold, as the machine does; a checked `+ - *` that
+                // overflows would have panicked, so it is not narrowed.
+                switch (bin.op) {
+                    .wrap_add, .wrap_sub, .wrap_mul, .shl => try self.emitNarrow(target, inst.ty),
+                    else => {},
+                }
             },
 
             .cast => |cst| {
                 const vr = try self.resolveReg(cst.value);
                 const op: Opcode = if (isFloat(inst.ty)) .cast_to_float else .cast_to_int;
                 try self.emit(Instr.r_r_imm(op, target, vr, 0));
+                // `x as u8` keeps the low 8 bits, `-1 as u32` is 0xFFFFFFFF.
+                if (op == .cast_to_int) try self.emitNarrow(target, inst.ty);
             },
 
             .store_local => |sl| {
@@ -510,7 +853,7 @@ const FnCompiler = struct {
                     // terminator and `try_payload`), so a caught `e == .v |p|`
                     // still recovers `p` — this just yields the tag.
                     const vname = b.name["error.".len..];
-                    const idx = self.errorVariantIndex(vname) orelse 1; // non-zero = error
+                    const idx = self.errorVariantIndexHere(vname) orelse 1; // non-zero = error
                     try self.emit(Instr.r_imm(.load_imm, target, idx));
                 } else if (std.mem.eql(u8, b.name, "catch_handler")) {
                     // Marker emitted by `catch` lowering; nothing to execute.
@@ -986,6 +1329,24 @@ const FnCompiler = struct {
         return null;
     }
 
+    /// Discriminant of an error variant as the native backend encodes it: its 1-based
+    /// position in the *current function's own* error set. Falls back to a search by name
+    /// across all sets only when the function's set is not named. (Searching by name alone
+    /// gave a variant the position it has in whichever set declares that name first, so a
+    /// name shared between two sets was encoded differently at compile time than at run time.)
+    fn errorVariantIndexHere(self: *FnCompiler, variant: []const u8) ?i64 {
+        if (self.func.error_ty) |error_ty| switch (error_ty) {
+            .variant_type => |set_name| for (self.module.errors) |e| {
+                if (!std.mem.eql(u8, e.name, set_name)) continue;
+                for (e.variants, 0..) |case, i| {
+                    if (std.mem.eql(u8, case.name, variant)) return @intCast(i + 1);
+                }
+            },
+            else => {},
+        };
+        return self.errorVariantIndex(variant);
+    }
+
     /// Discriminant of an error variant by name, across all error sets. 1-based
     /// (matching the LLVM backend) so discriminant 0 is reserved for "ok".
     fn errorVariantIndex(self: *FnCompiler, variant: []const u8) ?i64 {
@@ -1107,20 +1468,55 @@ const FnCompiler = struct {
 
     /// Number of cells a value of `ty` occupies in zone memory.
     fn cellCount(self: *FnCompiler, ty: ir.IrType) usize {
-        return switch (ty) {
-            .array => |arr| @as(usize, @intCast(arr.len)) * self.cellCount(arr.elem.*),
-            else => blk: {
-                if (structName(ty)) |sname| {
-                    if (self.structDef(sname)) |def| break :blk def.fields.len;
-                }
-                break :blk 1;
-            },
-        };
+        return cellCountOf(self.module, ty);
     }
 };
 
 fn isFloat(ty: ir.IrType) bool {
     return ty == .f32 or ty == .f64;
+}
+
+/// Width and signedness of an integer type that is narrower than the VM's 128-bit arithmetic,
+/// null for any other type.
+const IntShape = struct { bits: u16, signed: bool };
+
+fn intShape(ty: ir.IrType) ?IntShape {
+    const shape: IntShape = switch (ty) {
+        .i => |b| .{ .bits = b, .signed = true },
+        .u => |b| .{ .bits = b, .signed = false },
+        .byte => .{ .bits = 8, .signed = false },
+        .usize, .addr => .{ .bits = 64, .signed = false },
+        .isize => .{ .bits = 64, .signed = true },
+        else => return null,
+    };
+    return if (shape.bits == 0 or shape.bits >= 128) null else shape;
+}
+
+/// The initializer a struct static gives field `name`, or null when it gives it none.
+fn fieldInit(si: ir.StructInit, name: []const u8) ?ir.ConstInit {
+    for (si.fields) |f| {
+        if (std.mem.eql(u8, f.name, name)) return f.value;
+    }
+    return null;
+}
+
+/// A byte: what the elements of a string (`[]const u8`) are.
+fn isByteType(ty: ir.IrType) bool {
+    return switch (ty) {
+        .byte => true,
+        .u, .i => |bits| bits == 8,
+        else => false,
+    };
+}
+
+/// Is a value of `ty` one `Value` (a number, a pointer, a string, a function) rather than a
+/// block of cells? Such a value can fill a run of cells with a single `zone_fill`.
+fn isSingleValue(ty: ir.IrType) bool {
+    return switch (ty) {
+        .i, .u, .byte, .usize, .isize, .addr, .rune, .f32, .f64, .bool => true,
+        .ptr, .optional, .fn_ptr, .text, .slice => true,
+        else => false,
+    };
 }
 
 /// A position within a `type_info(T)` reflection tree. Reflection is fully

@@ -844,6 +844,77 @@ os_thread_running :: fn(token: i64) -> bool {
 }
 os_thread_id :: fn() -> u32 { return sys_gettid() as u32; }
 os_thread_yield :: fn() { ignored := sys_sched_yield(); }
+
+// Mutex and condition variable (back std.sync)
+// futex(2) = syscall 202: FUTEX_WAIT (0) sleeps while the word still holds `val`,
+// FUTEX_WAKE (1) wakes up to `val` sleepers. The shared flavour is used (no
+// FUTEX_PRIVATE_FLAG): a thread here is clone()d with CLONE_VM but not CLONE_THREAD, and
+// the key of a shared futex is right however the memory happens to be shared. A word is
+// 4 bytes at the start of the caller's 8-byte slot; all zero bits is the initial state of
+// both, and neither needs destroying.
+//
+// Mutex word: 0 unlocked, 1 locked with no waiter, 2 locked, a waiter may be asleep
+// (Drepper, "Futexes Are Tricky", the third mutex). A lock is taken with one
+// compare-exchange; only a contended one enters the kernel.
+// Condition word: a sequence number that every signal bumps. A waiter reads it while it
+// still holds the mutex, then sleeps only while it is unchanged, so a signal sent after the
+// mutex is released but before the sleep begins is not lost.
+
+sys_futex :: fn(addr: *u32, op: i32, val: u32, timeout: usize) -> i64 {
+    return unsafe core::asm(volatile, "syscall",
+        inputs: { "{rax}"(202), "{rdi}"(addr), "{rsi}"(op), "{rdx}"(val), "{r10}"(timeout), "{r8}"(0), "{r9}"(0) },
+        outputs: { "={rax}"(i64) }, clobbers: { "rcx", "r11", "memory" });
+}
+
+os_mutex_lock :: fn(m: *u64) {
+    w := unsafe (m as *u32);
+    c := core::atomic_cas(w, 0u32, 1u32, 4);
+    if c == 0u32 { return; }
+    if c != 2u32 { c = core::atomic_exchange(w, 2u32, 4); }
+    while c != 0u32 {
+        slept := sys_futex(w, 0, 2u32, 0usize);
+        c = core::atomic_exchange(w, 2u32, 4);
+    }
+}
+os_mutex_try_lock :: fn(m: *u64) -> bool {
+    w := unsafe (m as *u32);
+    return core::atomic_cas(w, 0u32, 1u32, 4) == 0u32;
+}
+os_mutex_unlock :: fn(m: *u64) {
+    w := unsafe (m as *u32);
+    if core::atomic_sub(w, 1u32, 4) != 1u32 {
+        core::atomic_store(w, 0u32, 4);
+        woken := sys_futex(w, 1, 1u32, 0usize);
+    }
+}
+
+// Atomically release `m` and sleep on `c`; `m` is held again when this returns. `ms` is a
+// timeout in milliseconds, 0xFFFFFFFF for none. True when woken (a wake-up may be
+// spurious), false when the timeout elapsed.
+os_cond_wait :: fn(c: *u64, m: *u64, ms: u32) -> bool {
+    w := unsafe (c as *u32);
+    seq := core::atomic_load(w, 4);
+    os_mutex_unlock(m);
+    r: i64 = 0i64;
+    if ms == 0xFFFFFFFFu32 {
+        r = sys_futex(w, 0, seq, 0usize);
+    } else {
+        ts: TimeSpec = .{ (ms / 1000u32) as i64, ((ms % 1000u32) as i64) * 1000000i64 };
+        r = sys_futex(w, 0, seq, unsafe ((&ts) as usize));
+    }
+    os_mutex_lock(m);
+    return r != -110i64;                  // -ETIMEDOUT
+}
+os_cond_signal :: fn(c: *u64) {
+    w := unsafe (c as *u32);
+    bumped := core::atomic_add(w, 1u32, 4);
+    woken := sys_futex(w, 1, 1u32, 0usize);
+}
+os_cond_broadcast :: fn(c: *u64) {
+    w := unsafe (c as *u32);
+    bumped := core::atomic_add(w, 1u32, 4);
+    woken := sys_futex(w, 1, 2147483647u32, 0usize);
+}
 os_cpu_count :: fn() -> u32 {
     mask: [128]u8 = .{};                  // up to 1024 CPUs
     n := sys_sched_getaffinity(0i64, 128usize, &mask[0]);

@@ -1,0 +1,570 @@
+// std.com + std.winrt against the real operating system (Windows only): the GUID text and
+// parsing checked against the OS's own StringFromGUID2 / IIDFromString, HSTRING lifecycle and
+// conversions, a real COM object (the OS's in-memory IStream) called through hand-declared
+// vtables, a COM object written here (an IStream with a static vtable) called back BY the OS
+// when it copies a stream into it, and a real Windows Runtime class (Windows.Foundation.Uri)
+// activated and read through its interfaces. Every vtable below was laid out from the SDK
+// headers and its offsets are `#assert`ed against what clang reports for them.
+// Returns 42 on success; any other value names the failed check.
+#import std.com;
+#import std.com.{ Guid, IUnknown, IUnknownVtbl, IInspectable, IInspectableVtbl, RefCount };
+#import std.winrt;
+#import std.winrt.{ HString, HStringRef };
+#import std.utf16;
+
+// ---- OS functions used only to cross-check ----
+#extern("ole32", "StringFromGUID2")
+os_string_from_guid2 :: fn(g: *const Guid, out: *u16, max: i32) -> i32;
+#extern("ole32", "IIDFromString")
+os_iid_from_string :: fn(text: *const u16, out: *Guid) -> i32;
+#extern("ole32", "CreateStreamOnHGlobal")
+os_create_stream :: fn(hglobal: usize, delete_on_release: i32, out: **IStream) -> i32;
+
+// ---- IStream / ISequentialStream (objidl.h) ----
+// Slots 0-2 IUnknown, 3 Read, 4 Write (ISequentialStream), then Seek, SetSize, CopyTo, Commit,
+// Revert, LockRegion, UnlockRegion, Stat, Clone.
+IStreamVtbl :: struct {
+    query_interface: fn(*IStream, *const Guid, **void) -> i32
+    add_ref:         fn(*IStream) -> u32
+    release:         fn(*IStream) -> u32
+    read:            fn(*IStream, *void, u32, *u32) -> i32
+    write:           fn(*IStream, *const void, u32, *u32) -> i32
+    seek:            fn(*IStream, i64, u32, *u64) -> i32              // LARGE_INTEGER, DWORD, ULARGE_INTEGER*
+    set_size:        fn(*IStream, u64) -> i32
+    copy_to:         fn(*IStream, *IStream, u64, *u64, *u64) -> i32
+    commit:          fn(*IStream, u32) -> i32
+    revert:          fn(*IStream) -> i32
+    lock_region:     fn(*IStream, u64, u64, u32) -> i32
+    unlock_region:   fn(*IStream, u64, u64, u32) -> i32
+    stat:            fn(*IStream, *void, u32) -> i32                  // STATSTG*, not used here
+    clone:           fn(*IStream, **IStream) -> i32
+}
+IStream :: struct {
+    vtbl: *IStreamVtbl
+    add_ref :: fn(self: *Self) -> u32 { return self.vtbl.add_ref(self); }
+    release :: fn(self: *Self) -> u32 { return self.vtbl.release(self); }
+}
+#assert(core::sizeof(IStreamVtbl) == 112);
+#assert(core::offset_of(IStreamVtbl, "read") == 24);
+#assert(core::offset_of(IStreamVtbl, "write") == 32);
+#assert(core::offset_of(IStreamVtbl, "seek") == 40);
+#assert(core::offset_of(IStreamVtbl, "set_size") == 48);
+#assert(core::offset_of(IStreamVtbl, "copy_to") == 56);
+#assert(core::offset_of(IStreamVtbl, "commit") == 64);
+#assert(core::offset_of(IStreamVtbl, "revert") == 72);
+#assert(core::offset_of(IStreamVtbl, "lock_region") == 80);
+#assert(core::offset_of(IStreamVtbl, "unlock_region") == 88);
+#assert(core::offset_of(IStreamVtbl, "stat") == 96);
+#assert(core::offset_of(IStreamVtbl, "clone") == 104);
+
+IID_ISequentialStream: Guid = .{ 0x0C733A30u32, 0x2A1Cu16, 0x11CEu16, .{ 0xADu8, 0xE5u8, 0x00u8, 0xAAu8, 0x00u8, 0x44u8, 0x77u8, 0x3Du8 } };   // {0C733A30-2A1C-11CE-ADE5-00AA0044773D}
+IID_IStream: Guid = .{ 0x0000000Cu32, 0x0000u16, 0x0000u16, .{ 0xC0u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x46u8 } };   // {0000000C-0000-0000-C000-000000000046}
+
+// ---- Windows.Foundation.Uri (windows.foundation.h) ----
+IUriFactoryVtbl :: struct {
+    query_interface: fn(*IUriFactory, *const Guid, **void) -> i32
+    add_ref:         fn(*IUriFactory) -> u32
+    release:         fn(*IUriFactory) -> u32
+    get_iids:        fn(*IUriFactory, *u32, **Guid) -> i32
+    get_runtime_class_name: fn(*IUriFactory, *usize) -> i32
+    get_trust_level: fn(*IUriFactory, *i32) -> i32
+    create_uri:      fn(*IUriFactory, usize, **IUri) -> i32               // (HSTRING uri, IUriRuntimeClass** instance)
+    create_with_relative_uri: fn(*IUriFactory, usize, usize, **IUri) -> i32
+}
+IUriFactory :: struct { vtbl: *IUriFactoryVtbl }
+
+IUriVtbl :: struct {
+    query_interface: fn(*IUri, *const Guid, **void) -> i32
+    add_ref:         fn(*IUri) -> u32
+    release:         fn(*IUri) -> u32
+    get_iids:        fn(*IUri, *u32, **Guid) -> i32
+    get_runtime_class_name: fn(*IUri, *usize) -> i32
+    get_trust_level: fn(*IUri, *i32) -> i32
+    get_absolute_uri: fn(*IUri, *usize) -> i32
+    get_display_uri:  fn(*IUri, *usize) -> i32
+    get_domain:       fn(*IUri, *usize) -> i32
+    get_extension:    fn(*IUri, *usize) -> i32
+    get_fragment:     fn(*IUri, *usize) -> i32
+    get_host:         fn(*IUri, *usize) -> i32
+    get_password:     fn(*IUri, *usize) -> i32
+    get_path:         fn(*IUri, *usize) -> i32
+    get_query:        fn(*IUri, *usize) -> i32
+    get_query_parsed: fn(*IUri, **void) -> i32                            // IWwwFormUrlDecoderRuntimeClass**
+    get_raw_uri:      fn(*IUri, *usize) -> i32
+    get_scheme_name:  fn(*IUri, *usize) -> i32
+    get_user_name:    fn(*IUri, *usize) -> i32
+    get_port:         fn(*IUri, *i32) -> i32
+    get_suspicious:   fn(*IUri, *u8) -> i32                               // boolean* (one byte)
+    equals:           fn(*IUri, *IUri, *u8) -> i32
+    combine_uri:      fn(*IUri, usize, **IUri) -> i32
+}
+IUri :: struct {
+    vtbl: *IUriVtbl
+    add_ref :: fn(self: *Self) -> u32 { return self.vtbl.add_ref(self); }
+    release :: fn(self: *Self) -> u32 { return self.vtbl.release(self); }
+}
+#assert(core::sizeof(IUriFactoryVtbl) == 64);
+#assert(core::offset_of(IUriFactoryVtbl, "create_uri") == 48);
+#assert(core::offset_of(IUriFactoryVtbl, "create_with_relative_uri") == 56);
+#assert(core::sizeof(IUriVtbl) == 184);
+#assert(core::offset_of(IUriVtbl, "get_absolute_uri") == 48);
+#assert(core::offset_of(IUriVtbl, "get_domain") == 64);
+#assert(core::offset_of(IUriVtbl, "get_host") == 88);
+#assert(core::offset_of(IUriVtbl, "get_path") == 104);
+#assert(core::offset_of(IUriVtbl, "get_query") == 112);
+#assert(core::offset_of(IUriVtbl, "get_query_parsed") == 120);
+#assert(core::offset_of(IUriVtbl, "get_raw_uri") == 128);
+#assert(core::offset_of(IUriVtbl, "get_scheme_name") == 136);
+#assert(core::offset_of(IUriVtbl, "get_user_name") == 144);
+#assert(core::offset_of(IUriVtbl, "get_port") == 152);
+#assert(core::offset_of(IUriVtbl, "get_suspicious") == 160);
+#assert(core::offset_of(IUriVtbl, "equals") == 168);
+#assert(core::offset_of(IUriVtbl, "combine_uri") == 176);
+
+IID_IUri: Guid = .{ 0x9E365E57u32, 0x48B2u16, 0x4160u16, .{ 0x95u8, 0x6Fu8, 0xC7u8, 0x38u8, 0x51u8, 0x20u8, 0xBBu8, 0xFCu8 } };   // {9E365E57-48B2-4160-956F-C7385120BBFC}
+IID_IUriFactory: Guid = .{ 0x44A9796Fu32, 0x723Eu16, 0x4FDFu16, .{ 0xA2u8, 0x18u8, 0x03u8, 0x3Eu8, 0x75u8, 0xB0u8, 0xC0u8, 0x84u8 } };   // {44A9796F-723E-4FDF-A218-033E75B0C084}
+
+// ---- a COM object written here: an IStream that collects what is written to it ----
+SinkStream :: struct {
+    vtbl: *IStreamVtbl
+    rc: RefCount
+    data: [64]u8
+    len: u32
+    writes: u32
+    queries: u32
+}
+
+sink_qi :: fn(self: *IStream, iid: *const Guid, out: **void) -> i32 {
+    s := unsafe (self as *SinkStream);
+    s.queries += 1u32;
+    if iid.eq(&com::IID_IUnknown) || iid.eq(&IID_ISequentialStream) || iid.eq(&IID_IStream) {
+        *out = unsafe (self as *void);
+        ig := s.rc.add();
+        return com::S_OK;
+    }
+    *out = unsafe (core::ptr_from_int(*void, 0usize));
+    return com::E_NOINTERFACE;
+}
+sink_add_ref :: fn(self: *IStream) -> u32 { s := unsafe (self as *SinkStream); return s.rc.add(); }
+sink_release :: fn(self: *IStream) -> u32 { s := unsafe (self as *SinkStream); return s.rc.release(); }
+sink_write :: fn(self: *IStream, pv: *const void, cb: u32, written: *u32) -> i32 {
+    s := unsafe (self as *SinkStream);
+    src := unsafe (pv as *const u8);
+    i: u32 = 0u32;
+    while i < cb {
+        if s.len >= 64u32 { *written = i; return com::E_FAIL; }   // full: a short write and a failure
+        s.data[s.len as usize] = unsafe (*core::ptr_from_int(*const u8, (src as usize) + (i as usize)));
+        s.len += 1u32;
+        i += 1u32;
+    }
+    s.writes += 1u32;
+    *written = cb;
+    return com::S_OK;
+}
+sink_read :: fn(self: *IStream, pv: *void, cb: u32, read: *u32) -> i32 { *read = 0u32; return com::E_NOTIMPL; }
+sink_seek :: fn(self: *IStream, dist: i64, origin: u32, pos: *u64) -> i32 { return com::E_NOTIMPL; }
+sink_set_size :: fn(self: *IStream, size: u64) -> i32 { return com::E_NOTIMPL; }
+sink_copy_to :: fn(self: *IStream, dest: *IStream, cb: u64, r: *u64, w: *u64) -> i32 { return com::E_NOTIMPL; }
+sink_commit :: fn(self: *IStream, flags: u32) -> i32 { return com::S_OK; }
+sink_revert :: fn(self: *IStream) -> i32 { return com::E_NOTIMPL; }
+sink_lock :: fn(self: *IStream, off: u64, cb: u64, kind: u32) -> i32 { return com::E_NOTIMPL; }
+sink_stat :: fn(self: *IStream, st: *void, flags: u32) -> i32 { return com::E_NOTIMPL; }
+sink_clone :: fn(self: *IStream, out: **IStream) -> i32 { return com::E_NOTIMPL; }
+
+// The vtable is static data in the image: no table is built at run time.
+SINK_VTBL: IStreamVtbl = .{ sink_qi, sink_add_ref, sink_release, sink_read, sink_write, sink_seek, sink_set_size, sink_copy_to, sink_commit, sink_revert, sink_lock, sink_lock, sink_stat, sink_clone };
+
+// ---- helpers ----
+// UTF-8 text → HSTRING-sized UTF-16 with a terminating zero, in `buf`; the length without it.
+widen :: fn(text: []const u8, buf: []u16) -> usize {
+    n := utf16::utf8_to_utf16(text, buf[0..buf.len - 1usize]) catch e { return 0usize; };
+    buf[n] = 0u16;
+    return n;
+}
+
+// Is HSTRING `h` (borrowed) exactly the UTF-8 text `want`?
+hstr_is :: fn(h: usize, want: []const u8) -> bool {
+    s: HString = .{ h };
+    out: [256]u8 = .{};
+    n := s.to_utf8(out[:]) catch e { return false; };
+    if n != want.len { return false; }
+    i: usize = 0usize;
+    while i < n {
+        if out[i] != want[i] { return false; }
+        i += 1usize;
+    }
+    return true;
+}
+
+// Read a Uri property through `getter` and compare it with `want`; releases the string.
+uri_prop_is :: fn(uri: *IUri, which: u32, want: []const u8) -> bool {
+    h: usize = 0usize;
+    hr: i32 = 0;
+    if which == 0u32 { hr = uri.vtbl.get_scheme_name(uri, &h); }
+    if which == 1u32 { hr = uri.vtbl.get_host(uri, &h); }
+    if which == 2u32 { hr = uri.vtbl.get_path(uri, &h); }
+    if which == 3u32 { hr = uri.vtbl.get_query(uri, &h); }
+    if which == 4u32 { hr = uri.vtbl.get_fragment(uri, &h); }
+    if which == 5u32 { hr = uri.vtbl.get_user_name(uri, &h); }
+    if which == 6u32 { hr = uri.vtbl.get_password(uri, &h); }
+    if which == 7u32 { hr = uri.vtbl.get_absolute_uri(uri, &h); }
+    if which == 8u32 { hr = uri.vtbl.get_domain(uri, &h); }
+    if com::failed(hr) { return false; }
+    ok := hstr_is(h, want);
+    owned: HString = .{ h };
+    owned.release();
+    return ok;
+}
+
+#entry
+main :: fn() -> i32 {
+    // ======== GUID: our text and parser against the OS's ========
+    g1 := winrt::new_guid() catch e { return 1; };
+    g2 := winrt::new_guid() catch e { return 2; };
+    if g1.is_null() { return 3; }
+    if g1.eq(&g2) { return 4; }
+    if (g1.data3 >> 12u16) != 4u16 { return 5; }              // a random (version 4) GUID
+    if (g1.data4[0] & 0xC0u8) != 0x80u8 { return 6; }         // RFC 4122 variant
+    text: [64]u8 = .{};
+    n := g1.format(text[:]) catch e { return 7; };
+    if n != 38usize { return 8; }
+    wide: [64]u16 = .{};
+    os_n := os_string_from_guid2(&g1, &wide[0], 64);
+    if os_n != 39 { return 9; }                               // 38 characters and the terminator
+    i: usize = 0usize;
+    while i < 38usize {
+        if (text[i] as u16) != wide[i] { return 10; }         // same characters, same case
+        i += 1usize;
+    }
+    // Parsing agrees with IIDFromString, in both directions and for both cases.
+    back := com::parse_guid(text[0..38]) catch e { return 11; };
+    if !back.eq(&g1) { return 12; }
+    lower: [38]u8 = .{};
+    i = 0usize;
+    while i < 38usize {
+        c := text[i];
+        if c >= 65u8 && c <= 70u8 { c = c + 32u8; }
+        lower[i] = c;
+        i += 1usize;
+    }
+    back = com::parse_guid(lower[:]) catch e { return 13; };
+    if !back.eq(&g1) { return 14; }
+    os_back: Guid = .{ 0u32, 0u16, 0u16, .{} };
+    if com::failed(os_iid_from_string(&wide[0], &os_back)) { return 15; }
+    if !os_back.eq(&g1) { return 16; }
+    // Every GUID constant in use equals what the OS parses from the header's text.
+    wbuf: [64]u16 = .{};
+    ids: [8]*const Guid = .{ &com::IID_IUnknown, &com::IID_IInspectable, &com::IID_IAgileObject, &com::IID_IActivationFactory, &IID_ISequentialStream, &IID_IStream, &IID_IUri, &IID_IUriFactory };
+    texts: [8][]const u8 = .{ "{00000000-0000-0000-C000-000000000046}", "{AF86E2E0-B12D-4C6A-9C5A-D7AA65101E90}", "{94EA2B94-E9CC-49E0-C0FF-EE64CA8F5B90}", "{00000035-0000-0000-C000-000000000046}", "{0C733A30-2A1C-11CE-ADE5-00AA0044773D}", "{0000000C-0000-0000-C000-000000000046}", "{9E365E57-48B2-4160-956F-C7385120BBFC}", "{44A9796F-723E-4FDF-A218-033E75B0C084}" };
+    k: usize = 0usize;
+    while k < 8usize {
+        wn := widen(texts[k], wbuf[:]);
+        if wn != 38usize { return 17; }
+        fromos: Guid = .{ 0u32, 0u16, 0u16, .{} };
+        if com::failed(os_iid_from_string(&wbuf[0], &fromos)) { return 18; }
+        if !fromos.eq(ids[k]) { return 19; }                  // the constant is what the OS reads in the header text
+        mine := com::parse_guid(texts[k]) catch e { return 20; };
+        if !mine.eq(ids[k]) { return 21; }                    // and so is our parser's reading of it
+        k += 1usize;
+    }
+    // Malformed text is refused.
+    bad: [10][]const u8 = .{ "", "{}", "00000000-0000-0000-C000-00000000004", "{00000000-0000-0000-C000-000000000046", "00000000-0000-0000-C000-000000000046}", "{00000000_0000-0000-C000-000000000046}", "{0000000G-0000-0000-C000-000000000046}", "{00000000-0000-0000-C000-000000000046 }", " {00000000-0000-0000-C000-000000000046}", "{00000000-0000-0000-C000-0000000000467}" };
+    k = 0usize;
+    while k < 10usize {
+        refused := false;
+        com::parse_guid(bad[k]) catch e { refused = true; };
+        if !refused { return 22; }
+        k += 1usize;
+    }
+    tiny: [37]u8 = .{};
+    refused := false;
+    g1.format(tiny[:]) catch e { refused = true; };
+    if !refused { return 23; }                                // one byte short
+
+    // ======== HRESULT ========
+    if !com::succeeded(com::S_FALSE) { return 24; }
+    if !com::failed(com::E_FAIL) { return 25; }
+    if com::facility(com::E_ACCESSDENIED) != 7u32 { return 26; }     // FACILITY_WIN32
+    if com::code(com::E_ACCESSDENIED) != 5u32 { return 27; }
+    if com::from_win32(5u32) != com::E_ACCESSDENIED { return 28; }
+    if com::from_win32(0u32) != 0 { return 29; }
+    named := false;
+    com::check(com::E_NOINTERFACE) catch e { if e == .no_interface { named = true; } };
+    if !named { return 30; }
+    named = false;
+    com::check(com::RPC_E_CHANGED_MODE) catch e { if e == .changed_mode { named = true; } };
+    if !named { return 31; }
+    named = false;
+    ign4 := com::check(-2147220000) catch e { if e == .other { named = true; } };   // an HRESULT with no name here
+    if !named { return 32; }
+    ok_s := com::check(com::S_FALSE) catch e { return 33; };         // S_FALSE is a success
+
+
+    // ======== HSTRING ========
+    scratch: [64]u16 = .{};
+    s1 := winrt::hstring_from_utf8("Grüße 😀", scratch[:]) catch e { return 34; };
+    if s1.is_empty() { return 35; }
+    if s1.len() != 8usize { return 36; }                       // G r ü ß e ' ' and one surrogate pair
+    u := s1.units();
+    if u.len != 8usize { return 37; }
+    if u[0] != 71u16 { return 38; }                            // 'G'
+    if u[2] != 0x00FCu16 { return 39; }                        // ü
+    if u[6] != 0xD83Du16 { return 40; }                        // 😀 as D83D DE00
+    if u[7] != 0xDE00u16 { return 41; }
+    out8: [64]u8 = .{};
+    m := s1.to_utf8(out8[:]) catch e { return 42; };
+    if m != 12usize { return 43; }
+    if !hstr_is(s1.h, "Grüße 😀") { return 44; }
+    dup := s1.duplicate() catch e { return 45; };
+    if !dup.eq(&s1) { return 46; }
+    s1.release();
+    if s1.h != 0usize { return 47; }                           // released: now empty
+    s1.release();                                              // and releasing again is harmless
+    if dup.len() != 8usize { return 48; }                      // the copy is independent of the first release
+    if !hstr_is(dup.h, "Grüße 😀") { return 49; }
+    other := winrt::hstring_from_utf8("grüße 😀", scratch[:]) catch e { return 50; };
+    if dup.eq(&other) { return 51; }                           // comparison is case-sensitive
+    other.release();
+    dup.release();
+
+    empty: HString = .{ 0usize };                              // the null HSTRING is the empty string
+    if !empty.is_empty() { return 52; }
+    if empty.len() != 0usize { return 53; }
+    if empty.units().len != 0usize { return 54; }
+    empty.release();
+    none: [1]u16 = .{};
+    e2 := winrt::hstring(none[0..0]) catch e { return 55; };
+    if !e2.is_empty() { return 56; }
+    e2.release();
+
+    zeros: [3]u16 = .{ 97u16, 0u16, 98u16 };                   // a HSTRING may hold a zero
+    zs := winrt::hstring(zeros[:]) catch e { return 57; };
+    if zs.len() != 3usize { return 58; }
+    zb := zs.to_utf8(out8[:]) catch e { return 59; };
+    if zb != 3usize { return 60; }
+    if out8[0] != 97u8 || out8[1] != 0u8 || out8[2] != 98u8 { return 61; }
+    zs.release();
+
+    lone: [2]u16 = .{ 0xD800u16, 97u16 };                      // an unpaired surrogate: allowed in an HSTRING
+    ls := winrt::hstring(lone[:]) catch e { return 62; };
+    if ls.len() != 2usize { return 63; }
+    bad_utf16 := false;
+    ls.to_utf8(out8[:]) catch e { if e == .invalid_utf16 { bad_utf16 = true; } };
+    if !bad_utf16 { return 64; }                               // but it cannot be turned into UTF-8
+    ls.release();
+    bad_utf8 := false;
+    badtxt: [3]u8 = .{ 97u8, 98u8, 0xC0u8 };                   // C0 can start no UTF-8 sequence
+    winrt::hstring_from_utf8(badtxt[:], scratch[:]) catch e { if e == .invalid_utf8 { bad_utf8 = true; } };
+    if !bad_utf8 { return 65; }
+    small: [3]u16 = .{};
+    short := false;
+    winrt::hstring_from_utf8("abcdef", small[:]) catch e { if e == .buffer_too_small { short = true; } };
+    if !short { return 66; }
+
+    // a borrowed HSTRING over a buffer: nothing to release
+    cbuf: [64]u16 = .{};
+    cn := widen("Windows.Foundation.Uri", cbuf[:]);
+    if cn != 22usize { return 67; }
+    cref: HStringRef = .{ .{}, 0usize };
+    cref.init(cbuf[0..cn + 1usize]) catch e { return 68; };
+    cview: HString = .{ cref.h };
+    if cview.len() != 22usize { return 69; }
+    if !hstr_is(cref.h, "Windows.Foundation.Uri") { return 70; }
+    owned_copy := winrt::hstring(cbuf[0..cn]) catch e { return 71; };
+    if !owned_copy.eq(&cview) { return 72; }
+    owned_copy.release();
+    unterminated := false;
+    cbuf[cn] = 65u16;                                          // 'A' where the zero should be
+    uref: HStringRef = .{ .{}, 0usize };
+    uref.init(cbuf[0..cn + 1usize]) catch e { if e == .invalid_arg { unterminated = true; } };
+    if !unterminated { return 73; }
+    cbuf[cn] = 0u16;
+    nothing := false;
+    uref.init(cbuf[0..0]) catch e { if e == .invalid_arg { nothing = true; } };
+    if !nothing { return 74; }
+
+    // ======== a COM object from the OS: the in-memory IStream ========
+    stream: *IStream = unsafe (core::ptr_from_int(*IStream, 0usize));
+    if com::failed(os_create_stream(0usize, 1, &stream)) { return 75; }
+    if unsafe (stream as usize) == 0usize { return 76; }
+    // Identity: asking an object for IUnknown always gives the same pointer.
+    base := unsafe (stream as *IUnknown);
+    unk: *void = unsafe (core::ptr_from_int(*void, 0usize));
+    if base.query_interface(&com::IID_IUnknown, &unk) != com::S_OK { return 77; }
+    if unsafe (unk as usize) != unsafe (stream as usize) { return 78; }
+    // That query took a reference, so there were two; releasing one leaves the one we started with.
+    unk_i := unsafe (unk as *IUnknown);
+    if unk_i.release() != 1u32 { return 79; }
+    // An interface the object does not have: E_NOINTERFACE, and the out-parameter is null.
+    other_i: *void = unsafe (core::ptr_from_int(*void, 1usize));
+    if base.query_interface(&com::IID_IInspectable, &other_i) != com::E_NOINTERFACE { return 80; }
+    if unsafe (other_i as usize) != 0usize { return 81; }
+    // ISequentialStream and IStream are the same object.
+    seq: *void = unsafe (core::ptr_from_int(*void, 0usize));
+    if base.query_interface(&IID_ISequentialStream, &seq) != com::S_OK { return 82; }
+    if unsafe (seq as usize) != unsafe (stream as usize) { return 83; }
+    seq_i := unsafe (seq as *IUnknown);
+    if seq_i.release() != 1u32 { return 84; }
+
+    // Call through the vtable: write, rewind, read back, measure.
+    hello: [5]u8 = .{ 104u8, 101u8, 108u8, 108u8, 111u8 };
+    nwritten: u32 = 0u32;
+    if stream.vtbl.write(stream, unsafe ((&hello[0]) as *const void), 5u32, &nwritten) != com::S_OK { return 85; }
+    if nwritten != 5u32 { return 86; }
+    pos: u64 = 99u64;
+    if stream.vtbl.seek(stream, 0i64, 0u32, &pos) != com::S_OK { return 87; }   // STREAM_SEEK_SET
+    if pos != 0u64 { return 88; }
+    got: [8]u8 = .{};
+    nread: u32 = 0u32;
+    if stream.vtbl.read(stream, unsafe ((&got[0]) as *void), 8u32, &nread) != com::S_OK { return 89; }
+    if nread != 5u32 { return 90; }
+    if got[0] != 104u8 || got[4] != 111u8 { return 91; }
+    if stream.vtbl.seek(stream, 0i64, 2u32, &pos) != com::S_OK { return 92; }   // STREAM_SEEK_END
+    if pos != 5u64 { return 93; }
+
+    // ======== a COM object written here, called back by the OS ========
+    // IStream::CopyTo reads from the OS stream and calls Write on the destination: ours.
+    sink: SinkStream = .{ &SINK_VTBL, com::new_refcount(), .{}, 0u32, 0u32, 0u32 };
+    sink_i := unsafe ((&sink) as *IStream);
+    digits: [10]u8 = .{ 48u8, 49u8, 50u8, 51u8, 52u8, 53u8, 54u8, 55u8, 56u8, 57u8 };
+    if stream.vtbl.seek(stream, 0i64, 0u32, &pos) != com::S_OK { return 94; }
+    if stream.vtbl.set_size(stream, 0u64) != com::S_OK { return 95; }
+    if stream.vtbl.write(stream, unsafe ((&digits[0]) as *const void), 10u32, &nwritten) != com::S_OK { return 96; }
+    if stream.vtbl.seek(stream, 0i64, 0u32, &pos) != com::S_OK { return 97; }
+    nr: u64 = 0u64;
+    nw: u64 = 0u64;
+    if stream.vtbl.copy_to(stream, sink_i, 10u64, &nr, &nw) != com::S_OK { return 98; }
+    if nr != 10u64 || nw != 10u64 { return 99; }
+    if sink.len != 10u32 { return 100; }
+    k = 0usize;
+    while k < 10usize {
+        if sink.data[k] != digits[k] { return 101; }          // the OS delivered every byte, in order
+        k += 1usize;
+    }
+    if sink.writes < 1u32 { return 102; }
+    if sink.rc.get() != 1u32 { return 103; }                  // whatever the OS added it also released
+    // Our QueryInterface answers like any other.
+    mine: *void = unsafe (core::ptr_from_int(*void, 0usize));
+    if sink_i.vtbl.query_interface(sink_i, &IID_IStream, &mine) != com::S_OK { return 104; }
+    if unsafe (mine as usize) != unsafe ((&sink) as usize) { return 105; }
+    if sink.rc.get() != 2u32 { return 106; }
+    mine_i := unsafe (mine as *IUnknown);
+    ig := mine_i.release();
+    if sink_i.vtbl.query_interface(sink_i, &com::IID_IInspectable, &mine) != com::E_NOINTERFACE { return 107; }
+    if sink.rc.get() != 1u32 { return 108; }
+    // When the destination refuses, the OS reports the failure.
+    if stream.vtbl.set_size(stream, 0u64) != com::S_OK { return 109; }
+    if stream.vtbl.seek(stream, 0i64, 0u32, &pos) != com::S_OK { return 110; }
+    big: [100]u8 = .{};
+    if stream.vtbl.write(stream, unsafe ((&big[0]) as *const void), 100u32, &nwritten) != com::S_OK { return 111; }
+    if stream.vtbl.seek(stream, 0i64, 0u32, &pos) != com::S_OK { return 112; }
+    if !com::failed(stream.vtbl.copy_to(stream, sink_i, 100u64, &nr, &nw)) { return 113; }   // the sink holds 64
+    if sink.len != 64u32 { return 114; }
+    if sink.rc.get() != 1u32 { return 115; }
+    if stream.release() != 0u32 { return 116; }               // the last reference: the object is gone
+
+    // ======== the Windows Runtime: Windows.Foundation.Uri ========
+    winrt::ro_initialize(winrt::RO_MULTITHREADED) catch e { return 120; };
+    // The thread is now in the multithreaded apartment; the other kind is refused by name.
+    changed := false;
+    winrt::co_initialize(winrt::CO_APARTMENTTHREADED) catch e { if e == .changed_mode { changed = true; } };
+    if !changed { return 121; }
+    winrt::co_initialize(winrt::CO_MULTITHREADED) catch e { return 122; };   // same kind: succeeds (S_FALSE); one more uninit owed
+
+    // A class that does not exist, and an interface its factory does not have.
+    missing_z: [64]u16 = .{};
+    mn := widen("Windows.Foo.NoSuchClass", missing_z[:]);
+    missing: HStringRef = .{ .{}, 0usize };
+    missing.init(missing_z[0..mn + 1usize]) catch e { return 123; };
+    no_class := false;
+    winrt::activation_factory(missing.h, &IID_IUriFactory) catch e { if e == .class_not_registered { no_class = true; } };
+    if !no_class { return 124; }
+    no_iface := false;
+    winrt::activation_factory(cref.h, &IID_IStream) catch e { if e == .no_interface { no_iface = true; } };
+    if !no_iface { return 125; }
+
+    ff := winrt::activation_factory(cref.h, &IID_IUriFactory) catch e { return 126; };
+    factory := unsafe (ff as *IUriFactory);
+    ubuf: [128]u16 = .{};
+    un := widen("https://user:pw@example.com:8080/a/b.txt?q=1#frag", ubuf[:]);
+    ustr := winrt::hstring(ubuf[0..un]) catch e { return 127; };
+    uri: *IUri = unsafe (core::ptr_from_int(*IUri, 0usize));
+    if factory.vtbl.create_uri(factory, ustr.h, &uri) != com::S_OK { return 128; }
+    if unsafe (uri as usize) == 0usize { return 129; }
+    ustr.release();
+    if !uri_prop_is(uri, 0u32, "https") { return 130; }
+    if !uri_prop_is(uri, 1u32, "example.com") { return 131; }
+    if !uri_prop_is(uri, 2u32, "/a/b.txt") { return 132; }
+    if !uri_prop_is(uri, 3u32, "?q=1") { return 133; }
+    if !uri_prop_is(uri, 4u32, "#frag") { return 134; }
+    if !uri_prop_is(uri, 5u32, "user") { return 135; }
+    if !uri_prop_is(uri, 6u32, "pw") { return 136; }
+    if !uri_prop_is(uri, 8u32, "example.com") { return 137; }
+    port: i32 = 0;
+    if uri.vtbl.get_port(uri, &port) != com::S_OK { return 138; }
+    if port != 8080 { return 139; }
+    susp: u8 = 9u8;
+    if uri.vtbl.get_suspicious(uri, &susp) != com::S_OK { return 140; }
+    if susp != 0u8 { return 141; }
+
+    // IInspectable: the runtime class name, the trust level and the interface ids it lists.
+    insp := unsafe (uri as *IInspectable);
+    cls: usize = 0usize;
+    if insp.vtbl.get_runtime_class_name(insp, &cls) != com::S_OK { return 142; }
+    if !hstr_is(cls, "Windows.Foundation.Uri") { return 143; }
+    clsh: HString = .{ cls };
+    clsh.release();
+    trust: i32 = 77;
+    if insp.vtbl.get_trust_level(insp, &trust) != com::S_OK { return 144; }
+    if trust != com::BASE_TRUST { return 145; }
+    niids: u32 = 0u32;
+    iids: *Guid = unsafe (core::ptr_from_int(*Guid, 0usize));          // IID**: the call hands back a pointer to an array
+    if insp.vtbl.get_iids(insp, &niids, &iids) != com::S_OK { return 146; }
+    if niids == 0u32 { return 147; }
+    found := false;
+    iidv := unsafe core::slice_from_raw_parts(Guid, iids, niids as usize);
+    k = 0usize;
+    while k < iidv.len {
+        if iidv[k].eq(&IID_IUri) { found = true; }
+        k += 1usize;
+    }
+    winrt::co_task_mem_free(unsafe (iids as *void));          // the array belongs to the caller
+    if !found { return 148; }                                 // it lists IUriRuntimeClass
+
+    // Reference counting is explicit: add_ref and release move the count by one each.
+    before := uri.add_ref();
+    after := uri.release();
+    if after + 1u32 != before { return 149; }
+
+    // Another interface of the same object, and the same-object rule.
+    again: *void = unsafe (core::ptr_from_int(*void, 0usize));
+    uri_u := unsafe (uri as *IUnknown);
+    if uri_u.query_interface(&IID_IUri, &again) != com::S_OK { return 150; }
+    if unsafe (again as usize) != unsafe (uri as usize) { return 151; }
+    again_u := unsafe (again as *IUnknown);
+    ig2 := again_u.release();
+
+    // A second Uri built from the first through the interface, compared with Equals.
+    rel_z: [16]u16 = .{};
+    rn := widen("/c.txt", rel_z[:]);
+    rel := winrt::hstring(rel_z[0..rn]) catch e { return 152; };
+    combined: *IUri = unsafe (core::ptr_from_int(*IUri, 0usize));
+    if uri.vtbl.combine_uri(uri, rel.h, &combined) != com::S_OK { return 153; }
+    rel.release();
+    if !uri_prop_is(combined, 2u32, "/c.txt") { return 154; }
+    if !uri_prop_is(combined, 1u32, "example.com") { return 155; }
+    same: u8 = 9u8;
+    if uri.vtbl.equals(uri, uri, &same) != com::S_OK { return 156; }
+    if same != 1u8 { return 157; }
+    if uri.vtbl.equals(uri, combined, &same) != com::S_OK { return 158; }
+    if same != 0u8 { return 159; }
+
+    // Give everything back, in the reverse order of getting it.
+    if combined.release() != 0u32 { return 160; }
+    ruri := uri.release();
+    ff_u := unsafe (ff as *IUnknown);
+    fr := ff_u.release();
+    winrt::co_uninitialize();
+    winrt::ro_uninitialize();
+    return 42;
+}

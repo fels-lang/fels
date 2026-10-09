@@ -137,20 +137,84 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
   `.variant` comparison, and every other `==` work.
 - **Struct/aggregate equality** is not lowered ([`src/ast_prelude.zig`](src/ast_prelude.zig)).
   Reflection-driven structural diffs would unlock it.
-- **No constant aggregates in static storage.** A top-level global may only hold a
-  scalar. A struct, an array or a function pointer is rejected with "constant
-  initializer could not be folded at compile time", and there is no uninitialised
-  form either. The same shapes all work as locals, so it is storage that is missing,
-  not the types. This is the same gap as a top-level `#run` producing an aggregate,
-  and it blocks any exported data symbol — which is how CLAP and VST3 both define
-  their entry point (`extern const clap_plugin_entry_t clap_entry;`). See
-  [`examples/dll`](examples/dll/README.md).
-- **Aggregate top-level constants** — a `#run` producing a struct, slice or enum cannot
-  become a top-level constant ([`src/ir.zig`](src/ir.zig)).
-- **A `catch` handler that falls off its end is accepted.** For a non-`void` success
-  type the expression's value is then undefined; the handler should be required to
-  `return`, `fail`, `break` or `continue` (a `void` success type may fall through).
-  [`docs/04`](docs/04_error_handling.md) says so; the compiler does not yet check it.
+- **Static storage covers the common shapes, not every one.** A top-level global can hold
+  structs, arrays, function pointers, addresses of other globals, `null`, strings and
+  payload-less enum variants, and can be exported ([`docs/01`](docs/01_syntax.md)). Not yet:
+  an enum variant with a payload, an optional that is not a pointer holding a value, the
+  address of an element or field (`&TABLE[2]`), a slice of anything but a string, and an
+  uninitialised global (write `.{}`). A data export is checked by resolving it by name at run
+  time and, for a DLL linked by LLD, by a C program that uses it through the import library
+  (`__declspec(dllimport)`); a DLL linked by `gabld` has no import library.
+- **Compile-time code reads static data, with two exceptions.** A `#run` or `#assert` reads a
+  struct, array, enum or function-pointer global (read-only; [`docs/09`](docs/09_comptime.md)).
+  It cannot read a global that holds the address of another global, nor a global that another
+  `#run` computes: the VM is built before any `#run` has a value, so `#assert(TABLE[3] == 9)` on
+  `TABLE: [8]u32 = #run make();` stops with "global `TABLE` cannot be read by compile-time code".
+- **What a `#run` can return is data only.** A struct, array, enum value, function pointer,
+  string or number becomes the global's initial value. A pointer into compile-time memory, a
+  payload variant, a lambda and a slice of anything but bytes are refused with a message
+  ([`docs/09`](docs/09_comptime.md#data-at-compile-time)).
+- **Compile-time aggregates alias when copied.** `b := a; b.x = 9;` changes `a` at compile time
+  and not at run time, and the same for an array, a field copied out of a struct and a value
+  stored into an array element. (Writes to *static* data are refused, so
+  there the mistake is loud; for a local it is silent.) In-place writes to a nested aggregate
+  fail outright: `pts[1].x = 9`, `o.p.x = 9`, `a.t[1] = 9` and `g[1][0] = 9` are reported as
+  "could not be evaluated", and so is the address of an element that is itself an aggregate
+  (`p := &pts[1]; p.y`); only whole-element writes (`pts[1] = .{ 9, 8 }`) work. The VM
+  addresses an aggregate by a pointer to its block and has no copy; it needs value semantics.
+- **Compile-time `+`, `-`, `*` keep the exact result on overflow.** A debug build traps and a
+  release build wraps ([`docs/02`](docs/02_types.md#overflow-policy)); `+%`, `-%`, `*%`, `<<`,
+  `~` and `as` do match the machine at compile time.
+- **`gabbro check` cannot judge a static value only the comptime VM can compute.** A value that
+  does not fit, a missing field, a pointer to something that is not a global are reported by
+  `check` and by every build. A `#run` result or a call inside a constant is checked when the
+  module is lowered (`build`, `object`, `ir`), as is a failing `#assert`. The language server
+  analyses one document without its imports and does not run this check yet.
+- **Assigning to a function parameter has no effect.** `f :: fn(x: i32) -> i32 { x = 5; return x; }`
+  returns its argument: the write goes to a new local that shadows `x`, and every read takes the
+  parameter. The same for a field (`p.x = 50`) or the whole value of a struct parameter, and
+  `a[0] = 60` on an array parameter crashes (access violation). Present in 0.1.1. Until it is
+  fixed, copy the parameter into a local first.
+- **A local array of `fn` values crashes the code generator.** `c: [2]fn(i32) -> i32 = .{ dbl, neg };`
+  builds thin pointers for elements that are 16-byte closures (the same fault in 0.1.1). An
+  array of `extern fn(i32) -> i32`, or a global array of `fn`, works.
+- **A bare `.variant` compared with a plain enum value is wrong.** `d == .south` for a
+  payload-less `enum` is false for every value at `-O0` and true for every value at `-O2`,
+  because the bare `.south` has no type to lower from. `d == Dir.south` and `match d`
+  work. (The same comparison on a caught *error* is handled; see the changelog.)
+- **An inline error set does not parse.** `-> i32 ! { invalid, overflow }`, shown in
+  [`docs/04`](docs/04_error_handling.md), is rejected with "expected ; after expression".
+  A bare `!` (inferred set) and a named `errors` set work.
+- **The payload of a caught error has no static type.** `if e == .code |c|` binds `c`
+  as `unknown`, so it can be returned or passed on but not used in arithmetic.
+- **Slicing a zero-length array panics at `-O0`.** `none: [0]u16 = .{}; none[0..0]` reports
+  "index out of bounds"; an empty range of a non-empty array is fine.
+- **Sub-byte `#packed` fields are not bit-packed.** `u1`–`u7` fields are accepted but
+  each takes a whole byte (`PixelFormat { u5, u6, u5 }` is 3 bytes), so they cannot
+  describe a C bitfield. `core::offset_of` reports the byte the field's storage starts at.
+- **`TARGET.os`, `TARGET.arch` and `TARGET.debug` do not work as documented.** Comparisons
+  with `TARGET.os` / `TARGET.arch` are never true, `TARGET.debug` reflects how the compiler
+  was built, and `core::os` / `core::arch` describe the host rather than the build target
+  ([`docs/08`](docs/08_attributes_builtins.md)).
+- **Errors are not first-class values.** An error is inspected where it is caught
+  (`catch e { if e == .variant … }`) and only on the name `catch` bound: a callee that is
+  handed the error can hold it but not compare it (that is a compile error), it cannot be
+  returned or stored, and its payload has no static type. Mapping one back to an HRESULT or a
+  status code is therefore written at each `catch`.
+- **A dereference as a call argument is read as a type.** `f(*p)` and `g(1, *p)` fail with
+  "unknown type `p`" when the operand is a bare name: the parser takes `*Name` in an
+  argument list for a pointer type, which only a few builtins (`ptr_from_int(*T, …)`,
+  `sizeof(*T)`) and generics with explicit type arguments want. `v := *p; f(v)` is the
+  workaround. For the same reason a pointer-to-pointer type argument (`ptr_from_int(**T, …)`)
+  is refused with a message; name it through an alias.
+- **The test suite does not run Linux executables.** It cross-compiles and links the portable
+  fixtures for Linux and checks the ELF, but running them takes a Linux machine; the Linux paths
+  (the futex mutex and condition variable, static data and relocation, `std.com`) were run
+  under WSL by hand. A CI job on Linux would close this.
+- **`std.sync` and `std.winrt` are deliberately small.** `std.sync` has a mutex, a condition
+  variable and a bounded queue: no reader/writer lock, semaphore, barrier, one-shot or unbounded
+  channel. `std.winrt` has start-up, activation and `HSTRING`: no events, delegates or async, no
+  generated projection of a runtime class, no smart pointer ([`docs/07`](docs/07_stdlib.md)).
 - **Returning a capturing closure** needs an `*Arena` parameter, because the captured
   environment must outlive the function. Lambdas otherwise capture freely.
 - **`#quote` pattern fidelity** — range, string, guard and binding match patterns reflect

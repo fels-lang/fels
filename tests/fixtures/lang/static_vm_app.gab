@@ -1,0 +1,125 @@
+// Compile-time code reads static data. Every table below is a global in the image, and the
+// `#assert`s at the bottom run the same functions on the comptime VM that `main` runs on the
+// machine: if the two ever disagree the program does not build, or `main` returns the number of
+// the check that failed. It returns 42 when every check holds.
+//
+// Writes are not allowed at compile time (the VM sees the initial value, the image is what
+// runs); that refusal is covered by tests/compiler/static_data.zig.
+
+Point :: struct { x: i32, y: i32 }
+Rec   :: struct { id: u32, name: []const u8, pos: Point, tags: [3]u8, on: bool, scale: f64 }
+Mode  :: enum { fast, slow, off }
+Vtbl  :: struct { add: fn(i32, i32) -> i32, id: u32 }
+
+add :: fn(a: i32, b: i32) -> i32 { return a + b; }
+dbl :: fn(x: i32) -> i32 { return x * 2; }
+neg :: fn(x: i32) -> i32 { return 0 - x; }
+
+SQUARES: [8]u32  = .{ 0, 1, 4, 9, 16, 25, 36, 49 };
+ORIGIN:  Point   = .{ 3, 4 };
+RECS:    [2]Rec  = .{
+    .{ 1, "one", .{ 1, 2 }, .{ 7, 8, 9 }, true, 1.5 },
+    .{ 2, "two", .{ 3, 4 }, .{ 1, 2, 3 }, false, 2.5 },
+};
+MODES:   [3]Mode = .{ .off, .fast, .slow };
+VT:      Vtbl    = .{ add, 7 };
+OPS:     [2]fn(i32) -> i32 = .{ dbl, neg };
+ZEROS:   [16]u8  = .{};
+SHORT:   [6]i32  = .{ 5, 6 };
+GRID:    [2][3]i32 = .{ .{ 1, 2, 3 }, .{ 4, 5, 6 } };
+GREETING :: "hello";
+COUNT:   i32     = 41;
+
+sum_squares :: fn() -> u32 {
+    s := 0u32;
+    i := 0usize;
+    while i < SQUARES.len {
+        s += SQUARES[i];
+        i += 1;
+    }
+    return s;
+}
+
+origin_sum :: fn() -> i32 { return ORIGIN.x * 10 + ORIGIN.y; }
+rec_field :: fn(i: usize) -> u32 { return RECS[i].id * 100 + RECS[i].pos.y as u32 * 10 + RECS[i].tags[2] as u32; }
+rec_name_len :: fn(i: usize) -> usize { return RECS[i].name.len; }
+rec_flag :: fn(i: usize) -> i32 { if RECS[i].on { return 1; } return 0; }
+rec_scale :: fn() -> f64 { return RECS[0].scale + RECS[1].scale; }
+mode_is_slow :: fn(i: usize) -> bool { return MODES[i] == Mode.slow; }
+mode_by_match :: fn(i: usize) -> i32 {
+    match MODES[i] {
+        .fast => { return 1; },
+        .slow => { return 2; },
+        .off => { return 3; },
+    }
+}
+via_vtbl :: fn() -> i32 { return VT.add(20, 22) + VT.id as i32; }
+via_ops :: fn(x: i32) -> i32 { return OPS[0](x) + OPS[1](x); }
+zeros_sum :: fn() -> i32 {
+    s := 0;
+    i := 0usize;
+    while i < ZEROS.len { s += ZEROS[i] as i32; i += 1; }
+    return s;
+}
+short_sum :: fn() -> i32 {
+    s := 0;
+    i := 0usize;
+    while i < SHORT.len { s += SHORT[i]; i += 1; }
+    return s;
+}
+grid_at :: fn(r: usize, c: usize) -> i32 { return GRID[r][c]; }
+count_plus :: fn() -> i32 { return COUNT + 1; }
+greeting_len :: fn() -> usize { return GREETING.len; }
+element_by_address :: fn() -> u32 { p := &SQUARES[2]; return *p; }
+copy_then_read :: fn() -> u32 { t := SQUARES; return t[5]; }
+origin_by_address :: fn() -> i32 { p := &ORIGIN; return p.x + p.y; }
+
+#assert(sum_squares() == 140, "sum of the squares table");
+#assert(origin_sum() == 34, "struct global fields");
+#assert(rec_field(0) == 129, "nested struct and array fields of an array element");
+#assert(rec_field(1) == 243, "the second element");
+#assert(rec_name_len(1) == 3, "string field length");
+#assert(rec_flag(0) == 1, "bool field true");
+#assert(rec_flag(1) == 0, "bool field false");
+#assert(rec_scale() == 4.0, "float fields");
+#assert(mode_is_slow(2), "an enum element equals Mode.slow");
+#assert(!mode_is_slow(0), "an enum element differs from Mode.slow");
+#assert(mode_by_match(1) == 1 && mode_by_match(2) == 2 && mode_by_match(0) == 3, "match on enum elements");
+#assert(via_vtbl() == 49, "a function pointer in a struct global");
+#assert(via_ops(5) == 5, "a table of function pointers");
+#assert(zeros_sum() == 0, "a zero-filled array");
+#assert(short_sum() == 11, "a short literal is zero past its end");
+#assert(grid_at(1, 2) == 6 && grid_at(0, 1) == 2, "an array of arrays");
+#assert(count_plus() == 42, "a scalar global reads its initial value");
+#assert(greeting_len() == 5, "a string constant");
+#assert(element_by_address() == 4, "the address of an element");
+#assert(copy_then_read() == 25, "copying a table into a local reads it");
+#assert(origin_by_address() == 7, "the address of a struct global");
+#assert(SQUARES[3] == 9, "an element read straight in an #assert");
+#assert(ORIGIN.y == 4, "a field read straight in an #assert");
+#assert(SQUARES.len == 8, "the length of a static array");
+
+main :: fn() -> i32 {
+    if sum_squares() != 140 { return 1; }
+    if origin_sum() != 34 { return 2; }
+    if rec_field(0) != 129 { return 3; }
+    if rec_field(1) != 243 { return 4; }
+    if rec_name_len(1) != 3 { return 5; }
+    if rec_flag(0) != 1 { return 6; }
+    if rec_flag(1) != 0 { return 7; }
+    if rec_scale() != 4.0 { return 8; }
+    if !mode_is_slow(2) { return 9; }
+    if mode_is_slow(0) { return 10; }
+    if mode_by_match(1) != 1 || mode_by_match(2) != 2 || mode_by_match(0) != 3 { return 11; }
+    if via_vtbl() != 49 { return 12; }
+    if via_ops(5) != 5 { return 13; }
+    if zeros_sum() != 0 { return 14; }
+    if short_sum() != 11 { return 15; }
+    if grid_at(1, 2) != 6 || grid_at(0, 1) != 2 { return 16; }
+    if count_plus() != 42 { return 17; }
+    if greeting_len() != 5 { return 18; }
+    if element_by_address() != 4 { return 19; }
+    if copy_then_read() != 25 { return 20; }
+    if origin_by_address() != 7 { return 21; }
+    return 42;
+}

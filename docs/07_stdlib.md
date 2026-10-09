@@ -41,6 +41,94 @@ Safe typed-memory generic helpers.
 
 Byte-specialized aliases are provided: `eql_bytes`, `copy_bytes`, `zero`.
 
+## `std.bytes`
+Read and write fixed-width integers at an explicit offset in a byte slice, for wire
+formats and file headers where the integers sit at known offsets in a stated byte order.
+
+```gabbro
+#import std.bytes as bytes;
+
+parse :: fn(packet: []const u8) -> u32 ! bytes::BytesError {
+    id := bytes::read_u32_le(packet, 4)?;      // bytes 4..8, least significant first
+    return id;
+}
+
+build :: fn(out: []u8, length: u16) -> void ! bytes::BytesError {
+    bytes::write_u16_be(out, 0, length)?;      // bytes 0..2, most significant first
+    return;
+}
+```
+
+- **Names:** `read_<width>_<order>` and `write_<width>_<order>`, with width `u16`, `u32`
+  or `u64` and order `le` (little-endian) or `be` (big-endian); plus `read_u8` and
+  `write_u8`, which have no order. Reads are `(self: []const u8, off: usize) -> T ! BytesError`;
+  writes are `(self: []u8, off: usize, v: T) -> void ! BytesError`. A signed value is the
+  unsigned one cast: `read_u16_le(b, 0)? as i16`.
+- **Bounds are always checked**, in every build mode (plain slice indexing is checked only
+  at `-O0`). An integer that would not lie wholly inside the slice fails with
+  `.out_of_bounds`, and then nothing was read or written. The offset can be any `usize`
+  (even `usize` max); the check cannot overflow. `BytesError` is its own error set, so to
+  return a different one from a parser, handle it with `catch` (`?` needs matching sets).
+- **No alignment is assumed.** The integers are assembled from single bytes, so an odd
+  offset or a slice that starts mid-buffer is fine, and byte order does not depend on the
+  machine.
+- **Unchecked access** is `core::unaligned_read(T, ptr)` (little-endian on the supported
+  targets), for a bound you have already proven.
+- Imported by name (`#import std.bytes.{ read_u32_le };`) a function also reads as a method:
+  `packet.read_u32_le(4)?`.
+
+See `tests/fixtures/stdlib/bytes_app.gab`.
+
+## `std.utf16`
+UTF-8 ⇄ UTF-16 conversion, in plain Gabbro with no OS calls, so it behaves the same on
+every target. (Windows' `MultiByteToWideChar` / `WideCharToMultiByte` do a related job;
+nothing here depends on them, and the test suite checks the two agree on every Unicode
+scalar value.)
+
+```gabbro
+#import std.utf16 as utf16;
+#import std.heap as heap;
+
+// UTF-8 text -> a NUL-terminated wide string for a Win32 "W" function.
+to_wide :: fn(a: *heap::Arena, text: []const u8) -> []u16 ! utf16::Utf16Error {
+    return utf16::alloc_utf16z(a, text);
+}
+
+// Size first, then convert into a buffer you own.
+into_buffer :: fn(text: []const u8, buf: []u16) -> usize ! utf16::Utf16Error {
+    need := utf16::utf16_len(text)?;               // exact result length; fails on malformed input
+    if need > buf.len { fail .buffer_too_small; }
+    return utf16::utf8_to_utf16(text, buf);
+}
+```
+
+- **Representations.** UTF-8 is a `[]const u8`; nothing guarantees a string is valid UTF-8,
+  which is why every conversion validates. UTF-16 is a `[]const u16` of code units in the
+  machine's own order (no byte-order mark, no serialisation); a character above U+FFFF is a
+  surrogate pair.
+- **Functions.** Sizing: `utf16_len(src8)` and `utf8_len(src16)` give the exact size of the
+  result. Conversion into your buffer: `utf8_to_utf16(src, dst)` and `utf16_to_utf8(src,
+  dst)` return the number of units / bytes written. From an arena: `alloc_utf16(a, src)`,
+  `alloc_utf16z(a, src)` (one extra unit past the end is `0`, so `.ptr` is a Win32
+  `LPCWSTR`; the returned length excludes it) and `alloc_utf8(a, src)`.
+- **Errors (`Utf16Error`).** `.invalid_utf8`, `.invalid_utf16`, `.buffer_too_small` and,
+  for the arena functions, `.out_of_memory`. Inspect one with `e == .invalid_utf8` in a
+  `catch`.
+- **Malformed input is an error and is never repaired**; there is no replacement
+  character. UTF-8 is rejected for: a stray continuation byte, `C0`/`C1`/`F5`–`FF`, a
+  truncated sequence, a non-continuation where one is required, an overlong encoding,
+  an encoded surrogate (`ED A0`–`BF`), and anything above U+10FFFF. UTF-16 is rejected for
+  a high surrogate not followed by a low one and for a low surrogate with no high one
+  before it. U+0000 is an ordinary character.
+- **Capacity is explicit.** A conversion validates and counts first, then checks the
+  destination, then writes. If the input is malformed or `dst` is too small it fails and
+  **`dst` is not modified**. A longer-than-needed `dst` keeps its extra units as they were.
+  The arena functions allocate exactly the result (plus the terminator for `alloc_utf16z`)
+  and the arena owns it; nothing is freed.
+
+See `tests/fixtures/stdlib/utf16_app.gab` (hand-picked and exhaustive cases) and
+`utf16_win_app.gab` (agreement with the Windows APIs).
+
 ## `std.fs`
 Minimal synchronous file I/O (Windows-only currently).
 
@@ -179,8 +267,247 @@ while i < thread::cpu_count() as usize { g.spawn(core::fn_ptr(worker), cp); i +=
 g.join_all();                    // wait for all
 ```
 
-> Thread pools and channels build on a future `std.sync` (Mutex/CondVar); for now
-> coordinate with `std.atomics`. See `tests/fixtures/stdlib/thread_app.gab`.
+> Locks, waiting and a blocking queue are in [`std.sync`](#stdsync); counters and flags
+> need only `std.atomics`. See `tests/fixtures/stdlib/thread_app.gab`.
+
+## `std.sync`
+Mutual exclusion and waiting between threads, on the operating system's own primitives: a
+thread that cannot proceed sleeps in the kernel instead of polling in a loop. On Windows a `Mutex` is a
+slim reader/writer lock (`SRWLOCK`) used exclusively and a `CondVar` a `CONDITION_VARIABLE`;
+on Linux they are built on `futex(2)`. Both are one machine word kept in your own struct, so
+there is no allocation, no initialisation call and nothing to destroy: **all zero bits is the
+unlocked state**, which makes `m: Mutex = .{};` correct as a local, as a struct field and as a
+global in static storage.
+
+```gabbro
+#import std.sync.{ Mutex, CondVar };
+
+lock: Mutex = .{};
+ready: bool = false;                  // guarded by `lock`
+cv: CondVar = .{};
+
+// a waiter
+lock.lock();
+while !ready { cv.wait(&lock); }      // always in a loop: wait() can return with no signal
+lock.unlock();
+
+// a signaller
+lock.lock();
+ready = true;
+lock.unlock();
+cv.signal();
+```
+
+- **`Mutex`** — `lock()` sleeps until it holds the lock; `try_lock() -> bool` takes it only if
+  it is free right now; `unlock()` releases it. Pair `lock()` with `defer m.unlock();` to
+  release on every exit from a function.
+- **`CondVar`** — `wait(&m)` releases `m`, sleeps, and holds `m` again when it returns.
+  `wait_timeout(&m, ms) -> bool` gives up after `ms` milliseconds (0xFFFFFFFF means never) and
+  returns `false` when the time ran out. `signal()` wakes one waiter, `broadcast()` wakes all;
+  either may be called with or without the lock held.
+- **A wait can return early.** A thread may be woken by nothing (a *spurious wake-up*, which
+  both operating systems allow), and a `signal()` sent while nobody waits is forgotten. That is
+  why the condition lives in data guarded by the mutex and every wait sits in a
+  `while !condition { … }` loop, as above. `wait_timeout` returning `true` means "woken", not
+  "the condition holds".
+- **Rules.** Share a lock by address, and do not copy one that is in use. A `Mutex` is not
+  recursive — locking it again from the thread that holds it deadlocks — and unlocking one the
+  thread does not hold is undefined. Nothing is fair, and there is no ownership or poisoning
+  check. Do not move or free a lock while a thread holds it or sleeps on it: join the threads
+  first.
+
+**`Queue(T)`** is a bounded blocking FIFO for any number of producers and consumers. It is
+**bounded** by design: it owns no memory — you hand it the storage, which fixes the capacity —
+so nothing is allocated behind your back, a producer that outruns its consumers waits instead
+of exhausting memory, and there is no allocator to share between threads.
+
+```gabbro
+#import std.sync;
+
+buf: [64]i32 = .{};
+q := sync::make_queue(i32, buf[:]);     // capacity 64; `buf` must outlive every user
+
+q.push(7);                              // sleeps while the queue is full; false once closed
+v := q.pop() ?? -1;                     // sleeps while it is empty; null once closed and drained
+```
+
+- `push(item) -> bool`, `try_push(item) -> bool` (false if full, closed or capacity 0),
+  `pop() -> ?T`, `try_pop() -> ?T` (null if empty), `len()`, `capacity()`, `is_closed()`.
+- **Shutdown.** `close()` ends the queue and wakes everyone blocked on it. After it, `push` and
+  `try_push` return `false`; items already queued can still be popped, and when they run out
+  `pop` returns `null`. So a pipeline stops like this: the producers finish, the owner calls
+  `close()`, the consumers drain the queue and see `null`, the owner joins them, and only then
+  releases the storage. `close()` may be called again harmlessly.
+- **Destruction.** A `Queue` holds no resource: there is no `deinit`. What must not happen is
+  freeing or moving the storage, or the `Queue` itself, while a thread is still inside a call —
+  hence "join, then release".
+- Items leave the queue in the order they went in (with several consumers, the order in which
+  they finish is up to the scheduler). A `Queue` over empty storage can hold nothing: `push`
+  fails, `pop` waits for `close()`.
+
+There is no reader/writer lock, semaphore, barrier, one-shot or unbounded channel yet. See
+`tests/fixtures/stdlib/sync_app.gab` — contention with exact totals, a two-thread hand-off that
+must alternate strictly, a broadcast, timed waits, and many producers against many consumers with
+every item delivered exactly once.
+
+## `std.com` — COM and Windows Runtime types
+The data types of COM and the Windows Runtime, with no operating-system call, so it compiles for
+every target: `Guid`, `HRESULT`, `IUnknown` and `IInspectable` with their vtables, and a reference
+counter for objects you implement. [`std.winrt`](#stdwinrt--calling-com-and-the-windows-runtime-windows-only) is the part that calls Windows.
+
+Every layout, GUID and constant was compared with the official Windows SDK headers
+(`guiddef.h`, `winerror.h`, `unknwn.h`, `inspectable.h`, `activation.h`) by compiling them with
+clang for `x86_64-pc-windows-msvc` and printing `sizeof`, `offsetof`, each interface's `__uuidof`
+and each constant; `#assert`s in the module pin the layouts, so a wrong offset is a build error.
+
+- **`Guid`** — 16 bytes, aligned to 4: `data1: u32`, `data2: u16`, `data3: u16`, `data4: [8]u8`
+  (an IID and a CLSID are GUIDs). `eq(&other)`, `is_null()`, `format(buf) -> usize` (writes
+  `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` in upper case; `buf` needs `GUID_TEXT_LEN` = 38 bytes,
+  else `.buffer_too_small`), and `parse_guid(text)` — exactly 8-4-4-4-12 hex digits in either case,
+  with the braces or without; anything else is `.invalid_format`. The well-known ids are globals —
+  `IID_IUnknown`, `IID_IInspectable`, `IID_IAgileObject`, `IID_IActivationFactory` — passed by
+  address (`&com::IID_IUnknown`). Treat them as constants: the language has no read-only aggregate
+  yet, so nothing stops a write.
+- **HRESULT** is an `i32` (`Hresult`): negative is failure, zero or more is success (`S_FALSE` = 1
+  is a success that means "no"). The `winerror.h` codes you meet are constants (`S_OK`, `E_FAIL`,
+  `E_NOINTERFACE`, `E_INVALIDARG`, `RPC_E_CHANGED_MODE`, `REGDB_E_CLASSNOTREG`, …);
+  `succeeded(hr)`, `failed(hr)`, `facility(hr)`, `code(hr)` and `from_win32(err)`
+  (`HRESULT_FROM_WIN32`) take one apart or build one.
+- **From an HRESULT to an error.** `check(hr)` succeeds on any success code and fails with
+  `ComError` otherwise: the common codes have their own names (`.no_interface`, `.invalid_arg`,
+  `.out_of_memory`, `.class_not_registered`, `.changed_mode`, …) and any other failure is `.other`,
+  which no longer says which code it was. Keep the HRESULT if you need it.
+- **From an error back to an HRESULT** is written where the error is caught, because an error is
+  not yet a value another function can take:
+
+  ```gabbro
+  read_header(self) catch e {
+      if e == .no_interface { return E_NOINTERFACE; }
+      return E_FAIL;
+  };
+  return S_OK;
+  ```
+- **`IUnknown`** `{ vtbl }` and its vtable `{ query_interface, add_ref, release }`, with the three
+  methods on the struct; **`IInspectable`** (the base of every Windows Runtime interface) adds
+  `get_iids`, `get_runtime_class_name` and `get_trust_level`; **`IActivationFactory`** adds
+  `activate_instance`. A COM method is called through the table with the interface pointer first —
+  `p.vtbl.release(p)` — and on x86-64 Windows there is one calling convention, so any Gabbro
+  function with matching parameter and result types fits a table slot.
+- **`RefCount`** — one atomic 32-bit counter for an object you implement: `new_refcount()` starts
+  at 1 (the creator's reference), `add()` and `release()` return the new count, and a `release()`
+  that returns 0 means the object is unreferenced and yours to free.
+
+**Ownership is by reference count and nothing else owns anything.** An interface pointer a function
+hands you (an out-parameter, or what `query_interface` returns) carries one reference that is
+yours to release exactly once; a pointer you are only lent is not yours to release, and you
+`add_ref` it to keep it; releasing the last reference destroys the object and any later use is a
+crash. The counts that `add_ref` and `release` return are for diagnostics — never branch on them.
+
+**Declaring an interface** is listing its vtable in header order with `this` first, then
+asserting the offsets against the header. **Implementing one** is a struct whose first field is the
+vtable pointer, plus a vtable that is static data — a global initialised with the functions, no
+table built at run time:
+
+```gabbro
+#import std.com;
+#import std.com.{ Guid, IUnknown, IUnknownVtbl, RefCount };
+
+Counter :: struct { vtbl: *IUnknownVtbl, rc: RefCount }
+
+c_query :: fn(self: *IUnknown, iid: *const Guid, out: **void) -> i32 {
+    c := unsafe (self as *Counter);
+    if iid.eq(&com::IID_IUnknown) {
+        *out = unsafe (self as *void);
+        n := c.rc.add();                      // the pointer handed out is a new reference
+        return com::S_OK;
+    }
+    *out = unsafe (core::ptr_from_int(*void, 0usize));
+    return com::E_NOINTERFACE;
+}
+c_add_ref :: fn(self: *IUnknown) -> u32 { c := unsafe (self as *Counter); return c.rc.add(); }
+c_release :: fn(self: *IUnknown) -> u32 { c := unsafe (self as *Counter); return c.rc.release(); }
+
+COUNTER_VTBL: IUnknownVtbl = .{ c_query, c_add_ref, c_release };
+
+#entry
+main :: fn() -> i32 {
+    obj: Counter = .{ &COUNTER_VTBL, com::new_refcount() };
+    p := unsafe ((&obj) as *IUnknown);
+    n := p.add_ref();                         // 2: the caller holds a reference of its own
+    n = p.release();                          // 1
+    return 42;
+}
+```
+
+## `std.winrt` — calling COM and the Windows Runtime (Windows only)
+The part of the COM / Windows Runtime story that calls Windows: starting COM and the Runtime on a
+thread, creating objects and activating runtime classes, and `HSTRING`. It is thin on purpose —
+each function that mirrors an OS call keeps the call's shape and returns its HRESULT unchanged
+(pass it to `com::check`), the few that only return a status (`co_initialize`, `ro_initialize`) or
+have one natural result (`activation_factory`, `new_guid`) are fallible, and nothing runs on its
+own: no hidden initialisation, no thread-local state. A program that imports it for another target
+fails to link, as for any missing Win32 function. The COM entry points come from `ole32.dll` and
+the Runtime ones from `combase.dll`; the Windows SDK has no `combase.lib` (it ships those in
+`runtimeobject.lib`), so the linker driver hands LLD that library, and `gabld` imports the DLL
+directly.
+
+- **Apartments.** `co_initialize(mode)` / `ro_initialize(kind)` apply to the calling thread and each
+  success - including one that returned `S_FALSE`, "already initialised" - is paired with one
+  `co_uninitialize()` / `ro_uninitialize()` on the same thread. Initialising a thread the other way
+  fails with `.changed_mode`. Use the multithreaded kinds (`CO_MULTITHREADED`, `RO_MULTITHREADED`)
+  unless the thread pumps a message loop.
+- **Creating objects.** `co_create_instance(&clsid, CLSCTX_INPROC_SERVER, &iid, &out)` is
+  `CoCreateInstance` (HRESULT back, `*out` an owned interface pointer). `activation_factory(class_id,
+  &iid)` is `RoGetActivationFactory`: the class name as an HSTRING handle (`.h`), an owned `*IUnknown`
+  back to cast to the factory interface, `.class_not_registered` if there is no such class.
+  `activate_instance(class_id)` is `RoActivateInstance`. `new_guid()` is `CoCreateGuid`;
+  `co_task_mem_free(p)` frees what the OS allocated for you with the COM task allocator, like the
+  array `IInspectable.get_iids` returns.
+- **`HString`** — an owned `HSTRING`: `.h` is the one-pointer handle to pass to the OS (the null
+  handle is the empty string). `hstring(units)` copies UTF-16 in (`WindowsCreateString`),
+  `hstring_from_utf8(text, scratch)` converts through your `[]u16` scratch buffer first, `release()`
+  deletes it (idempotent), `duplicate()`, `len()`, `is_empty()`, `units()` (a borrowed view, valid
+  until `release()`), `eq(&other)` (case-sensitive) and `to_utf8(out)`. An HSTRING may hold zeros
+  and unpaired surrogates; `to_utf8` refuses the latter with `.invalid_utf16`.
+- **`HStringRef`** — a borrowed `HSTRING` over a buffer you already hold (no allocation, nothing to
+  release), the cheap way to pass a class name. `init(z)` takes the UTF-16 *with its terminating
+  zero*; the struct must not move after `init`, and the buffer must outlive every use of `.h`.
+
+```gabbro
+#import std.com;
+#import std.com.{ Guid, IInspectable };
+#import std.winrt;
+#import std.winrt.{ HString, HStringRef };
+#import std.utf16;
+
+#entry
+main :: fn() -> i32 {
+    winrt::ro_initialize(winrt::RO_MULTITHREADED) catch e { return 1; };
+
+    name_buf: [64]u16 = .{};
+    n := utf16::utf8_to_utf16("Windows.Foundation.Uri", name_buf[0..63]) catch e { return 2; };
+    name_buf[n] = 0u16;
+    class_name: HStringRef = .{ .{}, 0usize };
+    class_name.init(name_buf[0..n + 1usize]) catch e { return 3; };
+
+    // `IUriRuntimeClassFactory`, from windows.foundation.h
+    IID_UriFactory: Guid = .{ 0x44A9796Fu32, 0x723Eu16, 0x4FDFu16, .{ 0xA2u8, 0x18u8, 0x03u8, 0x3Eu8, 0x75u8, 0xB0u8, 0xC0u8, 0x84u8 } };
+    factory := winrt::activation_factory(class_name.h, &IID_UriFactory) catch e { return 4; };
+    ig := factory.release();                  // every pointer we are handed is ours to release
+    winrt::ro_uninitialize();
+    return 42;
+}
+```
+
+`tests/fixtures/stdlib/winrt_app.gab` goes further against the real system: GUID text and parsing
+compared with `StringFromGUID2` / `IIDFromString`; an HSTRING through every operation; the OS's
+in-memory `IStream` called through a vtable declared from `objidl.h`; a COM object written in
+Gabbro that the OS calls back (`IStream::CopyTo` writes into it); and `Windows.Foundation.Uri`
+activated and read through its interfaces, with the reference counts checked.
+
+What it does not do: no events, delegates or async, no generated projection of a runtime class (you
+declare the interfaces you call), no smart pointer — a release is a call you write, with `defer` —
+and no marshalling across apartments.
 
 ## `std.net` — networking
 TCP and UDP over Winsock2, layered across a subdirectory module so each piece stays

@@ -198,7 +198,7 @@ Flags :: struct {
 }
 ```
 
-Packed structs support sub-byte field types (`u1` through `u7`), allowing precise bit-level layout:
+Packed structs accept sub-byte field types (`u1` through `u7`), but they are **not bit-packed**: each such field occupies one whole byte. `PixelFormat` below is 3 bytes (not 16 bits), and `StatusBits` above is 3 bytes (not 8 bits). Bit-level packing is not implemented (see the roadmap's known gaps), so these types do not describe a C bitfield.
 
 ```gabbro
 #packed

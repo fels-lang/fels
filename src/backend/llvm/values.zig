@@ -293,15 +293,29 @@ pub fn coerce(
     }
 
     if (src_kind == llvm.LLVMStructTypeKind and dst_kind == llvm.LLVMStructTypeKind) {
-        // e.g. slice struct passed where another struct is expected — alloca + bitload trick
-        const tmp = llvm.LLVMBuildAlloca(builder, src_lty, "");
+        // e.g. slice struct passed where another struct is expected — alloca + bitload trick.
+        // The scratch slot goes in the entry block: an alloca elsewhere is a dynamic one, and in
+        // a loop it would grow the stack on every pass.
+        const tmp = entryScratch(builder, ctx, src_lty);
         _ = llvm.LLVMBuildStore(builder, v, tmp);
         return llvm.LLVMBuildLoad2(builder, dest_lty, tmp, "");
     }
 
     // Fallback: bitcast
-    _ = ctx;
     return llvm.LLVMBuildBitCast(builder, v, dest_lty, "");
+}
+
+/// A scratch `alloca` in the entry block of the function `builder` is currently emitting into.
+fn entryScratch(builder: llvm.LLVMBuilderRef, ctx: llvm.LLVMContextRef, ty: llvm.LLVMTypeRef) llvm.LLVMValueRef {
+    const func = llvm.LLVMGetBasicBlockParent(llvm.LLVMGetInsertBlock(builder));
+    const entry = llvm.LLVMGetEntryBasicBlock(func);
+    const b = llvm.LLVMCreateBuilderInContext(ctx);
+    defer llvm.LLVMDisposeBuilder(b);
+    if (llvm.LLVMGetFirstInstruction(entry)) |first|
+        llvm.LLVMPositionBuilderBefore(b, first)
+    else
+        llvm.LLVMPositionBuilderAtEnd(b, entry);
+    return llvm.LLVMBuildAlloca(b, ty, "");
 }
 
 /// Type-aware numeric coercion. LLVM integer types do not retain signedness,

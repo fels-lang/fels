@@ -1,0 +1,317 @@
+// std.com on its own, with no operating system call - so it runs on every target, Linux
+// included: the GUID text form and parser, the in-memory layout of a GUID, the HRESULT
+// helpers and the error names `check` gives them, the atomic RefCount under threads, and COM
+// objects written here - IUnknown, IInspectable and an activation factory with static vtables -
+// called through their interface pointers the way a foreign caller would.
+// The expected texts, numbers and offsets come from the Windows SDK headers (see the header of
+// lib/std/com.gab). Returns 42 on success; any other value names the failed check.
+#import std.com;
+#import std.com.{ Guid, IUnknown, IUnknownVtbl, IInspectable, IInspectableVtbl, IActivationFactory, IActivationFactoryVtbl, RefCount };
+#import std.thread;
+
+// byte `i` of the in-memory form of a GUID
+byte_of :: fn(g: *const Guid, i: usize) -> u8 {
+    base := unsafe ((g) as usize);
+    return unsafe (*core::ptr_from_int(*const u8, base + i));
+}
+
+// does `g` format to exactly `want`?
+formats_as :: fn(g: *const Guid, want: []const u8) -> bool {
+    buf: [64]u8 = .{};
+    n := g.format(buf[:]) catch e { return false; };
+    if n != want.len { return false; }
+    i: usize = 0usize;
+    while i < n {
+        if buf[i] != want[i] { return false; }
+        i += 1usize;
+    }
+    return true;
+}
+
+// a name for a failure HRESULT: 0 = none (success), then the position in ComError's list
+name_of :: fn(hr: i32) -> u32 {
+    r: u32 = 0u32;
+    com::check(hr) catch e {
+        if e == .not_implemented { r = 1u32; }
+        else if e == .no_interface { r = 2u32; }
+        else if e == .invalid_pointer { r = 3u32; }
+        else if e == .aborted { r = 4u32; }
+        else if e == .failed { r = 5u32; }
+        else if e == .unexpected { r = 6u32; }
+        else if e == .out_of_memory { r = 7u32; }
+        else if e == .invalid_arg { r = 8u32; }
+        else if e == .access_denied { r = 9u32; }
+        else if e == .bad_handle { r = 10u32; }
+        else if e == .bounds { r = 11u32; }
+        else if e == .changed_state { r = 12u32; }
+        else if e == .illegal_call { r = 13u32; }
+        else if e == .changed_mode { r = 14u32; }
+        else if e == .class_not_registered { r = 15u32; }
+        else if e == .not_initialized { r = 16u32; }
+        else if e == .other { r = 99u32; }
+    };
+    return r;
+}
+
+// ---- a COM object written here: IInspectable, with a class name and a trust level ----
+Thing :: struct { vtbl: *IInspectableVtbl, rc: RefCount, serial: u32 }
+destroyed: u32 = 0u32;           // how many Things have been released to zero
+
+thing_qi :: fn(self: *IInspectable, iid: *const Guid, out: **void) -> i32 {
+    t := unsafe (self as *Thing);
+    if iid.eq(&com::IID_IUnknown) || iid.eq(&com::IID_IInspectable) {
+        *out = unsafe (self as *void);
+        ig := t.rc.add();
+        return com::S_OK;
+    }
+    *out = unsafe (core::ptr_from_int(*void, 0usize));
+    return com::E_NOINTERFACE;
+}
+thing_add_ref :: fn(self: *IInspectable) -> u32 { t := unsafe (self as *Thing); return t.rc.add(); }
+thing_release :: fn(self: *IInspectable) -> u32 {
+    t := unsafe (self as *Thing);
+    n := t.rc.release();
+    if n == 0u32 { destroyed += 1u32; }
+    return n;
+}
+thing_get_iids :: fn(self: *IInspectable, count: *u32, iids: **Guid) -> i32 {
+    *count = 0u32;
+    *iids = unsafe (core::ptr_from_int(*Guid, 0usize));
+    return com::S_OK;
+}
+thing_class_name :: fn(self: *IInspectable, name: *usize) -> i32 { *name = 0usize; return com::S_OK; }   // the empty HSTRING
+thing_trust :: fn(self: *IInspectable, level: *i32) -> i32 { *level = com::FULL_TRUST; return com::S_OK; }
+
+THING_VTBL: IInspectableVtbl = .{ thing_qi, thing_add_ref, thing_release, thing_get_iids, thing_class_name, thing_trust };
+THINGS: [4]Thing = .{};          // the pool the factory hands objects out of
+next_thing: u32 = 0u32;
+
+// ---- and its activation factory ----
+Factory :: struct { vtbl: *IActivationFactoryVtbl, rc: RefCount }
+
+fac_qi :: fn(self: *IActivationFactory, iid: *const Guid, out: **void) -> i32 {
+    f := unsafe (self as *Factory);
+    if iid.eq(&com::IID_IUnknown) || iid.eq(&com::IID_IInspectable) || iid.eq(&com::IID_IActivationFactory) {
+        *out = unsafe (self as *void);
+        ig := f.rc.add();
+        return com::S_OK;
+    }
+    *out = unsafe (core::ptr_from_int(*void, 0usize));
+    return com::E_NOINTERFACE;
+}
+fac_add_ref :: fn(self: *IActivationFactory) -> u32 { f := unsafe (self as *Factory); return f.rc.add(); }
+fac_release :: fn(self: *IActivationFactory) -> u32 { f := unsafe (self as *Factory); return f.rc.release(); }
+fac_get_iids :: fn(self: *IActivationFactory, count: *u32, iids: **Guid) -> i32 { *count = 0u32; return com::S_OK; }
+fac_class_name :: fn(self: *IActivationFactory, name: *usize) -> i32 { *name = 0usize; return com::S_OK; }
+fac_trust :: fn(self: *IActivationFactory, level: *i32) -> i32 { *level = com::BASE_TRUST; return com::S_OK; }
+fac_activate :: fn(self: *IActivationFactory, out: **IInspectable) -> i32 {
+    if next_thing >= 4u32 {
+        *out = unsafe (core::ptr_from_int(*IInspectable, 0usize));
+        return com::E_OUTOFMEMORY;
+    }
+    t := &THINGS[next_thing as usize];
+    t.vtbl = &THING_VTBL;
+    t.rc = com::new_refcount();
+    t.serial = next_thing + 100u32;
+    next_thing += 1u32;
+    *out = unsafe (t as *IInspectable);
+    return com::S_OK;
+}
+
+FACTORY_VTBL: IActivationFactoryVtbl = .{ fac_qi, fac_add_ref, fac_release, fac_get_iids, fac_class_name, fac_trust, fac_activate };
+FACTORY: Factory = .{ &FACTORY_VTBL, .{ 1u32 } };
+
+// ---- RefCount hammered from several threads ----
+Counter :: struct { rc: RefCount, rounds: u32, lows: u32 }
+
+hammer :: fn(p: *void) -> u32 {
+    c := unsafe (p as *Counter);
+    i: u32 = 0u32;
+    while i < c.rounds {
+        n := c.rc.add();
+        if n < 2u32 { c.lows += 1u32; }      // another reference is held (the creator's), so never below 2
+        m := c.rc.release();
+        i += 1u32;
+    }
+    return 0u32;
+}
+
+#entry
+main :: fn() -> i32 {
+    // ======== GUID: layout ========
+    if core::sizeof(Guid) != 16usize { return 1; }
+    if core::align_of(Guid) != 4usize { return 2; }
+    // The in-memory form: Data1-Data3 little-endian, Data4 in order (guiddef.h).
+    ia := com::IID_IInspectable;
+    // {AF86E2E0-B12D-4C6A-9C5A-D7AA65101E90}
+    if byte_of(&ia, 0usize) != 0xE0u8 || byte_of(&ia, 1usize) != 0xE2u8 || byte_of(&ia, 2usize) != 0x86u8 || byte_of(&ia, 3usize) != 0xAFu8 { return 3; }
+    if byte_of(&ia, 4usize) != 0x2Du8 || byte_of(&ia, 5usize) != 0xB1u8 { return 4; }
+    if byte_of(&ia, 6usize) != 0x6Au8 || byte_of(&ia, 7usize) != 0x4Cu8 { return 5; }
+    if byte_of(&ia, 8usize) != 0x9Cu8 || byte_of(&ia, 9usize) != 0x5Au8 || byte_of(&ia, 15usize) != 0x90u8 { return 6; }
+
+    // ======== GUID: text ========
+    if !formats_as(&com::IID_IUnknown, "{00000000-0000-0000-C000-000000000046}") { return 7; }
+    if !formats_as(&com::IID_IInspectable, "{AF86E2E0-B12D-4C6A-9C5A-D7AA65101E90}") { return 8; }
+    if !formats_as(&com::IID_IAgileObject, "{94EA2B94-E9CC-49E0-C0FF-EE64CA8F5B90}") { return 9; }
+    if !formats_as(&com::IID_IActivationFactory, "{00000035-0000-0000-C000-000000000046}") { return 10; }
+    zero: Guid = .{ 0u32, 0u16, 0u16, .{} };
+    if !zero.is_null() { return 11; }
+    if com::IID_IUnknown.is_null() { return 12; }
+    if !formats_as(&zero, "{00000000-0000-0000-0000-000000000000}") { return 13; }
+    // Every digit position and both nibbles of a byte are told apart.
+    ramp: Guid = .{ 0x01234567u32, 0x89ABu16, 0xCDEFu16, .{ 0x10u8, 0x32u8, 0x54u8, 0x76u8, 0x98u8, 0xBAu8, 0xDCu8, 0xFEu8 } };
+    if !formats_as(&ramp, "{01234567-89AB-CDEF-1032-547698BADCFE}") { return 14; }
+    r1 := com::parse_guid("{01234567-89AB-CDEF-1032-547698BADCFE}") catch e { return 15; };
+    if !r1.eq(&ramp) { return 16; }
+    r2 := com::parse_guid("01234567-89ab-cdef-1032-547698badcfe") catch e { return 17; };    // no braces, lower case
+    if !r2.eq(&ramp) { return 18; }
+    r3 := com::parse_guid("{01234567-89aB-cDeF-1032-547698BaDcFe}") catch e { return 19; };  // mixed case
+    if !r3.eq(&ramp) { return 20; }
+    if ramp.eq(&com::IID_IUnknown) { return 21; }
+    nearly: Guid = .{ 0x01234567u32, 0x89ABu16, 0xCDEFu16, .{ 0x10u8, 0x32u8, 0x54u8, 0x76u8, 0x98u8, 0xBAu8, 0xDCu8, 0xFFu8 } };   // last byte differs
+    if ramp.eq(&nearly) { return 22; }
+    bad: [12][]const u8 = .{
+        "", "{}", "01234567-89AB-CDEF-1032-547698BADCF", "01234567-89AB-CDEF-1032-547698BADCFEE",
+        "{01234567-89AB-CDEF-1032-547698BADCFE", "01234567-89AB-CDEF-1032-547698BADCFE}",
+        "{01234567_89AB-CDEF-1032-547698BADCFE}", "{01234567-89AB-CDEF-1032-547698BADCFG}",
+        "{01234567-89AB-CDEF-1032-547698BADCFE }", " {01234567-89AB-CDEF-1032-547698BADCFE}",
+        "{0123456-789AB-CDEF-1032-547698BADCFE}", "0123456789ABCDEF1032547698BADCFE",
+    };
+    k: usize = 0usize;
+    while k < 12usize {
+        refused := false;
+        com::parse_guid(bad[k]) catch e { if e == .invalid_format { refused = true; } };
+        if !refused { return 23; }
+        k += 1usize;
+    }
+    short: [37]u8 = .{};
+    too_small := false;
+    ramp.format(short[:]) catch e { if e == .buffer_too_small { too_small = true; } };
+    if !too_small { return 24; }
+    exact: [38]u8 = .{};
+    en := ramp.format(exact[:]) catch e { return 25; };      // exactly GUID_TEXT_LEN bytes is enough
+    if en != 38usize { return 26; }
+
+    // ======== HRESULT ========
+    if com::S_OK != 0 || com::S_FALSE != 1 { return 27; }
+    if com::E_FAIL != 0x80004005u32 as i32 { return 28; }
+    if com::E_NOTIMPL != 0x80004001u32 as i32 { return 29; }
+    if com::E_NOINTERFACE != 0x80004002u32 as i32 { return 30; }
+    if com::E_POINTER != 0x80004003u32 as i32 { return 31; }
+    if com::E_ABORT != 0x80004004u32 as i32 { return 32; }
+    if com::E_UNEXPECTED != 0x8000FFFFu32 as i32 { return 33; }
+    if com::E_OUTOFMEMORY != 0x8007000Eu32 as i32 { return 34; }
+    if com::E_INVALIDARG != 0x80070057u32 as i32 { return 35; }
+    if com::E_ACCESSDENIED != 0x80070005u32 as i32 { return 36; }
+    if com::E_HANDLE != 0x80070006u32 as i32 { return 37; }
+    if com::E_PENDING != 0x8000000Au32 as i32 { return 38; }
+    if com::E_BOUNDS != 0x8000000Bu32 as i32 { return 39; }
+    if com::E_CHANGED_STATE != 0x8000000Cu32 as i32 { return 40; }
+    if com::E_ILLEGAL_METHOD_CALL != 0x8000000Eu32 as i32 { return 41; }
+    if com::RPC_E_CHANGED_MODE != 0x80010106u32 as i32 { return 42; }
+    if com::REGDB_E_CLASSNOTREG != 0x80040154u32 as i32 { return 43; }
+    if com::CO_E_NOTINITIALIZED != 0x800401F0u32 as i32 { return 44; }
+    if com::CLASS_E_NOAGGREGATION != 0x80040110u32 as i32 { return 45; }
+    if com::CLASS_E_CLASSNOTAVAILABLE != 0x80040111u32 as i32 { return 46; }
+    if !com::succeeded(0) || !com::succeeded(1) || !com::succeeded(2147483647) { return 47; }
+    if com::succeeded(-1) || com::succeeded(com::E_FAIL) { return 48; }
+    if !com::failed(-2147483648) || com::failed(0) { return 49; }
+    if com::facility(com::E_ACCESSDENIED) != 7u32 || com::code(com::E_ACCESSDENIED) != 5u32 { return 50; }
+    if com::facility(com::E_FAIL) != 0u32 || com::code(com::E_FAIL) != 0x4005u32 { return 51; }
+    if com::facility(com::RPC_E_CHANGED_MODE) != 1u32 || com::code(com::RPC_E_CHANGED_MODE) != 0x0106u32 { return 52; }
+    if com::facility(com::REGDB_E_CLASSNOTREG) != 4u32 { return 53; }       // FACILITY_ITF
+    if com::from_win32(5u32) != com::E_ACCESSDENIED { return 54; }
+    if com::from_win32(2u32) != 0x80070002u32 as i32 { return 55; }
+    if com::from_win32(0u32) != 0 { return 56; }
+    if com::from_win32(com::E_FAIL as u32) != com::E_FAIL { return 57; }    // already an HRESULT: unchanged
+    if name_of(0) != 0u32 || name_of(1) != 0u32 || name_of(40) != 0u32 { return 58; }       // successes are not errors
+    if name_of(com::E_NOTIMPL) != 1u32 { return 59; }
+    if name_of(com::E_NOINTERFACE) != 2u32 { return 60; }
+    if name_of(com::E_POINTER) != 3u32 { return 61; }
+    if name_of(com::E_ABORT) != 4u32 { return 62; }
+    if name_of(com::E_FAIL) != 5u32 { return 63; }
+    if name_of(com::E_UNEXPECTED) != 6u32 { return 64; }
+    if name_of(com::E_OUTOFMEMORY) != 7u32 { return 65; }
+    if name_of(com::E_INVALIDARG) != 8u32 { return 66; }
+    if name_of(com::E_ACCESSDENIED) != 9u32 { return 67; }
+    if name_of(com::E_HANDLE) != 10u32 { return 68; }
+    if name_of(com::E_BOUNDS) != 11u32 { return 69; }
+    if name_of(com::E_CHANGED_STATE) != 12u32 { return 70; }
+    if name_of(com::E_ILLEGAL_METHOD_CALL) != 13u32 { return 71; }
+    if name_of(com::RPC_E_CHANGED_MODE) != 14u32 { return 72; }
+    if name_of(com::REGDB_E_CLASSNOTREG) != 15u32 { return 73; }
+    if name_of(com::CO_E_NOTINITIALIZED) != 16u32 { return 74; }
+    if name_of(com::E_PENDING) != 99u32 { return 75; }                       // a failure without a name here
+    if name_of(-1) != 99u32 { return 76; }
+
+    // ======== RefCount ========
+    rc: RefCount = com::new_refcount();
+    if rc.get() != 1u32 { return 77; }
+    if rc.add() != 2u32 { return 78; }
+    if rc.add() != 3u32 { return 79; }
+    if rc.release() != 2u32 { return 80; }
+    if rc.release() != 1u32 { return 81; }
+    if rc.release() != 0u32 { return 82; }
+    ctr: Counter = .{ com::new_refcount(), 50000u32, 0u32 };
+    g := thread::group();
+    k = 0usize;
+    while k < 4usize {
+        g.spawn(core::fn_ptr(hammer), unsafe ((&ctr) as *void));
+        k += 1usize;
+    }
+    g.join_all();
+    if ctr.rc.get() != 1u32 { return 83; }                    // every add matched by a release: no update lost
+    if ctr.lows != 0u32 { return 84; }
+
+    // ======== a COM object written here, through its interface pointers ========
+    fp := unsafe ((&FACTORY) as *IActivationFactory);
+    if fp.vtbl.add_ref(fp) != 2u32 { return 85; }
+    if fp.add_ref() != 3u32 { return 86; }                    // the same through the methods
+    if fp.release() != 2u32 { return 87; }
+    if fp.vtbl.release(fp) != 1u32 { return 88; }
+    // QueryInterface follows the identity rule and refuses what it does not implement.
+    got: *void = unsafe (core::ptr_from_int(*void, 0usize));
+    fp_u := unsafe (fp as *IUnknown);
+    if fp_u.query_interface(&com::IID_IUnknown, &got) != com::S_OK { return 89; }
+    if unsafe (got as usize) != unsafe (fp as usize) { return 90; }
+    if FACTORY.rc.get() != 2u32 { return 91; }
+    got_u := unsafe (got as *IUnknown);
+    if got_u.release() != 1u32 { return 92; }
+    if fp_u.query_interface(&com::IID_IAgileObject, &got) != com::E_NOINTERFACE { return 93; }
+    if unsafe (got as usize) != 0usize { return 94; }
+
+    // Activate: the factory builds objects, each with its own count.
+    obj: *IInspectable = unsafe (core::ptr_from_int(*IInspectable, 0usize));
+    if fp.activate_instance(&obj) != com::S_OK { return 95; }
+    if unsafe (obj as usize) == 0usize { return 96; }
+    t0 := unsafe (obj as *Thing);
+    if t0.serial != 100u32 { return 97; }
+    if t0.rc.get() != 1u32 { return 98; }
+    trust: i32 = 77;
+    if obj.vtbl.get_trust_level(obj, &trust) != com::S_OK { return 99; }
+    if trust != com::FULL_TRUST { return 100; }
+    // An IInspectable is an IUnknown (the first three entries are the same).
+    base := obj.as_unknown();
+    if base.add_ref() != 2u32 { return 101; }
+    if base.release() != 1u32 { return 102; }
+    // A second object is a different one.
+    obj2: *IInspectable = unsafe (core::ptr_from_int(*IInspectable, 0usize));
+    if fp.activate_instance(&obj2) != com::S_OK { return 103; }
+    if unsafe (obj2 as usize) == unsafe (obj as usize) { return 104; }
+    // Releasing the last reference destroys the object, once.
+    before := destroyed;
+    if obj.release() != 0u32 { return 105; }
+    if destroyed != before + 1u32 { return 106; }
+    if obj2.release() != 0u32 { return 107; }
+    if destroyed != before + 2u32 { return 108; }
+    // The pool runs out: a failure by name, and the out-pointer is null.
+    ex: *IInspectable = unsafe (core::ptr_from_int(*IInspectable, 0usize));
+    if fp.activate_instance(&ex) != com::S_OK { return 109; }
+    ey: *IInspectable = unsafe (core::ptr_from_int(*IInspectable, 0usize));
+    if fp.activate_instance(&ey) != com::S_OK { return 110; }
+    exhausted := fp.activate_instance(&ey);
+    if exhausted != com::E_OUTOFMEMORY { return 111; }
+    if unsafe (ey as usize) != 0usize { return 112; }
+    if name_of(exhausted) != 7u32 { return 113; }
+    return 42;
+}

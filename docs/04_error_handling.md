@@ -38,10 +38,8 @@ read_file :: fn(path: []const u8) -> []u8 ! IoError {
     // ...
 }
 
-// Inline error set (declared right in the signature)
-parse :: fn(s: []const u8) -> i32 ! { invalid, overflow } {
-    // ...
-}
+// An inline error set, `-> i32 ! { invalid, overflow }`, is not accepted by the parser
+// yet (see the roadmap's known gaps); declare the set with `errors` as above.
 
 // Inferred error type (bare `!`)
 combine :: fn() -> i32 ! {
@@ -143,10 +141,22 @@ result := parse("42") catch err {
 ```
 
 The `catch` block receives the error value bound to the name you provide.
-When the success type is not `void`, the block must leave the expression —
-`return`, `fail`, `break` or `continue`. The block does not produce a value;
-for a fallback value use `??` (below). A handler that falls off its end is not
-yet diagnosed, and the result is then undefined.
+The block does not produce a value; for a fallback value use `??` (below).
+When the call has a value (`result := parse("42") catch err { … }`) the block must
+leave the expression — `return`, `fail`, `break` or `continue` — and a handler that
+can run to its end is a compile error. When the `catch` is a statement of its own, or
+the call returns `void`, there is no value to produce and the handler may simply end;
+execution then carries on after the `catch`:
+
+```gabbro
+write_all(data) catch err { failures += 1; };     // ignore the byte count; count the failure and go on
+```
+
+An error is inspected where it is caught: `err == .variant` is accepted only on the name the
+`catch` bound. A function may take an error as a parameter and pass it on, but cannot compare it
+with a variant (`fn(e: ParseError) { if e == .eof … }` is a compile error), because the variants
+of an error are numbered by the function that raised it and the callee would read them against the
+wrong numbering.
 
 ### Inspecting the error variant
 
@@ -159,6 +169,11 @@ result := parse_json_string(input, output) catch err {
     return 35;
 };
 ```
+
+`err == .variant` and `err != .variant` compare the caught error with a variant of *its own*
+error set, so the same name in two sets is told apart. Naming a variant the set does not
+have (`.secnd`) is a compile error. Comparison is the only way to inspect an error:
+`match` does not accept an error value, and it cannot be cast to an integer.
 
 ## Force Unwrap with `!!`
 

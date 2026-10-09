@@ -69,8 +69,66 @@ Struct fields keep their declaration order at their natural alignment, so a stru
 mirrors a C struct has C's size and field offsets. `#packed` removes the padding
 (`#pragma pack(1)`), and `#align(N)` is `alignas(N)`: it raises the struct's alignment and
 rounds its size up, including when the struct is a field of another struct or an array
-element. There is no `offsetof` builtin; `core::sizeof` and the difference between two
-addresses give the same answer.
+element.
+
+### Checking a layout
+
+`core::sizeof`, `core::align_of` and `core::offset_of` report the layout at compile time,
+and `#assert` turns an assumption about it into a build error:
+
+```gabbro
+WNDCLASSEXA :: struct {
+    cbSize: u32,
+    style: u32,
+    lpfnWndProc: fn(usize, u32, usize, isize) -> isize,
+    cbClsExtra: i32,
+    cbWndExtra: i32,
+    hInstance: usize,
+    hIcon: usize,
+    hCursor: usize,
+    hbrBackground: usize,
+    lpszMenuName: ?*const u8,
+    lpszClassName: ?*const u8,
+    hIconSm: usize,
+}
+
+#assert(core::sizeof(WNDCLASSEXA) == 80, "WNDCLASSEXA is 80 bytes");
+#assert(core::offset_of(WNDCLASSEXA, "lpfnWndProc") == 8, "lpfnWndProc sits at offset 8");
+#assert(core::offset_of(WNDCLASSEXA, "lpszClassName") == 64);
+```
+
+The numbers in that example are those of `windows.h` (checked with clang against the
+Windows SDK headers). More generally, the compiler's answers were compared with clang's
+layout for `x86_64-pc-windows-msvc` on structs mixing `u8`–`u64`, `f64`, `bool`, pointers,
+arrays, nesting, `#packed` and `#align`; slice and `fn` fields were compared with the layout
+LLVM emits for them.
+
+What is **guaranteed**, on the supported targets (Windows and Linux, x86-64):
+
+| Property | Guarantee |
+|---|---|
+| Field order | Declaration order; never reordered. |
+| Field alignment | Natural: `u8`/`i8`/`bool` 1, `u16`/`i16` 2, `u32`/`i32`/`f32` 4, `u64`/`i64`/`f64`, pointers and `usize` 8. |
+| Struct alignment and size | The largest field alignment; the size is a multiple of it. |
+| `#packed` | No padding; alignment 1. Sub-byte fields (`u1`–`u7`) are *not* bit-packed: each takes one whole byte. |
+| `#align(N)` | Alignment at least `N`, size rounded up to a multiple of `N`. |
+| `[]T`, `string` | 16 bytes: pointer then length. |
+| `fn(...)` as a struct field | A thin 8-byte code pointer. A standalone `fn` value is a 16-byte `{fn, env}` closure. |
+| `?*T` | An 8-byte nullable pointer. |
+
+What is **not** guaranteed, and so is not offered:
+
+- The layout of an enum, an error set or an `interface` value. A payload enum happens to be
+  a 4-byte tag followed by a byte array, but that is an implementation detail;
+  `core::align_of` and `core::offset_of` reject these types, and a struct that contains one
+  has no `offset_of` for the fields after it.
+- Opaque (`Name :: opaque;`) and other incomplete types: they have no size.
+- Anything on a 32-bit target: the table assumes 8-byte pointers and 8-byte alignment for
+  64-bit integers, which Gabbro's current targets have.
+
+`core::offset_of` takes the field as a string literal and reports the offset of a
+top-level field; for a nested one, add the offsets (`offset_of(Outer, "inner") +
+offset_of(Inner, "x")`).
 
 Gabbro has no `union`. A payload enum is a *tagged* union — a 4-byte tag in front of the
 payload — so it cannot overlay C's untagged bytes. For a union that sits inside a C
@@ -90,6 +148,65 @@ The carrier decides the union's size and alignment, so it must be at least as la
 strictly aligned as every variant. `Input :: struct { kind: u32, u: MouseInput }` is the
 Win32 `INPUT` (40 bytes, union at offset 8) because `MouseInput` is its largest variant;
 the keyboard variant is a `*KeybdInput` view of `u`.
+
+## Exporting data
+
+`#export` makes a function visible to a C host; it does the same for a global. A C host finds
+a plugin's entry point by name, and what it finds is data — CLAP's is
+`extern const clap_plugin_entry_t clap_entry;`, a struct of version numbers and function
+pointers. A global's initializer is laid out in the image at build time (see "Static
+aggregates" in [01_syntax](01_syntax.md)), so the same declaration works here:
+
+```gabbro
+Version :: struct { major: u32, minor: u32, revision: u32 }
+PluginEntry :: struct {
+    version: Version,
+    init:    fn(u32) -> u32,
+    scale:   fn(i32) -> i32,
+    deinit:  fn(),
+}
+
+#export("gab_entry")
+ENTRY: PluginEntry = .{ .{ 1u32, 2u32, 0u32 }, plugin_init, plugin_scale, plugin_deinit };
+
+#export("gab_calls")
+calls: i32 = 0;            // a plain exported global; the host reads it, the library writes it
+```
+
+`#export("name")` exports the global under `name`; a bare `#export` uses its own name. An
+immutable constant (`#export("limit") LIMIT :: 42;`) is exported too, in read-only memory. The
+`fn(...)` fields of `PluginEntry` are bare code addresses, so a C declaration with function
+pointers of the same signatures has the same layout; check that with `#assert(core::sizeof(...))`
+and `core::offset_of` (see "Checking a layout").
+
+On Windows the symbol goes in the DLL's export table, where `GetProcAddress` (or Python's
+`ctypes.c_int32.in_dll`) finds it, and the address is the global's own storage — the host and
+the library see each other's writes. [`examples/dll`](../examples/dll/README.md) is a working
+plugin-shaped library, loaded from Python. A DLL that holds addresses in its data (the function
+pointers above) carries a base-relocation table, so it works wherever the loader maps it; two
+of them can be loaded into one process. A C program can also link against the import library
+LLD writes beside the DLL and declare the data `__declspec(dllimport) extern` — `int`, an array,
+a struct of function pointers and a string all read and write correctly, and the library sees
+the program's writes (tested with a freestanding C program compiled by clang). A DLL that gabld
+links has no import library, and gabld links only DLLs that hold no address; for those, and for
+any host that prefers it, resolve the export by name.
+
+On Linux the target is a static executable, so there is no shared object to export from; `#export`
+gives the global a global symbol under its exported name, visible to a debugger or `nm`.
+
+## COM and the Windows Runtime
+
+A COM interface is a pointer to an object whose first word points to a table of function pointers,
+and every method takes the interface pointer first — which is exactly a struct with a `*Vtbl` field
+and a vtable struct of `fn(...)` fields, called as `p.vtbl.method(p, ...)`. The standard library
+supplies the shared pieces — [`std.com`](07_stdlib.md#stdcom--com-and-windows-runtime-types) for
+`Guid`, `HRESULT`, `IUnknown` and `IInspectable`, and
+[`std.winrt`](07_stdlib.md#stdwinrt--calling-com-and-the-windows-runtime-windows-only) for starting
+COM / the Runtime, creating objects and `HSTRING` — and you declare the interfaces you call, listing
+the vtable in header order and `#assert`ing its `core::offset_of` values against the header (the
+way to get them is to compile the header with clang and print `offsetof`). An object you implement
+is a struct with the vtable pointer first and a static vtable (see "Static aggregates" in
+[01_syntax](01_syntax.md)), which the operating system can call back.
 
 ## Linking
 

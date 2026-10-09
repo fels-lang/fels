@@ -90,6 +90,39 @@ test "exe: cross-compile to a static Linux ELF (format + resolved entry)" {
     try std.testing.expect(std.mem.readInt(u64, elf[24..32], .little) != 0);
 }
 
+test "exe: the portable fixtures cross-compile to static Linux ELF executables" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    // These use no Windows API, so they must keep building for Linux (running them needs a
+    // Linux machine; they are run under WSL when the toolchain is checked by hand).
+    inline for (.{
+        .{ "tests/fixtures/lang/static_data_app.gab", "elf_static_data" },
+        .{ "tests/fixtures/lang/static_vm_app.gab", "elf_static_vm" },
+        .{ "tests/fixtures/lang/static_run_app.gab", "elf_static_run" },
+        .{ "tests/fixtures/stdlib/sync_app.gab", "elf_sync" },
+        .{ "tests/fixtures/stdlib/com_app.gab", "elf_com" },
+    }) |c| {
+        const obj_path = try std.fmt.allocPrint(a, ".zig-cache/{s}.o", .{c[1]});
+        const elf_path = try std.fmt.allocPrint(a, ".zig-cache/{s}.elf", .{c[1]});
+        gabbro.compileFileWithLlvm(a, io, .{
+            .file_name = c[0],
+            .source = "",
+            .obj_path = obj_path,
+            .exe_path = elf_path,
+            .opt_level = 0, // building and linking is what is checked; -O0 keeps it quick
+            .llvm_bin = gabbro.llvm_path ++ "/bin",
+            .target_os = .linux,
+        }) catch return error.SkipZigTest; // no ld.lld: nothing to check
+        const elf = std.Io.Dir.cwd().readFileAlloc(io, elf_path, a, .unlimited) catch return error.SkipZigTest;
+        try std.testing.expectEqualSlices(u8, "\x7fELF", elf[0..4]);
+        try std.testing.expect(std.mem.readInt(u64, elf[24..32], .little) != 0); // a resolved entry point
+    }
+}
+
 test "exe: main returning 0 exits cleanly" {
     if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
@@ -1704,6 +1737,16 @@ test "exe: std.path / std.time / std.crypto / std.serde run correctly cross-modu
         .{ "tests/fixtures/stdlib/vec_app.gab", "exe_vec_app" },
         .{ "tests/fixtures/stdlib/map_app.gab", "exe_map_app" },
         .{ "tests/fixtures/stdlib/env_app.gab", "exe_env_app" },
+        .{ "tests/fixtures/stdlib/bytes_app.gab", "exe_bytes_app" },
+        .{ "tests/fixtures/stdlib/utf16_app.gab", "exe_utf16_app" },
+        .{ "tests/fixtures/stdlib/utf16_win_app.gab", "exe_utf16_win_app" },
+        .{ "tests/fixtures/lang/error_variant_eq_app.gab", "exe_error_variant_eq_app" },
+        .{ "tests/fixtures/lang/static_data_app.gab", "exe_static_data_app" },
+        .{ "tests/fixtures/lang/static_vm_app.gab", "exe_static_vm_app" },
+        .{ "tests/fixtures/lang/static_run_app.gab", "exe_static_run_app" },
+        .{ "tests/fixtures/stdlib/sync_app.gab", "exe_sync_app" },
+        .{ "tests/fixtures/stdlib/com_app.gab", "exe_com_app" },
+        .{ "tests/fixtures/stdlib/winrt_app.gab", "exe_winrt_app" },
     }) |c| {
         const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);
         try std.testing.expectEqual(@as(u32, 42), code);
@@ -1984,6 +2027,65 @@ test "exe: #align gives a struct C's alignas layout, at runtime and in #run" {
         \\    return 42;
         \\}
     , "exe_align_layout");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: core::offset_of / align_of / sizeof constants match the layout LLVM emits" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The constants are folded by the compiler's own layout model (src/layout.zig); the
+    // measurements are what LLVM really laid out, taken as address differences at run
+    // time. Any disagreement between the model and the backend shows up here.
+    const code = try compileAndRun(arena.allocator(),
+        \\Plain :: struct { a: u8, b: u32, c: u64, d: u16 }
+        \\#packed
+        \\Pk :: struct { a: u8, b: u32, c: u64, d: u16 }
+        \\#align(16)
+        \\Al :: struct { a: u32 }
+        \\Nested :: struct { x: u8, p: Plain, y: u8 }
+        \\Mixed :: struct { tag: u8, items: [3]u32, tail: u16, f: f64, flag: bool, ptr: *u8, name: []const u8, cb: fn(i32) -> i32 }
+        \\WithAl :: struct { a: u8, al: Al, z: u8 }
+        \\SIZE_PLAIN :: core::sizeof(Plain);
+        \\SIZE_PK :: core::sizeof(Pk);
+        \\SIZE_AL :: core::sizeof(Al);
+        \\SIZE_NESTED :: core::sizeof(Nested);
+        \\SIZE_MIXED :: core::sizeof(Mixed);
+        \\SIZE_WITHAL :: core::sizeof(WithAl);
+        \\addr :: fn(p: *void) -> usize { return unsafe (p as usize); }
+        \\#entry
+        \\main :: fn() -> i32 {
+        \\    if SIZE_PLAIN != core::sizeof(Plain) { return 1; }
+        \\    if SIZE_PK != core::sizeof(Pk) { return 2; }
+        \\    if SIZE_AL != core::sizeof(Al) { return 3; }
+        \\    if SIZE_NESTED != core::sizeof(Nested) { return 4; }
+        \\    if SIZE_MIXED != core::sizeof(Mixed) { return 5; }
+        \\    if SIZE_WITHAL != core::sizeof(WithAl) { return 6; }
+        \\    p: Plain = .{};
+        \\    if core::offset_of(Plain, "b") != addr(unsafe ((&p.b) as *void)) - addr(unsafe ((&p) as *void)) { return 10; }
+        \\    if core::offset_of(Plain, "c") != addr(unsafe ((&p.c) as *void)) - addr(unsafe ((&p) as *void)) { return 11; }
+        \\    if core::offset_of(Plain, "d") != addr(unsafe ((&p.d) as *void)) - addr(unsafe ((&p) as *void)) { return 12; }
+        \\    n: Nested = .{};
+        \\    if core::offset_of(Nested, "p") != addr(unsafe ((&n.p) as *void)) - addr(unsafe ((&n) as *void)) { return 20; }
+        \\    if core::offset_of(Nested, "y") != addr(unsafe ((&n.y) as *void)) - addr(unsafe ((&n) as *void)) { return 21; }
+        \\    m: Mixed = .{};
+        \\    if core::offset_of(Mixed, "items") != addr(unsafe ((&m.items) as *void)) - addr(unsafe ((&m) as *void)) { return 30; }
+        \\    if core::offset_of(Mixed, "tail") != addr(unsafe ((&m.tail) as *void)) - addr(unsafe ((&m) as *void)) { return 31; }
+        \\    if core::offset_of(Mixed, "f") != addr(unsafe ((&m.f) as *void)) - addr(unsafe ((&m) as *void)) { return 32; }
+        \\    if core::offset_of(Mixed, "flag") != addr(unsafe ((&m.flag) as *void)) - addr(unsafe ((&m) as *void)) { return 33; }
+        \\    if core::offset_of(Mixed, "ptr") != addr(unsafe ((&m.ptr) as *void)) - addr(unsafe ((&m) as *void)) { return 34; }
+        \\    if core::offset_of(Mixed, "name") != addr(unsafe ((&m.name) as *void)) - addr(unsafe ((&m) as *void)) { return 35; }
+        \\    if core::offset_of(Mixed, "cb") != addr(unsafe ((&m.cb) as *void)) - addr(unsafe ((&m) as *void)) { return 36; }
+        \\    w: WithAl = .{};
+        \\    if core::offset_of(WithAl, "al") != addr(unsafe ((&w.al) as *void)) - addr(unsafe ((&w) as *void)) { return 40; }
+        \\    if core::offset_of(WithAl, "z") != addr(unsafe ((&w.z) as *void)) - addr(unsafe ((&w) as *void)) { return 41; }
+        \\    // alignment: a value of each type sits at an address that is a multiple of align_of
+        \\    if addr(unsafe ((&p) as *void)) % core::align_of(Plain) != 0usize { return 50; }
+        \\    if addr(unsafe ((&w.al) as *void)) % core::align_of(Al) != 0usize { return 51; }
+        \\    return 42;
+        \\}
+    , "exe_layout_vs_llvm");
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
@@ -3040,4 +3142,520 @@ test "exe: a bare `.variant` in a struct literal keeps its variant" {
         \\}
     , "exe_enum_in_struct_literal");
     try std.testing.expectEqual(@as(u32, 0), code);
+}
+
+// ---------------------------------------------------------------------------------------
+// DLL data exports. `#export` on a global puts it in the export table like a function, so a
+// foreign process can read and write it. The test process plays that host: it loads the DLL,
+// resolves the names, and goes through the exported data the way a C host would.
+
+const win_dll = struct {
+    extern "kernel32" fn LoadLibraryA(name: [*:0]const u8) callconv(.winapi) ?*anyopaque;
+    extern "kernel32" fn GetProcAddress(module: *anyopaque, name: [*:0]const u8) callconv(.winapi) ?*anyopaque;
+    extern "kernel32" fn FreeLibrary(module: *anyopaque) callconv(.winapi) i32;
+};
+
+/// Compile `src` to a DLL under .zig-cache and return its path.
+fn compileDll(allocator: std.mem.Allocator, src: []const u8, label: []const u8) ![:0]const u8 {
+    const io = std.testing.io;
+    const obj_path = try std.fmt.allocPrint(allocator, ".zig-cache/{s}.o", .{label});
+    const dll_path = try std.fmt.allocPrintSentinel(allocator, ".zig-cache/{s}.dll", .{label}, 0);
+    const lib_path = gabbro.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (lib_path.len > 0) &.{lib_path} else &.{};
+    try gabbro.compileWithLlvm(allocator, io, .{
+        .file_name = label,
+        .source = src,
+        .obj_path = obj_path,
+        .exe_path = dll_path,
+        .dll = true,
+        .opt_level = 2,
+        .llvm_bin = gabbro.llvm_path ++ "/bin",
+        .lib_paths = lib_paths,
+    });
+    return dll_path;
+}
+
+/// The C view of the exported `Entry` below.
+const DllEntry = extern struct {
+    abi: u32,
+    init: *const fn (i32) callconv(.c) i32,
+    scale: *const fn (i32) callconv(.c) i32,
+    name_ptr: [*]const u8,
+    name_len: usize,
+};
+
+const dll_data_source =
+    \\Entry :: struct { abi: u32, init: fn(i32) -> i32, scale: fn(i32) -> i32, name: []const u8 }
+    \\ent_init :: fn(x: i32) -> i32 { return x + 1; }
+    \\ent_scale :: fn(x: i32) -> i32 { return x * 3; }
+    \\
+    \\#export("gab_counter")
+    \\COUNTER: i32 = 5;
+    \\#export
+    \\bare_counter: i32 = 7;
+    \\#export("gab_table")
+    \\TABLE: [4]u32 = .{ 10u32, 20u32, 30u32 };
+    \\#export("gab_entry")
+    \\ENTRY: Entry = .{ 1u32, ent_init, ent_scale, "datadll" };
+    \\#export("gab_ro")
+    \\RO :: 42;
+    \\#export
+    \\bare_fn :: fn(a: i32) -> i32 { return a + 100; }
+    \\#export("gab_bump")
+    \\bump :: fn() -> i32 { COUNTER += 1; return COUNTER; }
+;
+
+fn procAddress(lib: *anyopaque, comptime T: type, name: [*:0]const u8) !T {
+    const p = win_dll.GetProcAddress(lib, name) orelse {
+        std.debug.print("\nthe DLL does not export `{s}`\n", .{name});
+        return error.MissingExport;
+    };
+    return @ptrCast(@alignCast(p));
+}
+
+test "dll: #export on a global is a data export a host can read and write" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const dll_path = try compileDll(arena.allocator(), dll_data_source, "dll_data_exports");
+    const lib = win_dll.LoadLibraryA(dll_path.ptr) orelse return error.DllLoadFailed;
+    defer _ = win_dll.FreeLibrary(lib);
+
+    // A scalar, under the explicit name and under its own name.
+    const counter = try procAddress(lib, *i32, "gab_counter");
+    try std.testing.expectEqual(@as(i32, 5), counter.*);
+    const bare = try procAddress(lib, *i32, "bare_counter");
+    try std.testing.expectEqual(@as(i32, 7), bare.*);
+
+    // An immutable constant is exported too.
+    const ro = try procAddress(lib, *const i32, "gab_ro");
+    try std.testing.expectEqual(@as(i32, 42), ro.*);
+
+    // An array: the literal stops short, the rest is zero.
+    const table = try procAddress(lib, *[4]u32, "gab_table");
+    try std.testing.expectEqualSlices(u32, &.{ 10, 20, 30, 0 }, table);
+
+    // A struct holding function pointers and a string: the shape of a plugin's entry point.
+    // The addresses inside it were fixed up by the loader, so calling through them works.
+    const entry = try procAddress(lib, *const DllEntry, "gab_entry");
+    try std.testing.expectEqual(@as(u32, 1), entry.abi);
+    try std.testing.expectEqual(@as(i32, 42), entry.init(41));
+    try std.testing.expectEqual(@as(i32, 42), entry.scale(14));
+    try std.testing.expectEqualStrings("datadll", entry.name_ptr[0..entry.name_len]);
+
+    // An exported function is still an export, and it shares the exported global.
+    const bare_fn = try procAddress(lib, *const fn (i32) callconv(.c) i32, "bare_fn");
+    try std.testing.expectEqual(@as(i32, 101), bare_fn(1));
+    const bump = try procAddress(lib, *const fn () callconv(.c) i32, "gab_bump");
+    try std.testing.expectEqual(@as(i32, 6), bump());
+    try std.testing.expectEqual(@as(i32, 6), counter.*); // the host sees the DLL's write
+    counter.* = 50;
+    try std.testing.expectEqual(@as(i32, 51), bump()); // and the DLL sees the host's
+}
+
+test "dll: addresses held in static data follow the image to wherever it is loaded" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The same image under two names, loaded together: two images cannot both sit at one
+    // preferred base, so at least one is moved, and the pointers stored in `ENTRY` have to move
+    // with it. (A linker that writes no base-relocation table leaves them aimed at the first.)
+    const first = try compileDll(arena.allocator(), dll_data_source, "dll_reloc_a");
+    const second = try compileDll(arena.allocator(), dll_data_source, "dll_reloc_b");
+    const lib_a = win_dll.LoadLibraryA(first.ptr) orelse return error.DllLoadFailed;
+    defer _ = win_dll.FreeLibrary(lib_a);
+    const lib_b = win_dll.LoadLibraryA(second.ptr) orelse return error.DllLoadFailed;
+    defer _ = win_dll.FreeLibrary(lib_b);
+
+    const a = try procAddress(lib_a, *const DllEntry, "gab_entry");
+    const b = try procAddress(lib_b, *const DllEntry, "gab_entry");
+    try std.testing.expect(@intFromPtr(a) != @intFromPtr(b));
+    try std.testing.expect(@intFromPtr(a.init) != @intFromPtr(b.init));
+    try std.testing.expect(@intFromPtr(a.name_ptr) != @intFromPtr(b.name_ptr));
+    // Each entry's code and string lie inside its own image.
+    const span: usize = 1 << 20;
+    const base_a = @intFromPtr(lib_a);
+    const base_b = @intFromPtr(lib_b);
+    try std.testing.expect(@intFromPtr(a.init) -% base_a < span);
+    try std.testing.expect(@intFromPtr(a.name_ptr) -% base_a < span);
+    try std.testing.expect(@intFromPtr(b.init) -% base_b < span);
+    try std.testing.expect(@intFromPtr(b.name_ptr) -% base_b < span);
+    try std.testing.expectEqual(@as(i32, 42), b.init(41));
+    try std.testing.expectEqualStrings("datadll", b.name_ptr[0..b.name_len]);
+}
+
+/// A C program, with no C runtime, that uses `dll_data_source`'s exports as a C program does: the
+/// data through `__declspec(dllimport) extern` declarations, resolved by the import library LLD
+/// wrote beside the DLL (every export gets an `__imp_` symbol there, data and code alike).
+const dll_import_host_source =
+    \\typedef unsigned int u32;
+    \\typedef int i32;
+    \\typedef unsigned long long u64;
+    \\typedef struct Entry {
+    \\    u32 abi;
+    \\    i32 (*init)(i32);
+    \\    i32 (*scale)(i32);
+    \\    const unsigned char *name_ptr;
+    \\    u64 name_len;
+    \\} Entry;
+    \\
+    \\__declspec(dllimport) extern i32 gab_counter;
+    \\__declspec(dllimport) extern u32 gab_table[4];
+    \\__declspec(dllimport) extern const i32 gab_ro;
+    \\__declspec(dllimport) extern Entry gab_entry;
+    \\__declspec(dllimport) i32 gab_bump(void);
+    \\__declspec(dllimport) void __stdcall ExitProcess(u32 code);
+    \\
+    \\void start(void) {
+    \\    if (gab_counter != 5) ExitProcess(1);
+    \\    if (gab_table[1] != 20u || gab_table[3] != 0u) ExitProcess(2);
+    \\    if (gab_ro != 42) ExitProcess(3);
+    \\    if (gab_entry.abi != 1u) ExitProcess(4);
+    \\    if (gab_entry.init(41) != 42) ExitProcess(5);
+    \\    if (gab_entry.scale(14) != 42) ExitProcess(6);
+    \\    if (gab_entry.name_len != 7ull || gab_entry.name_ptr[0] != 'd') ExitProcess(7);
+    \\    if (gab_bump() != 6) ExitProcess(8);
+    \\    if (gab_counter != 6) ExitProcess(9);   /* the library's write is seen here */
+    \\    gab_counter = 50;
+    \\    if (gab_bump() != 51) ExitProcess(10);  /* and this write is seen there */
+    \\    ExitProcess(42u);
+    \\}
+    \\
+;
+
+test "dll: a C program uses data exports through the DLL's import library" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    _ = try compileDll(a, dll_data_source, "dll_import_lib");
+
+    // Compile the C host with the LLVM's own clang (a freestanding object: no headers, no CRT).
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ".zig-cache/dll_import_host.c", .data = dll_import_host_source });
+    const clang = try std.fmt.allocPrint(a, "{s}/bin/clang.exe", .{gabbro.llvm_path});
+    var cc = std.process.spawn(io, .{
+        .argv = &.{
+            clang,                          "-c",                                  "--target=x86_64-pc-windows-msvc",
+            "-ffreestanding",               "-fno-stack-protector",                "-O1",
+            "-o",                           ".zig-cache/dll_import_host.obj",      ".zig-cache/dll_import_host.c",
+        },
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch return error.SkipZigTest; // this LLVM has no clang
+    switch (cc.wait(io) catch return error.SkipZigTest) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
+        else => return error.CompileFailed,
+    }
+
+    // Link it against the DLL's import library, as a C program would.
+    const sdk = gabbro.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (sdk.len > 0) &.{ sdk, ".zig-cache" } else &.{".zig-cache"};
+    try gabbro.llvm_link.windows(a, io, .{
+        .llvm_bin = gabbro.llvm_path ++ "/bin",
+        .obj_files = &.{".zig-cache/dll_import_host.obj"},
+        .output = ".zig-cache/dll_import_host.exe",
+        .lib_paths = lib_paths,
+        .libs = &.{"dll_import_lib"},
+        .entry = "start",
+    });
+
+    var host = std.process.spawn(io, .{
+        .argv = &.{".zig-cache/dll_import_host.exe"},
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.SkipZigTest;
+    const term = try host.wait(io);
+    try std.testing.expectEqual(@as(u32, 42), switch (term) {
+        .exited => |code| @as(u32, code),
+        else => 255,
+    });
+}
+
+// gabld writes no base-relocation table, so it must not be the one to link a DLL that holds an
+// absolute address: it hands such a DLL back (any non-zero status makes the compiler use LLD,
+// which writes the table). A DLL with no absolute address stays on the fast path.
+
+/// gabld's in-memory entry point.
+const GabldLinkMem = *const fn (
+    obj_ptr: [*]const u8,
+    obj_len: usize,
+    out_path: [*:0]const u8,
+    subsystem: u32,
+    entry: [*:0]const u8,
+    stack_reserve: u64,
+    is_dll: u32,
+) callconv(.c) i32;
+
+/// Compile `src` to an object (as a DLL's would be) and return its bytes.
+fn compileDllObject(allocator: std.mem.Allocator, src: []const u8, label: []const u8) ![]u8 {
+    const io = std.testing.io;
+    const obj_path = try std.fmt.allocPrint(allocator, ".zig-cache/{s}.o", .{label});
+    try gabbro.compileWithLlvm(allocator, io, .{
+        .file_name = label,
+        .source = src,
+        .obj_path = obj_path,
+        .exe_path = null,
+        .dll = true,
+        .opt_level = 2,
+        .llvm_bin = gabbro.llvm_path ++ "/bin",
+    });
+    return std.Io.Dir.cwd().readFileAlloc(io, obj_path, allocator, .unlimited);
+}
+
+test "gabld: a DLL holding an absolute address is handed back to LLD" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+
+    // gabld itself, built as a DLL from its source.
+    const gabld_obj = ".zig-cache/gabld_for_test.o";
+    const gabld_dll = ".zig-cache/gabld_for_test.dll";
+    try gabbro.compileFileWithLlvm(a, io, .{
+        .file_name = "linker/gabld.gab",
+        .source = "",
+        .obj_path = gabld_obj,
+        .exe_path = gabld_dll,
+        .dll = true,
+        .opt_level = 2,
+        .llvm_bin = gabbro.llvm_path ++ "/bin",
+        .lib_paths = if (gabbro.windows_sdk_lib_path.len > 0) &.{gabbro.windows_sdk_lib_path} else &.{},
+    });
+    const lib = win_dll.LoadLibraryA(gabld_dll) orelse return error.DllLoadFailed;
+    defer _ = win_dll.FreeLibrary(lib);
+    const link_mem = try procAddress(lib, GabldLinkMem, "gabbro_link_mem");
+
+    // With a static pointer table: declined.
+    const with_ptrs = try compileDllObject(a, dll_data_source, "gabld_obj_ptrs");
+    try std.testing.expect(link_mem(with_ptrs.ptr, with_ptrs.len, ".zig-cache/gabld_ptrs.dll", 3, "", 0, 1) != 0);
+
+    // Plain data and functions, nothing that holds an address: linked by gabld, and it loads.
+    const plain = try compileDllObject(a,
+        \\#export("gab_counter")
+        \\COUNTER: i32 = 5;
+        \\#export("gab_table")
+        \\TABLE: [4]u32 = .{ 10u32, 20u32, 30u32 };
+        \\#export("gab_add")
+        \\add :: fn(x: i32, y: i32) -> i32 { return x + y; }
+    , "gabld_obj_plain");
+    try std.testing.expectEqual(@as(i32, 0), link_mem(plain.ptr, plain.len, ".zig-cache/gabld_plain.dll", 3, "", 0, 1));
+    const plain_lib = win_dll.LoadLibraryA(".zig-cache/gabld_plain.dll") orelse return error.DllLoadFailed;
+    defer _ = win_dll.FreeLibrary(plain_lib);
+    const counter = try procAddress(plain_lib, *i32, "gab_counter");
+    try std.testing.expectEqual(@as(i32, 5), counter.*);
+    const add = try procAddress(plain_lib, *const fn (i32, i32) callconv(.c) i32, "gab_add");
+    try std.testing.expectEqual(@as(i32, 42), add(20, 22));
+
+    // An executable is always mapped at its fixed base, so the same addresses are fine there.
+    try std.testing.expectEqual(@as(i32, 0), link_mem(with_ptrs.ptr, with_ptrs.len, ".zig-cache/gabld_ptrs_as_exe.exe", 3, "", 0, 0));
+}
+
+test "exe: && and || skip the right operand when the left decides" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Both operands used to be evaluated. A side effect on the right happened whatever the left
+    // said, and the guard `i < s.len && s[i] != x` read `s[s.len]` (it trapped at -O0). The
+    // comptime VM runs the same lowering, so the `#assert`s below check it there as well.
+    const code = try compileAndRun(arena.allocator(),
+        \\hits: i32 = 0;
+        \\DEBUG :: false;
+        \\side :: fn(v: bool) -> bool { hits += 1; return v; }
+        \\scan :: fn(s: []const u8, x: u8) -> usize {
+        \\    i: usize = 0usize;
+        \\    while i < s.len && s[i] != x { i += 1usize; }
+        \\    return i;
+        \\}
+        \\calls :: fn(p: *i32, v: bool) -> bool { *p += 1; return v; }
+        \\count :: fn() -> i32 {
+        \\    n: i32 = 0;
+        \\    r := calls(&n, false) && calls(&n, true);
+        \\    r2 := calls(&n, true) || calls(&n, true);
+        \\    if r || !r2 { return -1; }
+        \\    return n;
+        \\}
+        \\#assert(scan("abcdef", 100u8) == 3usize);
+        \\#assert(scan("abcdef", 120u8) == 6usize);
+        \\#assert(scan("", 120u8) == 0usize);
+        \\#assert(count() == 2);
+        \\main :: fn() -> i32 {
+        \\    hits = 0;
+        \\    r1 := side(false) && side(true);
+        \\    if r1 || hits != 1 { return 1; }
+        \\    hits = 0;
+        \\    r2 := side(true) && side(true);
+        \\    if !r2 || hits != 2 { return 2; }
+        \\    hits = 0;
+        \\    r3 := side(true) || side(false);
+        \\    if !r3 || hits != 1 { return 3; }
+        \\    hits = 0;
+        \\    r4 := side(false) || side(true);
+        \\    if !r4 || hits != 2 { return 4; }
+        \\    hits = 0;
+        \\    r6 := side(true) && (side(false) || side(true));
+        \\    if !r6 || hits != 3 { return 6; }
+        \\    hits = 0;
+        \\    r7 := (side(false) && side(true)) || side(true);
+        \\    if !r7 || hits != 2 { return 7; }
+        \\    hits = 0;
+        \\    r8 := side(false) && side(true) && side(true);
+        \\    if r8 || hits != 1 { return 8; }
+        \\    hits = 0;
+        \\    r9 := side(true) || side(true) || side(true);
+        \\    if !r9 || hits != 1 { return 9; }
+        \\    hits = 0;
+        \\    n: i32 = 0;
+        \\    while n < 3 && side(true) { n += 1; }
+        \\    if n != 3 || hits != 3 { return 10; }
+        \\    if scan("abcdef", 100u8) != 3usize { return 12; }
+        \\    if scan("abcdef", 120u8) != 6usize { return 13; }
+        \\    if scan("", 120u8) != 0usize { return 14; }
+        \\    hits = 0;
+        \\    if DEBUG && side(true) { return 15; }
+        \\    if hits != 0 { return 16; }
+        \\    if !(true || side(true)) { return 17; }
+        \\    if hits != 0 { return 18; }
+        \\    if !(true && side(true)) { return 19; }
+        \\    if hits != 1 { return 20; }
+        \\    return 42;
+        \\}
+    , "exe_short_circuit");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: a catch handler that runs to its end carries on after the catch" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The handler used to end in `unreachable`: it fell through into the next block by luck at
+    // -O0, and at -O2 ran off the end of the function into whatever followed. Now it continues
+    // after the `catch`, as the success path does - for a `void` call, and for a call whose value
+    // the statement throws away (`f() catch e {};`, the usual way to ignore an error).
+    const code = try compileAndRun(arena.allocator(),
+        \\Oops :: errors { a, b }
+        \\no :: fn() -> void ! Oops { fail .b; return; }
+        \\yes :: fn() -> void ! Oops { return; }
+        \\num :: fn(n: i32) -> i32 ! Oops { if n < 0 { fail .a; } return n * 2; }
+        \\main :: fn() -> i32 {
+        \\    x: i32 = 0;
+        \\    no() catch e { x += 1; };
+        \\    if x != 1 { return 1; }
+        \\    yes() catch e { x += 100; };
+        \\    if x != 1 { return 2; }
+        \\    num(-1) catch e { x += 10; };
+        \\    if x != 11 { return 3; }
+        \\    num(4) catch e { x += 1000; };
+        \\    if x != 11 { return 4; }
+        \\    no() catch e { if e == .b { x += 20; } };
+        \\    if x != 31 { return 5; }
+        \\    v := num(5) catch e { return 6; };
+        \\    if v != 10 { return 7; }
+        \\    return 42;
+        \\}
+    , "exe_catch_fallthrough");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: reading an array field of a struct in a loop does not grow the stack" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `b.order[i]` used to copy the 4000-byte array into a new stack slot on every pass — an
+    // alloca outside the entry block is a dynamic allocation nothing frees — so the loop died of
+    // STATUS_STACK_OVERFLOW after a few hundred iterations. 100000 passes now run in one slot.
+    const code = try compileAndRun(arena.allocator(),
+        \\Big :: struct { n: u32, order: [4000]u8 }
+        \\main :: fn() -> i32 {
+        \\    b: Big = .{ 0u32, .{} };
+        \\    b.order[3] = 7u8;
+        \\    total: u32 = 0u32;
+        \\    k: usize = 0usize;
+        \\    while k < 100000usize {
+        \\        total += (b.order[k % 4000usize] as u32);
+        \\        k += 1usize;
+        \\    }
+        \\    if total != 175u32 { return 1; }   // index 3 is hit 25 times: 7 * 25
+        \\    return 42;
+        \\}
+    , "exe_array_field_loop");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: #run initialises a typed global, a struct field and an array element" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A typed global's initialiser is evaluated at compile time like a constant's, so `#run`
+    // works wherever a value is wanted, mixed with constants and layout queries. (A typed scalar
+    // global used to be the only place it worked; the aggregate forms are new.)
+    const code = try compileAndRun(arena.allocator(),
+        \\Point :: struct { x: i32, y: i32 }
+        \\sq :: fn(x: i32) -> i32 { return x * x; }
+        \\greeting :: fn() -> []const u8 { return "hey"; }
+        \\W :: 5;
+        \\SIZE :: core::sizeof(Point);
+        \\TEN: i32 = #run sq(3) + 1;
+        \\P: Point = .{ #run sq(4), W * 2 };
+        \\A: [3]i32 = .{ #run sq(2), W, SIZE as i32 };
+        \\B: u64 = #run 1u64 << 40u64;
+        \\S: []const u8 = #run greeting();
+        \\main :: fn() -> i32 {
+        \\    if TEN != 10 { return 1; }
+        \\    if P.x != 16 { return 2; }
+        \\    if P.y != 10 { return 3; }
+        \\    if A[0] != 4 { return 4; }
+        \\    if A[1] != 5 { return 5; }
+        \\    if A[2] != 8 { return 6; }
+        \\    if B != 1099511627776u64 { return 7; }
+        \\    if S.len != 3usize { return 8; }
+        \\    return 42;
+        \\}
+    , "exe_run_in_static_init");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: a call through an array element, a call result or a cast pointer" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `callee(args)` where the callee is an expression: it used to type-check as unknown and
+    // compile to a call of nothing (`h[0](21)` returned 16 instead of 42).
+    const code = try compileAndRun(arena.allocator(),
+        \\dbl :: fn(x: i32) -> i32 { return x * 2; }
+        \\neg :: fn(x: i32) -> i32 { return -x; }
+        \\pick :: fn(n: bool) -> fn(i32) -> i32 { if n { return neg; } return dbl; }
+        \\HANDLERS: [2]extern fn(i32) -> i32 = .{ dbl, neg };
+        \\CLOSURES: [2]fn(i32) -> i32 = .{ dbl, neg };
+        \\Vt :: struct { ops: [2]extern fn(i32) -> i32 }
+        \\VT: Vt = .{ .{ dbl, neg } };
+        \\main :: fn() -> i32 {
+        \\    h: [2]extern fn(i32) -> i32 = .{ dbl, neg };
+        \\    if h[0](21) != 42 { return 1; }
+        \\    if h[1](21) != -21 { return 2; }
+        \\    if HANDLERS[0](21) != 42 { return 3; }
+        \\    if CLOSURES[1](4) != -4 { return 4; }
+        \\    if pick(true)(5) != -5 { return 5; }
+        \\    if pick(false)(5) != 10 { return 6; }
+        \\    if VT.ops[1](9) != -9 { return 7; }
+        \\    i := 1usize;
+        \\    if HANDLERS[i](3) != -3 { return 8; }
+        \\    raw := unsafe (core::fn_ptr(dbl) as usize);
+        \\    if (unsafe (raw as extern fn(i32) -> i32))(8) != 16 { return 9; }
+        \\    return 42;
+        \\}
+    , "exe_call_through_expression");
+    try std.testing.expectEqual(@as(u32, 42), code);
 }
