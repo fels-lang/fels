@@ -49,7 +49,7 @@ strip --strip-debug "$stage/bin/fels"
 cp "$llvm/bin/lld" "$stage/bin/ld.lld"
 strip "$stage/bin/ld.lld"
 cp -R lib "$stage/lib"
-for m in LICENSE-APACHE-2.0.txt LICENSE-GPLv3.txt NOTICE README.md; do
+for m in LICENSE-APACHE-2.0.txt LICENSE-GPLv3.txt LICENSE-LLVM.txt NOTICE README.md; do
     if [ -f "$m" ]; then cp "$m" "$stage/"; fi
 done
 cp scripts/install.sh "$stage/install.sh"
@@ -67,6 +67,7 @@ if [ -n "$libclang" ]; then
     rm -rf "$out/bindgen-stage"
     mkdir -p "$bg"
     cp "$libclang" "$bg/libclang.so"
+    cp LICENSE-LLVM.txt "$bg/"
     strip "$bg/libclang.so"
     res="$(ls -d "$llvm"/lib/clang/[0-9]* 2>/dev/null | sort -V | tail -n 1 || true)"
     if [ -n "$res" ]; then cp -R "$res/include" "$bg/clang-headers"; fi

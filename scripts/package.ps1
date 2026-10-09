@@ -71,7 +71,7 @@ if (-not (Test-Path $llvmc)) { throw "required dependency not found: $llvmc" }
 Copy-Item $llvmc (Join-Path $stage "bin")
 
 Copy-Item -Recurse (Join-Path $repo "lib") (Join-Path $stage "lib")
-foreach ($m in @("LICENSE-APACHE-2.0.txt", "LICENSE-GPLv3.txt", "NOTICE", "README.md")) {
+foreach ($m in @("LICENSE-APACHE-2.0.txt", "LICENSE-GPLv3.txt", "LICENSE-LLVM.txt", "NOTICE", "README.md")) {
     if (Test-Path (Join-Path $repo $m)) { Copy-Item (Join-Path $repo $m) $stage }
 }
 # The platform installer (adds bin/ to PATH, sets FELS_HOME). Each OS's archive
@@ -97,6 +97,7 @@ if (Test-Path $libclang) {
     if (Test-Path $bgRoot) { Remove-Item -Recurse -Force $bgRoot }
     New-Item -ItemType Directory -Force $bgDir | Out-Null
     Copy-Item $libclang $bgDir
+    Copy-Item (Join-Path $repo "LICENSE-LLVM.txt") $bgDir
     # clang resource headers: <llvm>/lib/clang/<highest>/include -> bindgen/clang-headers
     $res = Get-ChildItem (Join-Path $LlvmPath "lib/clang") -Directory -ErrorAction SilentlyContinue |
         Sort-Object { [int]($_.Name) } -Descending | Select-Object -First 1
@@ -131,6 +132,7 @@ if (Test-Path $ldlld) {
     if (Test-Path $xRoot) { Remove-Item -Recurse -Force $xRoot }
     New-Item -ItemType Directory -Force $xRoot | Out-Null
     Copy-Item $ldlld $xRoot
+    Copy-Item (Join-Path $repo "LICENSE-LLVM.txt") $xRoot
     @"
 fels linux cross-compile component (ld.lld).
 

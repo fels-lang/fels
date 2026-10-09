@@ -25,7 +25,7 @@ mkdir -p "$prefix"
 cp -R "$src/bin" "$prefix/bin"
 cp -R "$src/lib" "$prefix/lib"
 chmod +x "$prefix/bin/fels" 2>/dev/null || true
-for m in LICENSE-APACHE-2.0.txt LICENSE-GPLv3.txt NOTICE README.md VERSION.txt; do
+for m in LICENSE-APACHE-2.0.txt LICENSE-GPLv3.txt LICENSE-LLVM.txt NOTICE README.md VERSION.txt; do
     [ -f "$src/$m" ] && cp "$src/$m" "$prefix/" || true
 done
 

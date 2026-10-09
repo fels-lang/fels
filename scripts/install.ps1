@@ -28,7 +28,7 @@ foreach ($d in @("bin", "lib")) {
 New-Item -ItemType Directory -Force $Prefix | Out-Null
 Copy-Item -Recurse -Force (Join-Path $src "bin") (Join-Path $Prefix "bin")
 Copy-Item -Recurse -Force (Join-Path $src "lib") (Join-Path $Prefix "lib")
-foreach ($m in @("LICENSE-APACHE-2.0.txt", "LICENSE-GPLv3.txt", "NOTICE", "README.md", "VERSION.txt")) {
+foreach ($m in @("LICENSE-APACHE-2.0.txt", "LICENSE-GPLv3.txt", "LICENSE-LLVM.txt", "NOTICE", "README.md", "VERSION.txt")) {
     if (Test-Path (Join-Path $src $m)) { Copy-Item -Force (Join-Path $src $m) $Prefix }
 }
 
