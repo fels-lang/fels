@@ -479,30 +479,46 @@ test "static data: a run that fills a big array does not leave a slow function b
         \\T: [10000]u32 = #run fill();
         \\main :: fn() -> i32 { return (T[100] as i32) - 300; }
     ;
+    // The time is measured against a program that does nothing, built the same way before and
+    // after: the first build of a test process on a CI machine took seconds where a desktop
+    // takes milliseconds, so it is not the one that is timed.
+    const empty = "main :: fn() -> i32 { return 0; }\n";
+    const before = try timedBuild(arena.allocator(), "empty_before", empty);
+    const big = try timedBuild(arena.allocator(), "big_fill", src);
+    const after = try timedBuild(arena.allocator(), "empty_after", empty);
+    const base = @min(before.ms, after.ms);
+
+    // `T` is data in the IR as lowered (the optimiser then folds `T[100]` and drops it), and
+    // `fill` is gone from the IR emitted
+    try expectIrHas(big.lowered, "@T = global [10000 x i32] [i32 0, i32 3, i32 6");
+    try expectIrLacks(big.ir, "@fill");
+    if (big.ms > base * 4 + 500) {
+        std.debug.print("\nbuilding took {d} ms, an empty program {d} ms: expected well under four times as long\n", .{ big.ms, base });
+        return error.TestUnexpectedResult;
+    }
+}
+
+const TimedBuild = struct { ms: i64, lowered: []const u8, ir: []const u8 };
+
+/// Compile, lower and emit `src` with -O2, and how long that took: the IR as lowered and as
+/// emitted, for the checks.
+fn timedBuild(a: std.mem.Allocator, name: [:0]const u8, src: []const u8) !TimedBuild {
     var t0: i64 = 0;
     var t1: i64 = 0;
     var freq: i64 = 1;
     _ = qpc.QueryPerformanceFrequency(&freq);
     _ = qpc.QueryPerformanceCounter(&t0);
 
-    var fe = try fels.compile(arena.allocator(), "big_fill.fels", src);
-    defer fe.deinit(arena.allocator());
-    const module = try fels.lowerFrontend(arena.allocator(), fe);
-    var backend = fels.LlvmBackend.init(arena.allocator(), "big_fill");
+    var fe = try fels.compile(a, try std.fmt.allocPrint(a, "{s}.fels", .{name}), src);
+    defer fe.deinit(a);
+    const module = try fels.lowerFrontend(a, fe);
+    var backend = fels.LlvmBackend.init(a, name);
     defer backend.deinit();
     try backend.lower(module);
-    // `T` is data in the IR as lowered (the optimiser then folds `T[100]` and drops it), and
-    // `fill` is gone from the IR emitted
-    const lowered = try backend.getIrText(arena.allocator());
-    try backend.emitObject(".zig-cache/big_fill_test.o", 2);
-    const ir = try backend.getIrText(arena.allocator());
+    const lowered = try backend.getIrText(a);
+    try backend.emitObject(try std.fmt.allocPrintSentinel(a, ".zig-cache/{s}_test.o", .{name}, 0), 2);
+    const ir = try backend.getIrText(a);
 
     _ = qpc.QueryPerformanceCounter(&t1);
-    const ms = @divTrunc((t1 - t0) * 1000, freq);
-    try expectIrHas(lowered, "@T = global [10000 x i32] [i32 0, i32 3, i32 6");
-    try expectIrLacks(ir, "@fill");
-    if (ms > 5000) {
-        std.debug.print("\nbuilding took {d} ms, expected well under 5000\n", .{ms});
-        return error.TestUnexpectedResult;
-    }
+    return .{ .ms = @divTrunc((t1 - t0) * 1000, freq), .lowered = lowered, .ir = ir };
 }
