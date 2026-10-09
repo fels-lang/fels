@@ -25,6 +25,19 @@ but don't declare functions from directly.
 `std.c` provides C-ABI type aliases (`c_int`, `c_long`, `c_size_t`, `c_string`, …)
 sized for 64-bit Windows (LLP64), so signatures can read like their C originals.
 
+### Naming a binding
+
+The Gabbro name of a binding is yours. It may be the name of a function the runtime or
+another module already declares — `CloseHandle`, `GetStdHandle`, `WriteFile` — and your
+declaration then shadows it inside your own file. Several bindings can also share one C
+symbol with different signatures; each call is compiled with the signature of the
+binding it names, so a `BOOL` can be `i32` in one module and `bool` in another.
+
+```gabbro
+#extern("kernel32", "CloseHandle")
+CloseHandle :: fn(handle: usize) -> i32;      // the C header's BOOL
+```
+
 ## Passing structs by value (the raylib pattern)
 
 C UI/graphics libraries pass small aggregates by value everywhere. Declare the
@@ -49,6 +62,34 @@ This matches what a C compiler (clang/MSVC) does, so the bits arrive intact.
 Floating-point *struct members* are not special-cased on Win64 (only naked
 `float`/`double` scalar arguments use XMM), so `Vector2` correctly travels as a
 64-bit integer. See `examples/c_interop/` for a runnable round-trip.
+
+## Struct layout and C unions
+
+Struct fields keep their declaration order at their natural alignment, so a struct that
+mirrors a C struct has C's size and field offsets. `#packed` removes the padding
+(`#pragma pack(1)`), and `#align(N)` is `alignas(N)`: it raises the struct's alignment and
+rounds its size up, including when the struct is a field of another struct or an array
+element. There is no `offsetof` builtin; `core::sizeof` and the difference between two
+addresses give the same answer.
+
+Gabbro has no `union`. A payload enum is a *tagged* union — a 4-byte tag in front of the
+payload — so it cannot overlay C's untagged bytes. For a union that sits inside a C
+struct, declare the member as the union's largest, most strictly aligned variant and view
+the others through an `unsafe` pointer cast:
+
+```gabbro
+// typedef union { struct { DWORD LowPart; LONG HighPart; }; LONGLONG QuadPart; } LARGE_INTEGER;
+LargeInteger :: struct { quad: i64 }
+LowHigh      :: struct { low: u32, high: i32 }
+
+li: LargeInteger = .{ -2i64 };
+parts := unsafe ((&li) as *LowHigh);          // parts.low == 4294967294, parts.high == -1
+```
+
+The carrier decides the union's size and alignment, so it must be at least as large and as
+strictly aligned as every variant. `Input :: struct { kind: u32, u: MouseInput }` is the
+Win32 `INPUT` (40 bytes, union at offset 8) because `MouseInput` is its largest variant;
+the keyboard variant is a `*KeybdInput` view of `u`.
 
 ## Linking
 

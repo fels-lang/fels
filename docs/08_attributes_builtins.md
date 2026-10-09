@@ -7,7 +7,12 @@ Attributes modify the behavior or layout of declarations. They are prefixed with
 ### Layout Attributes
 
 - `#packed`: applied to a `struct`. Packs the fields tightly without padding. Required for structs containing sub-byte fields (like `u4`).
-- `#align(N)`: custom alignment for a `struct`. Example: `#align(64)`.
+- `#align(N)`: C's `alignas(N)` for a `struct`. `N` is an integer literal and a power of
+  two (1 to 4096). The struct is aligned to at least `N` and its size is rounded up to a
+  multiple of `N`, wherever it lives: as a local or global, as a field of another struct
+  (placed at an `N`-aligned offset), or as an array element. Example: `#align(64)`.
+  On a `#packed` struct only the size is rounded up; the fields stay back to back.
+  `core::sizeof` agrees at compile time and at run time.
 
 ### Function Attributes
 

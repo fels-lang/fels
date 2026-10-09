@@ -619,3 +619,73 @@ test "LLVM lowering applies #cold / #section / #weak / #link_name (Phase 3)" {
         try std.testing.expect(std.mem.indexOf(u8, llvm_ir, expected) != null);
     }
 }
+
+test "LLVM: bindings of one C symbol share its function but keep their own signatures" {
+    if (comptime !gabbro.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The runtime binds `CloseHandle -> bool`; the program binds the same symbol
+    // `-> i32` (the BOOL a C header spells). LLVM holds one function per symbol, so
+    // there is a single declaration, but the program's call must be built with the
+    // program's own i32 result — not the runtime's i1, which would truncate it.
+    const src =
+        \\#extern("kernel32", "CloseHandle")
+        \\CloseHandle :: fn(h: usize) -> i32;
+        \\main :: fn() -> i32 { return CloseHandle(0usize); }
+    ;
+    var fe = try gabbro.compileWithRuntime(arena.allocator(), "extern_sigs.gab", src);
+    defer fe.deinit(arena.allocator());
+    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+
+    var backend = gabbro.LlvmBackend.init(arena.allocator(), "extern_sigs");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "declare i1 @CloseHandle(i64)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "call i1 @CloseHandle(") != null); // the runtime's own use
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "call i32 @CloseHandle(i64 0)") != null); // the program's
+    // exactly one declaration of the symbol
+    var declares: usize = 0;
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, llvm_ir, from, "@CloseHandle(")) |at| : (from = at + 1) {
+        const line_start = if (std.mem.lastIndexOfScalar(u8, llvm_ir[0..at], '\n')) |nl| nl + 1 else 0;
+        if (std.mem.startsWith(u8, llvm_ir[line_start..], "declare ")) declares += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), declares);
+}
+
+test "LLVM: access to a #packed struct's fields through a pointer is align 1" {
+    if (comptime !gabbro.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // `p.b` sits at offset 1 and `p.c` at offset 5. Annotating the load as `align 4`
+    // or `align 8` (the field types' natural alignment) would be a lie to LLVM.
+    const src =
+        \\#packed
+        \\Pk :: struct { a: u8, b: u32, c: u64 }
+        \\rd :: fn(p: *Pk) -> u32 { return p.b; }
+        \\rd64 :: fn(p: *Pk) -> u64 { return p.c; }
+        \\wr :: fn(p: *Pk, v: u32) { p.b = v; }
+    ;
+    var fe = try gabbro.compile(arena.allocator(), "packed_access.gab", src);
+    defer fe.deinit(arena.allocator());
+    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+
+    var backend = gabbro.LlvmBackend.init(arena.allocator(), "packed_access");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    inline for (.{
+        "load i32, ptr %1, align 1",
+        "load i64, ptr %1, align 1",
+        "store i32 %v, ptr %1, align 1",
+    }) |expected| {
+        try std.testing.expect(std.mem.indexOf(u8, llvm_ir, expected) != null);
+    }
+}

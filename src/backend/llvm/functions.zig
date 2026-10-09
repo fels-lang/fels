@@ -72,8 +72,23 @@ fn declareOne(cg: *ModuleCg, func: ir.IrFunction) !void {
         break :blk try types_mod.fnType(cg, func);
     };
 
-    const name_z = try cg.allocator.dupeZ(u8, func.name);
+    // An `#extern` function's LLVM symbol is its C symbol. More than one declaration
+    // may bind the same symbol (a user's `CloseHandle` beside the runtime's), each
+    // with its own IR name and signature, but LLVM holds one function per symbol:
+    // later declarations share it and remember their own function type, which their
+    // call sites use (see `fnTypeOf`).
+    const symbol = func.extern_name orelse func.name;
+    const name_z = try cg.allocator.dupeZ(u8, symbol);
     defer cg.allocator.free(name_z);
+
+    if (func.extern_name != null) {
+        if (llvm.LLVMGetNamedFunction(cg.mod, name_z)) |existing| {
+            try cg.fn_types.put(func.name, fn_ty);
+            if (abi_sig) |sig| try cg.fn_abi.put(func.name, sig);
+            try cg.fn_decls.put(func.name, existing);
+            return;
+        }
+    }
 
     const lv = llvm.LLVMAddFunction(cg.mod, name_z, fn_ty);
 

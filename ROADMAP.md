@@ -147,6 +147,10 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
   [`examples/dll`](examples/dll/README.md).
 - **Aggregate top-level constants** — a `#run` producing a struct, slice or enum cannot
   become a top-level constant ([`src/ir.zig`](src/ir.zig)).
+- **A `catch` handler that falls off its end is accepted.** For a non-`void` success
+  type the expression's value is then undefined; the handler should be required to
+  `return`, `fail`, `break` or `continue` (a `void` success type may fall through).
+  [`docs/04`](docs/04_error_handling.md) says so; the compiler does not yet check it.
 - **Returning a capturing closure** needs an `*Arena` parameter, because the captured
   environment must outlive the function. Lambdas otherwise capture freely.
 - **`#quote` pattern fidelity** — range, string, guard and binding match patterns reflect

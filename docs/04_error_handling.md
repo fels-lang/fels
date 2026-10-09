@@ -143,8 +143,10 @@ result := parse("42") catch err {
 ```
 
 The `catch` block receives the error value bound to the name you provide.
-The block must either return a value compatible with the success type, or
-diverge (e.g., `return`, `fail`, `break`).
+When the success type is not `void`, the block must leave the expression —
+`return`, `fail`, `break` or `continue`. The block does not produce a value;
+for a fallback value use `??` (below). A handler that falls off its end is not
+yet diagnosed, and the result is then undefined.
 
 ### Inspecting the error variant
 

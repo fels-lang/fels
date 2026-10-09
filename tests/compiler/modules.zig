@@ -120,6 +120,88 @@ test "modules: two modules may define the same name (collision mangling)" {
     try std.testing.expectEqual(@as(usize, 2), greets);
 }
 
+test "modules: two modules may bind one C symbol under the same name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Each module declares its own `GetTickCount` binding of the same kernel32
+    // symbol, with a different return width. Neither may be reported as a
+    // duplicate, and each keeps its own declaration (own IR name and signature).
+    const a =
+        \\#extern("kernel32", "GetTickCount")
+        \\pub GetTickCount :: fn() -> u32;
+        \\pub ticks :: fn() -> u32 { return GetTickCount(); }
+    ;
+    const b =
+        \\#extern("kernel32", "GetTickCount")
+        \\pub GetTickCount :: fn() -> u64;
+        \\pub ticks_wide :: fn() -> u64 { return GetTickCount(); }
+    ;
+    const main =
+        \\#import a;
+        \\#import b;
+        \\main :: fn() -> i32 {
+        \\    if a::ticks() == 0u32 && b::ticks_wide() == 0u64 { return 1; }
+        \\    return 0;
+        \\}
+    ;
+    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "a.gab", .source = a },
+        .{ .file_name = "b.gab", .source = b },
+        .{ .file_name = "main.gab", .source = main },
+    });
+    defer fe.deinit(arena.allocator());
+
+    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
+    try gabbro.ir_mod.validateModule(m);
+
+    // Two extern declarations of one C symbol: distinct IR names, same `extern_name`.
+    var first: ?[]const u8 = null;
+    var bound: usize = 0;
+    for (m.functions) |f| {
+        const sym = f.extern_name orelse continue;
+        if (!std.mem.eql(u8, sym, "GetTickCount")) continue;
+        bound += 1;
+        if (first) |name| try std.testing.expect(!std.mem.eql(u8, name, f.name));
+        first = f.name;
+    }
+    try std.testing.expectEqual(@as(usize, 2), bound);
+}
+
+test "modules: a user #extern and constant may reuse names the runtime declares" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The embedded runtime declares `CloseHandle` (-> bool), `GetStdHandle` and the
+    // constant `STD_OUTPUT_HANDLE`. A program binding the same Win32 names itself
+    // used to fail with "duplicate top-level declaration" for something it never
+    // wrote; its own declarations must now shadow the runtime's inside its own file.
+    const src =
+        \\#extern("kernel32", "CloseHandle")
+        \\CloseHandle :: fn(h: usize) -> i32;
+        \\#extern("kernel32", "GetStdHandle")
+        \\GetStdHandle :: fn(n: i32) -> usize;
+        \\STD_OUTPUT_HANDLE :: -11i32;
+        \\main :: fn() -> i32 {
+        \\    h := GetStdHandle(STD_OUTPUT_HANDLE);
+        \\    return CloseHandle(h);
+        \\}
+    ;
+    var fe = try gabbro.compileWithRuntime(arena.allocator(), "user.gab", src);
+    defer fe.deinit(arena.allocator());
+
+    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
+    try gabbro.ir_mod.validateModule(m);
+
+    // The runtime's `CloseHandle` and the user's are two declarations of one symbol.
+    var bound: usize = 0;
+    for (m.functions) |f| {
+        const sym = f.extern_name orelse continue;
+        if (std.mem.eql(u8, sym, "CloseHandle")) bound += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), bound);
+}
+
 test "modules: cross-module UFCS finds a method in the type's module" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

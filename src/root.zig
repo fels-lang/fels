@@ -52,6 +52,7 @@ pub const Ty = sema.Ty;
 pub const TypeEnv = sema.TypeEnv;
 pub const IrModule = ir.IrModule;
 pub const lowerFrontend = ir.lowerFrontend;
+pub const layout = @import("layout.zig");
 pub const Backend = backend.Backend;
 pub const BasaltBackend = basalt.BasaltBackend;
 

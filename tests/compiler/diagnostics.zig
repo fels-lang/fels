@@ -232,3 +232,51 @@ test "diagnostics: invalid integer/float literal width suffix is reported" {
     try std.testing.expect((try firstError(a,
         "main :: fn() -> i32 { return 0xABC; }")) == null);
 }
+
+test "diagnostics: #align must be a power-of-two integer literal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Anything else names a layout that does not exist, so it is an error rather
+    // than a silently ignored attribute.
+    const bad = [_][]const u8{
+        "#align(3)\nS :: struct { a: u32 }",
+        "#align(0)\nS :: struct { a: u32 }",
+        "#align(x)\nS :: struct { a: u32 }",
+        "#align\nS :: struct { a: u32 }",
+        "#align(8192)\nS :: struct { a: u32 }",
+    };
+    for (bad) |src| {
+        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_align.gab", src));
+    }
+    var ok = try gabbro.compile(arena.allocator(), "ok_align.gab", "#align(64)\nS :: struct { a: u32 }");
+    ok.deinit(arena.allocator());
+}
+
+test "diagnostics: the address of a #packed struct's field is rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A packed field can sit at any byte offset and a `*T` has no way to say so.
+    // (docs/02_types.md has always said this; the compiler used to accept it.)
+    const decl = "#packed\nPk :: struct { a: u8, b: u32, arr: [4]u8, inner: Inner }\n#packed\nInner :: struct { x: u16 }\n";
+    const bad = [_][]const u8{
+        "main :: fn() -> i32 { p: Pk = .{}; r := &p.b; return 0; }",
+        "main :: fn() -> i32 { p: Pk = .{}; r := &p.arr[1]; return 0; }",
+        "main :: fn() -> i32 { p: Pk = .{}; r := &p.inner.x; return 0; }",
+        "f :: fn(p: *Pk) -> i32 { r := &p.b; return 0; }",
+    };
+    for (bad) |body| {
+        const src = try std.mem.concat(arena.allocator(), u8, &.{ decl, body });
+        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "packed_addr.gab", src));
+    }
+    // The whole struct's address, by-value field access, and a plain struct's field
+    // address are all fine.
+    const ok = [_][]const u8{
+        "main :: fn() -> i32 { p: Pk = .{}; r := &p; return (p.b + r.b) as i32; }",
+        "Plain :: struct { a: u8, b: u32 }\nmain :: fn() -> i32 { q: Plain = .{}; r := &q.b; return 0; }",
+    };
+    for (ok) |body| {
+        const src = try std.mem.concat(arena.allocator(), u8, &.{ decl, body });
+        var fe = try gabbro.compile(arena.allocator(), "packed_ok.gab", src);
+        fe.deinit(arena.allocator());
+    }
+}

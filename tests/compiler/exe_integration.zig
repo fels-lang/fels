@@ -1867,6 +1867,126 @@ test "exe: #extern links against its C symbol (2nd arg), not its gabbro name" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: a program may bind Win32 names the runtime also declares" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: the embedded runtime declares `CloseHandle`, `GetStdHandle`,
+    // `STD_OUTPUT_HANDLE` and more under their bare names, so a program binding the same
+    // names failed with "duplicate top-level declaration". The program's own
+    // declarations (here with BOOL spelled `i32`, unlike the runtime's `bool`) must
+    // win inside its own file and link against the one kernel32 symbol.
+    const code = try compileAndRun(arena.allocator(),
+        \\#extern("kernel32", "GetStdHandle") GetStdHandle :: fn(n: i32) -> usize;
+        \\#extern("kernel32", "CloseHandle")  CloseHandle  :: fn(h: usize) -> i32;
+        \\STD_OUTPUT_HANDLE :: -11i32;
+        \\#entry
+        \\main :: fn() -> i32 {
+        \\    h := GetStdHandle(STD_OUTPUT_HANDLE);
+        \\    bad := CloseHandle(0usize);   // not a handle: FALSE
+        \\    return 42 + bad;
+        \\}
+    , "exe_extern_runtime_names");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: `??` and `!!` on a fallible use the success value or the default" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: sema accepted `T ! E ?? d` (and `!!`), but the lowering read the
+    // value as an optional — so a failure yielded stale data or the raw error tag
+    // instead of `d`. Also covers several `??` of different result types in one
+    // function (they used to share one temp local, so the second took the first's
+    // type) and a bare literal default, which has no type of its own.
+    const code = try compileAndRun(arena.allocator(),
+        \\Err :: errors { bad, short }
+        \\P :: struct { x: i32, y: i32 }
+        \\f :: fn(x: i32) -> i32 ! Err {
+        \\    if x == 0 { fail .bad; }
+        \\    if x == 1 { fail .short; }
+        \\    return x * 10;
+        \\}
+        \\name_of :: fn(x: i32) -> []const u8 ! Err { if x == 0 { fail .short; } return "named"; }
+        \\pt :: fn(x: i32) -> P ! Err { if x == 0 { fail .bad; } return .{ x, x + 1 }; }
+        \\opt :: fn(x: i32) -> ?P { if x == 0 { return null; } return .{ x, x + 1 }; }
+        \\ct :: fn() -> i32 { return (f(5) ?? 7) + (f(0) ?? 7); }
+        \\CT :: #run ct();
+        \\#entry
+        \\main :: fn() -> i32 {
+        \\    if (f(5) ?? 99) != 50 { return 1; }
+        \\    if (f(0) ?? 99) != 99 { return 2; }
+        \\    if (f(1) ?? 99) != 99 { return 3; }
+        \\    s := name_of(0) ?? "dflt";
+        \\    if s.len != 4 { return 4; }
+        \\    t := name_of(1) ?? "dflt";
+        \\    if t.len != 5 { return 5; }
+        \\    p := pt(2) ?? .{ 9, 9 };
+        \\    q := pt(0) ?? .{ 9, 9 };
+        \\    if p.y != 3 || q.y != 9 { return 6; }
+        \\    r := opt(2) ?? .{ 9, 9 };
+        \\    u := opt(0) ?? .{ 9, 9 };
+        \\    if r.y != 3 || u.y != 9 { return 7; }
+        \\    if CT != 57 { return 8; }
+        \\    if f(6)!! != 60 { return 9; }
+        \\    return 42;
+        \\}
+    , "exe_fallible_coalesce");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
+test "exe: #align gives a struct C's alignas layout, at runtime and in #run" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: `#align(N)` only raised the alignment of the variable holding the
+    // struct; `sizeof` stayed natural and a nested field was not moved. A struct that
+    // `bindgen` emitted for a C union (`#align(8)` over `[8]u8`) was therefore placed
+    // at offset 4 inside its parent, not 8. Also: the comptime VM summed field sizes
+    // with no padding at all, so `#run core::sizeof(S)` disagreed with the program.
+    const code = try compileAndRun(arena.allocator(),
+        \\Plain :: struct { a: u8, b: u32, c: u64, d: u16 }
+        \\#packed
+        \\Pk :: struct { a: u8, b: u32, c: u64, d: u16 }
+        \\#align(16)
+        \\Al :: struct { a: u32 }
+        \\#packed
+        \\#align(8)
+        \\PkAl :: struct { a: u8, b: u32 }
+        \\#align(8)
+        \\Blob :: struct { _bytes: [8]u8 }
+        \\Outer :: struct { a: u32, b: Blob }
+        \\Pair :: struct { x: u8, al: Al, y: u8 }
+        \\Holder :: struct { items: [3]Al }
+        \\CT_PLAIN :: #run core::sizeof(Plain);
+        \\CT_PK    :: #run core::sizeof(Pk);
+        \\CT_AL    :: #run core::sizeof(Al);
+        \\CT_OUTER :: #run core::sizeof(Outer);
+        \\CT_PAIR  :: #run core::sizeof(Pair);
+        \\#entry
+        \\main :: fn() -> i32 {
+        \\    if core::sizeof(Plain) != 24 || CT_PLAIN != 24 { return 1; }
+        \\    if core::sizeof(Pk) != 15 || CT_PK != 15 { return 2; }
+        \\    if core::sizeof(Al) != 16 || CT_AL != 16 { return 3; }
+        \\    if core::sizeof(PkAl) != 8 { return 4; }
+        \\    if core::sizeof(Outer) != 16 || CT_OUTER != 16 { return 5; }
+        \\    if core::sizeof(Pair) != 48 || CT_PAIR != 48 { return 6; }
+        \\    if core::sizeof(Holder) != 48 { return 7; }
+        \\    o: Outer = .{};
+        \\    off_b := unsafe ((&o.b) as usize) - unsafe ((&o) as usize);
+        \\    if off_b != 8usize { return 8; }
+        \\    p: Pair = .{};
+        \\    off_al := unsafe ((&p.al) as usize) - unsafe ((&p) as usize);
+        \\    if off_al != 16usize { return 9; }
+        \\    return 42;
+        \\}
+    , "exe_align_layout");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
+
 test "exe: generic fn instantiated for two distinct struct types stays distinct" {
     if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

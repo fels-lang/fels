@@ -54,6 +54,10 @@ pub const ModuleCg = struct {
     struct_alignments: std.StringHashMap(u32),
     /// Declared LLVM functions, keyed by mangled/extern name.
     fn_decls: std.StringHashMap(llvm.LLVMValueRef),
+    /// Own LLVM function type of a declaration that shares another's LLVM function
+    /// (several `#extern` bindings of one C symbol). Absent for every declaration
+    /// that owns its function, whose type is read off the function itself.
+    fn_types: std.StringHashMap(llvm.LLVMTypeRef),
     /// C-ABI lowering for `#extern` functions whose by-value aggregate params or
     /// return need Win64 coercion. Keyed by function name; consulted at call
     /// sites. Only non-trivial signatures are recorded (scalar externs stay on
@@ -143,6 +147,7 @@ pub const ModuleCg = struct {
             .struct_fields = std.StringHashMap([]StructField).init(allocator),
             .struct_alignments = std.StringHashMap(u32).init(allocator),
             .fn_decls = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
+            .fn_types = std.StringHashMap(llvm.LLVMTypeRef).init(allocator),
             .fn_abi = std.StringHashMap(abi.FnAbi).init(allocator),
             .global_decls = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
             .global_ir_types = std.StringHashMap(ir.IrType).init(allocator),
@@ -170,6 +175,7 @@ pub const ModuleCg = struct {
         self.struct_types.deinit();
         self.struct_alignments.deinit();
         self.fn_decls.deinit();
+        self.fn_types.deinit();
         var abi_it = self.fn_abi.valueIterator();
         while (abi_it.next()) |v| v.deinit(self.allocator);
         self.fn_abi.deinit();

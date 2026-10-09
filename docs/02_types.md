@@ -210,7 +210,7 @@ PixelFormat :: struct {
 ```
 
 > [!IMPORTANT]
-> Taking the address of a packed struct field is not allowed, because the field may not be byte-aligned. Access packed fields by value only.
+> Taking the address of a packed struct field (`&p.b`, `&p.arr[i]`, a field of a nested packed struct) is a compile error, because the field may not be byte-aligned. Read and write packed fields by value, including through a `*Packed` pointer. To hand a field's bytes to something else, take the address of the whole struct and use `core::unaligned_read` or `core::memcpy` at the field's offset.
 
 ### Generic Structs
 

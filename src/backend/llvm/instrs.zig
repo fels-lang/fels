@@ -34,7 +34,7 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         .store => |st| blk: {
             const target = resolveVal(cg, fncg, st.target, .{ .ptr = undefined });
             const val = resolveVal(cg, fncg, st.value, instr.ty);
-            _ = llvm.LLVMBuildStore(cg.builder, val, target);
+            markPackedAccess(llvm.LLVMBuildStore(cg.builder, val, target), target);
             break :blk null;
         },
 
@@ -272,7 +272,7 @@ fn lowerClosureEnvLoad(cg: *ModuleCg, fncg: anytype, ld: ir.ClosureEnvLoadInstr)
 fn getOrCreateThunk(cg: *ModuleCg, fn_link: []const u8, target: llvm.LLVMValueRef) ?llvm.LLVMValueRef {
     if (cg.closure_thunks.get(fn_link)) |t| return t;
 
-    const target_ty = llvm.LLVMGlobalGetValueType(target);
+    const target_ty = fnTypeOf(cg, fn_link, target);
     const n = llvm.LLVMCountParamTypes(target_ty);
     const ptr_ty = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
 
@@ -421,7 +421,9 @@ fn lowerUnary(cg: *ModuleCg, fncg: anytype, u: ir.UnaryInstr, ty: ir.IrType, loc
         .deref => blk: {
             // Debug: null-pointer dereference check.
             if (cg.opt_level == 0) emitNullCheck(cg, fncg.llvm_fn, v, location);
-            break :blk llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, ty), v, "");
+            const loaded = llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, ty), v, "");
+            markPackedAccess(loaded, v);
+            break :blk loaded;
         },
         .ref => lowerRef(cg, fncg, u.value),
     };
@@ -780,13 +782,20 @@ fn lowerCallIndirect(
     return if (ret_ty == .void) null else result;
 }
 
+/// The LLVM function type a call to IR function `name` is built with: its own
+/// declared type when it shares an LLVM function with another `#extern` binding of
+/// the same C symbol, otherwise the type of the function itself.
+fn fnTypeOf(cg: *ModuleCg, name: []const u8, lv: llvm.LLVMValueRef) llvm.LLVMTypeRef {
+    return cg.fn_types.get(name) orelse llvm.LLVMGlobalGetValueType(lv);
+}
+
 fn lowerCall(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrType) ?llvm.LLVMValueRef {
     // Calls to `#extern` C functions with by-value aggregate params/return take
     // the Win64 C-ABI path (coerce structs to integers / pass them indirectly).
     if (cg.fn_abi.get(call.callee)) |sig| return lowerCallAbi(cg, fncg, call, ret_ty, sig);
 
     const lv = cg.fn_decls.get(call.callee) orelse return null;
-    const fn_ty = llvm.LLVMGlobalGetValueType(lv);
+    const fn_ty = fnTypeOf(cg, call.callee, lv);
     const n_param = llvm.LLVMCountParamTypes(fn_ty);
 
     const args = cg.allocator.alloc(llvm.LLVMValueRef, call.args.len) catch return null;
@@ -814,7 +823,7 @@ fn lowerCall(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrType
 /// is materialized from a coerced integer or an `sret` slot. See `abi.zig`.
 fn lowerCallAbi(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrType, sig: abi.FnAbi) ?llvm.LLVMValueRef {
     const lv = cg.fn_decls.get(call.callee) orelse return null;
-    const fn_ty = llvm.LLVMGlobalGetValueType(lv);
+    const fn_ty = fnTypeOf(cg, call.callee, lv);
 
     const total = call.args.len + @as(usize, if (sig.sret) 1 else 0);
     const args = cg.allocator.alloc(llvm.LLVMValueRef, total) catch return null;
@@ -938,7 +947,9 @@ fn lowerField(
             if (cg.opt_level == 0) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
             const field_ptr = llvm.LLVMBuildStructGEP2(cg.builder, struct_lty, base_ptr, idx, "");
             if (want_addr) return field_ptr;
-            return llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, result_ty), field_ptr, "");
+            const field_load = llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, result_ty), field_ptr, "");
+            markPackedAccess(field_load, field_ptr);
+            return field_load;
         },
 
         .array => |arr| {
@@ -961,6 +972,20 @@ fn lowerField(
 
         else => return null,
     }
+}
+
+/// A field of a `#packed` struct can sit at any byte offset, so a load or store
+/// through its address is only valid at alignment 1; LLVM would otherwise assume the
+/// field type's natural alignment. `ptr` is inspected rather than tracked: a pointer
+/// to such a field is a GEP whose source type is the packed struct.
+fn markPackedAccess(access: llvm.LLVMValueRef, ptr: llvm.LLVMValueRef) void {
+    const is_gep_inst = llvm.LLVMIsAGetElementPtrInst(ptr) != null;
+    const is_gep_const = llvm.LLVMIsAConstantExpr(ptr) != null and
+        llvm.LLVMGetConstOpcode(ptr) == llvm.LLVMGetElementPtr;
+    if (!is_gep_inst and !is_gep_const) return;
+    const source = llvm.LLVMGetGEPSourceElementType(ptr);
+    if (llvm.LLVMGetTypeKind(source) == llvm.LLVMStructTypeKind and llvm.LLVMIsPackedStruct(source) != 0)
+        llvm.LLVMSetAlignment(access, 1);
 }
 
 /// Returns the alloca pointer for a local, or a fresh alloca for params/regs.

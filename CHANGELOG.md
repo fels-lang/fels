@@ -3,6 +3,42 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Fixed
+
+- **A program could not bind a Win32 function the runtime also declares.** Declaring
+  `#extern("kernel32", "CloseHandle")` under that name — or a `STD_OUTPUT_HANDLE`
+  constant, or the same API in two modules — failed with `duplicate top-level
+  declaration` for something the program never wrote. It broke both `examples/diskscan`
+  executables. A program's own declarations now shadow the runtime's inside its own
+  file. Bindings of one C symbol also keep their own signatures: LLVM holds one function
+  per symbol, and every call used to be built with the first declaration's types, so a
+  `BOOL` bound as `i32` was truncated to the runtime's `bool`.
+- **`expr ?? default` on a fallible (`T ! E`) value returned the wrong thing.** It was
+  lowered as if the value were an optional, so a failure yielded stale data or the raw
+  error tag instead of the default. `expr!!` on a fallible had the same mistake and
+  returned the wrong value on success. Two further faults in `??` are fixed: every `??`
+  in a function shared one temporary, so a later one of a different type (a slice, then
+  a struct) misread it, and a bare literal default such as `.{ 9, 9 }` was lowered with
+  no type.
+- **`#align(N)` only aligned the variable holding the struct.** Its size stayed natural
+  and a struct field of that type was not moved, so `#align(8)` over `[8]u8` — what
+  `gabbro bindgen` emits for a C union — sat at offset 4 inside its parent, not 8. It is
+  now `alignas(N)`: the struct is aligned and its size rounded up wherever it appears,
+  including generic structs and `#packed` structs. `N` must be a power of two.
+- **Comptime `core::sizeof` ignored padding.** The VM summed field sizes, so
+  `#run core::sizeof(S)` gave 15 for a struct the program measured at 24. It now uses
+  the layout the native backend produces.
+- **The address of a `#packed` field was accepted.** `docs/02_types.md` always said it
+  is an error; `&p.b` and `&p.arr[i]` now are. Field access through a `*Packed` pointer
+  is emitted with alignment 1 instead of the field type's natural alignment.
+
+### Changed
+
+- The README no longer claims `i128`/`u128`; the compiler rejects integers wider than 64
+  bits.
+
 ## 0.1.1 — 2026-09-08
 
 A bug-fix release. **If you have 0.1.0, replace it:** its build system does not work
