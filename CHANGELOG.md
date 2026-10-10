@@ -78,6 +78,11 @@ the major version is `0`, any minor bump may break source compatibility.
   and types declared below had been read. It now types the constants after every signature and
   layout, a constant that uses a later one types that one first, and a constant whose value
   depends on itself (`A :: B; B :: A;`) is reported as such.
+- **`p.x` read garbage when a local or parameter had the name of a type.** With
+  `p :: struct { x: i32 }`, `p.x` on a parameter `p: *p` or a local `p := &v` was read as the
+  variant `x` of the type `p`, not as the field (two such programs exited with 24 and 96 instead
+  of 5 and 6). The local or parameter now wins, as it already did in the checker. A store through
+  an array's `ptr` (`a.ptr.y = 9`), which crashed, now writes `a[0].y`.
 
 ## 0.2.2 — 2026-10-10
 
