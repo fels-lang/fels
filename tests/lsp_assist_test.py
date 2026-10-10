@@ -33,6 +33,7 @@ Line :: struct { a: Point, b: Point, name: []const u8, color: Color }
 Err :: errors { bad }
 
 #extern("kernel32", "Sleep") Sleep :: fn(ms: u32);
+#extern("kernel32", "Beep") Beep :: fn(freq: u32, ms: u32) -> i32;
 
 add :: fn(a: i32, b: i32) -> i32 { return a + b; }
 
@@ -283,9 +284,12 @@ def main():
     s.at("broken file: signature help, method", "textDocument/signatureHelp", "    q.scale(2, \n", 15,
          lambda r: sig(r)[0] == "scale(by: i32, back: bool) -> Point" and sig(r)[1] == 1
          and param_text(r, 1) == "back: bool")
-    s.edit("    q.scale(2, \n", "    Sleep(\n")
-    s.at("broken file: signature help, #extern", "textDocument/signatureHelp", "    Sleep(\n", 10,
-         lambda r: sig(r)[0] == "Sleep(ms: u32)" and sig(r)[1] == 0)
+    s.edit("    q.scale(2, \n", "    Beep(\n")
+    s.at("broken file: signature help, #extern", "textDocument/signatureHelp", "    Beep(\n", 9,
+         lambda r: sig(r)[0] == "Beep(freq: u32, ms: u32) -> i32" and sig(r)[1] == 0)
+    s.edit("    Beep(\n", "    Beep(440u32, \n")
+    s.at("broken file: signature help, #extern after the comma", "textDocument/signatureHelp",
+         "    Beep(440u32, \n", 17, lambda r: sig(r)[1] == 1 and param_text(r, 1) == "ms: u32")
 
     # Inlay hints from the last good analysis move with the text: a line inserted above them.
     s.edit("main :: fn() -> i32 {\n", "main :: fn() -> i32 {\n    // a new line\n")
