@@ -1,6 +1,6 @@
 # Linux / ELF / SysV backend
 
-Gabbro cross-compiles from Windows to a static, freestanding Linux x86-64 ELF — no
+Fels cross-compiles from Windows to a static, freestanding Linux x86-64 ELF — no
 libc — and runs it. Compute and CLI programs work today: I/O, the heap allocator,
 `Vec`, strings, formatting. Filesystem, time, process, net, and threads still call
 Win32; they aren't ported yet.
@@ -14,13 +14,13 @@ diverges.
 Use `--target linux` to cross-compile from a Windows host:
 
 ```
-gabbro build hello.fels -o hello --target linux --llvm-path Y:/SDK/LLVM
+fels build hello.fels -o hello --target linux --llvm-path Y:/SDK/LLVM
 # → a static, non-PIE ELF; runs under Linux/WSL with no shared-library deps
 
-gabbro build app.fels -o app --target linux --libc --sysroot <dir-with-libc.so.6> --llvm-path Y:/SDK/LLVM
+fels build app.fels -o app --target linux --libc --sysroot <dir-with-libc.so.6> --llvm-path Y:/SDK/LLVM
 # → a normal dynamically-linked glibc ELF (ldd → libc.so.6); _start hands off to
 #   __libc_start_main, which initializes glibc. `#extern("c", …)` now resolves
-#   against libc.so.6 (verified: getpid, and puts via glibc stdio). The whole gabbro
+#   against libc.so.6 (verified: getpid, and puts via glibc stdio). The whole fels
 #   stdlib still works under either ABI (it uses syscalls either way).
 #   `--target linux-gnu` is sugar for `--target linux --libc`.
 ```
@@ -55,17 +55,17 @@ Key implementation notes / gotchas:
   and let its `_start` call `main`. The implementation instead ships its own
   `#naked _start` and talks to the kernel directly — so the output is a single
   static ELF with **zero** dynamic dependencies (`ldd` → "not a dynamic
-  executable"). This matches gabbro's no-libc Windows story.
+  executable"). This matches fels's no-libc Windows story.
 - **`_start` must be a GLOBAL symbol.** `ld.lld -e _start` resolves the entry
   against global symbols; `#keep` (external linkage) was not enough on its own,
   so `_start` uses `#entry` (which also keeps it out of internalization, like
   `main`). A local `_start` links "successfully" with entry `0x0` → segfault.
-- **Inline-asm template quirks.** gabbro's asm template does not process `\n`
+- **Inline-asm template quirks.** fels's asm template does not process `\n`
   escapes, so multi-instruction asm uses `;` separators (a valid x86 GAS
   statement separator). A literal `$` in an LLVM asm string is an operand
   reference, so AT&T immediates are escaped as `$$-16` / `$$60`. Integer asm
   args are coerced to `i64` to match the asm function type.
-- **The platform allocator is a runtime seam, not `#if`.** gabbro has no conditional
+- **The platform allocator is a runtime seam, not `#if`.** fels has no conditional
   compilation, so `std.heap` stays OS-agnostic and the *runtime* (selected per
   target) provides `os_*`. The runtime-free `compile` path injects a host shim
   so the prelude still type-checks (`pipeline.prependHeapPrelude`).
@@ -133,7 +133,7 @@ Linux. No aggregates, no FFI, no stdlib OS calls yet.
    `cc out.o -o out -no-pie` (or PIE; see §7). Fall back to `ld.lld` with
    explicit crt objects when no `cc` is present.
 3. **Entry**: drop `/ENTRY:mainCRTStartup`. With `cc`/crt1.o, the program entry
-   is glibc's `_start`, which calls our `main(argc, argv)`. gabbro's `#entry main`
+   is glibc's `_start`, which calls our `main(argc, argv)`. fels's `#entry main`
    already lowers to a C-callable `main` returning `i32` — that's exactly what
    `_start` expects, so the exit code flows through.
 4. Gate the `__chkstk` module-asm ([context.zig](../src/backend/llvm/context.zig))
@@ -228,8 +228,8 @@ or, shorter-term, conditional injection in the pipeline keyed on `Target`.
   Either build `-no-pie` (simplest; `RelocDefault` already suits it) or switch
   the `TargetMachine` reloc model to `PIC` for Linux and link a PIE. Start with
   `-no-pie`, revisit for hardening.
-- **`gabld`**: the self-hosted linker is COFF-only and is purely an optimization
-  (LLD is always the correctness path). An ELF `gabld` is a *much* later,
+- **`felsld`**: the self-hosted linker is COFF-only and is purely an optimization
+  (LLD is always the correctness path). An ELF `felsld` is a *much* later,
   optional flourish — out of scope here.
 
 ## 8. Suggested order

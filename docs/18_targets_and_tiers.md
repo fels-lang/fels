@@ -1,6 +1,6 @@
 # Targets, ABIs & support tiers
 
-How gabbro decides *what machine* it compiles for, *what it links against*, and
+How fels decides *what machine* it compiles for, *what it links against*, and
 *how much we guarantee* per target. This is the architecture for cross-compiling
 beyond the original Windows-only backend.
 
@@ -32,7 +32,7 @@ are about codegen + runtime + stdlib completeness.
 
 The architectural decision: **all OS-specific behaviour goes through a small,
 fixed set of `os_*` primitives provided by the platform runtime**, and the
-standard library is written against that seam, OS-agnostically. gabbro has no
+standard library is written against that seam, OS-agnostically. fels has no
 `#if os == …` — the runtime is *selected* per target, so the seam is the only
 place the OS appears.
 
@@ -71,7 +71,7 @@ Linux this way.
 
 ## 3. libc vs freestanding (the `env` axis)
 
-Two ways to be a Linux binary; gabbro supports both, and they differ **only** in the
+Two ways to be a Linux binary; fels supports both, and they differ **only** in the
 entry point + link step — never in the stdlib:
 
 | | `none` / `musl` (freestanding, **default**) | `gnu` (glibc) |
@@ -125,9 +125,9 @@ future Tier 3.
 
 ## 5. Support tiers
 
-Borrowed from Rust's model, adapted to gabbro's seam architecture.
+Borrowed from Rust's model, adapted to fels's seam architecture.
 
-- **Tier 1 — guaranteed.** A first-class target gabbro commits to and gates releases
+- **Tier 1 — guaranteed.** A first-class target fels commits to and gates releases
   on: language, codegen, and runtime build and run, and the test suite passes in
   CI. The stdlib is expected complete; any remaining gap is a **release blocker**,
   not a reason to demote the target. *Regressions block a release.*
@@ -163,7 +163,7 @@ Borrowed from Rust's model, adapted to gabbro's seam architecture.
 
 > **Note — mutable globals + the env overlay.** `command_line`/`get_env` read
 > `/proc/self/{cmdline,environ}` (no captured `argv`/`envp` pointer needed).
-> `set_env`/`unset_env` were initially blocked because gabbro had no mutable
+> `set_env`/`unset_env` were initially blocked because fels had no mutable
 > top-level globals to anchor a process-wide environ — that language feature was
 > since added (`name: T = init;`, see [01_syntax](01_syntax.md)), so the runtime
 > now keeps an env overlay (`get_env` consults it first; `spawn` merges it into

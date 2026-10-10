@@ -18,7 +18,7 @@ Testing leans on two things the compiler already has:
 
 A test is a function marked `#test` that takes a test context `t: *Test`:
 
-```gabbro
+```fels
 #test
 add_associates :: fn(t: *Test) {
     t.eq(2 + 2, 4);
@@ -38,14 +38,14 @@ affect the next. When an assertion fails it calls `core::compiler_error(...)`,
 the VM halts that run, and the driver turns it into a real diagnostic:
 
 ```
-$ gabbro build app.fels -o app.exe
+$ fels build app.fels -o app.exe
 comptime test 'arithmetic_is_broken' failed: t.eq: values are not equal
 
 1 passed, 1 failed (comptime)
-gabbro: CompileFailed
+fels: CompileFailed
 ```
 
-No executable is produced and `gabbro` exits non-zero. A program whose tests all pass
+No executable is produced and `fels` exits non-zero. A program whose tests all pass
 builds normally; the test functions are **pruned before code generation**, so
 they add nothing to the binary. A program with no `#test` declarations pays
 nothing — the lane is skipped entirely.
@@ -117,12 +117,12 @@ parse → preludes → sema (Test injected if a #test exists)
 ## 5. Designed, not built yet
 
 The comptime lane is the spine. The rest (designed in
-[docs/15 §4](15_tooling.md)) builds on it and on gabbro's reflection:
+[docs/15 §4](15_tooling.md)) builds on it and on fels's reflection:
 
 - **Runtime lane** — `#test` functions that touch the OS run as a built
   executable, each in its own `zone`/arena with leak accounting. This also lifts
   the scalar-only restriction on `t.eq` (the LLVM backend runs the real
-  string/struct comparison). `gabbro test` discovers, builds, and reports (pretty
+  string/struct comparison). `fels test` discovers, builds, and reports (pretty
   TTY + TAP/JSON for CI).
 - **Reflection-powered assertions** — on a failed `t.eq`, walk `type_info(V)` and
   print a field-by-field structural diff for any struct/enum/slice, no `#derive`
@@ -130,10 +130,10 @@ The comptime lane is the spine. The rest (designed in
 - **Property testing** — a `#test(prop)` function declares its generated inputs as
   extra typed parameters; the runner derives a generator from `type_info` for
   each, runs N seeded cases, and **shrinks** to a minimal counterexample. (Inputs
-  go through parameters rather than an inline closure because gabbro lambdas don't
+  go through parameters rather than an inline closure because fels lambdas don't
   capture.)
 - **Snapshots** — `t.snapshot(value, "name")` serializes any value through serde
-  and diffs against a stored snapshot; `gabbro test --update` rewrites it.
+  and diffs against a stored snapshot; `fels test --update` rewrites it.
 
 The throughline: discovery is by attribute, assertions and generators come from
 reflection, and the comptime lane makes a failing test a failing build.

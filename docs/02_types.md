@@ -1,12 +1,12 @@
 # Type System
 
-Gabbro is statically typed with full inference. It's strict where that catches bugs — distinct types, optionals, no implicit narrowing — and stays out of your way otherwise, through inference and compound literals.
+Fels is statically typed with full inference. It's strict where that catches bugs — distinct types, optionals, no implicit narrowing — and stays out of your way otherwise, through inference and compound literals.
 
 ## Primitive Types
 
 ### Integer Types
 
-Gabbro provides fixed-width signed and unsigned integer types:
+Fels provides fixed-width signed and unsigned integer types:
 
 | Signed | Unsigned | Size |
 |--------|----------|------|
@@ -22,7 +22,7 @@ Gabbro provides fixed-width signed and unsigned integer types:
 
 Integer literals can carry a type suffix to specify their type explicitly:
 
-```gabbro
+```fels
 a := 42i32;       // i32
 b := 255u8;        // u8
 c := 1000u64;      // u64
@@ -39,17 +39,17 @@ A suffix is authoritative: it fixes the literal's width even through inference. 
 
 Only the widths in the table above are valid suffixes (`i8`/`i16`/`i32`/`i64`/`isize`, their `u` twins, and `byte`). An unsupported or malformed width is a compile error rather than a silently-dropped suffix:
 
-```gabbro
-x := 0u128;   // error: unsupported integer width `u128`: gabbro integers are at most 64-bit — use `u64` or `usize`
+```fels
+x := 0u128;   // error: unsupported integer width `u128`: fels integers are at most 64-bit — use `u64` or `usize`
 y := 0u9;     // error: unsupported integer width `u9`: ...
-z := 3.0f16;  // error: unsupported float width `f16`: gabbro floats are `f32` or `f64`
+z := 3.0f16;  // error: unsupported float width `f16`: fels floats are `f32` or `f64`
 ```
 
 A hex literal that legitimately ends in letters (`0xABC`, `0xFF`) is *not* a bad suffix — the suffix is split off only after the radix's digits, so hex digits are never mistaken for a width. Float literals accept only `f32`/`f64`.
 
 #### Overflow policy
 
-Gabbro's policy for plain `+`, `-`, `*` is fixed and never undefined behavior:
+Fels's policy for plain `+`, `-`, `*` is fixed and never undefined behavior:
 
 | Build | Plain `+` `-` `*` on overflow |
 | --- | --- |
@@ -61,7 +61,7 @@ ship — there is no overflow UB to exploit. When you specifically *want* wrapar
 in every build (hashing, PRNGs, checksums, fixed-width counters), use the explicit
 wrapping operators `+%`, `-%`, `*%`, which never trap:
 
-```gabbro
+```fels
 a := 250u8 +% 10u8;   // 4   — wraps at 256, never traps
 h := h *% 16777619u32; // FNV-style hash step
 
@@ -78,9 +78,9 @@ like the above can be evaluated in a `#run` constant and matches its runtime val
 
 #### Sub-Byte Integer Types
 
-Within packed structs, Gabbro supports sub-byte integer types from `u1` through `u7`. These types cannot be used outside of packed struct fields:
+Within packed structs, Fels supports sub-byte integer types from `u1` through `u7`. These types cannot be used outside of packed struct fields:
 
-```gabbro
+```fels
 #packed
 StatusBits :: struct {
     enabled: u1,
@@ -101,7 +101,7 @@ StatusBits :: struct {
 
 Float arithmetic and comparisons lower to the correct LLVM floating-point instructions.
 
-```gabbro
+```fels
 pi := 3.14159f64;
 half := 0.5f32;
 result := pi * 2.0;
@@ -111,18 +111,18 @@ result := pi * 2.0;
 
 `bool` holds one of two values: `true` or `false`.
 
-```gabbro
+```fels
 flag := true;
 done: bool = false;
 ```
 
-Booleans are used in conditions, logical expressions, and as flags. Gabbro does not implicitly convert integers or pointers to `bool`.
+Booleans are used in conditions, logical expressions, and as flags. Fels does not implicitly convert integers or pointers to `bool`.
 
 ### Void
 
 `void` is the unit type. It carries no data and is used as the return type for functions that produce no value:
 
-```gabbro
+```fels
 log :: fn(msg: []const u8) -> void {
     // ...
 }
@@ -136,7 +136,7 @@ You never construct a `void` value directly. A function with a `void` return end
 
 Structs are the primary way to group related data into a single type:
 
-```gabbro
+```fels
 Point :: struct {
     x: i32,
     y: i32,
@@ -145,7 +145,7 @@ Point :: struct {
 
 #### Construction
 
-```gabbro
+```fels
 // Named-field literal — order doesn't matter
 p: Point = .{ .x = 10, .y = 20 };
 
@@ -167,7 +167,7 @@ field, or a positional/`.{}` literal that stops short of it, fills it from the
 default. Defaults work like trailing default arguments — put defaulted fields
 last so a positional literal can reach them:
 
-```gabbro
+```fels
 Config :: struct {
     name: []const u8,
     retries: i32 = 3,
@@ -181,7 +181,7 @@ c: Config = .{ "deploy", 5 };                   // verbose = false (default)
 
 #### Field Access
 
-```gabbro
+```fels
 val := p.x;
 p.y = 30;
 ```
@@ -193,7 +193,7 @@ p.y = 30;
 
 The `#packed` attribute creates a struct with no padding between fields. This is essential for hardware registers, binary protocols, and memory-mapped I/O:
 
-```gabbro
+```fels
 #packed
 Flags :: struct {
     readable: bool,
@@ -204,7 +204,7 @@ Flags :: struct {
 
 Packed structs accept sub-byte field types (`u1` through `u7`), but they are **not bit-packed**: each such field occupies one whole byte. `PixelFormat` below is 3 bytes (not 16 bits), and `StatusBits` above is 3 bytes (not 8 bits). Bit-level packing is not implemented (see the roadmap's known gaps), so these types do not describe a C bitfield.
 
-```gabbro
+```fels
 #packed
 PixelFormat :: struct {
     red: u5,
@@ -220,7 +220,7 @@ PixelFormat :: struct {
 
 Structs can be parameterized by types (and compile-time values) using `$`-prefixed parameters:
 
-```gabbro
+```fels
 Pair :: struct($T: type, $U: type) {
     first: T,
     second: U,
@@ -231,7 +231,7 @@ p: Pair(i32, bool) = .{ 42, true };
 
 Generic structs are **monomorphized** — each unique combination of type arguments produces a distinct, specialized type at compile time. `Pair(i32, bool)` and `Pair(f64, f64)` are completely separate types.
 
-```gabbro
+```fels
 // A dynamically-growable array parameterized by element type
 ArrayList :: struct($T: type) {
     items: []T,
@@ -247,7 +247,7 @@ Functions can be declared **inside** a struct body. Within the body, `Self` is t
 struct type and the struct's type parameters are in scope, so methods on a generic
 struct never re-spell `$T`:
 
-```gabbro
+```fels
 Vec2 :: struct {
     x: i32, y: i32
 
@@ -263,7 +263,7 @@ p := Vec2::new(3, 4);   // associated function: `::`, no receiver
 n := p.len2();          // method: `.`, receiver auto-passed (25)
 ```
 
-```gabbro
+```fels
 Box :: struct($T: type) {
     value: T
     make :: fn(v: T) -> Self { return .{ v }; }       // T inferred from the arg
@@ -274,7 +274,7 @@ b := Box::make(10);     // Box(i32)
 v := b.get();           // 10
 ```
 
-Two call forms, matching Gabbro's `::` / `.` split:
+Two call forms, matching Fels's `::` / `.` split:
 
 - **`Type::name(...)`** for an *associated* function — one with no `self` (a
   constructor, factory, or type-level helper). Mirrors module member access.
@@ -298,7 +298,7 @@ extension.
 
 Enums define a type that holds one of a fixed set of variants:
 
-```gabbro
+```fels
 Direction :: enum {
     north,
     south,
@@ -313,7 +313,7 @@ d := Direction.north;
 
 When the expected type is known from context, you can use the dot shorthand:
 
-```gabbro
+```fels
 d2: Direction = .north;
 
 move :: fn(dir: Direction) -> void { /* ... */ }
@@ -323,7 +323,7 @@ move(.east);
 The context can be a typed local, an assignment, a call argument, the declared
 return type, or a field of a struct literal (positional or named):
 
-```gabbro
+```fels
 Robot :: struct { id: i32, facing: Direction }
 
 heading :: fn() -> Direction { return .south; }
@@ -336,7 +336,7 @@ spawn :: fn() -> Robot { return .{ 3, .west }; }
 It can also be an element of an array or slice literal, a field's default value, or the other
 operand of `==` and `!=`, on either side. A name the enum does not have is an error.
 
-```gabbro
+```fels
 route: [3]Direction = .{ .north, .north, .east };
 Turtle :: struct { facing: Direction = .north }
 
@@ -348,7 +348,7 @@ if .west != heading() { /* ... */ }
 
 Enum variants can carry associated data:
 
-```gabbro
+```fels
 Rect :: struct { width: f64, height: f64 }
 
 Shape :: enum {
@@ -364,7 +364,7 @@ Construct a payload-carrying variant by calling the variant as `EnumType.variant
 (payload-less variants are just `EnumType.variant`). Recover the payload by pattern
 matching:
 
-```gabbro
+```fels
 area :: fn(s: Shape) -> f64 {
     match s {
         .circle |r|    => return 3.14159 * r * r;
@@ -374,15 +374,15 @@ area :: fn(s: Shape) -> f64 {
 }
 ```
 
-Enums with payloads are Gabbro's approach to tagged unions. Construction and matching
+Enums with payloads are Fels's approach to tagged unions. Construction and matching
 both work at compile time too, so comptime code can build and inspect them — the
 basis for constructing `ast.*` values programmatically in metaprogramming.
 
 ### Error Types
 
-Error types are declared with the `errors` keyword. They look similar to enums but are specifically designed for use with Gabbro's fallible function system:
+Error types are declared with the `errors` keyword. They look similar to enums but are specifically designed for use with Fels's fallible function system:
 
-```gabbro
+```fels
 IoError :: errors {
     not_found,
     permission_denied,
@@ -397,7 +397,7 @@ ParseError :: errors {
 
 Error types integrate with the `!` operator in function return types to indicate fallible operations:
 
-```gabbro
+```fels
 read_file :: fn(path: []const u8) -> []u8 ! IoError {
     // ...
 }
@@ -408,7 +408,7 @@ read_file :: fn(path: []const u8) -> []u8 ! IoError {
 
 ## Pointer Types
 
-Gabbro provides several pointer kinds for different use cases.
+Fels provides several pointer kinds for different use cases.
 
 ### Single Pointers
 
@@ -420,7 +420,7 @@ A single pointer points to exactly one value:
 | `*const T`      | Immutable (const) pointer to `T`    |
 | `*volatile T`   | Volatile pointer to `T`             |
 
-```gabbro
+```fels
 x: i32 = 42;
 ptr: *i32 = &x;       // take address of x
 val := *ptr;           // dereference: read the value (42)
@@ -429,7 +429,7 @@ val := *ptr;           // dereference: read the value (42)
 
 `&` of a variable, a field or an element points at it in place. `&` of any other value (a literal, a call result, arithmetic, an enum variant) stores the value in a temporary and points at that. The temporary lives until the end of the enclosing block, like a local declared there, so the pointer must not be kept past it. An unsuffixed literal's temporary has the literal's default type:
 
-```gabbro
+```fels
 p := &5;               // *i32, pointing at a temporary holding 5
 q := &2.5;             // *f64
 r := &5i64;            // a suffix picks another width: *i64
@@ -447,7 +447,7 @@ parameter or what it points at (`&p.field`), an element of a slice, memory from 
 from a zone the caller passes in. A slice of a local array is not checked yet, since a function
 that `#run` calls returns the bytes it built that way.
 
-```gabbro
+```fels
 bad :: fn() -> *i32 { x := 5; return &x; }   // error: the address of local `x` cannot be returned
 ok :: fn(p: *Point) -> *i32 { return &p.y; } // points into the caller's `Point`
 ```
@@ -464,7 +464,7 @@ A many-pointer points to an array of values whose length is not tracked:
 | `[*]T`          | Mutable many-pointer to `T`             |
 | `[*]const T`    | Const many-pointer to `T`               |
 
-```gabbro
+```fels
 buffer: [*]u8 = get_raw_buffer();
 first := buffer[0];
 buffer[3] = 0xFF;
@@ -482,7 +482,7 @@ Slices are a **pointer + length** pair, providing bounds-checked access to a con
 | `[]T`         | Mutable slice of `T`          |
 | `[]const T`   | Const slice of `T`            |
 
-```gabbro
+```fels
 arr: [4]i32 = .{ 1, 2, 3, 4 };
 
 slice := arr[:];          // full slice of the array
@@ -492,9 +492,9 @@ len := slice.len;         // number of elements
 raw := slice.ptr;         // underlying pointer ([*]T)
 ```
 
-String literals in Gabbro have the type `[]const u8`:
+String literals in Fels have the type `[]const u8`:
 
-```gabbro
+```fels
 greeting: []const u8 = "hello, world";
 ```
 
@@ -504,7 +504,7 @@ greeting: []const u8 = "hello, world";
 identity. The comparison checks the length first, then the bytes, so it never
 reads past either slice:
 
-```gabbro
+```fels
 a: []const u8 = "abc";
 b: []const u8 = "abc";
 
@@ -529,11 +529,11 @@ in `#run` constants and `#compiler` hooks, e.g. `if d.derives == "Sum"`).
 
 Arrays are fixed-size, stack-allocated sequences:
 
-```gabbro
+```fels
 [N]T    // array of N elements of type T
 ```
 
-```gabbro
+```fels
 data: [4]u8 = .{ 1u8, 2u8, 3u8, 4u8 };
 zeros: [256]u8 = .{};                    // zero-initialized
 len := data.len;                          // compile-time known: 4
@@ -543,7 +543,7 @@ The length `N` is an integer literal or a constant, also one that compile-time c
 
 Arrays differ from slices in that their length is part of the type. `[4]u8` and `[8]u8` are different types. To pass an array to a function expecting a slice, use the slice operator:
 
-```gabbro
+```fels
 process :: fn(items: []const u8) -> void { /* ... */ }
 
 buf: [16]u8 = .{};
@@ -554,11 +554,11 @@ process(buf[:]);    // convert array to slice
 
 An optional wraps a value that may or may not be present:
 
-```gabbro
+```fels
 ?T    // either a value of type T, or null
 ```
 
-```gabbro
+```fels
 maybe: ?i32 = 42;
 none: ?i32 = null;
 ```
@@ -569,7 +569,7 @@ none: ?i32 = null;
 
 Extracts the value, **panicking at runtime** if the optional is `null`:
 
-```gabbro
+```fels
 val := maybe!!;    // 42 — or panic if null
 ```
 
@@ -577,13 +577,13 @@ val := maybe!!;    // 42 — or panic if null
 
 Provides a default value when the optional is `null`:
 
-```gabbro
+```fels
 val := maybe ?? 0;    // 42, or 0 if maybe were null
 ```
 
 #### Conditional Checks
 
-```gabbro
+```fels
 if maybe != null {
     // maybe is guaranteed non-null in this branch
 }
@@ -596,7 +596,7 @@ if maybe != null {
 
 Function types describe a function's signature as a first-class type:
 
-```gabbro
+```fels
 fn(i32, i32) -> i32                        // two i32 params, returns i32
 fn(*Self, []const u8) -> usize ! IoError   // fallible method
 fn() -> void                               // no params, no return value
@@ -604,7 +604,7 @@ fn() -> void                               // no params, no return value
 
 Function types allow storing and passing functions as values:
 
-```gabbro
+```fels
 apply :: fn(f: fn(i32) -> i32, x: i32) -> i32 {
     return f(x);
 }
@@ -618,14 +618,14 @@ result := apply(double, 21);    // 42
 
 Distinct types create **newtypes** — types that share the underlying representation but are treated as separate types by the compiler:
 
-```gabbro
+```fels
 UserId :: distinct u64;
 Pixels :: distinct i32;
 ```
 
 This prevents accidental mixing of semantically different values:
 
-```gabbro
+```fels
 user: UserId = 42u64 as UserId;
 offset: Pixels = 100i32 as Pixels;
 
@@ -635,7 +635,7 @@ offset: Pixels = 100i32 as Pixels;
 
 Convert between a distinct type and its underlying type with `as`:
 
-```gabbro
+```fels
 id: UserId = 42u64 as UserId;
 raw := id as u64;              // back to plain u64
 ```
@@ -648,7 +648,7 @@ raw := id as u64;              // back to plain u64
 A type alias gives an existing type a second name. Unlike `distinct`, an alias is
 **transparent** — the alias and its underlying type are fully interchangeable:
 
-```gabbro
+```fels
 MyInt :: i32;
 Bytes :: []u8;
 Trio  :: [3]i32;
@@ -664,7 +664,7 @@ bare identifier is a type when it **names** one — a built-in such as `f32`, `b
 or `Text`, a struct, enum or other declared type, or another alias, in this module
 or another (`lib::Node`) — and a constant otherwise:
 
-```gabbro
+```fels
 Real  :: f32;           // an alias of a built-in
 Node  :: struct { v: i32 }
 Point :: Node;          // an alias of a struct (declared before or after `Node`)
@@ -685,7 +685,7 @@ through an enum alias, `Point as Shape { … }`, `! ErrorAlias`. Use the origina
 
 The standard library uses aliases for C ABI types — see [`std.c`](11_c_interop.md):
 
-```gabbro
+```fels
 #import std.c.{ c_int, c_string };
 #extern("kernel32", "lstrlenA")
 lstrlenA :: fn(s: c_string) -> c_int;
@@ -695,11 +695,11 @@ lstrlenA :: fn(s: c_string) -> c_int;
 
 Opaque types declare a type with no visible definition. They can only be used behind a pointer:
 
-```gabbro
+```fels
 Foo :: opaque;
 ```
 
-```gabbro
+```fels
 // Only *Foo is usable — you cannot create or inspect a Foo value directly
 get_handle :: fn() -> *Foo { /* ... */ }
 use_handle :: fn(h: *Foo) -> void { /* ... */ }
@@ -713,7 +713,7 @@ Opaque types are useful for:
 
 The `atomic` qualifier is applied to struct fields to enable atomic memory operations:
 
-```gabbro
+```fels
 Counter :: struct {
     value: atomic u32,
 }
@@ -721,7 +721,7 @@ Counter :: struct {
 
 Atomic fields must be accessed through the `core::atomic_load` and `core::atomic_store` builtins rather than through regular field access:
 
-```gabbro
+```fels
 c: Counter = .{ .value = 0 };
 current := core::atomic_load(&c.value);
 core::atomic_store(&c.value, current + 1);
@@ -734,14 +734,14 @@ core::atomic_store(&c.value, current + 1);
 
 The `borrow` qualifier creates a temporary, non-owning reference to zone-allocated data:
 
-```gabbro
+```fels
 borrow *T       // borrowed pointer
 borrow []T      // borrowed slice
 ```
 
 Borrowed references allow you to pass zone-owned values to functions without transferring ownership:
 
-```gabbro
+```fels
 print_name :: fn(name: borrow []const u8) -> void {
     // Can read `name` but cannot store it or return it
 }
@@ -762,7 +762,7 @@ print_name :: fn(name: borrow []const u8) -> void {
 
 The `as` operator performs explicit type conversions:
 
-```gabbro
+```fels
 x := 42i32;
 y := x as i64;          // integer widening (lossless)
 z := x as u32;          // signed to unsigned
@@ -771,7 +771,7 @@ i := 3.14 as i32;       // float to integer (truncates toward zero)
 d := id as u64;         // distinct type to underlying type
 ```
 
-All casts in Gabbro are explicit and visible in the source code. The compiler will reject `as` casts that are nonsensical (e.g., casting a struct to an integer).
+All casts in Fels are explicit and visible in the source code. The compiler will reject `as` casts that are nonsensical (e.g., casting a struct to an integer).
 
 ### Cast Summary
 
@@ -787,7 +787,7 @@ All casts in Gabbro are explicit and visible in the source code. The compiler wi
 
 ## Type Coercion Rules
 
-Gabbro performs a small, well-defined set of **implicit coercions**. These are the only cases where a value of one type is silently accepted as another:
+Fels performs a small, well-defined set of **implicit coercions**. These are the only cases where a value of one type is silently accepted as another:
 
 | Source | Target | Description |
 |--------|--------|-------------|
@@ -796,7 +796,7 @@ Gabbro performs a small, well-defined set of **implicit coercions**. These are t
 | Concrete type | `*Interface` pointer | When the type implements the interface (checked at compile time) |
 | Non-null value | Optional (`?T`) | A value of type `T` is accepted where `?T` is expected |
 
-All other conversions require an explicit `as` cast. Gabbro intentionally keeps implicit coercions to a minimum to prevent subtle type errors.
+All other conversions require an explicit `as` cast. Fels intentionally keeps implicit coercions to a minimum to prevent subtle type errors.
 
 > [!NOTE]
 > Integer literals are special: the literal `42` can become `u8`, `i64`, `usize`, or any integer type — as long as the value fits. Once bound to a variable with a concrete type, no further implicit conversion occurs.

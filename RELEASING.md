@@ -1,14 +1,14 @@
-# Releasing gabbro
+# Releasing fels
 
-gabbro ships as a **slim, relocatable core archive**: `gabbro.exe` plus `LLVM-C.dll`
-(codegen) and `gabbrolld.dll` (the in-process COFF linker — no spawned `lld-link.exe`),
+fels ships as a **slim, relocatable core archive**: `fels.exe` plus `LLVM-C.dll`
+(codegen) and `felslld.dll` (the in-process COFF linker — no spawned `lld-link.exe`),
 and the standard library, laid out so the binary finds everything relative to
 itself (see Phase 0 — the runtime resolves `std/` from the exe's directory).
-Download, extract, run `bin/gabbro`. No install step, and no separate LLVM needed to
+Download, extract, run `bin/fels`. No install step, and no separate LLVM needed to
 *use* the compiler.
 
-The core does **not** bundle `libclang` (81 MB) — `gabbro bindgen` loads it on demand
-and ships as a separate optional component (`gabbro-bindgen-<ver>-<target>.zip`). See
+The core does **not** bundle `libclang` (81 MB) — `fels bindgen` loads it on demand
+and ships as a separate optional component (`fels-bindgen-<ver>-<target>.zip`). See
 [docs/19_distribution.md](docs/19_distribution.md) for the full model.
 
 ## LLVM in CI
@@ -50,32 +50,32 @@ git tag v0.1.0        && git push origin v0.1.0           # → stable release
 - A tag with a SemVer pre-release part (anything after `-`) publishes as a GitHub
   **pre-release**; a bare `vMAJOR.MINOR.PATCH` publishes as a full release.
 - The reported version (and release name) carries `+<git-sha>` build metadata for
-  pre-releases — e.g. `gabbro 0.1.0-beta.1+ab6e587` — while the asset filename stays
-  URL-friendly (`gabbro-0.1.0-beta.1-x86_64-windows.zip`).
-- `gabbro version` always reflects the exact build (`build.zig.zon` + `+<git-sha>` for
+  pre-releases — e.g. `fels 0.1.0-beta.1+ab6e587` — while the asset filename stays
+  URL-friendly (`fels-0.1.0-beta.1-x86_64-windows.zip`).
+- `fels version` always reflects the exact build (`build.zig.zon` + `+<git-sha>` for
   dev/pre-release builds; overridable with `-Dversion=…`).
 
 ## Packaging locally
 
 ```pwsh
 pwsh scripts/package.ps1 -LlvmPath <your-llvm-dir> [-Version 0.1.0-beta.1]
-# → dist/gabbro-<version>-x86_64-windows.zip              (slim core, in-process LLD)
-# → dist/gabbro-bindgen-<version>-x86_64-windows.zip      (optional libclang component)
-# → dist/gabbro-linux-cross-<version>-x86_64-windows.zip  (optional ld.lld for --target linux)
+# → dist/fels-<version>-x86_64-windows.zip              (slim core, in-process LLD)
+# → dist/fels-bindgen-<version>-x86_64-windows.zip      (optional libclang component)
+# → dist/fels-linux-cross-<version>-x86_64-windows.zip  (optional ld.lld for --target linux)
 ```
 
 The core archive carries `install.ps1` (Windows); the Linux/macOS archives carry
 `install.sh`. Both copy the layout to a stable prefix and wire up `PATH` +
-`GABBRO_HOME`. The release and nightly workflows publish all three archives as assets.
+`FELS_HOME`. The release and nightly workflows publish all three archives as assets.
 
 > Heads-up: an aggressive behavioral AV (e.g. G DATA DeepRay) may quarantine the
-> freshly built `gabbro.exe` or kill the packaging process — a compiler emitting fresh
+> freshly built `fels.exe` or kill the packaging process — a compiler emitting fresh
 > unsigned executables looks like a dropper. Add a build-folder / process
 > exception, or code-sign the release binaries.
 
 ## Known gap
 
-The released `gabbro.exe` still uses a **build-baked Windows SDK lib path** (for the
+The released `fels.exe` still uses a **build-baked Windows SDK lib path** (for the
 `kernel32.lib` it hands to programs it links). On a machine without that exact SDK
 version, linking *user programs* needs `-Dwindows-sdk-lib-path` at build time or a
 matching SDK present. Making the SDK relocatable (bundle the import lib / resolve

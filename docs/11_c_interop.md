@@ -1,16 +1,16 @@
 # 11. C interoperability
 
-Gabbro talks to C libraries directly: declare the functions you need with `#extern`,
+Fels talks to C libraries directly: declare the functions you need with `#extern`,
 link the import library, and call them. Structs cross the boundary **by value**
 with the correct platform ABI, and an automated generator turns C headers into
-Gabbro bindings so you don't hand-write hundreds of declarations.
+Fels bindings so you don't hand-write hundreds of declarations.
 
 ## Declaring C functions
 
 `#extern("<lib>", "<symbol>")` binds an external C function. The body is omitted
 (it lives in the C library), and the `<lib>` is pulled into the link automatically.
 
-```gabbro
+```fels
 #extern("raylib", "InitWindow")
 InitWindow :: fn(width: i32, height: i32, title: [*]const u8);
 
@@ -27,7 +27,7 @@ but don't declare functions from directly.
 `std.c` provides C-ABI type aliases (`c_int`, `c_long`, `c_size_t`, `c_string`, …)
 sized for 64-bit Windows (LLP64), so signatures can read like their C originals:
 
-```gabbro
+```fels
 #import std.c.{ c_int, c_string };
 
 #extern("kernel32", "lstrlenA")
@@ -37,7 +37,7 @@ lstrlenA :: fn(s: c_string) -> c_int;       // int lstrlenA(const char *s)
 They are [transparent aliases](02_types.md#type-aliases): a `c_int` *is* an `i32`, so
 values flow between the two with no cast, and `core::sizeof(c_int)` is 4.
 
-| alias                                 | Gabbro        | C                                    |
+| alias                                 | Fels        | C                                    |
 |---------------------------------------|---------------|--------------------------------------|
 | `c_char`, `c_schar`, `c_uchar`        | `i8`, `i8`, `u8` | `char`, `signed char`, `unsigned char` |
 | `c_short`, `c_ushort`                 | `i16`, `u16`  | `short`, `unsigned short`            |
@@ -50,18 +50,18 @@ values flow between the two with no cast, and `core::sizeof(c_int)` is 4.
 | `c_bool`                              | `bool`        | `_Bool`                              |
 | `c_string`                            | `[*]const u8` | `const char*` (NUL-terminated)       |
 
-`c_char` is the signed `i8`, so a pointer to it does not accept a Gabbro string
+`c_char` is the signed `i8`, so a pointer to it does not accept a Fels string
 (`[*]const u8`); use `c_string` for `const char*` parameters.
 
 ### Naming a binding
 
-The Gabbro name of a binding is yours. It may be the name of a function the runtime or
+The Fels name of a binding is yours. It may be the name of a function the runtime or
 another module already declares — `CloseHandle`, `GetStdHandle`, `WriteFile` — and your
 declaration then shadows it inside your own file. Several bindings can also share one C
 symbol with different signatures; each call is compiled with the signature of the
 binding it names, so a `BOOL` can be `i32` in one module and `bool` in another.
 
-```gabbro
+```fels
 #extern("kernel32", "CloseHandle")
 CloseHandle :: fn(handle: usize) -> i32;      // the C header's BOOL
 ```
@@ -69,10 +69,10 @@ CloseHandle :: fn(handle: usize) -> i32;      // the C header's BOOL
 ## Passing structs by value (the raylib pattern)
 
 C UI/graphics libraries pass small aggregates by value everywhere. Declare the
-struct on the Gabbro side to match the C layout and pass it directly — the compiler
+struct on the Fels side to match the C layout and pass it directly — the compiler
 applies the Win64 C ABI at the boundary:
 
-```gabbro
+```fels
 Color   :: struct { r: u8, g: u8, b: u8, a: u8 }   // 4 bytes
 Vector2 :: struct { x: f32, y: f32 }               // 8 bytes
 Rect    :: struct { x: f32, y: f32, w: f32, h: f32 } // 16 bytes
@@ -104,7 +104,7 @@ element.
 `core::sizeof`, `core::align_of` and `core::offset_of` report the layout at compile time,
 and `#assert` turns an assumption about it into a build error:
 
-```gabbro
+```fels
 WNDCLASSEXA :: struct {
     cbSize: u32,
     style: u32,
@@ -152,18 +152,18 @@ What is **not** guaranteed, and so is not offered:
   has no `offset_of` for the fields after it.
 - Opaque (`Name :: opaque;`) and other incomplete types: they have no size.
 - Anything on a 32-bit target: the table assumes 8-byte pointers and 8-byte alignment for
-  64-bit integers, which Gabbro's current targets have.
+  64-bit integers, which Fels's current targets have.
 
 `core::offset_of` takes the field as a string literal and reports the offset of a
 top-level field; for a nested one, add the offsets (`offset_of(Outer, "inner") +
 offset_of(Inner, "x")`).
 
-Gabbro has no `union`. A payload enum is a *tagged* union — a 4-byte tag in front of the
+Fels has no `union`. A payload enum is a *tagged* union — a 4-byte tag in front of the
 payload — so it cannot overlay C's untagged bytes. For a union that sits inside a C
 struct, declare the member as the union's largest, most strictly aligned variant and view
 the others through an `unsafe` pointer cast:
 
-```gabbro
+```fels
 // typedef union { struct { DWORD LowPart; LONG HighPart; }; LONGLONG QuadPart; } LARGE_INTEGER;
 LargeInteger :: struct { quad: i64 }
 LowHigh      :: struct { low: u32, high: i32 }
@@ -185,7 +185,7 @@ a plugin's entry point by name, and what it finds is data — CLAP's is
 pointers. A global's initializer is laid out in the image at build time (see "Static
 aggregates" in [01_syntax](01_syntax.md)), so the same declaration works here:
 
-```gabbro
+```fels
 Version :: struct { major: u32, minor: u32, revision: u32 }
 PluginEntry :: struct {
     version: Version,
@@ -215,8 +215,8 @@ pointers above) carries a base-relocation table, so it works wherever the loader
 of them can be loaded into one process. A C program can also link against the import library
 LLD writes beside the DLL and declare the data `__declspec(dllimport) extern` — `int`, an array,
 a struct of function pointers and a string all read and write correctly, and the library sees
-the program's writes (tested with a freestanding C program compiled by clang). A DLL that gabld
-links has no import library, and gabld links only DLLs that hold no address; for those, and for
+the program's writes (tested with a freestanding C program compiled by clang). A DLL that felsld
+links has no import library, and felsld links only DLLs that hold no address; for those, and for
 any host that prefers it, resolve the export by name.
 
 On Linux the target is a static executable, so there is no shared object to export from; `#export`
@@ -241,16 +241,16 @@ is a struct with the vtable pointer first and a static vtable (see "Static aggre
 The library named in `#extern`/`#system_library` is resolved at link time. Point
 the linker at it:
 
-- **CLI:** `gabbro build app.fels -o app.exe --lib-path <dir> [--lib <name>]`
+- **CLI:** `fels build app.fels -o app.exe --lib-path <dir> [--lib <name>]`
 - **build.fels:** `app.link("raylib"); app.lib_path("vendor/raylib/lib");`
 
 Linking a non-system import library currently routes through LLD (the self-hosted
-`gabld` doesn't read `.lib` archives yet); `gabbro` configures `lld-link` for you.
+`felsld` doesn't read `.lib` archives yet); `fels` configures `lld-link` for you.
 
 ### Linking the C runtime (`link_libc`)
 
-Gabbro links with `/NODEFAULTLIB` and its own tiny runtime — it does **not** pull in
-the C runtime. That's fine for pure Gabbro, but a C library brings its *code* and not
+Fels links with `/NODEFAULTLIB` and its own tiny runtime — it does **not** pull in
+the C runtime. That's fine for pure Fels, but a C library brings its *code* and not
 the CRT it depends on. A **static** library (e.g. a `raylib.lib` built against the
 CRT) calls `malloc`/`free`/`calloc`/`realloc` and the compiler's stack/security
 helpers (`__chkstk`, `__report_rangecheckfailure`), so linking it without the CRT
@@ -258,25 +258,25 @@ fails with `undefined symbol: malloc` and friends.
 
 Link the C runtime to fix it:
 
-- **CLI:** `gabbro build app.fels --libc` (or `-lc`)
+- **CLI:** `fels build app.fels --libc` (or `-lc`)
 - **build.fels:** `app.link_libc();`
 
 `link_libc` pulls in the UCRT (`ucrt.lib` — malloc/free/…) and the VC runtime
 (`vcruntime.lib` — `__chkstk`, security checks). Both search paths are found for
 you: the UCRT path is derived from the configured Windows SDK path, and the MSVC
-`lib/x64` directory (where `vcruntime.lib` lives) is **auto-discovered** — `gabbro`
+`lib/x64` directory (where `vcruntime.lib` lives) is **auto-discovered** — `fels`
 scans the standard `…/Microsoft Visual Studio/<year>/<edition>/VC/Tools/MSVC/<ver>/lib/x64`
 locations and uses the newest toolset it finds. So you normally don't configure
 anything. If your toolchain is on a non-default drive, override the discovery by
-building `gabbro` with `-Dmsvc-lib-path=<…/VC/Tools/MSVC/<ver>/lib/x64>`, or pass
+building `fels` with `-Dmsvc-lib-path=<…/VC/Tools/MSVC/<ver>/lib/x64>`, or pass
 `--lib-path <that dir>` on the command line.
 
-Gabbro's own functions are **module-private** (internal linkage — the whole program is
+Fels's own functions are **module-private** (internal linkage — the whole program is
 one object), so they never clash with the CRT's `exit`/`abort`/etc. when you link
 libc. A complete static-raylib build is just:
 
 ```sh
-gabbro build game.fels --libc --lib-path <raylib-lib-dir>
+fels build game.fels --libc --lib-path <raylib-lib-dir>
 ```
 
 (or `app.link_libc()` in a build.fels — the MSVC path is discovered automatically).
@@ -301,7 +301,7 @@ with no `lib_path` call) and reacts to what it finds:
 
 So this is usually all you write:
 
-```gabbro
+```fels
 build :: fn(b: Build) {
     game := b.executable("game", "src/main.fels");
     game.link("raylib");
@@ -330,10 +330,10 @@ can always be explicit:
 
 A static C library also needs *its own* system deps (static raylib wants
 `opengl32`/`gdi32`/…). You normally **don't list them** — when a static C library
-is linked, Gabbro honors that library's own embedded `/DEFAULTLIB` directives, exactly
+is linked, Fels honors that library's own embedded `/DEFAULTLIB` directives, exactly
 like a C compiler does, so its system dependencies flow in automatically:
 
-```gabbro
+```fels
 build :: fn(b: Build) {
     game := b.executable("game", "src/main.fels");
     game.link("raylib");
@@ -342,10 +342,10 @@ build :: fn(b: Build) {
 }
 ```
 
-Gabbro stays minimal-runtime by default: it links `/NODEFAULTLIB` and provides its own
-tiny runtime, so a plain Gabbro program pulls in nothing. The honoring kicks in **only**
-when a static C library is involved — and even then Gabbro suppresses just the CRT-startup
-*umbrella* libs (`libcmt`/`msvcrt`/…), whose `mainCRTStartup` would clash with Gabbro's
+Fels stays minimal-runtime by default: it links `/NODEFAULTLIB` and provides its own
+tiny runtime, so a plain Fels program pulls in nothing. The honoring kicks in **only**
+when a static C library is involved — and even then Fels suppresses just the CRT-startup
+*umbrella* libs (`libcmt`/`msvcrt`/…), whose `mainCRTStartup` would clash with Fels's
 entry, while letting the real system deps (`opengl32`, `gdi32`, …) through. The C
 runtime itself (`malloc`, `__chkstk`, …) comes from `ucrt`+`vcruntime`, which the
 static auto-detection already links.
@@ -356,7 +356,7 @@ static auto-detection already links.
 > prebuilt **static raylib** is the classic case: it embeds `winmm` but not the
 > GUI/GL libraries glfw uses, so a complete static-raylib build is:
 >
-> ```gabbro
+> ```fels
 > app := b.executable("app", "main.fels");
 > app.link("raylib");                 // raylib.lib detected → CRT auto-linked
 > app.link("opengl32"); app.link("gdi32"); app.link("user32");
@@ -372,7 +372,7 @@ static auto-detection already links.
 linking and control every dependency yourself, call `no_default_libs()`; then the
 library's `/DEFAULTLIB` directives are ignored and you list system deps explicitly:
 
-```gabbro
+```fels
 game.lib_path("vendor/raylib/lib-static");
 game.no_default_libs();
 game.link("opengl32"); game.link("gdi32"); game.link("user32");
@@ -381,7 +381,7 @@ game.link("winmm"); game.link("shell32");
 
 A static/dynamic toggle then needs nothing extra in the default path:
 
-```gabbro
+```fels
 if b.option("static") {
     game.lib_path("vendor/raylib/lib-static");   // static archive → CRT + its deps auto
 } else {
@@ -409,7 +409,7 @@ be DYNAMIC`) instead of silently shipping a dynamic build.
 ### Cross-platform
 
 That API is deliberately platform-agnostic, so the same `build.fels` will work
-unchanged once Gabbro grows other targets. The intended mapping:
+unchanged once Fels grows other targets. The intended mapping:
 
 | build.fels | Windows (today) | Linux (planned) | macOS (planned) |
 |---|---|---|---|
@@ -419,7 +419,7 @@ unchanged once Gabbro grows other targets. The intended mapping:
 | `runtime_file(x)` | copy next to exe | (rpath usually suffices) | (rpath) |
 | `link_libc()` | ucrt + vcruntime | the system libc/crt | libSystem |
 
-**Gabbro only emits and links Windows today** (COFF objects, `lld-link`, a Win64-only
+**Fels only emits and links Windows today** (COFF objects, `lld-link`, a Win64-only
 ABI in `backend/llvm/abi.zig`, PE output). Reaching Linux/macOS needs, in order:
 
 1. **Target selection** (`-target x86_64-linux-gnu`, …) — LLVM emits ELF/Mach-O
@@ -435,10 +435,10 @@ library design above absorbs it.
 
 ## Generating bindings from a C header
 
-`gabbro bindgen` parses an arbitrary C header with libclang and emits a Gabbro module:
+`fels bindgen` parses an arbitrary C header with libclang and emits a Fels module:
 
 ```sh
-gabbro bindgen raylib.h --lib raylib -o raylib.fels
+fels bindgen raylib.h --lib raylib -o raylib.fels
 ```
 
 It maps:
@@ -451,11 +451,11 @@ It maps:
 
 Then use it like any module:
 
-```gabbro
+```fels
 #import raylib.*;
 
 main :: fn() -> i32 {
-    InitWindow(800, 450, "gabbro + raylib".ptr);
+    InitWindow(800, 450, "fels + raylib".ptr);
     // ...
     return 0;
 }
@@ -464,7 +464,7 @@ main :: fn() -> i32 {
 Options: `--lib <name>` sets the import-library name (default: the header stem),
 `-o <file>` sets the output path, `-I<dir>` / `-D<sym>` are forwarded to clang,
 and anything after `--` is passed to clang verbatim (e.g. extra `-isystem` paths
-for libraries that include system headers). `gabbro bindgen` requires an
+for libraries that include system headers). `fels bindgen` requires an
 LLVM-enabled build (libclang ships in the same SDK).
 
 It also maps **object-like `#define` constants**: a plain numeric/string macro
@@ -472,7 +472,7 @@ becomes `pub NAME :: <value>;`, and a compound-literal macro (e.g. raylib's
 `#define RAYWHITE CLITERAL(Color){ 245,245,245,255 }`) becomes a comptime-folded
 typed constant, so colors and flags Just Work:
 
-```gabbro
+```fels
 __lit_RAYWHITE :: fn() -> Color { return .{ 245, 245, 245, 255 }; }
 pub RAYWHITE :: #run __lit_RAYWHITE();
 ```
@@ -481,10 +481,10 @@ pub RAYWHITE :: #run __lit_RAYWHITE();
 
 bindgen handles the awkward parts of real headers too:
 
-- **Function pointers / callbacks** become a real Gabbro function type, expanded
-  inline at the use site (Gabbro has no `Name :: fn(...)` type-alias form):
+- **Function pointers / callbacks** become a real Fels function type, expanded
+  inline at the use site (Fels has no `Name :: fn(...)` type-alias form):
   `void set_logger(LogCallback)` → `pub set_logger :: fn(cb: fn(i32, [*]const u8) -> void);`.
-  You can pass a Gabbro function as the callback and C will call back into it.
+  You can pass a Fels function as the callback and C will call back into it.
 - **Unions** and **bitfield structs** become a size- and alignment-correct opaque
   blob (`#align(A) struct { _bytes: [N]u8 }`) so by-value passing stays ABI-correct
   (you read the contents via casts).

@@ -27,19 +27,19 @@ Attributes modify the behavior or layout of declarations. They are prefixed with
 
 ### FFI & Linkage
 
-- `#export("name")`: exports the symbol with external linkage. If no string is provided, exports it using its Gabbro name. It applies to a function and to a top-level global (`#export("gab_entry") ENTRY: PluginEntry = .{ ... };`) — see [11_c_interop](11_c_interop.md#exporting-data).
+- `#export("name")`: exports the symbol with external linkage. If no string is provided, exports it using its Fels name. It applies to a function and to a top-level global (`#export("gab_entry") ENTRY: PluginEntry = .{ ... };`) — see [11_c_interop](11_c_interop.md#exporting-data).
 - `#extern("library_name", "symbol_name")`: declares an external function binding (FFI).
-  The second argument is the **real link symbol** — the Gabbro declaration name is free to
-  differ from the C symbol — a binding can take an idiomatic Gabbro name:
-  ```gabbro
+  The second argument is the **real link symbol** — the Fels declaration name is free to
+  differ from the C symbol — a binding can take an idiomatic Fels name:
+  ```fels
   #extern("kernel32", "WriteFile")
-  WriteFile :: fn(...) -> bool;          // Gabbro name == C symbol
+  WriteFile :: fn(...) -> bool;          // Fels name == C symbol
 
   #extern("ws2_32", "connect")
-  sys_connect :: fn(...) -> i32;         // Gabbro name `sys_connect`, links `connect`
+  sys_connect :: fn(...) -> i32;         // Fels name `sys_connect`, links `connect`
   ```
-  Two externs may bind the same C symbol under different Gabbro names (the one external
-  declaration is deduplicated at link time). A plain Gabbro function may even share a name
+  Two externs may bind the same C symbol under different Fels names (the one external
+  declaration is deduplicated at link time). A plain Fels function may even share a name
   with a renamed extern's C symbol (e.g. a `connect` wrapper over `sys_connect`); the
   wrapper keeps internal linkage under a module-private symbol so the two don't clash.
 - `#foreign`: Alias for `#extern`.
@@ -59,7 +59,7 @@ Builtins live in the reserved **`core::`** namespace — compiler-provided opera
 always in scope (no import). The `core::` prefix makes a builtin call visually
 distinct from an ordinary function call:
 
-```gabbro
+```fels
 n   := core::sizeof(Point);          // a builtin — you can see the compiler is involved
 name := core::type_name(Point);      // "Point"
 buf := unsafe core::slice_from_raw_parts(u8, p, len);
@@ -94,7 +94,7 @@ error). Some builtins require an `unsafe` block (last column).
 | `core::atomic_cas` | `core::atomic_cas(ptr, expected, desired, ord) -> T` | No | Compare-and-swap; returns the value seen (`== expected` on success). |
 | `core::atomic_fence` | `core::atomic_fence(ord)` | No | Memory fence. |
 | `core::ptr_from_int`| `core::ptr_from_int($T: type, addr: usize) -> T` | **Yes** | Integer address → pointer `T`. |
-| `core::fn_ptr`| `core::fn_ptr(f) -> *void` | **Yes** | Raw thin pointer of a top-level function, for a C callback / thread entry (gabbro's ordinary fn value is a fat closure a C ABI can't call). |
+| `core::fn_ptr`| `core::fn_ptr(f) -> *void` | **Yes** | Raw thin pointer of a top-level function, for a C callback / thread entry (fels's ordinary fn value is a fat closure a C ABI can't call). |
 | `core::slice_raw`| `core::slice_raw($T, ptr, len) -> []T` | **Yes** | Build a slice from a raw pointer + length. |
 | `core::volatile_store`| `core::volatile_store(ptr: *T, val: T)` | **Yes** | Volatile memory write. |
 | `core::unaligned_read`| `core::unaligned_read($T: type, ptr) -> T` | **Yes** | Read `T` from a possibly-unaligned address. |
@@ -118,7 +118,7 @@ Compile-time constants (no parens) that fold to a literal at the use site:
 | `core::os` | `[]const u8` | the OS of the machine the compiler runs on (`"windows"`, `"linux"`, …) — not the build target, see the `TARGET` warning below |
 | `core::arch` | `[]const u8` | the architecture of the machine the compiler runs on (`"x86_64"`, …) |
 
-```gabbro
+```fels
 log :: fn(msg: []const u8) { print(core::file); print_i64(core::line as i64); print(msg); }
 ```
 
@@ -152,7 +152,7 @@ Evaluates a condition at compile time and includes only the active branch in the
 `#if` is a **statement**: it appears inside a function body, not at the top level, so it
 chooses code, not declarations.
 
-```gabbro
+```fels
 width :: fn() -> i32 {
     #if core::sizeof(usize) == 8 {
         return 64;
@@ -164,11 +164,11 @@ width :: fn() -> i32 {
 
 ### Compile-time Run (`#run`)
 
-Executes Gabbro code during compilation on the comptime VM and folds the result to a
+Executes Fels code during compilation on the comptime VM and folds the result to a
 constant. `#run expr` is an expression and may initialise a top-level constant; the
 block form `#run { … }` is a statement and, like `#if`, only appears inside a function.
 
-```gabbro
+```fels
 // As an expression, including at the top level
 SIZE :: #run compute_size();
 
@@ -189,7 +189,7 @@ What a `#run` can return, what it can read (static data, read-only) and what is 
 
 ### Compile-time assertions (`#assert`)
 
-```gabbro
+```fels
 #assert(condition);
 #assert(condition, "message");
 ```
@@ -197,9 +197,9 @@ What a `#run` can return, what it can read (static data, read-only) and what is 
 A standalone top-level directive (like `#system_library`) that fails the build when
 `condition` is `false`. The condition is evaluated on the comptime VM, so it can use
 constants, `core::sizeof`, `core::align_of`, `core::offset_of` and calls the VM can run.
-It is the way to pin down a layout that something outside Gabbro depends on:
+It is the way to pin down a layout that something outside Fels depends on:
 
-```gabbro
+```fels
 Header :: struct { kind: u8, len: u32, id: u64 }
 
 #assert(core::sizeof(Header) == 16, "Header is sent as-is over the wire");
@@ -215,8 +215,8 @@ header.fels:3:9: error: static assertion failed: Header is sent as-is over the w
 
 - The condition must be a `bool` (a type error otherwise) and must fold at compile time;
   one that needs the host, such as a call into a DLL, is an error, not a pass.
-- `#assert` is evaluated when the program is lowered, i.e. by `gabbro build`, `object` and
-  `ir`. `gabbro check` only type-checks, so it does not run assertions.
+- `#assert` is evaluated when the program is lowered, i.e. by `fels build`, `object` and
+  `ir`. `fels check` only type-checks, so it does not run assertions.
 - Top level only. Inside a function, use `#if` with `core::trap()` or an ordinary check.
 
 ### The `TARGET` Pseudo-module
@@ -227,7 +227,7 @@ The compiler provides compile-time target information via the virtual `TARGET` i
 - `TARGET.arch`: Returns `.x86_64`, `.aarch64`, or `.unknown`.
 - `TARGET.debug`: Returns `true` if compiling in debug mode, `false` otherwise.
 
-```gabbro
+```fels
 describe :: fn() -> i32 {
     #if TARGET.os == .windows {
         return 1;
