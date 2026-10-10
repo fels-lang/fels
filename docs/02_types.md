@@ -31,6 +31,8 @@ d := 0usize;       // usize
 
 Without a suffix, an integer literal's type is inferred from context. If no context constrains it, the literal defaults to `i32`. Either way the value has to fit: `b: u8 = 300;` is a compile error, and so is `x := 5000000000;`, which needs a suffix (`5000000000i64`).
 
+The literal is computed at the type it takes, and so are a minus sign and arithmetic on literals: `k: i64 = -5;` is the 64-bit -5, `big: u64 = 1 << 40;` is computed in 64 bits, and so is `(1 << 40) as u64`. Next to a typed operand a literal takes that operand's type, on either side: with `big: i64`, both `big + 5` and `5 + big` are `i64`. A shift has the type of the value shifted, never that of the amount: with `b: u8`, `x := 1 << b;` is an `i32` and `1 << 10` is 1024.
+
 A local inferred from an unsuffixed literal has that default type: `x := 42` is an `i32`, so `&x` is a `*i32` (and `&y` is a `*f64` for `y := 1.5`). Reading `x` as another integer type takes a cast, `w: i64 = x as i64;`, or give the local its type up front (`x := 42i64` or `x: i64 = 42`). A constant is different: `N :: 300;` has no width of its own and is checked like the literal wherever it is used, so `b: u8 = N;` is an error.
 
 A suffix is authoritative: it fixes the literal's width even through inference. `x := 0i64` gives `x` a 64-bit slot — the `i64` is not narrowed back to the `i32` default. This matters for values that exceed 32 bits (e.g. addresses built with `usize`/`i64`), where a narrowed slot would silently truncate the value.
@@ -536,6 +538,8 @@ data: [4]u8 = .{ 1u8, 2u8, 3u8, 4u8 };
 zeros: [256]u8 = .{};                    // zero-initialized
 len := data.len;                          // compile-time known: 4
 ```
+
+The length `N` is an integer literal or a constant, also one that compile-time code computes (`N :: #run count();` or `N :: count();`, see [09_comptime](09_comptime.md)). An array literal may stop short, and the rest is zero, but it may not have more elements than the array: `a: [3]i32 = .{ 1, 2, 3, 4 };` is a compile error.
 
 Arrays differ from slices in that their length is part of the type. `[4]u8` and `[8]u8` are different types. To pass an array to a function expecting a slice, use the slice operator:
 
