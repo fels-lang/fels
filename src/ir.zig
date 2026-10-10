@@ -7182,12 +7182,19 @@ pub fn runCompilerHooks(allocator: std.mem.Allocator, front_end: pipeline.FrontE
 /// and passes it in. The build system's entry point (the Phase-3 message loop in
 /// imperative form).
 pub fn runBuildHook(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, host: vm_engine.BuildHost) InsertExpandError!void {
+    // The project's build.fels is the privileged root: it may call host FFI.
+    return runBuildHookWith(allocator, front_end, host, .{ .ffi = .all });
+}
+
+/// `runBuildHook` with the given capabilities: a package's build.fels gets what fels.pkg
+/// granted the package.
+pub fn runBuildHookWith(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, host: vm_engine.BuildHost, caps: vm_engine.Caps) InsertExpandError!void {
     var cvm = ComptimeVm.init(allocator, front_end);
     defer cvm.deinit();
     const c = cvm.ensureCache() orelse return error.SemanticFailed;
     var vm = vm_engine.Vm.initModule(cvm.gpa, &c.bc);
     vm.host = host;
-    vm.caps.ffi = .all; // build.fels is the privileged root — it may call host FFI.
+    vm.caps = caps;
     defer vm.deinit();
 
     // The `Build` argument: a single zone cell holding `id = 0`, addressed as a

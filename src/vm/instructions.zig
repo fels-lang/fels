@@ -160,6 +160,9 @@ pub const BuildOp = enum(u32) {
     step_print,     // (step, text)
     artifact_after, // (id, step)                      run the step before building the artifact
     default_step,   // (step)                          what a bare `fels build` runs
+    provide_lib_path, // (dir)                         for the users of a package: a library folder
+    provide_link,     // (lib)                         for the users of a package: a library to link
+    provide_runtime_file, // (path)                    for the users of a package: a file next to their output
 
     /// The intrinsic `std.build` calls for this op is `__build_` followed by the tag name.
     pub const prefix = "__build_";

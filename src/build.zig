@@ -81,6 +81,13 @@ pub const Artifact = struct {
     modules: std.ArrayList(pipeline.ModuleRoot) = .empty,
 };
 
+/// Library folders, libraries and runtime files a package's build.fels gives its users.
+pub const Provided = struct {
+    lib_paths: std.ArrayList([]const u8) = .empty,
+    links: std.ArrayList([]const u8) = .empty,
+    runtime_files: std.ArrayList([]const u8) = .empty,
+};
+
 pub const Define = struct {
     name: []const u8,
     /// The value as Fels source: `"text"`, `42` or `true`.
@@ -195,6 +202,11 @@ pub const BuildPlan = struct {
     cwd_abs: []const u8 = "",
     /// The packages fels.pkg uses (with the ones they use).
     packages: []const pkg.resolve.Package = &.{},
+    /// What this build.fels provides to the users of its package (`b.provide_*`), relative to
+    /// build.fels.
+    provided: Provided = .{},
+    /// What the packages' own build.fels provide, as absolute paths: added to every artifact.
+    from_packages: Provided = .{},
     /// Where `fels build install` copies to (`b.install_prefix`), relative to build.fels.
     install_prefix: ?[]const u8 = null,
     install_items: std.ArrayList(InstallItem) = .empty,
@@ -463,6 +475,17 @@ fn hostCall(ctx: *anyopaque, op_raw: u32, args: []const Value) Value {
                 else => .{ .print = pair.a },
             };
             plan.steps.items[step].actions.append(plan.a(), action) catch {
+                plan.oom = true;
+            };
+            return .void;
+        },
+        .provide_lib_path, .provide_link, .provide_runtime_file => {
+            const list = switch (op) {
+                .provide_lib_path => &plan.provided.lib_paths,
+                .provide_link => &plan.provided.links,
+                else => &plan.provided.runtime_files,
+            };
+            list.append(plan.a(), plan.dupe(argStr(args, 0))) catch {
                 plan.oom = true;
             };
             return .void;
@@ -840,7 +863,9 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: Run
         error.PackageError => error.PackageError,
     };
     if (loaded) |r| plan.packages = r.packages;
-    ir.package_caps = try packageCaps(&plan);
+    const folder_caps = try packageCaps(&plan);
+    try runPackageBuilds(gpa, io, &plan, folder_caps);
+    ir.package_caps = folder_caps;
     defer ir.package_caps = &.{};
 
     if (opts.list) {
@@ -853,9 +878,43 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: Run
     try executePlan(gpa, io, &plan, base_dir, opts);
 }
 
+/// Run the build.fels of every package that has one, with the capabilities fels.pkg granted
+/// the package, and collect what it provides to its users. Its artifacts and steps are its own
+/// business and are not built.
+fn runPackageBuilds(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, folder_caps: []const ir.FolderCaps) BuildError!void {
+    const a = plan.a();
+    for (plan.packages, folder_caps) |p, fc| {
+        const script = for ([_][]const u8{ "build.fels", "build.gab" }) |name| {
+            const path = std.fs.path.join(a, &.{ p.dir, name }) catch return error.OutOfMemory;
+            if (fileExists(io, path)) break path;
+        } else continue;
+        var sub = loadPlanWith(gpa, io, script, &.{}, fc.caps, false) catch |err| {
+            std.debug.print("fels build: the build.fels of the package `{s}` failed ({s})\n", .{ p.name, @errorName(err) });
+            return error.PackageError;
+        };
+        defer sub.deinit();
+        for (sub.provided.lib_paths.items) |d| plan.from_packages.lib_paths.append(a, joinPath(a, p.dir, d) catch return error.OutOfMemory) catch return error.OutOfMemory;
+        for (sub.provided.links.items) |l| plan.from_packages.links.append(a, plan.dupe(l)) catch return error.OutOfMemory;
+        for (sub.provided.runtime_files.items) |f| plan.from_packages.runtime_files.append(a, joinPath(a, p.dir, f) catch return error.OutOfMemory) catch return error.OutOfMemory;
+    }
+}
+
 /// Run `build_path` (a build.fels) with the `-D` `options` and return the plan it records,
 /// without building anything. The caller owns the plan (`deinit`).
 pub fn loadPlan(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, options: []const []const u8) BuildError!BuildPlan {
+    return loadPlanWith(gpa, io, build_path, options, .{ .ffi = .all }, true);
+}
+
+/// `loadPlan` with the capabilities of the script, and whether it must declare an artifact (a
+/// package's build.fels need not).
+fn loadPlanWith(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    build_path: []const u8,
+    options: []const []const u8,
+    caps: vm_engine.Caps,
+    need_artifact: bool,
+) BuildError!BuildPlan {
     var plan = BuildPlan.init(gpa);
     errdefer plan.deinit();
     plan.options = options; // visible to `b.option*` during the build hook
@@ -879,7 +938,7 @@ pub fn loadPlan(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opti
 
     // 2. Run `build(b)` on the comptime VM, recording into `plan`.
     const host = vm_engine.BuildHost{ .ctx = &plan, .call = hostCall };
-    ir.runBuildHook(gpa, fe, host) catch {
+    ir.runBuildHookWith(gpa, fe, host, caps) catch {
         // Every failure inside the hook used to surface as `NoBuildFn`, which reads
         // as "your build.fels has no `build`" even when the function was found and
         // ran partway. The VM prints its own reason above when it has one.
@@ -892,7 +951,7 @@ pub fn loadPlan(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opti
     };
     if (plan.oom) return error.OutOfMemory;
     if (reportScriptErrors(&plan)) return error.ScriptError;
-    if (plan.artifacts.items.len == 0) return error.NoArtifacts;
+    if (need_artifact and plan.artifacts.items.len == 0) return error.NoArtifacts;
     return plan;
 }
 
@@ -1085,6 +1144,7 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
     // the working directory `fels build` was invoked from.
     var lib_paths: std.ArrayList([]const u8) = .empty;
     lib_paths.appendSlice(a, opts.lib_paths) catch return error.OutOfMemory;
+    lib_paths.appendSlice(a, plan.from_packages.lib_paths.items) catch return error.OutOfMemory;
     for (art.lib_paths.items) |lp| {
         const abs = joinPath(a, base_dir, lp) catch return error.OutOfMemory;
         lib_paths.append(a, abs) catch return error.OutOfMemory;
@@ -1107,11 +1167,13 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
     for (art.lib_paths.items) |lp|
         search_dirs.append(a, joinPath(a, base_dir, lp) catch continue) catch {};
     search_dirs.append(a, base_dir) catch {};
+    search_dirs.appendSlice(a, plan.from_packages.lib_paths.items) catch return error.OutOfMemory;
 
     // The libraries to link: the named ones, then the library artifacts of this build
     // (found in their output directory, and inspected like any other library below).
     var linked: std.ArrayList([]const u8) = .empty;
     linked.appendSlice(a, art.libs.items) catch return error.OutOfMemory;
+    linked.appendSlice(a, plan.from_packages.links.items) catch return error.OutOfMemory;
     for (art.link_artifacts.items) |dep| {
         const dep_out = try resolveOutput(plan, base_dir, plan.artifacts.items[dep]);
         const dep_dir = std.fs.path.dirname(dep_out) orelse ".";
@@ -1200,6 +1262,7 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
     const out_dir = std.fs.path.dirname(out_path) orelse ".";
     var copy_srcs: std.ArrayList([]const u8) = .empty;
     for (art.runtime_files.items) |rf| copy_srcs.append(a, joinPath(a, base_dir, rf) catch continue) catch {};
+    copy_srcs.appendSlice(a, plan.from_packages.runtime_files.items) catch {};
     copy_srcs.appendSlice(a, auto_dlls.items) catch {};
     for (copy_srcs.items) |csrc| {
         const dst = joinPath(a, out_dir, std.fs.path.basename(csrc)) catch continue;
