@@ -402,15 +402,13 @@ pub const Analysis = struct {
     module: ast.Module,
     /// Null if the root file did not parse.
     symbols: ?sema.SymbolTable,
-    /// What the type check recorded (resolved names, expression types); null when
+    /// What the type check recorded (resolved names, expression types, partial where
+    /// checking failed) with the names declared inside function bodies; null when
     /// `symbols` is.
     types: ?sema.TypeEnv = null,
     /// Parse, symbol and type diagnostics of all loaded files; `file` tells which.
     diagnostics: []const Diagnostic,
     files: []const AnalysisFile,
-    /// The types the checker found (partial where checking failed), with the names declared
-    /// inside function bodies. Null when `symbols` is.
-    types: ?sema.TypeEnv = null,
     /// The module as loaded, before `#compiler` hooks and macro expansion: the macros are
     /// still in it.
     loaded: ast.Module = .{ .file_name = "", .items = &.{} },
