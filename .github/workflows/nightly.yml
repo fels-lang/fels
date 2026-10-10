@@ -44,7 +44,10 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: "Nightly ${{ steps.pkg.outputs.version }}"
           prerelease: true
-          files: ${{ steps.pkg.outputs.archive }}
+          files: |
+            ${{ steps.pkg.outputs.archive }}
+            ${{ steps.pkg.outputs.bindgen_archive }}
+            ${{ steps.pkg.outputs.linux_cross_archive }}
           body: |
             Automated build from the latest `main` — version `${{ steps.pkg.outputs.version }}`.
             Download `${{ steps.pkg.outputs.archive_name }}`, extract, and run `bin/gabbro`
