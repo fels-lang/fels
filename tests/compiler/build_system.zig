@@ -2,6 +2,7 @@
 /// plan they record. Nothing is compiled or linked, so these run without LLVM.
 const std = @import("std");
 const gabbro = @import("gabbro_compiler");
+const builtin = @import("builtin");
 const build = gabbro.build_driver;
 
 /// Write `src` as `<dir>/build.gab` and load its plan with the `-D` `options`.
@@ -209,4 +210,121 @@ test "build: a define or module name that is not a name is an error" {
         \\}
     ;
     try std.testing.expectError(error.ScriptError, loadPlan("bs_module_bad", module_src, &.{}));
+}
+
+/// Write `src` as `<dir>/build.gab` (after clearing `dir`) and run `target` with it.
+fn runTarget(comptime dir: []const u8, src: []const u8, target: []const u8) !void {
+    const io = std.testing.io;
+    const path = ".zig-cache/" ++ dir;
+    std.Io.Dir.cwd().deleteTree(io, path) catch {};
+    std.Io.Dir.cwd().createDirPath(io, path) catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path ++ "/build.gab", .data = src });
+    return build.run(std.testing.allocator, io, path ++ "/build.gab", .{ .target = target, .quiet = true });
+}
+
+fn expectFile(path: []const u8, want: []const u8) !void {
+    const gpa = std.testing.allocator;
+    const data = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, .unlimited);
+    defer gpa.free(data);
+    try std.testing.expectEqualStrings(want, data);
+}
+
+test "build: a step runs the steps it comes after, then its file actions in order" {
+    const src =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    b.executable("app", "main.gab");
+        \\    gen := b.step("gen", "write the inputs");
+        \\    gen.write_file("in/a.txt", "a");
+        \\    gen.write_file("in/sub/b.txt", "b");
+        \\    pack := b.step("pack", "copy them");
+        \\    pack.after(gen);
+        \\    pack.copy_dir("in", "out/in");
+        \\    pack.copy_file("in/a.txt", "out/a-copy.txt");
+        \\    pack.remove("in");
+        \\}
+    ;
+    try runTarget("bs_step_files", src, "pack");
+    try expectFile(".zig-cache/bs_step_files/out/in/a.txt", "a");
+    try expectFile(".zig-cache/bs_step_files/out/in/sub/b.txt", "b");
+    try expectFile(".zig-cache/bs_step_files/out/a-copy.txt", "a");
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(std.testing.io, ".zig-cache/bs_step_files/in", .{}));
+}
+
+test "build: a command gets its arguments, working directory and environment" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const src =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    b.executable("app", "main.gab");
+        \\    prep := b.step("prep", "");
+        \\    prep.write_file("work/keep.txt", "");
+        \\    cmd := b.command("say", "cmd");
+        \\    cmd.arg("/c");
+        \\    cmd.arg("echo %GREETING%>said.txt");
+        \\    cmd.cwd("work");
+        \\    cmd.env("GREETING", "hello");
+        \\}
+    ;
+    // `say` runs in work/, which `prep` creates; run it first.
+    const io = std.testing.io;
+    try runTarget("bs_step_cmd", src, "prep");
+    try build.run(std.testing.allocator, io, ".zig-cache/bs_step_cmd/build.gab", .{ .target = "say", .quiet = true });
+    try expectFile(".zig-cache/bs_step_cmd/work/said.txt", "hello\r\n");
+}
+
+test "build: a command that fails stops the build" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const src =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    b.executable("app", "main.gab");
+        \\    bad := b.command("fail", "cmd");
+        \\    bad.arg("/c");
+        \\    bad.arg("exit 3");
+        \\}
+    ;
+    try std.testing.expectError(error.StepFailed, runTarget("bs_step_fail", src, "fail"));
+}
+
+test "build: the default step runs for a bare gabbro build" {
+    const src =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    b.executable("app", "main.gab");
+        \\    notes := b.step("notes", "");
+        \\    notes.write_file("notes.txt", "ran");
+        \\    b.default_step(notes);
+        \\}
+    ;
+    const io = std.testing.io;
+    const dir = ".zig-cache/bs_step_default";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data = src });
+    try build.run(std.testing.allocator, io, dir ++ "/build.gab", .{ .quiet = true });
+    try expectFile(dir ++ "/notes.txt", "ran");
+}
+
+test "build: two steps of the same name are an error, a step after itself too" {
+    const twice =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    b.executable("app", "main.gab");
+        \\    b.step("gen", "");
+        \\    b.step("gen", "");
+        \\}
+    ;
+    try std.testing.expectError(error.ScriptError, loadPlan("bs_step_twice", twice, &.{}));
+    const cycle =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    b.executable("app", "main.gab");
+        \\    a := b.step("a", "");
+        \\    c := b.step("c", "");
+        \\    a.after(c);
+        \\    c.after(a);
+        \\}
+    ;
+    try std.testing.expectError(error.DependencyCycle, runTarget("bs_step_cycle", cycle, "a"));
 }
