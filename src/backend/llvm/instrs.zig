@@ -469,7 +469,10 @@ fn lowerRef(cg: *ModuleCg, fncg: anytype, val: ir.Value) ?llvm.LLVMValueRef {
 // Binary
 
 fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType, location: ir.SourceLocation) ?llvm.LLVMValueRef {
-    const lhs_hint = fncg.irTypeOf(b.lhs) orelse fncg.irTypeOf(b.rhs) orelse ty;
+    // A shift has the type of the value shifted, never of the amount: in `1 << b` with `b: u8`
+    // the literal takes the shift's own type, or `1 << 10` was computed in 8 bits.
+    const is_shift = b.op == .shl or b.op == .shr;
+    const lhs_hint = fncg.irTypeOf(b.lhs) orelse (if (is_shift) null else fncg.irTypeOf(b.rhs)) orelse ty;
     const rhs_hint = fncg.irTypeOf(b.rhs) orelse lhs_hint;
     const lhs = resolveVal(cg, fncg, b.lhs, lhs_hint);
     var rhs = resolveVal(cg, fncg, b.rhs, rhs_hint);

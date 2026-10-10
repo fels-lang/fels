@@ -4782,3 +4782,29 @@ test "exe: a literal on the left of an operator takes the right operand's type" 
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_lit_left_operand_o0", 0));
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_lit_left_operand_o2", 2));
 }
+
+test "exe: a literal shifted by a narrower amount keeps the shift's type" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The code generator typed the literal in `1 << b` by `b`, so with `b: u8` the shift was
+    // done in 8 bits: `1 << 10` panicked at -O0 and gave 0 at -O2.
+    const src =
+        \\shifted :: fn(b: u8) -> u64 { r: u64 = 1 << b; return r; }
+        \\#assert(shifted(40u8) == 1099511627776u64);
+        \\main :: fn() -> i32 {
+        \\    b: u8 = 10;
+        \\    c := 1 << b;
+        \\    if c != 1024 { return 1; }
+        \\    d: u64 = 1 << b;
+        \\    if d != 1024u64 { return 2; }
+        \\    if shifted(40u8) != 1099511627776u64 { return 3; }
+        \\    e: i64 = -1 << b;
+        \\    if e != -1024i64 { return 4; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_lit_shift_amount_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_lit_shift_amount_o2", 2));
+}
