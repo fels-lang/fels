@@ -26,8 +26,9 @@ the major version is `0`, any minor bump may break source compatibility.
   gave `k != -5`, `e: i8 = -128;` wrote four bytes into its one byte slot, and
   `big: u64 = 1 << 40;` stored 0, at every optimisation level and in the comptime VM. A negated
   literal and arithmetic on literals were computed and stored as an `i32` whatever type they were
-  given. They now take that type in a typed declaration or global, an assignment, a struct or
-  array literal, a call argument, a return value, a comparison with a typed operand, a cast
+  given, and so was a constant without a type (`A :: 3;`, `x: i64 = A - B;`). They now take
+  that type in a typed declaration or global, an assignment, a struct or array literal, a call
+  argument, a return value, a comparison with a typed operand, a cast
   (`(1 << 40) as u64`, `0xFFFFFFFF as u64`) and the default of a generic struct's field. In
   `5 + big` the literal takes the type of `big` (the expression was an untyped literal, so
   `x := 5 + big` made `x` an `i32`), and in `1 << b` with `b: u8` the shift is no longer done in
