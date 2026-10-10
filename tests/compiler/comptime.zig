@@ -143,6 +143,42 @@ test "#run: string .len and enum-payload construction fold on the VM" {
     try std.testing.expectEqual(@as(usize, 3), got);
 }
 
+test "#run: a string's escapes are resolved, as at run time" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The VM read the escapes as written: "a\nb\"c" was 7 bytes at compile time and 5 at run
+    // time, and a `#run` string result kept its backslashes.
+    const src =
+        \\slen :: fn() -> i32 { s := "a\nb\"c"; return s.len as i32; }
+        \\hex :: fn() -> i32 { s := "\x41\\"; return (s[0] as i32) * 100 + s.len as i32; }
+        \\LEN :: #run slen();           // 5
+        \\HEX :: #run hex();            // 'A' * 100 + 2
+        \\TEXT :: #run "tab\there";     // the 8 bytes, with a real tab
+    ;
+    var fe = try gabbro.compile(arena.allocator(), "vmesc.gab", src);
+    defer fe.deinit(arena.allocator());
+    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
+    try gabbro.ir_mod.validateModule(m);
+
+    var got: usize = 0;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "LEN")) {
+            got += 1;
+            try std.testing.expectEqual(ir.Imm{ .int = 5 }, g.init.imm);
+        }
+        if (std.mem.eql(u8, g.name, "HEX")) {
+            got += 1;
+            try std.testing.expectEqual(ir.Imm{ .int = 'A' * 100 + 2 }, g.init.imm);
+        }
+        if (std.mem.eql(u8, g.name, "TEXT")) {
+            got += 1;
+            try std.testing.expectEqualStrings("tab\there", g.init.imm.text);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 3), got);
+}
+
 test "#run: taking the address of a scalar local folds on the VM" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
