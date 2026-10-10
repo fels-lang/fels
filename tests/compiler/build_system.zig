@@ -362,3 +362,17 @@ test "build: a library for Linux is not supported yet, and says so" {
     ;
     try std.testing.expectError(error.ScriptError, loadPlan("bs_target_lib", src, &.{}));
 }
+
+test "build: a build script can print" {
+    const src =
+        \\#import std.build.{ Build };
+        \\#import std.io.{ println };
+        \\build :: fn(b: Build) {
+        \\    println("configuring");
+        \\    b.executable("app", "main.fels");
+        \\}
+    ;
+    var plan = try loadPlan("bs_print", src, &.{});
+    defer plan.deinit();
+    try std.testing.expectEqual(@as(usize, 1), plan.artifacts.items.len);
+}
