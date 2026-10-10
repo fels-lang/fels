@@ -1,0 +1,76 @@
+name: Set up LLVM
+description: >
+  Download the official LLVM release for Windows, keep only the files gabbro needs, and cache
+  them. The first run downloads about 820 MB; later runs restore a much smaller cache.
+
+inputs:
+  version:
+    description: LLVM version, as in the llvm/llvm-project release tag llvmorg-<version>
+    default: "22.1.6"
+
+outputs:
+  path:
+    description: The LLVM directory to pass as -Dllvm-path (has bin/, include/ and lib/)
+    value: ${{ steps.dir.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - name: LLVM directory
+      id: dir
+      shell: pwsh
+      run: '"path=${{ runner.temp }}\llvm" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT'
+
+    # Bump the "files" number when the list of kept files below changes, so the old cache is not
+    # restored.
+    - name: Cache LLVM
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.dir.outputs.path }}
+        key: llvm-${{ inputs.version }}-windows-files1
+
+    - name: Download and trim LLVM
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      env:
+        LLVM_VERSION: ${{ inputs.version }}
+        LLVM_DIR: ${{ steps.dir.outputs.path }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        $name = "clang+llvm-$env:LLVM_VERSION-x86_64-pc-windows-msvc"
+        $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/$name.tar.xz"
+        $archive = Join-Path $env:RUNNER_TEMP "llvm.tar.xz"
+        $full = Join-Path $env:RUNNER_TEMP "llvm-full"
+        Write-Host "==> downloading $url"
+        curl.exe -fsSL --retry 3 -o $archive $url
+        if ($LASTEXITCODE -ne 0) { throw "download failed ($LASTEXITCODE)" }
+
+        # 7z unpacks the xz layer to a pipe and the tar layer from it, so the 4 GB tar is never
+        # written to disk. cmd does the piping so the bytes pass through unchanged.
+        Write-Host "==> unpacking"
+        cmd /c "7z x -so `"$archive`" | 7z x -si -ttar -bso0 -bsp0 -y `"-o$full`""
+        if ($LASTEXITCODE -ne 0) { throw "unpacking failed ($LASTEXITCODE)" }
+        $src = Join-Path $full $name
+
+        # Keep what the build, the tests and scripts/package.ps1 use:
+        #   bin/      LLVM-C.dll (codegen), libclang.dll (bindgen), lld-link.exe (tests link
+        #             with it), ld.lld.exe (the Linux cross link), clang.exe (a DLL test
+        #             compiles its C host with it)
+        #   include/  the LLVM-C, clang-c and LLD headers
+        #   lib/      the LLVM and LLD static libraries (gabbrolld.dll links them),
+        #             LLVM-C.lib, and lib/clang (the clang headers for bindgen)
+        # The other clang tools and the clang static libraries are most of the 4 GB and are not used.
+        $dst = $env:LLVM_DIR
+        New-Item -ItemType Directory -Force (Join-Path $dst "bin"), (Join-Path $dst "lib") | Out-Null
+        foreach ($f in @("LLVM-C.dll", "libclang.dll", "lld-link.exe", "ld.lld.exe", "clang.exe")) {
+            Move-Item (Join-Path $src "bin/$f") (Join-Path $dst "bin")
+        }
+        Move-Item (Join-Path $src "include") $dst
+        Move-Item (Join-Path $src "lib/clang") (Join-Path $dst "lib")
+        Get-ChildItem (Join-Path $src "lib") -File |
+            Where-Object { $_.Name -match '^(LLVM.*|lld.*)\.lib$' } |
+            Move-Item -Destination (Join-Path $dst "lib")
+        Remove-Item -Recurse -Force $full, $archive
+        $mb = (Get-ChildItem -Recurse -File $dst | Measure-Object Length -Sum).Sum / 1MB
+        Write-Host ("==> LLVM {0} in {1} ({2:N0} MB)" -f $env:LLVM_VERSION, $dst, $mb)
