@@ -251,8 +251,9 @@ test "#run: a result that cannot be data fails with a diagnostic, not silent gar
         \\
     ;
     const refused = [_][]const u8{
-        // a pointer into compile-time memory: the program will not have that memory
-        "mk :: fn() -> Holder { x := 5; return .{ &x }; }\nH: Holder = #run mk();",
+        // a pointer into compile-time memory: the program will not have that memory (passed
+        // through a call, since the checker rejects a plain `return .{ &x }` itself)
+        "addr :: fn(p: *i32) -> *i32 { return p; }\nmk :: fn() -> Holder { x := 5; return .{ addr(&x) }; }\nH: Holder = #run mk();",
         // a variant that carries a payload (static storage does not hold one yet)
         "mk :: fn() -> Shape { return Shape.circle(3); }\nS: Shape = #run mk();",
         // an element the type cannot hold: a checked u8 addition that overflowed

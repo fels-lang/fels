@@ -4524,3 +4524,33 @@ test "exe: a bare variant in an array or slice literal and in a field default is
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_enum_bare_variant_slot_o0", 0));
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_enum_bare_variant_slot_o2", 2));
 }
+
+test "exe: an address the caller owns can still be returned" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Returning the address of a local is rejected; none of these is one.
+    const code = try compileAndRun(arena.allocator(),
+        \\P :: struct { x: i32, y: i32 }
+        \\G: i32 = 3;
+        \\GA: [4]i32 = .{ 1, 2, 3, 4 };
+        \\global :: fn() -> *i32 { return &G; }
+        \\first_two :: fn() -> []i32 { return GA[0..2]; }
+        \\same :: fn(p: *i32) -> *i32 { return p; }
+        \\field_of :: fn(p: *P) -> *i32 { q := &p.y; return q; }
+        \\from_arena :: fn(a: *Arena, v: i32) -> *i32 { p := a.new(i32); *p = v; return p; }
+        \\main :: fn() -> i32 {
+        \\    r: i32 = 0;
+        \\    zone z: Arena {
+        \\        p := from_arena(&z, 30);
+        \\        r = *p;
+        \\    }
+        \\    pt: P = .{ 1, 4 };
+        \\    *field_of(&pt) += 1;
+        \\    x := 2;
+        \\    return r + *global() + first_two()[1] + *same(&x) + pt.y;
+        \\}
+    , "exe_return_caller_address");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}
