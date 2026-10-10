@@ -8,6 +8,7 @@ const lock_mod = @import("lock.zig");
 const semver = @import("semver.zig");
 const fetch = @import("fetch.zig");
 const directives = @import("directives.zig");
+const ModuleRoot = @import("../pipeline.zig").ModuleRoot;
 
 const Manifest = manifest_mod.Manifest;
 const Cap = manifest_mod.Cap;
@@ -68,6 +69,9 @@ pub const Result = struct {
     lock_changed: bool,
     /// Packages left out with `skip_missing`.
     missing: []const []const u8 = &.{},
+    /// The project's own package (`#package` in its fels.pkg): inside the project
+    /// `#import <name>` reads from the project's own import folder. Null without `#package`.
+    self_root: ?ModuleRoot = null,
 
     pub fn find(self: Result, name: []const u8) ?Package {
         for (self.packages) |p| if (std.mem.eql(u8, p.name, name)) return p;
@@ -319,7 +323,13 @@ pub fn resolve(
 
     // Left-out packages keep their fels.lock line.
     for (missing.items) |name| if (old_lock.find(name)) |e| lock.put(a, e) catch return error.OutOfMemory;
-    return .{ .packages = packages.items, .lock = lock, .lock_changed = !sameLock(old_lock, lock), .missing = missing.items };
+    return .{
+        .packages = packages.items,
+        .lock = lock,
+        .lock_changed = !sameLock(old_lock, lock),
+        .missing = missing.items,
+        .self_root = try selfRoot(a, io, root_dir, root),
+    };
 }
 
 /// The folder `#import <name>` reads from for the package in `dir`: its `#root`, else `src/`
@@ -327,6 +337,14 @@ pub fn resolve(
 fn importDir(a: std.mem.Allocator, io: std.Io, dir: []const u8, m: Manifest) ResolveError![]const u8 {
     const rel = m.root orelse if (fetch.exists(io, std.fs.path.join(a, &.{ dir, "src" }) catch return error.OutOfMemory)) "src" else ".";
     return std.fs.path.resolve(a, &.{ dir, rel }) catch return error.OutOfMemory;
+}
+
+/// The import root of the project's own package, so its examples and tests import it by name
+/// the way its users do. None without `#package`, and none for a name fels keeps for itself.
+fn selfRoot(a: std.mem.Allocator, io: std.Io, dir: []const u8, m: Manifest) ResolveError!?ModuleRoot {
+    const name = m.name orelse return null;
+    if (std.mem.eql(u8, name, "std") or std.mem.eql(u8, name, "build_options")) return null;
+    return .{ .name = name, .dir = try importDir(a, io, dir, m) };
 }
 
 fn sameLock(x: lock_mod.Lock, y: lock_mod.Lock) bool {
