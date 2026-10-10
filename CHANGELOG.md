@@ -63,6 +63,14 @@ the major version is `0`, any minor bump may break source compatibility.
   in every set, so `fail`, `?`, `catch` and `err == .x` agree whatever sets an error passes through,
   and the comptime VM (`#run`, `#assert`) agrees with the compiled code. A `main` that fails still
   exits with its error's position in its own set.
+- **`&5` compiled and read garbage.** `p := &5; return *p;` exited with 72. A literal has no
+  storage, and the address the backend made for it was `undef`; the same went for `&-5`,
+  `&(2 + 3)` (constant folding turned the temporary back into a constant), `&"text"`, `&true`,
+  `&Color.blue` and an array's `&a.len` and `&a.ptr`, some of which crashed or failed to
+  compile. These now point at a temporary that holds the value, as `&f()` and `&(x + 1)`
+  already did. An unsuffixed literal's temporary has the literal's default type, so `&5` is a
+  `*i32` and can be passed where one is expected (it was a `*integer literal`, which no
+  parameter accepted); write `&5i64` for a `*i64`.
 
 ## 0.2.2 — 2026-10-10
 
