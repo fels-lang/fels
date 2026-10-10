@@ -727,6 +727,14 @@ pub const BinaryOp = enum {
 pub const CallExpr = struct {
     callee: *const Expr,
     args: []const CallArg,
+
+    /// Replace argument `index` in the tree itself. The tree is read-only after parsing
+    /// except for this: `Checker.resolveTypeArgs` turns an argument the parser had to
+    /// read as a dereference (`*Node`) into the type it names, and IR, the comptime VM
+    /// and the `where` evaluator, which read the arguments again, must see that type.
+    pub fn setArg(self: CallExpr, index: usize, arg: CallArg) void {
+        @constCast(self.args)[index] = arg;
+    }
 };
 
 pub const CallArg = union(enum) {

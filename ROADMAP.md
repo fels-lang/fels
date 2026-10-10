@@ -201,12 +201,6 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
   handed the error can hold it but not compare it (that is a compile error), it cannot be
   returned or stored, and its payload has no static type. Mapping one back to an HRESULT or a
   status code is therefore written at each `catch`.
-- **A dereference as a call argument is read as a type.** `f(*p)` and `g(1, *p)` fail with
-  "unknown type `p`" when the operand is a bare name: the parser takes `*Name` in an
-  argument list for a pointer type, which only a few builtins (`ptr_from_int(*T, …)`,
-  `sizeof(*T)`) and generics with explicit type arguments want. `v := *p; f(v)` is the
-  workaround. For the same reason a pointer-to-pointer type argument (`ptr_from_int(**T, …)`)
-  is refused with a message; name it through an alias.
 - **The test suite does not run Linux executables.** It cross-compiles and links the portable
   fixtures for Linux and checks the ELF, but running them takes a Linux machine; the Linux paths
   (the futex mutex and condition variable, static data and relocation, `std.com`) were run
@@ -217,6 +211,12 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
   generated projection of a runtime class, no smart pointer ([`docs/07`](docs/07_stdlib.md)).
 - **Returning a capturing closure** needs an `*Arena` parameter, because the captured
   environment must outlive the function. Lambdas otherwise capture freely.
+- **A variable named like a type is taken for the variable in a closure or a macro.** A
+  closure that has a local of the same name as a type it also writes as `*Type` for a builtin
+  or a generic function (`core::sizeof(*Node)` next to a local `Node`) is read as using the
+  variable, so returning it is refused as capturing; a macro template renames the type
+  along with its own local of that name. The free-variable pass runs before the callee is
+  known. Rename the variable.
 - **`#quote` pattern fidelity** — range, string, guard and binding match patterns reflect
   as the catch-all `anything`. Quoting works; reflecting on those patterns is lossy.
   This is the only `TODO` in the compiler ([`src/ir.zig`](src/ir.zig)).

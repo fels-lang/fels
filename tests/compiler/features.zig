@@ -948,3 +948,82 @@ test "static constraints: $T: Interface rejects non-conforming type" {
         gabbro.compile(arena.allocator(), "constraint_bad.gab", bad),
     );
 }
+
+test "the checker leaves a builtin's type argument as a type in the tree, and a load as a load" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The parser reads `*Node` in an argument list as a load. IR, the comptime VM and the `where`
+    // evaluator read the tree after the checker, so where a builtin takes a type the checker has
+    // to leave a `.type_ref` in the tree itself, not only in its own copy of the call.
+    const src =
+        \\Node :: struct { val: i32 }
+        \\inc :: fn(x: i32) -> i32 { return x + 1; }
+        \\builtin :: fn() -> usize { return core::sizeof(**Node); }
+        \\load :: fn(p: *i32) -> i32 { return inc(*p); }
+        \\shadowed :: fn(Node: i32) -> usize { return core::sizeof(*Node); }
+        \\pointee :: fn(p: *i32) -> usize { return core::sizeof(*p); }
+    ;
+    var fe = try gabbro.compile(arena.allocator(), "type_arg_tree.gab", src);
+    defer fe.deinit(arena.allocator());
+
+    const Names = struct {
+        fn firstArg(module: gabbro.Module, name: []const u8) !gabbro.ast_mod.Expr {
+            for (module.items) |item| switch (item) {
+                .function => |f| if (std.mem.eql(u8, f.name, name))
+                    return f.body.?.statements[0].return_stmt.value.?.kind.call.args[0].positional,
+                else => {},
+            };
+            return error.FunctionNotFound;
+        }
+    };
+    // A builtin's type, two levels deep.
+    const builtin = try Names.firstArg(fe.module, "builtin");
+    try std.testing.expect(builtin.kind == .type_ref and builtin.kind.type_ref.pointer.inner.* == .pointer);
+    // A load stays a load.
+    const load = try Names.firstArg(fe.module, "load");
+    try std.testing.expect(load.kind == .unary and load.kind.unary.op == .deref);
+    // A builtin's type is a type even where a parameter has the name of one...
+    try std.testing.expect((try Names.firstArg(fe.module, "shadowed")).kind == .type_ref);
+    // ...but `sizeof` of a variable is the size of what it points to.
+    const pointee = try Names.firstArg(fe.module, "pointee");
+    try std.testing.expect(pointee.kind == .unary and pointee.kind.unary.op == .deref);
+}
+
+test "a pointer type passed as a type argument is a placeholder in IR, never a load" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // `core::type_id` takes a type; the parser reads `**Node` as two dereferences and the checker
+    // turns it back into the type. IR lowers whatever it is not told is a type as a value, and
+    // a load through `Node` (or through the type parameter `T`) is invalid IR that the comptime
+    // VM cannot run, so no function below may contain one: not in a function the checker went
+    // through, not as the explicit type argument of a generic one, and not in a struct field's
+    // default, which the checker never looks at.
+    const src =
+        \\Node :: struct { val: i32 }
+        \\f :: fn() -> usize { return core::type_id(**Node); }
+        \\g :: fn($T: type) -> usize { return core::type_id(**T) + core::type_id(*T); }
+        \\h :: fn() -> usize { return g(Node) + f(); }
+        \\size_of :: fn($T: type) -> usize { return core::sizeof(T); }
+        \\k :: fn() -> usize { return size_of(*Node) + size_of(**Node); }
+        \\Hold :: struct { id: usize = core::type_id(**Node), n: usize = core::sizeof(*Node) }
+        \\m :: fn() -> usize { hd: Hold = .{}; return hd.id + hd.n; }
+    ;
+    var fe = try gabbro.compile(arena.allocator(), "type_arg_ir.gab", src);
+    defer fe.deinit(arena.allocator());
+    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
+    try gabbro.ir_mod.validateModule(m);
+
+    var lowered: usize = 0;
+    for (m.functions) |func| {
+        lowered += 1;
+        for (func.blocks) |block| for (block.instrs) |instr| {
+            if (instr.kind == .unary) {
+                std.debug.print("`{s}` lowers a type argument as a value\n", .{func.name});
+                return error.TypeArgumentLoweredAsValue;
+            }
+        };
+    }
+    try std.testing.expect(lowered >= 5);
+}

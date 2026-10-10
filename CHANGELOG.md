@@ -102,8 +102,9 @@ the major version is `0`, any minor bump may break source compatibility.
 - **An error handed to another function was compared against the wrong variants** (every error
   looked like the first one). Comparing an error with a variant is now accepted only on the name
   the `catch` bound, and is a compile error anywhere else.
-- **`ptr_from_int(**T, …)` failed the build without a message.** The builtins that take a type
-  as their first argument now say what they expected.
+- **A builtin handed something that is not a type failed the build without a message.**
+  `ptr_from_int(5usize, …)` is one: the builtins that take a type as their first argument now
+  say what they expected.
 - **Reading an array field of a struct in a loop overflowed the stack.** `b.order[i]` copied the
   whole array into a fresh stack slot on every pass — a dynamic allocation nothing released —
   so a loop over a 4000-byte field crashed after about 250 iterations (`STATUS_STACK_OVERFLOW`).
@@ -146,11 +147,28 @@ the major version is `0`, any minor bump may break source compatibility.
 - **The address of a `#packed` field was accepted.** `docs/02_types.md` always said it
   is an error; `&p.b` and `&p.arr[i]` now are. Field access through a `*Packed` pointer
   is emitted with alignment 1 instead of the field type's natural alignment.
+- **A dereference as a call argument was read as a type.** `f(*p)` and `g(1, *p)` failed with
+  "unknown type `p`" when the operand was a bare name (`f(x: *p)` too), and a variable named
+  like a builtin type (`addr`, `byte`) became that pointer type, a type mismatch. The parser
+  took `*name` in an argument list for a pointer type, which only a few builtins
+  (`ptr_from_int(*T, …)`, `sizeof(*T)`) and generic functions with explicit type arguments
+  (`new_slice(*Node, a, 4)`) want. It now reads `*name` as a dereference, and the checker turns
+  it back into a pointer type where a type is wanted: the first argument of those builtins and
+  the explicit type arguments of a generic function, whatever the type is (a struct, an alias
+  such as `c_int`, a type parameter, a name an import brings in). `f(*p)` loads,
+  `new_slice(*Node, …)` still names a type, and `v := *p; f(v)` is no longer needed.
+- **A pointer-to-pointer type argument could not be written.** `**T` was read as two
+  dereferences of `T`: `sizeof(**T)` failed with "cannot dereference value of type `T`",
+  `ptr_from_int(**T, …)` failed without a message and `arena.new(**T)` with "expected a type
+  argument". `**T`, and `***T`, now name pointer types in an argument, as `*T` does.
 
 ### Changed
 
 - The README no longer claims `i128`/`u128`; the compiler rejects integers wider than 64
   bits.
+- **A pointer type written where a value is wanted is refused.** `take(*Node)`, for a
+  `take :: fn(p: *Node)`, compiled and passed a null pointer; it is now an error that says
+  `Node` is a type, so `*Node` is a pointer type and not a value.
 
 ## 0.1.1 — 2026-09-08
 

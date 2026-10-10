@@ -2116,10 +2116,13 @@ pub const Parser = struct {
             },
             .star => {
                 // `*p` — a dereference. A pointer *type* in value position
-                // (`ptr_from_int(*Chunk, p)`, `sizeof(*u8)`) only ever appears as
-                // a call argument and is disambiguated there (parseCallArgExpr);
-                // in every other position — grouping `(*p)`, `unsafe (*p)`,
-                // `*p + 1`, `return *p` — a leading `*` is unambiguously a load.
+                // (`ptr_from_int(*Chunk, p)`, `new_slice(*Node, a, 4)`) only ever
+                // appears as a call argument. `*Chunk` is parsed as this same
+                // dereference and sema reads it as a type where a type is asked
+                // for (`sizeof(*u8)`, whose operand is a keyword, is a type
+                // already: parseCallArgExpr). In every other position — grouping
+                // `(*p)`, `unsafe (*p)`, `*p + 1`, `return *p` — a leading `*`
+                // is unambiguously a load.
                 // Bind as tightly as the other prefix operators (`&`, `-`, `!`),
                 // so `*p + 1` is `(*p) + 1`, not `*(p + 1)`.
                 const operand = try self.parseExpr(18);
@@ -2178,15 +2181,21 @@ pub const Parser = struct {
         return self.expr(.{ .compound_literal = try values.toOwnedSlice(self.allocator) }, spanFrom(start, close));
     }
 
-    // Parse a single call argument. A leading `*Type` here is a pointer *type*
-    // passed to a builtin (`sizeof(*u8)`, `ptr_from_int(*Chunk, p)`) — the one
-    // place a type appears in value position. Elsewhere `*x` is a dereference
-    // (handled by the generic prefix parser).
+    // Parse a single call argument. A pointer *type* passed to a builtin
+    // (`sizeof(*u8)`, `ptr_from_int(**u8, p)`) or to a generic function is the
+    // one place a type appears in value position, and the parser recognises it
+    // only where nothing else could be meant: `*`s followed by `const`/`volatile`,
+    // or by a builtin type keyword that ends the argument. `*name` is left alone —
+    // it is a dereference (`f(*p)`) unless a type is wanted there (`new_slice(*Node,
+    // a, 4)`), which depends on the callee and on what the name refers to, so sema
+    // decides (`Checker.resolveTypeArgs`).
     fn parseCallArgExpr(self: *Parser) ParseError!ast.Expr {
         if (self.check(.star)) {
-            const k1 = self.peekKind(1);
-            const looks_like_type = (k1 == .keyword_const or k1 == .keyword_volatile) or
-                (isTypeName(k1) and switch (self.peekKind(2)) {
+            var after_stars: usize = 1;
+            while (self.peekKind(after_stars) == .star) after_stars += 1;
+            const k = self.peekKind(after_stars);
+            const looks_like_type = (k == .keyword_const or k == .keyword_volatile) or
+                (isTypeKeyword(k) and switch (self.peekKind(after_stars + 1)) {
                     .comma, .r_paren => true,
                     else => false,
                 });
@@ -2369,9 +2378,9 @@ fn infixInfo(kind: TokenKind) ?Infix {
     };
 }
 
-fn isTypeName(kind: TokenKind) bool {
+/// A token that spells a builtin type and nothing else (`i32`, `u8`, `bool`, ...).
+fn isTypeKeyword(kind: TokenKind) bool {
     return switch (kind) {
-        .ident,
         .keyword_bool,
         .keyword_void,
         .keyword_i8,
@@ -2387,6 +2396,10 @@ fn isTypeName(kind: TokenKind) bool {
         => true,
         else => false,
     };
+}
+
+fn isTypeName(kind: TokenKind) bool {
+    return kind == .ident or isTypeKeyword(kind);
 }
 
 fn isAssignOp(kind: TokenKind) bool {

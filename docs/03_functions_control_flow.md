@@ -116,6 +116,13 @@ print_to :: fn($W: Writer, writer: *W, data: []const u8) -> usize ! IoError {
 }
 ```
 
+A pointer type is a type argument like any other — `arena.new_slice(*Node, n)`,
+`core::sizeof(**Node)`. Where a type is expected (the first argument of `core::sizeof`,
+`core::ptr_from_int` and the other builtins that take one, and an explicit `$T: type` argument of
+a generic function) `*Node` is that pointer type; in any other argument `*p` is a dereference,
+so `f(*p)` loads through the pointer `p`. (`core::sizeof(*p)` with a variable `p` is the size
+of what `p` points to.)
+
 > [!NOTE]
 > Generics are **monomorphized** — each unique type argument produces a specialized version at compile time. There is no runtime dispatch overhead.
 
