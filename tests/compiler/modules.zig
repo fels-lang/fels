@@ -22,8 +22,8 @@ test "modules: compileMulti with two source files" {
     ;
 
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "math.gab", .source = math_src },
-        .{ .file_name = "main.gab", .source = main_src },
+        .{ .file_name = "math.fels", .source = math_src },
+        .{ .file_name = "main.fels", .source = main_src },
     });
     defer fe.deinit(arena.allocator());
 
@@ -48,8 +48,8 @@ test "modules: public symbols from imported file are visible" {
     ;
 
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "utils.gab", .source = utils },
-        .{ .file_name = "app.gab", .source = app },
+        .{ .file_name = "utils.fels", .source = utils },
+        .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
 
@@ -75,15 +75,15 @@ test "modules: namespace import forms — as alias and .* glob" {
     ;
 
     var fe1 = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "lib.gab", .source = lib },
-        .{ .file_name = "aliased.gab", .source = aliased },
+        .{ .file_name = "lib.fels", .source = lib },
+        .{ .file_name = "aliased.fels", .source = aliased },
     });
     defer fe1.deinit(arena.allocator());
     try gabbro.ir_mod.validateModule(try gabbro.lowerFrontend(arena.allocator(), fe1));
 
     var fe2 = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "lib.gab", .source = lib },
-        .{ .file_name = "globbed.gab", .source = globbed },
+        .{ .file_name = "lib.fels", .source = lib },
+        .{ .file_name = "globbed.fels", .source = globbed },
     });
     defer fe2.deinit(arena.allocator());
     try gabbro.ir_mod.validateModule(try gabbro.lowerFrontend(arena.allocator(), fe2));
@@ -103,9 +103,9 @@ test "modules: two modules may define the same name (collision mangling)" {
         \\main :: fn() -> i32 { return a::greet() + b::greet() * 10; }
     ;
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "a.gab", .source = a },
-        .{ .file_name = "b.gab", .source = b },
-        .{ .file_name = "main.gab", .source = main },
+        .{ .file_name = "a.fels", .source = a },
+        .{ .file_name = "b.fels", .source = b },
+        .{ .file_name = "main.fels", .source = main },
     });
     defer fe.deinit(arena.allocator());
 
@@ -146,9 +146,9 @@ test "modules: two modules may bind one C symbol under the same name" {
         \\}
     ;
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "a.gab", .source = a },
-        .{ .file_name = "b.gab", .source = b },
-        .{ .file_name = "main.gab", .source = main },
+        .{ .file_name = "a.fels", .source = a },
+        .{ .file_name = "b.fels", .source = b },
+        .{ .file_name = "main.fels", .source = main },
     });
     defer fe.deinit(arena.allocator());
 
@@ -187,7 +187,7 @@ test "modules: a user #extern and constant may reuse names the runtime declares"
         \\    return CloseHandle(h);
         \\}
     ;
-    var fe = try gabbro.compileWithRuntime(arena.allocator(), "user.gab", src);
+    var fe = try gabbro.compileWithRuntime(arena.allocator(), "user.fels", src);
     defer fe.deinit(arena.allocator());
 
     const m = try gabbro.lowerFrontend(arena.allocator(), fe);
@@ -217,8 +217,8 @@ test "modules: cross-module UFCS finds a method in the type's module" {
         \\run :: fn(b: Box) -> i32 { return b.get(); }
     ;
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "lib.gab", .source = lib },
-        .{ .file_name = "app.gab", .source = app },
+        .{ .file_name = "lib.fels", .source = lib },
+        .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
     try gabbro.ir_mod.validateModule(try gabbro.lowerFrontend(arena.allocator(), fe));
@@ -234,8 +234,8 @@ test "modules: #run of a namespace call folds at comptime" {
         \\main :: fn() -> i32 { return #run lib::twice(21); }
     ;
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "lib.gab", .source = lib },
-        .{ .file_name = "app.gab", .source = app },
+        .{ .file_name = "lib.fels", .source = lib },
+        .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
 
@@ -266,8 +266,8 @@ test "modules: bare import is namespace-only (no unqualified access)" {
         \\run :: fn() -> i32 { return helper(); }
     ;
     const result = gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "lib.gab", .source = lib },
-        .{ .file_name = "app.gab", .source = app },
+        .{ .file_name = "lib.fels", .source = lib },
+        .{ .file_name = "app.fels", .source = app },
     });
     try std.testing.expectError(error.SemanticFailed, result);
 }
@@ -280,7 +280,7 @@ test "modules: compile parses imports without resolving them" {
         \\#import std.io;
         \\hello :: fn() -> i32 { return 42; }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "hello.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "hello.fels", src);
     defer fe.deinit(arena.allocator());
     try std.testing.expectEqual(@as(usize, 2), fe.module.items.len);
 }
@@ -299,8 +299,8 @@ test "modules: selective import exposes only selected public names" {
     ;
 
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "math.gab", .source = math_src },
-        .{ .file_name = "app.gab", .source = app_src },
+        .{ .file_name = "math.fels", .source = math_src },
+        .{ .file_name = "app.fels", .source = app_src },
     });
     defer fe.deinit(arena.allocator());
 }
@@ -324,12 +324,12 @@ test "modules: unselected and private names are not visible" {
     ;
 
     try std.testing.expectError(error.SemanticFailed, gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "dependency.gab", .source = dependency },
-        .{ .file_name = "private_use.gab", .source = private_use },
+        .{ .file_name = "dependency.fels", .source = dependency },
+        .{ .file_name = "private_use.fels", .source = private_use },
     }));
     try std.testing.expectError(error.SemanticFailed, gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "dependency.gab", .source = dependency },
-        .{ .file_name = "unselected_use.gab", .source = unselected_use },
+        .{ .file_name = "dependency.fels", .source = dependency },
+        .{ .file_name = "unselected_use.fels", .source = unselected_use },
     }));
 }
 
@@ -343,12 +343,12 @@ test "modules: selective imports reject missing and private declarations" {
     ;
 
     try std.testing.expectError(error.SemanticFailed, gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "dependency.gab", .source = dependency },
-        .{ .file_name = "private.gab", .source = "#import dependency.{hidden};" },
+        .{ .file_name = "dependency.fels", .source = dependency },
+        .{ .file_name = "private.fels", .source = "#import dependency.{hidden};" },
     }));
     try std.testing.expectError(error.SemanticFailed, gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "dependency.gab", .source = dependency },
-        .{ .file_name = "missing.gab", .source = "#import dependency.{missing};" },
+        .{ .file_name = "dependency.fels", .source = dependency },
+        .{ .file_name = "missing.fels", .source = "#import dependency.{missing};" },
     }));
 }
 
@@ -357,7 +357,7 @@ test "modules: missing modules are errors" {
     defer arena.deinit();
 
     try std.testing.expectError(error.IoError, gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "app.gab", .source = "#import missing;" },
+        .{ .file_name = "app.fels", .source = "#import missing;" },
     }));
 }
 
@@ -366,8 +366,8 @@ test "modules: std root resolves independently of importing directory" {
     defer arena.deinit();
 
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "std/io.gab", .source = "pub write_stdout :: fn() {}" },
-        .{ .file_name = "app/main.gab", .source = "#import std.io.{write_stdout}; run :: fn() { write_stdout(); }" },
+        .{ .file_name = "std/io.fels", .source = "pub write_stdout :: fn() {}" },
+        .{ .file_name = "app/main.fels", .source = "#import std.io.{write_stdout}; run :: fn() { write_stdout(); }" },
     });
     defer fe.deinit(arena.allocator());
 }
@@ -388,8 +388,8 @@ test "modules: public constants and types respect visibility" {
     ;
 
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "dependency.gab", .source = dependency },
-        .{ .file_name = "app.gab", .source = app },
+        .{ .file_name = "dependency.fels", .source = dependency },
+        .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
 }
@@ -401,7 +401,7 @@ test "modules: compileFile resolves local imports from disk" {
     var fe = try gabbro.compileFile(
         arena.allocator(),
         std.testing.io,
-        "tests/fixtures/modules/main.gab",
+        "tests/fixtures/modules/main.fels",
     );
     defer fe.deinit(arena.allocator());
 
@@ -414,8 +414,8 @@ test "modules: compileMulti normalizes logical module paths" {
     defer arena.deinit();
 
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = ".\\app\\dependency.gab", .source = "pub answer :: fn() -> i32 { return 42; }" },
-        .{ .file_name = "./app/main.gab", .source = "#import dependency.{answer}; run :: fn() -> i32 { return answer(); }" },
+        .{ .file_name = ".\\app\\dependency.fels", .source = "pub answer :: fn() -> i32 { return 42; }" },
+        .{ .file_name = "./app/main.fels", .source = "#import dependency.{answer}; run :: fn() -> i32 { return answer(); }" },
     });
     defer fe.deinit(arena.allocator());
 }
@@ -427,7 +427,7 @@ test "modules: configured std root loads std.mem" {
     var fe = try gabbro.compileFile(
         arena.allocator(),
         std.testing.io,
-        "tests/fixtures/stdlib/mem_app.gab",
+        "tests/fixtures/stdlib/mem_app.fels",
     );
     defer fe.deinit(arena.allocator());
 
@@ -442,7 +442,7 @@ test "modules: configured std root loads std.io" {
     var fe = try gabbro.compileFileWithRuntime(
         arena.allocator(),
         std.testing.io,
-        "tests/fixtures/stdlib/io_app.gab",
+        "tests/fixtures/stdlib/io_app.fels",
     );
     defer fe.deinit(arena.allocator());
 
@@ -457,7 +457,7 @@ test "modules: game stdlib (std.math + std.rand + std.color) resolves and lowers
     var fe = try gabbro.compileFileWithRuntime(
         arena.allocator(),
         std.testing.io,
-        "tests/fixtures/stdlib/game_app.gab",
+        "tests/fixtures/stdlib/game_app.fels",
     );
     defer fe.deinit(arena.allocator());
 
@@ -469,9 +469,9 @@ test "modules: general stdlib (std.path + std.time + std.crypto) resolves and lo
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     inline for (.{
-        "tests/fixtures/stdlib/path_app.gab",
-        "tests/fixtures/stdlib/time_app.gab",
-        "tests/fixtures/stdlib/crypto_app.gab",
+        "tests/fixtures/stdlib/path_app.fels",
+        "tests/fixtures/stdlib/time_app.fels",
+        "tests/fixtures/stdlib/crypto_app.fels",
     }) |fixture| {
         var fe = try gabbro.compileFileWithRuntime(arena.allocator(), std.testing.io, fixture);
         defer fe.deinit(arena.allocator());
@@ -487,7 +487,7 @@ test "modules: configured std root loads std.heap" {
     var fe = try gabbro.compileFileWithRuntime(
         arena.allocator(),
         std.testing.io,
-        "tests/fixtures/stdlib/heap_app.gab",
+        "tests/fixtures/stdlib/heap_app.fels",
     );
     defer fe.deinit(arena.allocator());
 
@@ -509,8 +509,8 @@ test "modules: imported self functions are extension methods" {
     ;
 
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "helpers.gab", .source = helpers },
-        .{ .file_name = "app.gab", .source = app },
+        .{ .file_name = "helpers.fels", .source = helpers },
+        .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
 
@@ -530,7 +530,7 @@ test "parser: namespace-qualified generic type in a typed local (ns::Name(args))
         \\    return 0;
         \\}
     ;
-    const module = try gabbro.parseSource(arena.allocator(), "q.gab", src);
+    const module = try gabbro.parseSource(arena.allocator(), "q.fels", src);
     const ty = module.items[0].function.body.?.statements[0].local_typed.ty;
     try std.testing.expect(ty == .generic_inst);
     try std.testing.expectEqualStrings("Atomic", ty.generic_inst.name);
@@ -556,8 +556,8 @@ test "modules: namespace-qualified generic type resolves + lowers (ns::Name(args
         \\}
     ;
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "lib.gab", .source = lib },
-        .{ .file_name = "app.gab", .source = app },
+        .{ .file_name = "lib.fels", .source = lib },
+        .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
 
@@ -604,8 +604,8 @@ test "modules: a type alias is imported like any other public name" {
     ;
     inline for (.{ selective, namespaced, globbed }) |app| {
         var fe = try gabbro.compileMulti(arena.allocator(), &.{
-            .{ .file_name = "lib.gab", .source = lib },
-            .{ .file_name = "app.gab", .source = app },
+            .{ .file_name = "lib.fels", .source = lib },
+            .{ .file_name = "app.fels", .source = app },
         });
         defer fe.deinit(arena.allocator());
         const module = try gabbro.lowerFrontend(arena.allocator(), fe);
@@ -642,8 +642,8 @@ test "modules: a local alias of an imported type" {
     ;
     inline for (.{ selective, namespaced }) |app| {
         var fe = try gabbro.compileMulti(arena.allocator(), &.{
-            .{ .file_name = "lib.gab", .source = lib },
-            .{ .file_name = "app.gab", .source = app },
+            .{ .file_name = "lib.fels", .source = lib },
+            .{ .file_name = "app.fels", .source = app },
         });
         defer fe.deinit(arena.allocator());
         try gabbro.ir_mod.validateModule(try gabbro.lowerFrontend(arena.allocator(), fe));
@@ -662,8 +662,8 @@ test "modules: an imported constant naming a constant stays a constant" {
         \\run :: fn() -> i32 { return MAX; }
     ;
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "lib.gab", .source = lib },
-        .{ .file_name = "app.gab", .source = app },
+        .{ .file_name = "lib.fels", .source = lib },
+        .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
@@ -683,9 +683,9 @@ test "modules: two modules declaring the same alias name collide, as two types d
     // A same-named constant in two modules is mangled apart, but a type (and so an alias)
     // keeps its bare name — `real :: f32;` is a type, so this is a duplicate declaration.
     try std.testing.expectError(error.SemanticFailed, gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "a.gab", .source = "pub real :: f32;" },
-        .{ .file_name = "b.gab", .source = "pub real :: f32;" },
-        .{ .file_name = "main.gab", .source = "#import a;\n#import b;\nrun :: fn() -> i32 { x: a::real = 1.5; return 0; }" },
+        .{ .file_name = "a.fels", .source = "pub real :: f32;" },
+        .{ .file_name = "b.fels", .source = "pub real :: f32;" },
+        .{ .file_name = "main.fels", .source = "#import a;\n#import b;\nrun :: fn() -> i32 { x: a::real = 1.5; return 0; }" },
     }));
 }
 
@@ -695,8 +695,8 @@ test "modules: std.c resolves and lowers (selective and namespaced imports)" {
     // `std.c` aliases `f32`/`f64` (identifier-spelled types), which used to make the whole
     // module fail to lower ("constant initializer could not be folded at compile time").
     inline for (.{
-        "tests/fixtures/stdlib/c_types_app.gab",
-        "tests/fixtures/stdlib/c_namespace_app.gab",
+        "tests/fixtures/stdlib/c_types_app.fels",
+        "tests/fixtures/stdlib/c_namespace_app.fels",
     }) |fixture| {
         var fe = try gabbro.compileFileWithRuntime(arena.allocator(), std.testing.io, fixture);
         defer fe.deinit(arena.allocator());
@@ -710,8 +710,8 @@ test "modules: unimported self functions are not extension methods" {
     defer arena.deinit();
 
     try std.testing.expectError(error.SemanticFailed, gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "helpers.gab", .source = "pub doubled :: fn(self: i32) -> i32 { return self * 2; }" },
-        .{ .file_name = "app.gab", .source = "run :: fn() -> i32 { return 20.doubled(); }" },
+        .{ .file_name = "helpers.fels", .source = "pub doubled :: fn(self: i32) -> i32 { return self * 2; }" },
+        .{ .file_name = "app.fels", .source = "run :: fn() -> i32 { return 20.doubled(); }" },
     }));
 }
 
@@ -734,8 +734,8 @@ test "modules: generic extension methods retain explicit type arguments" {
     ;
 
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "helpers.gab", .source = helpers },
-        .{ .file_name = "app.gab", .source = app },
+        .{ .file_name = "helpers.fels", .source = helpers },
+        .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
 
@@ -766,11 +766,34 @@ test "modules: `*name` in an argument is a pointer type for an imported type, a 
     ;
 
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
-        .{ .file_name = "lib.gab", .source = lib },
-        .{ .file_name = "app.gab", .source = app },
+        .{ .file_name = "lib.fels", .source = lib },
+        .{ .file_name = "app.fels", .source = app },
     });
     defer fe.deinit(arena.allocator());
 
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(module);
+}
+
+test "modules: an import still finds a file with the old .gab extension" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // From memory, as the language server and these tests load files.
+    var fe = try gabbro.compileMulti(a, &.{
+        .{ .file_name = "util.gab", .source = "pub add :: fn(x: i32, y: i32) -> i32 { return x + y; }\n" },
+        .{ .file_name = "main.fels", .source = "#import util;\nrun :: fn() -> i32 { return util::add(1, 2); }\n" },
+    });
+    defer fe.deinit(a);
+
+    // From disk, as the compiler does.
+    const io = std.testing.io;
+    const dir = ".zig-cache/old_ext";
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/util.gab", .data = "pub add :: fn(x: i32, y: i32) -> i32 { return x + y; }\n" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/main.fels", .data = "#import util;\nrun :: fn() -> i32 { return util::add(1, 2); }\n" });
+    var disk = try gabbro.compileFile(a, io, dir ++ "/main.fels");
+    defer disk.deinit(a);
+    try std.testing.expectEqual(@as(usize, 0), disk.diagnostics().len);
 }
