@@ -5,9 +5,13 @@ name: Release
 #   v0.4.0-rc.1    pre-release (any tag with a "-")
 # The release notes are the matching section of CHANGELOG.md ("## 0.3.1 ..."). A pre-release
 # without its own section uses "## Unreleased".
+#
+# Run it by hand (Actions > Release > Run workflow) to build, package and smoke test without
+# publishing. The archives are kept as workflow artifacts either way.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write # create the release
@@ -27,6 +31,7 @@ jobs:
 
       - name: Version and notes from the tag
         id: tag
+        if: github.ref_type == 'tag'
         shell: pwsh
         run: |
           $v = "${{ github.ref_name }}" -replace '^v', ''   # v0.4.0-rc.1 -> 0.4.0-rc.1
@@ -101,7 +106,18 @@ jobs:
           Pop-Location
           exit 0 # the step would otherwise fail with hello.exe's exit code
 
+      - name: Keep the archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: gabbro-${{ steps.pkg.outputs.file_version }}
+          path: |
+            ${{ steps.pkg.outputs.archive }}
+            ${{ steps.pkg.outputs.bindgen_archive }}
+            ${{ steps.pkg.outputs.linux_cross_archive }}
+          compression-level: 0 # already zipped
+
       - name: Publish the release
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           name: gabbro ${{ steps.tag.outputs.version }}
