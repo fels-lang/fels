@@ -14,6 +14,7 @@ const pipeline = @import("pipeline.zig");
 const ir = @import("ir.zig");
 const driver = @import("driver.zig");
 const diagnostic = @import("diagnostic.zig");
+const coff_archive = @import("coff_archive.zig");
 const vm_engine = @import("vm/engine.zig");
 const vm_value = @import("vm/value.zig");
 const instructions = @import("vm/instructions.zig");
@@ -633,8 +634,9 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
     lib_paths.append(a, base_dir) catch return error.OutOfMemory;
 
     const opt_level: u2 = if (opts.release and art.opt == 0) 2 else art.opt;
-    const is_lib = art.kind == .shared_library or art.kind == .static_library;
-    const stop_at_obj = art.kind == .object;
+    const is_lib = art.kind == .shared_library;
+    // A static library is the object packed into an archive after compiling.
+    const stop_at_obj = art.kind == .object or art.kind == .static_library;
 
     // Auto-detect each linked library by peeking inside the `.lib`: a static
     // archive needs the C runtime; an import library's sibling DLL is copied next
@@ -649,6 +651,7 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
     search_dirs.append(a, base_dir) catch {};
 
     var need_libc = art.link_mode == 1 or opts.link_libc or art.link_libc;
+    var has_gabbro_lib = false;
     var auto_dlls: std.ArrayList([]const u8) = .empty;
     for (art.libs.items) |lib_name| {
         for (search_dirs.items) |dir| {
@@ -657,6 +660,7 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
             defer gpa.free(data);
             switch (inspectLib(a, data)) {
                 .static => need_libc = true,
+                .gabbro_static => has_gabbro_lib = true,
                 .import_lib => |dll| if (dll.len != 0) {
                     // `static_link()` asserts intent: warn if the resolved lib is
                     // actually an import library (you'll get a dynamic link).
@@ -685,7 +689,7 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
     // When a static C library is involved, honor ITS own `/DEFAULTLIB` directives
     // by default — so its system deps (opengl32, gdi32, …) flow in automatically,
     // C3-style — unless the artifact opted out with `no_default_libs()`.
-    const honor_defaultlibs = need_libc and !art.no_default_libs;
+    const honor_defaultlibs = (need_libc or has_gabbro_lib) and !art.no_default_libs;
 
     const src = readSource(gpa, io, root_path);
     defer if (src) |s| gpa.free(s);
@@ -708,10 +712,12 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
         .link_flags = art.link_flags.items,
         .honor_defaultlibs = honor_defaultlibs,
         .link_libc = need_libc,
+        .library_object = art.kind == .static_library,
     }) catch |err| {
         std.debug.print("gabbro build: failed to build '{s}': {s}\n", .{ art.name, @errorName(err) });
         return error.CompileFailed;
     };
+    if (art.kind == .static_library) try writeStaticLibrary(gpa, io, obj_path, out_path);
 
     if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{out_path});
 
@@ -733,6 +739,24 @@ fn buildArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir:
         std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dst, .data = data }) catch continue;
         if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{dst});
     }
+}
+
+/// Pack the compiled object into the static library `out_path`.
+fn writeStaticLibrary(gpa: std.mem.Allocator, io: std.Io, obj_path: []const u8, out_path: []const u8) BuildError!void {
+    const obj = readSource(gpa, io, obj_path) orelse {
+        std.debug.print("gabbro build: cannot read {s}\n", .{obj_path});
+        return error.CompileFailed;
+    };
+    defer gpa.free(obj);
+    const lib = coff_archive.write(gpa, &.{.{ .name = std.fs.path.basename(obj_path), .data = obj }}) catch |err| {
+        std.debug.print("gabbro build: cannot write {s}: {s}\n", .{ out_path, @errorName(err) });
+        return error.CompileFailed;
+    };
+    defer gpa.free(lib);
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = out_path, .data = lib }) catch {
+        std.debug.print("gabbro build: cannot write {s}\n", .{out_path});
+        return error.CompileFailed;
+    };
 }
 
 fn runArtifact(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, idx: usize, opts: RunOptions) BuildError!void {
@@ -828,6 +852,9 @@ fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
 const LibKind = union(enum) {
     /// A static archive (regular COFF object members) — needs the C runtime.
     static,
+    /// A static library `gabbro build` wrote: no C runtime, but its `/DEFAULTLIB` directives
+    /// name the libraries its `#extern` functions come from.
+    gabbro_static,
     /// An import library — the value is the DLL its symbols come from.
     import_lib: []const u8,
     /// Not a recognizable COFF `.lib` archive.
@@ -840,6 +867,7 @@ const LibKind = union(enum) {
 fn inspectLib(arena: std.mem.Allocator, bytes: []const u8) LibKind {
     const magic = "!<arch>\n";
     if (bytes.len < magic.len or !std.mem.eql(u8, bytes[0..magic.len], magic)) return .unknown;
+    if (std.mem.indexOf(u8, bytes, coff_archive.gabbro_marker ++ "\x00") != null) return .gabbro_static;
     const needle = "__IMPORT_DESCRIPTOR_";
     const at = std.mem.indexOf(u8, bytes, needle) orelse return .static;
     var p = at + needle.len;

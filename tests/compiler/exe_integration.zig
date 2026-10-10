@@ -528,6 +528,62 @@ test "build: the expanded std.build API runs through the build hook" {
     });
 }
 
+test "build: a static library links into a program, with the libraries it needs" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const io = std.testing.io;
+
+    const dir = ".zig-cache/bt_static";
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    // The library uses user32 itself; the program does not name it.
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/util.gab", .data =
+        \\#extern("user32", "GetSystemMetrics")
+        \\metrics :: fn(index: i32) -> i32;
+        \\
+        \\#export("util_add")
+        \\add :: fn(a: i32, b: i32) -> i32 { return a + b + metrics(0) * 0; }
+        \\
+    });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.gab", .data =
+        \\#extern("util", "util_add")
+        \\util_add :: fn(a: i32, b: i32) -> i32;
+        \\
+        \\main :: fn() -> i32 { return util_add(2, 3); }
+        \\
+    });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    b.static("util", "util.gab");
+        \\    app := b.executable("app", "app.gab");
+        \\    app.link("util");
+        \\}
+    });
+
+    const lp = gabbro.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
+    for ([_][]const u8{ "util", "app" }) |target| {
+        try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.gab", .{
+            .target = target,
+            .quiet = true,
+            .llvm_bin = gabbro.llvm_path ++ "/bin",
+            .lib_paths = lib_paths,
+        });
+    }
+
+    // A real archive, not a DLL under a .lib name.
+    const lib = try std.Io.Dir.cwd().readFileAlloc(io, dir ++ "/util.lib", arena.allocator(), .unlimited);
+    try std.testing.expectEqualStrings("!<arch>\n", lib[0..8]);
+
+    var child = try std.process.spawn(io, .{ .argv = &.{dir ++ "/app.exe"}, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+    switch (try child.wait(io)) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 5), code),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "build: a test_dir step compiles+runs tests and fails on a failing one" {
     if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
