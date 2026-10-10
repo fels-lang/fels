@@ -3166,8 +3166,7 @@ const FunctionLowerer = struct {
                 const ct = self.exprType(expr);
                 for (values, 0..) |value, i| {
                     if (self.compoundFieldType(ct, i)) |fty| {
-                        // A `fn(...)` struct field holds a THIN raw function pointer.
-                        if (fty == .fn_ptr)
+                        if (isThinFnSlot(ct, fty))
                             try args.append(self.allocator, try self.lowerRawFnArg(value))
                         else
                             try args.append(self.allocator, try self.lowerExprAs(value, fty));
@@ -3995,8 +3994,7 @@ const FunctionLowerer = struct {
                 errdefer args.deinit(self.allocator);
                 for (values, 0..) |value, i| {
                     if (self.compoundFieldType(expected_ty, i)) |fty| {
-                        // A `fn(...)` struct field holds a THIN raw function pointer.
-                        if (fty == .fn_ptr)
+                        if (isThinFnSlot(expected_ty, fty))
                             try args.append(self.allocator, try self.lowerRawFnArg(value))
                         else
                             try args.append(self.allocator, try self.lowerExprAs(value, fty));
@@ -4062,6 +4060,17 @@ const FunctionLowerer = struct {
             },
             else => return null,
         }
+    }
+
+    /// Whether the element `elem_ty` of a compound literal of aggregate type `parent` is stored as
+    /// a THIN raw function pointer (built with `lowerRawFnArg`) rather than as a function value.
+    /// A `fn(...)` struct FIELD is thin, so the layout matches a C struct (`structs.zig`), and an
+    /// `extern fn(...)` is thin wherever it sits. An ARRAY element of plain `fn` type is a
+    /// `{ fn, env }` closure like a local, a parameter or a slice element, so a named function, a
+    /// lambda and a local holding either all lower as ordinary values.
+    fn isThinFnSlot(parent: IrType, elem_ty: IrType) bool {
+        if (elem_ty != .fn_ptr) return false;
+        return parent != .array or elem_ty.fn_ptr.thin;
     }
 
     /// The declared fields of a struct `IrType` (declaration order), or null if
