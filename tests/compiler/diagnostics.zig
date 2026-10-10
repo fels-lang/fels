@@ -707,6 +707,36 @@ test "diagnostics: an error is compared with a variant only where it was caught"
     fe.deinit(arena.allocator());
 }
 
+test "diagnostics: `match` on a caught error is refused, whatever its set" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `err == .x` is the way to inspect an error. `match` does not accept one; that must stay a
+    // compile error for an inferred set (`-> T !`) too, where comparing used to go wrong silently.
+    const decls =
+        \\E1 :: errors { p, x }
+        \\raise :: fn() -> i32 ! E1 { fail .x; }
+        \\inferred :: fn() -> i32 ! { v := raise()?; return v; }
+        \\inline_set :: fn() -> i32 ! { .p, .x } { fail .x; }
+        \\
+    ;
+    for ([_][]const u8{ "raise", "inferred", "inline_set" }) |callee| {
+        const src = try std.fmt.allocPrint(a,
+            \\{s}main :: fn() -> i32 {{
+            \\    r := {s}() catch err {{
+            \\        match err {{ .x => {{ return 5; }}, _ => {{ return 6; }} }}
+            \\    }};
+            \\    return r;
+            \\}}
+        , .{ decls, callee });
+        const msg = (try firstError(a, src)) orelse {
+            std.debug.print("\n`match` on an error from `{s}` was accepted\n", .{callee});
+            return error.TestExpectedError;
+        };
+        try std.testing.expect(std.mem.indexOf(u8, msg, "match subject must be an enum or integer type") != null);
+    }
+}
+
 test "diagnostics: `X :: Name;` is a type alias when Name is a type, a constant otherwise" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -53,6 +53,16 @@ the major version is `0`, any minor bump may break source compatibility.
   with "may not return a value on all code paths", although there is no value to return. Running
   to the end of such a function is now success and compiles to the same code as `return;`. A
   fallible function that returns a value still has to `return` or `fail` on every path.
+- **`err == .x` in a `catch` was always false when the error came through an inferred error set.**
+  Each error set numbered its own variants, and an inferred set (`-> T !` with nothing after the
+  `!`) has none, so the comparison was made against nothing, with no diagnostic. The same numbering
+  went wrong in related cases: `fail` in a function with an inferred set gave every variant the
+  same number, as did `fail` in a function with an inline set (`! { .p, .x }`), and an error passed
+  through an inferred set into a function with another set was read against that set's positions
+  (an `.x` could compare equal to `.q`). Errors are now numbered by their variant's name, the same
+  in every set, so `fail`, `?`, `catch` and `err == .x` agree whatever sets an error passes through,
+  and the comptime VM (`#run`, `#assert`) agrees with the compiled code. A `main` that fails still
+  exits with its error's position in its own set.
 
 ## 0.2.2 — 2026-10-10
 

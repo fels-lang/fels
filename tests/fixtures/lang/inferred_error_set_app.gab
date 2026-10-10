@@ -1,0 +1,221 @@
+// Comparing a caught error with a variant when the error went through an inferred error set
+// (`-> T !`, nothing after the `!`). Each set used to number its own variants, and an inferred
+// set has none: `err == .x` compared with nothing (always false, no diagnostic), `fail .x` in such
+// a function gave every variant the same number, an inline set (`! { .p, .x }`) did too in the
+// code generator, and an error passed from one set into another through an inferred one was read
+// against the second set's positions. Now an error is numbered by its variant's name, the same in
+// every set. Covers explicit, inline and inferred sets, two levels of `?` through inferred sets,
+// errors from two sets that put a shared name at different positions, `fail` directly in an
+// inferred function, tail forwarding, and the same code run by the comptime VM. Returns 42 on
+// success; any other value names the failed check.
+
+E1 :: errors { p, x }
+// `x` is first here and second in E1; `q` is second here, where E1 has `x`.
+E2 :: errors { x, q }
+
+raise_e1 :: fn(k: i32) -> i32 ! E1 {
+    if k == 1 { fail .p; }
+    if k == 2 { fail .x; }
+    return 100 + k;
+}
+
+raise_e2 :: fn(k: i32) -> i32 ! E2 {
+    if k == 1 { fail .x; }
+    if k == 2 { fail .q; }
+    return 200 + k;
+}
+
+// One level of `?` into an inferred set.
+pass_once :: fn(k: i32) -> i32 ! { v := raise_e1(k)?; return v; }
+
+// Two levels.
+pass_twice :: fn(k: i32) -> i32 ! { v := pass_once(k)?; return v; }
+
+// Errors of both sets through one inferred set: 1 and 2 come from E1, 3 and 4 from E2.
+pass_either :: fn(k: i32) -> i32 ! {
+    if k <= 2 { return raise_e1(k)?; }
+    return raise_e2(k - 2)?;
+}
+
+// `fail` in a function whose set is inferred.
+fail_direct :: fn(k: i32) -> i32 ! {
+    if k == 1 { fail .p; }
+    if k == 2 { fail .x; }
+    if k == 3 { fail .q; }
+    return 300 + k;
+}
+
+// An inline set.
+fail_inline :: fn(k: i32) -> i32 ! { .p, .x } {
+    if k == 1 { fail .p; }
+    if k == 2 { fail .x; }
+    return 400 + k;
+}
+
+// The result forwarded whole (`return f();`, no `?`) into an inferred set.
+forward :: fn(k: i32) -> i32 ! { return raise_e1(k); }
+
+// An E1 error handed on into the explicit set E2 through an inferred set. It is still E1's
+// `x`, so it is `.x` here, not E2's second variant `.q`.
+into_e2 :: fn(k: i32) -> i32 ! E2 { v := pass_once(k)?; return v; }
+
+// Which error is it? 1 = p, 2 = x, 3 = q, 0 = none of these, 9 = no error.
+which_explicit :: fn(k: i32) -> i32 {
+    v := raise_e1(k) catch err {
+        if err == .p { return 1; }
+        if err == .x { return 2; }
+        return 0;
+    };
+    return 9;
+}
+
+which_once :: fn(k: i32) -> i32 {
+    v := pass_once(k) catch err {
+        if err == .p { return 1; }
+        if err == .x { return 2; }
+        if err == .q { return 3; }
+        return 0;
+    };
+    return 9;
+}
+
+which_twice :: fn(k: i32) -> i32 {
+    v := pass_twice(k) catch err {
+        if err == .p { return 1; }
+        if err == .x { return 2; }
+        if err == .q { return 3; }
+        return 0;
+    };
+    return 9;
+}
+
+which_either :: fn(k: i32) -> i32 {
+    v := pass_either(k) catch err {
+        if err == .p { return 1; }
+        if err == .x { return 2; }
+        if err == .q { return 3; }
+        return 0;
+    };
+    return 9;
+}
+
+which_direct :: fn(k: i32) -> i32 {
+    v := fail_direct(k) catch err {
+        if err == .p { return 1; }
+        if err == .x { return 2; }
+        if err == .q { return 3; }
+        return 0;
+    };
+    return 9;
+}
+
+which_inline :: fn(k: i32) -> i32 {
+    v := fail_inline(k) catch err {
+        if err == .p { return 1; }
+        if err == .x { return 2; }
+        return 0;
+    };
+    return 9;
+}
+
+which_forward :: fn(k: i32) -> i32 {
+    v := forward(k) catch err {
+        if err == .p { return 1; }
+        if err == .x { return 2; }
+        return 0;
+    };
+    return 9;
+}
+
+which_into_e2 :: fn(k: i32) -> i32 {
+    v := into_e2(k) catch err {
+        if err == .q { return 3; }
+        if err == .x { return 2; }
+        return 0;
+    };
+    return 9;
+}
+
+// `!=` on an inferred set: true for everything but the named variant.
+not_x :: fn(k: i32) -> i32 {
+    v := pass_once(k) catch err {
+        if err != .x { return 1; }
+        return 0;
+    };
+    return 9;
+}
+
+// A catch inside a catch handler, both on inferred sets.
+nested :: fn(a: i32, b: i32) -> i32 {
+    v := pass_once(a) catch outer {
+        if outer == .x {
+            w := pass_either(b) catch inner {
+                if inner == .q { return 20; }
+                return 21;
+            };
+            return 22;
+        }
+        return 23;
+    };
+    return 9;
+}
+
+// The same logic run by the comptime VM: `#assert` and `#run` constants.
+#assert(which_once(2) == 2, "one `?` into an inferred set");
+#assert(which_twice(2) == 2, "two `?` through inferred sets");
+#assert(which_either(4) == 3, "an E2 error through an inferred set");
+#assert(which_direct(3) == 3, "`fail` in an inferred set");
+#assert(which_into_e2(2) == 2, "an E1 error handed into E2");
+CT_TWICE_P :: #run which_twice(1);
+CT_EITHER_X :: #run which_either(3);
+CT_INLINE_X :: #run which_inline(2);
+
+#entry
+main :: fn() -> i32 {
+    // an explicit set (this always worked)
+    if which_explicit(1) != 1 { return 1; }
+    if which_explicit(2) != 2 { return 2; }
+    if which_explicit(3) != 9 { return 3; }
+
+    // one level of `?` into an inferred set
+    if which_once(1) != 1 { return 4; }
+    if which_once(2) != 2 { return 5; }
+    if which_once(3) != 9 { return 6; }
+
+    // two levels
+    if which_twice(1) != 1 { return 7; }
+    if which_twice(2) != 2 { return 8; }
+
+    // two sets that number `x` differently, through one inferred set
+    if which_either(1) != 1 { return 9; }
+    if which_either(2) != 2 { return 10; }
+    if which_either(3) != 2 { return 11; }               // E2's `x` is `.x` too
+    if which_either(4) != 3 { return 12; }
+    if which_either(5) != 9 { return 13; }
+
+    // `fail` in an inferred set, and in an inline set
+    if which_direct(1) != 1 { return 14; }
+    if which_direct(2) != 2 { return 15; }
+    if which_direct(3) != 3 { return 16; }
+    if which_inline(1) != 1 { return 17; }
+    if which_inline(2) != 2 { return 18; }
+
+    // tail forwarding, and an E1 error handed on into E2
+    if which_forward(1) != 1 { return 19; }
+    if which_forward(2) != 2 { return 20; }
+    if which_into_e2(2) != 2 { return 21; }
+    if which_into_e2(1) != 0 { return 22; }              // `p` is neither `.q` nor `.x`
+
+    // `!=` and nested handlers
+    if not_x(1) != 1 { return 23; }
+    if not_x(2) != 0 { return 24; }
+    if nested(2, 4) != 20 { return 25; }
+    if nested(2, 1) != 21 { return 26; }
+    if nested(1, 4) != 23 { return 27; }
+
+    // the comptime VM agrees with the compiled code
+    if CT_TWICE_P != 1 { return 28; }
+    if CT_EITHER_X != 2 { return 29; }
+    if CT_INLINE_X != 2 { return 30; }
+    return 42;
+}

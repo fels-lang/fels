@@ -5498,9 +5498,9 @@ const Checker = struct {
             };
             if (text.len < 2 or text[0] != '.') continue;
             const variants = self.errorSetVariants(side.other) orelse continue;
-            // The variants of an error are numbered by the function that raised it, so the
-            // comparison is only meaningful on the name `catch` bound; the same error handed
-            // on through a parameter or a copy would be read against the wrong numbering.
+            // An error is inspected where it is caught, through the name `catch` bound. (The rule
+            // dates from when each set numbered its own variants and a copy could be read against
+            // the wrong set; errors are now numbered by name everywhere, see `ir.ErrorCodes`.)
             if (!self.isCaughtName(side.other_expr)) {
                 self.emitError(side.other_expr.span, "an error can be compared with a variant only through the name a `catch` gave it, where it was caught", .{});
                 return error.SemanticFailed;

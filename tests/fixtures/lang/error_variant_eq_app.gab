@@ -137,7 +137,7 @@ main :: fn() -> i32 {
     if not_second(1) != 1 || not_second(3) != 1 || not_second(4) != 1 { return 6; }
     if not_second(2) != 0 { return 7; }
 
-    // a variant name that appears in more than one set is told apart by position in ITS set
+    // a variant name that appears in more than one set, at different positions
     if which_other(1) != 1 { return 8; }
     if which_other(2) != 2 { return 9; }
     if which_other(3) != 3 { return 10; }

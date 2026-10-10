@@ -219,6 +219,38 @@ pub const ErrorCase = struct {
     payload: ?IrType,
 };
 
+/// How errors are numbered. An error value is the 1-based position of its variant's *name* in
+/// this table (0 means "no error"), whatever set the variant was declared in: `fail .name` puts
+/// that number in the result, `?` and `catch` pass it on unchanged, and `err == .name` compares
+/// with the same number. Each set used to number its own variants, which broke as soon as an
+/// error crossed from one set into another: an inferred set (`-> T !`) has no variants to number,
+/// so `err == .name` on it compared with nothing and `fail` in it always gave 1, and an error passed
+/// through one into an explicit set was read against that set's positions.
+///
+/// One table serves a whole program: the module lowered for the native build and the comptime
+/// VM evaluating it share it (see `ComptimeVm.error_codes`), so `#run`/`#assert` agree with the
+/// compiled code. Names get their number the first time they are met; the entry function's set is
+/// entered first (`seedEntryErrorCodes`), so a failing `main` still exits with its error's
+/// position in its own set.
+pub const ErrorCodes = struct {
+    allocator: std.mem.Allocator,
+    names: std.StringArrayHashMapUnmanaged(void) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator) ErrorCodes {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *ErrorCodes) void {
+        self.names.deinit(self.allocator);
+    }
+
+    /// The number of the error variant `name`, giving it the next free one on first use.
+    pub fn code(self: *ErrorCodes, name: []const u8) std.mem.Allocator.Error!i32 {
+        const entry = try self.names.getOrPut(self.allocator, name);
+        return @intCast(entry.index + 1);
+    }
+};
+
 pub const VariantCase = struct {
     name: []const u8,
     payload: ?IrType,
@@ -629,7 +661,7 @@ pub fn checkStaticData(allocator: std.mem.Allocator, front_end: pipeline.FrontEn
 pub fn lowerModule(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) LowerError!IrModule {
     var cvm = ComptimeVm.init(allocator, front_end);
     defer cvm.deinit();
-    return lowerModuleInner(allocator, front_end, &cvm);
+    return lowerModuleInner(allocator, front_end, &cvm, &cvm.error_codes);
 }
 
 /// `cvm` is the VM-backed comptime evaluator threaded down to `#run` sites. It
@@ -735,7 +767,10 @@ fn hashTypeName(h: *u64, ty: IrType) void {
     }
 }
 
-fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, cvm: ?*ComptimeVm) LowerError!IrModule {
+/// `error_codes` numbers the errors of every function lowered here (see `ErrorCodes`).
+fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, cvm: ?*ComptimeVm, error_codes: *ErrorCodes) LowerError!IrModule {
+    try seedEntryErrorCodes(front_end, error_codes);
+
     var structs: std.ArrayList(StructDef) = .empty;
     var errors: std.ArrayList(ErrorDef) = .empty;
     var variants: std.ArrayList(VariantDef) = .empty;
@@ -849,7 +884,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                 // recursive ast.* types — never sees them.
                 const comptime_only = cvm != null and fnIsComptimeOnly(decl);
                 if (decl.type_params.len == 0 and !comptime_only) {
-                    try functions.append(allocator, try lowerFunction(allocator, front_end.types, front_end.symbols, front_end.module, decl, cvm));
+                    try functions.append(allocator, try lowerFunction(allocator, front_end.types, front_end.symbols, front_end.module, decl, cvm, error_codes));
                 }
                 if (externLibName(decl.attrs)) |lib| try addExternLib(allocator, &extern_libs, lib);
             },
@@ -865,6 +900,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                         method,
                         mangled,
                         cvm,
+                        error_codes,
                     ));
                 }
                 var method_names = std.ArrayList([]const u8).empty;
@@ -962,6 +998,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                         inst.mangled_name,
                         inst.type_args,
                         cvm,
+                        error_codes,
                     ));
                 },
                 else => {},
@@ -1512,6 +1549,41 @@ fn lowerErrorDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, error_decl: a
     };
 }
 
+/// The variants of the error set a sema type names, in declaration order, or null when it
+/// names none (an inferred set has no list of its own).
+fn errorSetVariantsIn(types: sema.TypeEnv, ty: sema.Ty) ?[]const sema.ErrorVariantInfo {
+    return switch (ty) {
+        .error_set => |variants| variants,
+        .named => |id| blk: {
+            const type_layout = types.layouts.get(id) orelse break :blk null;
+            break :blk switch (type_layout.kind) {
+                .error_set => |variants| variants,
+                else => null,
+            };
+        },
+        else => null,
+    };
+}
+
+/// Numbers the variants of the entry function's error set first, in order. A `main` that fails
+/// exits with its error's number, and this keeps that the error's position in the set `main`
+/// declares. (The entry is the first one in item order, as the code generator picks it.)
+fn seedEntryErrorCodes(front_end: pipeline.FrontEnd, error_codes: *ErrorCodes) LowerError!void {
+    for (front_end.module.items) |item| {
+        const decl = switch (item) {
+            .function => |decl| decl,
+            else => continue,
+        };
+        if (decl.type_params.len != 0) continue;
+        if (!std.mem.eql(u8, decl.name, "main") and !hasAttr(decl.attrs, "entry")) continue;
+        const id = front_end.symbols.resolveVisible(decl.file_name, decl.name) orelse return;
+        const sig = front_end.types.fn_sigs.get(id) orelse return;
+        const variants = errorSetVariantsIn(front_end.types, sig.error_ty orelse return) orelse return;
+        for (variants) |variant| _ = try error_codes.code(variant.name);
+        return;
+    }
+}
+
 fn lowerFunctionInstantiation(
     allocator: std.mem.Allocator,
     types: sema.TypeEnv,
@@ -1520,6 +1592,7 @@ fn lowerFunctionInstantiation(
     mangled_name: []const u8,
     type_args: []const sema.TypeArg,
     cvm: ?*ComptimeVm,
+    error_codes: *ErrorCodes,
 ) !IrFunction {
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
@@ -1534,7 +1607,7 @@ fn lowerFunctionInstantiation(
     const ret_ty = lowerTypeWithBindingAndSymbols(allocator, decl.return_ty, type_args, types, symbols) catch .unknown;
 
     const blocks = if (decl.body) |body| blk: {
-        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl);
+        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl, error_codes);
         lowerer.cvm = cvm;
         lowerer.type_binding = type_args;
         // Without this the body lowers returns against `.void` and never wraps a
@@ -1609,7 +1682,7 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
     }
 }
 
-fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, module: ast.Module, decl: ast.FunctionDecl, cvm: ?*ComptimeVm) !IrFunction {
+fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, module: ast.Module, decl: ast.FunctionDecl, cvm: ?*ComptimeVm, error_codes: *ErrorCodes) !IrFunction {
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
 
@@ -1630,7 +1703,7 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
 
     const return_ty = try lowerAstTypeWithEnv(allocator, decl.return_ty, types, symbols);
     const blocks = if (decl.body) |body| blk: {
-        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl);
+        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl, error_codes);
         lowerer.module = module;
         lowerer.cvm = cvm;
         lowerer.current_return_ty = return_ty;
@@ -1685,6 +1758,7 @@ fn lowerInterfaceMethod(
     decl: ast.FunctionDecl,
     mangled_name: []const u8,
     cvm: ?*ComptimeVm,
+    error_codes: *ErrorCodes,
 ) !IrFunction {
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
@@ -1694,7 +1768,7 @@ fn lowerInterfaceMethod(
     });
     const return_ty = try lowerTypeReplacingSelf(allocator, decl.return_ty, impl.type_name, types, symbols);
     const blocks = if (decl.body) |body| blk: {
-        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl);
+        var lowerer = FunctionLowerer.init(allocator, types, symbols, decl, error_codes);
         lowerer.module = module;
         lowerer.cvm = cvm;
         lowerer.current_return_ty = return_ty;
@@ -1805,8 +1879,10 @@ const FunctionLowerer = struct {
     next_block_id: BlockId = 1,
     temp_id: u32 = 0,
     /// Names bound by the `catch` handlers currently being lowered, with the error set each
-    /// holds (innermost last). Lets `e == .variant` resolve `.variant` against the right set.
+    /// holds (innermost last). Lets `e == .variant` check `.variant` against the right set.
     catch_errors: std.ArrayList(CaughtError) = .empty,
+    /// The numbers `fail .name` and `e == .name` give error variants (shared program-wide).
+    error_codes: *ErrorCodes,
     loop_stack: std.ArrayList(LoopContext) = .empty,
     local_types: std.StringHashMap(IrType),
     current_return_ty: IrType = .void,
@@ -1839,7 +1915,7 @@ const FunctionLowerer = struct {
     /// order). A reference to one reads field `index` out of the `__env` pointer.
     lambda_captures: []const sema.Capture = &.{},
 
-    fn init(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, decl: ast.FunctionDecl) FunctionLowerer {
+    fn init(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, decl: ast.FunctionDecl, error_codes: *ErrorCodes) FunctionLowerer {
         const captures: []const sema.Capture = if (std.mem.startsWith(u8, decl.name, "__lambda_"))
             types.lambda_captures.get(linkNameFor(symbols, decl.file_name, decl.name)) orelse &.{}
         else
@@ -1855,6 +1931,7 @@ const FunctionLowerer = struct {
             .local_types = std.StringHashMap(IrType).init(allocator),
             .local_alias = std.StringHashMap([]const u8).init(allocator),
             .lambda_captures = captures,
+            .error_codes = error_codes,
         };
     }
 
@@ -2031,10 +2108,8 @@ const FunctionLowerer = struct {
                 errdefer payload_values.deinit(self.allocator);
                 for (fail.payload) |payload| try payload_values.append(self.allocator, try self.lowerExpr(payload));
                 const payloads = try payload_values.toOwnedSlice(self.allocator);
-                const error_value = try self.emit(.{ .variant_type = "<error>" }, .{ .builtin = .{
-                    .name = try std.fmt.allocPrint(self.allocator, "error.{s}", .{fail.variant}),
-                    .args = payloads,
-                } });
+                // The error is the number of its variant's name, the same in every set.
+                const error_value: Value = .{ .imm = .{ .int = try self.error_codes.code(fail.variant) } };
                 try self.emitDefersDown(0, .err);
                 var i = self.active_zones.items.len;
                 while (i > 0) {
@@ -3196,9 +3271,9 @@ const FunctionLowerer = struct {
             },
             .binary => |binary| blk: {
                 if (binary.op == .equal or binary.op == .not_equal) {
-                    // `err == .variant`: an error value is the 1-based position of its variant
-                    // in its error set (0 means "no error"). The bare `.variant` has no type of
-                    // its own, so the set comes from the other operand.
+                    // `err == .variant`: an error value is the number of its variant's name
+                    // (`ErrorCodes`; 0 means "no error"). The bare `.variant` has no type of its
+                    // own, so whether this compares errors depends on the other operand.
                     if (try self.lowerErrorVariantCompare(binary, expr)) |cmp| break :blk cmp;
                     const optional_expr: ?ast.Expr = if (self.exprType(binary.left.*) == .optional and binary.right.kind == .null)
                         binary.left.*
@@ -3318,15 +3393,13 @@ const FunctionLowerer = struct {
 
                 self.startBlock(err_id, "catch.err");
                 // While the handler is lowered, `e` names an error of this set, so
-                // `e == .variant` can be resolved against it.
-                const caught_set: ?sema.Ty = switch (self.types.expr_types.get(catch_expr.value.id) orelse .unknown) {
+                // `e == .variant` is read as an error comparison and checked against it.
+                const caught_set: sema.Ty = switch (self.types.expr_types.get(catch_expr.value.id) orelse .unknown) {
                     .fallible => |f| f.err.*,
-                    else => null,
+                    else => .unknown,
                 };
-                if (caught_set) |set_ty| try self.catch_errors.append(self.allocator, .{ .name = catch_expr.err_name, .ty = set_ty });
-                defer if (caught_set != null) {
-                    _ = self.catch_errors.pop();
-                };
+                try self.catch_errors.append(self.allocator, .{ .name = catch_expr.err_name, .ty = caught_set });
+                defer _ = self.catch_errors.pop();
                 const err_value = try self.emit(error_ty, .{ .try_err = value });
                 try self.emitNoResult(error_ty, .{ .store_local = .{ .name = catch_expr.err_name, .value = err_value } });
                 // Stash the error payload so `if e == .v |c|` in the handler can
@@ -4412,37 +4485,32 @@ const FunctionLowerer = struct {
     /// `expr ?? default` — use default value when expr is null/error.
     /// The variants of the error set a sema type names, in declaration order.
     fn errorSetVariantsOf(self: *FunctionLowerer, ty: sema.Ty) ?[]const sema.ErrorVariantInfo {
-        return switch (ty) {
-            .error_set => |variants| variants,
-            .named => |id| blk: {
-                const type_layout = self.types.layouts.get(id) orelse break :blk null;
-                break :blk switch (type_layout.kind) {
-                    .error_set => |variants| variants,
-                    else => null,
-                };
-            },
-            else => null,
-        };
+        return errorSetVariantsIn(self.types, ty);
     }
 
-    /// The error set an operand holds: a name bound by an enclosing `catch`, else the
-    /// type sema recorded for the expression.
-    fn errorSetOfOperand(self: *FunctionLowerer, operand: ast.Expr) ?[]const sema.ErrorVariantInfo {
+    /// An operand that holds an error: its set's variants, or null for a set that has no list
+    /// of its own (inferred, `-> T !`).
+    const ErrorOperand = struct { variants: ?[]const sema.ErrorVariantInfo };
+
+    /// Whether an operand holds an error, and of which set: a name bound by an enclosing
+    /// `catch` always does; any other expression does when sema typed it as an error.
+    fn errorOperand(self: *FunctionLowerer, operand: ast.Expr) ?ErrorOperand {
         if (operand.kind == .ident) {
             var i = self.catch_errors.items.len;
             while (i > 0) {
                 i -= 1;
                 const caught = self.catch_errors.items[i];
-                if (std.mem.eql(u8, caught.name, operand.kind.ident)) return self.errorSetVariantsOf(caught.ty);
+                if (std.mem.eql(u8, caught.name, operand.kind.ident)) return .{ .variants = self.errorSetVariantsOf(caught.ty) };
             }
         }
         const ty = self.types.expr_types.get(operand.id) orelse return null;
-        return self.errorSetVariantsOf(ty);
+        if (ty == .error_ty) return .{ .variants = null };
+        return .{ .variants = self.errorSetVariantsOf(ty) orelse return null };
     }
 
     /// `err == .variant` / `err != .variant` when one operand is a bare `.variant` and the
-    /// other has an error-set type: compare the error value with that variant's discriminant.
-    /// Returns null for any other comparison.
+    /// other holds an error: compare the error value with the variant's number (see
+    /// `ErrorCodes`). Returns null for any other comparison.
     fn lowerErrorVariantCompare(self: *FunctionLowerer, binary: ast.BinaryExpr, outer: ast.Expr) LowerError!?Value {
         const operands = [2]struct { variant: ast.Expr, other: ast.Expr }{
             .{ .variant = binary.right.*, .other = binary.left.* },
@@ -4450,15 +4518,19 @@ const FunctionLowerer = struct {
         };
         for (operands) |op| {
             const name = bareEnumVariant(op.variant) orelse continue;
-            const variants = self.errorSetOfOperand(op.other) orelse continue;
-            for (variants, 0..) |v, index| {
-                if (!std.mem.eql(u8, v.name, name)) continue;
-                const value = try self.lowerExpr(op.other);
-                const disc: Value = .{ .imm = .{ .int = @as(i128, @intCast(index)) + 1 } };
-                return try self.emitAt(.bool, .{ .binary = .{ .op = lowerBinOp(binary.op), .lhs = value, .rhs = disc } }, outer.span);
+            const err = self.errorOperand(op.other) orelse continue;
+            if (err.variants) |variants| {
+                const known = for (variants) |v| {
+                    if (std.mem.eql(u8, v.name, name)) break true;
+                } else false;
+                if (!known) {
+                    diag_mod.printErrorAt("this error set has no such variant", self.file_name, self.source, op.variant.span);
+                    return error.LoweringFailed;
+                }
             }
-            diag_mod.printErrorAt("this error set has no such variant", self.file_name, self.source, op.variant.span);
-            return error.LoweringFailed;
+            const value = try self.lowerExpr(op.other);
+            const code: Value = .{ .imm = .{ .int = try self.error_codes.code(name) } };
+            return try self.emitAt(.bool, .{ .binary = .{ .op = lowerBinOp(binary.op), .lhs = value, .rhs = code } }, outer.span);
         }
         return null;
     }
@@ -6139,6 +6211,9 @@ pub const ComptimeVm = struct {
     /// When set, pure scalar `#run` results are cached on disk under this dir
     /// (enabled by the `GABBRO_CACHE` env var). See `vm/run_cache.zig`.
     run_cache_dir: ?[]const u8 = null,
+    /// How errors are numbered, both in the code this VM runs and in the module `lowerModule`
+    /// lowers alongside it, so the two agree.
+    error_codes: ErrorCodes,
 
     const Cache = struct {
         ir_module: IrModule,
@@ -6152,10 +6227,12 @@ pub const ComptimeVm = struct {
             .arena = std.heap.ArenaAllocator.init(allocator),
             .front_end = front_end,
             .run_cache_dir = if (vm_run_cache.enabledByEnv()) vm_run_cache.default_dir else null,
+            .error_codes = ErrorCodes.init(allocator),
         };
     }
 
     pub fn deinit(self: *ComptimeVm) void {
+        self.error_codes.deinit();
         self.arena.deinit();
     }
 
@@ -6174,7 +6251,7 @@ pub const ComptimeVm = struct {
         // Lower the module with NO evaluator (cvm = null) so that any nested
         // `#run` encountered while building this cache lowers its operand
         // directly instead of recursing back into the VM — the recursion guard.
-        const irm = try lowerModuleInner(a, self.front_end, null);
+        const irm = try lowerModuleInner(a, self.front_end, null, &self.error_codes);
         const bc = try vm_compiler.compileModule(a, irm);
         var fm = std.StringHashMap(u32).init(a);
         for (irm.functions, 0..) |f, i| try fm.put(f.name, @intCast(i));
@@ -6186,7 +6263,7 @@ pub const ComptimeVm = struct {
         defer ctAdd(_ct);
         const c = self.ensureCache() orelse return null;
         const a = self.arena.allocator();
-        const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file) catch return null;
+        const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file, &self.error_codes) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
 
         // Persistent comptime cache: a pure `#run` thunk is a deterministic
@@ -6248,7 +6325,7 @@ pub const ComptimeVm = struct {
         defer ctAdd(_ct);
         const c = self.ensureCache() orelse return .failed;
         const a = self.arena.allocator();
-        const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file) catch return .failed;
+        const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file, &self.error_codes) catch return .failed;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return .failed;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
         defer vm.deinit();
@@ -6279,7 +6356,7 @@ pub const ComptimeVm = struct {
         defer ctAdd(_ct);
         const c = self.ensureCache() orelse return null;
         const a = self.arena.allocator();
-        const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file) catch return null;
+        const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file, &self.error_codes) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
         defer vm.deinit();
@@ -6295,7 +6372,7 @@ pub const ComptimeVm = struct {
         defer ctAdd(_ct);
         const c = self.ensureCache() orelse return null;
         const a = self.arena.allocator();
-        const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file) catch return null;
+        const irfn = lowerExprToFunction(a, self.front_end, expr, self.current_file, &self.error_codes) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
         defer vm.deinit();
@@ -6353,7 +6430,7 @@ pub const ComptimeVm = struct {
         // expr types live in `inst_expr_types`, not the global env.
         var inst_fe = self.front_end;
         inst_fe.types.expr_types = inst_expr_types;
-        const irfn = lowerWhereToFunction(a, inst_fe, where_block, type_args, output_params, self.current_file) catch return null;
+        const irfn = lowerWhereToFunction(a, inst_fe, where_block, type_args, output_params, self.current_file, &self.error_codes) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
         defer vm.deinit();
@@ -6374,7 +6451,7 @@ pub const ComptimeVm = struct {
         const a = self.arena.allocator();
         var inst_fe = self.front_end;
         inst_fe.types.expr_types = inst_expr_types;
-        const irfn = lowerWhereTypeToFunction(a, inst_fe, where_block, type_args, output_params, self.current_file) catch return null;
+        const irfn = lowerWhereTypeToFunction(a, inst_fe, where_block, type_args, output_params, self.current_file, &self.error_codes) catch return null;
         const bc_fn = vm_compiler.compileFunction(a, irfn, &c.func_map, c.ir_module) catch return null;
         var vm = vm_engine.Vm.initModule(self.gpa, &c.bc);
         defer vm.deinit();
@@ -7299,7 +7376,7 @@ pub fn evalCorpus(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) Co
 
 /// Lower a standalone `#run` expression into a one-block IR function that
 /// returns it, reusing the normal lowering machinery.
-fn lowerExprToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, expr: ast.Expr, file: []const u8) !IrFunction {
+fn lowerExprToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, expr: ast.Expr, file: []const u8, error_codes: *ErrorCodes) !IrFunction {
     const dummy = ast.FunctionDecl{
         .attrs = &.{},
         .name = "__run",
@@ -7312,7 +7389,7 @@ fn lowerExprToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEn
         .body = null,
         .span = expr.span,
     };
-    var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, dummy);
+    var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, dummy, error_codes);
     lowerer.module = front_end.module;
     lowerer.current_return_ty = lowerer.exprType(expr);
     var stmts = [_]ast.Stmt{.{ .return_stmt = .{ .value = expr, .span = expr.span } }};
@@ -7357,8 +7434,8 @@ fn whereDummyDecl(file: []const u8, span: Span) ast.FunctionDecl {
     };
 }
 
-fn lowerWhereToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, where_block: ast.Block, type_args: []const sema.TypeArg, output_params: []const []const u8, file: []const u8) !IrFunction {
-    var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, whereDummyDecl(file, where_block.span));
+fn lowerWhereToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, where_block: ast.Block, type_args: []const sema.TypeArg, output_params: []const []const u8, file: []const u8, error_codes: *ErrorCodes) !IrFunction {
+    var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, whereDummyDecl(file, where_block.span), error_codes);
     lowerer.module = front_end.module;
     lowerer.type_binding = type_args;
     lowerer.in_where = true;
@@ -7386,8 +7463,8 @@ fn lowerWhereToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontE
 /// Lower a `where` block to *compute an output type param*: an `Acc = <type>`
 /// assignment returns the node id of `<type>` (sema maps it back to a concrete
 /// type for this instantiation). Falling off the end returns 0 ("not assigned").
-fn lowerWhereTypeToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, where_block: ast.Block, type_args: []const sema.TypeArg, output_params: []const []const u8, file: []const u8) !IrFunction {
-    var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, whereDummyDecl(file, where_block.span));
+fn lowerWhereTypeToFunction(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, where_block: ast.Block, type_args: []const sema.TypeArg, output_params: []const []const u8, file: []const u8, error_codes: *ErrorCodes) !IrFunction {
+    var lowerer = FunctionLowerer.init(allocator, front_end.types, front_end.symbols, whereDummyDecl(file, where_block.span), error_codes);
     lowerer.module = front_end.module;
     lowerer.type_binding = type_args;
     lowerer.in_where = true;

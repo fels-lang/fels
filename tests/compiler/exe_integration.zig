@@ -104,6 +104,7 @@ test "exe: the portable fixtures cross-compile to static Linux ELF executables" 
         .{ "tests/fixtures/lang/static_vm_app.gab", "elf_static_vm" },
         .{ "tests/fixtures/lang/static_run_app.gab", "elf_static_run" },
         .{ "tests/fixtures/lang/try_defer_app.gab", "elf_try_defer" },
+        .{ "tests/fixtures/lang/inferred_error_set_app.gab", "elf_inferred_error_set" },
         .{ "tests/fixtures/stdlib/sync_app.gab", "elf_sync" },
         .{ "tests/fixtures/stdlib/com_app.gab", "elf_com" },
     }) |c| {
@@ -919,6 +920,26 @@ test "exe: fallible ? propagates error to caller, fallback returns sentinel" {
         \\}
     , "exe_fallible_ok");
     try std.testing.expectEqual(@as(u32, 7), code_ok);
+}
+
+test "exe: a failing main exits with its error's position in its own set" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Errors are numbered by name across the whole program, in the order the names are met.
+    // `helper` meets `w` and `b` before `main` is lowered; main's own set is numbered first
+    // anyway, so `.c` is still 3, its place in `E` (it would be 4 in order of use).
+    const code = try compileAndRun(arena.allocator(),
+        \\E :: errors { a, b, c }
+        \\helper :: fn(k: i32) -> i32 ! { if k == 0 { fail .w; } fail .b; }
+        \\probe :: fn() -> i32 { v := helper(1) catch e { if e == .b { return 1; } return 2; }; return v; }
+        \\main :: fn() -> i32 ! E {
+        \\    if probe() != 1 { fail .a; }
+        \\    fail .c;
+        \\}
+    , "exe_fallible_main_code");
+    try std.testing.expectEqual(@as(u32, 3), code);
 }
 
 test "exe: catch executes its error handler" {
@@ -1768,6 +1789,7 @@ test "exe: std.path / std.time / std.crypto / std.serde run correctly cross-modu
         .{ "tests/fixtures/stdlib/utf16_app.gab", "exe_utf16_app" },
         .{ "tests/fixtures/stdlib/utf16_win_app.gab", "exe_utf16_win_app" },
         .{ "tests/fixtures/lang/error_variant_eq_app.gab", "exe_error_variant_eq_app" },
+        .{ "tests/fixtures/lang/inferred_error_set_app.gab", "exe_inferred_error_set_app" },
         .{ "tests/fixtures/lang/static_data_app.gab", "exe_static_data_app" },
         .{ "tests/fixtures/lang/static_vm_app.gab", "exe_static_vm_app" },
         .{ "tests/fixtures/lang/static_run_app.gab", "exe_static_run_app" },

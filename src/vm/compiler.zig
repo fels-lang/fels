@@ -441,15 +441,6 @@ const FnCompiler = struct {
                 return dst;
             },
             .param, .local => |name| {
-                // A bare error variant `.code` (as in `e == .code`) lowers to a
-                // dotted pseudo-local; resolve it to its error discriminant.
-                if (name.len > 1 and name[0] == '.') {
-                    if (self.errorVariantIndex(name[1..])) |idx| {
-                        const dst = self.newReg();
-                        try self.emit(Instr.r_imm(.load_imm, dst, idx));
-                        return dst;
-                    }
-                }
                 const slot = self.local_slots.get(name) orelse return error.Unsupported;
                 // An addressed scalar's slot holds a pointer to its cell; read the
                 // value back through it.
@@ -847,14 +838,6 @@ const FnCompiler = struct {
                 } else if (std.mem.eql(u8, b.name, "compound_literal")) {
                     // Positional `.{ a, b, ... }` aggregate initializer.
                     try self.lowerCompoundLiteral(target, inst.ty, b.args);
-                } else if (std.mem.startsWith(u8, b.name, "error.")) {
-                    // The error *discriminant* for `fail .v`. Any payload travels
-                    // separately through the fallible's value cell (see the `.fail`
-                    // terminator and `try_payload`), so a caught `e == .v |p|`
-                    // still recovers `p` — this just yields the tag.
-                    const vname = b.name["error.".len..];
-                    const idx = self.errorVariantIndexHere(vname) orelse 1; // non-zero = error
-                    try self.emit(Instr.r_imm(.load_imm, target, idx));
                 } else if (std.mem.eql(u8, b.name, "catch_handler")) {
                     // Marker emitted by `catch` lowering; nothing to execute.
                 } else if (std.mem.eql(u8, b.name, "optional_some") and b.args.len >= 1) {
@@ -1325,35 +1308,6 @@ const FnCompiler = struct {
     fn structDef(self: *FnCompiler, name: []const u8) ?ir.StructDef {
         for (self.module.structs) |s| {
             if (std.mem.eql(u8, s.name, name)) return s;
-        }
-        return null;
-    }
-
-    /// Discriminant of an error variant as the native backend encodes it: its 1-based
-    /// position in the *current function's own* error set. Falls back to a search by name
-    /// across all sets only when the function's set is not named. (Searching by name alone
-    /// gave a variant the position it has in whichever set declares that name first, so a
-    /// name shared between two sets was encoded differently at compile time than at run time.)
-    fn errorVariantIndexHere(self: *FnCompiler, variant: []const u8) ?i64 {
-        if (self.func.error_ty) |error_ty| switch (error_ty) {
-            .variant_type => |set_name| for (self.module.errors) |e| {
-                if (!std.mem.eql(u8, e.name, set_name)) continue;
-                for (e.variants, 0..) |case, i| {
-                    if (std.mem.eql(u8, case.name, variant)) return @intCast(i + 1);
-                }
-            },
-            else => {},
-        };
-        return self.errorVariantIndex(variant);
-    }
-
-    /// Discriminant of an error variant by name, across all error sets. 1-based
-    /// (matching the LLVM backend) so discriminant 0 is reserved for "ok".
-    fn errorVariantIndex(self: *FnCompiler, variant: []const u8) ?i64 {
-        for (self.module.errors) |e| {
-            for (e.variants, 0..) |case, i| {
-                if (std.mem.eql(u8, case.name, variant)) return @intCast(i + 1);
-            }
         }
         return null;
     }
