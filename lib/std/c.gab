@@ -5,8 +5,11 @@
 // the C ABI on 64-bit Windows (LLP64: long is 32-bit, size_t is 64-bit). They
 // document intent and ease future cross-platform sizing.
 //
-//   #extern("msvcrt", "strlen")
-//   strlen :: fn(s: [*]const c_char) -> c_size_t;
+//   #extern("kernel32", "lstrlenA")
+//   lstrlenA :: fn(s: c_string) -> c_int;
+//
+// `c_char` is the signed `i8`, so a `[*]const c_char` does not take a Gabbro string
+// (`[*]const u8`, e.g. `"hi".ptr`): declare a `const char*` parameter as `c_string`.
 
 // integer types
 

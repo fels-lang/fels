@@ -688,3 +688,82 @@ test "diagnostics: an error is compared with a variant only where it was caught"
     var fe = try gabbro.compile(arena.allocator(), "err_caught.gab", good);
     fe.deinit(arena.allocator());
 }
+
+test "diagnostics: `X :: Name;` is a type alias when Name is a type, a constant otherwise" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `i32` is a keyword to the parser but `f32` is an identifier, so `my_float :: f32;`
+    // used to read as a value constant, and using it as a type failed with
+    // "`my_float` is not a type (it is a constant)".
+    try std.testing.expect((try firstError(a,
+        "my_float :: f32;\nmain :: fn() -> i32 { x: my_float = 1.5; return 0; }")) == null);
+
+    // Likewise for a declared type: the parser cannot tell `Node` from a constant's name.
+    try std.testing.expect((try firstError(a,
+        \\Node :: struct { v: i32 }
+        \\node_t :: Node;
+        \\main :: fn() -> i32 { x: node_t = .{ .v = 3 }; return x.v; }
+    )) == null);
+
+    // Every identifier-spelled built-in type, not only the floats.
+    try std.testing.expect((try firstError(a,
+        \\double_t :: f64;
+        \\byte_t :: byte;
+        \\addr_t :: addr;
+        \\text_t :: Text;
+        \\rune_t :: Rune;
+        \\bits_t :: u3;
+        \\main :: fn() -> i32 { d: double_t = 1.0; return 0; }
+    )) == null);
+
+    // An enum, an alias of an alias, and aliases declared before what they name.
+    try std.testing.expect((try firstError(a,
+        \\Early :: Late;
+        \\Late :: Real;
+        \\Real :: f32;
+        \\Paint :: Color;
+        \\Color :: enum { red, green }
+        \\main :: fn() -> i32 { x: Early = 2.5; p: Paint = .green; return 0; }
+    )) == null);
+
+    // A constant naming a constant is still a constant — it is not a type...
+    const not_a_type = (try firstError(a,
+        "W :: 8;\nV :: W;\nmain :: fn() -> i32 { x: V = 1; return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, not_a_type, "`V` is not a type") != null);
+    // ...and a name that is no type and no constant stays an unknown name.
+    const unknown = (try firstError(a,
+        "X :: Nope;\nmain :: fn() -> i32 { return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, unknown, "unknown name `Nope`") != null);
+}
+
+test "diagnostics: an alias spelled like a constant is not lowered as a global" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `my_float :: f64;` with nothing using it: lowering it as a constant failed with
+    // "constant initializer could not be folded at compile time".
+    const src =
+        \\my_float :: f64;
+        \\Node :: struct { v: i32 }
+        \\node_t :: Node;
+        \\N :: 8;
+        \\M :: N;
+        \\main :: fn() -> i32 { return M; }
+    ;
+    var fe = try gabbro.compile(a, "t.gab", src);
+    defer fe.deinit(a);
+    const module = try gabbro.lowerFrontend(a, fe);
+    try gabbro.ir_mod.validateModule(module);
+
+    // The aliases have no storage; the constants beside them keep theirs.
+    var constants: usize = 0;
+    for (module.globals) |g| {
+        try std.testing.expect(!std.mem.eql(u8, g.name, "my_float"));
+        try std.testing.expect(!std.mem.eql(u8, g.name, "node_t"));
+        if (std.mem.eql(u8, g.name, "N") or std.mem.eql(u8, g.name, "M")) constants += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), constants);
+}

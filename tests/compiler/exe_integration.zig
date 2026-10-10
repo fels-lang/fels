@@ -3899,3 +3899,83 @@ test "exe: a call through an array element, a call result or a cast pointer" {
     , "exe_call_through_expression");
     try std.testing.expectEqual(@as(u32, 42), code);
 }
+
+test "exe: std.c aliases compile and behave as the types they name" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Regression: `#import std.c;` (and `.{ c_int }`) failed to compile at all — `c_float :: f32`
+    // and `c_double :: f64` were read as constants, so the module died in lowering with
+    // "constant initializer could not be folded". Both fixtures self-check and return 42:
+    // the selective import exercises the aliases as parameters, returns, fields, pointers,
+    // slices and a real kernel32 call (plus `sizeof` seeing the LLP64 widths); the bare
+    // import reaches them through the namespace (`c::c_int`).
+    inline for (.{
+        .{ "tests/fixtures/stdlib/c_types_app.gab", "exe_c_types_app" },
+        .{ "tests/fixtures/stdlib/c_namespace_app.gab", "exe_c_namespace_app" },
+    }) |c| {
+        const code = try compileFileAndRun(arena.allocator(), c[0], c[1]);
+        try std.testing.expectEqual(@as(u32, 42), code);
+    }
+}
+
+test "exe: an alias of a declared type is that type in every position" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `X :: Name;` is an alias when `Name` is a type (a struct, an enum, `f32`, another
+    // alias — even one declared after it) and a constant when it is not. IR reads the
+    // names in a type reference, so an alias must lower as what it stands for wherever it
+    // sits: by value, behind a pointer, in a slice, as an enum a `match` switches on, in
+    // a generic signature, as an enum payload, and under `sizeof`. Each failure returns
+    // its own code. The pointer, `match` and payload cases are the ones that go wrong
+    // silently — a crash, or the wrong arm — when lowering reads the alias's own name.
+    const code = try compileAndRun(arena.allocator(),
+        \\Node  :: struct { v: i32, w: i32 }
+        \\Big   :: struct { a: i64, b: i64, c: i64 }
+        \\Color :: enum { red, green, blue }
+        \\node_t :: Node;
+        \\big_t  :: Big;
+        \\Paint  :: Color;
+        \\Real   :: f32;
+        \\Real2  :: Real;
+        \\Late   :: Later;                  // declared before the type it names
+        \\Later  :: Node;
+        \\N :: 8;
+        \\M :: N;                           // a constant naming a constant stays a constant
+        \\K :: M * 2;
+        \\Holder :: enum { none, one: big_t }
+        \\
+        \\mk   :: fn(a: i32) -> node_t { return .{ a, a + 1 }; }
+        \\bump :: fn(p: *node_t) { p.v = p.v + 10; }
+        \\sum  :: fn(xs: []node_t) -> i32 { t: i32 = 0; for x in xs { t += x.v; } return t; }
+        \\rank :: fn(p: Paint) -> i32 { match p { .red => { return 1; } .green => { return 2; } .blue => { return 3; } } }
+        \\pick :: fn($T: type, x: T, y: Real) -> Real { return y; }
+        \\weigh :: fn(h: Holder) -> i64 {
+        \\    match h {
+        \\        .none => { return 0i64; }
+        \\        .one |b| => { return b.a + b.b * 10i64 + b.c * 100i64; }
+        \\    }
+        \\}
+        \\
+        \\main :: fn() -> i32 {
+        \\    n: node_t = mk(3);
+        \\    bump(&n);
+        \\    if n.v != 13 || n.w != 4 { return 10; }                     // value, return, pointer param
+        \\    ns: [2]Late = .{ .{ 1, 0 }, .{ 2, 0 } };
+        \\    if sum(ns[:]) != 3 { return 20; }                           // slice of an alias
+        \\    if rank(.blue) != 3 { return 30; }                          // match on an alias-typed param
+        \\    p: Paint = .green;
+        \\    if rank(p) != 2 { return 40; }
+        \\    r: Real2 = 2.5;
+        \\    if pick(Real, 1.5, r) != 2.5 { return 50; }                 // alias as a type argument, and in a generic signature
+        \\    if core::sizeof(Real) != 4usize || core::sizeof(node_t) != 8usize { return 60; }
+        \\    if M + K != 24 { return 70; }                               // constants keep their values
+        \\    if weigh(Holder.one(.{ 1i64, 2i64, 3i64 })) != 321i64 { return 80; }   // payload of an alias
+        \\    return 0;
+        \\}
+    , "exe_alias_positions");
+    try std.testing.expectEqual(@as(u32, 0), code);
+}

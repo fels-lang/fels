@@ -161,6 +161,23 @@ the major version is `0`, any minor bump may break source compatibility.
   dereferences of `T`: `sizeof(**T)` failed with "cannot dereference value of type `T`",
   `ptr_from_int(**T, …)` failed without a message and `arena.new(**T)` with "expected a type
   argument". `**T`, and `***T`, now name pointer types in an argument, as `*T` does.
+- **`#import std.c` did not compile, and neither did any alias of an identifier-spelled
+  type.** The error, `constant initializer could not be folded at compile time`, pointed
+  at `pub c_float :: f32;`. The parser reads `Name :: i32;` as a type alias but
+  `Name :: f32;` as a value constant: only keyword-spelled types were recognised, and
+  `f32`, `f64`, `byte`, `Text`, a struct, an enum or another alias are plain
+  identifiers. Using such an alias as a type failed too (`` `my_float` is not a type
+  (it is a constant) ``), as did the `pub Name :: f32;` typedefs `gabbro bindgen` emits
+  for C `float` and `double`. Once every declaration and import is known, `X :: Name;`
+  and `X :: ns::Name;` are now aliases when `Name` is a type, and constants when it is
+  not (`C :: B;` with `B :: 8` is unchanged). An alias is resolved where it is
+  declared, so a `pub` alias can be imported without the type it names, and an alias of
+  a struct or enum lowers as that type behind a pointer, in a slice, as an enum payload
+  and as the subject of a `match`.
+- **An alias did not stand for its type in a few positions.** An optional of an alias
+  (`?c_int`) and an alias in a generic function's signature hit an internal compiler
+  error, `core::sizeof(c_int)` was a pointer's 8 bytes, and an alias passed as an
+  explicit type argument (`vec::make(c_int, &a)`) was typed as the alias itself.
 
 ### Changed
 

@@ -616,18 +616,38 @@ CStr  :: [*]const u8;
 add :: fn(a: MyInt, b: MyInt) -> i32 { return a + b; }  // MyInt == i32
 ```
 
-An alias is recognized when the right-hand side **begins with a type** — a
-primitive type keyword (`i32`, `bool`, …) or a type constructor (`[`, `*`, `[*`,
-`?`, `borrow`, `atomic`). A bare-identifier right-hand side stays a value
-constant, so `Foo :: Bar` is a constant, not an alias (alias-to-named-type is not
-supported yet).
-
-The standard library uses aliases for C ABI types — see [`std.c`](07_stdlib.md):
+`Name :: <right-hand side>;` declares an alias when the right-hand side is a type
+and a value constant when it is not. A primitive type keyword (`i32`, `bool`, …) or
+a type constructor (`[`, `*`, `[*`, `?`, `borrow`, `atomic`) is a type on sight. A
+bare identifier is a type when it **names** one — a built-in such as `f32`, `byte`
+or `Text`, a struct, enum or other declared type, or another alias, in this module
+or another (`lib::Node`) — and a constant otherwise:
 
 ```gabbro
-#import std.c.{ c_int, c_size_t };
-#extern("msvcrt", "strlen")
-strlen :: fn(s: [*]const c_char) -> c_size_t;
+Real  :: f32;           // an alias of a built-in
+Node  :: struct { v: i32 }
+Point :: Node;          // an alias of a struct (declared before or after `Node`)
+Money :: Real;          // an alias of an alias
+
+LIMIT :: 8;
+MAX   :: LIMIT;         // names a constant, so a constant — not an alias
+```
+
+An alias is accepted wherever its type can be written: annotations, parameters,
+returns, fields, pointers, slices, casts, generic type arguments and `sizeof`. A
+`pub` alias can be imported without importing the type it names.
+
+Two things are not supported yet. A generic instantiation on the right-hand side
+(`IntPair :: Pair(i32);`) is not an alias, and an alias cannot stand where the type's
+*name* is used as a path rather than written as a type — `Point::new(…)`, `Color.red`
+through an enum alias, `Point as Shape { … }`, `! ErrorAlias`. Use the original name there.
+
+The standard library uses aliases for C ABI types — see [`std.c`](11_c_interop.md):
+
+```gabbro
+#import std.c.{ c_int, c_string };
+#extern("kernel32", "lstrlenA")
+lstrlenA :: fn(s: c_string) -> c_int;
 ```
 
 ## Opaque Types

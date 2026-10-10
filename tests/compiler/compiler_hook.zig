@@ -268,6 +268,46 @@ test "compiler-hook: core::compiler_decls() inspection drives conditional genera
     try std.testing.expect(hasFunction(m, "answer"));
 }
 
+test "compiler-hook: an alias spelled like a constant is reported as an alias" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `Real :: f32;` and `Point :: Node;` read as constants to the parser; sema resolves
+    // them to aliases. The hook pass lowers the module to run the hook, so it must not try
+    // to store them as globals, and `compiler_decls()` must call them "alias" like
+    // `Int :: i32;` — not "const", which `LIMIT` still is. The hook only emits
+    // `saw_aliases` if it sees exactly the three aliases and the one constant.
+    const src =
+        \\Real :: f32;
+        \\Node :: struct { v: i32 }
+        \\Point :: Node;
+        \\Int :: i32;
+        \\LIMIT :: 4;
+        \\streq :: fn(p: []const u8, q: []const u8) -> bool {
+        \\    if p.len != q.len { return false; }
+        \\    for i in 0..p.len { if p[i] != q[i] { return false; } }
+        \\    return true;
+        \\}
+        \\#compiler gen :: fn() -> []const u8 {
+        \\    aliases: i32 = 0;
+        \\    consts: i32 = 0;
+        \\    for d in core::compiler_decls() {
+        \\        if streq(d.kind, "alias") { aliases += 1; }
+        \\        if streq(d.kind, "const") { consts += 1; }
+        \\    }
+        \\    if aliases == 3 && consts == 1 { return "saw_aliases :: fn() -> i32 { return 1; }"; }
+        \\    return "";
+        \\}
+        \\main :: fn() -> i32 { return LIMIT; }
+    ;
+    var fe = try gabbro.compile(a, "hook_alias.gab", src);
+    defer fe.deinit(a);
+    const m = try gabbro.lowerFrontend(a, fe);
+    try gabbro.ir_mod.validateModule(m);
+    try std.testing.expect(hasFunction(m, "saw_aliases"));
+}
+
 test "compiler-hook: no hook means no compiler-prelude injection" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

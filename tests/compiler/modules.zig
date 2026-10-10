@@ -565,6 +565,146 @@ test "modules: namespace-qualified generic type resolves + lowers (ns::Name(args
     try gabbro.ir_mod.validateModule(module);
 }
 
+test "modules: a type alias is imported like any other public name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Aliases of identifier-spelled types (`f32`, a struct, an enum, another alias) read
+    // as constants to the parser; sema must still hand them to importers as types. `Pair`
+    // names a PRIVATE struct: the importer sees the alias, and the aliased type is
+    // resolved where the alias is declared, not in the importing file.
+    const lib =
+        \\Hidden :: struct { a: i32, b: i32 }
+        \\pub Scalar :: f32;
+        \\pub Real :: Scalar;
+        \\pub Pair :: Hidden;
+        \\pub Shade :: Color;
+        \\pub Color :: enum { red, green, blue }
+        \\pub make :: fn(a: i32, b: i32) -> Pair { return .{ a, b }; }
+    ;
+    const selective =
+        \\#import lib.{ Real, Pair, Shade, make };
+        \\pick :: fn(s: Shade) -> i32 { match s { .red => { return 1; } .green => { return 2; } .blue => { return 3; } } }
+        \\run :: fn() -> i32 {
+        \\    p: Pair = make(3, 4);
+        \\    r: Real = 2.5;
+        \\    return p.a + p.b + (r as i32) + pick(.blue);
+        \\}
+    ;
+    const namespaced =
+        \\#import lib;
+        \\run :: fn() -> i32 {
+        \\    p: lib::Pair = lib::make(3, 4);
+        \\    r: lib::Real = 2.5;
+        \\    return p.a + p.b + (r as i32);
+        \\}
+    ;
+    const globbed =
+        \\#import lib.*;
+        \\run :: fn() -> i32 { p: Pair = make(3, 4); r: Scalar = 2.5; return p.a + p.b + (r as i32); }
+    ;
+    inline for (.{ selective, namespaced, globbed }) |app| {
+        var fe = try gabbro.compileMulti(arena.allocator(), &.{
+            .{ .file_name = "lib.gab", .source = lib },
+            .{ .file_name = "app.gab", .source = app },
+        });
+        defer fe.deinit(arena.allocator());
+        const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+        try gabbro.ir_mod.validateModule(module);
+        // The aliases emit no storage.
+        for (module.globals) |g| {
+            try std.testing.expect(!std.mem.eql(u8, g.name, "Scalar"));
+            try std.testing.expect(!std.mem.eql(u8, g.name, "Pair"));
+        }
+    }
+}
+
+test "modules: a local alias of an imported type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `Pos :: Vec2;` names a type that lives in another module — by a selective import
+    // and by a namespace — which only name resolution across modules can tell from a
+    // constant.
+    const lib =
+        \\pub Vec2 :: struct { x: f32, y: f32 }
+        \\pub Real :: f32;
+    ;
+    const selective =
+        \\#import lib.{ Vec2, Real };
+        \\Pos :: Vec2;
+        \\Num :: Real;
+        \\run :: fn() -> i32 { p: Pos = .{ 1.5, 2.5 }; n: Num = 4.0; return (p.x + p.y + n) as i32; }
+    ;
+    const namespaced =
+        \\#import lib;
+        \\Pos :: lib::Vec2;
+        \\Num :: lib::Real;
+        \\run :: fn() -> i32 { p: Pos = .{ 1.5, 2.5 }; n: Num = 4.0; return (p.x + p.y + n) as i32; }
+    ;
+    inline for (.{ selective, namespaced }) |app| {
+        var fe = try gabbro.compileMulti(arena.allocator(), &.{
+            .{ .file_name = "lib.gab", .source = lib },
+            .{ .file_name = "app.gab", .source = app },
+        });
+        defer fe.deinit(arena.allocator());
+        try gabbro.ir_mod.validateModule(try gabbro.lowerFrontend(arena.allocator(), fe));
+    }
+}
+
+test "modules: an imported constant naming a constant stays a constant" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const lib =
+        \\pub LIMIT :: 4;
+        \\pub MAX :: LIMIT;
+    ;
+    const app =
+        \\#import lib.{ MAX };
+        \\run :: fn() -> i32 { return MAX; }
+    ;
+    var fe = try gabbro.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "lib.gab", .source = lib },
+        .{ .file_name = "app.gab", .source = app },
+    });
+    defer fe.deinit(arena.allocator());
+    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    try gabbro.ir_mod.validateModule(module);
+
+    // Both are constants, so both have storage — `MAX` is not read as an alias of `LIMIT`.
+    var found: usize = 0;
+    for (module.globals) |g| {
+        if (std.mem.eql(u8, g.name, "LIMIT") or std.mem.eql(u8, g.name, "MAX")) found += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), found);
+}
+
+test "modules: two modules declaring the same alias name collide, as two types do" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A same-named constant in two modules is mangled apart, but a type (and so an alias)
+    // keeps its bare name — `real :: f32;` is a type, so this is a duplicate declaration.
+    try std.testing.expectError(error.SemanticFailed, gabbro.compileMulti(arena.allocator(), &.{
+        .{ .file_name = "a.gab", .source = "pub real :: f32;" },
+        .{ .file_name = "b.gab", .source = "pub real :: f32;" },
+        .{ .file_name = "main.gab", .source = "#import a;\n#import b;\nrun :: fn() -> i32 { x: a::real = 1.5; return 0; }" },
+    }));
+}
+
+test "modules: std.c resolves and lowers (selective and namespaced imports)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `std.c` aliases `f32`/`f64` (identifier-spelled types), which used to make the whole
+    // module fail to lower ("constant initializer could not be folded at compile time").
+    inline for (.{
+        "tests/fixtures/stdlib/c_types_app.gab",
+        "tests/fixtures/stdlib/c_namespace_app.gab",
+    }) |fixture| {
+        var fe = try gabbro.compileFileWithRuntime(arena.allocator(), std.testing.io, fixture);
+        defer fe.deinit(arena.allocator());
+        const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+        try gabbro.ir_mod.validateModule(module);
+    }
+}
+
 test "modules: unimported self functions are not extension methods" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

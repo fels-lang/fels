@@ -119,6 +119,19 @@ pub const SymbolTable = struct {
         return null;
     }
 
+    /// Whether `ref`, written in `file_name`, names a type: a visible type symbol, or —
+    /// when no declaration claims the name — a built-in type spelling (`f32`, `Text`).
+    /// The order `typeFromRef` resolves a type name in, so a name that answers yes here
+    /// is one a type annotation accepts.
+    fn namesType(self: SymbolTable, file_name: []const u8, ref: ast.NamedType) bool {
+        if (ref.namespace) |ns| {
+            const id = self.resolveScoped(file_name, ns, ref.name) orelse return false;
+            return self.symbol(id).kind == .type;
+        }
+        if (self.resolveVisible(file_name, ref.name)) |id| return self.symbol(id).kind == .type;
+        return fromBuiltinName(ref.name) != null;
+    }
+
     pub fn insert(
         self: *SymbolTable,
         allocator: std.mem.Allocator,
@@ -942,7 +955,66 @@ pub fn collectSymbols(allocator: std.mem.Allocator, module: ast.Module) Semantic
         }
     }
 
+    try promoteTypeAliases(&table, module);
     return table;
+}
+
+/// The type name a constant `X :: Name;` / `X :: ns::Name;` would alias, when its
+/// value is nothing but a (possibly namespace-qualified) identifier.
+fn constAliasTarget(decl: ast.ConstDecl) ?ast.NamedType {
+    if (decl.is_mutable or decl.ty != null) return null;
+    return switch (decl.value.kind) {
+        .ident => |name| .{ .name = name, .span = decl.value.span },
+        .scope_access => |sa| switch (sa.base.kind) {
+            .ident => |ns| .{ .name = sa.member, .namespace = ns, .span = decl.value.span },
+            else => null,
+        },
+        else => null,
+    };
+}
+
+/// The parser reads `X :: i32;` as a type alias but `X :: f32;`, `X :: Node;` and
+/// `X :: ns::Node;` as constants: `f32` is an identifier to the lexer, and `Node` may
+/// be a struct declared in another module, so it cannot tell a type's name from a
+/// constant's. With every declaration and import in the table the question has an
+/// answer: a constant whose value is nothing but a type's name is a transparent
+/// alias, however it is spelled. Mark those symbols `.type`. The checker registers
+/// them like any other alias and IR gives them no storage. A constant naming another
+/// constant (`C :: B;`) stays one.
+fn promoteTypeAliases(table: *SymbolTable, module: ast.Module) SemanticError!void {
+    // To a fixed point: in `A :: B; B :: Node;` B becomes a type first, then A follows.
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (module.items) |item| {
+            const decl = switch (item) {
+                .const_decl => |d| d,
+                else => continue,
+            };
+            const target = constAliasTarget(decl) orelse continue;
+            const id = table.resolveVisible(decl.file_name, decl.name) orelse continue;
+            if (table.symbol(id).kind != .const_symbol or !table.namesType(decl.file_name, target)) continue;
+            // A type keeps its bare name in the root scope (IR looks aliases up by it), but
+            // a constant declared in two modules got module-qualified linkage names. Two
+            // same-named types are a duplicate declaration; so are two same-named aliases.
+            if (!std.mem.eql(u8, table.symbol(id).link_name, decl.name)) {
+                std.debug.print("{s}: error: duplicate top-level declaration `{s}`\n", .{ decl.file_name, decl.name });
+                return error.SemanticFailed;
+            }
+            table.symbols.items[id].kind = .type;
+            changed = true;
+        }
+    }
+}
+
+/// Whether `decl` is a constant that `collectSymbols` resolved to a type alias (see
+/// `promoteTypeAliases`): the declaration reads as a constant, its symbol is a type.
+/// It has no value to check, fold or store.
+pub fn isTypeAliasConst(symbols: SymbolTable, decl: ast.ConstDecl) bool {
+    if (constAliasTarget(decl) == null) return false;
+    const id = symbols.resolveVisible(decl.file_name, decl.name) orelse
+        symbols.resolve(symbols.root_scope, decl.name) orelse return false;
+    return symbols.symbol(id).kind == .type;
 }
 
 fn visibleNamesFor(
@@ -1592,7 +1664,15 @@ const Checker = struct {
     fn checkItem(self: *Checker, item: ast.Item) SemanticError!void {
         switch (item) {
             .import => {},
-            .const_decl => |decl| _ = try self.inferExpr(decl.value),
+            .const_decl => |decl| {
+                // An alias spelled like a constant: validate it as `checkTypeDecl` does
+                // the other spelling (the name resolves, and is not cyclic).
+                if (isTypeAliasConst(self.symbols, decl)) {
+                    _ = try self.typeFromRef(.{ .named = constAliasTarget(decl).? });
+                } else {
+                    _ = try self.inferExpr(decl.value);
+                }
+            },
             .type_decl => |decl| try self.checkTypeDecl(decl),
             .function => |decl| {
                 // A `constraint` is a generic predicate template — registered for
@@ -1619,15 +1699,17 @@ const Checker = struct {
         // Pre-pass: register every type alias first, so the layout/fn-sig pass
         // below can resolve aliases regardless of declaration order.
         for (module.items) |item| {
-            const decl = switch (item) {
-                .type_decl => |d| d,
+            const aliased: ast.TypeRef = switch (item) {
+                .type_decl => |d| switch (d.kind) {
+                    .alias => |ty| ty,
+                    else => continue,
+                },
+                // `X :: Name;` that `collectSymbols` found to name a type: the same
+                // alias, spelled like a constant.
+                .const_decl => |d| if (isTypeAliasConst(self.symbols, d)) .{ .named = constAliasTarget(d).? } else continue,
                 else => continue,
             };
-            const aliased = switch (decl.kind) {
-                .alias => |ty| ty,
-                else => continue,
-            };
-            const id = self.symbols.resolveVisible(decl.file_name, decl.name) orelse continue;
+            const id = self.symbols.resolveVisible(item.fileName(), item.name() orelse continue) orelse continue;
             try self.env.alias_refs.put(id, aliased);
         }
 
@@ -1648,9 +1730,17 @@ const Checker = struct {
             // symbol (a bare root-scope lookup would miss them).
             const id = self.symbols.resolveVisible(item.fileName(), name) orelse continue;
             switch (item) {
-                // A mutable global carries an explicit type; an immutable constant
-                // takes the type of its (comptime) initializer.
-                .const_decl => |decl| try self.env.set(id, if (decl.ty) |t| try self.typeFromRef(t) else try self.inferExpr(decl.value)),
+                .const_decl => |decl| {
+                    // An alias spelled like a constant is a type like any other (it was
+                    // registered in the pre-pass); there is no value to infer.
+                    if (isTypeAliasConst(self.symbols, decl)) {
+                        try self.env.set(id, .{ .named = id });
+                    } else {
+                        // A mutable global carries an explicit type; an immutable constant
+                        // takes the type of its (comptime) initializer.
+                        try self.env.set(id, if (decl.ty) |t| try self.typeFromRef(t) else try self.inferExpr(decl.value));
+                    }
+                },
                 .type_decl => |decl| {
                     try self.env.set(id, .{ .named = id });
                     switch (decl.kind) {
@@ -4200,6 +4290,9 @@ const Checker = struct {
                     self.emitError(expr.span, "`{s}` is not a type", .{name});
                     return error.SemanticFailed;
                 }
+                // A transparent alias is the type it names.
+                if (self.env.alias_refs.contains(id))
+                    return try self.typeFromRef(.{ .named = .{ .name = name, .span = expr.span } });
                 return .{ .named = id };
             },
             // Generic struct instantiation used as a type argument, e.g.
@@ -5012,6 +5105,13 @@ const Checker = struct {
                         }
                         self.alias_depth += 1;
                         defer self.alias_depth -= 1;
+                        // The aliased type is written in the file that declares the alias,
+                        // so resolve it there: the file using the alias may not see the
+                        // names it is built from (`#import lib.{ node_t };` brings in
+                        // `node_t`, not the `Node` it stands for).
+                        const use_site = self.file;
+                        self.file = self.symbols.symbol(id).file_name;
+                        defer self.file = use_site;
                         return try self.typeFromRef(aliased);
                     }
                     return .{ .named = id };
@@ -5483,6 +5583,9 @@ const Checker = struct {
                     if (self.resolveTypeParam(name)) |tp_ty| break :blk tp_ty;
                     const id = self.resolveSymbol(name) orelse break :blk null;
                     if (self.symbols.symbol(id).kind != .type) break :blk null;
+                    // A transparent alias is the type it names.
+                    if (self.env.alias_refs.contains(id))
+                        break :blk self.typeFromRef(.{ .named = .{ .name = name, .span = expr.span } }) catch null;
                     break :blk .{ .named = id };
                 },
                 else => null,
