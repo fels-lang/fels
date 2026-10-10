@@ -58,7 +58,7 @@ def read_messages(out: bytes):
         i = j + 4 + clen
 
 
-def main():
+def single_file():
     p = subprocess.run([EXE, "lsp"], input=b"".join(frame(m) for m in MSGS),
                        capture_output=True, timeout=30)
     ok = True
@@ -87,6 +87,82 @@ def main():
                 ok &= [x["name"] for x in res] == ["Point", "add", "main"]
     if "leaked" in p.stderr.decode(errors="replace").lower():
         print("FAIL: memory leak reported"); ok = False
+    return ok
+
+
+def two_files():
+    """A project of two files: imports, cross-file hover/definition/completion, live edit."""
+    import tempfile
+    ok = True
+    with tempfile.TemporaryDirectory() as tmp:
+        util_src = "pub add :: fn(a: i32, b: i32) -> i32 { return a + b; }\n"
+        main_src = "#import util.{ add };\n\nmain :: fn() -> i32 {\n    return add(1, 2);\n}\n"
+        util_path = os.path.join(tmp, "util.gab")
+        main_path = os.path.join(tmp, "main.gab")
+        with open(util_path, "w", newline="\n") as f:
+            f.write(util_src)
+        with open(main_path, "w", newline="\n") as f:
+            f.write(main_src)
+        uri = lambda p: "file:///" + p.replace("\\", "/")
+        main_uri, util_uri = uri(main_path), uri(util_path)
+        call = {"line": 3, "character": main_src.splitlines()[3].index("add(") + 1}
+        renamed = util_src.replace("add", "plus")
+        msgs = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"capabilities": {}}},
+            {"jsonrpc": "2.0", "method": "textDocument/didOpen",
+             "params": {"textDocument": {"uri": main_uri, "languageId": "gabbro", "version": 1, "text": main_src}}},
+            {"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover",
+             "params": {"textDocument": {"uri": main_uri}, "position": call}},
+            {"jsonrpc": "2.0", "id": 3, "method": "textDocument/definition",
+             "params": {"textDocument": {"uri": main_uri}, "position": call}},
+            {"jsonrpc": "2.0", "id": 4, "method": "textDocument/completion",
+             "params": {"textDocument": {"uri": main_uri}, "position": {"line": 3, "character": 4}}},
+            {"jsonrpc": "2.0", "method": "textDocument/didOpen",
+             "params": {"textDocument": {"uri": util_uri, "languageId": "gabbro", "version": 1, "text": util_src}}},
+            {"jsonrpc": "2.0", "id": 5, "method": "textDocument/documentSymbol",
+             "params": {"textDocument": {"uri": main_uri}}},
+            {"jsonrpc": "2.0", "method": "textDocument/didChange",
+             "params": {"textDocument": {"uri": util_uri, "version": 2}, "contentChanges": [{"text": renamed}]}},
+            {"jsonrpc": "2.0", "id": 6, "method": "shutdown", "params": None},
+            {"jsonrpc": "2.0", "method": "exit", "params": None},
+        ]
+        p = subprocess.run([EXE, "lsp"], input=b"".join(frame(m) for m in msgs), capture_output=True, timeout=30)
+        last = {}
+        first_main = None
+        for r in read_messages(p.stdout):
+            if r.get("method") == "textDocument/publishDiagnostics":
+                u = r["params"]["uri"]
+                if u == main_uri and first_main is None:
+                    first_main = r["params"]["diagnostics"]
+                last[u] = r["params"]["diagnostics"]
+            elif r.get("id") == 2:
+                v = r["result"]["contents"]["value"]
+                print("cross-file hover:", v.replace("\n", " "))
+                ok &= "add :: fn(a: i32, b: i32) -> i32" in v
+            elif r.get("id") == 3:
+                res = r["result"]
+                print("cross-file definition:", res)
+                ok &= bool(res) and res["uri"].lower().endswith("util.gab") and res["range"]["start"]["line"] == 0
+            elif r.get("id") == 4:
+                labels = [x["label"] for x in r["result"]]
+                print("cross-file completion has add:", "add" in labels)
+                ok &= "add" in labels
+            elif r.get("id") == 5:
+                names = [x["name"] for x in r["result"]]
+                print("outline:", names)
+                ok &= "add" in names and "main" in names
+        print("main diagnostics before the edit:", first_main)
+        ok &= first_main == []
+        after = last.get(main_uri, [])
+        print("main diagnostics after renaming add to plus in util:", [d["message"] for d in after])
+        ok &= any("add" in d["message"] for d in after)
+        ok &= last.get(util_uri, []) == []
+    return ok
+
+
+def main():
+    ok = single_file()
+    ok &= two_files()
     print("RESULT:", "PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
 

@@ -1086,9 +1086,11 @@ fn dispatch(self: *Server, root: json.Value) void {
         self.flush();
         handleDocumentSymbol(self, id, params);
     } else if (std.mem.eql(u8, method, "shutdown")) {
+        self.flush();
         self.shutdown_requested = true;
         sendResult(self, id, "null");
     } else if (std.mem.eql(u8, method, "exit")) {
+        self.flush();
         self.shutdown_requested = true;
     } else if (id != null) {
         // Unknown request: reply null so the client isn't left waiting.
@@ -1183,4 +1185,138 @@ test "lsp: identifier under a byte offset" {
     try t.expectEqualStrings("bar_baz", identAt(src, 6));
     try t.expectEqualStrings("qux", identAt(src, 17)); // end of buffer
     try t.expectEqualStrings("", identAt(src, 12)); // on the '+'
+}
+
+// Analysis tests (an in-memory file system stands in for the editor and the disk)
+
+const MemFiles = struct {
+    names: []const []const u8,
+    texts: []const []const u8,
+
+    /// The loader joins `.` and the file name with the native separator.
+    fn same(name: []const u8, path: []const u8) bool {
+        const rest = if (path.len > 2 and path[0] == '.' and (path[1] == '/' or path[1] == '\\')) path[2..] else path;
+        return std.mem.eql(u8, name, rest);
+    }
+
+    fn read(ctx: ?*anyopaque, allocator: std.mem.Allocator, path: []const u8) ?[]const u8 {
+        const self: *MemFiles = @ptrCast(@alignCast(ctx.?));
+        for (self.names, 0..) |n, i| if (same(n, path))
+            return allocator.dupe(u8, self.texts[i]) catch null;
+        // Anything else (std) comes from the real disk.
+        return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .unlimited) catch null;
+    }
+
+    fn exists(ctx: ?*anyopaque, path: []const u8) bool {
+        const self: *MemFiles = @ptrCast(@alignCast(ctx.?));
+        for (self.names) |n| if (same(n, path)) return true;
+        std.Io.Dir.cwd().access(std.testing.io, path, .{}) catch return false;
+        return true;
+    }
+
+    fn analyze(self: *MemFiles, root: []const u8, runtime: bool) !pipeline.Analysis {
+        return pipeline.analyzeFile(std.testing.allocator, root, .{
+            .reader = .{ .ctx = self, .readFn = read, .existsFn = exists },
+            .include_runtime = runtime,
+        });
+    }
+};
+
+fn countFor(a: pipeline.Analysis, file: []const u8) usize {
+    var n: usize = 0;
+    for (a.diagnostics) |d| {
+        if (MemFiles.same(file, d.file)) n += 1;
+    }
+    return n;
+}
+
+test "lsp: a sibling module is loaded and its names are in scope" {
+    var mem = MemFiles{
+        .names = &.{ "util.gab", "main.gab" },
+        .texts = &.{
+            "pub add :: fn(a: i32, b: i32) -> i32 { return a + b; }\n",
+            "#import util.{ add };\nmain :: fn() -> i32 { return add(1, 2); }\n",
+        },
+    };
+    var a = try mem.analyze("main.gab", false);
+    defer a.deinit();
+    try std.testing.expectEqual(@as(usize, 0), a.diagnostics.len);
+    try std.testing.expect(a.symbols != null);
+    try std.testing.expect(a.symbols.?.resolveVisible("main.gab", "add") != null);
+}
+
+test "lsp: a name missing from an imported module is an error on the import" {
+    var mem = MemFiles{
+        .names = &.{ "util.gab", "main.gab" },
+        .texts = &.{
+            "pub plus :: fn(a: i32, b: i32) -> i32 { return a + b; }\n",
+            "#import util.{ add };\nmain :: fn() -> i32 { return add(1, 2); }\n",
+        },
+    };
+    var a = try mem.analyze("main.gab", false);
+    defer a.deinit();
+    try std.testing.expect(countFor(a, "main.gab") >= 1);
+    try std.testing.expectEqual(@as(usize, 0), countFor(a, "util.gab"));
+    try std.testing.expect(a.symbols != null);
+}
+
+test "lsp: a file with a syntax error gives its diagnostics and no symbols" {
+    var mem = MemFiles{ .names = &.{"main.gab"}, .texts = &.{"main :: fn() -> i32 {\n    return 1\n}\n"} };
+    var a = try mem.analyze("main.gab", false);
+    defer a.deinit();
+    try std.testing.expect(countFor(a, "main.gab") >= 1);
+    try std.testing.expect(a.symbols == null);
+}
+
+test "lsp: an import that cannot be found is reported on the import" {
+    var mem = MemFiles{ .names = &.{"main.gab"}, .texts = &.{"#import nowhere.{ x };\nmain :: fn() {}\n"} };
+    var a = try mem.analyze("main.gab", false);
+    defer a.deinit();
+    try std.testing.expectEqual(@as(usize, 1), countFor(a, "main.gab"));
+    try std.testing.expectEqual(@as(usize, 0), a.diagnostics[0].span.start);
+}
+
+test "lsp: an error in an imported module belongs to that module" {
+    var mem = MemFiles{
+        .names = &.{ "util.gab", "main.gab" },
+        .texts = &.{
+            "pub bad :: fn() -> i32 { return true; }\n",
+            "#import util.{ bad };\nmain :: fn() -> i32 { return bad(); }\n",
+        },
+    };
+    var a = try mem.analyze("main.gab", false);
+    defer a.deinit();
+    try std.testing.expectEqual(@as(usize, 0), countFor(a, "main.gab"));
+    try std.testing.expect(countFor(a, "util.gab") >= 1);
+}
+
+test "lsp: std is loaded and marked, and Mutex is known" {
+    var mem = MemFiles{
+        .names = &.{"main.gab"},
+        .texts = &.{"#import std.sync.{ Mutex };\nmain :: fn() { m: Mutex = Mutex.new(); }\n"},
+    };
+    var a = try mem.analyze("main.gab", true);
+    defer a.deinit();
+    var std_files: usize = 0;
+    for (a.files) |f| {
+        if (f.is_std) std_files += 1;
+    }
+    try std.testing.expect(std_files >= 1);
+    for (a.diagnostics) |d| {
+        try std.testing.expect(std.mem.indexOf(u8, d.message, "unknown type `Mutex`") == null);
+    }
+}
+
+test "lsp: file URIs and paths convert both ways" {
+    const gpa = std.testing.allocator;
+    const p = try uriToPath(gpa, "file:///c%3A/dev/my%20proj/a.gab");
+    defer gpa.free(p);
+    if (is_windows) {
+        try std.testing.expectEqualStrings("c:\\dev\\my proj\\a.gab", p);
+    } else {
+        try std.testing.expectEqualStrings("/c:/dev/my proj/a.gab", p);
+    }
+    const u = try pathToUri(gpa, "C:\\dev\\my proj\\a.gab");
+    defer gpa.free(u);
+    try std.testing.expectEqualStrings("file:///C:/dev/my%20proj/a.gab", u);
 }

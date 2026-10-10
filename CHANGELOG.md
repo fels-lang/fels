@@ -3,6 +3,16 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Changed
+
+- **`gabbro lsp` is project aware.** It analyzes each open file together with the modules it
+  imports (`std` and sibling `.gab` files), uses the editor's text for imported modules that are
+  open, publishes the errors of each module to its own file, and supports go to definition, hover,
+  completion and the outline across files. Before, an imported name such as `Mutex` was reported as
+  unknown in a file that `gabbro build` accepts.
+
 ## 0.2.1 — 2026-10-10
 
 ### Fixed

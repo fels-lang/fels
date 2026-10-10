@@ -2,8 +2,8 @@
 
 `gabbro lsp` works: diagnostics, completion, hover, go-to-definition, and document
 symbols — §8 wires it into your editor. The `#test` comptime lane works too
-([docs/17](17_testing.md)). A tree-sitter grammar (`tree-sitter-gabbro/`) and a Zed
-extension (`zed-gabbro/`) handle highlighting. A formatter, doc generator, runtime
+([docs/17](17_testing.md)). A tree-sitter grammar (`tree-sitter-gabbro`) and a Zed
+extension (`zed-gabbro`) are being written in their own repositories. A formatter, doc generator, runtime
 test lane, and REPL aren't built yet.
 
 ## 0. The principle: the compiler is a library
@@ -161,8 +161,8 @@ that runs `#run`/`#compiler` — the REPL is comptime gabbro, live. Good for exp
 
 ## 6. Editor integrations — one grammar, one server
 
-- **Syntax**: `tree-sitter-gabbro/grammar.js` is the single syntactic source of truth.
-  It already feeds the Zed extension; the same grammar + queries drive
+- **Syntax**: `grammar.js` in the separate `tree-sitter-gabbro` repository is the single syntactic source
+  of truth. It is meant to feed the Zed extension; the same grammar + queries drive
   nvim-treesitter, Helix, and VS Code (tree-sitter, with a TextMate grammar as a
   no-WASM fallback). Keep the highlight/indent/bracket/outline `.scm` queries in
   the grammar repo; editors consume them verbatim.
@@ -189,21 +189,47 @@ language five times.
 
 ## 8. Using `gabbro lsp` today
 
-`gabbro lsp` is built into the `gabbro` binary and speaks LSP over stdio. It gives live
-diagnostics, scope completion, hover, go-to-definition, and a document outline.
-Point any LSP-capable editor at `gabbro lsp`.
+`gabbro lsp` is built into the `gabbro` binary and speaks LSP over stdio. Point any
+LSP-capable editor at `gabbro lsp`. Gabbro source files end in `.gab`.
+
+What it does:
+
+- **Project aware.** Each open file is analyzed together with the modules it imports, using
+  the compiler's own loader: `std` (found as the compiler finds it: `--std-path`,
+  `GABBRO_STD`, `GABBRO_HOME`, next to the executable) and sibling `.gab` files (next to
+  the importing file, then under the project root, which is the nearest folder above the
+  file with a `build.gab`, else the workspace folder). A file that `gabbro check` accepts
+  gives no diagnostics.
+- **Open documents win over disk.** If an imported module is open in the editor, its
+  unsaved text is used. Editing a module re-analyzes the open files that import it.
+- **Diagnostics per file.** The errors of an imported module are published to that module's
+  own URI, not to the file that imports it. Errors inside `std` are not shown. A file that
+  does not parse gives its syntax errors; the rest of the project still checks.
+- **Go to definition and hover across files.** A name imported from another module jumps to
+  its declaration there (also in `std`). Hover shows the declaration as written and the
+  module it comes from. `alias::name` and the module path of an `#import` work too.
+- **Completion and outline** include the names in scope: the file's own declarations, the
+  names its imports bring in (selective imports, `as` aliases, `.*` wildcards, only `pub`
+  names), and the members of a module after `alias::`.
+- **Speed.** Analysis runs when no more input is waiting, so a burst of edits costs one run.
+  A 830 line file with imports of `std.sync`, `std.utf16` and a `win32` binding module
+  analyzes in about 5 ms in a release build (about 30 ms in a debug build); the standard
+  library is parsed again each time, which is cheap enough that no cache is kept. Set
+  `GABBRO_LSP_TIMING=1` to see each run on stderr.
+- **Not done yet:** rename, find references, semantic tokens, formatting, code actions,
+  inlay hints. `#compiler` hooks and computed `#insert` run during analysis, as in a build.
 
 **Helix** — `~/.config/helix/languages.toml` (zero compilation):
 
 ```toml
-[language-server.gab]
+[language-server.gabbro]
 command = "gabbro"
 args = ["lsp"]
 
 [[language]]
 name = "gabbro"
 scope = "source.gab"
-file-types = ["sk"]
+file-types = ["gab"]
 roots = ["build.gab"]
 language-servers = ["gabbro"]
 comment-tokens = ["//"]
@@ -212,7 +238,7 @@ comment-tokens = ["//"]
 **Neovim** — in your config:
 
 ```lua
-vim.filetype.add({ extension = { sk = "gabbro" } })
+vim.filetype.add({ extension = { gab = "gabbro" } })
 vim.api.nvim_create_autocmd("FileType", {
   pattern = "gabbro",
   callback = function()
@@ -222,14 +248,18 @@ vim.api.nvim_create_autocmd("FileType", {
 })
 ```
 
-**Zed** — the `zed-gabbro/` extension declares the server (`[language_servers]` +
-the Rust glue in `zed-gabbro/src/lib.rs`, which launches `gabbro lsp` from your `PATH`).
-Install it as a dev extension; building it needs a Rust toolchain (Zed compiles
-the extension to WASM). VS Code support is a thin client wrapper (future).
+**Zed** — a Zed extension (`zed-gabbro`) is being written in its own repository; it
+declares the server and launches `gabbro lsp` from your `PATH`. It is not part of this
+repository. The tree-sitter grammar (`tree-sitter-gabbro`) is a separate repository too.
+VS Code support is a thin client wrapper (future).
 
-> Smoke-test the protocol without an editor: `python tests/lsp_smoke.py` drives a
-> full `initialize` → `didOpen` → `completion`/`hover`/`definition`/`documentSymbol`
-> exchange against the built binary and prints the results.
+> Smoke-test the protocol without an editor: `python tests/lsp_smoke.py` drives an
+> `initialize`, `didOpen`, `completion`/`hover`/`definition`/`documentSymbol` exchange
+> against the built binary, on one file and on a two-file project.
+> `python tests/lsp_all_files.py` opens every `.gab` file of the repository through the
+> server and compares with `gabbro check`, and checks that rejected programs still give an
+> error at the right line. `python tests/lsp_perf.py <gabbro.exe> <file.gab>` times repeated
+> edits.
 
 ## Diagnostics in the terminal
 
