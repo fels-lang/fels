@@ -2043,10 +2043,7 @@ const Req = struct {
         for (order.items) |i| {
             const f = r.files.items[i];
             if (!todo.contains(f.key)) continue;
-            var an = pipeline.analyzeFile(r.gpa, f.path, .{
-                .reader = r.server.reader(),
-                .project_root = r.root,
-            }) catch continue;
+            var an = pipeline.analyzeFile(r.gpa, f.path, r.server.analysisOptions(r.root)) catch continue;
             defer an.deinit();
             r.analyses += 1;
             r.indexFrom(&an, &todo);
