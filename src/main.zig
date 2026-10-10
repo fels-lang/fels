@@ -586,6 +586,10 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
         } else if (std.mem.eql(u8, arg, "--prefix") and i + 1 < rest.len) {
             i += 1;
             opts.prefix = rest[i];
+        } else if (std.mem.eql(u8, arg, "--offline")) {
+            opts.offline = true;
+        } else if (std.mem.eql(u8, arg, "--frozen")) {
+            opts.frozen = true;
         } else if (arg.len > 2 and std.mem.startsWith(u8, arg, "-D")) {
             // A build option: `-Dname` (flag) or `-Dname=value`, read by `b.option*`.
             options.append(allocator, arg[2..]) catch return 1;
@@ -762,6 +766,9 @@ fn printUsage() void {
         \\  fels build <name>        build a named artifact or run a named step
         \\  fels build --list        list the project's artifacts and steps
         \\  fels build --release     build at release optimization
+        \\  fels build install       copy the installed artifacts to dist/ (--prefix <dir>)
+        \\  fels build --offline     use only fels.lock and the package cache, never git
+        \\  fels build --frozen      stop when fels.lock would change (for CI)
         \\
         \\options:
         \\  -o <path>              output file (default: derived from the source name)

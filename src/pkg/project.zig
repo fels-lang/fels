@@ -16,6 +16,12 @@ pub const Options = struct {
     update: []const []const u8 = &.{},
     update_all: bool = false,
     verify: bool = false,
+    /// Never run git (`--offline`).
+    offline: bool = false,
+    /// Stop when fels.lock would change (`--frozen`, for CI).
+    frozen: bool = false,
+    /// Leave out packages that cannot be had, and do not write fels.lock (the language server).
+    skip_missing: bool = false,
 };
 
 /// Resolve the packages of the project in `dir`; null when it has no fels.pkg.
@@ -47,8 +53,14 @@ pub fn load(
         .update = opts.update,
         .update_all = opts.update_all,
         .verify = opts.verify,
+        .offline = opts.offline or opts.skip_missing,
+        .skip_missing = opts.skip_missing,
     });
-    if (result.lock_changed) {
+    if (result.lock_changed and opts.frozen) {
+        std.debug.print("{s}: error: fels.lock would change (fels.pkg asks for something it does not have); run `fels fetch` and commit fels.lock\n", .{lock_path});
+        return error.PackageError;
+    }
+    if (result.lock_changed and !opts.skip_missing) {
         const text = lock_mod.write(a, result.lock) catch return error.OutOfMemory;
         if (result.lock.entries.items.len == 0) {
             std.Io.Dir.cwd().deleteFile(io, lock_path) catch {};
