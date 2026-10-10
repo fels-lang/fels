@@ -564,6 +564,11 @@ pub const TypeEnv = struct {
     /// Integer-valued top-level constants by name — so a `[N]T` array size can
     /// resolve a named const (`N :: 29`) or simple arithmetic over them.
     const_ints: std.StringHashMap(u64) = undefined,
+    /// Top-level constants used in an array length whose value only the comptime VM
+    /// can compute (`N :: #run four();`, `N :: four();`): `const_ints` has no entry
+    /// for them, so the length is 0 here. The pipeline evaluates them and passes the
+    /// values to the strict pass as `const_ints` seeds (`checkTypesWithResolution`).
+    unresolved_len_consts: std.StringArrayHashMapUnmanaged(void) = .empty,
     /// Lifted-lambda link name → the free-variable names in its body (candidates
     /// for capture). Populated at registration; resolved to actual captures at
     /// each definition site (see `lambda_captures`).
@@ -624,6 +629,7 @@ pub const TypeEnv = struct {
         self.enum_lits.deinit();
         self.literal_types.deinit();
         self.const_ints.deinit();
+        self.unresolved_len_consts.deinit(allocator);
         self.generic_call_insts.deinit();
         for (self.generic_instantiations.items) |*gi| {
             gi.expr_types.deinit();
@@ -1289,12 +1295,13 @@ pub fn checkTypesWithContext(
     source: []const u8,
     file: []const u8,
 ) SemanticError!TypeEnv {
-    return checkTypesWithResolution(allocator, module, symbols, source, file, null, null, null);
+    return checkTypesWithResolution(allocator, module, symbols, source, file, null, null, null, null);
 }
 
 /// Strict type-check with an optional resolution-time `where`-predicate evaluator
 /// (the two-pass rail). The callbacks are non-null only for pass-2 of a module
-/// that has `where` clauses.
+/// that has `where` clauses. `const_seeds` holds the values of constants that are
+/// used as array lengths and that only the comptime VM could compute.
 pub fn checkTypesWithResolution(
     allocator: std.mem.Allocator,
     module: ast.Module,
@@ -1304,6 +1311,7 @@ pub fn checkTypesWithResolution(
     where_ctx: ?*anyopaque,
     where_fn: ?WhereEvalFn,
     where_type_fn: ?WhereTypeEvalFn,
+    const_seeds: ?*const std.StringHashMap(u64),
 ) SemanticError!TypeEnv {
     var checker = Checker.init(allocator, symbols.*);
     checker.source = source;
@@ -1312,6 +1320,11 @@ pub fn checkTypesWithResolution(
     checker.where_eval_fn = where_fn;
     checker.where_type_eval_fn = where_type_fn;
     defer checker.deinit();
+    // Constants used as array lengths that the comptime VM computed (`N :: #run four();`).
+    if (const_seeds) |seeds| {
+        var it = seeds.iterator();
+        while (it.next()) |entry| try checker.env.const_ints.put(entry.key_ptr.*, entry.value_ptr.*);
+    }
     // Generic struct/function instantiation appends new symbols to the table.
     // Propagate the grown table back to the caller so later stages (IR lowering)
     // can resolve the instantiated symbols. `checker.deinit` does not free the
@@ -1444,6 +1457,9 @@ const Checker = struct {
     /// The initializers of the top-level constants without a type (`N :: 300;`),
     /// so a use of one is checked against its target type like the literal.
     const_values: std.AutoHashMapUnmanaged(SymbolId, ast.Expr) = .empty,
+    /// The initializers of the immutable top-level constants by name, for finding which
+    /// constant behind an array length needs the comptime VM (`noteUnresolvedLen`).
+    const_exprs: std.StringHashMapUnmanaged(ast.Expr) = .empty,
 
     const TopConst = union(enum) { pending: ast.ConstDecl, in_progress };
 
@@ -1474,6 +1490,7 @@ const Checker = struct {
         self.catch_names.deinit(self.allocator);
         self.top_consts.deinit(self.allocator);
         self.const_values.deinit(self.allocator);
+        self.const_exprs.deinit(self.allocator);
     }
 
     // Diagnostics
@@ -1935,9 +1952,9 @@ const Checker = struct {
                 var changed = false;
                 for (module.items) |item| switch (item) {
                     .const_decl => |decl| {
+                        if (pass == 0 and !decl.is_mutable) try self.const_exprs.put(self.allocator, decl.name, decl.value);
                         if (self.env.const_ints.contains(decl.name)) continue;
-                        const v = resolveArrayLen(decl.value, self.env.const_ints);
-                        if (v != 0 or decl.value.kind == .int) {
+                        if (tryResolveArrayLen(decl.value, self.env.const_ints)) |v| {
                             self.env.const_ints.put(decl.name, v) catch {};
                             changed = true;
                         }
@@ -5658,6 +5675,7 @@ const Checker = struct {
             .slice => |slice| return try self.sliceOf(try self.typeFromRef(slice.inner.*)),
             .array => |array| {
                 _ = try self.inferExpr(array.len.*);
+                try self.noteUnresolvedLen(array.len.*, 0);
                 return .{ .array = .{
                     .elem = try self.boxTy(try self.typeFromRef(array.inner.*)),
                     .len = resolveArrayLen(array.len.*, self.env.const_ints),
@@ -6368,6 +6386,29 @@ const Checker = struct {
         }
     }
 
+    /// Record in `env.unresolved_len_consts` each constant in the array length `expr`
+    /// that has no value in `const_ints` because only the comptime VM can compute it
+    /// (`N :: #run four();`). A constant computed from others (`M :: N * 2;`) is
+    /// followed to the ones it is computed from, which are then folded as usual.
+    fn noteUnresolvedLen(self: *Checker, expr: ast.Expr, depth: u8) SemanticError!void {
+        if (depth > 16) return; // a cycle (`A :: B + 1; B :: A + 1;`)
+        switch (expr.kind) {
+            .ident => |name| {
+                if (self.env.const_ints.contains(name)) return;
+                const value = self.const_exprs.get(name) orelse return;
+                if (isArrayLenShape(value))
+                    try self.noteUnresolvedLen(value, depth + 1)
+                else
+                    try self.env.unresolved_len_consts.put(self.allocator, name, {});
+            },
+            .binary => |binary| {
+                try self.noteUnresolvedLen(binary.left.*, depth + 1);
+                try self.noteUnresolvedLen(binary.right.*, depth + 1);
+            },
+            else => {},
+        }
+    }
+
     /// An integer literal or a constant's name as it was written, minus signs included.
     fn intLitText(self: *Checker, expr: ast.Expr) []const u8 {
         return switch (expr.kind) {
@@ -6965,22 +7006,40 @@ fn parseArrayLen(expr: ast.Expr) u64 {
 /// integer constant (`N :: 29`), or simple arithmetic over those (`2*W + 1`).
 /// Falls back to 0 for anything it can't fold at this stage.
 pub fn resolveArrayLen(expr: ast.Expr, const_ints: std.StringHashMap(u64)) u64 {
+    return tryResolveArrayLen(expr, const_ints) orelse 0;
+}
+
+/// `resolveArrayLen`, but null for anything it can't fold. A part it can't fold
+/// makes the whole unknown: `(#run four()) + 2` is not 2.
+fn tryResolveArrayLen(expr: ast.Expr, const_ints: std.StringHashMap(u64)) ?u64 {
     return switch (expr.kind) {
         .int => |text| @intCast(@max(parseIntLiteral(text), 0)),
-        .ident => |name| const_ints.get(name) orelse 0,
+        .ident => |name| const_ints.get(name),
         .binary => |b| blk: {
-            const l = resolveArrayLen(b.left.*, const_ints);
-            const r = resolveArrayLen(b.right.*, const_ints);
+            const l = tryResolveArrayLen(b.left.*, const_ints) orelse break :blk null;
+            const r = tryResolveArrayLen(b.right.*, const_ints) orelse break :blk null;
             break :blk switch (b.op) {
                 .add => l +% r,
                 .sub => if (l >= r) l - r else 0,
                 .mul => l *% r,
                 .div => if (r != 0) l / r else 0,
                 .rem => if (r != 0) l % r else 0,
-                else => 0,
+                else => null,
             };
         },
-        else => 0,
+        else => null,
+    };
+}
+
+/// An expression `resolveArrayLen` folds once the constants it names are known.
+fn isArrayLenShape(expr: ast.Expr) bool {
+    return switch (expr.kind) {
+        .int, .ident => true,
+        .binary => |b| switch (b.op) {
+            .add, .sub, .mul, .div, .rem => isArrayLenShape(b.left.*) and isArrayLenShape(b.right.*),
+            else => false,
+        },
+        else => false,
     };
 }
 
