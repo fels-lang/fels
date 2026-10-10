@@ -4755,3 +4755,30 @@ test "exe: an integer literal cast with `as` is computed at the cast's type" {
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_int_lit_cast_o0", 0));
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_int_lit_cast_o2", 2));
 }
+
+test "exe: a literal on the left of an operator takes the right operand's type" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `5 + big` was typed by its left operand alone, a literal, so `x := 5 + big` made `x` an `i32`.
+    const src =
+        \\sum :: fn(big: i64) -> i64 { x := 5 + big; return x; }
+        \\mix :: fn(m: u64) -> u64 { y := 0xFF & m; z := 1 | y; return z; }
+        \\#assert(sum(1i64 << 40) == 1099511627781i64);
+        \\#assert(mix(0x1F0u64) == 241u64);
+        \\main :: fn() -> i32 {
+        \\    big: i64 = 1 << 40;
+        \\    if sum(big) != 1099511627781i64 { return 1; }
+        \\    x := -1 + big;
+        \\    if x != 1099511627775i64 { return 2; }
+        \\    m: u64 = 0x7FFFFFFF00000000;
+        \\    y := 2 * m;
+        \\    if y != 0xFFFFFFFE00000000u64 { return 3; }
+        \\    if mix(0x1F0u64) != 241u64 { return 4; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_lit_left_operand_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_lit_left_operand_o2", 2));
+}

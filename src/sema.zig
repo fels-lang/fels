@@ -3395,6 +3395,9 @@ const Checker = struct {
                     try self.requireIntLitFits(binary.left.*, right);
                     try self.requireIntLitFits(binary.right.*, left);
                 }
+                // `5 + big` has the type of `big`, as `big + 5` has. Typed by its left
+                // operand alone it stayed a literal, and `x := 5 + big` made `x` an `i32`.
+                if (result == .int_lit and binary.op != .shl and binary.op != .shr and right.isInteger()) break :blk right;
                 break :blk result;
             },
             .try_expr => |try_expr| blk: {
