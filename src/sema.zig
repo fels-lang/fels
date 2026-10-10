@@ -471,6 +471,29 @@ pub const ImplMethodCall = struct {
     method_name: []const u8,
 };
 
+/// A name declared inside a function (a parameter, a local, a loop or match capture) and
+/// the type the checker gave it. Only the analysis for the language server records these
+/// (`checkTypesForAnalysis`); a build does not.
+pub const LocalBinding = struct {
+    name: []const u8,
+    file: []const u8,
+    /// `.param`, `.local_val` (`x := …`, `if x := …`), `.local_var` (`x: T = …`),
+    /// `.for_binding`, `.case_binding` (a `|x|` capture or a match name pattern),
+    /// `.try_error` (`catch e`) or `.zone`.
+    kind: SymbolKind,
+    /// What declares the name: the statement of a local (the name is at its start), the
+    /// written type of a parameter (the name is just before it), the `if`/`while`/`for`
+    /// statement, match arm or `catch` expression that holds a capture.
+    decl: Span,
+    /// The end of the region the name is visible in.
+    scope_end: usize,
+    ty: Ty,
+    /// The type as written, for a parameter or `x: T = …`.
+    written: ?ast.TypeRef = null,
+    /// The value of `x := value`.
+    value: ?ast.Expr = null,
+};
+
 pub const TypeEnv = struct {
     symbol_types: std.AutoHashMap(SymbolId, Ty),
     layouts: std.AutoHashMap(SymbolId, TypeLayout),
@@ -528,6 +551,9 @@ pub const TypeEnv = struct {
     /// Resolved at the definition site; read by the lambda body check and by IR.
     lambda_captures: std.StringHashMap([]const Capture) = undefined,
     diagnostics: std.ArrayList(Diagnostic) = .empty,
+    /// The names declared inside function bodies, in the order they were checked. Empty
+    /// unless the checker ran for the language server.
+    local_bindings: std.ArrayList(LocalBinding) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) TypeEnv {
         return .{
@@ -591,6 +617,7 @@ pub const TypeEnv = struct {
         while (lc.next()) |v| allocator.free(v.*);
         self.lambda_captures.deinit();
         self.diagnostics.deinit(allocator);
+        self.local_bindings.deinit(allocator);
     }
 
     pub fn set(self: *TypeEnv, id: SymbolId, ty: Ty) !void {
@@ -1194,10 +1221,34 @@ pub fn checkTypesTolerant(
     source: []const u8,
     file: []const u8,
 ) error{OutOfMemory}!TypeEnv {
+    return checkTypesTolerantImpl(allocator, module, symbols, source, file, false);
+}
+
+/// `checkTypesTolerant` for the language server: it also records the names declared
+/// inside function bodies and their types (`TypeEnv.local_bindings`).
+pub fn checkTypesForAnalysis(
+    allocator: std.mem.Allocator,
+    module: ast.Module,
+    symbols: *SymbolTable,
+    source: []const u8,
+    file: []const u8,
+) error{OutOfMemory}!TypeEnv {
+    return checkTypesTolerantImpl(allocator, module, symbols, source, file, true);
+}
+
+fn checkTypesTolerantImpl(
+    allocator: std.mem.Allocator,
+    module: ast.Module,
+    symbols: *SymbolTable,
+    source: []const u8,
+    file: []const u8,
+    record_locals: bool,
+) error{OutOfMemory}!TypeEnv {
     var checker = Checker.init(allocator, symbols.*);
     checker.source = source;
     checker.file = file;
     checker.tolerant = true;
+    checker.record_locals = record_locals;
     defer checker.deinit();
     defer symbols.* = checker.symbols;
     checker.checkModule(module) catch |err| switch (err) {
@@ -1348,6 +1399,11 @@ const Checker = struct {
     /// The error names bound by the `catch` handlers being checked (innermost last). An error is
     /// compared with a variant only through one of these.
     catch_names: std.ArrayList([]const u8) = .empty,
+    /// Record the names declared in function bodies (`TypeEnv.local_bindings`), for the
+    /// language server.
+    record_locals: bool = false,
+    /// The end of the block being checked: where a local declared in it stops being visible.
+    block_end: usize = 0,
 
     fn init(allocator: std.mem.Allocator, symbols: SymbolTable) Checker {
         return .{
@@ -1517,6 +1573,15 @@ const Checker = struct {
     fn declareLocal(self: *Checker, name: []const u8, ty: Ty) !void {
         const top = &self.scope_stack.items[self.scope_stack.items.len - 1];
         try top.put(name, ty);
+    }
+
+    /// Record a declared name for the language server (see `LocalBinding`). Not inside a
+    /// generic instantiation: its types belong to one binding of the type parameters.
+    fn noteLocal(self: *Checker, binding: LocalBinding) void {
+        if (!self.record_locals or self.current_type_binding.len > 0) return;
+        var b = binding;
+        b.file = self.file;
+        self.env.local_bindings.append(self.allocator, b) catch {};
     }
 
     fn lookupLocal(self: Checker, name: []const u8) ?Ty {
@@ -2309,6 +2374,15 @@ const Checker = struct {
             } else {
                 try self.declareLocal(param.name, param_ty);
             }
+            self.noteLocal(.{
+                .name = param.name,
+                .file = decl.file_name,
+                .kind = .param,
+                .decl = param.span,
+                .scope_end = if (decl.body) |body| body.span.end else decl.span.end,
+                .ty = if (param_ty == .borrow) param_ty.borrow.* else param_ty,
+                .written = param.ty,
+            });
         }
 
         // A lifted lambda sees its captured variables as locals (by value), so its
@@ -2367,6 +2441,9 @@ const Checker = struct {
     fn checkBlock(self: *Checker, block: ast.Block) SemanticError!void {
         try self.pushScope();
         defer self.popScope();
+        const saved_end = self.block_end;
+        self.block_end = block.span.end;
+        defer self.block_end = saved_end;
         for (block.statements) |stmt| try self.checkStmt(stmt);
     }
 
@@ -2375,12 +2452,14 @@ const Checker = struct {
             .local_infer => |local| {
                 const local_ty = try self.inferExpr(local.value);
                 try self.declareLocal(local.name, local_ty);
+                self.noteLocal(.{ .name = local.name, .file = "", .kind = .local_val, .decl = local.span, .scope_end = self.block_end, .ty = local_ty, .value = local.value });
                 try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
                 if (self.valueIsCapturingClosure(local.value)) try self.capturing_locals.put(local.name, {});
             },
             .local_typed => |local| {
                 const declared_ty = try self.typeFromRef(local.ty);
                 try self.rejectBorrowOutsideParam(declared_ty, local.ty.span());
+                self.noteLocal(.{ .name = local.name, .file = "", .kind = .local_var, .decl = local.span, .scope_end = self.block_end, .ty = declared_ty, .written = local.ty });
                 if (try self.coerceEnumLiteral(local.value, declared_ty)) {
                     try self.declareLocal(local.name, declared_ty);
                     return;
@@ -2506,10 +2585,12 @@ const Checker = struct {
                     try self.pushScope();
                     defer self.popScope();
                     try self.declareLocal(binding.name, inner_ty);
+                    self.noteLocal(.{ .name = binding.name, .file = "", .kind = .local_val, .decl = iff.span, .scope_end = iff.then_block.span.end, .ty = inner_ty });
                     const owner = self.exprZoneOwner(binding.value);
                     try self.setLocalZoneOwner(binding.name, owner);
                     if (iff.payload_binding) |payload_name| {
                         try self.declareLocal(payload_name, inner_ty);
+                        self.noteLocal(.{ .name = payload_name, .file = "", .kind = .case_binding, .decl = iff.span, .scope_end = iff.then_block.span.end, .ty = inner_ty });
                         try self.setLocalZoneOwner(payload_name, owner);
                     }
                     try self.checkBlock(iff.then_block);
@@ -2527,6 +2608,7 @@ const Checker = struct {
                     defer self.popScope();
                     if (iff.payload_binding) |payload_name| {
                         try self.declareLocal(payload_name, payload_ty orelse .unknown);
+                        self.noteLocal(.{ .name = payload_name, .file = "", .kind = .case_binding, .decl = iff.span, .scope_end = iff.then_block.span.end, .ty = payload_ty orelse .unknown });
                         try self.setLocalZoneOwner(payload_name, self.exprZoneOwner(iff.condition));
                     }
                     try self.checkBlock(iff.then_block);
@@ -2553,6 +2635,7 @@ const Checker = struct {
                 defer self.popScope();
                 if (while_stmt.payload_binding) |payload_name| {
                     try self.declareLocal(payload_name, payload_ty orelse .unknown);
+                    self.noteLocal(.{ .name = payload_name, .file = "", .kind = .case_binding, .decl = while_stmt.span, .scope_end = while_stmt.body.span.end, .ty = payload_ty orelse .unknown });
                     try self.setLocalZoneOwner(payload_name, self.exprZoneOwner(while_stmt.condition));
                 }
                 try self.checkBlock(while_stmt.body);
@@ -2569,6 +2652,7 @@ const Checker = struct {
                 try self.pushScope();
                 defer self.popScope();
                 try self.declareLocal(for_stmt.binding, start_ty);
+                self.noteLocal(.{ .name = for_stmt.binding, .file = "", .kind = .for_binding, .decl = for_stmt.span, .scope_end = for_stmt.body.span.end, .ty = start_ty });
                 self.loop_depth += 1;
                 defer self.loop_depth -= 1;
                 try self.checkBlock(for_stmt.body);
@@ -2599,9 +2683,14 @@ const Checker = struct {
                 };
                 try self.pushScope();
                 defer self.popScope();
-                try self.declareLocal(for_stmt.binding, if (for_stmt.by_ref) try self.ptrTo(elem_ty) else elem_ty);
+                const binding_ty = if (for_stmt.by_ref) try self.ptrTo(elem_ty) else elem_ty;
+                try self.declareLocal(for_stmt.binding, binding_ty);
+                self.noteLocal(.{ .name = for_stmt.binding, .file = "", .kind = .for_binding, .decl = for_stmt.span, .scope_end = for_stmt.body.span.end, .ty = binding_ty });
                 if (for_stmt.by_ref) try self.setLocalZoneOwner(for_stmt.binding, self.exprZoneOwner(for_stmt.iter));
-                if (for_stmt.index_binding) |name| try self.declareLocal(name, .usize);
+                if (for_stmt.index_binding) |name| {
+                    try self.declareLocal(name, .usize);
+                    self.noteLocal(.{ .name = name, .file = "", .kind = .for_binding, .decl = for_stmt.span, .scope_end = for_stmt.body.span.end, .ty = .usize });
+                }
                 self.loop_depth += 1;
                 defer self.loop_depth -= 1;
                 try self.checkBlock(for_stmt.body);
@@ -2636,6 +2725,7 @@ const Checker = struct {
                 // (alloc/alloc_bytes/dupe/new/…) resolves by ordinary UFCS; the
                 // escape checker still keys ownership off the zone name.
                 try self.declareLocal(zb.name, self.arenaTy());
+                self.noteLocal(.{ .name = zb.name, .file = "", .kind = .zone, .decl = zb.span, .scope_end = zb.body.span.end, .ty = self.arenaTy() });
                 try self.active_zones.append(self.allocator, .{
                     .name = zb.name,
                     .scope_depth = self.scope_stack.items.len - 1,
@@ -3023,6 +3113,7 @@ const Checker = struct {
                 try self.pushScope();
                 defer self.popScope();
                 try self.declareLocal(catch_expr.err_name, fallible.err.*);
+                self.noteLocal(.{ .name = catch_expr.err_name, .file = "", .kind = .try_error, .decl = expr.span, .scope_end = catch_expr.handler.span.end, .ty = fallible.err.* });
                 try self.catch_names.append(self.allocator, catch_expr.err_name);
                 defer _ = self.catch_names.pop();
                 try self.checkBlock(catch_expr.handler);
@@ -3153,7 +3244,10 @@ const Checker = struct {
             const bind = try self.checkMatchPattern(cls, subject_ty, arm, covered, &catchall);
             try self.pushScope();
             defer self.popScope();
-            if (bind) |b| try self.declareLocal(b.name, b.ty);
+            if (bind) |b| {
+                try self.declareLocal(b.name, b.ty);
+                self.noteLocal(.{ .name = b.name, .file = "", .kind = .case_binding, .decl = arm.span, .scope_end = arm.span.end, .ty = b.ty });
+            }
             try self.checkMatchGuard(arm.guard);
 
             const arm_ty: Ty = if (result_ty) |rt| blk: {
@@ -4174,7 +4268,10 @@ const Checker = struct {
             const bind = try self.checkMatchPattern(cls, subject_ty, arm, covered, &catchall);
             try self.pushScope();
             defer self.popScope();
-            if (bind) |b| try self.declareLocal(b.name, b.ty);
+            if (bind) |b| {
+                try self.declareLocal(b.name, b.ty);
+                self.noteLocal(.{ .name = b.name, .file = "", .kind = .case_binding, .decl = arm.span, .scope_end = arm.body.span.end, .ty = b.ty });
+            }
             try self.checkMatchGuard(arm.guard);
             try self.checkBlock(arm.body);
         }
