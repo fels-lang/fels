@@ -100,6 +100,8 @@ pub const LlvmBackend = struct {
         // of returning errors.
         if (self.cg.lowering_failed) return error.LoweringFailed;
 
+        if (self.cg.library_object) internalizeForLibrary(&self.cg);
+
         try emit.verify(&self.cg);
     }
 
@@ -229,6 +231,28 @@ fn appendExportName(cg: *ctx_mod.ModuleCg, buf: *std.ArrayList(u8), explicit: []
     const name = if (explicit.len > 0) explicit else own;
     try buf.appendSlice(cg.allocator, name);
     try buf.append(cg.allocator, 0);
+}
+
+/// For a static library's object: every definition except the `#export`ed ones becomes
+/// internal, and the exported ones lose `dllexport` (a program that links the library should
+/// not export them from its own image).
+fn internalizeForLibrary(cg: *ctx_mod.ModuleCg) void {
+    var f = llvm_c.LLVMGetFirstFunction(cg.mod);
+    while (f) |fv| : (f = llvm_c.LLVMGetNextFunction(fv)) {
+        if (llvm_c.LLVMIsDeclaration(fv) == 0) internalizeOne(fv);
+    }
+    var g = llvm_c.LLVMGetFirstGlobal(cg.mod);
+    while (g) |gv| : (g = llvm_c.LLVMGetNextGlobal(gv)) {
+        if (llvm_c.LLVMIsDeclaration(gv) == 0) internalizeOne(gv);
+    }
+}
+
+fn internalizeOne(v: llvm_c.LLVMValueRef) void {
+    if (llvm_c.LLVMGetDLLStorageClass(v) == llvm_c.LLVMDLLExportStorageClass) {
+        llvm_c.LLVMSetDLLStorageClass(v, llvm_c.LLVMDefaultStorageClass);
+    } else {
+        llvm_c.LLVMSetLinkage(v, llvm_c.LLVMInternalLinkage);
+    }
 }
 
 fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {

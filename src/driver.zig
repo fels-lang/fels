@@ -131,6 +131,10 @@ pub const LlvmCompileOptions = struct {
     /// Emit no platform entry-point wrapper (`mainCRTStartup`) or `_fltused` — a
     /// freestanding library object to embed in another binary (gabld into gabbro.exe).
     no_entry: bool = false,
+    /// The object of a static library (`b.static` in build.gab): no entry point, and every
+    /// symbol except the `#export`ed ones is internal, so the runtime it carries does not
+    /// clash with the program's own.
+    library_object: bool = false,
     /// Link dynamically against the system libc (the `linux-gnu` ABI). When false
     /// (default), Linux output is a static, freestanding, no-libc ELF.
     link_libc: bool = false,
@@ -323,7 +327,8 @@ fn emitLlvmFromFrontend(
     defer be.deinit();
 
     be.setTarget(opts.target_os);
-    be.cg.no_entry = opts.no_entry;
+    be.cg.no_entry = opts.no_entry or opts.library_object;
+    be.cg.library_object = opts.library_object;
     be.setOptLevel(opts.opt_level);
     if (opts.progress) |p| p(opts.progress_ctx, .codegen);
     const t_codegen = nowNs();

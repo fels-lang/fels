@@ -94,6 +94,9 @@ pub const ModuleCg = struct {
     /// `--no-entry`: emit no platform entry-point wrapper (`mainCRTStartup`). For
     /// compiling a library object to embed in another binary (e.g. gabld into gabbro).
     no_entry: bool = false,
+    /// The object of a static library: only `#export`ed symbols stay visible, so the
+    /// runtime it carries does not clash with the program that links it.
+    library_object: bool = false,
 
     /// Set when an internal lowering invariant is violated (e.g. a value's
     /// actual LLVM shape doesn't match what an instruction lowering assumed —
@@ -129,6 +132,8 @@ pub const ModuleCg = struct {
     /// normally supplies it isn't linked. Linux needs nothing here. Call once the
     /// target OS is set, before emission.
     pub fn applyTargetStubs(self: *ModuleCg) void {
+        // A static library's object calls the `__chkstk` of the program that links it.
+        if (self.library_object) return;
         if (self.target_os == .windows and builtin.target.cpu.arch == .x86_64)
             llvm.LLVMAppendModuleInlineAsm(self.mod, chkstk_x64_asm.ptr, chkstk_x64_asm.len);
     }
