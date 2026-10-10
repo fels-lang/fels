@@ -70,6 +70,9 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- **`#packed(N)` was accepted and ignored.** It compiled as plain `#packed`, so a struct meant
+  to match C's `#pragma pack(2)` came out a different size with no message. `#packed` takes no
+  argument; `#packed(N)` is an error that says there is no pack-to-N.
 - **`defer` did not run when `?` propagated an error.** `?` returned from the function in the
   code generator, past the cleanups: after `defer close(file); n := file.read(buf)?;` a failing
   `read` left `file` open, a `defer.err` was skipped, and the exit of an enclosing `zone` was too.

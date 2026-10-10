@@ -545,6 +545,24 @@ test "diagnostics: #align must be a power-of-two integer literal" {
     ok.deinit(arena.allocator());
 }
 
+test "diagnostics: #packed takes no argument" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `#packed(2)` used to compile as plain `#packed`: a struct that C packs to 2 bytes came out
+    // a different size, with no message. There is no pack-to-N, so it is an error.
+    const bad = [_][]const u8{
+        "#packed(2)\nS :: struct { a: u8, b: u32 }",
+        "#packed(1)\nS :: struct { a: u8, b: u32 }",
+        // a generic struct is checked when it is instantiated
+        "#packed(4)\nBox :: struct($T: type) { a: u8, b: T }\nmain :: fn() -> i32 { x: Box(u32) = .{ 1, 2 }; return 0; }",
+    };
+    for (bad) |src| {
+        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_packed.gab", src));
+    }
+    var ok = try gabbro.compile(arena.allocator(), "ok_packed.gab", "#packed\nS :: struct { a: u8, b: u32 }");
+    ok.deinit(arena.allocator());
+}
+
 test "diagnostics: the address of a #packed struct's field is rejected" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

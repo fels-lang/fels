@@ -1348,7 +1348,15 @@ const Checker = struct {
     /// The N of `#align(N)` on a type declaration, or 0 when it has none. N must be
     /// an integer literal that is a power of two — anything else is rejected here
     /// rather than silently dropped, since the layout it asks for would not exist.
+    /// `#packed(N)` is rejected for the same reason: C's `#pragma pack(N)` for N > 1 asks for
+    /// a layout that only removes padding down to N, and `#packed` has one meaning (none at all).
     fn alignAttrValue(self: *Checker, decl: ast.TypeDecl) SemanticError!u32 {
+        for (decl.attrs) |attr| {
+            if (std.mem.eql(u8, attr.name, "packed") and attr.args.len != 0) {
+                self.emitError(attr.span, "`#packed` takes no argument: it removes all padding. Packing to a width, as C's `#pragma pack(N)` does for N > 1, is not supported", .{});
+                return error.SemanticFailed;
+            }
+        }
         for (decl.attrs) |attr| {
             if (!std.mem.eql(u8, attr.name, "align")) continue;
             const n: i128 = if (attr.args.len == 1) switch (attr.args[0].kind) {
