@@ -25,6 +25,7 @@ const BuildOp = instructions.BuildOp;
 pub const BuildError = error{
     CompileFailed,
     ScriptError,
+    InstallFailed,
     DependencyCycle,
     NoBuildScript,
     NoBuildFn,
@@ -65,6 +66,17 @@ pub const Artifact = struct {
     link_libc: bool = false,
     /// Library artifacts of this build to link (`link_artifact`), built before this one.
     link_artifacts: std.ArrayList(usize) = .empty,
+    /// The files the build copied next to the output (runtime files, DLLs), which
+    /// `gabbro build install` copies along.
+    copied: std.ArrayList([]const u8) = .empty,
+};
+
+/// A file or folder `gabbro build install` copies (`b.install_file` / `b.install_dir`).
+pub const InstallItem = struct {
+    src: []const u8,
+    /// Relative to the install prefix.
+    dest: []const u8,
+    is_dir: bool,
 };
 
 const BuildState = enum { unbuilt, building, built };
@@ -117,6 +129,9 @@ pub const BuildPlan = struct {
     errors: std.ArrayList([]const u8) = .empty,
     /// Per artifact, during execution: so each is built once and after what it links.
     state: []BuildState = &.{},
+    /// Where `gabbro build install` copies to (`b.install_prefix`), relative to build.gab.
+    install_prefix: ?[]const u8 = null,
+    install_items: std.ArrayList(InstallItem) = .empty,
     oom: bool = false,
 
     fn init(gpa: std.mem.Allocator) BuildPlan {
@@ -407,6 +422,20 @@ fn hostCall(ctx: *anyopaque, op_raw: u32, args: []const Value) Value {
             if (id < plan.artifacts.items.len) plan.artifacts.items[id].link_libc = true;
             return .void;
         },
+        .install_prefix => {
+            plan.install_prefix = plan.dupe(argStr(args, 0));
+            return .void;
+        },
+        .install_file, .install_dir => {
+            plan.install_items.append(plan.a(), .{
+                .src = plan.dupe(argStr(args, 0)),
+                .dest = plan.dupe(argStr(args, 1)),
+                .is_dir = op == .install_dir,
+            }) catch {
+                plan.oom = true;
+            };
+            return .void;
+        },
         .link_artifact => {
             const id: usize = @intCast(argInt(args, 0));
             const lib: usize = @intCast(argInt(args, 1));
@@ -517,6 +546,8 @@ pub const RunOptions = struct {
     run_args: []const []const u8 = &.{},
     /// `-Dname` / `-Dname=value` build options, exposed to `b.option*` in build.gab.
     options: []const []const u8 = &.{},
+    /// `--prefix <dir>`: where `gabbro build install` copies to, over `b.install_prefix`.
+    prefix: ?[]const u8 = null,
 };
 
 /// Run `build_path` (a build.gab) and execute the resulting plan.
@@ -586,6 +617,9 @@ fn executePlan(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: [
     var target_idx: ?usize = null;
 
     if (opts.target) |name| {
+        // `install` is a built-in step, unless the script names a step or artifact so.
+        if (std.mem.eql(u8, name, "install") and !hasTarget(plan, name))
+            return runInstall(gpa, io, plan, base_dir, opts);
         // A step name?
         for (plan.steps.items) |st| {
             if (!std.mem.eql(u8, st.name, name)) continue;
@@ -787,15 +821,137 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
     copy_srcs.appendSlice(a, auto_dlls.items) catch {};
     for (copy_srcs.items) |csrc| {
         const dst = joinPath(a, out_dir, std.fs.path.basename(csrc)) catch continue;
-        if (std.mem.eql(u8, csrc, dst)) continue; // already in place
+        if (std.mem.eql(u8, csrc, dst)) { // already in place
+            plan.artifacts.items[idx].copied.append(a, dst) catch {};
+            continue;
+        }
         const data = readSource(gpa, io, csrc) orelse {
             std.debug.print("gabbro build: runtime file not found: {s}\n", .{csrc});
             continue;
         };
         defer gpa.free(data);
         std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dst, .data = data }) catch continue;
+        plan.artifacts.items[idx].copied.append(a, dst) catch {};
         if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{dst});
     }
+}
+
+/// Whether the script declares a step or an artifact called `name`.
+fn hasTarget(plan: *BuildPlan, name: []const u8) bool {
+    for (plan.steps.items) |st| if (std.mem.eql(u8, st.name, name)) return true;
+    for (plan.artifacts.items) |art| if (std.mem.eql(u8, art.name, name)) return true;
+    return false;
+}
+
+/// `gabbro build install`: build every artifact marked `install()` and copy it into the
+/// prefix (programs and DLLs to `bin/`, static and import libraries and objects to `lib/`),
+/// with the files the build copied next to it, then the `install_file`/`install_dir` items.
+fn runInstall(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, opts: RunOptions) BuildError!void {
+    const a = plan.a();
+    var any = plan.install_items.items.len != 0;
+    for (plan.artifacts.items) |art| any = any or art.install;
+    if (!any) {
+        std.debug.print("gabbro build: nothing to install; mark an artifact with install(), or use b.install_file / b.install_dir\n", .{});
+        return error.UnknownTarget;
+    }
+
+    const prefix_rel = opts.prefix orelse plan.install_prefix orelse "dist";
+    const prefix = if (std.fs.path.isAbsolute(prefix_rel)) prefix_rel else joinPath(a, base_dir, prefix_rel) catch return error.OutOfMemory;
+    const bin_dir = joinPath(a, prefix, "bin") catch return error.OutOfMemory;
+    const lib_dir = joinPath(a, prefix, "lib") catch return error.OutOfMemory;
+
+    var count: usize = 0;
+    for (plan.artifacts.items, 0..) |art, i| {
+        if (!art.install) continue;
+        try buildArtifact(gpa, io, plan, base_dir, i, opts);
+        const out = try resolveOutput(plan, base_dir, art);
+        const dest_dir = switch (art.kind) {
+            .executable, .shared_library => bin_dir,
+            .static_library, .object => lib_dir,
+        };
+        try installFile(gpa, io, out, dest_dir, opts);
+        count += 1;
+        // A DLL's import library, for programs that link against it.
+        if (art.kind == .shared_library) {
+            const dir = std.fs.path.dirname(out) orelse ".";
+            const implib = std.fmt.allocPrint(a, "{s}.lib", .{std.fs.path.stem(out)}) catch return error.OutOfMemory;
+            const implib_path = joinPath(a, dir, implib) catch return error.OutOfMemory;
+            if (fileExists(io, implib_path)) {
+                try installFile(gpa, io, implib_path, lib_dir, opts);
+                count += 1;
+            }
+        }
+        for (plan.artifacts.items[i].copied.items) |c| {
+            try installFile(gpa, io, c, bin_dir, opts);
+            count += 1;
+        }
+    }
+
+    for (plan.install_items.items) |item| {
+        const src = joinPath(a, base_dir, item.src) catch return error.OutOfMemory;
+        const dest = joinPath(a, prefix, item.dest) catch return error.OutOfMemory;
+        if (item.is_dir) {
+            count += try copyDir(gpa, io, src, dest, opts);
+        } else {
+            try copyFile(gpa, io, src, dest, opts);
+            count += 1;
+        }
+    }
+    if (!opts.quiet) std.debug.print("installed {d} file(s) to {s}\n", .{ count, prefix });
+}
+
+fn fileExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
+}
+
+/// Copy `src` into the folder `dest_dir`, keeping its name.
+fn installFile(gpa: std.mem.Allocator, io: std.Io, src: []const u8, dest_dir: []const u8, opts: RunOptions) BuildError!void {
+    const dest = std.fs.path.join(gpa, &.{ dest_dir, std.fs.path.basename(src) }) catch return error.OutOfMemory;
+    defer gpa.free(dest);
+    try copyFile(gpa, io, src, dest, opts);
+}
+
+/// Copy the file `src` to the path `dest`, creating the folders on the way.
+fn copyFile(gpa: std.mem.Allocator, io: std.Io, src: []const u8, dest: []const u8, opts: RunOptions) BuildError!void {
+    const data = readSource(gpa, io, src) orelse {
+        std.debug.print("gabbro build: cannot read {s}\n", .{src});
+        return error.InstallFailed;
+    };
+    defer gpa.free(data);
+    if (std.fs.path.dirname(dest)) |d| std.Io.Dir.cwd().createDirPath(io, d) catch {};
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dest, .data = data }) catch {
+        std.debug.print("gabbro build: cannot write {s}\n", .{dest});
+        return error.InstallFailed;
+    };
+    if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{dest});
+}
+
+/// Copy the folder `src` to `dest` with everything in it. Returns the number of files.
+fn copyDir(gpa: std.mem.Allocator, io: std.Io, src: []const u8, dest: []const u8, opts: RunOptions) BuildError!usize {
+    var dir = std.Io.Dir.cwd().openDir(io, src, .{ .iterate = true }) catch {
+        std.debug.print("gabbro build: cannot open folder {s}\n", .{src});
+        return error.InstallFailed;
+    };
+    defer dir.close(io);
+    std.Io.Dir.cwd().createDirPath(io, dest) catch {};
+    var count: usize = 0;
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        const from = std.fs.path.join(gpa, &.{ src, entry.name }) catch return error.OutOfMemory;
+        defer gpa.free(from);
+        const to = std.fs.path.join(gpa, &.{ dest, entry.name }) catch return error.OutOfMemory;
+        defer gpa.free(to);
+        switch (entry.kind) {
+            .directory => count += try copyDir(gpa, io, from, to, opts),
+            .file => {
+                try copyFile(gpa, io, from, to, opts);
+                count += 1;
+            },
+            else => {},
+        }
+    }
+    return count;
 }
 
 /// Pack the compiled object into the static library `out_path`.

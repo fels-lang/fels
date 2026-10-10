@@ -138,6 +138,9 @@ pub const BuildOp = enum(u32) {
     option_string, // (name, default, help) -> string        a declared `-Dname=<text>` option
     option_choice, // (name, "a|b|c", default, help) -> string  one of a fixed set of words
     link_artifact, // (id, lib_id)                    link a library artifact of this build, built first
+    install_prefix, // (dir)                           where `gabbro build install` copies to
+    install_file,   // (src, dest)                     a file `gabbro build install` copies
+    install_dir,    // (src, dest)                     a folder `gabbro build install` copies
 
     /// The intrinsic `std.build` calls for this op is `__build_` followed by the tag name.
     pub const prefix = "__build_";

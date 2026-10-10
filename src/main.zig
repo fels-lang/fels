@@ -574,6 +574,9 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, rest: []const []const u
         } else if (std.mem.eql(u8, arg, "--lib-path") and i + 1 < rest.len) {
             i += 1;
             lib_paths.append(allocator, rest[i]) catch return 1;
+        } else if (std.mem.eql(u8, arg, "--prefix") and i + 1 < rest.len) {
+            i += 1;
+            opts.prefix = rest[i];
         } else if (arg.len > 2 and std.mem.startsWith(u8, arg, "-D")) {
             // A build option: `-Dname` (flag) or `-Dname=value`, read by `b.option*`.
             options.append(allocator, arg[2..]) catch return 1;
