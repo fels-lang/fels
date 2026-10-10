@@ -1,142 +1,136 @@
-# Package management (design)
+# Packages
 
-Not built yet. The build system (doc 10) already runs `build.fels` in the comptime
-VM, hands each build hook a capability set, and models a content-hashed build graph.
-This is the other half — declaring, fetching, resolving, caching, and granting
-authority to dependencies.
+A Fels project lists the packages it uses in `fels.pkg`, next to `build.fels`. `fels build`
+fetches what is missing, and the program imports a package by its name:
 
-Content-addressed and decentralized, the Zig fundamentals: a dependency is a URL
-(git or tarball) plus a content hash, fetched once into a shared global cache,
-reproducible offline. Two things differ here. The manifest is `build.fels`, not a
-side-car data file — read by running it in the VM under a deny-all capability set
-that only records `b.dependency(...)` calls. And a dependency's build code runs with
-no ambient authority. It gets exactly the capabilities the root build grants, and
-the VM enforces that.
+```fels
+// fels.pkg
+#package mygame "0.1.0";
+#license "MIT";
 
-## Capabilities are the package boundary
+#use raylib from "github.com/raysan5/raylib" version "^5.0"
+    may ffi("opengl32", "gdi32", "winmm");
+#use mathlib from "../mathlib";
+```
 
-Every dependency's `build.fels` receives a `*Caps` it can't forge or widen (doc 10
-§5.1). You see the contract at add time:
+```fels
+// src/main.fels
+#import raylib.core;
+#import mathlib;
+```
+
+What sets Fels apart is in the `may` part. A package's compile-time code (its `#run`, its
+`#compiler` hooks) can only reach the host when `fels.pkg` grants it, and the compiler enforces
+that. A new version of a package that wants more stops the update until you grant it.
+
+## fels.pkg
+
+`fels.pkg` is a list of `#` directives, each ended by `;`. Comments are `//`.
+
+| Directive | Meaning |
+| --- | --- |
+| `#package name "version";` | the package's name and version |
+| `#license "MIT";` · `#description "...";` | shown to the people who use it |
+| `#use name from "source" [version "range"] [may caps];` | a package this one uses |
+| `#needs caps;` | what this package's compile-time code needs (for packages others use) |
+| `#root "src";` | where its imports start (default: `src/` if there is one, else the folder) |
+
+**The source** is a path (it starts with `.`, `/` or a drive like `C:\`) or a git location:
+`github.com/user/repo`, a full `https://` URL, `git@...` or `file:///...`.
+
+**The version** of a git package is a range over its version tags (`v1.2.3` or `1.2.3`):
+
+| Range | Matches |
+| --- | --- |
+| `^1.4` or `1.4` | `1.4.0` up to, not including, `2.0.0` |
+| `^0.3` | `0.3.0` up to `0.4.0` (below 1.0 the minor version is the breaking one) |
+| `~1.4` | `1.4.x` |
+| `=1.4.2` | only `1.4.2` |
+| `*` or no version | the newest version |
+
+Pre-releases (`2.0.0-rc.1`) only match a range that names one. A version that is not a range,
+such as `"main"` or a full commit hash, names a branch or a commit. A repository without version
+tags and without a version in `fels.pkg` is used at its default branch.
+
+## Capabilities
+
+The one capability Fels has today is `ffi`: compile-time code may call into host libraries. With
+library names (`ffi("user32")`), only into those; without (`ffi`), into any.
+
+- A package says what it needs: `#needs ffi("user32");` in its own `fels.pkg`.
+- You grant it on the `#use` line: `may ffi("user32")`.
+- When a package needs something its `#use` line does not grant, the build stops and says
+  which line to change:
+
+  ```text
+  fels.pkg:4:1: error: `mathlib` 1.2.0 needs ffi("user32") at compile time, which is not granted to it
+    To allow it, add `may ffi("user32")` to this #use line.
+  ```
+
+- A package can only pass on what it holds. If your project grants `helpers` the library
+  `gdi32`, and `helpers` grants `ffi("user32", "gdi32")` to a package it uses, that package gets
+  `gdi32` only.
+- The VM enforces the grant: a `#run` in a package's folder gets that package's capabilities, a
+  `#run` anywhere else gets none (only `build.fels` has host access). A package that calls a
+  library it did not declare is stopped when the call happens.
+
+## fels.lock
+
+`fels.lock` records the exact commit and a content hash of every git package:
+
+```fels
+#lock raylib from "github.com/raysan5/raylib" version "5.5.0"
+    commit "c1ab645ca298a2801097931d1079b10ff7eb9df8" hash "sha256-9f2c...";
+```
+
+The commands write it; nobody writes a hash by hand. A build takes the locked commit as long as
+`fels.pkg`'s range still allows it, so a new tag upstream does not change your build until you
+run `fels update`. Commit `fels.lock` along with `fels.pkg`.
+
+The hash covers every file of the package: the sorted paths and their bytes, the same on every
+machine (the checkout ignores git's line ending settings). It is checked when a package is
+fetched and by `fels fetch --verify`, and a mismatch stops the build.
+
+## Commands
 
 ```text
-$ fels add github.com/ana/imagelib
-  fetching … 4f9c…a1 (312 KiB)
-  imagelib requests capabilities:
-      fs.read   "assets/"        — read its bundled lookup tables
-      net       (none)
-      shell     (none)
-  grant fs.read for assets/? [y/N]
+fels add <name> <source> [version] [--may <caps>]   add a #use line and fetch the package
+fels fetch [--verify]                                 fetch what fels.pkg uses; check the hashes
+fels update [name...]                                 newest versions fels.pkg allows, into fels.lock
 ```
-
-The package declares the authority it needs, the root build grants it, the VM
-enforces it.
-
-```fels
-dep := b.dependency("imagelib", .{ .hash = "4f9c…a1" });
-dep.allow(.fs_read, "assets/");        // nothing else reaches the OS
-```
-
-A logging library that asks for `net` in a patch release is a capability diff in
-review, caught before the merge instead of after the incident.
-
-## Identity
-
-A package is `(name, content-hash)`:
-
-- `hash` — the identity. BLAKE3 (or SHA-256) over the normalized file tree (sorted
-  paths, fixed mode bits), stable across hosts.
-- `name` — for humans and the `#import pkg.module` namespace.
-- `source` — where to fetch (git ref or tarball URL). A hint. If the bytes don't
-  hash to the pin, the fetch is rejected.
-
-Names resolve through an index, itself a Fels file mapping names to sources,
-content-pinned and forkable. You point at the indexes you trust
-(`b.index("git.fels.dev/registry@<hash>")`). Direct URL deps skip the index entirely.
-
-## The manifest
-
-Deps are `build.fels` code, in a shape the manager extracts without trusting it:
-
-```fels
-build :: fn(b: Build) {
-    json := b.dependency("json", .{ .hash = "be20…77" });
-    img  := b.dependency("imagelib", .{ .hash = "4f9c…a1" })
-              .allow(.fs_read, "assets/");
-
-    app := b.executable("app", "src/main.fels");
-    app.use(json);          // json's modules in scope as json::…
-    app.use(img);
-    b.default(app);
-}
-```
-
-Query mode: to read the graph, `fels` runs `build` on the VM with a deny-all `Caps`
-and a `Build` that records side effects instead of performing them. The
-`b.dependency(...)` / `.allow(...)` calls land as data — nothing fetches, no file is
-touched.
-
-## Resolution and the lockfile
-
-Online at `add`/`update` time, then frozen:
-
-1. `fels add <name|url>` resolves through your indexes (or takes the URL), fetches,
-   hashes, writes the pin into `build.fels` and the lockfile.
-2. Transitive deps resolve the same way, each hash-pinned.
-3. Builds never resolve. They fetch by hash from the lockfile — cache hit, offline.
-   `--frozen` fails if the lockfile would change.
-
-Two deps pinning different hashes of the same name is not a conflict. They're
-distinct content, each in its own namespace, the way monomorphization keeps
-`Pair(i32)` and `Pair(f64)` apart — nothing for a solver to do. Want them unified?
-`fels update` does a one-shot minimum-version pick at add time, frozen after.
-
-The lockfile is readable Fels, diffable in review:
-
-```fels
-lock :: .{
-    .{ .name = "json",     .hash = "be20…77", .src = "git.fels.dev/std-json",   .caps = .{} },
-    .{ .name = "imagelib", .hash = "4f9c…a1", .src = "github.com/ana/imagelib",
-       .caps = .{ .{ .fs_read, "assets/" } } },
-};
-```
-
-## The cache
-
-Fetched packages live in `~/.fels/pkg/<hash>/`, shared by every project, immutable
-once written. One copy of `json@be20…77` machine-wide. A path is its hash, so
-tampering shows up on use. A dep is a content-hashed build-graph node (doc 10 §5.2),
-so an unchanged dep's compiled artifacts cache too — re-adding a dep you've built
-before is nearly free.
-
-`fels vendor` copies the resolved tree into `vendor/` for air-gapped builds.
-
-## CLI
 
 ```text
-fels add <name|url> [@version]   resolve, fetch, pin into build.fels + lock; prompt for caps
-fels update [name]               re-resolve to newer compatible versions, re-freeze
-fels remove <name>               drop a dependency
-fels why <name>                  who pulls a dep in, and its grants
-fels vendor                      copy resolved deps into ./vendor
-fels verify                      re-hash cache/lock; fail on drift
-fels caps                        the granted-capability set across the dep tree
+$ fels add raylib github.com/raysan5/raylib ^5.0 --may 'ffi("opengl32")'
+  fetching raylib 5.5.0
+added raylib 5.5.0
 ```
 
-`add`/`update` are the only online commands. `fels build` is offline and
-hash-pinned. `fels caps` puts the whole authority surface of the dep tree on one
-screen.
+`fels add` creates `fels.pkg` when there is none, and leaves it as it was when the package cannot
+be used. `fels build` fetches missing packages by itself, and `fels build --list` shows the
+packages with their versions and grants.
 
-## Trust model
+## How packages are resolved
 
-- Identity by content — you depend on bytes pinned by hash, not a mutable tag a
-  maintainer can repoint.
-- Authority by grant — a dep gets exactly the capabilities you hand it; new asks
-  appear in `fels caps` / `fels why`.
-- Reproducibility by lock — `--frozen` plus the content-addressed store make a build
-  bit-identical and offline.
-- Federation — indexes are forkable Fels files, no central registry.
-- Optional signing — an index entry or package may carry a maintainer signature;
-  `b.index(..).require_signed()` rejects unsigned resolves.
+- **One version of each package.** When two packages use the same one, its version has to fit
+  both ranges, or the build stops and says which ones disagree. A package used from two
+  different places is an error too.
+- **The packages a package uses come along**, with their own `fels.pkg`.
+- **Imports:** a package's name becomes an import root for every artifact of the build:
+  `#import mathlib` reads `<root>/mathlib.fels`, `#import mathlib.ops` reads `<root>/ops.fels`.
+  `a.add_module(name, dir)` in `build.fels` can point a name somewhere else.
+- **The cache:** git packages live in `%LOCALAPPDATA%\fels\pkg` on Windows and
+  `~/.cache/fels/pkg` elsewhere, one folder per package and commit, without `.git`.
+  `FELS_PKG_DIR` sets another folder. Fetching needs `git` on the PATH.
 
-No SAT solver, no central registry, no ambient-authority build scripts, no bespoke
-manifest language.
+## Not built yet
+
+- A registry or index of package names; today a package is used by its location.
+- `fels remove`, `fels why` (who uses a package) and `fels vendor` (copy the packages into the
+  project).
+- `--offline` and `--frozen` for builds that must not fetch or change `fels.lock`.
+- The language server does not read `fels.pkg` yet, so imports of packages are not resolved in
+  the editor.
+- More capabilities than `ffi` (reading files, the network, running programs) arrive with
+  compile-time features that need them.
+- A package's own `build.fels` (for C libraries it links) does not run yet; a package is its
+  Fels sources.
