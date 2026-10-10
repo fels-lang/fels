@@ -20,8 +20,6 @@ the major version is `0`, any minor bump may break source compatibility.
   of `==` or `!=`, and a name the enum does not have is an error.
 - A bare variant as an element of an array or slice literal (`a: [3]Color = .{ .red, .green, .blue }`)
   or as a field default (`color: Color = .green`) stored an undefined value.
-### Fixed
-
 - **An integer literal stored into a type other than `i32` had the wrong width.** `k: i64 = -5;`
   gave `k != -5`, `e: i8 = -128;` wrote four bytes into its one byte slot, and
   `big: u64 = 1 << 40;` stored 0, at every optimisation level and in the comptime VM. A negated
