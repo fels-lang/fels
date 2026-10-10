@@ -1,8 +1,8 @@
 //! Navigation across a project for `gabbro lsp`: find references, rename, document
 //! highlight and workspace symbols.
 //!
-//! The project is the folder with `build.gab` above the document (else the workspace
-//! folder, else the document's own folder), and every `.gab` file under it, except the
+//! The project is the folder with `build.fels` above the document (else the workspace
+//! folder, else the document's own folder), and every `.fels` file under it, except the
 //! standard library and the build output folders (`zig-out`, `.zig-cache`, `.git`,
 //! `.claude`, `dist`, `out`). At most `max_files` files are taken; the server says so
 //! with a `window/showMessage` when a project has more.
@@ -29,7 +29,7 @@
 //! file that file imports is the same (compared by a hash of the text), so an edit or a
 //! save makes only the affected entries stale. One analysis indexes every stale file it
 //! loaded, and the files that import others are analyzed first, so a project whose
-//! `main.gab` imports everything costs one analysis. A local, a parameter or a declaration
+//! `main.fels` imports everything costs one analysis. A local, a parameter or a declaration
 //! without `pub` can only be named in its own file, so only that file is searched for it.
 //! For anything else `references` indexes the files that contain the name as a word, and
 //! `rename` also those that contain the new name or import a module with `.*`.
@@ -49,7 +49,7 @@ const json = std.json;
 const Allocator = std.mem.Allocator;
 const SymbolId = sema.SymbolId;
 
-/// The most `.gab` files a project contributes.
+/// The most `.fels` files a project contributes.
 pub const max_files: usize = 400;
 /// The most directory entries one project scan looks at.
 const max_entries: usize = 50_000;
@@ -274,7 +274,7 @@ fn isExtern(attrs: []const ast.Attribute) bool {
 
 /// Whether a function's name means something outside the program's text: an `#extern`
 /// binds a C symbol, a plain `#export` exports its own name, `main` and the `build` of
-/// `build.gab` are looked up by name.
+/// `build.fels` are looked up by name.
 fn fixedFunction(f: ast.FunctionDecl, file: []const u8) Fixed {
     if (isExtern(f.attrs)) return .external;
     for (f.attrs) |a| {
@@ -1884,7 +1884,7 @@ const Req = struct {
         return &r.server.nav;
     }
 
-    /// The project of a document: the folder with `build.gab` (or the workspace folder,
+    /// The project of a document: the folder with `build.fels` (or the workspace folder,
     /// as the server found it), else the document's folder.
     fn forDoc(r: *Req, doc: *lsp.Doc) ?u32 {
         r.root = doc.project_root orelse std.fs.path.dirname(doc.path);
@@ -1947,7 +1947,7 @@ const Req = struct {
         return entry;
     }
 
-    /// Add every `.gab` file under the project root.
+    /// Add every `.fels` file under the project root.
     fn scan(r: *Req) void {
         if (r.scanned) return;
         r.scanned = true;
@@ -2209,7 +2209,7 @@ const Req = struct {
             r.gpa.free(owned);
             return;
         };
-        const msg = std.fmt.allocPrint(r.a(), "gabbro: the project {s} has more than {d} .gab files; references, rename and workspace symbols only look at the first {d}.", .{ root, max_files, max_files }) catch return;
+        const msg = std.fmt.allocPrint(r.a(), "gabbro: the project {s} has more than {d} .fels files; references, rename and workspace symbols only look at the first {d}.", .{ root, max_files, max_files }) catch return;
         var b: std.ArrayList(u8) = .empty;
         defer b.deinit(r.gpa);
         b.appendSlice(r.gpa, "{\"jsonrpc\":\"2.0\",\"method\":\"window/showMessage\",\"params\":{\"type\":2,\"message\":\"") catch return;
@@ -2797,136 +2797,136 @@ const TestProject = struct {
 
 test "nav: references of a function used in two files" {
     var files = TestFiles{
-        .names = &.{ "util.gab", "main.gab" },
+        .names = &.{ "util.fels", "main.fels" },
         .texts = &.{
             "pub add :: fn(a: i32, b: i32) -> i32 { return a + b; }\n",
             "#import util.{ add };\nmain :: fn() -> i32 {\n    x := add(1, 2);\n    return add(x, 3);\n}\n",
         },
     };
-    var p = try TestProject.init(&files, "main.gab");
+    var p = try TestProject.init(&files, "main.fels");
     defer p.deinit();
-    const t = p.targetAt("main.gab", "add", 1).?;
+    const t = p.targetAt("main.fels", "add", 1).?;
     try testing.expectEqual(Kind.function, t.kind);
     // The declaration, the import list and two calls.
     try testing.expectEqual(@as(usize, 4), p.refs(t));
-    try testing.expect(t.same(p.targetAt("util.gab", "add", 0).?));
+    try testing.expect(t.same(p.targetAt("util.fels", "add", 0).?));
 }
 
 test "nav: shadowed locals are different symbols" {
     var files = TestFiles{
-        .names = &.{"main.gab"},
+        .names = &.{"main.fels"},
         .texts = &.{
             "f :: fn() -> i32 {\n    x := 1;\n    y := x;\n    if y > 0 {\n        x := 2;\n        y = x;\n    }\n    return x + y;\n}\n" ++
                 "g :: fn() -> i32 {\n    x := 5;\n    return x;\n}\n",
         },
     };
-    var p = try TestProject.init(&files, "main.gab");
+    var p = try TestProject.init(&files, "main.fels");
     defer p.deinit();
-    const outer = p.targetAt("main.gab", "x", 0).?;
-    const inner = p.targetAt("main.gab", "x", 2).?;
-    const in_g = p.targetAt("main.gab", "x", 5).?;
+    const outer = p.targetAt("main.fels", "x", 0).?;
+    const inner = p.targetAt("main.fels", "x", 2).?;
+    const in_g = p.targetAt("main.fels", "x", 5).?;
     try testing.expectEqual(Kind.local, outer.kind);
     try testing.expect(!outer.same(inner) and !outer.same(in_g) and !inner.same(in_g));
     try testing.expectEqual(@as(usize, 3), p.refs(outer)); // x := 1, y := x, return x
     try testing.expectEqual(@as(usize, 2), p.refs(inner)); // x := 2, y = x
     try testing.expectEqual(@as(usize, 2), p.refs(in_g));
-    try testing.expect(outer.same(p.targetAt("main.gab", "x", 4).?)); // `return x + y`
+    try testing.expect(outer.same(p.targetAt("main.fels", "x", 4).?)); // `return x + y`
     // `y = x` in the inner block is a write of the outer `y`.
-    const y = p.targetAt("main.gab", "y", 2).?;
+    const y = p.targetAt("main.fels", "y", 2).?;
     try testing.expectEqual(@as(usize, 4), p.refs(y));
-    const idx = p.index("main.gab");
-    const o = idx.occAt(std.mem.indexOf(u8, files.text("main.gab"), "y = x").?).?;
+    const idx = p.index("main.fels");
+    const o = idx.occAt(std.mem.indexOf(u8, files.text("main.fels"), "y = x").?).?;
     try testing.expectEqual(Role.write, o.role);
 }
 
 test "nav: a struct field in a literal, an access and a method" {
     var files = TestFiles{
-        .names = &.{"main.gab"},
+        .names = &.{"main.fels"},
         .texts = &.{
             "Point :: struct {\n    x: i32,\n    y: i32,\n    sum :: fn(self: *Point) -> i32 { return self.x + self.y; }\n}\n" ++
                 "make :: fn() -> Point { return .{ .x = 1, .y = 2 }; }\n" ++
                 "main :: fn() -> i32 {\n    p: Point = .{ .x = 3, .y = 4 };\n    q := make();\n    return p.x + q.sum();\n}\n",
         },
     };
-    var p = try TestProject.init(&files, "main.gab");
+    var p = try TestProject.init(&files, "main.fels");
     defer p.deinit();
-    const x = p.targetAt("main.gab", "x", 0).?;
+    const x = p.targetAt("main.fels", "x", 0).?;
     try testing.expectEqual(Kind.field, x.kind);
     // The field, `self.x`, two literals and `p.x`.
     try testing.expectEqual(@as(usize, 5), p.refs(x));
-    const sum = p.targetAt("main.gab", "sum", 1).?;
+    const sum = p.targetAt("main.fels", "sum", 1).?;
     try testing.expectEqual(Kind.method, sum.kind);
     try testing.expectEqual(@as(usize, 2), p.refs(sum));
-    const point = p.targetAt("main.gab", "Point", 0).?;
+    const point = p.targetAt("main.fels", "Point", 0).?;
     try testing.expectEqual(@as(usize, 4), p.refs(point));
 }
 
 test "nav: enum variants through the type the context expects" {
     var files = TestFiles{
-        .names = &.{"main.gab"},
+        .names = &.{"main.fels"},
         .texts = &.{
             "Color :: enum { red, green }\n" ++
                 "pick :: fn(c: Color) -> i32 {\n    match c {\n        .red => { return 1; }\n        .green => { return 2; }\n    }\n}\n" ++
                 "main :: fn() -> i32 {\n    c: Color = .red;\n    d := Color.red;\n    if c == .green { return 0; }\n    return pick(.red);\n}\n",
         },
     };
-    var p = try TestProject.init(&files, "main.gab");
+    var p = try TestProject.init(&files, "main.fels");
     defer p.deinit();
-    const red = p.targetAt("main.gab", "red", 0).?;
+    const red = p.targetAt("main.fels", "red", 0).?;
     try testing.expectEqual(Kind.variant, red.kind);
     try testing.expectEqual(@as(usize, 5), p.refs(red));
-    const green = p.targetAt("main.gab", "green", 0).?;
+    const green = p.targetAt("main.fels", "green", 0).?;
     try testing.expectEqual(@as(usize, 3), p.refs(green));
 }
 
 test "nav: names in a generic function are found without the type check" {
     var files = TestFiles{
-        .names = &.{"main.gab"},
+        .names = &.{"main.fels"},
         .texts = &.{
             "Box :: struct($T: type) {\n    item: T,\n    n: i32,\n    get :: fn(self: *Self) -> T { return self.item; }\n}\n" ++
                 "count :: fn($T: type, b: *Box(T)) -> i32 { k := b.n; return k; }\n" ++
                 "main :: fn() -> i32 {\n    b: Box(i32) = .{ .item = 1, .n = 2 };\n    return count(i32, &b) + b.n;\n}\n",
         },
     };
-    var p = try TestProject.init(&files, "main.gab");
+    var p = try TestProject.init(&files, "main.fels");
     defer p.deinit();
-    const n = p.targetAt("main.gab", "n", 0).?;
+    const n = p.targetAt("main.fels", "n", 0).?;
     try testing.expectEqual(Kind.field, n.kind);
-    try testing.expect(n.same(p.targetAt("main.gab", "n", 1).?)); // b.n in the generic body
-    const t = p.targetAt("main.gab", "T", 1).?; // `item: T`
+    try testing.expect(n.same(p.targetAt("main.fels", "n", 1).?)); // b.n in the generic body
+    const t = p.targetAt("main.fels", "T", 1).?; // `item: T`
     try testing.expectEqual(Kind.type_param, t.kind);
     // The struct's `$T`, `item: T` and the method's `-> T`; `count` has a `T` of its own.
     try testing.expectEqual(@as(usize, 3), p.refs(t));
-    try testing.expect(t.same(p.targetAt("main.gab", "T", 2).?));
-    try testing.expect(!t.same(p.targetAt("main.gab", "T", 3).?));
-    const item = p.targetAt("main.gab", "item", 0).?;
+    try testing.expect(t.same(p.targetAt("main.fels", "T", 2).?));
+    try testing.expect(!t.same(p.targetAt("main.fels", "T", 3).?));
+    const item = p.targetAt("main.fels", "item", 0).?;
     try testing.expectEqual(@as(usize, 3), p.refs(item)); // field, `self.item`, `.item = 1`
-    const k = p.targetAt("main.gab", "k", 1).?;
+    const k = p.targetAt("main.fels", "k", 1).?;
     try testing.expectEqual(@as(usize, 2), p.refs(k));
 }
 
 test "nav: a `$T` inside a parameter type declares T" {
     var files = TestFiles{
-        .names = &.{"main.gab"},
+        .names = &.{"main.fels"},
         .texts = &.{
             "get :: fn(p: *$T, q: *$T) -> T { x: T = *p; return x; }\n" ++
                 "main :: fn() -> i32 { y: i32 = 1; return get(&y, &y); }\n",
         },
     };
-    var p = try TestProject.init(&files, "main.gab");
+    var p = try TestProject.init(&files, "main.fels");
     defer p.deinit();
-    const t = p.targetAt("main.gab", "T", 0).?; // `p: *$T`
+    const t = p.targetAt("main.fels", "T", 0).?; // `p: *$T`
     try testing.expectEqual(Kind.type_param, t.kind);
     // The second `$T`, `-> T` and `x: T` are uses of the first.
-    try testing.expect(t.same(p.targetAt("main.gab", "T", 1).?));
-    try testing.expect(t.same(p.targetAt("main.gab", "T", 2).?));
-    try testing.expect(t.same(p.targetAt("main.gab", "T", 3).?));
+    try testing.expect(t.same(p.targetAt("main.fels", "T", 1).?));
+    try testing.expect(t.same(p.targetAt("main.fels", "T", 2).?));
+    try testing.expect(t.same(p.targetAt("main.fels", "T", 3).?));
     try testing.expectEqual(@as(usize, 4), p.refs(t));
 }
 
 test "nav: interface methods, their implementations and calls" {
     var files = TestFiles{
-        .names = &.{"main.gab"},
+        .names = &.{"main.fels"},
         .texts = &.{
             "Show :: interface { val :: fn(self: *Self) -> i32; }\n" ++
                 "Good :: struct { z: i32 }\n" ++
@@ -2936,22 +2936,22 @@ test "nav: interface methods, their implementations and calls" {
                 "main :: fn() -> i32 {\n    g: Good = .{ .z = 9 };\n    return needs(&g) + g.val();\n}\n",
         },
     };
-    var p = try TestProject.init(&files, "main.gab");
+    var p = try TestProject.init(&files, "main.fels");
     defer p.deinit();
-    const val = p.targetAt("main.gab", "val", 0).?;
+    const val = p.targetAt("main.fels", "val", 0).?;
     try testing.expectEqual(Kind.interface_method, val.kind);
     // The interface, the implementation, `x.val()` (a constrained generic), `s.val()`
     // through the interface, `g.val()` on the implementing type.
     try testing.expectEqual(@as(usize, 5), p.refs(val));
-    const impl = p.index("main.gab").occAt(std.mem.indexOf(u8, files.text("main.gab"), "val :: fn(self: *Self) -> i32 {").?).?;
+    const impl = p.index("main.fels").occAt(std.mem.indexOf(u8, files.text("main.fels"), "val :: fn(self: *Self) -> i32 {").?).?;
     try testing.expectEqual(Role.impl, impl.role);
-    const show = p.targetAt("main.gab", "Show", 0).?;
+    const show = p.targetAt("main.fels", "Show", 0).?;
     try testing.expectEqual(@as(usize, 4), p.refs(show)); // declaration, `as Show`, `$T: Show`, `*Show`
 }
 
 test "nav: alias::name, a lambda capture, catch bindings and error variants" {
     var files = TestFiles{
-        .names = &.{ "util.gab", "main.gab" },
+        .names = &.{ "util.fels", "main.fels" },
         .texts = &.{
             "pub Num :: struct { v: i32 }\npub twice :: fn(n: i32) -> i32 { return n * 2; }\n",
             "#import util as u;\n" ++
@@ -2963,40 +2963,40 @@ test "nav: alias::name, a lambda capture, catch bindings and error variants" {
                 "    return u::twice(n.v) + add_base(base) + r;\n}\n",
         },
     };
-    var p = try TestProject.init(&files, "main.gab");
+    var p = try TestProject.init(&files, "main.fels");
     defer p.deinit();
-    const twice = p.targetAt("main.gab", "twice", 0).?;
+    const twice = p.targetAt("main.fels", "twice", 0).?;
     try testing.expectEqual(@as(usize, 2), p.refs(twice));
-    try testing.expect(twice.same(p.targetAt("util.gab", "twice", 0).?));
-    const num = p.targetAt("main.gab", "Num", 0).?;
+    try testing.expect(twice.same(p.targetAt("util.fels", "twice", 0).?));
+    const num = p.targetAt("main.fels", "Num", 0).?;
     try testing.expectEqual(@as(usize, 2), p.refs(num));
-    const v = p.targetAt("util.gab", "v", 0).?;
+    const v = p.targetAt("util.fels", "v", 0).?;
     try testing.expectEqual(@as(usize, 4), p.refs(v)); // field, `.v = 2`, two `n.v`
-    const base = p.targetAt("main.gab", "base", 0).?;
+    const base = p.targetAt("main.fels", "base", 0).?;
     try testing.expectEqual(@as(usize, 3), p.refs(base)); // declaration, in the lambda, argument
-    const e = p.targetAt("main.gab", "e", 0).?;
+    const e = p.targetAt("main.fels", "e", 0).?;
     try testing.expectEqual(Kind.local, e.kind);
     try testing.expectEqual(@as(usize, 2), p.refs(e));
-    const bad = p.targetAt("main.gab", "Bad", 0).?;
+    const bad = p.targetAt("main.fels", "Bad", 0).?;
     try testing.expectEqual(Kind.variant, bad.kind);
     try testing.expectEqual(@as(usize, 3), p.refs(bad)); // declaration, `fail .Bad`, `e == .Bad`
 }
 
 test "nav: a method #derive generates is no reference to its struct" {
     var files = TestFiles{
-        .names = &.{"main.gab"},
+        .names = &.{"main.fels"},
         .texts = &.{
             "#derive(Eq)\nPt :: struct { x: i32, t: i32 }\n" ++
                 "main :: fn() -> i32 {\n    a: Pt = .{ .x = 1, .t = 2 };\n    b := a;\n    if a.eq(&b) { return 1; }\n    return 0;\n}\n",
         },
     };
-    var p = try TestProject.init(&files, "main.gab");
+    var p = try TestProject.init(&files, "main.fels");
     defer p.deinit();
-    const pt = p.targetAt("main.gab", "Pt", 0).?;
+    const pt = p.targetAt("main.fels", "Pt", 0).?;
     try testing.expectEqual(@as(usize, 2), p.refs(pt));
-    const t = p.targetAt("main.gab", "t", 0).?;
+    const t = p.targetAt("main.fels", "t", 0).?;
     try testing.expectEqual(@as(usize, 2), p.refs(t));
-    try testing.expect(p.targetAt("main.gab", "eq", 0) == null);
+    try testing.expect(p.targetAt("main.fels", "eq", 0) == null);
 }
 
 test "nav: names that are not valid new names" {

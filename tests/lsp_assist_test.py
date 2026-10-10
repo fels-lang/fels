@@ -189,7 +189,7 @@ def param_text(res, k):
 
 def main():
     tmp = tempfile.mkdtemp()
-    path = os.path.join(tmp, "main.gab")
+    path = os.path.join(tmp, "main.fels")
     with open(path, "w", newline="\n") as f:
         f.write(SRC)
     s = Session(path)

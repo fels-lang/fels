@@ -24,7 +24,7 @@ SRC = (
     "\n"
     "main :: fn() -> i32 { v: u128 = 0u64; return add(1, 2); }\n"
 )
-URI = "file:///smoke.gab"
+URI = "file:///smoke.fels"
 add_call_col = SRC.splitlines()[4].index("add(") + 1  # cursor on the `add` call
 
 MSGS = [
@@ -97,8 +97,8 @@ def two_files():
     with tempfile.TemporaryDirectory() as tmp:
         util_src = "pub add :: fn(a: i32, b: i32) -> i32 { return a + b; }\n"
         main_src = "#import util.{ add };\n\nmain :: fn() -> i32 {\n    return add(1, 2);\n}\n"
-        util_path = os.path.join(tmp, "util.gab")
-        main_path = os.path.join(tmp, "main.gab")
+        util_path = os.path.join(tmp, "util.fels")
+        main_path = os.path.join(tmp, "main.fels")
         with open(util_path, "w", newline="\n") as f:
             f.write(util_src)
         with open(main_path, "w", newline="\n") as f:
@@ -142,7 +142,7 @@ def two_files():
             elif r.get("id") == 3:
                 res = r["result"]
                 print("cross-file definition:", res)
-                ok &= bool(res) and res["uri"].lower().endswith("util.gab") and res["range"]["start"]["line"] == 0
+                ok &= bool(res) and res["uri"].lower().endswith("util.fels") and res["range"]["start"]["line"] == 0
             elif r.get("id") == 4:
                 labels = [x["label"] for x in r["result"]]
                 print("cross-file completion has add:", "add" in labels)

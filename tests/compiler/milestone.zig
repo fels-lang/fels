@@ -127,7 +127,7 @@ test "milestone syntax parses and checks" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var front_end = try gabbro.compile(arena.allocator(), "milestone.gab", sample);
+    var front_end = try gabbro.compile(arena.allocator(), "milestone.fels", sample);
     defer front_end.deinit(arena.allocator());
 
     try std.testing.expectEqual(@as(usize, 15), front_end.module.items.len);
@@ -173,12 +173,12 @@ test "return type mismatch fails semantic checking" {
         \\}
     ;
 
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_return.gab", bad));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_return.fels", bad));
 }
 
 test "ir validation rejects missing branch targets" {
     const invalid = gabbro.IrModule{
-        .file_name = "invalid.gab",
+        .file_name = "invalid.fels",
         .functions = &.{
             .{
                 .name = "broken",

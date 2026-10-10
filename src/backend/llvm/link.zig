@@ -278,7 +278,7 @@ pub const LinuxLinkOptions = struct {
 /// Link a single ELF object into a **static, non-PIE** Linux executable via
 /// `ld.lld`. Freestanding by default (no libc) — a pure-Gabbro program has zero
 /// dynamic dependencies. libc is pulled in only when the user's `#extern` /
-/// `build.gab` adds `-lc`. Runs `ld.lld` on the host (cross-linking from Windows
+/// `build.fels` adds `-lc`. Runs `ld.lld` on the host (cross-linking from Windows
 /// works since LLD is target-agnostic).
 pub fn linkLinux(
     allocator: std.mem.Allocator,

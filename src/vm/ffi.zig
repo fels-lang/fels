@@ -9,7 +9,7 @@ pub const ExternCall = instructions.ExternCall;
 //
 // SECURITY: this executes arbitrary native code at compile time. That is the
 // `build.rs` / supply-chain surface. It is gated by `Caps` in engine.zig: a bare
-// `#run` is pure, and only `build.gab` is granted host access.
+// `#run` is pure, and only `build.fels` is granted host access.
 //
 // Marshaling is limited to the integer/pointer subset of the C ABI: arguments
 // and the return value are passed as register-width words (Win64 / SysV pass

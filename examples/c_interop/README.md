@@ -24,7 +24,7 @@ llvm-lib /out:cabi.lib cabi.obj
 
 # 2. Build the Gabbro program. The `#extern("cabi", ...)` decls pull in cabi.lib;
 #    --lib-path tells the linker where to find it.
-gabbro build main.gab -o demo.exe --lib-path .
+gabbro build main.fels -o demo.exe --lib-path .
 
 # 3. Run it — the exit code is 132 if every struct crossed the ABI correctly.
 ./demo.exe ; echo $?
@@ -33,7 +33,7 @@ gabbro build main.gab -o demo.exe --lib-path .
 `132 = 7 + 100 + 10 + 11 + 4`, summing the round-trips through each struct shape.
 
 For a real library you wouldn't hand-write the `#extern` block — generate it from
-the C header with `gabbro bindgen cabi.h --lib cabi -o cabi.gab`, then `#import cabi.*;`.
+the C header with `gabbro bindgen cabi.h --lib cabi -o cabi.fels`, then `#import cabi.*;`.
 See [docs/11_c_interop.md](../../docs/11_c_interop.md) for the full story.
 
 > Linking a non-system import library currently routes through LLD (the

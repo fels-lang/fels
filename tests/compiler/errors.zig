@@ -59,7 +59,7 @@ test "gabbro errors: declarations fail propagate catch and split defer" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "errors.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "errors.fels", src);
     defer fe.deinit(arena.allocator());
 
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
@@ -100,7 +100,7 @@ test "gabbro errors: fail payload type is checked" {
         \\}
     ;
 
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_error_payload.gab", bad));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_error_payload.fels", bad));
 }
 
 test "gabbro errors: anonymous inline error sets are checked" {
@@ -120,7 +120,7 @@ test "gabbro errors: anonymous inline error sets are checked" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "anon_errors.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "anon_errors.fels", src);
     defer fe.deinit(arena.allocator());
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(module);
@@ -136,7 +136,7 @@ test "gabbro errors: unknown variants in inline error sets fail" {
         \\}
     ;
 
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_error_variant.gab", bad));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_error_variant.fels", bad));
 }
 
 test "gabbro errors: postfix try outside fallible function fails" {
@@ -150,7 +150,7 @@ test "gabbro errors: postfix try outside fallible function fails" {
         \\}
     ;
 
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_try.gab", bad));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bad_try.fels", bad));
 }
 
 fn findFunction(module: gabbro.IrModule, name: []const u8) ?gabbro.ir_mod.IrFunction {

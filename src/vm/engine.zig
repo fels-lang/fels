@@ -47,7 +47,7 @@ pub const BuildHost = struct {
 };
 
 /// What a comptime run is allowed to do. A bare `#run` gets nothing — it is pure —
-/// and the build driver grants host access to `build.gab`. Capabilities only narrow
+/// and the build driver grants host access to `build.fels`. Capabilities only narrow
 /// as the call stack descends: `narrow` computes a conservative intersection and has
 /// no way to widen. This is the structural fix for the `build.rs` surface: a
 /// dependency's compile-time code can't reach the host unless it was handed the
@@ -65,7 +65,7 @@ pub const Caps = struct {
         /// spells them. Matched case-insensitively, because Windows DLL names are.
         /// Borrowed: the slice must outlive the run.
         libs: []const []const u8,
-        /// Any host call. The privileged root (`build.gab`) only.
+        /// Any host call. The privileged root (`build.fels`) only.
         all,
     };
 
@@ -94,7 +94,7 @@ pub const Caps = struct {
     /// grant refused rather than only that something did.
     pub fn denialReason(self: Caps) []const u8 {
         return switch (self.ffi) {
-            .none => "this code has no host access. A `#run` is pure; `build.gab` has host access, and a package's compile-time code gets it when gabbro.pkg grants it (`#use name from \"...\" may ffi(\"lib\")`)",
+            .none => "this code has no host access. A `#run` is pure; `build.fels` has host access, and a package's compile-time code gets it when gabbro.pkg grants it (`#use name from \"...\" may ffi(\"lib\")`)",
             .libs => "the capability grant of this code does not list that library (a package gets more with `may ffi(...)` on its `#use` line in gabbro.pkg)",
             // `.all` allows every call, so it never reaches a denial.
             .all => "this run's capability grant refused it",
@@ -143,7 +143,7 @@ pub const Vm = struct {
     /// Optional host bridge for `host_call` (the build driver). Null → trap.
     host: ?BuildHost = null,
     /// What this run may do. Default: nothing privileged (a pure `#run`). The build
-    /// driver sets `caps.ffi = .all` for `build.gab`. See `Caps`.
+    /// driver sets `caps.ffi = .all` for `build.fels`. See `Caps`.
     caps: Caps = .{},
     call_depth: usize = 0,
     max_call_depth: usize = 512,

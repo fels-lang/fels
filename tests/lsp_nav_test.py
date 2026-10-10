@@ -123,19 +123,19 @@ def check(cond, what):
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         paths = {}
-        for name, text in (("util.gab", UTIL), ("main.gab", MAIN), ("other.gab", OTHER), ("build.gab", BUILD)):
+        for name, text in (("util.fels", UTIL), ("main.fels", MAIN), ("other.fels", OTHER), ("build.fels", BUILD)):
             paths[name] = os.path.join(tmp, name)
             with open(paths[name], "w", newline="\n") as f:
                 f.write(text)
-        main_uri = uri_of(paths["main.gab"])
-        other_uri = uri_of(paths["other.gab"])
+        main_uri = uri_of(paths["main.fels"])
+        other_uri = uri_of(paths["other.fels"])
         root_uri = uri_of(tmp)
 
         rid = [100]
         msgs = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"rootUri": root_uri, "capabilities": {}}},
             {"jsonrpc": "2.0", "method": "initialized", "params": {}},
-            # Only main.gab is open: util.gab and other.gab are read from disk.
+            # Only main.fels is open: util.fels and other.fels are read from disk.
             {"jsonrpc": "2.0", "method": "textDocument/didOpen",
              "params": {"textDocument": {"uri": main_uri, "languageId": "gabbro", "version": 1, "text": MAIN}}},
         ]
@@ -202,7 +202,7 @@ def main():
         req("symbols ori", "workspace/symbol", {"query": "ori"})
         req("symbols point", "workspace/symbol", {"query": "point"})
         req("symbols all", "workspace/symbol", {"query": ""})
-        # Open other.gab with one more call of `add`: the open text wins over the disk.
+        # Open other.fels with one more call of `add`: the open text wins over the disk.
         other2 = OTHER + "thrice :: fn(n: i32) -> i32 { return add(add(n, n), n); }\n"
         msgs.append({"jsonrpc": "2.0", "method": "textDocument/didOpen",
                      "params": {"textDocument": {"uri": other_uri, "languageId": "gabbro", "version": 1, "text": other2}}})
@@ -225,7 +225,7 @@ def main():
             if "gabbro-lsp:" in line and ("references" in line or "rename" in line or "symbol" in line or "Highlight" in line):
                 print("  " + line.strip())
 
-        check(diags.get("main.gab") == [], "main.gab has no diagnostics: %s" % diags.get("main.gab"))
+        check(diags.get("main.fels") == [], "main.fels has no diagnostics: %s" % diags.get("main.fels"))
 
         def locs(label):
             r = out.get(label, {})
@@ -237,14 +237,14 @@ def main():
 
         add = locs("refs add")
         print("  refs add:", add)
-        check(len(add) == 6 and files_of("refs add") == ["main.gab", "other.gab", "util.gab"],
+        check(len(add) == 6 and files_of("refs add") == ["main.fels", "other.fels", "util.fels"],
               "references of add: declaration, two imports, three calls in three files")
-        check(len(locs("refs add no decl")) == 5 and ("util.gab", 8, 4) not in locs("refs add no decl"),
+        check(len(locs("refs add no decl")) == 5 and ("util.fels", 8, 4) not in locs("refs add no decl"),
               "includeDeclaration false leaves out the declaration")
 
         x = locs("refs field x")
         print("  refs field x:", x)
-        check(len(x) == 6 and files_of("refs field x") == ["main.gab", "other.gab", "util.gab"],
+        check(len(x) == 6 and files_of("refs field x") == ["main.fels", "other.fels", "util.fels"],
               "references of field x: declaration, self.x, three literals, p.x")
         check(len(locs("refs sum")) == 2, "references of method sum: declaration and p.sum()")
 
@@ -259,14 +259,14 @@ def main():
 
         red = locs("refs red")
         print("  refs red:", red)
-        check(len(red) == 4 and files_of("refs red") == ["main.gab", "util.gab"],
+        check(len(red) == 4 and files_of("refs red") == ["main.fels", "util.fels"],
               "references of variant red: declaration, match arm, typed local, comparison")
         point = locs("refs Point")
         print("  refs Point:", point)
         check(len(point) >= 7, "references of type Point in fields, parameters, returns, imports")
         pl = locs("refs println")
         print("  refs println:", pl)
-        check(len(pl) == 3 and files_of("refs println") == ["io.gab", "main.gab"],
+        check(len(pl) == 3 and files_of("refs println") == ["io.fels", "main.fels"],
               "references of std println: the import, the call, and its declaration in std")
 
         pr = out.get("prepare add", {}).get("result")
@@ -285,12 +285,12 @@ def main():
         changes = rn.get("changes", {})
         edits = {name_of(u): e for u, e in changes.items()}
         print("  rename add:", {k: len(v) for k, v in edits.items()})
-        check(sorted(edits) == ["main.gab", "other.gab", "util.gab"] and len(edits.get("other.gab", [])) == 3
-              and len(edits.get("util.gab", [])) == 1 and len(edits.get("main.gab", [])) == 2
+        check(sorted(edits) == ["main.fels", "other.fels", "util.fels"] and len(edits.get("other.fels", [])) == 3
+              and len(edits.get("util.fels", [])) == 1 and len(edits.get("main.fels", [])) == 2
               and all(e["newText"] == "plus" for v in edits.values() for e in v),
-              "rename add to plus edits util.gab and other.gab, which are not open, and main.gab")
+              "rename add to plus edits util.fels and other.fels, which are not open, and main.fels")
         # Apply the edits to the texts and check the result reads right.
-        texts = {"main.gab": MAIN, "other.gab": OTHER, "util.gab": UTIL}
+        texts = {"main.fels": MAIN, "other.fels": OTHER, "util.fels": UTIL}
         for name, es in edits.items():
             lines = texts[name].split("\n")
             for e in sorted(es, key=lambda e: (e["range"]["start"]["line"], e["range"]["start"]["character"]), reverse=True):
@@ -298,9 +298,9 @@ def main():
                 ln = lines[s["line"]]
                 lines[s["line"]] = ln[:s["character"]] + e["newText"] + ln[t["character"]:]
             texts[name] = "\n".join(lines)
-        check("pub plus :: fn" in texts["util.gab"] and "#import util.{ plus, Point }" in texts["other.gab"]
-              and "return plus(n, n)" in texts["other.gab"] and "total := plus(p.x" in texts["main.gab"]
-              and " add" not in texts["other.gab"], "the renamed texts read right")
+        check("pub plus :: fn" in texts["util.fels"] and "#import util.{ plus, Point }" in texts["other.fels"]
+              and "return plus(n, n)" in texts["other.fels"] and "total := plus(p.x" in texts["main.fels"]
+              and " add" not in texts["other.fels"], "the renamed texts read right")
 
         def err(label):
             return (out.get(label, {}).get("error") or {}).get("message", "")
@@ -320,8 +320,8 @@ def main():
         print("  rename sum to add:", err("rename sum to add"))
         check("error" in out.get("rename sum to add", {}), "rename refused when a function of the new name could be called as a method")
         ms = out.get("rename sum to length", {}).get("result") or {}
-        check(sorted((name_of(u), len(v)) for u, v in ms.get("changes", {}).items()) == [("main.gab", 1), ("util.gab", 1)],
-              "rename of method sum edits its declaration in util.gab and the call in main.gab")
+        check(sorted((name_of(u), len(v)) for u, v in ms.get("changes", {}).items()) == [("main.fels", 1), ("util.fels", 1)],
+              "rename of method sum edits its declaration in util.fels and the call in main.fels")
         lc = out.get("rename inner count to extra", {}).get("result") or {}
         check(sum(len(v) for v in lc.get("changes", {}).values()) == 2, "rename of the inner count edits only its two places")
 
@@ -334,14 +334,14 @@ def main():
             return [(s["name"], name_of(s["location"]["uri"]), s["kind"]) for s in (out.get(label, {}).get("result") or [])]
 
         print("  symbols ori:", syms("symbols ori"))
-        check(("origin", "util.gab", 12) in syms("symbols ori"), "workspace/symbol finds origin")
-        check(("Point", "util.gab", 23) in syms("symbols point"), "workspace/symbol is case-insensitive")
+        check(("origin", "util.fels", 12) in syms("symbols ori"), "workspace/symbol finds origin")
+        check(("Point", "util.fels", 23) in syms("symbols point"), "workspace/symbol is case-insensitive")
         allnames = set(n for n, _, _ in syms("symbols all"))
         check({"main", "shade", "twice", "corner", "add", "Color", "sum", "build"} <= allnames,
               "workspace/symbol with an empty query lists the project: %s" % sorted(allnames))
 
         after = locs("refs add after edit")
-        check(len(after) == 8, "references follow the open text of other.gab (8 now): %d" % len(after))
+        check(len(after) == 8, "references follow the open text of other.fels (8 now): %d" % len(after))
 
         if "leaked" in stderr.lower():
             check(False, "no memory leak reported")

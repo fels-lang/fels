@@ -14,7 +14,7 @@ test "runtime: @panic and assert are available via compileWithRuntime" {
         \\}
     ;
     // compile() alone would fail ("unknown function `assert`")
-    var fe = try gabbro.compileWithRuntime(arena.allocator(), "main.gab", src);
+    var fe = try gabbro.compileWithRuntime(arena.allocator(), "main.fels", src);
     defer fe.deinit(arena.allocator());
     const m = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(m);
@@ -43,7 +43,7 @@ test "runtime: supported platform sources are explicit and independently valid" 
 
     var fe = try gabbro.compileMulti(arena.allocator(), &.{
         .{ .file_name = "<runtime-linux>", .source = gabbro.gabbro_runtime.runtimeSourceFor(.linux, false).? },
-        .{ .file_name = "main.gab", .source = "main :: fn() -> i32 { return 0; }" },
+        .{ .file_name = "main.fels", .source = "main :: fn() -> i32 { return 0; }" },
     });
     defer fe.deinit(arena.allocator());
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
@@ -58,7 +58,7 @@ test "runtime: compile() without runtime — assert not available" {
         \\use :: fn() { assert(true); }
     ;
     // compile() has no runtime → assert is unknown → SemanticFailed
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bare.gab", src));
+    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bare.fels", src));
 }
 
 test "runtime: write_stdout is available for programs" {
@@ -70,7 +70,7 @@ test "runtime: write_stdout is available for programs" {
         \\    return write_stdout("Hello, Gabbro!\n") as i32;
         \\}
     ;
-    var fe = try gabbro.compileWithRuntime(arena.allocator(), "hello.gab", src);
+    var fe = try gabbro.compileWithRuntime(arena.allocator(), "hello.fels", src);
     defer fe.deinit(arena.allocator());
     const m = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(m);
@@ -88,7 +88,7 @@ test "runtime: exit and abort are terminating calls" {
         \\    abort();
         \\}
     ;
-    var fe = try gabbro.compileWithRuntime(arena.allocator(), "terminate.gab", src);
+    var fe = try gabbro.compileWithRuntime(arena.allocator(), "terminate.fels", src);
     defer fe.deinit(arena.allocator());
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(module);
@@ -108,7 +108,7 @@ test "runtime: @panic is #noreturn — CFG allows body without return" {
         \\    return x;
         \\}
     ;
-    var fe = try gabbro.compileWithRuntime(arena.allocator(), "validate.gab", src);
+    var fe = try gabbro.compileWithRuntime(arena.allocator(), "validate.fels", src);
     defer fe.deinit(arena.allocator());
     const m = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(m);

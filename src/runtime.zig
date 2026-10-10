@@ -9,11 +9,11 @@
 /// `__libc_start_main` (the dynamically-linked `linux-gnu` target).
 const builtin = @import("builtin");
 
-pub const windows_src = @embedFile("runtime/windows.gab");
+pub const windows_src = @embedFile("runtime/windows.fels");
 
-const linux_body = @embedFile("runtime/linux.gab");
-const linux_start_none = @embedFile("runtime/linux_start_none.gab");
-const linux_start_gnu = @embedFile("runtime/linux_start_gnu.gab");
+const linux_body = @embedFile("runtime/linux.fels");
+const linux_start_none = @embedFile("runtime/linux_start_none.fels");
+const linux_start_gnu = @embedFile("runtime/linux_start_gnu.fels");
 
 pub const linux_none_src = linux_body ++ "\n" ++ linux_start_none;
 pub const linux_gnu_src = linux_body ++ "\n" ++ linux_start_gnu;

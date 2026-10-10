@@ -82,27 +82,27 @@ jobs:
               println("hello from Gabbro");
               return 5;
           }
-          '@ | Out-File -Encoding utf8 (Join-Path $dir "hello.gab")
+          '@ | Out-File -Encoding utf8 (Join-Path $dir "hello.fels")
           Push-Location $dir
-          & $gabbro.FullName build hello.gab
+          & $gabbro.FullName build hello.fels
           if ($LASTEXITCODE -ne 0) { throw "gabbro build failed ($LASTEXITCODE)" }
           & .\hello.exe
           if ($LASTEXITCODE -ne 5) { throw "hello.exe returned $LASTEXITCODE, expected 5" }
 
-          # The same program through build.gab (0.1.0 shipped with this path broken).
+          # The same program through build.fels (0.1.0 shipped with this path broken).
           Remove-Item hello.exe
           @'
           #import std.build.{ Build, executable, default };
 
           build :: fn(b: Build) {
-              exe := b.executable("hello", "hello.gab");
+              exe := b.executable("hello", "hello.fels");
               b.default(exe);
           }
-          '@ | Out-File -Encoding utf8 build.gab
+          '@ | Out-File -Encoding utf8 build.fels
           & $gabbro.FullName build
-          if ($LASTEXITCODE -ne 0) { throw "gabbro build (build.gab) failed ($LASTEXITCODE)" }
+          if ($LASTEXITCODE -ne 0) { throw "gabbro build (build.fels) failed ($LASTEXITCODE)" }
           & .\hello.exe
-          if ($LASTEXITCODE -ne 5) { throw "hello.exe from build.gab returned $LASTEXITCODE, expected 5" }
+          if ($LASTEXITCODE -ne 5) { throw "hello.exe from build.fels returned $LASTEXITCODE, expected 5" }
           Pop-Location
           exit 0 # the step would otherwise fail with hello.exe's exit code
 

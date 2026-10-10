@@ -6211,7 +6211,7 @@ fn isCoreNs(sa: ast.ScopeAccess) bool {
 }
 
 /// Derive a module name from a file path for `core::module`: the basename with a
-/// trailing `.fels` (or `.gab`) stripped (e.g. `lib/std/heap.fels` → `heap`).
+/// trailing `.fels` (or `.fels`) stripped (e.g. `lib/std/heap.fels` → `heap`).
 fn moduleNameOf(file: []const u8) []const u8 {
     var base = file;
     if (std.mem.lastIndexOfAny(u8, base, "/\\")) |i| base = base[i + 1 ..];
@@ -6331,10 +6331,10 @@ test "a file's package folder decides its capabilities" {
         .{ .dir = "C:\\cache\\raylib-abc", .caps = .{ .ffi = .{ .libs = &gl } } },
         .{ .dir = "C:\\cache\\raylib-abc\\vendor\\inner", .caps = .{} },
     };
-    try std.testing.expect(capsForFile("c:/cache/raylib-abc/src/core.gab").ffi == .libs);
-    try std.testing.expect(capsForFile("C:\\cache\\raylib-abc\\vendor\\inner\\x.gab").ffi == .none);
-    try std.testing.expect(capsForFile("C:\\cache\\raylib-abcd\\x.gab").ffi == .none);
-    try std.testing.expect(capsForFile("main.gab").ffi == .none);
+    try std.testing.expect(capsForFile("c:/cache/raylib-abc/src/core.fels").ffi == .libs);
+    try std.testing.expect(capsForFile("C:\\cache\\raylib-abc\\vendor\\inner\\x.fels").ffi == .none);
+    try std.testing.expect(capsForFile("C:\\cache\\raylib-abcd\\x.fels").ffi == .none);
+    try std.testing.expect(capsForFile("main.fels").ffi == .none);
 }
 
 pub const ComptimeVm = struct {
@@ -7176,7 +7176,7 @@ pub fn runCompilerHooks(allocator: std.mem.Allocator, front_end: pipeline.FrontE
     };
 }
 
-/// Run a `build.gab`'s `build :: fn(b: Build)` entry on the comptime VM, with
+/// Run a `build.fels`'s `build :: fn(b: Build)` entry on the comptime VM, with
 /// `host` installed so its `std.build` `__build_*` intrinsics record into the
 /// driver's BuildPlan. Constructs the `Build` handle (a 1-cell `{ id: i32 } = {0}`)
 /// and passes it in. The build system's entry point (the Phase-3 message loop in
@@ -7187,7 +7187,7 @@ pub fn runBuildHook(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
     const c = cvm.ensureCache() orelse return error.SemanticFailed;
     var vm = vm_engine.Vm.initModule(cvm.gpa, &c.bc);
     vm.host = host;
-    vm.caps.ffi = .all; // build.gab is the privileged root — it may call host FFI.
+    vm.caps.ffi = .all; // build.fels is the privileged root — it may call host FFI.
     defer vm.deinit();
 
     // The `Build` argument: a single zone cell holding `id = 0`, addressed as a
@@ -7198,13 +7198,13 @@ pub fn runBuildHook(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
     const build_arg = vm_value.Value{ .struct_ref = .{ .zone = cell.ptr.zone, .offset = cell.ptr.offset } };
 
     // Surface why the hook stopped. Without this every failure reads as "your
-    // build.gab has no `build`", even when the function was found and ran.
+    // build.fels has no `build`", even when the function was found and ran.
     _ = vm.call("build", &.{build_arg}) catch |err| {
         if (vm.compiler_error_msg) |m| {
-            std.debug.print("build.gab: {s}\n", .{m});
+            std.debug.print("build.fels: {s}\n", .{m});
         } else {
             std.debug.print(
-                "build.gab: the comptime VM stopped ({s}). This means the script " ++
+                "build.fels: the comptime VM stopped ({s}). This means the script " ++
                     "reached something the VM cannot do at compile time — writing to " ++
                     "stdout is the common one, so a build script cannot print yet.\n",
                 .{@errorName(err)},

@@ -271,7 +271,7 @@ fn runSource(
     defer arena.deinit();
     const a = arena.allocator();
 
-    var fe = try gabbro.compile(a, "vm_test.gab", src);
+    var fe = try gabbro.compile(a, "vm_test.fels", src);
     defer fe.deinit(a);
     const ir_module = try gabbro.lowerFrontend(a, fe);
 
@@ -315,7 +315,7 @@ test "e2e: #run calls a function, folded to a constant" {
         \\square :: fn(x: i32) -> i32 { return x * x; }
         \\ANSWER :: #run square(7);
     ;
-    var fe = try gabbro.compile(a, "run.gab", src);
+    var fe = try gabbro.compile(a, "run.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
 
@@ -347,7 +347,7 @@ test "e2e: #run sizeof folds scalar, struct, and array sizes" {
         \\SP :: #run core::sizeof(Point);
         \\SA :: #run core::sizeof([4]i32);
     ;
-    var fe = try gabbro.compile(a, "sz.gab", src);
+    var fe = try gabbro.compile(a, "sz.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
 
@@ -374,7 +374,7 @@ test "e2e: #run enum match folds to a constant" {
         \\}
         \\R :: #run rank(Dir.east);
     ;
-    var fe = try gabbro.compile(a, "enum.gab", src);
+    var fe = try gabbro.compile(a, "enum.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try std.testing.expectEqual(@as(i128, 3), try globalInt(m, "R"));
@@ -402,7 +402,7 @@ test "e2e: #run optionals (?? coalesce and !! unwrap)" {
         \\NONE :: #run none_or();
         \\UNW  :: #run unwrapped();
     ;
-    var fe = try gabbro.compile(a, "opt.gab", src);
+    var fe = try gabbro.compile(a, "opt.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try std.testing.expectEqual(@as(i128, 5), try globalInt(m, "SOME"));
@@ -429,7 +429,7 @@ test "e2e: #run interface dynamic dispatch" {
         \\}
         \\AREA :: #run go();
     ;
-    var fe = try gabbro.compile(a, "iface.gab", src);
+    var fe = try gabbro.compile(a, "iface.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try std.testing.expectEqual(@as(i128, 25), try globalInt(m, "AREA"));
@@ -457,7 +457,7 @@ test "e2e: #run fallible with catch" {
         \\OKV :: #run safe(5);
         \\BADV :: #run safe(-3);
     ;
-    var fe = try gabbro.compile(a, "fallible.gab", src);
+    var fe = try gabbro.compile(a, "fallible.fels", src);
     defer fe.deinit(a);
     const m = try gabbro.lowerFrontend(a, fe);
     try std.testing.expectEqual(@as(i128, 10), try globalInt(m, "OKV"));

@@ -9,7 +9,7 @@ test "built-in constraint: a satisfying type is accepted (`$T: Numeric`)" {
         \\dbl :: fn($T: Numeric, x: T) -> T { return x +% x; }
         \\use :: fn() -> i32 { return dbl(20u8) as i32 + dbl(11) as i32; }  // 40 + 22
     ;
-    var fe = try gabbro.compile(arena.allocator(), "ok_constraint.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "ok_constraint.fels", src);
     defer fe.deinit(arena.allocator());
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(module);
@@ -27,7 +27,7 @@ test "built-in constraint: a non-satisfying type is rejected with a clear messag
         \\dbl :: fn($T: Numeric, x: T) -> T { return x; }
         \\use :: fn() -> i32 { p: P = .{ 0 }; _ := dbl(p); return 0; }
     ;
-    var fe = gabbro.compile(arena.allocator(), "bad_constraint.gab", src);
+    var fe = gabbro.compile(arena.allocator(), "bad_constraint.fels", src);
     if (fe) |*f| {
         f.deinit(arena.allocator());
         try std.testing.expect(false); // should not compile
@@ -47,7 +47,7 @@ test "where clause: a satisfying type is accepted (user predicate over type_info
         \\{ return x +% x; }
         \\use :: fn() -> i32 { return dbl(21); }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "where_ok.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "where_ok.fels", src);
     defer fe.deinit(arena.allocator());
     // The where predicate runs at lowering (on the comptime VM); a numeric T accepts.
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
@@ -70,7 +70,7 @@ test "where clause: a non-satisfying type is rejected during resolution (two-pas
     ;
     try std.testing.expectError(
         error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "where_bad.gab", src),
+        gabbro.compile(arena.allocator(), "where_bad.fels", src),
     );
 }
 
@@ -84,7 +84,7 @@ test "named constraint: `Name :: constraint($T)` accepts a satisfying type" {
         \\dbl :: fn($T: MyNum, x: T) -> T { return x +% x; }
         \\use :: fn() -> i32 { return dbl(21); }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "constraint_ok.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "constraint_ok.fels", src);
     defer fe.deinit(arena.allocator());
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(module);
@@ -102,7 +102,7 @@ test "named constraint: a non-satisfying type is rejected with the predicate's m
     ;
     try std.testing.expectError(
         error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "constraint_bad.gab", src),
+        gabbro.compile(arena.allocator(), "constraint_bad.fels", src),
     );
 }
 
@@ -117,7 +117,7 @@ test "named constraint: `core::require(T, Other)` composition accepts when all h
         \\use :: fn($T: Ordered, x: T) -> T { return x +% x; }
         \\go :: fn() -> i32 { return use(21); }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "require_ok.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "require_ok.fels", src);
     defer fe.deinit(arena.allocator());
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(module);
@@ -137,7 +137,7 @@ test "named constraint: `require` propagates the required constraint's rejection
     ;
     try std.testing.expectError(
         error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "require_bad.gab", src),
+        gabbro.compile(arena.allocator(), "require_bad.fels", src),
     );
 }
 
@@ -155,7 +155,7 @@ test "struct constraint: `struct($T: Name)` accepts a satisfying type (+ method)
         \\}
         \\use :: fn() -> i32 { c: Cell(i32) = .{ 7 }; return c.get(); }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "struct_constraint_ok.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "struct_constraint_ok.fels", src);
     defer fe.deinit(arena.allocator());
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(module);
@@ -175,7 +175,7 @@ test "struct constraint: a non-satisfying type is rejected at instantiation" {
     ;
     try std.testing.expectError(
         error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "struct_constraint_bad.gab", src),
+        gabbro.compile(arena.allocator(), "struct_constraint_bad.fels", src),
     );
 }
 
@@ -196,7 +196,7 @@ test "struct constraint: a non-satisfying type is rejected through an in-struct 
     ;
     try std.testing.expectError(
         error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "struct_constraint_method_bad.gab", src),
+        gabbro.compile(arena.allocator(), "struct_constraint_method_bad.fels", src),
     );
 }
 
@@ -220,7 +220,7 @@ test "where clause: output type param `-> $Acc` computed from type_info (two-pas
         \\}
         \\use :: fn() -> i32 { return acc_of(100u8) + acc_of(8i32); }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "out_ty.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "out_ty.fels", src);
     defer fe.deinit(arena.allocator());
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(module);
@@ -241,7 +241,7 @@ test "where clause: output type param + reject coexist (reject a float)" {
     ;
     try std.testing.expectError(
         error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "out_ty_reject.gab", src),
+        gabbro.compile(arena.allocator(), "out_ty_reject.fels", src),
     );
 }
 
@@ -261,7 +261,7 @@ test "generic function: inferred $T, monomorphized to i32" {
         \\    return x - y;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "generics.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "generics.fels", src);
     defer fe.deinit(arena.allocator());
 
     // Both calls use i32 — only one instantiation
@@ -291,7 +291,7 @@ test "generic function: two separate instantiations produce two IR functions" {
         \\    return b;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "generics2.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "generics2.fels", src);
     defer fe.deinit(arena.allocator());
 
     try std.testing.expectEqual(@as(usize, 2), fe.types.generic_instantiations.items.len);
@@ -321,7 +321,7 @@ test "generic function: same-type uses deduplicate to one instantiation" {
         \\    return a + b;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "dedup.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "dedup.fels", src);
     defer fe.deinit(arena.allocator());
     try std.testing.expectEqual(@as(usize, 1), fe.types.generic_instantiations.items.len);
 }
@@ -334,7 +334,7 @@ test "generic function: two T params — second must match first" {
         \\eq_check :: fn(a: $T, b: T) -> bool { return a == b; }
         \\use :: fn() -> bool { return eq_check(1, 2); }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "eq.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "eq.fels", src);
     defer fe.deinit(arena.allocator());
     const m = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(m);
@@ -350,7 +350,7 @@ test "generic function: type mismatch between T params fails sema" {
     ;
     try std.testing.expectError(
         error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "bad_generic.gab", bad),
+        gabbro.compile(arena.allocator(), "bad_generic.fels", bad),
     );
 }
 
@@ -368,7 +368,7 @@ test "generic function: explicit $T: type param" {
         \\    return zeroed(i32);
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "zeroed.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "zeroed.fels", src);
     defer fe.deinit(arena.allocator());
     try std.testing.expectEqual(@as(usize, 1), fe.types.generic_instantiations.items.len);
     const m = try gabbro.lowerFrontend(arena.allocator(), fe);
@@ -404,7 +404,7 @@ test "generic function: a `$T` inside a param type (`*$T`, `[]$T`, `?$T`, `[N]$T
         \\    return (n as i64) + get(&w) + (width(&w) as i64);
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "nested_tparam.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "nested_tparam.fels", src);
     defer fe.deinit(arena.allocator());
 
     const expected = [_][]const u8{
@@ -435,6 +435,6 @@ test "generic function: `*$T` twice is one T; a second `T` must match the first"
     ;
     try std.testing.expectError(
         error.SemanticFailed,
-        gabbro.compile(arena.allocator(), "nested_tparam_bad.gab", bad),
+        gabbro.compile(arena.allocator(), "nested_tparam_bad.fels", bad),
     );
 }

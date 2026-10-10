@@ -5,11 +5,11 @@ const gabbro = @import("gabbro_compiler");
 // image — a constant, a `.{ ... }` of constants, the address of a function, or the address of
 // another global — and nothing runs at startup to put it there. These tests look at what
 // reaches LLVM and at what is refused; `exe_integration.zig` runs the fixture
-// `tests/fixtures/lang/static_data_app.gab` and loads a DLL exporting such globals.
+// `tests/fixtures/lang/static_data_app.fels` and loads a DLL exporting such globals.
 
 /// Type-check `src`, lower it, and return the LLVM IR text.
 fn irText(allocator: std.mem.Allocator, src: []const u8) ![]const u8 {
-    var fe = try gabbro.compile(allocator, "static_data.gab", src);
+    var fe = try gabbro.compile(allocator, "static_data.fels", src);
     defer fe.deinit(allocator);
     const module = try gabbro.lowerFrontend(allocator, fe);
     var backend = gabbro.LlvmBackend.init(allocator, "static_data");
@@ -150,7 +150,7 @@ test "static data: #export makes a global a data export" {
 test "static data: a function pointer is called through a global, a field or a table element" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var fe = try gabbro.compile(arena.allocator(), "static_data.gab", decls ++
+    var fe = try gabbro.compile(arena.allocator(), "static_data.fels", decls ++
         \\ONE: extern fn(i32) -> i32 = dbl;
         \\VT: Vtbl = .{ add, 7u32 };
         \\T: [2]extern fn(i32) -> i32 = .{ dbl, dbl };
@@ -178,7 +178,7 @@ test "static data: a call has to match the function pointer's signature, and the
     };
     for (bad) |decl| {
         const src = try std.mem.concat(arena.allocator(), u8, &.{ decls, decl, "\n" });
-        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "static_data.gab", src));
+        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "static_data.fels", src));
     }
 }
 
@@ -190,7 +190,7 @@ fn expectRefused(allocator: std.mem.Allocator, decl: []const u8) !void {
         "\n",
     });
     // The front end already refuses it - the same check `gabbro check` runs - so nothing is lowered.
-    if (gabbro.compile(allocator, "static_data.gab", src)) |fe_ok| {
+    if (gabbro.compile(allocator, "static_data.fels", src)) |fe_ok| {
         var fe = fe_ok;
         defer fe.deinit(allocator);
         std.debug.print("\nthis initialiser was accepted by the front end but should be refused:\n  {s}\n", .{decl});
@@ -262,7 +262,7 @@ test "static data: a value only the comptime VM can compute is not refused by th
     };
     for (accepted) |decl| {
         const src = try std.mem.concat(arena.allocator(), u8, &.{ decls, decl, "\n" });
-        var fe = gabbro.compile(arena.allocator(), "static_data.gab", src) catch |err| {
+        var fe = gabbro.compile(arena.allocator(), "static_data.fels", src) catch |err| {
             std.debug.print("\nthe front end should accept:\n  {s}\n", .{decl});
             return err;
         };
@@ -270,20 +270,20 @@ test "static data: a value only the comptime VM can compute is not refused by th
     }
     // ...and a mistake in an initialiser that does need the VM still surfaces at lowering.
     const src = try std.mem.concat(arena.allocator(), u8, &.{ decls, "twice :: fn(x: i32) -> i32 { return x * 2; }\nG: u8 = #run twice(200);\n" });
-    var fe = try gabbro.compile(arena.allocator(), "static_data.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "static_data.fels", src);
     defer fe.deinit(arena.allocator());
     try std.testing.expectError(error.LoweringFailed, gabbro.lowerFrontend(arena.allocator(), fe));
 }
 
 // Compile-time code reading static data. The comptime VM runs the IR the native backend lowers,
 // and a global that is a struct, an array, an enum value or a function pointer is built the first
-// time a run reads it. `tests/fixtures/lang/static_vm_app.gab` checks the values against the machine;
+// time a run reads it. `tests/fixtures/lang/static_vm_app.fels` checks the values against the machine;
 // these check what is accepted and what is refused.
 
 /// Lower `src` (declarations + a `#assert`) and report whether lowering succeeded. A failing
 /// `#assert`, an unreadable global and a refused write all come back as `LoweringFailed`.
 fn lowers(allocator: std.mem.Allocator, src: []const u8) !bool {
-    var fe = try gabbro.compile(allocator, "static_read.gab", src);
+    var fe = try gabbro.compile(allocator, "static_read.fels", src);
     defer fe.deinit(allocator);
     if (gabbro.lowerFrontend(allocator, fe)) |_| {
         return true;
@@ -483,7 +483,7 @@ test "static data: a run that fills a big array does not leave a slow function b
     _ = qpc.QueryPerformanceFrequency(&freq);
     _ = qpc.QueryPerformanceCounter(&t0);
 
-    var fe = try gabbro.compile(arena.allocator(), "big_fill.gab", src);
+    var fe = try gabbro.compile(arena.allocator(), "big_fill.fels", src);
     defer fe.deinit(arena.allocator());
     const module = try gabbro.lowerFrontend(arena.allocator(), fe);
     var backend = gabbro.LlvmBackend.init(arena.allocator(), "big_fill");

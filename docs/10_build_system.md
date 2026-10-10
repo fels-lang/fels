@@ -1,4 +1,4 @@
-# The Gabbro Build System (`build.gab`)
+# The Gabbro Build System (`build.fels`)
 
 Your build is a Gabbro program that runs inside the compiler. No Makefiles, no CMake,
 no second language. The two pieces are already there: the comptime VM that executes
@@ -14,18 +14,18 @@ This is the design. The VM/metaprogramming foundation is in
 
 ## 1. The file and the execution model
 
-A project has a **`build.gab`** at its root. It defines a `build` procedure:
+A project has a **`build.fels`** at its root. It defines a `build` procedure:
 
 ```gabbro
 #import std.build.{ Build };
 
 build :: fn(b: Build) {
-    exe := b.executable("hello", "src/main.gab");
+    exe := b.executable("hello", "src/main.fels");
     b.default(exe);
 }
 ```
 
-`gabbro build` (no file argument) finds `./build.gab` and **runs `build(b)` inside the
+`gabbro build` (no file argument) finds `./build.fels` and **runs `build(b)` inside the
 comptime VM** — the same engine behind `#run` and `#compiler`. There is no
 separate "build binary": the build script never touches the disk to compile
 itself; it executes as compile-time Gabbro. After it returns, the compiler reads the
@@ -38,7 +38,7 @@ This is Jai's model (`#run build()`), minus the boilerplate. For Jai familiarity
 
 | Layer | Audience | Surface |
 | --- | --- | --- |
-| **0 — default** | `gabbro build main.gab` | No `build.gab`; CLI flags → options. (Exists today.) |
+| **0 — default** | `gabbro build main.fels` | No `build.fels`; CLI flags → options. (Exists today.) |
 | **1 — declarative builder** | 90% of projects | `Build`/`Artifact`/`Step` + methods. Pure data. |
 | **2 — workspaces & options** | power users | Jai-parity `Workspace`, full `Options` struct, `add_file`/`add_source`/`add_quote`. |
 | **3 — compiler intercept** | tooling, codegen | the message loop: `wait_message`, typed `Message`, `set_status`. |
@@ -54,7 +54,7 @@ because of that split.
 
 build :: fn(b: Build) {
     // the game
-    game := b.executable("game", "src/main.gab");
+    game := b.executable("game", "src/main.fels");
     game.release();                      // or .optimize(.release_fast)
     game.link("raylib");                 // raylib.lib
     game.link("user32");
@@ -68,7 +68,7 @@ build :: fn(b: Build) {
 
     // a codegen step that feeds a second artifact (planned: `codegen` and `needs` are not built yet)
     bind := b.codegen("bindings", gen_raylib_bindings);  // fn(*Gen)
-    tool := b.executable("packer", "tools/packer.gab");
+    tool := b.executable("packer", "tools/packer.fels");
     tool.needs(bind);                    // ordering + declared inputs
 
     // run / test steps
@@ -88,7 +88,7 @@ pub Backend    :: enum { llvm, native }   // native = gabbro's own backend (futu
 
 pub Artifact :: struct {
     name:    []const u8,
-    root:    []const u8,        // entry .gab source
+    root:    []const u8,        // entry .fels source
     kind:    OutputKind,
     opt:     Optimize,
     backend: Backend,
@@ -143,7 +143,7 @@ build :: fn(b: Build) {
     o.emit_debug_info = true;
     w.set_options(o);
 
-    w.add_file("main.gab");
+    w.add_file("main.fels");
     // add generated code as text …
     w.add_source("VERSION :: 3;");
     // … or as TYPED AST (validated at the generation site — better than a string)
@@ -203,7 +203,7 @@ lowers.
 ```gabbro
 build :: fn(b: Build) {
     w := b.workspace("Main");
-    w.add_file("main.gab");
+    w.add_file("main.fels");
     w.intercept();                       // begin
 
     had_error := false;
@@ -252,13 +252,13 @@ and adds the typed-AST/type-info handles.
 
 ### 5.1 Capability-sandboxed dependency builds — the supply-chain fix
 Jai's build is arbitrary code with full host access; so is `build.rs`. **Gabbro hands
-every build hook a capability set.** A dependency's `build.gab` receives a
+every build hook a capability set.** A dependency's `build.fels` receives a
 `*Caps` it cannot forge or widen:
 
 ```gabbro
-// vendor/raylib/build.gab  — runs sandboxed
+// vendor/raylib/build.fels  — runs sandboxed
 build :: fn(b: Build, caps: *Caps) {
-    lib := b.static("raylib", "src/raylib.gab");
+    lib := b.static("raylib", "src/raylib.fels");
     lib.optimize(.release_fast);
 
     caps.read_dir(".");          // ALLOWED — granted its own folder
@@ -286,7 +286,7 @@ at the generation site — not a raw string that fails at splice time. The
 build will generate, and the type-checker trusts it until the build supplies it.
 
 ```gabbro
-// main.gab
+// main.fels
 #provided GIT_REV: []const u8;       // build will define this
 println(GIT_REV);
 ```
@@ -297,7 +297,7 @@ println(GIT_REV);
 ```gabbro
 targets: [3]Target = .{ Target.win_x64, Target.linux_x64, Target.macos_arm64 };
 for t in targets {
-    e := b.executable("tool", "src/main.gab");
+    e := b.executable("tool", "src/main.fels");
     e.target(t);
     e.output(out_for(t));
 }
@@ -319,7 +319,7 @@ the safer, faster cousin of Jai's `generate_bindings`.
 ## 6. CLI surface
 
 ```text
-gabbro build                  run ./build.gab, build the default artifact
+gabbro build                  run ./build.fels, build the default artifact
 gabbro build <name>           build a named artifact or step
 gabbro build run [-- args]    build the default exe, then run it
 gabbro build test             build + run the test step
@@ -329,10 +329,10 @@ gabbro build -D key=value     set an option the script reads via b.option(...)
 gabbro build --watch          rebuild affected steps on change
 gabbro build --explain        print the build graph + cache decisions
 gabbro build --frozen         fail if the lockfile would change
-gabbro build <file.gab>        direct single-file build (back-compat, today's behavior)
+gabbro build <file.fels>        direct single-file build (back-compat, today's behavior)
 ```
 
-Like Jai (`-- meta Build`) and the Default_Metaprogram, the no-`build.gab` path is
+Like Jai (`-- meta Build`) and the Default_Metaprogram, the no-`build.fels` path is
 the built-in default metaprogram: it just turns flags into `Options`.
 
 ## 7. Location directives (Jai parity)
@@ -353,7 +353,7 @@ Paths always use `/`, even on Windows.
 
 | Jai | Gabbro |
 | --- | --- |
-| `build.jai` / `first.jai`, `#run build()` | `build.gab`, bare `gabbro build` (or `#run build()`) |
+| `build.jai` / `first.jai`, `#run build()` | `build.fels`, bare `gabbro build` (or `#run build()`) |
 | module `Compiler`, `#compiler` proc | `std.build`, `#compiler` hook (built) |
 | `compiler_create_workspace()` | `b.workspace(name)` |
 | `get_build_options` / `set_build_options` | `w.options()` / `w.set_options(o)` |
@@ -363,7 +363,7 @@ Paths always use `/`, even on Windows.
 | `compiler_begin_intercept` / `wait_for_message` / `end_intercept` | `w.intercept()` / `w.wait_message()` / `w.end_intercept()` |
 | `compiler_set_workspace_status(.FAILED)` | `w.set_status(.failed)` |
 | `set_build_options_dc(.{do_output=false})` | implicit — the build script never self-compiles to an exe |
-| Default_Metaprogram | `gabbro build` with no `build.gab` |
+| Default_Metaprogram | `gabbro build` with no `build.fels` |
 | `generate_bindings` | `b.codegen` step emitting typed AST |
 | — | **capabilities/sandbox, content-hashed parallel graph, `--watch`, target matrix, hermetic/`--frozen`** |
 
@@ -376,7 +376,7 @@ What the build system needs, against what already exists:
 | Comptime VM that runs IR | ✅ done |
 | `#compiler` hook + `compiler_decls()` (program introspection) | ✅ done |
 | Driver `compileFileWithLlvm` (exe/dll/obj) + `gabld` linker | ✅ done |
-| **`gabbro build` dir-mode**: find `build.gab`, run `build(b)` in the VM | ✅ done |
+| **`gabbro build` dir-mode**: find `build.fels`, run `build(b)` in the VM | ✅ done |
 | **Config capture**: `host_call` opcode → `__build_*` intrinsics → host `BuildPlan` | ✅ done |
 | **Plan executor**: per-artifact `compileFileWithLlvm`, wired outputs/libs/opt | ✅ done |
 | Layer 1 surface: `executable`/`shared`/`static`/`object`, `link`/`lib_path`/`output`/`optimize`/`define`, `require_*`/`depend`, `run_step`/`test_dir`/`default` | ✅ done |
@@ -384,7 +384,7 @@ What the build system needs, against what already exists:
 | `test_dir` step execution | ✅ done |
 | Build graph: deps/steps DAG, topo order, parallel | later |
 | Content hashing + incremental + `--watch` | later |
-| Capabilities / `*Caps` sandbox + VM capability table | ⏳ slices 1–2 done — comptime FFI is gated in `src/vm/engine.zig`, and the grant is per-library with conservative narrowing; the `*Caps` surface in `build.gab` is open |
+| Capabilities / `*Caps` sandbox + VM capability table | ⏳ slices 1–2 done — comptime FFI is gated in `src/vm/engine.zig`, and the grant is per-library with conservative narrowing; the `*Caps` surface in `build.fels` is open |
 | `add_quote` typed codegen / `#provided` / `define` injection | later (extends `#quote`/`#insert`) |
 | Layer 2 (`workspace`/`Options`) + Layer 3 (intercept) surface | later |
 | Cross-compile targets | later (needs Linux/macOS codegen + entry) |
@@ -403,11 +403,11 @@ capability system → Layers 2–3 surface → cross-compile.
 ## 10. Minimal end-to-end (the target for v1)
 
 ```gabbro
-// build.gab
+// build.fels
 #import std.build.{ Build };
 
 build :: fn(b: Build) {
-    app := b.executable("app", "src/main.gab");
+    app := b.executable("app", "src/main.fels");
     app.release();
     app.link("user32");
     b.run_step("run", app);
@@ -443,8 +443,8 @@ or the shorthands `a.debug()`, `a.release_safe()`, `a.release_fast()`, `a.releas
 copied next to the program:
 
 ```gabbro
-util := b.static("util", "src/util.gab");
-app := b.executable("app", "src/main.gab");
+util := b.static("util", "src/util.fels");
+app := b.executable("app", "src/main.fels");
 app.link_artifact(util);
 ```
 
@@ -474,7 +474,7 @@ and the workspace-wide `b.out_root(dir)` (a per-artifact `out_dir` wins).
 it into the install prefix: programs and DLLs (with the DLLs copied next to them) to `bin/`,
 static and import libraries to `lib/`. `b.install_file(src, dest)` and
 `b.install_dir(src, dest)` add files and folders, with `dest` relative to the prefix.
-`b.install_prefix(dir)` sets the prefix (default `dist`, relative to build.gab), and
+`b.install_prefix(dir)` sets the prefix (default `dist`, relative to build.fels), and
 `gabbro build install --prefix <dir>` overrides it. A step or artifact the script names
 `install` takes the place of the built-in step.
 
@@ -482,11 +482,11 @@ static and import libraries to `lib/`. `b.install_file(src, dest)` and
 `a.define_bool(name, value)` write a `build_options` module the program imports:
 
 ```gabbro
-// build.gab
+// build.fels
 app.define("GIT_REV", b.option_string("rev", "dev", "the commit"));
 app.define_int("MAX_PLAYERS", 8);
 
-// src/main.gab
+// src/main.fels
 #import build_options;
 limit := build_options::MAX_PLAYERS;
 ```
@@ -495,7 +495,7 @@ limit := build_options::MAX_PLAYERS;
 
 **Modules**: `a.add_module(name, dir)` maps an import name to a folder. With
 `app.add_module("mathlib", "deps/mathlib")`, `#import mathlib.ops` reads
-`deps/mathlib/ops.gab` and a bare `#import mathlib` reads `deps/mathlib/mathlib.gab`.
+`deps/mathlib/ops.fels` and a bare `#import mathlib` reads `deps/mathlib/mathlib.fels`.
 
 **Dependencies**: `b.require_path(name, dir)` / `b.require_git(name, url)` → a dep id;
 `a.depend(dep_id)`.
@@ -521,7 +521,7 @@ typo) and for a value of the wrong kind, and lists the options the script has:
 ```text
 $ gabbro build -Dthread=8
 gabbro build: unknown build option -Dthread
-build options of this build.gab:
+build options of this build.fels:
   -Dthreads=<int>              worker threads (default: 4)
   -Dbackend=gl|vulkan|d3d      renderer (default: gl)
 ```
@@ -533,19 +533,19 @@ at the top of `build`.
 description)`, `b.command(name, program)`, `b.default(artifact)` and `b.default_step(step)`.
 See [Steps](#steps) below.
 
-See `examples/build_showcase/` for a build.gab exercising most of these.
+See `examples/build_showcase/` for a build.fels exercising most of these.
 
 ## Steps
 
 A step is a named piece of work: `gabbro build <name>` builds the artifacts it depends on, runs
-the steps it comes after, then its actions in order. Paths are relative to build.gab.
+the steps it comes after, then its actions in order. Paths are relative to build.fels.
 
 ```gabbro
-gen_tool := b.executable("gen", "tools/gen.gab");
+gen_tool := b.executable("gen", "tools/gen.fels");
 
 gen := b.step("gen", "generate the tables");
 gen.run(gen_tool);                     // build the tool, then run it
-game := b.executable("game", "src/main.gab");
+game := b.executable("game", "src/main.fels");
 game.after(gen);                       // the tables exist before the game compiles
 
 assets := b.step("assets", "copy the assets next to the game");
@@ -567,7 +567,7 @@ b.default_step(all);                   // a bare `gabbro build` runs `all`
 | --- | --- |
 | `s.depends_on(artifact)` | build the artifact first |
 | `s.after(other)` | run the other step first |
-| `s.command(program) -> Command` | run a program: a name found on PATH, or a path relative to build.gab |
+| `s.command(program) -> Command` | run a program: a name found on PATH, or a path relative to build.fels |
 | `s.run(artifact) -> Command` | build an artifact of this build and run it |
 | `s.copy_file(src, dest)` · `s.copy_dir(src, dest)` | copy a file, or a folder with everything in it |
 | `s.write_file(path, text)` | write a file, creating its folders |
@@ -575,7 +575,7 @@ b.default_step(all);                   // a bare `gabbro build` runs `all`
 | `s.print(text)` | print a line (a build script cannot print with `std.io` yet) |
 
 A `Command` takes `c.arg(text)`, `c.arg_output(artifact)` (the absolute path of an
-artifact's output), `c.cwd(dir)` (default: build.gab's folder) and `c.env(key, value)` (added
+artifact's output), `c.cwd(dir)` (default: build.fels's folder) and `c.env(key, value)` (added
 to the environment `gabbro build` runs in). A command that exits with a code other than 0 stops
 the build. `b.command(name, program)` is a step with one command.
 
@@ -591,7 +591,7 @@ the build.
 ## Test steps
 
 `b.test_dir(name, dir)` declares a test step. Running it compiles and runs every
-`*.gab` file directly under `dir` as a standalone program — each one **passes when
+`*.fels` file directly under `dir` as a standalone program — each one **passes when
 it exits 0**:
 
 ```sh
@@ -600,14 +600,14 @@ gabbro build test          # the step named "test"
 
 ```text
 running tests in tests/
-  ✓ parser_test.gab
-  ✓ lexer_test.gab
-  ✗ sema_test.gab
+  ✓ parser_test.fels
+  ✓ lexer_test.fels
+  ✗ sema_test.fels
 
 2 passed, 1 failed
 ```
 
-A test is just a `.gab` with a `main :: fn() -> i32` that returns `0` on success
+A test is just a `.fels` with a `main :: fn() -> i32` that returns `0` on success
 and non-zero on failure. The step itself fails (non-zero `gabbro build` exit) if any
 test fails, so it drops cleanly into CI. Tests are compiled at `-O0` for speed.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Time the analysis of `gabbro lsp` on repeated edits of one file.
 
-    python tests/lsp_perf.py <gabbro.exe> <file.gab> [edits]
+    python tests/lsp_perf.py <gabbro.exe> <file.fels> [edits]
 
 The server prints one line per analysis to stderr when GABBRO_LSP_TIMING is set.
 Each edit appends a comment line, then a request forces the analysis to run.

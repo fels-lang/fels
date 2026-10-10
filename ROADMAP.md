@@ -14,12 +14,12 @@ Gabbro compiles end-to-end on two targets. Windows x86-64 is the original host: 
 check → IR → LLVM → object → executable, linked by `gabld` without spawning LLD.
 `x86_64-linux-none` (static) cross-compiles from Windows and has a complete standard
 library — all 25 modules, backed by 103 runtime functions in
-[`src/runtime/linux.gab`](src/runtime/linux.gab) covering file I/O, time, process
+[`src/runtime/linux.fels`](src/runtime/linux.fels) covering file I/O, time, process
 control, sockets and threads. `x86_64-linux-gnu` is implemented behind
 `--target linux-gnu` + `--sysroot`.
 
 The comptime VM runs the same IR the native backend lowers, and a bare `#run` is now
-capability-pure: it cannot reach host DLLs unless granted. `build.gab` is the
+capability-pure: it cannot reach host DLLs unless granted. `build.fels` is the
 privileged root.
 
 ---
@@ -35,7 +35,7 @@ What is still not automated or done:
 | Packaging prerequisites | `scripts/package.ps1` needs an LLVM install carrying the LLVM-C headers and the static `LLVM*`/`lld*` libraries. The usual Windows LLVM distributions ship only `Remarks.h` and `lto.h`; the `clang+llvm-*-x86_64-pc-windows-msvc` archive is the one that works. |
 | Repository description + topics | the repo is public but has neither, so it is close to unfindable in search |
 | Build-from-source path | Zig + LLVM, needs a clean pass and an examples sweep |
-| Release testing | 0.1.0 shipped with a broken build system because only `gabbro build <file>.gab` was tested, not `gabbro build`. Any release check must extract the archive somewhere neutral and run both. |
+| Release testing | 0.1.0 shipped with a broken build system because only `gabbro build <file>.fels` was tested, not `gabbro build`. Any release check must extract the archive somewhere neutral and run both. |
 
 ---
 
@@ -56,7 +56,7 @@ closed when two allowlists are disjoint. Both live in
 
 What remains:
 
-- The `*Caps` surface in `build.gab`, so a build script declares the libraries it
+- The `*Caps` surface in `build.fels`, so a build script declares the libraries it
   needs and the driver grants exactly those instead of `.all`. This is the first
   slice that changes the Gabbro-side API rather than compiler internals.
 - Capabilities beyond FFI — filesystem, network, environment, process spawn — each
@@ -91,7 +91,7 @@ are done.
 - Content hashing, incremental builds, `--watch`.
 - `add_quote` typed codegen, `#provided`, `define` injection — extends `#quote`/`#insert`.
 - Layer 2 (`workspace`/`Options`) and Layer 3 (intercept) surfaces.
-- Cross-compile target selection from `build.gab`.
+- Cross-compile target selection from `build.fels`.
 
 ### Targets
 
@@ -227,7 +227,7 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
 - **`bindgen` v1** maps the common scalar/pointer/struct/enum/array shapes; the rest is
   unhandled ([`src/bindgen.zig`](src/bindgen.zig)).
 - **No external packages** — projects are single-tree until the package manager lands.
-- **A build script cannot print.** `println` in a `build.gab` still stops the hook,
+- **A build script cannot print.** `println` in a `build.fels` still stops the hook,
   but only one piece is left: `core::narrow` lowers to the `truncate_to` builtin,
   and the comptime VM does not implement it (nor the other type-first builtins
   `ptr_from_int`, `unaligned_read`, `slice_from_raw_parts`). `write_stdout` calls it

@@ -76,7 +76,7 @@ build :: fn(out: []u8, length: u16) -> void ! bytes::BytesError {
 - Imported by name (`#import std.bytes.{ read_u32_le };`) a function also reads as a method:
   `packet.read_u32_le(4)?`.
 
-See `tests/fixtures/stdlib/bytes_app.gab`.
+See `tests/fixtures/stdlib/bytes_app.fels`.
 
 ## `std.utf16`
 UTF-8 ⇄ UTF-16 conversion, in plain Gabbro with no OS calls, so it behaves the same on
@@ -125,8 +125,8 @@ into_buffer :: fn(text: []const u8, buf: []u16) -> usize ! utf16::Utf16Error {
   The arena functions allocate exactly the result (plus the terminator for `alloc_utf16z`)
   and the arena owns it; nothing is freed.
 
-See `tests/fixtures/stdlib/utf16_app.gab` (hand-picked and exhaustive cases) and
-`utf16_win_app.gab` (agreement with the Windows APIs).
+See `tests/fixtures/stdlib/utf16_app.fels` (hand-picked and exhaustive cases) and
+`utf16_win_app.fels` (agreement with the Windows APIs).
 
 ## `std.fs`
 Minimal synchronous file I/O (Windows-only currently).
@@ -222,8 +222,8 @@ Methods: `get`/`set`, `get_acquire`/`set_release`, `exchange`, `cas`/`cas_value`
 each carrying the same compile-time contract as its free-function counterpart.
 
 > Atomic increments across threads lose nothing under contention — that's the whole
-> point (a plain `+= 1` would race). See `tests/fixtures/stdlib/atomics_thread_app.gab`,
-> and `atomic_cell_app.gab` for the `Atomic(T)` method API.
+> point (a plain `+= 1` would race). See `tests/fixtures/stdlib/atomics_thread_app.fels`,
+> and `atomic_cell_app.fels` for the `Atomic(T)` method API.
 
 ## `std.thread`
 Native OS threads and structured helpers. gabbro favours *real threads* over async/await
@@ -267,7 +267,7 @@ g.join_all();                    // wait for all
 ```
 
 > Locks, waiting and a blocking queue are in [`std.sync`](#stdsync); counters and flags
-> need only `std.atomics`. See `tests/fixtures/stdlib/thread_app.gab`.
+> need only `std.atomics`. See `tests/fixtures/stdlib/thread_app.fels`.
 
 ## `std.sync`
 Mutual exclusion and waiting between threads, on the operating system's own primitives: a
@@ -345,7 +345,7 @@ v := q.pop() ?? -1;                     // sleeps while it is empty; null once c
   fails, `pop` waits for `close()`.
 
 There is no reader/writer lock, semaphore, barrier, one-shot or unbounded channel yet. See
-`tests/fixtures/stdlib/sync_app.gab` — contention with exact totals, a two-thread hand-off that
+`tests/fixtures/stdlib/sync_app.fels` — contention with exact totals, a two-thread hand-off that
 must alternate strictly, a broadcast, timed waits, and many producers against many consumers with
 every item delivered exactly once.
 
@@ -498,7 +498,7 @@ main :: fn() -> i32 {
 }
 ```
 
-`tests/fixtures/stdlib/winrt_app.gab` goes further against the real system: GUID text and parsing
+`tests/fixtures/stdlib/winrt_app.fels` goes further against the real system: GUID text and parsing
 compared with `StringFromGUID2` / `IIDFromString`; an HSTRING through every operation; the OS's
 in-memory `IStream` called through a vtable declared from `objidl.h`; a COM object written in
 Gabbro that the OS calls back (`IStream::CopyTo` writes into it); and `Windows.Foundation.Uri`
@@ -573,7 +573,7 @@ ignored := srv.send_to("pong", d.from) catch e { return; };  // reply to sender
   link symbol, so the gabbro name is free to differ from the C name.
 
 > Loopback round-trips combining net + thread + addr are in
-> `tests/fixtures/stdlib/net_echo_app.gab` (TCP echo) and `net_udp_app.gab` (UDP echo).
+> `tests/fixtures/stdlib/net_echo_app.fels` (TCP echo) and `net_udp_app.fels` (UDP echo).
 > DNS (`getaddrinfo`) and a small HTTP client are the natural next additions.
 
 ## Game & graphics modules
@@ -712,7 +712,7 @@ path::dirname ("a/b/c.txt")            // "a/b"   ("." when no separator)
 path::extension("c.txt")               // ".txt"  (with the dot; "" if none)
 path::stem("c.txt")                    // "c"
 path::is_absolute("/x")                // true (also "C:\…" and "\unc")
-path::has_extension("c.gab", "sk")      // true (leading dot optional)
+path::has_extension("c.fels", "sk")      // true (leading dot optional)
 path::join(&a, "a/b", "c.txt")         // "a/b\c.txt"
 path::with_extension(&a, "c.txt", "md")// "c.md"
 ```

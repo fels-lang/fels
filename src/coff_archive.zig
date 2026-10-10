@@ -1,5 +1,5 @@
 //! Write a static library (`.lib`): a `!<arch>` archive holding COFF objects and a symbol
-//! table, the format lld-link and link.exe read. `b.static(...)` in build.gab uses it.
+//! table, the format lld-link and link.exe read. `b.static(...)` in build.fels uses it.
 
 const std = @import("std");
 
