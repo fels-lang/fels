@@ -4728,3 +4728,30 @@ test "exe: a generic struct's field default is stored at the field's width" {
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_generic_default_width_o0", 0));
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_generic_default_width_o2", 2));
 }
+
+test "exe: an integer literal cast with `as` is computed at the cast's type" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `(1 << 40) as u64` was computed in 32 bits (0), and `0xFFFFFFFF as u64` read as the `i32` -1.
+    const src =
+        \\wide :: fn() -> u64 { return (1 << 40) as u64; }
+        \\#assert(wide() == 1099511627776u64);
+        \\#assert(0xFFFFFFFF as u64 == 4294967295u64);
+        \\main :: fn() -> i32 {
+        \\    if (1 << 40) as u64 != 1099511627776u64 { return 1; }
+        \\    if 0xFFFFFFFF as u64 != 4294967295u64 { return 2; }
+        \\    if 3000000000 as i64 != 3000000000i64 { return 3; }
+        \\    if -1 as u64 != 18446744073709551615u64 { return 4; }
+        \\    if -1 as u8 != 255u8 { return 5; }
+        \\    if 200 as i8 != -56i8 { return 6; }
+        \\    if (1 << 40) as i32 != 0 { return 7; }
+        \\    if -(1 << 40) as i64 != -1099511627776i64 { return 8; }
+        \\    if wide() != 1099511627776u64 { return 9; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_int_lit_cast_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_int_lit_cast_o2", 2));
+}
