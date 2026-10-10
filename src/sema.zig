@@ -1415,6 +1415,13 @@ const Checker = struct {
     /// `.in_progress` while its own initializer is inferred: meeting it again is a cycle.
     top_consts: std.AutoHashMapUnmanaged(SymbolId, TopConst) = .empty,
 
+    /// The integer literal under the unary minus being checked: `-128i8` is `-`
+    /// applied to `128i8`, and the literal is checked as -128.
+    negated_int_lit: ?ast.NodeId = null,
+    /// The initializers of the top-level constants without a type (`N :: 300;`),
+    /// so a use of one is checked against its target type like the literal.
+    const_values: std.AutoHashMapUnmanaged(SymbolId, ast.Expr) = .empty,
+
     const TopConst = union(enum) { pending: ast.ConstDecl, in_progress };
 
     fn init(allocator: std.mem.Allocator, symbols: SymbolTable) Checker {
@@ -1441,6 +1448,7 @@ const Checker = struct {
         if (self.exhaustive_matches_init) self.exhaustive_matches.deinit();
         self.catch_names.deinit(self.allocator);
         self.top_consts.deinit(self.allocator);
+        self.const_values.deinit(self.allocator);
     }
 
     // Diagnostics
@@ -1542,6 +1550,8 @@ const Checker = struct {
             .void => "void",
             .usize => "usize",
             .isize => "isize",
+            .byte => "byte",
+            .addr => "addr",
             .f32 => "f32",
             .f64 => "f64",
             .int_lit => "integer literal",
@@ -1811,7 +1821,13 @@ const Checker = struct {
                 if (isTypeAliasConst(self.symbols, decl)) {
                     _ = try self.typeFromRef(.{ .named = constAliasTarget(decl).? });
                 } else {
-                    _ = try self.inferExpr(decl.value);
+                    const value_ty = try self.inferExpr(decl.value);
+                    if (decl.ty) |ty| {
+                        try self.requireIntLitFits(decl.value, try self.typeFromRef(ty));
+                    } else if (value_ty == .int_lit) {
+                        // Its uses take any integer type, but it is stored as an `i32`.
+                        try self.requireDefaultIntFits(decl.value);
+                    }
                 }
             },
             .type_decl => |decl| try self.checkTypeDecl(decl),
@@ -2080,6 +2096,8 @@ const Checker = struct {
         // A mutable global carries an explicit type; an immutable constant takes the type of
         // its (comptime) initializer.
         try self.env.set(id, if (decl.ty) |t| try self.typeFromRef(t) else try self.inferExpr(decl.value));
+        // A constant without a type (`N :: 300;`) is checked like its literal at each use.
+        if (decl.ty == null and !decl.is_mutable) try self.const_values.put(self.allocator, id, decl.value);
     }
 
     fn checkTypeDecl(self: *Checker, decl: ast.TypeDecl) SemanticError!void {
@@ -2103,6 +2121,8 @@ const Checker = struct {
                 for (strukt.fields) |field| {
                     const field_ty = try self.typeFromRef(field.ty);
                     try self.rejectBorrowOutsideParam(field_ty, field.span);
+                    // Defaults are not otherwise checked here: IR lowers them from the tree.
+                    if (field.default) |default| try self.requireIntLitFits(default, field_ty);
                 }
             },
             .errors => |errors_decl| {
@@ -2502,7 +2522,14 @@ const Checker = struct {
     fn checkStmt(self: *Checker, stmt: ast.Stmt) SemanticError!void {
         switch (stmt) {
             .local_infer => |local| {
-                const local_ty = try self.inferExpr(local.value);
+                var local_ty = try self.inferExpr(local.value);
+                // `x := 5;` makes `x` an `i32`, which is what IR stores it as. Left an
+                // untyped literal, `x` was accepted for any integer type and stored
+                // into it at the wrong width.
+                if (local_ty == .int_lit) {
+                    try self.requireDefaultIntFits(local.value);
+                    local_ty = .i32;
+                }
                 try self.declareLocal(local.name, local_ty);
                 self.noteLocal(.{ .name = local.name, .file = "", .kind = .local_val, .decl = local.span, .scope_end = self.block_end, .ty = local_ty, .value = local.value });
                 try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
@@ -2524,6 +2551,7 @@ const Checker = struct {
                     }, .{ .primary_label = std.fmt.allocPrint(self.allocator, "expected `{s}`", .{self.formatTy(declared_ty)}) catch null });
                     return error.SemanticFailed;
                 }
+                try self.requireIntLitFits(local.value, declared_ty);
                 try self.declareLocal(local.name, declared_ty);
                 try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
                 if (self.valueIsCapturingClosure(local.value)) try self.capturing_locals.put(local.name, {});
@@ -2554,6 +2582,8 @@ const Checker = struct {
                     }, .{ .primary_label = std.fmt.allocPrint(self.allocator, "expected `{s}`", .{self.formatTy(target_ty)}) catch null });
                     return error.SemanticFailed;
                 }
+                // A shift amount is not a value of the target's type.
+                if (assign.op != .shl and assign.op != .shr) try self.requireIntLitFits(assign.value, target_ty);
                 if (self.exprZoneOwner(assign.value)) |owner| {
                     // Borrowed values still may not be retained inside an
                     // aggregate or through a pointer — that would outlive the
@@ -2624,6 +2654,7 @@ const Checker = struct {
                     self.emitErrorRich(ret.span, "return type mismatch: expected `{s}`, found `{s}`", .{ self.formatTy(self.current_return_ty), self.formatTy(actual_ty) }, .{ .primary_label = std.fmt.allocPrint(self.allocator, "expected `{s}`", .{self.formatTy(self.current_return_ty)}) catch null });
                     return error.SemanticFailed;
                 }
+                if (ret.value) |value| try self.requireIntLitFits(value, self.current_return_ty);
             },
             .fail_stmt => |fail| try self.checkFail(fail),
             .if_stmt => |iff| {
@@ -2946,6 +2977,7 @@ const Checker = struct {
                     self.emitError(nc.default.span, "`??` default type `{s}` incompatible with `{s}`", .{ self.formatTy(default_ty), self.formatTy(inner_ty) });
                     return error.SemanticFailed;
                 }
+                try self.requireIntLitFits(nc.default.*, inner_ty);
                 break :blk inner_ty;
             },
             .as_cast => |cast| blk: {
@@ -3012,7 +3044,21 @@ const Checker = struct {
                     else
                         self.reportUnknownType(suffix, expr.span);
                 }
-                break :blk intLiteralType(text);
+                // A suffix gives the literal its type, and the value has to fit it. The
+                // type stands either way, so checking goes on (as for a bad suffix): a
+                // top level constant failing here would stop the whole module.
+                const ty = intLiteralType(text);
+                if (intTypeRange(ty)) |range| {
+                    const negated = self.negated_int_lit == expr.id;
+                    const fits = if (intLiteralValue(text)) |value| range.holds(if (negated) -value else value) else false;
+                    if (!fits) {
+                        const written = if (negated) std.fmt.allocPrint(self.allocator, "-{s}", .{text}) catch text else text;
+                        self.emitErrorRich(expr.span, "integer literal `{s}` does not fit in `{s}`", .{ written, self.formatTy(ty) }, .{
+                            .primary_label = std.fmt.allocPrint(self.allocator, "`{s}` holds {d} to {d}", .{ self.formatTy(ty), range.min, range.max }) catch null,
+                        });
+                    }
+                }
+                break :blk ty;
             },
             .float => |text| blk: {
                 const suffix = floatLiteralSuffix(text);
@@ -3063,7 +3109,12 @@ const Checker = struct {
                         },
                     };
                 },
-                .neg => try self.inferExpr(unary.expr.*),
+                .neg => blk: {
+                    const saved = self.negated_int_lit;
+                    defer self.negated_int_lit = saved;
+                    self.negated_int_lit = unary.expr.id;
+                    break :blk try self.inferExpr(unary.expr.*);
+                },
                 .not => blk: {
                     const inner = try self.inferExpr(unary.expr.*);
                     if (!inner.isBool()) {
@@ -3135,6 +3186,12 @@ const Checker = struct {
                         return error.SemanticFailed;
                     },
                 };
+                // A literal operand takes the other operand's type: with `b: u8`,
+                // `b < 256` would compare with 0. A shift amount is no such value.
+                if (binary.op != .shl and binary.op != .shr) {
+                    try self.requireIntLitFits(binary.left.*, right);
+                    try self.requireIntLitFits(binary.right.*, left);
+                }
                 break :blk result;
             },
             .try_expr => |try_expr| blk: {
@@ -3455,6 +3512,7 @@ const Checker = struct {
                             });
                             return error.SemanticFailed;
                         }
+                        try self.requireIntLitFits(arg_expr, method.params[i + 1].ty);
                     }
                     try self.env.expr_types.put(call.callee.id, .{ .fn_ptr = .{
                         .params = &.{},
@@ -3836,6 +3894,7 @@ const Checker = struct {
                     self.emitError(arg_expr.span, "argument {d} of `{s}`: expected `{s}`, found `{s}`", .{ i + 1, fld.name, self.formatTy(method.params[i + 1].ty), self.formatTy(arg_ty) });
                     return error.SemanticFailed;
                 }
+                try self.requireIntLitFits(arg_expr, method.params[i + 1].ty);
             }
             try self.env.impl_method_calls.put(call.callee.id, .{
                 .type_name = type_name,
@@ -3980,6 +4039,7 @@ const Checker = struct {
                 self.emitError(arg_expr.span, "argument {d} of `{s}`: expected `{s}`, found `{s}`", .{ arg_i + 1, name, self.formatTy(param.ty), self.formatTy(arg_ty) });
                 return error.SemanticFailed;
             }
+            try self.requireIntLitFits(arg_expr, param.ty);
             arg_i += 1;
         }
         // Emit a warning when calling a deprecated function.
@@ -4110,6 +4170,7 @@ const Checker = struct {
                     self.emitError(arg_expr.span, "variant `.{s}` payload: expected `{s}`, found `{s}`", .{ fld.name, self.formatTy(pty), self.formatTy(arg_ty) });
                     return error.SemanticFailed;
                 }
+                try self.requireIntLitFits(arg_expr, pty);
             }
         } else if (call.args.len != 0) {
             self.emitError(call.callee.span, "variant `.{s}` has no payload; write `{s}.{s}`", .{ fld.name, fld.base.kind.ident, fld.name });
@@ -4248,6 +4309,7 @@ const Checker = struct {
                         self.emitError(value.span, "integer match pattern is incompatible with subject type `{s}`", .{self.formatTy(subject_ty)});
                         return error.SemanticFailed;
                     }
+                    try self.requireIntLitFits(value, subject_ty);
                 }
                 return null;
             },
@@ -4266,6 +4328,8 @@ const Checker = struct {
                     self.emitError(arm.span, "range bounds are incompatible with subject type `{s}`", .{self.formatTy(subject_ty)});
                     return error.SemanticFailed;
                 }
+                try self.requireIntLitFits(r.lo, subject_ty);
+                try self.requireIntLitFits(r.hi, subject_ty);
                 return null;
             },
             .strings => {
@@ -4707,6 +4771,7 @@ const Checker = struct {
                 });
                 return error.SemanticFailed;
             }
+            try self.requireIntLitFits(arg_expr, expected);
         }
 
         // Check static constraints: `$T: Numeric` (built-in predicate) or
@@ -5456,6 +5521,7 @@ const Checker = struct {
                 });
                 return error.SemanticFailed;
             }
+            try self.requireIntLitFits(fail.payload[0], payload_ty);
         } else if (fail.payload.len != 0) {
             self.emitError(fail.span, "error variant `.{s}` does not have a payload", .{fail.variant});
             return error.SemanticFailed;
@@ -5580,6 +5646,7 @@ const Checker = struct {
                 });
                 return error.SemanticFailed;
             }
+            if (i < fp.params.len) try self.requireIntLitFits(arg_expr, fp.params[i]);
         }
         try self.env.expr_types.put(call.callee.id, fn_ty);
         return fp.ret.*;
@@ -5925,6 +5992,127 @@ const Checker = struct {
         return false;
     }
 
+    /// An integer literal coerces to an integer type only when its value fits
+    /// (docs/02_types.md, "Type Coercion Rules"); it used to be truncated without
+    /// a word. `compatible` sees only types, so each place that takes an expression
+    /// for an expected type calls this as well. The elements of an aggregate
+    /// literal and the values of an `if` or `match` are checked one by one, and a
+    /// constant without a type (`N :: 300;`) is checked like its literal.
+    fn requireIntLitFits(self: *Checker, expr: ast.Expr, expected: Ty) SemanticError!void {
+        return self.checkIntLitFits(expr, expected, false);
+    }
+
+    /// A literal with no type to take (`x := 5;`, `N :: 5;`) is an `i32`, which is
+    /// what IR stores it as, so it has to fit one.
+    fn requireDefaultIntFits(self: *Checker, expr: ast.Expr) SemanticError!void {
+        return self.checkIntLitFits(expr, .i32, true);
+    }
+
+    fn checkIntLitFits(self: *Checker, expr: ast.Expr, expected: Ty, is_default: bool) SemanticError!void {
+        switch (expected) {
+            .borrow, .optional => |inner| return self.checkIntLitFits(expr, inner.*, is_default),
+            else => {},
+        }
+        switch (expr.kind) {
+            .if_expr => |ie| {
+                try self.checkIntLitFits(ie.then_value, expected, is_default);
+                return self.checkIntLitFits(ie.else_value, expected, is_default);
+            },
+            .match_expr => |me| {
+                for (me.arms) |arm| try self.checkIntLitFits(arm.value, expected, is_default);
+                return;
+            },
+            .compound_literal => |values| {
+                switch (expected) {
+                    .array => |array| for (values) |value| try self.requireIntLitFits(value, array.elem.*),
+                    .slice => |elem| for (values) |value| try self.requireIntLitFits(value, elem.*),
+                    else => if (self.structFieldInfos(expected)) |fields| for (values, 0..) |value, i| {
+                        if (i >= fields.len) break;
+                        try self.requireIntLitFits(value, fields[i].ty);
+                    },
+                }
+                return;
+            },
+            .struct_literal => |inits| {
+                const fields = self.structFieldInfos(expected) orelse return;
+                for (inits) |fi| for (fields) |field| {
+                    if (!std.mem.eql(u8, field.name, fi.name)) continue;
+                    try self.requireIntLitFits(fi.value, field.ty);
+                    break;
+                };
+                return;
+            },
+            else => {},
+        }
+        const range = intTypeRange(expected) orelse return;
+        const value = self.untypedIntValue(expr);
+        const fits = switch (value) {
+            .none => return,
+            .value => |v| range.holds(v),
+            .too_large => false,
+        };
+        if (fits) return;
+        const ty_name = self.formatTy(expected);
+        const label = std.fmt.allocPrint(self.allocator, "`{s}` holds {d} to {d}", .{ ty_name, range.min, range.max }) catch null;
+        const written = self.intLitText(expr);
+        if (value == .value and !isLiteralShape(expr)) {
+            self.emitErrorRich(expr.span, "`{s}` is {d}, which does not fit in `{s}`", .{ written, value.value, ty_name }, .{ .primary_label = label });
+        } else {
+            // On its own a literal is an `i32`; the fix is the suffix of the type it was meant to have.
+            const help: ?[]const u8 = switch (value) {
+                .too_large => "gabbro integers are at most 64 bits wide",
+                .value => |v| if (!is_default) null else std.fmt.allocPrint(self.allocator, "an integer literal with no type to take is an `i32`: give it the type it needs with a suffix, as in `{s}{s}`", .{
+                    written, suggestedIntSuffix(written, v),
+                }) catch null,
+                .none => unreachable,
+            };
+            self.emitErrorRich(expr.span, "integer literal `{s}` does not fit in `{s}`", .{ written, ty_name }, .{ .primary_label = label, .help = help });
+        }
+        return error.SemanticFailed;
+    }
+
+    /// The value of an untyped integer literal, also under unary minus (`-128` is
+    /// `-` applied to `128`) or named by a constant without a type (`N :: 300;`).
+    fn untypedIntValue(self: *Checker, expr: ast.Expr) UntypedIntLit {
+        return switch (expr.kind) {
+            .ident, .scope_access => blk: {
+                const id = self.env.expr_symbols.get(expr.id) orelse break :blk .none;
+                const value = self.const_values.get(id) orelse break :blk .none;
+                // Only a literal: a constant naming another is not followed, so no cycle loops.
+                break :blk untypedIntLit(value);
+            },
+            .unary => |unary| if (unary.op != .neg) .none else switch (self.untypedIntValue(unary.expr.*)) {
+                .value => |v| .{ .value = -v },
+                else => |other| other,
+            },
+            else => untypedIntLit(expr),
+        };
+    }
+
+    /// An integer literal or a constant's name as it was written, minus signs included.
+    fn intLitText(self: *Checker, expr: ast.Expr) []const u8 {
+        return switch (expr.kind) {
+            .int => |text| text,
+            .ident => |name| name,
+            .scope_access => |sa| sa.member,
+            .unary => |unary| std.fmt.allocPrint(self.allocator, "-{s}", .{self.intLitText(unary.expr.*)}) catch "",
+            else => "",
+        };
+    }
+
+    /// The fields of the struct `ty` names, or null when it names none.
+    fn structFieldInfos(self: *Checker, ty: Ty) ?[]const FieldInfo {
+        const id = switch (ty) {
+            .named => |id| id,
+            else => return null,
+        };
+        const layout = self.env.layouts.get(id) orelse return null;
+        return switch (layout.kind) {
+            .struct_type => |fields| fields,
+            else => null,
+        };
+    }
+
     fn interfaceFromPointer(self: *Checker, ty: Ty) ?SymbolId {
         const id = switch (ty) {
             .pointer, .const_ptr => |inner| switch (inner.*) {
@@ -6229,6 +6417,109 @@ fn intLiteralType(text: []const u8) Ty {
     if (std.mem.endsWith(u8, text, "i8")) return .i8;
     if (std.mem.endsWith(u8, text, "byte")) return .byte;
     return .int_lit;
+}
+
+/// The values an integer type holds.
+const IntRange = struct {
+    min: i128,
+    max: i128,
+
+    fn of(comptime T: type) IntRange {
+        return .{ .min = std.math.minInt(T), .max = std.math.maxInt(T) };
+    }
+
+    fn holds(self: IntRange, value: i128) bool {
+        return value >= self.min and value <= self.max;
+    }
+};
+
+/// The range of a concrete integer type, or null for a type without one (an
+/// untyped literal, a type parameter, anything not an integer). `usize`,
+/// `isize` and `addr` are 64 bits wide on every target.
+fn intTypeRange(ty: Ty) ?IntRange {
+    return switch (ty) {
+        .i8 => IntRange.of(i8),
+        .i16 => IntRange.of(i16),
+        .i32 => IntRange.of(i32),
+        .i64, .isize => IntRange.of(i64),
+        .u8, .byte => IntRange.of(u8),
+        .u16 => IntRange.of(u16),
+        .u32 => IntRange.of(u32),
+        .u64, .usize, .addr => IntRange.of(u64),
+        else => null,
+    };
+}
+
+/// The value written by an integer literal's digits, in its radix, skipping `_`
+/// separators and ignoring any suffix; a leading `-` (the text of a negative
+/// literal that compile-time code built) negates it. Null when the digits need
+/// more than 64 bits, which no integer type holds.
+fn intLiteralValue(text: []const u8) ?i128 {
+    const negative = text.len > 0 and text[0] == '-';
+    const digits = if (negative) text[1..] else text;
+    var start: usize = 0;
+    var radix: u8 = 10;
+    if (digits.len >= 2 and digits[0] == '0' and (digits[1] == 'x' or digits[1] == 'X')) {
+        start = 2;
+        radix = 16;
+    } else if (digits.len >= 2 and digits[0] == '0' and (digits[1] == 'b' or digits[1] == 'B')) {
+        start = 2;
+        radix = 2;
+    }
+    var value: i128 = 0;
+    for (digits[start..]) |ch| {
+        if (ch == '_') continue;
+        const digit = std.fmt.charToDigit(ch, radix) catch break;
+        value = value * radix + digit;
+        if (value > std.math.maxInt(u64)) return null;
+    }
+    return if (negative) -value else value;
+}
+
+/// What an expression is as an untyped integer literal.
+const UntypedIntLit = union(enum) {
+    /// Not one: a suffixed literal has its own type, anything else is a value.
+    none,
+    value: i128,
+    /// More than 64 bits: there is no integer type it fits.
+    too_large,
+};
+
+/// An unsuffixed integer literal, or one under unary minus: `-128` is `-`
+/// applied to `128`, and fits `i8` although `128` does not.
+fn untypedIntLit(expr: ast.Expr) UntypedIntLit {
+    return switch (expr.kind) {
+        .int => |text| if (intLiteralSuffix(text).len != 0)
+            .none
+        else if (intLiteralValue(text)) |value|
+            .{ .value = value }
+        else
+            .too_large,
+        .unary => |unary| if (unary.op != .neg) .none else switch (untypedIntLit(unary.expr.*)) {
+            .value => |value| .{ .value = -value },
+            else => |other| other,
+        },
+        else => .none,
+    };
+}
+
+/// The suffix to suggest for a literal too large for an `i32`: a hex or binary
+/// literal is usually a bit pattern, so the smallest unsigned type that holds
+/// it; a decimal one `i64`, while it fits.
+fn suggestedIntSuffix(written: []const u8, value: i128) []const u8 {
+    const digits = std.mem.trimStart(u8, written, "-");
+    const bit_pattern = digits.len >= 2 and digits[0] == '0' and std.ascii.isAlphabetic(digits[1]);
+    if (value >= 0 and bit_pattern) return if (IntRange.of(u32).holds(value)) "u32" else "u64";
+    return if (IntRange.of(i64).holds(value)) "i64" else "u64";
+}
+
+/// A literal, possibly under unary minus, rather than the name of a constant.
+fn isLiteralShape(expr: ast.Expr) bool {
+    return switch (expr.kind) {
+        .int => true,
+        .unary => |unary| unary.op == .neg and isLiteralShape(unary.expr.*),
+        else => false,
+    };
 }
 
 fn floatLiteralType(text: []const u8) Ty {

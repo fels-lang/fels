@@ -41,7 +41,7 @@ pub SOCK_STREAM    :: 1;        // TCP
 pub SOCK_DGRAM     :: 2;        // UDP
 pub IPPROTO_TCP    :: 6;
 pub IPPROTO_UDP    :: 17;
-pub INVALID_SOCKET :: 0xFFFFFFFFFFFFFFFF;   // (SOCKET)(~0)
+pub INVALID_SOCKET :: 0xFFFFFFFFFFFFFFFFusize;   // (SOCKET)(~0)
 pub SOCKET_ERROR   :: -1;
 pub SOCKADDR_LEN   :: 16;       // sizeof(sockaddr_in)
 

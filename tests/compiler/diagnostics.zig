@@ -335,7 +335,7 @@ test "diagnostics: `*name` is a type where one is wanted and a dereference elsew
     // ...while a variable that merely has the name of a type is an ordinary load.
     try std.testing.expect(std.mem.indexOf(u8,
         (try firstError(a, prelude ++ "main :: fn() -> i32 { Node := 5; return f(*Node); }")).?,
-        "cannot dereference value of type `integer literal`") != null);
+        "cannot dereference value of type `i32`") != null);
 
     // Where only a type will do, `*name` is one and nothing else: a name that is no type says so,
     // as it always did, and a typo gets its suggestion.
@@ -1035,4 +1035,164 @@ test "diagnostics: a `$T` inside a param type is bound from the argument and sub
             return error.WrongDiagnostic;
         }
     }
+}
+
+/// Fail, printing the program and what it gave, unless the first error of `src` contains
+/// every one of `needles`.
+fn expectFirstError(arena: std.mem.Allocator, src: []const u8, needles: []const []const u8) !void {
+    const msg = (try firstError(arena, src)) orelse {
+        std.debug.print("expected an error for:\n{s}\ngot none\n", .{src});
+        return error.MissingDiagnostic;
+    };
+    for (needles) |needle| if (std.mem.indexOf(u8, msg, needle) == null) {
+        std.debug.print("expected `{s}` in the error for:\n{s}\ngot:\n{s}\n", .{ needle, src, msg });
+        return error.WrongDiagnostic;
+    };
+}
+
+test "diagnostics: an integer literal that does not fit its target type is rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // These were accepted and the value truncated: `y` held 705032704, `b` 44.
+    try expectFirstError(a, "main :: fn() -> i32 { y: i32 = 5000000000; return 0; }", &.{
+        "integer literal `5000000000` does not fit in `i32`", "`i32` holds -2147483648 to 2147483647",
+    });
+    try expectFirstError(a, "main :: fn() -> i32 { y: i32 = 0; y = 5000000000; return y; }", &.{
+        "integer literal `5000000000` does not fit in `i32`",
+    });
+    try expectFirstError(a, "main :: fn() -> i32 { b: u8 = 300; return 0; }", &.{
+        "integer literal `300` does not fit in `u8`", "`u8` holds 0 to 255",
+    });
+
+    // One past either end of each type, in each notation. `-128` is unary minus on `128`.
+    const outside = [_][2][]const u8{
+        .{ "i8", "-129" },                 .{ "i8", "128" },
+        .{ "u8", "-1" },                   .{ "u8", "0x100" },
+        .{ "byte", "0b1_0000_0000" },      .{ "i16", "-32_769" },
+        .{ "u16", "65_536" },              .{ "i32", "-2147483649" },
+        .{ "i32", "0x8000_0000" },         .{ "u32", "4294967296" },
+        .{ "i64", "9223372036854775808" }, .{ "i64", "-9223372036854775809" },
+        .{ "isize", "-0x8000_0000_0000_0001" }, .{ "u64", "0x1_0000_0000_0000_0000" },
+        .{ "usize", "-1" },
+    };
+    for (outside) |case| {
+        const src = try std.fmt.allocPrint(a, "main :: fn() -> i32 {{ x: {s} = {s}; return 0; }}", .{ case[0], case[1] });
+        const msg = try std.fmt.allocPrint(a, "integer literal `{s}` does not fit in `{s}`", .{ case[1], case[0] });
+        try expectFirstError(a, src, &.{msg});
+    }
+    // Exactly at either end is fine.
+    try expectNoError(a, "",
+        \\main :: fn() -> i32 {
+        \\    a: i8 = -128; b: i8 = 127; c: u8 = 0xFF; d: byte = 0b1111_1111;
+        \\    e: i16 = -32_768; f: u16 = 65_535; g: i32 = -2147483648; h: u32 = 0xFFFF_FFFF;
+        \\    i: i64 = -9223372036854775808; j: i64 = 0x7FFF_FFFF_FFFF_FFFF;
+        \\    k: u64 = 18446744073709551615; l: usize = 0xFFFF_FFFF_FFFF_FFFF; m: u8 = 0; n: u64 = -0;
+        \\    return 0;
+        \\}
+    );
+    // A literal wider than any integer type.
+    try expectFirstError(a, "main :: fn() -> i32 { x: u64 = 99999999999999999999999999999999999999999999; return 0; }", &.{
+        "does not fit in `u64`", "at most 64 bits",
+    });
+}
+
+test "diagnostics: an integer literal is checked wherever it takes its type from the context" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const prelude =
+        \\P :: struct { x: u8, y: i16  pub set :: fn(self: *Self, v: u8) { self.x = v; } }
+        \\Shape :: enum { circle: u8, none }
+        \\E :: errors { big: u8 }
+        \\Sink :: interface { put :: fn(self: *Self, b: u8); }
+        \\P as Sink { put :: fn(self: *Self, b: u8) { self.x = b; } }
+        \\take :: fn(v: i16) -> i16 { return v; }
+        \\get :: fn() -> u8 { return 1; }
+        \\maybe :: fn() -> ?u8 { return null; }
+        \\id :: fn($T: type, v: T) -> T { return v; }
+        \\
+    ;
+    const cases = [_][2][]const u8{
+        .{ "main :: fn() -> i32 { take(-32769); return 0; }", "`-32769` does not fit in `i16`" },
+        .{ "f :: fn() -> u8 { return 256; }", "`256` does not fit in `u8`" },
+        .{ "main :: fn() -> i32 { p: P = .{ .x = 1, .y = 40000 }; return 0; }", "`40000` does not fit in `i16`" },
+        .{ "main :: fn() -> i32 { p: P = .{ 300, 1 }; return 0; }", "`300` does not fit in `u8`" },
+        .{ "Q :: struct { x: u8 = 256 }", "`256` does not fit in `u8`" },
+        .{ "main :: fn() -> i32 { xs: [3]u8 = .{ 1, 2, 300 }; return 0; }", "`300` does not fit in `u8`" },
+        .{ "G: u8 = 256;", "`256` does not fit in `u8`" },
+        .{ "main :: fn() -> i32 { b: u8 = 0; b += 256; return 0; }", "`256` does not fit in `u8`" },
+        // As an operand it takes the other operand's type: this compared `b` with 0.
+        .{ "main :: fn() -> i32 { b := get(); if b < 256 { return 1; } return 0; }", "`256` does not fit in `u8`" },
+        .{ "main :: fn() -> i32 { n: usize = 0; if n == -1 { return 1; } return 0; }", "`-1` does not fit in `usize`" },
+        .{ "main :: fn() -> i32 { match get() { 300 => { return 1; } else => { return 0; } } }", "`300` does not fit in `u8`" },
+        .{ "main :: fn() -> i32 { match get() { 0..=300 => { return 1; } else => { return 0; } } }", "`300` does not fit in `u8`" },
+        .{ "main :: fn() -> i32 { c := true; b: u8 = if c { 1 } else { 256 }; return 0; }", "`256` does not fit in `u8`" },
+        .{ "main :: fn() -> i32 { b: u8 = match get() { 1 => 2, else => 999 }; return 0; }", "`999` does not fit in `u8`" },
+        .{ "main :: fn() -> i32 { b := maybe() ?? 256; return 0; }", "`256` does not fit in `u8`" },
+        .{ "main :: fn() -> i32 { o: ?u8 = 256; return 0; }", "`256` does not fit in `u8`" },
+        .{ "main :: fn() -> i32 { p: P = .{ .x = 0, .y = 0 }; p.set(300); return 0; }", "`300` does not fit in `u8`" },
+        .{ "main :: fn() -> i32 { p: P = .{ .x = 0, .y = 0 }; s: *Sink = &p; s.put(300); return 0; }", "`300` does not fit in `u8`" },
+        .{ "main :: fn() -> i32 { s := Shape.circle(300); return 0; }", "`300` does not fit in `u8`" },
+        .{ "f :: fn() -> i32 ! E { fail .big { 300 }; }", "`300` does not fit in `u8`" },
+        .{ "main :: fn() -> i32 { g := take; g(40000); return 0; }", "`40000` does not fit in `i16`" },
+        .{ "main :: fn() -> i32 { x := id(u8, 300); return 0; }", "`300` does not fit in `u8`" },
+    };
+    for (cases) |case| {
+        const src = try std.fmt.allocPrint(a, "{s}{s}\n", .{ prelude, case[0] });
+        try expectFirstError(a, src, &.{case[1]});
+    }
+
+    // A shift amount is not a value of the shifted type, and `as` truncates on purpose.
+    try expectNoError(a, prelude, "main :: fn() -> i32 { b: u8 = 1; b <<= 3; c := b >> 7; return 0; }");
+    try expectNoError(a, prelude, "main :: fn() -> i32 { b := 300 as u8; h := 0x8000_4005 as i32; return 0; }");
+}
+
+test "diagnostics: a suffix gives an integer literal its type, and the value has to fit it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try expectFirstError(a, "main :: fn() -> i32 { x := 256u8; return 0; }", &.{"integer literal `256u8` does not fit in `u8`"});
+    try expectFirstError(a, "main :: fn() -> i32 { x := -129i8; return 0; }", &.{"integer literal `-129i8` does not fit in `i8`"});
+    try expectFirstError(a, "main :: fn() -> i32 { x := -1u32; return 0; }", &.{"integer literal `-1u32` does not fit in `u32`"});
+    try expectFirstError(a, "main :: fn() -> i32 { x := 0x1_0000_0000_0000_0000u64; return 0; }", &.{"does not fit in `u64`"});
+    try expectNoError(a, "", "main :: fn() -> i32 { a := -128i8; b := 255u8; c := 0xFFFF_FFFF_FFFF_FFFFu64; d := -9223372036854775808i64; return 0; }");
+}
+
+test "diagnostics: an integer literal with no type to take is an i32" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `x` used to stay an untyped literal and be accepted for any integer type, while IR
+    // stored it as an `i32`: four bytes into the `u8`, which overwrote the next local.
+    try expectFirstError(a, "main :: fn() -> i32 { x := 5; b: u8 = x; return 0; }", &.{"type mismatch: expected `u8`, found `i32`"});
+    try expectFirstError(a, "main :: fn() -> i32 { x := 0; n: usize = 5; x = n; return 0; }", &.{"expected `i32`, found `usize`"});
+    try expectFirstError(a, "main :: fn() -> i32 { x := 5000000000; return 0; }", &.{
+        "integer literal `5000000000` does not fit in `i32`", "as in `5000000000i64`",
+    });
+    try expectFirstError(a, "main :: fn() -> i32 { x := -3000000000; return 0; }", &.{"as in `-3000000000i64`"});
+    try expectFirstError(a, "main :: fn() -> i32 { x := 0xFFFF_FFFF; return 0; }", &.{"as in `0xFFFF_FFFFu32`"});
+    try expectFirstError(a, "main :: fn() -> i32 { c := true; x := if c { 1 } else { 3000000000 }; return 0; }", &.{"`3000000000` does not fit in `i32`"});
+    try expectNoError(a, "", "main :: fn() -> i32 { x := -2147483648; y := 2147483647; z: i64 = x as i64; w := 5000000000i64; return y; }");
+}
+
+test "diagnostics: a constant without a type is checked like its literal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try expectFirstError(a, "N :: 300;\nmain :: fn() -> i32 { b: u8 = N; return 0; }", &.{"`N` is 300, which does not fit in `u8`"});
+    try expectFirstError(a, "N :: 5;\nmain :: fn() -> i32 { b: u8 = -N; return 0; }", &.{"`-N` is -5, which does not fit in `u8`"});
+    // Its uses take any integer type, but it is stored as an `i32`.
+    try expectFirstError(a, "BIG :: 5000000000;\nmain :: fn() -> i32 { return 0; }", &.{
+        "integer literal `5000000000` does not fit in `i32`", "as in `5000000000i64`",
+    });
+    try expectNoError(a, "N :: 255;\nM :: -128;\nBIG :: 5000000000i64;\n",
+        "main :: fn() -> i32 { b: u8 = N; c: i8 = M; d: i64 = -N; e: i64 = BIG; return 0; }");
+    // A local of the same name is not the constant.
+    try expectNoError(a, "N :: 300;\n", "main :: fn() -> i32 { N := 5; b: i32 = N; return b; }");
 }
