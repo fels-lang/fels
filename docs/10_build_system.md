@@ -465,6 +465,14 @@ static-vs-dynamic workflow and cross-platform linking.
 `a.windowed()` (GUI — no console window), `a.entry(symbol)`, `a.stack_size(bytes)`.
 These force the LLD path (the fast felsld linker can't apply them).
 
+**Target**: `a.target(.windows | .linux | .linux_gnu)` builds the artifact for another OS, also
+from Windows: `.linux` is a static ELF without libc, `.linux_gnu` links glibc dynamically, and
+`a.sysroot(dir)` says where glibc is. A Linux output has no `.exe`. `a.strip()` leaves the
+symbol table out of a Linux output (a Windows output has none). `b.host_os()` returns the OS
+`fels build` runs on (`.windows`, `.linux`, `.macos`, `.other`), so a script can choose per
+platform. Libraries for Linux are not supported yet, and there is no debug information
+(DWARF/CodeView) in the output yet.
+
 **Output**: `a.output(path)` (explicit), `a.out_dir(dir)` (a directory, name derived),
 and the workspace-wide `b.out_root(dir)` (a per-artifact `out_dir` wins).
 
@@ -609,7 +617,44 @@ running tests in tests/
 
 A test is just a `.fels` with a `main :: fn() -> i32` that returns `0` on success
 and non-zero on failure. The step itself fails (non-zero `fels build` exit) if any
-test fails, so it drops cleanly into CI. Tests are compiled at `-O0` for speed.
+test fails, so it drops cleanly into CI. A failing test shows its exit code and what it
+printed. Tests can import the project's packages.
+
+`b.test_dir` returns a `Tests` handle:
+
+| Call | Does |
+| --- | --- |
+| `t.recursive()` | also the tests in the folders below |
+| `t.filter(text)` | only the test files whose path contains `text` |
+| `t.optimize(.release_fast)` | the optimization level (default `.debug`, which keeps the checks) |
+| `t.link(lib)` | a library the tests link |
+| `t.link_artifact(lib)` | a library this build makes, built before the tests run |
+
+`fels build test -- parser` runs only the test files whose path contains `parser`.
+
+## Up to date
+
+`fels build` does not build an artifact again when nothing it depends on changed. Per artifact
+it keeps a stamp in `.fels-cache/build/<name>/inputs`: a hash of the artifact's settings, the
+import roots, the capabilities of the packages and the compiler itself, and the hash of every
+file the last build read (the sources and what they import, `std`, `build_options`, the
+libraries it linked). When all of them match and the output exists, the artifact is
+"up to date". A changed option reaches the program through `build_options` and builds it again.
+
+```text
+$ fels build
+  up to date: mathutil
+  building app (src/main.fels)
+  up to date: plugin
+```
+
+`fels build --rebuild` builds every artifact anyway. Compile-time code that reads other files
+through `#extern` calls is not tracked; rebuild after changing such a file.
+
+## Printing from build.fels
+
+`print` and `println` from `std.io` work in a build script and in `#run` code. At compile time
+their output goes to the compiler's output, next to `fels build`'s own lines.
 
 ## Inspecting the plan
 
