@@ -793,6 +793,15 @@ pub const Vm = struct {
 
                 // System
                 .sys_print => printValue(frame.regs[inst.a]),
+                .sys_write => {
+                    const data = frame.regs[inst.b];
+                    const len = strLen(data) orelse return error.TypeMismatch;
+                    const bytes = self.allocator.alloc(u8, len) catch return error.OutOfMemory;
+                    defer self.allocator.free(bytes);
+                    try self.copyStrBytes(data, bytes);
+                    std.debug.print("{s}", .{bytes});
+                    frame.regs[inst.a] = .{ .uint = len };
+                },
                 .trap => return error.Trap,
                 .host_call => {
                     const h = self.host orelse return error.InvalidInstruction;

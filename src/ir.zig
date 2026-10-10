@@ -7211,9 +7211,8 @@ pub fn runBuildHookWith(allocator: std.mem.Allocator, front_end: pipeline.FrontE
             std.debug.print("build.fels: {s}\n", .{m});
         } else {
             std.debug.print(
-                "build.fels: the comptime VM stopped ({s}). This means the script " ++
-                    "reached something the VM cannot do at compile time — writing to " ++
-                    "stdout is the common one, so a build script cannot print yet.\n",
+                "build.fels: the comptime VM stopped ({s}): the script reached something the " ++
+                    "VM cannot do at compile time (a host call it cannot make, for example).\n",
                 .{@errorName(err)},
             );
         }

@@ -73,6 +73,9 @@ pub const Opcode = enum(u8) {
 
     // System / diagnostics
     sys_print, // a = reg to print
+    // a = dst (bytes written), b = the string or byte slice. The runtime's `write_stdout` and
+    // `write_stderr` at compile time: the bytes go to the compiler's output (stderr).
+    sys_write,
     trap, // imm = const-pool index of message string, or -1 for none
 
     // Host call

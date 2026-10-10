@@ -125,6 +125,7 @@ fn hashFn(h: *Sha256, f: *const BytecodeFunction) bool {
             .host_ptr_make,
             .host_buf_make,
             .sys_print,
+            .sys_write,
             .halt_msg,
             .record_remove,
             => return false,
