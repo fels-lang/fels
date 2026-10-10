@@ -129,7 +129,15 @@ pub fn checkout(a: std.mem.Allocator, io: std.Io, url: []const u8, commit: []con
     _ = try git(a, io, &.{ "git", "-c", "advice.detachedHead=false", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "checkout", "-q", "FETCH_HEAD" }, tmp);
     const dot_git = std.fs.path.join(a, &.{ tmp, ".git" }) catch return error.OutOfMemory;
     cwd.deleteTree(io, dot_git) catch return error.CacheFailed;
-    cwd.rename(tmp, cwd, dest, io) catch return error.CacheFailed;
+    // On Windows a folder whose files were just written can stay locked for a moment (a virus
+    // scanner reading them), and renaming it fails: try again, then copy instead.
+    var attempt: usize = 0;
+    while (attempt < 5) : (attempt += 1) {
+        if (cwd.rename(tmp, cwd, dest, io)) |_| return else |_| {}
+        std.Io.Clock.Duration.sleep(.{ .raw = .fromMilliseconds(100), .clock = .awake }, io) catch {};
+    }
+    try copyTree(a, io, tmp, dest);
+    cwd.deleteTree(io, tmp) catch {};
 }
 
 /// Copy the folder `src` to `dest` with everything in it (`dest` is replaced).
