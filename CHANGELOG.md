@@ -83,6 +83,13 @@ the major version is `0`, any minor bump may break source compatibility.
   variant `x` of the type `p`, not as the field (two such programs exited with 24 and 96 instead
   of 5 and 6). The local or parameter now wins, as it already did in the checker. A store through
   an array's `ptr` (`a.ptr.y = 9`), which crashed, now writes `a[0].y`.
+- **A generic function whose parameter is `*$T`, `[]$T` or `?$T` rejected every argument.** Only
+  a whole `$T` parameter type introduced `T`, so `bump :: fn(p: *$T)` was not generic: `bump(&y)`
+  failed with "expected `*T`, found `*i32`", and a `T` in the return type or the body was an
+  unknown name. A `$T` anywhere in a parameter's type (`*const $T`, `[N]$T`, `[]*$T`,
+  `*List($T)`) now introduces `T`, and the call binds it from the argument at any depth. A `null`
+  passed to `?$T` binds nothing, so the next argument decides `T`. `gabbro lsp` declares such a
+  `T` at its `$T`.
 
 ## 0.2.2 — 2026-10-10
 

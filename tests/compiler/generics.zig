@@ -374,3 +374,67 @@ test "generic function: explicit $T: type param" {
     const m = try gabbro.lowerFrontend(arena.allocator(), fe);
     try gabbro.ir_mod.validateModule(m);
 }
+
+test "generic function: a `$T` inside a param type (`*$T`, `[]$T`, `?$T`, `[N]$T`) introduces T" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Only a whole `$T` param type used to introduce T: these were not generic at all,
+    // so `bump(&y)` failed with "expected `*T`, found `*i32`" and a `T` in the
+    // return type or the body was an unknown name.
+    const src =
+        \\Box :: struct($T: type) { item: T }
+        \\bump :: fn(p: *$T) -> void { *p += 1; }
+        \\get :: fn(p: *const $T) -> T { return *p; }
+        \\width :: fn(p: *$T) -> usize { return core::sizeof(T); }
+        \\first :: fn(s: []$T) -> T { return s[0]; }
+        \\or_else :: fn(o: ?$T, d: T) -> T { if (o) |v| { return v; } return d; }
+        \\sum3 :: fn(a: [3]$T) -> T { return a[0] + a[1] + a[2]; }
+        \\unbox :: fn(b: *Box($T)) -> T { return b.item; }
+        \\swap :: fn(a: *$T, b: *$T) -> void { t := *a; *a = *b; *b = t; }
+        \\use :: fn() -> i64 {
+        \\    y: i32 = 40;
+        \\    bump(&y);
+        \\    w: i64 = 7;
+        \\    v: i64 = 8;
+        \\    swap(&w, &v);
+        \\    arr: [3]i32 = .{ 1, 2, 3 };
+        \\    bx: Box(i32) = .{ .item = 9 };
+        \\    n := get(&y) + first(arr[0..]) + or_else(null, 5) + sum3(arr) + unbox(&bx);
+        \\    return (n as i64) + get(&w) + (width(&w) as i64);
+        \\}
+    ;
+    var fe = try gabbro.compile(arena.allocator(), "nested_tparam.gab", src);
+    defer fe.deinit(arena.allocator());
+
+    const expected = [_][]const u8{
+        "bump__T_i32",   "swap__T_i64",  "get__T_i32", "first__T_i32", "or_else__T_i32",
+        "sum3__T_i32",   "unbox__T_i32", "get__T_i64", "width__T_i64",
+    };
+    try std.testing.expectEqual(expected.len, fe.types.generic_instantiations.items.len);
+    for (expected) |name| {
+        var found = false;
+        for (fe.types.generic_instantiations.items) |gi| {
+            if (std.mem.eql(u8, gi.mangled_name, name)) found = true;
+        }
+        if (!found) std.debug.print("missing instantiation {s}\n", .{name});
+        try std.testing.expect(found);
+    }
+
+    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
+    try gabbro.ir_mod.validateModule(module);
+}
+
+test "generic function: `*$T` twice is one T; a second `T` must match the first" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const bad =
+        \\swap :: fn(a: *$T, b: *$T) -> void { t := *a; *a = *b; *b = t; }
+        \\use :: fn() -> void { x: i32 = 1; y: i64 = 2; swap(&x, &y); }
+    ;
+    try std.testing.expectError(
+        error.SemanticFailed,
+        gabbro.compile(arena.allocator(), "nested_tparam_bad.gab", bad),
+    );
+}

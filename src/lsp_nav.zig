@@ -729,6 +729,26 @@ const Local = struct {
 
 const Mark = struct { len: usize, end: u32 };
 
+/// Declares the `$T` written in a function's parameter types (`a: $T`, `p: *$T`,
+/// `xs: []$T`) where the first one of each name is; a later `$T` of the same name
+/// is a use of it.
+const ParamTypeParams = struct {
+    w: *Walker,
+    /// Where the function's own locals start in `w.locals`.
+    from: usize,
+
+    pub fn visit(d: *ParamTypeParams, tp: ast.NamedType) error{OutOfMemory}!void {
+        // The `Box($T)` that stands for `Self` in a generic struct's method is made
+        // by the parser and spans the struct's name: its `T` is declared at the
+        // struct's header, after the parameters.
+        if (!wordAt(d.w.src, tp.span.start, tp.name)) return;
+        for (d.w.locals.items[d.from..]) |l| {
+            if (l.type_param and std.mem.eql(u8, l.name, tp.name)) return;
+        }
+        d.w.declare(tp.name, tp.span.start, .type_param, .none);
+    }
+};
+
 /// The walk of one top level item, with the locals in scope.
 const Walker = struct {
     cx: *Ctx,
@@ -1094,12 +1114,12 @@ const Walker = struct {
         defer w.func = outer_func;
         w.pushScope(f.span.end);
         defer w.popScope();
+        var param_tps: ParamTypeParams = .{ .w = w, .from = w.locals.items.len };
         for (f.params) |p| {
             if (p.is_type_param) {
                 w.declare(p.name, p.span.start, .type_param, .none);
-            } else switch (p.ty) {
-                .type_param => |tp| w.declare(tp.name, tp.span.start, .type_param, .none),
-                else => {},
+            } else {
+                p.ty.eachTypeParam(&param_tps) catch {};
             }
         }
         switch (f.return_ty) {
@@ -2881,6 +2901,25 @@ test "nav: names in a generic function are found without the type check" {
     try testing.expectEqual(@as(usize, 3), p.refs(item)); // field, `self.item`, `.item = 1`
     const k = p.targetAt("main.gab", "k", 1).?;
     try testing.expectEqual(@as(usize, 2), p.refs(k));
+}
+
+test "nav: a `$T` inside a parameter type declares T" {
+    var files = TestFiles{
+        .names = &.{"main.gab"},
+        .texts = &.{
+            "get :: fn(p: *$T, q: *$T) -> T { x: T = *p; return x; }\n" ++
+                "main :: fn() -> i32 { y: i32 = 1; return get(&y, &y); }\n",
+        },
+    };
+    var p = try TestProject.init(&files, "main.gab");
+    defer p.deinit();
+    const t = p.targetAt("main.gab", "T", 0).?; // `p: *$T`
+    try testing.expectEqual(Kind.type_param, t.kind);
+    // The second `$T`, `-> T` and `x: T` are uses of the first.
+    try testing.expect(t.same(p.targetAt("main.gab", "T", 1).?));
+    try testing.expect(t.same(p.targetAt("main.gab", "T", 2).?));
+    try testing.expect(t.same(p.targetAt("main.gab", "T", 3).?));
+    try testing.expectEqual(@as(usize, 4), p.refs(t));
 }
 
 test "nav: interface methods, their implementations and calls" {

@@ -990,3 +990,49 @@ test "diagnostics: a top level constant whose value depends on itself" {
         (try firstError(a, "A :: B + 1;\nB :: A + 1;\nmain :: fn() -> i32 { return A; }")).?,
         "the value of constant `A` depends on itself") != null);
 }
+
+test "diagnostics: a `$T` inside a param type is bound from the argument and substituted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `*$T` (also `[]$T`, `?$T`) did not introduce `T`: the call failed with "expected
+    // `*T`, found `*i32`", and a `T` in the body or the return type was unknown.
+    const prelude =
+        \\bump :: fn(p: *$T) -> void { *p += 1; }
+        \\size_of_target :: fn(p: *$T) -> usize { return core::sizeof(T); }
+        \\get :: fn(p: *$T) -> T { return *p; }
+        \\first :: fn(s: []$T) -> T { return s[0]; }
+        \\or_else :: fn(o: ?$T, d: T) -> T { if (o) |v| { return v; } return d; }
+        \\swap :: fn(a: *$T, b: *T) -> void { t := *a; *a = *b; *b = t; }
+        \\
+    ;
+    const bodies = [_][]const u8{
+        "main :: fn() -> i32 { y: i32 = 40; bump(&y); return y; }",
+        "main :: fn() -> i32 { y: i64 = 40; return size_of_target(&y) as i32; }",
+        "main :: fn() -> i32 { y: i32 = 40; return get(&y); }",
+        "main :: fn() -> i32 { a: [2]i32 = .{ 5, 6 }; return first(a[0..]); }",
+        // `null` says nothing about `T`; the next argument binds it.
+        "main :: fn() -> i32 { x: ?i32 = 5; return or_else(x, 0) + or_else(null, 1); }",
+        "main :: fn() -> i32 { x: i32 = 1; y: i32 = 2; swap(&x, &y); return x; }",
+    };
+    for (bodies) |body| try expectNoError(a, prelude, body);
+
+    // A mismatch names the parameter type with `T` filled in.
+    const cases = [_]struct { body: []const u8, msg: []const u8 }{
+        .{ .body = "main :: fn() -> i32 { y: i32 = 40; bump(y); return y; }", .msg = "argument 1 of `bump`: expected `*i32`, found `i32`" },
+        .{ .body = "main :: fn() -> i32 { x: i32 = 1; y: i64 = 2; swap(&x, &y); return x; }", .msg = "argument 2 of `swap`: expected `*i32`, found `*i64`" },
+        .{ .body = "main :: fn() -> i32 { return first(5); }", .msg = "argument 1 of `first`: expected `[]i32`, found `integer literal`" },
+    };
+    for (cases) |c| {
+        const src = try std.fmt.allocPrint(a, "{s}{s}\n", .{ prelude, c.body });
+        const msg = (try firstError(a, src)) orelse {
+            std.debug.print("expected an error for:\n{s}\n", .{src});
+            return error.MissingDiagnostic;
+        };
+        if (std.mem.indexOf(u8, msg, c.msg) == null) {
+            std.debug.print("expected `{s}` in:\n{s}\n", .{ c.msg, msg });
+            return error.WrongDiagnostic;
+        }
+    }
+}
