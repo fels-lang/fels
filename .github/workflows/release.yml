@@ -1,13 +1,10 @@
 name: Release
 
-# Triggered by a version tag. Handles stable releases and pre-releases by the
-# SemVer tag itself:
-#   v0.1.0          → stable release "gabbro 0.1.0"
-#   v0.1.0-beta.1   → pre-release "gabbro 0.1.0-beta.1+<sha>" (full SemVer w/ metadata)
-#   v0.2.0-rc.1     → pre-release, etc.
-# A tag containing `-` is published as a GitHub pre-release; the `+<git-sha>`
-# build metadata is added to the reported version (and release name) for
-# traceability, while the asset filename stays URL-friendly.
+# A version tag builds the release archives and publishes a GitHub release:
+#   v0.3.1         stable release "gabbro 0.3.1"
+#   v0.4.0-rc.1    pre-release (any tag with a "-")
+# The release notes are the matching section of CHANGELOG.md ("## 0.3.1 ..."). A pre-release
+# without its own section uses "## Unreleased".
 on:
   push:
     tags: ["v*"]
@@ -28,34 +25,49 @@ jobs:
       - uses: ./.github/actions/setup-llvm
         id: llvm
 
-      - name: Derive version + channel from the tag
+      - name: Version and notes from the tag
         id: tag
         shell: pwsh
         run: |
-          $v = "${{ github.ref_name }}" -replace '^v', ''   # v0.1.0-beta.1 -> 0.1.0-beta.1
-          "version=$v" | Out-File -Append $env:GITHUB_OUTPUT
-          # A SemVer pre-release (contains '-') publishes as a GitHub pre-release.
-          $pre = if ($v -match '-') { 'true' } else { 'false' }
-          "prerelease=$pre" | Out-File -Append $env:GITHUB_OUTPUT
+          $v = "${{ github.ref_name }}" -replace '^v', ''   # v0.4.0-rc.1 -> 0.4.0-rc.1
+          $base = $v -replace '-.*$', ''
+          $pre = $v -ne $base
+          # The tag and build.zig.zon must name the same version.
+          $zon = (Select-String -Path build.zig.zon -Pattern '\.version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if (($zon -replace '-.*$', '') -ne $base) { throw "tag $v does not match build.zig.zon version $zon" }
+
+          # The CHANGELOG.md section: from its "## " heading to the next one.
+          $lines = Get-Content CHANGELOG.md
+          $heads = @("^## $([regex]::Escape($v))(\s|$)")
+          if ($pre) { $heads += "^## Unreleased(\s|$)" }
+          $notes = $null
+          foreach ($h in $heads) {
+              $i = 0
+              while ($i -lt $lines.Count -and $lines[$i] -notmatch $h) { $i++ }
+              if ($i -ge $lines.Count) { continue }
+              $end = $i + 1
+              while ($end -lt $lines.Count -and $lines[$end] -notmatch '^## ') { $end++ }
+              if ($end -gt $i + 1) { $notes = ($lines[($i + 1)..($end - 1)] -join "`n").Trim() }
+              break
+          }
+          if (-not $notes) { throw "CHANGELOG.md has no section for $v" }
+          $notes | Out-File -Encoding utf8 notes.md
+
+          "version=$v" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          "prerelease=$($pre.ToString().ToLower())" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
 
       - name: Build and package
         id: pkg
         shell: pwsh
         run: ./scripts/package.ps1 -LlvmPath "${{ steps.llvm.outputs.path }}" -Version "${{ steps.tag.outputs.version }}"
 
-      - name: Publish release
+      - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
-          name: "gabbro ${{ steps.pkg.outputs.version }}"
+          name: gabbro ${{ steps.tag.outputs.version }}
           prerelease: ${{ steps.tag.outputs.prerelease }}
+          body_path: notes.md
           files: |
             ${{ steps.pkg.outputs.archive }}
             ${{ steps.pkg.outputs.bindgen_archive }}
             ${{ steps.pkg.outputs.linux_cross_archive }}
-          generate_release_notes: true
-          body: |
-            **gabbro ${{ steps.pkg.outputs.version }}** — x86_64-windows.
-
-            Download `${{ steps.pkg.outputs.archive_name }}`, extract, and run
-            `bin/gabbro` — the standard library and linker travel with it (no install
-            step, no separate LLVM needed to *use* the compiler).
