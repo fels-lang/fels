@@ -4702,3 +4702,29 @@ test "exe: the comptime VM gives an integer literal the same width as the progra
     const src = try intLiteralWidthsSource(arena.allocator(), true);
     try std.testing.expectEqual(@as(u32, 0), try compileAndRun(arena.allocator(), src, "exe_int_lit_widths_comptime"));
 }
+
+test "exe: a generic struct's field default is stored at the field's width" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Sema does not check the defaults of a generic struct, so IR lowered `-5` there as an `i32`.
+    const src =
+        \\Box :: struct($T: type) { v: T, d: i64 = -5, s: i8 = -128, big: u64 = 1 << 40, t: T = -2 }
+        \\make :: fn() -> i64 { b: Box(i64) = .{ .v = 1 }; return b.d + b.t; }
+        \\#assert(make() == -7i64);
+        \\main :: fn() -> i32 {
+        \\    b: Box(i32) = .{ .v = 1 };
+        \\    if b.d != -5i64 { return 1; }
+        \\    if b.s != -128i8 { return 2; }
+        \\    if b.big != 1099511627776u64 { return 3; }
+        \\    if b.t != -2 { return 4; }
+        \\    c: Box(i64) = .{ 7 };
+        \\    if c.t != -2i64 || c.d != -5i64 { return 5; }
+        \\    if make() != -7i64 { return 6; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_generic_default_width_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_generic_default_width_o2", 2));
+}
