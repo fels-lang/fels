@@ -137,6 +137,7 @@ pub const BuildOp = enum(u32) {
     option_int,    // (name, default:i64, help) -> i64        a declared `-Dname=<int>` option
     option_string, // (name, default, help) -> string        a declared `-Dname=<text>` option
     option_choice, // (name, "a|b|c", default, help) -> string  one of a fixed set of words
+    link_artifact, // (id, lib_id)                    link a library artifact of this build, built first
 
     /// The intrinsic `std.build` calls for this op is `__build_` followed by the tag name.
     pub const prefix = "__build_";
