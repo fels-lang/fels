@@ -24,7 +24,7 @@ const BuildOp = instructions.BuildOp;
 
 pub const BuildError = error{
     CompileFailed,
-    InvalidOption,
+    ScriptError,
     NoBuildScript,
     NoBuildFn,
     BuildHookFailed,
@@ -443,9 +443,9 @@ fn optionName(option: []const u8) []const u8 {
     return option[0 .. std.mem.indexOfScalar(u8, option, '=') orelse option.len];
 }
 
-/// Report every problem with the `-D` options: a bad value, and a name the script does not
-/// declare (usually a typo). Returns whether there was one.
-fn reportOptionErrors(plan: *BuildPlan) bool {
+/// Report every problem the script run found: a bad option value, a `-D` name the script
+/// does not declare (usually a typo), a wrong call. Returns whether there was one.
+fn reportScriptErrors(plan: *BuildPlan) bool {
     for (plan.options) |o| {
         const name = optionName(o);
         const known = for (plan.declared.items) |d| {
@@ -453,8 +453,13 @@ fn reportOptionErrors(plan: *BuildPlan) bool {
         } else false;
         if (!known) plan.fail("unknown build option -D{s}", .{name});
     }
-    for (plan.errors.items) |e| std.debug.print("gabbro build: {s}\n", .{e});
-    if (plan.errors.items.len != 0 and plan.declared.items.len != 0) {
+    var about_options = false;
+    for (plan.errors.items) |e| {
+        std.debug.print("gabbro build: {s}\n", .{e});
+        if (std.mem.startsWith(u8, e, "-D") or std.mem.startsWith(u8, e, "unknown build option") or
+            std.mem.startsWith(u8, e, "option `")) about_options = true;
+    }
+    if (about_options and plan.declared.items.len != 0) {
         std.debug.print("build options of this build.gab:\n", .{});
         printOptions(plan);
     }
@@ -546,7 +551,7 @@ pub fn loadPlan(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opti
         return error.BuildHookFailed;
     };
     if (plan.oom) return error.OutOfMemory;
-    if (reportOptionErrors(&plan)) return error.InvalidOption;
+    if (reportScriptErrors(&plan)) return error.ScriptError;
     if (plan.artifacts.items.len == 0) return error.NoArtifacts;
     return plan;
 }
