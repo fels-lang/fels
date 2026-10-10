@@ -611,13 +611,13 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
     opts.options = options.items;
     opts.environ = environ;
 
-    const build_path = if (fileExists(io, "build.fels")) "build.fels" else if (fileExists(io, "build.gab")) blk: {
-        fels.pipeline_mod.noteOldExt("build.gab");
-        break :blk "build.gab";
-    } else {
-        std.debug.print("fels build: no build.fels in the current directory\n", .{});
+    const build_path = "build.fels";
+    if (!fileExists(io, build_path)) {
+        if (fileExists(io, "build.gab")) {
+            std.debug.print("fels build: found build.gab, but Fels files end in `.fels` since 0.5.0; rename it to build.fels (and the other .gab files)\n", .{});
+        } else std.debug.print("fels build: no build.fels in the current directory\n", .{});
         return 1;
-    };
+    }
 
     fels.build_driver.run(allocator, io, build_path, opts) catch |err| {
         // The messages from the script run or the packages already say what is wrong.
@@ -636,10 +636,9 @@ fn fileExists(io: std.Io, path: []const u8) bool {
 // Relocatable-runtime path resolution
 
 /// True if `dir/<rel>` exists (probe via the page allocator, freed immediately).
-/// Whether `dir` holds the standard library (`std/io.fels`, or `std/io.gab` from before the
-/// rename).
+/// Whether `dir` holds the standard library.
 fn hasStd(io: std.Io, dir: []const u8) bool {
-    return dirHasFile(io, dir, "std/io.fels") or dirHasFile(io, dir, "std/io.gab");
+    return dirHasFile(io, dir, "std/io.fels");
 }
 
 fn dirHasFile(io: std.Io, dir: []const u8, rel: []const u8) bool {

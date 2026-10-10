@@ -960,7 +960,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opts: Run
 fn runPackageBuilds(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, folder_caps: []const ir.FolderCaps) BuildError!void {
     const a = plan.a();
     for (plan.packages, folder_caps) |p, fc| {
-        const script = for ([_][]const u8{ "build.fels", "build.gab" }) |name| {
+        const script = for ([_][]const u8{"build.fels"}) |name| {
             const path = std.fs.path.join(a, &.{ p.dir, name }) catch return error.OutOfMemory;
             if (fileExists(io, path)) break path;
         } else continue;
