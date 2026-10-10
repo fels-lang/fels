@@ -144,6 +144,27 @@ pub fn main(init: std.process.Init) u8 {
         return fels.pkg.project.cmdUpdate(ra, io, init.environ_map, rest);
     }
 
+    // `fels test [paths...]` runs the #test functions of the project's files (no LLVM needed).
+    if (std.mem.eql(u8, cmd, "test")) {
+        const ra = init.arena.allocator();
+        var paths: std.ArrayList([]const u8) = .empty;
+        var std_flag: []const u8 = "";
+        var k: usize = 2;
+        while (k < args.len) : (k += 1) {
+            if (std.mem.eql(u8, args[k], "--std-path") and k + 1 < args.len) {
+                k += 1;
+                std_flag = args[k];
+            } else if (args[k].len > 1 and args[k][0] == '-') {
+                std.debug.print("fels test: unknown option '{s}'\n", .{args[k]});
+                return 1;
+            } else paths.append(ra, args[k]) catch return 1;
+        }
+        const exe_dir: ?[]const u8 = std.process.executableDirPathAlloc(io, ra) catch null;
+        if (resolveStdRoot(ra, io, init.environ_map, std_flag, exe_dir)) |root|
+            fels.pipeline_mod.stdlib_root_override = root;
+        return fels.test_cmd.cmd(allocator, io, init.environ_map, paths.items);
+    }
+
     // `fels bindgen <header.h>` generates Fels FFI bindings from a C header.
     if (std.mem.eql(u8, cmd, "bindgen")) return cmdBindgen(allocator, io, init.environ_map, args[2..]);
 
@@ -750,6 +771,7 @@ fn printUsage() void {
         \\  build    <name>        build a named artifact, or `run`/a step
         \\  build    <file.fels>     compile and link a single file directly
         \\  check    <file.fels>     parse and type-check only
+        \\  test     [path...]     run the #test functions (default: the .fels files in src/)
         \\  object   <file.fels>     compile to an object file (.o)
         \\  ir       <file.fels>     print LLVM IR to stdout
         \\  bindgen  <header.h>    generate Fels FFI bindings from a C header
