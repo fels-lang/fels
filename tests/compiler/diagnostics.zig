@@ -1200,3 +1200,15 @@ test "diagnostics: a constant without a type is checked like its literal" {
     // A local of the same name is not the constant.
     try expectNoError(a, "N :: 300;\n", "main :: fn() -> i32 { N := 5; b: i32 = N; return b; }");
 }
+
+test "diagnostics: a bare variant compared with an enum has to be one of its variants" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const color = "Color :: enum { red, green, blue }\nShape :: enum { dot, circle: i32 }\n";
+    try expectFirstError(a, color ++ "main :: fn() -> i32 { p := Color.red; if p == .purple { return 1; } return 0; }", &.{"enum `Color` has no variant `.purple`"});
+    try expectFirstError(a, color ++ "main :: fn() -> i32 { p := Color.red; if .purple != p { return 1; } return 0; }", &.{"enum `Color` has no variant `.purple`"});
+    try expectFirstError(a, color ++ "main :: fn() -> i32 { s := Shape.dot; if s == .square { return 1; } return 0; }", &.{"enum `Shape` has no variant `.square`"});
+    try expectNoError(a, color, "main :: fn() -> i32 { p := Color.red; s := Shape.dot; if p == .green || .blue != p || s == .circle { return 1; } return 0; }");
+}
