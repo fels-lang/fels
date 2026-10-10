@@ -5,6 +5,7 @@ const llvm = @import("c_api.zig").llvm;
 const types = @import("types.zig");
 const values = @import("values.zig");
 const panic_mod = @import("panic.zig");
+const abi = @import("abi.zig");
 const ModuleCg = @import("context.zig").ModuleCg;
 
 pub fn lower(
@@ -22,16 +23,16 @@ pub fn lower(
                 if (maybe_val) |val| {
                     if (fncg.irTypeOf(val)) |vt| if (vt == .fallible) {
                         const fv = values.resolveValue(cg, fncg, val, vt);
-                        _ = llvm.LLVMBuildRet(cg.builder, fv);
+                        buildRet(cg, fncg, fv);
                         return;
                     };
                 }
                 const ret_lty = types.fallibleReturnType(cg, func);
-                var ret = llvm.LLVMGetUndef(ret_lty);
+                var ok: llvm.LLVMValueRef = null;
                 if (maybe_val) |val| {
                     const val_ty = fncg.irTypeOf(val) orelse func.return_ty;
                     const ok_raw = values.resolveValue(cg, fncg, val, val_ty);
-                    const ok_lv = values.coerceTyped(
+                    ok = values.coerceTyped(
                         cg.builder,
                         cg.ctx,
                         ok_raw,
@@ -39,11 +40,9 @@ pub fn lower(
                         func.return_ty,
                         types.lower(cg, func.return_ty),
                     );
-                    ret = llvm.LLVMBuildInsertValue(cg.builder, ret, ok_lv, 0, "");
                 }
                 const zero = llvm.LLVMConstInt(llvm.LLVMInt32TypeInContext(cg.ctx), 0, 0);
-                ret = llvm.LLVMBuildInsertValue(cg.builder, ret, zero, 1, "");
-                _ = llvm.LLVMBuildRet(cg.builder, ret);
+                buildFallibleRet(cg, fncg, ret_lty, ok, zero);
                 return;
             }
 
@@ -60,7 +59,7 @@ pub fn lower(
                     },
                     else => values.resolveValue(cg, fncg, val, func.return_ty),
                 };
-                _ = llvm.LLVMBuildRet(cg.builder, ret);
+                buildRet(cg, fncg, ret);
             } else {
                 _ = llvm.LLVMBuildRetVoid(cg.builder);
             }
@@ -97,9 +96,9 @@ pub fn lower(
                 return;
             }
             const ret_lty = types.fallibleReturnType(cg, func);
-            var ret = llvm.LLVMGetUndef(ret_lty);
             // The payload shares the value slot (field 0, the ok type); the
             // discriminant is field 1.
+            var payload_val: llvm.LLVMValueRef = null;
             if (ft.payload) |payload| {
                 const pval_ty = fncg.irTypeOf(payload) orelse func.return_ty;
                 const payload_raw = values.resolveValue(cg, fncg, payload, pval_ty);
@@ -111,13 +110,38 @@ pub fn lower(
                     func.return_ty,
                     types.lower(cg, func.return_ty),
                 );
-                ret = llvm.LLVMBuildInsertValue(cg.builder, ret, payload_lv, 0, "");
+                payload_val = payload_lv;
             }
             const disc_raw = values.resolveValue(cg, fncg, ft.disc, .unknown);
             const i32_ty = llvm.LLVMInt32TypeInContext(cg.ctx);
             const disc = values.coerce(cg.builder, cg.ctx, disc_raw, i32_ty);
-            ret = llvm.LLVMBuildInsertValue(cg.builder, ret, disc, 1, "");
-            _ = llvm.LLVMBuildRet(cg.builder, ret);
+            buildFallibleRet(cg, fncg, ret_lty, payload_val, disc);
         },
     }
+}
+
+/// `ret v`, or for a function returning through memory (`fncg.sret`), store `v` there and
+/// `ret void`.
+fn buildRet(cg: *ModuleCg, fncg: anytype, v: llvm.LLVMValueRef) void {
+    if (fncg.sret) |out| {
+        abi.storeValue(cg, v, out);
+        _ = llvm.LLVMBuildRetVoid(cg.builder);
+    } else {
+        _ = llvm.LLVMBuildRet(cg.builder, v);
+    }
+}
+
+/// Return a fallible `{ ok, disc }` (`ok` null: left undefined). Through memory each field is
+/// stored on its own, so a large `ok` is copied rather than rebuilt as one aggregate value.
+fn buildFallibleRet(cg: *ModuleCg, fncg: anytype, ret_lty: llvm.LLVMTypeRef, ok: llvm.LLVMValueRef, disc: llvm.LLVMValueRef) void {
+    if (fncg.sret) |out| {
+        if (ok) |v| abi.storeValue(cg, v, llvm.LLVMBuildStructGEP2(cg.builder, ret_lty, out, 0, ""));
+        _ = llvm.LLVMBuildStore(cg.builder, disc, llvm.LLVMBuildStructGEP2(cg.builder, ret_lty, out, 1, ""));
+        _ = llvm.LLVMBuildRetVoid(cg.builder);
+        return;
+    }
+    var ret = llvm.LLVMGetUndef(ret_lty);
+    if (ok) |v| ret = llvm.LLVMBuildInsertValue(cg.builder, ret, v, 0, "");
+    ret = llvm.LLVMBuildInsertValue(cg.builder, ret, disc, 1, "");
+    _ = llvm.LLVMBuildRet(cg.builder, ret);
 }

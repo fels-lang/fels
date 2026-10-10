@@ -167,6 +167,92 @@ pub fn applyAbiAttrs(cg: *ModuleCg, lv: llvm.LLVMValueRef, sig: FnAbi) void {
     };
 }
 
+/// Mark parameter 0 of a Gabbro function that returns through memory as `sret(ty) noalias`
+/// (see `types.returnsIndirect`).
+pub fn markSret(cg: *ModuleCg, lv: llvm.LLVMValueRef, ty: llvm.LLVMTypeRef) void {
+    addTypeAttr(cg, lv, 1, "sret", ty);
+    const no_alias = llvm.LLVMGetEnumAttributeKindForName("noalias", 7);
+    llvm.LLVMAddAttributeAtIndex(lv, 1, llvm.LLVMCreateEnumAttribute(cg.ctx, no_alias, 0));
+}
+
+/// The type a function returns through its `sret` parameter 0, or null when it has none.
+pub fn sretOf(lv: llvm.LLVMValueRef) ?llvm.LLVMTypeRef {
+    const kind = llvm.LLVMGetEnumAttributeKindForName("sret", 4);
+    const attr = llvm.LLVMGetEnumAttributeAtIndex(lv, 1, kind) orelse return null;
+    return llvm.LLVMGetTypeAttributeValue(attr);
+}
+
+/// The same `sret(ty)` on argument 0 of a call, so an indirect call agrees with its callee.
+pub fn markCallSret(cg: *ModuleCg, call: llvm.LLVMValueRef, ty: llvm.LLVMTypeRef) void {
+    const kind = llvm.LLVMGetEnumAttributeKindForName("sret", 4);
+    llvm.LLVMAddCallSiteAttribute(call, 1, llvm.LLVMCreateTypeAttribute(cg.ctx, kind, ty));
+}
+
+/// Store `val` at `ptr`. A large aggregate that was just loaded (nothing that writes memory
+/// has been emitted since the load) is copied from where it was loaded instead: the x86 code
+/// generator splits a first-class aggregate load and store into one piece per element, which
+/// is slow to compile for a big array. The copy is `llvm.memcpy.inline` (a `rep movsb`), as
+/// a plain `memcpy` this size becomes a call to the C library's, which is not linked.
+pub fn storeValue(cg: *ModuleCg, val: llvm.LLVMValueRef, ptr: llvm.LLVMValueRef) void {
+    const ty = llvm.LLVMTypeOf(val);
+    if (types.returnsIndirect(cg, ty)) {
+        const i64_ty = llvm.LLVMInt64TypeInContext(cg.ctx);
+        const ptr_ty = llvm.LLVMPointerTypeInContext(cg.ctx, 0);
+        const size = llvm.LLVMConstInt(i64_ty, llvm.LLVMABISizeOfType(cg.targetData(), ty), 0);
+        const no = llvm.LLVMConstInt(llvm.LLVMInt1TypeInContext(cg.ctx), 0, 0);
+        if (llvm.LLVMIsALoadInst(val) != null and justLoaded(cg, val)) {
+            const src = llvm.LLVMGetOperand(val, 0);
+            if (src == ptr) return; // `x = x`
+            var overloads = [_]llvm.LLVMTypeRef{ ptr_ty, ptr_ty, i64_ty };
+            var args = [_]llvm.LLVMValueRef{ ptr, src, size, no };
+            const copy = callIntrinsic(cg, "llvm.memcpy.inline", &overloads, &args);
+            setArgAlign(cg, copy, 0, alignOf(ptr));
+            setArgAlign(cg, copy, 1, llvm.LLVMGetAlignment(val));
+            return;
+        }
+        // `.{}` of a big array or struct: a fill, not a store of every element.
+        if (llvm.LLVMIsNull(val) != 0) {
+            var overloads = [_]llvm.LLVMTypeRef{ ptr_ty, i64_ty };
+            var args = [_]llvm.LLVMValueRef{ ptr, llvm.LLVMConstInt(llvm.LLVMInt8TypeInContext(cg.ctx), 0, 0), size, no };
+            setArgAlign(cg, callIntrinsic(cg, "llvm.memset.inline", &overloads, &args), 0, alignOf(ptr));
+            return;
+        }
+    }
+    _ = llvm.LLVMBuildStore(cg.builder, val, ptr);
+}
+
+fn callIntrinsic(cg: *ModuleCg, name: []const u8, overloads: []llvm.LLVMTypeRef, args: []llvm.LLVMValueRef) llvm.LLVMValueRef {
+    const f = llvm.LLVMGetIntrinsicDeclaration(cg.mod, llvm.LLVMLookupIntrinsicID(name.ptr, name.len), overloads.ptr, overloads.len);
+    return llvm.LLVMBuildCall2(cg.builder, llvm.LLVMGlobalGetValueType(f), f, args.ptr, @intCast(args.len), "");
+}
+
+fn setArgAlign(cg: *ModuleCg, call: llvm.LLVMValueRef, arg: c_uint, alignment: c_uint) void {
+    if (alignment <= 1) return;
+    const kind = llvm.LLVMGetEnumAttributeKindForName("align", 5);
+    llvm.LLVMAddCallSiteAttribute(call, arg + 1, llvm.LLVMCreateEnumAttribute(cg.ctx, kind, alignment));
+}
+
+/// Whether `load` is in the current block and no instruction after it can write memory
+/// (only a few address computations are allowed in between), so its source still holds
+/// the loaded value.
+fn justLoaded(cg: *ModuleCg, load: llvm.LLVMValueRef) bool {
+    var inst = llvm.LLVMGetLastInstruction(llvm.LLVMGetInsertBlock(cg.builder));
+    var steps: u32 = 0;
+    while (inst) |i| : (steps += 1) {
+        if (i == load) return true;
+        if (steps == 8 or llvm.LLVMIsAGetElementPtrInst(i) == null) return false;
+        inst = llvm.LLVMGetPreviousInstruction(i);
+    }
+    return false;
+}
+
+/// The known alignment of a pointer (an alloca or a global), else 1.
+fn alignOf(ptr: llvm.LLVMValueRef) c_uint {
+    if (llvm.LLVMIsAAllocaInst(ptr) != null or llvm.LLVMIsAGlobalVariable(ptr) != null)
+        return llvm.LLVMGetAlignment(ptr);
+    return 1;
+}
+
 fn addTypeAttr(cg: *ModuleCg, lv: llvm.LLVMValueRef, index: c_uint, name: []const u8, ty: llvm.LLVMTypeRef) void {
     const kind = llvm.LLVMGetEnumAttributeKindForName(name.ptr, name.len);
     const attr = llvm.LLVMCreateTypeAttribute(cg.ctx, kind, ty);

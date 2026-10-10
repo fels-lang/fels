@@ -13,6 +13,27 @@ the major version is `0`, any minor bump may break source compatibility.
   completion and the outline across files. Before, an imported name such as `Mutex` was reported as
   unknown in a file that `gabbro build` accepts.
 
+### Fixed
+
+- **A `#run` that fills a big array made the build take seconds to minutes.** The comptime VM was never
+  the slow part (it stores an element in O(1)): the function the `#run` evaluated stayed in the program,
+  and compiling a function that returns a large array by value is superlinear (15 s for 4096 `u32`s,
+  more with a wide CPU's vector registers). Internal functions nothing refers to are now removed before
+  code generation, so a table built by `#run` costs only its data.
+- **A function returning a big array or struct by value was slow to compile.** A return over 128 bytes
+  now goes through a hidden leading pointer (`sret`) on every call path (direct calls, `fn` values,
+  closures, interface methods, fallible returns), and such a value is copied or zeroed with one inline
+  `memcpy`/`memset` instead of element by element. A function returning `[10000]u32` and its callers
+  now compile in about 0.2 s at `-O2`. The machine-level convention is unchanged (LLVM already passed
+  such returns through a hidden pointer), so `#export`ed functions keep their C ABI.
+- **A struct with an `i64` after a smaller field was measured 4 bytes short during lowering.** The
+  backend sized types with LLVM's default data layout, where `i64` is 4-aligned (`{ i32, i64 }` came
+  out 12 bytes, not 16). A closure environment on a zone was allocated too small, and a payload enum
+  carrying such a struct had too little room, so building one wrote past its stack slot. Sizes now
+  come from the target's layout.
+- **gabld wrote a DLL that does not load when the DLL imports nothing.** Its IAT data directory had an RVA
+  but size 0, which the Windows loader refuses (error 87). The directory is now left empty in that case.
+
 ## 0.2.1 — 2026-10-10
 
 ### Fixed

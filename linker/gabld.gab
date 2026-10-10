@@ -813,8 +813,12 @@ link_bytes :: fn(a: *Arena, data: []const u8, out_path: []const u8, opts: *LinkO
         wr_u32(img, dd + 24usize, pdata_rva as u32);        // [3] Exception RVA
         wr_u32(img, dd + 28usize, pdata_in as u32);         // [3] size
     }
-    wr_u32(img, dd + 96usize, iat_first_rva as u32);        // [12] IAT RVA
-    wr_u32(img, dd + 100usize, iat_total as u32);           // [12] IAT size
+    // An image without imports has no IAT, and a data directory with an RVA but no size is refused
+    // by the loader (error 87).
+    if iat_total > 0usize {
+        wr_u32(img, dd + 96usize, iat_first_rva as u32);        // [12] IAT RVA
+        wr_u32(img, dd + 100usize, iat_total as u32);           // [12] IAT size
+    }
 
     // Section headers (only present classes, in order)
     sh := opt + 240usize;
