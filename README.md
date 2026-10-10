@@ -74,7 +74,9 @@ section; gabld reads that and writes the import descriptors directly.
 Makefile, no second language. It populates a build plan; the compiler executes it.
 
 ```gabbro
-build :: fn(b: *Build) {
+#import std.build.{ Build };
+
+build :: fn(b: Build) {
     exe := b.executable("hello", "src/main.gab");
     b.default(exe);
 }
@@ -114,7 +116,7 @@ Dynamic dispatch is explicit, through `*Interface` values. Generics are monomorp
 Conformance is checked at compile time.
 
 ```gabbro
-Writer :: interface { write :: fn(*Self, []const u8) -> usize ! IoError; }
+Writer :: interface { write :: fn(self: *Self, data: []const u8) -> usize ! IoError; }
 
 FileHandle :: struct { fd: i32 }
 FileHandle as Writer {
