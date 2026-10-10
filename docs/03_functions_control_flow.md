@@ -239,14 +239,14 @@ Functions that can fail use `!` after the return type to declare an error channe
 read :: fn(buf: []u8) -> usize ! IoError { ... }
 
 // Inline error set
-parse :: fn(s: []const u8) -> i32 ! { invalid, overflow } { ... }
+parse :: fn(s: []const u8) -> i32 ! { .invalid, .overflow } { ... }
 
 // Inferred error type
 combine :: fn() -> i32 ! { ... }
 ```
 
 > [!TIP]
-> See the [Error Handling](05_error_handling.md) chapter for full details on error propagation, `try`, `catch`, and the `?` operator.
+> See the [Error Handling](04_error_handling.md) chapter for full details on error propagation, `catch`, and the `?` operator.
 
 ## External Functions
 
@@ -318,16 +318,16 @@ if flag {
     do_something();
 }
 
-// With binding (if-let style)
+// With binding (if-let style): try_parse returns an optional
 if result := try_parse(input) {
-    // result is available here
+    // result is the unwrapped value here
 }
 
-// With error payload capture
-if result := try_parse(input) |err| {
-    // err is bound to the captured error payload
+// With payload capture
+if try_parse(input) |value| {
+    // value is the unwrapped payload
 } else {
-    // success path
+    // try_parse returned null
 }
 ```
 
@@ -436,7 +436,7 @@ for &val in data[:] {
 ```
 
 > [!TIP]
-> Use `data[:]` to create a slice from a fixed-size array. See the [Types & Values](02_types_values.md) chapter for more on slices and arrays.
+> Use `data[:]` to create a slice from a fixed-size array. See the [Type System](02_types.md) chapter for more on slices and arrays.
 
 ### For Iterators
 
@@ -512,9 +512,9 @@ match n {
 
 // Single-statement arms (no braces needed)
 match value {
-    .a   => return 1,
-    .b   => return 2,
-    else => return 0,
+    .a   => return 1;
+    .b   => return 2;
+    else => return 0;
 }
 
 // Match as an expression — each arm yields a value, the whole match is that value
@@ -655,7 +655,7 @@ is no `else if`: put another `#if` inside the `else` block.
 
 ### Zone Blocks
 
-Zone blocks provide scoped memory management. See the [Memory & Zones](06_memory_zones.md) chapter for full details:
+Zone blocks provide scoped memory management. See the [Memory & Zones](05_memory_zones.md) chapter for full details:
 
 ```gabbro
 zone scratch: Arena {

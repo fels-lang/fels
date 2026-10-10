@@ -179,9 +179,9 @@ rejects on purpose. Each needs a fix-or-document decision before v0.1.0.
   payload-less `enum` is false for every value at `-O0` and true for every value at `-O2`,
   because the bare `.south` has no type to lower from. `d == Dir.south` and `match d`
   work. (The same comparison on a caught *error* is handled; see the changelog.)
-- **An inline error set does not parse.** `-> i32 ! { invalid, overflow }`, shown in
-  [`docs/04`](docs/04_error_handling.md), is rejected with "expected ; after expression".
-  A bare `!` (inferred set) and a named `errors` set work.
+- **An inline error set needs a leading dot on each variant.** `-> i32 ! { .invalid, .overflow }`
+  works ([`docs/04`](docs/04_error_handling.md)); `-> i32 ! { invalid, overflow }` is rejected
+  with "expected ; after expression". A bare `!` (inferred set) and a named `errors` set work.
 - **The payload of a caught error has no static type.** `if e == .code |c|` binds `c`
   as `unknown`, so it can be returned or passed on but not used in arithmetic.
 - **Slicing a zero-length array panics at `-O0`.** `none: [0]u16 = .{}; none[0..0]` reports

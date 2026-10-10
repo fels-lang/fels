@@ -42,6 +42,9 @@ them distinct means a local variable named `io` never shadows the `io` namespace
 > per module internally, so they link cleanly. You reach each through its
 > namespace (`a::greet`, `b::greet`) or a selective/glob import. A name is only
 > mangled when it actually collides — unique names keep their bare linkage.
+> This holds for functions and constants. Two *types* (structs, enums, interfaces,
+> error sets) with the same name are still a duplicate declaration, even in
+> different modules, so a file that imports `std.io` cannot declare its own `Writer`.
 
 ### Visibility
 
@@ -69,15 +72,15 @@ dynamic dispatch via `*InterfaceType` pointers.
 
 ### Declaration
 
-```gabbro
-#import std.io.{ IoError };
+This is how `std.io` declares its `Writer` interface:
 
+```gabbro
 pub Writer :: interface {
-    write :: fn(*Self, []const u8) -> usize ! IoError;
-    flush :: fn(*Self) -> void ! IoError;
+    write :: fn(self: *Self, data: []const u8) -> usize ! IoError;
+    flush :: fn(self: *Self) -> void ! IoError;
 }
 ```
-Notice the `*Self` parameter. Every interface method must take `*Self` (or `borrow *Self`) as its first parameter.
+Notice the `self: *Self` parameter. Every interface method must take `*Self` (or `borrow *Self`) as its first parameter, and every parameter is named, as in any function declaration.
 
 ### Implementation
 
@@ -95,6 +98,7 @@ File as Writer {
     
     flush :: fn(self: *Self) -> void ! IoError {
         // Implementation here...
+        return;
     }
 }
 ```
@@ -105,15 +109,16 @@ You can implicitly coerce a pointer to a concrete type into an interface pointer
 Calls through an interface pointer use a vtable for dynamic dispatch.
 
 ```gabbro
-process :: fn(w: *Writer) -> !void {
+process :: fn(w: *Writer) -> void ! IoError {
     w.write("Hello")?;
+    return;
 }
 
 main :: fn() {
-    f := File { handle = 1 };
+    f: File = .{ .handle = 1 };
     
     // Implicit coercion from *File to *Writer
-    process(&f) catch { return; };
+    process(&f) catch err { return; };
 }
 ```
 

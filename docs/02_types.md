@@ -334,12 +334,11 @@ spawn :: fn() -> Robot { return .{ 3, .west }; }
 Enum variants can carry associated data:
 
 ```gabbro
+Rect :: struct { width: f64, height: f64 }
+
 Shape :: enum {
     circle: f64,             // radius
-    rectangle: struct {      // inline struct payload
-        width: f64,
-        height: f64,
-    },
+    rectangle: Rect,         // struct payload
     none,                    // no payload
 }
 
@@ -390,7 +389,7 @@ read_file :: fn(path: []const u8) -> []u8 ! IoError {
 ```
 
 > [!NOTE]
-> See the [Error Handling](05_error_handling.md) chapter for full details on `try`, `catch`, and error propagation.
+> See the [Error Handling](04_error_handling.md) chapter for full details on `?`, `catch`, and error propagation.
 
 ## Pointer Types
 
@@ -407,7 +406,7 @@ A single pointer points to exactly one value:
 | `*volatile T`   | Volatile pointer to `T`             |
 
 ```gabbro
-x := 42;
+x: i32 = 42;
 ptr: *i32 = &x;       // take address of x
 val := *ptr;           // dereference: read the value (42)
 *ptr = 100;            // dereference: write a new value
@@ -678,16 +677,16 @@ Counter :: struct {
 }
 ```
 
-Atomic fields must be accessed through the `atomic_load` and `atomic_store` builtins rather than through regular field access:
+Atomic fields must be accessed through the `core::atomic_load` and `core::atomic_store` builtins rather than through regular field access:
 
 ```gabbro
-c := Counter { value = 0 };
+c: Counter = .{ .value = 0 };
 current := core::atomic_load(&c.value);
-atomic_store(&c.value, current + 1);
+core::atomic_store(&c.value, current + 1);
 ```
 
 > [!NOTE]
-> The `atomic` qualifier is only valid on struct fields. See the [Builtins](08_builtins.md) chapter for the full set of atomic operations available.
+> The `atomic` qualifier is only valid on struct fields. See the [Builtins](08_attributes_builtins.md) chapter for the full set of atomic operations available.
 
 ## Borrow Types
 
@@ -715,7 +714,7 @@ print_name :: fn(name: borrow []const u8) -> void {
 | Use in expressions | Forward to a non-`borrow` parameter |
 
 > [!IMPORTANT]
-> Borrowed references are a compile-time safety mechanism. They guarantee that zone-owned data is not accidentally captured beyond its intended scope. See the [Memory Management](06_memory.md) chapter for details on zones and ownership.
+> Borrowed references are a compile-time safety mechanism. They guarantee that zone-owned data is not accidentally captured beyond its intended scope. See the [Memory Management](05_memory_zones.md) chapter for details on zones and ownership.
 
 ## Type Casting
 

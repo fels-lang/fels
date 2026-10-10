@@ -42,7 +42,7 @@ main :: fn() -> i32 {
 ## Language at a Glance
 
 ```gabbro
-#import std.io.{ Writer, println, print_u64 };
+#import std.io.{ IoError, println, print_u64 };
 #import std.mem.{ copy, eql_bytes };
 
 // Constants use :: (compile-time binding)
@@ -69,17 +69,17 @@ Color :: enum {
 }
 
 // Interface
-Writer :: interface {
-    write :: fn(*Self, []const u8) -> usize ! IoError;
-    flush :: fn(*Self) -> void ! IoError;
+Sink :: interface {
+    write :: fn(self: *Self, data: []const u8) -> usize ! IoError;
+    flush :: fn(self: *Self) -> void ! IoError;
 }
 
 // Interface implementation
-Greeting as Writer {
+Greeting as Sink {
     write :: fn(self: *Self, data: []const u8) -> usize ! IoError {
         return write_stdout(data);
     }
-    flush :: fn(self: *Self) -> void ! IoError {}
+    flush :: fn(self: *Self) -> void ! IoError { return; }
 }
 
 // Function with generics
