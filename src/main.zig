@@ -596,7 +596,8 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, rest: []const []const u
     }
 
     gabbro.build_driver.run(allocator, io, build_path, opts) catch |err| {
-        std.debug.print("gabbro build: {s}\n", .{@errorName(err)});
+        // The option messages already say what is wrong.
+        if (err != error.InvalidOption) std.debug.print("gabbro build: {s}\n", .{@errorName(err)});
         return 1;
     };
     return 0;
