@@ -202,9 +202,32 @@ pub install :: fn(self: Artifact) {
     __build_install(self.id);
 }
 
-// Inject a comptime constant into this build (a `#provided`-style override).
-pub define :: fn(self: Artifact, key: []const u8, val: []const u8) {
-    __build_define(self.id, key, val);
+// Constants for the program, in a generated module it imports:
+//
+//   app.define("GIT_REV", rev);          // in build.gab
+//   app.define_int("MAX_PLAYERS", 8);
+//
+//   #import build_options;               // in the program
+//   x := build_options::MAX_PLAYERS;
+//
+// `#import build_options` works for every artifact; without a define it is empty.
+pub define :: fn(self: Artifact, name: []const u8, value: []const u8) {
+    __build_define(self.id, name, value);
+}
+
+pub define_int :: fn(self: Artifact, name: []const u8, value: i64) {
+    __build_define_int(self.id, name, value);
+}
+
+pub define_bool :: fn(self: Artifact, name: []const u8, value: bool) {
+    __build_define_bool(self.id, name, value);
+}
+
+// A named import root: with `app.add_module("raylib", "deps/raylib/src")`, the program's
+// `#import raylib.core` reads deps/raylib/src/core.gab, and `#import raylib` reads
+// deps/raylib/src/raylib.gab.
+pub add_module :: fn(self: Artifact, name: []const u8, dir: []const u8) {
+    __build_add_module(self.id, name, dir);
 }
 
 // Dependencies
