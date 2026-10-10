@@ -3,7 +3,7 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.4.0 — 2026-10-10
 
 **Gabbro is now called Fels.** The compiler is `fels.exe`, source files end in `.fels`, the
 build script is `build.fels`, the environment variables are `FELS_*` (`FELS_HOME`, `FELS_STD`,
