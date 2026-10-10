@@ -23,6 +23,7 @@ const BuildOp = instructions.BuildOp;
 
 pub const BuildError = error{
     CompileFailed,
+    InvalidOption,
     NoBuildScript,
     NoBuildFn,
     BuildHookFailed,
@@ -71,6 +72,19 @@ pub const Step = struct {
     dir: []const u8 = "",
 };
 
+pub const OptionKind = enum { bool, int, string, choice };
+
+/// A build option the script declared with `b.option_*`, shown by `--list`.
+pub const OptionDecl = struct {
+    name: []const u8,
+    kind: OptionKind,
+    /// The default as text, for the listing.
+    default: []const u8,
+    help: []const u8,
+    /// For `.choice`: the allowed words, separated by `|`.
+    choices: []const u8 = "",
+};
+
 pub const Dep = struct {
     name: []const u8,
     location: []const u8,
@@ -91,6 +105,10 @@ pub const BuildPlan = struct {
     want_summary: bool = false,
     /// `-Dname` / `-Dname=value` build options forwarded from the CLI.
     options: []const []const u8 = &.{},
+    /// The options the script declared, in declaration order.
+    declared: std.ArrayList(OptionDecl) = .empty,
+    /// Problems found while the script ran (a bad option value), reported after it.
+    errors: std.ArrayList([]const u8) = .empty,
     oom: bool = false,
 
     fn init(gpa: std.mem.Allocator) BuildPlan {
@@ -111,6 +129,29 @@ pub const BuildPlan = struct {
             return "";
         };
     }
+
+    fn fail(self: *BuildPlan, comptime fmt: []const u8, args: anytype) void {
+        const msg = std.fmt.allocPrint(self.a(), fmt, args) catch {
+            self.oom = true;
+            return;
+        };
+        self.errors.append(self.a(), msg) catch {
+            self.oom = true;
+        };
+    }
+
+    /// Record an option declaration; the first declaration of a name wins.
+    fn declare(self: *BuildPlan, decl: OptionDecl) void {
+        for (self.declared.items) |d| if (std.mem.eql(u8, d.name, decl.name)) return;
+        var copy = decl;
+        copy.name = self.dupe(decl.name);
+        copy.default = self.dupe(decl.default);
+        copy.help = self.dupe(decl.help);
+        copy.choices = self.dupe(decl.choices);
+        self.declared.append(self.a(), copy) catch {
+            self.oom = true;
+        };
+    }
 };
 
 // VM host-call bridge
@@ -126,6 +167,10 @@ fn argStr(args: []const Value, i: usize) []const u8 {
 fn argInt(args: []const Value, i: usize) i64 {
     if (i >= args.len) return 0;
     return @intCast(args[i].asI128() orelse 0);
+}
+
+fn argBool(args: []const Value, i: usize) bool {
+    return argInt(args, i) != 0;
 }
 
 /// Invoked by the `host_call` opcode for every `std.build` `__build_*` intrinsic.
@@ -275,10 +320,56 @@ fn hostCall(ctx: *anyopaque, op_raw: u32, args: []const Value) Value {
             plan.out_root = plan.dupe(argStr(args, 0));
             return .void;
         },
-        .option_flag => return .{ .int = if (hasFlag(plan.options, argStr(args, 0))) 1 else 0 },
+        .option_flag => {
+            plan.declare(.{ .name = argStr(args, 0), .kind = .bool, .default = "false", .help = "" });
+            return .{ .int = if (hasFlag(plan.options, argStr(args, 0))) 1 else 0 };
+        },
         .option_str => {
+            plan.declare(.{ .name = argStr(args, 0), .kind = .string, .default = argStr(args, 1), .help = "" });
             if (findOption(plan.options, argStr(args, 0))) |v| return .{ .string = plan.dupe(v) };
             return .{ .string = argStr(args, 1) };
+        },
+        .option_bool => {
+            const name = argStr(args, 0);
+            const default = argBool(args, 1);
+            plan.declare(.{ .name = name, .kind = .bool, .default = if (default) "true" else "false", .help = argStr(args, 2) });
+            const text = optionValue(plan.options, name) orelse return .{ .bool = default };
+            return .{ .bool = parseBool(text) orelse {
+                plan.fail("-D{s}={s}: expected true or false", .{ name, text });
+                return .{ .bool = default };
+            } };
+        },
+        .option_int => {
+            const name = argStr(args, 0);
+            const default = argInt(args, 1);
+            const shown = std.fmt.allocPrint(plan.a(), "{d}", .{default}) catch "";
+            plan.declare(.{ .name = name, .kind = .int, .default = shown, .help = argStr(args, 2) });
+            const text = optionValue(plan.options, name) orelse return .{ .int = default };
+            const v = std.fmt.parseInt(i64, text, 0) catch {
+                plan.fail("-D{s}={s}: expected an integer", .{ name, text });
+                return .{ .int = default };
+            };
+            return .{ .int = v };
+        },
+        .option_string => {
+            const name = argStr(args, 0);
+            plan.declare(.{ .name = name, .kind = .string, .default = argStr(args, 1), .help = argStr(args, 2) });
+            if (optionValue(plan.options, name)) |v| return .{ .string = plan.dupe(v) };
+            return .{ .string = argStr(args, 1) };
+        },
+        .option_choice => {
+            const name = argStr(args, 0);
+            const choices = argStr(args, 1);
+            const default = argStr(args, 2);
+            plan.declare(.{ .name = name, .kind = .choice, .default = default, .help = argStr(args, 3), .choices = choices });
+            if (!isChoice(choices, default))
+                plan.fail("option `{s}`: the default `{s}` is not one of {s}", .{ name, default, choices });
+            const text = optionValue(plan.options, name) orelse return .{ .string = default };
+            if (!isChoice(choices, text)) {
+                plan.fail("-D{s}={s}: expected one of {s}", .{ name, text, choices });
+                return .{ .string = default };
+            }
+            return .{ .string = plan.dupe(text) };
         },
         .summary => {
             plan.want_summary = argInt(args, 0) != 0;
@@ -318,6 +409,55 @@ fn findOption(options: []const []const u8, name: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, o[0..eq], name)) return o[eq + 1 ..];
     }
     return null;
+}
+
+/// The text of the last `-Dname` or `-Dname=value` given, or null if the option was not
+/// passed. A bare `-Dname` gives "".
+fn optionValue(options: []const []const u8, name: []const u8) ?[]const u8 {
+    var found: ?[]const u8 = null;
+    for (options) |o| {
+        const eq = std.mem.indexOfScalar(u8, o, '=') orelse o.len;
+        if (!std.mem.eql(u8, o[0..eq], name)) continue;
+        found = if (eq < o.len) o[eq + 1 ..] else "";
+    }
+    return found;
+}
+
+/// A bool option's text: a bare `-Dname` means true.
+fn parseBool(text: []const u8) ?bool {
+    inline for (.{ "", "true", "1", "yes", "on" }) |t| if (std.ascii.eqlIgnoreCase(text, t)) return true;
+    inline for (.{ "false", "0", "no", "off" }) |f| if (std.ascii.eqlIgnoreCase(text, f)) return false;
+    return null;
+}
+
+/// Whether `word` is one of the `|` separated `choices`.
+fn isChoice(choices: []const u8, word: []const u8) bool {
+    var it = std.mem.splitScalar(u8, choices, '|');
+    while (it.next()) |c| if (std.mem.eql(u8, c, word)) return true;
+    return false;
+}
+
+/// The name part of a `-Dname=value` option.
+fn optionName(option: []const u8) []const u8 {
+    return option[0 .. std.mem.indexOfScalar(u8, option, '=') orelse option.len];
+}
+
+/// Report every problem with the `-D` options: a bad value, and a name the script does not
+/// declare (usually a typo). Returns whether there was one.
+fn reportOptionErrors(plan: *BuildPlan) bool {
+    for (plan.options) |o| {
+        const name = optionName(o);
+        const known = for (plan.declared.items) |d| {
+            if (std.mem.eql(u8, d.name, name)) break true;
+        } else false;
+        if (!known) plan.fail("unknown build option -D{s}", .{name});
+    }
+    for (plan.errors.items) |e| std.debug.print("gabbro build: {s}\n", .{e});
+    if (plan.errors.items.len != 0 and plan.declared.items.len != 0) {
+        std.debug.print("build options of this build.gab:\n", .{});
+        printOptions(plan);
+    }
+    return plan.errors.items.len != 0;
 }
 
 /// Whether a `-Dname` flag (bare or `name=...`) was passed.
@@ -405,6 +545,7 @@ pub fn loadPlan(gpa: std.mem.Allocator, io: std.Io, build_path: []const u8, opti
         return error.BuildHookFailed;
     };
     if (plan.oom) return error.OutOfMemory;
+    if (reportOptionErrors(&plan)) return error.InvalidOption;
     if (plan.artifacts.items.len == 0) return error.NoArtifacts;
     return plan;
 }
@@ -748,6 +889,25 @@ fn optName(opt: u2) []const u8 {
     };
 }
 
+/// The declared options, one per line: `-Dname=<int>  help (default: 4)`.
+fn printOptions(plan: *BuildPlan) void {
+    for (plan.declared.items) |d| {
+        var buf: [96]u8 = undefined;
+        const usage = switch (d.kind) {
+            .bool => std.fmt.bufPrint(&buf, "-D{s}", .{d.name}),
+            .int => std.fmt.bufPrint(&buf, "-D{s}=<int>", .{d.name}),
+            .string => std.fmt.bufPrint(&buf, "-D{s}=<text>", .{d.name}),
+            .choice => std.fmt.bufPrint(&buf, "-D{s}={s}", .{ d.name, d.choices }),
+        } catch d.name;
+        std.debug.print("  {s: <28} {s}", .{ usage, d.help });
+        if (d.default.len != 0) {
+            const sep: []const u8 = if (d.help.len != 0) " " else "";
+            std.debug.print("{s}(default: {s})", .{ sep, d.default });
+        }
+        std.debug.print("\n", .{});
+    }
+}
+
 fn printList(plan: *BuildPlan) void {
     if (plan.workspace_name) |w| std.debug.print("workspace: {s}\n", .{w});
     std.debug.print("artifacts:\n", .{});
@@ -772,5 +932,9 @@ fn printList(plan: *BuildPlan) void {
             };
             std.debug.print("  {s: <16} {s: <10} {s}\n", .{ st.name, @tagName(st.kind), detail });
         }
+    }
+    if (plan.declared.items.len != 0) {
+        std.debug.print("options:\n", .{});
+        printOptions(plan);
     }
 }

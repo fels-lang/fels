@@ -235,6 +235,35 @@ pub summary :: fn(self: Build) {
 }
 
 // Build options (`gabbro build -Dname` / `-Dname=value`)
+//
+// Each option is declared where the script reads it. `gabbro build --list` shows every
+// declared option with its help text and default, and `gabbro build` stops with an error
+// for a `-D` option the script does not declare or a value of the wrong kind.
+//
+//   threads := b.option_int("threads", 4, "worker threads in the pool");
+//   backend := b.option_choice("backend", "gl|vulkan|d3d", "gl", "renderer");
+
+// `-Dname` or `-Dname=true|false` (also yes/no, on/off, 1/0).
+pub option_bool :: fn(self: Build, name: []const u8, default: bool, help: []const u8) -> bool {
+    return __build_option_bool(name, default, help);
+}
+
+// `-Dname=<int>`, decimal or with a 0x, 0o or 0b prefix.
+pub option_int :: fn(self: Build, name: []const u8, default: i64, help: []const u8) -> i64 {
+    return __build_option_int(name, default, help);
+}
+
+// `-Dname=<text>`.
+pub option_string :: fn(self: Build, name: []const u8, default: []const u8, help: []const u8) -> []const u8 {
+    return __build_option_string(name, default, help);
+}
+
+// `-Dname=<word>` where the word is one of `choices`, written "a|b|c".
+pub option_choice :: fn(self: Build, name: []const u8, choices: []const u8, default: []const u8, help: []const u8) -> []const u8 {
+    return __build_option_choice(name, choices, default, help);
+}
+
+// The short forms without help text.
 
 // True if `-Dname` was passed on the command line.
 pub option :: fn(self: Build, name: []const u8) -> bool {

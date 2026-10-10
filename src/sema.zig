@@ -3941,6 +3941,8 @@ const Checker = struct {
         // the rest are side-effecting void.
         if (BuildOp.fromIntrinsic(name)) |op| return switch (op.result()) {
             .int => .i32,
+            .i64 => .i64,
+            .bool => .bool,
             .string => try self.sliceOf(.u8),
             .void => .void,
         };
