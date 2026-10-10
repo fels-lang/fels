@@ -36,6 +36,8 @@ pub const Use = struct {
     may: []const Cap = &.{},
     /// Byte offset of the `#use`, for messages.
     at: u32 = 0,
+    /// Byte offset just after its `;` (`fels remove` cuts from `at` to here).
+    end: u32 = 0,
 
     pub fn isPath(self: Use) bool {
         return isPathSource(self.source);
@@ -85,7 +87,7 @@ pub fn parse(arena: std.mem.Allocator, source: []const u8, problem: *Problem) Er
         } else if (std.mem.eql(u8, word, "needs")) {
             try caps(&c, &needs);
         } else if (std.mem.eql(u8, word, "use")) {
-            var u: Use = .{ .at = d.start, .name = undefined, .source = undefined };
+            var u: Use = .{ .at = c.hash_at, .name = undefined, .source = undefined };
             const name_tok = c.peek();
             u.name = try c.name("the name the package is imported by");
             for (uses.items) |other| if (std.mem.eql(u8, other.name, u.name))
@@ -107,7 +109,8 @@ pub fn parse(arena: std.mem.Allocator, source: []const u8, problem: *Problem) Er
         } else {
             return c.fail(d, "unknown directive `#{s}`; fels.pkg has #package, #license, #description, #root, #needs and #use", .{word});
         }
-        _ = try c.expect(.semicolon, "`;` at the end of the directive");
+        const semi = try c.expect(.semicolon, "`;` at the end of the directive");
+        if (std.mem.eql(u8, word, "use")) uses.items[uses.items.len - 1].end = semi.start + 1;
     }
     m.uses = try uses.toOwnedSlice(arena);
     m.needs = try needs.toOwnedSlice(arena);
@@ -199,6 +202,7 @@ test "fels.pkg: the package, its uses and their capabilities" {
     try std.testing.expectEqualStrings("gdi32", rl.may[0].args[1]);
     try std.testing.expect(m.find("mathlib").?.isPath());
     try std.testing.expect(m.find("mathlib").?.version == null);
+    try std.testing.expectEqualStrings("#use mathlib from \"../mathlib\";", src[m.find("mathlib").?.at..m.find("mathlib").?.end]);
 }
 
 test "fels.pkg: mistakes are reported where they are" {
