@@ -9,7 +9,7 @@ it and it was not re-checked.
 These compile without a message and give a wrong result.
 
 - ~~An integer literal stored into a wider or narrower type uses the wrong width.~~ Fixed (see
-  `## Unreleased` in CHANGELOG.md): sema records the type a literal takes, so `k: i64 = -5;`,
+  0.3.1 in CHANGELOG.md): sema records the type a literal takes, so `k: i64 = -5;`,
   `e: i8 = -128;` and `big: u64 = 1 << 40;` are computed and stored at their type, also under
   `as`, in a generic struct's field default, in `5 + big` and in `1 << b`.
 - ~~A local inferred from a literal, read as another integer type, has the wrong value.~~ Fixed on
@@ -24,7 +24,7 @@ These compile without a message and give a wrong result.
   checked yet: a slice of a local array (`return buf[:]`, which a function that `#run` calls uses
   to return bytes), an address passed through a call, and an address stored into a global or
   through a pointer.
-- ~~An array whose length comes from a `#run` constant is empty.~~ Fixed (see `## Unreleased` in
+- ~~An array whose length comes from a `#run` constant is empty.~~ Fixed (see 0.3.1 in
   CHANGELOG.md): the comptime VM computes such a constant and the type check runs again with it;
   an array literal with more elements than its array is now an error.
 
