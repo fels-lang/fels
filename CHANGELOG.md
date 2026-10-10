@@ -3,6 +3,18 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Fixed
+
+- **`1e5` was reported as "unknown type `e5`".** Gabbro has no exponent notation, and the lexer
+  reads `1e5` as the integer `1` with the suffix `e5`. The error now says that exponent notation
+  is not supported and offers the number written out (`100000.0`; `1.5e3` gives `1500.0`).
+  Hex literals such as `0x1e5` are not affected.
+- **An error in a top level constant was reported twice.** The initializer is checked twice, and
+  each check added the same message. The checker now drops a message it has already reported at
+  the same place.
+
 ## 0.2.2 — 2026-10-10
 
 A release for editor support and five fixes. `gabbro lsp` now understands imports, so the language
