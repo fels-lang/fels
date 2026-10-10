@@ -100,7 +100,10 @@ pub const LlvmBackend = struct {
         // of returning errors.
         if (self.cg.lowering_failed) return error.LoweringFailed;
 
-        if (self.cg.library_object) internalizeForLibrary(&self.cg);
+        if (self.cg.library_object) {
+            internalizeForLibrary(&self.cg);
+            try emitDefaultLibs(&self.cg, module);
+        }
 
         try emit.verify(&self.cg);
     }
@@ -244,6 +247,23 @@ fn internalizeForLibrary(cg: *ctx_mod.ModuleCg) void {
     var g = llvm_c.LLVMGetFirstGlobal(cg.mod);
     while (g) |gv| : (g = llvm_c.LLVMGetNextGlobal(gv)) {
         if (llvm_c.LLVMIsDeclaration(gv) == 0) internalizeOne(gv);
+    }
+}
+
+/// For a static library's object: a `/DEFAULTLIB:<lib>.lib` linker directive for each library
+/// its `#extern` functions come from, so the program that links the static library also links
+/// what the library needs (the way an MSVC static library carries its dependencies).
+fn emitDefaultLibs(cg: *ctx_mod.ModuleCg, module: ir.IrModule) !void {
+    var seen: std.StringHashMap(void) = .init(cg.allocator);
+    defer seen.deinit();
+    for (module.functions) |f| {
+        const lib = f.extern_lib orelse continue;
+        if (lib.len == 0 or (try seen.getOrPut(lib)).found_existing) continue;
+        const opt = try std.fmt.allocPrint(cg.allocator, "/DEFAULTLIB:{s}.lib", .{link.importLibraryFor(lib)});
+        defer cg.allocator.free(opt);
+        var str = llvm_c.LLVMMDStringInContext2(cg.ctx, opt.ptr, opt.len);
+        const node = llvm_c.LLVMMDNodeInContext2(cg.ctx, &str, 1);
+        llvm_c.LLVMAddNamedMetadataOperand(cg.mod, "llvm.linker.options", llvm_c.LLVMMetadataAsValue(cg.ctx, node));
     }
 }
 
