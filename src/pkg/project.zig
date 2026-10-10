@@ -48,7 +48,9 @@ pub fn load(
     } else |_| {}
 
     const cache = fetch.cacheDir(a, env) catch return error.OutOfMemory;
+    const vendor_path = std.fs.path.join(a, &.{ dir, "vendor" }) catch return error.OutOfMemory;
     const result = try resolve_mod.resolve(a, io, dir, read.path, read.source, read.m, old, .{
+        .vendor_dir = if (fetch.exists(io, vendor_path)) vendor_path else null,
         .cache = cache,
         .update = opts.update,
         .update_all = opts.update_all,
@@ -199,6 +201,120 @@ pub fn add(
         return err;
     };
     return result.?.find(name).?;
+}
+
+/// `fels remove <name>...`: take the `#use` lines out of fels.pkg and the packages that are no
+/// longer used out of fels.lock.
+pub fn cmdRemove(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Environ.Map, args: []const []const u8) u8 {
+    if (args.len == 0) {
+        std.debug.print("usage: fels remove <name>...\n", .{});
+        return 1;
+    }
+    remove(a, io, env, ".", args) catch return 1;
+    for (args) |name| std.debug.print("removed {s}\n", .{name});
+    return 0;
+}
+
+/// Remove the `#use` lines of `names` from the fels.pkg in `dir`, then resolve so fels.lock
+/// keeps only what is still used.
+pub fn remove(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Environ.Map, dir: []const u8, names: []const []const u8) Error!void {
+    const read = try resolve_mod.readManifest(a, io, dir) orelse {
+        std.debug.print("fels remove: no fels.pkg in {s}\n", .{dir});
+        return error.PackageError;
+    };
+    var text = read.source;
+    // From the last line to the first, so the earlier offsets stay right.
+    var cuts: std.ArrayList(manifest_mod.Use) = .empty;
+    for (names) |name| {
+        const u = read.m.find(name) orelse {
+            std.debug.print("fels remove: fels.pkg does not use a package named '{s}'\n", .{name});
+            return error.PackageError;
+        };
+        cuts.append(a, u) catch return error.OutOfMemory;
+    }
+    std.mem.sort(manifest_mod.Use, cuts.items, {}, struct {
+        fn gt(_: void, x: manifest_mod.Use, y: manifest_mod.Use) bool {
+            return x.at > y.at;
+        }
+    }.gt);
+    for (cuts.items) |u| {
+        var end: usize = u.end;
+        // The line break after it goes too.
+        if (end < text.len and text[end] == '\r') end += 1;
+        if (end < text.len and text[end] == '\n') end += 1;
+        text = std.mem.concat(a, u8, &.{ text[0..u.at], text[end..] }) catch return error.OutOfMemory;
+    }
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = read.path, .data = text }) catch {
+        std.debug.print("fels remove: cannot write {s}\n", .{read.path});
+        return error.PackageError;
+    };
+    _ = try load(a, io, dir, env, .{});
+}
+
+/// `fels why <name>`: where a package comes from, who uses it, and what it may do.
+pub fn cmdWhy(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Environ.Map, args: []const []const u8) u8 {
+    if (args.len != 1) {
+        std.debug.print("usage: fels why <name>\n", .{});
+        return 1;
+    }
+    const r = (load(a, io, ".", env, .{ .offline = true }) catch return 1) orelse {
+        std.debug.print("fels why: no fels.pkg in the current directory\n", .{});
+        return 1;
+    };
+    const p = r.find(args[0]) orelse {
+        std.debug.print("fels why: no package named '{s}' is used, directly or through another package\n", .{args[0]});
+        return 1;
+    };
+    std.debug.print("{s} {s}  {s}\n  in {s}{s}\n", .{ p.name, p.version, p.source, p.dir, if (p.vendored) " (vendored)" else "" });
+    for (p.used_by) |via| {
+        std.debug.print("  used by {s}", .{via.by});
+        if (via.version) |v| std.debug.print(": version \"{s}\"", .{v});
+        if (via.may.len != 0) {
+            std.debug.print("{s} may", .{if (via.version != null) "," else ":"});
+            for (via.may, 0..) |c, i| std.debug.print("{s} {s}", .{ if (i == 0) "" else ",", manifest_mod.formatCap(a, c) catch c.name });
+        }
+        std.debug.print("\n", .{});
+    }
+    std.debug.print("  its compile-time code may:", .{});
+    if (p.caps.len == 0) std.debug.print(" nothing (it runs pure)", .{});
+    for (p.caps, 0..) |c, i| std.debug.print("{s} {s}", .{ if (i == 0) "" else ",", manifest_mod.formatCap(a, c) catch c.name });
+    std.debug.print("\n", .{});
+    return 0;
+}
+
+/// `fels vendor`: copy every git package into `vendor/<name>`. Builds then take them from there,
+/// without git and without the package cache; commit `vendor/` for builds that cannot fetch.
+pub fn cmdVendor(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Environ.Map, args: []const []const u8) u8 {
+    if (args.len != 0) {
+        std.debug.print("usage: fels vendor\n", .{});
+        return 1;
+    }
+    const n = vendor(a, io, env, ".") catch return 1;
+    std.debug.print("{d} package(s) in vendor/\n", .{n});
+    return 0;
+}
+
+/// Copy the git packages of the project in `dir` into `<dir>/vendor`. Returns how many.
+pub fn vendor(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Environ.Map, dir: []const u8) Error!usize {
+    // Resolve against the cache, not an older vendor/ (it is replaced).
+    const vendor_dir = std.fs.path.join(a, &.{ dir, "vendor" }) catch return error.OutOfMemory;
+    std.Io.Dir.cwd().deleteTree(io, vendor_dir) catch {};
+    const r = (try load(a, io, dir, env, .{})) orelse {
+        std.debug.print("fels vendor: no fels.pkg in {s}\n", .{dir});
+        return error.PackageError;
+    };
+    var count: usize = 0;
+    for (r.packages) |p| {
+        if (manifest_mod.isPathSource(p.source)) continue;
+        const dest = std.fs.path.join(a, &.{ vendor_dir, p.name }) catch return error.OutOfMemory;
+        fetch.copyTree(a, io, p.dir, dest) catch {
+            std.debug.print("fels vendor: cannot copy {s} to {s}\n", .{ p.dir, dest });
+            return error.PackageError;
+        };
+        std.debug.print("  vendor/{s}  {s} {s}\n", .{ p.name, p.name, p.version });
+        count += 1;
+    }
+    return count;
 }
 
 /// A folder name as a package name: letters, digits and `_`.
