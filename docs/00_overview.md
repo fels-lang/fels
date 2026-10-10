@@ -79,7 +79,7 @@ Greeting as Sink {
     write :: fn(self: *Self, data: []const u8) -> usize ! IoError {
         return write_stdout(data);
     }
-    flush :: fn(self: *Self) -> void ! IoError { return; }
+    flush :: fn(self: *Self) -> void ! IoError {}
 }
 
 // Function with generics

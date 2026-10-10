@@ -49,6 +49,10 @@ the major version is `0`, any minor bump may break source compatibility.
   as a pointer to the literal, which no pointer type accepted, so `&x` could not be passed to a
   `*i32` parameter or compared with a `*i32` either. `&x` is now a `*i32` (`*f64`). Reading `x`
   still adapts to its context (`w: i64 = x;`), but a value read through the pointer is an `i32`.
+- **A `-> void ! E` function needed an explicit `return;` at its end.** Without one it was refused
+  with "may not return a value on all code paths", although there is no value to return. Running
+  to the end of such a function is now success and compiles to the same code as `return;`. A
+  fallible function that returns a value still has to `return` or `fail` on every path.
 
 ## 0.2.2 — 2026-10-10
 

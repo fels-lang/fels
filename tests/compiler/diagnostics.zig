@@ -856,3 +856,37 @@ test "diagnostics: the address of a local inferred from a literal points at the 
     const through_ptr = (try firstError(a, "main :: fn() -> i32 { x := 0; p := &x; y: i64 = *p; return 0; }")).?;
     try std.testing.expect(std.mem.indexOf(u8, through_ptr, "found `i32`") != null);
 }
+
+test "diagnostics: a `void ! E` function may run to its end without `return;`" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Falling off the end of a fallible `void` function is success, as `return;` is. It used to
+    // be "may not return a value on all code paths", as if there were a value to return.
+    const accepted = [_][]const u8{
+        "E :: errors { bad }\nf :: fn() -> void ! E {}",
+        "E :: errors { bad }\nf :: fn(n: i32) -> void ! E { if n > 0 { fail .bad; } }",
+        "E :: errors { bad }\nf :: fn(n: i32) -> void ! E { if n > 0 { fail .bad; } }\ng :: fn(n: i32) -> void ! E { f(n)?; }",
+        "f :: fn(n: i32) -> void ! { if n > 0 { fail .bad; } }",
+        "E :: errors { bad }\nW :: interface { go :: fn(self: *Self) -> void ! E; }\nB :: struct { n: i32 }\nB as W { go :: fn(self: *Self) -> void ! E { self.n += 1; } }",
+    };
+    for (accepted) |src| {
+        if (try firstError(a, src)) |msg| {
+            std.debug.print("\nthis should be accepted:\n  {s}\ngot:\n{s}\n", .{ src, msg });
+            return error.TestUnexpectedResult;
+        }
+    }
+    // A fallible function with a value to return still has to return it on every path.
+    const refused = [_][]const u8{
+        "E :: errors { bad }\nf :: fn() -> i32 ! E {}",
+        "E :: errors { bad }\nf :: fn(n: i32) -> i32 ! E { if n > 0 { return 1; } }",
+        "E :: errors { bad }\nf :: fn(n: i32) -> i32 ! E { if n > 0 { fail .bad; } }",
+    };
+    for (refused) |src| {
+        const msg = (try firstError(a, src)) orelse {
+            std.debug.print("\nthis should be refused:\n  {s}\n", .{src});
+            return error.TestUnexpectedResult;
+        };
+        try std.testing.expect(std.mem.indexOf(u8, msg, "may not return a value on all code paths") != null);
+    }
+}

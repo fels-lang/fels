@@ -4200,3 +4200,74 @@ test "exe: the address of a local inferred from a literal is a pointer to its de
     , "exe_literal_local_address");
     try std.testing.expectEqual(@as(u32, 42), code);
 }
+
+test "exe: a `void ! E` function that runs to its end succeeds" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // These functions have no `return;`, which used to be required. Running off the end is
+    // success: the defer still runs, `?` and a `fail` on the way still fail, and it holds for an
+    // interface method, a generic function, an inferred error set and a call made by `#run`.
+    const code = try compileAndRun(arena.allocator(),
+        \\E :: errors { bad, worse }
+        \\counter: i32 = 0;
+        \\check :: fn(n: i32) -> void ! E {
+        \\    defer { counter += 1; }
+        \\    if n == 1 { fail .bad; }
+        \\    if n == 2 { fail .worse; }
+        \\}
+        \\forward :: fn(n: i32) -> void ! E {
+        \\    check(n)?;
+        \\}
+        \\Shape :: interface {
+        \\    poke :: fn(self: *Self, n: i32) -> void ! E;
+        \\}
+        \\Box :: struct { hits: i32 }
+        \\Box as Shape {
+        \\    poke :: fn(self: *Self, n: i32) -> void ! E {
+        \\        if n < 0 { fail .bad; }
+        \\        self.hits += n;
+        \\    }
+        \\}
+        \\gen :: fn(v: $T) -> void ! E {
+        \\    if v == 0 { fail .bad; }
+        \\}
+        \\setup :: fn() -> void ! E {}
+        \\inferred :: fn(n: i32) -> void ! {
+        \\    if n == 1 { fail .oops; }
+        \\}
+        \\at_compile_time :: fn() -> i32 {
+        \\    r := 0;
+        \\    setup() catch err { r += 100; };
+        \\    gen(4) catch err { r += 100; };
+        \\    gen(0) catch err { r += 7; };
+        \\    return r;
+        \\}
+        \\COMPTIME :: #run at_compile_time();
+        \\main :: fn() -> i32 {
+        \\    r := 0;
+        \\    check(0) catch err { return 1; };
+        \\    check(1) catch err { r += 1; };
+        \\    check(2) catch err { if err == .worse { r += 2; } };
+        \\    forward(0) catch err { return 2; };
+        \\    forward(1) catch err { r += 4; };
+        \\    b: Box = .{ .hits = 0 };
+        \\    b.poke(5) catch err { return 3; };
+        \\    b.poke(-1) catch err { r += 8; };
+        \\    s: *Shape = &b;
+        \\    s.poke(2) catch err { return 4; };
+        \\    gen(3) catch err { return 5; };
+        \\    gen(0) catch err { r += 16; };
+        \\    setup() catch err { return 6; };
+        \\    inferred(0) catch err { return 7; };
+        \\    inferred(1) catch err { r += 32; };
+        \\    if r != 63 { return 8; }
+        \\    if counter != 5 { return 9; }
+        \\    if b.hits != 7 { return 10; }
+        \\    if COMPTIME != 7 { return 11; }
+        \\    return 42;
+        \\}
+    , "exe_fallible_void_fallthrough");
+    try std.testing.expectEqual(@as(u32, 42), code);
+}

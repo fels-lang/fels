@@ -98,7 +98,6 @@ File as Writer {
     
     flush :: fn(self: *Self) -> void ! IoError {
         // Implementation here...
-        return;
     }
 }
 ```
@@ -111,7 +110,6 @@ Calls through an interface pointer use a vtable for dynamic dispatch.
 ```gabbro
 process :: fn(w: *Writer) -> void ! IoError {
     w.write("Hello")?;
-    return;
 }
 
 main :: fn() {
