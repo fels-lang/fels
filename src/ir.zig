@@ -4052,6 +4052,7 @@ const FunctionLowerer = struct {
         // untyped arm values (`.{ … }`, `.variant`) get the right target type.
         if (expr.kind == .match_expr) return self.lowerMatchExpr(expr, expected_ty);
         if (expr.kind == .if_expr) return self.lowerIfExpr(expr, expected_ty);
+        if (try self.lowerBareVariantAs(expr, expected_ty)) |v| return v;
         // A value passed where an `Any` is expected auto-wraps (compiler inserts
         // `any(x)`) — unless it's already an `Any`, or a literal that *constructs*
         // the `Any` (`.{ data, id, name }`), or an unknown-typed expr.
@@ -4113,6 +4114,32 @@ const FunctionLowerer = struct {
             .struct_literal => |inits| try self.lowerStructLiteral(inits, expected_ty, expr.span),
             else => try self.lowerExpr(expr),
         };
+    }
+
+    /// A bare `.variant` that sema did not type, lowered into a slot of enum type: an element
+    /// of an array literal (`arr: [3]Color = .{ .red, .green, .blue }`) or a struct field
+    /// default (`color: Color = .green`, which sema never visits). It used to lower as an
+    /// unknown local, an undefined value. Null when `expr` is no such variant or the slot is
+    /// no enum.
+    fn lowerBareVariantAs(self: *FunctionLowerer, expr: ast.Expr, expected_ty: IrType) LowerError!?Value {
+        const name = bareEnumVariant(expr) orelse return null;
+        if (self.types.enum_lits.contains(expr.id)) return null;
+        if (expected_ty != .struct_type) return null;
+        const id = self.symbols.resolve(self.symbols.root_scope, expected_ty.struct_type) orelse return null;
+        const layout = self.types.layouts.get(id) orelse return null;
+        const variants = switch (layout.kind) {
+            .variant_type => |v| v,
+            else => return null,
+        };
+        for (variants) |v| if (std.mem.eql(u8, v.name, name)) {
+            return try self.emit(expected_ty, .{ .variant_lit = .{
+                .type_name = expected_ty.struct_type,
+                .variant = name,
+                .payload = null,
+            } });
+        };
+        diag_mod.printErrorAt("this enum has no such variant", self.file_name, self.source, expr.span);
+        return error.LoweringFailed;
     }
 
     /// An indirect call whose callee is an already-evaluated function-pointer value: the arguments
