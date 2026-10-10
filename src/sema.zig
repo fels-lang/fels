@@ -2990,7 +2990,10 @@ const Checker = struct {
             .unary => |unary| switch (unary.op) {
                 .address_of => blk: {
                     try self.rejectPackedFieldAddress(unary.expr.*);
-                    break :blk try self.ptrTo(try self.inferExpr(unary.expr.*));
+                    // A local inferred from an untyped literal (`x := 42`) keeps
+                    // adapting to its context when read, but it is stored at the
+                    // literal's default type, so its address is `*i32` (`*f64`).
+                    break :blk try self.ptrTo(defaultLiteralType(try self.inferExpr(unary.expr.*)));
                 },
                 .deref => blk: {
                     const inner = try self.inferExpr(unary.expr.*);
@@ -4622,12 +4625,7 @@ const Checker = struct {
             if (param.ty == .type_param) {
                 const tp = param.ty.type_param;
                 if (!binding.contains(tp)) {
-                    const concrete = switch (arg_ty) {
-                        .int_lit => Ty.i32,
-                        .float_lit => Ty.f64,
-                        else => arg_ty,
-                    };
-                    try binding.put(tp, concrete);
+                    try binding.put(tp, defaultLiteralType(arg_ty));
                 }
             }
             // If param type contains a type variable (e.g. *$T), extract the binding.
@@ -6202,6 +6200,17 @@ fn floatLiteralType(text: []const u8) Ty {
     if (std.mem.endsWith(u8, text, "f32")) return .f32;
     if (std.mem.endsWith(u8, text, "f64")) return .f64;
     return .float_lit;
+}
+
+/// The type an untyped literal takes when nothing constrains it: `i32` for an
+/// integer literal, `f64` for a float literal. Any other type is returned as is.
+/// IR stores a literal-typed value at this type (`x := 42` gets an `i32` slot).
+fn defaultLiteralType(ty: Ty) Ty {
+    return switch (ty) {
+        .int_lit => .i32,
+        .float_lit => .f64,
+        else => ty,
+    };
 }
 
 /// The integer-literal suffixes gabbro accepts (mirrors `intLiteralType`).
