@@ -1,4 +1,4 @@
-/// Gabbro runtime module embedded inside the compiler binary.
+/// Fels runtime module embedded inside the compiler binary.
 ///
 /// Real programs automatically receive the host runtime, which provides:
 ///   - write_stdout(data), write_stderr(data)

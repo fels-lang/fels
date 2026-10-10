@@ -1,6 +1,6 @@
 const std = @import("std");
-const gabbro = @import("gabbro_compiler");
-const ir = @import("gabbro_compiler").ir_mod;
+const fels = @import("fels_compiler");
+const ir = @import("fels_compiler").ir_mod;
 
 test "comptime: #if with TARGET.os compiles both branches" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -15,10 +15,10 @@ test "comptime: #if with TARGET.os compiles both branches" {
         \\    }
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "ct.fels", src);
+    var fe = try fels.compile(arena.allocator(), "ct.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "comptime: #run expression as value" {
@@ -29,10 +29,10 @@ test "comptime: #run expression as value" {
         \\double :: fn(x: i32) -> i32 { return x * 2; }
         \\ANSWER :: #run double(21);
     ;
-    var fe = try gabbro.compile(arena.allocator(), "ct2.fels", src);
+    var fe = try fels.compile(arena.allocator(), "ct2.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "comptime: #run block at statement level" {
@@ -50,10 +50,10 @@ test "comptime: #run block at statement level" {
         \\    return result;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "ct3.fels", src);
+    var fe = try fels.compile(arena.allocator(), "ct3.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "#run: constant computed at compile time, not runtime" {
@@ -75,10 +75,10 @@ test "#run: constant computed at compile time, not runtime" {
         \\    return FIB_10 + FIB_7;   // 55 + 13 = 68
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "fib_ct.fels", src);
+    var fe = try fels.compile(arena.allocator(), "fib_ct.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // The globals should be initialised with COMPILE-TIME constants, not function calls.
     var found_fib10 = false;
@@ -120,10 +120,10 @@ test "#run: string .len and enum-payload construction fold on the VM" {
         \\EP  :: #run enum_payload();  // 21
         \\SP  :: #run str_payload();   // 4
     ;
-    var fe = try gabbro.compile(arena.allocator(), "vmstr.fels", src);
+    var fe = try fels.compile(arena.allocator(), "vmstr.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     var got: usize = 0;
     for (m.globals) |g| {
@@ -156,10 +156,10 @@ test "#run: a string's escapes are resolved, as at run time" {
         \\HEX :: #run hex();            // 'A' * 100 + 2
         \\TEXT :: #run "tab\there";     // the 8 bytes, with a real tab
     ;
-    var fe = try gabbro.compile(arena.allocator(), "vmesc.fels", src);
+    var fe = try fels.compile(arena.allocator(), "vmesc.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     var got: usize = 0;
     for (m.globals) |g| {
@@ -202,10 +202,10 @@ test "#run: taking the address of a scalar local folds on the VM" {
         \\R1 :: #run bump();          // 6
         \\R2 :: #run via_param(1);    // 11
     ;
-    var fe = try gabbro.compile(arena.allocator(), "addr_ct.fels", src);
+    var fe = try fels.compile(arena.allocator(), "addr_ct.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     var r1: bool = false;
     var r2: bool = false;
@@ -240,10 +240,10 @@ test "#run: a struct, array or enum result becomes the data of a global" {
         \\MODE: Mode = #run make_m();
         \\W: Wrap = .{ #run make_p(), .{ 7, 8, 9 } };
     ;
-    var fe = try gabbro.compile(arena.allocator(), "run_aggregate.fels", src);
+    var fe = try fels.compile(arena.allocator(), "run_aggregate.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     var seen: u32 = 0;
     for (m.globals) |g| {
@@ -302,12 +302,12 @@ test "#run: a result that cannot be data fails with a diagnostic, not silent gar
     };
     for (refused) |decl| {
         const src = try std.mem.concat(arena.allocator(), u8, &.{ head, decl, "\n" });
-        var fe = gabbro.compile(arena.allocator(), "run_refused.fels", src) catch |err| {
+        var fe = fels.compile(arena.allocator(), "run_refused.fels", src) catch |err| {
             std.debug.print("\nthe front end should accept (the VM is what refuses it):\n  {s}\n", .{decl});
             return err;
         };
         defer fe.deinit(arena.allocator());
-        if (gabbro.lowerFrontend(arena.allocator(), fe)) |_| {
+        if (fels.lowerFrontend(arena.allocator(), fe)) |_| {
             std.debug.print("\nthis should have been refused when lowered:\n  {s}\n", .{decl});
             return error.TestUnexpectedResult;
         } else |err| try std.testing.expectEqual(error.LoweringFailed, err);
@@ -328,9 +328,9 @@ test "#run: a global another #run computes is not readable by it" {
         \\second_x :: fn() -> i32 { return FIRST.x + 1; }
         \\SECOND: i32 = #run second_x();
     ;
-    var fe = try gabbro.compile(arena.allocator(), "run_chain.fels", src);
+    var fe = try fels.compile(arena.allocator(), "run_chain.fels", src);
     defer fe.deinit(arena.allocator());
-    try std.testing.expectError(error.LoweringFailed, gabbro.lowerFrontend(arena.allocator(), fe));
+    try std.testing.expectError(error.LoweringFailed, fels.lowerFrontend(arena.allocator(), fe));
 }
 
 test "#run: a constant may call a function declared below it" {
@@ -361,10 +361,10 @@ test "#run: a constant may call a function declared below it" {
         \\
     ;
     for ([_][]const u8{ decls, decls ++ where_fn }) |src| {
-        var fe = try gabbro.compile(arena.allocator(), "run_above.fels", src);
+        var fe = try fels.compile(arena.allocator(), "run_above.fels", src);
         defer fe.deinit(arena.allocator());
-        const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-        try gabbro.ir_mod.validateModule(m);
+        const m = try fels.lowerFrontend(arena.allocator(), fe);
+        try fels.ir_mod.validateModule(m);
         var found: usize = 0;
         for (m.globals) |g| {
             if (std.mem.eql(u8, g.name, "COMPTIME") or std.mem.eql(u8, g.name, "PLAIN")) {
@@ -431,9 +431,9 @@ test "comptime: wrapping arithmetic, shifts, ~ and casts drop what the type cann
     };
     for (holds) |cond| {
         const src = try std.fmt.allocPrint(arena.allocator(), "{s}#assert({s}, \"narrowing\");\nmain :: fn() -> i32 {{ return 0; }}\n", .{ wrapping, cond });
-        var fe = try gabbro.compile(arena.allocator(), "wrapping.fels", src);
+        var fe = try fels.compile(arena.allocator(), "wrapping.fels", src);
         defer fe.deinit(arena.allocator());
-        _ = gabbro.lowerFrontend(arena.allocator(), fe) catch |err| {
+        _ = fels.lowerFrontend(arena.allocator(), fe) catch |err| {
             std.debug.print("\nthis should hold at compile time, as it does on the machine:\n  {s}\n", .{cond});
             return err;
         };
@@ -452,9 +452,9 @@ test "#run: a comptime @panic halts the build with its message (#2)" {
         \\boom :: fn() -> i32 { @panic("explicit comptime panic"); return 0; }
         \\BAD :: #run boom();
     ;
-    var fe = try gabbro.compile(arena.allocator(), "panic_ct.fels", src);
+    var fe = try fels.compile(arena.allocator(), "panic_ct.fels", src);
     defer fe.deinit(arena.allocator());
-    try std.testing.expectError(error.LoweringFailed, gabbro.lowerFrontend(arena.allocator(), fe));
+    try std.testing.expectError(error.LoweringFailed, fels.lowerFrontend(arena.allocator(), fe));
 }
 
 test "#if: only live branch emitted to IR" {
@@ -470,10 +470,10 @@ test "#if: only live branch emitted to IR" {
         \\    }
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "platform.fels", src);
+    var fe = try fels.compile(arena.allocator(), "platform.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // Find platform_id and verify it compiled (the #if selected a branch)
     const fn_ = for (m.functions) |f| {
@@ -513,10 +513,10 @@ test "comptime: matchable TypeInfo — scalar kinds + fields" {
         \\U8_SIGNED  :: #run is_signed(u8);
         \\BOOL_IS    :: #run is_bool(bool);
     ;
-    var fe = try gabbro.compile(arena.allocator(), "ti1.fels", src);
+    var fe = try fels.compile(arena.allocator(), "ti1.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     try expectGlobalInt(m, "I32_BITS", 32);
     try expectGlobalInt(m, "U8_BITS", 8);
@@ -541,10 +541,10 @@ test "comptime: matchable TypeInfo — struct fields (iterate names + types)" {
         \\NAME_SUM :: #run namesum(Point);
         \\INT_FIELDS :: #run int_flds(Point);
     ;
-    var fe = try gabbro.compile(arena.allocator(), "ti2.fels", src);
+    var fe = try fels.compile(arena.allocator(), "ti2.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     try expectGlobalInt(m, "FIELD_COUNT", 3);
     try expectGlobalInt(m, "STRUCT_NAMELEN", 5); // "Point"
@@ -566,10 +566,10 @@ test "comptime: matchable TypeInfo — pointer/slice/optional + element navigati
         \\IS_OPT   :: #run is_opt(?i32);
         \\ELEM_BITS :: #run elem_bits([]u8);
     ;
-    var fe = try gabbro.compile(arena.allocator(), "ti3.fels", src);
+    var fe = try fels.compile(arena.allocator(), "ti3.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     try expectGlobalInt(m, "IS_PTR", 1);
     try expectGlobalInt(m, "IS_SLICE", 1);
@@ -584,10 +584,10 @@ test "comptime: type_name returns mangled type name" {
     const src =
         \\NAME :: #run core::type_name(i32);
     ;
-    var fe = try gabbro.compile(arena.allocator(), "tn1.fels", src);
+    var fe = try fels.compile(arena.allocator(), "tn1.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     var found = false;
     for (m.globals) |g| {

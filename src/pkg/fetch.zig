@@ -1,8 +1,8 @@
 //! Getting git packages: the versions a repository has (its tags), a checkout of one commit
-//! into the package cache, and the content hash that gabbro.lock records.
+//! into the package cache, and the content hash that fels.lock records.
 //!
-//! The cache is `%LOCALAPPDATA%\gabbro\pkg` on Windows and `~/.cache/gabbro/pkg` elsewhere
-//! (`$GABBRO_PKG_DIR` overrides it). Each package version is a folder without `.git`, named
+//! The cache is `%LOCALAPPDATA%\fels\pkg` on Windows and `~/.cache/fels/pkg` elsewhere
+//! (`$FELS_PKG_DIR` overrides it). Each package version is a folder without `.git`, named
 //! `<name>-<commit>`, and is not changed after it was checked out.
 
 const std = @import("std");
@@ -13,15 +13,15 @@ pub const FetchError = error{ GitFailed, NotFound, HashMismatch, OutOfMemory, Ca
 /// Where packages are kept.
 pub fn cacheDir(a: std.mem.Allocator, env: ?*const std.process.Environ.Map) ![]const u8 {
     if (env) |e| {
-        if (e.get("GABBRO_PKG_DIR")) |d| return a.dupe(u8, d);
+        if (e.get("FELS_PKG_DIR")) |d| return a.dupe(u8, d);
         if (@import("builtin").os.tag == .windows) {
-            if (e.get("LOCALAPPDATA")) |d| return std.fs.path.join(a, &.{ d, "gabbro", "pkg" });
+            if (e.get("LOCALAPPDATA")) |d| return std.fs.path.join(a, &.{ d, "fels", "pkg" });
         }
-        if (e.get("XDG_CACHE_HOME")) |d| return std.fs.path.join(a, &.{ d, "gabbro", "pkg" });
-        if (e.get("HOME")) |d| return std.fs.path.join(a, &.{ d, ".cache", "gabbro", "pkg" });
-        if (e.get("USERPROFILE")) |d| return std.fs.path.join(a, &.{ d, ".cache", "gabbro", "pkg" });
+        if (e.get("XDG_CACHE_HOME")) |d| return std.fs.path.join(a, &.{ d, "fels", "pkg" });
+        if (e.get("HOME")) |d| return std.fs.path.join(a, &.{ d, ".cache", "fels", "pkg" });
+        if (e.get("USERPROFILE")) |d| return std.fs.path.join(a, &.{ d, ".cache", "fels", "pkg" });
     }
-    return a.dupe(u8, ".gabbro-pkg");
+    return a.dupe(u8, ".fels-pkg");
 }
 
 /// The URL git fetches: `github.com/a/b` becomes `https://github.com/a/b`; a URL, `git@...`
@@ -44,14 +44,14 @@ fn git(a: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: ?[]const
         .argv = argv,
         .cwd = if (cwd) |d| .{ .path = d } else .inherit,
     }) catch |err| {
-        std.debug.print("gabbro: cannot run git ({s}); is git installed and on PATH?\n", .{@errorName(err)});
+        std.debug.print("fels: cannot run git ({s}); is git installed and on PATH?\n", .{@errorName(err)});
         return error.GitFailed;
     };
     switch (r.term) {
         .exited => |code| if (code == 0) return r.stdout,
         else => {},
     }
-    std.debug.print("gabbro: `{s}` failed:\n{s}", .{ std.mem.join(a, " ", argv) catch "git", r.stderr });
+    std.debug.print("fels: `{s}` failed:\n{s}", .{ std.mem.join(a, " ", argv) catch "git", r.stderr });
     return error.GitFailed;
 }
 
@@ -94,7 +94,7 @@ pub fn resolveRef(a: std.mem.Allocator, io: std.Io, url: []const u8, ref: []cons
         if (found == null) found = line[0..tab];
     }
     if (found) |c| return c;
-    std.debug.print("gabbro: {s} has no branch, tag or commit `{s}` (a commit must be written in full)\n", .{ url, ref });
+    std.debug.print("fels: {s} has no branch, tag or commit `{s}` (a commit must be written in full)\n", .{ url, ref });
     return error.NotFound;
 }
 

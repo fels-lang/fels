@@ -5,7 +5,7 @@
 //
 // Real OS threads, not async/await — a thread is a stack plus an entry point. The
 // entry is `fn(*void) -> u32` and its return value is the thread's exit code. A
-// normal gabbro function is a fat closure a C ABI can't call, so pass the entry as
+// normal fels function is a fat closure a C ABI can't call, so pass the entry as
 // a thin pointer with core::fn_ptr, and keep the context pointer alive:
 //
 //     worker :: fn(p: *void) -> u32 {

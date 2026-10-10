@@ -1,5 +1,5 @@
 const std = @import("std");
-const gabbro = @import("gabbro_compiler");
+const fels = @import("fels_compiler");
 
 test "interfaces: explicit conformance and dynamic dispatch lower end to end" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -39,10 +39,10 @@ test "interfaces: explicit conformance and dynamic dispatch lower end to end" {
         \\}
     ;
 
-    var fe = try gabbro.compile(arena.allocator(), "interfaces.fels", src);
+    var fe = try fels.compile(arena.allocator(), "interfaces.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     try std.testing.expectEqual(@as(usize, 1), m.vtables.len);
     try std.testing.expectEqual(@as(usize, 2), m.vtables[0].methods.len);
@@ -77,8 +77,8 @@ test "interfaces: explicit conformance and dynamic dispatch lower end to end" {
     };
     try std.testing.expectEqual(@as(usize, 1), return_make);
 
-    if (comptime gabbro.llvm_enabled) {
-        var backend = gabbro.LlvmBackend.init(arena.allocator(), "interfaces");
+    if (comptime fels.llvm_enabled) {
+        var backend = fels.LlvmBackend.init(arena.allocator(), "interfaces");
         defer backend.deinit();
         try backend.lower(m);
         const llvm_ir = try backend.getIrText(arena.allocator());
@@ -101,7 +101,7 @@ test "interfaces: missing required method fails sema" {
         \\    flush :: fn(self: *Self) {}
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "missing_method.fels", bad));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "missing_method.fels", bad));
 }
 
 test "interfaces: dynamic coercion requires explicit conformance" {
@@ -117,5 +117,5 @@ test "interfaces: dynamic coercion requires explicit conformance" {
         \\    writer: *Writer = file;
         \\}
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "missing_impl.fels", bad));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "missing_impl.fels", bad));
 }

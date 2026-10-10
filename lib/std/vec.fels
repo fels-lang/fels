@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.vec — Vec(T), a growable array with an identity all gabbro's own.
+// std.vec — Vec(T), a growable array with an identity all fels's own.
 //
-// gabbro containers are region-bound: a Vec carries a borrowed *Arena and grows by
+// fels containers are region-bound: a Vec carries a borrowed *Arena and grows by
 // bump-allocating a bigger block from it. No per-element frees, no destructors —
 // reset/deinit the region and every Vec in it is gone at once. That's the model:
 //
@@ -101,7 +101,7 @@ pub Vec :: struct($T: type) {
     pub clear :: fn(self: *Self) { self.count = 0usize; }
 
     // A deep copy of the live elements into region `into` (which may differ from
-    // this Vec's region — the gabbro way to let data escape a scratch arena).
+    // this Vec's region — the fels way to let data escape a scratch arena).
     pub clone_into :: fn(self: *Self, into: *Arena) -> Vec(T) {
         n: usize = self.count;
         if n < 1usize { n = 1usize; }

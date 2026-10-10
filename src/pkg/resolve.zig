@@ -1,5 +1,5 @@
 //! Resolving the packages a project uses, with the packages they use: one version of each
-//! package, from gabbro.lock where it has one, checked out into the cache when missing, and
+//! package, from fels.lock where it has one, checked out into the cache when missing, and
 //! each with the capabilities it was granted.
 
 const std = @import("std");
@@ -20,7 +20,7 @@ pub const Package = struct {
     source: []const u8,
     /// The version as shown: a tag's version, a branch, or `path`.
     version: []const u8,
-    /// The package's folder (where its gabbro.pkg is).
+    /// The package's folder (where its fels.pkg is).
     dir: []const u8,
     /// The folder `#import <name>.x` reads from.
     import_dir: []const u8,
@@ -32,19 +32,19 @@ pub const Package = struct {
 pub const Options = struct {
     /// The package cache (`fetch.cacheDir`).
     cache: []const u8,
-    /// Packages to resolve again instead of taking gabbro.lock's commit; empty with
+    /// Packages to resolve again instead of taking fels.lock's commit; empty with
     /// `update_all` false means none.
     update: []const []const u8 = &.{},
     update_all: bool = false,
-    /// Hash every git package's files and compare with gabbro.lock (`gabbro fetch --verify`).
+    /// Hash every git package's files and compare with fels.lock (`fels fetch --verify`).
     verify: bool = false,
 };
 
 pub const Result = struct {
     packages: []Package,
-    /// gabbro.lock as it should be now: what was resolved, nothing else.
+    /// fels.lock as it should be now: what was resolved, nothing else.
     lock: lock_mod.Lock,
-    /// Whether that differs from the gabbro.lock that was read.
+    /// Whether that differs from the fels.lock that was read.
     lock_changed: bool,
 
     pub fn find(self: Result, name: []const u8) ?Package {
@@ -55,7 +55,7 @@ pub const Result = struct {
 
 /// Who uses a package: for messages and for the capabilities it can pass on.
 const Consumer = struct {
-    /// The gabbro.pkg the `#use` is in, and its text (for the line number).
+    /// The fels.pkg the `#use` is in, and its text (for the line number).
     pkg_path: []const u8,
     pkg_source: []const u8,
     dir: []const u8,
@@ -65,9 +65,9 @@ const Consumer = struct {
 
 const Pending = struct { use: Use, from: Consumer };
 
-/// Read the gabbro.pkg in `dir`; null when there is none.
+/// Read the fels.pkg in `dir`; null when there is none.
 pub fn readManifest(a: std.mem.Allocator, io: std.Io, dir: []const u8) ResolveError!?struct { m: Manifest, path: []const u8, source: []const u8 } {
-    const path = std.fs.path.join(a, &.{ dir, "gabbro.pkg" }) catch return error.OutOfMemory;
+    const path = std.fs.path.join(a, &.{ dir, "fels.pkg" }) catch return error.OutOfMemory;
     const source = std.Io.Dir.cwd().readFileAlloc(io, path, a, .unlimited) catch return null;
     var problem: directives.Problem = .{};
     const m = manifest_mod.parse(a, source, &problem) catch |err| switch (err) {
@@ -118,7 +118,7 @@ fn narrow(a: std.mem.Allocator, granted: []const Cap, holder: ?[]const Cap) ![]c
     return out.toOwnedSlice(a);
 }
 
-/// Where a git package's version comes from: gabbro.lock, or the repository's tags/branches.
+/// Where a git package's version comes from: fels.lock, or the repository's tags/branches.
 fn pickCommit(
     a: std.mem.Allocator,
     io: std.Io,
@@ -130,7 +130,7 @@ fn pickCommit(
     const range: ?semver.Range = if (use.version) |v| semver.Range.parse(v) else semver.Range.parse("*");
     if (old) |e| keep: {
         if (wantsUpdate(opts, use.name) or !std.mem.eql(u8, e.source, use.source)) break :keep;
-        // The locked version must still be what gabbro.pkg asks for.
+        // The locked version must still be what fels.pkg asks for.
         if (range) |r| {
             const v = semver.Version.parse(e.version) orelse break :keep;
             if (!r.matches(v)) break :keep;
@@ -180,7 +180,7 @@ pub fn resolve(
         const granted = narrow(a, use.may, from.caps) catch return error.OutOfMemory;
 
         if (std.mem.eql(u8, use.name, "std") or std.mem.eql(u8, use.name, "build_options"))
-            return report(from, use, "`{s}` cannot be a package name; it is gabbro's own", .{use.name});
+            return report(from, use, "`{s}` cannot be a package name; it is fels's own", .{use.name});
 
         // A package used a second time: the same place and a version that fits.
         if (for (packages.items) |*p| {
@@ -192,7 +192,7 @@ pub fn resolve(
                 std.mem.eql(u8, p.source, use.source);
             if (!same) return report(from, use, "`{s}` comes from \"{s}\" here, but another package uses `{s}` from \"{s}\"", .{ use.name, use.source, p.name, p.source });
             if (use.version) |want| if (semver.Range.parse(want)) |r| if (semver.Version.parse(p.version)) |have| {
-                if (!r.matches(have)) return report(from, use, "`{s}` \"{s}\" is wanted here, but version {s} was chosen for another package that uses it; gabbro uses one version of each package", .{ use.name, want, p.version });
+                if (!r.matches(have)) return report(from, use, "`{s}` \"{s}\" is wanted here, but version {s} was chosen for another package that uses it; fels uses one version of each package", .{ use.name, want, p.version });
             };
             // Each grant counts: the package's code runs once, for everyone that uses it.
             p.caps = std.mem.concat(a, Cap, &.{ p.caps, granted }) catch return error.OutOfMemory;
@@ -220,7 +220,7 @@ pub fn resolve(
             if (fresh or opts.verify or !same_commit) {
                 const got = fetch.hashTree(a, io, pkg.dir) catch return report(from, use, "cannot read the files of `{s}` in {s}", .{ use.name, pkg.dir });
                 if (same_commit and !std.mem.eql(u8, got, old.?.hash))
-                    return report(from, use, "the files of `{s}` {s} do not match gabbro.lock\n  in gabbro.lock: {s}\n  in {s}: {s}\n  If the cache was changed, delete that folder and build again. If the package itself changed, `gabbro update {s}` takes the new files.", .{ use.name, picked.version, old.?.hash, pkg.dir, got, use.name });
+                    return report(from, use, "the files of `{s}` {s} do not match fels.lock\n  in fels.lock: {s}\n  in {s}: {s}\n  If the cache was changed, delete that folder and build again. If the package itself changed, `fels update {s}` takes the new files.", .{ use.name, picked.version, old.?.hash, pkg.dir, got, use.name });
                 hash = got;
             }
             lock.put(a, .{ .name = use.name, .source = use.source, .version = picked.version, .commit = picked.commit, .hash = hash }) catch return error.OutOfMemory;

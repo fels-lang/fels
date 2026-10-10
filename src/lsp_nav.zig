@@ -1,4 +1,4 @@
-//! Navigation across a project for `gabbro lsp`: find references, rename, document
+//! Navigation across a project for `fels lsp`: find references, rename, document
 //! highlight and workspace symbols.
 //!
 //! The project is the folder with `build.fels` above the document (else the workspace
@@ -2209,7 +2209,7 @@ const Req = struct {
             r.gpa.free(owned);
             return;
         };
-        const msg = std.fmt.allocPrint(r.a(), "gabbro: the project {s} has more than {d} .fels files; references, rename and workspace symbols only look at the first {d}.", .{ root, max_files, max_files }) catch return;
+        const msg = std.fmt.allocPrint(r.a(), "fels: the project {s} has more than {d} .fels files; references, rename and workspace symbols only look at the first {d}.", .{ root, max_files, max_files }) catch return;
         var b: std.ArrayList(u8) = .empty;
         defer b.deinit(r.gpa);
         b.appendSlice(r.gpa, "{\"jsonrpc\":\"2.0\",\"method\":\"window/showMessage\",\"params\":{\"type\":2,\"message\":\"") catch return;
@@ -2293,7 +2293,7 @@ pub fn dispatch(server: *lsp.Server, method: []const u8, id: ?json.Value, params
     }
     if (server.timing) {
         const ms = @as(f64, @floatFromInt(clock.sinceNs(t0))) / 1_000_000.0;
-        std.debug.print("gabbro-lsp: {s} in {d:.1} ms ({d} files, {d} analyses)\n", .{ method, ms, r.files.items.len, r.analyses });
+        std.debug.print("fels-lsp: {s} in {d:.1} ms ({d} files, {d} analyses)\n", .{ method, ms, r.files.items.len, r.analyses });
     }
 }
 

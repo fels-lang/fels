@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-/// Gabbro Linux runtime — compiled automatically into every Linux Gabbro program.
+/// Fels Linux runtime — compiled automatically into every Linux Fels program.
 /// Provides: @panic, assert, write_stdout, write_stderr
 /// No libc. Uses direct Linux syscalls.
 

@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const gabbro  = @import("gabbro_compiler");
+const fels  = @import("fels_compiler");
 
 // Sub-byte integers
 
@@ -22,10 +22,10 @@ test "u1-u7 as struct fields in packed struct" {
         \\    return r;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "subbyte.fels", src);
+    var fe = try fels.compile(arena.allocator(), "subbyte.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // The struct should have 4 fields
     const s = for (m.structs) |s| {
@@ -34,8 +34,8 @@ test "u1-u7 as struct fields in packed struct" {
     try std.testing.expectEqual(@as(usize, 4), s.fields.len);
 
     // u1 field should have bit-width 1 in IR
-    try std.testing.expectEqual(gabbro.ir_mod.IrType{ .u = 1 }, s.fields[0].ty);
-    try std.testing.expectEqual(gabbro.ir_mod.IrType{ .u = 3 }, s.fields[1].ty);
+    try std.testing.expectEqual(fels.ir_mod.IrType{ .u = 1 }, s.fields[0].ty);
+    try std.testing.expectEqual(fels.ir_mod.IrType{ .u = 3 }, s.fields[1].ty);
 }
 
 test "u4 field: 4-bit integer" {
@@ -48,10 +48,10 @@ test "u4 field: 4-bit integer" {
         \\    return .{ lo, hi };
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "nibble.fels", src);
+    var fe = try fels.compile(arena.allocator(), "nibble.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "i1-i7 signed sub-byte integers" {
@@ -66,16 +66,16 @@ test "i1-i7 signed sub-byte integers" {
         \\    pad:   u4,
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "signed_bits.fels", src);
+    var fe = try fels.compile(arena.allocator(), "signed_bits.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const s = for (m.structs) |s| {
         if (std.mem.eql(u8, s.name, "SignedFlags")) break s;
     } else return error.StructNotFound;
-    try std.testing.expectEqual(gabbro.ir_mod.IrType{ .i = 3 }, s.fields[0].ty);
-    try std.testing.expectEqual(gabbro.ir_mod.IrType{ .i = 1 }, s.fields[1].ty);
+    try std.testing.expectEqual(fels.ir_mod.IrType{ .i = 3 }, s.fields[0].ty);
+    try std.testing.expectEqual(fels.ir_mod.IrType{ .i = 1 }, s.fields[1].ty);
 }
 
 // New attributes
@@ -95,10 +95,10 @@ test "#noreturn: function with noreturn attribute" {
         \\    // no return statement — allowed because #noreturn
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "noreturn.fels", src);
+    var fe = try fels.compile(arena.allocator(), "noreturn.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // The function should have the no_return flag set
     const fn_ = for (m.functions) |f| {
@@ -117,10 +117,10 @@ test "#noinline: function with noinline attribute" {
         \\    return x * 2;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "noinline.fels", src);
+    var fe = try fels.compile(arena.allocator(), "noinline.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const fn_ = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "cold_path")) break f;
@@ -133,21 +133,21 @@ test "#export: function marked for export" {
     defer arena.deinit();
 
     const src =
-        \\#export("gabbro_add")
+        \\#export("fels_add")
         \\add :: fn(a: i32, b: i32) -> i32 { return a + b; }
         \\
         \\#export
         \\multiply :: fn(a: i32, b: i32) -> i32 { return a * b; }
     ;
-    var fe = try gabbro.compile(arena.allocator(), "export.fels", src);
+    var fe = try fels.compile(arena.allocator(), "export.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const add_fn = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "add")) break f;
     } else return error.FunctionNotFound;
-    try std.testing.expectEqualStrings("gabbro_add", add_fn.export_sym.?);
+    try std.testing.expectEqualStrings("fels_add", add_fn.export_sym.?);
 
     const mul_fn = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "multiply")) break f;
@@ -167,12 +167,12 @@ test "#deprecated: calling deprecated function emits warning" {
         \\    old_print("hello");   // should trigger warning
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "deprecated.fels", src);
+    var fe = try fels.compile(arena.allocator(), "deprecated.fels", src);
     defer fe.deinit(arena.allocator());
 
     // Compile succeeds, but diagnostics contain a warning
     try std.testing.expectEqual(@as(usize, 1), fe.diagnostics().len);
-    try std.testing.expectEqual(gabbro.DiagKind.warning, fe.diagnostics()[0].kind);
+    try std.testing.expectEqual(fels.DiagKind.warning, fe.diagnostics()[0].kind);
     try std.testing.expect(std.mem.indexOf(u8, fe.diagnostics()[0].message, "deprecated") != null);
 }
 
@@ -193,10 +193,10 @@ test "#system_library: standalone declaration is collected into IrModule.extern_
         \\    InitWindow(800, 450, "hi".ptr);
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "syslib.fels", src);
+    var fe = try fels.compile(arena.allocator(), "syslib.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // "raylib" should appear exactly once (deduped between #system_library and #extern),
     // and "kernel32" should be skipped entirely (always linked by the backend).
@@ -220,10 +220,10 @@ test "#foreign: alias for #extern binds external functions and contributes to ex
         \\    return WindowShouldClose();
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "foreign.fels", src);
+    var fe = try fels.compile(arena.allocator(), "foreign.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const fn_ = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "WindowShouldClose")) break f;
@@ -254,21 +254,21 @@ test "distinct integer type: lowers to underlying integer type in IR" {
         \\    return id as i32;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "distinct_int.fels", src);
+    var fe = try fels.compile(arena.allocator(), "distinct_int.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     // `make_user` return type and `unwrap` param must be i32, not a struct_type.
     const make_fn = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "make_user")) break f;
     } else return error.FunctionNotFound;
-    try std.testing.expectEqual(gabbro.ir_mod.IrType{ .i = 32 }, make_fn.return_ty);
+    try std.testing.expectEqual(fels.ir_mod.IrType{ .i = 32 }, make_fn.return_ty);
 
     const unwrap_fn = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "unwrap")) break f;
     } else return error.FunctionNotFound;
-    try std.testing.expectEqual(gabbro.ir_mod.IrType{ .i = 32 }, unwrap_fn.params[0].ty);
+    try std.testing.expectEqual(fels.ir_mod.IrType{ .i = 32 }, unwrap_fn.params[0].ty);
 }
 
 test "distinct pointer type: *opaque-based handle lowers to ptr" {
@@ -285,10 +285,10 @@ test "distinct pointer type: *opaque-based handle lowers to ptr" {
         \\    return GetStdHandle(-11);
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "distinct_ptr.fels", src);
+    var fe = try fels.compile(arena.allocator(), "distinct_ptr.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const fn_ = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "stdout")) break f;
@@ -309,17 +309,17 @@ test "distinct type in struct field lowers to underlying type" {
         \\    alive: bool,
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "distinct_field.fels", src);
+    var fe = try fels.compile(arena.allocator(), "distinct_field.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const s = for (m.structs) |s| {
         if (std.mem.eql(u8, s.name, "Entity")) break s;
     } else return error.StructNotFound;
     // EntityId is distinct u32 — the field must lower to u32, not struct_type.
-    try std.testing.expectEqual(gabbro.ir_mod.IrType{ .u = 32 }, s.fields[0].ty);
-    try std.testing.expectEqual(gabbro.ir_mod.IrType.bool, s.fields[1].ty);
+    try std.testing.expectEqual(fels.ir_mod.IrType{ .u = 32 }, s.fields[0].ty);
+    try std.testing.expectEqual(fels.ir_mod.IrType.bool, s.fields[1].ty);
 }
 
 // Opaque types
@@ -335,10 +335,10 @@ test "opaque type: *Opaque parameter lowers to ptr" {
         \\    return 0;
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "opaque_ptr.fels", src);
+    var fe = try fels.compile(arena.allocator(), "opaque_ptr.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const fn_ = for (m.functions) |f| {
         if (std.mem.eql(u8, f.name, "process")) break f;
@@ -359,17 +359,17 @@ test "atomic field: struct with atomic u32 fields lowers to regular u32" {
         \\    padding: u32,
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "atomic_field.fels", src);
+    var fe = try fels.compile(arena.allocator(), "atomic_field.fels", src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 
     const s = for (m.structs) |s| {
         if (std.mem.eql(u8, s.name, "Counter")) break s;
     } else return error.StructNotFound;
     // `atomic u32` strips the qualifier in the IR; field type must be u32.
-    try std.testing.expectEqual(gabbro.ir_mod.IrType{ .u = 32 }, s.fields[0].ty);
-    try std.testing.expectEqual(gabbro.ir_mod.IrType{ .u = 32 }, s.fields[1].ty);
+    try std.testing.expectEqual(fels.ir_mod.IrType{ .u = 32 }, s.fields[0].ty);
+    try std.testing.expectEqual(fels.ir_mod.IrType{ .u = 32 }, s.fields[1].ty);
 }
 
 test "atomic_load and atomic_store: parse, type-check, and lower to IR" {
@@ -388,11 +388,11 @@ test "atomic_load and atomic_store: parse, type-check, and lower to IR" {
         \\    return core::atomic_load(&f.ready, .acquire);
         \\}
     ;
-    var fe = try gabbro.compile(arena.allocator(), "atomic_ops.fels", src);
+    var fe = try fels.compile(arena.allocator(), "atomic_ops.fels", src);
     defer fe.deinit(arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), fe.diagnostics().len);
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 // Win64 C ABI for by-value aggregates (#extern)
@@ -428,23 +428,23 @@ const raylib_abi_src =
 ;
 
 test "C ABI: #extern declarations lower by-value aggregates per Win64" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var fe = try gabbro.compile(arena.allocator(), "raylib_abi.fels", raylib_abi_src);
+    var fe = try fels.compile(arena.allocator(), "raylib_abi.fels", raylib_abi_src);
     defer fe.deinit(arena.allocator());
     try std.testing.expectEqual(@as(usize, 0), fe.diagnostics().len);
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "raylib_abi");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "raylib_abi");
     defer backend.deinit();
     try backend.lower(m);
     const llvm_ir = try backend.getIrText(arena.allocator());
 
     inline for (.{
-        // Symbols are the C names (the `#extern` 2nd arg), not the gabbro decl names.
+        // Symbols are the C names (the `#extern` 2nd arg), not the fels decl names.
         "@ClearBackground(i32", // Color (4 bytes) → i32
         "@DrawCircleV(i64, float, i32", // Vector2 (8) → i64; radius f32; Color → i32
         "byval(%Rectangle)", // Rectangle (16) argument passed indirectly
@@ -458,16 +458,16 @@ test "C ABI: #extern declarations lower by-value aggregates per Win64" {
 }
 
 test "C ABI: call sites coerce by-value struct arguments and sret returns" {
-    if (comptime !gabbro.llvm_enabled) return;
+    if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var fe = try gabbro.compile(arena.allocator(), "raylib_abi.fels", raylib_abi_src);
+    var fe = try fels.compile(arena.allocator(), "raylib_abi.fels", raylib_abi_src);
     defer fe.deinit(arena.allocator());
-    const m = try gabbro.lowerFrontend(arena.allocator(), fe);
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "raylib_abi_calls");
+    var backend = fels.LlvmBackend.init(arena.allocator(), "raylib_abi_calls");
     defer backend.deinit();
     try backend.lower(m);
     const llvm_ir = try backend.getIrText(arena.allocator());
@@ -484,10 +484,10 @@ test "C ABI: call sites coerce by-value struct arguments and sret returns" {
     }
 }
 
-// C binding generator (`gabbro bindgen`, libclang)
+// C binding generator (`fels bindgen`, libclang)
 
-test "bindgen: C header lowers to Gabbro structs, enum consts, and #extern fns" {
-    if (comptime !gabbro.llvm_enabled) return; // libclang ships with the LLVM build
+test "bindgen: C header lowers to Fels structs, enum consts, and #extern fns" {
+    if (comptime !fels.llvm_enabled) return; // libclang ships with the LLVM build
 
     const csrc =
         \\typedef struct { float x; float y; } Vector2;
@@ -509,7 +509,7 @@ test "bindgen: C header lowers to Gabbro structs, enum consts, and #extern fns" 
         \\int reduce(BinOp op, int a);
         \\int variadic(int n, ...);
     ;
-    const out = try gabbro.bindgen.generateString(std.testing.allocator, "t.h", csrc, "demo", &.{});
+    const out = try fels.bindgen.generateString(std.testing.allocator, "t.h", csrc, "demo", &.{});
     defer std.testing.allocator.free(out);
 
     inline for (.{
@@ -522,7 +522,7 @@ test "bindgen: C header lowers to Gabbro structs, enum consts, and #extern fns" 
         "pub clear :: fn(c: Color);",
         "pub origin :: fn() -> Vector2;",
         "pub sum :: fn(a: i32, s: [*]const u8) -> i32;",
-        // Gabbro keywords used as C identifiers get a trailing `_`, while the
+        // Fels keywords used as C identifiers get a trailing `_`, while the
         // `#extern` symbol keeps the original C name.
         "    type_: i32,",
         "    match_: i32,",
@@ -556,12 +556,12 @@ fn argsContain(args: []const []const u8, needle: []const u8) bool {
 }
 
 test "link: honor_defaultlibs suppresses CRT umbrellas instead of blanket /NODEFAULTLIB" {
-    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     const a = std.testing.allocator;
 
     // Default (strict): blanket /NODEFAULTLIB, no per-umbrella suppression.
     {
-        const args = try gabbro.llvm_link.buildArgs(a, .{ .llvm_bin = "x", .output = "o.exe", .obj_files = &.{} });
+        const args = try fels.llvm_link.buildArgs(a, .{ .llvm_bin = "x", .output = "o.exe", .obj_files = &.{} });
         defer {
             for (args) |s| a.free(@constCast(s));
             a.free(args);
@@ -573,7 +573,7 @@ test "link: honor_defaultlibs suppresses CRT umbrellas instead of blanket /NODEF
     // Honoring: no blanket suppression; only the CRT-startup umbrellas are excluded,
     // so a C library's own /DEFAULTLIB:opengl32 etc. flow in.
     {
-        const args = try gabbro.llvm_link.buildArgs(a, .{ .llvm_bin = "x", .output = "o.exe", .obj_files = &.{}, .honor_defaultlibs = true });
+        const args = try fels.llvm_link.buildArgs(a, .{ .llvm_bin = "x", .output = "o.exe", .obj_files = &.{}, .honor_defaultlibs = true });
         defer {
             for (args) |s| a.free(@constCast(s));
             a.free(args);
@@ -585,11 +585,11 @@ test "link: honor_defaultlibs suppresses CRT umbrellas instead of blanket /NODEF
 }
 
 test "link: a DLL with no SDK import library of its own is linked through the one that has it" {
-    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     const a = std.testing.allocator;
-    // `#extern("combase", ...)` names the DLL (which gabld writes into the import table); the
+    // `#extern("combase", ...)` names the DLL (which felsld writes into the import table); the
     // Windows SDK ships those entry points in runtimeobject.lib, and there is no combase.lib.
-    const args = try gabbro.llvm_link.buildArgs(a, .{
+    const args = try fels.llvm_link.buildArgs(a, .{
         .llvm_bin = "x",
         .output = "o.exe",
         .obj_files = &.{},
@@ -602,14 +602,14 @@ test "link: a DLL with no SDK import library of its own is linked through the on
     try std.testing.expect(argsContain(args, "ole32.lib"));
     try std.testing.expect(argsContain(args, "runtimeobject.lib"));
     try std.testing.expect(!argsContain(args, "combase.lib"));
-    try std.testing.expectEqualStrings("kernel32", gabbro.llvm_link.importLibraryFor("kernel32"));
-    try std.testing.expectEqualStrings("runtimeobject", gabbro.llvm_link.importLibraryFor("COMBASE"));
+    try std.testing.expectEqualStrings("kernel32", fels.llvm_link.importLibraryFor("kernel32"));
+    try std.testing.expectEqualStrings("runtimeobject", fels.llvm_link.importLibraryFor("COMBASE"));
 }
 
 test "msvc: discoverLibX64 finds a vcruntime-bearing lib dir (or cleanly returns null)" {
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     const a = std.testing.allocator; // also asserts the discovery routine doesn't leak
-    if (gabbro.msvc.discoverLibX64(a, std.testing.io)) |path| {
+    if (fels.msvc.discoverLibX64(a, std.testing.io)) |path| {
         defer a.free(path);
         // Whatever it finds must be a real x64 lib dir.
         try std.testing.expect(std.mem.endsWith(u8, path, "lib/x64"));
@@ -627,7 +627,7 @@ test "core::: a bare builtin call is rejected (must use core::)" {
         \\P :: struct { x: i32 }
         \\main :: fn() -> i32 { return sizeof(P) as i32; }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "bare.fels", src));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "bare.fels", src));
 }
 
 test "core::: `core::sizeof` and `core::type_id` are accepted" {
@@ -638,10 +638,10 @@ test "core::: `core::sizeof` and `core::type_id` are accepted" {
         \\P :: struct { x: i32, y: i32 }
         \\main :: fn() -> i32 { return (core::sizeof(P) as i32) + (core::type_id(P) as i32); }
     ;
-    var fe = try gabbro.compile(a, "ns.fels", src);
+    var fe = try fels.compile(a, "ns.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "attrs: `#must_use` rejects a discarded call result" {
@@ -652,7 +652,7 @@ test "attrs: `#must_use` rejects a discarded call result" {
         \\compute :: fn() -> i32 { return 7; }
         \\main :: fn() -> i32 { compute(); return 0; }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "mu.fels", src));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "mu.fels", src));
 }
 
 test "attrs: `#must_use` allows a used call result" {
@@ -664,10 +664,10 @@ test "attrs: `#must_use` allows a used call result" {
         \\compute :: fn() -> i32 { return 7; }
         \\main :: fn() -> i32 { x := compute(); return x; }
     ;
-    var fe = try gabbro.compile(a, "mu_ok.fels", src);
+    var fe = try fels.compile(a, "mu_ok.fels", src);
     defer fe.deinit(a);
-    const m = try gabbro.lowerFrontend(a, fe);
-    try gabbro.ir_mod.validateModule(m);
+    const m = try fels.lowerFrontend(a, fe);
+    try fels.ir_mod.validateModule(m);
 }
 
 test "core::: `core` is a reserved import alias" {
@@ -678,5 +678,5 @@ test "core::: `core` is a reserved import alias" {
         \\#import std.heap as core;
         \\main :: fn() -> i32 { return 0; }
     ;
-    try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "reserve.fels", src));
+    try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "reserve.fels", src));
 }

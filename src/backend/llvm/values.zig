@@ -87,7 +87,7 @@ pub fn optionalSome(cg: *ModuleCg, payload: llvm.LLVMValueRef, payload_ty: ir.Ir
     return llvm.LLVMBuildInsertValue(cg.builder, opt, stored_payload, 1, "");
 }
 
-/// Resolve a Gabbro Value to an LLVMValueRef.
+/// Resolve a Fels Value to an LLVMValueRef.
 /// `fncg` is *FnCg from functions.zig — passed as anytype to avoid circular imports.
 pub fn resolveValue(
     cg: *ModuleCg,
@@ -142,7 +142,7 @@ pub fn resolveValue(
 ///
 /// On mismatch, records an internal lowering error (turned into a clean
 /// `error.LoweringFailed` by `LlvmBackend.lower`) and returns `null` instead
-/// of calling into LLVM with bad input — "malformed-but-typeable Gabbro source
+/// of calling into LLVM with bad input — "malformed-but-typeable Fels source
 /// must never crash the compiler process" is the invariant this protects.
 pub fn extractAggregateField(
     cg: *ModuleCg,
@@ -270,7 +270,7 @@ fn entryScratch(builder: llvm.LLVMBuilderRef, ctx: llvm.LLVMContextRef, ty: llvm
 }
 
 /// Type-aware numeric coercion. LLVM integer types do not retain signedness,
-/// so explicit casts must use the Gabbro source/destination types to select the
+/// so explicit casts must use the Fels source/destination types to select the
 /// correct extension and float-conversion instructions.
 pub fn coerceTyped(
     builder: llvm.LLVMBuilderRef,

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.process — process info, env vars, and child-process spawning for Gabbro. OS
+// std.process — process info, env vars, and child-process spawning for Fels. OS
 // calls go through the platform runtime (windows.fels → kernel32; linux.fels → getpid +
 // /proc + fork/execve/wait4/kill), so this file is OS-agnostic. It has current_pid,
 // command_line, get_env/set_env/unset_env, and Child + spawn/wait/try_wait/kill/
@@ -102,7 +102,7 @@ pub Child :: struct {
 }
 
 // Launch `command` (program plus arguments, exactly as you'd type at a shell —
-// e.g. `"gabbro build --release"`) as a new process. The child inherits the parent's
+// e.g. `"fels build --release"`) as a new process. The child inherits the parent's
 // console/standard handles. On Linux the command runs via `/bin/sh -c`.
 pub spawn :: fn(command: []const u8) -> Child ! ProcessError {
     cmd_buf: [1024]u8 = .{};

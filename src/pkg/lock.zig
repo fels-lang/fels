@@ -1,5 +1,5 @@
-//! gabbro.lock: the exact commit and content hash of every git package, written by
-//! `gabbro fetch`, `gabbro add` and `gabbro update`. Builds use what it says, so they do not
+//! fels.lock: the exact commit and content hash of every git package, written by
+//! `fels fetch`, `fels add` and `fels update`. Builds use what it says, so they do not
 //! change when a new version is tagged, and a hash mismatch stops the build.
 //!
 //!     #lock raylib from "github.com/raysan5/raylib" version "5.5.0"
@@ -49,7 +49,7 @@ pub fn parse(arena: std.mem.Allocator, source: []const u8, problem: *Problem) Er
     var c = directives.Cursor.init(arena, source, problem);
     var lock: Lock = .{};
     while (try c.directive()) |d| {
-        if (!std.mem.eql(u8, c.text(d), "lock")) return c.fail(d, "gabbro.lock has only #lock lines", .{});
+        if (!std.mem.eql(u8, c.text(d), "lock")) return c.fail(d, "fels.lock has only #lock lines", .{});
         var e: Entry = undefined;
         e.name = try c.name("the package name");
         inline for (.{ .{ "from", "source" }, .{ "version", "version" }, .{ "commit", "commit" }, .{ "hash", "hash" } }) |kw| {
@@ -63,7 +63,7 @@ pub fn parse(arena: std.mem.Allocator, source: []const u8, problem: *Problem) Er
     return lock;
 }
 
-/// gabbro.lock's text, entries sorted by name so the file only changes where a package does.
+/// fels.lock's text, entries sorted by name so the file only changes where a package does.
 pub fn write(a: std.mem.Allocator, lock: Lock) ![]u8 {
     const sorted = try a.dupe(Entry, lock.entries.items);
     defer a.free(sorted);
@@ -74,14 +74,14 @@ pub fn write(a: std.mem.Allocator, lock: Lock) ![]u8 {
     }.lt);
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(a);
-    try out.appendSlice(a, "// Written by gabbro fetch, add and update. Do not edit.\n");
+    try out.appendSlice(a, "// Written by fels fetch, add and update. Do not edit.\n");
     for (sorted) |e| {
         try out.print(a, "\n#lock {s} from \"{s}\" version \"{s}\"\n    commit \"{s}\" hash \"{s}\";\n", .{ e.name, e.source, e.version, e.commit, e.hash });
     }
     return out.toOwnedSlice(a);
 }
 
-test "gabbro.lock: written and read back" {
+test "fels.lock: written and read back" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();

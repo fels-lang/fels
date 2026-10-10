@@ -1,18 +1,18 @@
-//! gabbro compiler CLI
+//! fels compiler CLI
 //!
 //! Usage:
-//!   gabbro check  <file.fels>                    — parse + type-check only
-//!   gabbro build  <file.fels> [-o out.exe]       — compile to native exe (Windows)
-//!   gabbro ir     <file.fels>                    — dump LLVM IR to stdout
-//!   gabbro object <file.fels> [-o out.o]         — emit object file only
+//!   fels check  <file.fels>                    — parse + type-check only
+//!   fels build  <file.fels> [-o out.exe]       — compile to native exe (Windows)
+//!   fels ir     <file.fels>                    — dump LLVM IR to stdout
+//!   fels object <file.fels> [-o out.o]         — emit object file only
 //!
 //! Build with LLVM:  zig build -Dllvm-path=Y:/SDK/clang+llvm-22.1.6-x86_64-pc-windows-msvc
 
 const std = @import("std");
 const builtin = @import("builtin");
-const gabbro = @import("gabbro_compiler");
+const fels = @import("fels_compiler");
 
-const version = gabbro.version; // single source: build.zig.zon (+git-sha for dev)
+const version = fels.version; // single source: build.zig.zon (+git-sha for dev)
 
 // The Windows console defaults to a legacy OEM code page, which mangles the
 // UTF-8 bytes we print (✓, box-drawing). Switch it to UTF-8 (65001) at startup.
@@ -35,7 +35,7 @@ const Progress = struct {
     // ASCII spinner — braille glyphs aren't in most console fonts.
     const frames = [_][]const u8{ "|", "/", "-", "\\" };
 
-    fn step(self: *Progress, phase: gabbro.Phase) void {
+    fn step(self: *Progress, phase: fels.Phase) void {
         if (self.quiet) return;
         const f = frames[self.frame % frames.len];
         self.frame += 1;
@@ -48,7 +48,7 @@ const Progress = struct {
     }
 };
 
-fn progressStep(ctx: ?*anyopaque, phase: gabbro.Phase) void {
+fn progressStep(ctx: ?*anyopaque, phase: fels.Phase) void {
     const p: *Progress = @ptrCast(@alignCast(ctx.?));
     p.step(phase);
 }
@@ -107,44 +107,44 @@ pub fn main(init: std.process.Init) u8 {
         return 0;
     }
     if (eqAny(cmd, &.{ "version", "--version", "-v" })) {
-        std.debug.print("gabbro {s}\n", .{version});
+        std.debug.print("fels {s}\n", .{version});
         return 0;
     }
 
-    // `gabbro build` with no source file (or a step/target name, or flags) runs the
-    // project's build.fels in the build system. Only `gabbro build <file>.fels` for an
+    // `fels build` with no source file (or a step/target name, or flags) runs the
+    // project's build.fels in the build system. Only `fels build <file>.fels` for an
     // existing file is a direct single-file build (handled below).
     if (std.mem.eql(u8, cmd, "build")) {
         const arg2: ?[]const u8 = if (args.len >= 3) args[2] else null;
         const is_direct = arg2 != null and
-            gabbro.pipeline_mod.isSourceFile(arg2.?) and
+            fels.pipeline_mod.isSourceFile(arg2.?) and
             fileExists(io, arg2.?);
         if (!is_direct) {
             // The build system returns from here, ahead of the relocatable path
             // resolution further down, so resolve the stdlib root now. Without it
             // `std.build` is looked up at the path this compiler was *built* at, so
-            // `gabbro build` only works on the machine that produced the binary.
+            // `fels build` only works on the machine that produced the binary.
             const ra = init.arena.allocator();
             const exe_dir: ?[]const u8 = std.process.executableDirPathAlloc(io, ra) catch null;
             if (resolveStdRoot(ra, io, init.environ_map, "", exe_dir)) |root|
-                gabbro.pipeline_mod.stdlib_root_override = root;
+                fels.pipeline_mod.stdlib_root_override = root;
             return cmdBuildDir(allocator, io, init.environ_map, args[2..]);
         }
     }
 
-    // The package manager: gabbro.pkg and gabbro.lock in the current directory.
+    // The package manager: fels.pkg and fels.lock in the current directory.
     if (eqAny(cmd, &.{ "add", "fetch", "update" })) {
         const ra = init.arena.allocator();
         const rest = args[2..];
-        if (std.mem.eql(u8, cmd, "add")) return gabbro.pkg.project.cmdAdd(ra, io, init.environ_map, rest);
-        if (std.mem.eql(u8, cmd, "fetch")) return gabbro.pkg.project.cmdFetch(ra, io, init.environ_map, rest);
-        return gabbro.pkg.project.cmdUpdate(ra, io, init.environ_map, rest);
+        if (std.mem.eql(u8, cmd, "add")) return fels.pkg.project.cmdAdd(ra, io, init.environ_map, rest);
+        if (std.mem.eql(u8, cmd, "fetch")) return fels.pkg.project.cmdFetch(ra, io, init.environ_map, rest);
+        return fels.pkg.project.cmdUpdate(ra, io, init.environ_map, rest);
     }
 
-    // `gabbro bindgen <header.h>` generates Gabbro FFI bindings from a C header.
+    // `fels bindgen <header.h>` generates Fels FFI bindings from a C header.
     if (std.mem.eql(u8, cmd, "bindgen")) return cmdBindgen(allocator, io, init.environ_map, args[2..]);
 
-    // `gabbro lsp` starts the language server (JSON-RPC over stdio). No source file.
+    // `fels lsp` starts the language server (JSON-RPC over stdio). No source file.
     if (std.mem.eql(u8, cmd, "lsp")) {
         // The server loads `std` and the imports of the open files like the compiler does, so it
         // needs the same relocatable standard-library root (`--std-path` is accepted here too).
@@ -156,13 +156,13 @@ pub fn main(init: std.process.Init) u8 {
             if (std.mem.eql(u8, args[k], "--std-path")) std_flag = args[k + 1];
         }
         if (resolveStdRoot(ra, io, init.environ_map, std_flag, exe_dir)) |root|
-            gabbro.pipeline_mod.stdlib_root_override = root;
-        gabbro.lsp_mod.timing = init.environ_map.get("GABBRO_LSP_TIMING") != null;
-        return gabbro.runLsp(allocator, io);
+            fels.pipeline_mod.stdlib_root_override = root;
+        fels.lsp_mod.timing = init.environ_map.get("FELS_LSP_TIMING") != null;
+        return fels.runLsp(allocator, io);
     }
 
     if (args.len < 3) {
-        std.debug.print("gabbro: '{s}' needs a source file\n\n", .{cmd});
+        std.debug.print("fels: '{s}' needs a source file\n\n", .{cmd});
         printUsage();
         return 1;
     }
@@ -175,20 +175,20 @@ pub fn main(init: std.process.Init) u8 {
     defer if (opts.llvm_bin_owned) allocator.free(opts.llvm_bin);
     var discovered_msvc: ?[]const u8 = null;
     defer if (discovered_msvc) |p| allocator.free(p);
-    if (gabbro.llvm_path.len != 0) {
-        opts.llvm_bin = std.fmt.allocPrint(allocator, "{s}/bin", .{gabbro.llvm_path}) catch return 1;
+    if (fels.llvm_path.len != 0) {
+        opts.llvm_bin = std.fmt.allocPrint(allocator, "{s}/bin", .{fels.llvm_path}) catch return 1;
         opts.llvm_bin_owned = true;
         opts.opt_level = if (@import("builtin").mode == .Debug) 0 else 2;
     }
-    if (gabbro.windows_sdk_lib_path.len != 0) {
-        opts.lib_paths.append(allocator, gabbro.windows_sdk_lib_path) catch return 1;
+    if (fels.windows_sdk_lib_path.len != 0) {
+        opts.lib_paths.append(allocator, fels.windows_sdk_lib_path) catch return 1;
     }
     // CRT search paths (harmless if no CRT lib is linked) — make `--libc` /
     // `link_libc()` resolvable: ucrt.lib (SDK) + vcruntime.lib (MSVC).
-    if (gabbro.ucrt_lib_path.len != 0) opts.lib_paths.append(allocator, gabbro.ucrt_lib_path) catch return 1;
-    if (gabbro.msvc_lib_path.len != 0) {
-        opts.lib_paths.append(allocator, gabbro.msvc_lib_path) catch return 1;
-    } else if (gabbro.msvc.discoverLibX64(allocator, io)) |p| {
+    if (fels.ucrt_lib_path.len != 0) opts.lib_paths.append(allocator, fels.ucrt_lib_path) catch return 1;
+    if (fels.msvc_lib_path.len != 0) {
+        opts.lib_paths.append(allocator, fels.msvc_lib_path) catch return 1;
+    } else if (fels.msvc.discoverLibX64(allocator, io)) |p| {
         discovered_msvc = p;
         opts.lib_paths.append(allocator, p) catch return 1;
     }
@@ -222,7 +222,7 @@ pub fn main(init: std.process.Init) u8 {
             else if (std.mem.indexOf(u8, t, "windows") != null)
                 .windows
             else {
-                std.debug.print("gabbro: unknown --target `{s}` (expected linux, linux-gnu, or windows)\n", .{t});
+                std.debug.print("fels: unknown --target `{s}` (expected linux, linux-gnu, or windows)\n", .{t});
                 return 1;
             };
             // `-gnu` selects the dynamically-linked glibc ABI; otherwise Linux is
@@ -253,7 +253,7 @@ pub fn main(init: std.process.Init) u8 {
         } else if (eqAny(a, &.{ "--libc", "-lc" })) {
             opts.link_libc = true;
         } else {
-            std.debug.print("gabbro: unknown option '{s}'\n", .{a});
+            std.debug.print("fels: unknown option '{s}'\n", .{a});
             return 1;
         }
     }
@@ -266,18 +266,18 @@ pub fn main(init: std.process.Init) u8 {
         opts.extra_libs.append(allocator, "vcruntime") catch return 1;
     }
 
-    // Relocatable runtime: find the stdlib + the LLVM/linker dir wherever gabbro is
+    // Relocatable runtime: find the stdlib + the LLVM/linker dir wherever fels is
     // installed, so the binary isn't tied to its build machine. Resolved paths
     // live on the process arena (cleaned at exit).
     {
         const ra = init.arena.allocator();
         const exe_dir: ?[]const u8 = std.process.executableDirPathAlloc(io, ra) catch null;
-        // std root (dir containing `std/`): --std-path > $GABBRO_STD > $GABBRO_HOME/lib >
+        // std root (dir containing `std/`): --std-path > $FELS_STD > $FELS_HOME/lib >
         // exe-relative (lib, ../lib, ../../lib) > build-baked.
         if (resolveStdRoot(ra, io, init.environ_map, opts.std_path, exe_dir)) |root|
-            gabbro.pipeline_mod.stdlib_root_override = root;
+            fels.pipeline_mod.stdlib_root_override = root;
         // LLVM/linker dir (lld + the LLVM-C/clang DLLs): --llvm-path (set above) >
-        // $GABBRO_LLVM > lld next to gabbro.exe > build-baked (set above).
+        // $FELS_LLVM > lld next to fels.exe > build-baked (set above).
         if (!opts.llvm_from_flag) {
             if (resolveLlvmBin(ra, io, init.environ_map, exe_dir)) |bin| {
                 if (opts.llvm_bin_owned) allocator.free(opts.llvm_bin);
@@ -289,7 +289,7 @@ pub fn main(init: std.process.Init) u8 {
 
     const cwd = std.Io.Dir.cwd();
     const source = cwd.readFileAlloc(io, src_path, allocator, .unlimited) catch |err| {
-        std.debug.print("gabbro: cannot read '{s}': {s}\n", .{ src_path, @errorName(err) });
+        std.debug.print("fels: cannot read '{s}': {s}\n", .{ src_path, @errorName(err) });
         return 1;
     };
     defer allocator.free(source);
@@ -309,21 +309,21 @@ pub fn main(init: std.process.Init) u8 {
         return cmdBuild(allocator, io, src_path, source, obj, exe, &opts);
     }
 
-    std.debug.print("gabbro: unknown command '{s}'\n\n", .{cmd});
+    std.debug.print("fels: unknown command '{s}'\n\n", .{cmd});
     printUsage();
     return 1;
 }
 
 // Commands
 
-/// `gabbro bindgen <header.h> [--lib <name>] [-o <out.fels>] [-I... -D...] [-- <clang args>]`
+/// `fels bindgen <header.h> [--lib <name>] [-o <out.fels>] [-I... -D...] [-- <clang args>]`
 fn cmdBindgen(allocator: std.mem.Allocator, io: std.Io, env: anytype, args: []const []const u8) u8 {
-    if (!gabbro.llvm_enabled) {
-        std.debug.print("gabbro bindgen: requires an LLVM-enabled build (libclang).\n    Rebuild: zig build -Dllvm-path=<path>\n", .{});
+    if (!fels.llvm_enabled) {
+        std.debug.print("fels bindgen: requires an LLVM-enabled build (libclang).\n    Rebuild: zig build -Dllvm-path=<path>\n", .{});
         return 1;
     }
     if (args.len == 0) {
-        std.debug.print("gabbro bindgen: needs a header file\n    usage: gabbro bindgen <header.h> [--lib <name>] [-o <out.fels>] [-- <clang args>]\n", .{});
+        std.debug.print("fels bindgen: needs a header file\n    usage: fels bindgen <header.h> [--lib <name>] [-o <out.fels>] [-- <clang args>]\n", .{});
         return 1;
     }
     const header = args[0];
@@ -350,7 +350,7 @@ fn cmdBindgen(allocator: std.mem.Allocator, io: std.Io, env: anytype, args: []co
         } else if (std.mem.startsWith(u8, a, "-I") or std.mem.startsWith(u8, a, "-D")) {
             clang_args.append(allocator, a) catch return 1;
         } else {
-            std.debug.print("gabbro bindgen: unknown option '{s}'\n", .{a});
+            std.debug.print("fels bindgen: unknown option '{s}'\n", .{a});
             return 1;
         }
     }
@@ -364,15 +364,15 @@ fn cmdBindgen(allocator: std.mem.Allocator, io: std.Io, env: anytype, args: []co
     defer if (exe_dir) |d| allocator.free(d);
     loadLibclang(allocator, io, env, exe_dir) catch return 1;
 
-    gabbro.bindgen.generate(allocator, io, header, lib, out_path, clang_args.items, exe_dir) catch |err| {
-        std.debug.print("gabbro bindgen: failed: {s}\n", .{@errorName(err)});
+    fels.bindgen.generate(allocator, io, header, lib, out_path, clang_args.items, exe_dir) catch |err| {
+        std.debug.print("fels bindgen: failed: {s}\n", .{@errorName(err)});
         return 1;
     };
     return 0;
 }
 
-/// Find libclang and load it (bindgen only). Order: `$GABBRO_LIBCLANG` (file or dir)
-/// > beside gabbro.exe > `<exe>/bindgen` > `$GABBRO_LLVM/bin` > the build-time LLVM dir >
+/// Find libclang and load it (bindgen only). Order: `$FELS_LIBCLANG` (file or dir)
+/// > beside fels.exe > `<exe>/bindgen` > `$FELS_LLVM/bin` > the build-time LLVM dir >
 /// the bare name (OS loader search). Prints how to get it on total failure.
 fn loadLibclang(allocator: std.mem.Allocator, io: std.Io, env: anytype, exe_dir: ?[]const u8) !void {
     const name = switch (@import("builtin").os.tag) {
@@ -380,12 +380,12 @@ fn loadLibclang(allocator: std.mem.Allocator, io: std.Io, env: anytype, exe_dir:
         .macos => "libclang.dylib",
         else => "libclang.so",
     };
-    // 1. $GABBRO_LIBCLANG — a direct path to the library, or a dir containing it.
-    if (env.get("GABBRO_LIBCLANG")) |v| {
+    // 1. $FELS_LIBCLANG — a direct path to the library, or a dir containing it.
+    if (env.get("FELS_LIBCLANG")) |v| {
         if (fileExists(io, v) and tryLoadClang(v)) return;
         if (tryLoadClangIn(allocator, io, v, name)) return;
     }
-    // 2/3. Beside gabbro.exe, then `<exe>/bindgen` (the component layout).
+    // 2/3. Beside fels.exe, then `<exe>/bindgen` (the component layout).
     if (exe_dir) |ed| {
         if (tryLoadClangIn(allocator, io, ed, name)) return;
         if (std.fmt.allocPrint(allocator, "{s}/bindgen", .{ed})) |sub| {
@@ -393,15 +393,15 @@ fn loadLibclang(allocator: std.mem.Allocator, io: std.Io, env: anytype, exe_dir:
             if (tryLoadClangIn(allocator, io, sub, name)) return;
         } else |_| {}
     }
-    // 4/5. `$GABBRO_LLVM/bin`, then the build-time LLVM dir (dev/CI fallback).
-    if (env.get("GABBRO_LLVM")) |r| {
+    // 4/5. `$FELS_LLVM/bin`, then the build-time LLVM dir (dev/CI fallback).
+    if (env.get("FELS_LLVM")) |r| {
         if (std.fmt.allocPrint(allocator, "{s}/bin", .{r})) |b| {
             defer allocator.free(b);
             if (tryLoadClangIn(allocator, io, b, name)) return;
         } else |_| {}
     }
-    if (gabbro.llvm_path.len != 0) {
-        if (std.fmt.allocPrint(allocator, "{s}/bin", .{gabbro.llvm_path})) |b| {
+    if (fels.llvm_path.len != 0) {
+        if (std.fmt.allocPrint(allocator, "{s}/bin", .{fels.llvm_path})) |b| {
             defer allocator.free(b);
             if (tryLoadClangIn(allocator, io, b, name)) return;
         } else |_| {}
@@ -410,19 +410,19 @@ fn loadLibclang(allocator: std.mem.Allocator, io: std.Io, env: anytype, exe_dir:
     if (tryLoadClang(name)) return;
 
     std.debug.print(
-        \\gabbro bindgen: could not find {s}.
+        \\fels bindgen: could not find {s}.
         \\    bindgen is an optional feature — libclang is not bundled with the core compiler.
         \\    Provide it any of these ways:
-        \\      - put {s} next to gabbro.exe (or in a 'bindgen' folder beside it)
-        \\      - set GABBRO_LIBCLANG to its full path
-        \\      - set GABBRO_LLVM to an LLVM install (uses its bin/<libclang>)
+        \\      - put {s} next to fels.exe (or in a 'bindgen' folder beside it)
+        \\      - set FELS_LIBCLANG to its full path
+        \\      - set FELS_LLVM to an LLVM install (uses its bin/<libclang>)
         \\
     , .{ name, name });
     return error.LibclangNotFound;
 }
 
 fn tryLoadClang(path: []const u8) bool {
-    gabbro.bindgen.loadClang(path) catch return false;
+    fels.bindgen.loadClang(path) catch return false;
     return true;
 }
 
@@ -434,8 +434,8 @@ fn tryLoadClangIn(allocator: std.mem.Allocator, io: std.Io, dir: []const u8, nam
 }
 
 fn cmdCheck(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8) u8 {
-    var fe = gabbro.compileFileWithRuntime(allocator, io, path) catch |err| {
-        std.debug.print("gabbro: {s}\n", .{@errorName(err)});
+    var fe = fels.compileFileWithRuntime(allocator, io, path) catch |err| {
+        std.debug.print("fels: {s}\n", .{@errorName(err)});
         return 1;
     };
     defer fe.deinit(allocator);
@@ -446,13 +446,13 @@ fn cmdCheck(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
 }
 
 fn cmdIr(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8) u8 {
-    if (!gabbro.llvm_enabled) return noLlvm();
-    var fe = gabbro.compileFileWithRuntime(allocator, io, path) catch return 1;
+    if (!fels.llvm_enabled) return noLlvm();
+    var fe = fels.compileFileWithRuntime(allocator, io, path) catch return 1;
     defer fe.deinit(allocator);
     printDiags(allocator, fe.diagnostics(), path, source);
-    var module = gabbro.lowerFrontend(allocator, fe) catch return 1;
-    gabbro.ir_mod.runDefaultPasses(allocator, &module) catch return 1;
-    var be = gabbro.LlvmBackend.init(allocator, "sk");
+    var module = fels.lowerFrontend(allocator, fe) catch return 1;
+    fels.ir_mod.runDefaultPasses(allocator, &module) catch return 1;
+    var be = fels.LlvmBackend.init(allocator, "sk");
     defer be.deinit();
     be.lower(module) catch return 1;
     const text = be.getIrText(allocator) catch return 1;
@@ -465,10 +465,10 @@ fn cmdIr(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []c
 }
 
 fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8, obj_path: []const u8, opts: *Options) u8 {
-    if (!gabbro.llvm_enabled) return noLlvm();
+    if (!fels.llvm_enabled) return noLlvm();
     var progress = Progress{ .quiet = opts.quiet };
-    var timings: gabbro.Timings = .{};
-    gabbro.compileFileWithLlvm(allocator, io, .{
+    var timings: fels.Timings = .{};
+    fels.compileFileWithLlvm(allocator, io, .{
         .file_name = path,
         .source = source,
         .obj_path = obj_path,
@@ -484,7 +484,7 @@ fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source:
         .timings = &timings,
     }) catch |err| {
         progress.clear();
-        std.debug.print("gabbro: {s}\n", .{@errorName(err)});
+        std.debug.print("fels: {s}\n", .{@errorName(err)});
         return 1;
     };
     progress.clear();
@@ -494,10 +494,10 @@ fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source:
 }
 
 fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8, obj_path: []const u8, exe_path: []const u8, opts: *Options) u8 {
-    if (!gabbro.llvm_enabled) return noLlvm();
+    if (!fels.llvm_enabled) return noLlvm();
     var progress = Progress{ .quiet = opts.quiet };
-    var timings: gabbro.Timings = .{};
-    gabbro.compileFileWithLlvm(allocator, io, .{
+    var timings: fels.Timings = .{};
+    fels.compileFileWithLlvm(allocator, io, .{
         .file_name = path,
         .source = source,
         .obj_path = obj_path,
@@ -515,7 +515,7 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
         .timings = &timings,
     }) catch |err| {
         progress.clear();
-        std.debug.print("gabbro: {s}\n", .{@errorName(err)});
+        std.debug.print("fels: {s}\n", .{@errorName(err)});
         return 1;
     };
     progress.clear();
@@ -524,18 +524,18 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
     return 0;
 }
 
-// Build system (`gabbro build` with a build.fels)
+// Build system (`fels build` with a build.fels)
 
 fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, rest: []const []const u8) u8 {
-    if (!gabbro.llvm_enabled) return noLlvm();
+    if (!fels.llvm_enabled) return noLlvm();
 
-    var opts = gabbro.build_driver.RunOptions{};
+    var opts = fels.build_driver.RunOptions{};
 
     var llvm_bin: []const u8 = "";
     var llvm_bin_owned = false;
     defer if (llvm_bin_owned) allocator.free(llvm_bin);
-    if (gabbro.llvm_path.len != 0) {
-        llvm_bin = std.fmt.allocPrint(allocator, "{s}/bin", .{gabbro.llvm_path}) catch return 1;
+    if (fels.llvm_path.len != 0) {
+        llvm_bin = std.fmt.allocPrint(allocator, "{s}/bin", .{fels.llvm_path}) catch return 1;
         llvm_bin_owned = true;
     }
 
@@ -543,12 +543,12 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
     defer lib_paths.deinit(allocator);
     var discovered_msvc: ?[]const u8 = null;
     defer if (discovered_msvc) |p| allocator.free(p);
-    if (gabbro.windows_sdk_lib_path.len != 0) lib_paths.append(allocator, gabbro.windows_sdk_lib_path) catch return 1;
+    if (fels.windows_sdk_lib_path.len != 0) lib_paths.append(allocator, fels.windows_sdk_lib_path) catch return 1;
     // CRT search paths so a build.fels `app.link_libc()` resolves (harmless otherwise).
-    if (gabbro.ucrt_lib_path.len != 0) lib_paths.append(allocator, gabbro.ucrt_lib_path) catch return 1;
-    if (gabbro.msvc_lib_path.len != 0) {
-        lib_paths.append(allocator, gabbro.msvc_lib_path) catch return 1;
-    } else if (gabbro.msvc.discoverLibX64(allocator, io)) |p| {
+    if (fels.ucrt_lib_path.len != 0) lib_paths.append(allocator, fels.ucrt_lib_path) catch return 1;
+    if (fels.msvc_lib_path.len != 0) {
+        lib_paths.append(allocator, fels.msvc_lib_path) catch return 1;
+    } else if (fels.msvc.discoverLibX64(allocator, io)) |p| {
         discovered_msvc = p;
         lib_paths.append(allocator, p) catch return 1;
     }
@@ -590,7 +590,7 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
             // A build option: `-Dname` (flag) or `-Dname=value`, read by `b.option*`.
             options.append(allocator, arg[2..]) catch return 1;
         } else if (arg.len > 0 and arg[0] == '-') {
-            std.debug.print("gabbro build: unknown option '{s}'\n", .{arg});
+            std.debug.print("fels build: unknown option '{s}'\n", .{arg});
             return 1;
         } else if (opts.target == null) {
             opts.target = arg;
@@ -603,16 +603,16 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
     opts.environ = environ;
 
     const build_path = if (fileExists(io, "build.fels")) "build.fels" else if (fileExists(io, "build.gab")) blk: {
-        gabbro.pipeline_mod.noteOldExt("build.gab");
+        fels.pipeline_mod.noteOldExt("build.gab");
         break :blk "build.gab";
     } else {
-        std.debug.print("gabbro build: no build.fels in the current directory\n", .{});
+        std.debug.print("fels build: no build.fels in the current directory\n", .{});
         return 1;
     };
 
-    gabbro.build_driver.run(allocator, io, build_path, opts) catch |err| {
+    fels.build_driver.run(allocator, io, build_path, opts) catch |err| {
         // The messages from the script run or the packages already say what is wrong.
-        if (err != error.ScriptError and err != error.PackageError) std.debug.print("gabbro build: {s}\n", .{@errorName(err)});
+        if (err != error.ScriptError and err != error.PackageError) std.debug.print("fels build: {s}\n", .{@errorName(err)});
         return 1;
     };
     return 0;
@@ -640,13 +640,13 @@ fn dirHasFile(io: std.Io, dir: []const u8, rel: []const u8) bool {
 }
 
 /// Find the standard-library root (the directory containing `std/`), returning a
-/// path allocated on `ra` (the process arena). Order: `--std-path` > `$GABBRO_STD` >
-/// `$GABBRO_HOME/lib` > exe-relative (`lib`, `../lib`, `../../lib`) > build-baked.
+/// path allocated on `ra` (the process arena). Order: `--std-path` > `$FELS_STD` >
+/// `$FELS_HOME/lib` > exe-relative (`lib`, `../lib`, `../../lib`) > build-baked.
 fn resolveStdRoot(ra: std.mem.Allocator, io: std.Io, env: anytype, flag: []const u8, exe_dir: ?[]const u8) ?[]const u8 {
     if (flag.len > 0) return ra.dupe(u8, flag) catch null;
-    if (env.get("GABBRO_STD")) |v|
+    if (env.get("FELS_STD")) |v|
         if (hasStd(io, v)) return ra.dupe(u8, v) catch null;
-    if (env.get("GABBRO_HOME")) |home| {
+    if (env.get("FELS_HOME")) |home| {
         if (std.fmt.allocPrint(ra, "{s}/lib", .{home}) catch null) |c|
             if (hasStd(io, c)) return c;
     }
@@ -656,20 +656,20 @@ fn resolveStdRoot(ra: std.mem.Allocator, io: std.Io, env: anytype, flag: []const
             if (hasStd(io, cand)) return cand;
         }
     }
-    if (gabbro.stdlib_root.len > 0 and hasStd(io, gabbro.stdlib_root))
-        return ra.dupe(u8, gabbro.stdlib_root) catch null;
+    if (fels.stdlib_root.len > 0 and hasStd(io, fels.stdlib_root))
+        return ra.dupe(u8, fels.stdlib_root) catch null;
     return null;
 }
 
-/// Find the LLVM/linker bin dir (the LLVM DLLs + any linker shipped beside gabbro).
-/// Order: `$GABBRO_LLVM/bin` > the exe's own dir > null (keep what `--llvm-path` /
+/// Find the LLVM/linker bin dir (the LLVM DLLs + any linker shipped beside fels).
+/// Order: `$FELS_LLVM/bin` > the exe's own dir > null (keep what `--llvm-path` /
 /// the build-baked path resolved). Marker is `LLVM-C.dll`: it's in both an LLVM
-/// install and the gabbro core bin, and unlike `lld-link.exe` it survives the switch
-/// to in-process linking (gabbrolld.dll). The Linux cross-linker `ld.lld.exe`, when
+/// install and the fels core bin, and unlike `lld-link.exe` it survives the switch
+/// to in-process linking (felslld.dll). The Linux cross-linker `ld.lld.exe`, when
 /// shipped, lives in this same dir, so cross-compiles resolve it here too.
 fn resolveLlvmBin(ra: std.mem.Allocator, io: std.Io, env: anytype, exe_dir: ?[]const u8) ?[]const u8 {
     const lld = if (@import("builtin").os.tag == .windows) "LLVM-C.dll" else "ld.lld";
-    if (env.get("GABBRO_LLVM")) |v| {
+    if (env.get("FELS_LLVM")) |v| {
         if (std.fmt.allocPrint(ra, "{s}/bin", .{v}) catch null) |b|
             if (dirHasFile(io, b, lld)) return b;
     }
@@ -684,7 +684,7 @@ fn ms(ns: u64) f64 {
     return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
 }
 
-fn printTimings(t: gabbro.Timings, _: []const u8) void {
+fn printTimings(t: fels.Timings, _: []const u8) void {
     std.debug.print("\n", .{});
     printRow("front-end", t.frontend_ns);
     printRow("lowering", t.lower_ns);
@@ -694,7 +694,7 @@ fn printTimings(t: gabbro.Timings, _: []const u8) void {
     printRow("link", t.link_ns);
     std.debug.print("  ───────────────────────\n", .{});
     printRow("total", t.total_ns);
-    // Comptime time is a slice of front-end + lowering — Gabbro's signature cost.
+    // Comptime time is a slice of front-end + lowering — Fels's signature cost.
     if (t.comptime_ns != 0) {
         std.debug.print("  (of which comptime: {d: >7.2} ms)\n", .{ms(t.comptime_ns)});
     }
@@ -712,7 +712,7 @@ fn eqAny(s: []const u8, options: []const []const u8) bool {
 }
 
 fn noLlvm() u8 {
-    std.debug.print("gabbro: LLVM backend not enabled.\n" ++
+    std.debug.print("fels: LLVM backend not enabled.\n" ++
         "    Rebuild: zig build -Dllvm-path=<path>\n", .{});
     return 1;
 }
@@ -722,10 +722,10 @@ fn deriveOut(allocator: std.mem.Allocator, src: []const u8, ext: []const u8) []c
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, ext }) catch src;
 }
 
-fn printDiags(allocator: std.mem.Allocator, diags: []const gabbro.Diagnostic, path: []const u8, source: []const u8) void {
-    const pal = gabbro.stderrPalette();
+fn printDiags(allocator: std.mem.Allocator, diags: []const fels.Diagnostic, path: []const u8, source: []const u8) void {
+    const pal = fels.stderrPalette();
     for (diags) |d| {
-        const rendered = gabbro.renderDiagnosticColored(allocator, path, source, d, pal) catch continue;
+        const rendered = fels.renderDiagnosticColored(allocator, path, source, d, pal) catch continue;
         defer allocator.free(rendered);
         std.debug.print("{s}\n", .{rendered});
     }
@@ -733,9 +733,9 @@ fn printDiags(allocator: std.mem.Allocator, diags: []const gabbro.Diagnostic, pa
 
 fn printUsage() void {
     std.debug.print(
-        \\gabbro {s} — a systems language with compile-time metaprogramming
+        \\fels {s} — a systems language with compile-time metaprogramming
         \\
-        \\usage:  gabbro <command> <file.fels> [options]
+        \\usage:  fels <command> <file.fels> [options]
         \\
         \\commands:
         \\  build                  run ./build.fels (the build system) — see below
@@ -744,24 +744,24 @@ fn printUsage() void {
         \\  check    <file.fels>     parse and type-check only
         \\  object   <file.fels>     compile to an object file (.o)
         \\  ir       <file.fels>     print LLVM IR to stdout
-        \\  bindgen  <header.h>    generate Gabbro FFI bindings from a C header
-        \\  add      <name> <src>  use a package: add it to gabbro.pkg and fetch it
-        \\  fetch                  get the packages gabbro.pkg uses (--verify checks hashes)
-        \\  update   [name...]     move packages to the newest version gabbro.pkg allows
+        \\  bindgen  <header.h>    generate Fels FFI bindings from a C header
+        \\  add      <name> <src>  use a package: add it to fels.pkg and fetch it
+        \\  fetch                  get the packages fels.pkg uses (--verify checks hashes)
+        \\  update   [name...]     move packages to the newest version fels.pkg allows
         \\  version                print the compiler version
         \\  help                   show this message
         \\
-        \\C bindings (gabbro bindgen, requires an LLVM-enabled build):
-        \\  gabbro bindgen <h> --lib <name> -o <out.fels>   generate bindings for a C library
-        \\  gabbro bindgen <h> -I<dir> -D<sym>            pass include dirs / defines to clang
-        \\  gabbro bindgen <h> -- <clang args...>         forward arbitrary args to clang
+        \\C bindings (fels bindgen, requires an LLVM-enabled build):
+        \\  fels bindgen <h> --lib <name> -o <out.fels>   generate bindings for a C library
+        \\  fels bindgen <h> -I<dir> -D<sym>            pass include dirs / defines to clang
+        \\  fels bindgen <h> -- <clang args...>         forward arbitrary args to clang
         \\
-        \\build system (gabbro build, with a build.fels in the current directory):
-        \\  gabbro build               build the default artifact (or all of them)
-        \\  gabbro build run [-- args] build the default exe, then run it
-        \\  gabbro build <name>        build a named artifact or run a named step
-        \\  gabbro build --list        list the project's artifacts and steps
-        \\  gabbro build --release     build at release optimization
+        \\build system (fels build, with a build.fels in the current directory):
+        \\  fels build               build the default artifact (or all of them)
+        \\  fels build run [-- args] build the default exe, then run it
+        \\  fels build <name>        build a named artifact or run a named step
+        \\  fels build --list        list the project's artifacts and steps
+        \\  fels build --release     build at release optimization
         \\
         \\options:
         \\  -o <path>              output file (default: derived from the source name)

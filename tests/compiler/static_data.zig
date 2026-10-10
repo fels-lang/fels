@@ -1,5 +1,5 @@
 const std = @import("std");
-const gabbro = @import("gabbro_compiler");
+const fels = @import("fels_compiler");
 
 // Static storage: `NAME: T = <initialiser>;` at the top level. The initialiser is data in the
 // image — a constant, a `.{ ... }` of constants, the address of a function, or the address of
@@ -9,10 +9,10 @@ const gabbro = @import("gabbro_compiler");
 
 /// Type-check `src`, lower it, and return the LLVM IR text.
 fn irText(allocator: std.mem.Allocator, src: []const u8) ![]const u8 {
-    var fe = try gabbro.compile(allocator, "static_data.fels", src);
+    var fe = try fels.compile(allocator, "static_data.fels", src);
     defer fe.deinit(allocator);
-    const module = try gabbro.lowerFrontend(allocator, fe);
-    var backend = gabbro.LlvmBackend.init(allocator, "static_data");
+    const module = try fels.lowerFrontend(allocator, fe);
+    var backend = fels.LlvmBackend.init(allocator, "static_data");
     defer backend.deinit();
     try backend.lower(module);
     return backend.getIrText(allocator);
@@ -45,7 +45,7 @@ const decls =
 ;
 
 test "static data: initialisers reach LLVM as constants, and nothing runs at startup" {
-    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const src = try std.mem.concat(arena.allocator(), u8, &.{ decls,
@@ -82,7 +82,7 @@ test "static data: initialisers reach LLVM as constants, and nothing runs at sta
 }
 
 test "static data: an omitted field is read the way a local literal reads it" {
-    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const src = try std.mem.concat(arena.allocator(), u8, &.{ decls,
@@ -123,7 +123,7 @@ test "static data: an omitted field is read the way a local literal reads it" {
 }
 
 test "static data: #export makes a global a data export" {
-    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const src = try std.mem.concat(arena.allocator(), u8, &.{ decls,
@@ -150,7 +150,7 @@ test "static data: #export makes a global a data export" {
 test "static data: a function pointer is called through a global, a field or a table element" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var fe = try gabbro.compile(arena.allocator(), "static_data.fels", decls ++
+    var fe = try fels.compile(arena.allocator(), "static_data.fels", decls ++
         \\ONE: extern fn(i32) -> i32 = dbl;
         \\VT: Vtbl = .{ add, 7u32 };
         \\T: [2]extern fn(i32) -> i32 = .{ dbl, dbl };
@@ -178,7 +178,7 @@ test "static data: a call has to match the function pointer's signature, and the
     };
     for (bad) |decl| {
         const src = try std.mem.concat(arena.allocator(), u8, &.{ decls, decl, "\n" });
-        try std.testing.expectError(error.SemanticFailed, gabbro.compile(arena.allocator(), "static_data.fels", src));
+        try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "static_data.fels", src));
     }
 }
 
@@ -189,8 +189,8 @@ fn expectRefused(allocator: std.mem.Allocator, decl: []const u8) !void {
         decl,
         "\n",
     });
-    // The front end already refuses it - the same check `gabbro check` runs - so nothing is lowered.
-    if (gabbro.compile(allocator, "static_data.fels", src)) |fe_ok| {
+    // The front end already refuses it - the same check `fels check` runs - so nothing is lowered.
+    if (fels.compile(allocator, "static_data.fels", src)) |fe_ok| {
         var fe = fe_ok;
         defer fe.deinit(allocator);
         std.debug.print("\nthis initialiser was accepted by the front end but should be refused:\n  {s}\n", .{decl});
@@ -251,7 +251,7 @@ test "static data: an initialiser that is not a constant is refused" {
 test "static data: a value only the comptime VM can compute is not refused by the front end" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // The check that `gabbro check` runs has no evaluator, so it cannot judge these: a `#run`, a
+    // The check that `fels check` runs has no evaluator, so it cannot judge these: a `#run`, a
     // call in a constant. They pass the front end and are checked when the module is lowered.
     const accepted = [_][]const u8{
         "twice :: fn(x: i32) -> i32 { return x * 2; }\nG: i32 = #run twice(4);",
@@ -262,7 +262,7 @@ test "static data: a value only the comptime VM can compute is not refused by th
     };
     for (accepted) |decl| {
         const src = try std.mem.concat(arena.allocator(), u8, &.{ decls, decl, "\n" });
-        var fe = gabbro.compile(arena.allocator(), "static_data.fels", src) catch |err| {
+        var fe = fels.compile(arena.allocator(), "static_data.fels", src) catch |err| {
             std.debug.print("\nthe front end should accept:\n  {s}\n", .{decl});
             return err;
         };
@@ -270,9 +270,9 @@ test "static data: a value only the comptime VM can compute is not refused by th
     }
     // ...and a mistake in an initialiser that does need the VM still surfaces at lowering.
     const src = try std.mem.concat(arena.allocator(), u8, &.{ decls, "twice :: fn(x: i32) -> i32 { return x * 2; }\nG: u8 = #run twice(200);\n" });
-    var fe = try gabbro.compile(arena.allocator(), "static_data.fels", src);
+    var fe = try fels.compile(arena.allocator(), "static_data.fels", src);
     defer fe.deinit(arena.allocator());
-    try std.testing.expectError(error.LoweringFailed, gabbro.lowerFrontend(arena.allocator(), fe));
+    try std.testing.expectError(error.LoweringFailed, fels.lowerFrontend(arena.allocator(), fe));
 }
 
 // Compile-time code reading static data. The comptime VM runs the IR the native backend lowers,
@@ -283,9 +283,9 @@ test "static data: a value only the comptime VM can compute is not refused by th
 /// Lower `src` (declarations + a `#assert`) and report whether lowering succeeded. A failing
 /// `#assert`, an unreadable global and a refused write all come back as `LoweringFailed`.
 fn lowers(allocator: std.mem.Allocator, src: []const u8) !bool {
-    var fe = try gabbro.compile(allocator, "static_read.fels", src);
+    var fe = try fels.compile(allocator, "static_read.fels", src);
     defer fe.deinit(allocator);
-    if (gabbro.lowerFrontend(allocator, fe)) |_| {
+    if (fels.lowerFrontend(allocator, fe)) |_| {
         return true;
     } else |err| {
         try std.testing.expectEqual(error.LoweringFailed, err);
@@ -409,7 +409,7 @@ test "static data: a global that holds the address of another is not readable at
 }
 
 test "static data: a run that builds a table gives the image the table, once" {
-    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const src = try std.mem.concat(arena.allocator(), u8, &.{ decls,
@@ -459,7 +459,7 @@ const qpc = struct {
 };
 
 test "static data: a run that fills a big array does not leave a slow function behind" {
-    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime @import("builtin").os.tag != .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -483,10 +483,10 @@ test "static data: a run that fills a big array does not leave a slow function b
     _ = qpc.QueryPerformanceFrequency(&freq);
     _ = qpc.QueryPerformanceCounter(&t0);
 
-    var fe = try gabbro.compile(arena.allocator(), "big_fill.fels", src);
+    var fe = try fels.compile(arena.allocator(), "big_fill.fels", src);
     defer fe.deinit(arena.allocator());
-    const module = try gabbro.lowerFrontend(arena.allocator(), fe);
-    var backend = gabbro.LlvmBackend.init(arena.allocator(), "big_fill");
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    var backend = fels.LlvmBackend.init(arena.allocator(), "big_fill");
     defer backend.deinit();
     try backend.lower(module);
     try backend.emitObject(".zig-cache/big_fill_test.o", 2);

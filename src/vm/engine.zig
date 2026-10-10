@@ -36,7 +36,7 @@ const Frame = struct {
     zone_watermark: usize,
 };
 
-/// The Gabbro compile-time virtual machine.
+/// The Fels compile-time virtual machine.
 /// A side-effecting bridge to the embedding host, invoked by the `host_call`
 /// opcode. The build driver installs one so `std.build`'s `__build_*` intrinsics
 /// record into a BuildPlan. `op` is a `BuildOp`; `args` are the call arguments
@@ -94,8 +94,8 @@ pub const Caps = struct {
     /// grant refused rather than only that something did.
     pub fn denialReason(self: Caps) []const u8 {
         return switch (self.ffi) {
-            .none => "this code has no host access. A `#run` is pure; `build.fels` has host access, and a package's compile-time code gets it when gabbro.pkg grants it (`#use name from \"...\" may ffi(\"lib\")`)",
-            .libs => "the capability grant of this code does not list that library (a package gets more with `may ffi(...)` on its `#use` line in gabbro.pkg)",
+            .none => "this code has no host access. A `#run` is pure; `build.fels` has host access, and a package's compile-time code gets it when fels.pkg grants it (`#use name from \"...\" may ffi(\"lib\")`)",
+            .libs => "the capability grant of this code does not list that library (a package gets more with `may ffi(...)` on its `#use` line in fels.pkg)",
             // `.all` allows every call, so it never reaches a denial.
             .all => "this run's capability grant refused it",
         };

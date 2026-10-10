@@ -1,9 +1,9 @@
-/// The `gabbro build` build system: runs build.fels scripts on the comptime VM and checks the
+/// The `fels build` build system: runs build.fels scripts on the comptime VM and checks the
 /// plan they record. Nothing is compiled or linked, so these run without LLVM.
 const std = @import("std");
-const gabbro = @import("gabbro_compiler");
+const fels = @import("fels_compiler");
 const builtin = @import("builtin");
-const build = gabbro.build_driver;
+const build = fels.build_driver;
 
 /// Write `src` as `<dir>/build.fels` and load its plan with the `-D` `options`.
 fn loadPlan(comptime dir: []const u8, src: []const u8, options: []const []const u8) !build.BuildPlan {
@@ -168,7 +168,7 @@ test "build: install with nothing to install is an error" {
     try std.testing.expectError(error.UnknownTarget, build.run(std.testing.allocator, io, dir ++ "/build.fels", .{ .target = "install", .quiet = true }));
 }
 
-test "build: define records constants as Gabbro source, a later define wins" {
+test "build: define records constants as Fels source, a later define wins" {
     const src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {
@@ -287,7 +287,7 @@ test "build: a command that fails stops the build" {
     try std.testing.expectError(error.StepFailed, runTarget("bs_step_fail", src, "fail"));
 }
 
-test "build: the default step runs for a bare gabbro build" {
+test "build: the default step runs for a bare fels build" {
     const src =
         \\#import std.build.{ Build };
         \\build :: fn(b: Build) {

@@ -1,4 +1,4 @@
-//! gabbro.pkg: a package's name and version, and the packages it uses, as `#` directives.
+//! fels.pkg: a package's name and version, and the packages it uses, as `#` directives.
 //!
 //!     #package mygame "0.1.0";
 //!     #license "MIT";
@@ -16,7 +16,7 @@ const directives = @import("directives.zig");
 pub const Problem = directives.Problem;
 pub const Error = directives.Error;
 
-/// The capabilities gabbro knows. `ffi` lets compile-time code call into host libraries; with
+/// The capabilities fels knows. `ffi` lets compile-time code call into host libraries; with
 /// arguments, only into those.
 pub const known_caps = [_][]const u8{"ffi"};
 
@@ -53,7 +53,7 @@ pub const Manifest = struct {
     version: ?[]const u8 = null,
     license: ?[]const u8 = null,
     description: ?[]const u8 = null,
-    /// The folder imports of this package start in, relative to gabbro.pkg.
+    /// The folder imports of this package start in, relative to fels.pkg.
     root: ?[]const u8 = null,
     needs: []const Cap = &.{},
     uses: []const Use = &.{},
@@ -64,7 +64,7 @@ pub const Manifest = struct {
     }
 };
 
-/// Parse gabbro.pkg. Strings and slices live in `arena`. On `error.Invalid`, `problem` says why.
+/// Parse fels.pkg. Strings and slices live in `arena`. On `error.Invalid`, `problem` says why.
 pub fn parse(arena: std.mem.Allocator, source: []const u8, problem: *Problem) Error!Manifest {
     var c = directives.Cursor.init(arena, source, problem);
     var m: Manifest = .{};
@@ -105,7 +105,7 @@ pub fn parse(arena: std.mem.Allocator, source: []const u8, problem: *Problem) Er
             }
             try uses.append(arena, u);
         } else {
-            return c.fail(d, "unknown directive `#{s}`; gabbro.pkg has #package, #license, #description, #root, #needs and #use", .{word});
+            return c.fail(d, "unknown directive `#{s}`; fels.pkg has #package, #license, #description, #root, #needs and #use", .{word});
         }
         _ = try c.expect(.semicolon, "`;` at the end of the directive");
     }
@@ -122,7 +122,7 @@ fn caps(c: *directives.Cursor, out: *std.ArrayList(Cap)) Error!void {
         const known = for (known_caps) |k| {
             if (std.mem.eql(u8, k, name)) break true;
         } else false;
-        if (!known) return c.fail(t, "unknown capability `{s}`; gabbro knows `ffi`", .{name});
+        if (!known) return c.fail(t, "unknown capability `{s}`; fels knows `ffi`", .{name});
         var args: std.ArrayList([]const u8) = .empty;
         if (c.peek().kind == .l_paren) {
             _ = c.next();
@@ -157,7 +157,7 @@ pub fn covers(granted: []const Cap, need: Cap) bool {
     return false;
 }
 
-/// A capability written as in gabbro.pkg: `ffi("a", "b")`.
+/// A capability written as in fels.pkg: `ffi("a", "b")`.
 pub fn formatCap(a: std.mem.Allocator, cap: Cap) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(a, cap.name);
@@ -172,7 +172,7 @@ pub fn formatCap(a: std.mem.Allocator, cap: Cap) ![]const u8 {
     return out.toOwnedSlice(a);
 }
 
-test "gabbro.pkg: the package, its uses and their capabilities" {
+test "fels.pkg: the package, its uses and their capabilities" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var problem: Problem = .{};
@@ -201,7 +201,7 @@ test "gabbro.pkg: the package, its uses and their capabilities" {
     try std.testing.expect(m.find("mathlib").?.version == null);
 }
 
-test "gabbro.pkg: mistakes are reported where they are" {
+test "fels.pkg: mistakes are reported where they are" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const Case = struct { src: []const u8, line: usize, msg: []const u8 };
@@ -219,7 +219,7 @@ test "gabbro.pkg: mistakes are reported where they are" {
     }
 }
 
-test "gabbro.pkg: a grant covers a need" {
+test "fels.pkg: a grant covers a need" {
     const any: Cap = .{ .name = "ffi" };
     const gl: Cap = .{ .name = "ffi", .args = &.{"opengl32"} };
     const gl_gdi: Cap = .{ .name = "ffi", .args = &.{ "OpenGL32", "gdi32" } };

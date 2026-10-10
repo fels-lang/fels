@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Smoke-test the `gabbro lsp` language server over stdio (no editor needed).
+"""Smoke-test the `fels lsp` language server over stdio (no editor needed).
 
 Drives a full initialize -> didOpen -> completion / hover / definition /
 documentSymbol exchange against the built binary and prints the results.
 
-    python tests/lsp_smoke.py [path-to-gabbro.exe]
+    python tests/lsp_smoke.py [path-to-fels.exe]
 """
 import subprocess, json, sys, os
 
 EXE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-    os.path.dirname(__file__), "..", "zig-out", "bin", "gabbro.exe")
+    os.path.dirname(__file__), "..", "zig-out", "bin", "fels.exe")
 
 
 def frame(msg):
@@ -31,7 +31,7 @@ MSGS = [
     {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"capabilities": {}}},
     {"jsonrpc": "2.0", "method": "initialized", "params": {}},
     {"jsonrpc": "2.0", "method": "textDocument/didOpen",
-     "params": {"textDocument": {"uri": URI, "languageId": "gabbro", "version": 1, "text": SRC}}},
+     "params": {"textDocument": {"uri": URI, "languageId": "fels", "version": 1, "text": SRC}}},
     {"jsonrpc": "2.0", "id": 2, "method": "textDocument/completion",
      "params": {"textDocument": {"uri": URI}, "position": {"line": 4, "character": 0}}},
     {"jsonrpc": "2.0", "id": 3, "method": "textDocument/hover",
@@ -110,7 +110,7 @@ def two_files():
         msgs = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"capabilities": {}}},
             {"jsonrpc": "2.0", "method": "textDocument/didOpen",
-             "params": {"textDocument": {"uri": main_uri, "languageId": "gabbro", "version": 1, "text": main_src}}},
+             "params": {"textDocument": {"uri": main_uri, "languageId": "fels", "version": 1, "text": main_src}}},
             {"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover",
              "params": {"textDocument": {"uri": main_uri}, "position": call}},
             {"jsonrpc": "2.0", "id": 3, "method": "textDocument/definition",
@@ -118,7 +118,7 @@ def two_files():
             {"jsonrpc": "2.0", "id": 4, "method": "textDocument/completion",
              "params": {"textDocument": {"uri": main_uri}, "position": {"line": 3, "character": 4}}},
             {"jsonrpc": "2.0", "method": "textDocument/didOpen",
-             "params": {"textDocument": {"uri": util_uri, "languageId": "gabbro", "version": 1, "text": util_src}}},
+             "params": {"textDocument": {"uri": util_uri, "languageId": "fels", "version": 1, "text": util_src}}},
             {"jsonrpc": "2.0", "id": 5, "method": "textDocument/documentSymbol",
              "params": {"textDocument": {"uri": main_uri}}},
             {"jsonrpc": "2.0", "method": "textDocument/didChange",

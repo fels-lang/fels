@@ -1,5 +1,5 @@
-//! A project's packages: read gabbro.pkg and gabbro.lock in a folder, resolve, and write
-//! gabbro.lock when it changed. `gabbro build`, `fetch`, `update` and `add` go through here.
+//! A project's packages: read fels.pkg and fels.lock in a folder, resolve, and write
+//! fels.lock when it changed. `fels build`, `fetch`, `update` and `add` go through here.
 
 const std = @import("std");
 const manifest_mod = @import("manifest.zig");
@@ -18,7 +18,7 @@ pub const Options = struct {
     verify: bool = false,
 };
 
-/// Resolve the packages of the project in `dir`; null when it has no gabbro.pkg.
+/// Resolve the packages of the project in `dir`; null when it has no fels.pkg.
 pub fn load(
     a: std.mem.Allocator,
     io: std.Io,
@@ -27,7 +27,7 @@ pub fn load(
     opts: Options,
 ) Error!?Result {
     const read = try resolve_mod.readManifest(a, io, dir) orelse return null;
-    const lock_path = std.fs.path.join(a, &.{ dir, "gabbro.lock" }) catch return error.OutOfMemory;
+    const lock_path = std.fs.path.join(a, &.{ dir, "fels.lock" }) catch return error.OutOfMemory;
     var old: lock_mod.Lock = .{};
     if (std.Io.Dir.cwd().readFileAlloc(io, lock_path, a, .unlimited)) |text| {
         var problem: directives.Problem = .{};
@@ -35,7 +35,7 @@ pub fn load(
             error.OutOfMemory => return error.OutOfMemory,
             error.Invalid => {
                 const loc = directives.location(text, problem.at);
-                std.debug.print("{s}:{d}:{d}: error: {s}\n  Delete gabbro.lock and run `gabbro fetch` to write it again.\n", .{ lock_path, loc.line, loc.col, problem.msg });
+                std.debug.print("{s}:{d}:{d}: error: {s}\n  Delete fels.lock and run `fels fetch` to write it again.\n", .{ lock_path, loc.line, loc.col, problem.msg });
                 return error.PackageError;
             },
         };
@@ -53,7 +53,7 @@ pub fn load(
         if (result.lock.entries.items.len == 0) {
             std.Io.Dir.cwd().deleteFile(io, lock_path) catch {};
         } else std.Io.Dir.cwd().writeFile(io, .{ .sub_path = lock_path, .data = text }) catch {
-            std.debug.print("gabbro: cannot write {s}\n", .{lock_path});
+            std.debug.print("fels: cannot write {s}\n", .{lock_path});
             return error.PackageError;
         };
     }
@@ -75,35 +75,35 @@ pub fn printPackages(a: std.mem.Allocator, packages: []const Package) void {
     }
 }
 
-/// `gabbro fetch [--verify]`: get every package gabbro.pkg uses and write gabbro.lock.
+/// `fels fetch [--verify]`: get every package fels.pkg uses and write fels.lock.
 pub fn cmdFetch(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Environ.Map, args: []const []const u8) u8 {
     var verify = false;
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--verify")) verify = true else {
-            std.debug.print("gabbro fetch: unknown argument '{s}'\n", .{arg});
+            std.debug.print("fels fetch: unknown argument '{s}'\n", .{arg});
             return 1;
         }
     }
     const result = load(a, io, ".", env, .{ .verify = verify }) catch return 1;
     const r = result orelse {
-        std.debug.print("gabbro fetch: no gabbro.pkg in the current directory\n", .{});
+        std.debug.print("fels fetch: no fels.pkg in the current directory\n", .{});
         return 1;
     };
     printPackages(a, r.packages);
-    if (verify) std.debug.print("the files of every git package match gabbro.lock\n", .{});
+    if (verify) std.debug.print("the files of every git package match fels.lock\n", .{});
     return 0;
 }
 
-/// `gabbro update [name...]`: take the newest versions gabbro.pkg allows (of all packages, or
-/// the named ones) and write them to gabbro.lock.
+/// `fels update [name...]`: take the newest versions fels.pkg allows (of all packages, or
+/// the named ones) and write them to fels.lock.
 pub fn cmdUpdate(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Environ.Map, args: []const []const u8) u8 {
     const before = load(a, io, ".", env, .{}) catch return 1;
     const old = before orelse {
-        std.debug.print("gabbro update: no gabbro.pkg in the current directory\n", .{});
+        std.debug.print("fels update: no fels.pkg in the current directory\n", .{});
         return 1;
     };
     for (args) |name| if (old.find(name) == null) {
-        std.debug.print("gabbro update: gabbro.pkg does not use a package named '{s}'\n", .{name});
+        std.debug.print("fels update: fels.pkg does not use a package named '{s}'\n", .{name});
         return 1;
     };
     const after = (load(a, io, ".", env, .{ .update = args, .update_all = args.len == 0 }) catch return 1).?;
@@ -114,12 +114,12 @@ pub fn cmdUpdate(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Envi
         std.debug.print("  {s}: {s} -> {s}\n", .{ p.name, was.version, p.version });
         changed += 1;
     }
-    if (changed == 0) std.debug.print("everything is at the newest version gabbro.pkg allows\n", .{});
+    if (changed == 0) std.debug.print("everything is at the newest version fels.pkg allows\n", .{});
     return 0;
 }
 
-/// `gabbro add <name> <source> [version] [--may <caps>]`: add a `#use` line to gabbro.pkg (and
-/// create gabbro.pkg if there is none), then fetch the package. gabbro.pkg stays as it was
+/// `fels add <name> <source> [version] [--may <caps>]`: add a `#use` line to fels.pkg (and
+/// create fels.pkg if there is none), then fetch the package. fels.pkg stays as it was
 /// when that fails.
 pub fn cmdAdd(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Environ.Map, args: []const []const u8) u8 {
     var positional: std.ArrayList([]const u8) = .empty;
@@ -133,9 +133,9 @@ pub fn cmdAdd(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Environ
     }
     if (positional.items.len < 2 or positional.items.len > 3) {
         std.debug.print(
-            \\usage: gabbro add <name> <source> [version] [--may <capabilities>]
-            \\  gabbro add raylib github.com/raysan5/raylib ^5.0 --may 'ffi("opengl32")'
-            \\  gabbro add mathlib ../mathlib
+            \\usage: fels add <name> <source> [version] [--may <capabilities>]
+            \\  fels add raylib github.com/raysan5/raylib ^5.0 --may 'ffi("opengl32")'
+            \\  fels add mathlib ../mathlib
             \\
         , .{});
         return 1;
@@ -147,8 +147,8 @@ pub fn cmdAdd(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Environ
     return 0;
 }
 
-/// Add `#use <name> from "<source>"` to the gabbro.pkg in `dir` (creating it when there is
-/// none) and resolve. On failure gabbro.pkg is left as it was.
+/// Add `#use <name> from "<source>"` to the fels.pkg in `dir` (creating it when there is
+/// none) and resolve. On failure fels.pkg is left as it was.
 pub fn add(
     a: std.mem.Allocator,
     io: std.Io,
@@ -159,7 +159,7 @@ pub fn add(
     version: ?[]const u8,
     may: ?[]const u8,
 ) Error!Package {
-    const path = std.fs.path.join(a, &.{ dir, "gabbro.pkg" }) catch return error.OutOfMemory;
+    const path = std.fs.path.join(a, &.{ dir, "fels.pkg" }) catch return error.OutOfMemory;
     const cwd = std.Io.Dir.cwd();
     const before: ?[]const u8 = cwd.readFileAlloc(io, path, a, .unlimited) catch null;
     var text: std.ArrayList(u8) = .empty;
@@ -167,7 +167,7 @@ pub fn add(
         text.appendSlice(a, b) catch return error.OutOfMemory;
         if (b.len != 0 and b[b.len - 1] != '\n') text.append(a, '\n') catch return error.OutOfMemory;
     } else {
-        // A new gabbro.pkg, named after the folder.
+        // A new fels.pkg, named after the folder.
         const here = std.fs.path.resolve(a, &.{ std.process.currentPathAlloc(io, a) catch ".", dir }) catch return error.OutOfMemory;
         text.print(a, "#package {s} \"0.1.0\";\n\n", .{packageName(a, std.fs.path.basename(here))}) catch return error.OutOfMemory;
     }
@@ -177,13 +177,13 @@ pub fn add(
     text.appendSlice(a, ";\n") catch return error.OutOfMemory;
 
     cwd.writeFile(io, .{ .sub_path = path, .data = text.items }) catch {
-        std.debug.print("gabbro add: cannot write {s}\n", .{path});
+        std.debug.print("fels add: cannot write {s}\n", .{path});
         return error.PackageError;
     };
     const result = load(a, io, dir, env, .{}) catch |err| {
-        // Put gabbro.pkg back as it was.
+        // Put fels.pkg back as it was.
         if (before) |b| cwd.writeFile(io, .{ .sub_path = path, .data = b }) catch {} else cwd.deleteFile(io, path) catch {};
-        std.debug.print("gabbro add: gabbro.pkg was not changed\n", .{});
+        std.debug.print("fels add: fels.pkg was not changed\n", .{});
         return err;
     };
     return result.?.find(name).?;

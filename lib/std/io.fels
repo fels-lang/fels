@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.io — synchronous, allocation-free I/O for Gabbro.
+// std.io — synchronous, allocation-free I/O for Fels.
 //
 // Writer and Reader are the interfaces. Concrete writers: Stdout, Stderr, FixedBuf
 // (a 256-byte stack scratch buffer), and NullWriter (discards but counts bytes).

@@ -84,7 +84,7 @@ pub const ConstInit = union(enum) {
     variant_tag: u32,
     /// A value only the comptime VM can compute (a `#run` result) that has not been computed. It
     /// exists only in the module the VM itself reads — built before any evaluation can run — and in
-    /// `gabbro check`, which runs nothing. The module that is compiled has the value instead, or
+    /// `fels check`, which runs nothing. The module that is compiled has the value instead, or
     /// the build stopped with the reason there is none, so a backend never sees this.
     pending,
 };
@@ -186,7 +186,7 @@ pub const FallibleType = struct {
 pub const FnPtrType = struct {
     params: []const IrType,
     ret: *const IrType,
-    /// A THIN function pointer (a bare address, not gabbro's fat `{fn, env}` closure).
+    /// A THIN function pointer (a bare address, not fels's fat `{fn, env}` closure).
     /// Produced by reinterpreting a raw pointer/address as `fn(...)`; callable as a
     /// direct indirect call. This is what makes a dynamically-loaded function
     /// (`wglGetProcAddress`, `GetProcAddress`, a COM vtable slot) callable.
@@ -390,7 +390,7 @@ pub const CallIndirectInstr = struct {
     /// no tracked type and lowers to a zero-width `i0`). Empty = fall back to
     /// each arg's tracked type.
     param_tys: []const IrType = &.{},
-    /// True when `callee` is a fat closure value `{ fn, env }` (a gabbro function
+    /// True when `callee` is a fat closure value `{ fn, env }` (a fels function
     /// value) rather than a raw function pointer (an interface method). The
     /// backend extracts the `fn` field before calling.
     is_closure: bool = false,
@@ -619,7 +619,7 @@ pub const StaticDataDiag = struct { diag: Diagnostic, source: []const u8 };
 /// return one diagnostic for each global that is wrong: a value that does not fit, an unknown or
 /// duplicate or missing field, too many initializers, a lambda or generic function, a pointer to
 /// something that is not a top-level global, and so on. This is the part of static-storage
-/// checking that needs no evaluator, which is why `gabbro check` can report it; what needs the
+/// checking that needs no evaluator, which is why `fels check` can report it; what needs the
 /// comptime VM (a `#run` value, a call in a constant) is checked when the module is lowered. The
 /// diagnostics are allocated with `allocator`.
 pub fn checkStaticData(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd) std.mem.Allocator.Error![]const StaticDataDiag {
@@ -3716,7 +3716,7 @@ const FunctionLowerer = struct {
                 }
                 // core::fn_ptr(f) — the RAW thin function pointer of a top-level
                 // function, as a `*void` usable as a C callback / thread entry.
-                // Bypasses gabbro's fat `{fn, env}` closure (which a C ABI can't call):
+                // Bypasses fels's fat `{fn, env}` closure (which a C ABI can't call):
                 // reuses the same raw-function-arg lowering as a direct extern call.
                 if (call.callee.kind == .scope_access and isCoreNs(call.callee.kind.scope_access) and
                     std.mem.eql(u8, callee_name, "fn_ptr") and call.args.len == 1)
@@ -3959,7 +3959,7 @@ const FunctionLowerer = struct {
                         }
                         break :cv .{ .local = callee_name };
                     };
-                    // Only a genuine gabbro function VALUE (a fat `{ fn, env }` closure)
+                    // Only a genuine fels function VALUE (a fat `{ fn, env }` closure)
                     // is called through its env. A THIN `extern fn(...)` pointer and
                     // other raw callees (`@`-prefixed runtime fns) are called by
                     // their bare pointer — a direct indirect call.
@@ -4857,7 +4857,7 @@ const FunctionLowerer = struct {
 
     /// Compare a `[]const u8` subject to a string literal, byte by byte. The
     /// literal's bytes are read only inside a block guarded by a length match, so
-    /// a shorter subject is never read out of bounds (Gabbro's `&&` is eager).
+    /// a shorter subject is never read out of bounds (Fels's `&&` is eager).
     fn lowerStringEq(self: *FunctionLowerer, subject_in: Value, literal_raw: []const u8) LowerError!Value {
         const subject = try self.materializeStrOperand(subject_in);
         const lit = strlit.bytes(self.allocator, literal_raw);
@@ -5346,7 +5346,7 @@ const FunctionLowerer = struct {
     }
 
     /// Lower a `fn(...)` argument passed to an `#extern` C function as a THIN raw
-    /// function pointer (C cannot call gabbro's fat `{fn, env}` closure). Only a plain
+    /// function pointer (C cannot call fels's fat `{fn, env}` closure). Only a plain
     /// top-level function works — its signature matches C; a lambda/closure carries
     /// an environment, so it is rejected.
     fn lowerRawFnArg(self: *FunctionLowerer, value: ast.Expr) LowerError!Value {
@@ -6292,7 +6292,7 @@ fn isCoreOnlyBuiltin(name: []const u8) bool {
 /// be folded to a constant, letting the caller lower the operand for runtime
 /// instead (there is no AST tree-walker fallback).
 /// The capabilities of the compile-time code in one package's folder: what its `#use` line
-/// granted (`gabbro build` sets these from gabbro.pkg). Code outside every package folder runs
+/// granted (`fels build` sets these from fels.pkg). Code outside every package folder runs
 /// pure.
 pub const FolderCaps = struct {
     dir: []const u8,
@@ -6357,7 +6357,7 @@ pub const ComptimeVm = struct {
     /// names are drained here). Allocated on `arena`.
     removals: std.ArrayList([]const u8) = .empty,
     /// When set, pure scalar `#run` results are cached on disk under this dir
-    /// (enabled by the `GABBRO_CACHE` env var). See `vm/run_cache.zig`.
+    /// (enabled by the `FELS_CACHE` env var). See `vm/run_cache.zig`.
     run_cache_dir: ?[]const u8 = null,
     /// How errors are numbered, both in the code this VM runs and in the module `lowerModule`
     /// lowers alongside it, so the two agree.
@@ -7118,7 +7118,7 @@ pub fn hasFinalHook(module: ast.Module) bool {
 const compiler_hook_id_base: ast.NodeId = 500_000;
 
 /// Run every `#compiler` hook on the VM. Each hook is a `fn() -> []const u8`
-/// returning Gabbro source for top-level declarations; the concatenation of all
+/// returning Fels source for top-level declarations; the concatenation of all
 /// their outputs is returned (or null if there are no hooks). The pipeline then
 /// parses that source and adds the declarations to the module — this is how
 /// compile-time code GENERATES new top-level declarations (which `#insert`, a
@@ -8030,7 +8030,7 @@ const StaticInit = struct {
 
     /// A `#run` that yields a struct, array, enum or function pointer: evaluate it and read the
     /// result back as constant data of type `ty`. With no evaluator (the cache build that prepares
-    /// the VM, `gabbro check`) the value is `pending`: it cannot be known yet, and is not wrong.
+    /// the VM, `fels check`) the value is `pending`: it cannot be known yet, and is not wrong.
     fn buildRun(self: StaticInit, expr: ast.Expr, ty: IrType) LowerError!ConstInit {
         const c = self.cvm orelse return .pending;
         c.hook_error = null;
@@ -8301,7 +8301,7 @@ fn needsStaticInit(ty: IrType) bool {
 /// is evaluated on the comptime VM like any other constant, so it can use constants,
 /// `core::sizeof` / `align_of` / `offset_of`, and `#run`-able calls. Only the final
 /// lowering has an evaluator; the cache build that prepares the VM (`cvm == null`)
-/// skips it, and `gabbro check` (type-checking only) never reaches it.
+/// skips it, and `fels check` (type-checking only) never reaches it.
 fn checkStaticAssert(decl: ast.StaticAssertDecl, cvm: ?*ComptimeVm) LowerError!void {
     const c = cvm orelse return;
     c.current_file = decl.file_name;

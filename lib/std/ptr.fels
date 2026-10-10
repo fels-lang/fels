@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // std.ptr — pointer/address conversions and alignment arithmetic.
 //
-// Gabbro has no pointer-arithmetic operators (no `p + 1`); address math goes through
+// Fels has no pointer-arithmetic operators (no `p + 1`); address math goes through
 // usize and the unsafe cast / ptr_from_int intrinsics. This module names that dance
 // so call sites read as ptr.add_bytes / ptr.is_aligned instead of ad hoc unsafe casts.
 // Byte-stride ops (add_bytes/sub_bytes) work on raw addresses, so you pass the element

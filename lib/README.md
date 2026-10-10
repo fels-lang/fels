@@ -1,15 +1,15 @@
-# Gabbro Modules
+# Fels Modules
 
-This directory contains Gabbro's standard-library and future package modules.
+This directory contains Fels's standard-library and future package modules.
 
 The compiler resolves:
 
-```gabbro
+```fels
 #import std.mem;
 ```
 
 to `std/mem.fels` beneath its configured modules root. The compiler defaults to
-this sibling `gabbro-modules` directory; use `-Dstdlib-root=<path>` when building the
+this sibling `fels-modules` directory; use `-Dstdlib-root=<path>` when building the
 compiler to choose another location.
 
 ## std.mem
@@ -18,7 +18,7 @@ compiler to choose another location.
 an import-scoped extension method because its first value parameter is named
 `self`:
 
-```gabbro
+```fels
 #import std.mem.{copy, eql_bytes, fill, index_of, zero};
 
 copy(u8, destination, source);

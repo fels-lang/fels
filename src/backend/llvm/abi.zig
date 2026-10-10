@@ -1,8 +1,8 @@
 //! Win64 (x86_64-pc-windows-msvc) C ABI for passing/returning by-value
 //! aggregates across the `#extern`/`#foreign` boundary.
 //!
-//! Gabbro's own calls pass structs as first-class LLVM aggregate values, which is
-//! self-consistent for Gabbro↔Gabbro code. But the platform C ABI is *not* what LLVM
+//! Fels's own calls pass structs as first-class LLVM aggregate values, which is
+//! self-consistent for Fels↔Fels code. But the platform C ABI is *not* what LLVM
 //! does with a raw `%Struct` value parameter — the front-end (here) must lower
 //! aggregates to the ABI representation, exactly as Clang does. Without this,
 //! every C function that takes/returns a struct by value (raylib's `Color`,
@@ -19,8 +19,8 @@
 //! correct — that is precisely how `Vector2` reaches `DrawCircleV`.
 //!
 //! Scope: this applies only to functions with `extern_name` set (pure external
-//! declarations, never defined here) and to their call sites. Gabbro↔Gabbro calls and
-//! Gabbro's internal aggregates (slices, optionals, fallibles, interfaces) are
+//! declarations, never defined here) and to their call sites. Fels↔Fels calls and
+//! Fels's internal aggregates (slices, optionals, fallibles, interfaces) are
 //! untouched. Exposing struct-passing `#export` functions to C (callee-side
 //! prologue reconstruction) is a separate, later step.
 
@@ -43,7 +43,7 @@ pub const Class = union(enum) {
 
 pub const ParamAbi = struct {
     class: Class,
-    /// The original Gabbro parameter type (used to lower `direct` params normally
+    /// The original Fels parameter type (used to lower `direct` params normally
     /// and to recover the `%Struct` LLVM type for coerced/indirect ones).
     ir_ty: ir.IrType,
     /// The named `%Struct` LLVM type, when `class` is `.coerce`/`.indirect`.
@@ -74,7 +74,7 @@ fn sizeOf(cg: *ModuleCg, ty: llvm.LLVMTypeRef) u64 {
     return llvm.LLVMABISizeOfType(cg.targetData(), ty);
 }
 
-/// Classify a single Gabbro type. Only named `struct` types are C aggregates; every
+/// Classify a single Fels type. Only named `struct` types are C aggregates; every
 /// other type (including slices/optionals/etc., which never appear in a sane C
 /// signature) passes through `.direct`, preserving today's behavior.
 fn classify(cg: *ModuleCg, ty: ir.IrType) Class {
@@ -140,7 +140,7 @@ pub fn externFnType(cg: *ModuleCg, func: ir.IrFunction, sig: FnAbi) !llvm.LLVMTy
     for (sig.params) |p| {
         tys[n] = switch (p.class) {
             // A `fn(...)` param at the C boundary is a THIN function pointer, not
-            // gabbro's fat `{fn, env}` closure — C expects a bare pointer.
+            // fels's fat `{fn, env}` closure — C expects a bare pointer.
             .direct => if (p.ir_ty == .fn_ptr) ptr_ty else types.lower(cg, p.ir_ty),
             .coerce => |bits| llvm.LLVMIntTypeInContext(cg.ctx, bits),
             .indirect => ptr_ty,
@@ -167,7 +167,7 @@ pub fn applyAbiAttrs(cg: *ModuleCg, lv: llvm.LLVMValueRef, sig: FnAbi) void {
     };
 }
 
-/// Mark parameter 0 of a Gabbro function that returns through memory as `sret(ty) noalias`
+/// Mark parameter 0 of a Fels function that returns through memory as `sret(ty) noalias`
 /// (see `types.returnsIndirect`).
 pub fn markSret(cg: *ModuleCg, lv: llvm.LLVMValueRef, ty: llvm.LLVMTypeRef) void {
     addTypeAttr(cg, lv, 1, "sret", ty);

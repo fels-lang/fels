@@ -54,7 +54,7 @@ pub fn lower(cg: *ModuleCg, ty: ir.IrType) llvm.LLVMTypeRef {
         // All other pointer-like types are opaque `ptr` (LLVM 15+).
         .ptr => llvm.LLVMPointerTypeInContext(ctx, 0),
 
-        // A gabbro function value is a fat closure `{ fn, env }`; a THIN `extern fn(...)`
+        // A fels function value is a fat closure `{ fn, env }`; a THIN `extern fn(...)`
         // pointer (a raw C-ABI address) is a bare pointer.
         .fn_ptr => |fp| if (fp.thin) llvm.LLVMPointerTypeInContext(ctx, 0) else cg.getClosureType(),
 
@@ -94,7 +94,7 @@ pub fn lowerSlice(cg: *ModuleCg, tys: []const ir.IrType) ![]llvm.LLVMTypeRef {
 /// Fallible functions (!T) get return type { T, i32 } where i32 is the error discriminant.
 pub fn fnType(cg: *ModuleCg, func: ir.IrFunction) !llvm.LLVMTypeRef {
     // At the C (`#extern`) boundary a `fn(...)` param/return is a THIN function
-    // pointer, not gabbro's fat `{fn, env}` closure (C cannot call a closure).
+    // pointer, not fels's fat `{fn, env}` closure (C cannot call a closure).
     const is_extern = func.extern_name != null;
     const param_tys = try cg.allocator.alloc(llvm.LLVMTypeRef, func.params.len);
     defer cg.allocator.free(param_tys);
@@ -115,7 +115,7 @@ pub fn fnType(cg: *ModuleCg, func: ir.IrFunction) !llvm.LLVMTypeRef {
 /// Aggregates larger than this many bytes are returned through a hidden `sret` pointer.
 const indirect_return_bytes = 128;
 
-/// Whether a Gabbro function returning `ret_lty` takes a hidden leading `ptr sret` parameter
+/// Whether a Fels function returning `ret_lty` takes a hidden leading `ptr sret` parameter
 /// and returns `void`. A large array or struct returned as an LLVM value is split by the x86
 /// code generator into one piece per element, and that takes time superlinear in the element
 /// count (15 s for a `[4096]u32`); returned through memory it is one copy. The machine-level

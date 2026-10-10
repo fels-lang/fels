@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.build — Gabbro's build system. A project's build.fels defines `build :: fn(b: Build)`.
-// `gabbro build` runs it in the comptime VM; each builder call records into the build
+// std.build — Fels's build system. A project's build.fels defines `build :: fn(b: Build)`.
+// `fels build` runs it in the comptime VM; each builder call records into the build
 // plan via a __build_* intrinsic, then the driver compiles + links each artifact with
-// gabld.
+// felsld.
 //
 //   build :: fn(b: Build) {
 //       b.workspace("my-game");
@@ -22,7 +22,7 @@
 pub Build    :: struct { id: i32 }
 pub Artifact :: struct { id: i32 }
 
-// A named step: `gabbro build <name>` builds its artifacts, runs the steps it comes after,
+// A named step: `fels build <name>` builds its artifacts, runs the steps it comes after,
 // then its actions in order. Paths are relative to build.fels.
 //
 //   assets := b.step("assets", "copy the assets next to the game");
@@ -78,7 +78,7 @@ pub Command :: struct {
     // The working directory, relative to build.fels (default: build.fels's folder).
     pub cwd :: fn(self: Command, dir: []const u8) { __build_command_cwd(self.id, dir); }
 
-    // An environment variable, on top of the environment gabbro build runs in.
+    // An environment variable, on top of the environment fels build runs in.
     pub env :: fn(self: Command, key: []const u8, value: []const u8) { __build_command_env(self.id, key, value); }
 }
 
@@ -161,12 +161,12 @@ pub link_flag :: fn(self: Artifact, flag: []const u8) {
 
 // Link the host's libc — the portable "I need a C runtime" switch. Needed when
 // linking a C library that calls into libc (e.g. a static raylib.lib using
-// malloc/free, which Gabbro's libc-less link doesn't provide). Resolved per host:
+// malloc/free, which Fels's libc-less link doesn't provide). Resolved per host:
 //   Windows → the UCRT (malloc/free/…) + VC runtime (__chkstk/…); the matching
 //             search paths are added automatically.
 //   Linux   → glibc: a dynamically-linked `libc.so.6` and the glibc entry point,
 //             so `#extern("c", …)` resolves and the C runtime is initialized.
-// (Same as `gabbro build --libc`, and the CLI `--libc` / `--target *-gnu` for a
+// (Same as `fels build --libc`, and the CLI `--libc` / `--target *-gnu` for a
 //  single-file build.)
 pub link_libc :: fn(self: Artifact) {
     __build_link_libc(self.id);
@@ -197,7 +197,7 @@ pub runtime_file :: fn(self: Artifact, path: []const u8) {
     __build_runtime_file(self.id, path);
 }
 
-// When a static C library is linked, Gabbro honors that library's OWN `/DEFAULTLIB`
+// When a static C library is linked, Fels honors that library's OWN `/DEFAULTLIB`
 // directives by default, so its system dependencies (opengl32, gdi32, winmm, …)
 // are pulled in automatically — you don't list them. Call `no_default_libs()` to
 // opt out: keep the strict, minimal-runtime linking and specify every system
@@ -256,7 +256,7 @@ pub description :: fn(self: Artifact, text: []const u8) {
     __build_description(self.id, text);
 }
 
-// Mark this artifact for `gabbro build install`, which builds it and copies it into the
+// Mark this artifact for `fels build install`, which builds it and copies it into the
 // install prefix: programs and DLLs to bin/, static and import libraries to lib/.
 pub install :: fn(self: Artifact) {
     __build_install(self.id);
@@ -314,8 +314,8 @@ pub workspace :: fn(self: Build, name: []const u8) {
     __build_workspace(name);
 }
 
-// Where `gabbro build install` copies to, relative to build.fels (default "dist").
-// `gabbro build install --prefix <dir>` overrides it.
+// Where `fels build install` copies to, relative to build.fels (default "dist").
+// `fels build install --prefix <dir>` overrides it.
 pub install_prefix :: fn(self: Build, dir: []const u8) {
     __build_install_prefix(dir);
 }
@@ -340,10 +340,10 @@ pub summary :: fn(self: Build) {
     __build_summary(1);
 }
 
-// Build options (`gabbro build -Dname` / `-Dname=value`)
+// Build options (`fels build -Dname` / `-Dname=value`)
 //
-// Each option is declared where the script reads it. `gabbro build --list` shows every
-// declared option with its help text and default, and `gabbro build` stops with an error
+// Each option is declared where the script reads it. `fels build --list` shows every
+// declared option with its help text and default, and `fels build` stops with an error
 // for a `-D` option the script does not declare or a value of the wrong kind.
 //
 //   threads := b.option_int("threads", 4, "worker threads in the pool");
@@ -383,7 +383,7 @@ pub option_str :: fn(self: Build, name: []const u8, default: []const u8) -> []co
 
 // Steps & default
 
-// A run step: `gabbro build <name>` builds `target`, then runs it with the arguments
+// A run step: `fels build <name>` builds `target`, then runs it with the arguments
 // given after `--`. The returned command takes more arguments, a cwd and env.
 pub run_step :: fn(self: Build, name: []const u8, target: Artifact) -> Command {
     return .{ __build_run_step(name, target.id) };
@@ -404,7 +404,7 @@ b_step :: fn(name: []const u8) -> Step {
     return .{ __build_step(name, "") };
 }
 
-// What a bare `gabbro build` runs: this step instead of the default artifact.
+// What a bare `fels build` runs: this step instead of the default artifact.
 pub default_step :: fn(self: Build, step: Step) {
     __build_default_step(step.id);
 }
@@ -419,7 +419,7 @@ pub test_dir :: fn(self: Build, name: []const u8, dir: []const u8) {
     __build_test_dir(name, dir);
 }
 
-// Set which artifact bare `gabbro build` produces.
+// Set which artifact bare `fels build` produces.
 pub default :: fn(self: Build, target: Artifact) {
     __build_set_default(target.id);
 }
