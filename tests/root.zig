@@ -33,4 +33,5 @@ comptime {
     _ = @import("compiler/compiler_hook.zig");
     _ = @import("compiler/build_system.zig");
     _ = @import("compiler/packages.zig");
+    _ = @import("compiler/test_cmd.zig");
 }
