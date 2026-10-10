@@ -20,6 +20,27 @@ the major version is `0`, any minor bump may break source compatibility.
   of `==` or `!=`, and a name the enum does not have is an error.
 - A bare variant as an element of an array or slice literal (`a: [3]Color = .{ .red, .green, .blue }`)
   or as a field default (`color: Color = .green`) stored an undefined value.
+### Fixed
+
+- **An integer literal stored into a type other than `i32` had the wrong width.** `k: i64 = -5;`
+  gave `k != -5`, `e: i8 = -128;` wrote four bytes into its one byte slot, and
+  `big: u64 = 1 << 40;` stored 0, at every optimisation level and in the comptime VM. A negated
+  literal and arithmetic on literals were computed and stored as an `i32` whatever type they were
+  given. They now take that type in a typed declaration or global, an assignment, a struct or
+  array literal, a call argument, a return value, a comparison with a typed operand, a cast
+  (`(1 << 40) as u64`, `0xFFFFFFFF as u64`) and the default of a generic struct's field. In
+  `5 + big` the literal takes the type of `big` (the expression was an untyped literal, so
+  `x := 5 + big` made `x` an `i32`), and in `1 << b` with `b: u8` the shift is no longer done in
+  8 bits.
+- **An array whose length was a constant computed at compile time was empty.** With
+  `N :: #run four();` (or `N :: four();`), `a: [N]i32 = .{ 1, 2, 3, 4 };` was a zero length array
+  and `a[3]` panicked at run time; the same held for a global, a parameter and a struct field.
+  Such a constant is now computed by the comptime VM before the type check that sizes the array.
+  A part that could not be folded no longer counts as 0 either (`(#run four()) + 1` was 1), and a
+  length that is negative or not an integer is an error.
+- **An array literal with more elements than its array was accepted.** `x: [3]i32 = .{ 1, 2, 3, 4 };`
+  dropped the fourth element without a word; it is now an error that names the array type
+  (messages about an array type used to print it as `T`). A shorter literal is still zero filled.
 
 ## 0.3.0 — 2026-10-10
 
