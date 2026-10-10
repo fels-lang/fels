@@ -1719,6 +1719,18 @@ fn tyText(v: *const View, ty: Ty, hint: ?ast.TypeRef) []const u8 {
     return o.list.items;
 }
 
+/// In `recv.name(...)` the receiver fills the first value parameter (`self`), and a type
+/// parameter with a constraint is inferred: neither is written in the call.
+fn notWrittenInMethodCall(constraints: []const ast.TypeConstraint, name: []const u8, is_type_param: bool, receiver_done: *bool) bool {
+    if (is_type_param) {
+        for (constraints) |tc| if (std.mem.eql(u8, tc.param, name)) return true;
+        return false;
+    }
+    if (receiver_done.*) return false;
+    receiver_done.* = true;
+    return true;
+}
+
 /// `(a: i32, b: i32) -> i32 ! Err` of a callable. The byte ranges of the parameters are
 /// appended to `ranges` when it is given.
 fn renderParams(v: *const View, o: *Out, c: Callable, ranges: ?*std.ArrayList([2]usize)) void {
@@ -1727,9 +1739,10 @@ fn renderParams(v: *const View, o: *Out, c: Callable, ranges: ?*std.ArrayList([2
     if (c.owner) |ow| o.subst = substFor(v, ow);
     o.s("(");
     var n: usize = 0;
+    var receiver_done = false;
     if (c.decl) |d| {
-        for (d.params, 0..) |p, i| {
-            if (i == 0 and c.drop_self and std.mem.eql(u8, p.name, "self")) continue;
+        for (d.params) |p| {
+            if (c.drop_self and notWrittenInMethodCall(d.type_constraints, p.name, p.is_type_param, &receiver_done)) continue;
             if (n > 0) o.s(", ");
             const st = o.len();
             if (p.is_type_param) {
@@ -1759,8 +1772,8 @@ fn renderParams(v: *const View, o: *Out, c: Callable, ranges: ?*std.ArrayList([2
         return;
     }
     if (c.iface) |m| {
-        for (m.params, 0..) |p, i| {
-            if (i == 0 and c.drop_self and std.mem.eql(u8, p.name, "self")) continue;
+        for (m.params) |p| {
+            if (c.drop_self and notWrittenInMethodCall(&.{}, p.name, p.is_type_param, &receiver_done)) continue;
             if (n > 0) o.s(", ");
             const st = o.len();
             o.s(p.name);
@@ -1902,8 +1915,12 @@ fn expectedEnum(v: *const View, ctx: EnumCtx, code: []const u8, pos: usize) ?Sym
 /// The type of the parameter at argument index `index` of a call.
 fn paramType(v: *const View, c: Callable, index: usize) ?Ty {
     var params: []const sema.ParamSig = &.{};
+    var constraints: []const ast.TypeConstraint = &.{};
     if (c.sym) |id| {
-        if (v.env.fn_sigs.get(id)) |sig| params = sig.params;
+        if (v.env.fn_sigs.get(id)) |sig| {
+            params = sig.params;
+            constraints = sig.type_constraints;
+        }
     } else if (c.iface) |m| {
         params = m.params;
     } else if (c.fn_ty) |t| switch (t) {
@@ -1911,8 +1928,9 @@ fn paramType(v: *const View, c: Callable, index: usize) ?Ty {
         else => return null,
     };
     var i: usize = 0;
-    for (params, 0..) |p, k| {
-        if (k == 0 and c.drop_self and std.mem.eql(u8, p.name, "self")) continue;
+    var receiver_done = false;
+    for (params) |p| {
+        if (c.drop_self and notWrittenInMethodCall(constraints, p.name, p.is_type_param, &receiver_done)) continue;
         if (i == index) return p.ty;
         i += 1;
     }
