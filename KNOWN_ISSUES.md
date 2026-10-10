@@ -19,21 +19,14 @@ These compile without a message and give a wrong result.
   variant takes the enum type of the other operand (either side), and a name the enum does not have
   is an error. The same `undef` came from a bare variant in an array or slice literal and in a field
   default (`color: Color = .green`); fixed in `1baae6b`.
-- **An array whose length comes from a `#run` constant is empty.** Verified. With
-  `N :: #run four();`, `a: [N]i32 = .{ 1, 2, 3, 4 };` becomes a zero length array and the program
-  panics at run time.
 - ~~Returning `&local` or `&5` gives a dangling pointer.~~ Fixed in `1f2583b`: returning the
   address of a local, a parameter or a temporary is an error (docs/02, "Single Pointers"). Not
   checked yet: a slice of a local array (`return buf[:]`, which a function that `#run` calls uses
   to return bytes), an address passed through a call, and an address stored into a global or
   through a pointer.
-- **`p == .green` on a plain enum compares against `undef`.** Verified. With
-  `Color :: enum { red, green, blue }` and `p := Color.green`, `p == .green` is false; the result
-  changes with the optimisation level.
 - ~~An array whose length comes from a `#run` constant is empty.~~ Fixed (see `## Unreleased` in
   CHANGELOG.md): the comptime VM computes such a constant and the type check runs again with it;
   an array literal with more elements than its array is now an error.
-- **Returning `&local` or `&5` gives a dangling pointer.** Reported. Neither is checked.
 
 ## 2. Compiler crashes and missing messages
 
