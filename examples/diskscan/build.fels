@@ -1,10 +1,10 @@
 // Build script for diskscan — a fast, multithreaded disk-usage analyzer with a
 // native Win32 GUI. Two artifacts share one scanner:
 //
-//   gabbro build              build both (CLI + GUI) into ./out, release
-//   gabbro build run          build + run the CLI on the current directory
-//   gabbro build gui          build + launch the GUI
-//   gabbro build -Ddebug      unoptimized build with safety checks
+//   fels build              build both (CLI + GUI) into ./out, release
+//   fels build run          build + run the CLI on the current directory
+//   fels build gui          build + launch the GUI
+//   fels build -Ddebug      unoptimized build with safety checks
 //
 #import std.build.{ Build, Optimize, executable, optimize, release, debug,
                     subsystem, console, windowed, version, description,
@@ -34,9 +34,9 @@ build :: fn(b: Build) {
     gui.install();
 
     // steps
-    // No `default` is set, so a bare `gabbro build` builds *both* artifacts; the
+    // No `default` is set, so a bare `fels build` builds *both* artifacts; the
     // named steps build-and-run one of them.
-    b.run_step("run", cli);     // gabbro build run   → CLI on the current dir
-    b.run_step("gui", gui);     // gabbro build gui   → launch the GUI
+    b.run_step("run", cli);     // fels build run   → CLI on the current dir
+    b.run_step("gui", gui);     // fels build gui   → launch the GUI
     b.summary();
 }

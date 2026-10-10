@@ -1,6 +1,6 @@
 #import std.io;
 
 main :: fn() -> i32 {
-    io::println("hello from gabbro build!");
+    io::println("hello from fels build!");
     return 7;
 }

@@ -1,4 +1,4 @@
-// Example project build script. Run with `gabbro build` (once dir-mode lands).
+// Example project build script. Run with `fels build` (once dir-mode lands).
 // See docs/10_build_system.md for the full design.
 
 #import std.build.{ Build, executable, shared, release, debug, link, lib_path,
@@ -23,10 +23,10 @@ build :: fn(b: Build) {
     logic.debug();
     logic.output("bin/logic.dll");
 
-    // Steps: `gabbro build run`, `gabbro build test`.
+    // Steps: `fels build run`, `fels build test`.
     b.run_step("run", game);
     b.test_dir("test", "tests/");
 
-    // What bare `gabbro build` produces.
+    // What bare `fels build` produces.
     b.default(game);
 }

@@ -3,6 +3,6 @@
 build :: fn(b: Build) {
     app := b.executable("ecs_game", "src/main.fels");
     app.release();
-    b.run_step("run", app);   // gabbro build run
+    b.run_step("run", app);   // fels build run
     b.default(app);
 }

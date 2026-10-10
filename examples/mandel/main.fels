@@ -1,7 +1,7 @@
 // mandel.fels — a Mandelbrot set that is finished before the program starts.
 //
 // `render` never runs in the built binary. It runs on the comptime VM, and what
-// it returns is Gabbro source: one `println` per row. `#insert #parse` splices
+// it returns is Fels source: one `println` per row. `#insert #parse` splices
 // that back in, so `main` ends up holding the picture, not the maths.
 
 #import std.heap.{ Arena, make };
@@ -32,7 +32,7 @@ escape :: fn(cx: f64, cy: f64) -> i32 {
     return 0;
 }
 
-// Runs on the comptime VM. Returns Gabbro source code, not a picture.
+// Runs on the comptime VM. Returns Fels source code, not a picture.
 render :: fn() -> []const u8 {
     a := make();
     sb := strings::builder(&a);

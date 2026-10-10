@@ -5,7 +5,7 @@ puts functions **and data** in its export table under the names you gave, and a
 foreign process can resolve them and use them.
 
 ```
-gabbro build
+fels build
 ```
 
 Verified with `llvm-readobj --coff-exports`:
@@ -48,7 +48,7 @@ A CLAP or VST3 plugin's entry point is an exported **data** symbol —
 `extern const clap_plugin_entry_t clap_entry;` — a static struct of version numbers and
 function pointers that the host reads and calls through. `gab_entry` is that shape:
 
-```gabbro
+```fels
 #export("gab_entry")
 ENTRY: PluginEntry = .{ .{ 1u32, 2u32, 0u32 }, plugin_init, plugin_scale, plugin_deinit };
 ```

@@ -1,8 +1,8 @@
 # diskscan
 
-A fast, multithreaded disk-usage analyzer for Windows — written in **gabbro**, with
+A fast, multithreaded disk-usage analyzer for Windows — written in **fels**, with
 both a command-line tool and a native Win32 GUI browser. Think WinDirStat, but a
-few hundred lines of gabbro and no dependencies.
+few hundred lines of fels and no dependencies.
 
 ```
 out/diskscan      [dir]     scan, print the biggest items + throughput  (console)
@@ -13,19 +13,19 @@ out/diskscan-gui  [dir]     browse the tree, recycle what you don't want (window
 
 ## Build
 
-Built entirely with the gabbro build system (`build.fels`):
+Built entirely with the fels build system (`build.fels`):
 
 ```
-gabbro build            # build both exes into ./out (release)
-gabbro build run        # build + run the CLI on the current directory
-gabbro build gui        # build + launch the GUI
-gabbro build -Ddebug    # unoptimized build with safety checks
+fels build            # build both exes into ./out (release)
+fels build run        # build + run the CLI on the current directory
+fels build gui        # build + launch the GUI
+fels build -Ddebug    # unoptimized build with safety checks
 ```
 
 ## What makes it fast
 
 A full `C:` scan here is ~2.6 M files / 1.8 TB. The language is never the
-bottleneck — gabbro compiles to native code through LLVM, so the cost is the OS's
+bottleneck — fels compiles to native code through LLVM, so the cost is the OS's
 directory enumeration. diskscan pulls two levers to minimize that cost:
 
 1. **Bulk directory reads.** Instead of `FindNextFile` (one entry per syscall),
