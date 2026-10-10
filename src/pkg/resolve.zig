@@ -308,8 +308,7 @@ pub fn resolve(
                 if (from.caps != null) " The package that uses it can only pass on what it was granted itself." else "",
             });
         }
-        const root_rel = pkg.manifest.root orelse if (fetch.exists(io, std.fs.path.join(a, &.{ pkg.dir, "src" }) catch return error.OutOfMemory)) "src" else ".";
-        pkg.import_dir = std.fs.path.resolve(a, &.{ pkg.dir, root_rel }) catch return error.OutOfMemory;
+        pkg.import_dir = try importDir(a, io, pkg.dir, pkg.manifest);
         packages.append(a, pkg) catch return error.OutOfMemory;
 
         if (read) |r| {
@@ -321,6 +320,13 @@ pub fn resolve(
     // Left-out packages keep their fels.lock line.
     for (missing.items) |name| if (old_lock.find(name)) |e| lock.put(a, e) catch return error.OutOfMemory;
     return .{ .packages = packages.items, .lock = lock, .lock_changed = !sameLock(old_lock, lock), .missing = missing.items };
+}
+
+/// The folder `#import <name>` reads from for the package in `dir`: its `#root`, else `src/`
+/// when there is one, else the folder itself.
+fn importDir(a: std.mem.Allocator, io: std.Io, dir: []const u8, m: Manifest) ResolveError![]const u8 {
+    const rel = m.root orelse if (fetch.exists(io, std.fs.path.join(a, &.{ dir, "src" }) catch return error.OutOfMemory)) "src" else ".";
+    return std.fs.path.resolve(a, &.{ dir, rel }) catch return error.OutOfMemory;
 }
 
 fn sameLock(x: lock_mod.Lock, y: lock_mod.Lock) bool {
