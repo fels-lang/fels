@@ -11,20 +11,17 @@ The core does **not** bundle `libclang` (81 MB) — `gabbro bindgen` loads it on
 and ships as a separate optional component (`gabbro-bindgen-<ver>-<target>.zip`). See
 [docs/19_distribution.md](docs/19_distribution.md) for the full model.
 
-## One-time CI setup
+## LLVM in CI
 
-The build needs an LLVM prebuilt that ships **LLVM-C + libclang + headers** (the
-same one used locally). CI can't fetch that automatically, so configure:
+The workflows download the official LLVM release for Windows from llvm.org
+(`clang+llvm-<version>-x86_64-pc-windows-msvc.tar.xz`, about 820 MB) with the
+`.github/actions/setup-llvm` action. It keeps only the files the build, the tests and
+`package.ps1` use (about 690 MB unpacked instead of 3.9 GB) and caches them, so later
+runs skip the download. No secret or repo variable is needed.
 
-| Kind | Name | Value |
-| --- | --- | --- |
-| Repo **secret** | `LLVM_URL` | A downloadable archive of your LLVM (`.7z`/`.zip`) |
-| Repo **variable** | `LLVM_AVAILABLE` | `true` (gates the LLVM-dependent jobs on) |
-| Repo **variable** | `LLVM_VERSION` | optional — bump to invalidate the LLVM cache |
-
-Until `LLVM_AVAILABLE=true`, the LLVM jobs are skipped and the fast `check` lane
-(build + the LLVM-independent suite, incl. the 74-case VM corpus) still gates
-every PR. Adjust the extractor in the workflows if your archive isn't `.7z`.
+To move to a new LLVM, change the `version` default in `.github/actions/setup-llvm/action.yml`.
+If the build starts to need another LLVM file, add it to the list in that action and bump
+the `files` number in its cache key. `mlugg/setup-zig@v2` caches the Zig cache of each job.
 
 ## Workflows
 
@@ -44,6 +41,12 @@ git tag v0.1.0-beta.1 && git push origin v0.1.0-beta.1   # → pre-release
 git tag v0.1.0        && git push origin v0.1.0           # → stable release
 ```
 
+- The release notes are the section of `CHANGELOG.md` for that version (`## 0.3.1 ...`), so
+  rename `## Unreleased` to the version before tagging. A pre-release without its own section
+  uses `## Unreleased`.
+- The workflow smoke tests the archive (builds and runs a small program) before it publishes.
+- To try the whole build without publishing, run the Release workflow by hand (Actions >
+  Release > Run workflow). The archives are kept as workflow artifacts.
 - A tag with a SemVer pre-release part (anything after `-`) publishes as a GitHub
   **pre-release**; a bare `vMAJOR.MINOR.PATCH` publishes as a full release.
 - The reported version (and release name) carries `+<git-sha>` build metadata for
@@ -63,8 +66,7 @@ pwsh scripts/package.ps1 -LlvmPath <your-llvm-dir> [-Version 0.1.0-beta.1]
 
 The core archive carries `install.ps1` (Windows); the Linux/macOS archives carry
 `install.sh`. Both copy the layout to a stable prefix and wire up `PATH` +
-`GABBRO_HOME`. The release/nightly workflows publish both the core and the bindgen
-component as assets.
+`GABBRO_HOME`. The release and nightly workflows publish all three archives as assets.
 
 > Heads-up: an aggressive behavioral AV (e.g. G DATA DeepRay) may quarantine the
 > freshly built `gabbro.exe` or kill the packaging process — a compiler emitting fresh
