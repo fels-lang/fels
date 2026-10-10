@@ -1,0 +1,190 @@
+// `expr?` leaves the function with the error the way `fail` does: before it returns, the cleanups
+// of every scope being left run -- a plain `defer`, a `defer.err`, the exit of an enclosing `zone`
+// -- and a `defer.ok` does not. Only the defers registered before the `?` exist yet, and they run
+// last-registered first. This was not so: the code generator returned straight out of the function
+// and skipped them all, so `defer close(file)` leaked on the error path it exists for.
+//
+// Each check logs a letter code per cleanup into g_log and compares the log with the order that
+// must result. The same functions run on the comptime VM (#assert at the bottom), where `?` was
+// not supported at all. Returns 42 when everything holds; any other value names the failed check.
+
+Err :: errors { bad, worse }
+
+g_log: [32]u8 = .{};
+g_n: u32 = 0u32;
+g_calls: u32 = 0u32;
+
+note :: fn(c: u8) { g_log[g_n as usize] = c; g_n += 1u32; }
+clear :: fn() { g_n = 0u32; g_calls = 0u32; }
+log_is :: fn(want: []const u8) -> bool {
+    if (g_n as usize) != want.len { return false; }
+    i: usize = 0usize;
+    while i < want.len {
+        if g_log[i] != want[i] { return false; }
+        i += 1usize;
+    }
+    return true;
+}
+
+// 1 when it succeeds; fails with .bad
+step :: fn(fail_it: bool) -> i32 ! Err {
+    g_calls += 1u32;
+    if fail_it { fail .bad; }
+    return 1;
+}
+// fails with .worse
+step_worse :: fn() -> i32 ! Err { fail .worse; }
+
+// ---- defers registered before the `?` run on it, last first; later ones do not exist yet ----
+ordered :: fn(fail_second: bool) -> i32 ! Err {
+    defer { note(1u8); }
+    a := step(false)?;
+    defer { note(2u8); }
+    b := step(fail_second)?;
+    defer { note(3u8); }
+    return a + b;
+}
+
+// ---- `?` as a statement, and in other expressions ----
+as_statement :: fn() -> i32 ! Err {
+    defer { note(1u8); }
+    step(true)?;
+    return 7;
+}
+add :: fn(a: i32, b: i32) -> i32 { g_calls += 100u32; return a + b; }
+as_argument :: fn(fail_second: bool) -> i32 ! Err {
+    defer { note(1u8); }
+    return add(step(false)?, step(fail_second)?);       // `add` is not called when either `?` fails
+}
+in_condition :: fn(fail_it: bool) -> i32 ! Err {
+    defer { note(1u8); }
+    if step(fail_it)? > 0 { return 5; }
+    return 6;
+}
+
+// ---- in a loop: the defer of the iteration that fails runs, with those of earlier ones ----
+looped :: fn(fail_on: i32) -> i32 ! Err {
+    total := 0;
+    i := 0;
+    while i < 5 {
+        defer { note(4u8); }
+        i += 1;
+        if i == 2 { continue; }
+        total += step(i == fail_on)?;
+    }
+    return total;
+}
+
+// ---- which defers run on the error path, which on the success path ----
+modes :: fn(fail_it: bool) -> i32 ! Err {
+    defer { note(1u8); }
+    defer.ok { note(2u8); }
+    defer.err { note(3u8); }
+    v := step(fail_it)?;
+    return v;
+}
+
+// ---- the error itself arrives unchanged ----
+passes_on :: fn() -> i32 ! Err {
+    defer { note(1u8); }
+    v := step_worse()?;
+    return v;
+}
+two_levels :: fn() -> i32 ! Err {
+    defer { note(2u8); }
+    v := passes_on()?;
+    return v;
+}
+
+// ---- a `zone` is left through `?` as it is through `fail` ----
+zoned :: fn(fail_it: bool) -> i32 ! Err {
+    zone a: Arena {
+        defer { note(5u8); }
+        buf := a.new_slice(u8, 64);
+        buf[0] = 7u8;
+        v := step(fail_it)?;
+        return v + (buf[0] as i32);
+    }
+}
+
+// ---- at compile time (no global writes there: static data is read-only for the VM) ----
+cstep :: fn(fail_it: bool) -> i32 ! Err {
+    if fail_it { fail .bad; }
+    return 1;
+}
+sum_two :: fn() -> i32 ! Err {
+    a := cstep(false)?;
+    b := cstep(false)?;
+    return a + b;
+}
+sum_then_fail :: fn() -> i32 ! Err {
+    a := cstep(false)?;
+    b := cstep(true)?;
+    return a + b;
+}
+ct_ok :: fn() -> i32 { r := sum_two() catch e { return -1; }; return r; }
+ct_err :: fn() -> i32 { r := sum_then_fail() catch e { return -1; }; return r; }
+#assert(ct_ok() == 2, "? on the success path, at compile time");
+#assert(ct_err() == -1, "? propagating an error, at compile time");
+
+#entry
+main :: fn() -> i32 {
+    clear();
+    r := ordered(true) ?? -1;
+    if r != -1 || !log_is(.{ 2u8, 1u8 }) { return 1; }               // 3 was never registered
+    clear();
+    r = ordered(false) ?? -2;
+    if r != 2 || !log_is(.{ 3u8, 2u8, 1u8 }) { return 2; }           // the normal exit: all three, last first
+    clear();
+
+    as_statement() catch e { };
+    if !log_is(.{ 1u8 }) { return 3; }
+    clear();
+    r = as_argument(true) ?? -1;
+    if r != -1 || !log_is(.{ 1u8 }) || g_calls != 2u32 { return 4; } // both steps ran, `add` did not (100)
+    clear();
+    r = as_argument(false) ?? -1;
+    if r != 2 || g_calls != 102u32 { return 5; }
+    clear();
+    r = in_condition(true) ?? -1;
+    if r != -1 || !log_is(.{ 1u8 }) { return 6; }
+    clear();
+    r = in_condition(false) ?? -1;
+    if r != 5 || !log_is(.{ 1u8 }) { return 7; }                     // the defer also runs on the way out normally
+    clear();
+
+    r = looped(4) ?? -1;
+    if r != -1 || !log_is(.{ 4u8, 4u8, 4u8, 4u8 }) { return 8; }     // iterations 1, 2, 3 and the failing 4th
+    clear();
+    r = looped(0) ?? -1;
+    if r != 4 || g_n != 5u32 { return 9; }                           // no failure: five iterations, five defers
+    clear();
+
+    r = modes(true) ?? -1;
+    if r != -1 || !log_is(.{ 3u8, 1u8 }) { return 10; }              // defer.err and defer; not defer.ok
+    clear();
+    r = modes(false) ?? -1;
+    if r != 1 || !log_is(.{ 2u8, 1u8 }) { return 11; }               // defer.ok and defer; not defer.err
+    clear();
+
+    saw_worse := false;
+    two_levels() catch e { if e == .worse { saw_worse = true; } };
+    if !saw_worse || !log_is(.{ 1u8, 2u8 }) { return 12; }           // innermost cleanup first, then the caller's
+    clear();
+
+    r = zoned(true) ?? -1;
+    if r != -1 || !log_is(.{ 5u8 }) { return 13; }
+    clear();
+    r = zoned(false) ?? -2;
+    if r != 8 || !log_is(.{ 5u8 }) { return 14; }
+
+    // leaving a zone through `?` many times must not run out of memory or corrupt the stack
+    k := 0;
+    while k < 2000 {
+        clear();
+        zoned(true) catch e { };
+        k += 1;
+    }
+    if !log_is(.{ 5u8 }) { return 15; }
+    return 42;
+}

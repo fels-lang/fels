@@ -3277,11 +3277,28 @@ const FunctionLowerer = struct {
             },
             .try_expr => |try_expr| blk: {
                 const value = try self.lowerExpr(try_expr.value.*);
-                const with_context = try self.emit(self.exprType(try_expr.value.*), .{ .builtin = .{
-                    .name = "try_context",
-                    .args = try self.allocator.dupe(Value, &.{value}),
-                } });
-                break :blk try self.emit(self.exprType(expr), .{ .try_ok = with_context });
+                // `expr?` leaves the function with the error when `expr` failed, so it is lowered as
+                // `fail` is: the cleanups of every scope being left run first, the `defer`s that run
+                // on an error and the exit of an enclosing `zone`. (The code generator used to emit
+                // the early return itself, which skipped all of them: a `defer close(file)` was not
+                // run when a later `?` propagated an error, the very pattern `defer` is for.)
+                const is_ok = try self.emit(.bool, .{ .try_is_ok = value });
+                const ok_id = self.allocBlockId();
+                const err_id = self.allocBlockId();
+                try self.terminate(.{ .cond_branch = .{ .cond = is_ok, .then_block = ok_id, .else_block = err_id } });
+
+                self.startBlock(err_id, "try.err");
+                const disc = try self.emit(.{ .i = 32 }, .{ .try_err = value });
+                try self.emitDefersDown(0, .err);
+                var zi = self.active_zones.items.len;
+                while (zi > 0) {
+                    zi -= 1;
+                    try self.lowerZoneExit(self.active_zones.items[zi]);
+                }
+                try self.terminate(.{ .fail = .{ .disc = disc, .payload = null } });
+
+                self.startBlock(ok_id, "try.ok");
+                break :blk try self.emit(self.exprType(expr), .{ .try_ok = value });
             },
             .catch_expr => |catch_expr| blk: {
                 const value = try self.lowerExpr(catch_expr.value.*);

@@ -287,8 +287,10 @@ test "LLVM error/fallible ABI: fail and return lower to { ok, i32 } struct" {
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "insertvalue") != null);
     // fail emits a non-zero discriminant and returns.
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "ret { i32, i32 }") != null);
-    // try_context emits a conditional branch on the discriminant.
-    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "propagate_err") != null);
+    // `?` branches on the discriminant and returns the error from its own block: connect has two
+    // returns, caller has two (the propagated error and the normal one).
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "br i1") != null);
+    try std.testing.expect(std.mem.count(u8, llvm_ir, "ret { i32, i32 }") >= 4);
 }
 
 test "LLVM fallible return coerces to its declared integer width" {
