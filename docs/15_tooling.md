@@ -210,14 +210,42 @@ What it does:
   module it comes from. `alias::name` and the module path of an `#import` work too.
 - **Completion and outline** include the names in scope: the file's own declarations, the
   names its imports bring in (selective imports, `as` aliases, `.*` wildcards, only `pub`
-  names), and the members of a module after `alias::`.
+  names), the locals and parameters visible at the cursor, and the members of a module
+  after `alias::`.
+- **Member completion.** After `expr.` the fields (with their types), methods (with their
+  signatures), the methods of interfaces the type implements and the free functions whose
+  first parameter is `self` of that type. It works through pointers (`p.` for a `*T`),
+  along chains (`a.b.`, `f().`, `a[i].`, `x?.`, `x!!.`), on slices and arrays (`len`,
+  `ptr`), on `Type.` (the variants of an enum or error set; choosing an associated
+  function turns the `.` into `::`) and on `Type::`. A `.` that starts an enum literal
+  offers the variants of the type expected there: after `==`, `!=` and `=`, in a call
+  argument, after `return`, in a `match` arm and after `name: Type =`. A method of a
+  generic struct instance shows its type arguments (`Vec(i32).push` takes `item: i32`).
+- **Signature help** (`(` and `,`): the function, method, interface method, function
+  pointer field, macro or `#extern` being called, with its parameters as written and the
+  active one.
+- **Inlay hints**: the inferred type after a name declared with `:=` and after `for`,
+  `match`, `if` and `while` captures, written as Gabbro source writes types (`[]const u8`,
+  `*Node`, `?T`, `T ! Err`, `Vec(i32)`). A declaration with a written type gets none.
+- **Hover** on a local, a parameter or a field shows `name: Type`; on a method its
+  signature.
+- **While typing.** Code is broken most of the time during typing (`p.` alone does not
+  parse). The server keeps the last analysis whose text parsed and answers completion,
+  hover, signature help and inlay hints from it while the current text does not parse.
+  Positions are mapped from that text to the current one with a line diff, so the answers
+  stay correct outside the lines being edited; an inlay hint is only shown where the
+  mapping is exact. Diagnostics always come from the current text.
 - **Speed.** Analysis runs when no more input is waiting, so a burst of edits costs one run.
   A 830 line file with imports of `std.sync`, `std.utf16` and a `win32` binding module
   analyzes in about 5 ms in a release build (about 30 ms in a debug build); the standard
   library is parsed again each time, which is cheap enough that no cache is kept. Set
   `GABBRO_LSP_TIMING=1` to see each run on stderr.
-- **Not done yet:** rename, find references, semantic tokens, formatting, code actions,
-  inlay hints. `#compiler` hooks and computed `#insert` run during analysis, as in a build.
+  Completion and signature help answer in about 1 ms on that file while it does not parse
+  and in about 6 ms (the analysis included) when it does.
+- **Not done yet:** rename, find references, semantic tokens, formatting, code actions.
+  `#compiler` hooks and computed `#insert` run during analysis, as in a build. Locals
+  inside generic functions have no recorded types (the checker types those bodies per
+  instance), so they get no hover type, no inlay hint and no member completion.
 
 **Helix** — `~/.config/helix/languages.toml` (zero compilation):
 
@@ -259,7 +287,8 @@ VS Code support is a thin client wrapper (future).
 > `python tests/lsp_all_files.py` opens every `.gab` file of the repository through the
 > server and compares with `gabbro check`, and checks that rejected programs still give an
 > error at the right line. `python tests/lsp_perf.py <gabbro.exe> <file.gab>` times repeated
-> edits.
+> edits. `python tests/lsp_assist_test.py` checks member completion, signature help, inlay
+> hints and hover, also while the file does not parse.
 
 ## Diagnostics in the terminal
 

@@ -18,11 +18,17 @@
 //! * A change of a document re-analyzes the open documents that import it. Analysis of
 //!   several quick changes is merged: it runs when no more input is waiting.
 //!
+//! * Help while typing lives in lsp_assist.zig: completion of members after `expr.`,
+//!   `Type::` and enum literals, signature help, inlay hints for inferred types, and hover
+//!   on locals, parameters and fields. While the text does not parse, these answer from
+//!   the last analysis whose text parsed, with positions mapped through the edits.
+//!
 //! stdout carries only LSP messages. All front end diagnostics are captured as data.
 //!
-//! Implemented: diagnostics, completion (names in scope, `alias::` members, keywords),
-//! hover, go to definition, document symbols. Not implemented: rename, references,
-//! formatting, semantic tokens, code actions, inlay hints.
+//! Implemented: diagnostics, completion (names in scope, locals, `alias::` and `Type::`
+//! members, members after `.`, enum literals, keywords), hover, go to definition, document
+//! symbols, signature help, inlay hints. Not implemented: rename, references, formatting,
+//! semantic tokens, code actions.
 
 const std = @import("std");
 const builtin = @import("builtin");

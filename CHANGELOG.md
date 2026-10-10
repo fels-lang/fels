@@ -5,6 +5,21 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ## Unreleased
 
+### Added
+
+- **`gabbro lsp` helps while typing.** Completion after `expr.` lists the fields, methods,
+  interface methods and `self` functions of the expression's type (through pointers and along
+  chains such as `a.b.`, `f().` and `a[i].`), the variants after `Type.`, the associated
+  functions after `Type::`, and the variants of the expected enum after a `.` that starts an
+  enum literal (`m == .`). Signature help shows the parameters of the function, method,
+  interface method, function pointer field, macro or `#extern` being called, with the active
+  one. Inlay hints show the inferred type after `x := …` and after `for`, `match`, `if` and
+  `while` captures. Hover on a local, a parameter or a field shows `name: Type`.
+- **Answers while the file does not parse.** Code is broken most of the time during typing
+  (`p.` alone does not parse), so the server keeps the last analysis whose text parsed and
+  answers completion, hover, signature help and inlay hints from it, with positions mapped
+  through the edits. Diagnostics still come from the current text.
+
 ### Fixed
 
 - **`1e5` was reported as "unknown type `e5`".** Gabbro has no exponent notation, and the lexer
