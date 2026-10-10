@@ -3,6 +3,24 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Changed
+
+- **Source change:** a function cannot return the address of a local, a parameter or a temporary
+  (`&x`, `&p` of a parameter, `&s.field` or `&arr[i]` of a local, `&5`, `&f()`, `&(x + 1)`), directly,
+  inside a returned struct or array literal, or through a local that was given it (`q := &x;
+  return q;`). It compiled before and the pointer dangled once the function returned. Addresses of
+  globals, through pointer parameters, into slices and from an allocator or a zone are unaffected.
+
+### Fixed
+
+- `p == .green` on a plain enum compared against an undefined value, so the result was wrong or
+  changed with `-O`. The bare variant now takes the enum type of the other operand, on either side
+  of `==` or `!=`, and a name the enum does not have is an error.
+- A bare variant as an element of an array or slice literal (`a: [3]Color = .{ .red, .green, .blue }`)
+  or as a field default (`color: Color = .green`) stored an undefined value.
+
 ## 0.3.0 — 2026-10-10
 
 Editor support and a stricter rule for integer literals.
