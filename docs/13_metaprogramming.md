@@ -31,8 +31,11 @@ A bare `#insert #quote { ... }` is **not** hygienic — the locals it introduces
 
 ## 2. Macros
 
-A macro is a compile-time template. It is declared like a function but with the
-`macro` keyword, and its body must be a single `return #quote { ... };`:
+A macro is a compile-time template. It is declared like a function, with `macro`
+in place of `fn`, and its body must be a single `return #quote { ... };`.
+`macro` is not a reserved word: it only has this meaning after `::`, and it can
+still be used as an ordinary name. Macros are top level declarations; a struct
+body holds only fields and `fn` methods.
 
 ```gabbro
 swap :: macro(a: Expr, b: Expr) {

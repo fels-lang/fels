@@ -555,6 +555,10 @@ return match code { 0 => 200, 1, 2, 3 => 400, else => 500 };
 > through to the next arm). A guarded arm does not count toward exhaustiveness.
 > String compares are length-gated, so a shorter subject is never read out of
 > bounds.
+>
+> Character literals and negative numbers are not patterns (`'a' =>` and `-1 =>`
+> are errors). Match the code instead (`97 =>` for `'a'`) or bind a name and use
+> a guard: `k if k == -1 => ...`.
 
 ### Break and Continue
 
@@ -612,6 +616,10 @@ unsafe {
 val := unsafe core::unaligned_read(u64, &x);
 ```
 
+As a statement, `unsafe` must be followed by a block: `unsafe (p as *u8);` on a
+line of its own is an error. The expression form is for places where the value
+is used, such as an initializer, an argument or an assignment.
+
 > [!CAUTION]
 > Unsafe code bypasses the compiler's safety guarantees. Use sparingly and audit carefully. Incorrect unsafe code can cause undefined behavior, memory corruption, or security vulnerabilities.
 
@@ -640,6 +648,10 @@ size := #run compute_size();
 |-----------|----------------------------------------------------------------|
 | `#if`     | Conditional compilation based on compile-time constants        |
 | `#run`    | Execute code or expressions at compile time                    |
+
+`#if` is a statement inside a function body (see
+[docs/08](08_attributes_builtins.md)). It takes an optional `else { }`, but there
+is no `else if`: put another `#if` inside the `else` block.
 
 ### Zone Blocks
 
