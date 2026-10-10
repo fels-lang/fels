@@ -1,0 +1,5 @@
+// A static library: only the #export functions are visible to the program that links it.
+#export("mathutil_square")
+square :: fn(x: i32) -> i32 {
+    return x * x;
+}

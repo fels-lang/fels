@@ -3,17 +3,26 @@
 A tour of the `std.build` API. Run these from this directory:
 
 ```sh
-gabbro build            # build the default artifact (app) into bin/
-gabbro build run        # build, then run it
-gabbro build --list     # list artifacts and steps
-gabbro build -Dtrace    # enable the `trace` build option (defines TRACE=1)
-gabbro build --release  # force release optimization
-gabbro build plugin     # build a specific artifact (the shared library)
+gabbro build                     # the default step `all`: the app, the plugin and the assets
+gabbro build run                 # build, then run the app
+gabbro build --list              # artifacts, steps and options
+gabbro build -Dtrace -Dthreads=8 -Dgreeting=Hi
+gabbro build -Dmode=fast         # optimize the app for speed
+gabbro build install             # copy the app, its DLL and the assets to dist/
+gabbro build clean               # remove what the build made
+gabbro build plugin              # build one artifact (the shared library)
 ```
 
-[build.gab](build.gab) demonstrates: a workspace + `out_root`, a GUI executable
-(`windowed()`), optimization levels, stack size, version/description/install
-metadata, linking + raw linker flags, a configurable `-D` build option, a
-companion shared library, a run step, a default, and the build `summary()`.
+[build.gab](build.gab) shows:
+
+- typed build options (`option_bool`, `option_int`, `option_string`, `option_choice`)
+- a static library the app links with `link_artifact`, built first
+- a shared library, installed next to the app
+- constants for the program (`define`, `define_bool`, `define_int`), which
+  [src/main.gab](src/main.gab) reads with `#import build_options;`
+- steps: copying the assets, an `all` step as the default, a run step with a working
+  directory, and a clean step
+- `gabbro build install` with `install()` and `install_dir`
+- the workspace, `out_root`, the version and description, and the build `summary()`
 
 See [docs/10_build_system.md](../../docs/10_build_system.md) for the full reference.
