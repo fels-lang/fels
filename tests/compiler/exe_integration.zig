@@ -878,6 +878,55 @@ test "build: an artifact for Linux is an ELF without .exe, and strip makes it sm
     try std.testing.expect(small.len < full.len);
 }
 
+test "build: an artifact that is up to date is not built again" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const cwd = std.Io.Dir.cwd();
+
+    const dir = ".zig-cache/bt_cache";
+    cwd.deleteTree(io, dir) catch {};
+    cwd.createDirPath(io, dir) catch {};
+    try cwd.writeFile(io, .{ .sub_path = dir ++ "/util.fels", .data = "pub base :: fn() -> i32 { return 40; }\n" });
+    try cwd.writeFile(io, .{ .sub_path = dir ++ "/main.fels", .data = "#import util;\n#import build_options;\nmain :: fn() -> i32 { return util::base() + build_options::EXTRA as i32; }\n" });
+    try cwd.writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    app := b.executable("app", "main.fels");
+        \\    app.define_int("EXTRA", b.option_int("extra", 2, ""));
+        \\}
+    });
+    const lp = fels.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
+    const opts: fels.build_driver.RunOptions = .{ .quiet = true, .llvm_bin = fels.llvm_path ++ "/bin", .lib_paths = lib_paths };
+    const exe = dir ++ "/app.exe";
+
+    try fels.build_driver.run(a, io, dir ++ "/build.fels", opts);
+    const first = (try cwd.statFile(io, exe, .{})).mtime;
+    // Nothing changed: the program is not linked again.
+    try fels.build_driver.run(a, io, dir ++ "/build.fels", opts);
+    try std.testing.expectEqual(first, (try cwd.statFile(io, exe, .{})).mtime);
+    // An imported file changed: built again.
+    try cwd.writeFile(io, .{ .sub_path = dir ++ "/util.fels", .data = "pub base :: fn() -> i32 { return 50; }\n" });
+    try fels.build_driver.run(a, io, dir ++ "/build.fels", opts);
+    const second = (try cwd.statFile(io, exe, .{})).mtime;
+    try std.testing.expect(!std.meta.eql(first, second));
+    // An option changed (through build_options): built again.
+    var with_option = opts;
+    with_option.options = &.{"extra=7"};
+    try fels.build_driver.run(a, io, dir ++ "/build.fels", with_option);
+    try std.testing.expect(!std.meta.eql(second, (try cwd.statFile(io, exe, .{})).mtime));
+
+    var child = try std.process.spawn(io, .{ .argv = &.{exe}, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+    switch (try child.wait(io)) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 57), code),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "build: a test_dir step compiles+runs tests and fails on a failing one" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
