@@ -94,8 +94,8 @@ pub const Caps = struct {
     /// grant refused rather than only that something did.
     pub fn denialReason(self: Caps) []const u8 {
         return switch (self.ffi) {
-            .none => "this ran as a pure `#run`, which has no host access — only `build.gab` is granted it",
-            .libs => "this run's capability grant does not list that library",
+            .none => "this code has no host access. A `#run` is pure; `build.gab` has host access, and a package's compile-time code gets it when gabbro.pkg grants it (`#use name from \"...\" may ffi(\"lib\")`)",
+            .libs => "the capability grant of this code does not list that library (a package gets more with `may ffi(...)` on its `#use` line in gabbro.pkg)",
             // `.all` allows every call, so it never reaches a denial.
             .all => "this run's capability grant refused it",
         };
