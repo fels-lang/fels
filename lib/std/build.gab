@@ -85,12 +85,12 @@ pub system_library :: fn(self: Artifact, name: []const u8) {
 
 // Add a library search directory.
 pub lib_path :: fn(self: Artifact, dir: []const u8) {
-    __build_libpath(self.id, dir);
+    __build_lib_path(self.id, dir);
 }
 
 // Pass a raw flag straight to the linker (escape hatch), e.g. "/DEBUG".
 pub link_flag :: fn(self: Artifact, flag: []const u8) {
-    __build_linkflag(self.id, flag);
+    __build_link_flag(self.id, flag);
 }
 
 // Link the host's libc — the portable "I need a C runtime" switch. Needed when
@@ -103,7 +103,7 @@ pub link_flag :: fn(self: Artifact, flag: []const u8) {
 // (Same as `gabbro build --libc`, and the CLI `--libc` / `--target *-gnu` for a
 //  single-file build.)
 pub link_libc :: fn(self: Artifact) {
-    __build_linklibc(self.id);
+    __build_link_libc(self.id);
 }
 
 // How C libraries are linked. `.dynamic` (the default) links the platform's
@@ -116,19 +116,19 @@ pub LinkMode :: enum { dynamic, static }
 
 pub link_mode :: fn(self: Artifact, mode: LinkMode) {
     match mode {
-        .dynamic => { __build_linkmode(self.id, 0); }
-        .static  => { __build_linkmode(self.id, 1); }
+        .dynamic => { __build_link_mode(self.id, 0); }
+        .static  => { __build_link_mode(self.id, 1); }
     }
 }
 
 // Shorthands: `app.dynamic()` / `app.static_link()`.
-pub dynamic :: fn(self: Artifact) { __build_linkmode(self.id, 0); }
-pub static_link :: fn(self: Artifact) { __build_linkmode(self.id, 1); }
+pub dynamic :: fn(self: Artifact) { __build_link_mode(self.id, 0); }
+pub static_link :: fn(self: Artifact) { __build_link_mode(self.id, 1); }
 
 // Copy a runtime dependency (e.g. a `.dll`) next to the output after building,
 // so a dynamically-linked program runs without manually shipping its DLLs.
 pub runtime_file :: fn(self: Artifact, path: []const u8) {
-    __build_runtimefile(self.id, path);
+    __build_runtime_file(self.id, path);
 }
 
 // When a static C library is linked, Gabbro honors that library's OWN `/DEFAULTLIB`
@@ -137,7 +137,7 @@ pub runtime_file :: fn(self: Artifact, path: []const u8) {
 // opt out: keep the strict, minimal-runtime linking and specify every system
 // dependency yourself with `link(...)`.
 pub no_default_libs :: fn(self: Artifact) {
-    __build_nodefaultlibs(self.id);
+    __build_no_default_libs(self.id);
 }
 
 // Executable settings
@@ -175,7 +175,7 @@ pub output :: fn(self: Artifact, path: []const u8) {
 
 // Put this artifact's output in `dir` (overrides the workspace out_root).
 pub out_dir :: fn(self: Artifact, dir: []const u8) {
-    __build_outdir(self.id, dir);
+    __build_out_dir(self.id, dir);
 }
 
 // Metadata
@@ -187,7 +187,7 @@ pub version :: fn(self: Artifact, v: []const u8) {
 
 // A human-readable description (shown by `--list`).
 pub description :: fn(self: Artifact, text: []const u8) {
-    __build_desc(self.id, text);
+    __build_description(self.id, text);
 }
 
 // Mark this artifact for installation (flagged in the build summary).
@@ -226,7 +226,7 @@ pub workspace :: fn(self: Build, name: []const u8) {
 
 // Default output directory for every artifact (a per-artifact `out_dir` wins).
 pub out_root :: fn(self: Build, dir: []const u8) {
-    __build_outroot(dir);
+    __build_out_root(dir);
 }
 
 // Print a summary of every artifact after the build.
@@ -238,27 +238,27 @@ pub summary :: fn(self: Build) {
 
 // True if `-Dname` was passed on the command line.
 pub option :: fn(self: Build, name: []const u8) -> bool {
-    return __build_optionflag(name) != 0;
+    return __build_option_flag(name) != 0;
 }
 
 // The value of `-Dname=value`, or `default` if not given.
 pub option_str :: fn(self: Build, name: []const u8, default: []const u8) -> []const u8 {
-    return __build_optionstr(name, default);
+    return __build_option_str(name, default);
 }
 
 // Steps & default
 
 // A run step: `gabbro build <name>` builds `target`, then runs it.
 pub run_step :: fn(self: Build, name: []const u8, target: Artifact) {
-    __build_run(name, target.id);
+    __build_run_step(name, target.id);
 }
 
 // A test step: build + run every test under `dir`.
 pub test_dir :: fn(self: Build, name: []const u8, dir: []const u8) {
-    __build_test(name, dir);
+    __build_test_dir(name, dir);
 }
 
 // Set which artifact bare `gabbro build` produces.
 pub default :: fn(self: Build, target: Artifact) {
-    __build_default(target.id);
+    __build_set_default(target.id);
 }

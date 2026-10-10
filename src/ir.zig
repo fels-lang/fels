@@ -6259,38 +6259,11 @@ fn isBuiltinName(name: []const u8) bool {
         "__str_cat",
         "compiler_error",
         "compiler_remove",
-        // std.build host intrinsics (comptime-only; lowered to host_call in the VM).
-        "__build_artifact",
-        "__build_opt",
-        "__build_link",
-        "__build_libpath",
-        "__build_output",
-        "__build_define",
-        "__build_default",
-        "__build_run",
-        "__build_test",
-        "__build_require",
-        "__build_depend",
-        "__build_subsystem",
-        "__build_entry",
-        "__build_stack",
-        "__build_linkflag",
-        "__build_outdir",
-        "__build_version",
-        "__build_desc",
-        "__build_workspace",
-        "__build_outroot",
-        "__build_install",
-        "__build_optionflag",
-        "__build_optionstr",
-        "__build_summary",
-        "__build_linkmode",
-        "__build_runtimefile",
-        "__build_nodefaultlibs",
-        "__build_linklibc",
     }) |builtin| {
         if (std.mem.eql(u8, name, builtin)) return true;
     }
+    // std.build host intrinsics (comptime-only; lowered to host_call in the VM).
+    if (vm_instructions.BuildOp.fromIntrinsic(name) != null) return true;
     return isCoreOnlyBuiltin(name);
 }
 
