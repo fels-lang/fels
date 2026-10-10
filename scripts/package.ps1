@@ -26,7 +26,10 @@ if (-not [System.IO.Path]::IsPathRooted($OutDir)) { $OutDir = Join-Path $repo $O
 # -Din-process-lld builds gabbrolld.dll (the LLD fallback) so the release never spawns
 # a 69 MB lld-link.exe. -Dembed-linker bakes the self-hosted gabld INTO gabbro.exe, so
 # the common link path needs no separate gabld.dll (single-binary linker).
-$buildArgs = @("build", "-Dllvm-path=$LlvmPath", "-Doptimize=$Optimize", "-Din-process-lld", "-Dembed-linker")
+# The target is pinned to the baseline x86-64-v2 (SSE4.2) CPU. Without it zig builds for the CPU of
+# the build machine, and 0.2.0 shipped with AVX-512 code that crashed ("illegal instruction",
+# 0xC000001D) on CPUs without it.
+$buildArgs = @("build", "-Dllvm-path=$LlvmPath", "-Doptimize=$Optimize", "-Dcpu=x86_64_v2", "-Din-process-lld", "-Dembed-linker")
 if ($Version) { $buildArgs += "-Dversion=$Version" }
 Write-Host "==> zig $($buildArgs -join ' ')"
 Push-Location $repo
