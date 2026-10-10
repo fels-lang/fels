@@ -296,6 +296,49 @@ test "#run: a global another #run computes is not readable by it" {
     try std.testing.expectError(error.LoweringFailed, gabbro.lowerFrontend(arena.allocator(), fe));
 }
 
+test "#run: a constant may call a function declared below it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Sema used to type the constants in the same walk that records the function signatures, so
+    // a constant above its callee was an internal compiler error ("function symbol has no
+    // signature record"). The second program has a `where` clause, so it is checked twice: by
+    // the tolerant pre-pass and then by the strict pass.
+    const decls =
+        \\E :: errors { bad }
+        \\setup :: fn() -> void ! E { return; }
+        \\COMPTIME :: #run comptime_ok();
+        \\PLAIN :: seven();
+        \\comptime_ok :: fn() -> i32 {
+        \\    setup() catch err { return 1; };
+        \\    return 7;
+        \\}
+        \\seven :: fn() -> i32 { return 7; }
+        \\main :: fn() -> i32 { return COMPTIME + PLAIN; }
+        \\
+    ;
+    const where_fn =
+        \\dbl :: fn(x: $T) -> T
+        \\where { match core::type_info(T) { .int => {} else => core::reject("needs an integer"); } }
+        \\{ return x +% x; }
+        \\
+    ;
+    for ([_][]const u8{ decls, decls ++ where_fn }) |src| {
+        var fe = try gabbro.compile(arena.allocator(), "run_above.gab", src);
+        defer fe.deinit(arena.allocator());
+        const m = try gabbro.lowerFrontend(arena.allocator(), fe);
+        try gabbro.ir_mod.validateModule(m);
+        var found: usize = 0;
+        for (m.globals) |g| {
+            if (std.mem.eql(u8, g.name, "COMPTIME") or std.mem.eql(u8, g.name, "PLAIN")) {
+                found += 1;
+                try std.testing.expectEqual(ir.Imm{ .int = 7 }, g.init.imm);
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 2), found);
+    }
+}
+
 // The VM computes in 128 bits. A value that a narrower type would have dropped bits from must be
 // narrowed the way the machine does it: after a wrapping operation, a left shift, `~`, and a cast.
 // Without that, `x ^ (x << 13)` on a u32 keeps its high bits and the `>> 17` that follows shifts

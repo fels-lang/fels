@@ -806,6 +806,33 @@ test "exe: generated match + cast compiles and runs" {
     try std.testing.expectEqual(@as(u32, 30), code);
 }
 
+test "exe: top level constants above the functions, types and constants they use" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Declaration order does not matter: the `#run` above its callee was an internal compiler
+    // error, and so was the plain constant initialized by a call; `SUM` failed to type.
+    const code = try compileAndRun(arena.allocator(),
+        \\E :: errors { bad }
+        \\setup :: fn() -> void ! E { return; }
+        \\COMPTIME :: #run comptime_ok();
+        \\PLAIN :: seven();
+        \\SUM :: LATER * 2 + 4;
+        \\ORIGIN :: #run make_point();
+        \\comptime_ok :: fn() -> i32 {
+        \\    setup() catch err { return 1; };
+        \\    return 7;
+        \\}
+        \\seven :: fn() -> i32 { return 7; }
+        \\make_point :: fn() -> Point { p: Point = .{ .x = 20, .y = 30 }; return p; }
+        \\LATER :: 3;
+        \\Point :: struct { x: i32, y: i32 }
+        \\main :: fn() -> i32 { return COMPTIME + PLAIN + SUM + ORIGIN.x + ORIGIN.y; }
+    , "exe_const_order");
+    try std.testing.expectEqual(@as(u32, 74), code);
+}
+
 test "exe: comptime FFI from a pure #run is rejected (capability)" {
     if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

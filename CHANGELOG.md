@@ -71,6 +71,13 @@ the major version is `0`, any minor bump may break source compatibility.
   already did. An unsuffixed literal's temporary has the literal's default type, so `&5` is a
   `*i32` and can be passed where one is expected (it was a `*integer literal`, which no
   parameter accepted); write `&5i64` for a `*i64`.
+- **A top level constant above the function it calls was an internal compiler error.**
+  `X :: #run f();` or `X :: f();` declared above `f` stopped with "function symbol has no
+  signature record", and `A :: B + 1;` above `B :: 6;` failed with "operator `+` requires numeric
+  operands, found `B`". The checker typed each constant as it reached it, before the functions
+  and types declared below had been read. It now types the constants after every signature and
+  layout, a constant that uses a later one types that one first, and a constant whose value
+  depends on itself (`A :: B; B :: A;`) is reported as such.
 
 ## 0.2.2 — 2026-10-10
 
