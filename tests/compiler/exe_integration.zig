@@ -642,6 +642,68 @@ test "build: link_artifact builds the libraries first and links them" {
     }
 }
 
+test "build: install copies a program with its DLL, and a static library" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const io = std.testing.io;
+
+    const dir = ".zig-cache/bt_install";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/util.gab", .data =
+        \\#export("util_add")
+        \\add :: fn(a: i32, b: i32) -> i32 { return a + b; }
+        \\
+    });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/dyn.gab", .data =
+        \\#export("dyn_mul")
+        \\mul :: fn(a: i32, b: i32) -> i32 { return a * b; }
+        \\
+    });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/app.gab", .data =
+        \\#extern("util", "util_add")
+        \\util_add :: fn(a: i32, b: i32) -> i32;
+        \\#extern("dyn", "dyn_mul")
+        \\dyn_mul :: fn(a: i32, b: i32) -> i32;
+        \\
+        \\main :: fn() -> i32 { return util_add(2, 3) + dyn_mul(2, 10); }
+        \\
+    });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    b.out_root("out");
+        \\    util := b.static("util", "util.gab");
+        \\    util.install();
+        \\    dyn := b.shared("dyn", "dyn.gab");
+        \\    app := b.executable("app", "app.gab");
+        \\    app.link_artifact(util);
+        \\    app.link_artifact(dyn);
+        \\    app.install();
+        \\}
+    });
+
+    const lp = gabbro.windows_sdk_lib_path;
+    const lib_paths: []const []const u8 = if (lp.len > 0) &.{lp} else &.{};
+    try gabbro.build_driver.run(arena.allocator(), io, dir ++ "/build.gab", .{
+        .target = "install",
+        .quiet = true,
+        .llvm_bin = gabbro.llvm_path ++ "/bin",
+        .lib_paths = lib_paths,
+    });
+
+    // The DLL went along with the program it was copied next to.
+    for ([_][]const u8{ dir ++ "/dist/lib/util.lib", dir ++ "/dist/bin/dyn.dll" }) |f|
+        try std.Io.Dir.cwd().access(io, f, .{});
+    var child = try std.process.spawn(io, .{ .argv = &.{dir ++ "/dist/bin/app.exe"}, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+    switch (try child.wait(io)) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 25), code),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "build: a test_dir step compiles+runs tests and fails on a failing one" {
     if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

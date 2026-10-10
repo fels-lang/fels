@@ -120,3 +120,49 @@ test "build: link_artifact of an executable is an error" {
     ;
     try std.testing.expectError(error.ScriptError, loadPlan("bs_link_exe", src, &.{}));
 }
+
+test "build: install copies files and folders into the prefix" {
+    const io = std.testing.io;
+    const dir = ".zig-cache/bs_install";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    std.Io.Dir.cwd().createDirPath(io, dir ++ "/assets/sub") catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/README.md", .data = "readme" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/assets/a.txt", .data = "a" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/assets/sub/b.txt", .data = "b" });
+    const src =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    b.executable("app", "main.gab");
+        \\    b.install_prefix("pkg");
+        \\    b.install_file("README.md", "doc/README.md");
+        \\    b.install_dir("assets", "share/assets");
+        \\}
+    ;
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data = src });
+    try build.run(std.testing.allocator, io, dir ++ "/build.gab", .{ .target = "install", .quiet = true });
+
+    const gpa = std.testing.allocator;
+    for ([_][2][]const u8{
+        .{ dir ++ "/pkg/doc/README.md", "readme" },
+        .{ dir ++ "/pkg/share/assets/a.txt", "a" },
+        .{ dir ++ "/pkg/share/assets/sub/b.txt", "b" },
+    }) |f| {
+        const data = try std.Io.Dir.cwd().readFileAlloc(io, f[0], gpa, .unlimited);
+        defer gpa.free(data);
+        try std.testing.expectEqualStrings(f[1], data);
+    }
+}
+
+test "build: install with nothing to install is an error" {
+    const io = std.testing.io;
+    const dir = ".zig-cache/bs_install_none";
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    const src =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    b.executable("app", "main.gab");
+        \\}
+    ;
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.gab", .data = src });
+    try std.testing.expectError(error.UnknownTarget, build.run(std.testing.allocator, io, dir ++ "/build.gab", .{ .target = "install", .quiet = true }));
+}
