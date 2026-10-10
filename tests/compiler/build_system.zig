@@ -328,3 +328,37 @@ test "build: two steps of the same name are an error, a step after itself too" {
     ;
     try std.testing.expectError(error.DependencyCycle, runTarget("bs_step_cycle", cycle, "a"));
 }
+
+test "build: target, sysroot, strip and host_os" {
+    const src =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    app := b.executable("app", "main.fels");
+        \\    app.target(.linux_gnu);
+        \\    app.sysroot("sysroot");
+        \\    app.strip();
+        \\    if b.host_os() == .windows { app.version("on-windows"); }
+        \\    if b.host_os() == .linux { app.version("on-linux"); }
+        \\}
+    ;
+    var plan = try loadPlan("bs_target", src, &.{});
+    defer plan.deinit();
+    const app = plan.artifacts.items[0];
+    try std.testing.expectEqual(std.Target.Os.Tag.linux, app.target_os);
+    try std.testing.expect(app.target_gnu);
+    try std.testing.expectEqualStrings("sysroot", app.sysroot);
+    try std.testing.expect(app.strip);
+    const want = if (builtin.os.tag == .windows) "on-windows" else "on-linux";
+    try std.testing.expectEqualStrings(want, app.version.?);
+}
+
+test "build: a library for Linux is not supported yet, and says so" {
+    const src =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    lib := b.static("util", "util.fels");
+        \\    lib.target(.linux);
+        \\}
+    ;
+    try std.testing.expectError(error.ScriptError, loadPlan("bs_target_lib", src, &.{}));
+}

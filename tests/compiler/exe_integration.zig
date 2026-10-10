@@ -846,6 +846,38 @@ test "build: a test step finds tests in sub-folders, filters them and links a li
     try fels.build_driver.run(arena.allocator(), io, dir ++ "/build.fels", only_add);
 }
 
+test "build: an artifact for Linux is an ELF without .exe, and strip makes it smaller" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+
+    const dir = ".zig-cache/bt_target";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/main.fels", .data = "main :: fn() -> i32 { return 7; }\n" });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/build.fels", .data =
+        \\#import std.build.{ Build };
+        \\build :: fn(b: Build) {
+        \\    full := b.executable("full", "main.fels");
+        \\    full.target(.linux);
+        \\    small := b.executable("small", "main.fels");
+        \\    small.target(.linux);
+        \\    small.strip();
+        \\}
+    });
+    fels.build_driver.run(a, io, dir ++ "/build.fels", .{ .quiet = true, .llvm_bin = fels.llvm_path ++ "/bin" }) catch
+        return error.SkipZigTest; // no ld.lld in this LLVM
+
+    const full = try std.Io.Dir.cwd().readFileAlloc(io, dir ++ "/full", a, .unlimited);
+    const small = try std.Io.Dir.cwd().readFileAlloc(io, dir ++ "/small", a, .unlimited);
+    try std.testing.expectEqualStrings("\x7fELF", full[0..4]);
+    try std.testing.expectEqualStrings("\x7fELF", small[0..4]);
+    try std.testing.expect(small.len < full.len);
+}
+
 test "build: a test_dir step compiles+runs tests and fails on a failing one" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
