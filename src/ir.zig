@@ -3202,6 +3202,18 @@ const FunctionLowerer = struct {
                             .fn_takes_env = is_lambda,
                         } });
                     }
+                    // A constant without a type (`N :: 5;`) is stored as an `i32` but takes the
+                    // type it is used as, like its literal (`settleIntLit`): read it at that type,
+                    // or `x: i64 = A - B;` subtracts and stores 32 bits.
+                    if (kind == .const_symbol and self.types.get(id) != null and self.types.get(id).? == .int_lit) {
+                        const used_as = self.exprType(expr);
+                        switch (used_as) {
+                            .i, .u, .byte, .usize, .isize => if (!std.meta.eql(used_as, IrType{ .i = 32 })) {
+                                break :blk try self.emitAt(used_as, .{ .cast = .{ .kind = .as, .value = .{ .global = link } } }, expr.span);
+                            },
+                            else => {},
+                        }
+                    }
                     if (kind == .function or kind == .const_symbol or kind == .global_var) break :blk Value{ .global = link };
                 }
                 break :blk Value{ .local = name };

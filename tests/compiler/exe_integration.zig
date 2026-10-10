@@ -4852,3 +4852,36 @@ test "exe: an array whose length is computed at compile time has that length" {
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_computed_array_len_o0", 0));
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_computed_array_len_o2", 2));
 }
+
+test "exe: a constant without a type is read at the type it is used as" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `A :: 3;` is stored as an `i32`. `x: i64 = A - B;` subtracted in 32 bits and stored 4 bytes
+    // into the 8 byte slot (wrong at -O0), and `(A - B) as u64` widened the result without sign.
+    const src =
+        \\A :: 3;
+        \\B :: 5;
+        \\BIG :: 2000000000;
+        \\diff :: fn() -> i64 { x: i64 = A - B; return x; }
+        \\wide :: fn() -> i64 { return BIG * 4; }
+        \\#assert(diff() == -2i64);
+        \\#assert(wide() == 8000000000i64);
+        \\main :: fn() -> i32 {
+        \\    if diff() != -2i64 { return 1; }
+        \\    if wide() != 8000000000i64 { return 2; }
+        \\    y: i64 = 0;
+        \\    y = B - A - 10;
+        \\    if y != -8i64 { return 3; }
+        \\    b: u8 = A;
+        \\    if b != 3u8 { return 4; }
+        \\    if (A - B) as i64 != -2i64 { return 5; }
+        \\    k: i64 = -7;
+        \\    if k + A != -4i64 { return 6; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_untyped_const_width_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_untyped_const_width_o2", 2));
+}
