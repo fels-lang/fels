@@ -775,25 +775,25 @@ test "modules: `*name` in an argument is a pointer type for an imported type, a 
     try fels.ir_mod.validateModule(module);
 }
 
-test "modules: an import still finds a file with the old .gab extension" {
+test "modules: an import that only finds a .gab file says to rename it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+    const util = "pub add :: fn(x: i32, y: i32) -> i32 { return x + y; }\n";
+    const main = "#import util;\nrun :: fn() -> i32 { return util::add(1, 2); }\n";
 
-    // From memory, as the language server and these tests load files.
-    var fe = try fels.compileMulti(a, &.{
-        .{ .file_name = "util.gab", .source = "pub add :: fn(x: i32, y: i32) -> i32 { return x + y; }\n" },
-        .{ .file_name = "main.fels", .source = "#import util;\nrun :: fn() -> i32 { return util::add(1, 2); }\n" },
-    });
-    defer fe.deinit(a);
+    // From memory, as these tests load files.
+    try std.testing.expectError(error.IoError, fels.compileMulti(a, &.{
+        .{ .file_name = "util.gab", .source = util },
+        .{ .file_name = "main.fels", .source = main },
+    }));
 
     // From disk, as the compiler does.
     const io = std.testing.io;
     const dir = ".zig-cache/old_ext";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
     std.Io.Dir.cwd().createDirPath(io, dir) catch {};
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/util.gab", .data = "pub add :: fn(x: i32, y: i32) -> i32 { return x + y; }\n" });
-    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/main.fels", .data = "#import util;\nrun :: fn() -> i32 { return util::add(1, 2); }\n" });
-    var disk = try fels.compileFile(a, io, dir ++ "/main.fels");
-    defer disk.deinit(a);
-    try std.testing.expectEqual(@as(usize, 0), disk.diagnostics().len);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/util.gab", .data = util });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dir ++ "/main.fels", .data = main });
+    try std.testing.expectError(error.IoError, fels.compileFile(a, io, dir ++ "/main.fels"));
 }
