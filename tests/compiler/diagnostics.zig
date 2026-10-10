@@ -896,8 +896,8 @@ test "diagnostics: the address of a local inferred from a literal points at the 
         "main :: fn() -> i32 { x := 1.5; p: *f64 = &x; return 0; }",
         "main :: fn() -> i32 { x := 0u8; p: *u8 = &x; return 0; }",
         "main :: fn() -> i32 { s := 0; for i in 0..10 { p: *i32 = &i; s += *p; } return s; }",
-        // Reading the local still adapts the literal to its context.
-        "main :: fn() -> i32 { x := 5; y: i64 = x; z: u8 = x; return 0; }",
+        // Another width takes a cast: the local is an `i32`.
+        "main :: fn() -> i32 { x := 5; y: i64 = x as i64; z: u8 = x as u8; return 0; }",
     };
     for (accepted) |src| {
         if (try firstError(a, src)) |msg| {
@@ -914,6 +914,10 @@ test "diagnostics: the address of a local inferred from a literal points at the 
     // What the pointer reads back is an `i32`, not a literal that could widen.
     const through_ptr = (try firstError(a, "main :: fn() -> i32 { x := 0; p := &x; y: i64 = *p; return 0; }")).?;
     try std.testing.expect(std.mem.indexOf(u8, through_ptr, "found `i32`") != null);
+    // The local itself is an `i32` too: reading it as another integer type is refused. It used
+    // to be accepted and read with the wrong width (`x := -5; y: i64 = x;` gave `y != -5`).
+    const widened = (try firstError(a, "main :: fn() -> i32 { x := 5; y: i64 = x; return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, widened, "found `i32`") != null);
 }
 
 test "diagnostics: a `void ! E` function may run to its end without `return;`" {
