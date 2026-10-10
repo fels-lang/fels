@@ -3,6 +3,34 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Added
+
+- **Typed build options.** `b.option_bool`, `option_int`, `option_string` and `option_choice`
+  declare an option with a default and a help text. `gabbro build --list` shows them, and a `-D`
+  option the script does not declare, or a value of the wrong kind, stops the build with a
+  message that lists the options.
+- **`a.link_artifact(lib)`** links a static or shared library the same build makes. The library
+  is built first, each artifact once, and a DLL is copied next to the program.
+- **`gabbro build install`** copies the artifacts marked with `install()` into an install prefix
+  (`bin/` and `lib/`), with `b.install_file`, `b.install_dir`, `b.install_prefix` and
+  `--prefix`.
+- **`define`, `define_int` and `define_bool`** pass constants to the program through a generated
+  `build_options` module (`#import build_options;`). `define` was recorded and then ignored.
+- **`a.add_module(name, dir)`** maps an import name to a folder, so `#import name.x` reads
+  `<dir>/x.gab`.
+
+### Fixed
+
+- **`b.static(...)` wrote a DLL named `.lib`**, which no linker can use as a static library. It
+  now writes an archive. Only the library's `#export`ed symbols are visible to the program that
+  links it, so the runtime both carry no longer clashes, and the libraries its `#extern`
+  functions come from are linked along without being named.
+- **A string's escapes were not resolved at compile time.** In the comptime VM `"a\nb\"c"` was
+  7 bytes instead of 5, and a string a `#run` computed kept its backslashes. `s == "a\n"` also
+  compared against the backslash and the `n`.
+
 ## 0.3.1 — 2026-10-10
 
 Fixes for programs that compiled without a message and gave a wrong result: integer literals of
