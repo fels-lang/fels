@@ -4691,3 +4691,14 @@ test "exe: an integer literal is stored at the width of the type it takes" {
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_int_lit_widths_o0", 0));
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_int_lit_widths_o2", 2));
 }
+
+test "exe: the comptime VM gives an integer literal the same width as the program does" {
+    if (comptime !gabbro.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The same checks as `#assert`s: the VM runs the lowered IR, so a literal lowered at the
+    // wrong width failed the build there (`#assert(c_i64_6() == 0)` for `1 << 40`).
+    const src = try intLiteralWidthsSource(arena.allocator(), true);
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRun(arena.allocator(), src, "exe_int_lit_widths_comptime"));
+}
