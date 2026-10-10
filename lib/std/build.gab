@@ -22,6 +22,66 @@
 pub Build    :: struct { id: i32 }
 pub Artifact :: struct { id: i32 }
 
+// A named step: `gabbro build <name>` builds its artifacts, runs the steps it comes after,
+// then its actions in order. Paths are relative to build.gab.
+//
+//   assets := b.step("assets", "copy the assets next to the game");
+//   assets.copy_dir("assets", "bin/assets");
+//   gen := b.step("gen", "generate the tables");
+//   cmd := gen.command("python");
+//   cmd.arg("tools/gen.py");
+//   game.after(gen);                    // generate before compiling
+pub Step :: struct {
+    id: i32,
+
+    // Build `artifact` before this step's actions.
+    pub depends_on :: fn(self: Step, artifact: Artifact) { __build_step_depends_on(self.id, artifact.id); }
+
+    // Run `other` before this step.
+    pub after :: fn(self: Step, other: Step) { __build_step_after(self.id, other.id); }
+
+    // Run a program: a name found on PATH, or a path relative to build.gab. The build stops
+    // when it exits with a code other than 0.
+    pub command :: fn(self: Step, program: []const u8) -> Command {
+        return .{ __build_step_command(self.id, program) };
+    }
+
+    // Build `artifact` (a program of this build) and run it, like `command`.
+    pub run :: fn(self: Step, artifact: Artifact) -> Command {
+        return .{ __build_step_run(self.id, artifact.id) };
+    }
+
+    pub copy_file :: fn(self: Step, src: []const u8, dest: []const u8) { __build_step_copy_file(self.id, src, dest); }
+
+    // Copy a folder with everything in it.
+    pub copy_dir :: fn(self: Step, src: []const u8, dest: []const u8) { __build_step_copy_dir(self.id, src, dest); }
+
+    pub write_file :: fn(self: Step, path: []const u8, text: []const u8) { __build_step_write_file(self.id, path, text); }
+
+    // Remove a file or a folder with everything in it.
+    pub remove :: fn(self: Step, path: []const u8) { __build_step_remove(self.id, path, ""); }
+
+    // Print a line when the step runs.
+    pub print :: fn(self: Step, text: []const u8) { __build_step_print(self.id, text, ""); }
+}
+
+// A program a step runs (`step.command(...)`, `b.command(...)`, `b.run_step(...)`).
+pub Command :: struct {
+    id: i32,
+
+    pub arg :: fn(self: Command, text: []const u8) { __build_command_arg(self.id, text); }
+
+    // The output path of an artifact as an argument (built before the command runs only
+    // when the step depends on it).
+    pub arg_output :: fn(self: Command, artifact: Artifact) { __build_command_arg_output(self.id, artifact.id); }
+
+    // The working directory, relative to build.gab (default: build.gab's folder).
+    pub cwd :: fn(self: Command, dir: []const u8) { __build_command_cwd(self.id, dir); }
+
+    // An environment variable, on top of the environment gabbro build runs in.
+    pub env :: fn(self: Command, key: []const u8, value: []const u8) { __build_command_env(self.id, key, value); }
+}
+
 // Enums (public API)
 
 pub Optimize  :: enum { debug, release_safe, release_fast, release_small }
@@ -323,9 +383,35 @@ pub option_str :: fn(self: Build, name: []const u8, default: []const u8) -> []co
 
 // Steps & default
 
-// A run step: `gabbro build <name>` builds `target`, then runs it.
-pub run_step :: fn(self: Build, name: []const u8, target: Artifact) {
-    __build_run_step(name, target.id);
+// A run step: `gabbro build <name>` builds `target`, then runs it with the arguments
+// given after `--`. The returned command takes more arguments, a cwd and env.
+pub run_step :: fn(self: Build, name: []const u8, target: Artifact) -> Command {
+    return .{ __build_run_step(name, target.id) };
+}
+
+// A named step; see `Step`.
+pub step :: fn(self: Build, name: []const u8, description: []const u8) -> Step {
+    return .{ __build_step(name, description) };
+}
+
+// A step that runs one program: `b.command("gen", "python").arg("gen.py")`.
+pub command :: fn(self: Build, name: []const u8, program: []const u8) -> Command {
+    s := b_step(name);
+    return s.command(program);
+}
+
+b_step :: fn(name: []const u8) -> Step {
+    return .{ __build_step(name, "") };
+}
+
+// What a bare `gabbro build` runs: this step instead of the default artifact.
+pub default_step :: fn(self: Build, step: Step) {
+    __build_default_step(step.id);
+}
+
+// Run `step` before building this artifact (code generation, for example).
+pub after :: fn(self: Artifact, step: Step) {
+    __build_artifact_after(self.id, step.id);
 }
 
 // A test step: build + run every test under `dir`.

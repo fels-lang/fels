@@ -144,6 +144,22 @@ pub const BuildOp = enum(u32) {
     define_int,     // (id, key, value:i64)            an integer constant in `build_options`
     define_bool,    // (id, key, value:bool)           a bool constant in `build_options`
     add_module,     // (id, name, dir)                 `#import name.x` reads <dir>/x.gab
+    step,           // (name, description) -> step     a named step with actions
+    step_depends_on, // (step, id)                     build the artifact before the step
+    step_after,     // (step, other)                   run the other step before this one
+    step_command,   // (step, program) -> command      run a program
+    step_run,       // (step, id) -> command           build an artifact and run its output
+    command_arg,    // (command, text)
+    command_arg_output, // (command, id)               the output path of an artifact
+    command_cwd,    // (command, dir)
+    command_env,    // (command, key, value)
+    step_copy_file, // (step, src, dest)
+    step_copy_dir,  // (step, src, dest)
+    step_write_file, // (step, path, text)
+    step_remove,    // (step, path)                    a file or a folder
+    step_print,     // (step, text)
+    artifact_after, // (id, step)                      run the step before building the artifact
+    default_step,   // (step)                          what a bare `gabbro build` runs
 
     /// The intrinsic `std.build` calls for this op is `__build_` followed by the tag name.
     pub const prefix = "__build_";
@@ -159,7 +175,7 @@ pub const BuildOp = enum(u32) {
     /// What the intrinsic returns in `build.gab`: an id or flag is an `i32`.
     pub fn result(op: BuildOp) Result {
         return switch (op) {
-            .artifact, .require, .option_flag => .int,
+            .artifact, .require, .option_flag, .step, .step_command, .step_run, .run_step => .int,
             .option_int => .i64,
             .option_bool => .bool,
             .option_str, .option_string, .option_choice => .string,
