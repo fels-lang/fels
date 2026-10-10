@@ -68,6 +68,17 @@ pub const CompileError = error{
 /// lands. Set once at startup; the compiler is single-threaded per build.
 pub var stdlib_root_override: ?[]const u8 = null;
 
+/// A name an import can start with that stands for a folder: `#import name.a.b` reads
+/// `<dir>/a/b.gab`, and a bare `#import name` reads `<dir>/<name>.gab`.
+pub const ModuleRoot = struct {
+    name: []const u8,
+    dir: []const u8,
+};
+
+/// The named module roots of the current compile. `gabbro build` sets them per artifact
+/// (`add_module`, and the generated `build_options`).
+pub var module_roots: []const ModuleRoot = &.{};
+
 // Public entry points
 
 /// Compile source text directly (no file I/O).
@@ -553,6 +564,18 @@ fn resolveImportPath(
 ) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
+
+    if (parts.len > 0) for (module_roots) |m| {
+        if (!std.mem.eql(u8, parts[0], m.name)) continue;
+        try buf.appendSlice(allocator, m.dir);
+        const rest = if (parts.len == 1) parts else parts[1..];
+        for (rest) |part| {
+            try buf.append(allocator, std.fs.path.sep);
+            try buf.appendSlice(allocator, part);
+        }
+        try buf.appendSlice(allocator, ".gab");
+        return buf.toOwnedSlice(allocator);
+    };
 
     const is_std = parts.len > 0 and std.mem.eql(u8, parts[0], "std");
     if (is_std and stdlib_root != null) {
