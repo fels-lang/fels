@@ -5,3 +5,4 @@ pub const manifest = @import("pkg/manifest.zig");
 pub const semver = @import("pkg/semver.zig");
 pub const lock = @import("pkg/lock.zig");
 pub const fetch = @import("pkg/fetch.zig");
+pub const resolve = @import("pkg/resolve.zig");
