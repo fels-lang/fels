@@ -17,16 +17,17 @@ permissions:
 
 jobs:
   release:
-    name: build + publish release
+    name: build and publish
     runs-on: windows-latest
-    if: ${{ vars.LLVM_AVAILABLE == 'true' }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: mlugg/setup-zig@v1
+      - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+          cache-size-limit: 4096
+      - uses: ./.github/actions/setup-llvm
+        id: llvm
+
       - name: Derive version + channel from the tag
         id: tag
         shell: pwsh
@@ -36,22 +37,12 @@ jobs:
           # A SemVer pre-release (contains '-') publishes as a GitHub pre-release.
           $pre = if ($v -match '-') { 'true' } else { 'false' }
           "prerelease=$pre" | Out-File -Append $env:GITHUB_OUTPUT
-      - name: Cache LLVM
-        id: cache-llvm
-        uses: actions/cache@v4
-        with:
-          path: llvm
-          key: llvm-${{ vars.LLVM_VERSION || 'pinned' }}-windows
-      - name: Download LLVM
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri "${{ secrets.LLVM_URL }}" -OutFile llvm-archive
-          7z x llvm-archive -ollvm
-      - name: Build + package (version from the tag)
+
+      - name: Build and package
         id: pkg
         shell: pwsh
-        run: ./scripts/package.ps1 -LlvmPath "${{ github.workspace }}/llvm" -Version "${{ steps.tag.outputs.version }}"
+        run: ./scripts/package.ps1 -LlvmPath "${{ steps.llvm.outputs.path }}" -Version "${{ steps.tag.outputs.version }}"
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
