@@ -432,13 +432,16 @@ pub const Server = struct {
         }
     }
 
-    /// The nearest folder above `path` with a `build.gab`, else the workspace folder.
+    /// The nearest folder above `path` with a `build.fels` (or `build.gab`), else the
+    /// workspace folder.
     pub fn findProjectRoot(self: *Server, path: []const u8) ?[]u8 {
         var dir = std.fs.path.dirname(path);
         while (dir) |d| {
-            const probe = std.fs.path.join(self.gpa, &.{ d, "build.gab" }) catch break;
-            defer self.gpa.free(probe);
-            if (sourceExists(self, probe)) return self.gpa.dupe(u8, d) catch null;
+            for ([_][]const u8{ "build.fels", "build.gab" }) |name| {
+                const probe = std.fs.path.join(self.gpa, &.{ d, name }) catch break;
+                defer self.gpa.free(probe);
+                if (sourceExists(self, probe)) return self.gpa.dupe(u8, d) catch null;
+            }
             dir = std.fs.path.dirname(d);
         }
         if (self.workspace_root) |r| return self.gpa.dupe(u8, r) catch null;
@@ -788,7 +791,7 @@ pub fn appendCompletionItem(
 /// the extension.
 pub fn moduleLabel(path: []const u8) []const u8 {
     const base = std.fs.path.basename(path);
-    return if (std.mem.endsWith(u8, base, ".gab")) base[0 .. base.len - 4] else base;
+    return pipeline.withoutExt(base);
 }
 
 fn handleCompletion(self: *Server, id: ?json.Value, params: json.Value) void {

@@ -281,7 +281,7 @@ fn fixedFunction(f: ast.FunctionDecl, file: []const u8) Fixed {
         if (std.mem.eql(u8, a.name, "export") and a.args.len == 0) return .exported;
     }
     if (std.mem.eql(u8, f.name, "main")) return .entry;
-    if (std.mem.eql(u8, f.name, "build") and std.mem.eql(u8, std.fs.path.basename(file), "build.gab")) return .entry;
+    if (std.mem.eql(u8, f.name, "build") and std.mem.eql(u8, pipeline.withoutExt(std.fs.path.basename(file)), "build")) return .entry;
     return .no;
 }
 
@@ -1975,7 +1975,7 @@ const Req = struct {
             switch (entry.kind) {
                 .directory => if (!skipDir(entry.basename)) walker.enter(io, entry) catch {},
                 .file => {
-                    if (!std.mem.endsWith(u8, entry.basename, ".gab")) continue;
+                    if (!pipeline.isSourceFile(entry.basename)) continue;
                     if (paths.items.len >= max_files) {
                         r.capped = true;
                         break;
@@ -2136,15 +2136,17 @@ const Req = struct {
             while (end < rest.len and (isIdent(rest[end]) or rest[end] == '.')) end += 1;
             const module = std.mem.trimEnd(u8, rest[0..end], ".");
             if (module.len == 0 or std.mem.eql(u8, module, "std") or std.mem.startsWith(u8, module, "std.")) continue;
-            const rel = r.a().alloc(u8, module.len + 4) catch return;
-            for (module, 0..) |c, i| rel[i] = if (c == '.') std.fs.path.sep else c;
-            @memcpy(rel[module.len..], ".gab");
+            const stem = r.a().alloc(u8, module.len) catch return;
+            for (module, 0..) |c, i| stem[i] = if (c == '.') std.fs.path.sep else c;
             const bases = [_]?[]const u8{ std.fs.path.dirname(f.path), r.root };
-            for (bases) |base| {
-                const b = base orelse continue;
-                const p = std.fs.path.join(r.a(), &.{ b, rel }) catch continue;
-                const k = lsp.pathKey(r.a(), p) catch continue;
-                out.append(r.a(), k) catch {};
+            for ([_][]const u8{ pipeline.source_ext, pipeline.old_ext }) |ext| {
+                const rel = std.mem.concat(r.a(), u8, &.{ stem, ext }) catch return;
+                for (bases) |base| {
+                    const b = base orelse continue;
+                    const p = std.fs.path.join(r.a(), &.{ b, rel }) catch continue;
+                    const k = lsp.pathKey(r.a(), p) catch continue;
+                    out.append(r.a(), k) catch {};
+                }
             }
         }
     }

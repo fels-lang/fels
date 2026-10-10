@@ -117,7 +117,7 @@ pub fn main(init: std.process.Init) u8 {
     if (std.mem.eql(u8, cmd, "build")) {
         const arg2: ?[]const u8 = if (args.len >= 3) args[2] else null;
         const is_direct = arg2 != null and
-            std.mem.endsWith(u8, arg2.?, ".gab") and
+            gabbro.pipeline_mod.isSourceFile(arg2.?) and
             fileExists(io, arg2.?);
         if (!is_direct) {
             // The build system returns from here, ahead of the relocatable path
@@ -355,7 +355,7 @@ fn cmdBindgen(allocator: std.mem.Allocator, io: std.Io, env: anytype, args: []co
         }
     }
 
-    const out_path = out orelse deriveOut(allocator, header, ".gab");
+    const out_path = out orelse deriveOut(allocator, header, ".fels");
     defer if (out == null) allocator.free(out_path);
 
     // libclang is loaded on demand (the core compiler carries no dependency on
@@ -602,11 +602,13 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
     opts.options = options.items;
     opts.environ = environ;
 
-    const build_path = "build.gab";
-    if (!fileExists(io, build_path)) {
-        std.debug.print("gabbro build: no build.gab in the current directory\n", .{});
+    const build_path = if (fileExists(io, "build.fels")) "build.fels" else if (fileExists(io, "build.gab")) blk: {
+        gabbro.pipeline_mod.noteOldExt("build.gab");
+        break :blk "build.gab";
+    } else {
+        std.debug.print("gabbro build: no build.fels in the current directory\n", .{});
         return 1;
-    }
+    };
 
     gabbro.build_driver.run(allocator, io, build_path, opts) catch |err| {
         // The messages from the script run or the packages already say what is wrong.
@@ -625,6 +627,12 @@ fn fileExists(io: std.Io, path: []const u8) bool {
 // Relocatable-runtime path resolution
 
 /// True if `dir/<rel>` exists (probe via the page allocator, freed immediately).
+/// Whether `dir` holds the standard library (`std/io.fels`, or `std/io.gab` from before the
+/// rename).
+fn hasStd(io: std.Io, dir: []const u8) bool {
+    return dirHasFile(io, dir, "std/io.fels") or dirHasFile(io, dir, "std/io.gab");
+}
+
 fn dirHasFile(io: std.Io, dir: []const u8, rel: []const u8) bool {
     const probe = std.fmt.allocPrint(std.heap.page_allocator, "{s}/{s}", .{ dir, rel }) catch return false;
     defer std.heap.page_allocator.free(probe);
@@ -637,18 +645,18 @@ fn dirHasFile(io: std.Io, dir: []const u8, rel: []const u8) bool {
 fn resolveStdRoot(ra: std.mem.Allocator, io: std.Io, env: anytype, flag: []const u8, exe_dir: ?[]const u8) ?[]const u8 {
     if (flag.len > 0) return ra.dupe(u8, flag) catch null;
     if (env.get("GABBRO_STD")) |v|
-        if (dirHasFile(io, v, "std/io.gab")) return ra.dupe(u8, v) catch null;
+        if (hasStd(io, v)) return ra.dupe(u8, v) catch null;
     if (env.get("GABBRO_HOME")) |home| {
         if (std.fmt.allocPrint(ra, "{s}/lib", .{home}) catch null) |c|
-            if (dirHasFile(io, c, "std/io.gab")) return c;
+            if (hasStd(io, c)) return c;
     }
     if (exe_dir) |ed| {
         for ([_][]const u8{ "lib", "../lib", "../../lib" }) |rel| {
             const cand = std.fmt.allocPrint(ra, "{s}/{s}", .{ ed, rel }) catch continue;
-            if (dirHasFile(io, cand, "std/io.gab")) return cand;
+            if (hasStd(io, cand)) return cand;
         }
     }
-    if (gabbro.stdlib_root.len > 0 and dirHasFile(io, gabbro.stdlib_root, "std/io.gab"))
+    if (gabbro.stdlib_root.len > 0 and hasStd(io, gabbro.stdlib_root))
         return ra.dupe(u8, gabbro.stdlib_root) catch null;
     return null;
 }
