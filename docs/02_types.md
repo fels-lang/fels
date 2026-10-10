@@ -434,6 +434,22 @@ r := &5i64;            // a suffix picks another width: *i64
 s := &f();             // a temporary holding the call's result
 ```
 
+A function cannot return an address in its own frame: the address of a local, of a parameter
+(a pointer parameter's own address too, `&p`), of a field or an element stored in one, or of a
+temporary (`&5`, `&f()`, `&(x + 1)`). The frame is gone once the function returns, so the pointer
+would dangle. The compiler follows the address through a local that a declaration or a plain
+assignment gave it (`q := &x; return q;`) and into a returned struct or array literal, the way it
+keeps a zone's memory inside its zone ([Memory & Zones](05_memory_zones.md)); it does not follow
+it through a call. An address that outlives the function can be returned: of a global, a pointer
+parameter or what it points at (`&p.field`), an element of a slice, memory from an allocator or
+from a zone the caller passes in. A slice of a local array is not checked yet, since a function
+that `#run` calls returns the bytes it built that way.
+
+```gabbro
+bad :: fn() -> *i32 { x := 5; return &x; }   // error: the address of local `x` cannot be returned
+ok :: fn(p: *Point) -> *i32 { return &p.y; } // points into the caller's `Point`
+```
+
 - `*const T` prevents modification through the pointer. The underlying data may still be mutable through another path.
 - `*volatile T` ensures every read and write goes to memory, preventing the compiler from optimizing accesses away. Use this for memory-mapped hardware registers.
 
