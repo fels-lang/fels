@@ -163,6 +163,11 @@ pub const BuildOp = enum(u32) {
     provide_lib_path, // (dir)                         for the users of a package: a library folder
     provide_link,     // (lib)                         for the users of a package: a library to link
     provide_runtime_file, // (path)                    for the users of a package: a file next to their output
+    test_recursive,   // (step)                        a test step also runs the tests in sub-folders
+    test_filter,      // (step, text)                  only test files whose path contains the text
+    test_optimize,    // (step, level:i32)             the optimization level of the tests
+    test_link,        // (step, lib)                   a library the tests link
+    test_link_artifact, // (step, id)                  a library artifact the tests link, built first
 
     /// The intrinsic `std.build` calls for this op is `__build_` followed by the tag name.
     pub const prefix = "__build_";
@@ -178,7 +183,7 @@ pub const BuildOp = enum(u32) {
     /// What the intrinsic returns in `build.fels`: an id or flag is an `i32`.
     pub fn result(op: BuildOp) Result {
         return switch (op) {
-            .artifact, .require, .option_flag, .step, .step_command, .step_run, .run_step => .int,
+            .artifact, .require, .option_flag, .step, .step_command, .step_run, .run_step, .test_dir => .int,
             .option_int => .i64,
             .option_bool => .bool,
             .option_str, .option_string, .option_choice => .string,

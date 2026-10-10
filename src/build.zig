@@ -111,8 +111,13 @@ pub const Step = struct {
     kind: StepKind,
     /// `.run`: the artifact it runs.
     target: usize = 0,
-    /// `.test_dir`: the folder of the tests.
+    /// `.test_dir`: the folder of the tests, and how they are found, built and linked.
     dir: []const u8 = "",
+    test_recursive: bool = false,
+    test_filters: std.ArrayList([]const u8) = .empty,
+    test_opt: u2 = 0,
+    test_libs: std.ArrayList([]const u8) = .empty,
+    test_link_artifacts: std.ArrayList(usize) = .empty,
     description: []const u8 = "",
     /// Artifacts built and steps run before the actions.
     artifacts: std.ArrayList(usize) = .empty,
@@ -497,6 +502,37 @@ fn hostCall(ctx: *anyopaque, op_raw: u32, args: []const Value) Value {
         },
         .test_dir => {
             if (plan.addStep(argStr(args, 0), .test_dir, "")) |step| step.dir = plan.dupe(argStr(args, 1));
+            return .{ .int = @intCast(plan.steps.items.len - 1) };
+        },
+        .test_recursive, .test_filter, .test_optimize, .test_link, .test_link_artifact => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id >= plan.steps.items.len or plan.steps.items[id].kind != .test_dir) return .void;
+            const st = &plan.steps.items[id];
+            switch (op) {
+                .test_recursive => st.test_recursive = true,
+                .test_filter => st.test_filters.append(plan.a(), plan.dupe(argStr(args, 1))) catch {
+                    plan.oom = true;
+                },
+                .test_optimize => st.test_opt = @intCast(@as(u8, @intCast(argInt(args, 1))) & 3),
+                .test_link => st.test_libs.append(plan.a(), plan.dupe(argStr(args, 1))) catch {
+                    plan.oom = true;
+                },
+                else => {
+                    const lib: usize = @intCast(argInt(args, 1));
+                    if (lib >= plan.artifacts.items.len) return .void;
+                    if (plan.artifacts.items[lib].kind != .static_library and plan.artifacts.items[lib].kind != .shared_library) {
+                        plan.fail("test step `{s}`: link_artifact(`{s}`): not a library", .{ st.name, plan.artifacts.items[lib].name });
+                        return .void;
+                    }
+                    st.test_link_artifacts.append(plan.a(), lib) catch {
+                        plan.oom = true;
+                    };
+                    // Built before the tests run.
+                    st.artifacts.append(plan.a(), lib) catch {
+                        plan.oom = true;
+                    };
+                },
+            }
             return .void;
         },
         .require => {
@@ -1005,7 +1041,7 @@ fn runStep(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []con
     const step = plan.steps.items[idx];
     for (step.artifacts.items) |art| try buildArtifact(gpa, io, plan, base_dir, art, opts);
     for (step.after.items) |other| try runStep(gpa, io, plan, base_dir, other, opts);
-    if (step.kind == .test_dir) try runTestDir(gpa, io, plan, base_dir, step.dir, opts);
+    if (step.kind == .test_dir) try runTestDir(gpa, io, plan, base_dir, step, opts);
     for (step.actions.items) |action| try runAction(gpa, io, plan, base_dir, action, opts);
     plan.step_state[idx] = .built;
 }
@@ -1417,62 +1453,123 @@ fn writeStaticLibrary(gpa: std.mem.Allocator, io: std.Io, obj_path: []const u8, 
     };
 }
 
-/// Run a `test_dir` step: compile + run every `*.fels` file directly under `dir`
-/// as a standalone program. A test passes when it exits 0. Reports each result
-/// and a pass/fail tally; fails the step if any test fails.
-fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, dir_rel: []const u8, opts: RunOptions) BuildError!void {
+/// Run a `test_dir` step: compile and run every `*.fels` file in its folder (and the folders
+/// below, with `recursive`) as a program of its own. A test passes when it exits with 0; a
+/// failing one shows its exit code and output. The tests see the project's packages and link
+/// what the step names. `fels build <step> -- <text>` runs only the files whose path has the text.
+fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []const u8, step: Step, opts: RunOptions) BuildError!void {
     const a = plan.a();
-    const dir_abs = joinPath(a, base_dir, dir_rel) catch return error.OutOfMemory;
+    const dir_abs = joinPath(a, base_dir, step.dir) catch return error.OutOfMemory;
 
     var dir = std.Io.Dir.cwd().openDir(io, dir_abs, .{ .iterate = true }) catch {
         std.debug.print("fels build: cannot open test directory '{s}'\n", .{dir_abs});
         return error.RunFailed;
     };
     defer dir.close(io);
-    std.Io.Dir.cwd().createDirPath(io, ".zig-cache/felstest") catch {};
+
+    // The test files, relative to the folder, in a fixed order.
+    var files: std.ArrayList([]const u8) = .empty;
+    if (step.test_recursive) {
+        var walker = dir.walk(a) catch return error.OutOfMemory;
+        defer walker.deinit();
+        while (walker.next(io) catch null) |entry| {
+            if (entry.kind == .file and pipeline.isSourceFile(entry.basename))
+                files.append(a, a.dupe(u8, entry.path) catch return error.OutOfMemory) catch return error.OutOfMemory;
+        }
+    } else {
+        var it = dir.iterate();
+        while (it.next(io) catch null) |entry| {
+            if (entry.kind == .file and pipeline.isSourceFile(entry.name))
+                files.append(a, a.dupe(u8, entry.name) catch return error.OutOfMemory) catch return error.OutOfMemory;
+        }
+    }
+    std.mem.sort([]const u8, files.items, {}, struct {
+        fn lt(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.order(u8, x, y) == .lt;
+        }
+    }.lt);
+
+    // What the tests link: the step's libraries, its library artifacts, what packages provide.
+    var lib_paths: std.ArrayList([]const u8) = .empty;
+    lib_paths.appendSlice(a, opts.lib_paths) catch return error.OutOfMemory;
+    lib_paths.appendSlice(a, plan.from_packages.lib_paths.items) catch return error.OutOfMemory;
+    lib_paths.append(a, base_dir) catch return error.OutOfMemory;
+    var libs: std.ArrayList([]const u8) = .empty;
+    libs.appendSlice(a, step.test_libs.items) catch return error.OutOfMemory;
+    libs.appendSlice(a, plan.from_packages.links.items) catch return error.OutOfMemory;
+    for (step.test_link_artifacts.items) |i| {
+        const out = try resolveOutput(plan, base_dir, plan.artifacts.items[i]);
+        lib_paths.append(a, std.fs.path.dirname(out) orelse ".") catch return error.OutOfMemory;
+        libs.append(a, std.fs.path.stem(out)) catch return error.OutOfMemory;
+    }
+    // The packages' import roots, as for an artifact.
+    var roots: std.ArrayList(pipeline.ModuleRoot) = .empty;
+    for (plan.packages) |p| roots.append(a, .{ .name = p.name, .dir = p.import_dir }) catch return error.OutOfMemory;
+    pipeline.module_roots = roots.items;
+    defer pipeline.module_roots = &.{};
+
+    const filters = if (opts.run_args.len != 0) opts.run_args else step.test_filters.items;
+    const opt_level: u2 = if (opts.release and step.test_opt == 0) 2 else step.test_opt;
+    const out_dir = ".zig-cache/felstest";
+    std.Io.Dir.cwd().createDirPath(io, out_dir) catch {};
 
     if (!opts.quiet) std.debug.print("running tests in {s}/\n", .{dir_abs});
     var passed: u32 = 0;
     var failed: u32 = 0;
-    var it = dir.iterate();
-    while (it.next(io) catch null) |entry| {
-        if (entry.kind != .file) continue;
-        if (!pipeline.isSourceFile(entry.name)) continue;
-        // `entry.name` is only valid until the next iteration — copy it.
-        const name = a.dupe(u8, entry.name) catch continue;
-        const src_path = joinPath(a, dir_abs, name) catch continue;
-        const exe = std.fmt.allocPrint(a, ".zig-cache/felstest/{s}.exe", .{name}) catch continue;
-        const obj = std.fmt.allocPrint(a, "{s}.o", .{exe}) catch continue;
+    for (files.items) |rel| {
+        if (filters.len != 0) {
+            const wanted = for (filters) |f| {
+                if (std.mem.indexOf(u8, rel, f) != null) break true;
+            } else false;
+            if (!wanted) continue;
+        }
+        const src_path = joinPath(a, dir_abs, rel) catch return error.OutOfMemory;
+        // One output per test, also for tests of the same name in different folders.
+        const flat = a.dupe(u8, rel) catch return error.OutOfMemory;
+        for (flat) |*c| if (c.* == '/' or c.* == '\\') {
+            c.* = '_';
+        };
+        const exe = std.fmt.allocPrint(a, "{s}/{s}.exe", .{ out_dir, flat }) catch return error.OutOfMemory;
+        const obj = std.fmt.allocPrint(a, "{s}.o", .{exe}) catch return error.OutOfMemory;
         const src = readSource(gpa, io, src_path) orelse continue;
         defer gpa.free(src);
 
-        const ok = blk: {
+        var why: []const u8 = "";
+        compile: {
             driver.compileFileWithLlvm(gpa, io, .{
                 .file_name = src_path,
                 .source = src,
                 .obj_path = obj,
                 .exe_path = exe,
-                .opt_level = 0,
+                .opt_level = opt_level,
                 .llvm_bin = opts.llvm_bin,
-                .lib_paths = opts.lib_paths,
-            }) catch break :blk false;
-            var child = std.process.spawn(io, .{
-                .argv = &.{exe},
-                .stdin = .ignore,
-                .stdout = .ignore,
-                .stderr = .ignore,
-            }) catch break :blk false;
-            break :blk switch (child.wait(io) catch break :blk false) {
-                .exited => |code| code == 0,
-                else => false,
+                .lib_paths = lib_paths.items,
+                .extra_libs = libs.items,
+            }) catch {
+                why = "did not compile (see above)";
+                break :compile;
             };
-        };
-        if (ok) {
+            const r = std.process.run(a, io, .{ .argv = &.{exe} }) catch {
+                why = "could not be started";
+                break :compile;
+            };
+            switch (r.term) {
+                .exited => |code| if (code != 0) {
+                    why = std.fmt.allocPrint(a, "exited with {d}", .{code}) catch "failed";
+                },
+                else => why = "crashed",
+            }
+            if (why.len != 0) {
+                const output = std.mem.trimEnd(u8, std.mem.concat(a, u8, &.{ r.stdout, r.stderr }) catch "", "\r\n");
+                if (output.len != 0) why = std.fmt.allocPrint(a, "{s}:\n      {s}", .{ why, output }) catch why;
+            }
+        }
+        if (why.len == 0) {
             passed += 1;
-            if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{name});
+            if (!opts.quiet) std.debug.print("  \u{2713} {s}\n", .{rel});
         } else {
             failed += 1;
-            std.debug.print("  \u{2717} {s}\n", .{name});
+            std.debug.print("  \u{2717} {s} {s}\n", .{ rel, why });
         }
     }
 
