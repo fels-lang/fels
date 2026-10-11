@@ -679,13 +679,23 @@ pub const Vm = struct {
                 },
                 .index_addr => {
                     const index = frame.regs[inst.c].asI128() orelse return error.TypeMismatch;
-                    if (frame.regs[inst.b] == .host_buf) {
-                        const hb = frame.regs[inst.b].host_buf;
-                        frame.regs[inst.a] = .{ .host_ptr = .{ .addr = hb.addr + @as(usize, @intCast(index)) * hb.stride, .size = hb.stride } };
-                    } else {
-                        const base = try asPtr(frame.regs[inst.b]);
-                        const stride: i128 = @intCast(inst.imm);
-                        frame.regs[inst.a] = .{ .ptr = .{ .zone = base.zone, .offset = base.offset + @as(u32, @intCast(index * stride)) } };
+                    switch (frame.regs[inst.b]) {
+                        .host_buf => |hb| {
+                            frame.regs[inst.a] = .{ .host_ptr = .{ .addr = hb.addr + @as(usize, @intCast(index)) * hb.stride, .size = hb.stride } };
+                        },
+                        // A `[]const u8` constant lives in the compiler's memory: the address of
+                        // byte `index` is a real one (up to one past the end, where `s[len..len]`
+                        // starts).
+                        .string => |s| {
+                            const i: usize = std.math.cast(usize, index) orelse return error.TypeMismatch;
+                            if (i > s.len) return error.OutOfBounds;
+                            frame.regs[inst.a] = .{ .host_ptr = .{ .addr = @intFromPtr(s.ptr) + i, .size = 1 } };
+                        },
+                        else => {
+                            const base = try asPtr(frame.regs[inst.b]);
+                            const stride: i128 = @intCast(inst.imm);
+                            frame.regs[inst.a] = .{ .ptr = .{ .zone = base.zone, .offset = base.offset + @as(u32, @intCast(index * stride)) } };
+                        },
                     }
                 },
                 .index_load => {
@@ -709,13 +719,20 @@ pub const Vm = struct {
                     }
                 },
                 .slice_make => {
-                    const base = try asPtr(frame.regs[inst.b]);
                     const len = frame.regs[inst.c].asI128() orelse return error.TypeMismatch;
-                    frame.regs[inst.a] = .{ .slice = .{
-                        .zone = base.zone,
-                        .offset = base.offset,
-                        .len = @intCast(len),
-                    } };
+                    if (frame.regs[inst.b] == .host_ptr) {
+                        // A slice of a string or of host memory (an arena's bytes) stays in
+                        // host memory.
+                        const hp = frame.regs[inst.b].host_ptr;
+                        frame.regs[inst.a] = .{ .host_buf = .{ .addr = hp.addr, .len = @intCast(len), .stride = hp.size } };
+                    } else {
+                        const base = try asPtr(frame.regs[inst.b]);
+                        frame.regs[inst.a] = .{ .slice = .{
+                            .zone = base.zone,
+                            .offset = base.offset,
+                            .len = @intCast(len),
+                        } };
+                    }
                 },
                 .slice_len => {
                     frame.regs[inst.a] = switch (frame.regs[inst.b]) {
