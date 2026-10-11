@@ -206,6 +206,124 @@ pub fn identifier(a: std.mem.Allocator, raw: []const u8) error{OutOfMemory}!?[]c
     return name;
 }
 
+/// `fels new <name> [options]` and `fels init [options]` on the command line. Everything is
+/// written to stderr, like the other commands' output. Returns the exit code.
+pub fn cmd(a: std.mem.Allocator, io: std.Io, is_init: bool, args: []const []const u8) u8 {
+    const which = if (is_init) "fels init" else "fels new";
+    var template: Template = .app;
+    var license: License = .mit;
+    var git = true;
+    var target: ?[]const u8 = null;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--list")) {
+            printTemplates();
+            return 0;
+        } else if (std.mem.eql(u8, arg, "--app")) {
+            template = .app;
+        } else if (std.mem.eql(u8, arg, "--lib")) {
+            template = .lib;
+        } else if (std.mem.eql(u8, arg, "--cbind")) {
+            template = .cbind;
+        } else if (std.mem.eql(u8, arg, "--no-git")) {
+            git = false;
+        } else if (std.mem.eql(u8, arg, "--license") and i + 1 < args.len) {
+            i += 1;
+            license = parseLicense(args[i]) orelse {
+                std.debug.print("{s}: the license is MIT, Apache-2.0 or none, not `{s}`\n", .{ which, args[i] });
+                return 1;
+            };
+        } else if (arg.len > 1 and arg[0] == '-') {
+            std.debug.print("{s}: unknown option '{s}'\n", .{ which, arg });
+            return 1;
+        } else if (target == null and !is_init) {
+            target = arg;
+        } else {
+            std.debug.print("{s}: one project at a time; what is `{s}`?\n", .{ which, arg });
+            return 1;
+        }
+    }
+    const dir = if (is_init) "." else target orelse {
+        std.debug.print("usage: fels new <name> [--app | --lib | --cbind] [--license MIT|Apache-2.0|none] [--no-git]\n" ++
+            "       fels new --list   shows the templates\n", .{});
+        return 1;
+    };
+
+    // The package is named after the folder.
+    const folder = if (is_init)
+        std.fs.path.basename(std.process.currentPathAlloc(io, a) catch ".")
+    else
+        std.fs.path.basename(std.mem.trimEnd(u8, dir, "/\\"));
+    const name = (identifier(a, folder) catch return 1) orelse {
+        std.debug.print("{s}: `{s}` cannot be a package name: it starts with a letter or `_` and has letters, digits, `_` and `-`\n", .{ which, folder });
+        return 1;
+    };
+    if (!std.mem.eql(u8, name, folder))
+        std.debug.print("note: `{s}` is not a Fels name, so the package is called `{s}`\n", .{ folder, name });
+
+    var buf: [1024]u8 = undefined;
+    var w = std.Io.File.stderr().writerStreaming(io, &buf);
+    const created = create(a, io, &w.interface, .{
+        .dir = dir,
+        .name = name,
+        .template = template,
+        .license = license,
+        .git = git,
+        .init = is_init,
+        .year = thisYear(io),
+        .author = author(a, io, name) catch return 1,
+    }) catch {
+        w.interface.flush() catch {};
+        return 1;
+    };
+    report(&w.interface, if (is_init) null else dir, name, template, created) catch {};
+    w.interface.flush() catch {};
+    return 0;
+}
+
+/// What was made, and what to do next.
+fn report(out: *std.Io.Writer, dir: ?[]const u8, name: []const u8, template: Template, created: Created) std.Io.Writer.Error!void {
+    try out.print("created the {s} {s}\n", .{ @tagName(template), name });
+    for (created.written) |f| try out.print("  {s}\n", .{f});
+    for (created.kept) |f| try out.print("  {s} (kept as it was)\n", .{f});
+    if (created.git_note.len != 0) try out.print("{s}\n", .{created.git_note});
+    try out.writeAll("\nnext:\n");
+    if (dir) |d| try out.print("  cd {s}\n", .{d});
+    switch (template) {
+        .app => try out.writeAll(
+            \\  fels build run    build and run it
+            \\  fels test         run its tests
+            \\
+        ),
+        .lib => try out.writeAll(
+            \\  fels test         run its tests
+            \\  fels build run    build and run examples/demo.fels
+            \\  to share it, push it to a git host and tag a version (git tag v0.1.0)
+            \\
+        ),
+        .cbind => try out.print(
+            \\  put {s}.lib (and {s}.dll) into lib/, and bind its functions in src/{s}.fels
+            \\  fels test         run its tests
+            \\  fels build run    build and run examples/demo.fels
+            \\
+        , .{ name, name, name }),
+    }
+}
+
+fn printTemplates() void {
+    std.debug.print("templates (fels new <name> --<template>):\n", .{});
+    for (std.enums.values(Template)) |t|
+        std.debug.print("  --{s: <7} {s}{s}\n", .{ @tagName(t), t.describe(), if (t == .app) " (the default)" else "" });
+}
+
+fn parseLicense(text: []const u8) ?License {
+    if (std.ascii.eqlIgnoreCase(text, "mit")) return .mit;
+    if (std.ascii.eqlIgnoreCase(text, "apache-2.0") or std.ascii.eqlIgnoreCase(text, "apache")) return .apache;
+    if (std.ascii.eqlIgnoreCase(text, "none")) return .none;
+    return null;
+}
+
 fn exists(io: std.Io, path: []const u8) bool {
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
