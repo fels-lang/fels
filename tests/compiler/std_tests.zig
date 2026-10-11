@@ -13,6 +13,12 @@ const files = [_][]const u8{
     "tests/fixtures/stdlib/process_tests.fels",
 };
 
+/// Files whose tests reach the OS (folders, the environment, the command line), which
+/// compile-time code may not: they run natively only.
+const native_files = [_][]const u8{
+    "tests/fixtures/stdlib/os_tests.fels",
+};
+
 fn runAll(comptime_only: bool) !void {
     // The test programs go to .fels-cache/test in the project folder: one under .zig-cache.
     const project = ".zig-cache/std_tests";
@@ -21,7 +27,7 @@ fn runAll(comptime_only: bool) !void {
     defer out.deinit();
     const summary = try fels.test_cmd.run(std.testing.allocator, io, &out.writer, .{
         .project_dir = project,
-        .paths = &files,
+        .paths = if (comptime_only) &files else &(files ++ native_files),
         .comptime_only = comptime_only,
         .llvm_bin = fels.llvm_path ++ "/bin",
         .lib_paths = if (fels.windows_sdk_lib_path.len != 0) &.{fels.windows_sdk_lib_path} else &.{},
