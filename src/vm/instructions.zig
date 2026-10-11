@@ -66,6 +66,7 @@ pub const Opcode = enum(u8) {
     // Host memory (run byte-addressed std.heap at comptime)
     host_ptr_make, // a = dst; b = addr reg (uint); imm = byte size of pointee → host_ptr
     host_buf_make, // a = dst; b = addr/host_ptr reg; c = len reg; imm = byte stride → host_buf
+    bits_to_slice, // a = dst; b = a slice read from host memory as 16 bytes; imm = byte stride → host_buf
     opt_is_some, // a = dst; b = optional value → bool (non-null)
     interface_method, // a = dst; b = interface value; imm = method slot → fn_ref
     call_indirect, // a = dst; b = callee fn_ref reg; c = arg base reg; imm = arg count
