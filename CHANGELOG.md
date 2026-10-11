@@ -3,6 +3,26 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Added
+
+- **Calendar dates in `std.time`.** `Date` is a day as the number of days since 1970-01-01:
+  `time::date(y, m, d)` (null for a day that does not exist), `parts`, `weekday`, `add_days`,
+  `add_months` (the day stays inside the month), `add_years`, `days_until`, `parse_date` and
+  `format_date` for `YYYY-MM-DD`, `today_utc`, `is_leap_year`, `days_in_month`.
+
+### Fixed
+
+- **Assigning a param did nothing in a compiled program.** `x = 5; return x;` returned the
+  value passed in, and so did a change through a field of a struct param (`p.v = 5`). Every
+  param now has a slot of its own. (The comptime VM was right.)
+- **A `*Self` method called on a struct param** (`p.get()` with `p: P`) got an invalid
+  `self`: garbage values or a crash.
+- **`==` and `!=` on two optionals** (`a == b` with `a, b: ?i64`, or optional structs) did not
+  compile, and failed on the comptime VM. Both null is equal, one null is not, both set
+  compares the values.
+
 ## 0.6.1 — 2026-10-11
 
 Fixes: `fels test` works on a project with files that have no tests, and a
