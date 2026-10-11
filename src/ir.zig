@@ -7247,7 +7247,7 @@ pub const TestReport = struct {
     results: []const TestResult = &.{},
 };
 
-fn isTestFn(f: ast.FunctionDecl) bool {
+pub fn isTestFn(f: ast.FunctionDecl) bool {
     if (f.is_macro or f.is_constraint or f.body == null) return false;
     for (f.attrs) |a| if (std.mem.eql(u8, a.name, "test")) return true;
     return false;
