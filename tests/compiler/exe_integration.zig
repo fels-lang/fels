@@ -5470,3 +5470,32 @@ test "exe: a constant made of typed values has their type" {
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_typed_const_o0", 0));
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_typed_const_o2", 2));
 }
+
+test "exe: a match arm can name several enum variants" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `.buy, .sell => …` shares one body, in a match statement and a match expression, as
+    // integer and string patterns could already.
+    const src =
+        \\Kind :: enum { buy, sell, dividend, fee, split }
+        \\moves :: fn(k: Kind) -> bool {
+        \\    match k {
+        \\        .buy, .sell, .split => { return true; }
+        \\        .dividend, .fee => { return false; }
+        \\    }
+        \\}
+        \\cost :: fn(k: Kind) -> i32 {
+        \\    return match k { .buy, .fee => 1, .sell => 2, .dividend, .split => 3 };
+        \\}
+        \\#assert(moves(.split) && !moves(.fee));
+        \\#assert(cost(.fee) == 1 && cost(.split) == 3);
+        \\main :: fn() -> i32 {
+        \\    if !moves(.buy) || !moves(.sell) || moves(.dividend) { return 1; }
+        \\    if cost(.buy) != 1 || cost(.sell) != 2 || cost(.dividend) != 3 { return 2; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRun(arena.allocator(), src, "exe_match_grouped_variants"));
+}
