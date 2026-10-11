@@ -5742,10 +5742,8 @@ const Checker = struct {
                         self.emitError(named.span, "unknown error type `{s}::{s}`", .{ ns, named.name });
                     } else if (fromBuiltinName(named.name) != null) {
                         self.emitError(named.span, "`{s}` is not an error type", .{named.name});
-                    } else if (self.suggestTypeName(named.name)) |hint| {
-                        self.emitError(named.span, "unknown error type `{s}`; did you mean `{s}`?", .{ named.name, hint });
                     } else {
-                        self.emitError(named.span, "unknown error type `{s}`", .{named.name});
+                        self.emitErrorRich(named.span, "unknown error type `{s}`", .{named.name}, .{ .primary_label = "not a known type", .help = self.typeNameHelp(named.name) });
                     }
                     return error.SemanticFailed;
                 };
