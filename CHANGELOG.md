@@ -26,6 +26,10 @@ the major version is `0`, any minor bump may break source compatibility.
 - **Comparing the variable of a `for` loop over strings** (`for t in tags { if t == tag … }`)
   stopped the compiler with an internal error. The loop variable is now declared like any
   other local.
+- **Slices are checked as slices**: `s[len..len]` (empty, at the end) panicked with "index out
+  of bounds" in a debug build, while `s[a..b]` with `b` past the end or before `a` was not
+  checked at all. Now `a <= b <= len` holds, in every build, or the program panics with
+  "slice out of bounds".
 - **`==` and `!=` on two optionals** (`a == b` with `a, b: ?i64`, or optional structs) did not
   compile, and failed on the comptime VM. Both null is equal, one null is not, both set
   compares the values.
