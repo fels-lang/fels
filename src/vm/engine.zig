@@ -542,6 +542,9 @@ pub const Vm = struct {
                         .int => |v| .{ .int = v },
                         .uint => |v| .{ .int = std.math.cast(i128, v) orelse @bitCast(v) },
                         .bool => |bb| .{ .int = @intFromBool(bb) },
+                        // `p as usize`: the address of real memory
+                        .host_ptr => |hp| .{ .int = hp.addr },
+                        .null_ptr => .{ .int = 0 },
                         else => return error.TypeMismatch,
                     };
                 },
@@ -777,10 +780,14 @@ pub const Vm = struct {
                     frame.regs[inst.b],
                     frame.regs[inst.c],
                 ) orelse return error.TypeMismatch,
-                .host_ptr_make => frame.regs[inst.a] = .{ .host_ptr = .{
-                    .addr = asAddr(frame.regs[inst.b]) orelse return error.TypeMismatch,
-                    .size = @intCast(inst.imm),
-                } },
+                .host_ptr_make => frame.regs[inst.a] = switch (frame.regs[inst.b]) {
+                    // a pointer cast: a pointer into a zone, or null, stays as it is
+                    .ptr, .null_ptr => frame.regs[inst.b],
+                    else => .{ .host_ptr = .{
+                        .addr = asAddr(frame.regs[inst.b]) orelse return error.TypeMismatch,
+                        .size = @intCast(inst.imm),
+                    } },
+                },
                 .host_buf_make => frame.regs[inst.a] = .{ .host_buf = .{
                     .addr = asAddr(frame.regs[inst.b]) orelse return error.TypeMismatch,
                     .len = @intCast(frame.regs[inst.c].asI128() orelse return error.TypeMismatch),
