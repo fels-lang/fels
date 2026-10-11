@@ -37,7 +37,8 @@ the major version is `0`, any minor bump may break source compatibility.
   `Point` (or a private `State`), or a program with a `Reader` next to `#import std.fs` (std.io
   has a `Reader`), or std.math with a binding that has its own `Vec2`, stopped with "duplicate
   top-level declaration". A type whose name another file declares too is now qualified, as a
-  function already was, and each file sees its own.
+  function already was, and each file sees its own, also as the type argument of a generic
+  (`Vec(Item)` in a field).
 - **Arena memory at compile time.** On the comptime VM (`#run`, `fels test --comptime`)
   slicing a string (`s[1..3]`) failed with "TypeMismatch", and so did `heap::alloc(T, ...)`, a
   `Vec` of slices, a pointer cast (`p as *T`, `p as usize`) and a negative number read back from
