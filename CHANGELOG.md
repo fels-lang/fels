@@ -30,6 +30,8 @@ the major version is `0`, any minor bump may break source compatibility.
   `Vec` of slices, a pointer cast (`p as *T`, `p as usize`) and a negative number read back from
   an arena. They now work as in a compiled program.
 - **The comptime VM leaked** the names and strings of every `#extern` call it made.
+- **`fels test --comptime` skipped a test named like a function of another file** (a test
+  `helper` next to `mathx::helper`) with "InvalidInstruction"; it runs now.
 - **Assigning a param did nothing in a compiled program.** `x = 5; return x;` returned the
   value passed in, and so did a change through a field of a struct param (`p.v = 5`). Every
   param now has a slot of its own. (The comptime VM was right.)
