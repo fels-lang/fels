@@ -211,8 +211,10 @@ fn printFeDiagnostics(
 
 /// Comptime test lane: run every `#test` function on the VM during compilation.
 /// A failed assertion (`t.eq`, `t.expect`, …) becomes a build error — the program
-/// does not compile, exactly like a type error. On success the test functions are
-/// pruned so they never reach the backend. No-op when the module has no tests.
+/// does not compile, exactly like a type error. A test the VM cannot run (it reads a
+/// file, say) is skipped with a note: `fels test` runs it as a program. On success the
+/// test functions are pruned so they never reach the backend. No-op when the module
+/// has no tests.
 fn runComptimeTestLane(allocator: std.mem.Allocator, fe: *pipeline.FrontEnd, file_name: []const u8) LlvmDriverError!void {
     if (!ir.hasTestDecl(fe.module)) return;
     const report = ir.runComptimeTests(allocator, fe.*) catch {
@@ -226,6 +228,10 @@ fn runComptimeTestLane(allocator: std.mem.Allocator, fe: *pipeline.FrontEnd, fil
         std.debug.print("\n{d} passed, {d} failed (comptime)\n", .{ report.passed, report.failed });
         return error.CompileFailed;
     }
+    if (report.skipped != 0) std.debug.print(
+        "note: {d} #test {s} of {s} cannot run at compile time; `fels test` runs {s}\n",
+        .{ report.skipped, if (report.skipped == 1) "function" else "functions", file_name, if (report.skipped == 1) "it" else "them" },
+    );
     // All green — drop the test functions so they never reach the backend.
     fe.module = ir.pruneTestDecls(fe.arena.allocator(), fe.module) catch fe.module;
 }
