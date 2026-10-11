@@ -7,6 +7,10 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Added
 
+- **`std.json` reads JSON of any shape** into a tree of values in an arena: `parse`, then
+  `get`, `at` and `len` to look into it (what is not there is a null value) and `as_f64`,
+  `as_i64`, `as_text` and `as_bool` to read it. Numbers keep their text next to their `f64`;
+  strings are unescaped, `\u` escapes as UTF-8.
 - **`std.csv` reads CSV text**: records of fields between a comma, a semicolon (as German
   spreadsheets write it) or a tab, with fields in quotes as RFC 4180 has them. `reader`, `next`
   and `done` go record by record, `records` reads them all, `guess_separator` looks at the first
