@@ -37,6 +37,10 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- **A float literal under minus in an `f32`.** `off: f32 = -10.0` (and `0.0 - 10.0`, or such a
+  value assigned, passed or put into a struct field) was lowered as an `f64` and stored as 8
+  bytes into the 4-byte slot: the variable read as garbage and its neighbours were overwritten.
+  Like an integer literal, an expression of float literals now takes the type of its place.
 - **Paths, the environment and the command line outside ASCII on Windows.** `std.fs` handed its
   UTF-8 paths to the ANSI functions of Windows, so a path with an umlaut (a OneDrive folder
   "Persönlich", one from a file dialog) was misread, and so were the values of `get_env` and
