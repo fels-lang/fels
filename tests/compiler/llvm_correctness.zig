@@ -684,12 +684,15 @@ test "LLVM: access to a #packed struct's fields through a pointer is align 1" {
     try backend.lower(module);
     const llvm_ir = try backend.getIrText(arena.allocator());
 
-    inline for (.{
-        "load i32, ptr %1, align 1",
-        "load i64, ptr %1, align 1",
-        "store i32 %v, ptr %1, align 1",
-    }) |expected| {
-        try std.testing.expect(std.mem.indexOf(u8, llvm_ir, expected) != null);
+    // Some line of each kind, whatever its register numbers, is `align 1`.
+    inline for (.{ "load i32, ptr %", "load i64, ptr %", "store i32 %" }) |start| {
+        var found = false;
+        var lines = std.mem.splitScalar(u8, llvm_ir, '\n');
+        while (lines.next()) |line| {
+            const at = std.mem.indexOf(u8, line, start) orelse continue;
+            if (std.mem.endsWith(u8, line[at..], ", align 1")) found = true;
+        }
+        try std.testing.expect(found);
     }
 }
 
