@@ -7,6 +7,7 @@ const lock_mod = @import("lock.zig");
 const resolve_mod = @import("resolve.zig");
 const fetch = @import("fetch.zig");
 const directives = @import("directives.zig");
+const semver = @import("semver.zig");
 
 pub const Result = resolve_mod.Result;
 pub const Package = resolve_mod.Package;
@@ -162,7 +163,9 @@ pub fn cmdAdd(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Environ
 }
 
 /// Add `#use <name> from "<source>"` to the fels.pkg in `dir` (creating it when there is
-/// none) and resolve. On failure fels.pkg is left as it was.
+/// none) and resolve. Without a `version`, a package that resolves to a version tag gets the
+/// range of that version (`^0.4` for 0.4.2, `^1.2` for 1.2.0), so a later `fels update` does not
+/// bring a version that breaks it. On failure fels.pkg is left as it was.
 pub fn add(
     a: std.mem.Allocator,
     io: std.Io,
@@ -187,6 +190,7 @@ pub fn add(
     }
     text.print(a, "#use {s} from \"{s}\"", .{ name, source }) catch return error.OutOfMemory;
     if (version) |v| text.print(a, " version \"{s}\"", .{v}) catch return error.OutOfMemory;
+    const after_name = text.items.len;
     if (may) |m| text.print(a, "\n    may {s}", .{m}) catch return error.OutOfMemory;
     text.appendSlice(a, ";\n") catch return error.OutOfMemory;
 
@@ -200,7 +204,16 @@ pub fn add(
         std.debug.print("fels add: fels.pkg was not changed\n", .{});
         return err;
     };
-    return result.?.find(name).?;
+    const p = result.?.find(name).?;
+    if (version == null) if (semver.Version.parse(p.version)) |v| if (v.pre.len == 0) {
+        // The range goes in after the source; the version resolved stays in fels.lock.
+        var with_range: std.ArrayList(u8) = .empty;
+        with_range.appendSlice(a, text.items[0..after_name]) catch return error.OutOfMemory;
+        with_range.print(a, " version \"^{d}.{d}\"", .{ v.major, v.minor }) catch return error.OutOfMemory;
+        with_range.appendSlice(a, text.items[after_name..]) catch return error.OutOfMemory;
+        cwd.writeFile(io, .{ .sub_path = path, .data = with_range.items }) catch {};
+    };
+    return p;
 }
 
 /// `fels remove <name>...`: take the `#use` lines out of fels.pkg and the packages that are no
