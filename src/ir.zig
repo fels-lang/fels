@@ -2500,9 +2500,13 @@ const FunctionLowerer = struct {
                 .base = .{ .local = iter_name },
                 .index = .{ .local = index_name },
             } });
-        try self.emitNoResult(binding_ty, .{ .store_local = .{ .name = for_stmt.binding, .value = item } });
+        // Declared like any local, so what the body does with it knows its type (`x == "a"` on a
+        // `[]const u8` element compares the text).
+        const binding_name = try self.declareLocal(for_stmt.binding, binding_ty);
+        try self.emitNoResult(binding_ty, .{ .store_local = .{ .name = binding_name, .value = item } });
         if (for_stmt.index_binding) |name| {
-            try self.emitNoResult(.usize, .{ .store_local = .{ .name = name, .value = .{ .local = index_name } } });
+            const index_binding = try self.declareLocal(name, .usize);
+            try self.emitNoResult(.usize, .{ .store_local = .{ .name = index_binding, .value = .{ .local = index_name } } });
         }
         try self.lowerBlock(for_stmt.body.statements, .{ .branch = increment_id });
 
