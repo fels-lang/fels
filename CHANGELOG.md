@@ -40,6 +40,9 @@ the major version is `0`, any minor bump may break source compatibility.
   `Arena`) was "no visible method", and where it was found, the call could go to the free
   function. A candidate that cannot take the receiver is now passed over, and the call goes to
   the method that was chosen.
+- **A keyword in an import path** (`#import app.import.prices;`, for a folder `import`) said
+  only "expected ; after import". It now says that the name is a keyword and the file or folder
+  needs another one.
 - **`fels update` said "everything is at the newest version"** right after it took a new
   one, when a range in fels.pkg had changed. It now tells the change against fels.lock as it
   was (`imgui: 0.2.0 -> 0.3.0`).
