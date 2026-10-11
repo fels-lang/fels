@@ -136,6 +136,9 @@ them from there, without git and without the cache, so a project can carry its p
 - **Imports:** a package's name becomes an import root for every artifact of the build:
   `#import mathlib` reads `<root>/mathlib.fels`, `#import mathlib.ops` reads `<root>/ops.fels`.
   `a.add_module(name, dir)` in `build.fels` can point a name somewhere else.
+- **The project's own name** is an import root too. A library with `#package mathx` imports
+  itself as its users do, so its examples and tests can say `#import mathx;`. This works in
+  `fels build`, `fels test` and the editor. A `#use` with the project's own name is an error.
 - **The cache:** git packages live in `%LOCALAPPDATA%\fels\pkg` on Windows and
   `~/.cache/fels/pkg` elsewhere, one folder per package and commit, without `.git`.
   `FELS_PKG_DIR` sets another folder. Fetching needs `git` on the PATH.
@@ -145,7 +148,8 @@ them from there, without git and without the cache, so a project can carry its p
 A package is its Fels sources. When it also has a `build.fels`, `fels build` runs it for the
 project that uses the package, with the capabilities `fels.pkg` grants the package (not with the
 host access the project's own `build.fels` has). Its artifacts and steps are not built there;
-what counts is what it provides to every artifact of the project:
+what counts is what it provides to every artifact of the project, and to the test programs of
+`fels test`:
 
 ```fels
 // the build.fels of a package that wraps a C library
