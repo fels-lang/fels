@@ -144,7 +144,8 @@ pub fn main(init: std.process.Init) u8 {
         return fels.pkg.project.cmdUpdate(ra, io, init.environ_map, rest);
     }
 
-    // `fels test [paths...]` runs the #test functions of the project's files (no LLVM needed).
+    // `fels test [paths...]` runs the #test functions of the project's files: as native
+    // programs, or on the comptime VM in a fels without LLVM.
     if (std.mem.eql(u8, cmd, "test")) {
         const ra = init.arena.allocator();
         var paths: std.ArrayList([]const u8) = .empty;
@@ -162,7 +163,13 @@ pub fn main(init: std.process.Init) u8 {
         const exe_dir: ?[]const u8 = std.process.executableDirPathAlloc(io, ra) catch null;
         if (resolveStdRoot(ra, io, init.environ_map, std_flag, exe_dir)) |root|
             fels.pipeline_mod.stdlib_root_override = root;
-        return fels.test_cmd.cmd(allocator, io, init.environ_map, paths.items);
+        const link = linkPaths(ra, io) catch return 1;
+        return fels.test_cmd.cmd(allocator, io, .{
+            .paths = paths.items,
+            .environ = init.environ_map,
+            .llvm_bin = link.llvm_bin,
+            .lib_paths = link.lib_paths,
+        });
     }
 
     // `fels bindgen <header.h>` generates Fels FFI bindings from a C header.
@@ -549,6 +556,19 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
 }
 
 // Build system (`fels build` with a build.fels)
+
+/// The LLVM bin folder and the library folders a link needs, as `fels build` finds them:
+/// from how fels was built, or the MSVC libraries of this machine.
+fn linkPaths(a: std.mem.Allocator, io: std.Io) error{OutOfMemory}!struct { llvm_bin: []const u8, lib_paths: []const []const u8 } {
+    const llvm_bin = if (fels.llvm_path.len != 0) try std.fmt.allocPrint(a, "{s}/bin", .{fels.llvm_path}) else "";
+    var lib_paths: std.ArrayList([]const u8) = .empty;
+    if (fels.windows_sdk_lib_path.len != 0) try lib_paths.append(a, fels.windows_sdk_lib_path);
+    if (fels.ucrt_lib_path.len != 0) try lib_paths.append(a, fels.ucrt_lib_path);
+    if (fels.msvc_lib_path.len != 0) {
+        try lib_paths.append(a, fels.msvc_lib_path);
+    } else if (fels.msvc.discoverLibX64(a, io)) |p| try lib_paths.append(a, p);
+    return .{ .llvm_bin = llvm_bin, .lib_paths = lib_paths.items };
+}
 
 fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, rest: []const []const u8) u8 {
     if (!fels.llvm_enabled) return noLlvm();

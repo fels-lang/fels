@@ -1,11 +1,14 @@
-//! `fels test`: run the `#test` functions of a project's files on the comptime VM.
+//! `fels test`: run the `#test` functions of a project's files.
 //!
-//! Each file is compiled on its own, the front end with the runtime as `fels check` does, and
-//! nothing is generated or linked, so this works without LLVM. A file that does not compile
-//! shows its diagnostics and counts as failed. Of a file that compiles, the `#test` functions
-//! declared in that file run (not those of the files it imports; they run when those files are
-//! tested). Imports resolve as in `fels build`: the packages of fels.pkg and the project's own
-//! package name.
+//! Each file is compiled on its own. A file that does not compile shows its diagnostics and
+//! counts as failed. Of a file that compiles, the `#test` functions declared in that file run
+//! (not those of the files it imports; they run when those files are tested). Imports resolve
+//! as in `fels build`: the packages of fels.pkg and the project's own package name.
+//!
+//! With LLVM, the tests of a file run as a native program (`pipeline.test_runner`): they can
+//! read files, call C and do whatever the program can. The program is linked like an
+//! artifact of the project and runs in the project folder. Without LLVM, or with
+//! `comptime_only`, they run on the comptime VM, as `fels build` runs them.
 
 const std = @import("std");
 const pipeline = @import("pipeline.zig");
@@ -15,6 +18,8 @@ const runtime = @import("runtime.zig");
 const style = @import("style.zig");
 const pkg = @import("pkg.zig");
 const build = @import("build.zig");
+const driver = @import("driver.zig");
+const build_options = @import("build_options");
 
 pub const Options = struct {
     /// The project folder. Its fels.pkg gives the packages and the project's own package, and
@@ -26,6 +31,12 @@ pub const Options = struct {
     environ: ?*const std.process.Environ.Map = null,
     /// Colors for the diagnostics.
     palette: style.Palette = .plain,
+    /// Run the tests on the comptime VM, also when native test programs can be built.
+    comptime_only: bool = false,
+    /// For linking the test programs: the LLVM bin folder and the library folders, as
+    /// `fels build` gets them.
+    llvm_bin: []const u8 = "",
+    lib_paths: []const []const u8 = &.{},
 };
 
 pub const Summary = struct {
@@ -70,10 +81,12 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
     const loaded = try pkg.project.load(a, io, opts.project_dir, opts.environ, .{ .skip_missing = true });
     var roots: std.ArrayList(pipeline.ModuleRoot) = .empty;
     var caps: []const ir.FolderCaps = &.{};
+    var packages: []const pkg.resolve.Package = &.{};
     if (loaded) |r| {
         if (r.self_root) |s| try roots.append(a, s);
         for (r.packages) |p| try roots.append(a, .{ .name = p.name, .dir = p.import_dir });
         caps = try build.folderCaps(a, r.packages);
+        packages = r.packages;
         for (r.missing) |name|
             try out.print("note: the package `{s}` is in fels.pkg but not fetched yet; run `fels fetch`\n", .{name});
     }
@@ -103,9 +116,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
         }
     }
 
+    var native: ?Native = null;
+    if (build_options.enable_llvm and !opts.comptime_only)
+        native = try Native.init(gpa, io, a, out, opts, packages, caps);
+
     var summary: Summary = .{};
     for (files.list.items) |path| {
-        try testFile(gpa, io, out, path, try displayPath(a, path), opts.palette, &summary);
+        try testFile(gpa, io, out, path, try displayPath(a, path), opts.palette, if (native) |*n| n else null, &summary);
         try out.flush();
     }
 
@@ -121,7 +138,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
     return summary;
 }
 
-/// Compile one file, show its diagnostics, and run its own `#test` functions.
+/// Compile one file, show its diagnostics, and run its own `#test` functions: as a native
+/// program with `native`, else on the comptime VM.
 fn testFile(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -129,8 +147,12 @@ fn testFile(
     path: []const u8,
     display: []const u8,
     palette: style.Palette,
+    native: ?*const Native,
     summary: *Summary,
 ) Error!void {
+    const saved_runner = pipeline.test_runner;
+    pipeline.test_runner = native != null;
+    defer pipeline.test_runner = saved_runner;
     var fe = pipeline.compileFileWithRuntime(gpa, io, path) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
@@ -157,6 +179,7 @@ fn testFile(
 
     const selected: ir.TestOptions = .{ .only_file = path };
     if (ir.countTestDecls(fe.module, selected) == 0) return;
+    if (native) |n| return n.testFile(gpa, io, out, fe, path, display, summary);
     const report = ir.runComptimeTestsWith(gpa, fe, selected) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.SemanticFailed => {
@@ -177,6 +200,218 @@ fn testFile(
     summary.passed += report.passed;
     summary.failed += report.failed;
     summary.skipped += report.skipped;
+}
+
+/// How the test programs are built and run.
+const Native = struct {
+    llvm_bin: []const u8,
+    lib_paths: []const []const u8,
+    libs: []const []const u8,
+    runtime_files: []const []const u8,
+    /// Where the programs go: `.fels-cache/test` in the project folder.
+    out_dir: []const u8,
+    /// The project folder, where the programs run.
+    cwd: []const u8,
+
+    fn init(
+        gpa: std.mem.Allocator,
+        io: std.Io,
+        a: std.mem.Allocator,
+        out: *std.Io.Writer,
+        opts: Options,
+        packages: []const pkg.resolve.Package,
+        caps: []const ir.FolderCaps,
+    ) Error!Native {
+        const link = build.testLinkInputs(gpa, io, a, opts.project_dir, packages, caps) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                // The reason is printed above.
+                try out.writeAll("fels test: the build.fels of the project or of a package failed\n");
+                try out.flush();
+                return error.PackageError;
+            },
+        };
+        var lib_paths: std.ArrayList([]const u8) = .empty;
+        try lib_paths.appendSlice(a, opts.lib_paths);
+        try lib_paths.appendSlice(a, link.lib_paths.items);
+        const cwd = std.process.currentPathAlloc(io, a) catch try a.dupe(u8, ".");
+        const project = try std.fs.path.resolve(a, &.{ cwd, opts.project_dir });
+        const out_dir = try std.fs.path.join(a, &.{ project, ".fels-cache", "test" });
+        std.Io.Dir.cwd().createDirPath(io, out_dir) catch {};
+        return .{
+            .llvm_bin = opts.llvm_bin,
+            .lib_paths = lib_paths.items,
+            .libs = link.links.items,
+            .runtime_files = link.runtime_files.items,
+            .out_dir = out_dir,
+            .cwd = project,
+        };
+    }
+
+    /// Build the test program of the file `fe` compiled (with `pipeline.test_runner`), run
+    /// it, and report each test.
+    fn testFile(
+        self: *const Native,
+        gpa: std.mem.Allocator,
+        io: std.Io,
+        out: *std.Io.Writer,
+        fe: pipeline.FrontEnd,
+        path: []const u8,
+        display: []const u8,
+        summary: *Summary,
+    ) Error!void {
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        // One program per file, also for files of the same name in different folders.
+        const flat = try a.dupe(u8, display);
+        for (flat) |*c| if (c.* == '/' or c.* == ':') {
+            c.* = '_';
+        };
+        const exe = try std.fmt.allocPrint(a, "{s}{c}{s}.exe", .{ self.out_dir, std.fs.path.sep, flat });
+        const obj = try std.fmt.allocPrint(a, "{s}.o", .{exe});
+        driver.emitLlvmFromFrontend(gpa, io, fe, .{
+            .file_name = path,
+            .source = "",
+            .obj_path = obj,
+            .exe_path = exe,
+            .opt_level = 0,
+            .llvm_bin = self.llvm_bin,
+            .lib_paths = self.lib_paths,
+            .extra_libs = self.libs,
+        }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                // The linker or the backend printed the reason.
+                try out.print("{s}\n  \u{2717} the test program does not build\n", .{display});
+                summary.broken += 1;
+                return;
+            },
+        };
+        self.copyRuntimeFiles(gpa, io);
+
+        try out.print("{s}\n", .{display});
+        // After a crash, or a `t.fatal`, the program starts again behind that test.
+        var from: u32 = 0;
+        while (true) {
+            var num: [16]u8 = undefined;
+            const argv: []const []const u8 = if (from == 0)
+                &.{exe}
+            else
+                &.{ exe, std.fmt.bufPrint(&num, "{d}", .{from}) catch unreachable };
+            const r = std.process.run(a, io, .{ .argv = argv, .cwd = .{ .path = self.cwd } }) catch {
+                try out.writeAll("  \u{2717} the test program could not be started\n");
+                summary.broken += 1;
+                return;
+            };
+            const ran = try readRun(a, out, r, summary);
+            if (ran.done) return;
+            if (ran.started == 0) {
+                // It stopped before the first test it was to run.
+                try out.print("  \u{2717} the test program stopped before its tests ran{s}\n", .{try exitText(a, r)});
+                summary.broken += 1;
+                return;
+            }
+            from += ran.started;
+        }
+    }
+
+    /// Copy the runtime files (DLLs) next to the test programs, so they start.
+    fn copyRuntimeFiles(self: *const Native, gpa: std.mem.Allocator, io: std.Io) void {
+        for (self.runtime_files) |src| {
+            const data = std.Io.Dir.cwd().readFileAlloc(io, src, gpa, .unlimited) catch continue;
+            defer gpa.free(data);
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const dst = std.fmt.bufPrint(&buf, "{s}{c}{s}", .{ self.out_dir, std.fs.path.sep, std.fs.path.basename(src) }) catch continue;
+            std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dst, .data = data }) catch {};
+        }
+    }
+};
+
+/// What a test program writes before its lines of the test protocol
+/// (`ast_prelude.runtime_testing_source`).
+const marker = "@@fels-test ";
+
+/// One run of a test program.
+const Ran = struct {
+    /// The tests that started.
+    started: u32 = 0,
+    /// The program got to the end: every test ran.
+    done: bool = false,
+};
+
+/// Read the protocol lines of a test program's output, and report the tests in it. Text a
+/// test printed is shown when the test fails.
+fn readRun(a: std.mem.Allocator, out: *std.Io.Writer, r: std.process.RunResult, summary: *Summary) Error!Ran {
+    var ran: Ran = .{};
+    var current: ?[]const u8 = null;
+    var msgs: std.ArrayList([]const u8) = .empty;
+    var printed: std.ArrayList(u8) = .empty;
+    var lines = std.mem.splitScalar(u8, r.stdout, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        if (!std.mem.startsWith(u8, line, marker)) {
+            if (current != null) {
+                try printed.appendSlice(a, line);
+                try printed.append(a, '\n');
+            }
+            continue;
+        }
+        const what = line[marker.len..];
+        if (std.mem.startsWith(u8, what, "RUN ")) {
+            current = what["RUN ".len..];
+            ran.started += 1;
+            msgs.clearRetainingCapacity();
+            printed.clearRetainingCapacity();
+        } else if (std.mem.startsWith(u8, what, "MSG ")) {
+            try msgs.append(a, what["MSG ".len..]);
+        } else if (std.mem.eql(u8, what, "PASS")) {
+            if (current) |name| {
+                try out.print("  \u{2713} {s}\n", .{name});
+                summary.passed += 1;
+            }
+            current = null;
+        } else if (std.mem.eql(u8, what, "FAIL")) {
+            if (current) |name| {
+                try printFailure(out, name, msgs.items, printed.items);
+                summary.failed += 1;
+            }
+            current = null;
+        } else if (std.mem.eql(u8, what, "END")) {
+            ran.done = true;
+        }
+    }
+    // The program ended inside a test: it crashed (or called `exit`).
+    if (current) |name| {
+        const stderr = std.mem.trim(u8, r.stderr, " \r\n");
+        const why = if (stderr.len != 0) stderr else try std.fmt.allocPrint(a, "crashed{s}", .{try exitText(a, r)});
+        try msgs.append(a, why);
+        try printFailure(out, name, msgs.items, printed.items);
+        summary.failed += 1;
+    }
+    return ran;
+}
+
+/// `✗ name: first message`, the other messages below it, then what the test printed.
+fn printFailure(out: *std.Io.Writer, name: []const u8, msgs: []const []const u8, printed: []const u8) Error!void {
+    if (msgs.len == 0)
+        try out.print("  \u{2717} {s}\n", .{name})
+    else
+        try out.print("  \u{2717} {s}: {s}\n", .{ name, msgs[0] });
+    if (msgs.len > 1) for (msgs[1..]) |m| try out.print("      {s}\n", .{m});
+    const text = std.mem.trim(u8, printed, " \r\n");
+    if (text.len == 0) return;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |l| try out.print("      | {s}\n", .{std.mem.trimEnd(u8, l, "\r")});
+}
+
+/// ` (exit code N)` for how the program ended, or nothing.
+fn exitText(a: std.mem.Allocator, r: std.process.RunResult) error{OutOfMemory}![]const u8 {
+    return switch (r.term) {
+        .exited => |code| try std.fmt.allocPrint(a, " (exit code {d})", .{code}),
+        else => "",
+    };
 }
 
 /// The files to test, in order, each once.
@@ -248,17 +483,16 @@ fn fileExists(io: std.Io, path: []const u8) bool {
 }
 
 /// `fels test [paths...]` on the command line: the report goes to stderr, like the other
-/// commands' output. Returns the exit code: 1 when a test failed or a file has errors.
-pub fn cmd(gpa: std.mem.Allocator, io: std.Io, environ: ?*const std.process.Environ.Map, paths: []const []const u8) u8 {
+/// commands' output. `opts` is all but the colors. Returns the exit code: 1 when a test
+/// failed or a file has errors.
+pub fn cmd(gpa: std.mem.Allocator, io: std.Io, opts: Options) u8 {
     var buf: [4096]u8 = undefined;
     // Streaming: the parser prints to stderr too, and a positional writer would write over it
     // when stderr is a file.
     var w = std.Io.File.stderr().writerStreaming(io, &buf);
-    const summary = run(gpa, io, &w.interface, .{
-        .paths = paths,
-        .environ = environ,
-        .palette = style.forStderr(),
-    }) catch |err| {
+    var with_colors = opts;
+    with_colors.palette = style.forStderr();
+    const summary = run(gpa, io, &w.interface, with_colors) catch |err| {
         w.interface.flush() catch {};
         switch (err) {
             error.PackageError, error.BadPath => {},
