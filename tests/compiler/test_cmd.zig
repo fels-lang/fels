@@ -288,6 +288,40 @@ test "fels test: natively, an app's tests write files, and a failing one shows w
     try std.testing.expect(std.mem.endsWith(u8, r.text, "\n2 passed, 1 failed\n"));
 }
 
+// `a.alloc_bytes(4)` is std.heap's method on Arena. A free `alloc_bytes(n: i32)` in the program
+// made it "no visible method", and once found, the call went to the free one.
+const same_name_source =
+    \\#import std.heap as heap;
+    \\
+    \\alloc_bytes :: fn(n: i32) -> i32 { return n + 1; }
+    \\
+    \\#test
+    \\the_method_and_the_function_both_answer :: fn(t: *Test) {
+    \\    a := heap::make();
+    \\    b := a.alloc_bytes(4usize);
+    \\    b[3] = 7u8;
+    \\    t.eq(b.len, 4usize);
+    \\    t.eq(alloc_bytes(b[3] as i32), 8);
+    \\    a.deinit();
+    \\}
+    \\
+;
+
+test "fels test: a free function does not hide a method of the same name from another module" {
+    const dir = ".zig-cache/tc_method_same_name";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/main.fels", same_name_source);
+    const vm = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(vm.text);
+    try expectHas(vm.text, "  \u{2713} the_method_and_the_function_both_answer\n");
+    if (comptime !fels.llvm_enabled) return;
+    if (comptime builtin.os.tag != .windows) return;
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try expectHas(native.text, "  \u{2713} the_method_and_the_function_both_answer\n");
+}
+
 test "fels test: natively, a file without tests compiles as it is and is not an error" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
