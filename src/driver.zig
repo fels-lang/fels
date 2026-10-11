@@ -299,12 +299,15 @@ pub fn compileFileWithLlvm(
     }
 }
 
-fn emitLlvmFromFrontend(
+/// Lower a checked front end and emit it: the object, and with `opts.exe_path` the linked
+/// program. `opts.file_name` names the module; `opts.source` is not read.
+pub fn emitLlvmFromFrontend(
     allocator: std.mem.Allocator,
     io: std.Io,
     fe: pipeline.FrontEnd,
     opts: LlvmCompileOptions,
 ) LlvmDriverError!void {
+    if (!build_options.enable_llvm) return error.LlvmNotEnabled;
     var ir_arena = std.heap.ArenaAllocator.init(allocator);
     defer ir_arena.deinit();
     const ir_allocator = ir_arena.allocator();
