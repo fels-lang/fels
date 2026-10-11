@@ -3095,9 +3095,10 @@ const Checker = struct {
             .ident => |name| {
                 // Compile-time pseudo-modules return unknown so field access works.
                 if (std.mem.eql(u8, name, "TARGET")) return .unknown;
+                // A local named like a builtin (`any`, `narrow`) is the local.
+                if (self.lookupLocal(name)) |local_ty| return local_ty;
                 if (isBuiltinValue(name)) return .void;
                 if (std.mem.startsWith(u8, name, ".")) return .error_ty;
-                if (self.lookupLocal(name)) |local_ty| return local_ty;
                 if (self.resolveTypeParam(name)) |type_param_ty| return type_param_ty;
                 if (self.resolveSymbol(name)) |id| {
                     try self.env.expr_symbols.put(expr.id, id);

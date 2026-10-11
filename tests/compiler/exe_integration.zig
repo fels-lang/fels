@@ -1932,6 +1932,35 @@ test "exe: a local shadows a top-level function of the same name" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: a local may be named like a builtin" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Strata: `any := false` was declared, but `any = true` then said "expected `void`": the
+    // name was read as the builtin `any` before the local.
+    const code = try compileAndRun(arena.allocator(),
+        \\count :: fn(xs: []const i32) -> i32 {
+        \\    any := false;
+        \\    narrow: i32 = 0;
+        \\    for x in xs {
+        \\        if x > 2 {
+        \\            any = true;
+        \\            narrow += x;
+        \\        }
+        \\    }
+        \\    if !any { return -1; }
+        \\    return narrow;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    xs: [4]i32 = .{ 1, 3, 5, 2 };
+        \\    none: [1]i32 = .{ 1 };
+        \\    return count(xs[:]) * 10 + count(none[:]) + 1;
+        \\}
+    , "exe_local_named_like_builtin");
+    try std.testing.expectEqual(@as(u32, 80), code);
+}
+
 test "exe: a local inferred from a usize const stays integer-typed" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
