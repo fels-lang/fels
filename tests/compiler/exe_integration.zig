@@ -3298,6 +3298,29 @@ test "exe: failing #test fails the build" {
     , "exe_ctest_fail"));
 }
 
+test "exe: a #test the comptime VM cannot run does not fail the build" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A host call and a write to a global stop the VM; `fels test` runs such tests as a
+    // program, so the build skips them with a note.
+    const code = try compileAndRun(arena.allocator(),
+        \\counter: i32 = 0;
+        \\#test
+        \\asks_the_os :: fn(t: *Test) {
+        \\    t.expect(os_pid() > 0i64);
+        \\}
+        \\#test
+        \\counts :: fn(t: *Test) {
+        \\    counter += 1;
+        \\    t.eq(counter, 1);
+        \\}
+        \\main :: fn() -> i32 { return 5; }
+    , "exe_ctest_skip");
+    try std.testing.expectEqual(@as(u32, 5), code);
+}
+
 test "exe: t.fatal fails the build with its message" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
