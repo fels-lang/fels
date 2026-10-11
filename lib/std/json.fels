@@ -1,0 +1,479 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.json — reading JSON (RFC 8259): the text becomes a tree of values in an arena, to look
+// into with `get` (a member of an object), `at` (an element of an array) and the `as_*`
+// readers.
+//
+//   doc := json::parse(text, &a) catch err { ... };      // a JsonError
+//   quote := doc.get("chart").get("result").at(0);
+//   for t in quote.get("timestamp").items { day := t.as_i64() ?? 0i64; ... }
+//
+// A lookup that finds nothing gives a null value, so a chain of them needs no checks on the
+// way; an `as_*` reader gives null for a value of another kind. A number keeps the text it was
+// written as (for a decimal type, or digits an f64 cannot hold) next to its f64, which is exact
+// for numbers of up to 15 digits. Strings are unescaped, a \u escape (also a surrogate pair) as
+// UTF-8; a string without escapes is a slice of the text. Nesting deeper than 512 is refused.
+
+#import std.heap.{ Arena };
+#import std.vec as vec;
+#import std.vec.{ Vec };
+
+pub JsonError :: errors {
+    unexpected_end,     // the text ends inside a value
+    unexpected_byte,    // a byte that cannot stand where it stands
+    bad_number,
+    bad_string,         // a bad escape, or a control character in a string
+    too_deep,           // arrays and objects nested deeper than 512
+    trailing_text,      // something after the value
+}
+
+pub Kind :: enum { null_value, boolean, number, string, array, object }
+
+pub Value :: struct {
+    kind: Kind,
+    flag: bool,             // the value of a boolean
+    number: f64,            // the value of a number
+    text: []const u8,       // the value of a string, or a number as it was written
+    items: []Value,         // the elements of an array, or the values of an object's members
+    keys: [][]const u8,     // the names of an object's members, in the order of `items`
+
+    // The member `key` of an object (the first of that name); null when there is none, or for
+    // a value that is no object.
+    pub get :: fn(self: Self, key: []const u8) -> Value {
+        if self.kind == .object {
+            i: usize = 0usize;
+            while i < self.keys.len {
+                if self.keys[i] == key { return self.items[i]; }
+                i += 1usize;
+            }
+        }
+        return null_value();
+    }
+
+    // Element `i` of an array; null past its end, or for a value that is no array.
+    pub at :: fn(self: Self, i: usize) -> Value {
+        if self.kind == .array && i < self.items.len { return self.items[i]; }
+        return null_value();
+    }
+
+    // How many elements an array has, or members an object; 0 for any other value.
+    pub len :: fn(self: Self) -> usize {
+        if self.kind == .array || self.kind == .object { return self.items.len; }
+        return 0usize;
+    }
+
+    pub is_null :: fn(self: Self) -> bool { return self.kind == .null_value; }
+
+    pub as_f64 :: fn(self: Self) -> ?f64 {
+        if self.kind == .number { return self.number; }
+        return null;
+    }
+
+    // A number that is a whole number and fits an i64 (exact for up to 18 digits).
+    pub as_i64 :: fn(self: Self) -> ?i64 {
+        if self.kind != .number { return null; }
+        exact := whole(self.text);
+        if exact != null { return exact; }
+        if self.number != self.number { return null; }
+        if self.number < -9223372036854774784.0 || self.number > 9223372036854774784.0 { return null; }
+        n := self.number as i64;
+        if (n as f64) != self.number { return null; }
+        return n;
+    }
+
+    pub as_text :: fn(self: Self) -> ?[]const u8 {
+        if self.kind == .string { return self.text; }
+        return null;
+    }
+
+    pub as_bool :: fn(self: Self) -> ?bool {
+        if self.kind == .boolean { return self.flag; }
+        return null;
+    }
+}
+
+// The null value, which a lookup that finds nothing gives too.
+pub null_value :: fn() -> Value {
+    none: [0]Value = .{};
+    names: [0][]const u8 = .{};
+    out: Value = .{ .null_value, false, 0.0, "", none[:], names[:] };
+    return out;
+}
+
+// The value `text` holds, in `a`. A UTF-8 byte order mark at the start is skipped.
+pub parse :: fn(text: []const u8, a: *Arena) -> Value ! JsonError {
+    p: Parser = .{ text, 0usize, a, 0u32 };
+    if text.len >= 3usize && text[0] == 0xEFu8 && text[1] == 0xBBu8 && text[2] == 0xBFu8 { p.at = 3usize; }
+    v := value(&p)?;
+    skip_space(&p);
+    if p.at < p.text.len { fail .trailing_text; }
+    return v;
+}
+
+MAX_DEPTH :: 512u32;
+TEN_22 :: 10000000000000000000000.0;
+
+QUOTE :: 34u8;
+BACKSLASH :: 92u8;
+
+Parser :: struct {
+    text: []const u8,
+    at: usize,
+    a: *Arena,
+    depth: u32,
+}
+
+value :: fn(p: *Parser) -> Value ! JsonError {
+    skip_space(p);
+    if p.at >= p.text.len { fail .unexpected_end; }
+    c := p.text[p.at];
+    if c == 123u8 { return object(p); }
+    if c == 91u8 { return array(p); }
+    if c == QUOTE {
+        s := string(p)?;
+        out := null_value();
+        out.kind = .string;
+        out.text = s;
+        return out;
+    }
+    if c == 116u8 {
+        word(p, "true")?;
+        out := null_value();
+        out.kind = .boolean;
+        out.flag = true;
+        return out;
+    }
+    if c == 102u8 {
+        word(p, "false")?;
+        out := null_value();
+        out.kind = .boolean;
+        return out;
+    }
+    if c == 110u8 {
+        word(p, "null")?;
+        return null_value();
+    }
+    if c == 45u8 || is_digit(c) { return number(p); }
+    fail .unexpected_byte;
+}
+
+object :: fn(p: *Parser) -> Value ! JsonError {
+    p.depth += 1u32;
+    if p.depth > MAX_DEPTH { fail .too_deep; }
+    p.at += 1usize;
+    keys := vec::make([]const u8, p.a);
+    items := vec::make(Value, p.a);
+    skip_space(p);
+    if p.at < p.text.len && p.text[p.at] == 125u8 {
+        p.at += 1usize;
+    } else {
+        while true {
+            skip_space(p);
+            if p.at >= p.text.len { fail .unexpected_end; }
+            if p.text[p.at] != QUOTE { fail .unexpected_byte; }
+            k := string(p)?;
+            skip_space(p);
+            if p.at >= p.text.len { fail .unexpected_end; }
+            if p.text[p.at] != 58u8 { fail .unexpected_byte; }
+            p.at += 1usize;
+            v := value(p)?;
+            keys.push(k);
+            items.push(v);
+            if end_of(p, 125u8)? { break; }
+        }
+    }
+    p.depth -= 1u32;
+    out := null_value();
+    out.kind = .object;
+    out.items = items.items();
+    out.keys = keys.items();
+    return out;
+}
+
+array :: fn(p: *Parser) -> Value ! JsonError {
+    p.depth += 1u32;
+    if p.depth > MAX_DEPTH { fail .too_deep; }
+    p.at += 1usize;
+    items := vec::make(Value, p.a);
+    skip_space(p);
+    if p.at < p.text.len && p.text[p.at] == 93u8 {
+        p.at += 1usize;
+    } else {
+        while true {
+            v := value(p)?;
+            items.push(v);
+            if end_of(p, 93u8)? { break; }
+        }
+    }
+    p.depth -= 1u32;
+    out := null_value();
+    out.kind = .array;
+    out.items = items.items();
+    return out;
+}
+
+// After a member or an element: true at `close`, false at a comma (both read).
+end_of :: fn(p: *Parser, close: u8) -> bool ! JsonError {
+    skip_space(p);
+    if p.at >= p.text.len { fail .unexpected_end; }
+    c := p.text[p.at];
+    p.at += 1usize;
+    if c == close { return true; }
+    if c == 44u8 { return false; }
+    fail .unexpected_byte;
+}
+
+// The string that starts at the quote at `p.at`, unescaped: a slice of the text when it has no
+// escapes, else a copy in the arena.
+string :: fn(p: *Parser) -> []const u8 ! JsonError {
+    p.at += 1usize;
+    start := p.at;
+    while p.at < p.text.len {
+        c := p.text[p.at];
+        if c == QUOTE {
+            plain := p.text[start..p.at];
+            p.at += 1usize;
+            return plain;
+        }
+        if c == BACKSLASH { break; }
+        if c < 32u8 { fail .bad_string; }
+        p.at += 1usize;
+    }
+    if p.at >= p.text.len { fail .unexpected_end; }
+    out := vec::make(u8, p.a);
+    out.extend(p.text[start..p.at]);
+    while p.at < p.text.len {
+        c := p.text[p.at];
+        if c == QUOTE {
+            p.at += 1usize;
+            return out.items();
+        }
+        if c < 32u8 { fail .bad_string; }
+        p.at += 1usize;
+        if c != BACKSLASH {
+            out.push(c);
+            continue;
+        }
+        if p.at >= p.text.len { fail .unexpected_end; }
+        e := p.text[p.at];
+        p.at += 1usize;
+        if e == QUOTE || e == BACKSLASH || e == 47u8 {
+            out.push(e);
+        } else if e == 98u8 {
+            out.push(8u8);
+        } else if e == 102u8 {
+            out.push(12u8);
+        } else if e == 110u8 {
+            out.push(10u8);
+        } else if e == 114u8 {
+            out.push(13u8);
+        } else if e == 116u8 {
+            out.push(9u8);
+        } else if e == 117u8 {
+            cp := hex4(p)?;
+            if cp >= 0xDC00u32 && cp < 0xE000u32 { fail .bad_string; }
+            if cp >= 0xD800u32 && cp < 0xDC00u32 {
+                // a surrogate pair: the low half must follow
+                if p.at + 2usize > p.text.len || p.text[p.at] != BACKSLASH || p.text[p.at + 1usize] != 117u8 { fail .bad_string; }
+                p.at += 2usize;
+                low := hex4(p)?;
+                if low < 0xDC00u32 || low >= 0xE000u32 { fail .bad_string; }
+                cp = 0x10000u32 + ((cp - 0xD800u32) << 10u32) + (low - 0xDC00u32);
+            }
+            utf8(&out, cp);
+        } else {
+            fail .bad_string;
+        }
+    }
+    fail .unexpected_end;
+}
+
+// The four hex digits at `p.at`.
+hex4 :: fn(p: *Parser) -> u32 ! JsonError {
+    if p.at + 4usize > p.text.len { fail .unexpected_end; }
+    v: u32 = 0u32;
+    i: usize = 0usize;
+    while i < 4usize {
+        c := p.text[p.at + i];
+        d: u32 = 0u32;
+        if is_digit(c) {
+            d = (c - 48u8) as u32;
+        } else if c >= 97u8 && c <= 102u8 {
+            d = ((c - 97u8) as u32) + 10u32;
+        } else if c >= 65u8 && c <= 70u8 {
+            d = ((c - 65u8) as u32) + 10u32;
+        } else {
+            fail .bad_string;
+        }
+        v = v * 16u32 + d;
+        i += 1usize;
+    }
+    p.at += 4usize;
+    return v;
+}
+
+// `cp` as UTF-8 at the end of `out`.
+utf8 :: fn(out: *Vec(u8), cp: u32) {
+    if cp < 0x80u32 {
+        out.push(cp as u8);
+    } else if cp < 0x800u32 {
+        out.push(0xC0u8 | ((cp >> 6u32) as u8));
+        out.push(0x80u8 | ((cp & 0x3Fu32) as u8));
+    } else if cp < 0x10000u32 {
+        out.push(0xE0u8 | ((cp >> 12u32) as u8));
+        out.push(0x80u8 | (((cp >> 6u32) & 0x3Fu32) as u8));
+        out.push(0x80u8 | ((cp & 0x3Fu32) as u8));
+    } else {
+        out.push(0xF0u8 | ((cp >> 18u32) as u8));
+        out.push(0x80u8 | (((cp >> 12u32) & 0x3Fu32) as u8));
+        out.push(0x80u8 | (((cp >> 6u32) & 0x3Fu32) as u8));
+        out.push(0x80u8 | ((cp & 0x3Fu32) as u8));
+    }
+}
+
+// The number at `p.at`: a minus, the whole part (no leading zero), a fraction, an exponent.
+number :: fn(p: *Parser) -> Value ! JsonError {
+    start := p.at;
+    if p.text[p.at] == 45u8 { p.at += 1usize; }
+    if p.at >= p.text.len { fail .bad_number; }
+    if p.text[p.at] == 48u8 {
+        p.at += 1usize;
+    } else if is_digit(p.text[p.at]) {
+        digits(p);
+    } else {
+        fail .bad_number;
+    }
+    if p.at < p.text.len && p.text[p.at] == 46u8 {
+        p.at += 1usize;
+        if p.at >= p.text.len || !is_digit(p.text[p.at]) { fail .bad_number; }
+        digits(p);
+    }
+    if p.at < p.text.len && (p.text[p.at] == 101u8 || p.text[p.at] == 69u8) {
+        p.at += 1usize;
+        if p.at < p.text.len && (p.text[p.at] == 43u8 || p.text[p.at] == 45u8) { p.at += 1usize; }
+        if p.at >= p.text.len || !is_digit(p.text[p.at]) { fail .bad_number; }
+        digits(p);
+    }
+    out := null_value();
+    out.kind = .number;
+    out.text = p.text[start..p.at];
+    out.number = to_f64(out.text);
+    return out;
+}
+
+digits :: fn(p: *Parser) {
+    while p.at < p.text.len && is_digit(p.text[p.at]) { p.at += 1usize; }
+}
+
+// The value of a number written as JSON writes it (checked before): its first 19 digits as a
+// whole number, times a power of ten.
+to_f64 :: fn(text: []const u8) -> f64 {
+    i: usize = 0usize;
+    negative := false;
+    if text[0] == 45u8 {
+        negative = true;
+        i = 1usize;
+    }
+    mantissa: u64 = 0u64;
+    kept: u32 = 0u32;
+    exp: i64 = 0i64;
+    while i < text.len && is_digit(text[i]) {
+        if kept < 19u32 {
+            mantissa = mantissa * 10u64 + ((text[i] - 48u8) as u64);
+            if mantissa != 0u64 { kept += 1u32; }
+        } else {
+            exp += 1i64;
+        }
+        i += 1usize;
+    }
+    if i < text.len && text[i] == 46u8 {
+        i += 1usize;
+        while i < text.len && is_digit(text[i]) {
+            if kept < 19u32 {
+                mantissa = mantissa * 10u64 + ((text[i] - 48u8) as u64);
+                if mantissa != 0u64 { kept += 1u32; }
+                exp -= 1i64;
+            }
+            i += 1usize;
+        }
+    }
+    if i < text.len {
+        i += 1usize;
+        sign: i64 = 1i64;
+        if text[i] == 45u8 {
+            sign = -1i64;
+            i += 1usize;
+        } else if text[i] == 43u8 {
+            i += 1usize;
+        }
+        e: i64 = 0i64;
+        while i < text.len {
+            // beyond this an f64 is infinite or 0 anyway
+            if e < 1000i64 { e = e * 10i64 + ((text[i] - 48u8) as i64); }
+            i += 1usize;
+        }
+        exp += sign * e;
+    }
+    v := mantissa as f64;
+    if mantissa != 0u64 {
+        // powers of ten up to 10^22 are exact, so a number of up to 15 digits is too
+        while exp > 22i64 {
+            v *= TEN_22;
+            exp -= 22i64;
+        }
+        while exp < -22i64 {
+            v /= TEN_22;
+            exp += 22i64;
+        }
+        if exp > 0i64 {
+            v *= power(exp);
+        } else if exp < 0i64 {
+            v /= power(0i64 - exp);
+        }
+    }
+    if negative { return 0.0 - v; }
+    return v;
+}
+
+// 10^n for n up to 22, exact.
+power :: fn(n: i64) -> f64 {
+    v: f64 = 1.0;
+    i: i64 = 0i64;
+    while i < n {
+        v *= 10.0;
+        i += 1i64;
+    }
+    return v;
+}
+
+// The whole number `text` writes, when it is one of up to 18 digits.
+whole :: fn(text: []const u8) -> ?i64 {
+    i: usize = 0usize;
+    negative := text.len > 0usize && text[0] == 45u8;
+    if negative { i = 1usize; }
+    if text.len - i == 0usize || text.len - i > 18usize { return null; }
+    n: i64 = 0i64;
+    while i < text.len {
+        if !is_digit(text[i]) { return null; }
+        n = n * 10i64 + ((text[i] - 48u8) as i64);
+        i += 1usize;
+    }
+    if negative { return 0i64 - n; }
+    return n;
+}
+
+skip_space :: fn(p: *Parser) {
+    while p.at < p.text.len {
+        c := p.text[p.at];
+        if c != 32u8 && c != 9u8 && c != 10u8 && c != 13u8 { return; }
+        p.at += 1usize;
+    }
+}
+
+// The literal `w` at `p.at`.
+word :: fn(p: *Parser, w: []const u8) -> void ! JsonError {
+    if p.at + w.len > p.text.len { fail .unexpected_end; }
+    if p.text[p.at..(p.at + w.len)] != w { fail .unexpected_byte; }
+    p.at += w.len;
+}
+
+is_digit :: fn(c: u8) -> bool { return c >= 48u8 && c <= 57u8; }
