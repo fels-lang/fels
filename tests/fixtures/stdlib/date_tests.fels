@@ -1,0 +1,104 @@
+// std.time calendar dates, as `#test` functions: `fels test` runs them natively and on the
+// comptime VM (tests/compiler/std_tests.zig).
+#import std.time as time;
+#import std.time.{ Date };
+
+ymd :: fn(t: *Test, d: Date, year: i64, month: u8, day: u8) {
+    p := d.parts();
+    t.eq(p.year, year);
+    t.eq(p.month, month);
+    t.eq(p.day, day);
+}
+
+#test
+the_epoch_is_day_zero :: fn(t: *Test) {
+    d := time::date(1970i64, 1i64, 1i64) ?? time::today_utc();
+    t.eq(d.days, 0i64);
+    t.eq(d.weekday(), 4u8);
+    ymd(t, d, 1970i64, 1u8, 1u8);
+}
+
+#test
+dates_round_trip :: fn(t: *Test) {
+    d := time::date(2024i64, 2i64, 29i64) ?? time::today_utc();
+    t.eq(d.days, 19782i64);
+    ymd(t, d, 2024i64, 2u8, 29u8);
+    t.eq(d.weekday(), 4u8);
+    old := time::date(1900i64, 3i64, 1i64) ?? time::today_utc();
+    t.eq(old.days, -25508i64);
+    ymd(t, old, 1900i64, 3u8, 1u8);
+    far := time::date(2400i64, 12i64, 31i64) ?? time::today_utc();
+    ymd(t, far, 2400i64, 12u8, 31u8);
+}
+
+#test
+days_that_do_not_exist_are_null :: fn(t: *Test) {
+    none: ?Date = null;
+    t.expect(time::date(2023i64, 2i64, 29i64) == none);
+    t.expect(time::date(1900i64, 2i64, 29i64) == none);
+    t.expect(time::date(2024i64, 13i64, 1i64) == none);
+    t.expect(time::date(2024i64, 4i64, 31i64) == none);
+    t.expect(time::date(2024i64, 1i64, 0i64) == none);
+    t.expect(time::date(2000i64, 2i64, 29i64) != none);
+}
+
+#test
+leap_years_and_month_lengths :: fn(t: *Test) {
+    t.expect(time::is_leap_year(2024i64));
+    t.expect(time::is_leap_year(2000i64));
+    t.expect(!time::is_leap_year(1900i64));
+    t.expect(!time::is_leap_year(2023i64));
+    t.eq(time::days_in_month(2024i64, 2i64), 29i64);
+    t.eq(time::days_in_month(2023i64, 2i64), 28i64);
+    t.eq(time::days_in_month(2023i64, 4i64), 30i64);
+    t.eq(time::days_in_month(2023i64, 12i64), 31i64);
+    t.eq(time::days_in_month(2023i64, 13i64), 0i64);
+}
+
+#test
+adding_days_crosses_months_and_years :: fn(t: *Test) {
+    d := time::date(2023i64, 12i64, 31i64) ?? time::today_utc();
+    ymd(t, d.add_days(1i64), 2024i64, 1u8, 1u8);
+    ymd(t, d.add_days(-365i64), 2022i64, 12u8, 31u8);
+    e := d.add_days(60i64);
+    t.eq(d.days_until(e), 60i64);
+    t.eq(e.days_until(d), -60i64);
+}
+
+#test
+adding_months_keeps_the_day_inside_the_month :: fn(t: *Test) {
+    jan31 := time::date(2024i64, 1i64, 31i64) ?? time::today_utc();
+    ymd(t, jan31.add_months(1i64), 2024i64, 2u8, 29u8);
+    ymd(t, jan31.add_months(2i64), 2024i64, 3u8, 31u8);
+    ymd(t, jan31.add_months(-1i64), 2023i64, 12u8, 31u8);
+    ymd(t, jan31.add_months(13i64), 2025i64, 2u8, 28u8);
+    ymd(t, jan31.add_months(-14i64), 2022i64, 11u8, 30u8);
+    leap := time::date(2024i64, 2i64, 29i64) ?? time::today_utc();
+    ymd(t, leap.add_years(1i64), 2025i64, 2u8, 28u8);
+    ymd(t, leap.add_years(4i64), 2028i64, 2u8, 29u8);
+}
+
+#test
+iso_dates_parse_and_format :: fn(t: *Test) {
+    d := time::parse_date("2024-03-15") ?? time::today_utc();
+    ymd(t, d, 2024i64, 3u8, 15u8);
+    buf: [16]u8 = .{};
+    t.eq(time::format_date(d, buf[:]), "2024-03-15");
+    early := time::date(5i64, 7i64, 4i64) ?? time::today_utc();
+    t.eq(time::format_date(early, buf[:]), "0005-07-04");
+    none: ?Date = null;
+    t.expect(time::parse_date("2024-3-15") == none);
+    t.expect(time::parse_date("2024/03/15") == none);
+    t.expect(time::parse_date("2023-02-29") == none);
+    t.expect(time::parse_date("20x4-03-15") == none);
+}
+
+#test
+utc_still_breaks_down_seconds :: fn(t: *Test) {
+    dt := time::utc(1700000000i64);
+    t.eq(dt.year, 2023i64);
+    t.eq(dt.month, 11u8);
+    t.eq(dt.day, 14u8);
+    t.eq(dt.hour, 22u8);
+    t.eq(dt.weekday, 2u8);
+}
