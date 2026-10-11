@@ -11,6 +11,8 @@ the major version is `0`, any minor bump may break source compatibility.
   `time::date(y, m, d)` (null for a day that does not exist), `parts`, `weekday`, `add_days`,
   `add_months` (the day stays inside the month), `add_years`, `days_until`, `parse_date` and
   `format_date` for `YYYY-MM-DD`, `today_utc`, `is_leap_year`, `days_in_month`.
+- **`fels add` without a version writes the range of the version it found**: `version "^0.4"`
+  for 0.4.2, so a later `fels update` does not bring a version that breaks the project.
 - **A match arm can name several enum variants**: `.buy, .sell => …`, as integer and string
   patterns could already. A binding `|x|` still needs an arm of one variant.
 
