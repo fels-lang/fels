@@ -189,6 +189,23 @@ test "packages: fels add writes fels.pkg, and leaves it as it was when that fail
     try std.testing.expectEqualStrings(text, try std.Io.Dir.cwd().readFileAlloc(io, pkg_path, s.mem(), .unlimited));
 }
 
+test "packages: fels add without a version writes the range of the version it found" {
+    var s = (try Setup.init("pk_add_range")) orelse return error.SkipZigTest;
+    defer s.deinit();
+    // The newest tag is v2.0.0: the range keeps a later 3.0 out, and goes before `may`.
+    const p = try project.add(s.mem(), io, &s.env, s.project, "mathlib", s.url, null, "ffi(\"user32\")");
+    try std.testing.expectEqualStrings("2.0.0", p.version);
+    const pkg_path = try std.fmt.allocPrint(s.mem(), "{s}/fels.pkg", .{s.project});
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, pkg_path, s.mem(), .unlimited);
+    const want = try std.fmt.allocPrint(s.mem(), "#use mathlib from \"{s}\" version \"^2.0\"\n    may ffi(\"user32\");\n", .{s.url});
+    if (std.mem.indexOf(u8, text, want) == null) {
+        std.debug.print("fels.pkg:\n{s}\n", .{text});
+        return error.TestUnexpectedResult;
+    }
+    // The file reads back as it says.
+    try std.testing.expectEqualStrings("2.0.0", (try s.load(.{})).find("mathlib").?.version);
+}
+
 test "packages: a package's #run gets the capability fels.pkg grants, and no more" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
