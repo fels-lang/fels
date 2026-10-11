@@ -7422,7 +7422,8 @@ pub fn runComptimeTestsWith(allocator: std.mem.Allocator, front_end: pipeline.Fr
         vm.zone_stack.setCell(cell.ptr.zone, cell.ptr.offset, .{ .int = 0 }) catch return error.SemanticFailed;
         const t_arg = vm_value.Value{ .struct_ref = .{ .zone = cell.ptr.zone, .offset = cell.ptr.offset } };
 
-        if (vm.call(f.name, &.{t_arg})) |_| {
+        // A test named like a function of another file is known by its qualified name.
+        if (vm.call(linkNameFor(front_end.symbols, item.fileName(), f.name), &.{t_arg})) |_| {
             passed += 1;
             try results.append(out, .{ .name = name });
         } else |err| {
