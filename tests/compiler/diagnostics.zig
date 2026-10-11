@@ -1458,3 +1458,17 @@ test "diagnostics: an array length computed at compile time is checked against t
     // not an error.
     try expectNoError(a, four, "N :: #run four();\nmain :: fn() -> i32 { x: [N]i32 = .{ 1, 2, 3, 4 }; return x[3]; }");
 }
+
+test "diagnostics: a keyword in an import path says to rename the file or folder" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Once just "expected ; after import", which does not say what is wrong with the path.
+    var p = try fels.parser_mod.Parser.init(a, "kw.fels", "#import app.import.prices;\n", 1);
+    try std.testing.expectError(error.ParseFailed, p.parseModule());
+    try std.testing.expectEqual(@as(usize, 1), p.diagnostics.items.len);
+    try std.testing.expectEqualStrings(
+        "`import` is a keyword, so a file or folder of that name cannot be imported; rename it",
+        p.diagnostics.items[0].message,
+    );
+}
