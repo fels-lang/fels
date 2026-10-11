@@ -322,6 +322,36 @@ test "fels test: a free function does not hide a method of the same name from an
     try expectHas(native.text, "  \u{2713} the_method_and_the_function_both_answer\n");
 }
 
+test "fels test: a type of another module is a type argument" {
+    const dir = ".zig-cache/tc_scoped_type_arg";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/shapes.fels", "pub Point :: struct { x: i32, y: i32 }\n");
+    // `first(shapes::Point, ...)` was "expected a type argument".
+    try write(dir, "src/main.fels",
+        \\#import shapes;
+        \\
+        \\first :: fn($T: type, xs: []T) -> T { return xs[0]; }
+        \\
+        \\#test
+        \\a_qualified_type_as_an_argument :: fn(t: *Test) {
+        \\    pts: [2]shapes::Point = .{ .{ 3, 4 }, .{ 5, 6 } };
+        \\    p := first(shapes::Point, pts[:]);
+        \\    t.eq(p.x, 3);
+        \\    t.eq(p.y, 4);
+        \\}
+        \\
+    );
+    const vm = try runTests(.{ .project_dir = dir });
+    defer std.testing.allocator.free(vm.text);
+    try expectHas(vm.text, "  \u{2713} a_qualified_type_as_an_argument\n");
+    if (comptime !fels.llvm_enabled) return;
+    if (comptime builtin.os.tag != .windows) return;
+    const native = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(native.text);
+    try expectHas(native.text, "  \u{2713} a_qualified_type_as_an_argument\n");
+}
+
 test "fels test: natively, a file without tests compiles as it is and is not an error" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
