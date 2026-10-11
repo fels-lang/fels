@@ -311,6 +311,25 @@ test "diagnostics: a function or constant from a module imported whole says how 
     try std.testing.expect(std.mem.indexOf(u8, name, "did you mean") == null);
 }
 
+test "diagnostics: a value suggestion is a name the file can write" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const lib = "pub lerp :: fn(x: i32) -> i32 { return x; }\n";
+
+    // `lerp` is in the program but not reachable by that name, so it is no answer to a typo.
+    const typo_whole = (try firstErrorWithLib(a, lib, "#import std.math;\nrun :: fn() -> i32 { return lerq(1); }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, typo_whole, "unknown function `lerq`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, typo_whole, "did you mean") == null);
+    const not_imported = (try firstErrorWithLib(a, lib, "run :: fn() -> i32 { return lerp(1); }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, not_imported, "unknown function `lerp`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, not_imported, "did you mean") == null);
+
+    // Imported by name it is one.
+    const typo_braced = (try firstErrorWithLib(a, lib, "#import std.math.{ lerp };\nrun :: fn() -> i32 { return lerq(1); }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, typo_braced, "did you mean `lerp`?") != null);
+}
+
 /// Fail, printing the program and the diagnostic, unless `prelude` + `body` type-checks
 /// without an error.
 fn expectNoError(arena: std.mem.Allocator, prelude: []const u8, body: []const u8) !void {

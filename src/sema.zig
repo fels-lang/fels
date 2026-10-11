@@ -5559,9 +5559,10 @@ const Checker = struct {
         return best;
     }
 
-    /// The closest value name (local, parameter, function, or const) to `name`,
-    /// within a small edit distance — the "did you mean `x`?" for an unknown
-    /// identifier. Null when nothing is close enough to be a likely typo.
+    /// The closest value name this file can write (local, parameter, function, or
+    /// const) to `name`, within a small edit distance: the "did you mean `x`?"
+    /// for an unknown identifier. Null when nothing is close enough to be a likely
+    /// typo. Never `name` itself: it was not found as written.
     fn suggestValueName(self: *Checker, name: []const u8) ?[]const u8 {
         var best: ?[]const u8 = null;
         var best_dist: usize = 3; // within 2 edits
@@ -5569,7 +5570,7 @@ const Checker = struct {
             fn f(cand: []const u8, target: []const u8, b: *?[]const u8, bd: *usize) void {
                 if (cand.len == 0 or cand[0] == '<') return; // skip synthetics
                 const d = levenshtein(target, cand);
-                if (d < bd.*) {
+                if (d > 0 and d < bd.*) {
                     bd.* = d;
                     b.* = cand;
                 }
@@ -5582,7 +5583,7 @@ const Checker = struct {
         }
         // Top-level values: functions and consts (skip types).
         for (self.symbols.symbols.items) |sym| {
-            if (sym.kind != .type) consider(sym.name, name, &best, &best_dist);
+            if (sym.kind != .type and self.seesByName(sym)) consider(sym.name, name, &best, &best_dist);
         }
         if (best) |b| if (best_dist * 2 > @max(name.len, b.len)) return null;
         return best;
