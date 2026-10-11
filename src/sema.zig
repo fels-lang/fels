@@ -3117,7 +3117,7 @@ const Checker = struct {
                 if (fromBuiltinName(name)) |builtin_ty| return builtin_ty;
                 self.emitErrorRich(expr.span, "unknown name `{s}`", .{name}, .{
                     .primary_label = "not found in this scope",
-                    .help = if (self.suggestValueName(name)) |h| (std.fmt.allocPrint(self.allocator, "did you mean `{s}`?", .{h}) catch null) else null,
+                    .help = self.valueNameHelp(name),
                 });
                 return error.SemanticFailed;
             },
@@ -4029,7 +4029,7 @@ const Checker = struct {
             }
             self.emitErrorRich(call.callee.span, "unknown function `{s}`", .{name}, .{
                 .primary_label = "no such function in scope",
-                .help = if (self.suggestValueName(name)) |h| (std.fmt.allocPrint(self.allocator, "did you mean `{s}`?", .{h}) catch null) else null,
+                .help = self.valueNameHelp(name),
             });
             return error.SemanticFailed;
         };
@@ -5613,6 +5613,14 @@ const Checker = struct {
     fn typeNameHelp(self: *Checker, name: []const u8) ?[]const u8 {
         if (self.namespacedNameHelp(name, true)) |help| return help;
         const hint = self.suggestTypeName(name) orelse return null;
+        return std.fmt.allocPrint(self.allocator, "did you mean `{s}`?", .{hint}) catch null;
+    }
+
+    /// The help for an unknown name or function: how to reach it when a module
+    /// this file imports whole declares it, else the closest name, if one is close.
+    fn valueNameHelp(self: *Checker, name: []const u8) ?[]const u8 {
+        if (self.namespacedNameHelp(name, false)) |help| return help;
+        const hint = self.suggestValueName(name) orelse return null;
         return std.fmt.allocPrint(self.allocator, "did you mean `{s}`?", .{hint}) catch null;
     }
 
