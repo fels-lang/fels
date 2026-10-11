@@ -60,8 +60,8 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
             break :blk llvm.LLVMBuildLoad2(cg.builder, elem_ty, gep, "");
         },
         .index_addr => |ix| blk: {
-            // Debug: bounds check before taking address.
-            if (cg.opt_level == 0) emitBoundsCheck(cg, fncg, ix, instr.location);
+            // Debug: bounds check before taking address (a slice's start checks its own).
+            if (cg.opt_level == 0 and ix.checked) emitBoundsCheck(cg, fncg, ix, instr.location);
             break :blk lowerIndexAddress(cg, fncg, ix, pointerChild(instr.ty) orelse .unknown, instr.location);
         },
 
