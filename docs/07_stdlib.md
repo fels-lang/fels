@@ -136,6 +136,8 @@ Minimal synchronous file I/O (Windows-only currently).
 - `append(path)`: Open for appending
 - `delete(path)`: Remove a file
 - `exists(path)`: Check file existence
+- `make_dir(path)`: Make a folder (one that is there already is fine); `make_dirs(path)` makes
+  the folders above it too; `remove_dir(path)` removes an empty folder
 - Returns a `File` struct which implements both `Reader` and `Writer`.
 
 ## `std.process`
@@ -145,7 +147,10 @@ Process management (Windows-only currently).
 - `wait(child)`, `try_wait(child)`, `kill(child)`, `release(child)`
 - `current_pid()`
 - `get_env`, `set_env`, `unset_env`
-- `command_line`
+- `command_line`: the command line as one text
+- `args(&a)`: the arguments, the program first. On Windows they are split from the command
+  line as the C runtime splits it (`split_command_line(line, &a)` does that for any line:
+  quotes keep spaces, `\"` is a quote); on Linux they are as the kernel passed them.
 
 ## `std.ptr`
 Pointer manipulation and conversions (requires `unsafe` in some contexts).
