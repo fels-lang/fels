@@ -5526,3 +5526,44 @@ test "exe: the variable of a for loop over strings compares as text" {
     ;
     try std.testing.expectEqual(@as(u32, 0), try compileAndRun(arena.allocator(), src, "exe_for_string_binding"));
 }
+
+test "exe: a slice may be empty at the end, and may not reach past it" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The start of a slice was checked as an index (`start < len`), so `s[len..len]` panicked,
+    // while `end > len` was not checked at all. Now `start <= end <= len` holds or it panics.
+    const ok =
+        \\take :: fn(s: []const i32, from: usize, to: usize) -> usize { return s[from..to].len; }
+        \\main :: fn() -> i32 {
+        \\    xs: [3]i32 = .{ 1, 2, 3 };
+        \\    s := xs[:];
+        \\    if take(s, 3usize, 3usize) != 0usize { return 1; }
+        \\    if take(s, 0usize, 0usize) != 0usize { return 2; }
+        \\    if take(s, 1usize, 3usize) != 2usize { return 3; }
+        \\    e := s[3usize..3usize];
+        \\    if e[0usize..0usize].len != 0usize { return 4; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), ok, "exe_slice_empty_end_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), ok, "exe_slice_empty_end_o2", 2));
+    // A panic exits with 0xDEADBEEF; the test sees its low byte.
+    const past =
+        \\take :: fn(s: []const i32, from: usize, to: usize) -> usize { return s[from..to].len; }
+        \\main :: fn() -> i32 {
+        \\    xs: [3]i32 = .{ 1, 2, 3 };
+        \\    return take(xs[:], 1usize, 4usize) as i32;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0xEF), try compileAndRunAt(arena.allocator(), past, "exe_slice_past_end", 2));
+    const backwards =
+        \\take :: fn(s: []const i32, from: usize, to: usize) -> usize { return s[from..to].len; }
+        \\main :: fn() -> i32 {
+        \\    xs: [3]i32 = .{ 1, 2, 3 };
+        \\    return take(xs[:], 2usize, 1usize) as i32;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0xEF), try compileAndRunAt(arena.allocator(), backwards, "exe_slice_backwards", 2));
+}
