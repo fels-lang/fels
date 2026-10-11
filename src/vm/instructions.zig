@@ -199,6 +199,9 @@ pub const BuildOp = enum(u32) {
     }
 };
 
+/// The `imm` of the `trap` a function the VM could not compile runs instead of its body.
+pub const unrunnable_trap: i64 = -2;
+
 pub const Instr = struct {
     op: Opcode,
     a: Reg = 0,

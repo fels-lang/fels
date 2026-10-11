@@ -161,6 +161,11 @@ pub const Vm = struct {
     /// diagnostic to report when the run halts. Points into `concat_strings` or a
     /// module constant, so it lives as long as the VM.
     compiler_error_msg: ?[]const u8 = null,
+    /// Set when the run stopped at something only a running program can do: a host call
+    /// this run may not make, a write to a global, a function the VM could not compile. The
+    /// code is not wrong for that, so the comptime test lane skips such a test instead of
+    /// failing it.
+    needs_runtime: bool = false,
     /// The static data this run has built so far, indexed like the module's `globals`: the value
     /// (a pointer into the static zone) of each one that has been read. Built on first read, so a
     /// run pays only for the tables it touches, and shared by every call in the run.
@@ -183,6 +188,7 @@ pub const Vm = struct {
     /// that names both the symbol and which grant refused it.
     fn callExtern(self: *Vm, ec: ffi.ExternCall, args: []const Value) error{Trap}!Value {
         if (!self.caps.allowsFfi(ec.lib, ec.symbol)) {
+            self.needs_runtime = true;
             self.setErrorMsg(
                 "comptime FFI to `{s}` (in `{s}`) is not allowed here: {s}.",
                 .{ ec.symbol, ec.lib, self.caps.denialReason() },
@@ -361,6 +367,7 @@ pub const Vm = struct {
     /// A failed store: a write into static data is the program's mistake, so say so.
     fn writeFailed(self: *Vm, err: zones.ZoneError) VmError {
         if (err == error.ReadOnly) {
+            self.needs_runtime = true;
             self.compiler_error_msg = "compile-time code cannot modify a global: it sees the initial value that goes into the image, and a write would not be there at run time";
             return error.Trap;
         }
@@ -814,7 +821,13 @@ pub const Vm = struct {
                     std.debug.print("{s}", .{bytes});
                     frame.regs[inst.a] = .{ .uint = len };
                 },
-                .trap => return error.Trap,
+                .trap => {
+                    if (inst.imm == instructions.unrunnable_trap) {
+                        self.needs_runtime = true;
+                        self.setErrorMsg("the comptime VM cannot run `{s}`", .{frame.func.name}, "the comptime VM cannot run a function this code calls");
+                    }
+                    return error.Trap;
+                },
                 .host_call => {
                     const h = self.host orelse return error.InvalidInstruction;
                     const base: usize = inst.b;
