@@ -213,3 +213,96 @@ test "fels test: on the comptime VM, a test that needs the running program is sk
     try std.testing.expect(std.mem.endsWith(u8, r.text, "\n1 passed, 0 failed, 2 skipped\n"));
 }
 
+/// An app: `main`, a function, and tests that print, write a file, fail.
+const app_source =
+    \\#import std.io;
+    \\#import std.io.{ Writer };
+    \\#import std.fs;
+    \\
+    \\double :: fn(x: i32) -> i32 { return x * 2; }
+    \\
+    \\main :: fn() -> i32 {
+    \\    io::println("the app runs");
+    \\    return 0;
+    \\}
+    \\
+    \\#test
+    \\doubles :: fn(t: *Test) {
+    \\    t.eq(double(4), 8);
+    \\}
+    \\
+    \\#test
+    \\writes_a_file :: fn(t: *Test) {
+    \\    f := fs::create("out.txt") catch err { t.fatal("cannot create out.txt"); return; };
+    \\    w: *Writer = &f;
+    \\    w.write_all("hi") catch err { t.fatal("cannot write"); return; };
+    \\    (&f).close();
+    \\    t.expect(fs::exists("out.txt"));
+    \\}
+    \\
+    \\#test
+    \\prints_and_fails :: fn(t: *Test) {
+    \\    io::println("double(2) is computed");
+    \\    t.eq(double(2), 5);
+    \\    t.expect(double(1) == 3);
+    \\}
+    \\
+;
+
+test "fels test: natively, an app's tests write files, and a failing one shows what it printed" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const dir = ".zig-cache/tc_native";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "fels.pkg", "#package app \"0.1.0\";\n");
+    try write(dir, "src/main.fels", app_source);
+    const r = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(r.text);
+    try std.testing.expectEqual(@as(u32, 2), r.summary.passed);
+    try std.testing.expectEqual(@as(u32, 1), r.summary.failed);
+    try std.testing.expectEqual(@as(u32, 0), r.summary.broken);
+    try expectHas(r.text, "/src/main.fels\n  \u{2713} doubles\n  \u{2713} writes_a_file\n");
+    try expectHas(r.text, "  \u{2717} prints_and_fails: t.eq: values are not equal\n      t.expect: condition was false\n      | double(2) is computed\n");
+    // The test program runs in the project folder, and the app's own `main` does not run.
+    std.Io.Dir.cwd().access(io, dir ++ "/out.txt", .{}) catch return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "the app runs") == null);
+    try std.testing.expect(std.mem.endsWith(u8, r.text, "\n2 passed, 1 failed\n"));
+}
+
+test "fels test: natively, a crash and t.fatal end only their own test" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const dir = ".zig-cache/tc_crash";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    try write(dir, "src/crash.fels",
+        \\#test
+        \\first :: fn(t: *Test) {
+        \\    t.eq(1, 1);
+        \\}
+        \\
+        \\#test
+        \\out_of_bounds :: fn(t: *Test) {
+        \\    xs: [3]i32 = .{ 1, 2, 3 };
+        \\    i: usize = 5usize;
+        \\    t.eq(xs[i], 1);
+        \\}
+        \\
+        \\#test
+        \\gives_up :: fn(t: *Test) {
+        \\    t.fatal("no config file");
+        \\    t.eq(1, 2);
+        \\}
+        \\
+        \\#test
+        \\last :: fn(t: *Test) {
+        \\    t.eq(2, 2);
+        \\}
+        \\
+    );
+    const r = try runNative(.{ .project_dir = dir });
+    defer std.testing.allocator.free(r.text);
+    try std.testing.expectEqual(@as(u32, 2), r.summary.passed);
+    try std.testing.expectEqual(@as(u32, 2), r.summary.failed);
+    try expectHas(r.text, "  \u{2713} first\n  \u{2717} out_of_bounds: panic: index out of bounds");
+    try expectHas(r.text, "  \u{2717} gives_up: no config file\n  \u{2713} last\n");
+}
