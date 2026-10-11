@@ -710,6 +710,40 @@ test "LLVM lowering applies #cold / #section / #weak / #link_name (Phase 3)" {
     }
 }
 
+test "LLVM: #cold / #section / #weak / #link_name stay through the IR passes a build runs" {
+    if (comptime !fels.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const src =
+        \\#cold
+        \\rare :: fn() -> i32 { return 1; }
+        \\#section(".hot")
+        \\sec :: fn() -> i32 { return 2; }
+        \\#weak
+        \\wk :: fn() -> i32 { return 3; }
+        \\#link_name("renamed_sym")
+        \\rn :: fn() -> i32 { return 4; }
+        \\main :: fn() -> i32 { return rare() + sec() + wk() + rn(); }
+    ;
+
+    var fe = try fels.compile(arena.allocator(), "attrs_passes.fels", src);
+    defer fe.deinit(arena.allocator());
+    var module = try fels.lowerFrontend(arena.allocator(), fe);
+    // Each pass rebuilds the functions; they lost these attributes on the way.
+    try fels.ir_mod.runDefaultPasses(arena.allocator(), &module);
+
+    var backend = fels.LlvmBackend.init(arena.allocator(), "attrs_passes");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+
+    inline for (.{ "cold", "section \".hot\"", "weak", "@renamed_sym" }) |expected| {
+        try std.testing.expect(std.mem.indexOf(u8, llvm_ir, expected) != null);
+    }
+}
+
 test "LLVM: bindings of one C symbol share its function but keep their own signatures" {
     if (comptime !fels.llvm_enabled) return;
     if (comptime @import("builtin").os.tag != .windows) return error.SkipZigTest; // the Windows runtime's `CloseHandle`
