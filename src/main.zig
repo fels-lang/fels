@@ -145,16 +145,19 @@ pub fn main(init: std.process.Init) u8 {
     }
 
     // `fels test [paths...]` runs the #test functions of the project's files: as native
-    // programs, or on the comptime VM in a fels without LLVM.
+    // programs, or on the comptime VM with `--comptime` (and in a fels without LLVM).
     if (std.mem.eql(u8, cmd, "test")) {
         const ra = init.arena.allocator();
         var paths: std.ArrayList([]const u8) = .empty;
         var std_flag: []const u8 = "";
+        var comptime_only = false;
         var k: usize = 2;
         while (k < args.len) : (k += 1) {
             if (std.mem.eql(u8, args[k], "--std-path") and k + 1 < args.len) {
                 k += 1;
                 std_flag = args[k];
+            } else if (std.mem.eql(u8, args[k], "--comptime")) {
+                comptime_only = true;
             } else if (args[k].len > 1 and args[k][0] == '-') {
                 std.debug.print("fels test: unknown option '{s}'\n", .{args[k]});
                 return 1;
@@ -167,6 +170,7 @@ pub fn main(init: std.process.Init) u8 {
         return fels.test_cmd.cmd(allocator, io, .{
             .paths = paths.items,
             .environ = init.environ_map,
+            .comptime_only = comptime_only,
             .llvm_bin = link.llvm_bin,
             .lib_paths = link.lib_paths,
         });
