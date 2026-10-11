@@ -5369,3 +5369,79 @@ test "exe: a constant without a type is read at the type it is used as" {
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_untyped_const_width_o0", 0));
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_untyped_const_width_o2", 2));
 }
+
+test "exe: two optionals compare by their values, also optional structs" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `a == b` on two optionals was an `icmp` of the `{ i1, T }` pair, which LLVM refused, and a
+    // TypeMismatch on the comptime VM. Both null is equal, one null is not, both set compares
+    // the values; the `#assert`s check the VM, `main` the program.
+    const src =
+        \\P :: struct { v: i64, w: u8 }
+        \\mk :: fn(ok: bool, v: i64) -> ?P {
+        \\    if ok { out: P = .{ v, 1u8 }; return out; }
+        \\    return null;
+        \\}
+        \\ints :: fn() -> i32 {
+        \\    a: ?i64 = 5i64;
+        \\    b: ?i64 = 5i64;
+        \\    c: ?i64 = 6i64;
+        \\    n: ?i64 = null;
+        \\    m: ?i64 = null;
+        \\    if a != b { return 1; }
+        \\    if a == c { return 2; }
+        \\    if a == n || n == a { return 3; }
+        \\    if n != m { return 4; }
+        \\    return 0;
+        \\}
+        \\structs :: fn() -> i32 {
+        \\    if mk(true, 3i64) != mk(true, 3i64) { return 5; }
+        \\    if mk(true, 3i64) == mk(true, 4i64) { return 6; }
+        \\    if mk(true, 3i64) == mk(false, 3i64) { return 7; }
+        \\    if mk(false, 3i64) != mk(false, 4i64) { return 8; }
+        \\    return 0;
+        \\}
+        \\#assert(ints() == 0);
+        \\#assert(structs() == 0);
+        \\main :: fn() -> i32 { return ints() + structs(); }
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_optional_eq_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_optional_eq_o2", 2));
+}
+
+test "exe: a param can be assigned, changed through a field and through a *Self method" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A param had no slot of its own: `x = 5` was lost (reads went to the param), and a
+    // `*Self` method on a by-value struct param got `ptr undef` as `self` (garbage or a crash).
+    // The caller's value does not change: the param is a copy.
+    const src =
+        \\P :: struct {
+        \\    v: i64
+        \\
+        \\    pub get  :: fn(self: *Self) -> i64 { return self.v; }
+        \\    pub bump :: fn(self: *Self) { self.v += 1i64; }
+        \\}
+        \\set_scalar :: fn(x: i64) -> i64 { x = 5i64; return x; }
+        \\add_scalar :: fn(x: i64) -> i64 { x += 2i64; return x; }
+        \\read :: fn(n: i64, p: P, m: u8) -> i64 { return p.get() + n + (m as i64); }
+        \\bump :: fn(p: P) -> i64 { p.bump(); p.bump(); return p.v; }
+        \\assign :: fn(p: P) -> i64 { p.v = 9i64; return p.get(); }
+        \\main :: fn() -> i32 {
+        \\    if set_scalar(1i64) != 5i64 { return 1; }
+        \\    if add_scalar(1i64) != 3i64 { return 2; }
+        \\    p: P = .{ 7i64 };
+        \\    if read(1i64, p, 2u8) != 10i64 { return 3; }
+        \\    if bump(p) != 9i64 { return 4; }
+        \\    if assign(p) != 9i64 { return 5; }
+        \\    if p.v != 7i64 { return 6; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_param_slots_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_param_slots_o2", 2));
+}
