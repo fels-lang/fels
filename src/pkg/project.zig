@@ -109,9 +109,34 @@ pub fn cmdFetch(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Envir
     return 0;
 }
 
+/// A package whose version `fels update` changed; `from` is empty for one new to fels.lock.
+pub const Change = struct { name: []const u8, from: []const u8, to: []const u8 };
+
+/// fels.lock in `dir` as it is, before anything resolves: empty when there is none or it
+/// does not read.
+pub fn readLock(a: std.mem.Allocator, io: std.Io, dir: []const u8) lock_mod.Lock {
+    const lock_path = std.fs.path.join(a, &.{ dir, "fels.lock" }) catch return .{};
+    const text = std.Io.Dir.cwd().readFileAlloc(io, lock_path, a, .unlimited) catch return .{};
+    var problem: directives.Problem = .{};
+    return lock_mod.parse(a, text, &problem) catch .{};
+}
+
+/// The packages of `after` whose version is not the one `locked` had.
+pub fn changes(a: std.mem.Allocator, locked: lock_mod.Lock, after: Result) error{OutOfMemory}![]const Change {
+    var out: std.ArrayList(Change) = .empty;
+    for (after.packages) |p| {
+        const from = if (locked.find(p.name)) |e| e.version else "";
+        if (std.mem.eql(u8, from, p.version)) continue;
+        try out.append(a, .{ .name = p.name, .from = from, .to = p.version });
+    }
+    return out.items;
+}
+
 /// `fels update [name...]`: take the newest versions fels.pkg allows (of all packages, or
-/// the named ones) and write them to fels.lock.
+/// the named ones) and write them to fels.lock. What changed is told against fels.lock as it
+/// was, so a version that a changed range in fels.pkg brought counts too.
 pub fn cmdUpdate(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Environ.Map, args: []const []const u8) u8 {
+    const locked = readLock(a, io, ".");
     const before = load(a, io, ".", env, .{}) catch return 1;
     const old = before orelse {
         std.debug.print("fels update: no fels.pkg in the current directory\n", .{});
@@ -122,14 +147,13 @@ pub fn cmdUpdate(a: std.mem.Allocator, io: std.Io, env: ?*const std.process.Envi
         return 1;
     };
     const after = (load(a, io, ".", env, .{ .update = args, .update_all = args.len == 0 }) catch return 1).?;
-    var changed: usize = 0;
-    for (after.packages) |p| {
-        const was = old.find(p.name) orelse continue;
-        if (std.mem.eql(u8, was.version, p.version)) continue;
-        std.debug.print("  {s}: {s} -> {s}\n", .{ p.name, was.version, p.version });
-        changed += 1;
+    const changed = changes(a, locked, after) catch return 1;
+    for (changed) |c| {
+        if (c.from.len == 0) {
+            std.debug.print("  {s}: {s} (new)\n", .{ c.name, c.to });
+        } else std.debug.print("  {s}: {s} -> {s}\n", .{ c.name, c.from, c.to });
     }
-    if (changed == 0) std.debug.print("everything is at the newest version fels.pkg allows\n", .{});
+    if (changed.len == 0) std.debug.print("everything is at the newest version fels.pkg allows\n", .{});
     return 0;
 }
 
