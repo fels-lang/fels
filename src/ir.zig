@@ -634,8 +634,11 @@ pub fn checkStaticData(allocator: std.mem.Allocator, front_end: pipeline.FrontEn
     defer folded_consts.deinit();
     var found: std.ArrayList(StaticDataDiag) = .empty;
     errdefer found.deinit(allocator);
+    const outer_scope = type_scope;
+    defer type_scope = outer_scope;
     for (front_end.module.items) |item| switch (item) {
         .const_decl => |decl| {
+            _ = enterTypeScope(front_end.symbols, decl.file_name);
             const declared_ref = decl.ty orelse continue;
             const declared = lowerAstTypeWithEnv(allocator, declared_ref, front_end.types, front_end.symbols) catch continue;
             if (!needsStaticInit(declared)) continue;
@@ -797,7 +800,10 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
     var folded_consts = try foldModuleConsts(allocator, front_end);
     defer folded_consts.deinit();
 
+    const outer_scope = type_scope;
+    defer type_scope = outer_scope;
     for (front_end.module.items) |item| {
+        _ = enterTypeScope(front_end.symbols, item.fileName());
         switch (item) {
             .import => {},
             .static_assert => |decl| try checkStaticAssert(decl, cvm),
@@ -918,7 +924,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
             },
             .interface_impl => |impl| {
                 for (impl.methods) |method| {
-                    const mangled = try interfaceMethodName(allocator, impl.type_name, impl.interface_name, method.name);
+                    const mangled = try interfaceMethodName(allocator, linkNameFor(front_end.symbols, impl.file_name, impl.type_name), linkNameFor(front_end.symbols, impl.file_name, impl.interface_name), method.name);
                     try functions.append(allocator, try lowerInterfaceMethod(
                         allocator,
                         front_end.types,
@@ -933,7 +939,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                 }
                 var method_names = std.ArrayList([]const u8).empty;
                 errdefer method_names.deinit(allocator);
-                const interface_id = front_end.symbols.resolve(front_end.symbols.root_scope, impl.interface_name) orelse {
+                const interface_id = resolveTopLevel(front_end.symbols, impl.file_name, impl.interface_name) orelse {
                     diag_mod.printIce("interface symbol not found during vtable generation", @src());
                     return error.LoweringFailed;
                 };
@@ -951,13 +957,13 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                 for (interface_methods) |method| {
                     try method_names.append(allocator, try interfaceMethodName(
                         allocator,
-                        impl.type_name,
-                        impl.interface_name,
+                        linkNameFor(front_end.symbols, impl.file_name, impl.type_name),
+                        linkNameFor(front_end.symbols, impl.file_name, impl.interface_name),
                         method.name,
                     ));
                 }
                 try vtables.append(allocator, .{
-                    .name = try interfaceVTableName(allocator, impl.type_name, impl.interface_name),
+                    .name = try interfaceVTableName(allocator, linkNameFor(front_end.symbols, impl.file_name, impl.type_name), linkNameFor(front_end.symbols, impl.file_name, impl.interface_name)),
                     .methods = try method_names.toOwnedSlice(allocator),
                 });
             },
@@ -1548,7 +1554,7 @@ fn lowerStruct(allocator: std.mem.Allocator, decl: ast.TypeDecl, strukt: ast.Str
     }
 
     return .{
-        .name = decl.name,
+        .name = linkNameFor(symbols, decl.file_name, decl.name),
         .fields = try fields.toOwnedSlice(allocator),
         .is_packed = hasAttr(decl.attrs, "packed"),
         .alignment = alignAttr(decl.attrs),
@@ -1564,7 +1570,7 @@ fn lowerEnumDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, enum_decl: ast
             .payload = if (v.payload) |p| try lowerType(allocator, try dealias(allocator, p, types, symbols)) else null,
         });
     }
-    return .{ .name = decl.name, .variants = try cases.toOwnedSlice(allocator) };
+    return .{ .name = linkNameFor(symbols, decl.file_name, decl.name), .variants = try cases.toOwnedSlice(allocator) };
 }
 
 fn lowerErrorDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, error_decl: ast.ErrorDecl, types: sema.TypeEnv, symbols: sema.SymbolTable) !ErrorDef {
@@ -1579,7 +1585,7 @@ fn lowerErrorDef(allocator: std.mem.Allocator, decl: ast.TypeDecl, error_decl: a
     }
 
     return .{
-        .name = decl.name,
+        .name = linkNameFor(symbols, decl.file_name, decl.name),
         .variants = try variants.toOwnedSlice(allocator),
     };
 }
@@ -1629,6 +1635,8 @@ fn lowerFunctionInstantiation(
     cvm: ?*ComptimeVm,
     error_codes: *ErrorCodes,
 ) !IrFunction {
+    const outer_scope = enterTypeScope(symbols, decl.file_name);
+    defer type_scope = outer_scope;
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
 
@@ -1686,7 +1694,7 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
                     return lowerSemaTypeWithEnv(allocator, arg.ty, types, symbols) catch .unknown;
             }
             // Distinct type: substitute underlying type.
-            if (symbols.resolve(symbols.root_scope, named.name)) |id| {
+            if (resolveTypeName(symbols, named.name)) |id| {
                 if (types.distinct_types.get(id)) |underlying| {
                     return lowerSemaTypeWithEnv(allocator, underlying, types, symbols) catch .unknown;
                 }
@@ -1719,6 +1727,8 @@ fn lowerTypeWithBindingAndSymbols(allocator: std.mem.Allocator, ty: ast.TypeRef,
 }
 
 fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, module: ast.Module, decl: ast.FunctionDecl, cvm: ?*ComptimeVm, error_codes: *ErrorCodes) !IrFunction {
+    const outer_scope = enterTypeScope(symbols, decl.file_name);
+    defer type_scope = outer_scope;
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
 
@@ -1797,6 +1807,8 @@ fn lowerInterfaceMethod(
     cvm: ?*ComptimeVm,
     error_codes: *ErrorCodes,
 ) !IrFunction {
+    const outer_scope = enterTypeScope(symbols, decl.file_name);
+    defer type_scope = outer_scope;
     var params: std.ArrayList(IrParam) = .empty;
     errdefer params.deinit(allocator);
     for (decl.params) |param| try params.append(allocator, .{
@@ -1840,9 +1852,9 @@ fn lowerTypeReplacingSelf(allocator: std.mem.Allocator, ty: ast.TypeRef, concret
     };
     if (ptr_inner_ast) |inner_ty| switch (inner_ty) {
         .named => |named| if (!std.mem.eql(u8, named.name, "Self")) {
-            if (symbols.resolve(symbols.root_scope, named.name)) |id| {
+            if (resolveTypeName(symbols, named.name)) |id| {
                 if (types.layouts.get(id)) |layout| if (layout.kind == .interface_type)
-                    return .{ .interface_value = named.name };
+                    return .{ .interface_value = typeLinkName(named.name, named.namespace) };
             }
         },
         else => {},
@@ -1850,7 +1862,7 @@ fn lowerTypeReplacingSelf(allocator: std.mem.Allocator, ty: ast.TypeRef, concret
     return switch (ty) {
         .named => |named| blk: {
             if (std.mem.eql(u8, named.name, "Self")) break :blk .{ .struct_type = concrete_name };
-            if (symbols.resolve(symbols.root_scope, named.name)) |id| {
+            if (resolveTypeName(symbols, named.name)) |id| {
                 if (types.distinct_types.get(id)) |underlying| {
                     break :blk lowerSemaTypeWithEnv(allocator, underlying, types, symbols) catch .unknown;
                 }
@@ -4657,8 +4669,8 @@ const FunctionLowerer = struct {
         if (field.base.kind != .ident) return null;
         const base_ident = field.base.kind.ident;
         if (self.bindsValue(base_ident)) return null;
-        const sym_id = self.symbols.resolve(self.symbols.root_scope, base_ident) orelse return null;
-        return if (self.symbols.symbol(sym_id).kind == .type) base_ident else null;
+        const sym_id = resolveTopLevel(self.symbols, self.file_name, base_ident) orelse return null;
+        return if (self.symbols.symbol(sym_id).kind == .type) self.symbols.symbol(sym_id).link_name else null;
     }
 
     /// Whether `name` is a capture, a param or a declared local here (what `lowerExpr`
@@ -5685,11 +5697,40 @@ fn linkNameFor(symbols: sema.SymbolTable, file: []const u8, name: []const u8) []
     return name;
 }
 
+/// The file whose type names the `lower*Type` functions read, with the symbols to read them: a
+/// type named like one of another module has a qualified link name (as a function has), and the
+/// IR knows every type by its link name. Set while an item of that file is lowered.
+const TypeScope = struct { symbols: sema.SymbolTable, file: []const u8 };
+threadlocal var type_scope: ?TypeScope = null;
+
+/// Make `file` the one whose type names are read; returns the scope to put back.
+fn enterTypeScope(symbols: sema.SymbolTable, file: []const u8) ?TypeScope {
+    const before = type_scope;
+    type_scope = .{ .symbols = symbols, .file = file };
+    return before;
+}
+
+/// The symbol a type name of the source means: in the file being lowered, or else at the top.
+fn resolveTypeName(symbols: sema.SymbolTable, name: []const u8) ?sema.SymbolId {
+    if (type_scope) |scope| if (resolveTopLevel(symbols, scope.file, name)) |id| return id;
+    return symbols.resolve(symbols.root_scope, name);
+}
+
+/// The IR name of the type `name` of the source (reached through `namespace` when set): its
+/// link name in the file being lowered, or `name` itself.
+fn typeLinkName(name: []const u8, namespace: ?[]const u8) []const u8 {
+    const scope = type_scope orelse return name;
+    const id = (if (namespace) |ns| scope.symbols.resolveScoped(scope.file, ns, name) else resolveTopLevel(scope.symbols, scope.file, name)) orelse return name;
+    const sym = scope.symbols.symbol(id);
+    if (sym.kind != .type) return name;
+    return sym.link_name;
+}
+
 fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
     return switch (ty) {
         .type_param => .unknown,
         .generic_inst => |gi| .{ .struct_type = gi.name },
-        .named => |named| lowerNamedType(named.name),
+        .named => |named| if (named.namespace) |ns| .{ .struct_type = typeLinkName(named.name, ns) } else lowerNamedType(named.name),
         .pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },
         .many_pointer => |ptr| .{ .ptr = try boxType(allocator, try lowerType(allocator, ptr.inner.*)) },
         .optional => |optional| .{ .optional = try boxType(allocator, try lowerType(allocator, optional.inner.*)) },
@@ -5726,7 +5767,7 @@ fn lowerType(allocator: std.mem.Allocator, ty: ast.TypeRef) !IrType {
 /// `generic_struct_instances` key.
 fn appendSemaTyMangle(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), ty: sema.Ty, symbols: sema.SymbolTable) !void {
     switch (ty) {
-        .named => |id| try buf.appendSlice(allocator, symbols.symbol(id).name),
+        .named => |id| try buf.appendSlice(allocator, symbols.symbol(id).link_name),
         .pointer => |inner| {
             try buf.appendSlice(allocator, "ptr_");
             try appendSemaTyMangle(allocator, buf, inner.*, symbols);
@@ -5770,7 +5811,7 @@ fn appendGenericArgMangle(
             for (binding) |b| if (std.mem.eql(u8, b.name, n.name))
                 return appendSemaTyMangle(allocator, buf, b.ty, symbols);
             // …a transparent alias (mangle the underlying, as sema's typeFromRef does)…
-            if (symbols.resolve(symbols.root_scope, n.name)) |id|
+            if (resolveTypeName(symbols, n.name)) |id|
                 if (types.alias_refs.get(id)) |aliased|
                     return appendGenericArgMangle(allocator, buf, aliased, binding, types, symbols);
             // …or a builtin scalar / user struct, both of which mangle to the name.
@@ -5849,7 +5890,7 @@ fn dealiased(allocator: std.mem.Allocator, ty: ast.TypeRef, types: sema.TypeEnv,
     if (depth > 32) return null;
     switch (ty) {
         .named => |named| {
-            const id = symbols.resolve(symbols.root_scope, named.name) orelse return null;
+            const id = resolveTypeName(symbols, named.name) orelse return null;
             const aliased = types.alias_refs.get(id) orelse return null;
             return (try dealiased(allocator, aliased, types, symbols, depth + 1)) orelse aliased;
         },
@@ -5929,15 +5970,15 @@ fn lowerAstTypeWithEnv(allocator: std.mem.Allocator, written: ast.TypeRef, types
         else => null,
     };
     if (ptr_inner_ast) |inner_ty| switch (inner_ty) {
-        .named => |named| if (symbols.resolve(symbols.root_scope, named.name)) |id| {
+        .named => |named| if (resolveTypeName(symbols, named.name)) |id| {
             if (types.layouts.get(id)) |layout| if (layout.kind == .interface_type)
-                return .{ .interface_value = named.name };
+                return .{ .interface_value = typeLinkName(named.name, named.namespace) };
         },
         else => {},
     };
     // Distinct type: lower directly to the underlying type.
     if (ty == .named) {
-        if (symbols.resolve(symbols.root_scope, ty.named.name)) |id| {
+        if (resolveTypeName(symbols, ty.named.name)) |id| {
             if (types.distinct_types.get(id)) |underlying| {
                 return lowerSemaTypeWithEnv(allocator, underlying, types, symbols);
             }
@@ -6007,7 +6048,7 @@ fn lowerNamedType(name: []const u8) IrType {
     if (std.mem.eql(u8, name, "void")) return .void;
     if (std.mem.eql(u8, name, "usize")) return .usize;
     if (std.mem.eql(u8, name, "isize")) return .isize;
-    return .{ .struct_type = name };
+    return .{ .struct_type = typeLinkName(name, null) };
 }
 
 fn resolveTypeParamInTy(ty: sema.Ty, binding: []const sema.TypeArg) sema.Ty {
@@ -6046,7 +6087,7 @@ fn lowerSemaType(allocator: std.mem.Allocator, ty: sema.Ty, symbols: sema.Symbol
             .elem = try boxType(allocator, try lowerSemaType(allocator, array.elem.*, symbols)),
             .len = array.len,
         } },
-        .named => |id| .{ .struct_type = symbols.symbol(id).name },
+        .named => |id| .{ .struct_type = symbols.symbol(id).link_name },
         .error_set => .{ .variant_type = "<anonymous-error-set>" },
         .fallible => |fallible| .{ .fallible = .{
             .ok = try boxType(allocator, try lowerSemaType(allocator, fallible.ok.*, symbols)),
@@ -6080,7 +6121,7 @@ fn lowerSemaTypeWithEnv(allocator: std.mem.Allocator, ty: sema.Ty, types: sema.T
         if (inner.* == .named) {
             const id = inner.named;
             if (types.layouts.get(id)) |layout| if (layout.kind == .interface_type)
-                return .{ .interface_value = symbols.symbol(id).name };
+                return .{ .interface_value = symbols.symbol(id).link_name };
         }
     }
     // Distinct type: substitute the underlying type so the IR uses the real representation.
@@ -6096,7 +6137,7 @@ fn lowerSemaTypeWithEnv(allocator: std.mem.Allocator, ty: sema.Ty, types: sema.T
 fn concretePointerName(ty: sema.Ty, symbols: sema.SymbolTable) ?[]const u8 {
     return switch (ty) {
         .pointer, .const_ptr => |inner| switch (inner.*) {
-            .named => |id| symbols.symbol(id).name,
+            .named => |id| symbols.symbol(id).link_name,
             else => null,
         },
         else => null,
