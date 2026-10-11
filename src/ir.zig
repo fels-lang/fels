@@ -1452,22 +1452,10 @@ fn foldFunctionConstants(allocator: std.mem.Allocator, function: IrFunction) !Ir
         });
     }
 
-    return .{
-        .name = function.name,
-        .params = function.params,
-        .return_ty = function.return_ty,
-        .error_ty = function.error_ty,
-        .blocks = try blocks.toOwnedSlice(allocator),
-        .extern_name = function.extern_name,
-        .extern_lib = function.extern_lib,
-        .variadic = function.variadic,
-        .inline_hint = function.inline_hint,
-        .no_inline = function.no_inline,
-        .no_return = function.no_return,
-        .entry = function.entry,
-        .naked = function.naked,
-        .export_sym = function.export_sym,
-    };
+    // A copy, so every attribute of the function stays (`#section`, `#weak`, ...).
+    var folded = function;
+    folded.blocks = try blocks.toOwnedSlice(allocator);
+    return folded;
 }
 
 fn resolveVal(consts: *const ConstMap, value: Value) Value {
@@ -1593,22 +1581,9 @@ fn simplifyBranches(allocator: std.mem.Allocator, module: *IrModule) !void {
             });
         }
 
-        try functions.append(allocator, .{
-            .name = function.name,
-            .params = function.params,
-            .return_ty = function.return_ty,
-            .error_ty = function.error_ty,
-            .blocks = try blocks.toOwnedSlice(allocator),
-            .extern_name = function.extern_name,
-            .extern_lib = function.extern_lib,
-        .variadic = function.variadic,
-            .inline_hint = function.inline_hint,
-            .no_inline = function.no_inline,
-            .no_return = function.no_return,
-            .entry = function.entry,
-            .naked = function.naked,
-            .export_sym = function.export_sym,
-        });
+        var simplified = function;
+        simplified.blocks = try blocks.toOwnedSlice(allocator);
+        try functions.append(allocator, simplified);
     }
 
     module.functions = try functions.toOwnedSlice(allocator);
@@ -1660,22 +1635,9 @@ fn eliminateFunctionDeadCode(allocator: std.mem.Allocator, function: IrFunction)
         });
     }
 
-    return .{
-        .name = function.name,
-        .params = function.params,
-        .return_ty = function.return_ty,
-        .error_ty = function.error_ty,
-        .blocks = try blocks.toOwnedSlice(allocator),
-        .extern_name = function.extern_name,
-        .extern_lib = function.extern_lib,
-        .variadic = function.variadic,
-        .inline_hint = function.inline_hint,
-        .no_inline = function.no_inline,
-        .no_return = function.no_return,
-        .entry = function.entry,
-        .naked = function.naked,
-        .export_sym = function.export_sym,
-    };
+    var kept = function;
+    kept.blocks = try blocks.toOwnedSlice(allocator);
+    return kept;
 }
 
 fn instrHasSideEffects(instr: Instr) bool {
