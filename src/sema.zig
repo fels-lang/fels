@@ -6910,6 +6910,20 @@ pub fn isUntypedIntExpr(expr: ast.Expr) bool {
     };
 }
 
+/// An expression made only of float literals without a suffix (`-10.0`, `0.0 - 1.5`): like an
+/// untyped integer expression, it takes the float type of the place it goes to.
+pub fn isUntypedFloatExpr(expr: ast.Expr) bool {
+    return switch (expr.kind) {
+        .float => |text| floatLiteralSuffix(text).len == 0,
+        .unary => |unary| unary.op == .neg and isUntypedFloatExpr(unary.expr.*),
+        .binary => |binary| switch (binary.op) {
+            .add, .sub, .mul, .div => isUntypedFloatExpr(binary.left.*) and isUntypedFloatExpr(binary.right.*),
+            else => false,
+        },
+        else => false,
+    };
+}
+
 /// The suffix to suggest for a literal too large for an `i32`: a hex or binary
 /// literal is usually a bit pattern, so the smallest unsigned type that holds
 /// it; a decimal one `i64`, while it fits.
