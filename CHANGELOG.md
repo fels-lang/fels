@@ -3,6 +3,15 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Fixed
+
+- **"did you mean `Build`?" offered the name that was not found.** A name that a module
+  imported whole declares (`#import std.build;`) now gets the way to reach it:
+  `` write `build::Build`, or import it with `#import std.build.{ Build };` ``. A suggestion is
+  only a name the file can write, and a built-in type after `!` says it is not an error type.
+
 ## 0.6.0 — 2026-10-11
 
 `fels test` runs the tests of a project as programs, so they can read files and call C, and
