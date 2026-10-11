@@ -1397,6 +1397,9 @@ const Checker = struct {
     diagnostics: std.ArrayList(Diagnostic) = .empty,
     source: []const u8 = "",
     file: []const u8 = "",
+    /// The items of the module being checked, so the help for an unknown name can
+    /// quote the import that reaches it (`namespacedNameHelp`).
+    module_items: []const ast.Item = &.{},
     /// Functions declared `#must_use` — discarding a call's result is an error.
     /// Populated at the start of `checkModule`.
     must_use_fns: std.StringHashMap(void) = undefined,
@@ -1943,6 +1946,7 @@ const Checker = struct {
     }
 
     fn checkModule(self: *Checker, module: ast.Module) SemanticError!void {
+        self.module_items = module.items;
         // Pre-fold integer-valued top-level constants FIRST (before collecting
         // struct layouts), so a `[N]T` array field/local resolves its named-const
         // size (`N :: 29`) or simple arithmetic over them. A few passes let a const
@@ -5576,6 +5580,34 @@ const Checker = struct {
         return best;
     }
 
+    /// The help for a name that is public in a module this file imports whole
+    /// (`#import std.build;`): the bare name does not reach it, its namespace
+    /// (`build::Build`) or a braced import does. Null when no such module declares
+    /// the name, or (with `type_only`) declares it but not as a type.
+    fn namespacedNameHelp(self: *Checker, name: []const u8, type_only: bool) ?[]const u8 {
+        for (self.module_items) |item| {
+            const imp = switch (item) {
+                .import => |value| value,
+                else => continue,
+            };
+            if (!std.mem.eql(u8, imp.file_name, self.file)) continue;
+            const ns = imp.namespace() orelse continue;
+            const id = self.symbols.resolveScoped(self.file, ns, name) orelse continue;
+            if (type_only and self.symbols.symbol(id).kind != .type) continue;
+            const path = std.mem.join(self.allocator, ".", imp.path) catch return null;
+            return std.fmt.allocPrint(self.allocator, "write `{s}::{s}`, or import it with `#import {s}.{{ {s} }};`", .{ ns, name, path, name }) catch null;
+        }
+        return null;
+    }
+
+    /// The help for an unknown type name: how to reach it when a module this file
+    /// imports whole declares it, else the closest type name, if one is close.
+    fn typeNameHelp(self: *Checker, name: []const u8) ?[]const u8 {
+        if (self.namespacedNameHelp(name, true)) |help| return help;
+        const hint = self.suggestTypeName(name) orelse return null;
+        return std.fmt.allocPrint(self.allocator, "did you mean `{s}`?", .{hint}) catch null;
+    }
+
     /// `1e5` or `1.5e3`: the lexer reads exponent notation as a number with the
     /// suffix `e5`, which fels does not have. Say so, and offer the number
     /// written out when that is short enough to be useful.
@@ -5603,12 +5635,7 @@ const Checker = struct {
             }
             return;
         }
-        if (self.suggestTypeName(name)) |hint| {
-            const help = std.fmt.allocPrint(self.allocator, "did you mean `{s}`?", .{hint}) catch null;
-            self.emitErrorRich(span, "unknown type `{s}`", .{name}, .{ .primary_label = "not a known type", .help = help });
-        } else {
-            self.emitErrorRich(span, "unknown type `{s}`", .{name}, .{ .primary_label = "not a known type" });
-        }
+        self.emitErrorRich(span, "unknown type `{s}`", .{name}, .{ .primary_label = "not a known type", .help = self.typeNameHelp(name) });
     }
 
     fn typeFromRef(self: *Checker, ty: ast.TypeRef) SemanticError!Ty {
