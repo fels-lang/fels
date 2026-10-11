@@ -161,6 +161,15 @@ fels object <file>    emit an object file
 fels build  <file>    build an executable (Windows)
 ```
 
+Start a project with `fels new` ([docs/15](docs/15_tooling.md) §9):
+
+```text
+fels new hello        a program in hello/ (--lib for a library, --cbind for C bindings)
+cd hello
+fels build run        build it and run it
+fels test             run its tests
+```
+
 Worked programs live in [`examples/`](examples/) — among them `dll`, a shared library
 whose exports a foreign process can resolve and call, `capability`, where a dependency
 is refused host access at compile time, `mandel`, a Mandelbrot set drawn entirely by
