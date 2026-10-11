@@ -5567,3 +5567,24 @@ test "exe: a slice may be empty at the end, and may not reach past it" {
     ;
     try std.testing.expectEqual(@as(u32, 0xEF), try compileAndRunAt(arena.allocator(), backwards, "exe_slice_backwards", 2));
 }
+
+test "exe: a string literal is also a C string" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The bytes of a literal had no NUL after them, so `"abc".ptr` given to C read on into
+    // whatever came next (lstrlenA said 13). A literal now ends in a NUL its length leaves out.
+    const src =
+        \\#extern("kernel32", "lstrlenA")
+        \\lstrlenA :: fn(s: [*]const u8) -> i32;
+        \\main :: fn() -> i32 {
+        \\    if lstrlenA("abc".ptr) != 3 { return 1; }
+        \\    s: []const u8 = "hello";
+        \\    if lstrlenA(s.ptr) != 5 || s.len != 5usize { return 2; }
+        \\    if lstrlenA("".ptr) != 0 { return 3; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRun(arena.allocator(), src, "exe_literal_c_string"));
+}
