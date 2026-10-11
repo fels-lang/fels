@@ -5740,6 +5740,8 @@ const Checker = struct {
                 const id = self.resolveTypeSymbol(named.namespace, named.name) orelse {
                     if (named.namespace) |ns| {
                         self.emitError(named.span, "unknown error type `{s}::{s}`", .{ ns, named.name });
+                    } else if (fromBuiltinName(named.name) != null) {
+                        self.emitError(named.span, "`{s}` is not an error type", .{named.name});
                     } else if (self.suggestTypeName(named.name)) |hint| {
                         self.emitError(named.span, "unknown error type `{s}`; did you mean `{s}`?", .{ named.name, hint });
                     } else {

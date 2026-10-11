@@ -268,6 +268,17 @@ test "diagnostics: a type suggestion is a name the file can write" {
     try std.testing.expect(std.mem.indexOf(u8, typo_braced, "did you mean `Build`?") != null);
 }
 
+test "diagnostics: a built-in type after `!` is not an error type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // It used to be "unknown error type `i32`; did you mean `i32`?".
+    const builtin = (try firstError(a, "f :: fn() -> i32 ! i32 { return 0; }")).?;
+    try std.testing.expect(std.mem.indexOf(u8, builtin, "`i32` is not an error type") != null);
+    try std.testing.expect(std.mem.indexOf(u8, builtin, "did you mean") == null);
+}
+
 /// Fail, printing the program and the diagnostic, unless `prelude` + `body` type-checks
 /// without an error.
 fn expectNoError(arena: std.mem.Allocator, prelude: []const u8, body: []const u8) !void {
