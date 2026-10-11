@@ -5205,6 +5205,37 @@ test "exe: an integer literal is stored at the width of the type it takes" {
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_int_lit_widths_o2", 2));
 }
 
+test "exe: a float literal under minus is stored at the width of the type it takes" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // IR lowered `-10.0` and `0.0 - 10.0` as `f64` values: `off: f32 = -10.0` stored an 8-byte
+    // double into the 4-byte slot, so `off` read as garbage (a chart label lost its offset).
+    const src =
+        \\Pair :: struct { a: f32, b: f32 }
+        \\pass :: fn(a: f32, b: f32) -> f32 { return b; }
+        \\main :: fn() -> i32 {
+        \\    off: f32 = -10.0;
+        \\    if !(off < 0.0) { return 1; }
+        \\    if off != -10.0 { return 2; }
+        \\    later: f32 = 1.0;
+        \\    later = -2.5;
+        \\    if later != -2.5 { return 3; }
+        \\    sum: f32 = 0.0 - 10.0;
+        \\    if sum + 20.0 != 10.0 { return 4; }
+        \\    p: Pair = .{ -1.5, 2.0 * -2.0 };
+        \\    if p.a != -1.5 || p.b != -4.0 { return 5; }
+        \\    if pass(0.0, -14.0) != -14.0 { return 6; }
+        \\    wide: f64 = -10.0;
+        \\    if wide != -10.0 { return 7; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_float_lit_widths_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_float_lit_widths_o2", 2));
+}
+
 test "exe: the comptime VM gives an integer literal the same width as the program does" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

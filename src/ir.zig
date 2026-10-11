@@ -4150,6 +4150,7 @@ const FunctionLowerer = struct {
         if (expr.kind == .if_expr) return self.lowerIfExpr(expr, expected_ty);
         if (try self.lowerBareVariantAs(expr, expected_ty)) |v| return v;
         if (self.isUnsettledIntLit(expr, expected_ty)) return self.lowerIntLitAs(expr, expected_ty);
+        if (self.isUnsettledFloatLit(expr, expected_ty)) return self.lowerFloatLitAs(expr, expected_ty);
         // A value passed where an `Any` is expected auto-wraps (compiler inserts
         // `any(x)`) — unless it's already an `Any`, or a literal that *constructs*
         // the `Any` (`.{ data, id, name }`), or an unknown-typed expr.
@@ -4262,6 +4263,32 @@ const FunctionLowerer = struct {
                 .op = lowerBinOp(binary.op),
                 .lhs = try self.lowerIntLitAs(binary.left.*, ty),
                 .rhs = try self.lowerIntLitAs(binary.right.*, ty),
+            } }, expr.span),
+            else => try self.lowerExpr(expr),
+        };
+    }
+
+    /// Whether `expr` is made of float literals without a suffix and goes into an `f32` or `f64`
+    /// slot. Sema leaves such an expression untyped (`float_lit`, lowered as `f64`): `-10.0` or
+    /// `0.0 - 10.0` went into an `f32` slot as an 8-byte `double`, a wrong value that also wrote
+    /// over the slot's neighbours.
+    fn isUnsettledFloatLit(self: *FunctionLowerer, expr: ast.Expr, expected_ty: IrType) bool {
+        if (expected_ty != .f32 and expected_ty != .f64) return false;
+        if (self.types.expr_types.get(expr.id)) |recorded| if (recorded != .float_lit) return false;
+        return sema.isUntypedFloatExpr(expr);
+    }
+
+    /// Lower an expression made only of float literals at the float type `ty`.
+    fn lowerFloatLitAs(self: *FunctionLowerer, expr: ast.Expr, ty: IrType) LowerError!Value {
+        return switch (expr.kind) {
+            .unary => |unary| try self.emitAt(ty, .{ .unary = .{
+                .op = .neg,
+                .value = try self.lowerFloatLitAs(unary.expr.*, ty),
+            } }, expr.span),
+            .binary => |binary| try self.emitAt(ty, .{ .binary = .{
+                .op = lowerBinOp(binary.op),
+                .lhs = try self.lowerFloatLitAs(binary.left.*, ty),
+                .rhs = try self.lowerFloatLitAs(binary.right.*, ty),
             } }, expr.span),
             else => try self.lowerExpr(expr),
         };
