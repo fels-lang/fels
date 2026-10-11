@@ -5526,16 +5526,24 @@ const Checker = struct {
         return null;
     }
 
-    /// The closest known type name to `name` (a built-in or a user-declared
-    /// type), within a small edit distance — for "did you mean `X`?" hints.
-    /// Returns null when nothing is close enough to be a likely typo.
+    /// Whether this file reaches `sym` by its bare name: its own declaration, a
+    /// name it imports, or the runtime's. Only such a name is worth suggesting.
+    fn seesByName(self: *Checker, sym: Symbol) bool {
+        const id = self.resolveSymbol(sym.name) orelse return false;
+        return id == sym.id;
+    }
+
+    /// The closest type name to `name` that this file can write (a built-in or a
+    /// type it sees), within a small edit distance, for "did you mean `X`?" hints.
+    /// Returns null when nothing is close enough to be a likely typo. Never `name`
+    /// itself: it was not found as written.
     fn suggestTypeName(self: *Checker, name: []const u8) ?[]const u8 {
         var best: ?[]const u8 = null;
         var best_dist: usize = 3; // only suggest within 2 edits
         const consider = struct {
             fn f(cand: []const u8, target: []const u8, b: *?[]const u8, bd: *usize) void {
                 const d = levenshtein(target, cand);
-                if (d < bd.*) {
+                if (d > 0 and d < bd.*) {
                     bd.* = d;
                     b.* = cand;
                 }
@@ -5543,7 +5551,7 @@ const Checker = struct {
         }.f;
         for (builtin_type_names) |cand| consider(cand, name, &best, &best_dist);
         for (self.symbols.symbols.items) |sym| {
-            if (sym.kind == .type) consider(sym.name, name, &best, &best_dist);
+            if (sym.kind == .type and self.seesByName(sym)) consider(sym.name, name, &best, &best_dist);
         }
         // Reject suggestions that are a large fraction of the name (avoids
         // nonsense like suggesting `u8` for a 3-letter typo).
