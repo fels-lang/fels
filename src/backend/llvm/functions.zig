@@ -94,6 +94,7 @@ fn declareOne(cg: *ModuleCg, func: ir.IrFunction) !void {
     }
 
     const lv = llvm.LLVMAddFunction(cg.mod, name_z, fn_ty);
+    abi.markBoolExt(cg, lv);
 
     // Parameter names are cosmetic; skip them for ABI-lowered externs whose
     // LLVM parameters no longer correspond 1:1 to source parameters.

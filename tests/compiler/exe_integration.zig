@@ -5205,6 +5205,32 @@ test "exe: an integer literal is stored at the width of the type it takes" {
     try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_int_lit_widths_o2", 2));
 }
 
+test "exe: a bool passed to a C function is 0 or 1 in the whole register" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A `bool` went to C as an LLVM `i1` without `zeroext`, so only bit 0 was set: `!f()` passed
+    // to Dear ImGui's `BeginDisabled(bool)` arrived as 0xFE, and ImGui made every later item
+    // transparent. `SetLastError` keeps the whole register, `GetLastError` gives it back.
+    const src =
+        \\#extern("kernel32", "SetLastError")
+        \\SetLastError :: fn(code: bool);
+        \\#extern("kernel32", "GetLastError")
+        \\GetLastError :: fn() -> u32;
+        \\yes :: fn(n: usize) -> bool { return n > 0usize && n < 10usize; }
+        \\main :: fn() -> i32 {
+        \\    SetLastError(!yes(3usize));
+        \\    if GetLastError() != 0u32 { return 1; }
+        \\    SetLastError(!yes(30usize));
+        \\    if GetLastError() != 1u32 { return 2; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_bool_to_c_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_bool_to_c_o2", 2));
+}
+
 test "exe: a float literal under minus is stored at the width of the type it takes" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

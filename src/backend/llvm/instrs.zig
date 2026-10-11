@@ -802,6 +802,7 @@ fn lowerCallIndirect(
         @intCast(total),
         "",
     );
+    abi.markCallBoolExt(cg, result, fn_ty);
     if (sret) {
         abi.markCallSret(cg, result, ret_lty);
         return llvm.LLVMBuildLoad2(cg.builder, ret_lty, resolved_args[0], "");
@@ -848,6 +849,7 @@ fn lowerCall(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrType
     }
 
     const result = llvm.LLVMBuildCall2(cg.builder, fn_ty, lv, args.ptr, @intCast(args.len), "");
+    abi.markCallBoolExt(cg, result, fn_ty);
     if (sret_ty) |ty| {
         abi.markCallSret(cg, result, ty);
         return llvm.LLVMBuildLoad2(cg.builder, ty, args[0], "");
@@ -891,6 +893,7 @@ fn lowerCallAbi(cg: *ModuleCg, fncg: anytype, call: ir.CallInstr, ret_ty: ir.IrT
     }
 
     const result = llvm.LLVMBuildCall2(cg.builder, fn_ty, lv, args.ptr, @intCast(total), "");
+    abi.markCallBoolExt(cg, result, fn_ty);
 
     if (sig.sret) return llvm.LLVMBuildLoad2(cg.builder, sig.ret_struct, sret_slot, "");
     return switch (sig.ret) {
