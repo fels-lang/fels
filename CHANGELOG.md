@@ -30,6 +30,11 @@ the major version is `0`, any minor bump may break source compatibility.
   `Vec` of slices, a pointer cast (`p as *T`, `p as usize`) and a negative number read back from
   an arena. They now work as in a compiled program.
 - **The comptime VM leaked** the names and strings of every `#extern` call it made.
+- **A free function hid a method of the same name from another module.** With
+  `alloc_bytes :: fn(n: i32) -> i32` in a program, `a.alloc_bytes(4)` (std.heap's method on
+  `Arena`) was "no visible method", and where it was found, the call could go to the free
+  function. A candidate that cannot take the receiver is now passed over, and the call goes to
+  the method that was chosen.
 - **`fels test --comptime` skipped a test named like a function of another file** (a test
   `helper` next to `mathx::helper`) with "InvalidInstruction"; it runs now.
 - **Assigning a param did nothing in a compiled program.** `x = 5; return x;` returned the
