@@ -2,6 +2,8 @@
 // (tests/compiler/std_tests.zig).
 #import std.heap as heap;
 #import std.csv as csv;
+// with std.io (through std.fs): its `Reader` and the reader of std.csv must not meet
+#import std.fs as fs;
 
 #test
 fields_between_commas :: fn(t: *Test) {

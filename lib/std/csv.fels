@@ -24,7 +24,9 @@ QUOTE :: 34u8;
 CR :: 13u8;
 LF :: 10u8;
 
-pub Reader :: struct {
+// Named so that it does not meet std.io's `Reader` (types of different modules still share one
+// namespace).
+pub CsvReader :: struct {
     text: []const u8,
     at: usize,            // where the next record starts
     sep: u8,
@@ -109,10 +111,10 @@ pub Reader :: struct {
 
 // A reader of the records of `text`, with fields between `sep` (44u8 for ',', 59u8 for ';',
 // 9u8 for a tab).
-pub reader :: fn(text: []const u8, sep: u8) -> Reader {
+pub reader :: fn(text: []const u8, sep: u8) -> CsvReader {
     at: usize = 0usize;
     if text.len >= 3usize && text[0] == 0xEFu8 && text[1] == 0xBBu8 && text[2] == 0xBFu8 { at = 3usize; }
-    r: Reader = .{ text, at, sep, 0usize, 0usize };
+    r: CsvReader = .{ text, at, sep, 0usize, 0usize };
     return r;
 }
 

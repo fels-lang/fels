@@ -11,7 +11,7 @@ the major version is `0`, any minor bump may break source compatibility.
   spreadsheets write it) or a tab, with fields in quotes as RFC 4180 has them. `reader`, `next`
   and `done` go record by record, `records` reads them all, `guess_separator` looks at the first
   line. Empty lines and a byte order mark are skipped; an open quote is
-  `CsvError.unterminated_quote`.
+  `CsvError.unterminated_quote`. The reader's type is `CsvReader`.
 - **Folders in `std.fs`**: `make_dir` (a folder that is there already is fine), `make_dirs`
   (the folders above it too) and `remove_dir` (an empty folder).
 - **The arguments of a program**: `process::args(&a)`, the program first. On Windows the
