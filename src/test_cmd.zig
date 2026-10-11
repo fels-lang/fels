@@ -237,7 +237,6 @@ const Native = struct {
         const cwd = std.process.currentPathAlloc(io, a) catch try a.dupe(u8, ".");
         const project = try std.fs.path.resolve(a, &.{ cwd, opts.project_dir });
         const out_dir = try std.fs.path.join(a, &.{ project, ".fels-cache", "test" });
-        std.Io.Dir.cwd().createDirPath(io, out_dir) catch {};
         return .{
             .llvm_bin = opts.llvm_bin,
             .lib_paths = lib_paths.items,
@@ -269,6 +268,8 @@ const Native = struct {
         for (flat) |*c| if (c.* == '/' or c.* == ':') {
             c.* = '_';
         };
+        // Made here, so a project without tests gets no .fels-cache folder.
+        std.Io.Dir.cwd().createDirPath(io, self.out_dir) catch {};
         const exe = try std.fmt.allocPrint(a, "{s}{c}{s}.exe", .{ self.out_dir, std.fs.path.sep, flat });
         const obj = try std.fmt.allocPrint(a, "{s}.o", .{exe});
         driver.emitLlvmFromFrontend(gpa, io, fe, .{
