@@ -103,6 +103,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "fels build (build.fels) failed ($LASTEXITCODE)" }
           & .\hello.exe
           if ($LASTEXITCODE -ne 5) { throw "hello.exe from build.fels returned $LASTEXITCODE, expected 5" }
+
+          # A project from each template: its tests pass as test programs, and it builds.
+          foreach ($t in "app", "lib", "cbind") {
+              & $fels.FullName new "smoke_$t" "--$t" --no-git
+              if ($LASTEXITCODE -ne 0) { throw "fels new --$t failed ($LASTEXITCODE)" }
+              Push-Location "smoke_$t"
+              & $fels.FullName test
+              if ($LASTEXITCODE -ne 0) { throw "fels test in the $t template failed ($LASTEXITCODE)" }
+              & $fels.FullName build
+              if ($LASTEXITCODE -ne 0) { throw "fels build in the $t template failed ($LASTEXITCODE)" }
+              Pop-Location
+          }
           Pop-Location
           exit 0 # the step would otherwise fail with hello.exe's exit code
 
