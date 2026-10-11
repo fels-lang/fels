@@ -796,6 +796,7 @@ fn printUsage() void {
         \\  build    <file.fels>     compile and link a single file directly
         \\  check    <file.fels>     parse and type-check only
         \\  test     [path...]     run the #test functions (default: the .fels files in src/)
+        \\  test     --comptime    run them on the comptime VM: nothing is built or linked
         \\  object   <file.fels>     compile to an object file (.o)
         \\  ir       <file.fels>     print LLVM IR to stdout
         \\  bindgen  <header.h>    generate Fels FFI bindings from a C header
