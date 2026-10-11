@@ -2,8 +2,8 @@
 // std.process — process info, env vars, and child-process spawning for Fels. OS
 // calls go through the platform runtime (windows.fels → kernel32; linux.fels → getpid +
 // /proc + fork/execve/wait4/kill), so this file is OS-agnostic. It has current_pid,
-// command_line, get_env/set_env/unset_env, and Child + spawn/wait/try_wait/kill/
-// release, all sharing ProcessError. (exit/abort/@panic live in the runtime — no
+// command_line, args/split_command_line, get_env/set_env/unset_env, and Child +
+// spawn/wait/try_wait/kill/release, all sharing ProcessError. (exit/abort/@panic live in the runtime — no
 // import needed.)
 //
 // Linux: command_line/get_env read /proc/self/{cmdline,environ}; set_env/unset_env
@@ -11,10 +11,14 @@
 // child (run via /bin/sh -c).
 
 #import std.io.{ IoError };
+#import std.heap.{ Arena, alloc };
+#import std.vec as vec;
 
 // The process seam, provided by the platform runtime:
 //   os_pid() -> i64
 //   os_cmdline(out) -> i64                 length copied into `out`
+//   os_args_raw(out) -> i64                the arguments, each ended by a NUL; -1 where the OS
+//                                          has only one command-line text (Windows)
 //   os_get_env(name, out) -> i64           value length, or -1 if unset
 //   os_set_env(name, value) -> bool / os_unset_env(name) -> bool
 //   os_spawn(cmd) -> i64                   opaque child token, or -1
@@ -60,6 +64,104 @@ pub command_line :: fn(out: []u8) -> []const u8 {
     n := os_cmdline(out);
     if n < 0i64 { return out[0usize..0usize]; }
     return out[0usize..(n as usize)];
+}
+
+// The arguments the program was started with, the program first, in `a`. On Windows they are
+// split from the command line as the C runtime splits it (`split_command_line`); on Linux they
+// are as the kernel passed them.
+pub args :: fn(a: *Arena) -> [][]const u8 {
+    buf := alloc(u8, a, 32768usize);
+    n := os_args_raw(buf);
+    if n < 0i64 { return split_command_line(command_line(buf), a); }
+    out := vec::make([]const u8, a);
+    start: usize = 0usize;
+    i: usize = 0usize;
+    while i < (n as usize) {
+        if buf[i] == 0u8 {
+            out.push(buf[start..i]);
+            start = i + 1usize;
+        }
+        i += 1usize;
+    }
+    if start < (n as usize) { out.push(buf[start..(n as usize)]); }
+    return out.items();
+}
+
+// A Windows command line split into its arguments, as the C runtime splits it: spaces and tabs
+// part them outside quotes; `\"` is a quote, `\\"` a backslash before a quote that opens or
+// closes, and `""` inside quotes a quote; other backslashes are kept. The program, first, ends
+// at the first space, or at its closing quote, and has no backslash rules (`C:\dir\`).
+pub split_command_line :: fn(line: []const u8, a: *Arena) -> [][]const u8 {
+    out := vec::make([]const u8, a);
+    text := alloc(u8, a, line.len);
+    n: usize = 0usize;
+    i: usize = 0usize;
+    // the program
+    if i < line.len && line[i] == 34u8 {
+        i += 1usize;
+        start := i;
+        while i < line.len && line[i] != 34u8 { i += 1usize; }
+        out.push(line[start..i]);
+        if i < line.len { i += 1usize; }
+    } else {
+        start := i;
+        while i < line.len && line[i] != 32u8 && line[i] != 9u8 { i += 1usize; }
+        out.push(line[start..i]);
+    }
+    while true {
+        while i < line.len && (line[i] == 32u8 || line[i] == 9u8) { i += 1usize; }
+        if i >= line.len { break; }
+        start := n;
+        quoted := false;
+        while i < line.len {
+            c := line[i];
+            if !quoted && (c == 32u8 || c == 9u8) { break; }
+            if c == 92u8 {
+                slashes: usize = 0usize;
+                while i < line.len && line[i] == 92u8 {
+                    slashes += 1usize;
+                    i += 1usize;
+                }
+                if i < line.len && line[i] == 34u8 {
+                    k: usize = 0usize;
+                    while k < slashes / 2usize {
+                        text[n] = 92u8;
+                        n += 1usize;
+                        k += 1usize;
+                    }
+                    if slashes % 2usize == 1usize {
+                        text[n] = 34u8;
+                        n += 1usize;
+                        i += 1usize;
+                    }
+                } else {
+                    k: usize = 0usize;
+                    while k < slashes {
+                        text[n] = 92u8;
+                        n += 1usize;
+                        k += 1usize;
+                    }
+                }
+                continue;
+            }
+            if c == 34u8 {
+                if quoted && i + 1usize < line.len && line[i + 1usize] == 34u8 {
+                    text[n] = 34u8;
+                    n += 1usize;
+                    i += 2usize;
+                    continue;
+                }
+                quoted = !quoted;
+                i += 1usize;
+                continue;
+            }
+            text[n] = c;
+            n += 1usize;
+            i += 1usize;
+        }
+        out.push(text[start..n]);
+    }
+    return out.items();
 }
 
 // Environment variables
