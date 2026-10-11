@@ -3,7 +3,12 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.7.0 — 2026-10-11
+
+What a desktop program needed (Strata, a portfolio program written in Fels): JSON and CSV
+readers, calendar dates, `exp`/`ln`/`pow`, folders, the program's arguments, and file paths
+outside ASCII on Windows; and the fixes it found, among them types of the same name in
+different modules and a negative float literal in an `f32`.
 
 ### Added
 
