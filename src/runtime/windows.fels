@@ -100,6 +100,10 @@ ReadFile :: fn(h: usize, buf: *u8, len: u32, read: *u32, ov: ?*void) -> bool;
 GetFileAttributesA :: fn(name: *const u8) -> u32;
 #extern("kernel32", "DeleteFileA")
 DeleteFileA :: fn(name: *const u8) -> bool;
+#extern("kernel32", "CreateDirectoryA")
+CreateDirectoryA :: fn(name: *const u8, sec: ?*void) -> bool;
+#extern("kernel32", "RemoveDirectoryA")
+RemoveDirectoryA :: fn(name: *const u8) -> bool;
 #extern("kernel32", "SetFilePointerEx")
 SetFilePointerEx :: fn(h: usize, dist: i64, newp: ?*i64, method: u32) -> bool;
 #extern("kernel32", "FindFirstFileExA")
@@ -163,6 +167,14 @@ os_path_kind :: fn(path: *const u8) -> i32 {
 }
 os_unlink :: fn(path: *const u8) -> i32 {
     if !DeleteFileA(path) { return -1; }
+    return 0;
+}
+os_mkdir :: fn(path: *const u8) -> i32 {
+    if !CreateDirectoryA(path, null) { return -1; }
+    return 0;
+}
+os_rmdir :: fn(path: *const u8) -> i32 {
+    if !RemoveDirectoryA(path) { return -1; }
     return 0;
 }
 
