@@ -148,6 +148,10 @@ pub const IrFunction = struct {
     section: ?[]const u8 = null,
     /// `#link_name("name")` — the external symbol name (without exporting it).
     link_name: ?[]const u8 = null,
+    /// The file and line of the declaration, for debug info; "" and 0 for a function the
+    /// compiler made.
+    file: []const u8 = "",
+    line: u32 = 0,
 };
 
 pub const IrParam = struct {
@@ -160,6 +164,10 @@ pub const IrBlock = struct {
     name: []const u8,
     instrs: []const Instr,
     terminator: ?Terminator,
+    /// The line and column of the statement the terminator comes from, for debug info; 0 when
+    /// it has none.
+    term_line: u32 = 0,
+    term_column: u32 = 0,
 };
 
 pub const IrType = union(enum) {
@@ -315,6 +323,10 @@ pub const Instr = struct {
     ty: IrType,
     kind: InstrKind,
     location: SourceLocation = .{ .file = "", .line = 0, .column = 0 },
+    /// The line and column of the statement the instruction comes from, for debug info; 0 when
+    /// it has none.
+    line: u32 = 0,
+    column: u32 = 0,
 };
 
 pub const InstrKind = union(enum) {
@@ -1449,6 +1461,8 @@ fn foldFunctionConstants(allocator: std.mem.Allocator, function: IrFunction) !Ir
             .name = block.name,
             .instrs = try instrs.toOwnedSlice(allocator),
             .terminator = foldTerminator(&consts, block.terminator),
+            .term_line = block.term_line,
+            .term_column = block.term_column,
         });
     }
 
@@ -1473,10 +1487,10 @@ fn tryFoldInstr(consts: *const ConstMap, instr: Instr) Instr {
             const rhs = resolveVal(consts, binary.rhs);
             if (lhs == .imm and rhs == .imm) {
                 if (foldBinaryImm(binary.op, lhs.imm, rhs.imm)) |result| {
-                    return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .const_value = result }, .location = instr.location };
+                    return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .const_value = result }, .location = instr.location, .line = instr.line, .column = instr.column };
                 }
             }
-            return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .binary = .{ .op = binary.op, .lhs = lhs, .rhs = rhs } }, .location = instr.location };
+            return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .binary = .{ .op = binary.op, .lhs = lhs, .rhs = rhs } }, .location = instr.location, .line = instr.line, .column = instr.column };
         },
         .unary => |unary| {
             // `ref` takes its operand's storage, not its value: a register that folded to a
@@ -1485,10 +1499,10 @@ fn tryFoldInstr(consts: *const ConstMap, instr: Instr) Instr {
             const value = resolveVal(consts, unary.value);
             if (value == .imm) {
                 if (foldUnaryImm(unary.op, value.imm)) |result| {
-                    return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .const_value = result }, .location = instr.location };
+                    return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .const_value = result }, .location = instr.location, .line = instr.line, .column = instr.column };
                 }
             }
-            return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .unary = .{ .op = unary.op, .value = value } }, .location = instr.location };
+            return .{ .id = instr.id, .ty = instr.ty, .kind = .{ .unary = .{ .op = unary.op, .value = value } }, .location = instr.location, .line = instr.line, .column = instr.column };
         },
         else => return instr,
     }
@@ -1578,6 +1592,8 @@ fn simplifyBranches(allocator: std.mem.Allocator, module: *IrModule) !void {
                 .name = block.name,
                 .instrs = block.instrs,
                 .terminator = simplifyTerminator(block.terminator),
+                .term_line = block.term_line,
+                .term_column = block.term_column,
             });
         }
 
@@ -1632,6 +1648,8 @@ fn eliminateFunctionDeadCode(allocator: std.mem.Allocator, function: IrFunction)
             .name = block.name,
             .instrs = try instrs.toOwnedSlice(allocator),
             .terminator = block.terminator,
+            .term_line = block.term_line,
+            .term_column = block.term_column,
         });
     }
 
@@ -2016,6 +2034,8 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
         .keep = hasAttr(decl.attrs, "keep"),
         .section = strAttrArg(decl.attrs, "section"),
         .link_name = strAttrArg(decl.attrs, "link_name"),
+        .file = decl.file_name,
+        .line = @intCast(error_codes.lineCol(decl.source, decl.span.start).line),
     };
 }
 
@@ -2200,6 +2220,9 @@ const FunctionLowerer = struct {
     current_id: BlockId = 0,
     current_name: []const u8 = "entry",
     current_terminated: bool = false,
+    /// The statement being lowered: its line and column go on each instruction (debug info).
+    stmt_line: u32 = 0,
+    stmt_column: u32 = 0,
     next_reg: RegId = 1,
     next_block_id: BlockId = 1,
     temp_id: u32 = 0,
@@ -2424,6 +2447,15 @@ const FunctionLowerer = struct {
     }
 
     fn lowerStmt(self: *FunctionLowerer, stmt: ast.Stmt) LowerError!void {
+        const outer_line = self.stmt_line;
+        const outer_column = self.stmt_column;
+        defer {
+            self.stmt_line = outer_line;
+            self.stmt_column = outer_column;
+        }
+        const at = self.error_codes.lineCol(self.source, stmt.span().start);
+        self.stmt_line = @intCast(at.line);
+        self.stmt_column = @intCast(at.col);
         switch (stmt) {
             .decl => return error.LoweringFailed, // only in a declaration quote
             .local_infer => |local| {
@@ -6400,7 +6432,7 @@ const FunctionLowerer = struct {
         if (self.current_terminated) return .{ .imm = .null };
         const id = self.next_reg;
         self.next_reg += 1;
-        try self.current_instrs.append(self.allocator, .{ .id = id, .ty = ty, .kind = kind });
+        try self.current_instrs.append(self.allocator, .{ .id = id, .ty = ty, .kind = kind, .line = self.stmt_line, .column = self.stmt_column });
         return .{ .reg = id };
     }
 
@@ -6413,13 +6445,15 @@ const FunctionLowerer = struct {
             .ty = ty,
             .kind = kind,
             .location = self.sourceLocation(span),
+            .line = self.stmt_line,
+            .column = self.stmt_column,
         });
         return .{ .reg = id };
     }
 
     fn emitNoResult(self: *FunctionLowerer, ty: IrType, kind: InstrKind) LowerError!void {
         if (self.current_terminated) return;
-        try self.current_instrs.append(self.allocator, .{ .id = null, .ty = ty, .kind = kind });
+        try self.current_instrs.append(self.allocator, .{ .id = null, .ty = ty, .kind = kind, .line = self.stmt_line, .column = self.stmt_column });
     }
 
     /// Lower a `fn(...)` argument passed to an `#extern` C function as a THIN raw
@@ -6679,6 +6713,8 @@ const FunctionLowerer = struct {
             .name = self.current_name,
             .instrs = try self.current_instrs.toOwnedSlice(self.allocator),
             .terminator = terminator,
+            .term_line = self.stmt_line,
+            .term_column = self.stmt_column,
         });
         self.current_terminated = true;
     }
