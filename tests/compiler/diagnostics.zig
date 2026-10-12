@@ -1435,6 +1435,30 @@ test "diagnostics: an array literal with more elements than its array is rejecte
     try expectNoError(a, "", "main :: fn() -> i32 { x: [3]i32 = .{ 1 }; y: [3]i32 = .{}; return x[2] + y[0]; }");
 }
 
+test "diagnostics: a struct literal value of another type than its field is rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const pair = "Inner :: struct { x: i32, y: i32 }\nPair :: struct { a: i32, s: Inner, b: bool }\n";
+    // `fels check` said "ok" and LLVM crashed in `fels build`: nothing compared a value with its field.
+    try expectFirstError(a, pair ++ "main :: fn() -> i32 { p: Pair = .{ 1, true }; return p.a; }", &.{
+        "field `s` of `Pair`: expected `Inner`, found `bool`", "expected `Inner`",
+    });
+    try expectFirstError(a, pair ++ "main :: fn() -> i32 { p: Pair = .{ .a = 1, .s = true, .b = false }; return p.a; }", &.{"field `s` of `Pair`: expected `Inner`, found `bool`"});
+    try expectFirstError(a, pair ++ "main :: fn() -> i32 { p: Pair = .{ 1, .{ 2, true } }; return p.a; }", &.{"field `y` of `Inner`: expected `i32`, found `bool`"});
+    try expectFirstError(a, pair ++ "f :: fn(p: Pair) -> i32 { return p.a; }\nmain :: fn() -> i32 { return f(.{ true }); }", &.{"field `a` of `Pair`: expected `i32`, found `bool`"});
+    try expectFirstError(a, pair ++ "mk :: fn() -> Pair { return .{ 1, .{}, 2.5 }; }", &.{"field `b` of `Pair`: expected `bool`, found `float literal`"});
+    try expectFirstError(a, pair ++ "main :: fn() -> i32 { p: Pair = .{}; p = .{ 1, .{}, 4 }; return p.a; }", &.{"field `b` of `Pair`: expected `bool`, found `integer literal`"});
+    // The value past the last field was dropped without a word.
+    try expectFirstError(a, pair ++ "main :: fn() -> i32 { p: Pair = .{ 1, .{}, true, 4 }; return p.a; }", &.{
+        "too many values for `Pair`: the literal has 4, the struct has 3 fields", "`Pair` ends before this value",
+    });
+    // A literal that stops short is fine: the fields after it take their defaults, then zero.
+    try expectNoError(a, pair, "main :: fn() -> i32 { p: Pair = .{ 1 }; q: Pair = .{ 1, .{ 2 } }; r: Pair = .{}; return p.a + q.s.x + r.a; }");
+    try expectNoError(a, pair ++ "Color :: enum { red, green }\nRobot :: struct { id: i32, c: Color }\n",
+        "main :: fn() -> i32 { s: Inner = .{ 1, 2 }; p: Pair = .{ 1, s, true }; r: Robot = .{ 1, .green }; q: Robot = .{ .c = .red, .id = 2 }; return p.a + r.id + q.id; }");
+}
+
 test "diagnostics: an array length computed at compile time is checked against the literal" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

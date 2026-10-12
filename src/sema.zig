@@ -548,7 +548,8 @@ pub const TypeEnv = struct {
     enum_lits: std.AutoHashMap(ast.NodeId, EnumLit),
     /// `.{ … }` literal NodeIds whose struct type came from the context (a typed local,
     /// an assignment, a return, an argument, an enclosing literal) -> that struct's
-    /// symbol. Only the language server reads it (references of a field).
+    /// symbol. Sema checks the literal's values against the fields with it, and the
+    /// language server reads it (references of a field).
     literal_types: std.AutoHashMap(ast.NodeId, SymbolId),
     generic_instantiations: std.ArrayList(GenericInstantiation) = .empty,
     /// Callee expression NodeId → mangled name for generic function calls.
@@ -3296,11 +3297,32 @@ const Checker = struct {
             .bool => .bool,
             .null => .null_ptr,
             .compound_literal => |values| blk: {
-                for (values) |value| _ = try self.inferExpr(value);
+                const struct_id = self.env.literal_types.get(expr.id);
+                const fields = if (struct_id) |id| self.structFieldInfos(.{ .named = id }) else null;
+                if (fields) |fs| if (values.len > fs.len) {
+                    const ty_name = self.formatTy(.{ .named = struct_id.? });
+                    self.emitErrorRich(values[fs.len].span, "too many values for `{s}`: the literal has {d}, the struct has {d} field{s}", .{ ty_name, values.len, fs.len, if (fs.len == 1) "" else "s" }, .{
+                        .primary_label = std.fmt.allocPrint(self.allocator, "`{s}` ends before this value", .{ty_name}) catch null,
+                    });
+                    return error.SemanticFailed;
+                };
+                for (values, 0..) |value, i| {
+                    const value_ty = try self.inferExpr(value);
+                    if (fields) |fs| try self.requireFieldValue(value, value_ty, struct_id.?, fs[i]);
+                }
                 break :blk .unknown;
             },
-            .struct_literal => |fields| blk: {
-                for (fields) |f| _ = try self.inferExpr(f.value);
+            .struct_literal => |inits| blk: {
+                const struct_id = self.env.literal_types.get(expr.id);
+                const fields = if (struct_id) |id| self.structFieldInfos(.{ .named = id }) else null;
+                for (inits) |fi| {
+                    const value_ty = try self.inferExpr(fi.value);
+                    // A name that is no field is reported when the literal is lowered.
+                    if (fields) |fs| for (fs) |field| if (std.mem.eql(u8, field.name, fi.name)) {
+                        try self.requireFieldValue(fi.value, value_ty, struct_id.?, field);
+                        break;
+                    };
+                }
                 break :blk .unknown;
             },
             .unary => |unary| switch (unary.op) {
@@ -4358,12 +4380,15 @@ const Checker = struct {
 
     /// Push an expected type down into an aggregate literal's field values.
     ///
-    /// A struct literal is validated against the struct's declared field types
-    /// during lowering, not here, so a bare `.variant` sitting in a field
-    /// position never reached `coerceEnumLiteral` and lowered as variant 0 with
-    /// no diagnostic. Give each field value its declared type as a coercion
-    /// target, recursing so nested literals get the same treatment.
+    /// A bare `.variant` sitting in a field position never reached
+    /// `coerceEnumLiteral` and lowered as variant 0 with no diagnostic. Give each
+    /// field value its declared type as a coercion target, recursing so nested
+    /// literals get the same treatment. The struct is recorded in `literal_types`,
+    /// where `inferExpr` checks each value against its field.
     fn coerceLiteralFields(self: *Checker, expr: ast.Expr, expected: Ty) SemanticError!void {
+        // A literal checked again for another type (a generic body, once per binding)
+        // must not keep the struct of an earlier one.
+        _ = self.env.literal_types.remove(expr.id);
         const type_id = switch (expected) {
             .named => |id| id,
             else => return,
@@ -4395,6 +4420,20 @@ const Checker = struct {
             },
             else => {},
         }
+    }
+
+    /// A value of a `.{ … }` literal of the struct `struct_id` has the type of its field.
+    /// It was not checked, and IR built the struct from a value of another type: LLVM
+    /// crashed on `.{ 1, true }` with an `Inner` field where `true` stands.
+    fn requireFieldValue(self: *Checker, value: ast.Expr, value_ty: Ty, struct_id: SymbolId, field: FieldInfo) SemanticError!void {
+        // A bare `.variant` was typed against the field by `coerceLiteralFields`.
+        if (self.env.enum_lits.contains(value.id)) return;
+        if (try self.compatible(value_ty, field.ty)) return;
+        const field_ty = self.formatTy(field.ty);
+        self.emitErrorRich(value.span, "field `{s}` of `{s}`: expected `{s}`, found `{s}`", .{
+            field.name, self.formatTy(.{ .named = struct_id }), field_ty, self.formatTy(value_ty),
+        }, .{ .primary_label = std.fmt.allocPrint(self.allocator, "expected `{s}`", .{field_ty}) catch null });
+        return error.SemanticFailed;
     }
 
     /// `EnumType.variant(payload)` — construct an enum value carrying a payload
