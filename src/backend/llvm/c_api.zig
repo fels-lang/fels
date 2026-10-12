@@ -8,4 +8,5 @@ pub const llvm = @cImport({
     @cInclude("llvm-c/BitWriter.h");
     @cInclude("llvm-c/Support.h");
     @cInclude("llvm-c/Transforms/PassBuilder.h");
+    @cInclude("llvm-c/DebugInfo.h");
 });

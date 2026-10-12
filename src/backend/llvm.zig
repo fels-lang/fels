@@ -47,6 +47,14 @@ pub const LlvmBackend = struct {
         llvm_c.LLVMContextSetDiscardValueNames(self.cg.ctx, 1);
     }
 
+    /// Emit debug info for the module (`-g`). `root_file` is the compile's root, `cwd` the folder
+    /// relative source paths are taken from. Must be called before `lower`.
+    pub fn setDebugInfo(self: *LlvmBackend, root_file: []const u8, cwd: []const u8) void {
+        if (self.cg.debug != null) return;
+        const codeview = self.cg.target_os == .windows;
+        self.cg.debug = ctx_mod.debug_mod.DebugCg.init(self.cg.allocator, self.cg.ctx, self.cg.mod, root_file, cwd, self.cg.opt_level > 0, codeview);
+    }
+
     /// Set the target OS (cross-compilation). Must be called before `lower`.
     pub fn setTarget(self: *LlvmBackend, target_os: std.Target.Os.Tag) void {
         self.cg.target_os = target_os;
@@ -128,6 +136,7 @@ pub const LlvmBackend = struct {
             try emitDefaultLibs(&self.cg, module);
         }
 
+        if (self.cg.debug) |*d| d.finish();
         try emit.verify(&self.cg);
     }
 

@@ -7,6 +7,7 @@ const llvm = @import("c_api.zig").llvm;
 const variants = @import("variants.zig");
 const abi = @import("abi.zig");
 const emit = @import("emit.zig");
+pub const debug_mod = @import("debug.zig");
 
 /// Windows x64 stack-probe stub. LLVM emits `call __chkstk` in the prologue of any
 /// function whose frame exceeds one page (4 KiB); the CRT that normally supplies
@@ -284,6 +285,8 @@ pub const ModuleCg = struct {
     /// The object of a static library: only `#export`ed symbols stay visible, so the
     /// runtime it carries does not clash with the program that links it.
     library_object: bool = false,
+    /// Debug info (`-g`); null without.
+    debug: ?debug_mod.DebugCg = null,
 
     /// Set when an internal lowering invariant is violated (e.g. a value's
     /// actual LLVM shape doesn't match what an instruction lowering assumed —
@@ -386,6 +389,7 @@ pub const ModuleCg = struct {
     }
 
     pub fn deinit(self: *ModuleCg) void {
+        if (self.debug) |*d| d.deinit();
         // Free field lists
         var it = self.struct_fields.valueIterator();
         while (it.next()) |v| self.allocator.free(v.*);
