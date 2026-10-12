@@ -351,6 +351,14 @@ pub const Stmt = union(enum) {
     /// (`#quote { f :: fn() { … } }`), which `#insert` makes declarations of.
     decl: *const Item,
     expr: Expr,
+
+    /// Where the statement is in its file.
+    pub fn span(self: Stmt) Span {
+        return switch (self) {
+            .decl => |item| item.span(),
+            inline else => |s| s.span,
+        };
+    }
 };
 
 /// `#insert <expr>;` — splice compile-time-generated code at this point.
