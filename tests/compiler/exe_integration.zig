@@ -5700,3 +5700,44 @@ test "exe: an enum literal where an optional enum is expected" {
     ;
     try std.testing.expectEqual(@as(u32, 0), try compileAndRun(arena.allocator(), src, "exe_optional_enum_literal"));
 }
+
+test "exe: an index can be a dereference" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The lexer reads `[*` as the start of a many-pointer type `[*]T`, so `text[*at]` ended
+    // the expression before the `[` ("expected {" in a `while` condition).
+    const src =
+        \\number_at :: fn(text: []const u8, at: *usize) -> i64 {
+        \\    n: i64 = 0i64;
+        \\    while *at < text.len && text[*at] >= 48u8 && text[*at] <= 57u8 {
+        \\        n = n * 10i64 + ((text[*at] - 48u8) as i64);
+        \\        *at += 1usize;
+        \\    }
+        \\    return n;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    text: []const u8 = "12+345";
+        \\    at: usize = 0usize;
+        \\    if number_at(text, &at) != 12i64 || at != 2usize { return 1; }
+        \\    p := &at;
+        \\    pp := &p;
+        \\    if text[*p] != 43u8 { return 2; }              // `+`
+        \\    c := text[*p + 1usize];                        // the index goes on after the load
+        \\    if c != 51u8 { return 3; }
+        \\    if text[**pp] != 43u8 { return 4; }            // through two pointers
+        \\    if text[*p..].len != 4usize { return 5; }      // the start of a slice
+        \\    *p += 1usize;
+        \\    if number_at(text, p) != 345i64 { return 6; }
+        \\    buf: [3]u8 = .{ 0u8, 0u8, 0u8 };
+        \\    i: usize = 1usize;
+        \\    q := &i;
+        \\    buf[*q] = 7u8;                                 // an assignment target
+        \\    if buf[1usize] != 7u8 { return 7; }
+        \\    return 0;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_index_deref_o0", 0));
+    try std.testing.expectEqual(@as(u32, 0), try compileAndRunAt(arena.allocator(), src, "exe_index_deref_o2", 2));
+}

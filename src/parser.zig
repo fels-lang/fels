@@ -1945,7 +1945,7 @@ pub const Parser = struct {
                 left = try self.expr(.{ .scope_access = .{ .base = try self.allocExpr(left), .member = member.text(self.source) } }, Span.new(left.span.start, member.start + member.len));
                 continue;
             }
-            if (self.match(.l_bracket)) {
+            if (self.match(.l_bracket) or self.splitBracketStar()) {
                 if (self.match(.colon)) {
                     const close = try self.expect(.r_bracket, "expected ] after slice");
                     left = try self.expr(.{ .slice = .{ .base = try self.allocExpr(left) } }, Span.new(left.span.start, close.start + close.len));
@@ -2328,6 +2328,16 @@ pub const Parser = struct {
         const tok = self.peek();
         if (tok.kind != .eof) self.index += 1;
         return tok;
+    }
+
+    /// The lexer reads `[*` as one token, the start of a many-pointer type
+    /// `[*]T`. After an operand it is `[` and a dereference (`text[*at]`):
+    /// turn the token into the `*` and report the `[` as consumed.
+    fn splitBracketStar(self: *Parser) bool {
+        if (!self.check(.l_bracket_star)) return false;
+        const tok = &self.tokens[self.index];
+        tok.* = .{ .kind = .star, .start = tok.start + 1, .len = 1 };
+        return true;
     }
 
     fn expect(self: *Parser, kind: TokenKind, message: []const u8) ParseError!Token {
