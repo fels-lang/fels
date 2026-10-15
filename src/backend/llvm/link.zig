@@ -26,6 +26,7 @@ const FelsLinkFn = *const fn (in_path: [*:0]const u8, out_path: [*:0]const u8) c
 /// arbitrary linker flags, or a C library's `/DEFAULTLIB` (static-CRT objects).
 fn felsldEligible(opts: WindowsLinkOptions) bool {
     if (opts.obj_files.len != 1) return false;
+    if (opts.debug) return false; // felsld writes no PDB
     if (opts.extra_flags.len != 0) return false;
     if (opts.honor_defaultlibs) return false;
     return true;
@@ -157,6 +158,8 @@ pub const WindowsLinkOptions = struct {
     /// `/NODEFAULTLIB`. Only the CRT-startup umbrella libs are suppressed (they'd
     /// clash with Fels's own entry); the C runtime is provided via `ucrt`/`vcruntime`.
     honor_defaultlibs: bool = false,
+    /// Write the debug info into a PDB next to the output (`-g`). Only LLD does.
+    debug: bool = false,
 };
 
 /// The import library to hand LLD for a DLL named in `#extern("dll", "symbol")`. It is the DLL's
@@ -177,6 +180,12 @@ pub fn buildArgs(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ![]cons
     try args.append(allocator, try std.fmt.allocPrint(allocator, "{s}/lld-link.exe", .{opts.llvm_bin}));
     for (opts.obj_files) |obj| try args.append(allocator, try allocator.dupe(u8, obj));
     try args.append(allocator, try std.fmt.allocPrint(allocator, "/OUT:{s}", .{opts.output}));
+    if (opts.debug) {
+        // `app.exe` gets `app.pdb`; the exe records where it is, so a debugger finds it.
+        const stem = opts.output[0 .. opts.output.len - std.fs.path.extension(opts.output).len];
+        try args.append(allocator, try allocator.dupe(u8, "/DEBUG:FULL"));
+        try args.append(allocator, try std.fmt.allocPrint(allocator, "/PDB:{s}.pdb", .{stem}));
+    }
     if (opts.dll) {
         // Shared library: no CRT entry point — `/NOENTRY` makes it a pure
         // code+exports container; exports come from dllexport directives.
@@ -438,7 +447,11 @@ pub fn windowsMem(allocator: std.mem.Allocator, io: std.Io, obj_bytes: []const u
     noteLldFallback(opts, obj_bytes);
     // Spill the object so LLD can read it, then take the LLD path.
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = opts.obj_files[0], .data = obj_bytes }) catch return error.OutOfMemory;
-    return linkWithLld(allocator, io, opts);
+    linkWithLld(allocator, io, opts) catch |err| {
+        // felsld needs no import libraries, so a program that links without -g may not with it.
+        if (opts.debug) std.debug.print("note: with -g a program is linked by LLD, which needs the import library of each DLL it uses (kernel32.lib, ...): they come with the Windows SDK\n", .{});
+        return err;
+    };
 }
 
 test "link: ld.lld is looked for in the LLVM folder, then next to fels" {
