@@ -360,6 +360,11 @@ const Pass = struct {
             llvm.LLVMRemoveBasicBlockFromParent(blk);
             llvm.LLVMAppendExistingBasicBlock(rw.new, blk);
         }
+        // The debug info goes with the body: its lines are in the old function's subprogram.
+        if (llvm.LLVMGetSubprogram(rw.old)) |sp| {
+            llvm.LLVMSetSubprogram(rw.new, sp);
+            llvm.LLVMSetSubprogram(rw.old, null);
+        }
         const entry = llvm.LLVMGetEntryBasicBlock(rw.new);
 
         // Parameters: a taken-apart one is rebuilt only where it is used whole.

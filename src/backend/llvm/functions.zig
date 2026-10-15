@@ -174,6 +174,10 @@ fn defineOne(cg: *ModuleCg, func: ir.IrFunction) !void {
         try blocks.put(block.id, llvm.LLVMAppendBasicBlockInContext(cg.ctx, llvm_fn, name_z));
     }
 
+    // Debug info: the subprogram, and the declaration's line for the stack slots below.
+    if (cg.debug) |*d| d.begin(cg.builder, cg.ctx, func, llvm_fn);
+    defer if (cg.debug) |*d| d.end(cg.builder);
+
     // Emit allocas at the start of the entry block.
     const entry_bb = blocks.get(func.blocks[0].id).?;
     var locals = try local_vars.allocateLocals(cg, func, entry_bb);
@@ -223,7 +227,13 @@ fn defineOne(cg: *ModuleCg, func: ir.IrFunction) !void {
     // Lower each block.
     for (func.blocks) |block| {
         llvm.LLVMPositionBuilderAtEnd(cg.builder, fncg.blocks.get(block.id).?);
-        for (block.instrs) |instr| instrs.lower(cg, &fncg, instr);
-        if (block.terminator) |term| terminators.lower(cg, &fncg, term, func);
+        for (block.instrs) |instr| {
+            if (cg.debug) |*d| d.at(cg.builder, cg.ctx, instr.line, instr.column);
+            instrs.lower(cg, &fncg, instr);
+        }
+        if (block.terminator) |term| {
+            if (cg.debug) |*d| d.at(cg.builder, cg.ctx, block.term_line, block.term_column);
+            terminators.lower(cg, &fncg, term, func);
+        }
     }
 }

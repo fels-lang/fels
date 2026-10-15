@@ -323,8 +323,12 @@ pub fn getOrCreateThunk(cg: *ModuleCg, fn_link: []const u8, target: llvm.LLVMVal
     const thunk = llvm.LLVMAddFunction(cg.mod, name.ptr, thunk_ty);
     llvm.LLVMSetLinkage(thunk, llvm.LLVMInternalLinkage);
 
-    // Build the body, then restore the builder to where it was.
+    // Build the body, then restore the builder to where it was. The thunk has no source line
+    // (debug info): the one of the function being built is not its own.
     const saved = llvm.LLVMGetInsertBlock(cg.builder);
+    const saved_loc = llvm.LLVMGetCurrentDebugLocation2(cg.builder);
+    llvm.LLVMSetCurrentDebugLocation2(cg.builder, null);
+    defer llvm.LLVMSetCurrentDebugLocation2(cg.builder, saved_loc);
     const entry = llvm.LLVMAppendBasicBlockInContext(cg.ctx, thunk, "entry");
     llvm.LLVMPositionBuilderAtEnd(cg.builder, entry);
     const args = cg.allocator.alloc(llvm.LLVMValueRef, n) catch return null;
