@@ -174,6 +174,9 @@ pub const LlvmCompileOptions = struct {
     progress_ctx: ?*anyopaque = null,
     /// If set, per-phase timings are written here.
     timings: ?*Timings = null,
+    /// Debug info (`-g`): source lines and function names for a debugger, in a PDB next to a
+    /// Windows program and in DWARF sections of a Linux one.
+    debug_info: bool = false,
 };
 
 const clock = @import("clock.zig");
@@ -427,6 +430,10 @@ pub fn emitLlvmFromFrontend(
     be.cg.library_object = opts.library_object;
     be.setOptLevel(opts.opt_level);
     be.setSafety(opts.safety);
+    // Relative source paths in the debug info are taken from this folder.
+    const cwd: ?[:0]u8 = if (opts.debug_info) (std.process.currentPathAlloc(io, allocator) catch null) else null;
+    defer if (cwd) |d| allocator.free(d);
+    if (opts.debug_info) be.setDebugInfo(opts.file_name, cwd orelse ".");
     if (opts.progress) |p| p(opts.progress_ctx, .codegen);
     const t_codegen = nowNs();
     be.lower(module) catch {
@@ -493,6 +500,7 @@ pub fn emitLlvmFromFrontend(
             .stack_reserve = opts.stack_reserve,
             .extra_flags = opts.link_flags,
             .honor_defaultlibs = opts.honor_defaultlibs,
+            .debug = opts.debug_info,
         }) catch return error.LinkFailed;
         if (opts.timings) |tm| tm.link_ns = sinceNs(t_link);
     } else {
