@@ -925,6 +925,25 @@ test "diagnostics: fail e takes an error the function's set holds" {
     try expectNoError(a, decls, "g :: fn(e: F) -> i32 ! F { fail e; }\nh :: fn(e: F) -> i32 ! { fail e; }\nk :: fn() -> F { return F.c(3i64); }");
 }
 
+test "diagnostics: if x := opt warns, and names the form of while and match" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Two spellings unwrapped an optional in an `if`; `if opt |x|` is the one `while` and
+    // `match` use.
+    var fe = try fels.compile(a, "if_bind.fels",
+        \\find :: fn(n: i32) -> ?i32 { if n > 0 { return n; } return null; }
+        \\f :: fn() -> i32 { if v := find(3) { return v; } if find(4) |w| { return w; } return 0; }
+    );
+    defer fe.deinit(a);
+    var warnings: usize = 0;
+    for (fe.diagnostics()) |d| {
+        try std.testing.expect(d.kind != .err);
+        if (std.mem.indexOf(u8, d.message, "write the name after the optional, `if value |v| { … }`") != null) warnings += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), warnings);
+}
+
 test "diagnostics: a payload in braces warns, and the build goes on" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
