@@ -91,11 +91,9 @@ StatusBits :: struct {
 }
 ```
 
-> [!NOTE]
-> Each sub-byte value takes one whole byte, in a `#packed` struct too: fields are not
-> bit-packed yet (see [Packed structs](#packed-structs) below), so `StatusBits` is 3 bytes and
-> does not describe a C bitfield or a hardware register. The compiler accepts the types
-> elsewhere as well (a local, a parameter, a field of a plain struct), one byte each.
+In a `#packed` struct they take their bits, so `StatusBits` is one byte (see
+[Packed structs](#packed-structs) below). Elsewhere (a local, a parameter, a field of a plain
+struct) a sub-byte value takes a whole byte.
 
 ### Float Types
 
@@ -207,7 +205,13 @@ Flags :: struct {
 }
 ```
 
-Packed structs accept sub-byte field types (`u1` through `u7`), but they are **not bit-packed**: each such field occupies one whole byte. `PixelFormat` below is 3 bytes (not 16 bits), and `StatusBits` above is 3 bytes (not 8 bits). Bit-level packing is not implemented (see the roadmap's known gaps), so these types do not describe a C bitfield.
+A packed struct with a sub-byte field (`u1`–`u7`, `i1`–`i7`) is laid out bit by bit: each
+integer field takes exactly its width, starting at the bit where the field before it ended,
+from the lowest bit of the first byte up. `PixelFormat` below is 16 bits, two bytes, with
+`red` in bits 0–4, `green` in bits 5–10 and `blue` in bits 11–15; `StatusBits` above is one
+byte. A wider integer may start inside a byte too (`a: u3, b: u8` puts `b` in bits 3–10).
+The struct is as many bytes as its bits need; the bits after the last field are zero in a
+literal.
 
 ```fels
 #packed
@@ -216,7 +220,17 @@ PixelFormat :: struct {
     green: u6,
     blue: u5,
 }
+
+p: PixelFormat = .{ 31, 0, 31 };   // the bits 0b11111_000000_11111
+p.green = 63;                      // the other fields keep their bits
 ```
+
+A field that is no integer (a `bool`, a float, a pointer, a struct, an array) takes whole bytes
+and starts at a whole byte: if the integers before it end inside a byte, that is an error that
+says how many bits are missing, so the filler is written out (`reserved: u5`) rather than added
+without a word. A `bool` is a byte; use `u1` for a bit. `core::offset_of` gives the byte a
+field's first bit is in. A packed struct without sub-byte fields lies byte by byte, as C's
+`#pragma pack(1)` does.
 
 > [!IMPORTANT]
 > Taking the address of a packed struct field (`&p.b`, `&p.arr[i]`, a field of a nested packed struct) is a compile error, because the field may not be byte-aligned. Read and write packed fields by value, including through a `*Packed` pointer. To hand a field's bytes to something else, take the address of the whole struct and use `core::unaligned_read` or `core::memcpy` at the field's offset.

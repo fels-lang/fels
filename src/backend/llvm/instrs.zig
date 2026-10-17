@@ -1,5 +1,7 @@
 /// Instruction lowering.
 const std = @import("std");
+const ctx_mod = @import("context.zig");
+const layout_mod = @import("../../layout.zig");
 const ir = @import("../../ir.zig");
 const llvm = @import("c_api.zig").llvm;
 const types = @import("types.zig");
@@ -34,6 +36,10 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         .store => |st| blk: {
             const target = resolveVal(cg, fncg, st.target, .{ .ptr = undefined });
             const val = resolveVal(cg, fncg, st.value, instr.ty);
+            if (bitRefOf(fncg, st.target)) |ref| {
+                writeBitField(cg, ref, val);
+                break :blk null;
+            }
             markPackedAccess(llvm.LLVMBuildStore(cg.builder, val, target), target);
             break :blk null;
         },
@@ -50,7 +56,13 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         },
 
         .field => |f| lowerField(cg, fncg, f, instr.ty, false, instr.location),
-        .field_addr => |f| lowerField(cg, fncg, f, instr.ty, true, instr.location),
+        .field_addr => |f| blk: {
+            fncg.pending_bits = null;
+            const addr = lowerField(cg, fncg, f, instr.ty, true, instr.location);
+            if (fncg.pending_bits) |ref| if (instr.id) |id| fncg.bit_refs.put(id, ref) catch {};
+            fncg.pending_bits = null;
+            break :blk addr;
+        },
 
         .index => |ix| blk: {
             // Safety: bounds check before loading.
@@ -417,6 +429,7 @@ fn lowerUnary(cg: *ModuleCg, fncg: anytype, u: ir.UnaryInstr, ty: ir.IrType, loc
     // Taking an address reads nothing: resolving the operand as a value would load it (a
     // whole array, say) and coerce that to a pointer, which is not a valid instruction.
     if (u.op == .ref) return lowerRef(cg, fncg, u.value);
+    if (u.op == .deref) if (bitRefOf(fncg, u.value)) |ref| return readBitField(cg, ref, types.lower(cg, ty));
     const v = resolveVal(cg, fncg, u.value, ty);
     const bl = cg.builder;
     return switch (u.op) {
@@ -981,6 +994,17 @@ fn lowerField(
                 if (want_addr) return base_ptr;
                 return llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, result_ty), base_ptr, "");
             }
+            if (cg.bitPlaces(name)) |places| {
+                const struct_lty = cg.struct_types.get(name) orelse return null;
+                const base_ptr = if (want_addr)
+                    localOrAllocaPtr(cg, fncg, f.base, struct_lty) orelse return null
+                else blk: {
+                    const tmp = abi.entryAlloca(cg, fncg.llvm_fn, struct_lty);
+                    _ = llvm.LLVMBuildStore(cg.builder, resolveVal(cg, fncg, f.base, base_ir_ty), tmp);
+                    break :blk tmp;
+                };
+                return bitFieldAccess(cg, fncg, name, places, base_ptr, f.name, result_ty, want_addr);
+            }
             // Struct value (e.g. a local of named type loaded from alloca).
             const idx = cg.fieldIndex(name, f.name) orelse return null;
             const struct_lty = cg.struct_types.get(name) orelse return null;
@@ -1001,6 +1025,7 @@ fn lowerField(
             const struct_lty = cg.struct_types.get(name) orelse return null;
             const base_ptr = resolveVal(cg, fncg, f.base, base_ir_ty);
             if (cg.safety) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
+            if (cg.bitPlaces(name)) |places| return bitFieldAccess(cg, fncg, name, places, base_ptr, f.name, result_ty, want_addr);
             // A union's fields are all at its own address.
             const field_ptr = if (cg.isUnion(name))
                 base_ptr
@@ -1049,6 +1074,116 @@ fn markPackedAccess(access: llvm.LLVMValueRef, ptr: llvm.LLVMValueRef) void {
     const source = llvm.LLVMGetGEPSourceElementType(ptr);
     if (llvm.LLVMGetTypeKind(source) == llvm.LLVMStructTypeKind and llvm.LLVMIsPackedStruct(source) != 0)
         llvm.LLVMSetAlignment(access, 1);
+}
+
+/// Where the bits of a `field_addr` register are, when it addresses a field of a
+/// bit-packed struct.
+fn bitRefOf(fncg: anytype, val: ir.Value) ?ctx_mod.BitRef {
+    return switch (val) {
+        .reg => |id| fncg.bit_refs.get(id),
+        else => null,
+    };
+}
+
+/// Field `field_name` of the bit-packed struct `name` at `base_ptr`, read as `result_ty`,
+/// or its address. A field of whole bytes is at its byte offset; an integer is the bits of
+/// the bytes it spans. The address is that of the field's first byte, and `pending_bits`
+/// says where its bits are (`lower` files them under the register, for a `store` or a
+/// `deref` through it).
+fn bitFieldAccess(
+    cg: *ModuleCg,
+    fncg: anytype,
+    name: []const u8,
+    places: []const layout_mod.BitPlace,
+    base_ptr: llvm.LLVMValueRef,
+    field_name: []const u8,
+    result_ty: ir.IrType,
+    want_addr: bool,
+) ?llvm.LLVMValueRef {
+    const fields = cg.struct_fields.get(name) orelse return null;
+    const i = for (fields, 0..) |fd, k| {
+        if (std.mem.eql(u8, fd.name, field_name)) break k;
+    } else return null;
+    const place = places[i];
+    var offset = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), place.bit / 8, 0)};
+    const byte_ptr = llvm.LLVMBuildGEP2(cg.builder, llvm.LLVMInt8TypeInContext(cg.ctx), base_ptr, &offset, 1, "");
+    const ref = ctx_mod.BitRef.of(byte_ptr, place, fields[i].ir_ty);
+    if (want_addr) {
+        fncg.pending_bits = ref;
+        return byte_ptr;
+    }
+    return readBitField(cg, ref, types.lower(cg, result_ty));
+}
+
+/// The field `ref` names, as `result_lty`. An integer field is its own bits whatever type
+/// the read has (`u3` is a `u8` to the checker), zero- or sign-extended to it.
+fn readBitField(cg: *ModuleCg, ref: ctx_mod.BitRef, result_lty: llvm.LLVMTypeRef) llvm.LLVMValueRef {
+    if (ref.whole) {
+        const whole = llvm.LLVMBuildLoad2(cg.builder, result_lty, ref.ptr, "");
+        llvm.LLVMSetAlignment(whole, 1);
+        return whole;
+    }
+    const unit_bits = ref.span * 8;
+    const unit = llvm.LLVMIntTypeInContext(cg.ctx, @intCast(unit_bits));
+    const loaded = llvm.LLVMBuildLoad2(cg.builder, unit, ref.ptr, "");
+    llvm.LLVMSetAlignment(loaded, 1);
+    const shifted = if (ref.shift > 0) llvm.LLVMBuildLShr(cg.builder, loaded, llvm.LLVMConstInt(unit, ref.shift, 0), "") else loaded;
+    const narrow = if (ref.bits < unit_bits)
+        llvm.LLVMBuildTrunc(cg.builder, shifted, llvm.LLVMIntTypeInContext(cg.ctx, @intCast(ref.bits)), "")
+    else
+        shifted;
+    if (llvm.LLVMGetTypeKind(result_lty) != llvm.LLVMIntegerTypeKind) return narrow;
+    const result_bits = llvm.LLVMGetIntTypeWidth(result_lty);
+    if (result_bits > ref.bits) return if (ref.signed)
+        llvm.LLVMBuildSExt(cg.builder, narrow, result_lty, "")
+    else
+        llvm.LLVMBuildZExt(cg.builder, narrow, result_lty, "");
+    if (result_bits < ref.bits) return llvm.LLVMBuildTrunc(cg.builder, narrow, result_lty, "");
+    return narrow;
+}
+
+/// Write `value` to the field `ref` names, leaving the bits around it as they are.
+fn writeBitField(cg: *ModuleCg, ref: ctx_mod.BitRef, value: llvm.LLVMValueRef) void {
+    if (ref.whole) {
+        const store = llvm.LLVMBuildStore(cg.builder, value, ref.ptr);
+        llvm.LLVMSetAlignment(store, 1);
+        return;
+    }
+    const width: u7 = @intCast(ref.span * 8);
+    const unit = llvm.LLVMIntTypeInContext(cg.ctx, width);
+    const ones: u128 = if (ref.bits >= 128) ~@as(u128, 0) else (@as(u128, 1) << @intCast(ref.bits)) - 1;
+    const keep: u128 = ~(ones << @intCast(ref.shift));
+    var words = [_]u64{ @truncate(keep), @truncate(keep >> 64) };
+    const keep_mask = llvm.LLVMConstIntOfArbitraryPrecision(unit, 2, &words);
+    const old = llvm.LLVMBuildLoad2(cg.builder, unit, ref.ptr, "");
+    llvm.LLVMSetAlignment(old, 1);
+    const kept = llvm.LLVMBuildAnd(cg.builder, old, keep_mask, "");
+    // The value may be wider than the field (`u3` is a `u8` to the checker): only its own
+    // bits go in, so it cannot spill into the next field.
+    const value_width = llvm.LLVMGetIntTypeWidth(llvm.LLVMTypeOf(value));
+    const wide = if (value_width < width) llvm.LLVMBuildZExt(cg.builder, value, unit, "") else if (value_width > width) llvm.LLVMBuildTrunc(cg.builder, value, unit, "") else value;
+    var one_words = [_]u64{ @truncate(ones), @truncate(ones >> 64) };
+    const own = llvm.LLVMBuildAnd(cg.builder, wide, llvm.LLVMConstIntOfArbitraryPrecision(unit, 2, &one_words), "");
+    const placed = if (ref.shift > 0) llvm.LLVMBuildShl(cg.builder, own, llvm.LLVMConstInt(unit, ref.shift, 0), "") else own;
+    const store = llvm.LLVMBuildStore(cg.builder, llvm.LLVMBuildOr(cg.builder, kept, placed, ""), ref.ptr);
+    llvm.LLVMSetAlignment(store, 1);
+}
+
+/// A bit-packed struct of type `name` with the fields `values` gives (by field index; null
+/// leaves one zero), built in a zeroed slot.
+fn buildBitStruct(cg: *ModuleCg, fncg: anytype, name: []const u8, places: []const layout_mod.BitPlace, given: []const ?llvm.LLVMValueRef) ?llvm.LLVMValueRef {
+    const struct_lty = cg.struct_types.get(name) orelse return null;
+    const tmp = abi.entryAlloca(cg, fncg.llvm_fn, struct_lty);
+    _ = llvm.LLVMBuildStore(cg.builder, llvm.LLVMConstNull(struct_lty), tmp);
+    for (given, 0..) |maybe, i| {
+        const v = maybe orelse continue;
+        const place = places[i];
+        var offset = [_]llvm.LLVMValueRef{llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), place.bit / 8, 0)};
+        const byte_ptr = llvm.LLVMBuildGEP2(cg.builder, llvm.LLVMInt8TypeInContext(cg.ctx), tmp, &offset, 1, "");
+        const fields = cg.struct_fields.get(name) orelse return null;
+        writeBitField(cg, ctx_mod.BitRef.of(byte_ptr, place, fields[i].ir_ty), v);
+    }
+    return llvm.LLVMBuildLoad2(cg.builder, struct_lty, tmp, "");
 }
 
 /// Returns the alloca pointer for a local, or a fresh alloca for params/regs.
@@ -1594,6 +1729,12 @@ fn lowerCompoundLiteral(
         .struct_type => |name| {
             const struct_lty = cg.struct_types.get(name) orelse return null;
             const fields = cg.struct_fields.get(name) orelse return null;
+            if (cg.bitPlaces(name)) |places| {
+                const given = cg.allocator.alloc(?llvm.LLVMValueRef, fields.len) catch return null;
+                defer cg.allocator.free(given);
+                for (given, 0..) |*g, i| g.* = if (i < args.len) resolveVal(cg, fncg, args[i], fields[i].ir_ty) else null;
+                return buildBitStruct(cg, fncg, name, places, given);
+            }
             // Start zeroed so any field the literal omits (`.{}`, partial `.{ a }`)
             // is zero rather than undef — same fix as the array case above.
             var agg = llvm.LLVMConstNull(struct_lty);
@@ -1619,6 +1760,15 @@ fn lowerStructLit(
     const struct_lty = cg.struct_types.get(sl.ty_name) orelse return null;
     const fields = cg.struct_fields.get(sl.ty_name) orelse return null;
     _ = ty;
+    if (cg.bitPlaces(sl.ty_name)) |places| {
+        const given = cg.allocator.alloc(?llvm.LLVMValueRef, fields.len) catch return null;
+        defer cg.allocator.free(given);
+        @memset(given, null);
+        for (sl.fields) |fv| for (fields, 0..) |fd, i| if (std.mem.eql(u8, fd.name, fv.name)) {
+            given[i] = resolveVal(cg, fncg, fv.value, fd.ir_ty);
+        };
+        return buildBitStruct(cg, fncg, sl.ty_name, places, given);
+    }
     var agg = llvm.LLVMGetUndef(struct_lty);
     for (sl.fields) |fv| {
         // Find the index of this field name.

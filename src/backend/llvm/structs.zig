@@ -57,6 +57,20 @@ pub fn lowerAll(cg: *ModuleCg, structs: []const ir.StructDef) !void {
             if (s.alignment > 0) try cg.struct_alignments.put(s.name, s.alignment);
             continue;
         }
+        if (layout.isBitPacked(s)) {
+            // Bit by bit (`layout.bitPlaces`): the body is the struct's bytes. A field of whole
+            // bytes is reached at its byte offset, an integer by its bits (instrs.zig).
+            for (s.fields, 0..) |f, i| field_entries[i] = .{ .name = f.name, .ir_ty = f.ty };
+            const places = try cg.allocator.alloc(layout.BitPlace, s.fields.len);
+            const all = layout.bitPlaces(s, layout.SliceSource{ .structs = structs }, places);
+            const whole = layout.of(.{ .struct_type = s.name }, structs);
+            var body = [_]llvm.LLVMTypeRef{llvm.LLVMArrayType2(llvm.LLVMInt8TypeInContext(cg.ctx), if (whole) |w| w.size else 0)};
+            llvm.LLVMStructSetBody(lty, &body, 1, 1);
+            try cg.struct_fields.put(s.name, field_entries);
+            if (all) |a| try cg.struct_bits.put(s.name, a) else cg.allocator.free(places);
+            if (s.alignment > 0) try cg.struct_alignments.put(s.name, s.alignment);
+            continue;
+        }
         for (s.fields, 0..) |f, i| {
             // A `fn(...)` field is a `{fn, env}` closure, as anywhere; an `extern fn(...)` one
             // is the thin C pointer a C struct holds (a Win32 `WNDCLASSEXA.lpfnWndProc`).

@@ -1,5 +1,6 @@
 /// ModuleCg — owns the LLVM context, module, and builder for one compilation unit.
 const std = @import("std");
+const layout_mod = @import("../../layout.zig");
 const builtin = @import("builtin");
 const ir = @import("../../ir.zig");
 const llvm = @import("c_api.zig").llvm;
@@ -42,6 +43,33 @@ pub const StructField = struct {
     ir_ty: ir.IrType,
 };
 
+/// A field of a bit-packed struct reached through a pointer: its first byte, and for an
+/// integer the bits of the `span` bytes from there that hold it.
+pub const BitRef = struct {
+    ptr: llvm.LLVMValueRef,
+    /// A field of whole bytes, loaded and stored as its type at `ptr` (byte-aligned).
+    whole: bool,
+    shift: u64 = 0,
+    bits: u64 = 0,
+    span: u64 = 0,
+    /// An `iN` field: read back sign-extended.
+    signed: bool = false,
+
+    /// Where field `place` of a bit-packed struct is, its first byte at `ptr`; `ty` is the
+    /// field's type.
+    pub fn of(ptr: llvm.LLVMValueRef, place: layout_mod.BitPlace, ty: @import("../../ir.zig").IrType) BitRef {
+        if (!place.int or (place.bit % 8 == 0 and place.bits % 8 == 0)) return .{ .ptr = ptr, .whole = true };
+        return .{
+            .ptr = ptr,
+            .whole = false,
+            .shift = place.bit % 8,
+            .bits = place.bits,
+            .span = (place.bit % 8 + place.bits + 7) / 8,
+            .signed = ty == .i,
+        };
+    }
+};
+
 pub const ModuleCg = struct {
     allocator: std.mem.Allocator,
     ctx: llvm.LLVMContextRef,
@@ -55,6 +83,8 @@ pub const ModuleCg = struct {
     struct_alignments: std.StringHashMap(u32),
     /// The structs that are `union`s.
     struct_unions: std.StringHashMap(void),
+    /// The bit-packed structs (`layout.isBitPacked`): where each field sits, by field index.
+    struct_bits: std.StringHashMap([]const layout_mod.BitPlace),
     /// Declared LLVM functions, keyed by mangled/extern name.
     fn_decls: std.StringHashMap(llvm.LLVMValueRef),
     /// Own LLVM function type of a declaration that shares another's LLVM function
@@ -158,6 +188,7 @@ pub const ModuleCg = struct {
             .struct_fields = std.StringHashMap([]StructField).init(allocator),
             .struct_alignments = std.StringHashMap(u32).init(allocator),
             .struct_unions = std.StringHashMap(void).init(allocator),
+            .struct_bits = std.StringHashMap([]const layout_mod.BitPlace).init(allocator),
             .fn_decls = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
             .fn_types = std.StringHashMap(llvm.LLVMTypeRef).init(allocator),
             .fn_abi = std.StringHashMap(abi.FnAbi).init(allocator),
@@ -190,6 +221,9 @@ pub const ModuleCg = struct {
         self.struct_types.deinit();
         self.struct_alignments.deinit();
         self.struct_unions.deinit();
+        var bits_it = self.struct_bits.valueIterator();
+        while (bits_it.next()) |v| self.allocator.free(v.*);
+        self.struct_bits.deinit();
         self.fn_decls.deinit();
         self.fn_types.deinit();
         self.closure_thunks.deinit();
@@ -253,6 +287,11 @@ pub const ModuleCg = struct {
     /// Whether the struct `name` is a `union` (its fields all at offset 0).
     pub fn isUnion(self: *ModuleCg, name: []const u8) bool {
         return self.struct_unions.contains(name);
+    }
+
+    /// Where the fields of the struct `name` sit when it is bit-packed; null for any other.
+    pub fn bitPlaces(self: *ModuleCg, name: []const u8) ?[]const layout_mod.BitPlace {
+        return self.struct_bits.get(name);
     }
 
     pub fn fieldIndex(self: *ModuleCg, struct_name: []const u8, field_name: []const u8) ?u32 {

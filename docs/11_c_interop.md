@@ -143,7 +143,7 @@ What is **guaranteed**, on the supported targets (Windows and Linux, x86-64):
 | Field order | Declaration order; never reordered. |
 | Field alignment | Natural: `u8`/`i8`/`bool` 1, `u16`/`i16` 2, `u32`/`i32`/`f32` 4, `u64`/`i64`/`f64`, pointers and `usize` 8. |
 | Struct alignment and size | The largest field alignment; the size is a multiple of it. |
-| `#packed` | No padding; alignment 1. Takes no argument: there is no equivalent of `#pragma pack(2)` or `pack(4)` (`#packed(2)` is an error). Sub-byte fields (`u1`–`u7`) are *not* bit-packed: each takes one whole byte. |
+| `#packed` | No padding; alignment 1. Takes no argument: there is no equivalent of `#pragma pack(2)` or `pack(4)` (`#packed(2)` is an error). Sub-byte fields (`u1`–`u7`) are bit-packed, from the lowest bit up; that is not C's bitfield layout, which groups bitfields into units of their declared type, so a C bitfield struct is matched with explicit filler fields. |
 | `#align(N)` | Alignment at least `N`, size rounded up to a multiple of `N`. |
 | `[]T`, `string` | 16 bytes: pointer then length. |
 | `extern fn(...)` | A thin 8-byte code pointer, a C function pointer, in a field as anywhere. A plain `fn(...)` is a 16-byte `{fn, env}` closure, in a field too. |

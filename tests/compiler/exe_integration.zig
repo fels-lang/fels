@@ -4463,6 +4463,87 @@ test "exe: .variant(payload) where the enum or error type is known" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_dot_payload_o2", 2, true));
 }
 
+test "exe: a #packed struct with sub-byte fields is laid out bit by bit" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Each integer takes its width from where the last field ended, a byte-sized one too;
+    // a field that is no integer is whole bytes at a whole byte. Reads and writes keep the
+    // neighbouring bits, a signed field reads back negative, and a literal, a static, a
+    // #run result, an array element and a nested field all hold the same bits.
+    const src =
+        \\#packed
+        \\ControlReg :: struct { enable: u1, mode: u3, reserved: u3, flag: u1 }
+        \\#packed
+        \\Straddle :: struct { a: u3, b: u8, c: u5 }
+        \\#packed
+        \\Signed :: struct { d: i3, v: i1, rest: u4 }
+        \\#packed
+        \\Mixed :: struct { lo: u4, hi: u4, f: f32, last: u1, more: u7 }
+        \\#packed
+        \\Odd :: struct { a: u3, b: u2 }
+        \\Outer :: struct { tag: u8, r: ControlReg }
+        \\G: ControlReg = .{ 1, 5, 0, 1 };
+        \\T: [2]Straddle = .{ .{ 7, 0xAB, 0x1F }, .{} };
+        \\byte_of :: fn(r: *ControlReg) -> u8 { return unsafe (*(r as *u8)); }
+        \\make :: fn() -> ControlReg { r: ControlReg = .{}; r.mode = 6; r.flag = 1; return r; }
+        \\R :: #run make();
+        \\bump :: fn(p: *ControlReg) { p.mode += 1; p.flag = 0; }
+        \\main :: fn() -> i32 {
+        \\    if core::sizeof(ControlReg) != 1 || core::sizeof(Straddle) != 2 || core::sizeof(Signed) != 1 || core::sizeof(Mixed) != 6 { return 1; }
+        \\    r: ControlReg = .{ 1, 5, 0, 1 };
+        \\    if byte_of(&r) != 139 { return 2; }
+        \\    if r.mode != 5 || r.enable != 1 || r.flag != 1 { return 3; }
+        \\    r.mode = 3;
+        \\    if byte_of(&r) != 135 { return 4; }
+        \\    bump(&r);
+        \\    if r.mode != 4 || r.flag != 0 || byte_of(&r) != 9 { return 5; }
+        \\    s: Straddle = .{ 5, 0xAB, 0x11 };
+        \\    raw := unsafe (*((&s) as *u16));
+        \\    if raw != (5 | (0xAB << 3) | (0x11 << 11)) { return 6; }
+        \\    if s.b != 0xAB || s.c != 0x11 || s.a != 5 { return 7; }
+        \\    s.b = 0x5C;
+        \\    if s.a != 5 || s.b != 0x5C || s.c != 0x11 { return 8; }
+        \\    g: Signed = .{ -2, -1, 9 };
+        \\    if g.d != -2 || g.v != -1 || g.rest != 9 { return 9; }
+        \\    m: Mixed = .{ 3, 12, 2.5, 1, 100 };
+        \\    if m.lo != 3 || m.hi != 12 || m.f != 2.5 || m.last != 1 || m.more != 100 { return 10; }
+        \\    if core::offset_of(Mixed, "f") != 1 || core::offset_of(Mixed, "last") != 5 { return 11; }
+        \\    if byte_of(&G) != 139 || G.mode != 5 { return 12; }
+        \\    if T[0].b != 0xAB || T[0].c != 0x1F || T[1].b != 0 { return 13; }
+        \\    o: Outer = .{ 9, .{ 0, 2, 0, 0 } };
+        \\    o.r.mode = 7;
+        \\    if o.r.mode != 7 || o.tag != 9 { return 14; }
+        \\    xs: [3]ControlReg = .{};
+        \\    xs[1].mode = 2;
+        \\    if xs[1].mode != 2 || xs[0].mode != 0 { return 15; }
+        \\    a: ControlReg = .{ 1, 2, 3, 0 };
+        \\    b: ControlReg = .{ 1, 2, 3, 0 };
+        \\    if a != b { return 16; }
+        \\    if R.mode != 6 || R.flag != 1 { return 17; }
+        \\    if !core::has_padding(u3) || core::has_padding(ControlReg) || core::has_padding(Straddle) || !core::has_padding(Odd) { return 18; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_bitfields", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_bitfields_o2", 2, true));
+}
+
+test "exe: a field that is no integer starts at a whole byte of a bit-packed struct" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `f` would start at bit 3: read as its bytes it cannot, and the 5 bits before it are
+    // written out as a field rather than left as hidden padding.
+    try std.testing.expectError(error.LoweringFailed, compileAndRun(arena.allocator(),
+        \\#packed
+        \\Bad :: struct { a: u3, f: f32 }
+        \\main :: fn() -> i32 { b: Bad = .{}; return 0; }
+    , "exe_bitfield_misplaced"));
+}
+
 test "exe: unknown field in a struct literal fails the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

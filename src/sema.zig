@@ -422,7 +422,22 @@ pub const FieldInfo = struct {
     /// `name: T = expr` default, carried from the field decl so a literal that
     /// omits this field (named `.{…}`, short positional, or `.{}`) can fill it.
     default: ?ast.Expr = null,
+    /// The width of a sub-byte integer field (`u3` is 3, `i5` is 5), which `ty` (a `u8` or
+    /// an `i8`) does not say; 0 for any other. A `#packed` struct lays such fields out by
+    /// their bits.
+    bits: u8 = 0,
 };
+
+/// The width of `ref` when it names a sub-byte integer type (`u1`–`u7`, `i1`–`i7`); 0 otherwise.
+pub fn subByteBits(ref: ast.TypeRef) u8 {
+    const name = switch (ref) {
+        .named => |n| if (n.namespace == null) n.name else return 0,
+        else => return 0,
+    };
+    if (name.len != 2 or (name[0] != 'u' and name[0] != 'i')) return 0;
+    if (name[1] < '1' or name[1] > '7') return 0;
+    return name[1] - '0';
+}
 
 pub const VariantInfo = struct {
     name: []const u8,
@@ -2273,6 +2288,7 @@ const Checker = struct {
                                         .name = field.name,
                                         .ty = try self.typeFromRef(field.ty),
                                         .default = field.default,
+                                        .bits = subByteBits(field.ty),
                                     });
                                 }
                                 try self.env.layouts.put(id, .{
@@ -6048,6 +6064,7 @@ const Checker = struct {
                 .name = field.name,
                 .ty = try self.typeFromRef(field.ty), // uses current_type_binding
                 .default = field.default,
+                .bits = subByteBits(field.ty),
             });
         }
         try self.env.layouts.put(inst_id, .{
