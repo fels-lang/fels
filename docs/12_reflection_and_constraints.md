@@ -15,8 +15,9 @@ At runtime, `core::type_id(T)` is a stable type identity. It is a content hash a
 across compilation units. `core::type_name(T)` and `core::sizeof(T)` fold to real runtime values.
 `Any` is a type-erased value: `any(x)` wraps a value, and `any_as(v, T) -> ?T` is a safe
 downcast. The metadata travels inline with the value, baked as a tree-shaken string literal, so
-reflection you don't use costs nothing. A generic walker recurses through struct fields, slice
-elements and pointers. That is enough for reflection-driven serialization with no per-type code.
+reflection you don't use costs nothing. With the free functions `any_field_at`, `any_elem` and
+`any_deref`, a generic walker recurses through struct fields, slice elements and pointers. That
+is enough for reflection-driven serialization with no per-type code, which `std.serde` does.
 
 > In code, these builtins carry their `core::` prefix: `core::type_info(T)`,
 > `core::type_id(T)`, `core::type_name(T)`, `core::sizeof(T)`, `core::any(x)`,
@@ -40,12 +41,12 @@ rest:
 
 1. **`TypeInfo`**: a matchable tagged enum that describes a type. It is the same value at
    comptime and runtime.
-2. **`typeid`**: a cheap, stable runtime identity for a type (an index, not a pointer).
+2. **`typeid`**: a cheap, stable runtime identity for a type (a content hash, not a pointer).
 3. **`Any`**: a `(pointer, typeid)` pair with *safe* navigation and downcasting.
 4. **`constraint`**: a comptime predicate over `TypeInfo`. `$T: C` and interface conformance
    are the same mechanism.
 5. **`where`**: either a per-instantiation block that can inspect, *rewrite* and *reject* the
-   type bindings (with overload fallback), **or** interface bounds. In the second form,
+   type bindings (overload fallback is planned), **or** interface bounds. In the second form,
    `fn($T, x: *T) where T: Show` is equivalent to the inline `fn($T: Show, …)`, and you
    comma-separate several bounds (`where T: A, U: B`). A bound type is checked for conformance,
    and the interface's methods are callable on it directly (`x.val()`), not only via a
@@ -56,15 +57,16 @@ with no new directives.
 
 ## 1. `TypeInfo` — reflection as a matchable value
 
-Today Fels has `core::type_info(T)` with ad-hoc field access (`.kind`, `.fields[i].name`,
-`.bits`). We replace that with a real tagged enum. It has the same shape as the `ast.*`
-metaprogramming surface and is injected as a prelude when reflection is used.
+`core::type_info(T)` returns a real tagged enum, not a set of ad-hoc fields. It has the same
+shape as the `ast.*` metaprogramming surface, and the compiler injects it as a prelude when a
+module uses reflection.
 
 > **Implemented today:** `core::type_info(T)` returns such an enum. Its variants are
 > `void_`, `boolean`, `int`, `float`, `pointer`, `slice`, `array`, `optional`, `struct_`,
-> `enum_` and `other` (the name of any other type), with `TiInt`/`TiFloat`/… payloads. The
-> `fn_`, `iface` and `distinct_` variants below are still design. (`void`, `bool` and
-> `distinct` are keywords, so those variants are spelled `void_`, `boolean` and `distinct_`.)
+> `union_`, `enum_` and `other` (the name of any other type), with `TiInt`/`TiFloat`/…
+> payloads. The `fn_`, `iface` and `distinct_` variants below are still design. (`void`,
+> `bool` and `distinct` are keywords, so those variants are spelled `void_`, `boolean` and
+> `distinct_`.)
 
 ```fels
 TypeInfo :: enum {
@@ -114,7 +116,8 @@ describe :: fn(info: TypeInfo) -> []const u8 {
 > `i32` and two structurally-identical structs. The id is also **stable across compilation
 > units**, because there is no global numbering. In a generic, `core::type_id(T)` folds per
 > instantiation. Identity tests are a single `usize` compare. `info_of(id)` (the dynamic table
-> lookup) is still design and needs §4.
+> lookup) is still design and needs §4. `core::typeid_of(T)` is an older spelling of the same
+> builtin, and these docs use `core::type_id(T)`.
 
 ```fels
 core::type_id(T) -> usize        // a stable id (content hash); IMPLEMENTED
@@ -125,7 +128,7 @@ info_of(id) -> *TypeInfo        // table lookup — design (§4)
 Two identical types always share one id, so an identity test is a single integer compare:
 
 ```fels
-if core::typeid_of(T) == core::typeid_of(Vector3) { … }
+if core::type_id(T) == core::type_id(Vector3) { … }
 ```
 
 > **✦ Beyond Jai.** Jai compares `*Type_Info` pointers and bakes the whole table
@@ -146,9 +149,12 @@ and the data's type metadata.
 > the erased value. **Fels's twist on the type table:** metadata travels *inline* with the
 > value, so there is no central `info_of(id)` table to bake or manage. It is also tree-shaken
 > automatically, and only the names of `any()`'d types reach the binary. A bare value passed to
-> an `Any` parameter is wrapped automatically. (`.info`/`.field`/`.elem`/`.deref` navigation is
-> the next step. The method spelling `v.as(T)` below is design only. `as` is a keyword, so the
-> downcast is the function `any_as(v, T)`.)
+> an `Any` parameter is wrapped automatically. Navigation works through free functions:
+> `any_field_at(v, i)`, `any_elem(v, i)` and `any_deref(v)` return a `?Any`, and
+> `any_field_count(v)` and `any_field_name(v, i)` give a struct's field count and names. Fields
+> are reached by index, not by name. (The method spellings below, `v.info()`, `v.field("name")`,
+> `v.elem(i)`, `v.deref()` and `v.as(T)`, are design only. `as` is a keyword, so the downcast is
+> the function `any_as(v, T)`.)
 
 ```fels
 Any :: struct { data: *const u8, id: usize, name: []const u8 }   // injected; `any(x)` builds it
@@ -191,9 +197,9 @@ sum_field :: fn(v: Any) -> i32 {
 Runtime reflection needs `TypeInfo` baked into the binary's data segment. Jai bakes
 **everything** and then offers `runtime_storageless_type_info` to turn it off. Fels inverts the
 default: a type's info reaches the binary **only if it can be reached at runtime**. That means
-some runtime code calls `core::type_info(T)`, takes `typeid(T)`, or wraps a `T` into an `Any`.
-The compiler already tracks the comptime/runtime split (the VM vs the LLVM backend), so this is
-a reachability pass over those roots.
+some runtime code calls `core::type_info(T)`, takes `core::type_id(T)`, or wraps a `T` into an
+`Any`. The compiler already tracks the comptime/runtime split (the VM vs the LLVM backend), so
+this is a reachability pass over those roots.
 
 ```fels
 type_table() -> []TypeInfo     // every type that was baked (debuggers, tooling)
@@ -274,7 +280,7 @@ composable case, and a **`where` block** as the escape hatch that can rewrite an
 > `constraint Name($T) { … }` declarations**. The built-ins are `$T: Numeric`, `Int`, `Float`,
 > `Signed`, `Unsigned`, `Bool`, `Struct`, `Enum` and `Ptr`, and they are checked by type kind.
 > A non-satisfying type is rejected with a clear message at the `$T: Name` site
-> (`type `P` does not satisfy `MyNum`: expected a numeric type`). A user `constraint` is a
+> (``type `P` does not satisfy `MyNum`: expected a numeric type``). A user `constraint` is a
 > named, reusable comptime predicate: a where-style block over `core::type_info(T)` that may
 > `core::reject`. It runs on the resolution VM at each `$T: Name` use, via the same two-pass
 > rail. Built-ins take precedence over a same-named user constraint.
@@ -361,10 +367,14 @@ where {
 - `$Acc` is an **output type parameter**. It is declared in the return position and *computed*
   by `where`. (Jai bolts this on with a separate `$R` and assigns it inside `#modify`. Here it
   reads as "the return type is whatever `where` decided.")
-- `core::reject("…")` takes an interpolated message, and, more importantly, it participates in
-  **overload resolution**. A rejected instantiation is *not yet* an error, and the compiler
-  tries the next overload. Only when every candidate rejects does it report, listing each
-  reason.
+- `core::reject("…")` takes a message, and the plan is for it to take part in **overload
+  resolution**. A rejected instantiation would then *not yet* be an error, and the compiler
+  would try the next overload. Only when every candidate rejects would it report, listing each
+  reason. This is still design. Fels has no same-name overloads yet, so today a rejection is a
+  compile error at the call site.
+
+This is the planned shape. It does not compile today, because the second `push` is a duplicate
+declaration:
 
 ```fels
 // Two overloads; `where` disambiguates instead of erroring on ambiguity:
@@ -372,11 +382,11 @@ push :: fn($T: type, xs: *List(T), v: T)        where { … }   { … }
 push :: fn($T: type, xs: *List(T), vs: []T)     where { … }   { … }
 ```
 
-> **✦ Beyond Jai.** There are three improvements. (1) `core::reject` comes with a real
-> interpolated message and **overload fallback** instead of a hard error, while Jai's `#modify`
-> returning false is fatal. (2) Output types are *declared where they belong* (`-> $Acc`) and
-> computed in `where`, instead of a magic `$R` mutated in a side block. (3) The `where` body
-> uses matchable `TypeInfo`, not `cast(*Type_Info_*)`.
+> **✦ Beyond Jai.** There are three improvements. (1) `core::reject` comes with a real message,
+> and the planned **overload fallback** will turn a rejection into "try the next candidate".
+> Jai's `#modify` returning false is always fatal. (2) Output types are *declared where they
+> belong* (`-> $Acc`) and computed in `where`, instead of a magic `$R` mutated in a side block.
+> (3) The `where` body uses matchable `TypeInfo`, not `cast(*Type_Info_*)`.
 
 ### 6.3 How `where` is wired — the two-pass resolution rail
 
