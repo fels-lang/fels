@@ -1211,6 +1211,39 @@ test "exe: an error's payload is read back, whatever its type" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_payload_kinds_o2", 2, true));
 }
 
+test "exe: a type argument is given or inferred, whichever the parameter is" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A `$T: type` had to be passed and a constrained `$T: Numeric` could not be: now a call passes
+    // the explicit ones, all, or none, and each one not passed is inferred from the values.
+    const src =
+        \\Show :: interface { show :: fn(self: *Self) -> i32; }
+        \\P :: struct { v: i32 }
+        \\P as Show { show :: fn(self: *Self) -> i32 { return self.v; } }
+        \\biggest :: fn($T: type, a: T, b: T) -> T { if a > b { return a; } return b; }
+        \\bump :: fn($T: Numeric, x: T) -> T { return x + 1; }
+        \\make :: fn($T: type) -> T { r: T = 5; return r; }
+        \\both :: fn($T: type, $U: Numeric, a: T, b: U) -> i64 { return (a as i64) + (b as i64); }
+        \\calc :: fn() -> i64 {
+        \\    r := biggest(i32, 3, 9) as i64;            // explicit, as before
+        \\    r += biggest(4, 2) as i64;                  // inferred: 4
+        \\    r += bump(i64, 10i64);                      // a constrained one given: 11
+        \\    r += bump(20) as i64;                       // inferred: 21
+        \\    r += make(i64);                             // only explicit can work: 5
+        \\    r += both(i32, 1, 2u8);                     // as before: T given, U inferred: 3
+        \\    r += both(1, 2u8);                          // none: 3
+        \\    r += both(i32, u8, 1, 2u8);                 // all: 3
+        \\    return r;
+        \\}
+        \\X :: #run calc();
+        \\main :: fn() -> i32 { if calc() != 9 + 4 + 11 + 21 + 5 + 3 + 3 + 3 { return 1; } if X != calc() { return 2; } return 42; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_type_args", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_type_args_o2", 2, true));
+}
+
 test "exe: core::has_padding says whether a type has bytes no value sets" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

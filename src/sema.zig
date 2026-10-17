@@ -520,6 +520,27 @@ pub const LocalBinding = struct {
     value: ?ast.Expr = null,
 };
 
+/// Which type parameters of a generic function a call passes as arguments, before its values.
+/// Any of them may be inferred from the values, so a call passes the explicit ones
+/// (`$T: type`, as declared) or none or all: `max(i32, 10, 20)`, `max(10, 20)`.
+pub const TypeArgs = enum {
+    /// The `$T: type` parameters, not the constrained ones (`$T: Show`).
+    unconstrained,
+    none,
+    all,
+
+    /// Whether a call passing these gives `param`, a type parameter, as an argument.
+    pub fn gives(self: TypeArgs, sig: FnSig, param: ParamSig) bool {
+        return switch (self) {
+            .none => false,
+            .all => true,
+            .unconstrained => for (sig.type_constraints) |c| {
+                if (std.mem.eql(u8, c.param, param.name)) break false;
+            } else true,
+        };
+    }
+};
+
 pub const TypeEnv = struct {
     symbol_types: std.AutoHashMap(SymbolId, Ty),
     layouts: std.AutoHashMap(SymbolId, TypeLayout),
@@ -550,6 +571,9 @@ pub const TypeEnv = struct {
     /// address-of'd because the method takes a `*Self`/`*const Self` (UFCS auto-ref).
     /// IR lowers these receivers via `lowerLValueAddress`.
     receiver_auto_addr: std.AutoHashMap(ast.NodeId, void),
+    /// The type arguments a call of a generic function passes (by its callee's node id),
+    /// where they are not the `$T: type` parameters: all of them, or none.
+    call_type_args: std.AutoHashMap(ast.NodeId, TypeArgs),
     /// Bare enum-literal (`.variant`) NodeIds resolved against an expected enum
     /// type (in argument/assignment/typed-local position). IR lowers as variant_lit.
     enum_lits: std.AutoHashMap(ast.NodeId, EnumLit),
@@ -607,6 +631,7 @@ pub const TypeEnv = struct {
             .impl_method_calls = std.AutoHashMap(ast.NodeId, ImplMethodCall).init(allocator),
             .iterator_fors = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .receiver_auto_addr = std.AutoHashMap(ast.NodeId, void).init(allocator),
+            .call_type_args = std.AutoHashMap(ast.NodeId, TypeArgs).init(allocator),
             .enum_lits = std.AutoHashMap(ast.NodeId, EnumLit).init(allocator),
             .literal_types = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .generic_call_insts = std.AutoHashMap(ast.NodeId, []const u8).init(allocator),
@@ -635,6 +660,7 @@ pub const TypeEnv = struct {
         self.impl_method_calls.deinit();
         self.iterator_fors.deinit();
         self.receiver_auto_addr.deinit();
+        self.call_type_args.deinit();
         self.enum_lits.deinit();
         self.literal_types.deinit();
         self.const_ints.deinit();
@@ -5276,27 +5302,33 @@ const Checker = struct {
     /// `*Self` (mirrors `inferDirectCallImpl`, but for generic methods like the
     /// Arena allocators whose receiver follows a leading `$T: type`).
     fn inferGenericCallImpl(self: *Checker, sym_id: SymbolId, fn_name: []const u8, sig: FnSig, call: ast.CallExpr, is_method: bool) SemanticError!Ty {
-        // Constrained type params ($T: Interface) are implicit — inferred from value args.
-        // Unconstrained type params ($T: type) are explicit — the caller passes the type.
-        // So we count: value params + unconstrained type params = expected arg count.
-        var expected_arg_count: usize = 0;
+        // A call passes the explicit type parameters (`$T: type`) before the values, as they
+        // are declared, or all type parameters, or none: each one not passed is inferred from
+        // the values (see `TypeArgs`).
+        var value_count: usize = 0;
+        var type_count: usize = 0;
+        var unconstrained_count: usize = 0;
         for (sig.params) |p| {
             if (!p.is_type_param) {
-                expected_arg_count += 1;
+                value_count += 1;
                 continue;
             }
-            // Is this type param constrained?
-            const is_constrained = for (sig.type_constraints) |c| {
-                if (std.mem.eql(u8, c.param, p.name)) break true;
-            } else false;
-            if (!is_constrained) expected_arg_count += 1; // explicit $T: type
+            type_count += 1;
+            if (TypeArgs.unconstrained.gives(sig, p)) unconstrained_count += 1;
         }
-        if (call.args.len != expected_arg_count) {
+        const given: TypeArgs = if (call.args.len == value_count + unconstrained_count)
+            .unconstrained
+        else if (call.args.len == value_count)
+            .none
+        else if (call.args.len == value_count + type_count)
+            .all
+        else {
             self.emitError(call.callee.span, "`{s}` expects {d} argument(s), but {d} were provided", .{
-                fn_name, expected_arg_count, call.args.len,
+                fn_name, value_count + unconstrained_count, call.args.len,
             });
             return error.SemanticFailed;
-        }
+        };
+        if (given != .unconstrained) try self.env.call_type_args.put(call.callee.id, given);
 
         // Infer type args by matching call args to value params.
         // Type-only params ($T: type / $T: Interface) are inferred from the value args.
@@ -5308,14 +5340,8 @@ const Checker = struct {
 
         var arg_i: usize = 0;
         for (sig.params) |param| {
-            if (param.is_type_param) {
-                // Constrained ($T: Interface) → implicit, skip for arg matching.
-                // Unconstrained ($T: type) → explicit, falls through to arg handling below.
-                const constrained = for (sig.type_constraints) |c| {
-                    if (std.mem.eql(u8, c.param, param.name)) break true;
-                } else false;
-                if (constrained) continue;
-            }
+            // A type parameter not passed is inferred from the values.
+            if (param.is_type_param and !given.gives(sig, param)) continue;
             if (arg_i >= call.args.len) break;
             const arg_expr = switch (call.args[arg_i]) {
                 .positional => |value| value,
@@ -5323,11 +5349,9 @@ const Checker = struct {
             };
             arg_i += 1;
             try self.checkNonEscapingArgument(arg_expr, param.ty);
-            // An explicit `$T: type` argument is a TYPE expression (`i32`,
-            // `List(i32)`), not a value — resolve it as a type so generic-struct
-            // instantiations (which parse as a call) bind correctly. Constrained
-            // `$T: Interface` params were already `continue`d above, so every type
-            // param reaching here is explicit.
+            // A type argument is a TYPE expression (`i32`, `List(i32)`), not a value —
+            // resolve it as a type so generic-struct instantiations (which parse as a call)
+            // bind correctly.
             const arg_ty = if (param.is_type_param)
                 try self.inferTypeArg(arg_expr)
             else
@@ -5335,17 +5359,19 @@ const Checker = struct {
             try arg_tys.append(self.allocator, arg_ty);
             try self.bindTypeVars(param.ty, arg_ty, &binding);
         }
+        // A `$T: type` left to inference must be decided by the values.
+        if (given == .none) for (sig.params) |param| {
+            if (!param.is_type_param or !TypeArgs.unconstrained.gives(sig, param)) continue;
+            if (binding.contains(param.name)) continue;
+            self.emitError(call.callee.span, "`{s}` cannot infer its type parameter `{s}` from these arguments: pass the type arguments first, `{s}({s}, …)`", .{ fn_name, param.name, fn_name, param.name });
+            return error.SemanticFailed;
+        };
 
         // Verify all value args are compatible with substituted param types.
         var check_i: usize = 0;
         var receiver_seen = false;
         for (sig.params) |param| {
-            if (param.is_type_param) {
-                const constrained = for (sig.type_constraints) |c| {
-                    if (std.mem.eql(u8, c.param, param.name)) break true;
-                } else false;
-                if (constrained) continue;
-            }
+            if (param.is_type_param and !given.gives(sig, param)) continue;
             if (check_i >= arg_tys.items.len) break;
             const arg_ty = arg_tys.items[check_i];
             check_i += 1;

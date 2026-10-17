@@ -4018,13 +4018,11 @@ const FunctionLowerer = struct {
                     var is_explicit_type_arg = false;
                     var raw_fn_ptr = false;
                     if (direct_sig) |sig| {
+                        const type_args = self.types.call_type_args.get(call.callee.id) orelse .unconstrained;
                         while (value_param_index < sig.params.len and sig.params[value_param_index].is_type_param) {
                             const type_param = sig.params[value_param_index];
                             value_param_index += 1;
-                            const is_constrained = for (sig.type_constraints) |constraint| {
-                                if (std.mem.eql(u8, constraint.param, type_param.name)) break true;
-                            } else false;
-                            if (!is_constrained) {
+                            if (type_args.gives(sig, type_param)) {
                                 is_explicit_type_arg = true;
                                 // Remember the concrete type this `$T` is bound to.
                                 if (self.lowerTypeArg(value)) |bound_ty| {
