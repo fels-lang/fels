@@ -3,7 +3,12 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.10.0 — 2026-10-18
+
+Text prints with its values: `io::println("{name} has {n} items")` shows any value by its type,
+and a type can say how it prints. Builds and tests are much faster (Strata builds in 3 s, not
+14 s, and its tests run in 4 s, not 210 s), and `fels build` and `fels test` draw a live tree of
+their work and end with a summary.
 
 ### Added
 
