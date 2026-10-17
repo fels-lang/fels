@@ -3,6 +3,26 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Changed
+
+- **The commands show what they are doing.** On a terminal, `fels build` and `fels test` draw
+  a live tree of the work, as `zig build` does: the artifact or the test file, and the stage it
+  is in (checking, lowering, generating code, linking, running). Then each artifact gets one
+  line: `✓ app → bin/app.exe  1.84s`, `· lib up to date`, or `✗ app: does not compile` under
+  its errors. A build of more than one artifact ends with a `Build Summary`, and `fels test`
+  with a `Test Summary` and the time. Marks and counts are in color. `fels build <file>` puts
+  the time of each stage on its result line, and the timing table is behind `-t` now. Piped
+  output has no tree and no color, and the same lines.
+- **Colors on Linux and macOS** too, for diagnostics and the commands' lines, on a terminal.
+  `NO_COLOR`, `FELS_COLOR` and `TERM=dumb` work as on Windows.
+
+### Fixed
+
+- On Linux and macOS every time read 0 (`-t` showed `0.00 ms` for every stage): the clock was
+  only built for Windows.
+
 ## 0.9.0 — 2026-10-17
 
 Errors are values, and more of what a program means has a spelling: a `catch` gives a value, and
