@@ -3,6 +3,20 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Added
+
+- **Debug info**: `-g` (and `fels build -g` for a project) gives a program the source lines,
+  functions, parameters and locals with their types that a debugger shows: a PDB beside a
+  Windows program, DWARF in a Linux one. On Windows the program is then linked by LLD, which
+  needs the Windows SDK's import libraries.
+
+### Fixed
+
+- `#section`, `#weak`, `#cold`, `#keep` and `#link_name` were dropped from a function in every
+  native build: the passes that run before code generation rebuilt it without them.
+
 ## 0.13.0 - 2026-10-20
 
 The syntax is settled: from this version on, what the syntax reference shows keeps its form and
