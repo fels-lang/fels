@@ -4307,6 +4307,12 @@ const Checker = struct {
             }
             return .bool;
         }
+        // An atomic takes its ordering last, always: without it the call read the wrong
+        // arguments and gave wrong values.
+        if (atomicSignature(name)) |sig| if (call.args.len != sig.args) {
+            self.emitError(call.callee.span, "`core::{s}` takes {d} arguments, the ordering last: `core::{s}`; `std.atomics` names the orderings (`atomics::SeqCst`)", .{ name, sig.args, sig.usage });
+            return error.SemanticFailed;
+        };
         // Value-returning atomics (`load` + read-modify-write + compare-exchange)
         // yield the pointee type of the first (pointer) argument.
         if (std.mem.eql(u8, name, "atomic_load") or std.mem.eql(u8, name, "atomic_add") or
@@ -8314,6 +8320,27 @@ fn genericInstanceBase(expr: ast.Expr) ?[]const u8 {
     if (cur.kind != .call) return null;
     const callee = cur.kind.call.callee.*;
     return if (callee.kind == .ident) callee.kind.ident else null;
+}
+
+/// How many arguments a `core::atomic_*` builtin takes, and how it is written.
+fn atomicSignature(name: []const u8) ?struct { args: usize, usage: []const u8 } {
+    const sigs = .{
+        .{ "atomic_load", 2, "atomic_load(ptr, ord)" },
+        .{ "atomic_store", 3, "atomic_store(ptr, value, ord)" },
+        .{ "atomic_add", 3, "atomic_add(ptr, value, ord)" },
+        .{ "atomic_sub", 3, "atomic_sub(ptr, value, ord)" },
+        .{ "atomic_and", 3, "atomic_and(ptr, value, ord)" },
+        .{ "atomic_or", 3, "atomic_or(ptr, value, ord)" },
+        .{ "atomic_xor", 3, "atomic_xor(ptr, value, ord)" },
+        .{ "atomic_max", 3, "atomic_max(ptr, value, ord)" },
+        .{ "atomic_min", 3, "atomic_min(ptr, value, ord)" },
+        .{ "atomic_nand", 3, "atomic_nand(ptr, value, ord)" },
+        .{ "atomic_exchange", 3, "atomic_exchange(ptr, value, ord)" },
+        .{ "atomic_cas", 4, "atomic_cas(ptr, expected, desired, ord)" },
+        .{ "atomic_fence", 1, "atomic_fence(ord)" },
+    };
+    inline for (sigs) |sig| if (std.mem.eql(u8, name, sig[0])) return .{ .args = sig[1], .usage = sig[2] };
+    return null;
 }
 
 fn derefChainBase(expr: ast.Expr) ?[]const u8 {
