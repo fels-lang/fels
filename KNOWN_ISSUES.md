@@ -30,7 +30,8 @@ These compile without a message and give a wrong result.
 
 ## 2. Compiler crashes and missing messages
 
-- **`"xyz"[1]` stops the compiler without a message.** Verified.
+- ~~`"xyz"[1]` stops the compiler without a message.~~ Fixed 2026-10-17: a string literal is
+  indexed as the `[]const u8` it is, bounds-checked.
 - **`core::ptr_from_int(*p, 16usize)` with a variable `p` stops the compiler without a message.**
   Verified. With a type argument it works.
 - **`fels ir file.fels | head` panics** ("reached unreachable code"; earlier also "wrong File
@@ -75,8 +76,8 @@ These compile without a message and give a wrong result.
 - `F :: seven; F()` (a constant holding a function) fails.
 - No exponent notation for floats (`1e5`); the error now says so.
 - `#extern("msvcrt", "strlen")` does not link; the docs use `lstrlenA` instead.
-- A bare variant does not take an optional enum type: `o: ?Color = .green;` is "expected `?Color`,
-  found `error`"; `Color.green` works.
+- ~~A bare variant does not take an optional enum type (`o: ?Color = .green;`).~~ Fixed: it
+  takes the enum inside the optional, and `.circle(r)` does too.
 
 ## 5. Language server (`fels lsp`)
 
