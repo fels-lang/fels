@@ -139,10 +139,15 @@ Minimal synchronous file I/O, on Windows and Linux.
 - `open(path)`: Open an existing file for reading
 - `create(path)`: Create or truncate a file for writing
 - `append(path)`: Open a file for appending
+- `read_all(path, &a)`: Read a whole file into the arena
 - `delete(path)`: Remove a file
-- `exists(path)`: Check whether a file exists
+- `exists(path)`: Check whether a file or folder exists. `is_dir(path)` checks for a folder.
 - `make_dir(path)`: Make a folder (one that is already there is fine). `make_dirs(path)` makes
   the folders above it too, and `remove_dir(path)` removes an empty folder.
+- `open_dir(path)`: Walk a folder with the `DirIter` it returns. `dir_next()` gives the next
+  entry's name (`.` and `..` included), or null at the end, and the name is valid until the
+  next call. `dir_is_dir()`, `dir_size()` and `dir_is_reparse()` describe that entry, and
+  `dir_close()` ends the walk. On Linux, `dir_size()` is always 0.
 - You get back a `File` struct, which implements both `Reader` and `Writer`.
 - Paths are UTF-8, like all Fels text, and can be up to 1023 bytes long. On Windows the
   runtime turns them into the UTF-16 that the `*W` functions take. `dir_next` gives you names
@@ -196,12 +201,10 @@ if atomics::compare_exchange(&counter, 1u32, 100u32) { /* swapped */ }
 ```
 
 **Compile-time type contracts.** Each operation is guarded by a `constraint`
-(`Native`/`Numeric`/`Integer`/`Boolean`) built on `core::type_info` reflection. That way,
-misuse is a clear compile error and not a backend failure. Here is what a bitwise op on a
-float gives you:
+(`Native`/`Numeric`/`Integer`) built on `core::type_info` reflection. That way, misuse is a
+clear compile error and not a backend failure. Here is what a bitwise op on a float gives you:
 ```
-error: type `f64` does not satisfy `Integer`: bitwise/shift/min/max atomics
-require an integer type
+error: type `f64` does not satisfy `Integer`: expected an integer type
 ```
 
 - **Load/store:** `load`, `store`, `load_acquire`, `store_release`
@@ -232,8 +235,11 @@ n := counter.get();
 ```
 
 The methods are `get`/`set`, `get_acquire`/`set_release`, `exchange`, `cas`/`cas_value`,
-`add`/`sub`/`mul`/`div` (numeric), `max`/`min`, and `and`/`or`/`xor`/`nand` (integer).
-Each one carries the same compile-time contract as its free-function counterpart.
+`add`/`sub`/`mul`/`div` (numeric), and `max`/`min` and `and`/`or`/`xor`/`nand` (integer).
+The cell itself only checks that `T` is `Native`. The methods do not carry the narrower
+contracts of their free-function counterparts, so `and` on an `Atomic(f64)` passes
+`fels check` and then fails in code generation. Use the free functions when you want the
+clear compile error.
 
 > Atomic increments across threads lose nothing under contention. That is the whole point,
 > because a plain `+= 1` would race. See `tests/fixtures/stdlib/atomics_thread_app.fels`,
@@ -266,7 +272,8 @@ code := t.join();                // blocks; returns the worker's exit code
 ```
 
 - **`Thread`** (methods): `join() -> u32` (waits, returns the exit code, closes the handle),
-  `detach()` (fire-and-forget), `is_running()` (non-blocking poll), `ok()`.
+  `detach()` (fire-and-forget), `is_running()` (non-blocking poll), `ok()`. On Linux an exit
+  code keeps only its low 8 bits, so return 0 to 255 if you read it with `join()`.
 - **`spawn(entry, arg) -> Thread`**: start a thread. `entry` is `core::fn_ptr(fn)`.
 - **Helpers:** `current_id()`, `sleep(ms)`, `yield_now()`, `cpu_count()`.
 - **`ThreadGroup`**: structured fan-out. `spawn(entry, arg)` adds a thread, and `join_all()`
@@ -381,10 +388,10 @@ offset is a build error.
   `format(buf) -> usize`, which writes `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` in upper case.
   `buf` needs `GUID_TEXT_LEN` = 38 bytes, else the result is `.buffer_too_small`.
   `parse_guid(text)` takes exactly 8-4-4-4-12 hex digits in either case, with the braces or
-  without, and anything else is `.invalid_format`. The well-known ids are globals
+  without, and anything else is `.invalid_format`. The well-known ids are typed constants
   (`IID_IUnknown`, `IID_IInspectable`, `IID_IAgileObject`, `IID_IActivationFactory`), and you
-  pass them by address (`&com::IID_IUnknown`). Treat them as constants. The language has no
-  read-only aggregate yet, so nothing stops a write.
+  pass them by address (`&com::IID_IUnknown`). They live in read-only data, so never write to
+  one.
 - **HRESULT** is an `i32` (`Hresult`). A negative value is a failure, and zero or more is a
   success (`S_FALSE` = 1 is a success that means "no"). The `winerror.h` codes you meet are
   constants (`S_OK`, `E_FAIL`, `E_NOINTERFACE`, `E_INVALIDARG`, `RPC_E_CHANGED_MODE`,
@@ -394,8 +401,9 @@ offset is a build error.
   `ComError` otherwise. The common codes have their own names (`.no_interface`, `.invalid_arg`,
   `.out_of_memory`, `.class_not_registered`, `.changed_mode`, …), and any other failure is
   `.other`, which no longer says which code it was. If you need the code, keep the HRESULT.
-- **From an error back to an HRESULT.** You write this where the error is caught, because an
-  error is not yet a value another function can take:
+- **From an error back to an HRESULT.** The module has no function for this direction. You
+  write it where the error is caught, or in a function of your own that takes the `ComError`,
+  because an error is a value you can pass on:
 
   ```fels
   read_header(self) catch e {
@@ -534,12 +542,13 @@ smart pointer: a release is a call you write, with `defer`. And there is no mars
 apartments.
 
 ## `std.net` — networking
-TCP and UDP over Winsock2. The code is layered across a subdirectory module, so each piece stays
-small and focused. Here are the layers from the bottom up:
+TCP and UDP, over Winsock2 on Windows and over the socket system calls on Linux. The code is
+layered across a subdirectory module, so each piece stays small and focused. Here are the layers
+from the bottom up:
 
 | Module | What it gives you |
 | --- | --- |
-| `std.net.os` | Raw `ws2_32` `#extern` bindings, protocol constants, the `sockaddr_in` wire struct, the shared `NetError`, and `addr ⇄ wire` conversions. The foundation. Reach for it directly only for an option the upper layers don't expose. |
+| `std.net.os` | The raw socket calls (`sys_` functions over the runtime's socket layer: Winsock2 on Windows, socket system calls on Linux), protocol constants, the `sockaddr_in` wire struct, the shared `NetError`, and `addr ⇄ wire` conversions. The foundation. Reach for it directly only for an option the upper layers don't expose. |
 | `std.net.addr` | `IpV4` / `SocketAddr`: parse, format, classify (`is_loopback`/`is_unspecified`), `to_net`/`from_net`, `#derive(Eq)`. |
 | `std.net.socket` | `Socket`: the typed handle and the options shared by every protocol (`set_recv_timeout`/`set_send_timeout`, `set_reuse_addr`, `set_broadcast`, `set_nonblocking`, `shutdown`, `bind_to`, `local_addr`). |
 | `std.net.tcp` | `TcpStream` / `TcpListener`: streams plus `send_all` / `recv_exact`, `set_nodelay`, and `accept` returning the peer address. |
@@ -547,7 +556,8 @@ small and focused. Here are the layers from the bottom up:
 | `std.net` | A thin facade re-exporting the lifecycle (`init` / `shutdown` / `last_error`) and the constructors (`connect` / `listen` / `udp_bind`). |
 
 It leans on the newer language features throughout: in-struct methods, `#derive`, and
-`!`-fallible returns. Every layer fails with the one shared `os::NetError`.
+`!`-fallible returns. Every layer that works with sockets fails with the one shared
+`os::NetError`. Parsing an address fails with `addr::AddrError`.
 
 **Addresses** (`std.net.addr`): `IpV4` has `#derive(Eq)` and a hand-written `format` that
 renders a dotted quad, and `SocketAddr` has a derived `Eq` that recurses into `IpV4.eq`:
@@ -592,8 +602,10 @@ ignored := srv.send_to("pong", d.from) catch e { return; };  // reply to sender
   `set_read_timeout`, `local_addr`, `close`.
 - The facade re-exports the types of its submodules: `net::TcpStream`, `net::TcpListener`,
   `net::Accepted`, `net::UdpSocket`, `net::Datagram`, `net::SocketAddr` and `net::NetError`.
-- The raw Winsock bindings keep a `sys_` prefix. The second argument of `#extern` is the
-  real link symbol, so the Fels name is free to differ from the C name.
+- The raw calls in `std.net.os` keep a `sys_` prefix and their Winsock names
+  (`sys_wsa_startup`, `sys_closesocket`). Each one calls the runtime's socket layer, so the
+  same names work on Linux. The constants are the Winsock values on both systems, and the
+  Linux runtime translates the ones that differ.
 
 > Loopback round-trips that combine net, thread and addr are in
 > `tests/fixtures/stdlib/net_echo_app.fels` (TCP echo) and `net_udp_app.fels` (UDP echo).
@@ -711,8 +723,8 @@ sm.get("alpha");                    // hashes + compares the string bytes
 ### `std.path`
 
 Filesystem path strings, with pure manipulation and no I/O. Both `/` and `\` are accepted
-as separators, and `join` writes the platform `SEP`. Query functions return sub-slices
-and allocate nothing, while builders take an `*Arena`.
+as separators, and `join` writes `SEP`, which is `\` on every target. Query functions return
+sub-slices and allocate nothing, while builders take an `*Arena`.
 
 ```fels
 path::basename("a/b/c.txt")            // "c.txt"
@@ -729,8 +741,9 @@ One invariant holds: `basename(p)` == `stem(p)` ++ `extension(p)`.
 
 ### `std.time`
 
-Wall-clock time, a monotonic clock, sleeping, and a UTC calendar breakdown. The backend is
-Windows (kernel32).
+Wall-clock time, a monotonic clock, sleeping, and a UTC calendar breakdown, on Windows and
+Linux. The clocks come from the platform runtime, which calls kernel32 on Windows and
+`clock_gettime` and `nanosleep` on Linux.
 
 ```fels
 secs := time::unix_seconds();          // i64 seconds since 1970-01-01 UTC
@@ -740,7 +753,7 @@ dt   := time::utc(secs);               // DateTime { year, month, day, hour, min
 start := time::now();                  // monotonic Instant
 time::sleep_ms(16u32);
 ns := time::since_nanos(start);        // also since_millis / since_seconds
-boot := time::monotonic_millis();      // GetTickCount64, coarse monotonic
+boot := time::monotonic_millis();      // the same monotonic clock, in milliseconds
 ```
 
 `utc` is exact for any time ≥ the epoch, using Howard Hinnant's civil-from-days. `weekday`
@@ -869,7 +882,7 @@ Deserialization constructs the value reflectively. It zero-inits a `result: T`, 
 *mutable* `Any` over its address, and writes each parsed field through the real field
 address that `any_field_at` hands back. Arrays and strings are allocated in the arena.
 
-This is the "one serializer, two speeds" design from docs/12. The *structure* comes from
+This is the "one source, two speeds" design from docs/12. The *structure* comes from
 `core::type_info` (a struct's `id` sizes/tags slice and optional-payload elements, with the
 alignment derived recursively from the field types). The *bytes* come from `Any`. So adding
 a new type needs no changes to the serializer or the parser.
