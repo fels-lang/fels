@@ -955,6 +955,8 @@ pub const RunOptions = struct {
     frozen: bool = false,
     /// `--rebuild`: build every artifact, even one that is up to date.
     rebuild: bool = false,
+    /// `-g`: debug info for every artifact (a PDB beside a Windows program).
+    debug_info: bool = false,
 };
 
 /// Run `build_path` (a build.fels) and execute the resulting plan.
@@ -1445,6 +1447,7 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
         .link_flags = link_flags.items,
         .need_libc = need_libc,
         .honor_defaultlibs = honor_defaultlibs,
+        .debug_info = opts.debug_info,
     });
     const stamp = std.fmt.allocPrint(a, "{s}/.fels-cache/build/{s}/inputs", .{ base_dir, art.name }) catch return error.OutOfMemory;
     const stale: Stale = if (opts.rebuild) .asked else if (!fileExists(io, out_path)) .no_output else try staleness(gpa, io, plan, stamp, key);
@@ -1467,6 +1470,7 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
         .dll = is_lib,
         .opt_level = opt_level,
         .safety = mode.safety,
+        .debug_info = opts.debug_info,
         .llvm_bin = opts.llvm_bin,
         .lib_paths = lib_paths.items,
         .extra_libs = libs.items,
@@ -1656,6 +1660,7 @@ const KeyParts = struct {
     link_flags: []const []const u8,
     need_libc: bool,
     honor_defaultlibs: bool,
+    debug_info: bool,
 };
 
 /// What an artifact's build depends on besides the text of its files, as two hashes: the
@@ -1684,7 +1689,7 @@ fn settingsKey(io: std.Io, plan: *BuildPlan, art: Artifact, parts: KeyParts) Bui
     str(&h, art.root);
     str(&h, @tagName(art.kind));
     str(&h, @tagName(art.target_os));
-    h.update(&.{ parts.opt_level, @intFromBool(parts.safety), art.subsystem, @intFromBool(art.target_gnu), @intFromBool(art.strip), @intFromBool(parts.need_libc), @intFromBool(parts.honor_defaultlibs) });
+    h.update(&.{ parts.opt_level, @intFromBool(parts.safety), art.subsystem, @intFromBool(art.target_gnu), @intFromBool(art.strip), @intFromBool(parts.need_libc), @intFromBool(parts.honor_defaultlibs), @intFromBool(parts.debug_info) });
     h.update(std.mem.asBytes(&art.stack));
     str(&h, art.sysroot);
     str(&h, art.entry orelse "");

@@ -784,6 +784,8 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
             opts.offline = true;
         } else if (std.mem.eql(u8, arg, "--rebuild")) {
             opts.rebuild = true;
+        } else if (eqAny(arg, &.{ "-g", "--debug-info" })) {
+            opts.debug_info = true;
         } else if (std.mem.eql(u8, arg, "--frozen")) {
             opts.frozen = true;
         } else if (arg.len > 2 and std.mem.startsWith(u8, arg, "-D")) {
@@ -980,6 +982,7 @@ fn printUsage() void {
         \\  fels build --offline     use only fels.lock and the package cache, never git
         \\  fels build --frozen      stop when fels.lock would change (for CI)
         \\  fels build --rebuild     build every artifact, also the ones that are up to date
+        \\  fels build -g            with debug info for a debugger (a .pdb beside a Windows program)
         \\
         \\options:
         \\  -o <path>              output file (default: derived from the source name)
