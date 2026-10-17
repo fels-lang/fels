@@ -6186,6 +6186,23 @@ const Checker = struct {
         return self.errorVariantsFromDecl(set.variants);
     }
 
+    /// `fail e;`: an error value passed on, which the function's set must take as `?` does.
+    fn checkFailValue(self: *Checker, fail: ast.FailStmt, value: ast.Expr) SemanticError!void {
+        const err_ty = self.current_error_ty orelse {
+            self.emitError(fail.span, "`fail` used in a function without a `!` error return type", .{});
+            return error.SemanticFailed;
+        };
+        const value_ty = try self.inferExpr(value);
+        if (!self.isErrorType(value_ty)) {
+            self.emitError(value.span, "`fail` takes an error, `.name`, `.name(payload)` or an error value, not a `{s}`", .{self.formatTy(value_ty)});
+            return error.SemanticFailed;
+        }
+        if (!try self.compatible(value_ty, err_ty)) {
+            self.emitError(value.span, "this error is a `{s}`, and the function fails with `{s}`", .{ self.formatTy(value_ty), self.formatTy(err_ty) });
+            return error.SemanticFailed;
+        }
+    }
+
     /// `yield value;` ends a `catch` handler with the value the `catch` expression takes, the
     /// call's success type. It belongs to the innermost handler.
     fn checkYield(self: *Checker, y: ast.YieldStmt) SemanticError!void {
@@ -6221,6 +6238,7 @@ const Checker = struct {
     }
 
     fn checkFail(self: *Checker, fail: ast.FailStmt) SemanticError!void {
+        if (fail.value) |value| return self.checkFailValue(fail, value);
         if (fail.brace_payload) self.emitWarning(fail.span, "write the payload in parentheses, `fail .{s}(…)`, as an enum variant is built: the `{{ … }}` form will go", .{fail.variant});
         const err_ty = self.current_error_ty orelse {
             self.emitError(fail.span, "`fail` used in a function without a `!` error return type", .{});

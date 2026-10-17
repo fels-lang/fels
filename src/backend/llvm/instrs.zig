@@ -129,6 +129,8 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
             vi.type_name,
             vi.variant,
         ),
+        .variant_tag => |vt| vars_mod.buildVariantTag(cg, resolveVal(cg, fncg, vt.value, .unknown), vt.type_name),
+
         .variant_payload => |vp| vars_mod.buildVariantPayload(
             cg,
             resolveVal(cg, fncg, vp.value, .unknown),

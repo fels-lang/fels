@@ -1079,6 +1079,10 @@ const FnCompiler = struct {
                 const subj = try self.resolveReg(vp.value);
                 try self.emit(Instr.r_r_imm(.load_cell, target, subj, 1));
             },
+            .variant_tag => |vt| {
+                const subj = try self.resolveReg(vt.value);
+                try self.emit(Instr.r_r_imm(.load_cell, target, subj, 0));
+            },
 
             // Optionals
             // `some(x)` is a 1-cell block [x]; `none` is the bare null value.
