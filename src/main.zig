@@ -24,34 +24,13 @@ fn enableUtf8Console() void {
     if (builtin.os.tag == .windows) _ = win.SetConsoleOutputCP(65001);
 }
 
-// Live status line
-// A "changing command line" — the current phase, with a spinner that advances at
-// each phase boundary. Uses a bare carriage return + padding (no ANSI), so it is
-// harmless when output is redirected.
+const ui = fels.ui;
 
-const Progress = struct {
-    quiet: bool,
-    frame: usize = 0,
-    // ASCII spinner — braille glyphs aren't in most console fonts.
-    const frames = [_][]const u8{ "|", "/", "-", "\\" };
-
-    fn step(self: *Progress, phase: fels.Phase) void {
-        if (self.quiet) return;
-        const f = frames[self.frame % frames.len];
-        self.frame += 1;
-        std.debug.print("\r  {s} {s: <26}", .{ f, phase.label() });
-    }
-
-    fn clear(self: *Progress) void {
-        if (self.quiet) return;
-        std.debug.print("\r{s: <40}\r", .{""});
-    }
-};
-
-fn progressStep(ctx: ?*anyopaque, phase: fels.Phase) void {
-    const p: *Progress = @ptrCast(@alignCast(ctx.?));
-    p.step(phase);
-}
+/// The io of `std.debug.print`, which the live progress tree (ui.zig) draws through too, so
+/// the two take one lock on stderr. The standard library's single-threaded default, given one
+/// thread for the tree's redraws in `main`.
+pub const std_options_debug_threaded_io: ?*std.Io.Threaded = &debug_io;
+var debug_io: std.Io.Threaded = .init_single_threaded;
 
 // Entry
 
@@ -86,8 +65,11 @@ const Options = struct {
 
 pub fn main(init: std.process.Init) u8 {
     enableUtf8Console();
-    // Colors for the diagnostics, when stderr is a terminal.
+    // Colors and the live progress tree, when stderr is a terminal.
     fels.style.detectPosix(init.io, init.environ_map);
+    ui.pal = fels.style.forStderr();
+    debug_io.allocator = std.heap.page_allocator;
+    debug_io.concurrent_limit = .limited(1);
     const allocator = init.gpa;
     const io = init.io;
 
@@ -483,13 +465,16 @@ fn tryLoadClangIn(allocator: std.mem.Allocator, io: std.Io, dir: []const u8, nam
 
 fn cmdCheck(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8) u8 {
     var fe = fels.compileFileWithRuntime(allocator, io, path) catch |err| {
-        std.debug.print("fels: {s}\n", .{@errorName(err)});
+        std.debug.print("{s} {s}: {s}\n", .{ ui.mark(.fail), path, ui.failure(err) });
         return 1;
     };
     defer fe.deinit(allocator);
     printDiags(allocator, fe.diagnostics(), path, source);
-    if (fels.diagnostic_mod.Diagnostic.anyError(fe.diagnostics())) return 1;
-    std.debug.print("ok — no errors\n", .{});
+    if (fels.diagnostic_mod.Diagnostic.anyError(fe.diagnostics())) {
+        std.debug.print("{s} {s}: does not compile\n", .{ ui.mark(.fail), path });
+        return 1;
+    }
+    std.debug.print("{s} {s}: no errors\n", .{ ui.mark(.ok), path });
     return 0;
 }
 
@@ -542,7 +527,8 @@ const win_out = struct {
 
 fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8, obj_path: []const u8, opts: *Options) u8 {
     if (!fels.llvm_enabled) return noLlvm();
-    var progress = Progress{ .quiet = opts.quiet };
+    if (!opts.quiet) ui.start("fels object", 0);
+    var stages = ui.Stages.begin(ui.root, std.fs.path.basename(path));
     var timings: fels.Timings = .{};
     fels.compileFileWithLlvm(allocator, io, .{
         .file_name = path,
@@ -556,23 +542,40 @@ fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source:
         .sysroot = opts.sysroot,
         .lib_paths = opts.lib_paths.items,
         .extra_libs = opts.extra_libs.items,
-        .progress = progressStep,
-        .progress_ctx = &progress,
+        .progress = ui.Stages.step,
+        .progress_ctx = &stages,
         .timings = &timings,
-    }) catch |err| {
-        progress.clear();
-        std.debug.print("fels: {s}\n", .{@errorName(err)});
-        return 1;
-    };
-    progress.clear();
-    std.debug.print("  wrote {s}\n", .{obj_path});
-    if (opts.show_time) printTimings(timings, obj_path);
+    }) catch |err| return buildFailed(&stages, path, err);
+    return buildDone(&stages, obj_path, timings, opts);
+}
+
+/// The line of a failed single-file compile: `✗ path: does not compile` (the reason is above).
+fn buildFailed(stages: *ui.Stages, path: []const u8, err: anyerror) u8 {
+    _ = stages.end();
+    ui.finish();
+    std.debug.print("{s} {s}: {s}\n", .{ ui.mark(.fail), path, ui.failure(err) });
+    return 1;
+}
+
+/// The line of a finished single-file compile: `✓ out  0.84s  (check 120ms · ... )`.
+fn buildDone(stages: *ui.Stages, out: []const u8, timings: fels.Timings, opts: *Options) u8 {
+    const ns = stages.end();
+    ui.finish();
+    if (opts.quiet) return 0;
+    var d: [48]u8 = undefined;
+    var b: [160]u8 = undefined;
+    const breakdown = ui.stageBreakdown(&b, timings);
+    std.debug.print("{s} {s}  {s}", .{ ui.mark(.ok), out, ui.dimDuration(&d, if (timings.total_ns != 0) timings.total_ns else ns) });
+    if (breakdown.len != 0) std.debug.print("  {s}({s}){s}", .{ ui.pal.dim(), breakdown, ui.pal.reset() });
+    std.debug.print("\n", .{});
+    if (opts.show_time) printTimings(timings, out);
     return 0;
 }
 
 fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8, obj_path: []const u8, exe_path: []const u8, opts: *Options) u8 {
     if (!fels.llvm_enabled) return noLlvm();
-    var progress = Progress{ .quiet = opts.quiet };
+    if (!opts.quiet) ui.start("fels build", 0);
+    var stages = ui.Stages.begin(ui.root, std.fs.path.basename(path));
     var timings: fels.Timings = .{};
     fels.compileFileWithLlvm(allocator, io, .{
         .file_name = path,
@@ -588,18 +591,11 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
         .llvm_bin = opts.llvm_bin,
         .lib_paths = opts.lib_paths.items,
         .extra_libs = opts.extra_libs.items,
-        .progress = progressStep,
-        .progress_ctx = &progress,
+        .progress = ui.Stages.step,
+        .progress_ctx = &stages,
         .timings = &timings,
-    }) catch |err| {
-        progress.clear();
-        std.debug.print("fels: {s}\n", .{@errorName(err)});
-        return 1;
-    };
-    progress.clear();
-    std.debug.print("  \u{2713} {s}\n", .{exe_path});
-    if (!opts.quiet) printTimings(timings, exe_path);
-    return 0;
+    }) catch |err| return buildFailed(&stages, path, err);
+    return buildDone(&stages, exe_path, timings, opts);
 }
 
 // Build system (`fels build` with a build.fels)
@@ -790,7 +786,7 @@ fn printTimings(t: fels.Timings, _: []const u8) void {
     printRow("codegen", t.codegen_ns);
     printRow("emit object", t.emit_ns);
     printRow("link", t.link_ns);
-    std.debug.print("  ───────────────────────\n", .{});
+    std.debug.print("  {s}───────────────────────{s}\n", .{ ui.pal.dim(), ui.pal.reset() });
     printRow("total", t.total_ns);
     // Comptime time is a slice of front-end + lowering — Fels's signature cost.
     if (t.comptime_ns != 0) {
