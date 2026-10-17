@@ -534,8 +534,8 @@ test "bindgen: C header lowers to Fels structs, enum consts, and #extern fns" {
         "pub SCALE :: 1.5;",
         "pub WHITE :: #run __lit_WHITE();",
         "__lit_WHITE :: fn() -> Color { return .{ 255 , 255 , 255 , 255 }; }",
-        // hard constructs: union → sized blob, opaque type, fn-pointer param, variadic
-        "pub U :: struct { _bytes: [8]u8 }",
+        // a C union is a Fels `union`; an opaque type, a fn-pointer param, a variadic
+        "pub U :: union {\n    i: i32,\n    d: f64,\n}",
         "pub Opaque :: opaque;",
         "pub use_opaque :: fn(o: *Opaque);",
         // a C function pointer is a thin `extern fn` (a plain `fn` is a Fels closure)
