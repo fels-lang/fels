@@ -17,7 +17,22 @@ These compile without a message and give a wrong result.
   `#run` calls returns the bytes it built that way, and telling those calls from run-time ones
   is not done yet.
 
+- **Structs passed by value to C on Linux follow the Win64 rules.** The SysV classification is not
+  built: `abi.zig` applies its Win64 `classify` on every target. A `Vector2` (`{ float, float }`)
+  goes as an `i64` where SysV wants one XMM register, and a `{ double, double }` goes by reference
+  where SysV wants two. Calling a real Linux C object under WSL gave wrong values for both; a
+  `Color` (four bytes) happens to match. Verified 2026-10-17.
+
 ## 2. Compiler crashes and missing messages
+
+- **`#derive(Neg)`, `Min`, `Max` and `Clamp` on a struct with a nested struct field** pass
+  `fels check` and then crash the code generator ("Intrinsic has incorrect return type").
+  `Ord`, `Hash`, `Add`, `Sub`, `Mul`, `Scale` and `Lerp` give a clear error there instead.
+  Verified 2026-10-17.
+- **`#derive(Eq)` on a struct with an enum field fails** with "no visible method or extension
+  function `eq`": `fieldIsNamedStruct` in `src/parser.zig` takes any named type for a struct.
+  Verified 2026-10-17.
+- **An unknown escape such as `\xZZ`** in a string is kept as literal text, with no error.
 
 - **Macro errors go to stderr only**; the language server does not show them. Reported.
 - **`std.json` and `std.serde` cannot be imported together**: both declare a `Parser`, and the
@@ -38,6 +53,10 @@ These compile without a message and give a wrong result.
 
 ## 4. Missing features and limits
 
+- On Linux `fs::read_all` fails on `/proc` files: it sizes the file by seeking, and they have no
+  size.
+- Artifacts with the same name share one up-to-date stamp in `fels build`, so a target matrix
+  that names each build `"tool"` rebuilds all of them every time. Give each artifact its own name.
 - No debug information: the LLVM backend emits no DWARF or CodeView, so a debugger shows no
   source lines and `fels build` has no `debug_info()`.
 - Libraries (`b.static`, `b.shared`) cannot target Linux yet; the archive writer reads COFF objects.
@@ -67,6 +86,8 @@ These compile without a message and give a wrong result.
 - The project root fallback for imports can accept an import that `fels build` rejects.
 - The static data check of `fels check` is not part of the server analysis.
 - A broken imported module replaces the importer's last good analysis.
+- Go to definition on a derived method (`#derive`) returns nothing, and for a function a
+  `#compiler` hook generated, hover shows the file's first line and definition jumps to line 0.
 
 ## 6. Grammar (`tree-sitter-fels`)
 
