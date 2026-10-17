@@ -365,7 +365,7 @@ fn lowerIndexAddress(
     const idx = resolveVal(cg, fncg, ix.index, .usize);
     const elem_lty = types.lower(cg, elem_ir_ty);
 
-    const base_ir_ty = fncg.irTypeOf(ix.base);
+    const base_ir_ty = indexBaseType(fncg, ix.base);
     if (base_ir_ty) |base_ty| switch (base_ty) {
         .slice => {
             const base_val = resolveVal(cg, fncg, ix.base, base_ty);
@@ -1650,8 +1650,18 @@ fn emitSignedDivisionOverflowCheck(
 }
 
 /// Emit a slice/array bounds check before an index operation.
+/// The type of an index's base. A string literal (`"xyz"[1]`, folded to an `.imm.text`) has
+/// none recorded, yet it is a `[]const u8`, as `lowerField` reads it.
+fn indexBaseType(fncg: anytype, base: ir.Value) ?ir.IrType {
+    if (fncg.irTypeOf(base)) |ty| return ty;
+    return switch (base) {
+        .imm => |im| if (im == .text) str_slice_ty else null,
+        else => null,
+    };
+}
+
 fn emitBoundsCheck(cg: *ModuleCg, fncg: anytype, ix: ir.IndexInstr, location: ir.SourceLocation) void {
-    const base_ir_ty = fncg.irTypeOf(ix.base) orelse return;
+    const base_ir_ty = indexBaseType(fncg, ix.base) orelse return;
     const len = switch (base_ir_ty) {
         .slice => blk: {
             const slice = resolveVal(cg, fncg, ix.base, base_ir_ty);
