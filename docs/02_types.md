@@ -221,6 +221,38 @@ PixelFormat :: struct {
 > [!IMPORTANT]
 > Taking the address of a packed struct field (`&p.b`, `&p.arr[i]`, a field of a nested packed struct) is a compile error, because the field may not be byte-aligned. Read and write packed fields by value, including through a `*Packed` pointer. To hand a field's bytes to something else, take the address of the whole struct and use `core::unaligned_read` or `core::memcpy` at the field's offset.
 
+### Unions
+
+A `union` is a struct whose fields share their storage: every field starts at offset 0, and
+the union is as large as its largest field, rounded up to the strictest alignment among
+them. It is C's untagged union, for the bytes a C API overlays and for viewing a value's
+bits as another type.
+
+```fels
+Halves :: struct { low: u32, high: u32 }
+LargeInteger :: union { quad: u64, parts: Halves }   // 8 bytes
+
+li: LargeInteger = .{ .quad = 0x0000000500000007 };
+low := unsafe (li.parts.low);                          // 7
+li.parts.high = 1;                                     // writes the upper four bytes
+```
+
+Nothing records which field was written last, so reading a field reinterprets the bytes as
+that field's type, whatever they hold. That is what a pointer cast does, and like one it is
+done in `unsafe`. Writing a field (the place of a plain `=`) is not unsafe; `u.f += 1` reads
+`u.f` first, so it is. Taking `&u.f` hands out a pointer that reads the same way, so it is
+`unsafe` too.
+
+A union literal sets one field and zeroes the rest of the bytes: `.{ v }` sets the first
+field, `.{ .name = v }` another, and `.{}` leaves the whole union zero. A union in static
+storage (a global, a constant) starts as `.{}`; write its field at run time. `core::sizeof`,
+`core::align_of` and `core::offset_of` (always 0) work on a union, a union may be generic
+(`Cell :: union($T: type) { value: T, raw: [8]u8 }`), and `core::type_info` reports one as
+`.union_`, so a reflective reader does not take its fields for separate values. The
+comptime VM does not run code that reads or writes a union's fields.
+
+For a value that is one of several things and knows which, use a payload enum (below).
+
 ### Generic Structs
 
 Structs can be parameterized by types (and compile-time values) using `$`-prefixed parameters:
@@ -379,7 +411,7 @@ area :: fn(s: Shape) -> f64 {
 }
 ```
 
-Enums with payloads are Fels's approach to tagged unions. Construction and matching
+Enums with payloads are Fels's approach to tagged unions (a `union` is untagged). Construction and matching
 both work at compile time too, so comptime code can build and inspect them — the
 basis for constructing `ast.*` values programmatically in metaprogramming.
 
