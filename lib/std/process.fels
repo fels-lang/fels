@@ -43,10 +43,8 @@ pub ProcessError :: errors {
 // Copy `s` into `buf`, NUL-terminate, and return a pointer to the start.
 proc_to_cstr :: fn(s: []const u8, buf: []u8) -> *const u8 ! ProcessError {
     if s.len + 1 > buf.len { fail .name_too_long; }
-    i := 0usize;
-    while i < s.len {
+    for i in 0..s.len {
         buf[i] = s[i];
-        i += 1;
     }
     buf[s.len] = 0;
     return buf.ptr;
@@ -123,11 +121,9 @@ pub split_command_line :: fn(line: []const u8, a: *Arena) -> [][]const u8 {
                     i += 1;
                 }
                 if i < line.len && line[i] == 34 {
-                    k: usize = 0;
-                    while k < slashes / 2 {
+                    for k in 0..slashes / 2 {
                         text[n] = 92;
                         n += 1;
-                        k += 1;
                     }
                     if slashes % 2 == 1 {
                         text[n] = 34;
@@ -135,11 +131,9 @@ pub split_command_line :: fn(line: []const u8, a: *Arena) -> [][]const u8 {
                         i += 1;
                     }
                 } else {
-                    k: usize = 0;
-                    while k < slashes {
+                    for k in 0..slashes {
                         text[n] = 92;
                         n += 1;
-                        k += 1;
                     }
                 }
                 continue;
@@ -209,10 +203,8 @@ pub Child :: struct {
 pub spawn :: fn(command: []const u8) -> Child ! ProcessError {
     cmd_buf: [1024]u8 = .{};
     if command.len + 1 > cmd_buf.len { fail .command_too_long; }
-    i := 0usize;
-    while i < command.len {
+    for i in 0..command.len {
         cmd_buf[i] = command[i];
-        i += 1;
     }
     cmd_buf[command.len] = 0;
     token := os_spawn(cmd_buf[:].ptr);
