@@ -116,8 +116,8 @@ Compile-time constants (no parens) that fold to a literal at the use site:
 | `core::func` | `[]const u8` | the enclosing function's name |
 | `core::line` | `i32` | the line of the `core::line` reference |
 | `core::column` | `i32` | the column |
-| `core::os` | `[]const u8` | the OS of the machine the compiler runs on (`"windows"`, `"linux"`, …) — not the build target, see the `TARGET` warning below |
-| `core::arch` | `[]const u8` | the architecture of the machine the compiler runs on (`"x86_64"`, …) |
+| `core::os` | `[]const u8` | the OS the program is built for (`"windows"`, `"linux"`), as `TARGET.os` |
+| `core::arch` | `[]const u8` | the architecture the program is built for (`"x86_64"`), as `TARGET.arch` |
 
 ```fels
 log :: fn(msg: []const u8) { print(core::file); print_i64(core::line as i64); print(msg); }
@@ -220,13 +220,14 @@ header.fels:3:9: error: static assertion failed: Header is sent as-is over the w
   `ir`. `fels check` only type-checks, so it does not run assertions.
 - Top level only. Inside a function, use `#if` with `core::trap()` or an ordinary check.
 
-### The `TARGET` Pseudo-module
+### The `TARGET` constant
 
-The compiler provides compile-time target information via the virtual `TARGET` identifier.
+`TARGET` describes the platform and mode the program is built for. It is a constant,
+`TARGET : TargetInfo`, whose fields are enums:
 
-- `TARGET.os`: Returns `.windows`, `.linux`, `.macos`, or `.unknown`.
-- `TARGET.arch`: Returns `.x86_64`, `.aarch64`, or `.unknown`.
-- `TARGET.debug`: Returns `true` if compiling in debug mode, `false` otherwise.
+- `TARGET.os`: a `TargetOs`, `.windows`, `.linux`, `.macos` or `.unknown`.
+- `TARGET.arch`: a `TargetArch`, `.x86_64`, `.aarch64` or `.unknown`.
+- `TARGET.debug`: `true` in a debug build (`-O0`, the `debug` mode), `false` when optimized.
 
 ```fels
 describe :: fn() -> i32 {
@@ -238,16 +239,9 @@ describe :: fn() -> i32 {
 }
 ```
 
-> [!WARNING]
-> Verified against the current compiler, these do **not** yet behave as described above:
->
-> - A comparison with `TARGET.os` or `TARGET.arch` is never true. On a native Windows build
->   both `TARGET.os == .windows` and `TARGET.os == .linux` take the `else` branch, as does
->   `TARGET.arch == .x86_64`.
-> - `TARGET.debug` reports how the *compiler* was built, not the program's `-O` level.
-> - `core::os` and `core::arch` are the strings for the machine the compiler runs on: a
->   `--target linux` build made on Windows still reports `"windows"`.
->
-> None of them can choose between platforms in a cross-compiled program today. A
-> conditional *declaration* (a platform-specific `#extern` inside `#if`) is not supported
-> either, because `#if` is a statement.
+It is the build's, not the compiler's: a `--target linux` build made on Windows sees
+`.linux`. A misspelt platform is a compile error (`TARGET.os == .windos`: "enum `TargetOs`
+has no variant `.windos`"). In `#if` the comparison folds and only the branch that holds is
+compiled; in a plain `if` it is an ordinary comparison of constants. A build script and
+`fels check` see the machine they run on. `#if` is a statement, so it goes in a function
+body.
