@@ -3,22 +3,28 @@
 // submodules: net.os (raw ws2_32 + NetError), net.addr (IpV4/SocketAddr), net.socket
 // (the typed Socket handle), net.tcp (TcpStream/TcpListener), net.udp (UdpSocket).
 //
-// Call net::init() once per process, then use the helpers here or import a submodule
-// for its types:
+// Call net::init() once per process, then use the helpers here:
 //
 //   net::init() catch e { return; };
-//   s := net::connect(addr::socket_addr(addr::localhost(), 8080u16)) catch e { return; };
+//   s: net::TcpStream = net::connect(addr::socket_addr(addr::localhost(), 8080u16)) catch e { return; };
 //   ignored := s.send_all("ping") catch e {};
 //   net::shutdown();
 //
-// Types live in their submodule (fels doesn't re-export types across modules), so
-// you only need the submodule import for annotations.
+// The types of the submodules are re-exported here (`net::TcpStream`, `net::NetError`), so
+// only std.net.addr is needed besides, for building an address.
 
 #import std.net.os as os;
-#import std.net.os.{NetError};
 #import std.net.addr as addr;
 #import std.net.tcp as tcp;
 #import std.net.udp as udp;
+
+pub NetError    :: os::NetError;
+pub SocketAddr  :: addr::SocketAddr;
+pub TcpStream   :: tcp::TcpStream;
+pub TcpListener :: tcp::TcpListener;
+pub Accepted    :: tcp::Accepted;
+pub UdpSocket   :: udp::UdpSocket;
+pub Datagram    :: udp::Datagram;
 
 // Library lifecycle
 
@@ -34,19 +40,19 @@ pub last_error :: fn() -> i32 { return os::last_error(); }
 
 // TCP convenience
 
-// Connect to `sa` and return a ready `tcp::TcpStream` (client side).
-pub connect :: fn(sa: addr::SocketAddr) -> tcp::TcpStream ! NetError {
+// Connect to `sa` and return a ready `TcpStream` (client side).
+pub connect :: fn(sa: SocketAddr) -> TcpStream ! NetError {
     return tcp::connect(sa)?;
 }
 
-// Bind + listen on `sa`, returning a `tcp::TcpListener` (server side, backlog 16).
-pub listen :: fn(sa: addr::SocketAddr) -> tcp::TcpListener ! NetError {
+// Bind + listen on `sa`, returning a `TcpListener` (server side, backlog 16).
+pub listen :: fn(sa: SocketAddr) -> TcpListener ! NetError {
     return tcp::listen(sa)?;
 }
 
 // UDP convenience
 
-// A `udp::UdpSocket` bound to `sa`.
-pub udp_bind :: fn(sa: addr::SocketAddr) -> udp::UdpSocket ! NetError {
+// A `UdpSocket` bound to `sa`.
+pub udp_bind :: fn(sa: SocketAddr) -> UdpSocket ! NetError {
     return udp::bind(sa)?;
 }
