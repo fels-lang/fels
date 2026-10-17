@@ -4544,6 +4544,33 @@ test "exe: a field that is no integer starts at a whole byte of a bit-packed str
     , "exe_bitfield_misplaced"));
 }
 
+test "exe: a layout query takes a generic type's instance" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // core::sizeof(Box(u64)) was "`Box` is not a function": the instance was read as a call.
+    // A value argument (`f(3)`) is still a value.
+    const src =
+        \\Box :: struct($T: type) { v: T, tag: u8 }
+        \\Pair :: struct($A: type, $B: type) { a: A, b: B }
+        \\U :: union($T: type) { one: T, raw: [2]u32 }
+        \\f :: fn(x: i32) -> i32 { return x; }
+        \\S :: core::sizeof(Box(u32));
+        \\main :: fn() -> i32 {
+        \\    if S != 8 { return 6; }
+        \\    if core::sizeof(Box(u64)) != 16 || core::sizeof(Box(u8)) != 2 || core::align_of(Box(u64)) != 8 { return 1; }
+        \\    if core::sizeof(Pair(u8, u32)) != 8 || core::offset_of(Pair(u8, u32), "b") != 4 { return 2; }
+        \\    if core::sizeof(U(u16)) != 8 || core::sizeof(*Box(u64)) != 8 { return 3; }
+        \\    if core::type_name(Box(u8)).len == 0 { return 4; }
+        \\    n := core::sizeof(f(3)); if n != 4 { return 5; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_generic_layout", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_generic_layout_o2", 2, true));
+}
+
 test "exe: unknown field in a struct literal fails the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

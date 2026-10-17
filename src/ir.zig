@@ -5775,7 +5775,9 @@ const FunctionLowerer = struct {
 
     fn lowerTypeArg(self: *FunctionLowerer, expr: ast.Expr) LowerError!IrType {
         return switch (expr.kind) {
-            .type_ref => |ty| lowerType(self.allocator, try dealias(self.allocator, ty, self.types, self.symbols)),
+            // With the type environment: `Box(u64)` is the instance's struct, which `lowerType`
+            // alone has no name for.
+            .type_ref => |ty| lowerAstTypeWithEnv(self.allocator, try dealias(self.allocator, ty, self.types, self.symbols), self.types, self.symbols) catch .unknown,
             // A bare ident may be a generic type parameter — resolve it to the
             // concrete type bound for this instantiation, so `sizeof(T)` etc.
             // get the real type instead of an unknown one.
@@ -8651,7 +8653,7 @@ fn foldLayoutCall(call: ast.CallExpr, file: []const u8, env: FoldEnv) ?Imm {
         .named => return null,
     };
     const ty: IrType = switch (first.kind) {
-        .type_ref => |t| lowerType(env.allocator, t) catch return null,
+        .type_ref => |t| lowerAstTypeWithEnv(env.allocator, t, env.types, env.symbols) catch return null,
         .ident => |name| layoutQueryNamedType(env.allocator, env.types, env.symbols, file, name),
         else => return null,
     };
