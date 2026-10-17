@@ -194,8 +194,10 @@ all.
 - Windows x64 works from end to end.
 - Linux x64 works from end to end too: the compiler runs there and builds static executables.
 - There is no macOS support and no formatter yet.
-- Programs carry no debug info yet, so a debugger shows no source lines.
-- The compiler has 844 tests, and CI runs them on Windows and Linux on every push.
+- `-g` gives a program debug info: source lines, functions, parameters and locals with their
+  types, in a PDB on Windows and as DWARF on Linux. On Windows it needs the import libraries of
+  the Windows SDK for now.
+- The compiler has 851 tests, and CI runs them on Windows and Linux on every push.
 
 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) lists what is still rough, and the
 [changelog](CHANGELOG.md) shows what changed in each release.

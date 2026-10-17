@@ -29,6 +29,7 @@ fels ir <file>        Print LLVM IR
 fels object <file>    Emit object file
 fels build <file>     Build an executable for the host OS, or for --target linux / windows
 fels run <file>       Build it and run it (-- <args> passes arguments to the program)
+fels build <file> -g  With debug info: a .pdb beside a Windows program, DWARF in a Linux one
 ```
 
 ## Hello World

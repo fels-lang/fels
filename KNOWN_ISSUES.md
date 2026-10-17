@@ -74,8 +74,10 @@ These compile without a message and give a wrong result.
   size.
 - Artifacts with the same name share one up-to-date stamp in `fels build`, so a target matrix
   that names each build `"tool"` rebuilds all of them every time. Give each artifact its own name.
-- No debug information: the LLVM backend emits no DWARF or CodeView, so a debugger shows no
-  source lines and `fels build` has no `debug_info()`.
+- Debug info (`-g`) on Windows is linked by LLD, which needs the import library of each DLL a
+  program uses (`kernel32.lib`, ...): they come with the Windows SDK. Fels's own linker needs
+  none, but writes no PDB. Locals of nested blocks all show in the function's scope, and the
+  fields of a `#packed` struct with bit fields are not shown.
 - Libraries (`b.static`, `b.shared`) cannot target Linux yet; the archive writer reads COFF objects.
 - At compile time (`#run`, `#assert`), `&5` and `&(x + 1)` are refused ("the comptime VM cannot
   run `f`"). Verified 2026-10-17.

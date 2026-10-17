@@ -341,6 +341,7 @@ fels build --explain        print the build graph + cache decisions (planned)
 fels build --frozen         fail if the lockfile would change
 fels build --offline        use only fels.lock and the package cache, never git
 fels build --rebuild        build every artifact, also the ones that are up to date
+fels build -g               with debug info for a debugger (a .pdb beside a Windows program)
 fels build --prefix <dir>   the install prefix for `fels build install` (default: dist)
 fels build -q, --quiet      print no progress: no live tree, no ✓ and up-to-date lines
 fels build <file.fels>        direct single-file build (back-compat, today's behavior)
@@ -488,8 +489,9 @@ and this works from Windows too. `.linux` is a static ELF without libc, `.linux_
 glibc dynamically, and `a.sysroot(dir)` says where glibc is. A Linux output has no `.exe`.
 `a.strip()` leaves the symbol table out of a Linux output (a Windows output has none).
 `b.host_os()` returns the OS that `fels build` runs on (`.windows`, `.linux`, `.macos`,
-`.other`), so a script can choose per platform. Libraries for Linux are not supported yet,
-and the output does not carry debug information (DWARF/CodeView) yet.
+`.other`), so a script can choose per platform. Libraries for Linux are not supported yet.
+`fels build -g` gives every artifact debug info: a PDB beside a Windows program, DWARF in a
+Linux one.
 
 **Output**: `a.output(path)` sets an explicit path, and `a.out_dir(dir)` sets a directory and
 derives the name. There is also the workspace-wide `b.out_root(dir)`, but a per-artifact
