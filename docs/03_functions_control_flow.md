@@ -673,9 +673,9 @@ Fels supports compile-time evaluation through a few special directives:
     // 32-bit platform code
 }
 
-// Compile-time execution
+// A block of statements (today it runs with the program, see 08)
 #run {
-    // Code executed at compile time
+    // ...
 }
 
 // Compile-time expression
@@ -685,7 +685,7 @@ size := #run compute_size();
 | Directive | Purpose                                                        |
 |-----------|----------------------------------------------------------------|
 | `#if`     | Conditional compilation based on compile-time constants        |
-| `#run`    | Execute code or expressions at compile time                    |
+| `#run`    | Evaluate an expression at compile time (a `#run { }` block, see 08) |
 
 `#if` takes an optional `else { }`, and `else #if cond { }` for the next test of a chain. In
 a function body it chooses code. At the top level it chooses declarations, by the platform
