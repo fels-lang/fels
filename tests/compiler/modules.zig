@@ -417,6 +417,41 @@ test "modules: a constraint names what its own module declares" {
     }));
 }
 
+test "modules: std.map refuses a key AutoHashMap cannot compare by its bytes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const dir = ".zig-cache/bytekey";
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    const cases = [_]struct { key: []const u8, ok: bool }{
+        .{ .key = "i32", .ok = true },
+        .{ .key = "Tight", .ok = true },
+        .{ .key = "f64", .ok = false },
+        .{ .key = "[]const u8", .ok = false },
+        .{ .key = "Gap", .ok = false },
+        .{ .key = "?i32", .ok = false },
+    };
+    for (cases, 0..) |case, i| {
+        const src = try std.fmt.allocPrint(a,
+            \\#import std.map as map;
+            \\#import std.heap as heap;
+            \\Gap :: struct {{ a: u8, b: u32 }}
+            \\Tight :: struct {{ a: u32, b: u32 }}
+            \\main :: fn() -> i32 {{ h := heap::make(); m := map::auto({s}, i32, &h); return 0; }}
+            \\
+        , .{case.key});
+        const path = try std.fmt.allocPrint(a, "{s}/key{d}.fels", .{ dir, i });
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = src });
+        if (case.ok) {
+            var fe = try fels.compileFileWithRuntime(a, io, path);
+            fe.deinit(a);
+        } else {
+            try std.testing.expectError(error.SemanticFailed, fels.compileFileWithRuntime(a, io, path));
+        }
+    }
+}
+
 test "modules: compileFile resolves local imports from disk" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
