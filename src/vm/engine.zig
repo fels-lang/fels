@@ -134,6 +134,9 @@ pub const Caps = struct {
     }
 };
 
+/// Why compile-time code does not write a global, a scalar one or a field of one.
+const global_write_message = "compile-time code cannot modify a global: it sees the initial value that goes into the image, and a write would not be there at run time";
+
 pub const Vm = struct {
     allocator: std.mem.Allocator,
     /// Function table for resolving `call`. Optional: a standalone function with
@@ -368,7 +371,7 @@ pub const Vm = struct {
     fn writeFailed(self: *Vm, err: zones.ZoneError) VmError {
         if (err == error.ReadOnly) {
             self.needs_runtime = true;
-            self.compiler_error_msg = "compile-time code cannot modify a global: it sees the initial value that goes into the image, and a write would not be there at run time";
+            self.compiler_error_msg = global_write_message;
             return error.Trap;
         }
         return err;
@@ -857,6 +860,10 @@ pub const Vm = struct {
                     if (inst.imm == instructions.unrunnable_trap) {
                         self.needs_runtime = true;
                         self.setErrorMsg("the comptime VM cannot run `{s}`", .{frame.func.name}, "the comptime VM cannot run a function this code calls");
+                    }
+                    if (inst.imm == instructions.global_write_trap) {
+                        self.needs_runtime = true;
+                        self.compiler_error_msg = global_write_message;
                     }
                     return error.Trap;
                 },

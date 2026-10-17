@@ -365,6 +365,24 @@ test "#run: a result that cannot be data fails with a diagnostic, not silent gar
     }
 }
 
+test "#run: compile-time code does not write a global, scalar or aggregate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // A global is the initial value the image starts with; a write at compile time would not
+    // be there at run time. A field write said so; a scalar one stubbed the whole function
+    // ("the comptime VM cannot run `bump`").
+    const writes = [_][]const u8{
+        "counter: i32 = 0;\nbump :: fn() -> i32 { counter = counter + 5; return counter; }\nX :: #run bump();\n",
+        "P :: struct { x: i32 }\nG: P = .{ 1 };\nset :: fn() -> i32 { G.x = 9; return G.x; }\nY :: #run set();\n",
+    };
+    for (writes) |src| {
+        var fe = try fels.compile(arena.allocator(), "run_writes.fels", src);
+        defer fe.deinit(arena.allocator());
+        try std.testing.expectError(error.LoweringFailed, fels.lowerFrontend(arena.allocator(), fe));
+    }
+}
+
 test "#run: a global another #run computes is not readable by it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
