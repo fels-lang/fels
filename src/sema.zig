@@ -3461,7 +3461,10 @@ const Checker = struct {
                     // literal's default type: a local inferred from an untyped literal (`x := 42`,
                     // which still adapts to its context when read) and a temporary for a literal
                     // (`&5`, `&f()`), so `&x` and `&5` are `*i32` and `&2.5` is `*f64`.
-                    break :blk try self.ptrTo(defaultLiteralType(try self.inferExpr(unary.expr.*)));
+                    const pointee = defaultLiteralType(try self.inferExpr(unary.expr.*));
+                    // A constant is read-only data: what points at it cannot write it.
+                    if (self.constantRoot(unary.expr.*) != null) break :blk try self.constPtrTo(pointee);
+                    break :blk try self.ptrTo(pointee);
                 },
                 .deref => blk: {
                     const inner = try self.inferExpr(unary.expr.*);
@@ -6584,8 +6587,31 @@ const Checker = struct {
         };
     }
 
-    /// Reject assignments whose target is a dereference of a *const pointer.
+    /// The top-level constant (`NAME :: value`, `NAME : T : value`) a place is part of: the
+    /// constant itself, one of its fields, or an element of an array or slice it holds. Not what
+    /// a pointer in it points to, which a write may change.
+    fn constantRoot(self: *Checker, place: ast.Expr) ?[]const u8 {
+        return switch (place.kind) {
+            .ident => |name| blk: {
+                if (self.lookupLocal(name) != null) break :blk null;
+                const id = self.resolveSymbol(name) orelse break :blk null;
+                break :blk if (self.symbols.symbol(id).kind == .const_symbol) name else null;
+            },
+            .field => |f| blk: {
+                const base_ty = self.inferExpr(f.base.*) catch break :blk null;
+                break :blk if (isPointerTy(base_ty)) null else self.constantRoot(f.base.*);
+            },
+            .index => |i| self.constantRoot(i.base.*),
+            else => null,
+        };
+    }
+
+    /// Reject assignments to a constant and through a *const pointer.
     fn checkAssignTarget(self: *Checker, target: ast.Expr) SemanticError!void {
+        if (self.constantRoot(target)) |name| {
+            self.emitError(target.span, "`{s}` is a constant: declare it `{s}: T = value;` to change it", .{ name, name });
+            return error.SemanticFailed;
+        }
         switch (target.kind) {
             .unary => |u| {
                 if (u.op != .deref) return;
