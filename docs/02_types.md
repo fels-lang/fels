@@ -78,7 +78,7 @@ like the above can be evaluated in a `#run` constant and matches its runtime val
 
 #### Sub-Byte Integer Types
 
-Within packed structs, Fels supports sub-byte integer types from `u1` through `u7`. These types cannot be used outside of packed struct fields:
+Fels has the sub-byte integer types `u1` through `u7`, meant for the fields of `#packed` structs:
 
 ```fels
 #packed
@@ -90,7 +90,10 @@ StatusBits :: struct {
 ```
 
 > [!NOTE]
-> Sub-byte types are only valid as fields inside `#packed` structs. They cannot appear in function signatures, local variables, or non-packed struct fields.
+> Each sub-byte value takes one whole byte, in a `#packed` struct too: fields are not
+> bit-packed yet (see [Packed structs](#packed-structs) below), so `StatusBits` is 3 bytes and
+> does not describe a C bitfield or a hardware register. The compiler accepts the types
+> elsewhere as well (a local, a parameter, a field of a plain struct), one byte each.
 
 ### Float Types
 
