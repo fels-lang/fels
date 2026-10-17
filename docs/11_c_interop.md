@@ -50,6 +50,9 @@ between the two without a cast, and `core::sizeof(c_int)` is 4.
 | `c_bool`                              | `bool`        | `_Bool`                              |
 | `c_string`                            | `[*]const u8` | `const char*` (NUL-terminated)       |
 
+These sizes don't change on Linux x86-64, where C `long` is 64 bits, so use `c_longlong` and
+`c_ulonglong` for `long` and `unsigned long` there.
+
 `c_char` is the signed `i8`, so a pointer to it does not accept a Fels string (`[*]const u8`).
 For `const char*` parameters, use `c_string` instead.
 
@@ -288,8 +291,9 @@ non-default drive, override the discovery by building `fels` with
 command line.
 
 Fels's own functions are **module-private**: they have internal linkage, and the whole program
-is one object. So they never clash with the CRT's `exit`/`abort`/etc. when you link libc. A
-complete static-raylib build then takes one command:
+is one object. So they never clash with the CRT's `exit`/`abort`/etc. when you link libc. One
+command then covers the C runtime of a static-raylib build. Its system libraries come on top,
+as the note below explains:
 
 ```sh
 fels build game.fels --libc --lib-path <raylib-lib-dir>
@@ -421,16 +425,16 @@ be DYNAMIC`) instead of silently shipping a dynamic build.
 
 ### Cross-platform
 
-That API is deliberately platform-agnostic, so the same `build.fels` will work unchanged once
-Fels grows other targets. This is the intended mapping:
+That API is deliberately platform-agnostic, so the same `build.fels` calls work for Linux
+today and are meant to carry over to macOS. This is how each call maps:
 
-| build.fels | Windows (today) | Linux (planned) | macOS (planned) |
+| build.fels | Windows | Linux | macOS (planned) |
 |---|---|---|---|
 | `link("raylib")` | `raylib.lib` | `-lraylib` → `libraylib.so`/`.a` | `-lraylib` → `libraylib.dylib`/`.a` |
-| `link_mode(.dynamic)` | import lib + ship `.dll` | `.so` + rpath | `.dylib` + rpath |
-| `link_mode(.static)` | archive + CRT | `.a` + libc | `.a` + libSystem |
-| `runtime_file(x)` | copy next to exe | (rpath usually suffices) | (rpath) |
-| `link_libc()` | ucrt + vcruntime | the system libc/crt | libSystem |
+| `link_mode(.dynamic)` | import lib + ship `.dll` | `.so` only in a glibc build, no rpath | `.dylib` + rpath |
+| `link_mode(.static)` | archive + CRT | links glibc, as `link_libc()` does | `.a` + libSystem |
+| `runtime_file(x)` | copy next to exe | copy next to exe | (rpath) |
+| `link_libc()` | ucrt + vcruntime | glibc (`libc.so.6`) | libSystem |
 
 **Fels emits and links Windows and Linux on x86-64.** Windows gets PE through felsld or
 `lld-link` with the Win64 ABI. Linux gets ELF through `ld.lld` with the SysV ABI, either static
