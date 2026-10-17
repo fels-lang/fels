@@ -4649,17 +4649,23 @@ const Checker = struct {
         const type_id = self.resolveSymbol(fld.base.kind.ident) orelse return null;
         if (self.symbols.symbol(type_id).kind != .type) return null;
         const layout = self.env.layouts.get(type_id) orelse return null;
-        const variants = switch (layout.kind) {
-            .variant_type => |v| v,
+        // An error of a set built with its payload, `ParseError.overflow(n)`, as an enum's.
+        var payload_ty: ?Ty = null;
+        const found = switch (layout.kind) {
+            .variant_type => |variants| for (variants) |v| {
+                if (std.mem.eql(u8, v.name, fld.name)) {
+                    payload_ty = v.payload;
+                    break true;
+                }
+            } else false,
+            .error_set => |variants| for (variants) |v| {
+                if (std.mem.eql(u8, v.name, fld.name)) {
+                    payload_ty = v.payload;
+                    break true;
+                }
+            } else false,
             else => return null,
         };
-        var payload_ty: ?Ty = null;
-        const found = for (variants) |v| {
-            if (std.mem.eql(u8, v.name, fld.name)) {
-                payload_ty = v.payload;
-                break true;
-            }
-        } else false;
         if (!found) return null;
 
         if (payload_ty) |pty| {
@@ -6468,6 +6474,14 @@ const Checker = struct {
                 self.emitError(span, "unknown variant `.{s}`", .{name});
                 return error.SemanticFailed;
             },
+            // `ParseError.eof` — an error of the set, as an enum's variant is a value of it.
+            .error_set => |variants| blk: {
+                for (variants) |v| {
+                    if (std.mem.eql(u8, v.name, name)) break :blk .{ .named = type_id };
+                }
+                self.emitError(span, "`{s}` has no error variant `.{s}`", .{ self.symbols.symbol(type_id).name, name });
+                return error.SemanticFailed;
+            },
             .interface_type => |methods| blk: {
                 for (methods) |method| {
                     if (std.mem.eql(u8, method.name, name)) break :blk .{ .fn_ptr = .{
@@ -6476,10 +6490,6 @@ const Checker = struct {
                     } };
                 }
                 self.emitError(span, "no method `{s}` on this interface", .{name});
-                return error.SemanticFailed;
-            },
-            else => {
-                self.emitError(span, "field access on `{s}` is not supported", .{self.formatTy(base_ty)});
                 return error.SemanticFailed;
             },
         };

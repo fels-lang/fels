@@ -1211,6 +1211,31 @@ test "exe: an error's payload is read back, whatever its type" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_payload_kinds_o2", 2, true));
 }
 
+test "exe: E.v and E.v(payload) build an error" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `ParseError.big(2)` and `Plain.b` were refused: an error could only be made by `fail`.
+    const src =
+        \\PE :: errors { plain, big: i64, word: []const u8 }
+        \\Plain :: errors { a, b }
+        \\size :: fn(e: PE) -> i64 { return match e { .big |n| => n, .word |s| => s.len as i64, .plain => 1i64 }; }
+        \\calc :: fn() -> i64 {
+        \\    t := size(PE.big(40i64)) + size(PE.word("abcd")) + size(PE.plain);
+        \\    p := Plain.b;
+        \\    if p != .b { return -1i64; }
+        \\    k: PE = PE.big(2i64);
+        \\    if k != .big { return -2i64; }
+        \\    return t + size(k);
+        \\}
+        \\X :: #run calc();
+        \\main :: fn() -> i32 { if calc() != 47i64 { return 1; } if X != 47i64 { return 2; } return 42; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_construct", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_construct_o2", 2, true));
+}
+
 test "exe: a warning does not stop the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

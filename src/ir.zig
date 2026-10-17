@@ -4215,6 +4215,16 @@ const FunctionLowerer = struct {
                 break :blk try self.emit(self.exprType(expr), .{ .call = .{ .callee = call_callee, .args = arg_slice } });
             },
             .field => |field| blk: {
+                // `ParseError.eof`: an error, the number of its variant or, for a set whose
+                // errors carry payloads, the tagged value with no payload.
+                if (self.errorSetAccess(field)) |set_ty| {
+                    if (set_ty == .struct_type) break :blk try self.emit(set_ty, .{ .variant_lit = .{
+                        .type_name = set_ty.struct_type,
+                        .variant = field.name,
+                        .payload = null,
+                    } });
+                    break :blk Value{ .imm = .{ .int = try self.error_codes.code(field.name) } };
+                }
                 if (self.variantAccessType(field)) |type_name| {
                     break :blk try self.emit(self.exprType(expr), .{ .variant_lit = .{
                         .type_name = type_name,
@@ -4927,6 +4937,18 @@ const FunctionLowerer = struct {
     /// The variants of the error set a sema type names, in declaration order.
     fn errorSetVariantsOf(self: *FunctionLowerer, ty: sema.Ty) ?[]const sema.ErrorVariantInfo {
         return errorSetVariantsIn(self.types, ty);
+    }
+
+    /// `Set.name` where `Set` names an error set: the IR type of its errors (an `i32`, or the
+    /// tagged value of a set with payloads). Null for anything else.
+    fn errorSetAccess(self: *FunctionLowerer, field: ast.FieldExpr) ?IrType {
+        if (field.base.kind != .ident) return null;
+        if (self.local_types.contains(self.curLocal(field.base.kind.ident))) return null;
+        const id = resolveTopLevel(self.symbols, self.file_name, field.base.kind.ident) orelse return null;
+        if (self.symbols.symbol(id).kind != .type) return null;
+        const layout = self.types.layouts.get(id) orelse return null;
+        if (layout.kind != .error_set) return null;
+        return namedIrType(id, self.symbols.symbol(id).link_name);
     }
 
     /// The tagged error set of the function's errors, or null when they are plain numbers.
