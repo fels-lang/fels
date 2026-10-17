@@ -113,7 +113,7 @@ and `#assert` turns an assumption about it into a build error:
 WNDCLASSEXA :: struct {
     cbSize: u32,
     style: u32,
-    lpfnWndProc: fn(usize, u32, usize, isize) -> isize,
+    lpfnWndProc: extern fn(usize, u32, usize, isize) -> isize,
     cbClsExtra: i32,
     cbWndExtra: i32,
     hInstance: usize,
@@ -146,7 +146,7 @@ What is **guaranteed**, on the supported targets (Windows and Linux, x86-64):
 | `#packed` | No padding; alignment 1. Takes no argument: there is no equivalent of `#pragma pack(2)` or `pack(4)` (`#packed(2)` is an error). Sub-byte fields (`u1`–`u7`) are *not* bit-packed: each takes one whole byte. |
 | `#align(N)` | Alignment at least `N`, size rounded up to a multiple of `N`. |
 | `[]T`, `string` | 16 bytes: pointer then length. |
-| `fn(...)` as a struct field | A thin 8-byte code pointer. A standalone `fn` value is a 16-byte `{fn, env}` closure. |
+| `extern fn(...)` | A thin 8-byte code pointer, a C function pointer, in a field as anywhere. A plain `fn(...)` is a 16-byte `{fn, env}` closure, in a field too. |
 | `?*T` | An 8-byte nullable pointer. |
 
 What is **not** guaranteed, and so is not offered:
@@ -194,9 +194,9 @@ aggregates" in [01_syntax](01_syntax.md)), so the same declaration works here:
 Version :: struct { major: u32, minor: u32, revision: u32 }
 PluginEntry :: struct {
     version: Version,
-    init:    fn(u32) -> u32,
-    scale:   fn(i32) -> i32,
-    deinit:  fn(),
+    init:    extern fn(u32) -> u32,
+    scale:   extern fn(i32) -> i32,
+    deinit:  extern fn(),
 }
 
 #export("gab_entry")
@@ -208,7 +208,7 @@ calls: i32 = 0;            // a plain exported global; the host reads it, the li
 
 `#export("name")` exports the global under `name`; a bare `#export` uses its own name. An
 immutable constant (`#export("limit") LIMIT :: 42;`) is exported too, in read-only memory. The
-`fn(...)` fields of `PluginEntry` are bare code addresses, so a C declaration with function
+`extern fn(...)` fields of `PluginEntry` are bare code addresses, so a C declaration with function
 pointers of the same signatures has the same layout; check that with `#assert(core::sizeof(...))`
 and `core::offset_of` (see "Checking a layout").
 
@@ -231,7 +231,7 @@ gives the global a global symbol under its exported name, visible to a debugger 
 
 A COM interface is a pointer to an object whose first word points to a table of function pointers,
 and every method takes the interface pointer first — which is exactly a struct with a `*Vtbl` field
-and a vtable struct of `fn(...)` fields, called as `p.vtbl.method(p, ...)`. The standard library
+and a vtable struct of `extern fn(...)` fields, called as `p.vtbl.method(p, ...)`. The standard library
 supplies the shared pieces — [`std.com`](07_stdlib.md#stdcom--com-and-windows-runtime-types) for
 `Guid`, `HRESULT`, `IUnknown` and `IInspectable`, and
 [`std.winrt`](07_stdlib.md#stdwinrt--calling-com-and-the-windows-runtime-windows-only) for starting
