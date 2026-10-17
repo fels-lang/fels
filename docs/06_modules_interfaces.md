@@ -65,6 +65,27 @@ pub User :: struct {
 }
 ```
 
+A module offers another module's type under its own name with a `pub` alias of it, of the
+same name or another (a re-export). Importers name it, build it and call its associated
+functions through the module, and an error set re-exported this way is one after `!`:
+
+```fels
+// shapes/circle.fels
+pub Circle :: struct { r: f64
+    pub unit :: fn() -> Circle { return .{ 1.0 }; }
+}
+
+// shapes.fels
+#import shapes.circle as circle;
+pub Circle :: circle::Circle;        // the same type, offered by `shapes`
+
+// main.fels
+#import shapes;
+c: shapes::Circle = shapes::Circle::unit();
+```
+
+`std.net` does this for the types of its submodules (`net::TcpStream`, `net::NetError`).
+
 ## Interfaces
 
 Interfaces in Fels define a set of methods that a type must implement. They enable

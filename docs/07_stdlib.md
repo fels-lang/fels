@@ -544,7 +544,6 @@ sa.format(&sb);                                      // "127.0.0.1:8080"
 ```fels
 #import std.net as net;
 #import std.net.addr as addr;
-#import std.net.tcp as tcp;          // for the TcpStream / TcpListener types
 
 net::init() catch e { return; };
 
@@ -573,9 +572,8 @@ ignored := srv.send_to("pong", d.from) catch e { return; };  // reply to sender
 - **`TcpListener`**: `accept() -> Accepted{stream, peer}`, `accept_stream()`, `local_addr`, `close`.
 - **`UdpSocket`**: `send_to`/`recv_from`, `connect`+`send`/`recv`, `set_broadcast`,
   `set_read_timeout`, `local_addr`, `close`.
-- Types live in their submodule (`tcp::TcpStream`, `udp::UdpSocket`, …) because the
-  language doesn't re-export a type across modules; the facade hands those types
-  back, so you only need the submodule import for a type annotation.
+- The facade re-exports the types of its submodules: `net::TcpStream`, `net::TcpListener`,
+  `net::Accepted`, `net::UdpSocket`, `net::Datagram`, `net::SocketAddr` and `net::NetError`.
 - The raw Winsock bindings keep a `sys_` prefix; the `#extern` 2nd arg is the real
   link symbol, so the fels name is free to differ from the C name.
 

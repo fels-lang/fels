@@ -686,9 +686,10 @@ An alias is accepted wherever its type can be written: annotations, parameters,
 returns, fields, pointers, slices, casts, generic type arguments and `core::sizeof`. A
 `pub` alias can be imported without importing the type it names.
 
-An alias cannot stand yet where the type's *name* is used as a path rather than written
-as a type — `Point::new(…)`, `Color.red` through an enum alias, `Point as Shape { … }`,
-`! ErrorAlias`. Use the original name there.
+An alias stands for its type in a path as well: `P::new(…)`, `Hue.red` through an enum
+alias, `! ErrorAlias`, and from another module (`lib::P::new(…)`), which is how a module
+re-exports a type. An interface is implemented on the type itself (`Point as Shape { … }`),
+not on an alias of it.
 
 The standard library uses aliases for C ABI types — see [`std.c`](11_c_interop.md):
 
