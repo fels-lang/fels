@@ -2,35 +2,43 @@
 
 ## Attributes
 
-Attributes modify the behavior or layout of declarations. They are prefixed with `#`.
+Attributes change the behavior or the layout of a declaration, and each one starts with `#`.
 
 ### Layout Attributes
 
-- `#packed`: applied to a `struct`. Packs the fields tightly without padding (alignment 1). Sub-byte fields (`u1`–`u7`, `i1`–`i7`) take their bits, and so does every integer field after them; any other field starts at a whole byte (see [Packed structs](02_types.md#packed-structs)).
-- `#align(N)`: C's `alignas(N)` for a `struct`. `N` is an integer literal and a power of
-  two (1 to 4096). The struct is aligned to at least `N` and its size is rounded up to a
-  multiple of `N`, wherever it lives: as a local or global, as a field of another struct
-  (placed at an `N`-aligned offset), or as an array element. Example: `#align(64)`.
-  On a `#packed` struct only the size is rounded up; the fields stay back to back.
-  `core::sizeof` agrees at compile time and at run time.
+- `#packed`: for a `struct`. It packs the fields tightly with no padding, so the alignment is 1.
+  Sub-byte fields (`u1`–`u7`, `i1`–`i7`) take only their bits, and so does every integer field
+  after them. Any other field starts at a whole byte (see
+  [Packed structs](02_types.md#packed-structs)).
+- `#align(N)`: C's `alignas(N)` for a `struct`. `N` is an integer literal and a power of two,
+  from 1 to 4096. The struct is aligned to at least `N`, and its size is rounded up to a
+  multiple of `N`. That holds wherever the struct lives: as a local or a global, as a field of
+  another struct (placed at an `N`-aligned offset), or as an array element. Example:
+  `#align(64)`. On a `#packed` struct only the size is rounded up, and the fields stay back to
+  back. `core::sizeof` agrees with this at compile time and at run time.
 
 ### Function Attributes
 
-- `#inline`: hints the compiler to inline the function.
-- `#noinline`: prevents the compiler from inlining the function.
-- `#noreturn`: specifies that the function never returns (e.g., exit or panic).
-- `#naked`: produces a function without standard prologue or epilogue. Typically used for raw inline assembly entry points.
-- `#entry`: designates the function as the program entry point (an alternative to naming it `main`).
-- `#cold`: marks a rarely-called function so the optimizer moves it off the hot path (a real LLVM `cold` attribute).
-- `#section("name")`: places the function in a specific object-file section.
-- `#keep`: never strip the function, even if it's unused (forces non-internal linkage).
+- `#inline`: hints to the compiler that it should inline the function.
+- `#noinline`: keeps the compiler from inlining the function.
+- `#noreturn`: says that the function never returns, as with exit or panic.
+- `#naked`: produces a function without the standard prologue or epilogue. You will mostly use
+  it for raw inline assembly entry points.
+- `#entry`: makes the function the program's entry point, as an alternative to naming it `main`.
+- `#cold`: marks a function that is rarely called, so the optimizer moves it off the hot path.
+  It becomes a real LLVM `cold` attribute.
+- `#section("name")`: places the function in a specific section of the object file.
+- `#keep`: never strips the function, even when nothing uses it. It forces non-internal linkage.
 
 ### FFI & Linkage
 
-- `#export("name")`: exports the symbol with external linkage. If no string is provided, exports it using its Fels name. It applies to a function and to a top-level global (`#export("gab_entry") ENTRY: PluginEntry = .{ ... };`) — see [11_c_interop](11_c_interop.md#exporting-data).
-- `#extern("library_name", "symbol_name")`: declares an external function binding (FFI).
-  The second argument is the **real link symbol** — the Fels declaration name is free to
-  differ from the C symbol — a binding can take an idiomatic Fels name:
+- `#export("name")`: exports the symbol with external linkage. Without a string, it exports the
+  symbol under its Fels name. It works on a function and on a top-level global
+  (`#export("gab_entry") ENTRY: PluginEntry = .{ ... };`), see
+  [11_c_interop](11_c_interop.md#exporting-data).
+- `#extern("library_name", "symbol_name")`: declares a binding to an external function (FFI).
+  The second argument is the **real link symbol**. The Fels declaration name does not have to
+  match the C symbol, so a binding can take an idiomatic Fels name:
   ```fels
   #extern("kernel32", "WriteFile")
   WriteFile :: fn(...) -> bool;          // Fels name == C symbol
@@ -38,26 +46,30 @@ Attributes modify the behavior or layout of declarations. They are prefixed with
   #extern("ws2_32", "connect")
   sys_connect :: fn(...) -> i32;         // Fels name `sys_connect`, links `connect`
   ```
-  Two externs may bind the same C symbol under different Fels names (the one external
-  declaration is deduplicated at link time). A plain Fels function may even share a name
-  with a renamed extern's C symbol (e.g. a `connect` wrapper over `sys_connect`); the
-  wrapper keeps internal linkage under a module-private symbol so the two don't clash.
-- `#foreign`: Alias for `#extern`.
-- `#system_library("libname")`: A top-level directive that tells the linker to link against the specified system library.
-- `#link_name("name")`: sets the function's external symbol name **without** exporting it (distinct from `#export`).
-- `#weak`: emits a weak symbol that another definition can override at link time.
+  Two externs may bind the same C symbol under different Fels names, and the one external
+  declaration is deduplicated at link time. A plain Fels function may even share its name with
+  a renamed extern's C symbol, for example a `connect` wrapper over `sys_connect`. The wrapper
+  keeps internal linkage under a module-private symbol, so the two don't clash.
+- `#foreign`: an alias for `#extern`.
+- `#system_library("libname")`: a top-level directive that tells the linker to link against the
+  named system library.
+- `#link_name("name")`: sets the function's external symbol name **without** exporting it, which
+  is what sets it apart from `#export`.
+- `#weak`: emits a weak symbol, which another definition can override at link time.
 
 ### Diagnostics
 
-- `#deprecated("message")`: Triggers a deprecation warning at the call site.
-- `#must_use`: the caller may not discard the function's return value — `f();` as a statement is an error; use `x := f()` or `_ := f()`.
-- `#maybe_unused`: marks a declaration as possibly unused (accepted; suppresses any future unused-declaration warning).
+- `#deprecated("message")`: triggers a deprecation warning at the call site.
+- `#must_use`: the caller may not discard the function's return value. `f();` as a statement is
+  an error, so write `x := f()` or `_ := f()`.
+- `#maybe_unused`: marks a declaration as possibly unused. The compiler accepts it, and it
+  suppresses any future unused-declaration warning.
 
 ## Builtins — the `core::` namespace
 
-Builtins live in the reserved **`core::`** namespace — compiler-provided operations,
-always in scope (no import). The `core::` prefix makes a builtin call visually
-distinct from an ordinary function call:
+Builtins live in the reserved **`core::`** namespace. They are operations the compiler
+provides, and they are always in scope, with no import. The `core::` prefix makes a builtin
+call look different from an ordinary function call:
 
 ```fels
 n   := core::sizeof(Point);          // a builtin — you can see the compiler is involved
@@ -66,49 +78,50 @@ buf := unsafe core::slice_raw(u8, p, len);
 if bad { core::panic("invalid state"); }   // no-return
 ```
 
-`core` is reserved: a user module/import may not be named `core` (it's a compile
-error). Some builtins require an `unsafe` block (last column).
+`core` is reserved, so a module or import of your own may not be named `core` (that is a
+compile error). Some builtins need an `unsafe` block, as the last column of the table shows.
 
-> **Bare names are rejected.** Calling a builtin by its bare name (`sizeof(T)`,
-> `ptr_from_int(...)`, …) is a hard error pointing you at the `core::` form. A few
-> names were tidied in the move: `typeid_of` → `core::type_id`, `truncate_to` →
-> `core::narrow`, `slice_from_raw_parts` → `core::slice_raw`. The old names still work
-> behind `core::` (`core::typeid_of`), but these docs use the new ones. (`@panic` keeps its
-> sigil and also works as `core::panic`.)
+> **Bare names are rejected.** If you call a builtin by its bare name (`sizeof(T)`,
+> `ptr_from_int(...)`, …), you get a hard error that points you to the `core::` form. A few
+> names were tidied up in the move: `typeid_of` → `core::type_id`, `truncate_to` →
+> `core::narrow`, `slice_from_raw_parts` → `core::slice_raw`. The old names still work behind
+> `core::` (`core::typeid_of`), but these docs use the new ones. (`@panic` keeps its sigil and
+> also works as `core::panic`.)
 
 | Builtin | Signature | Unsafe? | Description |
 |---------|-----------|---------|-------------|
 | `core::sizeof` | `core::sizeof($T: type) -> usize` | No | Size of `T` in bytes, padding included. |
 | `core::align_of` | `core::align_of($T: type) -> usize` | No | Alignment `T` requires, in bytes. Folds at compile time. |
-| `core::offset_of` | `core::offset_of($T: type, "field") -> usize` | No | Byte offset of `field` in struct `T`; the field is a string literal. Folds at compile time. |
-| `core::has_padding` | `core::has_padding($T: type) -> bool` | No | Whether a `T` has bytes no value sets: padding between or after struct fields (nested ones too), an optional's flag byte, the bytes a smaller enum or error payload leaves. Folds at compile time. |
+| `core::offset_of` | `core::offset_of($T: type, "field") -> usize` | No | Byte offset of `field` in struct `T`, with the field as a string literal. Folds at compile time. |
+| `core::has_padding` | `core::has_padding($T: type) -> bool` | No | Whether a `T` has bytes that no value sets: padding between or after struct fields (nested ones too), an optional's flag byte, the bytes a smaller enum or error payload leaves. Folds at compile time. |
 | `core::narrow` | `core::narrow($T: type, val) -> T` | No | Truncate a wider integer into a narrower `T`. |
 | `core::type_name` | `core::type_name($T: type) -> []const u8` | No | The type's name as a string. |
 | `core::type_info` | `core::type_info($T: type) -> TypeInfo` | No | Compile-time reflection data (fields, variants, …). |
 | `core::type_id` | `core::type_id($T: type) -> usize` | No | Stable runtime type id. |
 | `core::any` | `core::any(x) -> Any` | No | Wrap a value into a type-erased `Any`. |
-| `core::panic` | `core::panic(msg: []const u8) -> never` | No | Abort with a message; never returns. |
+| `core::panic` | `core::panic(msg: []const u8) -> never` | No | Abort with a message. Never returns. |
 | `core::atomic_load` | `core::atomic_load(ptr, ord) -> T` | No | Atomic load with ordering `ord`. |
 | `core::atomic_store`| `core::atomic_store(ptr, val, ord)` | No | Atomic store. |
-| `core::atomic_add`/`_sub`/`_and`/`_or`/`_xor` | `core::atomic_add(ptr, v, ord) -> T` | No | Read-modify-write; returns the **previous** value. |
-| `core::atomic_max`/`_min` | `core::atomic_max(ptr, v, ord) -> T` | No | Atomic max/min (signed vs unsigned chosen from `T`). |
-| `core::atomic_exchange` | `core::atomic_exchange(ptr, v, ord) -> T` | No | Swap; returns the previous value. |
-| `core::atomic_cas` | `core::atomic_cas(ptr, expected, desired, ord) -> T` | No | Compare-and-swap; returns the value seen (`== expected` on success). |
+| `core::atomic_add`/`_sub`/`_and`/`_or`/`_xor` | `core::atomic_add(ptr, v, ord) -> T` | No | Read-modify-write that returns the **previous** value. |
+| `core::atomic_max`/`_min` | `core::atomic_max(ptr, v, ord) -> T` | No | Atomic max/min (signed or unsigned, chosen from `T`). |
+| `core::atomic_exchange` | `core::atomic_exchange(ptr, v, ord) -> T` | No | Swap that returns the previous value. |
+| `core::atomic_cas` | `core::atomic_cas(ptr, expected, desired, ord) -> T` | No | Compare-and-swap that returns the value it saw (`== expected` on success). |
 | `core::atomic_fence` | `core::atomic_fence(ord)` | No | Memory fence. |
 | `core::ptr_from_int`| `core::ptr_from_int($T: type, addr: usize) -> T` | **Yes** | Integer address → pointer `T`. |
-| `core::fn_ptr`| `core::fn_ptr(f) -> *void` | **Yes** | Raw thin pointer of a top-level function, for a C callback / thread entry (fels's ordinary fn value is a fat closure a C ABI can't call). |
-| `core::slice_raw`| `core::slice_raw($T, ptr, len) -> []T` | **Yes** | Build a slice from a raw pointer + length. |
+| `core::fn_ptr`| `core::fn_ptr(f) -> *void` | **Yes** | Raw thin pointer to a top-level function, for a C callback or a thread entry. An ordinary Fels fn value is a fat closure, which a C ABI can't call. |
+| `core::slice_raw`| `core::slice_raw($T, ptr, len) -> []T` | **Yes** | Build a slice from a raw pointer and a length. |
 | `core::volatile_store`| `core::volatile_store(ptr: *T, val: T)` | **Yes** | Volatile memory write. |
 | `core::unaligned_read`| `core::unaligned_read($T: type, ptr) -> T` | **Yes** | Read `T` from a possibly-unaligned address. |
 | `core::asm` | `core::asm(...)` | **Yes** | Inline assembly: `core::asm(volatile, "inst", inputs: {}, outputs: {}, clobbers: {})` |
 
-The trailing `ord` is an integer ordering constant — `0` relaxed, `1` acquire, `2` release,
-`3` acq_rel, `4` seq_cst — and **must be compile-time known**. Prefer the
+The trailing `ord` is an integer ordering constant: `0` relaxed, `1` acquire, `2` release,
+`3` acq_rel and `4` seq_cst. It **must be known at compile time**. Prefer the
 [`std.atomics`](07_stdlib.md#stdatomics) wrappers, which default to seq_cst.
 
 ### Source-location & target constants
 
-Compile-time constants (no parens) that fold to a literal at the use site:
+These are compile-time constants, written without parentheses. Each one folds to a literal
+where you use it:
 
 | Constant | Type | Value |
 |---|---|---|
@@ -126,32 +139,34 @@ log :: fn(msg: []const u8) { print(core::file); print_i64(core::line as i64); pr
 
 ### Math
 
-`core::min(a,b)`, `core::max(a,b)`, `core::abs(x)`, `core::clamp(x, lo, hi)` (int or
-float), and the float functions `core::sqrt`, `core::floor`, `core::ceil`,
-`core::round`, `core::trunc`, `core::sin`, `core::cos`, `core::pow(x, y)`,
-`core::fma(a, b, c)`. Each returns its first argument's type and maps to a fast CPU
-instruction. All except `fma` also **fold at compile time** (usable in `#run`).
+For ints and floats there are `core::min(a,b)`, `core::max(a,b)`, `core::abs(x)` and
+`core::clamp(x, lo, hi)`. The float functions are `core::sqrt`, `core::floor`, `core::ceil`,
+`core::round`, `core::trunc`, `core::sin`, `core::cos`, `core::pow(x, y)` and
+`core::fma(a, b, c)`. Each one returns the type of its first argument and maps to a fast CPU
+instruction. All of them except `fma` also **fold at compile time**, so you can use them in
+`#run`.
 
 ### Bit operations
 
-On any integer: `core::count_ones(x)`, `core::count_zeros(x)`,
+These work on any integer: `core::count_ones(x)`, `core::count_zeros(x)`,
 `core::leading_zeros(x)`, `core::trailing_zeros(x)`, `core::swap_bytes(x)`,
-`core::reverse_bits(x)`, `core::rotate_left(x, n)`, `core::rotate_right(x, n)`.
-Each returns `x`'s type. `core::count_ones` folds at compile time; the
-width-dependent ones currently fall back to runtime inside `#run`.
+`core::reverse_bits(x)`, `core::rotate_left(x, n)` and `core::rotate_right(x, n)`. Each one
+returns the type of `x`. `core::count_ones` folds at compile time, but the ones that depend on
+the width currently fall back to runtime inside `#run`.
 
 ### Memory & control
 
 `core::memcpy(dst, src, n)`, `core::memset(dst, byte, n)`, `core::trap()`,
-`core::unreachable()`, `core::prefetch(ptr)`, `core::cycle_count() -> u64`. These are
-the low-level primitives the standard library wraps.
+`core::unreachable()`, `core::prefetch(ptr)` and `core::cycle_count() -> u64` are the low-level
+primitives that the standard library wraps.
 
 ## Compile-Time Directives
 
 ### Compile-time If (`#if`)
 
-Evaluates a condition at compile time and includes only the active branch. In a function
-body it chooses code, and the condition is any constant expression:
+`#if` evaluates a condition at compile time and keeps only the branch that is active. In a
+function body it chooses between pieces of code, and the condition can be any constant
+expression:
 
 ```fels
 width :: fn() -> i32 {
@@ -165,8 +180,8 @@ width :: fn() -> i32 {
 }
 ```
 
-At the top level it chooses declarations: an `#extern`, an `#import`, a constant or a
-struct layout that differs between platforms.
+At the top level it chooses between declarations: an `#extern`, an `#import`, a constant or a
+struct layout that differs from one platform to the next.
 
 ```fels
 #if TARGET.os == .windows {
@@ -178,16 +193,17 @@ struct layout that differs between platforms.
 }
 ```
 
-A top-level `#if` is decided while the file is read, before any constant has a value, so
-its condition asks about the build only: `TARGET.os` or `TARGET.arch` compared with a
-variant (`==`, `!=`), `TARGET.debug`, `true` and `false`, joined with `!`, `&&` and `||`.
-Anything else in it is a compile error, as is a platform `TARGET` does not know. The
-declarations of the branches not taken are parsed but are not part of the program.
+A top-level `#if` is decided while the file is read, before any constant has a value. That is
+why its condition can only ask about the build. It may use `TARGET.os` or `TARGET.arch`
+compared with a variant (`==`, `!=`), `TARGET.debug`, `true` and `false`, joined with `!`, `&&`
+and `||`. Anything else in the condition is a compile error, and so is a platform that `TARGET`
+does not know. The declarations in the branches not taken are parsed, but they are not part of
+the program.
 
 ### Compile-time Run (`#run`)
 
-Executes Fels code during compilation on the comptime VM and folds the result to a
-constant. `#run expr` is an expression and may initialise a top-level constant; the
+`#run` executes Fels code on the comptime VM while the program compiles, and folds the result
+to a constant. `#run expr` is an expression, and it may initialise a top-level constant. The
 block form `#run { … }` is a statement and, like `#if`, only appears inside a function.
 
 ```fels
@@ -219,9 +235,11 @@ main :: fn() -> i32 {
     return SIZE + (CRC[1] & 0) as i32;
 }
 ```
-What a `#run` can return, what it can read (static data, read-only) and what is refused is in
-[09_comptime](09_comptime.md#data-at-compile-time).
-*Note: the comptime VM supports many standard language features but may be limited when interfacing with external or deeply complex types.*
+
+What a `#run` can return, what it can read (static data, read-only) and what gets refused is
+explained in [09_comptime](09_comptime.md#data-at-compile-time).
+*Note: the comptime VM supports many of the standard language features, but it may be limited
+when it works with external or deeply complex types.*
 
 ### Compile-time assertions (`#assert`)
 
@@ -230,10 +248,10 @@ What a `#run` can return, what it can read (static data, read-only) and what is 
 #assert(condition, "message");
 ```
 
-A standalone top-level directive (like `#system_library`) that fails the build when
-`condition` is `false`. The condition is evaluated on the comptime VM, so it can use
-constants, `core::sizeof`, `core::align_of`, `core::offset_of` and calls the VM can run.
-It is the way to pin down a layout that something outside Fels depends on:
+`#assert` is a standalone top-level directive, like `#system_library`, and it fails the build
+when `condition` is `false`. The condition is evaluated on the comptime VM, so it can use
+constants, `core::sizeof`, `core::align_of`, `core::offset_of` and calls the VM can run. This is
+how you pin down a layout that something outside Fels depends on:
 
 ```fels
 Header :: struct { kind: u8, len: u32, id: u64 }
@@ -243,26 +261,28 @@ Header :: struct { kind: u8, len: u32, id: u64 }
 #assert(core::align_of(Header) == 8);
 ```
 
-A failing assertion reports the message and the condition as written:
+When an assertion fails, it reports the message and the condition as you wrote it:
 
 ```
 header.fels:3:9: error: static assertion failed: Header is sent as-is over the wire (`core::sizeof(Header) == 16`)
 ```
 
-- The condition must be a `bool` (a type error otherwise) and must fold at compile time;
-  one that needs the host, such as a call into a DLL, is an error, not a pass.
-- `#assert` is evaluated when the program is lowered, i.e. by `fels build`, `object` and
+- The condition must be a `bool`, or you get a type error, and it must fold at compile time. A
+  condition that needs the host, such as a call into a DLL, is an error, not a pass.
+- `#assert` is evaluated when the program is lowered, that is by `fels build`, `object` and
   `ir`. `fels check` only type-checks, so it does not run assertions.
-- Top level only. Inside a function, use `#if` with `core::trap()` or an ordinary check.
+- It works at the top level only. Inside a function, use `#if` with `core::trap()` or an
+  ordinary check.
 
 ### The `TARGET` constant
 
-`TARGET` describes the platform and mode the program is built for. It is a constant,
-`TARGET : TargetInfo`, whose fields are enums:
+`TARGET` describes the platform and the mode that the program is built for. It is a constant,
+`TARGET : TargetInfo`, and its fields are enums:
 
-- `TARGET.os`: a `TargetOs`, `.windows`, `.linux`, `.macos` or `.unknown`.
-- `TARGET.arch`: a `TargetArch`, `.x86_64`, `.aarch64` or `.unknown`.
-- `TARGET.debug`: `true` in a debug build (`-O0`, the `debug` mode), `false` when optimized.
+- `TARGET.os`: a `TargetOs`, which is `.windows`, `.linux`, `.macos` or `.unknown`.
+- `TARGET.arch`: a `TargetArch`, which is `.x86_64`, `.aarch64` or `.unknown`.
+- `TARGET.debug`: `true` in a debug build (`-O0`, the `debug` mode), and `false` when the build
+  is optimized.
 
 ```fels
 describe :: fn() -> i32 {
@@ -274,8 +294,8 @@ describe :: fn() -> i32 {
 }
 ```
 
-It is the build's, not the compiler's: a `--target linux` build made on Windows sees
-`.linux`. A misspelt platform is a compile error (`TARGET.os == .windos`: "enum `TargetOs`
-has no variant `.windos`"). In `#if` the comparison folds and only the branch that holds is
-compiled; in a plain `if` it is an ordinary comparison of constants. A build script and
+`TARGET` belongs to the build, not to the compiler, so a `--target linux` build made on Windows
+sees `.linux`. A misspelt platform is a compile error (`TARGET.os == .windos`: "enum `TargetOs`
+has no variant `.windos`"). In `#if` the comparison folds, and only the branch that holds is
+compiled. In a plain `if` it is an ordinary comparison of constants. A build script and
 `fels check` see the machine they run on.
