@@ -56,11 +56,13 @@ src/main.fels
       | double(2) is computed
   ✗ out_of_bounds: panic: index out of bounds at src\main.fels:31:10
   ✓ last
-3 passed, 2 failed
+
+Test Summary: 3 passed, 2 failed · 0.42s
 ```
 
 A failed test shows every check that failed, and below them, after `|`, what the test printed.
-A passing test prints nothing. `fels test` exits with 1 when a test failed or a file does not
+A passing test prints nothing. On a terminal, a live tree shows which file is being built or
+run while you wait, and the marks and counts are in color. `fels test` exits with 1 when a test failed or a file does not
 compile, so you can use it in CI.
 
 ### The test program
@@ -89,9 +91,10 @@ Nothing is built or linked, and a test that the VM cannot run is skipped:
 
 ```
 src/app.fels
-  - asks_the_os: skipped (comptime FFI to `GetCurrentProcessId` (in `kernel32`) is not allowed here)
+  · asks_the_os: skipped (comptime FFI to `GetCurrentProcessId` (in `kernel32`) is not allowed here)
   ✓ adds
-1 passed, 0 failed, 1 skipped
+
+Test Summary: 1 passed, 1 skipped · 31ms
 ```
 
 ## 3. The comptime lane in `fels build`
