@@ -22,26 +22,26 @@ pub List :: struct($T: type) {
 
 // A new empty list with a small initial capacity.
 pub make :: fn($T: type, a: *Arena) -> List(T) {
-    r: List(T) = .{ a, alloc(T, a, 4usize), 0usize };
+    r: List(T) = .{ a, alloc(T, a, 4), 0 };
     return r;
 }
 
 // A new empty list with at least `cap` capacity reserved up front.
 pub with_cap :: fn($T: type, a: *Arena, cap: usize) -> List(T) {
     want: usize = cap;
-    if want < 1usize { want = 1usize; }
-    r: List(T) = .{ a, alloc(T, a, want), 0usize };
+    if want < 1 { want = 1; }
+    r: List(T) = .{ a, alloc(T, a, want), 0 };
     return r;
 }
 
 // Ensure room for one more element, growing ×2 if the backing store is full.
 grow_one :: fn($T: type, self: *List(T)) {
     if self.len < self.data.len { return; }
-    new_cap: usize = self.data.len * 2usize;
-    if new_cap < 4usize { new_cap = 4usize; }
+    new_cap: usize = self.data.len * 2;
+    if new_cap < 4 { new_cap = 4; }
     nbuf: []T = alloc(T, self.arena, new_cap);
-    i: usize = 0usize;
-    while i < self.len { nbuf[i] = self.data[i]; i = i + 1usize; }
+    i: usize = 0;
+    while i < self.len { nbuf[i] = self.data[i]; i = i + 1; }
     self.data = nbuf;
 }
 
@@ -49,7 +49,7 @@ grow_one :: fn($T: type, self: *List(T)) {
 pub push :: fn($T: type, self: *List(T), item: T) {
     grow_one(T, self);
     self.data[self.len] = item;
-    self.len = self.len + 1usize;
+    self.len = self.len + 1;
 }
 
 pub get :: fn($T: type, self: *List(T), i: usize) -> T { return self.data[i]; }
@@ -64,14 +64,14 @@ pub last :: fn($T: type, self: *List(T)) -> T { return self.data[self.len - 1usi
 
 // Remove and return the last element (assumes non-empty).
 pub pop :: fn($T: type, self: *List(T)) -> T {
-    self.len = self.len - 1usize;
+    self.len = self.len - 1;
     return self.data[self.len];
 }
 
 // O(1) removal: overwrite index `i` with the last element, then shrink. Does NOT
 // preserve order — perfect for "remove this dead entity" in a game loop.
 pub remove_swap :: fn($T: type, self: *List(T), i: usize) {
-    self.len = self.len - 1usize;
+    self.len = self.len - 1;
     if i < self.len { self.data[i] = self.data[self.len]; }
 }
 
