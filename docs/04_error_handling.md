@@ -231,6 +231,37 @@ arm, as a match on an enum does. An error of an inferred set can be any error, s
 takes any variant name and always needs an `else`. Two errors of a set without payloads compare
 with `==`. An error cannot be cast to an integer.
 
+### Reading a payload
+
+A variant declared with a payload (`overflow: i64`) carries a value of that type, given with
+`fail .overflow { n }`. A `match` arm binds it, and so does `if err == .variant |name|`:
+
+```fels
+describe :: fn(e: ParseError) -> i64 {
+    return match e {
+        .invalid_input => 0,
+        .overflow |n| => n,
+        .buffer_full => -1,
+    };
+}
+
+v := parse(text) catch err {
+    if err == .overflow |n| { println("too big"); }
+    yield 0;
+};
+```
+
+The binding has the variant's payload type; binding a variant that carries none is a compile
+error. The payload goes where the error goes: `?` passes it on within one set, and it stays with
+an error kept in a local, a field or a global. Three limits:
+
+- An inferred set (`-> T !`) keeps an error's variant but not its payload, so a payload cannot be
+  bound through one: give the function the named set (`-> T ! ParseError`) to pass payloads on.
+- An inline set (`-> T ! { .a, .b }`) carries no payloads; a variant with one belongs to a
+  declared set.
+- Two errors of a set with payloads do not compare with `==` (the same variant, or the same
+  payload too?): compare each with a variant, or `match` it.
+
 ## Force Unwrap with `!!`
 
 The `!!` operator unwraps a fallible (or optional) value, panicking at runtime
