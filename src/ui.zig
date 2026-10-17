@@ -116,14 +116,16 @@ pub const Stages = struct {
     const stage_count = @typeInfo(driver.Phase).@"enum".fields.len;
 };
 
-/// `check 120ms · lower 30ms · codegen 400ms · link 200ms` for the end of a build line: the
-/// stages that took a millisecond or more.
+/// `check 120ms · lower 30ms · codegen 400ms · emit 90ms · link 200ms` for the end of a build
+/// line: the stages of the live tree that took a millisecond or more.
 pub fn stageBreakdown(buf: []u8, t: driver.Timings) []const u8 {
     var w: std.Io.Writer = .fixed(buf);
     const parts = [_]struct { name: []const u8, ns: u64 }{
         .{ .name = "check", .ns = t.frontend_ns },
-        .{ .name = "lower", .ns = t.lower_ns + t.passes_ns },
-        .{ .name = "codegen", .ns = t.codegen_ns + t.emit_ns },
+        .{ .name = "lower", .ns = t.lower_ns },
+        .{ .name = "optimise", .ns = t.passes_ns },
+        .{ .name = "codegen", .ns = t.codegen_ns },
+        .{ .name = "emit", .ns = t.emit_ns },
         .{ .name = "link", .ns = t.link_ns },
     };
     var first = true;

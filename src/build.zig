@@ -1433,6 +1433,7 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
     }
     var inputs: std.ArrayList([]const u8) = .empty;
     var stages = ui.Stages.begin(ui.root, art.name);
+    var timings: driver.Timings = .{};
 
     if (!fresh) driver.compileFileWithLlvm(gpa, io, .{
         .inputs = &inputs,
@@ -1458,6 +1459,7 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
         .sysroot = if (art.sysroot.len != 0) joinPath(a, base_dir, art.sysroot) catch return error.OutOfMemory else "",
         .progress = ui.Stages.step,
         .progress_ctx = &stages,
+        .timings = &timings,
     }) catch |err| {
         _ = stages.end();
         plan.failed += 1;
@@ -1471,7 +1473,8 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
         writeStamp(gpa, io, stamp, key, inputs.items);
         plan.built += 1;
         var d: [48]u8 = undefined;
-        if (!opts.quiet) std.debug.print("{s} {s} {s}\u{2192}{s} {s}  {s}\n", .{ ui.mark(.ok), art.name, ui.pal.dim(), ui.pal.reset(), out_path, ui.dimDuration(&d, took) });
+        var b: [160]u8 = undefined;
+        if (!opts.quiet) std.debug.print("{s} {s} {s}\u{2192}{s} {s}  {s}  {s}({s}){s}\n", .{ ui.mark(.ok), art.name, ui.pal.dim(), ui.pal.reset(), out_path, ui.dimDuration(&d, took), ui.pal.dim(), ui.stageBreakdown(&b, timings), ui.pal.reset() });
     }
 
     // Copy runtime dependencies next to the output — both the explicit
