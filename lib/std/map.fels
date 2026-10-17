@@ -54,6 +54,7 @@ byte_key_problem :: fn(ti: TypeInfo) -> []const u8 {
     match ti {
         .float => { return "a float key is compared by its bytes, where `-0.0` and `0.0` differ and a NaN equals nothing"; },
         .slice => { return "a slice key is compared by its address and length, not its contents: key strings with `StrMap`"; },
+        .union_ => { return "a union key is compared by all its bytes, which hold the field written last and what that field does not cover"; },
         .array |a| => { return byte_key_problem(*a.elem); },
         .struct_ |st| => {
             for f in st.fields {

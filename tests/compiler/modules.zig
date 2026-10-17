@@ -431,6 +431,7 @@ test "modules: std.map refuses a key AutoHashMap cannot compare by its bytes" {
         .{ .key = "[]const u8", .ok = false },
         .{ .key = "Gap", .ok = false },
         .{ .key = "?i32", .ok = false },
+        .{ .key = "Overlay", .ok = false },
     };
     for (cases, 0..) |case, i| {
         const src = try std.fmt.allocPrint(a,
@@ -438,6 +439,7 @@ test "modules: std.map refuses a key AutoHashMap cannot compare by its bytes" {
             \\#import std.heap as heap;
             \\Gap :: struct {{ a: u8, b: u32 }}
             \\Tight :: struct {{ a: u32, b: u32 }}
+            \\Overlay :: union {{ a: u8, b: u32 }}
             \\main :: fn() -> i32 {{ h := heap::make(); m := map::auto({s}, i32, &h); return 0; }}
             \\
         , .{case.key});

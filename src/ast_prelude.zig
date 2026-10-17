@@ -105,7 +105,7 @@ pub const source =
 /// whenever a module declares a `#compiler` hook, so the hook can call the
 /// `core::compiler_decls()` introspection builtin and `for`-iterate the program's
 /// top-level declarations WITH structure. `Decl.kind` is one of: "fn", "struct",
-/// "enum", "errors", "interface", "distinct", "opaque", "const".
+/// "union", "enum", "errors", "interface", "distinct", "opaque", "const".
 ///
 /// `Decl.fields` is overloaded by kind: a `struct`'s fields, an `enum`'s variants
 /// (`type_name` = the payload type, or "" if the variant has none), or a `fn`'s
@@ -182,6 +182,7 @@ pub const reflection_source =
     \\    array:    TiArray,
     \\    optional: *TypeInfo,
     \\    struct_:  TiStruct,
+    \\    union_:   TiStruct,
     \\    enum_:    TiEnum,
     \\    other:    []const u8,
     \\}
