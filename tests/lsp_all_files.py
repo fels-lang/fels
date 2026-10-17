@@ -103,7 +103,7 @@ ERROR_CASES = {
     "arg_count.fels": ("add :: fn(a: i32, b: i32) -> i32 { return a + b; }\nmain :: fn() -> i32 {\n    return add(1);\n}\n", 3),
     "unknown_type.fels": ("main :: fn() -> i32 {\n    p: Poin = 0;\n    return 0;\n}\n", 2),
     "arg_type.fels": ("take :: fn(a: i32) {}\nmain :: fn() {\n    take(true);\n}\n", 3),
-    "bad_fail.fels": ("NetError :: errors { http: u16, }\nbad :: fn() -> u32 ! NetError {\n    fail .http { \"nope\" };\n}\n", 3),
+    "bad_fail.fels": ("NetError :: errors { http: u16, }\nbad :: fn() -> u32 ! NetError {\n    fail .http(\"nope\");\n}\n", 3),
     "syntax.fels": ("main :: fn() -> i32 {\n    return 1\n}\n", 3),
     "bad_import.fels": ("#import nothing_here.{ x };\nmain :: fn() {}\n", 1),
     "u128.fels": ("main :: fn() -> i32 {\n    v: u128 = 0u64;\n    return 0;\n}\n", 2),

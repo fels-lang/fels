@@ -435,6 +435,8 @@ pub const ReturnStmt = struct {
 pub const FailStmt = struct {
     variant: []const u8,
     payload: []const Expr,
+    /// The payload was written `{ … }`, the form before `( … )`.
+    brace_payload: bool = false,
     span: Span,
 };
 

@@ -895,6 +895,24 @@ test "diagnostics: an error is compared with a variant wherever it is" {
     try expectFirstError(a, "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> bool { return e == .c; }", &.{"`Oops` has no error variant `.c`"});
 }
 
+test "diagnostics: a payload in braces warns, and the build goes on" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `fail .v(p)` is built as an enum variant is; `fail .v { p }` is the form before it.
+    var fe = try fels.compile(a, "brace_payload.fels",
+        \\PE :: errors { plain, big: i64 }
+        \\f :: fn(k: i32) -> i32 ! PE { if k == 1 { fail .big(77i64); } fail .big { 5i64 }; }
+    );
+    defer fe.deinit(a);
+    var warnings: usize = 0;
+    for (fe.diagnostics()) |d| {
+        try std.testing.expect(d.kind != .err);
+        if (std.mem.indexOf(u8, d.message, "write the payload in parentheses, `fail .big(…)`") != null) warnings += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), warnings);
+}
+
 test "diagnostics: a type parameter left out must be inferable" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -993,7 +1011,7 @@ test "diagnostics: an error's payload is bound where its variant carries one" {
     const decls =
         \\PE :: errors { plain, big: i64 }
         \\E :: errors { first, second }
-        \\num :: fn() -> i32 ! PE { fail .big { 5i64 }; }
+        \\num :: fn() -> i32 ! PE { fail .big(5i64); }
         \\loose :: fn() -> i32 ! { return num()?; }
         \\
     ;
@@ -1026,7 +1044,7 @@ test "diagnostics: an inline error set carries no payload" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    try expectFirstError(a, "f :: fn(n: i32) -> i32 ! { .small, .big: i64 } { if n > 9 { fail .big { 5i64 }; } return n; }\nmain :: fn() -> i32 { return 0; }", &.{
+    try expectFirstError(a, "f :: fn(n: i32) -> i32 ! { .small, .big: i64 } { if n > 9 { fail .big(5i64); } return n; }\nmain :: fn() -> i32 { return 0; }", &.{
         "the error `.big` of an inline set cannot carry a payload",
     });
     try expectNoError(a, "", "f :: fn(n: i32) -> i32 ! { .small, .big } { if n > 9 { fail .big; } return n; }\nmain :: fn() -> i32 { return 0; }");
@@ -1482,7 +1500,7 @@ test "diagnostics: an integer literal is checked wherever it takes its type from
         .{ "main :: fn() -> i32 { p: P = .{ .x = 0, .y = 0 }; p.set(300); return 0; }", "`300` does not fit in `u8`" },
         .{ "main :: fn() -> i32 { p: P = .{ .x = 0, .y = 0 }; s: *Sink = &p; s.put(300); return 0; }", "`300` does not fit in `u8`" },
         .{ "main :: fn() -> i32 { s := Shape.circle(300); return 0; }", "`300` does not fit in `u8`" },
-        .{ "f :: fn() -> i32 ! E { fail .big { 300 }; }", "`300` does not fit in `u8`" },
+        .{ "f :: fn() -> i32 ! E { fail .big(300); }", "`300` does not fit in `u8`" },
         .{ "main :: fn() -> i32 { g := take; g(40000); return 0; }", "`40000` does not fit in `i16`" },
         .{ "main :: fn() -> i32 { x := id(u8, 300); return 0; }", "`300` does not fit in `u8`" },
     };

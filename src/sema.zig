@@ -6215,6 +6215,7 @@ const Checker = struct {
     }
 
     fn checkFail(self: *Checker, fail: ast.FailStmt) SemanticError!void {
+        if (fail.brace_payload) self.emitWarning(fail.span, "write the payload in parentheses, `fail .{s}(…)`, as an enum variant is built: the `{{ … }}` form will go", .{fail.variant});
         const err_ty = self.current_error_ty orelse {
             self.emitError(fail.span, "`fail` used in a function without a `!` error return type", .{});
             return error.SemanticFailed;
