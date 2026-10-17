@@ -235,9 +235,9 @@ test "static data: an initialiser that is not a constant is refused" {
         "G: extern fn(i32) -> i32 = gen;",
         "G: extern fn(i32) -> i32 = fn(x: i32) -> i32 { return x; };",
         "G: extern fn(i32) -> i32 = 0;",
-        // enums: a payload-less variant, spelt out
+        // enums: a variant, with its payload when it carries one
         "G: Shape = .circle;",
-        "G: Shape = Shape.circle(5);",
+        "G: Shape = Shape.none(5);",
         "G: Mode = .nope;",
         "G: Mode = 1;",
         "G: Mode = Mode.nope;",

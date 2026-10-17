@@ -83,6 +83,8 @@ pub const ConstInit = union(enum) {
     /// An enum value that carries no payload: its discriminant. A simple enum is that `i32`;
     /// for an enum that also has payload variants the payload bytes are left zero.
     variant_tag: u32,
+    /// An enum value or an error that carries a payload: its tag, and the payload's data.
+    variant: VariantInit,
     /// A value only the comptime VM can compute (a `#run` result) that has not been computed. It
     /// exists only in the module the VM itself reads — built before any evaluation can run — and in
     /// `fels check`, which runs nothing. The module that is compiled has the value instead, or
@@ -93,6 +95,12 @@ pub const ConstInit = union(enum) {
 pub const StructInit = struct {
     ty_name: []const u8,
     fields: []const ConstFieldInit,
+};
+
+pub const VariantInit = struct {
+    tag: u32,
+    payload: *const ConstInit,
+    payload_ty: IrType,
 };
 
 pub const ConstFieldInit = struct {
@@ -8851,8 +8859,8 @@ const StaticInit = struct {
         };
     }
 
-    /// An enum value is `.variant` or `Enum.variant`. A variant that carries a payload needs
-    /// a value built at that variant, which static storage does not do yet.
+    /// An enum value is `.variant` or `Enum.variant`, and `.variant(payload)` for a variant
+    /// that carries one.
     fn buildEnum(self: StaticInit, expr: ast.Expr, name: []const u8, variants: []const sema.VariantInfo) LowerError!ConstInit {
         const callee: ast.Expr = if (expr.kind == .call) expr.kind.call.callee.* else expr;
         const variant: []const u8 = switch (callee.kind) {
@@ -8864,28 +8872,62 @@ const StaticInit = struct {
             return self.fail(expr.span, "an enum in static storage must be written as a variant: `.name` or `{s}.name`", .{name});
         for (variants) |v| {
             if (!std.mem.eql(u8, v.name, variant)) continue;
-            if (v.payload != null or expr.kind == .call)
-                return self.fail(expr.span, "a variant with a payload cannot be initialised in static storage yet; `{s}.{s}` carries one", .{ name, variant });
+            if (v.payload) |pty| {
+                const arg = payloadArg(expr) orelse
+                    return self.fail(expr.span, "`{s}.{s}` carries a payload: write `{s}.{s}(value)`", .{ name, variant, name, variant });
+                const payload_ty = lowerSemaTypeWithEnv(self.allocator, pty, self.env.types, self.env.symbols) catch
+                    return self.fail(expr.span, "the payload type of `{s}.{s}` is not known here", .{ name, variant });
+                return self.variantInit(v.index, arg, payload_ty);
+            }
+            if (expr.kind == .call)
+                return self.fail(expr.span, "`{s}.{s}` carries no payload", .{ name, variant });
             return .{ .variant_tag = v.index };
         }
         return self.fail(expr.span, "no variant `{s}` in enum `{s}`", .{ variant, name });
     }
 
-    /// An error of a set whose errors carry payloads, written `.name`: its tag is the number of
-    /// the variant. A payload, as for an enum, is not built in static storage yet.
+    /// The payload of `.variant(payload)`; null when `expr` gives none.
+    fn payloadArg(expr: ast.Expr) ?ast.Expr {
+        if (expr.kind != .call) return null;
+        const args = expr.kind.call.args;
+        if (args.len != 1) return null;
+        return switch (args[0]) {
+            .positional => |e| e,
+            .named => null,
+        };
+    }
+
+    fn variantInit(self: StaticInit, tag: u32, arg: ast.Expr, payload_ty: IrType) LowerError!ConstInit {
+        const payload = try self.allocator.create(ConstInit);
+        payload.* = try self.build(arg, payload_ty);
+        return .{ .variant = .{ .tag = tag, .payload = payload, .payload_ty = payload_ty } };
+    }
+
+    /// An error of a set whose errors carry payloads, written `.name`, or `.name(payload)` for
+    /// one that carries a payload (`Set.name` and `Set.name(payload)` too): its tag is the
+    /// number of the variant.
     fn buildError(self: StaticInit, expr: ast.Expr, set: TaggedErrorSet) LowerError!ConstInit {
-        const variant: []const u8 = switch (expr.kind) {
+        const callee: ast.Expr = if (expr.kind == .call) expr.kind.call.callee.* else expr;
+        const variant: []const u8 = switch (callee.kind) {
             .ident => |n| if (n.len > 1 and n[0] == '.') n[1..] else "",
+            .field => |f| if (f.base.kind == .ident) f.name else "",
             else => "",
         };
         if (variant.len == 0)
             return self.fail(expr.span, "an error in static storage must be written as a variant: `.name`", .{});
         for (set.variants) |v| {
             if (!std.mem.eql(u8, v.name, variant)) continue;
-            if (v.payload != null)
-                return self.fail(expr.span, "an error with a payload cannot be initialised in static storage yet; `.{s}` carries one", .{variant});
-            const codes = self.error_codes orelse return .{ .variant_tag = 0 };
-            return .{ .variant_tag = @intCast(try codes.code(variant)) };
+            const tag: u32 = if (self.error_codes) |codes| @intCast(try codes.code(variant)) else 0;
+            if (v.payload != null) {
+                const arg = payloadArg(expr) orelse
+                    return self.fail(expr.span, "`.{s}` carries a payload: write `{s}.{s}(value)`", .{ variant, set.link_name, variant });
+                const payload_ty = set.payloadIrType(self.allocator, self.env.types, self.env.symbols, variant) orelse
+                    return self.fail(expr.span, "the payload type of `.{s}` is not known here", .{variant});
+                return self.variantInit(tag, arg, payload_ty);
+            }
+            if (expr.kind == .call)
+                return self.fail(expr.span, "`.{s}` carries no payload", .{variant});
+            return .{ .variant_tag = tag };
         }
         return self.fail(expr.span, "`{s}` has no error variant `.{s}`", .{ set.link_name, variant });
     }

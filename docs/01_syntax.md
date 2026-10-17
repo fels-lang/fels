@@ -431,11 +431,11 @@ any depth:
 | a constant expression — a literal, other constants, `core::sizeof`, a `#run` call | any integer, `f32`/`f64`, `bool`, `[]const u8` (a string) |
 | `.{ ... }`, positional or named | a struct |
 | `.{ ... }` | an array |
-| `.{}` | anything above: a struct with every field defaulted or zero, an array of zeros, an empty slice |
+| `.{}` | anything above: a struct with every field defaulted or zero, an array of zeros, an empty slice; a union only this way |
 | the name of a top-level function | a function value — a `fn(...)` closure, or an `extern fn(...)` C pointer |
 | `&OTHER` — the address of another top-level global | a pointer `*T` or `?*T` |
 | `null` | a pointer or an optional |
-| `.variant` or `Enum.variant`, for a variant with no payload | an enum |
+| `.variant` or `Enum.variant`, and `Enum.variant(payload)` for one that carries a payload | an enum, or an error of a set (`.eof`, `HttpError.status(404)`) |
 | `#run call()` that returns the whole value | a struct, an array, an enum value, a function pointer, or a string — also as one field or element of a literal |
 
 ```fels
@@ -443,6 +443,7 @@ Point :: struct { x: i32, y: i32 }
 Vtbl  :: struct { add: fn(i32, i32) -> i32, id: u32 }
 Node  :: struct { v: i32, next: *Node }
 Mode  :: enum { fast, slow }
+Shape :: enum { circle: f64, square: f64 }
 
 add :: fn(a: i32, b: i32) -> i32 { return a + b; }
 dbl :: fn(x: i32) -> i32 { return x * 2; }
@@ -454,6 +455,7 @@ HANDLERS: [2]extern fn(i32) -> i32 = .{ dbl, dbl };
 A:        Node                     = .{ 1, &B };      // the two refer to each other;
 B:        Node                     = .{ 2, &A };      // the order they are written in does not matter
 MODE:     Mode                     = .slow;
+FIRST:    Shape                    = Shape.circle(1.5);   // a payload, a string one too
 
 use :: fn() -> i32 { return VT.add(1, 2) + HANDLERS[1](4); }   // calls through the tables
 ```
@@ -470,9 +472,9 @@ that is generic or a lambda, a pointer to anything but a top-level global. `fels
 these like any type error; a value that only the compile-time evaluator can compute (a `#run`) is
 checked when the program is built.
 
-Not supported yet: an enum variant that carries a payload, an optional that is not a
-pointer holding anything but `null`, the address of an element or a field (`&TABLE[2]`,
-`&OBJ.id`; take `&TABLE` or `&OBJ`), a slice of anything but a string. There is no
+Not supported yet: an optional that is not a pointer holding anything but `null`, the
+address of an element or a field (`&TABLE[2]`, `&OBJ.id`; take `&TABLE` or `&OBJ`), a slice
+of anything but a string. There is no
 uninitialised form; write `.{}` for zeros.
 
 A table can also be built by the compiler instead of typed out. `#run` runs a function at

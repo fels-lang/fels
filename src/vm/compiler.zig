@@ -579,6 +579,14 @@ const FnCompiler = struct {
                 try self.emit(Instr.r_imm(.load_imm, tag_reg, tag));
                 try self.emit(Instr.r_r_imm(.store_cell, dst, tag_reg, 0));
             },
+            .variant => |v| {
+                try self.allocBlock(dst, 2);
+                const part = try self.scratchReg(depth);
+                try self.emit(Instr.r_imm(.load_imm, part, v.tag));
+                try self.emit(Instr.r_r_imm(.store_cell, dst, part, 0));
+                try self.materializeInto(part, v.payload.*, v.payload_ty, depth + 1);
+                try self.emit(Instr.r_r_imm(.store_cell, dst, part, 1));
+            },
             .func_ref => |link| {
                 const map = self.func_map orelse return self.unsupported("it names a function and there is no function table");
                 const fidx = map.get(link) orelse return self.unsupported("it names a function the comptime VM does not have");

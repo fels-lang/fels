@@ -234,11 +234,16 @@ const Decoder = struct {
             const base = try self.block(v, ty, at);
             const tag_cell = try self.cell(base, 0, at);
             const tag = tag_cell.asI128() orelse return self.reject(at, "the enum value has no tag", .{});
-            if (tag < 0 or tag >= def.variants.len)
-                return self.reject(at, "the enum value's tag {d} is not a variant of `{s}`", .{ tag, name });
-            const chosen = def.variants[@intCast(tag)];
-            if (chosen.payload != null)
-                return self.reject(at, "a variant with a payload cannot be stored in static data yet; `{s}.{s}` carries one", .{ name, chosen.name });
+            // A case's tag is its position, or the number it names (an error's).
+            const chosen = for (def.variants, 0..) |case, i| {
+                if ((case.disc orelse @as(u32, @intCast(i))) == tag) break case;
+            } else return self.reject(at, "the enum value's tag {d} is not a variant of `{s}`", .{ tag, name });
+            if (chosen.payload) |pty| {
+                const step: Where = .{ .parent = at, .step = .{ .field = chosen.name } };
+                const payload = try self.allocator.create(ConstInit);
+                payload.* = try self.read(try self.cell(base, 1, &step), pty, &step);
+                return .{ .variant = .{ .tag = @intCast(tag), .payload = payload, .payload_ty = pty } };
+            }
             return .{ .variant_tag = @intCast(tag) };
         }
         return self.reject(at, "`{s}` is not a type whose layout is known here", .{name});
