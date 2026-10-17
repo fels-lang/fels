@@ -32,9 +32,10 @@ are about codegen + runtime + stdlib completeness.
 
 The architectural decision: **all OS-specific behaviour goes through a small,
 fixed set of `os_*` primitives provided by the platform runtime**, and the
-standard library is written against that seam, OS-agnostically. fels has no
-`#if os == …` — the runtime is *selected* per target, so the seam is the only
-place the OS appears.
+standard library is written against that seam, OS-agnostically. The standard library
+uses no `#if TARGET.os == …` — the runtime is *selected* per target, so the seam is the
+only place the OS appears in it. (A program can choose its own declarations by platform
+with a top-level `#if`.)
 
 ```
    std.io   std.heap   std.time   std.fs   std.net   …      (OS-agnostic)

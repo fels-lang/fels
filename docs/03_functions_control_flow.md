@@ -660,9 +660,9 @@ size := #run compute_size();
 | `#if`     | Conditional compilation based on compile-time constants        |
 | `#run`    | Execute code or expressions at compile time                    |
 
-`#if` is a statement inside a function body (see
-[docs/08](08_attributes_builtins.md)). It takes an optional `else { }`, but there
-is no `else if`: put another `#if` inside the `else` block.
+`#if` takes an optional `else { }`, and `else #if cond { }` for the next test of a
+chain. In a function body it chooses code; at the top level it chooses declarations, by
+the platform the program is built for (see [docs/08](08_attributes_builtins.md)).
 
 ### Zone Blocks
 

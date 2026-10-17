@@ -149,19 +149,39 @@ the low-level primitives the standard library wraps.
 
 ### Compile-time If (`#if`)
 
-Evaluates a condition at compile time and includes only the active branch in the IR.
-`#if` is a **statement**: it appears inside a function body, not at the top level, so it
-chooses code, not declarations.
+Evaluates a condition at compile time and includes only the active branch. In a function
+body it chooses code, and the condition is any constant expression:
 
 ```fels
 width :: fn() -> i32 {
     #if core::sizeof(usize) == 8 {
         return 64;
-    } else {
+    } else #if core::sizeof(usize) == 4 {
         return 32;
+    } else {
+        return 16;
     }
 }
 ```
+
+At the top level it chooses declarations: an `#extern`, an `#import`, a constant or a
+struct layout that differs between platforms.
+
+```fels
+#if TARGET.os == .windows {
+    #extern("kernel32", "GetCurrentProcessId") pid :: fn() -> u32;
+    PATH_SEP :: 92;      // '\\'
+} else #if TARGET.os == .linux {
+    #extern("c", "getpid") pid :: fn() -> i32;
+    PATH_SEP :: 47;      // '/'
+}
+```
+
+A top-level `#if` is decided while the file is read, before any constant has a value, so
+its condition asks about the build only: `TARGET.os` or `TARGET.arch` compared with a
+variant (`==`, `!=`), `TARGET.debug`, `true` and `false`, joined with `!`, `&&` and `||`.
+Anything else in it is a compile error, as is a platform `TARGET` does not know. The
+declarations of the branches not taken are parsed but are not part of the program.
 
 ### Compile-time Run (`#run`)
 
@@ -243,5 +263,4 @@ It is the build's, not the compiler's: a `--target linux` build made on Windows 
 `.linux`. A misspelt platform is a compile error (`TARGET.os == .windos`: "enum `TargetOs`
 has no variant `.windos`"). In `#if` the comparison folds and only the branch that holds is
 compiled; in a plain `if` it is an ordinary comparison of constants. A build script and
-`fels check` see the machine they run on. `#if` is a statement, so it goes in a function
-body.
+`fels check` see the machine they run on.
