@@ -5496,7 +5496,7 @@ const Checker = struct {
             switch (checkBuiltinConstraint(self, constraint.interface, bound_ty)) {
                 .ok => continue,
                 .fail => |desc| {
-                    self.emitError(constraint.span, "type `{s}` does not satisfy `{s}`: expected {s}", .{ self.formatTy(bound_ty), constraint.interface, desc });
+                    self.emitError(call.callee.span, "type `{s}` does not satisfy `{s}`: expected {s}", .{ self.formatTy(bound_ty), constraint.interface, desc });
                     return error.SemanticFailed;
                 },
                 .not_builtin => {},
@@ -5504,7 +5504,7 @@ const Checker = struct {
             // A user-defined `constraint Name($T) { … }` — run its predicate.
             if (self.runConstraintPredicate(constraint.interface, bound_ty)) |msg| {
                 if (msg.len > 0) {
-                    self.emitError(constraint.span, "type `{s}` does not satisfy `{s}`: {s}", .{ self.formatTy(bound_ty), constraint.interface, msg });
+                    self.emitError(call.callee.span, "type `{s}` does not satisfy `{s}`: {s}", .{ self.formatTy(bound_ty), constraint.interface, msg });
                     return error.SemanticFailed;
                 }
                 continue; // satisfied
@@ -5515,19 +5515,19 @@ const Checker = struct {
                 .pointer, .const_ptr => |inner| switch (inner.*) {
                     .named => |id| id,
                     else => {
-                        self.emitError(constraint.span, "type parameter `{s}` must be a named struct, found `{s}`", .{ constraint.param, self.formatTy(bound_ty) });
+                        self.emitError(call.callee.span, "type parameter `{s}` must be a named struct, found `{s}`", .{ constraint.param, self.formatTy(bound_ty) });
                         return error.SemanticFailed;
                     },
                 },
                 else => {
-                    self.emitError(constraint.span, "type parameter `{s}` must be a named struct, found `{s}`", .{ constraint.param, self.formatTy(bound_ty) });
+                    self.emitError(call.callee.span, "type parameter `{s}` must be a named struct, found `{s}`", .{ constraint.param, self.formatTy(bound_ty) });
                     return error.SemanticFailed;
                 },
             };
             const concrete_name = self.symbols.symbol(concrete_id).name;
             const key = try interfaceImplKey(self.allocator, concrete_name, constraint.interface);
             if (!self.env.interface_impls.contains(key)) {
-                self.emitError(constraint.span, "`{s}` does not implement `{s}`", .{ concrete_name, constraint.interface });
+                self.emitError(call.callee.span, "`{s}` does not implement `{s}`", .{ concrete_name, constraint.interface });
                 return error.SemanticFailed;
             }
         }
