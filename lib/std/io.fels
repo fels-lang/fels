@@ -317,56 +317,701 @@ pub write_hex_u64_full :: fn(self: *Writer, value: u64) -> usize ! IoError {
     return a + b + c + d + e + f + g + h;
 }
 
-// Stdout convenience
+// Printing
+//
+// `print`, `println`, `eprint`, `eprintln` and `w.write_fmt` take a `Format`. A string literal
+// passed to one is read by the compiler: text, `{expr}` or `{expr:spec}` for a value, and
+// `{{` and `}}` for a brace. Any other `[]const u8` is printed as it is.
+//
+//   io::println("{name} has {n} items");
+//   io::println("{p}");                         // Point{ x: 1, y: 2 }
+//   io::println("{x:8} {id:06} {flags:x} {ratio:.2}");
+//
+// A spec is `[[fill]align][0][width][.precision][kind]`. Align is `<` left, `>` right or `^`
+// centered (numbers go right, the rest left by themselves); `0` pads a number with zeros after
+// its sign; the precision is the digits after a float's point; the kind is `x` or `X` for hex,
+// `b` binary, `o` octal, `?` text in quotes. The width counts bytes.
+//
+// Every type prints: numbers, bool, text, an enum as its variant, an optional as its value or
+// `null`, slices and arrays as `[1, 2]`, structs as `Point{ x: 1, y: 2 }` (text inside a value
+// in quotes), pointers as their address.
 
-pub print :: fn(data: []const u8) -> usize ! IoError {
+pub print :: fn(f: Format) -> usize ! IoError {
     out := stdout();
-    return (&out).write_all(data)?;
+    return (&out).write_fmt(f)?;
 }
 
-pub println :: fn(data: []const u8) -> usize ! IoError {
+pub println :: fn(f: Format) -> usize ! IoError {
     out := stdout();
-    return (&out).write_line(data)?;
+    return (&out).write_fmt_line(f)?;
 }
 
+pub eprint :: fn(f: Format) -> usize ! IoError {
+    out := stderr();
+    return (&out).write_fmt(f)?;
+}
+
+pub eprintln :: fn(f: Format) -> usize ! IoError {
+    out := stderr();
+    return (&out).write_fmt_line(f)?;
+}
+
+#deprecated("print it in a format instead: `{n}` in the text of `io::print`")
 pub print_u64 :: fn(value: u64) -> usize ! IoError {
     out := stdout();
     return (&out).write_u64(value)?;
 }
 
+#deprecated("print it in a format instead: `{n}` in the text of `io::print`")
 pub print_i64 :: fn(value: i64) -> usize ! IoError {
     out := stdout();
     return (&out).write_i64(value)?;
 }
 
+#deprecated("print it in a format instead: `{n:x}` in the text of `io::print`")
 pub print_hex_u64 :: fn(value: u64) -> usize ! IoError {
     out := stdout();
     return (&out).write_hex_u64(value)?;
 }
 
+#deprecated("print it in a format instead: `{b}` in the text of `io::print`")
 pub print_bool :: fn(value: bool) -> usize ! IoError {
     out := stdout();
     return (&out).write_bool(value)?;
 }
 
-// Stderr convenience
-
-pub eprint :: fn(data: []const u8) -> usize ! IoError {
-    out := stderr();
-    return (&out).write_all(data)?;
-}
-
-pub eprintln :: fn(data: []const u8) -> usize ! IoError {
-    out := stderr();
-    return (&out).write_line(data)?;
-}
-
+#deprecated("print it in a format instead: `{n}` in the text of `io::eprint`")
 pub eprint_u64 :: fn(value: u64) -> usize ! IoError {
     out := stderr();
     return (&out).write_u64(value)?;
 }
 
+#deprecated("print it in a format instead: `{n}` in the text of `io::eprint`")
 pub eprint_i64 :: fn(value: i64) -> usize ! IoError {
     out := stderr();
     return (&out).write_i64(value)?;
+}
+
+// Write `f` to the writer: its text, or what the compiler made of the literal. The bytes go
+// through a buffer of 512, so a line is one write.
+pub write_fmt :: fn(self: *Writer, f: Format) -> usize ! IoError {
+    return write_format(self, f, false)?;
+}
+
+// `write_fmt`, then a newline.
+pub write_fmt_line :: fn(self: *Writer, f: Format) -> usize ! IoError {
+    return write_format(self, f, true)?;
+}
+
+// Where a `Formatter` of `write_fmt` puts its bytes: a buffer in front of the writer.
+FmtSink :: struct {
+    w: *Writer,
+    buf: []u8,
+    len: usize,
+}
+
+write_format :: fn(w: *Writer, f: Format, newline: bool) -> usize ! IoError {
+    space: [512]u8 = .{};
+    sink: FmtSink = .{ w, space[0..512], 0 };
+    ctx := unsafe ((&sink) as *void);
+    fo: Formatter = .{ ctx, sink_out, show_value, 0, false };
+    if f.run |r| { r(&fo); } else { fo.text(f.text); }
+    if newline { fo.text("\n"); }
+    if fo.failed { fail .write_failed; }
+    if !sink_flush(&sink) { fail .write_failed; }
+    return fo.count;
+}
+
+sink_out :: fn(ctx: *void, bytes: []const u8) -> bool {
+    sink := unsafe (ctx as *FmtSink);
+    if sink.len + bytes.len > sink.buf.len {
+        if !sink_flush(sink) { return false; }
+        if bytes.len > sink.buf.len {
+            written := sink.w.write_all(bytes) catch e { return false; };
+            return true;
+        }
+    }
+    for i in 0..bytes.len { sink.buf[sink.len + i] = bytes[i]; }
+    sink.len += bytes.len;
+    return true;
+}
+
+sink_flush :: fn(sink: *FmtSink) -> bool {
+    if sink.len == 0 { return true; }
+    written := sink.w.write_all(sink.buf[0..sink.len]) catch e { return false; };
+    sink.len = 0;
+    return true;
+}
+
+// What a spec asks for.
+Spec :: struct {
+    fill: u8,
+    align: u8,       // 0 (by the type), '<', '>' or '^'
+    zero: bool,
+    width: usize,
+    prec: usize,
+    has_prec: bool,
+    kind: u8,        // 0, 'x', 'X', 'b', 'o' or '?'
+}
+
+is_align :: fn(c: u8) -> bool {
+    return c == 60 || c == 62 || c == 94;
+}
+
+is_digit :: fn(c: u8) -> bool {
+    return c >= 48 && c <= 57;
+}
+
+// The compiler has checked the spec, so this only reads it.
+parse_spec :: fn(s: []const u8) -> Spec {
+    sp: Spec = .{ 32, 0, false, 0, 0, false, 0 };
+    i: usize = 0;
+    if s.len >= 2 {
+        if is_align(s[1]) {
+            sp.fill = s[0];
+            sp.align = s[1];
+            i = 2;
+        }
+    }
+    if i == 0 && s.len >= 1 {
+        if is_align(s[0]) {
+            sp.align = s[0];
+            i = 1;
+        }
+    }
+    if i < s.len {
+        if s[i] == 48 {
+            sp.zero = true;
+            i += 1;
+        }
+    }
+    while i < s.len {
+        if !is_digit(s[i]) { break; }
+        sp.width = sp.width * 10 + ((s[i] - 48) as usize);
+        i += 1;
+    }
+    if i < s.len {
+        if s[i] == 46 {
+            sp.has_prec = true;
+            i += 1;
+            while i < s.len {
+                if !is_digit(s[i]) { break; }
+                sp.prec = sp.prec * 10 + ((s[i] - 48) as usize);
+                i += 1;
+            }
+        }
+    }
+    if i < s.len { sp.kind = s[i]; }
+    return sp;
+}
+
+// `Formatter.show` of std.io: write the value at `d`, of the type `ti` (`id` its type id), as
+// `spec` says.
+pub show_value :: fn(f: *Formatter, d: *const u8, id: usize, ti: TypeInfo, spec: []const u8) {
+    put_value(f, d, id, ti, parse_spec(spec), false);
+}
+
+// `c`, `n` times.
+put_fill :: fn(f: *Formatter, c: u8, n: usize) {
+    chunk: [16]u8 = .{};
+    for i in 0..16 { chunk[i] = c; }
+    left: usize = n;
+    while left > 0 {
+        k: usize = if left > 16 { 16 } else { left };
+        f.text(chunk[0..k]);
+        left -= k;
+    }
+}
+
+// `s` padded to the spec's width; `numeric` text goes to the right by itself.
+put_padded :: fn(f: *Formatter, s: []const u8, sp: Spec, numeric: bool) {
+    if sp.width <= s.len {
+        f.text(s);
+        return;
+    }
+    n := sp.width - s.len;
+    align: u8 = sp.align;
+    if align == 0 { align = if numeric { 62 } else { 60 }; }
+    if align == 60 {
+        f.text(s);
+        put_fill(f, sp.fill, n);
+    } else if align == 62 {
+        put_fill(f, sp.fill, n);
+        f.text(s);
+    } else {
+        put_fill(f, sp.fill, n / 2);
+        f.text(s);
+        put_fill(f, sp.fill, n - n / 2);
+    }
+}
+
+// The digits of `n` in `base`, written backwards from the end of `buf`; where they start.
+put_digits :: fn(buf: []u8, n: u64, base: u64, upper: bool) -> usize {
+    i: usize = buf.len;
+    x: u64 = n;
+    while true {
+        i -= 1;
+        d := (x % base) as u8;
+        if d < 10 { buf[i] = 48 + d; } else if upper { buf[i] = 55 + d; } else { buf[i] = 87 + d; }
+        x = x / base;
+        if x == 0 { break; }
+    }
+    return i;
+}
+
+put_int :: fn(f: *Formatter, neg: bool, mag: u64, sp: Spec) {
+    buf: [72]u8 = .{};
+    base: u64 = 10;
+    upper := false;
+    if sp.kind == 120 { base = 16; }
+    if sp.kind == 88 { base = 16; upper = true; }
+    if sp.kind == 98 { base = 2; }
+    if sp.kind == 111 { base = 8; }
+    start := put_digits(buf[0..72], mag, base, upper);
+    sign: usize = 0;
+    if neg { sign = 1; }
+    if sp.zero && sp.width > 72 - start + sign {
+        if neg { f.text("-"); }
+        put_fill(f, 48, sp.width - (72 - start) - sign);
+        f.text(buf[start..72]);
+        return;
+    }
+    if neg {
+        start -= 1;
+        buf[start] = 45;
+    }
+    put_padded(f, buf[start..72], sp, true);
+}
+
+// The text of `x` at the start of `buf`; its length. Without a precision 15 significant
+// digits at most (as many as a decimal number keeps through an f64), with the zeros at the
+// end left out (`3.14159265`, `0.1`, `2`); `debug` keeps a `.0`.
+float_text :: fn(buf: []u8, x: f64, sp: Spec, debug: bool) -> usize {
+    i: usize = 0;
+    v: f64 = x;
+    if v != v {
+        buf[0] = 110; buf[1] = 97; buf[2] = 110;   // nan
+        return 3;
+    }
+    if v < 0.0 {
+        buf[i] = 45;
+        i += 1;
+        v = -v;
+    }
+    if v > 1.7976931348623157e308 {
+        buf[i] = 105; buf[i + 1] = 110; buf[i + 2] = 102;   // inf
+        return i + 3;
+    }
+    prec: usize = if sp.has_prec { sp.prec } else { 6 };
+    if prec > 17 { prec = 17; }
+    exp: i32 = 0;
+    big := v >= 1e16;
+    tiny := v != 0.0 && v < 0.00001 && !sp.has_prec;
+    if big || tiny {
+        while v >= 10.0 { v = v / 10.0; exp += 1; }
+        while v < 1.0 { v = v * 10.0; exp -= 1; }
+    }
+    if !sp.has_prec {
+        // 15 significant digits: those of the integer part, then the rest after the point
+        // (behind the zeros that lead a number below 1).
+        int_digits: usize = 0;
+        w: f64 = v;
+        while w >= 1.0 {
+            w = w / 10.0;
+            int_digits += 1;
+        }
+        lead: usize = 0;
+        if int_digits == 0 && v != 0.0 {
+            w = v;
+            while w < 0.1 {
+                w = w * 10.0;
+                lead += 1;
+            }
+        }
+        prec = if int_digits >= 15 { 0 } else { 15 - int_digits + lead };
+        if prec > 17 { prec = 17; }
+    }
+    scale: f64 = 1.0;
+    for k in 0..prec { scale = scale * 10.0; }
+    ip: u64 = v as u64;
+    fd: u64 = ((v - (ip as f64)) * scale + 0.5) as u64;
+    if (fd as f64) >= scale {
+        ip += 1;
+        fd = 0;
+    }
+    if (big || tiny) && ip >= 10 {
+        ip = 1;
+        exp += 1;
+    }
+    tmp: [24]u8 = .{};
+    st := put_digits(tmp[0..24], ip, 10, false);
+    for k in st..24 {
+        buf[i] = tmp[k];
+        i += 1;
+    }
+    if prec > 0 {
+        dot := i;
+        buf[i] = 46;
+        i += 1;
+        fs := put_digits(tmp[0..24], fd, 10, false);
+        for k in 0..(prec - (24 - fs)) {
+            buf[i] = 48;
+            i += 1;
+        }
+        for k in fs..24 {
+            buf[i] = tmp[k];
+            i += 1;
+        }
+        if !sp.has_prec {
+            while i > dot + 1 && buf[i - 1] == 48 { i -= 1; }
+            if i == dot + 1 {
+                if debug { buf[i] = 48; i += 1; } else { i = dot; }
+            }
+        }
+    } else if debug {
+        buf[i] = 46; buf[i + 1] = 48;
+        i += 2;
+    }
+    if big || tiny {
+        buf[i] = 101;
+        i += 1;
+        e: u64 = 0;
+        if exp < 0 {
+            buf[i] = 45;
+            i += 1;
+            e = (-exp) as u64;
+        } else {
+            e = exp as u64;
+        }
+        es := put_digits(tmp[0..24], e, 10, false);
+        for k in es..24 {
+            buf[i] = tmp[k];
+            i += 1;
+        }
+    }
+    return i;
+}
+
+put_float :: fn(f: *Formatter, x: f64, sp: Spec, debug: bool) {
+    buf: [96]u8 = .{};
+    n := float_text(buf[0..96], x, sp, debug);
+    put_padded(f, buf[0..n], sp, true);
+}
+
+// Text in quotes, with `\n`, `\t`, `\"` and `\\` escaped.
+put_quoted :: fn(f: *Formatter, s: []const u8) {
+    f.text("\"");
+    start: usize = 0;
+    for i in 0..s.len {
+        c := s[i];
+        esc: []const u8 = "";
+        if c == 34 { esc = "\\\""; }
+        if c == 92 { esc = "\\\\"; }
+        if c == 10 { esc = "\\n"; }
+        if c == 9 { esc = "\\t"; }
+        if c == 13 { esc = "\\r"; }
+        if esc.len != 0 {
+            f.text(s[start..i]);
+            f.text(esc);
+            start = i + 1;
+        }
+    }
+    f.text(s[start..s.len]);
+    f.text("\"");
+}
+
+// What `Formatter.text` counts, for the width of a value made of several pieces.
+count_out :: fn(ctx: *void, bytes: []const u8) -> bool {
+    return true;
+}
+
+// The value at `d`, of type `ti`. A value of several pieces is measured first when the spec
+// has a width.
+put_value :: fn(f: *Formatter, d: *const u8, id: usize, ti: TypeInfo, sp: Spec, nested: bool) {
+    if sp.width == 0 || is_simple(ti) {
+        put_bare(f, d, id, ti, sp, nested);
+        return;
+    }
+    inner: Spec = sp;
+    inner.width = 0;
+    measure: Formatter = .{ f.ctx, count_out, f.show, 0, false };
+    put_bare(&measure, d, id, ti, inner, nested);
+    n: usize = if sp.width > measure.count { sp.width - measure.count } else { 0 };
+    align: u8 = if sp.align == 0 { 60 } else { sp.align };
+    if align == 62 { put_fill(f, sp.fill, n); }
+    if align == 94 { put_fill(f, sp.fill, n / 2); }
+    put_bare(f, d, id, ti, inner, nested);
+    if align == 60 { put_fill(f, sp.fill, n); }
+    if align == 94 { put_fill(f, sp.fill, n - n / 2); }
+}
+
+// A value written as one piece of text, which pads itself.
+is_simple :: fn(ti: TypeInfo) -> bool {
+    match ti {
+        .int => return true;
+        .float => return true;
+        .boolean => return true;
+        .slice |e| => {
+            et: TypeInfo = *e;
+            return is_byte(et);
+        }
+        else => return false;
+    }
+}
+
+is_byte :: fn(ti: TypeInfo) -> bool {
+    match ti { .int |i| => return i.bits == 8; else => return false; }
+}
+
+read_unsigned :: fn(d: *const u8, bits: u16) -> u64 {
+    unsafe {
+        if bits == 8 { return (*(d as *const u8)) as u64; }
+        if bits == 16 { return (*(d as *const u16)) as u64; }
+        if bits == 32 { return (*(d as *const u32)) as u64; }
+        return *(d as *const u64);
+    }
+}
+
+read_signed :: fn(d: *const u8, bits: u16) -> i64 {
+    unsafe {
+        if bits == 8 { return (*(d as *const i8)) as i64; }
+        if bits == 16 { return (*(d as *const i16)) as i64; }
+        if bits == 32 { return (*(d as *const i32)) as i64; }
+        return *(d as *const i64);
+    }
+}
+
+// A type's name without the module part of its link name.
+short_name :: fn(name: []const u8) -> []const u8 {
+    start: usize = 0;
+    for i in 0..name.len {
+        if name[i] == 36 { start = i + 1; }
+    }
+    return name[start..name.len];
+}
+
+// The bytes a value of type `ti` takes in a slice or an array.
+value_size :: fn(ti: TypeInfo) -> usize {
+    match ti {
+        .int |i| => {
+            if i.bits <= 8 { return 1; }
+            return (i.bits as usize) / 8;
+        }
+        .float |fl| => return (fl.bits as usize) / 8;
+        .boolean => return 1;
+        .struct_ |st| => return st.size;
+        .union_ |u| => return u.size;
+        .slice => return 16;
+        .pointer => return 8;
+        .array |a| => {
+            et: TypeInfo = *a.elem;
+            return a.len * value_size(et);
+        }
+        .optional |inner| => {
+            it: TypeInfo = *inner;
+            if is_pointer(it) { return 8; }
+            al := value_align(it);
+            return al + ((value_size(it) + al - 1) / al) * al;
+        }
+        .enum_ => return 4;
+        else => return 8;
+    }
+}
+
+// Where a value of type `ti` may start: the size of its largest scalar.
+value_align :: fn(ti: TypeInfo) -> usize {
+    match ti {
+        .int |i| => {
+            if i.bits <= 8 { return 1; }
+            b := (i.bits as usize) / 8;
+            if b > 8 { return 8; }
+            return b;
+        }
+        .float |fl| => return (fl.bits as usize) / 8;
+        .boolean => return 1;
+        .array |a| => {
+            et: TypeInfo = *a.elem;
+            return value_align(et);
+        }
+        .optional |inner| => {
+            it: TypeInfo = *inner;
+            return value_align(it);
+        }
+        .struct_ |st| => {
+            mx: usize = 1;
+            for k in 0..st.fields.len {
+                ft: TypeInfo = *st.fields[k].ty;
+                fa := value_align(ft);
+                if fa > mx { mx = fa; }
+            }
+            return mx;
+        }
+        .enum_ => return 4;
+        else => return 8;
+    }
+}
+
+// The type id of a value of type `ti`, for a type's own `format`: a struct's.
+value_id :: fn(ti: TypeInfo) -> usize {
+    match ti {
+        .struct_ |st| => return st.id;
+        .union_ |u| => return u.id;
+        else => return 0;
+    }
+}
+
+is_pointer :: fn(ti: TypeInfo) -> bool {
+    match ti {
+        .pointer => return true;
+        else => return false;
+    }
+}
+
+// The elements of a slice or an array: `count` of them from `base`, `elem` their type.
+put_list :: fn(f: *Formatter, base: usize, count: usize, elem: TypeInfo, sp: Spec) {
+    f.text("[");
+    size := value_size(elem);
+    id := value_id(elem);
+    for i in 0..count {
+        if i > 0 { f.text(", "); }
+        ep := unsafe core::ptr_from_int(*const u8, base + i * size);
+        put_value(f, ep, id, elem, sp, true);
+    }
+    f.text("]");
+}
+
+// The bits `bit..bit + bits` from `d` (a field of a bit-packed struct), as an unsigned number.
+read_bits :: fn(d: *const u8, bit: u32, bits: u16) -> u64 {
+    x: u64 = 0;
+    for k in 0..(bits as usize) {
+        at: usize = (bit as usize) + k;
+        byte := unsafe *(core::ptr_from_int(*const u8, (d as usize) + at / 8));
+        if ((byte >> ((at % 8) as u8)) & 1) == 1 { x = x | ((1 as u64) << (k as u64)); }
+    }
+    return x;
+}
+
+put_bare :: fn(f: *Formatter, d: *const u8, id: usize, ti: TypeInfo, sp: Spec, nested: bool) {
+    // A type with its own `format :: fn(self, f: *Formatter)` prints itself.
+    if __fmt_custom(id, d, f) { return; }
+    match ti {
+        .int |i| => {
+            if i.signed {
+                n := read_signed(d, i.bits);
+                if n < 0 {
+                    put_int(f, true, (-(n + 1)) as u64 + 1, sp);
+                } else {
+                    put_int(f, false, n as u64, sp);
+                }
+            } else {
+                put_int(f, false, read_unsigned(d, i.bits), sp);
+            }
+        }
+        .float |fl| => {
+            x: f64 = 0.0;
+            unsafe {
+                if fl.bits == 32 { x = (*(d as *const f32)) as f64; } else { x = *(d as *const f64); }
+            }
+            put_float(f, x, sp, sp.kind == 63);
+        }
+        .boolean => {
+            b := unsafe *(d as *const bool);
+            put_padded(f, if b { "true" } else { "false" }, sp, false);
+        }
+        .slice |e| => {
+            et: TypeInfo = *e;
+            base: usize = 0;
+            n: usize = 0;
+            unsafe {
+                at: usize = d as usize;
+                base = *(at as *const usize);
+                n = *((at + 8) as *const usize);
+            }
+            if is_byte(et) {
+                text := unsafe core::slice_raw(u8, core::ptr_from_int(*u8, base), n);
+                if nested || sp.kind == 63 { put_quoted(f, text); } else { put_padded(f, text, sp, false); }
+            } else {
+                put_list(f, base, n, et, sp);
+            }
+        }
+        .array |a| => {
+            et: TypeInfo = *a.elem;
+            put_list(f, unsafe (d as usize), a.len, et, sp);
+        }
+        .pointer => {
+            addr := unsafe *(d as *const usize);
+            f.text("0x");
+            hex: Spec = sp;
+            hex.kind = 120;
+            hex.width = 0;
+            put_int(f, false, addr as u64, hex);
+        }
+        .optional |inner| => {
+            pt: TypeInfo = *inner;
+            // `?*T` is the pointer itself, null when 0; any other `?T` is a flag, then the value.
+            if is_pointer(pt) {
+                addr := unsafe *(d as *const usize);
+                if addr == 0 { f.text("null"); } else { put_value(f, d, 0, pt, sp, nested); }
+                return;
+            }
+            some := unsafe *(d as *const bool);
+            if some {
+                pp := unsafe core::ptr_from_int(*const u8, (d as usize) + value_align(pt));
+                put_value(f, pp, value_id(pt), pt, sp, nested);
+            } else {
+                f.text("null");
+            }
+        }
+        .struct_ |st| => {
+            f.text(short_name(st.name));
+            if st.fields.len == 0 {
+                f.text("{}");
+                return;
+            }
+            f.text("{ ");
+            for k in 0..st.fields.len {
+                if k > 0 { f.text(", "); }
+                f.text(st.fields[k].name);
+                f.text(": ");
+                fld := st.fields[k];
+                ft: TypeInfo = *fld.ty;
+                if fld.bits != 0 {
+                    // A field of a bit-packed struct: its bits, signed or not.
+                    raw := read_bits(d, fld.bit, fld.bits);
+                    neg := false;
+                    match ft {
+                        .int |fi| => {
+                            if fi.signed {
+                                if ((raw >> ((fld.bits - 1) as u64)) & 1) == 1 {
+                                    neg = true;
+                                    raw = ((1 as u64) << (fld.bits as u64)) - raw;
+                                }
+                            }
+                        }
+                        else => {}
+                    }
+                    put_int(f, neg, raw, sp);
+                } else {
+                    fp := unsafe core::ptr_from_int(*const u8, (d as usize) + fld.offset);
+                    put_value(f, fp, value_id(ft), ft, sp, true);
+                }
+            }
+            f.text(" }");
+        }
+        .union_ |u| => {
+            f.text(short_name(u.name));
+            f.text("{ … }");
+        }
+        .enum_ |en| => {
+            disc := unsafe *(d as *const i32);
+            if disc >= 0 && (disc as usize) < en.variants.len {
+                put_padded(f, en.variants[disc as usize].name, sp, false);
+            } else {
+                f.text(short_name(en.name));
+                f.text("(?)");
+            }
+        }
+        .void_ => f.text("void");
+        .other |name| => f.text(name);
+    }
 }
