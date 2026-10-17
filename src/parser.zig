@@ -63,6 +63,39 @@ pub const BlockResult = struct {
     next_id: ast.NodeId,
 };
 
+pub const EmbeddedResult = struct {
+    expr: ast.Expr,
+    next_id: ast.NodeId,
+    /// The lambdas in the expression, lifted as the parser lifts them.
+    lifted: []const ast.FunctionDecl,
+};
+
+/// Parse the expression at `source[start..end]` (a value in a format string, `format_expand`),
+/// with the spans of its nodes in `source`. Fails, without printing, when that text is not one
+/// whole expression.
+pub fn parseEmbedded(
+    allocator: std.mem.Allocator,
+    file_name: []const u8,
+    source: []const u8,
+    start: usize,
+    end: usize,
+    next_id: ast.NodeId,
+) ParseError!EmbeddedResult {
+    var lex = lexer.Lexer.init(source[start..end]);
+    const tokens = try lex.all(allocator);
+    for (tokens) |*t| t.start += @intCast(start);
+    // Its lambdas are numbered apart from those of the file, which has a `__lambda_0` too.
+    var p: Parser = .{ .allocator = allocator, .file_name = file_name, .source = source, .tokens = tokens, .next_id = next_id, .lambda_counter = embedded_lambdas };
+    defer p.diagnostics.deinit(allocator);
+    const e = try p.parseExpr(0);
+    embedded_lambdas = p.lambda_counter;
+    if (!p.check(.eof) or p.diagnostics.items.len != 0) return error.ParseFailed;
+    return .{ .expr = e, .next_id = p.next_id, .lifted = try p.lifted_lambdas.toOwnedSlice(allocator) };
+}
+
+/// The number of the next lambda lifted out of an embedded expression (`parseEmbedded`).
+var embedded_lambdas: u32 = 1_000_000_000;
+
 /// Parse `source` as a sequence of statements (a brace-less block body). Used
 /// by `#parse("...")`: the comptime-produced string is parsed into a block and
 /// spliced. Node ids continue from `next_id`.
