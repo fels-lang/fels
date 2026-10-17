@@ -61,6 +61,12 @@ pub const Diagnostic = struct {
         return .{ .kind = .err, .message = message, .span = span, .file = file };
     }
 
+    /// Whether any of `diags` is an error: a warning is printed, but does not stop a build.
+    pub fn anyError(diags: []const Diagnostic) bool {
+        for (diags) |d| if (d.kind == .err) return true;
+        return false;
+    }
+
     pub fn warn(message: []const u8, span: Span, file: []const u8) Diagnostic {
         return .{ .kind = .warning, .message = message, .span = span, .file = file };
     }

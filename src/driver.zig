@@ -49,7 +49,7 @@ pub fn compileSource(
             defer allocator.free(rendered);
             std.debug.print("{s}\n", .{rendered});
         }
-        return error.CompileFailed;
+        if (diag_mod.Diagnostic.anyError(fe.diagnostics())) return error.CompileFailed;
     }
 
     var module = ir.lowerFrontend(allocator, fe) catch |err| switch (err) {
@@ -263,7 +263,7 @@ pub fn compileWithLlvm(
     defer fe.deinit(allocator);
     if (fe.diagnostics().len != 0) {
         printFeDiagnostics(allocator, fe.diagnostics(), opts.file_name, opts.source);
-        return error.CompileFailed;
+        if (diag_mod.Diagnostic.anyError(fe.diagnostics())) return error.CompileFailed;
     }
 
     try runComptimeTestLane(allocator, &fe, opts.file_name);
@@ -297,7 +297,7 @@ pub fn compileFileWithLlvm(
     if (opts.timings) |tm| tm.frontend_ns = sinceNs(t_fe);
     if (fe.diagnostics().len != 0) {
         printFeDiagnostics(allocator, fe.diagnostics(), opts.file_name, opts.source);
-        return error.CompileFailed;
+        if (diag_mod.Diagnostic.anyError(fe.diagnostics())) return error.CompileFailed;
     }
 
     try runComptimeTestLane(allocator, &fe, opts.file_name);
