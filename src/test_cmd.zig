@@ -9,6 +9,10 @@
 //! read files, call C and do whatever the program can. The program is linked like an
 //! artifact of the project and runs in the project folder. Without LLVM, or with
 //! `comptime_only`, they run on the comptime VM, as `fels build` runs them.
+//!
+//! The files are tested at the same time, each in a `fels test --worker` process of its own
+//! (the compiler keeps its state in globals, so not in threads), and their reports are
+//! printed in the order of the files.
 
 const std = @import("std");
 const pipeline = @import("pipeline.zig");
@@ -39,6 +43,16 @@ pub const Options = struct {
     /// `fels build` gets them.
     llvm_bin: []const u8 = "",
     lib_paths: []const []const u8 = &.{},
+    /// Test the files in worker processes, this many at once (the command line gives the
+    /// number of cores). With 0 or 1, and on the comptime VM, they are tested one by one here.
+    jobs: usize = 0,
+    /// The fels program the workers run, and the arguments they get besides
+    /// `test --worker <file>` (`--std-path`).
+    self_exe: []const u8 = "",
+    worker_args: []const []const u8 = &.{},
+    /// This process is a worker: it tests its file for a parent `fels test`, and ends its
+    /// report with the counts for the parent instead of a summary.
+    worker: bool = false,
 };
 
 pub const Summary = struct {
@@ -90,7 +104,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
         for (r.packages) |p| try roots.append(a, .{ .name = p.name, .dir = p.import_dir });
         caps = try build.folderCaps(a, r.packages);
         packages = r.packages;
-        for (r.missing) |name|
+        if (!opts.worker) for (r.missing) |name|
             try out.print("note: the package `{s}` is in fels.pkg but not fetched yet; run `fels fetch`\n", .{name});
     }
     const saved_roots = pipeline.module_roots;
@@ -119,22 +133,31 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
         }
     }
 
-    var native: ?Native = null;
-    if (build_options.enable_llvm and !opts.comptime_only)
-        native = try Native.init(gpa, io, a, out, opts, packages, caps);
-
     // On a terminal, the live tree: a node per file, with the stage it is in.
-    ui.start("fels test", files.list.items.len);
+    if (!opts.worker) ui.start("fels test", files.list.items.len);
     defer ui.finish();
     var summary: Summary = .{};
-    for (files.list.items) |path| {
-        const display = try displayPath(a, path);
-        var stages = ui.Stages.begin(ui.root, display);
-        defer _ = stages.end();
-        try testFile(gpa, io, out, path, display, opts.palette, if (native) |*n| n else null, &stages, &summary);
-        try out.flush();
+    const native_lane = build_options.enable_llvm and !opts.comptime_only;
+    if (native_lane and !opts.worker and opts.jobs > 1 and files.list.items.len > 1 and opts.self_exe.len != 0) {
+        try runWorkers(gpa, io, out, a, files.list.items, opts, &summary);
+    } else {
+        var native: ?Native = null;
+        if (native_lane) native = try Native.init(gpa, io, a, out, opts, packages, caps);
+        for (files.list.items) |path| {
+            const display = try displayPath(a, path);
+            var stages = ui.Stages.begin(ui.root, display);
+            defer _ = stages.end();
+            try testFile(gpa, io, out, path, display, opts.palette, if (native) |*n| n else null, &stages, &summary);
+            try out.flush();
+        }
     }
     ui.finish();
+
+    if (opts.worker) {
+        try out.print("{s}{d} {d} {d} {d}\n", .{ summary_marker, summary.passed, summary.failed, summary.skipped, summary.broken });
+        try out.flush();
+        return summary;
+    }
 
     if (summary.passed + summary.failed + summary.skipped + summary.broken == 0) {
         try out.writeAll("no #test functions found\n");
@@ -151,6 +174,169 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
     }
     try out.flush();
     return summary;
+}
+
+/// What the last line of a worker's report starts with; the counts of `Summary` follow.
+const summary_marker = "@@fels-test-summary ";
+
+/// A file a worker process tests, and what it reported.
+const Job = struct {
+    path: []const u8,
+    display: []const u8,
+    /// Where the worker writes its report (its stderr).
+    report_path: []const u8,
+    /// The report, without the counts line: the start of `text`, which the pool's allocator
+    /// owns.
+    report: []const u8 = "",
+    text: []u8 = &.{},
+    counts: Summary = .{},
+    done: std.Io.Event = .unset,
+};
+
+/// The worker processes: `jobs` threads, each starting one `fels test --worker <file>` after
+/// the other until no file is left.
+const Pool = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    files: []Job,
+    next: usize = 0,
+    /// The command line of a worker without its file.
+    argv: []const []const u8,
+    environ: ?*const std.process.Environ.Map,
+
+    fn work(pool: *Pool) void {
+        while (true) {
+            const i = @atomicRmw(usize, &pool.next, .Add, 1, .monotonic);
+            if (i >= pool.files.len) return;
+            const job = &pool.files[i];
+            pool.testOne(job);
+            job.done.set(pool.io);
+        }
+    }
+
+    fn testOne(pool: *Pool, job: *Job) void {
+        const node = ui.root.start(job.display, 0);
+        defer node.end();
+        const argv = std.mem.concat(pool.gpa, []const u8, &.{ pool.argv, &.{job.path} }) catch return pool.broken(job, "out of memory");
+        defer pool.gpa.free(argv);
+        // The report goes to a file, not a pipe: on Windows a child started while another is
+        // being started inherits the other's pipe, which then ends only when both have ended,
+        // so the workers finished in waves.
+        const file = std.Io.Dir.cwd().createFile(pool.io, job.report_path, .{}) catch |err| return pool.broken(job, @errorName(err));
+        var child = std.process.spawn(pool.io, .{
+            .argv = argv,
+            .environ_map = pool.environ,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .{ .file = file },
+        }) catch |err| {
+            file.close(pool.io);
+            return pool.broken(job, @errorName(err));
+        };
+        const term = child.wait(pool.io) catch |err| {
+            file.close(pool.io);
+            return pool.broken(job, @errorName(err));
+        };
+        file.close(pool.io);
+        job.text = std.Io.Dir.cwd().readFileAlloc(pool.io, job.report_path, pool.gpa, .unlimited) catch |err| return pool.broken(job, @errorName(err));
+
+        // The last line has the counts.
+        const text = job.text;
+        const at: ?usize = if (std.mem.lastIndexOf(u8, text, "\n" ++ summary_marker)) |i| i + 1 else if (std.mem.startsWith(u8, text, summary_marker)) 0 else null;
+        if (at) |i| {
+            var nums = std.mem.tokenizeAny(u8, text[i + summary_marker.len ..], " \r\n");
+            const fields = [_]*u32{ &job.counts.passed, &job.counts.failed, &job.counts.skipped, &job.counts.broken };
+            for (fields) |f| f.* = std.fmt.parseInt(u32, nums.next() orelse "0", 10) catch 0;
+            job.report = text[0..i];
+        } else {
+            // It stopped before its counts: a crash of fels itself.
+            const why = switch (term) {
+                .exited => |code| std.fmt.allocPrint(pool.gpa, "fels stopped with exit code {d}", .{code}) catch "fels stopped",
+                else => "fels crashed",
+            };
+            const more = std.fmt.allocPrint(pool.gpa, "{s}{s}{s}{s}\n  {s} {s} while it tested this file\n", .{
+                text, ui.pal.bold(), job.display, ui.pal.reset(), ui.mark(.fail), why,
+            }) catch return;
+            pool.gpa.free(job.text);
+            job.text = more;
+            job.report = more;
+            job.counts.broken = 1;
+        }
+    }
+
+    fn broken(pool: *Pool, job: *Job, why: []const u8) void {
+        job.counts.broken = 1;
+        job.text = std.fmt.allocPrint(pool.gpa, "{s}{s}{s}\n  {s} fels could not be started to test it ({s})\n", .{
+            ui.pal.bold(), job.display, ui.pal.reset(), ui.mark(.fail), why,
+        }) catch return;
+        job.report = job.text;
+    }
+};
+
+/// Test `paths` in worker processes, `opts.jobs` at once, and write their reports in the order
+/// of the files as they come in.
+fn runWorkers(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    a: std.mem.Allocator,
+    paths: []const []const u8,
+    opts: Options,
+    summary: *Summary,
+) Error!void {
+    // The reports go next to the test programs, in `.fels-cache/test`.
+    const dir = try joinPath(a, opts.project_dir, ".fels-cache/test");
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    const files = try a.alloc(Job, paths.len);
+    for (files, paths) |*job, path| {
+        const display = try displayPath(a, path);
+        const flat = try a.dupe(u8, display);
+        for (flat) |*c| if (c.* == '/' or c.* == ':') {
+            c.* = '_';
+        };
+        job.* = .{ .path = path, .display = display, .report_path = try std.fmt.allocPrint(a, "{s}/{s}.report", .{ dir, flat }) };
+    }
+
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ opts.self_exe, "test", "--worker" });
+    try argv.appendSlice(a, opts.worker_args);
+    // The workers write to a file: they keep the colors of this terminal.
+    var env: ?std.process.Environ.Map = null;
+    if (ui.pal.on) if (opts.environ) |e| {
+        env = try e.clone(a);
+        try env.?.put("FELS_COLOR", "1");
+    };
+    var pool: Pool = .{
+        .gpa = gpa,
+        .io = io,
+        .files = files,
+        .argv = argv.items,
+        .environ = if (env) |*e| e else opts.environ,
+    };
+
+    var group: std.Io.Group = .init;
+    var started: usize = 0;
+    for (0..@min(opts.jobs, files.len)) |_| {
+        group.concurrent(io, Pool.work, .{&pool}) catch break;
+        started += 1;
+    }
+    if (started == 0) pool.work(); // no threads to be had: one by one here
+    defer {
+        // When every worker has ended (one may hold another's report open), the reports go.
+        group.await(io) catch {};
+        for (files) |job| std.Io.Dir.cwd().deleteFile(io, job.report_path) catch {};
+    }
+
+    for (files) |*job| {
+        job.done.waitUncancelable(io);
+        defer gpa.free(job.text);
+        try out.writeAll(job.report);
+        try out.flush();
+        summary.passed += job.counts.passed;
+        summary.failed += job.counts.failed;
+        summary.skipped += job.counts.skipped;
+        summary.broken += job.counts.broken;
+    }
 }
 
 /// A file's name above its tests, in bold.
