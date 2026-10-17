@@ -108,11 +108,9 @@ HEX_DIGITS :: "0123456789ABCDEF";
 
 // Write `digits` hex digits of `v` (most significant first, upper-case) at out[at..].
 put_hex :: fn(out: []u8, at: usize, v: u64, digits: usize) {
-    i: usize = 0;
-    while i < digits {
+    for i in 0..digits {
         shift: u64 = ((digits - 1 - i) as u64) * 4;
         out[at + i] = HEX_DIGITS[((v >> shift) & 15) as usize];
-        i += 1;
     }
 }
 
@@ -127,12 +125,10 @@ hex_val :: fn(c: u8) -> u8 {
 // Read `digits` hex digits of s starting at `at`; false if any is not one.
 read_hex :: fn(s: []const u8, at: usize, digits: usize, out: *u64) -> bool {
     v: u64 = 0;
-    i: usize = 0;
-    while i < digits {
+    for i in 0..digits {
         h := hex_val(s[at + i]);
         if h == 255 { return false; }
         v = (v << 4) | (h as u64);
-        i += 1;
     }
     *out = v;
     return true;
