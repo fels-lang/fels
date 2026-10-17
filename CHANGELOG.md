@@ -3,7 +3,13 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.9.0 — 2026-10-17
+
+Errors are values, and more of what a program means has a spelling: a `catch` gives a value, and
+an error is compared, matched, kept, built and raised again anywhere; the runtime checks stay in
+release builds; unions, bit fields, typed constants, `TARGET` and payloads in static data cover
+C layouts and platform code; and a long list of programs that compiled to wrong code or crashed
+now work or are errors.
 
 ### Added
 
