@@ -240,10 +240,8 @@ pub alloc_one :: fn($T: type, self: *Arena) -> *T {
 // Call as `(&a).dupe(T, src)`.
 pub dupe :: fn($T: type, self: *Arena, src: []const T) -> []T {
     out := alloc(T, self, src.len);
-    i := 0usize;
-    while i < src.len {
+    for i in 0..src.len {
         out[i] = src[i];
-        i += 1;
     }
     return out;
 }
