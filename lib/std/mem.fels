@@ -15,10 +15,8 @@ shorter_len :: fn(a: usize, b: usize) -> usize {
 pub eql :: fn($T: type, self: []const T, b: []const T) -> bool {
     if self.len != b.len { return false; }
 
-    i := 0usize;
-    while i < self.len {
+    for i in 0..self.len {
         if self[i] != b[i] { return false; }
-        i += 1;
     }
     return true;
 }
@@ -26,10 +24,8 @@ pub eql :: fn($T: type, self: []const T, b: []const T) -> bool {
 pub starts_with :: fn($T: type, self: []const T, prefix: []const T) -> bool {
     if prefix.len > self.len { return false; }
 
-    i := 0usize;
-    while i < prefix.len {
+    for i in 0..prefix.len {
         if self[i] != prefix[i] { return false; }
-        i += 1;
     }
     return true;
 }
@@ -38,10 +34,8 @@ pub ends_with :: fn($T: type, self: []const T, suffix: []const T) -> bool {
     if suffix.len > self.len { return false; }
 
     offset := self.len - suffix.len;
-    i := 0usize;
-    while i < suffix.len {
+    for i in 0..suffix.len {
         if self[offset + i] != suffix[i] { return false; }
-        i += 1;
     }
     return true;
 }
@@ -50,10 +44,8 @@ pub ends_with :: fn($T: type, self: []const T, suffix: []const T) -> bool {
 // Source and destination must not overlap.
 pub copy :: fn($T: type, self: []T, source: []const T) -> usize {
     count := shorter_len(self.len, source.len);
-    i := 0usize;
-    while i < count {
+    for i in 0..count {
         self[i] = source[i];
-        i += 1;
     }
     return count;
 }
@@ -85,10 +77,8 @@ pub reverse :: fn($T: type, self: []T) {
 }
 
 pub index_of :: fn($T: type, self: []const T, needle: T) -> ?usize {
-    i := 0usize;
-    while i < self.len {
+    for i in 0..self.len {
         if self[i] == needle { return i; }
-        i += 1;
     }
     return null;
 }
