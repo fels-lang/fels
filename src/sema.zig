@@ -553,6 +553,9 @@ pub const TypeEnv = struct {
     /// Transparent type aliases: alias SymbolId → the aliased TypeRef. Resolved
     /// on demand in `typeFromRef` so the alias name is fully interchangeable.
     alias_refs: std.AutoHashMap(SymbolId, ast.TypeRef),
+    /// The type each alias stands for, resolved in the file that declares it (the IR lowers
+    /// an alias by it, wherever the alias is named from).
+    alias_types: std.AutoHashMap(SymbolId, Ty),
     expr_types: std.AutoHashMap(ast.NodeId, Ty),
     expr_symbols: std.AutoHashMap(ast.NodeId, SymbolId),
     expr_scopes: std.AutoHashMap(ast.NodeId, ScopeId),
@@ -624,6 +627,7 @@ pub const TypeEnv = struct {
             .distinct_types = std.AutoHashMap(SymbolId, Ty).init(allocator),
             .opaque_types = std.AutoHashMap(SymbolId, void).init(allocator),
             .alias_refs = std.AutoHashMap(SymbolId, ast.TypeRef).init(allocator),
+            .alias_types = std.AutoHashMap(SymbolId, Ty).init(allocator),
             .expr_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .expr_symbols = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .expr_scopes = std.AutoHashMap(ast.NodeId, ScopeId).init(allocator),
@@ -653,6 +657,7 @@ pub const TypeEnv = struct {
         self.distinct_types.deinit();
         self.opaque_types.deinit();
         self.alias_refs.deinit();
+        self.alias_types.deinit();
         self.expr_types.deinit();
         self.expr_symbols.deinit();
         self.expr_scopes.deinit();
@@ -1077,7 +1082,7 @@ pub fn collectSymbolsInto(
         }
     }
 
-    try promoteTypeAliases(allocator, sink, &table, module);
+    promoteTypeAliases(&table, module);
     return table;
 }
 
@@ -1116,12 +1121,7 @@ fn constAliasType(allocator: std.mem.Allocator, decl: ast.ConstDecl) ?ast.TypeRe
 /// alias, however it is spelled. Mark those symbols `.type`. The checker registers
 /// them like any other alias and IR gives them no storage. A constant naming another
 /// constant (`C :: B;`) stays one.
-fn promoteTypeAliases(
-    allocator: std.mem.Allocator,
-    sink: ?*std.ArrayList(Diagnostic),
-    table: *SymbolTable,
-    module: ast.Module,
-) SemanticError!void {
+fn promoteTypeAliases(table: *SymbolTable, module: ast.Module) void {
     // To a fixed point: in `A :: B; B :: Node;` B becomes a type first, then A follows.
     var changed = true;
     while (changed) {
@@ -1134,13 +1134,6 @@ fn promoteTypeAliases(
             const target = constAliasTarget(decl) orelse continue;
             const id = table.resolveVisible(decl.file_name, decl.name) orelse continue;
             if (table.symbol(id).kind != .const_symbol or !table.namesType(decl.file_name, target)) continue;
-            // A type keeps its bare name in the root scope (IR looks aliases up by it), but
-            // a constant declared in two modules got module-qualified linkage names. Two
-            // same-named types are a duplicate declaration; so are two same-named aliases.
-            if (!std.mem.eql(u8, table.symbol(id).link_name, decl.name)) {
-                try collectError(allocator, sink, decl.file_name, decl.span, "duplicate top-level declaration `{s}`", .{decl.name});
-                continue;
-            }
             table.symbols.items[id].kind = .type;
             changed = true;
         }
@@ -1830,18 +1823,27 @@ const Checker = struct {
     /// Resolve `alias::member` (single-level namespace access). The base must be a
     /// namespace alias bound by `#import a.b;` / `#import a.b as alias;`.
     fn resolveScopeAccessSymbol(self: Checker, sa: ast.ScopeAccess) ?SymbolId {
-        const alias = switch (sa.base.kind) {
-            .ident => |n| n,
+        const type_id = switch (sa.base.kind) {
+            .ident => |alias| blk: {
+                if (self.symbols.resolveScoped(self.file, alias, sa.member)) |id| return id;
+                break :blk self.resolveSymbol(alias) orelse return null;
+            },
+            // `ns::Type::method`: the type of another module.
+            .scope_access => |inner| switch (inner.base.kind) {
+                .ident => |ns| self.symbols.resolveScoped(self.file, ns, inner.member) orelse return null,
+                else => return null,
+            },
             else => return null,
         };
-        if (self.symbols.resolveScoped(self.file, alias, sa.member)) |id| return id;
         // `Type::method` — an associated (no-receiver) function declared inside the
-        // struct body, hoisted to a top-level `"<Type>.<member>"`.
-        if (self.resolveSymbol(alias)) |tid| {
-            if (self.symbols.symbol(tid).kind == .type)
-                return self.assocFnInFile(alias, sa.member, self.symbols.symbol(tid).file_name);
-        }
-        return null;
+        // struct body, hoisted to a top-level `"<Type>.<member>"`. An alias of the type (a
+        // re-export) reaches the type's.
+        var tid = type_id;
+        if (self.env.alias_types.get(tid)) |aliased| if (aliased == .named) {
+            tid = aliased.named;
+        };
+        if (self.symbols.symbol(tid).kind != .type) return null;
+        return self.assocFnInFile(self.symbols.symbol(tid).name, sa.member, self.symbols.symbol(tid).file_name);
     }
 
     /// Find a hoisted in-struct function `"<base>.<member>"` in `file`, visible from
@@ -2118,6 +2120,18 @@ const Checker = struct {
         }
 
         try self.collectTopLevelTypes(module);
+
+        // What each alias stands for, so a module's `pub` alias of a type of another module
+        // (a re-export) is that type to every module that names it.
+        var aliases = self.env.alias_refs.keyIterator();
+        while (aliases.next()) |id_ptr| {
+            const sym = self.symbols.symbol(id_ptr.*);
+            const use_site = self.file;
+            self.file = sym.file_name;
+            defer self.file = use_site;
+            const ty = self.typeFromRef(.{ .named = .{ .name = sym.name, .span = sym.span } }) catch continue;
+            try self.env.alias_types.put(id_ptr.*, ty);
+        }
 
         // Record `#must_use` functions so a discarded call to one is rejected.
         self.must_use_fns = std.StringHashMap(void).init(self.allocator);
@@ -6168,6 +6182,15 @@ const Checker = struct {
                     self.emitError(named.span, "`{s}` is not an error type (it is a {s})", .{ named.name, self.symbols.symbol(id).kind.label() });
                     return error.SemanticFailed;
                 }
+                // An alias of an error set (a re-export) is that set.
+                if (self.env.alias_refs.contains(id)) {
+                    const aliased = try self.typeFromRef(.{ .named = named });
+                    if (self.errorSetVariants(aliased) == null) {
+                        self.emitError(named.span, "`{s}` is not an error type (declare it with `errors {{ ... }}`)", .{named.name});
+                        return error.SemanticFailed;
+                    }
+                    break :blk aliased;
+                }
                 const layout = self.env.layouts.get(id) orelse {
                     self.emitError(named.span, "`{s}` is not an error type", .{named.name});
                     return error.SemanticFailed;
@@ -6472,6 +6495,12 @@ const Checker = struct {
         }
     }
 
+    /// The type an alias's symbol stands for, when it is a named one; any other symbol itself.
+    fn dealiasId(self: *Checker, id: SymbolId) SymbolId {
+        if (self.env.alias_types.get(id)) |ty| if (ty == .named) return ty.named;
+        return id;
+    }
+
     fn fieldType(self: *Checker, base_ty: Ty, name: []const u8, span: Span) SemanticError!Ty {
         // Unknown base (e.g., TARGET pseudo-module) — field access returns unknown.
         if (base_ty == .unknown) return .unknown;
@@ -6479,7 +6508,8 @@ const Checker = struct {
             if (std.mem.eql(u8, name, "ok")) return base_ty.fallible.ok.*;
             if (std.mem.eql(u8, name, "err")) return base_ty.fallible.err.*;
         }
-        const type_id = switch (base_ty) {
+        // A type reached through an alias (`net::Kind.udp`, a re-export) is the type itself.
+        const type_id = self.dealiasId(switch (base_ty) {
             .named => |id| id,
             .pointer, .const_ptr => |inner| switch (inner.*) {
                 .named => |id| id,
@@ -6492,7 +6522,7 @@ const Checker = struct {
                 self.emitError(span, "field access on `{s}` is not supported", .{self.formatTy(base_ty)});
                 return error.SemanticFailed;
             },
-        };
+        });
         const layout = self.env.layouts.get(type_id) orelse {
             self.emitError(span, "type has no accessible fields", .{});
             return error.SemanticFailed;

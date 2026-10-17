@@ -3328,24 +3328,31 @@ const FunctionLowerer = struct {
 
     /// Resolve a `ns::member` scope-access to its symbol (file-aware).
     fn resolveScope(self: *FunctionLowerer, sa: ast.ScopeAccess) ?sema.SymbolId {
-        const alias = switch (sa.base.kind) {
-            .ident => |n| n,
+        const type_id = switch (sa.base.kind) {
+            .ident => |alias| blk: {
+                if (self.symbols.resolveScoped(self.file_name, alias, sa.member)) |id| return id;
+                break :blk resolveTopLevel(self.symbols, self.file_name, alias) orelse return null;
+            },
+            .scope_access => |inner| switch (inner.base.kind) {
+                .ident => |ns| self.symbols.resolveScoped(self.file_name, ns, inner.member) orelse return null,
+                else => return null,
+            },
             else => return null,
         };
-        if (self.symbols.resolveScoped(self.file_name, alias, sa.member)) |id| return id;
         // `Type::method` — an associated function hoisted from a struct body to a
         // top-level `"<Type>.<member>"` (mirrors sema's resolveScopeAccessSymbol).
-        if (resolveTopLevel(self.symbols, self.file_name, alias)) |tid| {
-            if (self.symbols.symbol(tid).kind == .type) {
-                var buf: [256]u8 = undefined;
-                const dotted = std.fmt.bufPrint(&buf, "{s}.{s}", .{ alias, sa.member }) catch return null;
-                const file = self.symbols.symbol(tid).file_name;
-                for (self.symbols.symbols.items) |sym| {
-                    if (sym.kind == .function and std.mem.eql(u8, sym.file_name, file) and
-                        std.mem.eql(u8, sym.name, dotted))
-                        return sym.id;
-                }
-            }
+        var tid = type_id;
+        if (self.types.alias_types.get(tid)) |aliased| if (aliased == .named) {
+            tid = aliased.named;
+        };
+        if (self.symbols.symbol(tid).kind != .type) return null;
+        var buf: [256]u8 = undefined;
+        const dotted = std.fmt.bufPrint(&buf, "{s}.{s}", .{ self.symbols.symbol(tid).name, sa.member }) catch return null;
+        const file = self.symbols.symbol(tid).file_name;
+        for (self.symbols.symbols.items) |sym| {
+            if (sym.kind == .function and std.mem.eql(u8, sym.file_name, file) and
+                std.mem.eql(u8, sym.name, dotted))
+                return sym.id;
         }
         return null;
     }
@@ -4906,11 +4913,29 @@ const FunctionLowerer = struct {
     /// symbol, not a value), the type's name. A local, param or capture of the type's
     /// name is the value, as sema reads it: `p.x` with `p := &v` next to `p :: struct`.
     fn variantAccessType(self: *FunctionLowerer, field: ast.FieldExpr) ?[]const u8 {
-        if (field.base.kind != .ident) return null;
-        const base_ident = field.base.kind.ident;
-        if (self.bindsValue(base_ident)) return null;
-        const sym_id = resolveTopLevel(self.symbols, self.file_name, base_ident) orelse return null;
+        const sym_id = self.typeNamedBy(field.base.*) orelse return null;
         return if (self.symbols.symbol(sym_id).kind == .type) self.symbols.symbol(sym_id).link_name else null;
+    }
+
+    /// The type an expression names, when it is a type's name (`Color`, `gfx::Color`): its
+    /// symbol, followed through an alias (a re-export). Null for a value.
+    fn typeNamedBy(self: *FunctionLowerer, base: ast.Expr) ?sema.SymbolId {
+        var id = switch (base.kind) {
+            .ident => |name| blk: {
+                if (self.bindsValue(name)) return null;
+                break :blk resolveTopLevel(self.symbols, self.file_name, name) orelse return null;
+            },
+            .scope_access => |sa| switch (sa.base.kind) {
+                .ident => |ns| self.symbols.resolveScoped(self.file_name, ns, sa.member) orelse return null,
+                else => return null,
+            },
+            else => return null,
+        };
+        if (self.types.alias_types.get(id)) |aliased| if (aliased == .named) {
+            id = aliased.named;
+        };
+        if (self.symbols.symbol(id).kind != .type) return null;
+        return id;
     }
 
     /// Whether `name` is a capture, a param or a declared local here (what `lowerExpr`
@@ -4964,10 +4989,7 @@ const FunctionLowerer = struct {
     /// `Set.name` where `Set` names an error set: the IR type of its errors (an `i32`, or the
     /// tagged value of a set with payloads). Null for anything else.
     fn errorSetAccess(self: *FunctionLowerer, field: ast.FieldExpr) ?IrType {
-        if (field.base.kind != .ident) return null;
-        if (self.local_types.contains(self.curLocal(field.base.kind.ident))) return null;
-        const id = resolveTopLevel(self.symbols, self.file_name, field.base.kind.ident) orelse return null;
-        if (self.symbols.symbol(id).kind != .type) return null;
+        const id = self.typeNamedBy(field.base.*) orelse return null;
         const layout = self.types.layouts.get(id) orelse return null;
         if (layout.kind != .error_set) return null;
         return namedIrType(id, self.symbols.symbol(id).link_name);
@@ -6010,6 +6032,8 @@ fn linkNameFor(symbols: sema.SymbolTable, file: []const u8, name: []const u8) []
 const TypeScope = struct {
     symbols: sema.SymbolTable,
     layouts: std.AutoHashMap(sema.SymbolId, sema.TypeLayout),
+    /// What each alias stands for (see `sema.TypeEnv.alias_types`).
+    alias_types: std.AutoHashMap(sema.SymbolId, sema.Ty),
     file: []const u8,
 };
 threadlocal var type_scope: ?TypeScope = null;
@@ -6017,7 +6041,7 @@ threadlocal var type_scope: ?TypeScope = null;
 /// Make `file` the one whose type names are read; returns the scope to put back.
 fn enterTypeScope(symbols: sema.SymbolTable, types: sema.TypeEnv, file: []const u8) ?TypeScope {
     const before = type_scope;
-    type_scope = .{ .symbols = symbols, .layouts = types.layouts, .file = file };
+    type_scope = .{ .symbols = symbols, .layouts = types.layouts, .alias_types = types.alias_types, .file = file };
     return before;
 }
 
@@ -6027,6 +6051,10 @@ fn enterTypeScope(symbols: sema.SymbolTable, types: sema.TypeEnv, file: []const 
 /// anything else is.
 fn namedIrType(id: ?sema.SymbolId, link_name: []const u8) IrType {
     const scope = type_scope orelse return .{ .struct_type = link_name };
+    // An alias is what it stands for: a re-export from another module, whose name there may
+    // not be visible here.
+    if (id) |sym| if (scope.alias_types.get(sym)) |aliased|
+        return lowerSemaType(std.heap.page_allocator, aliased, scope.symbols) catch .{ .struct_type = link_name };
     if (id) |sym| if (scope.layouts.get(sym)) |layout| switch (layout.kind) {
         .error_set => |variants| if (!sema.errorSetHasPayloads(variants)) return .{ .i = 32 },
         else => {},
