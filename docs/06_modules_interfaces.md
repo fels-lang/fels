@@ -8,8 +8,9 @@ one file.
 ### Imports
 
 The `#import` directive brings another module's public symbols into scope. A path is a list
-of names separated by dots. It is relative to the current file, or it starts with `std.` when
-it points into the standard library. You can import in four forms:
+of names separated by dots. It is relative to the current file. A path into the standard
+library starts with `std.`, and a path into a package starts with the package's name (see
+[Packages](16_packages.md)). You can import in four forms:
 
 ```fels
 // 1. Namespace import — bind the module under its last path segment.
