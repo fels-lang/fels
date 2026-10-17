@@ -40,7 +40,7 @@ pub write_padded_center :: fn(w: *Writer, data: []const u8, width: usize, fill: 
         return w.write_all(data)?;
     }
     total := width - data.len;
-    left := total / 2usize;
+    left := total / 2;
     right := total - left;
     a := w.write_repeat(fill, left)?;
     b := w.write_all(data)?;
@@ -99,11 +99,11 @@ pub join_bytes :: fn(w: *Writer, items: []const []const u8, sep: []const u8) -> 
     written := 0usize;
     i := 0usize;
     while i < items.len {
-        if i > 0usize {
+        if i > 0 {
             written += w.write_all(sep)?;
         }
         written += w.write_all(items[i])?;
-        i += 1usize;
+        i += 1;
     }
     return written;
 }
