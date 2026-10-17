@@ -1111,6 +1111,46 @@ test "exe: an error is compared with a variant wherever it is" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_compare_o2", 2, true));
 }
 
+test "exe: match on an error, as a statement and as a value" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\E :: errors { first, second, third }
+        \\Box :: struct { err: E }
+        \\num :: fn(n: i32) -> i32 ! E { if n < 0 { fail .second; } if n > 9 { fail .third; } return n; }
+        \\loose :: fn(n: i32) -> i32 ! { return num(n)?; }
+        \\code :: fn(e: E) -> i32 {
+        \\    match e {
+        \\        .first => { return 1; },
+        \\        .second => { return 2; },
+        \\        .third => { return 3; },
+        \\    }
+        \\}
+        \\name_len :: fn(e: E) -> i32 { return match e { .first => 5, .second => 6, else => 0 }; }
+        \\give :: fn(n: i32) -> E { if n == 0 { return .first; } if n == 1 { return .second; } return .third; }
+        \\calc :: fn() -> i32 {
+        \\    a := num(-1) catch e { yield match e { .second => 20, else => 99 }; };
+        \\    b := loose(50) catch e { match e { .third => { yield 3; }, else => { yield 4; } } };
+        \\    box: Box = .{ give(2) };
+        \\    c := match box.err { .third => 300, .first, .second => 900 };
+        \\    s := 0;
+        \\    for i in 0..3 { s += match give(i) { .third => 1, .first, .second => 2 }; }
+        \\    return a + b + c + s + code(give(0)) * 1000 + name_len(.second) * 10000;
+        \\}
+        \\X :: #run calc();
+        \\main :: fn() -> i32 {
+        \\    r := calc();
+        \\    if r != 20 + 3 + 300 + 5 + 1000 + 60000 { return 1; }
+        \\    if X != r { return 2; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_match", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_match_o2", 2, true));
+}
+
 test "exe: the name a catch binds is a local of the handler" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

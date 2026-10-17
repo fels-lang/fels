@@ -3732,8 +3732,9 @@ const Checker = struct {
         const subject_ty = try self.inferExpr(me.subject.*);
         const cls = self.classifyMatchSubject(subject_ty);
         if (cls.kind == .invalid) return self.invalidMatchSubject(me.subject.span);
+        if (cls.kind == .error_) try self.env.expr_types.put(me.subject.id, subject_ty);
 
-        const covered = try self.allocator.alloc(bool, cls.variants.len);
+        const covered = try self.allocator.alloc(bool, cls.variantCount());
         defer self.allocator.free(covered);
         @memset(covered, false);
         var catchall = false;
@@ -4659,8 +4660,18 @@ const Checker = struct {
         return try self.inferExpr(inner);
     }
 
-    const MatchKind = enum { integer, string, enum_, invalid };
-    const MatchClass = struct { kind: MatchKind, variants: []const VariantInfo = &.{} };
+    const MatchKind = enum { integer, string, enum_, error_, invalid };
+    const MatchClass = struct {
+        kind: MatchKind,
+        variants: []const VariantInfo = &.{},
+        /// The variants of an error's set; none for an inferred set (`-> T !`), which is `open`.
+        error_variants: []const ErrorVariantInfo = &.{},
+        open: bool = false,
+
+        fn variantCount(self: MatchClass) usize {
+            return if (self.kind == .error_) self.error_variants.len else self.variants.len;
+        }
+    };
     const ArmBind = struct { name: []const u8, ty: Ty };
 
     fn matchSubjectIsString(ty: Ty) bool {
@@ -4670,11 +4681,13 @@ const Checker = struct {
         };
     }
 
-    /// Classify a match subject: integer, string (`[]u8`), enum (with variants),
-    /// or invalid.
+    /// Classify a match subject: integer, string (`[]u8`), enum (with variants), error (with
+    /// its set's variants, or open for an inferred set), or invalid.
     fn classifyMatchSubject(self: *Checker, ty: Ty) MatchClass {
         if (ty.isInteger()) return .{ .kind = .integer };
         if (matchSubjectIsString(ty)) return .{ .kind = .string };
+        if (ty == .error_ty) return .{ .kind = .error_, .open = true };
+        if (self.errorSetVariants(ty)) |variants| return .{ .kind = .error_, .error_variants = variants };
         switch (ty) {
             .named => |id| if (self.env.layouts.get(id)) |layout| switch (layout.kind) {
                 .variant_type => |v| return .{ .kind = .enum_, .variants = v },
@@ -4708,7 +4721,9 @@ const Checker = struct {
                 if (!guarded) catchall.* = true;
                 return .{ .name = name, .ty = subject_ty };
             },
-            .enum_variant => |vname| {
+            .enum_variant => |vname| if (cls.kind == .error_) {
+                return self.checkErrorMatchPattern(cls, arm, vname, covered);
+            } else {
                 if (cls.kind != .enum_) {
                     self.emitError(arm.span, "enum variant pattern cannot be used with this match subject", .{});
                     return error.SemanticFailed;
@@ -4784,6 +4799,30 @@ const Checker = struct {
         }
     }
 
+    /// An arm `.name` of a match on an error: a variant of the error's set, any name for an
+    /// inferred set.
+    fn checkErrorMatchPattern(self: *Checker, cls: MatchClass, arm: anytype, vname: []const u8, covered: []bool) SemanticError!?ArmBind {
+        const guarded = arm.guard != null;
+        if (!cls.open) {
+            const index = for (cls.error_variants, 0..) |v, i| {
+                if (std.mem.eql(u8, v.name, vname)) break i;
+            } else {
+                self.emitError(arm.span, "unknown error variant `.{s}` in match", .{vname});
+                return error.SemanticFailed;
+            };
+            if (covered[index] and !guarded) {
+                self.emitError(arm.span, "duplicate match arm for error `.{s}`", .{vname});
+                return error.SemanticFailed;
+            }
+            if (!guarded) covered[index] = true;
+        }
+        if (arm.binding != null) {
+            self.emitError(arm.span, "an error's payload cannot be bound in a `match` yet", .{});
+            return error.SemanticFailed;
+        }
+        return null;
+    }
+
     fn checkMatchGuard(self: *Checker, guard: ?ast.Expr) SemanticError!void {
         if (guard) |g| {
             const gt = try self.inferExpr(g);
@@ -4812,6 +4851,20 @@ const Checker = struct {
             try self.exhaustive_matches.put(span.start, {});
             return;
         }
+        if (cls.kind == .error_) {
+            if (cls.open) {
+                self.emitError(span, "non-exhaustive match: an error of an inferred set (`!`) can be any error, so the match needs an `else` arm", .{});
+                return error.SemanticFailed;
+            }
+            for (cls.error_variants, 0..) |v, i| {
+                if (!covered[i]) {
+                    self.emitError(span, "non-exhaustive match: error `.{s}` is not handled (add it, or an `else` arm)", .{v.name});
+                    return error.SemanticFailed;
+                }
+            }
+            try self.exhaustive_matches.put(span.start, {});
+            return;
+        }
         // integer / string: only exhaustive via a catch-all.
         if (require) {
             self.emitError(span, "non-exhaustive match expression: add an `else` arm (it must yield a value on every path)", .{});
@@ -4823,8 +4876,10 @@ const Checker = struct {
         const subject_ty = try self.inferExpr(m.subject);
         const cls = self.classifyMatchSubject(subject_ty);
         if (cls.kind == .invalid) return self.invalidMatchSubject(m.subject.span);
+        // The IR tells an error subject by its type, which sema does not record for a local.
+        if (cls.kind == .error_) try self.env.expr_types.put(m.subject.id, subject_ty);
 
-        const covered = try self.allocator.alloc(bool, cls.variants.len);
+        const covered = try self.allocator.alloc(bool, cls.variantCount());
         defer self.allocator.free(covered);
         @memset(covered, false);
         var catchall = false;
@@ -4845,7 +4900,7 @@ const Checker = struct {
     }
 
     fn invalidMatchSubject(self: *Checker, span: Span) SemanticError {
-        self.emitError(span, "match subject must be an enum or integer type", .{});
+        self.emitError(span, "match subject must be an enum, an error, an integer or a string", .{});
         return error.SemanticFailed;
     }
 

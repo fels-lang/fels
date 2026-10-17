@@ -895,12 +895,11 @@ test "diagnostics: an error is compared with a variant wherever it is" {
     try expectFirstError(a, "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> bool { return e == .c; }", &.{"`Oops` has no error variant `.c`"});
 }
 
-test "diagnostics: `match` on a caught error is refused, whatever its set" {
+test "diagnostics: `match` on an error covers its set's variants" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    // `err == .x` is the way to inspect an error. `match` does not accept one; that must stay a
-    // compile error for an inferred set (`-> T !`) too, where comparing used to go wrong silently.
+    // A named set, an inferred one (`-> T !`) and an inline one, through the catch name.
     const decls =
         \\E1 :: errors { p, x }
         \\raise :: fn() -> i32 ! E1 { fail .x; }
@@ -917,12 +916,35 @@ test "diagnostics: `match` on a caught error is refused, whatever its set" {
             \\    return r;
             \\}}
         , .{ decls, callee });
-        const msg = (try firstError(a, src)) orelse {
-            std.debug.print("\n`match` on an error from `{s}` was accepted\n", .{callee});
-            return error.TestExpectedError;
-        };
-        try std.testing.expect(std.mem.indexOf(u8, msg, "match subject must be an enum or integer type") != null);
+        if (try firstError(a, src)) |msg| {
+            std.debug.print("\n`match` on an error from `{s}` was refused:\n{s}\n", .{ callee, msg });
+            return error.UnexpectedDiagnostic;
+        }
     }
+    const set =
+        \\E :: errors { first, second }
+        \\num :: fn() -> i32 ! E { fail .first; }
+        \\loose :: fn() -> i32 ! { return num()?; }
+        \\
+    ;
+    const cases = [_]struct { body: []const u8, needle: []const u8 }{
+        .{ .body = "g :: fn(e: E) -> i32 { match e { .first => { return 1; } } return 0; }", .needle = "error `.second` is not handled" },
+        .{ .body = "g :: fn(e: E) -> i32 { return match e { .first => 1 }; }", .needle = "error `.second` is not handled" },
+        .{ .body = "g :: fn(e: E) -> i32 { match e { .first => { return 1; }, .nope => { return 2; }, else => { return 3; } } }", .needle = "unknown error variant `.nope`" },
+        .{ .body = "g :: fn(e: E) -> i32 { match e { .first => { return 1; }, .first => { return 2; }, else => { return 3; } } }", .needle = "duplicate match arm for error `.first`" },
+        // An inferred set has no list of variants: any name, but always an `else`.
+        .{ .body = "g :: fn() -> i32 { v := loose() catch e { match e { .first => { yield 1; } } }; return v; }", .needle = "needs an `else` arm" },
+    };
+    for (cases) |case| {
+        const src = try std.mem.concat(a, u8, &.{ set, case.body, "\n" });
+        try expectFirstError(a, src, &.{case.needle});
+    }
+    const accepted = [_][]const u8{
+        "g :: fn(e: E) -> i32 { match e { .first => { return 1; }, .second => { return 2; } } }",
+        "g :: fn(e: E) -> i32 { return match e { .first, .second => 1 }; }",
+        "g :: fn() -> i32 { v := loose() catch e { yield match e { .anything => 1, else => 2 }; }; return v; }",
+    };
+    for (accepted) |body| try expectNoError(a, set, body);
 }
 
 test "diagnostics: `X :: Name;` is a type alias when Name is a type, a constant otherwise" {
