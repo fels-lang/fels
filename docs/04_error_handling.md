@@ -383,6 +383,10 @@ message.
 | `fail .variant { payload }` | Return an error with payload |
 | `expr?` | Propagate error, unwrap success |
 | `expr catch err { ... }` | Handle error locally |
+| `yield value;` | End a `catch` handler with the value of the expression |
+| `err == .variant` | Is the error that variant (anywhere) |
+| `match err { .variant => ... }` | Branch on the error's variant |
+| `.variant \|p\| => ...` / `if err == .variant \|p\|` | Bind the variant's payload |
 | `expr!!` | Force unwrap (panic on error) |
 | `expr ?? default` | Use default on error |
 | `defer { ... }` | Always-run cleanup |
