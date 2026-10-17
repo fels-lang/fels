@@ -19,7 +19,7 @@ pub from_addr :: fn($T: type, addr: usize) -> *T {
 }
 
 pub is_null :: fn($T: type, p: *T) -> bool {
-    return to_addr(T, p) == 0usize;
+    return to_addr(T, p) == 0;
 }
 
 // Advance an address by `offset` bytes.
@@ -49,13 +49,13 @@ pub diff_bytes :: fn($T: type, a: *T, b: *T) -> isize {
 // mask-based tricks below (use `bits.is_power_of_two_u64` to check one).
 
 pub is_aligned :: fn(addr: usize, alignment: usize) -> bool {
-    return (addr & (alignment - 1usize)) == 0usize;
+    return (addr & (alignment - 1)) == 0;
 }
 
 pub align_down :: fn(addr: usize, alignment: usize) -> usize {
-    return addr & ~(alignment - 1usize);
+    return addr & ~(alignment - 1);
 }
 
 pub align_up :: fn(addr: usize, alignment: usize) -> usize {
-    return align_down(addr + (alignment - 1usize), alignment);
+    return align_down(addr + (alignment - 1), alignment);
 }
