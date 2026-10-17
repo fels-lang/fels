@@ -872,36 +872,27 @@ test "diagnostics: a builtin whose first argument is not a type says so" {
         "the first argument of `ptr_from_int` must be a type") != null);
 }
 
-test "diagnostics: an error is compared with a variant only where it was caught" {
+test "diagnostics: an error is compared with a variant wherever it is" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // An error handed to another function was compared against the wrong variants (every error
-    // looked like the first one), so comparing anything but the name `catch` bound is refused.
-    const bad = [_][]const u8{
+    const a = arena.allocator();
+    // Only the name a `catch` bound could be compared: outside it an error was no value of its
+    // own (a pointer), so a parameter, a copy or a call result read as the wrong variant.
+    const good = [_][]const u8{
         "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> i32 { if e == .b { return 2; } return 1; }",
         "Oops :: errors { a, b }\nfails :: fn() -> void ! Oops { fail .b; return; }\ng :: fn() -> i32 { r: i32 = 1; fails() catch e { copy := e; if copy == .b { r = 2; } }; return r; }",
         "Oops :: errors { a, b }\nh :: fn(e: Oops) -> bool { return .a != e; }",
+        "Oops :: errors { a, b }\nBox :: struct { err: Oops }\nh :: fn(x: Box) -> bool { return x.err == .a; }",
+        "Oops :: errors { a, b }\npick :: fn() -> Oops { return .b; }\nh :: fn() -> bool { return pick() == .b; }",
     };
-    for (bad) |src| {
-        try std.testing.expectError(error.SemanticFailed, fels.compile(arena.allocator(), "err_param.fels", src));
+    for (good) |src| {
+        if (try firstError(a, src)) |msg| {
+            std.debug.print("\nexpected no error for:\n{s}\ngot:\n{s}\n", .{ src, msg });
+            return error.UnexpectedDiagnostic;
+        }
     }
-    // A function may still take an error and pass it on; it just cannot look inside it.
-    const passes =
-        \\Oops :: errors { a, b }
-        \\show :: fn(e: Oops) {}
-        \\fails :: fn() -> void ! Oops { fail .b; return; }
-        \\g :: fn() { fails() catch e { show(e); }; }
-    ;
-    var passed = try fels.compile(arena.allocator(), "err_passes.fels", passes);
-    passed.deinit(arena.allocator());
-    // Inspecting the error where it is caught is the supported way.
-    const good =
-        \\Oops :: errors { a, b }
-        \\fails :: fn() -> void ! Oops { fail .b; return; }
-        \\code :: fn() -> i32 { r: i32 = 1; fails() catch e { if e == .b { r = 2; } }; return r; }
-    ;
-    var fe = try fels.compile(arena.allocator(), "err_caught.fels", good);
-    fe.deinit(arena.allocator());
+    // The variant must still be one of the set's.
+    try expectFirstError(a, "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> bool { return e == .c; }", &.{"`Oops` has no error variant `.c`"});
 }
 
 test "diagnostics: `match` on a caught error is refused, whatever its set" {

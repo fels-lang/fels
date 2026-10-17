@@ -1489,9 +1489,6 @@ const Checker = struct {
     /// The `catch` expression that is a whole statement (`f() catch e { ... };`): its value is
     /// thrown away, so its handler may run to its end.
     discarded_catch: ?ast.NodeId = null,
-    /// The error names bound by the `catch` handlers being checked (innermost last). An error is
-    /// compared with a variant only through one of these.
-    catch_names: std.ArrayList([]const u8) = .empty,
     /// What a `yield` gives a value to: the `catch` handlers being checked (innermost last).
     yield_targets: std.ArrayList(YieldTarget) = .empty,
     /// Record the names declared in function bodies (`TypeEnv.local_bindings`), for the
@@ -1543,7 +1540,6 @@ const Checker = struct {
         self.diagnostics.deinit(self.allocator);
         if (self.constraint_decls_init) self.constraint_decls.deinit();
         if (self.exhaustive_matches_init) self.exhaustive_matches.deinit();
-        self.catch_names.deinit(self.allocator);
         self.yield_targets.deinit(self.allocator);
         self.top_consts.deinit(self.allocator);
         self.const_values.deinit(self.allocator);
@@ -3615,8 +3611,6 @@ const Checker = struct {
                 defer self.popScope();
                 try self.declareLocal(catch_expr.err_name, fallible.err.*);
                 self.noteLocal(.{ .name = catch_expr.err_name, .file = "", .kind = .try_error, .decl = expr.span, .scope_end = catch_expr.handler.span.end, .ty = fallible.err.* });
-                try self.catch_names.append(self.allocator, catch_expr.err_name);
-                defer _ = self.catch_names.pop();
                 const ok_ty = fallible.ok.*;
                 const value_discarded = self.discarded_catch != null and self.discarded_catch.? == expr.id;
                 try self.yield_targets.append(self.allocator, .{
@@ -6127,29 +6121,14 @@ const Checker = struct {
                 else => continue,
             };
             if (text.len < 2 or text[0] != '.') continue;
+            // An error is compared wherever it is, a parameter or a field as well as the name a
+            // `catch` bound: errors are numbered by name, the same in every set (`ir.ErrorCodes`).
             const variants = self.errorSetVariants(side.other) orelse continue;
-            // An error is inspected where it is caught, through the name `catch` bound. (The rule
-            // dates from when each set numbered its own variants and a copy could be read against
-            // the wrong set; errors are now numbered by name everywhere, see `ir.ErrorCodes`.)
-            if (!self.isCaughtName(side.other_expr)) {
-                self.emitError(side.other_expr.span, "an error can be compared with a variant only through the name a `catch` gave it, where it was caught", .{});
-                return error.SemanticFailed;
-            }
             const name = text[1..];
             for (variants) |v| if (std.mem.eql(u8, v.name, name)) return;
             self.emitError(side.variant.span, "`{s}` has no error variant `.{s}`", .{ self.formatTy(side.other), name });
             return error.SemanticFailed;
         }
-    }
-
-    /// Is `expr` the name bound by an enclosing `catch` handler?
-    fn isCaughtName(self: *Checker, expr: ast.Expr) bool {
-        const name = switch (expr.kind) {
-            .ident => |n| n,
-            else => return false,
-        };
-        for (self.catch_names.items) |bound| if (std.mem.eql(u8, bound, name)) return true;
-        return false;
     }
 
     /// A call through a function-pointer variable, a local or a global: check the
@@ -6541,7 +6520,6 @@ const Checker = struct {
         const diagnostics_len = self.diagnostics.items.len;
         const scopes_len = self.scope_stack.items.len;
         const zones_len = self.active_zones.items.len;
-        const catch_names_len = self.catch_names.items.len;
         const yield_targets_len = self.yield_targets.items.len;
         const saved_record = self.record_locals;
         const saved_loop = self.loop_depth;
@@ -6561,7 +6539,6 @@ const Checker = struct {
         self.env.generic_instantiations.shrinkRetainingCapacity(instantiations_len);
         while (self.scope_stack.items.len > scopes_len) self.popScope();
         self.active_zones.shrinkRetainingCapacity(zones_len);
-        self.catch_names.shrinkRetainingCapacity(catch_names_len);
         self.yield_targets.shrinkRetainingCapacity(yield_targets_len);
         self.record_locals = saved_record;
         self.loop_depth = saved_loop;
