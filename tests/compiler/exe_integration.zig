@@ -1211,6 +1211,33 @@ test "exe: an error's payload is read back, whatever its type" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_payload_kinds_o2", 2, true));
 }
 
+test "exe: negative numbers and characters are match patterns" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `-1 =>` and `'a' =>` were parse errors: a parser had to match codes (`97 =>`) or guards.
+    const src =
+        \\sign :: fn(n: i32) -> i32 { return match n { -1 => 10, 0 => 20, 1, 2 => 30, -100..-2 => 40, else => 50 }; }
+        \\kind :: fn(c: u8) -> i32 {
+        \\    match c {
+        \\        'a'..='z' => { return 1; },
+        \\        'A'..='Z' => { return 2; },
+        \\        '0'..='9', '_' => { return 3; },
+        \\        ' ', '\t', '\n' => { return 4; },
+        \\        else => { return 5; },
+        \\    }
+        \\}
+        \\calc :: fn() -> i32 {
+        \\    return sign(-1) + sign(0) + sign(2) + sign(-50) + sign(7) + kind('q') * 100 + kind('Q') * 200 + kind('_') * 300 + kind('\t') * 400 + kind('#') * 500;
+        \\}
+        \\X :: #run calc();
+        \\main :: fn() -> i32 { if calc() != 10 + 20 + 30 + 40 + 50 + 100 + 400 + 900 + 1600 + 2500 { return 1; } if X != calc() { return 2; } return 42; }
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_match_char_neg", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_match_char_neg_o2", 2, true));
+}
+
 test "exe: a top-level #if chooses the declarations of the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

@@ -1202,6 +1202,11 @@ pub const Parser = struct {
             const vname = try self.expect(.ident, "expected variant name");
             try patterns.append(self.allocator, .{ .enum_variant = vname.text(self.source) });
         };
+        // Numbers and ranges mix in one arm: `'0'..='9', '_' => …`.
+        if (first == .range or first == .int_values) while (self.check(.comma) and self.intPatternAt(1)) {
+            _ = self.advance(); // comma
+            try patterns.append(self.allocator, try self.parseMatchPattern());
+        };
         return patterns.toOwnedSlice(self.allocator);
     }
 
@@ -1219,7 +1224,7 @@ pub const Parser = struct {
             return .{ .strings = try values.toOwnedSlice(self.allocator) };
         }
 
-        if (self.check(.int_lit)) {
+        if (self.intPatternAt(0)) {
             const first = try self.parseExpr(0);
             if (self.match(.dot_dot) or self.match(.dot_dot_eq)) {
                 const inclusive = self.previous().kind == .dot_dot_eq;
@@ -1229,7 +1234,7 @@ pub const Parser = struct {
             var values: std.ArrayList(ast.Expr) = .empty;
             errdefer values.deinit(self.allocator);
             try values.append(self.allocator, first);
-            while (self.check(.comma) and self.peekKind(1) == .int_lit) {
+            while (self.check(.comma) and self.intPatternAt(1)) {
                 _ = self.advance();
                 try values.append(self.allocator, try self.parseExpr(0));
             }
@@ -1241,8 +1246,18 @@ pub const Parser = struct {
             return .{ .enum_variant = vname.text(self.source) };
         }
 
-        const id = try self.expect(.ident, "expected a match pattern (`.variant`, integer, string, a name, or `else`)");
+        const id = try self.expect(.ident, "expected a match pattern (`.variant`, an integer or character, a string, a name, or `else`)");
         return .{ .binding = id.text(self.source) };
+    }
+
+    /// Whether the token `offset` ahead starts an integer pattern: a number, a character
+    /// literal (`'a'`, its code point), or either after a `-`.
+    fn intPatternAt(self: *Parser, offset: usize) bool {
+        const kind = self.peekKind(offset);
+        if (kind == .int_lit or kind == .char_lit) return true;
+        if (kind != .minus) return false;
+        const next = self.peekKind(offset + 1);
+        return next == .int_lit or next == .char_lit;
     }
 
     /// Optional payload binding after a pattern: `|x|`.
