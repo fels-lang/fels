@@ -130,14 +130,16 @@ File as Writer {
 You can implicitly coerce a pointer to a concrete type into an interface pointer.
 Calls through an interface pointer use a vtable for dynamic dispatch.
 
+With the `Writer` and `File` above:
+
 ```fels
 process :: fn(w: *Writer) -> void ! IoError {
     w.write("Hello")?;
 }
 
-main :: fn() {
+use_file :: fn() {
     f: File = .{ .handle = 1 };
-    
+
     // Implicit coercion from *File to *Writer
     process(&f) catch err { return; };
 }

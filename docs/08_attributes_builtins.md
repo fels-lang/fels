@@ -191,6 +191,20 @@ constant. `#run expr` is an expression and may initialise a top-level constant; 
 block form `#run { … }` is a statement and, like `#if`, only appears inside a function.
 
 ```fels
+compute_size :: fn() -> i32 { return 16 * 4; }
+
+make_crc_table :: fn() -> [256]u32 {
+    table: [256]u32 = .{};
+    for i in 0..256 {
+        c := i as u32;
+        for k in 0..8 { c = if c & 1 != 0 { 0xEDB88320 ^ (c >> 1) } else { c >> 1 }; }
+        table[i] = c;
+    }
+    return table;
+}
+
+warm_up :: fn() { _ := make_crc_table(); }
+
 // As an expression, including at the top level
 SIZE :: #run compute_size();
 
@@ -200,9 +214,9 @@ CRC: [256]u32 = #run make_crc_table();
 // As a block statement, inside a function
 main :: fn() -> i32 {
     #run {
-        compute_lookup_tables();
+        warm_up();
     }
-    return 0;
+    return SIZE + (CRC[1] & 0) as i32;
 }
 ```
 What a `#run` can return, what it can read (static data, read-only) and what is refused is in
