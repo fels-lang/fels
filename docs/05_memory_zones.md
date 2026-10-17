@@ -1,12 +1,12 @@
 # Memory & Zones
 
-No garbage collector, no hidden allocations. Memory is managed with **zones** —
-lexically-scoped arenas — and **borrowing** moves it between scopes without breaking
-ownership.
+Fels has no garbage collector and no hidden allocations. You manage memory with **zones**,
+which are arenas tied to a lexical scope, and **borrowing** moves that memory between scopes
+without breaking ownership.
 
 ## Zone Blocks
 
-A zone block defines a lexical scope and creates an allocation arena tied to that scope.
+A zone block opens a lexical scope and creates an allocation arena that belongs to that scope.
 
 ```fels
 zone scratch: Arena {
@@ -26,21 +26,21 @@ zone scratch: Arena {
 }
 ```
 
-- Currently, `Arena` is the only supported zone kind.
+- For now, `Arena` is the only supported zone kind.
 - You cannot nest zones with the same name.
 - Memory allocated in a zone lives exactly as long as the zone's block.
 
 ### The handle is a real `std.heap.Arena`
 
-A zone handle **is** a [`std.heap.Arena`](07_stdlib.md) — the same chunked bump
-allocator you can construct manually with `std.heap.make()`. Entering the zone is
-`handle := make()`; every exit path (normal, `return`, `break`, `continue`,
-`fail`) runs `deinit()` automatically, so the arena is always drained on the way
-out. You never write `make`/`deinit` yourself, and the module does not need to
-`#import std.heap` — the compiler injects it whenever a zone block is present.
+A zone handle **is** a [`std.heap.Arena`](07_stdlib.md), the same chunked bump allocator you
+can construct by hand with `std.heap.make()`. Entering the zone amounts to `handle := make()`.
+Every exit path (normal, `return`, `break`, `continue`, `fail`) runs `deinit()` automatically,
+so the arena is always drained on the way out. You never write `make`/`deinit` yourself. The
+module does not need to `#import std.heap` either, because the compiler injects it whenever a
+zone block is present.
 
-Because the handle is a full `Arena`, the entire library API is available on it,
-not just `new`/`new_slice`:
+Because the handle is a full `Arena`, the whole library API is available on it, not only
+`new`/`new_slice`:
 
 ```fels
 zone z: Arena {
@@ -56,15 +56,15 @@ zone z: Arena {
 }
 ```
 
-`new`/`new_slice` remain as the zone-flavored spellings of `alloc_one`/`alloc`.
-`free` is a compile-time-checked no-op: a bump arena reclaims everything at once
-on zone exit, so freeing a single allocation only verifies ownership.
+`new`/`new_slice` stay as the zone-flavored spellings of `alloc_one`/`alloc`. `free` is a
+no-op that the compiler checks. A bump arena reclaims everything at once when the zone exits,
+so freeing a single allocation only verifies ownership.
 
 ## Ownership and Escape Analysis
 
-When you allocate memory in a zone, the resulting pointer (or slice) is "owned"
-by that zone. Fels performs strict escape analysis at compile time to ensure
-zone-allocated memory does not outlive its arena.
+When you allocate memory in a zone, the pointer (or slice) you get back is "owned" by that
+zone. Fels runs a strict escape analysis at compile time to make sure zone-allocated memory
+does not outlive its arena.
 
 ```fels
 escape_example :: fn() -> []u8 {
@@ -78,18 +78,22 @@ escape_example :: fn() -> []u8 {
 ```
 
 **Ownership Rules:**
-1. **Assignment propagation**: Storing a zone-owned value into a variable makes that variable zone-owned.
-2. **No Escape**: Zone-owned values cannot escape to outer scopes or be returned from functions.
-3. **Restricted Passing**: Zone-owned values can only be passed as arguments to function parameters explicitly marked with `borrow`.
-4. **Valid Freeing**: You can only `free` a value using the zone handle that owns it.
+1. **Assignment propagation**: Storing a zone-owned value in a variable makes that variable
+   zone-owned too.
+2. **No Escape**: A zone-owned value cannot escape to an outer scope or be returned from a
+   function.
+3. **Restricted Passing**: A zone-owned value can only be passed as an argument to a function
+   parameter that is explicitly marked with `borrow`.
+4. **Valid Freeing**: You can only `free` a value through the zone handle that owns it.
 
-The same check keeps a function's own frame in it: the address of a local, a parameter or a
-temporary cannot be returned (see [Pointer Types](02_types.md#single-pointers)).
+The same check keeps addresses in a function's own frame from leaving it. You cannot return
+the address of a local, a parameter or a temporary
+(see [Pointer Types](02_types.md#single-pointers)).
 
 ## Borrow Parameters
 
-If you want to pass zone-allocated memory to a function, the function must declare
-that it is borrowing the memory using the `borrow` keyword.
+To pass zone-allocated memory to a function, the function must declare that it borrows the
+memory. It does that with the `borrow` keyword.
 
 ```fels
 // The `borrow` keyword tells the compiler this slice is temporary
@@ -109,17 +113,20 @@ main :: fn() {
 ```
 
 **Borrowing Rules:**
-1. `borrow` is only valid as the **outermost** qualifier of a function parameter: `borrow *T`,
-   `borrow []T`, or a value that holds one, `borrow Parser` for a struct (an optional, an array).
+1. `borrow` is only valid as the **outermost** qualifier of a function parameter. That means
+   `borrow *T`, `borrow []T`, or a value that holds one: `borrow Parser` for a struct, and the
+   same for an optional or an array.
 2. You cannot nest `borrow` qualifiers (e.g., `borrow borrow *T` is invalid).
-3. `borrow` is **not valid** on return types, local variables, struct fields, or const declarations.
+3. `borrow` is **not valid** on return types, local variables, struct fields, or const
+   declarations.
 4. **A value made from borrowed data is borrowed.** A struct or array local that holds a
-   borrowed value (built with it, or with a field or element set to it) is borrowed in turn: it
-   can be read, changed and passed to a `borrow` parameter, and it cannot be returned or passed
-   on to a parameter that does not borrow. A borrowed value cannot be stored through a pointer or
-   into a global, which would outlive the borrow.
-5. Borrowed values cannot be explicitly freed.
-6. A borrowed value is transparent to type-checking inside the function — you interact with it just like a normal pointer or slice.
+   borrowed value (built with it, or with a field or element set to it) is borrowed in turn.
+   You can read it, change it and pass it to a `borrow` parameter, but you cannot return it or
+   pass it on to a parameter that does not borrow. A borrowed value cannot be stored through a
+   pointer or into a global, because either would outlive the borrow.
+5. A borrowed value cannot be freed explicitly.
+6. Inside the function, a borrowed value is transparent to type-checking, so you work with it
+   like a normal pointer or slice.
 
 A parser over a borrowed buffer is a plain struct:
 
@@ -139,7 +146,8 @@ count_a :: fn(text: borrow []const u8) -> i32 {
 
 ## Example: Building a Temporary String
 
-Zones are highly effective for temporary processing where you'd normally use a GC or manually manage malloc/free:
+Zones work well for temporary processing, where you would otherwise use a GC or manage
+malloc/free by hand:
 
 ```fels
 #import std.io.{ println };
