@@ -902,8 +902,11 @@ fn hasFlag(options: []const []const u8, name: []const u8) bool {
 pub const RunOptions = struct {
     /// A requested target/step name (`fels build <name>`), or null for the default.
     target: ?[]const u8 = null,
-    /// Override every artifact to a release optimization level.
+    /// `--release`: build the artifacts left at `debug` as `release_safe` (optimized, with the
+    /// safety checks).
     release: bool = false,
+    /// `--release-fast`: build them as `release_fast` (optimized, without the safety checks).
+    release_fast: bool = false,
     /// Just print the artifacts and steps, build nothing.
     list: bool = false,
     quiet: bool = false,
@@ -1280,7 +1283,9 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
     }
     lib_paths.append(a, base_dir) catch return error.OutOfMemory;
 
-    const opt_level: u2 = if (opts.release and art.opt == 0) 2 else art.opt;
+    // `--release` makes a debug artifact release_safe
+    const mode = modeSettings(releaseMode(opts, art.opt));
+    const opt_level = mode.opt_level;
     const is_lib = art.kind == .shared_library;
     // `strip`: ld.lld leaves out the symbol table. A Windows output has none to begin with.
     var link_flags: std.ArrayList([]const u8) = .empty;
@@ -1369,6 +1374,7 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
     // last build read (sources, std, build_options, the libraries it linked).
     const key = try settingsKey(io, plan, art, .{
         .opt_level = opt_level,
+        .safety = mode.safety,
         .lib_paths = lib_paths.items,
         .libs = libs.items,
         .link_flags = link_flags.items,
@@ -1391,6 +1397,7 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
         .exe_path = if (stop_at_obj) null else out_path,
         .dll = is_lib,
         .opt_level = opt_level,
+        .safety = mode.safety,
         .llvm_bin = opts.llvm_bin,
         .lib_paths = lib_paths.items,
         .extra_libs = libs.items,
@@ -1559,6 +1566,7 @@ fn copyDir(gpa: std.mem.Allocator, io: std.Io, src: []const u8, dest: []const u8
 
 const KeyParts = struct {
     opt_level: u2,
+    safety: bool,
     lib_paths: []const []const u8,
     libs: []const []const u8,
     link_flags: []const []const u8,
@@ -1588,7 +1596,7 @@ fn settingsKey(io: std.Io, plan: *BuildPlan, art: Artifact, parts: KeyParts) Bui
     str(&h, art.root);
     str(&h, @tagName(art.kind));
     str(&h, @tagName(art.target_os));
-    h.update(&.{ parts.opt_level, art.subsystem, @intFromBool(art.target_gnu), @intFromBool(art.strip), @intFromBool(parts.need_libc), @intFromBool(parts.honor_defaultlibs) });
+    h.update(&.{ parts.opt_level, @intFromBool(parts.safety), art.subsystem, @intFromBool(art.target_gnu), @intFromBool(art.strip), @intFromBool(parts.need_libc), @intFromBool(parts.honor_defaultlibs) });
     h.update(std.mem.asBytes(&art.stack));
     str(&h, art.sysroot);
     str(&h, art.entry orelse "");
@@ -1730,7 +1738,8 @@ fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
     defer pipeline.module_roots = &.{};
 
     const filters = if (opts.run_args.len != 0) opts.run_args else step.test_filters.items;
-    const opt_level: u2 = if (opts.release and step.test_opt == 0) 2 else step.test_opt;
+    const mode = modeSettings(releaseMode(opts, step.test_opt));
+    const opt_level = mode.opt_level;
     const out_dir = ".zig-cache/felstest";
     std.Io.Dir.cwd().createDirPath(io, out_dir) catch {};
 
@@ -1763,6 +1772,7 @@ fn runTestDir(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []
                 .obj_path = obj,
                 .exe_path = exe,
                 .opt_level = opt_level,
+                .safety = mode.safety,
                 .llvm_bin = opts.llvm_bin,
                 .lib_paths = lib_paths.items,
                 .extra_libs = libs.items,
@@ -1858,6 +1868,28 @@ fn joinPath(a: std.mem.Allocator, base: []const u8, rel: []const u8) ![]const u8
 
 fn readSource(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?[]const u8 {
     return std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch null;
+}
+
+/// What a build mode (`Optimize` in std.build) compiles with. `release_fast` is the only one
+/// without the runtime safety checks; `release_safe` is optimized as fully as `release_fast`
+/// (it was `-O1`, and no checks came with it either).
+const ModeSettings = struct { opt_level: u2, safety: bool };
+
+/// The mode an artifact at `mode` builds in: `--release` and `--release-fast` change `debug`.
+fn releaseMode(opts: RunOptions, mode: u2) u2 {
+    if (mode != 0) return mode;
+    if (opts.release_fast) return 2;
+    if (opts.release) return 1;
+    return 0;
+}
+
+fn modeSettings(mode: u2) ModeSettings {
+    return switch (mode) {
+        0 => .{ .opt_level = 0, .safety = true }, // debug
+        1 => .{ .opt_level = 2, .safety = true }, // release_safe
+        2 => .{ .opt_level = 2, .safety = false }, // release_fast
+        3 => .{ .opt_level = 3, .safety = true }, // release_small
+    };
 }
 
 fn optName(opt: u2) []const u8 {

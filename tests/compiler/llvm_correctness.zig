@@ -372,7 +372,7 @@ test "LLVM debug: integer overflow inserts a located runtime check" {
     try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "integer overflow at overflow.fels:1:") != null);
 }
 
-test "LLVM release: division omits debug runtime check" {
+test "LLVM release: division keeps its runtime check unless safety is off" {
     if (comptime !fels.llvm_enabled) return;
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -386,13 +386,22 @@ test "LLVM release: division omits debug runtime check" {
     defer fe.deinit(arena.allocator());
     const module = try fels.lowerFrontend(arena.allocator(), fe);
 
-    var backend = fels.LlvmBackend.init(arena.allocator(), "div_release");
-    defer backend.deinit();
-    backend.setOptLevel(2);
-    try backend.lower(module);
-    const llvm_ir = try backend.getIrText(arena.allocator());
+    // The checks used to come with -O0 alone, so a release build divided by zero unchecked.
+    var checked = fels.LlvmBackend.init(arena.allocator(), "div_release");
+    defer checked.deinit();
+    checked.setOptLevel(2);
+    try checked.lower(module);
+    const checked_ir = try checked.getIrText(arena.allocator());
+    try std.testing.expect(std.mem.indexOf(u8, checked_ir, "check_fail") != null);
 
-    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "check_fail") == null);
+    // `release_fast` / `--unchecked` leave them out.
+    var unchecked = fels.LlvmBackend.init(arena.allocator(), "div_unchecked");
+    defer unchecked.deinit();
+    unchecked.setOptLevel(2);
+    unchecked.setSafety(false);
+    try unchecked.lower(module);
+    const unchecked_ir = try unchecked.getIrText(arena.allocator());
+    try std.testing.expect(std.mem.indexOf(u8, unchecked_ir, "check_fail") == null);
 }
 
 test "LLVM debug: shift overflow inserts a runtime check" {

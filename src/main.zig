@@ -62,6 +62,8 @@ const Options = struct {
     lib_paths: std.ArrayList([]const u8) = .empty,
     extra_libs: std.ArrayList([]const u8) = .empty,
     opt_level: u2 = 0,
+    /// The runtime safety checks; `--unchecked` and `--release-fast` turn them off.
+    safety: bool = true,
     quiet: bool = false,
     show_time: bool = false,
     dll: bool = false,
@@ -279,6 +281,11 @@ pub fn main(init: std.process.Init) u8 {
             opts.opt_level = 1;
         } else if (eqAny(a, &.{ "-O2", "--release" })) {
             opts.opt_level = 2;
+        } else if (std.mem.eql(u8, a, "--release-fast")) {
+            opts.opt_level = 2;
+            opts.safety = false;
+        } else if (std.mem.eql(u8, a, "--unchecked")) {
+            opts.safety = false;
         } else if (std.mem.eql(u8, a, "-O3")) {
             opts.opt_level = 3;
         } else if (eqAny(a, &.{ "-q", "--quiet" })) {
@@ -512,6 +519,7 @@ fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source:
         .source = source,
         .obj_path = obj_path,
         .opt_level = opts.opt_level,
+        .safety = opts.safety,
         .target_os = opts.target_os,
         .no_entry = opts.no_entry,
         .link_libc = opts.link_libc,
@@ -543,6 +551,7 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
         .exe_path = exe_path,
         .dll = opts.dll,
         .opt_level = opts.opt_level,
+        .safety = opts.safety,
         .target_os = opts.target_os,
         .link_libc = opts.link_libc,
         .sysroot = opts.sysroot,
@@ -621,6 +630,8 @@ fn cmdBuildDir(allocator: std.mem.Allocator, io: std.Io, environ: *const std.pro
             after_ddash = true;
         } else if (eqAny(arg, &.{ "-O2", "--release" })) {
             opts.release = true;
+        } else if (std.mem.eql(u8, arg, "--release-fast")) {
+            opts.release_fast = true;
         } else if (std.mem.eql(u8, arg, "--list")) {
             opts.list = true;
         } else if (eqAny(arg, &.{ "-q", "--quiet" })) {
@@ -825,7 +836,8 @@ fn printUsage() void {
         \\  fels build run [-- args] build the default exe, then run it
         \\  fels build <name>        build a named artifact or run a named step
         \\  fels build --list        list the project's artifacts and steps
-        \\  fels build --release     build at release optimization
+        \\  fels build --release     build optimized, with the safety checks (release_safe)
+        \\  fels build --release-fast  build optimized, without them (release_fast)
         \\  fels build install       copy the installed artifacts to dist/ (--prefix <dir>)
         \\  fels build --offline     use only fels.lock and the package cache, never git
         \\  fels build --frozen      stop when fels.lock would change (for CI)
@@ -834,6 +846,8 @@ fn printUsage() void {
         \\options:
         \\  -o <path>              output file (default: derived from the source name)
         \\  -O0 / -O1 / -O2 / -O3  optimisation level   (--release = -O2)
+        \\  --unchecked            no runtime safety checks (bounds, null, overflow,
+        \\                         division by zero, shifts); --release-fast = -O2 --unchecked
         \\  -t, --time             print phase timings (build/object)
         \\  -q, --quiet            no status line or timings
         \\  --llvm-path <dir>      LLVM root (forward slashes)

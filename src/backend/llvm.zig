@@ -26,10 +26,14 @@ pub const LlvmBackend = struct {
         self.cg.deinit();
     }
 
-    /// Configure optimization/safety mode before lowering.
-    /// Level 0 inserts debug runtime checks; higher levels omit them.
+    /// Configure the optimization level before lowering.
     pub fn setOptLevel(self: *LlvmBackend, opt_level: u2) void {
         self.cg.opt_level = opt_level;
+    }
+
+    /// Whether lowering inserts the runtime safety checks (see `ModuleCg.safety`).
+    pub fn setSafety(self: *LlvmBackend, on: bool) void {
+        self.cg.safety = on;
     }
 
     /// Set the target OS (cross-compilation). Must be called before `lower`.

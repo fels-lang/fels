@@ -85,8 +85,13 @@ pub const ModuleCg = struct {
     /// module's real data layout isn't stamped on until just before emit).
     /// Lazily created by `targetData`.
     target_data: ?llvm.LLVMTargetDataRef = null,
-    /// Optimisation level (0 = debug). Debug builds insert runtime safety checks.
+    /// Optimisation level (0 = debug).
     opt_level: u2 = 0,
+    /// Insert the runtime safety checks: index bounds, null pointers, integer overflow,
+    /// division by zero and shift amounts. On at every opt level unless the build asks for
+    /// none (`release_fast`, `--unchecked`); they used to come with `-O0` only, so a release
+    /// build indexed past the end of a slice without a word.
+    safety: bool = true,
     /// The OS we are generating code for. Defaults to the host; overridden by
     /// `--target` for cross-compilation. Drives the entry point, `__chkstk`, and
     /// `_fltused`.

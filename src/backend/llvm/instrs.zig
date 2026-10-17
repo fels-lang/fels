@@ -53,15 +53,15 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         .field_addr => |f| lowerField(cg, fncg, f, instr.ty, true, instr.location),
 
         .index => |ix| blk: {
-            // Debug: bounds check before loading.
-            if (cg.opt_level == 0) emitBoundsCheck(cg, fncg, ix, instr.location);
+            // Safety: bounds check before loading.
+            if (cg.safety) emitBoundsCheck(cg, fncg, ix, instr.location);
             const elem_ty = types.lower(cg, instr.ty);
             const gep = lowerIndexAddress(cg, fncg, ix, instr.ty, instr.location) orelse break :blk null;
             break :blk llvm.LLVMBuildLoad2(cg.builder, elem_ty, gep, "");
         },
         .index_addr => |ix| blk: {
-            // Debug: bounds check before taking address (a slice's start checks its own).
-            if (cg.opt_level == 0 and ix.checked) emitBoundsCheck(cg, fncg, ix, instr.location);
+            // Safety: bounds check before taking address (a slice's start checks its own).
+            if (cg.safety and ix.checked) emitBoundsCheck(cg, fncg, ix, instr.location);
             break :blk lowerIndexAddress(cg, fncg, ix, pointerChild(instr.ty) orelse .unknown, instr.location);
         },
 
@@ -362,14 +362,14 @@ fn lowerIndexAddress(
         .ptr => |inner| switch (inner.*) {
             .array => |arr| {
                 const base_ptr = resolveVal(cg, fncg, ix.base, base_ty);
-                if (cg.opt_level == 0) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
+                if (cg.safety) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
                 const zero = llvm.LLVMConstInt(llvm.LLVMInt64TypeInContext(cg.ctx), 0, 0);
                 var indices = [_]llvm.LLVMValueRef{ zero, idx };
                 return llvm.LLVMBuildGEP2(cg.builder, types.lower(cg, .{ .array = arr }), base_ptr, &indices, 2, "");
             },
             else => {
                 const base_ptr = resolveVal(cg, fncg, ix.base, base_ty);
-                if (cg.opt_level == 0) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
+                if (cg.safety) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
                 var indices = [_]llvm.LLVMValueRef{idx};
                 return llvm.LLVMBuildGEP2(cg.builder, elem_lty, base_ptr, &indices, 1, "");
             },
@@ -422,15 +422,15 @@ fn lowerUnary(cg: *ModuleCg, fncg: anytype, u: ir.UnaryInstr, ty: ir.IrType, loc
             // Float negation: `0.0 - v` (LLVMBuildNeg is integer-only and would
             // emit an invalid `sub double`).
             llvm.LLVMBuildFSub(bl, llvm.LLVMConstNull(llvm.LLVMTypeOf(v)), v, "")
-        else if (cg.opt_level == 0)
+        else if (cg.safety)
             lowerOverflowingBinary(cg, fncg.llvm_fn, llvm.LLVMConstNull(llvm.LLVMTypeOf(v)), v, "llvm.ssub.with.overflow", location)
         else
             llvm.LLVMBuildNeg(bl, v, ""),
         .not => llvm.LLVMBuildNot(bl, v, ""),
         .bit_not => llvm.LLVMBuildNot(bl, v, ""),
         .deref => blk: {
-            // Debug: null-pointer dereference check.
-            if (cg.opt_level == 0) emitNullCheck(cg, fncg.llvm_fn, v, location);
+            // Safety: null-pointer dereference check.
+            if (cg.safety) emitNullCheck(cg, fncg.llvm_fn, v, location);
             const loaded = llvm.LLVMBuildLoad2(cg.builder, types.lower(cg, ty), v, "");
             markPackedAccess(loaded, v);
             break :blk loaded;
@@ -505,20 +505,20 @@ fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType, l
             }
             break :blk if (is_float)
                 llvm.LLVMBuildFAdd(bl, lhs, rhs, "")
-            else if (cg.opt_level == 0)
+            else if (cg.safety)
                 lowerOverflowingBinary(cg, fncg.llvm_fn, lhs, rhs, if (is_unsigned) "llvm.uadd.with.overflow" else "llvm.sadd.with.overflow", location)
             else
                 llvm.LLVMBuildAdd(bl, lhs, rhs, "");
         },
         .sub => if (is_float)
             llvm.LLVMBuildFSub(bl, lhs, rhs, "")
-        else if (cg.opt_level == 0)
+        else if (cg.safety)
             lowerOverflowingBinary(cg, fncg.llvm_fn, lhs, rhs, if (is_unsigned) "llvm.usub.with.overflow" else "llvm.ssub.with.overflow", location)
         else
             llvm.LLVMBuildSub(bl, lhs, rhs, ""),
         .mul => if (is_float)
             llvm.LLVMBuildFMul(bl, lhs, rhs, "")
-        else if (cg.opt_level == 0)
+        else if (cg.safety)
             lowerOverflowingBinary(cg, fncg.llvm_fn, lhs, rhs, if (is_unsigned) "llvm.umul.with.overflow" else "llvm.smul.with.overflow", location)
         else
             llvm.LLVMBuildMul(bl, lhs, rhs, ""),
@@ -530,8 +530,8 @@ fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType, l
         .div => if (is_float)
             llvm.LLVMBuildFDiv(bl, lhs, rhs, "")
         else blk: {
-            // Debug: check for division by zero.
-            if (cg.opt_level == 0) {
+            // Safety: check for division by zero.
+            if (cg.safety) {
                 const zero = llvm.LLVMConstInt(llvm.LLVMTypeOf(rhs), 0, 0);
                 const is_zero = llvm.LLVMBuildICmp(bl, llvm.LLVMIntEQ, rhs, zero, "");
                 emitRuntimeCheck(cg, fncg.llvm_fn, is_zero, "division by zero", location);
@@ -545,8 +545,8 @@ fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType, l
         .rem => if (is_float)
             llvm.LLVMBuildFRem(bl, lhs, rhs, "")
         else blk: {
-            // Debug: check for division by zero (modulo).
-            if (cg.opt_level == 0) {
+            // Safety: check for division by zero (modulo).
+            if (cg.safety) {
                 const zero = llvm.LLVMConstInt(llvm.LLVMTypeOf(rhs), 0, 0);
                 const is_zero = llvm.LLVMBuildICmp(bl, llvm.LLVMIntEQ, rhs, zero, "");
                 emitRuntimeCheck(cg, fncg.llvm_fn, is_zero, "remainder by zero", location);
@@ -558,8 +558,8 @@ fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType, l
                 llvm.LLVMBuildSRem(cg.builder, lhs, rhs, "");
         },
         .shl => blk: {
-            // Debug: check shift amount < bit width.
-            if (cg.opt_level == 0) {
+            // Safety: check shift amount < bit width.
+            if (cg.safety) {
                 const rhs_ty = llvm.LLVMTypeOf(rhs);
                 const width = llvm.LLVMGetIntTypeWidth(llvm.LLVMTypeOf(lhs));
                 const limit = llvm.LLVMConstInt(rhs_ty, width, 0);
@@ -569,8 +569,8 @@ fn lowerBinary(cg: *ModuleCg, fncg: anytype, b: ir.BinaryInstr, ty: ir.IrType, l
             break :blk llvm.LLVMBuildShl(cg.builder, lhs, rhs, "");
         },
         .shr => blk: {
-            // Debug: check shift amount < bit width.
-            if (cg.opt_level == 0) {
+            // Safety: check shift amount < bit width.
+            if (cg.safety) {
                 const rhs_ty = llvm.LLVMTypeOf(rhs);
                 const width = llvm.LLVMGetIntTypeWidth(llvm.LLVMTypeOf(lhs));
                 const limit = llvm.LLVMConstInt(rhs_ty, width, 0);
@@ -986,7 +986,7 @@ fn lowerField(
             const idx = cg.fieldIndex(name, f.name) orelse return null;
             const struct_lty = cg.struct_types.get(name) orelse return null;
             const base_ptr = resolveVal(cg, fncg, f.base, base_ir_ty);
-            if (cg.opt_level == 0) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
+            if (cg.safety) emitNullCheck(cg, fncg.llvm_fn, base_ptr, location);
             const field_ptr = llvm.LLVMBuildStructGEP2(cg.builder, struct_lty, base_ptr, idx, "");
             if (want_addr) return field_ptr;
             // A `fn(...)` struct field is stored as a bare code pointer (structs.zig), whatever
