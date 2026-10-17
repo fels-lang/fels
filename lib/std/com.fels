@@ -290,9 +290,9 @@ pub check :: fn(hr: i32) -> void ! ComError {
 // header (see the ones below).
 
 pub IUnknownVtbl :: struct {
-    query_interface: fn(*IUnknown, *const Guid, **void) -> i32
-    add_ref:         fn(*IUnknown) -> u32
-    release:         fn(*IUnknown) -> u32
+    query_interface: extern fn(*IUnknown, *const Guid, **void) -> i32
+    add_ref:         extern fn(*IUnknown) -> u32
+    release:         extern fn(*IUnknown) -> u32
 }
 
 pub IUnknown :: struct {
@@ -315,12 +315,12 @@ pub IUnknown :: struct {
 // IInspectable: the base of every WinRT interface. The HSTRING it returns is std.winrt's
 // to read and release.
 pub IInspectableVtbl :: struct {
-    query_interface:        fn(*IInspectable, *const Guid, **void) -> i32
-    add_ref:                fn(*IInspectable) -> u32
-    release:                fn(*IInspectable) -> u32
-    get_iids:               fn(*IInspectable, *u32, **Guid) -> i32       // ULONG*, IID**: free the array with CoTaskMemFree
-    get_runtime_class_name: fn(*IInspectable, *usize) -> i32             // HSTRING*: an owned string
-    get_trust_level:        fn(*IInspectable, *i32) -> i32               // TrustLevel*
+    query_interface:        extern fn(*IInspectable, *const Guid, **void) -> i32
+    add_ref:                extern fn(*IInspectable) -> u32
+    release:                extern fn(*IInspectable) -> u32
+    get_iids:               extern fn(*IInspectable, *u32, **Guid) -> i32       // ULONG*, IID**: free the array with CoTaskMemFree
+    get_runtime_class_name: extern fn(*IInspectable, *usize) -> i32             // HSTRING*: an owned string
+    get_trust_level:        extern fn(*IInspectable, *i32) -> i32               // TrustLevel*
 }
 
 pub IInspectable :: struct {
@@ -338,13 +338,13 @@ pub IInspectable :: struct {
 
 // IActivationFactory: what a WinRT class's factory object offers for default construction.
 pub IActivationFactoryVtbl :: struct {
-    query_interface:  fn(*IActivationFactory, *const Guid, **void) -> i32
-    add_ref:          fn(*IActivationFactory) -> u32
-    release:          fn(*IActivationFactory) -> u32
-    get_iids:         fn(*IActivationFactory, *u32, **Guid) -> i32
-    get_runtime_class_name: fn(*IActivationFactory, *usize) -> i32
-    get_trust_level:  fn(*IActivationFactory, *i32) -> i32
-    activate_instance: fn(*IActivationFactory, **IInspectable) -> i32
+    query_interface:  extern fn(*IActivationFactory, *const Guid, **void) -> i32
+    add_ref:          extern fn(*IActivationFactory) -> u32
+    release:          extern fn(*IActivationFactory) -> u32
+    get_iids:         extern fn(*IActivationFactory, *u32, **Guid) -> i32
+    get_runtime_class_name: extern fn(*IActivationFactory, *usize) -> i32
+    get_trust_level:  extern fn(*IActivationFactory, *i32) -> i32
+    activate_instance: extern fn(*IActivationFactory, **IInspectable) -> i32
 }
 
 pub IActivationFactory :: struct {

@@ -3769,23 +3769,34 @@ test "exe: a capturing closure's environment lives on the enclosing zone" {
     try std.testing.expectEqual(@as(u32, 107), code);
 }
 
-test "exe: a fn-ptr struct field is a thin C pointer, not a fat closure" {
+test "exe: an extern fn struct field is a thin C pointer, a fn field a closure" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // A `fn(...)` field must be a single pointer (8 bytes) so the struct layout
-    // matches C structs like Win32 `WNDCLASSEXA` — a fat `{fn, env}` closure would
-    // make this 32. Layout: u32(4) + pad(4) + ptr(8) + u32(4) + tail pad(4) = 24.
+    // `extern fn(...)` is one pointer, so the layout matches a C struct such as Win32's
+    // `WNDCLASSEXA`: u32(4) + pad(4) + ptr(8) + u32(4) + tail pad(4) = 24. A `fn(...)` field
+    // is the `{fn, env}` closure it is anywhere (it was a thin pointer in a struct only, so a
+    // closure that captured could not be stored): 4 + 4 + 16 + 4 + 4 = 32.
     const code = try compileAndRun(arena.allocator(),
-        \\WC :: struct { a: u32, proc: fn(usize) -> isize, b: u32 }
+        \\WC :: struct { a: u32, proc: extern fn(usize) -> isize, b: u32 }
+        \\Cb :: struct { a: u32, proc: fn(usize) -> isize, b: u32 }
         \\handler :: fn(h: usize) -> isize { return 0isize; }
+        \\Counter :: struct { step: fn(i32) -> i32 }
         \\main :: fn() -> i32 {
         \\    wc: WC = .{ 1u32, handler, 2u32 };
-        \\    return core::sizeof(WC) as i32;
+        \\    if core::sizeof(WC) != 24 { return 1; }
+        \\    if core::sizeof(Cb) != 32 { return 2; }
+        \\    n := 0;
+        \\    zone z: Arena {
+        \\        k := 40;
+        \\        c: Counter = .{ fn(x: i32) -> i32 { return x + k; } };
+        \\        n = c.step(2);
+        \\    }
+        \\    return n;
         \\}
     , "exe_fnptr_field");
-    try std.testing.expectEqual(@as(u32, 24), code);
+    try std.testing.expectEqual(@as(u32, 42), code);
 }
 
 test "exe: a function pointer stored in a struct field can be called" {
@@ -4983,7 +4994,7 @@ const DllEntry = extern struct {
 };
 
 const dll_data_source =
-    \\Entry :: struct { abi: u32, init: fn(i32) -> i32, scale: fn(i32) -> i32, name: []const u8 }
+    \\Entry :: struct { abi: u32, init: extern fn(i32) -> i32, scale: extern fn(i32) -> i32, name: []const u8 }
     \\ent_init :: fn(x: i32) -> i32 { return x + 1; }
     \\ent_scale :: fn(x: i32) -> i32 { return x * 3; }
     \\
@@ -5685,21 +5696,20 @@ test "exe: a local array of `fn` values holds closures - named, lambda, capturin
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
-test "exe: a `fn` struct field and an `extern fn` element stay thin pointers next to a `fn` array" {
+test "exe: a `fn` struct field is a closure and an `extern fn` element a thin pointer, in arrays too" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // The array rule must not leak into structs: a `fn` FIELD keeps the 8-byte pointer a C struct
-    // needs, also when the struct is itself an array element, and an `extern fn` element is a bare
-    // code address wherever it sits. (A closure in `Box.op` would make `Box` 24 bytes, not 16.)
+    // A `fn` field is a `{fn, env}` closure, also when its struct is an array element (`Box` is
+    // 16 + 4 + pad = 24 bytes), and an `extern fn` element is a bare code address wherever it sits.
     const code = try compileAndRun(arena.allocator(),
         \\dbl :: fn(x: i32) -> i32 { return x * 2; }
         \\neg :: fn(x: i32) -> i32 { return -x; }
         \\Box :: struct { op: fn(i32) -> i32, n: i32 }
         \\Vt :: struct { ops: [2]extern fn(i32) -> i32 }
         \\main :: fn() -> i32 {
-        \\    if (core::sizeof(Box) as i32) != 16 { return 1; }
+        \\    if (core::sizeof(Box) as i32) != 24 { return 1; }
         \\    bs: [2]Box = .{ .{ dbl, 21 }, .{ neg, 9 } };
         \\    if bs[0].op(bs[0].n) != 42 { return 2; }
         \\    if bs[1].op(bs[1].n) != -9 { return 3; }

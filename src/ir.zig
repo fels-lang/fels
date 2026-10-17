@@ -3800,9 +3800,9 @@ const FunctionLowerer = struct {
                             };
                             break :blk try self.lowerZoneMethod(zone_name, zone_field.name, call.args, expr);
                         }
-                        // `b.f(args)` where `f` is a fn-pointer struct field → a THIN
-                        // indirect call through the stored pointer (no env: a struct
-                        // fn-ptr field is a thin C pointer, not a fat closure).
+                        // `b.f(args)` where `f` is a fn-pointer struct field → an indirect
+                        // call through the stored value: a closure's for `fn(...)`, a thin
+                        // C pointer's for `extern fn(...)`.
                         if (callee_ty == .fn_ptr) {
                             const fp = callee_ty.fn_ptr;
                             const callee_val = try self.lowerExpr(call.callee.*);
@@ -3826,7 +3826,7 @@ const FunctionLowerer = struct {
                                 .callee = callee_val,
                                 .args = try args.toOwnedSlice(self.allocator),
                                 .param_tys = try arg_ts.toOwnedSlice(self.allocator),
-                                .is_closure = false,
+                                .is_closure = !fp.thin,
                             } });
                         }
                     }
@@ -4568,15 +4568,13 @@ const FunctionLowerer = struct {
         }
     }
 
-    /// Whether the element `elem_ty` of a compound literal of aggregate type `parent` is stored as
-    /// a THIN raw function pointer (built with `lowerRawFnArg`) rather than as a function value.
-    /// A `fn(...)` struct FIELD is thin, so the layout matches a C struct (`structs.zig`), and an
-    /// `extern fn(...)` is thin wherever it sits. An ARRAY element of plain `fn` type is a
-    /// `{ fn, env }` closure like a local, a parameter or a slice element, so a named function, a
-    /// lambda and a local holding either all lower as ordinary values.
+    /// Whether the element `elem_ty` of a compound literal is stored as a THIN raw function
+    /// pointer (built with `lowerRawFnArg`) rather than as a function value: an `extern fn(...)`,
+    /// wherever it sits. A plain `fn(...)` is a `{ fn, env }` closure in a field and an array
+    /// element as in a local, so a named function, a lambda and a closure all go in.
     fn isThinFnSlot(parent: IrType, elem_ty: IrType) bool {
-        if (elem_ty != .fn_ptr) return false;
-        return parent != .array or elem_ty.fn_ptr.thin;
+        _ = parent;
+        return elem_ty == .fn_ptr and elem_ty.fn_ptr.thin;
     }
 
     /// The declared fields of a struct `IrType` (declaration order), or null if
@@ -4627,7 +4625,7 @@ const FunctionLowerer = struct {
                 diag_mod.printErrorAt(msg, self.file_name, self.source, span);
                 return error.LoweringFailed;
             };
-            if (fty == .fn_ptr)
+            if (fty == .fn_ptr and fty.fn_ptr.thin)
                 try args.append(self.allocator, try self.lowerRawFnArg(value))
             else
                 try args.append(self.allocator, try self.lowerExprAs(value, fty));
@@ -4818,7 +4816,7 @@ const FunctionLowerer = struct {
         while (i < fields.len) : (i += 1) {
             const dflt = fields[i].default orelse return;
             const fty = lowerSemaTypeWithEnv(self.allocator, fields[i].ty, self.types, self.symbols) catch IrType.unknown;
-            if (fty == .fn_ptr)
+            if (fty == .fn_ptr and fty.fn_ptr.thin)
                 try args.append(self.allocator, try self.lowerRawFnArg(dflt))
             else
                 try args.append(self.allocator, try self.lowerExprAs(dflt, fty));

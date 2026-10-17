@@ -499,12 +499,12 @@ const Generator = struct {
         };
     }
 
-    /// A C function type → Fels's inline function-pointer type `fn(args) -> ret`.
-    /// (Fels has no `Name :: fn(...)` type-alias syntax, so callbacks are always
-    /// expanded inline at their use site.)
+    /// A C function type → Fels's thin C function-pointer type `extern fn(args) -> ret`
+    /// (a plain `fn(...)` is a Fels closure, two words). Callbacks are expanded inline at their
+    /// use site.
     fn mapFnType(self: *Generator, fnproto: c.CXType) BindgenError![]const u8 {
         var buf: std.ArrayList(u8) = .empty;
-        try buf.appendSlice(self.arena, "fn(");
+        try buf.appendSlice(self.arena, "extern fn(");
         const nargs = @max(cl.clang_getNumArgTypes(fnproto), 0);
         var i: c_int = 0;
         while (i < nargs) : (i += 1) {
