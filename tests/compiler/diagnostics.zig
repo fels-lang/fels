@@ -1373,20 +1373,16 @@ test "diagnostics: an alias spelled like a constant is not lowered as a global" 
     try std.testing.expectEqual(@as(usize, 2), constants);
 }
 
-test "diagnostics: exponent notation gets its own message, with the number written out" {
+test "diagnostics: a float literal takes an exponent" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    // `1e5` used to say "unknown type `e5`": the lexer reads it as `1` with the suffix `e5`.
-    const int_msg = (try firstError(a, "main :: fn() -> i32 { x := 1e5; return 0; }")).?;
-    try std.testing.expect(std.mem.indexOf(u8, int_msg, "exponent notation `1e5` is not supported") != null);
-    try std.testing.expect(std.mem.indexOf(u8, int_msg, "`100000.0`") != null);
-    try std.testing.expect(std.mem.indexOf(u8, int_msg, "unknown type") == null);
-    const float_msg = (try firstError(a, "main :: fn() -> i32 { x := 1.5e3; return 0; }")).?;
-    try std.testing.expect(std.mem.indexOf(u8, float_msg, "exponent notation `1.5e3` is not supported") != null);
-    try std.testing.expect(std.mem.indexOf(u8, float_msg, "`1500.0`") != null);
+    // `1e5` was refused ("exponent notation is not supported"); it is a float, as `1.5e-3` is.
+    try expectNoError(a, "", "main :: fn() -> i32 { x := 1e5; y: f32 = 1.5e-3; z := 2E+10f32; return 0; }");
     // In a hex literal `e` is a digit.
     try std.testing.expect((try firstError(a, "main :: fn() -> i32 { x := 0x1e5; return x - 485; }")) == null);
+    // A float is no integer: `n: i32 = 1e3` is a type error, as `n: i32 = 1000.0` is.
+    try expectFirstError(a, "main :: fn() -> i32 { n: i32 = 1e3; return n; }", &.{"expected `i32`"});
 }
 
 test "diagnostics: a problem in a top level constant is reported once" {

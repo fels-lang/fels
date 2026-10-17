@@ -4655,6 +4655,27 @@ test "exe: a constant naming a function is that function" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_fn_alias_o2", 2, true));
 }
 
+test "exe: a float literal takes an exponent" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `1e5`, `1.5e-3`, `2E+2f32` and `2.5e2`; in `0x1e5` the `e` is a digit.
+    const src =
+        \\main :: fn() -> i32 {
+        \\    a := 1e5;
+        \\    b: f32 = 1.5e-3;
+        \\    c := 2E+2f32;
+        \\    d := 2.5e2;
+        \\    h := 0x1e5;
+        \\    if a != 100000.0 || b > 0.0016 || b < 0.0014 || c != 200.0 || d != 250.0 || h != 485 { return 1; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_float_exponent", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_float_exponent_o2", 2, true));
+}
+
 test "exe: a program without main does not build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
