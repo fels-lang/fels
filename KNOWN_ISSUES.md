@@ -75,7 +75,6 @@ These compile without a message and give a wrong result.
 - `F :: seven; F()` (a constant holding a function) fails.
 - No exponent notation for floats (`1e5`); the error now says so.
 - `#extern("msvcrt", "strlen")` does not link; the docs use `lstrlenA` instead.
-- Character literals and negative numbers are not `match` patterns (docs/03 shows the workaround).
 - A bare variant does not take an optional enum type: `o: ?Color = .green;` is "expected `?Color`,
   found `error`"; `Color.green` works.
 
