@@ -42,13 +42,13 @@ pub ProcessError :: errors {
 
 // Copy `s` into `buf`, NUL-terminate, and return a pointer to the start.
 proc_to_cstr :: fn(s: []const u8, buf: []u8) -> *const u8 ! ProcessError {
-    if s.len + 1usize > buf.len { fail .name_too_long; }
+    if s.len + 1 > buf.len { fail .name_too_long; }
     i := 0usize;
     while i < s.len {
         buf[i] = s[i];
-        i += 1usize;
+        i += 1;
     }
-    buf[s.len] = 0u8;
+    buf[s.len] = 0;
     return buf.ptr;
 }
 
@@ -62,26 +62,26 @@ pub current_pid :: fn() -> u32 {
 // The OS command line, copied into `out` (truncated if it doesn't fit).
 pub command_line :: fn(out: []u8) -> []const u8 {
     n := os_cmdline(out);
-    if n < 0i64 { return out[0usize..0usize]; }
-    return out[0usize..(n as usize)];
+    if n < 0 { return out[0..0usize]; }
+    return out[0..(n as usize)];
 }
 
 // The arguments the program was started with, the program first, in `a`. On Windows they are
 // split from the command line as the C runtime splits it (`split_command_line`); on Linux they
 // are as the kernel passed them.
 pub args :: fn(a: *Arena) -> [][]const u8 {
-    buf := alloc(u8, a, 32768usize);
+    buf := alloc(u8, a, 32768);
     n := os_args_raw(buf);
-    if n < 0i64 { return split_command_line(command_line(buf), a); }
+    if n < 0 { return split_command_line(command_line(buf), a); }
     out := vec::make([]const u8, a);
-    start: usize = 0usize;
-    i: usize = 0usize;
+    start: usize = 0;
+    i: usize = 0;
     while i < (n as usize) {
-        if buf[i] == 0u8 {
+        if buf[i] == 0 {
             out.push(buf[start..i]);
-            start = i + 1usize;
+            start = i + 1;
         }
-        i += 1usize;
+        i += 1;
     }
     if start < (n as usize) { out.push(buf[start..(n as usize)]); }
     return out.items();
@@ -94,70 +94,70 @@ pub args :: fn(a: *Arena) -> [][]const u8 {
 pub split_command_line :: fn(line: []const u8, a: *Arena) -> [][]const u8 {
     out := vec::make([]const u8, a);
     text := alloc(u8, a, line.len);
-    n: usize = 0usize;
-    i: usize = 0usize;
+    n: usize = 0;
+    i: usize = 0;
     // the program
-    if i < line.len && line[i] == 34u8 {
-        i += 1usize;
+    if i < line.len && line[i] == 34 {
+        i += 1;
         start := i;
-        while i < line.len && line[i] != 34u8 { i += 1usize; }
+        while i < line.len && line[i] != 34 { i += 1; }
         out.push(line[start..i]);
-        if i < line.len { i += 1usize; }
+        if i < line.len { i += 1; }
     } else {
         start := i;
-        while i < line.len && line[i] != 32u8 && line[i] != 9u8 { i += 1usize; }
+        while i < line.len && line[i] != 32 && line[i] != 9 { i += 1; }
         out.push(line[start..i]);
     }
     while true {
-        while i < line.len && (line[i] == 32u8 || line[i] == 9u8) { i += 1usize; }
+        while i < line.len && (line[i] == 32 || line[i] == 9) { i += 1; }
         if i >= line.len { break; }
         start := n;
         quoted := false;
         while i < line.len {
             c := line[i];
-            if !quoted && (c == 32u8 || c == 9u8) { break; }
-            if c == 92u8 {
-                slashes: usize = 0usize;
-                while i < line.len && line[i] == 92u8 {
-                    slashes += 1usize;
-                    i += 1usize;
+            if !quoted && (c == 32 || c == 9) { break; }
+            if c == 92 {
+                slashes: usize = 0;
+                while i < line.len && line[i] == 92 {
+                    slashes += 1;
+                    i += 1;
                 }
-                if i < line.len && line[i] == 34u8 {
-                    k: usize = 0usize;
-                    while k < slashes / 2usize {
-                        text[n] = 92u8;
-                        n += 1usize;
-                        k += 1usize;
+                if i < line.len && line[i] == 34 {
+                    k: usize = 0;
+                    while k < slashes / 2 {
+                        text[n] = 92;
+                        n += 1;
+                        k += 1;
                     }
-                    if slashes % 2usize == 1usize {
-                        text[n] = 34u8;
-                        n += 1usize;
-                        i += 1usize;
+                    if slashes % 2 == 1 {
+                        text[n] = 34;
+                        n += 1;
+                        i += 1;
                     }
                 } else {
-                    k: usize = 0usize;
+                    k: usize = 0;
                     while k < slashes {
-                        text[n] = 92u8;
-                        n += 1usize;
-                        k += 1usize;
+                        text[n] = 92;
+                        n += 1;
+                        k += 1;
                     }
                 }
                 continue;
             }
-            if c == 34u8 {
-                if quoted && i + 1usize < line.len && line[i + 1usize] == 34u8 {
-                    text[n] = 34u8;
-                    n += 1usize;
-                    i += 2usize;
+            if c == 34 {
+                if quoted && i + 1 < line.len && line[i + 1] == 34 {
+                    text[n] = 34;
+                    n += 1;
+                    i += 2;
                     continue;
                 }
                 quoted = !quoted;
-                i += 1usize;
+                i += 1;
                 continue;
             }
             text[n] = c;
-            n += 1usize;
-            i += 1usize;
+            n += 1;
+            i += 1;
         }
         out.push(text[start..n]);
     }
@@ -172,8 +172,8 @@ pub get_env :: fn(name: []const u8, out: []u8) -> ?[]const u8 {
     name_buf: [128]u8 = .{};
     cname := proc_to_cstr(name, name_buf[:]) catch err { return null; };
     n := os_get_env(cname, out);
-    if n < 0i64 { return null; }
-    return out[0usize..(n as usize)];
+    if n < 0 { return null; }
+    return out[0..(n as usize)];
 }
 
 // Set (or overwrite) an environment variable for the current process — and for
@@ -208,13 +208,13 @@ pub Child :: struct {
 // console/standard handles. On Linux the command runs via `/bin/sh -c`.
 pub spawn :: fn(command: []const u8) -> Child ! ProcessError {
     cmd_buf: [1024]u8 = .{};
-    if command.len + 1usize > cmd_buf.len { fail .command_too_long; }
+    if command.len + 1 > cmd_buf.len { fail .command_too_long; }
     i := 0usize;
     while i < command.len {
         cmd_buf[i] = command[i];
-        i += 1usize;
+        i += 1;
     }
-    cmd_buf[command.len] = 0u8;
+    cmd_buf[command.len] = 0;
     token := os_spawn(cmd_buf[:].ptr);
     if token == PROC_INVALID { fail .spawn_failed; }
     return .{ token };
@@ -223,7 +223,7 @@ pub spawn :: fn(command: []const u8) -> Child ! ProcessError {
 // Block until the child exits, then return its exit code.
 pub wait :: fn(self: *Child) -> u32 ! ProcessError {
     code := os_wait(self.token, true);
-    if code < 0i64 { fail .wait_failed; }
+    if code < 0 { fail .wait_failed; }
     return code as u32;
 }
 
@@ -231,8 +231,8 @@ pub wait :: fn(self: *Child) -> u32 ! ProcessError {
 // code if it has, or `null` if it's still running.
 pub try_wait :: fn(self: *Child) -> ?u32 ! ProcessError {
     code := os_wait(self.token, false);
-    if code == -2i64 { return null; }      // still running
-    if code < 0i64 { fail .wait_failed; }
+    if code == -2 { return null; }      // still running
+    if code < 0 { fail .wait_failed; }
     return code as u32;
 }
 
