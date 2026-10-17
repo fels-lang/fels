@@ -38,6 +38,10 @@ the major version is `0`, any minor bump may break source compatibility.
   literal, and IR stored the 8-byte end into a 4-byte slot. Past 2³¹ the loop ran a wrong number
   of times, and a range from a large literal to an `i64` crashed. A literal bound now takes the
   other bound's type (`0..xs.len` counts in `usize`); two literals make an `i32`.
+- **felsld dropped the relocations of a section past the 65,535th**: it read the 16-bit count
+  and missed that COFF keeps a larger one in the first record. A program that big linked without
+  a word and its calls after that point went nowhere (Strata died at start). It reads the real
+  count now.
 
 ## 0.7.0 — 2026-10-11
 
