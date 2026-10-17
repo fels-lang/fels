@@ -50,13 +50,13 @@ pub FsError :: errors {
 // Copy `path` into `buf`, append a NUL terminator, and return a pointer to the
 // start of `buf` for the OS calls (UTF-8; on Windows the runtime makes UTF-16 of it).
 fs_to_cstr :: fn(path: []const u8, buf: []u8) -> *const u8 ! FsError {
-    if path.len + 1usize > buf.len { fail .path_too_long; }
+    if path.len + 1 > buf.len { fail .path_too_long; }
     i := 0usize;
     while i < path.len {
         buf[i] = path[i];
-        i += 1usize;
+        i += 1;
     }
-    buf[path.len] = 0u8;
+    buf[path.len] = 0;
     return buf.ptr;
 }
 
@@ -70,18 +70,18 @@ pub File :: struct {
 
 File as Reader {
     read :: fn(self: *Self, buf: []u8) -> usize ! IoError {
-        if buf.len == 0usize { return 0usize; }
+        if buf.len == 0 { return 0; }
         n := os_file_read(self.handle, buf.ptr, buf.len);
-        if n < 0i64 { fail .read_failed; }
+        if n < 0 { fail .read_failed; }
         return n as usize;
     }
 }
 
 File as Writer {
     write :: fn(self: *Self, data: []const u8) -> usize ! IoError {
-        if data.len == 0usize { return 0usize; }
+        if data.len == 0 { return 0; }
         n := os_file_write(self.handle, data.ptr, data.len);
-        if n < 0i64 { fail .write_failed; }
+        if n < 0 { fail .write_failed; }
         return n as usize;
     }
     flush :: fn(self: *Self) -> void ! IoError {
@@ -163,14 +163,14 @@ pub make_dir :: fn(path: []const u8) -> void ! FsError {
 
 // Make the folder `path` and every folder above it that is missing (`a/b/c`, with `/` or `\`).
 pub make_dirs :: fn(path: []const u8) -> void ! FsError {
-    i: usize = 1usize;
+    i: usize = 1;
     while i < path.len {
         c := path[i];
         // the folder up to here, unless that is a drive (`C:`)
-        if (c == 47u8 || c == 92u8) && path[i - 1usize] != 58u8 && !is_dir(path[0usize..i]) {
-            make_dir(path[0usize..i])?;
+        if (c == 47 || c == 92) && path[i - 1] != 58 && !is_dir(path[0..i]) {
+            make_dir(path[0..i])?;
         }
-        i += 1usize;
+        i += 1;
     }
     make_dir(path)?;
     return;
@@ -190,19 +190,19 @@ pub read_all :: fn(path: []const u8, a: *Arena) -> []u8 ! FsError {
     cpath := fs_to_cstr(path, path_buf[:])?;
     h := os_file_open(cpath, 0);
     if h == FS_INVALID { fail .not_found; }
-    sz := os_file_seek(h, 0i64, 2);     // SEEK_END → size
-    back := os_file_seek(h, 0i64, 0);   // SEEK_SET → rewind
-    if sz < 0i64 || back < 0i64 { os_file_close(h); fail .seek_failed; }
+    sz := os_file_seek(h, 0, 2);     // SEEK_END → size
+    back := os_file_seek(h, 0, 0);   // SEEK_SET → rewind
+    if sz < 0 || back < 0 { os_file_close(h); fail .seek_failed; }
     buf: []u8 = a.alloc_bytes(sz as usize);
-    total: usize = 0usize;
+    total: usize = 0;
     while total < buf.len {
         n := os_file_read(h, &buf[total], buf.len - total);
-        if n < 0i64 { os_file_close(h); fail .read_failed; }
-        if n == 0i64 { break; }
+        if n < 0 { os_file_close(h); fail .read_failed; }
+        if n == 0 { break; }
         total += n as usize;
     }
     os_file_close(h);
-    return buf[0usize..total];
+    return buf[0..total];
 }
 
 // Directory iteration
@@ -216,7 +216,7 @@ pub DirIter :: struct {
 }
 
 pub open_dir :: fn(path: []const u8) -> DirIter ! FsError {
-    iter: DirIter = .{ FS_INVALID, .{}, 0usize };
+    iter: DirIter = .{ FS_INVALID, .{}, 0 };
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
     iter.handle = os_dir_open(cpath);
@@ -228,9 +228,9 @@ pub open_dir :: fn(path: []const u8) -> DirIter ! FsError {
 pub dir_next :: fn(self: *DirIter) -> ?[]const u8 {
     if self.handle == FS_INVALID { return null; }
     n := os_dir_next(self.handle, self.namebuf[:]);
-    if n < 0i64 { return null; }
+    if n < 0 { return null; }
     self.namelen = n as usize;
-    return self.namebuf[0usize..self.namelen];
+    return self.namebuf[0..self.namelen];
 }
 
 // Whether the entry most recently returned by `dir_next` is a subdirectory.
@@ -242,7 +242,7 @@ pub dir_is_dir :: fn(self: *DirIter) -> bool {
 // Size in bytes of the most recent entry (free on Windows; 0 on Linux, whose
 // getdents64 doesn't carry it — stat the path if you need it there).
 pub dir_size :: fn(self: *DirIter) -> u64 {
-    if self.handle == FS_INVALID { return 0u64; }
+    if self.handle == FS_INVALID { return 0; }
     return os_dir_size(self.handle);
 }
 
