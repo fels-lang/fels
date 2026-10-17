@@ -55,6 +55,8 @@ const Options = struct {
     show_time: bool = false,
     /// The line of the finished build; `fels run` prints it only with -t.
     done_line: bool = true,
+    /// `-g`: debug info for a debugger.
+    debug_info: bool = false,
     dll: bool = false,
     /// `--no-entry`: emit a freestanding library object (no `mainCRTStartup` /
     /// `_fltused`), for embedding into another binary.
@@ -311,6 +313,8 @@ pub fn main(init: std.process.Init) u8 {
             opts.opt_level = 3;
         } else if (eqAny(a, &.{ "-q", "--quiet" })) {
             opts.quiet = true;
+        } else if (eqAny(a, &.{ "-g", "--debug-info" })) {
+            opts.debug_info = true;
         } else if (eqAny(a, &.{ "-t", "--time" })) {
             opts.show_time = true;
         } else if (eqAny(a, &.{ "--shared", "--dll" })) {
@@ -591,6 +595,7 @@ fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source:
         .obj_path = obj_path,
         .opt_level = opts.opt_level,
         .safety = opts.safety,
+        .debug_info = opts.debug_info,
         .target_os = opts.target_os,
         .no_entry = opts.no_entry,
         .link_libc = opts.link_libc,
@@ -642,6 +647,7 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
         .dll = opts.dll,
         .opt_level = opts.opt_level,
         .safety = opts.safety,
+        .debug_info = opts.debug_info,
         .target_os = opts.target_os,
         .link_libc = opts.link_libc,
         .sysroot = opts.sysroot,
@@ -980,6 +986,7 @@ fn printUsage() void {
         \\  -O0 / -O1 / -O2 / -O3  optimisation level   (--release = -O2)
         \\  --unchecked            no runtime safety checks (bounds, null, overflow,
         \\                         division by zero, shifts); --release-fast = -O2 --unchecked
+        \\  -g, --debug-info       debug info for a debugger (a .pdb on Windows, DWARF on Linux)
         \\  -t, --time             print phase timings (build/object)
         \\  -q, --quiet            no status line or timings
         \\  --llvm-path <dir>      LLVM root (forward slashes)
