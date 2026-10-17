@@ -31,7 +31,7 @@ pub TcpStream :: struct {
     // Write the whole buffer, looping over short writes. Fails `send_failed` on a
     // socket error and `closed` if the socket accepts zero bytes mid-write.
     pub send_all :: fn(self: *Self, data: []const u8) -> void ! NetError {
-        sent: usize = 0usize;
+        sent: usize = 0;
         while sent < data.len {
             n := os::sys_send(self.sock.fd, unsafe ((&data[sent]) as *const u8), (data.len - sent) as i32, 0);
             if n < 0 { fail .send_failed; }
@@ -51,7 +51,7 @@ pub TcpStream :: struct {
     // Fill `buf` completely, looping over short reads. Fails `closed` if the peer
     // hangs up before `buf.len` bytes arrive (i.e. a truncated message).
     pub recv_exact :: fn(self: *Self, buf: []u8) -> void ! NetError {
-        got: usize = 0usize;
+        got: usize = 0;
         while got < buf.len {
             n := os::sys_recv(self.sock.fd, unsafe ((&buf[got]) as *u8), (buf.len - got) as i32, 0);
             if n < 0 { fail .recv_failed; }
@@ -91,7 +91,7 @@ pub TcpListener :: struct {
 
     // Block until a client connects; returns the stream plus the peer's address.
     pub accept :: fn(self: *Self) -> Accepted ! NetError {
-        raw: os::RawSockaddr = .{ 0u16, 0u16, 0u32, 0u64 };
+        raw: os::RawSockaddr = .{ 0, 0, 0, 0 };
         len: i32 = os::SOCKADDR_LEN as i32;
         c := os::sys_accept(self.sock.fd, unsafe ((&raw) as *u8), &len);
         if c == os::INVALID_SOCKET { fail .accept_failed; }
