@@ -18,10 +18,11 @@ A target has three orthogonal axes:
         └───────────┘        └────────┘        └──────────────────────┘
 ```
 
-You write a target as an LLVM-style triple, such as `x86_64-linux-gnu`, `aarch64-linux-none` or
+You write a target as an LLVM-style triple, such as `x86_64-linux-gnu`, `x86_64-linux-none` or
 `x86_64-windows-msvc`. The CLI also accepts shorthands. `--target linux` means
 `x86_64-linux-none`, the static, freestanding default, and `--target linux-gnu` means
-`x86_64-linux-gnu`.
+`x86_64-linux-gnu`. Today every build is x86_64. `--target` reads only the OS and whether the
+ABI is `gnu`, so an `aarch64-linux` triple still gives an x86_64 binary.
 
 **The front-end is target-independent.** The lexer, parser, sema, IR, comptime VM and macros
 describe *computation*, not a platform, so every language feature works on every target. The
@@ -74,10 +75,10 @@ entry point and the link step, never in the stdlib:
 
 | | `none` / `musl` (freestanding, **default**) | `gnu` (glibc) |
 | --- | --- | --- |
-| Entry | our `#naked #entry _start` → `main` | crt1.o `_start` → `__libc_start_main` → `main` |
-| Link | `ld.lld -static -e _start` | `-dynamic-linker /lib64/ld-linux-x86-64.so.2`, crt objects, `-lc` |
+| Entry | our `#naked #entry _start` → `main` | our `#naked #entry _start` → `__libc_start_main` → `main` |
+| Link | `ld.lld -static -e _start` | `ld.lld -e _start` with `<sysroot>/libc.so.6` and `-dynamic-linker /lib64/ld-linux-x86-64.so.2`, no crt objects, no `-lc` |
 | Output | static non-PIE ELF, **zero deps** (`ldd` → "not a dynamic executable") | dynamically linked against `libc.so.6` |
-| Needs at link time | only `ld.lld` | a libc toolchain / **sysroot** (crt1.o, libc.so, the loader) |
+| Needs at link time | only `ld.lld` | `ld.lld` and a **sysroot** folder that holds `libc.so.6` |
 | OS seam | raw syscalls | raw syscalls *(unchanged)*, libc is used only for its loader/CRT |
 
 **Decision: freestanding is the default and recommended Linux target.** It is self-contained
@@ -85,12 +86,14 @@ and portable across distros (the static-musl/Go/Zig model), and it needs nothing
 That is why it cross-compiles cleanly from a Windows host today. `gnu` is the opt-in for interop
 with libc-only libraries, or for "a normal dynamically-linked binary."
 
-Because the seam stays on raw syscalls, **`gnu` is purely a link-mode + entry change**. It means
-gating off our `_start`, switching the `ld.lld` argument set and supplying the glibc objects.
-The compiler plumbing for that is small. The real dependency is the **glibc files at link
-time**, and those are not bundled. On a full Linux host, or with `--sysroot` pointing at one,
-the link works with no extra steps. On a minimal box you first install `libc6-dev` (and use
-`cc` as the link driver).
+Because the seam stays on raw syscalls, **`gnu` is purely a link-mode + entry change**. The
+runtime swaps in a different `_start` (`src/runtime/linux_start_gnu.fels`), which hands off to
+glibc's `__libc_start_main` the way crt1.o's `_start` does. The link drops `-static` and names
+`libc.so.6` and the loader path instead. The real dependency is **`libc.so.6` at link time**,
+and it is not bundled. Pass `--sysroot <dir>` (or `a.sysroot(dir)` in `build.fels`) with a
+folder that holds it, such as `/lib/x86_64-linux-gnu` on a Linux host or a copy of that one file
+on Windows. No crt objects, no `libc6-dev` and no `cc` are needed, because `ld.lld` is the only
+linker that Fels runs for Linux.
 
 ## 4. Architectures
 
@@ -101,10 +104,16 @@ boundaries need a classifier.
 
 | Arch | LLVM | Syscall ABI (nr / args / insn) | Aggregate ABI | Status |
 | --- | --- | --- | --- | --- |
-| **x86_64** | ✅ | `rax` / `rdi rsi rdx r10 r8 r9` / `syscall` | SysV AMD64 (done) | **implemented** |
-| **aarch64** | ✅ | `x8` / `x0…x5` / `svc #0` | AAPCS64 | Tier 2 target, needs runtime + classifier |
+| **x86_64** | ✅ | `rax` / `rdi rsi rdx r10 r8 r9` / `syscall` | Win64 done, SysV AMD64 not done | **implemented**, except by-value structs at C calls on Linux |
+| **aarch64** | ✅ | `x8` / `x0…x5` / `svc #0` | AAPCS64 | Tier 3, not implemented yet: needs runtime + classifier + `--target` support |
 | **riscv64** | ✅ | `a7` / `a0…a5` / `ecall` | RV calling conv | Tier 3, emerging |
 | **wasm32** | ✅ | no syscalls, WASI imports | wasm ABI | Tier 3, different seam (WASI), no `_start` asm |
+
+The x86_64 classifier knows only the Win64 rules, and `abi.zig` applies them on every target.
+So on Linux, a struct passed by value to an `#extern` C function, or returned by value from
+one, does not follow the SysV ABI yet. Scalars and pointers are fine there, since LLVM lowers
+them. The SysV eightbyte classification is still the plan from
+[14_linux_elf_backend](14_linux_elf_backend.md#5-the-system-v-amd64-abi).
 
 Adding an arch is a checklist, not a rewrite:
 
@@ -136,9 +145,9 @@ The tiers are borrowed from Rust's model and adapted to the seam architecture of
 | Target | Tier | Notes |
 | --- | --- | --- |
 | `x86_64-windows-msvc` | **1** | original host target, full stdlib |
-| `x86_64-linux-none` (static) | **1** | first-class target that cross-compiles from Windows. Language, codegen and core stdlib (io/heap/time/Vec/strings) verified. Completing fs/process/net/thread is a **Tier-1 release blocker**, not a demotion |
+| `x86_64-linux-none` (static) | **1** | first-class target that cross-compiles from Windows. Language, codegen and every `std` module work on it (see §6). By-value structs at C calls do not follow SysV yet (see §4) |
 | `x86_64-linux-gnu` (glibc) | **2** | implemented: `--target linux-gnu` + `--sysroot`. Our `_start` → `__libc_start_main`, links `libc.so.6` directly. Needs a sysroot with `libc.so.6` at link time |
-| `aarch64-linux` | **3 → 2** | unblock by adding the aarch64 runtime + ABI arm |
+| `aarch64-linux` | **3** | not implemented yet, the compiler emits x86_64 only. Planned for Tier 2 once the aarch64 runtime + ABI arm exist |
 | `riscv64-linux`, `wasm32-wasi` | **3** | LLVM-ready, runtime/seam not yet written |
 | `*-macos` | **3** | Mach-O + Apple ABI, a larger effort |
 
