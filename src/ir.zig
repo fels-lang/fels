@@ -1137,6 +1137,15 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
     };
 }
 
+/// Bytes that print as they are: `[]u8`, `[]const u8`, a string literal.
+fn isByteTextIr(ty: IrType) bool {
+    return switch (ty) {
+        .text => true,
+        .slice => |inner| inner.* == .byte or (inner.* == .u and inner.u == 8),
+        else => false,
+    };
+}
+
 /// About how many functions `lowerModuleInner` lowers, for the count in the live tree.
 fn loweredFunctionCount(front_end: pipeline.FrontEnd) usize {
     var n: usize = front_end.types.generic_instantiations.items.len;
@@ -4528,6 +4537,12 @@ const FunctionLowerer = struct {
     /// Wrap `arg` into a type-erased `Any { data, id, name }`: spill it to a
     /// temporary, take its address, and record its typeid + name. Shared by the
     /// `any(x)` builtin and the value→`Any` auto-wrap.
+    /// Whether the struct of link name `name` is the prelude's `Format`.
+    fn isFormatStruct(self: *FunctionLowerer, name: []const u8) bool {
+        const id = self.symbols.resolveVisible("<runtime>", "Format") orelse return false;
+        return std.mem.eql(u8, self.symbols.symbol(id).link_name, name);
+    }
+
     fn lowerAnyWrap(self: *FunctionLowerer, arg: ast.Expr) LowerError!Value {
         const val = try self.lowerExpr(arg);
         const val_ty = self.exprType(arg);
@@ -4554,6 +4569,18 @@ const FunctionLowerer = struct {
         if (try self.lowerBareVariantAs(expr, expected_ty)) |v| return v;
         if (self.isUnsettledIntLit(expr, expected_ty)) return self.lowerIntLitAs(expr, expected_ty);
         if (self.isUnsettledFloatLit(expr, expected_ty)) return self.lowerFloatLitAs(expr, expected_ty);
+        // Text passed where a `Format` is expected prints as it is: `Format{ text, null }`. (A
+        // literal with `{value}` in it is already the struct literal of its code.)
+        if (expected_ty == .struct_type and self.isFormatStruct(expected_ty.struct_type)) {
+            const et = self.exprType(expr);
+            if (isByteTextIr(et)) {
+                const text = try self.lowerExpr(expr);
+                return self.mkStruct(expected_ty.struct_type, &.{
+                    .{ .name = "text", .value = text },
+                    .{ .name = "run", .value = .{ .imm = .null } },
+                });
+            }
+        }
         // A value passed where an `Any` is expected auto-wraps (compiler inserts
         // `any(x)`) — unless it's already an `Any`, or a literal that *constructs*
         // the `Any` (`.{ data, id, name }`), or an unknown-typed expr.

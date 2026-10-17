@@ -163,6 +163,38 @@ pub const any_source =
     \\}
 ;
 
+/// `Format` — what a function takes to print text with values in it, and `Formatter`, what
+/// the text is written to. A string literal passed to a `Format` parameter is read by the
+/// compiler: `"{name} has {n} items"` becomes code that writes the text and each value to a
+/// `Formatter` (`run`). Any other `[]const u8` is printed as it is (`text`). The function
+/// that takes the `Format` makes the `Formatter`: `ctx` and `out` are where the bytes go,
+/// `show` writes a value (its address, type id and type) by its type (std.io has both). Injected when a module names
+/// `Format` or `Formatter`, so they are visible everywhere, as `Any` is.
+pub const format_source =
+    \\Formatter :: struct {
+    \\    ctx: *void,
+    \\    out: fn(*void, []const u8) -> bool,
+    \\    show: fn(*Formatter, *const u8, usize, TypeInfo, []const u8),
+    \\    count: usize,
+    \\    failed: bool,
+    \\
+    \\    pub text :: fn(self: *Self, s: []const u8) {
+    \\        if self.failed { return; }
+    \\        if self.out(self.ctx, s) { self.count += s.len; } else { self.failed = true; }
+    \\    }
+    \\
+    \\    pub value :: fn(self: *Self, v: $T, spec: []const u8) {
+    \\        if self.failed { return; }
+    \\        self.show(self, unsafe ((&v) as *const u8), core::type_id(T), core::type_info(T), spec);
+    \\    }
+    \\}
+    \\
+    \\Format :: struct {
+    \\    text: []const u8,
+    \\    run: ?fn(*Formatter),
+    \\}
+;
+
 pub const reflection_source =
     \\TiInt     :: struct { bits: u16, signed: bool }
     \\TiFloat   :: struct { bits: u16 }
