@@ -65,8 +65,8 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
         },
 
         .index => |ix| blk: {
-            // Safety: bounds check before loading.
-            if (cg.safety) emitBoundsCheck(cg, fncg, ix, instr.location);
+            // Safety: bounds check before loading (unless the lowering knows it is in bounds).
+            if (cg.safety and ix.checked) emitBoundsCheck(cg, fncg, ix, instr.location);
             const elem_ty = types.lower(cg, instr.ty);
             const gep = lowerIndexAddress(cg, fncg, ix, instr.ty, instr.location) orelse break :blk null;
             break :blk llvm.LLVMBuildLoad2(cg.builder, elem_ty, gep, "");
