@@ -3,6 +3,19 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Changed
+
+- **The runtime safety checks stay in release builds.** Index bounds, null pointers, integer
+  overflow, division by zero and shift amounts were checked only at `-O0`, so every optimized
+  build read past the end of a slice, wrapped on overflow and divided by zero without a word,
+  while the docs called slices bounds-checked. Every build but `release_fast` keeps them now:
+  `release_safe` is `-O2` with the checks (it was `-O1` without them), and `fels build
+  --release`, `release()` and `-O2` give it. `release_fast`, `fels build --release-fast`, and
+  `--release-fast` or `--unchecked` for one file are the explicit opt-out. The checks cost the
+  raytracer example about 1.5% of its time and make programs larger (23 KB to 58 KB there).
+
 ## 0.8.0 — 2026-10-17
 
 Less to write and fewer surprises: a local from a literal takes the type its uses ask for, so
