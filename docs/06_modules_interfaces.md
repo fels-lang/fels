@@ -42,9 +42,9 @@ them distinct means a local variable named `io` never shadows the `io` namespace
 > per module internally, so they link cleanly. You reach each through its
 > namespace (`a::greet`, `b::greet`) or a selective/glob import. A name is only
 > mangled when it actually collides — unique names keep their bare linkage.
-> This holds for functions and constants. Two *types* (structs, enums, interfaces,
-> error sets) with the same name are still a duplicate declaration, even in
-> different modules, so a file that imports `std.io` cannot declare its own `Writer`.
+> This holds for functions, constants and types alike: a file that imports `std.io` may
+> declare its own `Writer`, and `io::Writer` is still the other one. Importing the name
+> itself next to its own (`#import std.io.{ Writer };`) is ambiguous, an error.
 
 ### Visibility
 
