@@ -4571,6 +4571,40 @@ test "exe: a layout query takes a generic type's instance" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_generic_layout_o2", 2, true));
 }
 
+test "exe: a struct that holds borrowed data is borrowed, and passed as a borrow" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A field or element of a local may take a borrowed slice; the local is then borrowed,
+    // passed to `borrow *Parser` and to `borrow Parser` by value.
+    const src =
+        \\Parser :: struct { src: []const u8, pos: usize }
+        \\next :: fn(p: borrow *Parser) -> u8 { b := p.src[p.pos]; p.pos += 1; return b; }
+        \\peek :: fn(p: borrow Parser) -> u8 { return p.src[p.pos]; }
+        \\count :: fn(src: borrow []const u8) -> i32 {
+        \\    p: Parser = .{ "", 0 };
+        \\    p.src = src;
+        \\    n: i32 = 0;
+        \\    if peek(p) == 'b' { n += 10; }
+        \\    while p.pos < p.src.len { if next(&p) == 'a' { n += 1; } }
+        \\    return n;
+        \\}
+        \\second :: fn(src: borrow []const u8) -> i32 {
+        \\    ps: [2]Parser = .{};
+        \\    ps[1].src = src;
+        \\    return peek(ps[1]) as i32;
+        \\}
+        \\main :: fn() -> i32 {
+        \\    if count("banana") != 13 { return 1; }
+        \\    if second("*") != 42 { return 2; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_borrow_struct", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_borrow_struct_o2", 2, true));
+}
+
 test "exe: unknown field in a struct literal fails the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
