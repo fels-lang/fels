@@ -4875,6 +4875,9 @@ test "exe: the address of a local inferred from a literal is a pointer to its de
         \\    if f != 2.5 { return 5; }
         \\    b := unsafe ((&x) as *u8);
         \\    if *b != 42u8 { return 6; }
+        \\    g := 1.5;
+        \\    narrow: f32 = g as f32;
+        \\    if narrow != 1.5 { return 8; }
         \\    return 42;
         \\}
     , "exe_literal_local_address");

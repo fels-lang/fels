@@ -2727,6 +2727,9 @@ const Checker = struct {
                     try self.requireDefaultIntFits(local.value);
                     local_ty = .i32;
                 }
+                // Likewise `x := 1.5;` is an `f64`. Left a float literal, `y: f32 = x;` was
+                // accepted and stored the `f64`'s bits into the `f32` without converting them.
+                if (local_ty == .float_lit) local_ty = .f64;
                 try self.declareLocal(local.name, local_ty);
                 self.noteLocal(.{ .name = local.name, .file = "", .kind = .local_val, .decl = local.span, .scope_end = self.block_end, .ty = local_ty, .value = local.value });
                 try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
