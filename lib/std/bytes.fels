@@ -36,100 +36,100 @@ fits :: fn(len: usize, off: usize, n: usize) -> bool {
 }
 
 pub read_u8 :: fn(self: []const u8, off: usize) -> u8 ! BytesError {
-    if !fits(self.len, off, 1usize) { fail .out_of_bounds; }
+    if !fits(self.len, off, 1) { fail .out_of_bounds; }
     return self[off];
 }
 
 pub write_u8 :: fn(self: []u8, off: usize, v: u8) -> void ! BytesError {
-    if !fits(self.len, off, 1usize) { fail .out_of_bounds; }
+    if !fits(self.len, off, 1) { fail .out_of_bounds; }
     self[off] = v;
     return;
 }
 
 pub read_u16_le :: fn(self: []const u8, off: usize) -> u16 ! BytesError {
-    if !fits(self.len, off, 2usize) { fail .out_of_bounds; }
-    return (self[off] as u16) | ((self[off + 1usize] as u16) << 8u16);
+    if !fits(self.len, off, 2) { fail .out_of_bounds; }
+    return (self[off] as u16) | ((self[off + 1] as u16) << 8);
 }
 
 pub read_u16_be :: fn(self: []const u8, off: usize) -> u16 ! BytesError {
-    if !fits(self.len, off, 2usize) { fail .out_of_bounds; }
-    return ((self[off] as u16) << 8u16) | (self[off + 1usize] as u16);
+    if !fits(self.len, off, 2) { fail .out_of_bounds; }
+    return ((self[off] as u16) << 8) | (self[off + 1] as u16);
 }
 
 pub read_u32_le :: fn(self: []const u8, off: usize) -> u32 ! BytesError {
-    if !fits(self.len, off, 4usize) { fail .out_of_bounds; }
-    return (self[off] as u32) | ((self[off + 1usize] as u32) << 8u32) | ((self[off + 2usize] as u32) << 16u32) | ((self[off + 3usize] as u32) << 24u32);
+    if !fits(self.len, off, 4) { fail .out_of_bounds; }
+    return (self[off] as u32) | ((self[off + 1] as u32) << 8) | ((self[off + 2] as u32) << 16) | ((self[off + 3] as u32) << 24);
 }
 
 pub read_u32_be :: fn(self: []const u8, off: usize) -> u32 ! BytesError {
-    if !fits(self.len, off, 4usize) { fail .out_of_bounds; }
-    return ((self[off] as u32) << 24u32) | ((self[off + 1usize] as u32) << 16u32) | ((self[off + 2usize] as u32) << 8u32) | (self[off + 3usize] as u32);
+    if !fits(self.len, off, 4) { fail .out_of_bounds; }
+    return ((self[off] as u32) << 24) | ((self[off + 1] as u32) << 16) | ((self[off + 2] as u32) << 8) | (self[off + 3] as u32);
 }
 
 pub read_u64_le :: fn(self: []const u8, off: usize) -> u64 ! BytesError {
-    if !fits(self.len, off, 8usize) { fail .out_of_bounds; }
-    return (self[off] as u64) | ((self[off + 1usize] as u64) << 8u64) | ((self[off + 2usize] as u64) << 16u64) | ((self[off + 3usize] as u64) << 24u64) | ((self[off + 4usize] as u64) << 32u64) | ((self[off + 5usize] as u64) << 40u64) | ((self[off + 6usize] as u64) << 48u64) | ((self[off + 7usize] as u64) << 56u64);
+    if !fits(self.len, off, 8) { fail .out_of_bounds; }
+    return (self[off] as u64) | ((self[off + 1] as u64) << 8) | ((self[off + 2] as u64) << 16) | ((self[off + 3] as u64) << 24) | ((self[off + 4] as u64) << 32) | ((self[off + 5] as u64) << 40) | ((self[off + 6] as u64) << 48) | ((self[off + 7] as u64) << 56);
 }
 
 pub read_u64_be :: fn(self: []const u8, off: usize) -> u64 ! BytesError {
-    if !fits(self.len, off, 8usize) { fail .out_of_bounds; }
-    return ((self[off] as u64) << 56u64) | ((self[off + 1usize] as u64) << 48u64) | ((self[off + 2usize] as u64) << 40u64) | ((self[off + 3usize] as u64) << 32u64) | ((self[off + 4usize] as u64) << 24u64) | ((self[off + 5usize] as u64) << 16u64) | ((self[off + 6usize] as u64) << 8u64) | (self[off + 7usize] as u64);
+    if !fits(self.len, off, 8) { fail .out_of_bounds; }
+    return ((self[off] as u64) << 56) | ((self[off + 1] as u64) << 48) | ((self[off + 2] as u64) << 40) | ((self[off + 3] as u64) << 32) | ((self[off + 4] as u64) << 24) | ((self[off + 5] as u64) << 16) | ((self[off + 6] as u64) << 8) | (self[off + 7] as u64);
 }
 
 pub write_u16_le :: fn(self: []u8, off: usize, v: u16) -> void ! BytesError {
-    if !fits(self.len, off, 2usize) { fail .out_of_bounds; }
+    if !fits(self.len, off, 2) { fail .out_of_bounds; }
     self[off] = v as u8;
-    self[off + 1usize] = (v >> 8u16) as u8;
+    self[off + 1] = (v >> 8) as u8;
     return;
 }
 
 pub write_u16_be :: fn(self: []u8, off: usize, v: u16) -> void ! BytesError {
-    if !fits(self.len, off, 2usize) { fail .out_of_bounds; }
-    self[off] = (v >> 8u16) as u8;
-    self[off + 1usize] = v as u8;
+    if !fits(self.len, off, 2) { fail .out_of_bounds; }
+    self[off] = (v >> 8) as u8;
+    self[off + 1] = v as u8;
     return;
 }
 
 pub write_u32_le :: fn(self: []u8, off: usize, v: u32) -> void ! BytesError {
-    if !fits(self.len, off, 4usize) { fail .out_of_bounds; }
+    if !fits(self.len, off, 4) { fail .out_of_bounds; }
     self[off] = v as u8;
-    self[off + 1usize] = (v >> 8u32) as u8;
-    self[off + 2usize] = (v >> 16u32) as u8;
-    self[off + 3usize] = (v >> 24u32) as u8;
+    self[off + 1] = (v >> 8) as u8;
+    self[off + 2] = (v >> 16) as u8;
+    self[off + 3] = (v >> 24) as u8;
     return;
 }
 
 pub write_u32_be :: fn(self: []u8, off: usize, v: u32) -> void ! BytesError {
-    if !fits(self.len, off, 4usize) { fail .out_of_bounds; }
-    self[off] = (v >> 24u32) as u8;
-    self[off + 1usize] = (v >> 16u32) as u8;
-    self[off + 2usize] = (v >> 8u32) as u8;
-    self[off + 3usize] = v as u8;
+    if !fits(self.len, off, 4) { fail .out_of_bounds; }
+    self[off] = (v >> 24) as u8;
+    self[off + 1] = (v >> 16) as u8;
+    self[off + 2] = (v >> 8) as u8;
+    self[off + 3] = v as u8;
     return;
 }
 
 pub write_u64_le :: fn(self: []u8, off: usize, v: u64) -> void ! BytesError {
-    if !fits(self.len, off, 8usize) { fail .out_of_bounds; }
+    if !fits(self.len, off, 8) { fail .out_of_bounds; }
     self[off] = v as u8;
-    self[off + 1usize] = (v >> 8u64) as u8;
-    self[off + 2usize] = (v >> 16u64) as u8;
-    self[off + 3usize] = (v >> 24u64) as u8;
-    self[off + 4usize] = (v >> 32u64) as u8;
-    self[off + 5usize] = (v >> 40u64) as u8;
-    self[off + 6usize] = (v >> 48u64) as u8;
-    self[off + 7usize] = (v >> 56u64) as u8;
+    self[off + 1] = (v >> 8) as u8;
+    self[off + 2] = (v >> 16) as u8;
+    self[off + 3] = (v >> 24) as u8;
+    self[off + 4] = (v >> 32) as u8;
+    self[off + 5] = (v >> 40) as u8;
+    self[off + 6] = (v >> 48) as u8;
+    self[off + 7] = (v >> 56) as u8;
     return;
 }
 
 pub write_u64_be :: fn(self: []u8, off: usize, v: u64) -> void ! BytesError {
-    if !fits(self.len, off, 8usize) { fail .out_of_bounds; }
-    self[off] = (v >> 56u64) as u8;
-    self[off + 1usize] = (v >> 48u64) as u8;
-    self[off + 2usize] = (v >> 40u64) as u8;
-    self[off + 3usize] = (v >> 32u64) as u8;
-    self[off + 4usize] = (v >> 24u64) as u8;
-    self[off + 5usize] = (v >> 16u64) as u8;
-    self[off + 6usize] = (v >> 8u64) as u8;
-    self[off + 7usize] = v as u8;
+    if !fits(self.len, off, 8) { fail .out_of_bounds; }
+    self[off] = (v >> 56) as u8;
+    self[off + 1] = (v >> 48) as u8;
+    self[off + 2] = (v >> 40) as u8;
+    self[off + 3] = (v >> 32) as u8;
+    self[off + 4] = (v >> 24) as u8;
+    self[off + 5] = (v >> 16) as u8;
+    self[off + 6] = (v >> 8) as u8;
+    self[off + 7] = v as u8;
     return;
 }
