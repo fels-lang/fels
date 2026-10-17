@@ -650,12 +650,12 @@ fels build test          # the step named "test"
 ```
 
 ```text
-running tests in tests/
-  ✓ parser_test.fels
-  ✓ lexer_test.fels
-  ✗ sema_test.fels
+tests/
+  ✓ lexer_test.fels  212ms
+  ✓ parser_test.fels  240ms
+  ✗ sema_test.fels: exited with 1
 
-2 passed, 1 failed
+Test Summary: 2 passed, 1 failed · 0.71s
 ```
 
 A test is a `.fels` file with a `main :: fn() -> i32` that returns `0` on success and
