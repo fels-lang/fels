@@ -1211,6 +1211,44 @@ test "exe: an error's payload is read back, whatever its type" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_payload_kinds_o2", 2, true));
 }
 
+test "exe: a constant with its type written is read-only data" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `NAME : T : value` is to `NAME :: value` what `name: T = value` is to `name := value`: an
+    // aggregate constant, which had no way to be written, and a table nothing can change.
+    const src =
+        \\Point :: struct { x: i32, y: i32 }
+        \\ORIGIN : Point : .{ 3, 4 };
+        \\TABLE : [4]u8 : .{ 1, 2, 3, 4 };
+        \\LIMIT : i64 : 5000000000;
+        \\N : usize : 3;
+        \\sum :: fn(p: *const Point) -> i32 { return p.x + p.y; }
+        \\total :: fn() -> i32 { return ORIGIN.x * 10 + TABLE[3] as i32; }
+        \\T :: #run total();
+        \\main :: fn() -> i32 {
+        \\    if sum(&ORIGIN) != 7 { return 1; }
+        \\    if TABLE[2] != 3u8 { return 2; }
+        \\    if LIMIT != 5000000000i64 { return 3; }
+        \\    arr: [N]i32 = .{};
+        \\    if arr.len != 3usize { return 4; }
+        \\    if T != 34 { return 5; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_typed_const", 0, true));
+    var fe = try fels.compile(arena.allocator(), "typed_const.fels", src);
+    defer fe.deinit(arena.allocator());
+    const module = try fels.lowerFrontend(arena.allocator(), fe);
+    var backend = fels.LlvmBackend.init(arena.allocator(), "typed_const");
+    defer backend.deinit();
+    try backend.lower(module);
+    const llvm_ir = try backend.getIrText(arena.allocator());
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@ORIGIN = constant") != null);
+    try std.testing.expect(std.mem.indexOf(u8, llvm_ir, "@TABLE = constant") != null);
+}
+
 test "exe: a global holds an error of a set with payloads" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
