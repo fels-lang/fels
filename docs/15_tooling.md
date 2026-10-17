@@ -93,10 +93,14 @@ Fels frontend can:
 
 - **Comptime-aware navigation.** `#derive`, `#compiler` hooks and macros generate real
   declarations at comptime. The server runs that generation pass (it already happens in the
-  pipeline) and indexes the **generated** symbols. So hover, go-to-def and completion work on a
-  derived `eq`/`hash`/`format` method, not only on hand-written ones. (Rust-analyzer has to
-  fight the opacity of proc-macros. Fels generates structured AST, so the server sees the
-  output directly.)
+  pipeline), so it knows the **generated** symbols. Today a derived method such as `eq` or
+  `hash` shows up in member completion, and hover shows its signature. Go-to-definition on it
+  returns nothing, and find references lists no uses. A function made by a `#compiler` hook
+  shows up in completion. But hover on it shows the first line of the file, and
+  go-to-definition jumps to the top of the file. A local brought in by `#insert` gets a hover
+  type but no definition. The goal is that hover, go-to-def and references work on generated
+  declarations as they do on hand-written ones. (Rust-analyzer has to fight the opacity of
+  proc-macros. Fels generates structured AST, so the server sees the output directly.)
 - **Type-aware semantic tokens.** Beyond tree-sitter's syntactic colors, color by *meaning*.
   Tell a type from a value and a `#run`/comptime constant from a runtime one, and mark an
   `#extern` symbol or a region/`zone` handle. All of that is derivable from `expr_types` and
