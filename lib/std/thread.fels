@@ -39,7 +39,7 @@ pub Thread :: struct {
     // Block until the thread finishes, returning its exit code. A joined Thread
     // must not be reused.
     pub join :: fn(self: *Self) -> u32 {
-        if self.token == THREAD_INVALID { return 0u32; }
+        if self.token == THREAD_INVALID { return 0; }
         code := os_thread_join(self.token);
         self.token = THREAD_INVALID;
         return code;
@@ -90,20 +90,20 @@ pub ThreadGroup :: struct {
     // Add a thread running `entry(arg)` to the group. Silently ignored past
     // MAX_GROUP threads.
     pub spawn :: fn(self: *Self, entry: *void, arg: *void) {
-        if self.count >= 64usize { return; }
+        if self.count >= 64 { return; }
         self.tokens[self.count] = os_thread_spawn(entry, arg);
-        self.count += 1usize;
+        self.count += 1;
     }
 
     // Block until every thread in the group has finished, then reset the group
     // so it can be reused.
     pub join_all :: fn(self: *Self) {
-        i: usize = 0usize;
+        i: usize = 0;
         while i < self.count {
             if self.tokens[i] != THREAD_INVALID { ig := os_thread_join(self.tokens[i]); }
-            i += 1usize;
+            i += 1;
         }
-        self.count = 0usize;
+        self.count = 0;
     }
 }
 
