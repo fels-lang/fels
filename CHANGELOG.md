@@ -5,6 +5,22 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ## Unreleased
 
+### Added
+
+- **A `catch` gives a value with `yield`.** `n := parse(s) catch e { log(e); yield 0; };` A
+  handler could only leave the expression (`return`, `fail`, `break`, `continue`), and `??`, the
+  only fallback, cannot look at the error. `yield` belongs to the innermost handler, leaves the
+  loops in it, runs its `defer`s, and is checked against the call's success type.
+- **Errors are values to inspect anywhere.** `e == .variant` was accepted only on the name a
+  `catch` bound; it now works on a parameter, a field, a copy or a call result, and `match e {
+  .a => …, .b => … }` takes an error, as a statement and as a value. A declared or inline set
+  must be covered or have an `else`; an inferred set (`-> T !`) always needs an `else`. An error
+  can be kept in a local, a field or a global and returned (`-> E`, `return .eof;`).
+- **An error's payload is read back.** `fail .overflow { n }` attached one that nothing could
+  read but `if e == .v |c|` in the handler, and only when it had the success type.
+  `match e { .overflow |n| => … }` and `if e == .overflow |n|` now bind it as the variant's type,
+  wherever the error is, and `?` passes it on within one set.
+
 ### Changed
 
 - **The runtime safety checks stay in release builds.** Index bounds, null pointers, integer
@@ -15,6 +31,28 @@ the major version is `0`, any minor bump may break source compatibility.
   --release`, `release()` and `-O2` give it. `release_fast`, `fels build --release-fast`, and
   `--release-fast` or `--unchecked` for one file are the explicit opt-out. The checks cost the
   raytracer example about 1.5% of its time and make programs larger (23 KB to 58 KB there).
+- **An error of a set whose errors carry payloads is a tagged value**, its number and its
+  payload, and a fallible of that set is `{ ok, i32, [N x i8] }` with room for the largest
+  payload (`{ ok, i32 }` for every other set, as before). An inferred set keeps an error's number
+  only, so binding a payload through one is a compile error; name the set to pass payloads on.
+  Two errors of such a set do not compare with `==`.
+- **An inline error set** (`-> T ! { .a, .b }`) cannot give a variant a payload, which it lost.
+- **A bare `.variant` where an error of a declared set goes** must be one of the set's variants
+  (`return .eof;` from `-> E`, `e: E = .eof`).
+- **`yield` is a keyword.**
+
+### Fixed
+
+- **The catches of one function shared the slot that held the error payload**, sized by the
+  first. A later catch around a call with a wider result wrote past it, over the locals beside
+  it: a crash at `-O0`, overwritten locals at `-O2`.
+- **The name a `catch` binds was never declared**: the error was stored into an outer local of
+  that name, and a copy of it (`k := e`) took a pointer slot.
+- **An error outside its `catch` was a pointer**: `k := e`, a parameter of an error type and a
+  `-> E` return were pointer-sized, `return .eof;` returned an undefined value, and a struct with
+  an error field failed LLVM's verifier.
+- **The comptime VM wrapped `return inner();`** as the success value, so a `#run` through a
+  function that forwards a fallible could not be evaluated.
 
 ## 0.8.0 — 2026-10-17
 
