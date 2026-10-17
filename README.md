@@ -62,7 +62,8 @@ The compiler checks that nothing leaves its zone. This does not compile:
 ## Errors are values
 
 A function that can fail returns `T ! E`. `fail` raises an error. `?` passes it up. `catch`
-handles it. An error is a small number. Nothing unwinds the stack.
+handles it, and `yield` gives a value in its place. An error is a small number, with a payload
+if its variant has one, and `match` reads both. Nothing unwinds the stack.
 
 <p align="center"><img src="docs/images/errors.png" width="660" alt="A parser of digits with an error type, ? and catch"></p>
 
