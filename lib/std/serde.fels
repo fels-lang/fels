@@ -19,18 +19,18 @@
 
 read_unsigned :: fn(d: *const u8, bits: u16) -> u64 {
     unsafe {
-        if bits == 8u16 { return (*(d as *const u8)) as u64; }
-        if bits == 16u16 { return (*(d as *const u16)) as u64; }
-        if bits == 32u16 { return (*(d as *const u32)) as u64; }
+        if bits == 8 { return (*(d as *const u8)) as u64; }
+        if bits == 16 { return (*(d as *const u16)) as u64; }
+        if bits == 32 { return (*(d as *const u32)) as u64; }
         return *(d as *const u64);
     }
 }
 
 read_signed :: fn(d: *const u8, bits: u16) -> i64 {
     unsafe {
-        if bits == 8u16 { return (*(d as *const i8)) as i64; }
-        if bits == 16u16 { return (*(d as *const i16)) as i64; }
-        if bits == 32u16 { return (*(d as *const i32)) as i64; }
+        if bits == 8 { return (*(d as *const i8)) as i64; }
+        if bits == 16 { return (*(d as *const i16)) as i64; }
+        if bits == 32 { return (*(d as *const i32)) as i64; }
         return *(d as *const i64);
     }
 }
@@ -38,14 +38,14 @@ read_signed :: fn(d: *const u8, bits: u16) -> i64 {
 // True when a slice's element type is an 8-bit integer (`[]const u8`/`[]u8`), i.e.
 // it should render as a JSON string rather than an array.
 is_byte :: fn(ti: TypeInfo) -> bool {
-    match ti { .int |i| => return i.bits == 8u16; else => return false; }
+    match ti { .int |i| => return i.bits == 8; else => return false; }
 }
 
 // Length of a slice whose value `v.data` points at a `{ptr,len}` header.
 slice_len :: fn(v: Any) -> usize {
     unsafe {
         base: usize = v.data as usize;
-        return *((base + 8usize) as *const usize);
+        return *((base + 8) as *const usize);
     }
 }
 
@@ -55,19 +55,19 @@ write_string :: fn(v: Any, w: *StringBuilder) {
     unsafe {
         base: usize = v.data as usize;
         ptr:  usize = *(base as *const usize);
-        len:  usize = *((base + 8usize) as *const usize);
-        append_byte(w, 34u8);                       // "
-        i: usize = 0usize;
+        len:  usize = *((base + 8) as *const usize);
+        append_byte(w, 34);                       // "
+        i: usize = 0;
         while i < len {
             c: u8 = *((ptr + i) as *const u8);
-            if c == 34u8 { append_byte(w, 92u8); append_byte(w, 34u8); }        // \"
-            else { if c == 92u8 { append_byte(w, 92u8); append_byte(w, 92u8); } // \\
-            else { if c == 10u8 { append_byte(w, 92u8); append_byte(w, 110u8); } // \n
-            else { if c == 9u8 { append_byte(w, 92u8); append_byte(w, 116u8); }  // \t
+            if c == 34 { append_byte(w, 92); append_byte(w, 34); }        // \"
+            else { if c == 92 { append_byte(w, 92); append_byte(w, 92); } // \\
+            else { if c == 10 { append_byte(w, 92); append_byte(w, 110); } // \n
+            else { if c == 9 { append_byte(w, 92); append_byte(w, 116); }  // \t
             else { append_byte(w, c); } } } }
-            i = i + 1usize;
+            i = i + 1;
         }
-        append_byte(w, 34u8);                       // "
+        append_byte(w, 34);                       // "
     }
 }
 
@@ -83,7 +83,7 @@ write_val :: fn(v: Any, ti: TypeInfo, w: *StringBuilder) {
         }
         .float |f| => {
             unsafe {
-                if f.bits == 32u16 { append_f64_min(w, (*(v.data as *const f32)) as f64); }
+                if f.bits == 32 { append_f64_min(w, (*(v.data as *const f32)) as f64); }
                 else { append_f64_min(w, *(v.data as *const f64)); }
             }
         }
@@ -94,40 +94,40 @@ write_val :: fn(v: Any, ti: TypeInfo, w: *StringBuilder) {
             et: TypeInfo = *e;           // deref to a typed local (unambiguous vs `*e` as a type)
             if is_byte(et) { write_string(v, w); }
             else {
-                append_byte(w, 91u8);    // [
+                append_byte(w, 91);    // [
                 // Walk the elements directly (handles scalar, struct, AND nested-slice
                 // elements uniformly): stride from `ti_size`, element id from `ti_id`.
                 unsafe {
                     base: usize = v.data as usize;
                     ptr:  usize = *(base as *const usize);
-                    n:    usize = *((base + 8usize) as *const usize);
+                    n:    usize = *((base + 8) as *const usize);
                     esz:  usize = ti_size(et);
                     eid:  usize = ti_id(et);
-                    i: usize = 0usize;
+                    i: usize = 0;
                     while i < n {
-                        if i > 0usize { append_byte(w, 44u8); }  // ,
+                        if i > 0 { append_byte(w, 44); }  // ,
                         ep: *const u8 = (ptr + i * esz) as *const u8;
                         ev: Any = .{ ep, eid, "" };
                         write_val(ev, et, w);
-                        i = i + 1usize;
+                        i = i + 1;
                     }
                 }
-                append_byte(w, 93u8);    // ]
+                append_byte(w, 93);    // ]
             }
         }
         .struct_ |s| => {
-            append_byte(w, 123u8);       // {
-            i: usize = 0usize;
+            append_byte(w, 123);       // {
+            i: usize = 0;
             while i < s.fields.len {
-                if i > 0usize { append_byte(w, 44u8); }     // ,
-                append_byte(w, 34u8); append(w, s.fields[i].name); append_byte(w, 34u8);
-                append_byte(w, 58u8);    // :
+                if i > 0 { append_byte(w, 44); }     // ,
+                append_byte(w, 34); append(w, s.fields[i].name); append_byte(w, 34);
+                append_byte(w, 58);    // :
                 ft: TypeInfo = *s.fields[i].ty;
                 if any_field_at(v, i) |fv| { write_val(fv, ft, w); }
                 else { append(w, "null"); }
-                i = i + 1usize;
+                i = i + 1;
             }
-            append_byte(w, 125u8);       // }
+            append_byte(w, 125);       // }
         }
         .optional |inner| => {
             pt: TypeInfo = *inner;       // `?T` = { i1 is_some, T payload @ align(T) }
@@ -147,9 +147,9 @@ write_val :: fn(v: Any, ti: TypeInfo, w: *StringBuilder) {
             // any, aren't emitted (TiVariant carries no payload type).
             unsafe {
                 disc: i32 = *(v.data as *const i32);
-                append_byte(w, 34u8);
+                append_byte(w, 34);
                 if (disc as usize) < en.variants.len { append(w, en.variants[disc as usize].name); }
-                append_byte(w, 34u8);
+                append_byte(w, 34);
             }
         }
         else => append(w, "null");
@@ -175,41 +175,41 @@ Parser :: struct { s: []const u8, pos: usize, ok: bool }
 
 p_cur :: fn(p: *Parser) -> u8 {
     if p.pos < p.s.len { return p.s[p.pos]; }
-    return 0u8;
+    return 0;
 }
 
 p_skip_ws :: fn(p: *Parser) {
     cont: bool = true;
     while cont {
         c: u8 = p_cur(p);
-        if c == 32u8 { p.pos += 1usize; }
-        else { if c == 10u8 { p.pos += 1usize; }
-        else { if c == 9u8 { p.pos += 1usize; }
-        else { if c == 13u8 { p.pos += 1usize; }
+        if c == 32 { p.pos += 1; }
+        else { if c == 10 { p.pos += 1; }
+        else { if c == 9 { p.pos += 1; }
+        else { if c == 13 { p.pos += 1; }
         else { cont = false; } } } }
     }
 }
 
 p_eat :: fn(p: *Parser, c: u8) -> bool {
     p_skip_ws(p);
-    if p_cur(p) == c { p.pos += 1usize; return true; }
+    if p_cur(p) == c { p.pos += 1; return true; }
     return false;
 }
 
 is_dig :: fn(c: u8) -> bool {
-    if c < 48u8 { return false; }
-    if c > 57u8 { return false; }
+    if c < 48 { return false; }
+    if c > 57 { return false; }
     return true;
 }
 
 p_i64 :: fn(p: *Parser) -> i64 {
     p_skip_ws(p);
     neg: bool = false;
-    if p_cur(p) == 45u8 { neg = true; p.pos += 1usize; }
+    if p_cur(p) == 45 { neg = true; p.pos += 1; }
     v: i64 = 0;
     while is_dig(p_cur(p)) {
-        v = v * 10 + ((p_cur(p) - 48u8) as i64);
-        p.pos += 1usize;
+        v = v * 10 + ((p_cur(p) - 48) as i64);
+        p.pos += 1;
     }
     if neg { return -v; }
     return v;
@@ -218,19 +218,19 @@ p_i64 :: fn(p: *Parser) -> i64 {
 p_f64 :: fn(p: *Parser) -> f64 {
     p_skip_ws(p);
     neg: bool = false;
-    if p_cur(p) == 45u8 { neg = true; p.pos += 1usize; }
+    if p_cur(p) == 45 { neg = true; p.pos += 1; }
     ip: f64 = 0.0;
     while is_dig(p_cur(p)) {
-        ip = ip * 10.0 + ((p_cur(p) - 48u8) as f64);
-        p.pos += 1usize;
+        ip = ip * 10.0 + ((p_cur(p) - 48) as f64);
+        p.pos += 1;
     }
-    if p_cur(p) == 46u8 {
-        p.pos += 1usize;
+    if p_cur(p) == 46 {
+        p.pos += 1;
         scale: f64 = 1.0;
         while is_dig(p_cur(p)) {
             scale = scale / 10.0;
-            ip = ip + ((p_cur(p) - 48u8) as f64) * scale;
-            p.pos += 1usize;
+            ip = ip + ((p_cur(p) - 48) as f64) * scale;
+            p.pos += 1;
         }
     }
     if neg { return -ip; }
@@ -239,8 +239,8 @@ p_f64 :: fn(p: *Parser) -> f64 {
 
 p_bool :: fn(p: *Parser) -> bool {
     p_skip_ws(p);
-    if p_cur(p) == 116u8 { p.pos += 4usize; return true; }   // "true"
-    p.pos += 5usize;                                          // "false"
+    if p_cur(p) == 116 { p.pos += 4; return true; }   // "true"
+    p.pos += 5;                                          // "false"
     return false;
 }
 
@@ -248,26 +248,26 @@ p_bool :: fn(p: *Parser) -> bool {
 p_str :: fn(p: *Parser, a: *Arena) -> []const u8 {
     p_skip_ws(p);
     sb := builder(a);
-    if p_cur(p) != 34u8 { return str(&sb); }
-    p.pos += 1usize;
+    if p_cur(p) != 34 { return str(&sb); }
+    p.pos += 1;
     cont: bool = true;
     while cont {
         if p.pos >= p.s.len { cont = false; }
         else {
             c: u8 = p.s[p.pos];
-            if c == 34u8 { p.pos += 1usize; cont = false; }      // closing "
-            else { if c == 92u8 {                                // backslash
-                p.pos += 1usize;
+            if c == 34 { p.pos += 1; cont = false; }      // closing "
+            else { if c == 92 {                                // backslash
+                p.pos += 1;
                 if p.pos < p.s.len {
                     e: u8 = p.s[p.pos];
-                    if e == 110u8 { append_byte(&sb, 10u8); }    // \n
-                    else { if e == 116u8 { append_byte(&sb, 9u8); }  // \t
+                    if e == 110 { append_byte(&sb, 10); }    // \n
+                    else { if e == 116 { append_byte(&sb, 9); }  // \t
                     else { append_byte(&sb, e); } }              // \" \\ etc → literal
-                    p.pos += 1usize;
+                    p.pos += 1;
                 }
             } else {
                 append_byte(&sb, c);
-                p.pos += 1usize;
+                p.pos += 1;
             } }
         }
     }
@@ -277,15 +277,15 @@ p_str :: fn(p: *Parser, a: *Arena) -> []const u8 {
 // Field writers (cast away const, store the parsed value)
 set_int :: fn(d: *const u8, ti: TiInt, val: i64) {
     unsafe {
-        if ti.bits == 8u16 { *(d as *u8) = val as u8; }
-        else { if ti.bits == 16u16 { *(d as *u16) = val as u16; }
-        else { if ti.bits == 32u16 { *(d as *u32) = val as u32; }
+        if ti.bits == 8 { *(d as *u8) = val as u8; }
+        else { if ti.bits == 16 { *(d as *u16) = val as u16; }
+        else { if ti.bits == 32 { *(d as *u32) = val as u32; }
         else { *(d as *u64) = val as u64; } } }
     }
 }
 set_f :: fn(d: *const u8, ti: TiFloat, val: f64) {
     unsafe {
-        if ti.bits == 32u16 { *(d as *f32) = val as f32; }
+        if ti.bits == 32 { *(d as *f32) = val as f32; }
         else { *(d as *f64) = val; }
     }
 }
@@ -294,31 +294,31 @@ set_str :: fn(d: *const u8, bytes: []const u8) {
     unsafe {
         base: usize = d as usize;
         *(base as *usize) = bytes.ptr as usize;
-        *((base + 8usize) as *usize) = bytes.len;
+        *((base + 8) as *usize) = bytes.len;
     }
 }
 set_empty :: fn(d: *const u8) {
     unsafe {
         base: usize = d as usize;
-        *(base as *usize) = 0usize;
-        *((base + 8usize) as *usize) = 0usize;
+        *(base as *usize) = 0;
+        *((base + 8) as *usize) = 0;
     }
 }
 
 // Byte size + type id of an element TypeInfo (for allocating + wrapping arrays).
 ti_size :: fn(et: TypeInfo) -> usize {
     match et {
-        .int |i| => return (i.bits as usize) / 8usize;
-        .float |f| => return (f.bits as usize) / 8usize;
-        .boolean => return 1usize;
+        .int |i| => return (i.bits as usize) / 8;
+        .float |f| => return (f.bits as usize) / 8;
+        .boolean => return 1;
         .struct_ |s| => return type_size_of(s.id);
-        .slice |se| => return 16usize;
-        .pointer |pe| => return 8usize;
-        else => return 8usize;
+        .slice |se| => return 16;
+        .pointer |pe| => return 8;
+        else => return 8;
     }
 }
 ti_id :: fn(et: TypeInfo) -> usize {
-    match et { .struct_ |s| => return s.id; else => return 0usize; }
+    match et { .struct_ |s| => return s.id; else => return 0; }
 }
 // Alignment of a type — needed to find an optional's payload offset (`?T` lays out
 // as `{ i1 is_some, T payload }`, payload at offset `align(T)`). A struct's alignment
@@ -326,40 +326,40 @@ ti_id :: fn(et: TypeInfo) -> usize {
 ti_align :: fn(et: TypeInfo) -> usize {
     match et {
         .int |i| => {
-            b: usize = (i.bits as usize) / 8usize;
-            if b > 8usize { return 8usize; }
+            b: usize = (i.bits as usize) / 8;
+            if b > 8 { return 8; }
             return b;
         }
-        .float |f| => return (f.bits as usize) / 8usize;
-        .boolean => return 1usize;
-        .slice |se| => return 8usize;
-        .pointer |pe| => return 8usize;
+        .float |f| => return (f.bits as usize) / 8;
+        .boolean => return 1;
+        .slice |se| => return 8;
+        .pointer |pe| => return 8;
         .struct_ |s| => {
-            mx: usize = 1usize;
-            i: usize = 0usize;
+            mx: usize = 1;
+            i: usize = 0;
             while i < s.fields.len {
                 fa: TypeInfo = *s.fields[i].ty;
                 fal: usize = ti_align(fa);
                 if fal > mx { mx = fal; }
-                i = i + 1usize;
+                i = i + 1;
             }
             return mx;
         }
-        else => return 8usize;
+        else => return 8;
     }
 }
 
 name_eq :: fn(x: []const u8, y: []const u8) -> bool {
     if x.len != y.len { return false; }
-    i: usize = 0usize;
-    while i < x.len { if x[i] != y[i] { return false; } i = i + 1usize; }
+    i: usize = 0;
+    while i < x.len { if x[i] != y[i] { return false; } i = i + 1; }
     return true;
 }
 find_field :: fn(s: TiStruct, key: []const u8) -> usize {
-    i: usize = 0usize;
+    i: usize = 0;
     while i < s.fields.len {
         if name_eq(s.fields[i].name, key) { return i; }
-        i = i + 1usize;
+        i = i + 1;
     }
     return s.fields.len;   // not found
 }
@@ -371,50 +371,50 @@ p_skip_scalar :: fn(p: *Parser) {
         if p.pos >= p.s.len { cont = false; }
         else {
             d: u8 = p.s[p.pos];
-            if d == 44u8 { cont = false; }
-            else { if d == 125u8 { cont = false; }
-            else { if d == 93u8 { cont = false; }
-            else { if d == 32u8 { cont = false; }
-            else { if d == 10u8 { cont = false; }
-            else { if d == 9u8 { cont = false; }
-            else { if d == 13u8 { cont = false; }
-            else { p.pos += 1usize; } } } } } } }
+            if d == 44 { cont = false; }
+            else { if d == 125 { cont = false; }
+            else { if d == 93 { cont = false; }
+            else { if d == 32 { cont = false; }
+            else { if d == 10 { cont = false; }
+            else { if d == 9 { cont = false; }
+            else { if d == 13 { cont = false; }
+            else { p.pos += 1; } } } } } } }
         }
     }
 }
 p_skip_value :: fn(p: *Parser, a: *Arena) {
     p_skip_ws(p);
     c: u8 = p_cur(p);
-    if c == 34u8 { p_str(p, a); }
-    else { if c == 123u8 { p_skip_obj(p, a); }
-    else { if c == 91u8 { p_skip_arr(p, a); }
+    if c == 34 { p_str(p, a); }
+    else { if c == 123 { p_skip_obj(p, a); }
+    else { if c == 91 { p_skip_arr(p, a); }
     else { p_skip_scalar(p); } } }
 }
 p_skip_obj :: fn(p: *Parser, a: *Arena) {
-    p_eat(p, 123u8);
+    p_eat(p, 123);
     p_skip_ws(p);
-    if p_cur(p) == 125u8 { p.pos += 1usize; return; }
+    if p_cur(p) == 125 { p.pos += 1; return; }
     cont: bool = true;
     while cont {
         p_str(p, a);
-        p_eat(p, 58u8);
+        p_eat(p, 58);
         p_skip_value(p, a);
         p_skip_ws(p);
-        if p_cur(p) == 44u8 { p.pos += 1usize; } else { cont = false; }
+        if p_cur(p) == 44 { p.pos += 1; } else { cont = false; }
     }
-    p_eat(p, 125u8);
+    p_eat(p, 125);
 }
 p_skip_arr :: fn(p: *Parser, a: *Arena) {
-    p_eat(p, 91u8);
+    p_eat(p, 91);
     p_skip_ws(p);
-    if p_cur(p) == 93u8 { p.pos += 1usize; return; }
+    if p_cur(p) == 93 { p.pos += 1; return; }
     cont: bool = true;
     while cont {
         p_skip_value(p, a);
         p_skip_ws(p);
-        if p_cur(p) == 44u8 { p.pos += 1usize; } else { cont = false; }
+        if p_cur(p) == 44 { p.pos += 1; } else { cont = false; }
     }
-    p_eat(p, 93u8);
+    p_eat(p, 93);
 }
 
 // The recursive parser
@@ -432,11 +432,11 @@ parse_value :: fn(p: *Parser, target: Any, ti: TypeInfo, a: *Arena) {
         .optional |inner| => {
             pt: TypeInfo = *inner;
             p_skip_ws(p);
-            if p_cur(p) == 110u8 {              // 'n' → null → leave is_some = 0
-                p.pos += 4usize;
-                unsafe { *(target.data as *u8) = 0u8; }
+            if p_cur(p) == 110 {              // 'n' → null → leave is_some = 0
+                p.pos += 4;
+                unsafe { *(target.data as *u8) = 0; }
             } else {
-                unsafe { *(target.data as *u8) = 1u8; }   // is_some = true
+                unsafe { *(target.data as *u8) = 1; }   // is_some = true
                 off: usize = ti_align(pt);
                 pp: *const u8 = unsafe ((target.data as usize) + off) as *const u8;
                 pv: Any = .{ pp, ti_id(pt), "" };
@@ -446,10 +446,10 @@ parse_value :: fn(p: *Parser, target: Any, ti: TypeInfo, a: *Arena) {
         .enum_ |en| => {
             key: []const u8 = p_str(p, a);      // the variant name
             disc: i32 = 0;
-            i: usize = 0usize;
+            i: usize = 0;
             while i < en.variants.len {
                 if name_eq(en.variants[i].name, key) { disc = i as i32; }
-                i = i + 1usize;
+                i = i + 1;
             }
             unsafe { *(target.data as *i32) = disc; }
         }
@@ -458,13 +458,13 @@ parse_value :: fn(p: *Parser, target: Any, ti: TypeInfo, a: *Arena) {
 }
 
 parse_struct :: fn(p: *Parser, target: Any, s: TiStruct, a: *Arena) {
-    if !p_eat(p, 123u8) { p.ok = false; return; }   // {
+    if !p_eat(p, 123) { p.ok = false; return; }   // {
     p_skip_ws(p);
-    if p_cur(p) == 125u8 { p.pos += 1usize; return; }   // empty {}
+    if p_cur(p) == 125 { p.pos += 1; return; }   // empty {}
     cont: bool = true;
     while cont {
         key: []const u8 = p_str(p, a);
-        if !p_eat(p, 58u8) { p.ok = false; return; }   // :
+        if !p_eat(p, 58) { p.ok = false; return; }   // :
         fi: usize = find_field(s, key);
         if fi < s.fields.len {
             ft: TypeInfo = *s.fields[fi].ty;
@@ -474,47 +474,47 @@ parse_struct :: fn(p: *Parser, target: Any, s: TiStruct, a: *Arena) {
             p_skip_value(p, a);   // unknown key
         }
         p_skip_ws(p);
-        if p_cur(p) == 44u8 { p.pos += 1usize; } else { cont = false; }
+        if p_cur(p) == 44 { p.pos += 1; } else { cont = false; }
     }
-    p_eat(p, 125u8);   // }
+    p_eat(p, 125);   // }
 }
 
 parse_array :: fn(p: *Parser, target: Any, et: TypeInfo, a: *Arena) {
-    if !p_eat(p, 91u8) { p.ok = false; return; }   // [
+    if !p_eat(p, 91) { p.ok = false; return; }   // [
     p_skip_ws(p);
-    if p_cur(p) == 93u8 { p.pos += 1usize; set_empty(target.data); return; }   // []
+    if p_cur(p) == 93 { p.pos += 1; set_empty(target.data); return; }   // []
     // Pass 1: count elements (so we can allocate exactly).
     start: usize = p.pos;
-    count: usize = 0usize;
+    count: usize = 0;
     cont: bool = true;
     while cont {
         p_skip_value(p, a);
-        count = count + 1usize;
+        count = count + 1;
         p_skip_ws(p);
-        if p_cur(p) == 44u8 { p.pos += 1usize; } else { cont = false; }
+        if p_cur(p) == 44 { p.pos += 1; } else { cont = false; }
     }
     esz: usize = ti_size(et);
     eid: usize = ti_id(et);
     buf: []u8 = a.alloc_bytes(count * esz);
     // Pass 2: parse each element into its slot.
     p.pos = start;
-    i: usize = 0usize;
+    i: usize = 0;
     while i < count {
         slot: *const u8 = unsafe ((buf.ptr as usize) + i * esz) as *const u8;
         elem: Any = .{ slot, eid, "" };
         parse_value(p, elem, et, a);
         p_skip_ws(p);
-        if p_cur(p) == 44u8 { p.pos += 1usize; }
-        i = i + 1usize;
+        if p_cur(p) == 44 { p.pos += 1; }
+        i = i + 1;
     }
-    p_eat(p, 93u8);   // ]
+    p_eat(p, 93);   // ]
     set_arr(target.data, buf, count);   // write the slice header {ptr, count}
 }
 set_arr :: fn(d: *const u8, buf: []u8, count: usize) {
     unsafe {
         base: usize = d as usize;
         *(base as *usize) = buf.ptr as usize;
-        *((base + 8usize) as *usize) = count;
+        *((base + 8) as *usize) = count;
     }
 }
 
@@ -524,7 +524,7 @@ pub from_json :: fn($T: type, text: []const u8, a: *Arena) -> ?T {
     result: T = .{};
     dp: *const u8 = unsafe (&result) as *const u8;
     base: Any = .{ dp, core::type_id(T), core::type_name(T) };
-    p: Parser = .{ text, 0usize, true };
+    p: Parser = .{ text, 0, true };
     parse_value(&p, base, core::type_info(T), a);
     if !p.ok { return null; }
     return result;
