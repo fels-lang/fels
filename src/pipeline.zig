@@ -1511,6 +1511,7 @@ fn stmtUsesAny(stmt: ast.Stmt) bool {
         .local_infer => |s| exprUsesAny(s.value),
         .assign => |s| exprUsesAny(s.target) or exprUsesAny(s.value),
         .return_stmt => |s| if (s.value) |v| exprUsesAny(v) else false,
+        .yield_stmt => |s| exprUsesAny(s.value),
         .expr => |e| exprUsesAny(e),
         else => false,
     };
@@ -1564,6 +1565,7 @@ fn stmtUsesReflection(stmt: ast.Stmt) bool {
         .local_typed => |s| exprUsesReflection(s.value),
         .assign => |s| exprUsesReflection(s.target) or exprUsesReflection(s.value),
         .return_stmt => |s| if (s.value) |v| exprUsesReflection(v) else false,
+        .yield_stmt => |s| exprUsesReflection(s.value),
         .expr => |e| exprUsesReflection(e),
         else => false,
     };
@@ -1751,6 +1753,7 @@ fn stmtUsesMeta(stmt: ast.Stmt) bool {
         .local_typed => |s| exprUsesMeta(s.value),
         .assign => |s| exprUsesMeta(s.target) or exprUsesMeta(s.value),
         .return_stmt => |s| if (s.value) |v| exprUsesMeta(v) else false,
+        .yield_stmt => |s| exprUsesMeta(s.value),
         .expr => |e| exprUsesMeta(e),
         else => false,
     };

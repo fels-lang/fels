@@ -71,6 +71,7 @@ const Analyzer = struct {
                 try self.walkExpr(s.value);
             },
             .return_stmt => |s| if (s.value) |v| try self.walkExpr(v),
+            .yield_stmt => |s| try self.walkExpr(s.value),
             .fail_stmt => |s| for (s.payload) |p| try self.walkExpr(p),
             .expr => |e| try self.walkExpr(e),
             .if_stmt => |s| {

@@ -320,6 +320,10 @@ const Expander = struct {
                 .value = if (r.value) |v| try self.substExpr(v, env, hyg) else null,
                 .span = r.span,
             } }),
+            .yield_stmt => |y| try out.append(self.arena, .{ .yield_stmt = .{
+                .value = try self.substExpr(y.value, env, hyg),
+                .span = y.span,
+            } }),
             .fail_stmt => |s| {
                 var payload: std.ArrayList(ast.Expr) = .empty;
                 for (s.payload) |e| try payload.append(self.arena, try self.substExpr(e, env, hyg));

@@ -4775,6 +4775,45 @@ test "exe: a catch handler that runs to its end carries on after the catch" {
     try std.testing.expectEqual(@as(u32, 42), code);
 }
 
+test "exe: a catch handler gives the expression its value with yield" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\Oops :: errors { a, b }
+        \\P :: struct { x: i32, y: i32 }
+        \\num :: fn(n: i32) -> i32 ! Oops { if n < 0 { fail .a; } if n > 100 { fail .b; } return n * 2; }
+        \\pt :: fn(n: i32) -> P ! Oops { if n < 0 { fail .a; } return .{ n, n + 1 }; }
+        \\main :: fn() -> i32 {
+        \\    count := 0;
+        \\    v := num(-1) catch e { count += 1; yield 7; };
+        \\    if v != 7 { return 1; }
+        \\    w := num(4) catch e { count += 100; yield 0; };
+        \\    if w != 8 || count != 1 { return 2; }
+        \\    u := num(500) catch e { if e == .a { yield 1; } else { yield 2; } };
+        \\    if u != 2 { return 3; }
+        \\    d := 0;
+        \\    t := num(-3) catch e { defer { d = 5; } yield d + 3; };
+        \\    if t != 3 || d != 5 { return 4; }
+        \\    n := num(-1) catch e { yield (num(-2) catch e2 { yield 9; }) + 1; };
+        \\    if n != 10 { return 5; }
+        \\    p := pt(-1) catch e { yield .{ 3, 4 }; };
+        \\    if p.x != 3 || p.y != 4 { return 6; }
+        \\    q := pt(2) catch e { yield .{ 3, 4 }; };
+        \\    if q.x != 2 || q.y != 3 { return 7; }
+        \\    s := 0;
+        \\    for i in 0..5 {
+        \\        s += num(i - 2) catch e { for j in 0..10 { if j == 3 { yield j; } } yield 50; };
+        \\    }
+        \\    if s != 3 + 3 + 0 + 2 + 4 { return 8; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_catch_yield", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_catch_yield_o2", 2, true));
+}
+
 test "exe: reading an array field of a struct in a loop does not grow the stack" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
