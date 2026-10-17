@@ -937,6 +937,30 @@ test "diagnostics: fail e takes an error the function's set holds" {
     try expectNoError(a, decls, "g :: fn(e: F) -> i32 ! F { fail e; }\nh :: fn(e: F) -> i32 ! { fail e; }\nk :: fn() -> F { return F.c(3i64); }");
 }
 
+test "diagnostics: a set names its errors without the dot, inline as declared" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `-> T ! { a, b }` was "expected ; after expression": an inline set took only `.a`, a
+    // declared one either. A body after a bare `!` is not taken for a set.
+    var fe = try fels.compile(a, "error_sets.fels",
+        \\E :: errors { a, b }
+        \\f :: fn(n: i32) -> i32 ! { invalid, overflow } { if n < 0 { fail .invalid; } return n; }
+        \\g :: fn() -> i32 ! { x: i32 = 5; return x; }
+        \\h :: fn() -> i32 ! { one } { fail .one; }
+        \\old :: fn() -> i32 ! { .p, .q } { fail .p; }
+        \\D :: errors { .c, d }
+    );
+    defer fe.deinit(a);
+    var warnings: usize = 0;
+    for (fe.diagnostics()) |d| {
+        try std.testing.expect(d.kind != .err);
+        if (std.mem.indexOf(u8, d.message, "a set names its errors without the dot") != null) warnings += 1;
+    }
+    // One for the dotted inline set, one for the dotted declaration.
+    try std.testing.expectEqual(@as(usize, 2), warnings);
+}
+
 test "diagnostics: if x := opt warns, and names the form of while and match" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1164,10 +1188,10 @@ test "diagnostics: an inline error set carries no payload" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    try expectFirstError(a, "f :: fn(n: i32) -> i32 ! { .small, .big: i64 } { if n > 9 { fail .big(5i64); } return n; }\nmain :: fn() -> i32 { return 0; }", &.{
+    try expectFirstError(a, "f :: fn(n: i32) -> i32 ! { small, big: i64 } { if n > 9 { fail .big(5i64); } return n; }\nmain :: fn() -> i32 { return 0; }", &.{
         "the error `.big` of an inline set cannot carry a payload",
     });
-    try expectNoError(a, "", "f :: fn(n: i32) -> i32 ! { .small, .big } { if n > 9 { fail .big; } return n; }\nmain :: fn() -> i32 { return 0; }");
+    try expectNoError(a, "", "f :: fn(n: i32) -> i32 ! { small, big } { if n > 9 { fail .big; } return n; }\nmain :: fn() -> i32 { return 0; }");
 }
 
 test "diagnostics: `match` on an error covers its set's variants" {
@@ -1179,7 +1203,7 @@ test "diagnostics: `match` on an error covers its set's variants" {
         \\E1 :: errors { p, x }
         \\raise :: fn() -> i32 ! E1 { fail .x; }
         \\inferred :: fn() -> i32 ! { v := raise()?; return v; }
-        \\inline_set :: fn() -> i32 ! { .p, .x } { fail .x; }
+        \\inline_set :: fn() -> i32 ! { p, x } { fail .x; }
         \\
     ;
     for ([_][]const u8{ "raise", "inferred", "inline_set" }) |callee| {

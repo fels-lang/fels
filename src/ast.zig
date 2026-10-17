@@ -206,6 +206,9 @@ pub const ErrorVariantDecl = struct {
     name: []const u8,
     payload: ?TypeRef,
     span: Span,
+    /// Written `.name`, the older spelling of a declared error (it warns): a set names its
+    /// errors as `name`, and `.name` is how one is used.
+    dotted: bool = false,
 };
 
 pub const FieldDecl = struct {
