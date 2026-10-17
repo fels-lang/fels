@@ -73,7 +73,8 @@ These compile without a message and give a wrong result.
   `tests/fixtures/stdlib/fmt_tests.fels` runs natively only.
 - A constant computed by a call or `#run` cannot be read by other compile time code
   (`SUM :: PLAIN + 3`).
-- `F :: seven; F()` (a constant holding a function) fails.
+- ~~`F :: seven; F()` (a constant holding a function) fails.~~ Fixed 2026-10-17: a constant
+  naming a function is that function.
 - No exponent notation for floats (`1e5`); the error now says so.
 - `#extern("msvcrt", "strlen")` does not link; the docs use `lstrlenA` instead.
 - ~~A bare variant does not take an optional enum type (`o: ?Color = .green;`).~~ Fixed: it
