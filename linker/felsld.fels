@@ -188,10 +188,13 @@ sec_name :: fn(obj: *CoffObj, field_off: usize) -> []const u8 {
     return sub(obj.data, field_off, 8usize);
 }
 
+// IMAGE_SCN_LNK_NRELOC_OVFL: the section has more relocations than its 16-bit count holds.
+SCN_LNK_NRELOC_OVFL :: 0x01000000u32;
+
 // Read section `i` (0-based).
 get_section :: fn(obj: *CoffObj, i: u32) -> Section {
     base := SIZEOF_FILE_HEADER + ((i as usize) * SIZEOF_SECTION_HDR);
-    return .{
+    sec: Section = .{
         sec_name(obj, base),
         rd_u32(obj.data, base + 8usize),
         rd_u32(obj.data, base + 12usize),
@@ -201,6 +204,17 @@ get_section :: fn(obj: *CoffObj, i: u32) -> Section {
         rd_u16(obj.data, base + 32usize),
         rd_u32(obj.data, base + 36usize),
     };
+    // Past 0xFFFF relocations the count field says 0xFFFF, and the first record holds the real
+    // count, itself included, where its address goes; the relocations follow it. Taken at face
+    // value, the 65,535 records from the first one left the rest of the calls unpatched.
+    if (sec.flags & SCN_LNK_NRELOC_OVFL) != 0u32 && sec.num_relocs == 0xFFFFu32 && sec.reloc_ptr != 0u32 {
+        total := rd_u32(obj.data, sec.reloc_ptr as usize);
+        if total > 0u32 {
+            sec.num_relocs = total - 1u32;
+            sec.reloc_ptr += SIZEOF_RELOC as u32;
+        }
+    }
+    return sec;
 }
 
 // Resolve a symbol name: inline 8 bytes, or (first 4 bytes == 0) → string table.
