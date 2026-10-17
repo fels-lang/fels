@@ -895,6 +895,16 @@ test "diagnostics: an error is compared with a variant wherever it is" {
     try expectFirstError(a, "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> bool { return e == .c; }", &.{"`Oops` has no error variant `.c`"});
 }
 
+test "diagnostics: an inline error set carries no payload" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try expectFirstError(a, "f :: fn(n: i32) -> i32 ! { .small, .big: i64 } { if n > 9 { fail .big { 5i64 }; } return n; }\nmain :: fn() -> i32 { return 0; }", &.{
+        "the error `.big` of an inline set cannot carry a payload",
+    });
+    try expectNoError(a, "", "f :: fn(n: i32) -> i32 ! { .small, .big } { if n > 9 { fail .big; } return n; }\nmain :: fn() -> i32 { return 0; }");
+}
+
 test "diagnostics: `match` on an error covers its set's variants" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
