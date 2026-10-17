@@ -69,7 +69,7 @@ pub DateTime :: struct {
 // Floor-divide (rounds toward −∞), so pre-epoch times still break down correctly.
 fdiv :: fn(a: i64, b: i64) -> i64 {
     q: i64 = a / b;
-    if (a % b != 0i64) && ((a < 0i64) != (b < 0i64)) { return q - 1i64; }
+    if (a % b != 0) && ((a < 0) != (b < 0)) { return q - 1; }
     return q;
 }
 
@@ -83,17 +83,17 @@ pub DateParts :: struct {
 // Howard Hinnant's civil-from-days: the date `days` days after 1970-01-01.
 parts_from_days :: fn(days: i64) -> DateParts {
     // Shift the epoch to 0000-03-01, so the leap day is the last day of a year.
-    z:   i64 = days + 719468i64;
-    era: i64 = fdiv(z, 146097i64);
-    doe: i64 = z - era * 146097i64;                                  // 0 … 146096
-    yoe: i64 = (doe - doe / 1460i64 + doe / 36524i64 - doe / 146096i64) / 365i64; // 0 … 399
-    y:   i64 = yoe + era * 400i64;
-    doy: i64 = doe - (365i64 * yoe + yoe / 4i64 - yoe / 100i64);     // 0 … 365
-    mp:  i64 = (5i64 * doy + 2i64) / 153i64;                         // 0 … 11
-    d:   i64 = doy - (153i64 * mp + 2i64) / 5i64 + 1i64;             // 1 … 31
-    m:   i64 = mp + 3i64;
-    if mp >= 10i64 { m = mp - 9i64; }
-    if m <= 2i64 { y = y + 1i64; }
+    z:   i64 = days + 719468;
+    era: i64 = fdiv(z, 146097);
+    doe: i64 = z - era * 146097;                                  // 0 … 146096
+    yoe: i64 = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // 0 … 399
+    y:   i64 = yoe + era * 400;
+    doy: i64 = doe - (365 * yoe + yoe / 4 - yoe / 100);     // 0 … 365
+    mp:  i64 = (5 * doy + 2) / 153;                         // 0 … 11
+    d:   i64 = doy - (153 * mp + 2) / 5 + 1;             // 1 … 31
+    m:   i64 = mp + 3;
+    if mp >= 10 { m = mp - 9; }
+    if m <= 2 { y = y + 1; }
     out: DateParts = .{ y, m as u8, d as u8 };
     return out;
 }
@@ -101,33 +101,33 @@ parts_from_days :: fn(days: i64) -> DateParts {
 // The other way: the days from 1970-01-01 to `year`-`month`-`day` (which must exist).
 days_from_parts :: fn(year: i64, month: i64, day: i64) -> i64 {
     y: i64 = year;
-    if month <= 2i64 { y = year - 1i64; }
-    era: i64 = fdiv(y, 400i64);
-    yoe: i64 = y - era * 400i64;                                     // 0 … 399
-    mp:  i64 = month - 3i64;                                         // March = 0
-    if month <= 2i64 { mp = month + 9i64; }
-    doy: i64 = (153i64 * mp + 2i64) / 5i64 + day - 1i64;             // 0 … 365
-    doe: i64 = yoe * 365i64 + yoe / 4i64 - yoe / 100i64 + doy;       // 0 … 146096
-    return era * 146097i64 + doe - 719468i64;
+    if month <= 2 { y = year - 1; }
+    era: i64 = fdiv(y, 400);
+    yoe: i64 = y - era * 400;                                     // 0 … 399
+    mp:  i64 = month - 3;                                         // March = 0
+    if month <= 2 { mp = month + 9; }
+    doy: i64 = (153 * mp + 2) / 5 + day - 1;             // 0 … 365
+    doe: i64 = yoe * 365 + yoe / 4 - yoe / 100 + doy;       // 0 … 146096
+    return era * 146097 + doe - 719468;
 }
 
 // The weekday of the day `days` days after 1970-01-01 (a Thursday): 0=Sunday … 6=Saturday.
 weekday_of :: fn(days: i64) -> u8 {
-    return (days + 4i64 - fdiv(days + 4i64, 7i64) * 7i64) as u8;
+    return (days + 4 - fdiv(days + 4, 7) * 7) as u8;
 }
 
 // Break `secs` (seconds since the Unix epoch) into its UTC components.
 pub utc :: fn(secs: i64) -> DateTime {
-    days:    i64 = fdiv(secs, 86400i64);
-    rem:     i64 = secs - days * 86400i64;   // 0 … 86399 (floor-correct)
+    days:    i64 = fdiv(secs, 86400);
+    rem:     i64 = secs - days * 86400;   // 0 … 86399 (floor-correct)
     p := parts_from_days(days);
     out: DateTime = .{
         p.year,
         p.month,
         p.day,
-        (rem / 3600i64) as u8,
-        ((rem / 60i64) % 60i64) as u8,
-        (rem % 60i64) as u8,
+        (rem / 3600) as u8,
+        ((rem / 60) % 60) as u8,
+        (rem % 60) as u8,
         weekday_of(days),
     };
     return out;
@@ -163,9 +163,9 @@ pub Date :: struct {
     // month has it, else it becomes the month's last: 2024-01-31 plus one month is 2024-02-29.
     pub add_months :: fn(self: *Self, n: i64) -> Date {
         p := parts_from_days(self.days);
-        total: i64 = p.year * 12i64 + (p.month as i64) - 1i64 + n;
-        y: i64 = fdiv(total, 12i64);
-        m: i64 = total - y * 12i64 + 1i64;
+        total: i64 = p.year * 12 + (p.month as i64) - 1 + n;
+        y: i64 = fdiv(total, 12);
+        m: i64 = total - y * 12 + 1;
         d: i64 = p.day as i64;
         last: i64 = days_in_month(y, m);
         if d > last { d = last; }
@@ -182,55 +182,55 @@ pub Date :: struct {
 
 // Whether `year` has a February 29.
 pub is_leap_year :: fn(year: i64) -> bool {
-    if year % 4i64 != 0i64 { return false; }
-    if year % 100i64 != 0i64 { return true; }
-    return year % 400i64 == 0i64;
+    if year % 4 != 0 { return false; }
+    if year % 100 != 0 { return true; }
+    return year % 400 == 0;
 }
 
 // The number of days of `month` (1–12) in `year`; 0 for a month that does not exist.
 pub days_in_month :: fn(year: i64, month: i64) -> i64 {
-    if month < 1i64 || month > 12i64 { return 0i64; }
-    if month == 2i64 {
-        if is_leap_year(year) { return 29i64; }
-        return 28i64;
+    if month < 1 || month > 12 { return 0; }
+    if month == 2 {
+        if is_leap_year(year) { return 29; }
+        return 28;
     }
-    if month == 4i64 || month == 6i64 || month == 9i64 || month == 11i64 { return 30i64; }
-    return 31i64;
+    if month == 4 || month == 6 || month == 9 || month == 11 { return 30; }
+    return 31;
 }
 
 // The date `year`-`month`-`day`, or null when there is no such day (2023-02-29, month 13).
 pub date :: fn(year: i64, month: i64, day: i64) -> ?Date {
-    if day < 1i64 || day > days_in_month(year, month) { return null; }
+    if day < 1 || day > days_in_month(year, month) { return null; }
     out: Date = .{ days_from_parts(year, month, day) };
     return out;
 }
 
 // Today's date in UTC.
 pub today_utc :: fn() -> Date {
-    out: Date = .{ fdiv(unix_seconds(), 86400i64) };
+    out: Date = .{ fdiv(unix_seconds(), 86400) };
     return out;
 }
 
 // The number made of the `n` digits of `text` from `at`, or -1 when one of them is no digit.
 digits_at :: fn(text: []const u8, at: usize, n: usize) -> i64 {
-    v: i64 = 0i64;
+    v: i64 = 0;
     i: usize = at;
     while i < at + n {
         c := text[i];
-        if c < 48u8 || c > 57u8 { return -1i64; }
-        v = v * 10i64 + ((c - 48u8) as i64);
-        i += 1usize;
+        if c < 48 || c > 57 { return -1; }
+        v = v * 10 + ((c - 48) as i64);
+        i += 1;
     }
     return v;
 }
 
 // The date written as `YYYY-MM-DD` (ISO 8601), or null when `text` is not one.
 pub parse_date :: fn(text: []const u8) -> ?Date {
-    if text.len != 10usize || text[4] != 45u8 || text[7] != 45u8 { return null; }
-    y := digits_at(text, 0usize, 4usize);
-    m := digits_at(text, 5usize, 2usize);
-    d := digits_at(text, 8usize, 2usize);
-    if y < 0i64 || m < 0i64 || d < 0i64 { return null; }
+    if text.len != 10 || text[4] != 45 || text[7] != 45 { return null; }
+    y := digits_at(text, 0, 4);
+    m := digits_at(text, 5, 2);
+    d := digits_at(text, 8, 2);
+    if y < 0 || m < 0 || d < 0 { return null; }
     return date(y, m, d);
 }
 
@@ -238,22 +238,22 @@ pub parse_date :: fn(text: []const u8) -> ?Date {
 // outside 0 … 9999 give an empty text.
 pub format_date :: fn(d: Date, buf: []u8) -> []const u8 {
     p := parts_from_days(d.days);
-    if buf.len < 10usize || p.year < 0i64 || p.year > 9999i64 { return buf[0usize..0usize]; }
-    put_digits(buf, 0usize, 4usize, p.year);
-    buf[4] = 45u8;
-    put_digits(buf, 5usize, 2usize, p.month as i64);
-    buf[7] = 45u8;
-    put_digits(buf, 8usize, 2usize, p.day as i64);
-    return buf[0usize..10usize];
+    if buf.len < 10 || p.year < 0 || p.year > 9999 { return buf[0..0usize]; }
+    put_digits(buf, 0, 4, p.year);
+    buf[4] = 45;
+    put_digits(buf, 5, 2, p.month as i64);
+    buf[7] = 45;
+    put_digits(buf, 8, 2, p.day as i64);
+    return buf[0..10usize];
 }
 
 // Write `v` with `n` digits, zeros in front, into `buf` from `at`.
 put_digits :: fn(buf: []u8, at: usize, n: usize, v: i64) {
     rest: i64 = v;
     i: usize = n;
-    while i > 0usize {
-        i -= 1usize;
-        buf[at + i] = 48u8 + ((rest % 10i64) as u8);
-        rest = rest / 10i64;
+    while i > 0 {
+        i -= 1;
+        buf[at + i] = 48 + ((rest % 10) as u8);
+        rest = rest / 10;
     }
 }
