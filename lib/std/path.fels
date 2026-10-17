@@ -25,9 +25,9 @@ pub is_sep :: fn(c: u8) -> bool { return c == 47u8 || c == 92u8; }   // '/' or '
 // with no separator, that's `p` itself; for a trailing separator, "".
 pub basename :: fn(p: []const u8) -> []const u8 {
     i: usize = p.len;
-    while i > 0usize {
-        if is_sep(p[i - 1usize]) { return p[i..p.len]; }
-        i = i - 1usize;
+    while i > 0 {
+        if is_sep(p[i - 1]) { return p[i..p.len]; }
+        i = i - 1;
     }
     return p;
 }
@@ -37,16 +37,16 @@ pub basename :: fn(p: []const u8) -> []const u8 {
 // the only separator is a leading one.
 pub dirname :: fn(p: []const u8) -> []const u8 {
     i: usize = p.len;
-    while i > 0usize {
-        if is_sep(p[i - 1usize]) {
-            j: usize = i - 1usize;
-            while j > 0usize {
-                if is_sep(p[j - 1usize]) { j = j - 1usize; } else { break; }
+    while i > 0 {
+        if is_sep(p[i - 1]) {
+            j: usize = i - 1;
+            while j > 0 {
+                if is_sep(p[j - 1]) { j = j - 1; } else { break; }
             }
-            if j == 0usize { return p[0..1usize]; }   // a rooted path like "\a"
+            if j == 0 { return p[0..1usize]; }   // a rooted path like "\a"
             return p[0..j];
         }
-        i = i - 1usize;
+        i = i - 1;
     }
     return ".";
 }
@@ -59,13 +59,13 @@ pub parent :: fn(p: []const u8) -> []const u8 { return dirname(p); }
 pub extension :: fn(p: []const u8) -> []const u8 {
     b := basename(p);
     i: usize = b.len;
-    while i > 0usize {
-        c := b[i - 1usize];
-        if c == 46u8 {                                 // '.'
-            if i - 1usize == 0usize { return ""; }     // leading-dot file
-            return b[(i - 1usize)..b.len];
+    while i > 0 {
+        c := b[i - 1];
+        if c == 46 {                                 // '.'
+            if i - 1 == 0 { return ""; }     // leading-dot file
+            return b[(i - 1)..b.len];
         }
-        i = i - 1usize;
+        i = i - 1;
     }
     return "";
 }
@@ -79,10 +79,10 @@ pub stem :: fn(p: []const u8) -> []const u8 {
 
 // True if `p` starts with a separator, a `\\` UNC prefix, or a `X:` drive.
 pub is_absolute :: fn(p: []const u8) -> bool {
-    if p.len == 0usize { return false; }
+    if p.len == 0 { return false; }
     if is_sep(p[0]) { return true; }
-    if p.len >= 2usize {
-        if p[1] == 58u8 { return true; }               // ':' → drive letter
+    if p.len >= 2 {
+        if p[1] == 58 { return true; }               // ':' → drive letter
     }
     return false;
 }
@@ -93,12 +93,12 @@ pub is_relative :: fn(p: []const u8) -> bool { return !is_absolute(p); }
 // both `has_extension(p, "sk")` and `has_extension(p, ".fels")` work).
 pub has_extension :: fn(p: []const u8, want: []const u8) -> bool {
     e := extension(p);
-    if want.len > 0usize {
-        if want[0] == 46u8 { return strings::str_eq(e, want); }
+    if want.len > 0 {
+        if want[0] == 46 { return strings::str_eq(e, want); }
     }
     // `want` has no leading dot — compare against the extension sans dot.
-    if e.len == 0usize { return want.len == 0usize; }
-    return strings::str_eq(e[1usize..e.len], want);
+    if e.len == 0 { return want.len == 0; }
+    return strings::str_eq(e[1..e.len], want);
 }
 
 // Builders (need an arena)
@@ -106,17 +106,17 @@ pub has_extension :: fn(p: []const u8, want: []const u8) -> bool {
 // Join two path segments with a single `SEP`. Trailing separators on `x` and
 // leading ones on `y` are collapsed. An absolute `y` replaces `x` entirely.
 pub join :: fn(a: *Arena, x: []const u8, y: []const u8) -> []const u8 {
-    if x.len == 0usize { return strings::str_dup(a, y); }
-    if y.len == 0usize { return strings::str_dup(a, x); }
+    if x.len == 0 { return strings::str_dup(a, y); }
+    if y.len == 0 { return strings::str_dup(a, x); }
     if is_absolute(y) { return strings::str_dup(a, y); }
 
     xe: usize = x.len;
-    while xe > 0usize {
-        if is_sep(x[xe - 1usize]) { xe = xe - 1usize; } else { break; }
+    while xe > 0 {
+        if is_sep(x[xe - 1]) { xe = xe - 1; } else { break; }
     }
-    ys: usize = 0usize;
+    ys: usize = 0;
     while ys < y.len {
-        if is_sep(y[ys]) { ys = ys + 1usize; } else { break; }
+        if is_sep(y[ys]) { ys = ys + 1; } else { break; }
     }
 
     sb := strings::builder(a);
@@ -138,8 +138,8 @@ pub with_extension :: fn(a: *Arena, p: []const u8, new_ext: []const u8) -> []con
     base := p[0..(p.len - e.len)];
     sb := strings::builder(a);
     strings::append(&sb, base);
-    if new_ext.len > 0usize {
-        if new_ext[0] != 46u8 { strings::append_byte(&sb, 46u8); }
+    if new_ext.len > 0 {
+        if new_ext[0] != 46 { strings::append_byte(&sb, 46); }
         strings::append(&sb, new_ext);
     }
     return strings::str(&sb);
