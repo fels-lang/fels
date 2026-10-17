@@ -115,9 +115,13 @@ describe :: fn(info: TypeInfo) -> []const u8 {
 > therefore always share an id, and distinct types differ, including `*i32` vs `i32`, `[]i32` vs
 > `i32` and two structurally-identical structs. The id is also **stable across compilation
 > units**, because there is no global numbering. In a generic, `core::type_id(T)` folds per
-> instantiation. Identity tests are a single `usize` compare. `info_of(id)` (the dynamic table
-> lookup) is still design and needs §4. `core::typeid_of(T)` is an older spelling of the same
-> builtin, and these docs use `core::type_id(T)`.
+> instantiation. Identity tests are a single `usize` compare. When a program uses `Any`, the
+> compiler also generates `type_name_of(id)` and `type_size_of(id)`, which give a type's name and
+> size from a bare id. They know the scalar types, the program's structs and their field types,
+> and they return `"?"` or 0 for any other id. (A struct with an array field is left out.) The
+> full lookup `info_of(id)`, which would return a `TypeInfo`, is still design and needs §4.
+> `core::typeid_of(T)` is an older spelling of the same builtin, and these docs use
+> `core::type_id(T)`.
 
 ```fels
 core::type_id(T) -> usize        // a stable id (content hash); IMPLEMENTED
@@ -346,20 +350,25 @@ serialize :: fn($T: Struct & HasField("id"), v: T) { … }   // composed
 
 When you need to *change* the bindings (Jai's `T = s64`) or compute an output type, attach a
 `where` block. It runs once per instantiation, after type matching, with the type parameters as
-mutable comptime values.
+mutable comptime values. The example below computes an output type, and it compiles and runs
+today. Changing `T` itself is still design.
 
 ```fels
 // Sum into a wider accumulator so u8 arrays don't overflow:
 sum :: fn($T: type, xs: []T) -> $Acc
 where {
     match core::type_info(T) {
-        .int |i| => { Acc = if i.bits < 32 { (if i.signed { i32 } else { u32 }) } else { T }; },
+        .int |i| => {
+            if i.bits >= 32 { Acc = T; }
+            else if i.signed { Acc = i32; }
+            else { Acc = u32; }
+        },
         .float   => { Acc = T; },
-        else     => { core::reject("sum: {core::type_name(T)} is not a numeric type"); },
+        else     => { core::reject("sum: not a numeric type"); },
     }
 } {
-    total: Acc = 0;
-    for x in xs { total = total +% (x as Acc); }
+    total: Acc = 0 as Acc;
+    for x in xs { total = total + (x as Acc); }
     return total;
 }
 ```
