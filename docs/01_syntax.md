@@ -41,7 +41,7 @@ user code:
 
 ```fels
 @if := 42;          // uses the keyword 'if' as a variable name
-@panic("oh no");    // standard library panic function
+@panic("oh no");    // the runtime's panic function
 ```
 
 ## Keywords
@@ -54,6 +54,7 @@ The tables below list every keyword in Fels, grouped by category.
 |---------|---------|
 | `fn` | Function declaration |
 | `struct` | Struct type definition |
+| `union` | Union type definition (fields share their storage) |
 | `interface` | Interface (trait) type definition |
 | `enum` | Enum type definition |
 | `errors` | Error set type definition |
@@ -171,7 +172,8 @@ from the context.
 
 ### Float Literals
 
-A float literal always contains a decimal point, and the fractional part after it is required.
+A float literal has a decimal point with digits after it, an exponent (`e` or `E`, an optional
+sign, then digits), or both.
 
 ```fels
 3.14      // f64 by default
@@ -209,6 +211,7 @@ String literals go in double quotes, and their type is `[]const u8`.
 | `\t` | Horizontal tab |
 | `\r` | Carriage return |
 | `\0` | Null byte |
+| `\xHH` | The byte with hex value `HH`, two hex digits (`\x41` is `A`) |
 
 ### Character Literals
 
@@ -340,17 +343,26 @@ The table lists operators from **highest** to **lowest** precedence:
 
 | Precedence | Operators | Associativity |
 |:----------:|-----------|:-------------:|
-| 1 (highest) | `!`, `~`, `&`, `*`, `-` (prefix) | Right-to-left |
-| 2 | `*`, `/`, `%` | Left-to-right |
-| 3 | `+`, `-` | Left-to-right |
-| 4 | `<<`, `>>` | Left-to-right |
-| 5 | `&` (bitwise) | Left-to-right |
-| 6 | `^` | Left-to-right |
-| 7 | `\|` | Left-to-right |
-| 8 | `==`, `!=`, `<`, `<=`, `>`, `>=` | Left-to-right |
-| 9 | `&&` | Left-to-right |
-| 10 | `\|\|` | Left-to-right |
-| 11 (lowest) | `?`, `!!`, `as`, `catch`, `??` (postfix/special) | Left-to-right |
+| 1 (highest) | `?`, `!!`, `as`, `catch` (postfix), calls, `.` field access, indexing | Left-to-right |
+| 2 | `!`, `~`, `&`, `*`, `-` (prefix) | Right-to-left |
+| 3 | `*`, `/`, `%`, `*%` | Left-to-right |
+| 4 | `+`, `-`, `+%`, `-%` | Left-to-right |
+| 5 | `<<`, `>>` | Left-to-right |
+| 6 | `&` (bitwise) | Left-to-right |
+| 7 | `^` | Left-to-right |
+| 8 | `\|` | Left-to-right |
+| 9 | `==`, `!=`, `<`, `<=`, `>`, `>=` | Left-to-right |
+| 10 | `&&` | Left-to-right |
+| 11 (lowest) | `\|\|` | Left-to-right |
+
+The postfix operators bind tighter than everything else, the prefix operators included. So
+`-x as u8` is `-(x as u8)`, `*p as i32` is `*(p as i32)`, and `a == b as i64` is
+`a == (b as i64)`. Write `(*p) as i32` when you want to cast the value that `*p` loads.
+
+`??` has no single row, because it binds tightly on its left and loosely on its right. Its left
+operand is only the operand just before it, so `x + o ?? 0` is `x + (o ?? 0)`. Its right operand
+runs to the end of the expression, so `o ?? 0 + 1` is `o ?? (0 + 1)`. A chain groups from the
+right, so `a ?? b ?? c` is `a ?? (b ?? c)`.
 
 > [!TIP]
 > When in doubt, add parentheses to make the precedence explicit. The code is easier to read
