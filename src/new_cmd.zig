@@ -387,9 +387,7 @@ const app_files = [_]File{
     \\
     \\main :: fn() -> i32 {
     \\    io::println("Hello from {{name}}!");
-    \\    io::print("1 + 2 + ... + 10 = ");
-    \\    io::print_i64(sum_to(10) as i64);
-    \\    io::println("");
+    \\    io::println("1 + 2 + ... + 10 = {sum_to(10)}");
     \\    return 0;
     \\}
     \\
@@ -470,9 +468,8 @@ const lib_files = [_]File{
     \\#import {{name}};
     \\
     \\main :: fn() -> i32 {
-    \\    io::print("clamp(42, 0, 10) = ");
-    \\    io::print_i64({{name}}::clamp(42, 0, 10) as i64);
-    \\    io::println("");
+    \\    n := {{name}}::clamp(42, 0, 10);
+    \\    io::println("clamp(42, 0, 10) = {n}");
     \\    return 0;
     \\}
     \\
@@ -572,9 +569,8 @@ const cbind_files = [_]File{
     \\#import {{name}};
     \\
     \\main :: fn() -> i32 {
-    \\    io::print("seconds since boot: ");
-    \\    io::print_u64({{name}}::seconds_since_boot());
-    \\    io::println("");
+    \\    secs := {{name}}::seconds_since_boot();
+    \\    io::println("seconds since boot: {secs}");
     \\    return 0;
     \\}
     \\
