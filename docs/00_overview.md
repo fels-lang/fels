@@ -19,15 +19,15 @@ zig build test
 
 To build with the LLVM backend, pass the path to your LLVM:
 ```powershell
-zig build -Dllvm-path=Y:/SDK/LLVM
+zig build -Dllvm-path=path/to/llvm
 ```
 
 These compiler commands get you started:
 ```text
 fels check <file>     Parse and type-check
-fels ir <file>        Print Fels IR
+fels ir <file>        Print LLVM IR
 fels object <file>    Emit object file
-fels build <file>     Build executable (Windows)
+fels build <file>     Build an executable for the host OS, or for --target linux / windows
 ```
 
 ## Hello World
@@ -46,8 +46,7 @@ main :: fn() -> i32 {
 Here is a quick tour of the syntax in one file:
 
 ```fels
-#import std.io.{ IoError, println, print_u64 };
-#import std.mem.{ copy, eql_bytes };
+#import std.io.{ IoError, print, println, print_u64 };
 
 // Constants use :: (compile-time binding)
 MAX_SIZE :: 1024;
@@ -81,7 +80,7 @@ Sink :: interface {
 // Interface implementation
 Greeting as Sink {
     write :: fn(self: *Self, data: []const u8) -> usize ! IoError {
-        return write_stdout(data);
+        return print(data);
     }
     flush :: fn(self: *Self) -> void ! IoError {}
 }
