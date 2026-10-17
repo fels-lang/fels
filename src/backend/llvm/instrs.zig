@@ -161,16 +161,16 @@ pub fn lower(cg: *ModuleCg, fncg: anytype, instr: ir.Instr) void {
             break :blk values.extractAggregateField(cg, fallible, 0, "fallible ok value");
         },
 
-        // try_err: extract discriminant field (1).
+        // try_err: the number of the error, field 1; or, typed as a set whose errors carry
+        // payloads, the whole error, `{ number, payload bytes }` from fields 1 and 2.
         .try_err => |val| blk: {
             const fallible = resolveVal(cg, fncg, val, .unknown);
-            break :blk values.extractAggregateField(cg, fallible, 1, "fallible error discriminant");
-        },
-
-        // try_payload: the error payload shares the value slot (field 0).
-        .try_payload => |val| blk: {
-            const fallible = resolveVal(cg, fncg, val, .unknown);
-            break :blk values.extractAggregateField(cg, fallible, 0, "fallible error payload");
+            const code = values.extractAggregateField(cg, fallible, 1, "fallible error discriminant") orelse break :blk null;
+            if (types.errorPayloadBytes(cg, instr.ty) == null) break :blk code;
+            const data = values.extractAggregateField(cg, fallible, 2, "fallible error payload") orelse break :blk null;
+            var err = llvm.LLVMGetUndef(types.lower(cg, instr.ty));
+            err = llvm.LLVMBuildInsertValue(cg.builder, err, code, 0, "");
+            break :blk llvm.LLVMBuildInsertValue(cg.builder, err, data, 1, "");
         },
 
         // Zone enter/exit lower to `make()`/`deinit()` calls in the IR, so these

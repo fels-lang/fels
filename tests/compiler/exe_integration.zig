@@ -1151,6 +1151,113 @@ test "exe: match on an error, as a statement and as a value" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_match_o2", 2, true));
 }
 
+test "exe: an error's payload is read back, whatever its type" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The payload used to be put in the success value's slot, as the success type: an `i64` was
+    // cut to the `i32` of the result, and nothing but `if e == .v |c|` in the handler read it.
+    const src =
+        \\Pos :: struct { line: i32, col: i32 }
+        \\ParseError :: errors { empty, overflow: i64, bad_char: u8, at: Pos, name: []const u8 }
+        \\parse :: fn(k: i32) -> i32 ! ParseError {
+        \\    if k == 0 { fail .empty; }
+        \\    if k == 1 { fail .overflow { 5000000000i64 }; }
+        \\    if k == 2 { fail .bad_char { 33u8 }; }
+        \\    if k == 3 { fail .at { .{ 7, 9 } }; }
+        \\    if k == 4 { fail .name { "bogus" }; }
+        \\    return k * 10;
+        \\}
+        \\twice :: fn(k: i32) -> i32 ! ParseError { v := parse(k)?; return v * 2; }
+        \\loose :: fn(k: i32) -> i32 ! { v := parse(k)?; return v; }
+        \\describe :: fn(e: ParseError) -> i64 {
+        \\    return match e {
+        \\        .empty => 1,
+        \\        .overflow |n| => n / 1000000,
+        \\        .bad_char |c| => c as i64,
+        \\        .at |p| => (p.line * 100 + p.col) as i64,
+        \\        .name |s| => s.len as i64,
+        \\    };
+        \\}
+        \\first :: fn() -> ParseError { return .empty; }
+        \\calc :: fn() -> i64 {
+        \\    total := 0i64;
+        \\    for k in 0..6 {
+        \\        v := twice(k) catch e {
+        \\            if e == .overflow |n| { total += n - 5000000000i64 + 1000i64; }
+        \\            if e == .at |p| { total += (p.col * 1000) as i64; }
+        \\            yield 0;
+        \\        };
+        \\        total += v as i64;
+        \\        w := parse(k) catch e { yield describe(e) as i32; };
+        \\        total += w as i64 * 100000i64;
+        \\    }
+        \\    u := loose(1) catch e { if e == .overflow { yield 3; } yield 4; };
+        \\    total += u as i64 * 10000000000i64;
+        \\    if describe(first()) != 1i64 { return -1i64; }
+        \\    return total;
+        \\}
+        \\X :: #run calc();
+        \\main :: fn() -> i32 {
+        \\    r := calc();
+        \\    expect := 100i64 + 1000i64 + 9000i64 + (1i64 + 5000i64 + 33i64 + 709i64 + 5i64 + 50i64) * 100000i64 + 30000000000i64;
+        \\    if r != expect { return 1; }
+        \\    if X != r { return 2; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_payload_kinds", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_payload_kinds_o2", 2, true));
+}
+
+test "exe: errors with payloads through void, large, generic and forwarding functions" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\PE :: errors { plain, big: i64, word: []const u8 }
+        \\Holder :: struct { tag: i32, err: PE }
+        \\nothing :: fn(k: i32) -> void ! PE { if k == 1 { fail .big { 77i64 }; } if k == 2 { fail .plain; } }
+        \\wide :: fn(k: i32) -> [40]i64 ! PE { if k == 1 { fail .word { "abc" }; } r: [40]i64 = .{}; r[39] = 5i64; return r; }
+        \\inner :: fn(k: i32) -> i32 ! PE { if k == 1 { fail .big { 9i64 }; } return k; }
+        \\forward :: fn(k: i32) -> i32 ! PE { return inner(k); }
+        \\forward_loose :: fn(k: i32) -> i32 ! { return inner(k); }
+        \\gen :: fn($T: type, x: T, k: i32) -> T ! PE { if k == 1 { fail .big { 123i64 }; } return x; }
+        \\make :: fn(k: i32) -> PE { if k == 0 { return .plain; } return .plain; }
+        \\big_of :: fn(e: PE) -> i64 { match e { .big |n| => { return n; }, else => { return -1i64; } } }
+        \\main :: fn() -> i32 {
+        \\    t := 0i64;
+        \\    nothing(1) catch e { if e == .big |n| { t += n; } };
+        \\    if t != 77i64 { return 1; }
+        \\    nothing(2) catch e { if e == .plain { t += 1000i64; } };
+        \\    if t != 1077i64 { return 2; }
+        \\    nothing(0) catch e { t += 100000i64; };
+        \\    if t != 1077i64 { return 3; }
+        \\    w := wide(1) catch e { if e == .word |s| { t += (s.len * 10000) as i64; } yield .{}; };
+        \\    if t != 31077i64 { return 4; }
+        \\    w2 := wide(0) catch e { yield .{}; };
+        \\    if w2[39] != 5i64 { return 5; }
+        \\    f := forward(1) catch e { yield big_of(e) as i32; };
+        \\    if f != 9 { return 6; }
+        \\    g := forward_loose(1) catch e { yield 50; };
+        \\    if g != 50 { return 7; }
+        \\    h := gen(i64, 4i64, 1) catch e { yield big_of(e); };
+        \\    if h != 123i64 { return 8; }
+        \\    holder: Holder = .{ 1, make(0) };
+        \\    if holder.err != .plain { return 9; }
+        \\    arr: [2]PE = .{ .plain, .plain };
+        \\    if arr[1] != .plain { return 10; }
+        \\    q := inner(1) catch e { holder.err = e; yield 0; };
+        \\    if big_of(holder.err) != 9i64 { return 11; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_payload_paths", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_payload_paths_o2", 2, true));
+}
+
 test "exe: the name a catch binds is a local of the handler" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

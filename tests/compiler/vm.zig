@@ -511,6 +511,34 @@ test "e2e: #run compares errors held in parameters, fields and copies" {
     try std.testing.expectEqual(@as(i128, 213), try globalInt(m, "X"));
 }
 
+test "e2e: #run reads an error's payload" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\PE :: errors { plain, big: i64, word: []const u8 }
+        \\Holder :: struct { tag: i32, err: PE }
+        \\nothing :: fn(k: i32) -> void ! PE { if k == 1 { fail .big { 77i64 }; } }
+        \\inner :: fn(k: i32) -> i32 ! PE { if k == 1 { fail .word { "abcd" }; } if k == 2 { fail .big { 9i64 }; } return k; }
+        \\twice :: fn(k: i32) -> i32 ! PE { v := inner(k)?; return v * 2; }
+        \\size :: fn(e: PE) -> i64 { return match e { .big |n| => n, .word |s| => s.len as i64, .plain => 0i64 }; }
+        \\calc :: fn() -> i64 {
+        \\    t := 0i64;
+        \\    nothing(1) catch e { if e == .big |n| { t += n; } };
+        \\    a := twice(1) catch e { yield size(e) as i32; };
+        \\    holder: Holder = .{ 1, .plain };
+        \\    b := twice(2) catch e { holder.err = e; yield 0; };
+        \\    return t + a as i64 * 100i64 + size(holder.err) * 10000i64;
+        \\}
+        \\X :: #run calc();
+    ;
+    var fe = try fels.compile(a, "error_payload_vm.fels", src);
+    defer fe.deinit(a);
+    const m = try fels.lowerFrontend(a, fe);
+    try std.testing.expectEqual(@as(i128, 77 + 400 + 90000), try globalInt(m, "X"));
+}
+
 test "e2e: float arithmetic" {
     const src =
         \\favg :: fn(a: f64, b: f64) -> f64 {

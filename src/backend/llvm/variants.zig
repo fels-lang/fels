@@ -39,8 +39,10 @@ pub fn declareAll(cg: *ModuleCg, variant_defs: []const ir.VariantDef) !void {
             break :blk llvm.LLVMStructCreateNamed(cg.ctx, nm.ptr);
         };
 
+        // A case's tag is its position, or the one it names: an error set's are the numbers
+        // of its variants.
         var disc_map = std.StringHashMap(u32).init(cg.allocator);
-        for (vd.variants, 0..) |v, i| try disc_map.put(v.name, @intCast(i));
+        for (vd.variants, 0..) |v, i| try disc_map.put(v.name, v.disc orelse @intCast(i));
 
         const meta = try cg.allocator.create(EnumMeta);
         meta.* = .{ .discriminants = disc_map, .llvm_ty = llvm_ty, .is_simple = is_simple };
