@@ -573,6 +573,9 @@ pub const TypeEnv = struct {
     /// The type each alias stands for, resolved in the file that declares it (the IR lowers
     /// an alias by it, wherever the alias is named from).
     alias_types: std.AutoHashMap(SymbolId, Ty),
+    /// A constant that names a function (`F :: seven;`, `pub read :: io::read_file;`) → the
+    /// function: calling it is calling that function, and its value is that function's.
+    fn_aliases: std.AutoHashMap(SymbolId, SymbolId),
     expr_types: std.AutoHashMap(ast.NodeId, Ty),
     expr_symbols: std.AutoHashMap(ast.NodeId, SymbolId),
     expr_scopes: std.AutoHashMap(ast.NodeId, ScopeId),
@@ -645,6 +648,7 @@ pub const TypeEnv = struct {
             .opaque_types = std.AutoHashMap(SymbolId, void).init(allocator),
             .alias_refs = std.AutoHashMap(SymbolId, ast.TypeRef).init(allocator),
             .alias_types = std.AutoHashMap(SymbolId, Ty).init(allocator),
+            .fn_aliases = std.AutoHashMap(SymbolId, SymbolId).init(allocator),
             .expr_types = std.AutoHashMap(ast.NodeId, Ty).init(allocator),
             .expr_symbols = std.AutoHashMap(ast.NodeId, SymbolId).init(allocator),
             .expr_scopes = std.AutoHashMap(ast.NodeId, ScopeId).init(allocator),
@@ -675,6 +679,7 @@ pub const TypeEnv = struct {
         self.opaque_types.deinit();
         self.alias_refs.deinit();
         self.alias_types.deinit();
+        self.fn_aliases.deinit();
         self.expr_types.deinit();
         self.expr_symbols.deinit();
         self.expr_scopes.deinit();
@@ -2156,6 +2161,33 @@ const Checker = struct {
                 };
                 if (!changed) break;
             }
+        }
+
+        // A constant whose value names a function is that function, as `X :: Name;` is the
+        // type it names. Resolved in the declaring file, and through another such constant.
+        var rounds: usize = 0;
+        while (rounds < 8) : (rounds += 1) {
+            var grew = false;
+            for (module.items) |item| switch (item) {
+                .const_decl => |decl| {
+                    const use_site = self.file;
+                    self.file = decl.file_name;
+                    defer self.file = use_site;
+                    const const_id = self.resolveSymbol(decl.name) orelse continue;
+                    if (self.symbols.symbol(const_id).kind != .const_symbol or self.env.fn_aliases.contains(const_id)) continue;
+                    const named: ?SymbolId = switch (decl.value.kind) {
+                        .ident => |n| self.resolveSymbol(n),
+                        .scope_access => |sa| self.resolveScopeAccessSymbol(sa),
+                        else => null,
+                    };
+                    const target = named orelse continue;
+                    const function = if (self.symbols.symbol(target).kind == .function) target else self.env.fn_aliases.get(target) orelse continue;
+                    try self.env.fn_aliases.put(const_id, function);
+                    grew = true;
+                },
+                else => {},
+            };
+            if (!grew) break;
         }
 
         try self.collectTopLevelTypes(module);
@@ -4033,10 +4065,11 @@ const Checker = struct {
         // dispatch below, keyed on the member name (`core::sizeof` → `sizeof`).
         if (call.callee.kind == .scope_access and !isCoreNamespace(call.callee.kind.scope_access)) {
             const sa = call.callee.kind.scope_access;
-            const id = self.resolveScopeAccessSymbol(sa) orelse {
+            const named = self.resolveScopeAccessSymbol(sa) orelse {
                 self.emitError(call.callee.span, "no namespace member `{s}` is visible here", .{sa.member});
                 return error.SemanticFailed;
             };
+            const id = self.env.fn_aliases.get(named) orelse named;
             if (self.symbols.symbol(id).kind != .function) {
                 self.emitError(call.callee.span, "`{s}` is not callable", .{sa.member});
                 return error.SemanticFailed;
@@ -4386,7 +4419,7 @@ const Checker = struct {
             return error.SemanticFailed;
         }
 
-        const id = self.resolveSymbol(name) orelse {
+        const named_id = self.resolveSymbol(name) orelse {
             // Maybe it's a local function-pointer variable.
             if (self.lookupLocal(name)) |local_ty| switch (local_ty) {
                 .fn_ptr => return try self.checkFnPtrCall(call, local_ty),
@@ -4418,6 +4451,14 @@ const Checker = struct {
             });
             return error.SemanticFailed;
         };
+        // `F :: seven;`: a call of `F` is a call of `seven`.
+        if (self.env.fn_aliases.get(named_id)) |function| return self.inferNamedCall(function, call);
+        return self.inferNamedCall(named_id, call);
+    }
+
+    /// A call of the top-level function (or global function pointer) `id`.
+    fn inferNamedCall(self: *Checker, id: SymbolId, call: ast.CallExpr) SemanticError!Ty {
+        const name = self.symbols.symbol(id).name;
         if (self.symbols.symbol(id).kind != .function) {
             // A global holding a function pointer is called like a local one.
             if (self.symbols.symbol(id).kind == .global_var) {

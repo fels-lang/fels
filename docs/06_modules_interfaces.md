@@ -84,7 +84,9 @@ pub Circle :: circle::Circle;        // the same type, offered by `shapes`
 c: shapes::Circle = shapes::Circle::unit();
 ```
 
-`std.net` does this for the types of its submodules (`net::TcpStream`, `net::NetError`).
+`std.net` does this for the types of its submodules (`net::TcpStream`, `net::NetError`). A
+function is re-exported the same way, by a `pub` constant that names it:
+`pub read :: files::read_all;` makes `module::read(…)` that function.
 
 ## Interfaces
 

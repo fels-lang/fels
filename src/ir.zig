@@ -879,6 +879,8 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                 // `X :: Name;` naming a type is an alias (sema marks its symbol a type),
                 // not a constant: no value, no storage, like the `type_decl` spelling.
                 if (sema.isTypeAliasConst(front_end.symbols, decl)) continue;
+                // `F :: seven;` is the function `seven` by another name: no value of its own.
+                if (isFnAliasConst(front_end, decl)) continue;
                 // A typed global goes through `StaticInit`. So does `NAME :: #run f();` when `f`
                 // returns a struct, an array, an enum value or a function pointer: there is no
                 // declared type to read, so the type is the one sema gave the call.
@@ -3435,15 +3437,18 @@ const FunctionLowerer = struct {
                 // A declared local shadows a top-level function/const of the same
                 // name (matching sema's `lookupLocal`-first resolution). Without
                 // this, `foo := 10` next to a `foo :: fn()` lowered to `@foo`.
-                if (resolveTopLevel(self.symbols, self.file_name, name)) |id| {
+                if (resolveTopLevel(self.symbols, self.file_name, name)) |named| {
+                    // `F :: seven;`: the value of `F` is `seven`'s.
+                    const id = self.types.fn_aliases.get(named) orelse named;
                     const kind = self.symbols.symbol(id).kind;
                     const link = self.symbols.symbol(id).link_name;
+                    const fn_name = self.symbols.symbol(id).name;
                     // A function used as a VALUE (not a direct call) becomes a fat
                     // closure `{ fn, env }`. Phase 1: env is always null (no captures).
                     // Constraints/macros are compile-time templates, not callable
                     // values — keep them as a bare symbol reference.
-                    if (kind == .function and !self.isTemplateFn(name)) {
-                        const is_lambda = std.mem.startsWith(u8, name, "__lambda_");
+                    if (kind == .function and !self.isTemplateFn(fn_name)) {
+                        const is_lambda = std.mem.startsWith(u8, fn_name, "__lambda_");
                         break :blk try self.emit(self.fnPtrTypeOf(expr), .{ .closure_make = .{
                             .fn_link = link,
                             .env = if (is_lambda) try self.buildCaptureEnv(link) else .{ .imm = .null },
@@ -3969,7 +3974,7 @@ const FunctionLowerer = struct {
                 // collision-mangled function links by its module-qualified name).
                 // `core::` is not a real module, so its symbol is always null (like a
                 // bare builtin) — routed by `callee_name` below.
-                const callee_sym: ?sema.SymbolId = switch (call.callee.kind) {
+                const named_sym: ?sema.SymbolId = switch (call.callee.kind) {
                     .ident => resolveTopLevel(self.symbols, self.file_name, callee_name),
                     // `core::` resolves its CANONICAL name (= `callee_name`): a real
                     // builtin like `sizeof` has no symbol (→ builtin path), but
@@ -3978,6 +3983,8 @@ const FunctionLowerer = struct {
                     .scope_access => |sa| if (isCoreNs(sa)) resolveTopLevel(self.symbols, self.file_name, callee_name) else self.resolveScope(sa),
                     else => null,
                 };
+                // `F :: seven;`: calling `F` calls `seven`.
+                const callee_sym: ?sema.SymbolId = if (named_sym) |id| self.types.fn_aliases.get(id) orelse id else null;
                 // compiler_decls() (Phase 3 introspection): materialize the
                 // program's top-level declarations as a `[]Decl` the hook can
                 // `for`-iterate. Handled before the generic builtin path because
@@ -8522,6 +8529,13 @@ fn layoutQueryNamedType(allocator: std.mem.Allocator, types: sema.TypeEnv, symbo
 
 /// A struct's definition rebuilt from its sema layout, for layout queries. Field types are
 /// lowered exactly as `lowerStruct` does, so the answer matches the emitted type.
+/// Whether `decl` names a function (`F :: seven;`), which sema made an alias of it.
+fn isFnAliasConst(front_end: pipeline.FrontEnd, decl: ast.ConstDecl) bool {
+    const id = front_end.symbols.resolveVisible(decl.file_name, decl.name) orelse
+        front_end.symbols.resolve(front_end.symbols.root_scope, decl.name) orelse return false;
+    return front_end.types.fn_aliases.contains(id);
+}
+
 fn structDefFromSema(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, name: []const u8) ?StructDef {
     const id = symbols.resolve(symbols.root_scope, name) orelse return null;
     const type_layout = types.layouts.get(id) orelse return null;
@@ -8854,7 +8868,8 @@ const StaticInit = struct {
             },
             else => null,
         };
-        const symbol_id = id orelse return self.fail(expr.span, "a function pointer in static storage must name a top-level function", .{});
+        const named = id orelse return self.fail(expr.span, "a function pointer in static storage must name a top-level function", .{});
+        const symbol_id = self.env.types.fn_aliases.get(named) orelse named;
         const sym = self.env.symbols.symbol(symbol_id);
         if (sym.kind != .function) return self.fail(expr.span, "`{s}` is not a function", .{sym.name});
         // A lambda is lifted to a function that takes a hidden environment argument, so its
