@@ -1287,6 +1287,12 @@ const FnCompiler = struct {
         switch (term) {
             .return_value => |opt| {
                 if (fallible) {
+                    // `return inner();` passes the callee's fallible on as it is: wrapped, it
+                    // was the success value, so the caller read a fallible where a value goes.
+                    if (opt) |v| if (self.typeOf(v) == .fallible) {
+                        try self.emit(Instr.r_imm(.ret, try self.resolveReg(v), 0));
+                        return;
+                    };
                     // ok: [value, disc=0].
                     const vr = if (opt) |v| try self.resolveReg(v) else try self.constReg(0);
                     const wrapped = try self.emitFallible(vr, try self.constReg(0));

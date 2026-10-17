@@ -511,6 +511,27 @@ test "e2e: #run compares errors held in parameters, fields and copies" {
     try std.testing.expectEqual(@as(i128, 213), try globalInt(m, "X"));
 }
 
+test "e2e: #run passes a fallible on with return inner()" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The VM wrapped the callee's fallible as the success value, so the caller read a fallible
+    // where its value goes and the `#run` could not be evaluated.
+    const src =
+        \\E :: errors { bad }
+        \\inner :: fn(k: i32) -> i32 ! E { if k == 1 { fail .bad; } return k; }
+        \\forward :: fn(k: i32) -> i32 ! E { return inner(k); }
+        \\loose :: fn(k: i32) -> i32 ! { return forward(k); }
+        \\calc :: fn() -> i32 { return (forward(3) ?? 0) + (forward(1) ?? 50) + (loose(1) catch e { yield if e == .bad { 400 } else { 0 }; }); }
+        \\X :: #run calc();
+    ;
+    var fe = try fels.compile(a, "tail_forward_vm.fels", src);
+    defer fe.deinit(a);
+    const m = try fels.lowerFrontend(a, fe);
+    try std.testing.expectEqual(@as(i128, 453), try globalInt(m, "X"));
+}
+
 test "e2e: #run reads an error's payload" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
