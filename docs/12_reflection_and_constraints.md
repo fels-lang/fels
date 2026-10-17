@@ -95,10 +95,10 @@ VariantInfo :: struct { name: []const u8, payload: ?*TypeInfo, tag: u32 }
 ```fels
 describe :: fn(info: TypeInfo) -> []const u8 {
     match info {
-        .int |i|     => return if i.signed { "signed integer" } else { "unsigned integer" };
-        .struct_ |s| => return s.name;
-        .slice |elem| => return "slice";
-        else         => return "other";
+        .int |i|     => { return if i.signed { "signed integer" } else { "unsigned integer" }; },
+        .struct_ |s| => { return s.name; },
+        .slice |elem| => { return "slice"; },
+        else         => { return "other"; },
     }
 }
 ```
@@ -225,14 +225,14 @@ serializer **once** and choose where it executes:
 ```fels
 to_json :: fn(v: Any, w: *StringBuilder) {
     match v.info() {
-        .boolean     => w.str(if v.as(bool)!! { "true" } else { "false" }),
-        .int  |i|    => w.write_i64(v.read_int()),       // read_int widens any int
-        .float |f|   => w.write_f64(v.read_float()),
+        .boolean     => { w.str(if v.as(bool)!! { "true" } else { "false" }); },
+        .int  |i|    => { w.write_i64(v.read_int()); },       // read_int widens any int
+        .float |f|   => { w.write_f64(v.read_float()); },
         .slice |e|   => {
             w.byte('[');
             for i in 0..v.len() { if i > 0 { w.byte(','); } to_json(v.elem(i)!!, w); }
             w.byte(']');
-        }
+        },
         .struct_ |s| => {
             w.byte('{');
             for f, i in s.fields {
@@ -241,8 +241,8 @@ to_json :: fn(v: Any, w: *StringBuilder) {
                 to_json(v.field(f.name)!!, w);
             }
             w.byte('}');
-        }
-        else => w.str("null"),
+        },
+        else => { w.str("null"); },
     }
 }
 ```
@@ -297,7 +297,7 @@ composable. Interface conformance becomes *one kind* of constraint.
 
 ```fels
 Numeric :: constraint($T) {
-    match core::type_info(T) { .int => {} .float => {} else => core::reject("expected a numeric type"); }
+    match core::type_info(T) { .int => {}, .float => {}, else => { core::reject("expected a numeric type"); }, }
 }
 
 Ordered :: constraint($T) { core::require(T, Numeric); }   // constraints can require others
@@ -356,9 +356,9 @@ with the type parameters as mutable comptime values.
 sum :: fn($T: type, xs: []T) -> $Acc
 where {
     match core::type_info(T) {
-        .int |i| => Acc = if i.bits < 32 { (if i.signed { i32 } else { u32 }) } else { T };
-        .float   => Acc = T;
-        else     => core::reject("sum: {core::type_name(T)} is not a numeric type");
+        .int |i| => { Acc = if i.bits < 32 { (if i.signed { i32 } else { u32 }) } else { T }; },
+        .float   => { Acc = T; },
+        else     => { core::reject("sum: {core::type_name(T)} is not a numeric type"); },
     }
 } {
     total: Acc = 0;

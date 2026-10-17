@@ -479,57 +479,59 @@ yields values, not addresses.
 
 ### Match
 
-Pattern matching on enums and integers:
+Pattern matching on enums and integers. An arm is `pattern => body,`: in a match
+statement the body is a block, in a match expression a value. The comma ends every arm
+(after the last one it may be left out):
 
 ```fels
 // Enum matching
 match direction {
-    .north => { println("going north"); }
-    .south => { println("going south"); }
-    .east  => { println("going east"); }
-    .west  => { println("going west"); }
+    .north => { println("going north"); },
+    .south => { println("going south"); },
+    .east  => { println("going east"); },
+    .west  => { println("going west"); },
 }
 
 // Several variants that share an arm
 match kind {
-    .buy, .sell => { /* moves shares */ }
-    else        => { /* the rest */ }
+    .buy, .sell => { /* moves shares */ },
+    else        => { /* the rest */ },
 }
 
 // Enum with payload capture (an arm of one variant)
 match shape {
-    .circle    |radius| => { /* use radius */ }
-    .rectangle |corner| => { /* use corner */ }
-    .none               => { /* nothing */ }
+    .circle    |radius| => { /* use radius */ },
+    .rectangle |corner| => { /* use corner */ },
+    .none               => { /* nothing */ },
 }
 
 // Integer matching: single values, grouped values, and ranges
 match code {
-    0        => { println("ok"); }
+    0        => { println("ok"); },
     1, 2, 3  => { println("warning"); }  // grouped cases
     400..=499 => { println("client"); }  // inclusive range (use `..` for exclusive)
-    else     => { println("error"); }
+    else     => { println("error"); },
 }
 
 // String matching
 match command {
-    "start"        => { /* ... */ }
-    "stop", "halt" => { /* grouped */ }
-    else           => { /* ... */ }
+    "start"        => { /* ... */ },
+    "stop", "halt" => { /* grouped */ },
+    else           => { /* ... */ },
 }
 
 // A bare name binds the subject (a catch-all); `if` adds a guard
 match n {
-    0          => { /* zero */ }
-    k if k < 0 => { /* negative, bound as k */ }
-    k          => { /* positive, bound as k */ }
+    0          => { /* zero */ },
+    k if k < 0 => { /* negative, bound as k */ },
+    k          => { /* positive, bound as k */ },
 }
 
 // Single-statement arms (no braces needed)
 match value {
-    .a   => return 1;
-    .b   => return 2;
-    else => return 0;
+    .a   => { return 1; },
+    .b   => { return 2; },
+    else => { return 0; },
 }
 
 // Match as an expression — each arm yields a value, the whole match is that value
