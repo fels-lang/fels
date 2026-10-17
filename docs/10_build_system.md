@@ -335,19 +335,22 @@ fels build <file.fels>        direct single-file build (back-compat, today's beh
 Like Jai (`-- meta Build`) and the Default_Metaprogram, the no-`build.fels` path is
 the built-in default metaprogram: it just turns flags into `Options`.
 
-## 7. Location directives (Jai parity)
+## 7. Source locations
 
-For asserts, logging, and codegen:
+For asserts, logging and codegen, `core::` constants fold to a literal where they are written
+(see [Builtins](08_attributes_builtins.md#source-location--target-constants)):
 
-| Directive | Meaning |
+| Constant | Meaning |
 | --- | --- |
-| `#file` | full path of the current file |
-| `#line` | current line number |
-| `#filepath` | directory of the current file |
-| `#location(x)` | `(file, line)` of a piece of code |
-| `#caller_location` | default-arg form: caller's `(file, line)` |
+| `core::file` | the current file's path, as the compiler was given it |
+| `core::module` | the module's name |
+| `core::func` | the enclosing function's name |
+| `core::line` | the line it is written on |
+| `core::column` | the column |
 
-Paths always use `/`, even on Windows.
+Not there yet, compared with Jai: the folder of the file (`#filepath`), the location of a
+piece of code (`#location(x)`), and the caller's location as a default argument
+(`#caller_location`).
 
 ## 8. Jai → Fels mapping (and the extensions)
 
