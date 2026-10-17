@@ -1376,6 +1376,41 @@ pub fn mangleGeneric(
     return allocator.dupe(u8, name);
 }
 
+/// A local that starts from an integer literal (`n := 0;`) takes the type its uses ask for:
+/// `total := 0; for x in prices { total += x; }` makes `total` an `i64` when `prices` holds
+/// `i64`s. A function body is checked twice. In the first pass these locals are still
+/// literals, which any integer type accepts, and the places that ask a value for an exact type
+/// (an assignment, a typed local or field, an argument, a return, a pointer) note that type for
+/// the local; the first one counts. An operand next to a typed one does not: the operators take
+/// operands of mixed widths, so a type from them would change programs that compile as they
+/// are. The second pass, the real one, declares each local with the type noted, or as an `i32`
+/// when nothing asked. `m := n;` and `m = n;` tie two locals to one type.
+/// A local from a float literal (`w := 0.0;`) takes `f32` or `f64` the same way, `f64` when
+/// nothing asks.
+const LiteralInference = struct {
+    /// True during the first pass.
+    active: bool = false,
+    /// The first pass's locals, in the order declared.
+    locals: std.ArrayList(Pending) = .empty,
+    /// Those in scope: a name, the scope it was declared in, its index in `locals`.
+    names: std.ArrayList(Name) = .empty,
+    /// The second pass's answer: the type of the local declared at a source offset.
+    decided: std.AutoHashMapUnmanaged(usize, Ty) = .empty,
+
+    const Pending = struct {
+        /// The offset of its declaration, the key of `decided`.
+        decl: usize,
+        /// The local whose type this one has (itself at first).
+        parent: u32,
+        /// What the first use asked for.
+        ty: ?Ty = null,
+        /// It starts from a float literal (`w := 0.0;`) and takes `f32` or `f64`; an integer
+        /// one takes an integer type.
+        float: bool = false,
+    };
+    const Name = struct { name: []const u8, depth: usize, index: u32 };
+};
+
 const Checker = struct {
     allocator: std.mem.Allocator,
     symbols: SymbolTable,
@@ -1454,6 +1489,9 @@ const Checker = struct {
     record_locals: bool = false,
     /// The end of the block being checked: where a local declared in it stops being visible.
     block_end: usize = 0,
+    /// The locals of the function being checked that start from an integer literal
+    /// (`n := 0;`); see `inferLiteralLocals`.
+    infer: LiteralInference = .{},
     /// The top-level constants `collectTopLevelTypes` has yet to type, so an initializer that
     /// names a constant declared further down types that one first. A constant is
     /// `.in_progress` while its own initializer is inferred: meeting it again is a cycle.
@@ -1645,6 +1683,11 @@ const Checker = struct {
         owners.deinit();
         var frame_ptrs = self.frame_ptr_scopes.pop().?;
         frame_ptrs.deinit();
+        // The literal locals of the scope left behind go out of sight.
+        const depth = self.scope_stack.items.len;
+        while (self.infer.names.items.len > 0 and self.infer.names.items[self.infer.names.items.len - 1].depth >= depth) {
+            _ = self.infer.names.pop();
+        }
     }
 
     fn declareLocal(self: *Checker, name: []const u8, ty: Ty) !void {
@@ -2582,6 +2625,9 @@ const Checker = struct {
     /// are enclosing locals — those become its captures (recorded by-value with
     /// their types). Resolved once per lambda.
     fn resolveLambdaCaptures(self: *Checker, link: []const u8) SemanticError!void {
+        // Not in the first pass over literal locals: their types are not known yet, and the
+        // captures are resolved once.
+        if (self.infer.active) return;
         const frees = self.env.lambda_free.get(link) orelse return;
         if (self.env.lambda_captures.contains(link)) return;
         var caps = std.ArrayList(Capture).empty;
@@ -2692,6 +2738,16 @@ const Checker = struct {
         try self.rejectBorrowOutsideParam(self.current_return_ty, decl.return_ty.span());
 
         if (decl.body) |body| {
+            // A function checked from inside another (a lambda) has literal locals of its own.
+            const saved_infer = self.infer;
+            self.infer = .{};
+            defer {
+                self.infer.locals.deinit(self.allocator);
+                self.infer.names.deinit(self.allocator);
+                self.infer.decided.deinit(self.allocator);
+                self.infer = saved_infer;
+            }
+            try self.inferLiteralLocals(body);
             try self.checkBlock(body);
             // #noreturn functions are allowed to not have explicit returns.
             const is_noreturn = hasAttr(decl.attrs, "noreturn");
@@ -2720,16 +2776,33 @@ const Checker = struct {
         switch (stmt) {
             .local_infer => |local| {
                 var local_ty = try self.inferExpr(local.value);
-                // `x := 5;` makes `x` an `i32`, which is what IR stores it as. Left an
-                // untyped literal, `x` was accepted for any integer type and stored
-                // into it at the wrong width.
+                // `x := 5;` has the type its uses ask for (`inferLiteralLocals`), an `i32` when
+                // none does, and IR stores it at that type. Left an untyped literal, `x` was
+                // accepted for any integer type and stored into it at the wrong width.
                 if (local_ty == .int_lit) {
-                    try self.requireDefaultIntFits(local.value);
-                    local_ty = .i32;
+                    if (self.infer.active) {
+                        try self.declarePending(local, false);
+                    } else if (self.infer.decided.get(local.span.start)) |ty| {
+                        try self.requireIntLitFits(local.value, ty);
+                        local_ty = ty;
+                    } else {
+                        try self.requireDefaultIntFits(local.value);
+                        local_ty = .i32;
+                    }
                 }
-                // Likewise `x := 1.5;` is an `f64`. Left a float literal, `y: f32 = x;` was
-                // accepted and stored the `f64`'s bits into the `f32` without converting them.
-                if (local_ty == .float_lit) local_ty = .f64;
+                // Likewise `x := 1.5;` has the float type its uses ask for, an `f64` when none
+                // does. Left a float literal, `y: f32 = x;` was accepted and stored the `f64`'s
+                // bits into the `f32` without converting them.
+                if (local_ty == .float_lit) {
+                    if (self.infer.active) {
+                        try self.declarePending(local, true);
+                    } else if (self.infer.decided.get(local.span.start)) |ty| {
+                        try self.settleFloatLit(local.value, ty);
+                        local_ty = ty;
+                    } else {
+                        local_ty = .f64;
+                    }
+                }
                 try self.declareLocal(local.name, local_ty);
                 self.noteLocal(.{ .name = local.name, .file = "", .kind = .local_val, .decl = local.span, .scope_end = self.block_end, .ty = local_ty, .value = local.value });
                 try self.setLocalZoneOwner(local.name, self.exprZoneOwner(local.value));
@@ -2778,6 +2851,8 @@ const Checker = struct {
                 if (try self.coerceEnumLiteral(assign.value, target_ty)) return;
                 try self.coerceLiteralFields(assign.value, target_ty);
                 const value_ty = try self.inferExpr(assign.value);
+                // (a shift amount is no value of the target's type)
+                if (self.infer.active and assign.op != .shl and assign.op != .shr) self.notePendingAssign(assign.target, assign.value, value_ty);
                 if (!try self.compatible(value_ty, target_ty)) {
                     self.emitErrorRich(assign.value.span, "type mismatch in assignment: expected `{s}`, found `{s}`", .{
                         self.formatTy(target_ty), self.formatTy(value_ty),
@@ -2952,16 +3027,28 @@ const Checker = struct {
                 // (`0..xs.len` counts in `usize`), and two literals make an `i32`, as `x := 5`
                 // does. It used to take the start's type alone, so `0..xs.len` counted in an
                 // `i32` and the 8-byte end was stored into the 4-byte slot IR made for it.
-                const loop_ty: Ty = if (start_ty != .int_lit) start_ty else if (end_ty != .int_lit) end_ty else .i32;
-                if (start_ty == .int_lit and end_ty == .int_lit) {
+                // Between two literals (`0..8`) the index is like a local from a literal: it has
+                // the type its uses ask for (`inferLiteralLocals`), an `i32` when none does.
+                const literal_bounds = start_ty == .int_lit and end_ty == .int_lit;
+                const pending = literal_bounds and self.infer.active;
+                const decided: ?Ty = if (literal_bounds and !self.infer.active) self.infer.decided.get(for_stmt.span.start) else null;
+                const loop_ty: Ty = if (start_ty != .int_lit) start_ty else if (end_ty != .int_lit) end_ty else if (pending) .int_lit else decided orelse .i32;
+                if (literal_bounds and !pending and decided == null) {
                     try self.requireDefaultIntFits(for_stmt.start);
                     try self.requireDefaultIntFits(for_stmt.end);
-                } else {
+                } else if (!pending) {
                     try self.requireIntLitFits(for_stmt.start, loop_ty);
                     try self.requireIntLitFits(for_stmt.end, loop_ty);
                 }
                 try self.pushScope();
                 defer self.popScope();
+                if (pending) {
+                    try self.declarePendingName(for_stmt.binding, for_stmt.span.start, null, false);
+                    // `for i in 0..n` with a literal local `n`: `i` has `n`'s type
+                    const index: u32 = @intCast(self.infer.locals.items.len - 1);
+                    self.linkPendingIdents(index, for_stmt.start);
+                    self.linkPendingIdents(index, for_stmt.end);
+                }
                 try self.declareLocal(for_stmt.binding, loop_ty);
                 self.noteLocal(.{ .name = for_stmt.binding, .file = "", .kind = .for_binding, .decl = for_stmt.span, .scope_end = for_stmt.body.span.end, .ty = loop_ty });
                 self.loop_depth += 1;
@@ -3343,6 +3430,11 @@ const Checker = struct {
             .unary => |unary| switch (unary.op) {
                 .address_of => blk: {
                     try self.rejectPackedFieldAddress(unary.expr.*);
+                    // In the first pass over literal locals, `&n` for one of them has no type
+                    // yet, so the pointer it goes to (`p: *i64 = &n;`) can give `n` its type.
+                    if (self.infer.active and unary.expr.kind == .ident) {
+                        if (self.lookupPending(unary.expr.kind.ident) != null) break :blk .unknown;
+                    }
                     // `&` of something with no fixed width of its own points at storage of the
                     // literal's default type: a local inferred from an untyped literal (`x := 42`,
                     // which still adapts to its context when read) and a temporary for a literal
@@ -3351,6 +3443,8 @@ const Checker = struct {
                 },
                 .deref => blk: {
                     const inner = try self.inferExpr(unary.expr.*);
+                    // through `p := &n;` for a literal local, in the first pass
+                    if (inner == .unknown and self.infer.active) break :blk .unknown;
                     break :blk switch (inner) {
                         .pointer, .const_ptr => |p| p.*,
                         .slice => |p| p.*,
@@ -3456,11 +3550,17 @@ const Checker = struct {
                 // A literal operand takes the other operand's type: with `b: u8`,
                 // `b < 256` would compare with 0. A shift amount is no such value.
                 if (binary.op != .shl and binary.op != .shr) {
-                    try self.requireIntLitFits(binary.left.*, right);
-                    try self.requireIntLitFits(binary.right.*, left);
+                    try self.requireOperandIntLitFits(binary.left.*, right);
+                    try self.requireOperandIntLitFits(binary.right.*, left);
                 }
                 // `5 + big` has the type of `big`, as `big + 5` has. Typed by its left
                 // operand alone it stayed a literal, and `x := 5 + big` made `x` an `i32`.
+                // In the first pass over literal locals, arithmetic on one of them has no type
+                // yet either: the second pass gives it one from the local's (`n + w` has `n`'s),
+                // which the other operand's would not match.
+                if (self.infer.active and result != .bool and (self.containsPending(binary.left.*) or self.containsPending(binary.right.*))) {
+                    break :blk if (result.isFloat()) .float_lit else .int_lit;
+                }
                 if (result == .int_lit and binary.op != .shl and binary.op != .shr and right.isInteger()) break :blk right;
                 break :blk result;
             },
@@ -6367,6 +6467,247 @@ const Checker = struct {
         return false;
     }
 
+    /// `requireIntLitFits` for an operand next to a typed one, which gives no literal local in
+    /// it a type: the operators take operands of mixed widths (`i < xs.len` with an `i32` `i`),
+    /// so a type from them would change what programs that compile already do.
+    fn requireOperandIntLitFits(self: *Checker, expr: ast.Expr, other: Ty) SemanticError!void {
+        const active = self.infer.active;
+        self.infer.active = false;
+        defer self.infer.active = active;
+        return self.requireIntLitFits(expr, other);
+    }
+
+    /// The first pass over a function body (see `LiteralInference`). Its errors are dropped, the
+    /// second pass reports what still holds, and it records nothing for the language server. A
+    /// body with compile-time code is checked once, as before: that code runs while it is checked.
+    fn inferLiteralLocals(self: *Checker, body: ast.Block) SemanticError!void {
+        if (hasComptimeCode(body)) return;
+        const diagnostics_len = self.diagnostics.items.len;
+        const scopes_len = self.scope_stack.items.len;
+        const zones_len = self.active_zones.items.len;
+        const catch_names_len = self.catch_names.items.len;
+        const saved_record = self.record_locals;
+        const saved_loop = self.loop_depth;
+        const saved_unsafe = self.unsafe_depth;
+        const saved_block_end = self.block_end;
+        const instantiations_len = self.env.generic_instantiations.items.len;
+        self.record_locals = false;
+        self.infer.active = true;
+        self.checkBlock(body) catch |err| if (err == error.OutOfMemory) return err;
+        self.infer.active = false;
+        // A generic call with a literal local in it instantiated the function for the local's
+        // type in this pass, an `i32`; the second pass records the instantiations it calls.
+        for (self.env.generic_instantiations.items[instantiations_len..]) |*gi| {
+            gi.expr_types.deinit();
+            gi.call_insts.deinit();
+        }
+        self.env.generic_instantiations.shrinkRetainingCapacity(instantiations_len);
+        while (self.scope_stack.items.len > scopes_len) self.popScope();
+        self.active_zones.shrinkRetainingCapacity(zones_len);
+        self.catch_names.shrinkRetainingCapacity(catch_names_len);
+        self.record_locals = saved_record;
+        self.loop_depth = saved_loop;
+        self.unsafe_depth = saved_unsafe;
+        self.block_end = saved_block_end;
+        // Its errors go, but for those outside the body: a generic struct this pass instantiated
+        // first, whose fields the second pass does not check again. The second pass reports the
+        // body's own.
+        var kept = diagnostics_len;
+        var kept_error = false;
+        for (self.diagnostics.items[diagnostics_len..]) |d| {
+            const inside = std.mem.eql(u8, d.file, self.file) and d.span.start >= body.span.start and d.span.end <= body.span.end;
+            if (inside) continue;
+            self.diagnostics.items[kept] = d;
+            kept += 1;
+            if (d.kind == .err or d.kind == .ice) kept_error = true;
+        }
+        self.diagnostics.shrinkRetainingCapacity(kept);
+        // ... and fail the function, as the one pass did when it met them.
+        if (kept_error) return error.SemanticFailed;
+        self.capturing_locals.clearRetainingCapacity();
+        self.infer.names.clearRetainingCapacity();
+        for (self.infer.locals.items, 0..) |local, i| {
+            const ty = self.infer.locals.items[self.pendingRoot(@intCast(i))].ty orelse continue;
+            try self.infer.decided.put(self.allocator, local.decl, ty);
+        }
+    }
+
+    /// In the first pass: `local` starts from a literal.
+    fn declarePending(self: *Checker, local: ast.LocalInfer, float: bool) SemanticError!void {
+        return self.declarePendingName(local.name, local.span.start, local.value, float);
+    }
+
+    /// In the first pass: the local `name` declared at the offset `decl` (a `for` between two
+    /// literals has its own) has no type yet; `value` is what it starts from.
+    fn declarePendingName(self: *Checker, name: []const u8, decl: usize, value: ?ast.Expr, float: bool) SemanticError!void {
+        const index: u32 = @intCast(self.infer.locals.items.len);
+        try self.infer.locals.append(self.allocator, .{ .decl = decl, .parent = index, .float = float });
+        // `m := n + 1;` has `n`'s type (an `n` declared before this one)
+        if (value) |v| if (self.untypedYet(v)) self.linkPendingIdents(index, v);
+        try self.infer.names.append(self.allocator, .{ .name = name, .depth = self.scope_stack.items.len - 1, .index = index });
+    }
+
+    /// The literal local `name` stands for, if it is one: the innermost local of that name.
+    fn lookupPending(self: *Checker, name: []const u8) ?u32 {
+        if (!self.infer.active) return null;
+        var depth = self.scope_stack.items.len;
+        while (depth > 0) {
+            depth -= 1;
+            const ty = self.scope_stack.items[depth].get(name) orelse continue;
+            // declared again in the same scope with a type (`n := b;` after `n := 0;`)
+            if (ty != .int_lit and ty != .float_lit) return null;
+            var i = self.infer.names.items.len;
+            while (i > 0) {
+                i -= 1;
+                const n = self.infer.names.items[i];
+                if (n.depth == depth and std.mem.eql(u8, n.name, name)) return n.index;
+            }
+            return null;
+        }
+        return null;
+    }
+
+    fn pendingRoot(self: *Checker, index: u32) u32 {
+        var i = index;
+        while (self.infer.locals.items[i].parent != i) i = self.infer.locals.items[i].parent;
+        return i;
+    }
+
+    /// A use asks for `ty`; the first one of the local's kind counts (an integer type for a
+    /// local from an integer literal, `f32` or `f64` for one from a float literal).
+    fn constrainPending(self: *Checker, index: u32, ty: Ty) void {
+        const root = self.pendingRoot(index);
+        const local = &self.infer.locals.items[root];
+        const fits = if (local.float) ty == .f32 or ty == .f64 else isConcreteInt(ty);
+        if (fits and local.ty == null) local.ty = ty;
+    }
+
+    /// Two literal locals of one kind have one type; one already asked for keeps it.
+    fn linkPending(self: *Checker, a: u32, b: u32) void {
+        const ra = self.pendingRoot(a);
+        const rb = self.pendingRoot(b);
+        if (ra == rb) return;
+        if (self.infer.locals.items[ra].float != self.infer.locals.items[rb].float) return;
+        if (self.infer.locals.items[ra].ty == null) {
+            self.infer.locals.items[ra].parent = rb;
+        } else {
+            self.infer.locals.items[rb].parent = ra;
+        }
+    }
+
+    /// Whether the value `expr` is made of literal locals and literals alone (`n`, `n + 1`,
+    /// `-n`), so it has no type of its own yet: it takes the one it goes to, and so do they.
+    fn untypedYet(self: *Checker, expr: ast.Expr) bool {
+        if (isUntypedIntExpr(expr) or isUntypedFloatExpr(expr)) return true;
+        return switch (expr.kind) {
+            .ident => |name| self.lookupPending(name) != null,
+            .unary => |unary| (unary.op == .neg or unary.op == .bit_not) and self.untypedYet(unary.expr.*),
+            .binary => |binary| switch (binary.op) {
+                .shl, .shr => self.untypedYet(binary.left.*),
+                .add, .sub, .mul, .div, .rem, .wrap_add, .wrap_sub, .wrap_mul, .bit_and, .bit_or, .bit_xor => self.untypedYet(binary.left.*) and self.untypedYet(binary.right.*),
+                else => false,
+            },
+            .if_expr => |ie| self.untypedYet(ie.then_value) and self.untypedYet(ie.else_value),
+            else => false,
+        };
+    }
+
+    /// Whether the value `expr` is computed from a literal local (`n`, `n + w`, `-n`).
+    fn containsPending(self: *Checker, expr: ast.Expr) bool {
+        return switch (expr.kind) {
+            .ident => |name| self.lookupPending(name) != null,
+            .unary => |unary| (unary.op == .neg or unary.op == .bit_not) and self.containsPending(unary.expr.*),
+            .binary => |binary| switch (binary.op) {
+                .shl, .shr => self.containsPending(binary.left.*),
+                .add, .sub, .mul, .div, .rem, .wrap_add, .wrap_sub, .wrap_mul, .bit_and, .bit_or, .bit_xor => self.containsPending(binary.left.*) or self.containsPending(binary.right.*),
+                else => false,
+            },
+            .if_expr => |ie| self.containsPending(ie.then_value) or self.containsPending(ie.else_value),
+            else => false,
+        };
+    }
+
+    /// Tie the literal locals that make up the value `expr` (`n + 1`) to `index`.
+    fn linkPendingIdents(self: *Checker, index: u32, expr: ast.Expr) void {
+        switch (expr.kind) {
+            .ident => |name| if (self.lookupPending(name)) |other| self.linkPending(index, other),
+            .unary => |unary| if (unary.op == .neg or unary.op == .bit_not) self.linkPendingIdents(index, unary.expr.*),
+            .binary => |binary| switch (binary.op) {
+                .shl, .shr => self.linkPendingIdents(index, binary.left.*),
+                .add, .sub, .mul, .div, .rem, .wrap_add, .wrap_sub, .wrap_mul, .bit_and, .bit_or, .bit_xor => {
+                    self.linkPendingIdents(index, binary.left.*);
+                    self.linkPendingIdents(index, binary.right.*);
+                },
+                else => {},
+            },
+            .if_expr => |ie| {
+                self.linkPendingIdents(index, ie.then_value);
+                self.linkPendingIdents(index, ie.else_value);
+            },
+            else => {},
+        }
+    }
+
+    /// The value `expr` goes where `expected` is: a literal local in it (`n`, `n + 1`, `&n`
+    /// for a pointer) takes that type.
+    fn notePendingUse(self: *Checker, expr: ast.Expr, expected: Ty) void {
+        switch (expr.kind) {
+            .ident => |name| if (self.lookupPending(name)) |index| self.constrainPending(index, expected),
+            .unary => |unary| switch (unary.op) {
+                .neg, .bit_not => self.notePendingUse(unary.expr.*, expected),
+                .address_of => if (unary.expr.kind == .ident) {
+                    const pointee: ?Ty = switch (expected) {
+                        .pointer, .const_ptr => |inner| inner.*,
+                        else => null,
+                    };
+                    if (pointee) |ty| if (self.lookupPending(unary.expr.kind.ident)) |index| self.constrainPending(index, ty);
+                },
+                else => {},
+            },
+            // `n * 2` goes where `n` would; `n * w` with a typed `w` takes its type from the
+            // operands in the second pass, as it did before, so it gives `n` none
+            .binary => |binary| {
+                if (!self.untypedYet(expr)) return;
+                switch (binary.op) {
+                    .shl, .shr => self.notePendingUse(binary.left.*, expected),
+                    .add, .sub, .mul, .div, .rem, .wrap_add, .wrap_sub, .wrap_mul, .bit_and, .bit_or, .bit_xor => {
+                        self.notePendingUse(binary.left.*, expected);
+                        self.notePendingUse(binary.right.*, expected);
+                    },
+                    else => {},
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// `target = value;` or `target += value;` with a literal local as the target: it takes the
+    /// value's type, or ties to the literal locals the value is made of.
+    fn notePendingAssign(self: *Checker, target: ast.Expr, value: ast.Expr, value_ty: Ty) void {
+        if (target.kind != .ident) return;
+        const index = self.lookupPending(target.kind.ident) orelse return;
+        if (isConcreteInt(value_ty) or value_ty == .f32 or value_ty == .f64) {
+            self.constrainPending(index, value_ty);
+        } else {
+            if (self.untypedYet(value)) self.linkPendingIdents(index, value);
+        }
+    }
+
+    /// Record the float type `ty` for an expression made only of float literals (`1.5`,
+    /// `-0.5`, `0.0 - 1.5`), which IR then computes and stores at that width.
+    fn settleFloatLit(self: *Checker, expr: ast.Expr, ty: Ty) SemanticError!void {
+        if (!isUntypedFloatExpr(expr)) return;
+        try self.env.expr_types.put(expr.id, ty);
+        switch (expr.kind) {
+            .unary => |unary| try self.settleFloatLit(unary.expr.*, ty),
+            .binary => |binary| {
+                try self.settleFloatLit(binary.left.*, ty);
+                try self.settleFloatLit(binary.right.*, ty);
+            },
+            else => {},
+        }
+    }
+
     /// An integer literal coerces to an integer type only when its value fits
     /// (docs/02_types.md, "Type Coercion Rules"); it used to be truncated without
     /// a word. `compatible` sees only types, so each place that takes an expression
@@ -6388,6 +6729,8 @@ const Checker = struct {
             .borrow, .optional => |inner| return self.checkIntLitFits(expr, inner.*, is_default),
             else => {},
         }
+        // A literal local meeting a type here takes it (the default `i32` is no such type).
+        if (self.infer.active and !is_default) self.notePendingUse(expr, expected);
         try self.settleIntLit(expr, expected);
         switch (expr.kind) {
             .if_expr => |ie| {
@@ -6962,6 +7305,36 @@ pub fn isUntypedIntExpr(expr: ast.Expr) bool {
         },
         else => false,
     };
+}
+
+/// A type a literal local can be given: an integer type of a fixed width.
+fn isConcreteInt(ty: Ty) bool {
+    return switch (ty) {
+        .i8, .i16, .i32, .i64, .u8, .u16, .u32, .u64, .byte, .usize, .isize => true,
+        else => false,
+    };
+}
+
+/// What `inferLiteralLocals` needs to know of a function body.
+/// Whether a function body has compile-time statements (`#if`, `#run`, `#insert`, `#for`), which
+/// run as they are checked: `inferLiteralLocals` checks such a body once.
+fn hasComptimeCode(block: ast.Block) bool {
+    for (block.statements) |stmt| switch (stmt) {
+        .if_stmt => |s| {
+            if (hasComptimeCode(s.then_block)) return true;
+            if (s.else_block) |b| if (hasComptimeCode(b)) return true;
+        },
+        .while_stmt => |s| if (hasComptimeCode(s.body)) return true,
+        .for_range => |s| if (hasComptimeCode(s.body)) return true,
+        .for_slice => |s| if (hasComptimeCode(s.body)) return true,
+        .unsafe_block => |b| if (hasComptimeCode(b)) return true,
+        .zone_block => |z| if (hasComptimeCode(z.body)) return true,
+        .defer_stmt => |d| if (hasComptimeCode(d.body)) return true,
+        .match_stmt => |m| for (m.arms) |arm| if (hasComptimeCode(arm.body)) return true,
+        .comptime_if, .comptime_run, .insert_stmt, .comptime_for => return true,
+        else => {},
+    };
+    return false;
 }
 
 /// An expression made only of float literals without a suffix (`-10.0`, `0.0 - 1.5`): like an
