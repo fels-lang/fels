@@ -169,7 +169,7 @@ pub clear :: fn(flag: *u32) { store(flag, 0u32); }
 
 // Busy-wait until the flag becomes non-zero.
 pub wait_until_set :: fn(flag: *u32) {
-    while load(flag) == 0u32 {}
+    while load(flag) == 0 {}
 }
 
 // Busy-wait until the flag holds exactly `value`.
