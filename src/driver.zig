@@ -353,6 +353,18 @@ pub fn emitLlvmFromFrontend(
     };
     if (opts.timings) |tm| tm.passes_ns = sinceNs(t_passes);
 
+    // An executable starts at `main` (or an `#entry` function). Without one the link went
+    // through and the program jumped to nothing at start.
+    if (opts.exe_path != null and !opts.dll and !opts.no_entry and !opts.library_object and opts.entry == null) {
+        const has_entry = for (module.functions) |f| {
+            if (f.entry) break true;
+        } else false;
+        if (!has_entry) {
+            std.debug.print("error: {s} has no `main`: an executable starts at `main :: fn() -> i32`, or at a function marked `#entry`\n", .{opts.file_name});
+            return error.LoweringFailed;
+        }
+    }
+
     // LLVM backend
     const llvm_backend = @import("backend/llvm.zig");
     const module_name = try allocator.dupeZ(u8, opts.file_name);
