@@ -663,6 +663,7 @@ pub const LowerError = error{
 
 pub const ValidationError = error{
     InvalidIr,
+    OutOfMemory,
 };
 
 pub const Pass = enum {
@@ -1130,10 +1131,62 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
 }
 
 pub fn validateModule(module: IrModule) ValidationError!void {
+    const a = std.heap.smp_allocator;
+    var ids: IdSets = .{};
+    defer ids.deinit(a);
     for (module.functions) |function| {
-        try validateFunction(function);
+        try validateFunction(a, function, &ids);
     }
 }
+
+/// The ids of a function's registers and blocks, a bit each: both are numbered per function,
+/// from 1 and 0, so the sets are as long as the function. One walk fills them, and every
+/// operand is then checked against them, where a search of the function for each one made a
+/// big function take seconds.
+const IdSets = struct {
+    regs: std.DynamicBitSetUnmanaged = .{},
+    blocks: std.DynamicBitSetUnmanaged = .{},
+
+    fn deinit(self: *IdSets, a: std.mem.Allocator) void {
+        self.regs.deinit(a);
+        self.blocks.deinit(a);
+    }
+
+    /// The ids `function` gives, or `InvalidIr` when one is given twice.
+    fn fill(self: *IdSets, a: std.mem.Allocator, function: IrFunction) ValidationError!void {
+        var regs: usize = 0;
+        var blocks: usize = 0;
+        for (function.blocks) |block| {
+            blocks = @max(blocks, @as(usize, block.id) + 1);
+            for (block.instrs) |instr| if (instr.id) |id| {
+                regs = @max(regs, @as(usize, id) + 1);
+            };
+        }
+        try clearTo(a, &self.regs, regs);
+        try clearTo(a, &self.blocks, blocks);
+        for (function.blocks) |block| {
+            if (self.blocks.isSet(block.id)) return error.InvalidIr;
+            self.blocks.set(block.id);
+            for (block.instrs) |instr| if (instr.id) |id| {
+                if (self.regs.isSet(id)) return error.InvalidIr;
+                self.regs.set(id);
+            };
+        }
+    }
+
+    fn hasReg(self: *const IdSets, id: RegId) bool {
+        return id < self.regs.bit_length and self.regs.isSet(id);
+    }
+
+    fn hasBlock(self: *const IdSets, id: BlockId) bool {
+        return id < self.blocks.bit_length and self.blocks.isSet(id);
+    }
+
+    fn clearTo(a: std.mem.Allocator, set: *std.DynamicBitSetUnmanaged, len: usize) error{OutOfMemory}!void {
+        if (set.bit_length < len) try set.resize(a, len, false);
+        set.unsetAll();
+    }
+};
 
 pub fn runDefaultPasses(allocator: std.mem.Allocator, module: *IrModule) !void {
     try runPasses(allocator, module, &.{ .const_fold, .branch, .dce });
@@ -1150,34 +1203,29 @@ pub fn runPasses(allocator: std.mem.Allocator, module: *IrModule, passes: []cons
     }
 }
 
-fn validateFunction(function: IrFunction) ValidationError!void {
+fn validateFunction(a: std.mem.Allocator, function: IrFunction, ids: *IdSets) ValidationError!void {
     if (function.extern_name != null and function.blocks.len == 0) return;
     if (function.blocks.len == 0) return error.InvalidIr;
     if (function.blocks[0].id != 0) return error.InvalidIr;
 
-    for (function.blocks, 0..) |block, block_index| {
+    // Every block id and register id once in the function.
+    try ids.fill(a, function);
+    const in: Defined = .{ .function = function, .ids = ids };
+    for (function.blocks) |block| {
         if (block.terminator == null) return error.InvalidIr;
-        for (function.blocks[block_index + 1 ..]) |other| {
-            if (block.id == other.id) return error.InvalidIr;
-        }
-
-        for (block.instrs, 0..) |instr, instr_index| {
-            if (instr.id) |id| {
-                for (function.blocks[0 .. block_index + 1], 0..) |seen_block, seen_block_index| {
-                    const end = if (seen_block_index == block_index) instr_index else seen_block.instrs.len;
-                    for (seen_block.instrs[0..end]) |seen| {
-                        if (seen.id != null and seen.id.? == id) return error.InvalidIr;
-                    }
-                }
-            }
-            try validateInstr(function, instr);
-        }
-
-        try validateTerminator(function, block.terminator.?);
+        for (block.instrs) |instr| try validateInstr(in, instr);
+        try validateTerminator(in, block.terminator.?);
     }
 }
 
-fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
+/// What an operand may name: a register or block of `function` (`ids`), or one of its
+/// parameters.
+const Defined = struct {
+    function: IrFunction,
+    ids: *const IdSets,
+};
+
+fn validateInstr(function: Defined, instr: Instr) ValidationError!void {
     switch (instr.kind) {
         .const_value, .alloc, .alloc_slice, .zone_push, .zone_pop, .global_load => {},
         .inline_asm => |ai| for (ai.args) |v| try validateValue(function, v),
@@ -1231,7 +1279,7 @@ fn validateInstr(function: IrFunction, instr: Instr) ValidationError!void {
     }
 }
 
-fn validateTerminator(function: IrFunction, terminator: Terminator) ValidationError!void {
+fn validateTerminator(function: Defined, terminator: Terminator) ValidationError!void {
     switch (terminator) {
         .return_value => |value| if (value) |ret| try validateValue(function, ret),
         .fail => |ft| {
@@ -1239,38 +1287,22 @@ fn validateTerminator(function: IrFunction, terminator: Terminator) ValidationEr
             if (ft.err) |e| try validateValue(function, e);
         },
         .panic => {},
-        .branch => |target| if (!hasBlock(function, target)) return error.InvalidIr,
+        .branch => |target| if (!function.ids.hasBlock(target)) return error.InvalidIr,
         .cond_branch => |branch| {
             try validateValue(function, branch.cond);
-            if (!hasBlock(function, branch.then_block)) return error.InvalidIr;
-            if (!hasBlock(function, branch.else_block)) return error.InvalidIr;
+            if (!function.ids.hasBlock(branch.then_block)) return error.InvalidIr;
+            if (!function.ids.hasBlock(branch.else_block)) return error.InvalidIr;
         },
         .unreachable_term => {},
     }
 }
 
-fn validateValue(function: IrFunction, value: Value) ValidationError!void {
+fn validateValue(function: Defined, value: Value) ValidationError!void {
     switch (value) {
-        .reg => |id| if (!hasReg(function, id)) return error.InvalidIr,
-        .param => |name| if (!hasParam(function, name)) return error.InvalidIr,
+        .reg => |id| if (!function.ids.hasReg(id)) return error.InvalidIr,
+        .param => |name| if (!hasParam(function.function, name)) return error.InvalidIr,
         .local, .global, .imm => {},
     }
-}
-
-fn hasBlock(function: IrFunction, id: BlockId) bool {
-    for (function.blocks) |block| {
-        if (block.id == id) return true;
-    }
-    return false;
-}
-
-fn hasReg(function: IrFunction, id: RegId) bool {
-    for (function.blocks) |block| {
-        for (block.instrs) |instr| {
-            if (instr.id != null and instr.id.? == id) return true;
-        }
-    }
-    return false;
 }
 
 fn hasParam(function: IrFunction, name: []const u8) bool {
