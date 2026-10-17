@@ -398,8 +398,16 @@ s := Shape.circle(3.14);     // construct a variant with its payload
 ```
 
 Construct a payload-carrying variant by calling the variant as `EnumType.variant(payload)`
-(payload-less variants are just `EnumType.variant`). Recover the payload by pattern
-matching:
+(payload-less variants are just `EnumType.variant`). Where the type is known, the dot
+shorthand takes the payload the same way, in every place `.variant` works:
+
+```fels
+s: Shape = .circle(2.0);
+shapes: [2]Shape = .{ .rectangle(.{ 1.0, 2.0 }), .none };
+unit :: fn() -> Shape { return .circle(1.0); }
+```
+
+Recover the payload by pattern matching:
 
 ```fels
 area :: fn(s: Shape) -> f64 {
