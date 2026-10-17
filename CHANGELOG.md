@@ -20,6 +20,12 @@ the major version is `0`, any minor bump may break source compatibility.
     instructions, and is now half that.
   - `fels test` tests the files at the same time, one `fels` process per core (`-j<n>` sets
     how many, `-j1` tests one file at a time). The report keeps the order of the files.
+- **The live tree shows what a stage is at**: it counts the functions being checked, lowered and
+  generated (`[1414/2168] lowering`) and names the one it is at, shows a `#run` with its file and
+  line while the comptime VM runs it, and says when the VM gets ready and how many functions
+  LLVM emits. In `fels test` each file's own stages show in the tree. A built artifact's line
+  has the size of its output, and a dim line under it says why it was built again (`because
+  src/ui/app.fels changed`, `because fels changed`). `fels test` names its slowest files.
 - **The commands show what they are doing.** On a terminal, `fels build` and `fels test` draw
   a live tree of the work, as `zig build` does: the artifact or the test file, and the stage it
   is in (checking, lowering, generating code, linking, running). Then each artifact gets one

@@ -67,10 +67,16 @@ run while you wait, and the marks and counts are in color. `fels test` exits wit
 failed or a file does not compile, so you can use it in CI.
 
 The files are tested at the same time, as many as the computer has cores, each in a `fels`
-process of its own. The report still comes in the order of the files. The tests of one file run
-one after the other, but two files run side by side: if the tests of both write the same file in
-the project folder, they get in each other's way. Give each file of output its own name, or test
-one file at a time with `-j1`.
+process of its own, and the live tree shows the stage each of them is in. The report still comes
+in the order of the files. The tests of one file run one after the other, but two files run side
+by side: if the tests of both write the same file in the project folder, they get in each other's
+way. Give each file of output its own name, or test one file at a time with `-j1`. A run of four
+files or more that takes a second or longer names its slowest files under the summary:
+
+```text
+Test Summary: 163 passed · 3.78s
+slowest: src/sample_tests.fels 2.81s, src/imports/loader_tests.fels 2.74s, src/imports/updates_tests.fels 2.70s
+```
 
 ### The test program
 
