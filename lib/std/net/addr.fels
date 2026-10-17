@@ -67,8 +67,7 @@ pub parse :: fn(s: []const u8) -> IpV4 ! AddrError {
     octets: [4]u32 = .{ 0, 0, 0, 0 };
     idx: usize = 0;       // which octet
     seen: bool = false;        // saw a digit for this octet
-    i: usize = 0;
-    while i < s.len {
+    for i in 0..s.len {
         c := s[i];
         if c == 46 {                       // '.'
             if !seen || idx >= 3 { fail .bad_format; }
@@ -80,7 +79,6 @@ pub parse :: fn(s: []const u8) -> IpV4 ! AddrError {
             if octets[idx] > 255 { fail .octet_range; }
             seen = true;
         }
-        i += 1;
     }
     if idx != 3 || !seen { fail .bad_format; }
     return .{ octets[0] as u8, octets[1] as u8, octets[2] as u8, octets[3] as u8 };
