@@ -25,6 +25,10 @@ the major version is `0`, any minor bump may break source compatibility.
   The local is an `f64` (as an integer one is an `i32`), and `y: f32 = x as f32;` narrows it.
 - **`std.fmt` did not type-check** ("unknown error type `IoError`"): it used `Writer`, `IoError`
   and `null_writer` from `std.io` without importing them by name. It does now, and has tests.
+- **`for i in 0..xs.len` counted in an `i32`**: the index took the start's type, an untyped
+  literal, and IR stored the 8-byte end into a 4-byte slot. Past 2³¹ the loop ran a wrong number
+  of times, and a range from a large literal to an `i64` crashed. A literal bound now takes the
+  other bound's type (`0..xs.len` counts in `usize`); two literals make an `i32`.
 
 ## 0.7.0 — 2026-10-11
 
