@@ -21,6 +21,32 @@ test "comptime: #if with TARGET.os compiles both branches" {
     try fels.ir_mod.validateModule(m);
 }
 
+test "comptime: #if takes else #if, a chain of tests" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // There was no `else if`: the next test had to go inside the `else` block.
+    const src =
+        \\pick :: fn(n: i32) -> i32 {
+        \\    #if TARGET.os == .linux { return 1; } else #if TARGET.os == .windows { return 2; } else { return 3; }
+        \\}
+        \\third :: fn() -> i32 {
+        \\    #if false { return 1; } else #if false { return 2; } else { return 3; }
+        \\}
+        \\P :: #run pick(0);
+        \\Q :: #run third();
+    ;
+    var fe = try fels.compile(arena.allocator(), "ct_chain.fels", src);
+    defer fe.deinit(arena.allocator());
+    const m = try fels.lowerFrontend(arena.allocator(), fe);
+    try fels.ir_mod.validateModule(m);
+    const want_p: i128 = if (@import("builtin").os.tag == .linux) 1 else if (@import("builtin").os.tag == .windows) 2 else 3;
+    for (m.globals) |g| {
+        if (std.mem.eql(u8, g.name, "P")) try std.testing.expectEqual(ir.Imm{ .int = want_p }, g.init.imm);
+        if (std.mem.eql(u8, g.name, "Q")) try std.testing.expectEqual(ir.Imm{ .int = 3 }, g.init.imm);
+    }
+}
+
 test "comptime: #run expression as value" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
