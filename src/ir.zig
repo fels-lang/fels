@@ -3119,6 +3119,54 @@ const FunctionLowerer = struct {
         return self.mkVariant("TypeInfo", if (self.isUnionType(.{ .struct_type = name })) "union_" else "struct_", payload);
     }
 
+    /// The `TypeInfo` of an error type (a set without payloads, or any error): its value is the
+    /// number of the error, an `i32`, so it is an enum whose variant `k` is named after error
+    /// number `k`, the errors of the whole program counted (`ErrorCodes`). A printed error shows
+    /// its name that way. Null when the type argument is no such error type.
+    fn errorTypeInfo(self: *FunctionLowerer, arg: ast.Expr) LowerError!?Value {
+        const sema_ty: sema.Ty = switch (arg.kind) {
+            .ident => |name| blk: {
+                for (self.type_binding) |b| if (std.mem.eql(u8, b.name, name)) break :blk b.ty;
+                const id = resolveTopLevel(self.symbols, self.file_name, name) orelse return null;
+                break :blk .{ .named = id };
+            },
+            else => return null,
+        };
+        const variants: ?[]const sema.ErrorVariantInfo = switch (sema_ty) {
+            .error_set => |v| v,
+            .error_ty => null,
+            .named => |id| blk: {
+                const layout = self.types.layouts.get(id) orelse return null;
+                break :blk switch (layout.kind) {
+                    .error_set => |v| v,
+                    else => return null,
+                };
+            },
+            else => return null,
+        };
+        if (variants) |vs| {
+            if (sema.errorSetHasPayloads(vs)) return null;
+            for (vs) |v| _ = try self.error_codes.code(v.name);
+        }
+        const names = self.error_codes.names.keys();
+        var vvals: std.ArrayList(Value) = .empty;
+        defer vvals.deinit(self.allocator);
+        try vvals.append(self.allocator, try self.mkStruct("TiVariant", &.{
+            .{ .name = "name", .value = astStr("none") },
+            .{ .name = "has_payload", .value = .{ .imm = .{ .bool = false } } },
+        }));
+        for (names) |n| try vvals.append(self.allocator, try self.mkStruct("TiVariant", &.{
+            .{ .name = "name", .value = astStr(n) },
+            .{ .name = "has_payload", .value = .{ .imm = .{ .bool = false } } },
+        }));
+        const slice = try self.materializeSlice(.{ .struct_type = "TiVariant" }, vvals.items);
+        const payload = try self.mkStruct("TiEnum", &.{
+            .{ .name = "name", .value = astStr("error") },
+            .{ .name = "variants", .value = slice },
+        });
+        return try self.mkVariant("TypeInfo", "enum_", payload);
+    }
+
     fn tiEnum(self: *FunctionLowerer, name: []const u8, visiting: *std.StringHashMap(void)) LowerError!Value {
         _ = visiting;
         const variants = self.enumVariantInfos(name) orelse return self.mkVariant("TypeInfo", "other", astStr(name));
@@ -4251,6 +4299,7 @@ const FunctionLowerer = struct {
                         .positional => |e| e,
                         .named => |n| n.value,
                     };
+                    if (try self.errorTypeInfo(first)) |info| break :blk info;
                     const ty = try self.lowerTypeArg(first);
                     break :blk try self.materializeTypeInfo(ty);
                 }
