@@ -3928,6 +3928,22 @@ const FunctionLowerer = struct {
                 {
                     break :blk try self.lowerLayoutQuery(callee_name, call, expr);
                 }
+                // core::has_padding(T): a layout question too, a `bool` folded here.
+                if (call.callee.kind == .scope_access and isCoreNs(call.callee.kind.scope_access) and
+                    std.mem.eql(u8, callee_name, "has_padding") and call.args.len == 1)
+                {
+                    const first = switch (call.args[0]) {
+                        .positional => |e| e,
+                        .named => |n| n.value,
+                    };
+                    var ty = try self.lowerTypeArg(first);
+                    if (ty == .struct_type) ty = layoutQueryNamedType(self.allocator, self.types, self.symbols, self.file_name, ty.struct_type);
+                    const padded = typeHasPadding(self.allocator, self.types, self.symbols, ty, 0) orelse {
+                        diag_mod.printErrorAt("cannot tell whether this type has padding: its layout is not known at compile time", self.file_name, self.source, expr.span);
+                        return error.LoweringFailed;
+                    };
+                    break :blk Value{ .imm = .{ .bool = padded } };
+                }
                 // asm(...) needs structural constraint parsing — handle before generic builtin path.
                 if (std.mem.eql(u8, callee_name, "asm")) {
                     break :blk try self.lowerAsmCall(call, expr);
@@ -8378,6 +8394,65 @@ fn structDefFromSema(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols:
         };
     }
     return .{ .name = name, .fields = out, .is_packed = type_layout.is_packed, .alignment = type_layout.alignment };
+}
+
+/// Whether a value of `ty` has bytes no value sets: padding between or after the fields of a
+/// struct (in it, or in a struct, array or field inside it), the flag byte of an optional (all
+/// but the lowest bit unset), the bytes of an enum or an error payload that a smaller variant
+/// leaves, and the payload slot of a fallible. Null when a layout is not known.
+fn typeHasPadding(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, ty: IrType, depth: u32) ?bool {
+    if (depth > 32) return null;
+    return switch (ty) {
+        .void, .bool, .byte, .i, .u, .rune, .f32, .f64, .usize, .isize, .addr, .ptr, .zone => false,
+        .slice, .text, .interface_value, .fn_ptr => false,
+        .optional => |inner| inner.* != .ptr,
+        .fallible => true,
+        .array => |arr| typeHasPadding(allocator, types, symbols, arr.elem.*, depth + 1),
+        .struct_type => |name| blk: {
+            if (taggedErrorSetNamed(types, symbols, name) != null) break :blk true;
+            const id = symbols.resolve(symbols.root_scope, name) orelse break :blk null;
+            const type_layout = types.layouts.get(id) orelse break :blk null;
+            switch (type_layout.kind) {
+                // A plain enum is an `i32`; one with payloads is a tag and the bytes of its
+                // largest payload, which a smaller one does not fill.
+                .variant_type => |variants| {
+                    for (variants) |v| if (v.payload != null) break :blk true;
+                    break :blk false;
+                },
+                .struct_type => {},
+                else => break :blk null,
+            }
+            const def = structDefFromSema(allocator, types, symbols, name) orelse break :blk null;
+            var offset: u64 = 0;
+            var max_align: u64 = 1;
+            for (def.fields) |field| {
+                if (typeHasPadding(allocator, types, symbols, field.ty, depth + 1) orelse break :blk null) break :blk true;
+                const member = paddingMemberLayout(allocator, types, symbols, field.ty) orelse break :blk null;
+                if (!def.is_packed) {
+                    const aligned = (offset + member.alignment - 1) / member.alignment * member.alignment;
+                    if (aligned != offset) break :blk true;
+                    max_align = @max(max_align, member.alignment);
+                }
+                offset += member.size;
+            }
+            var total = (offset + max_align - 1) / max_align * max_align;
+            if (def.alignment != 0) total = (total + def.alignment - 1) / def.alignment * def.alignment;
+            break :blk total != offset;
+        },
+        else => null,
+    };
+}
+
+/// The size and alignment of a field, for `typeHasPadding`: as `layout_mod` gives them, and a
+/// plain enum's (an `i32`), which it does not model.
+fn paddingMemberLayout(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sema.SymbolTable, ty: IrType) ?layout_mod.Layout {
+    if (ty == .struct_type) {
+        if (symbols.resolve(symbols.root_scope, ty.struct_type)) |id| if (types.layouts.get(id)) |l| if (l.kind == .variant_type)
+            return .{ .size = 4, .alignment = 4 };
+    }
+    if (ty == .fn_ptr) return .{ .size = 8, .alignment = 8 };
+    const source = SemaLayoutSource{ .allocator = allocator, .types = types, .symbols = symbols };
+    return layout_mod.ofWith(ty, source);
 }
 
 /// Struct definitions for `layout_mod` queries, served from the sema layouts.

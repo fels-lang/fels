@@ -4066,6 +4066,13 @@ const Checker = struct {
             try self.checkLayoutQuery(call, name);
             return .usize;
         }
+        if (std.mem.eql(u8, name, "has_padding")) {
+            if (call.args.len != 1) {
+                self.emitError(call.callee.span, "`core::has_padding` takes one type: `core::has_padding(T)`", .{});
+                return error.SemanticFailed;
+            }
+            return .bool;
+        }
         // Value-returning atomics (`load` + read-modify-write + compare-exchange)
         // yield the pointee type of the first (pointer) argument.
         if (std.mem.eql(u8, name, "atomic_load") or std.mem.eql(u8, name, "atomic_add") or
@@ -7927,7 +7934,7 @@ fn firstArgWanted(callee: ast.Expr) FirstArg {
         if (std.mem.eql(u8, name, b)) return .type_or_value;
     inline for (.{
         "truncate_to", "ptr_from_int", "unaligned_read", "slice_from_raw_parts",
-        "align_of",    "offset_of",
+        "align_of",    "offset_of",    "has_padding",
     }) |b|
         if (std.mem.eql(u8, name, b)) return .type_only;
     return .none;
@@ -7959,6 +7966,7 @@ fn isCoreScalarBuiltin(name: []const u8) bool {
 fn isMigratedBuiltin(name: []const u8) bool {
     inline for (.{
         "sizeof",        "align_of",       "offset_of",    "type_info", "type_name", "typeid_of", "type_id",
+        "has_padding",
         "truncate_to",   "narrow",         "slice_raw",     "any",
         "slice_from_raw_parts", "ptr_from_int", "unaligned_read", "volatile_store",
         "atomic_load",   "atomic_store",   "asm",           "reject",    "require",
@@ -7975,6 +7983,7 @@ pub fn isBuiltinValue(name: []const u8) bool {
         "truncate_to", "ptr_from_int",   "volatile_store",
         "slice_from_raw_parts",
         "sizeof",      "align_of",       "offset_of",     "unaligned_read", "asm",
+        "has_padding",
         "atomic_load", "atomic_store",   "volatile",
         "atomic_add",  "atomic_sub",     "atomic_and",  "atomic_or", "atomic_xor",
         "atomic_exchange", "atomic_cas", "atomic_fence", "atomic_max", "atomic_min",
