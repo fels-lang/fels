@@ -50,11 +50,15 @@ const win = struct {
     extern "kernel32" fn GetEnvironmentVariableA(name: [*:0]const u8, buf: [*]u8, size: u32) callconv(.winapi) u32;
 };
 
+/// What `detectPosix` found for stderr, on a system other than Windows. Plain until `main`
+/// calls it, so tests get plain text.
+var posix_stderr: Palette = .plain;
+
 /// Decide whether to colorize stderr, enabling VT processing on the console if so.
-/// Off when stderr is redirected (not a console), when `NO_COLOR` is set, or on a
-/// non-Windows host (the diagnostic path is Windows-tested for now).
+/// Off when stderr is redirected (not a console) or when `NO_COLOR` is set; `FELS_COLOR`
+/// turns it on. Elsewhere than on Windows, what `detectPosix` found.
 pub fn forStderr() Palette {
-    if (builtin.target.os.tag != .windows) return .plain;
+    if (builtin.target.os.tag != .windows) return posix_stderr;
     if (envSet("NO_COLOR")) return .plain; // https://no-color.org
     if (envSet("FELS_COLOR")) return .{ .on = true }; // force on (e.g. piping to a pager)
     const h = win.GetStdHandle(win.std_error_handle) orelse return .plain;
@@ -62,6 +66,29 @@ pub fn forStderr() Palette {
     if (win.GetConsoleMode(h, &mode) == 0) return .plain; // redirected → no console
     _ = win.SetConsoleMode(h, mode | win.enable_vt);
     return .{ .on = true };
+}
+
+/// On a system other than Windows, find out once whether stderr gets colors: when it is a
+/// terminal and `TERM` is not `dumb`, with `NO_COLOR` and `FELS_COLOR` as on Windows.
+pub fn detectPosix(io: std.Io, env: *const std.process.Environ.Map) void {
+    if (builtin.target.os.tag == .windows) return;
+    const set = struct {
+        fn f(e: *const std.process.Environ.Map, name: []const u8) bool {
+            const v: []const u8 = e.get(name) orelse return false;
+            return v.len != 0;
+        }
+    }.f;
+    const term: []const u8 = env.get("TERM") orelse "";
+    posix_stderr = if (set(env, "NO_COLOR"))
+        .plain
+    else if (set(env, "FELS_COLOR"))
+        .{ .on = true }
+    else if (std.mem.eql(u8, term, "dumb"))
+        .plain
+    else if (std.Io.File.stderr().isTty(io) catch false)
+        .{ .on = true }
+    else
+        .plain;
 }
 
 fn envSet(comptime name: [*:0]const u8) bool {
