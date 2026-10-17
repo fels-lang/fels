@@ -62,7 +62,7 @@ distinct from an ordinary function call:
 ```fels
 n   := core::sizeof(Point);          // a builtin — you can see the compiler is involved
 name := core::type_name(Point);      // "Point"
-buf := unsafe core::slice_from_raw_parts(u8, p, len);
+buf := unsafe core::slice_raw(u8, p, len);
 if bad { core::panic("invalid state"); }   // no-return
 ```
 
@@ -72,7 +72,8 @@ error). Some builtins require an `unsafe` block (last column).
 > **Bare names are rejected.** Calling a builtin by its bare name (`sizeof(T)`,
 > `ptr_from_int(...)`, …) is a hard error pointing you at the `core::` form. A few
 > names were tidied in the move: `typeid_of` → `core::type_id`, `truncate_to` →
-> `core::narrow`, `slice_from_raw_parts` → `core::slice_raw`. (`@panic` keeps its
+> `core::narrow`, `slice_from_raw_parts` → `core::slice_raw`. The old names still work
+> behind `core::` (`core::typeid_of`), but these docs use the new ones. (`@panic` keeps its
 > sigil and also works as `core::panic`.)
 
 | Builtin | Signature | Unsafe? | Description |
