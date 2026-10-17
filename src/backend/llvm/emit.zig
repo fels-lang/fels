@@ -19,6 +19,21 @@ pub fn initNativeTarget() EmitError!void {
         return error.TargetInitFailed;
     if (llvm.LLVMInitializeNativeAsmParser() != 0)
         return error.TargetInitFailed;
+    noFastIsel();
+}
+
+var fast_isel_off = false;
+
+/// Select instructions with SelectionDAG at `-O0` too, not FastISel. FastISel cannot select a
+/// slice or a struct passed, returned, loaded or stored whole, which Fels code does all the
+/// time, and it hands each block where it fails to SelectionDAG: Strata took 2.5 s to emit
+/// that way, and 1.8 s with SelectionDAG alone. At `-O0` LLVM takes this from its command-line
+/// option (`LLVMSetTargetMachineFastISel` does not reach it), which it reads once per process.
+fn noFastIsel() void {
+    if (fast_isel_off) return;
+    fast_isel_off = true;
+    const argv = [_][*:0]const u8{ "fels", "-fast-isel=false" };
+    llvm.LLVMParseCommandLineOptions(argv.len, @ptrCast(&argv), null);
 }
 
 pub const TargetMachine = struct {
