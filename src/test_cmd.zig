@@ -133,21 +133,27 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
         }
     }
 
-    // On a terminal, the live tree: a node per file, with the stage it is in.
-    if (!opts.worker) ui.start("fels test", files.list.items.len);
+    // On a terminal, the live tree: a node per file, with the stage it is in. A worker's tree
+    // is its file's node in the tree of the parent `fels test`.
+    if (opts.worker) {
+        if (files.list.items.len != 0) ui.startWorker(try displayPath(a, files.list.items[0]));
+    } else ui.start("fels test", files.list.items.len);
     defer ui.finish();
     var summary: Summary = .{};
+    var slowest: Slowest = .{};
     const native_lane = build_options.enable_llvm and !opts.comptime_only;
     if (native_lane and !opts.worker and opts.jobs > 1 and files.list.items.len > 1 and opts.self_exe.len != 0) {
-        try runWorkers(gpa, io, out, a, files.list.items, opts, &summary);
+        try runWorkers(gpa, io, out, a, files.list.items, opts, &summary, &slowest);
     } else {
         var native: ?Native = null;
         if (native_lane) native = try Native.init(gpa, io, a, out, opts, packages, caps);
         for (files.list.items) |path| {
             const display = try displayPath(a, path);
-            var stages = ui.Stages.begin(ui.root, display);
-            defer _ = stages.end();
+            var stages = if (opts.worker) ui.Stages.in(ui.root) else ui.Stages.begin(ui.root, display);
+            const before = summary;
             try testFile(gpa, io, out, path, display, opts.palette, if (native) |*n| n else null, &stages, &summary);
+            const took = stages.end();
+            if (summary.passed + summary.failed != before.passed + before.failed) slowest.add(display, took);
             try out.flush();
         }
     }
@@ -170,11 +176,43 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, opts: Option
             .{ .n = summary.broken, .what = if (summary.broken == 1) "file has errors" else "files have errors", .color = .bad },
         });
         var d: [48]u8 = undefined;
-        try out.print(" \u{00b7} {s}\n", .{ui.dimDuration(&d, clock.sinceNs(started))});
+        const took = clock.sinceNs(started);
+        try out.print(" \u{00b7} {s}\n", .{ui.dimDuration(&d, took)});
+        if (took >= std.time.ns_per_s) try slowest.write(out);
     }
     try out.flush();
     return summary;
 }
+
+/// The test files that took longest, for a line under the summary of a run of four or more.
+const Slowest = struct {
+    top: [3]File = .{ .{}, .{}, .{} },
+    files: usize = 0,
+
+    const File = struct { name: []const u8 = "", ns: u64 = 0 };
+
+    fn add(self: *Slowest, name: []const u8, ns: u64) void {
+        self.files += 1;
+        var i: usize = self.top.len;
+        while (i > 0 and self.top[i - 1].ns < ns) i -= 1;
+        if (i == self.top.len) return;
+        var j = self.top.len - 1;
+        while (j > i) : (j -= 1) self.top[j] = self.top[j - 1];
+        self.top[i] = .{ .name = name, .ns = ns };
+    }
+
+    /// `slowest: src/a_tests.fels 2.74s, src/b_tests.fels 2.70s, src/c_tests.fels 2.17s`
+    fn write(self: *const Slowest, out: *std.Io.Writer) Error!void {
+        if (self.files < 4) return;
+        try out.print("{s}slowest:", .{ui.pal.dim()});
+        for (self.top, 0..) |f, k| {
+            if (f.ns == 0) break;
+            var d: [24]u8 = undefined;
+            try out.print("{s} {s} {s}", .{ if (k == 0) "" else ",", f.name, ui.duration(&d, f.ns) });
+        }
+        try out.print("{s}\n", .{ui.pal.reset()});
+    }
+};
 
 /// What the last line of a worker's report starts with; the counts of `Summary` follow.
 const summary_marker = "@@fels-test-summary ";
@@ -190,6 +228,8 @@ const Job = struct {
     report: []const u8 = "",
     text: []u8 = &.{},
     counts: Summary = .{},
+    /// How long the worker took, from its start to its end.
+    ns: u64 = 0,
     done: std.Io.Event = .unset,
 };
 
@@ -223,20 +263,26 @@ const Pool = struct {
         // being started inherits the other's pipe, which then ends only when both have ended,
         // so the workers finished in waves.
         const file = std.Io.Dir.cwd().createFile(pool.io, job.report_path, .{}) catch |err| return pool.broken(job, @errorName(err));
-        var child = std.process.spawn(pool.io, .{
+        // The worker draws its tree (stages, functions) in place of its file's node here, over
+        // a pipe the progress tree gives it. The tree takes it only from the io it draws with.
+        const tree_io = std.Options.debug_io;
+        const started = clock.monoNs();
+        var child = std.process.spawn(tree_io, .{
             .argv = argv,
             .environ_map = pool.environ,
             .stdin = .ignore,
             .stdout = .ignore,
             .stderr = .{ .file = file },
+            .progress_node = node,
         }) catch |err| {
             file.close(pool.io);
             return pool.broken(job, @errorName(err));
         };
-        const term = child.wait(pool.io) catch |err| {
+        const term = child.wait(tree_io) catch |err| {
             file.close(pool.io);
             return pool.broken(job, @errorName(err));
         };
+        job.ns = clock.sinceNs(started);
         file.close(pool.io);
         job.text = std.Io.Dir.cwd().readFileAlloc(pool.io, job.report_path, pool.gpa, .unlimited) catch |err| return pool.broken(job, @errorName(err));
 
@@ -283,6 +329,7 @@ fn runWorkers(
     paths: []const []const u8,
     opts: Options,
     summary: *Summary,
+    slowest: *Slowest,
 ) Error!void {
     // The reports go next to the test programs, in `.fels-cache/test`.
     const dir = try joinPath(a, opts.project_dir, ".fels-cache/test");
@@ -336,6 +383,7 @@ fn runWorkers(
         summary.failed += job.counts.failed;
         summary.skipped += job.counts.skipped;
         summary.broken += job.counts.broken;
+        if (job.counts.passed + job.counts.failed != 0) slowest.add(job.display, job.ns);
     }
 }
 
@@ -357,6 +405,9 @@ fn testFile(
     stages: *ui.Stages,
     summary: *Summary,
 ) Error!void {
+    // Checking, the five stages of building the test program, running it; on the comptime VM
+    // checking and running.
+    stages.node.setEstimatedTotalItems(if (native != null) 7 else 2);
     stages.stage("checking");
     const saved_runner = pipeline.test_runner;
     pipeline.test_runner = native != null;
