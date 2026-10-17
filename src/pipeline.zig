@@ -30,34 +30,8 @@ const testing_prelude_id_base: ast.NodeId = 200_000;
 /// Node-id base for the injected `TARGET` prelude, far above any program's own ids.
 const target_prelude_id_base: ast.NodeId = 3_000_000;
 
-/// What the program is built for, as `TARGET` and `core::os`/`core::arch` report it. The driver
-/// sets it for each compile; anything else (a build script, `fels check`, the language server)
-/// sees the host, in a debug build.
-pub const BuildTarget = struct {
-    os: std.Target.Os.Tag = @import("builtin").os.tag,
-    /// Fels builds for x86-64 only.
-    arch: std.Target.Cpu.Arch = .x86_64,
-    /// Built without optimisation (`-O0`, the `debug` mode).
-    debug: bool = true,
-
-    pub fn osName(self: BuildTarget) []const u8 {
-        return switch (self.os) {
-            .windows => "windows",
-            .linux => "linux",
-            .macos => "macos",
-            else => "unknown",
-        };
-    }
-
-    pub fn archName(self: BuildTarget) []const u8 {
-        return switch (self.arch) {
-            .x86_64 => "x86_64",
-            .aarch64 => "aarch64",
-            else => "unknown",
-        };
-    }
-};
-pub threadlocal var build_target: BuildTarget = .{};
+/// What the program is built for (`TARGET`, `core::os`, a top-level `#if`).
+pub const build_target = @import("build_target.zig");
 /// Node-id base for the generated test runner (`test_runner`).
 const test_runner_id_base: ast.NodeId = 250_000;
 
@@ -1460,7 +1434,7 @@ fn prependAnyPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module
 
 /// The declarations of `TARGET` for the build being made (`build_target`).
 fn prependTargetPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
-    const t = build_target;
+    const t = build_target.current;
     const src = try std.fmt.allocPrint(allocator,
         \\pub TargetOs :: enum {{ windows, linux, macos, unknown }}
         \\pub TargetArch :: enum {{ x86_64, aarch64, unknown }}

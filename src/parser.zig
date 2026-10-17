@@ -4,6 +4,7 @@ const diag_mod = @import("diagnostic.zig");
 const Diagnostic = diag_mod.Diagnostic;
 const Span = @import("lexer/span.zig").Span;
 const lexer = @import("lexer/tokens.zig");
+const build_target = @import("build_target.zig");
 const Token = lexer.Token;
 const TokenKind = lexer.TokenKind;
 
@@ -142,44 +143,7 @@ pub const Parser = struct {
         var items: std.ArrayList(ast.Item) = .empty;
         errdefer items.deinit(self.allocator);
 
-        while (!self.check(.eof)) {
-            // Jai-style `#system_library("name");` — a standalone linking
-            // directive, parsed before generic attributes so it isn't
-            // mistaken for an attribute attached to the next declaration.
-            if (self.check(.hash) and self.checkIdentAt(1, "system_library")) {
-                const hash = self.advance();
-                _ = self.advance(); // consume "system_library"
-                try items.append(self.allocator, .{ .system_library = try self.finishSystemLibrary(hash) });
-                continue;
-            }
-
-            // `#assert(cond, "msg");` — a standalone compile-time assertion, like
-            // `#system_library` not an attribute of the next declaration.
-            if (self.check(.hash) and self.checkIdentAt(1, "assert")) {
-                const hash = self.advance();
-                _ = self.advance(); // consume "assert"
-                try items.append(self.allocator, .{ .static_assert = try self.finishStaticAssert(hash) });
-                continue;
-            }
-
-            var attrs = try self.parseAttributes();
-            if (self.match(.hash)) {
-                try items.append(self.allocator, .{ .import = try self.parseImport(self.previous()) });
-                continue;
-            }
-
-            const is_public = self.match(.keyword_pub);
-            if (is_public) {
-                const public_attrs = try self.parseAttributes();
-                if (public_attrs.len != 0) {
-                    var combined: std.ArrayList(ast.Attribute) = .empty;
-                    try combined.appendSlice(self.allocator, attrs);
-                    try combined.appendSlice(self.allocator, public_attrs);
-                    attrs = try combined.toOwnedSlice(self.allocator);
-                }
-            }
-            try items.append(self.allocator, try self.parseTopLevel(attrs, is_public));
-        }
+        while (!self.check(.eof)) try self.parseTopLevelItem(&items);
 
         // Append lambdas lifted from expressions as synthetic top-level functions.
         for (self.lifted_lambdas.items) |decl| {
@@ -259,6 +223,137 @@ pub const Parser = struct {
             .file_name = self.file_name,
             .span = spanFrom(hash, semi),
         };
+    }
+
+    /// One declaration of the module (or of the branch of a top-level `#if`), added to `items`.
+    fn parseTopLevelItem(self: *Parser, items: *std.ArrayList(ast.Item)) ParseError!void {
+        if (self.check(.hash) and self.peekKind(1) == .keyword_if) return self.parseTopLevelIf(items);
+
+        // Jai-style `#system_library("name");` — a standalone linking
+        // directive, parsed before generic attributes so it isn't
+        // mistaken for an attribute attached to the next declaration.
+        if (self.check(.hash) and self.checkIdentAt(1, "system_library")) {
+            const hash = self.advance();
+            _ = self.advance(); // consume "system_library"
+            try items.append(self.allocator, .{ .system_library = try self.finishSystemLibrary(hash) });
+            return;
+        }
+
+        // `#assert(cond, "msg");` — a standalone compile-time assertion, like
+        // `#system_library` not an attribute of the next declaration.
+        if (self.check(.hash) and self.checkIdentAt(1, "assert")) {
+            const hash = self.advance();
+            _ = self.advance(); // consume "assert"
+            try items.append(self.allocator, .{ .static_assert = try self.finishStaticAssert(hash) });
+            return;
+        }
+
+        var attrs = try self.parseAttributes();
+        if (self.match(.hash)) {
+            try items.append(self.allocator, .{ .import = try self.parseImport(self.previous()) });
+            return;
+        }
+
+        const is_public = self.match(.keyword_pub);
+        if (is_public) {
+            const public_attrs = try self.parseAttributes();
+            if (public_attrs.len != 0) {
+                var combined: std.ArrayList(ast.Attribute) = .empty;
+                try combined.appendSlice(self.allocator, attrs);
+                try combined.appendSlice(self.allocator, public_attrs);
+                attrs = try combined.toOwnedSlice(self.allocator);
+            }
+        }
+        try items.append(self.allocator, try self.parseTopLevel(attrs, is_public));
+    }
+
+    /// `#if cond { declarations } else #if cond { … } else { … }` among the declarations: the
+    /// branch whose condition holds for the build being made (`build_target`) is kept, the others
+    /// are parsed and dropped. It is decided here, as the file is read, so the imports and
+    /// `#extern`s of a branch are what the rest of the compiler sees.
+    fn parseTopLevelIf(self: *Parser, items: *std.ArrayList(ast.Item)) ParseError!void {
+        _ = self.advance(); // `#`
+        _ = self.advance(); // `if`
+        var taken = false;
+        while (true) {
+            const cond_tok = self.peek();
+            const cond = try self.parseExpr(0);
+            const holds = try self.buildCondition(cond, cond_tok);
+            try self.parseTopLevelBranch(items, holds and !taken);
+            taken = taken or holds;
+            if (!self.match(.keyword_else)) return;
+            if (self.check(.hash) and self.peekKind(1) == .keyword_if) {
+                _ = self.advance();
+                _ = self.advance();
+                continue;
+            }
+            return self.parseTopLevelBranch(items, !taken);
+        }
+    }
+
+    /// The declarations of a branch of a top-level `#if`: into `items` when `keep`, else parsed
+    /// and dropped, with the lambdas and methods they lifted out.
+    fn parseTopLevelBranch(self: *Parser, items: *std.ArrayList(ast.Item), keep: bool) ParseError!void {
+        _ = try self.expect(.l_brace, "expected { after the condition of a top-level #if");
+        const lambdas = self.lifted_lambdas.items.len;
+        const methods = self.hoisted_methods.items.len;
+        var dropped: std.ArrayList(ast.Item) = .empty;
+        defer dropped.deinit(self.allocator);
+        while (!self.check(.r_brace) and !self.check(.eof)) try self.parseTopLevelItem(if (keep) items else &dropped);
+        _ = try self.expect(.r_brace, "expected } to close a branch of a top-level #if");
+        if (!keep) {
+            self.lifted_lambdas.shrinkRetainingCapacity(lambdas);
+            self.hoisted_methods.shrinkRetainingCapacity(methods);
+        }
+    }
+
+    /// The value of the condition of a top-level `#if`, for the build being made. It asks about
+    /// the build only, as nothing else is known while the file is read: `TARGET.os` and
+    /// `TARGET.arch` compared with a variant, `TARGET.debug`, `true` and `false`, with `!`, `&&`
+    /// and `||`.
+    fn buildCondition(self: *Parser, cond: ast.Expr, at: Token) ParseError!bool {
+        const t = build_target.current;
+        switch (cond.kind) {
+            .bool => |b| return b,
+            .unary => |u| if (u.op == .not) return !(try self.buildCondition(u.expr.*, at)),
+            .field => |f| if (isTargetField(f, "debug")) return t.debug,
+            .binary => |b| switch (b.op) {
+                .and_and => return (try self.buildCondition(b.left.*, at)) and (try self.buildCondition(b.right.*, at)),
+                .or_or => return (try self.buildCondition(b.left.*, at)) or (try self.buildCondition(b.right.*, at)),
+                .equal, .not_equal => {
+                    const sides = [2][2]ast.Expr{ .{ b.left.*, b.right.* }, .{ b.right.*, b.left.* } };
+                    for (sides) |side| {
+                        const f = switch (side[0].kind) {
+                            .field => |f| f,
+                            else => continue,
+                        };
+                        const variant = switch (side[1].kind) {
+                            .ident => |n| if (n.len > 1 and n[0] == '.') n[1..] else continue,
+                            else => continue,
+                        };
+                        const fact, const names = if (isTargetField(f, "os"))
+                            .{ t.osName(), &build_target.os_names }
+                        else if (isTargetField(f, "arch"))
+                            .{ t.archName(), &build_target.arch_names }
+                        else
+                            continue;
+                        for (names) |n| {
+                            if (std.mem.eql(u8, n, variant)) break;
+                        } else {
+                            const msg = std.fmt.allocPrint(self.allocator, "`TARGET.{s}` has no value `.{s}`", .{ f.name, variant }) catch return error.OutOfMemory;
+                            try self.errorAt(at, msg);
+                            return error.ParseFailed;
+                        }
+                        const same = std.mem.eql(u8, fact, variant);
+                        return if (b.op == .equal) same else !same;
+                    }
+                },
+                else => {},
+            },
+            else => {},
+        }
+        try self.errorAt(at, "a top-level `#if` asks about the build: `TARGET.os` or `TARGET.arch` compared with a variant (`==`, `!=`), `TARGET.debug`, `true` or `false`, joined with `!`, `&&` and `||`");
+        return error.ParseFailed;
     }
 
     fn parseTopLevel(self: *Parser, attrs: []const ast.Attribute, is_public: bool) ParseError!ast.Item {
@@ -2373,6 +2468,11 @@ pub const Parser = struct {
         try self.diagnostics.append(self.allocator, Diagnostic.err(message, spanFrom(tok, tok), self.file_name));
     }
 };
+
+/// `TARGET.<name>`.
+fn isTargetField(f: ast.FieldExpr, name: []const u8) bool {
+    return std.mem.eql(u8, f.name, name) and f.base.kind == .ident and std.mem.eql(u8, f.base.kind.ident, "TARGET");
+}
 
 /// Strips surrounding double-quotes from a string-literal token's raw text.
 fn trimQuotes(text: []const u8) []const u8 {
