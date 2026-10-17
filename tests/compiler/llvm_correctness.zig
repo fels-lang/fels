@@ -796,6 +796,73 @@ test "LLVM: -g gives each function a subprogram and each statement its line" {
     try std.testing.expect(std.mem.indexOf(u8, text, "!DISubprogram(name: \"__thunk_") == null);
 }
 
+test "LLVM: -g describes the parameters and locals with their types" {
+    if (comptime !fels.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\Point :: struct {
+        \\    x: i32,
+        \\    y: i32,
+        \\    next: ?*Point,
+        \\}
+        \\
+        \\Color :: enum { red, green }
+        \\
+        \\area :: fn(p: Point, scale: f64) -> f64 {
+        \\    d := (p.x * p.y) as f64;
+        \\    return d * scale;
+        \\}
+        \\
+        \\main :: fn() -> i32 {
+        \\    p: Point = .{ .x = 3, .y = 4, .next = null };
+        \\    c := Color.green;
+        \\    xs: [3]u8 = .{ 1, 2, 3 };
+        \\    s := xs[:];
+        \\    total := area(p, 2.0) as i32 + s.len as i32;
+        \\    if c == Color.green { total += 1; }
+        \\    return total - 28;
+        \\}
+    ;
+    var fe = try fels.compile(a, "dbg_vars.fels", src);
+    defer fe.deinit(a);
+    const module = try fels.lowerFrontend(a, fe);
+
+    var backend = fels.LlvmBackend.init(a, "dbg_vars");
+    defer backend.deinit();
+    backend.setTarget(.linux);
+    backend.setDebugInfo("dbg_vars.fels", "/work");
+    try backend.lower(module);
+    const text = try backend.getIrText(a);
+
+    inline for (.{
+        // parameters, with the place in the argument list
+        "!DILocalVariable(name: \"p\", arg: 1",
+        "!DILocalVariable(name: \"scale\", arg: 2",
+        // locals
+        "!DILocalVariable(name: \"d\"",
+        "!DILocalVariable(name: \"total\"",
+        "!DILocalVariable(name: \"xs\"",
+        // types
+        "!DIBasicType(name: \"i32\", size: 32, encoding: DW_ATE_signed)",
+        "!DIBasicType(name: \"f64\", size: 64, encoding: DW_ATE_float)",
+        "!DICompositeType(tag: DW_TAG_structure_type, name: \"Point\"",
+        "!DIDerivedType(tag: DW_TAG_member, name: \"y\"",
+        "!DICompositeType(tag: DW_TAG_enumeration_type, name: \"Color\"",
+        "!DIEnumerator(name: \"green\"",
+        "!DICompositeType(tag: DW_TAG_array_type",
+        "!DIDerivedType(tag: DW_TAG_member, name: \"len\"",
+    }) |expected| {
+        if (std.mem.indexOf(u8, text, expected) == null) {
+            std.debug.print("missing {s} in:\n{s}\n", .{ expected, text });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
 test "LLVM: bindings of one C symbol share its function but keep their own signatures" {
     if (comptime !fels.llvm_enabled) return;
     if (comptime @import("builtin").os.tag != .windows) return error.SkipZigTest; // the Windows runtime's `CloseHandle`

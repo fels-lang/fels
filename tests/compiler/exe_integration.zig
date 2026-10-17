@@ -160,8 +160,13 @@ test "exe: -g writes a PDB beside the program, with its functions and their line
     const lines = std.process.run(a, io, .{ .argv = &.{ pdbutil, "dump", "-l", ".zig-cache/dbg_pdb.pdb" } }) catch return error.SkipZigTest;
     try std.testing.expect(std.mem.indexOf(u8, lines.stdout, "dbg_pdb.fels") != null);
     const symbols = std.process.run(a, io, .{ .argv = &.{ pdbutil, "dump", "-symbols", ".zig-cache/dbg_pdb.pdb" } }) catch return error.SkipZigTest;
-    try std.testing.expect(std.mem.indexOf(u8, symbols.stdout, "`first`") != null);
-    try std.testing.expect(std.mem.indexOf(u8, symbols.stdout, "`main`") != null);
+    // the functions, a parameter and a local
+    inline for (.{ "`first`", "`main`", "S_LOCAL [size = 16] `xs`", "`v`" }) |part| {
+        if (std.mem.indexOf(u8, symbols.stdout, part) == null) {
+            std.debug.print("missing {s} in:\n{s}\n", .{ part, symbols.stdout });
+            return error.TestUnexpectedResult;
+        }
+    }
 }
 
 test "exe: -g puts DWARF sections with the source file into a Linux program" {
