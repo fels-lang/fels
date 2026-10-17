@@ -387,7 +387,7 @@ What the build system needs, against what already exists:
 | Capabilities / `*Caps` sandbox + VM capability table | ⏳ slices 1–2 done — comptime FFI is gated in `src/vm/engine.zig`, and the grant is per-library with conservative narrowing; the `*Caps` surface in `build.fels` is open |
 | `add_quote` typed codegen / `#provided` / `define` injection | later (extends `#quote`/`#insert`) |
 | Layer 2 (`workspace`/`Options`) + Layer 3 (intercept) surface | later |
-| Cross-compile targets | later (needs Linux/macOS codegen + entry) |
+| Cross-compile targets | ✅ Linux x86-64 (`a.target(.linux)`, `.linux_gnu`); macOS later |
 
 **Execution mechanism (as built):** instead of reading the `Build` struct back
 out of VM memory, the builder methods call `__build_*` compiler intrinsics that
