@@ -29,6 +29,17 @@ the major version is `0`, any minor bump may break source compatibility.
   done in `unsafe`; writing one is not. A literal sets one field and zeroes the rest; a static
   union starts as `.{}`. bindgen turns a C union into one (a union with a bitfield stays a byte
   blob), and `core::type_info` reports one as `.union_`.
+- **Bit fields.** A `#packed` struct with a sub-byte field (`u1`–`u7`, `i1`–`i7`) is laid out
+  bit by bit: `PixelFormat { red: u5, green: u6, blue: u5 }` is two bytes, and a hardware register
+  or a binary header with bit fields has a spelling. Each integer takes its width from where the
+  field before it ended; any other field starts at a whole byte, and the bits missing before one
+  are an error that names the filler to write. Reads and writes keep the neighbouring bits. A
+  `#packed` struct without sub-byte fields is unchanged.
+- **A struct local may hold borrowed data**, and is then borrowed itself: `p.src = src` works as
+  `.{ src, 0 }` did, and `borrow Parser` passes such a struct by value. A store through a pointer
+  or into a global is still refused.
+- **`core::sizeof(Box(u64))`**, and `align_of`, `offset_of` and `type_name`, take a generic
+  type's instance; it was "`Box` is not a function".
 - **`.variant(payload)` where the type is known**, as `.variant` is: `s: Shape = .circle(2.0)`,
   `return .status(404);`, `.{ .circle(1.0), .none }`. It was "unknown function `.circle`".
 - **An enum value or an error with a payload is static data**: a global, a table of them, a
@@ -70,6 +81,10 @@ the major version is `0`, any minor bump may break source compatibility.
   warning.
 - **`std.list` is gone**; `std.vec` is the growable array.
 - **`union` is a keyword.**
+- **A set names its errors without the dot, inline as declared**: `-> T ! { a, b }`, as
+  `errors { a, b }`. The dotted spelling (`! { .a, .b }`, `errors { .a }`) warns.
+- **A `#packed` struct with sub-byte fields changes size** (see Bit fields above), and
+  `core::has_padding(u3)` is true: the byte a `u3` is stored in has bits no value sets.
 
 - **The runtime safety checks stay in release builds.** Index bounds, null pointers, integer
   overflow, division by zero and shift amounts were checked only at `-O0`, so every optimized
@@ -110,6 +125,10 @@ the major version is `0`, any minor bump may break source compatibility.
   constraint's own module was unknown at every use from another module; and a type that failed
   a constraint was reported at the declaration's offset, shown on whatever line of the caller's
   file had it. It is reported at the call.
+- **Writing a scalar global in a `#run`** stopped with "the comptime VM cannot run `f`"; it says
+  that compile-time code does not modify a global, as writing a field of one did.
+- **A misspelled variant in an array literal or a typed global's value** (`.{ .none, .squar }`)
+  was caught late or not at all; it is "enum `Shape` has no variant `.squar`".
 - **An interface implemented on an alias** (`P as Show { … }` for `P :: Point;`) was registered
   for the name `P`, so `Point` did not implement it. It is an error that names the type.
 
