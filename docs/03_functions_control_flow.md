@@ -2,7 +2,7 @@
 
 ## Function Declarations
 
-Functions are declared with `::` and `fn`:
+You declare a function with `::` and `fn`:
 
 ```fels
 // Named function
@@ -27,10 +27,12 @@ process :: fn(data: []const u8) -> void {
 ```
 
 > [!NOTE]
-> Functions without an explicit return type implicitly return `void`. Writing `-> void` is optional but permitted for clarity.
+> A function without an explicit return type returns `void` implicitly. You may still write
+> `-> void` if you find it clearer, but you don't have to.
 
-A constant whose value names a function is that function under another name, as `X :: Name;`
-is the type it names: calling it calls the function directly, and its value is the function's.
+A constant whose value names a function is that function under another name, in the same way
+that `X :: Name;` is the type it names. Calling the constant calls the function directly, and
+its value is the function's.
 
 ```fels
 seven :: fn() -> i32 { return 7; }
@@ -75,7 +77,8 @@ pub doubled :: fn(self: i32) -> i32 {
 
 ## Self and Methods
 
-Any top-level function whose first parameter is named `self` can be called using **dot-call syntax**:
+Any top-level function whose first parameter is named `self` can be called with **dot-call
+syntax**:
 
 ```fels
 // In module point.fels:
@@ -86,9 +89,9 @@ p: Point = .{ 3, 4 };
 d := p.distance();      // auto-referenced to `&p`; same as distance(&p)
 ```
 
-A `*Self` method auto-references its receiver, so you call it with a plain value —
-no explicit `&`. It works on a **temporary** too: the value is spilled to a stack slot and pointed
-at. Methods chain on returned values:
+A `*Self` method auto-references its receiver, so you call it on a plain value, without an
+explicit `&`. It works on a **temporary** too: the value is spilled to a stack slot, and the
+method gets a pointer to it. Methods also chain on returned values:
 
 ```fels
 n := make_point(3, 4).distance();        // call on a temporary
@@ -96,12 +99,13 @@ q := origin().translate(1, 2).scaled(3); // chain method calls
 ```
 
 > [!NOTE]
-> A method on a temporary receiver sees a copy, so any mutation it makes is
-> discarded with the temporary — chaining is for transforming/reading.
+> A method on a temporary receiver sees a copy, so any change it makes is thrown away
+> together with the temporary. Chaining is for transforming and reading.
 
 ## Generic Functions
 
-Fels uses the `$` prefix to introduce type parameters. The first occurrence of `$T` binds the type; subsequent uses of `T` refer to the bound type.
+Fels uses the `$` prefix to introduce type parameters. The first occurrence of `$T` binds the
+type, and later uses of `T` refer to that bound type.
 
 ```fels
 // Type parameter with $
@@ -125,27 +129,29 @@ print_to :: fn($W: Writer, writer: *W, data: []const u8) -> usize ! IoError {
 }
 ```
 
-A type parameter declared in the list (`$T: type`, or `$W: Writer` with a constraint) is
-an argument the caller may pass or leave to inference. A call passes the type arguments
-before the values: the `$T: type` ones, or all of them, or none. Each one not passed is
-inferred from the values (`max(10, 20)` makes `T` an `i32`); one that cannot be, like the
-`T` of `make :: fn($T: type) -> T`, has to be passed (`make(i64)`).
+A type parameter declared in the list (`$T: type`, or `$W: Writer` with a constraint) is an
+argument that the caller may pass or leave to inference. A call passes its type arguments
+before the values, and it can pass the `$T: type` ones, all of them, or none. Each one you
+don't pass is inferred from the values, so `max(10, 20)` makes `T` an `i32`. One that cannot
+be inferred has to be passed, like the `T` of `make :: fn($T: type) -> T`, which you call as
+`make(i64)`.
 
-A pointer type is a type argument like any other — `arena.new_slice(*Node, n)`,
-`core::sizeof(**Node)`. Where a type is expected (the first argument of `core::sizeof`,
-`core::ptr_from_int` and the other builtins that take one, and an explicit `$T: type` argument of
-a generic function) `*Node` is that pointer type; in any other argument `*p` is a dereference,
-so `f(*p)` loads through the pointer `p`. (`core::sizeof(*p)` with a variable `p` is the size
-of what `p` points to.)
+A pointer type is a type argument like any other, as in `arena.new_slice(*Node, n)` or
+`core::sizeof(**Node)`. Where a type is expected, `*Node` is that pointer type. That is the
+case for the first argument of `core::sizeof`, `core::ptr_from_int` and the other builtins
+that take one, and for an explicit `$T: type` argument of a generic function. In any other
+argument `*p` is a dereference, so `f(*p)` loads through the pointer `p`.
+(`core::sizeof(*p)` with a variable `p` is the size of what `p` points to.)
 
 > [!NOTE]
-> Generics are **monomorphized** — each unique type argument produces a specialized version at compile time. There is no runtime dispatch overhead.
+> Generics are **monomorphized**: each unique type argument produces a specialized version
+> at compile time, so there is no runtime dispatch overhead.
 
 ## Lambdas (Anonymous Functions)
 
-An expression of the form `fn(params) -> Ret { body }` is a **lambda** — an
-anonymous function you can pass directly to a higher-order function or store in
-a variable. The return type is optional (defaults to `void`).
+An expression of the form `fn(params) -> Ret { body }` is a **lambda**. It is an anonymous
+function that you can pass directly to a higher-order function or store in a variable. The
+return type is optional and defaults to `void`.
 
 ```fels
 // As an argument — no need to declare a named predicate.
@@ -160,8 +166,8 @@ sq := square;   // square is a top-level fn
 z := sq(8);
 ```
 
-Functions are first-class values: a function name (or a lambda) has a
-**function-pointer type** `fn(Params) -> Ret`, which you can name explicitly:
+Functions are first-class values. A function name (or a lambda) has a **function-pointer
+type** `fn(Params) -> Ret`, and you can write that type out explicitly:
 
 ```fels
 op: fn(i32, i32) -> i32 = add;
@@ -170,8 +176,8 @@ r := op(2, 3);
 
 ### Capturing closures
 
-A lambda may reference variables from the enclosing scope; they are **captured by
-value** when the closure is created:
+A lambda may use variables from the enclosing scope. They are **captured by value** at the
+moment the closure is created:
 
 ```fels
 mul :: fn(f: fn(i32) -> i32, v: i32) -> i32 { return f(v); }
@@ -183,16 +189,16 @@ main :: fn() -> i32 {
 }
 ```
 
-A function value is a **fat closure** `{ fn, env }`: a function pointer plus a
-pointer to its captured environment. A plain (non-capturing) function or lambda
-has an empty environment, so it costs no more than a bare pointer; a capturing
-lambda copies the captured values into a small environment when it is created.
+A function value is a **fat closure** `{ fn, env }`: a function pointer plus a pointer to
+its captured environment. A plain (non-capturing) function or lambda has an empty
+environment, so it costs no more than a bare pointer. A capturing lambda copies the captured
+values into a small environment when it is created.
 
 **Where the environment lives** follows fels's region model:
 
 - Inside a `zone`, a capturing closure's environment is allocated on the **zone's
-  Arena**, so the closure is valid for the whole zone — it can be stored and
-  handed around freely within that scope:
+  Arena**. The closure is then valid for the whole zone, and you can store it and hand it
+  around freely within that scope:
 
   ```fels
   zone scratch: Arena {
@@ -202,9 +208,9 @@ lambda copies the captured values into a small environment when it is created.
   }
   ```
 
-- Given an `*Arena` parameter, the environment is allocated in that
-  **caller-supplied region** — so a factory can *return* an escaping closure that
-  stays valid for as long as the caller's arena (region passing):
+- When there is an `*Arena` parameter, the environment is allocated in that
+  **caller-supplied region**. This is region passing, and it lets a factory *return* an
+  escaping closure that stays valid for as long as the caller's arena:
 
   ```fels
   make_adder :: fn(into: *Arena, n: i32) -> fn(i32) -> i32 {
@@ -217,37 +223,36 @@ lambda copies the captured values into a small environment when it is created.
   }
   ```
 
-- Otherwise, the environment lives on the **stack frame** that created it. Such a
-  closure is safe to *call* and to *pass down* to a higher-order function (the
-  common case), but cannot outlive that frame.
+- Otherwise, the environment lives on the **stack frame** that created it. Such a closure
+  is safe to *call* and to *pass down* to a higher-order function, which is the common
+  case, but it cannot outlive that frame.
 
 > [!IMPORTANT]
-> **Returning a capturing closure requires an `*Arena` parameter** (so the
-> environment lives in the caller's region). Without one it is a compile error —
-> the environment belongs to a stack frame or a zone that ends with the function,
-> so it would dangle:
+> **Returning a capturing closure requires an `*Arena` parameter**, so that the environment
+> lives in the caller's region. Without one it is a compile error. The environment belongs
+> to a stack frame or a zone that ends with the function, so it would dangle:
 > ```
 > error: a capturing closure cannot be returned: its captured environment lives
 > in this function and would be left dangling (take an `*Arena` parameter so the
 > closure's environment is allocated in the caller's region)
 > ```
-> This applies whether you return the closure directly or via a local. Returning
-> a *non*-capturing function value is always fine (it's just a pointer).
+> This applies whether you return the closure directly or through a local. Returning a
+> *non*-capturing function value is always fine, because it is only a pointer.
 
 > [!NOTE]
-> Lambdas are **lifted** to ordinary top-level functions at compile time. A
-> non-capturing lambda is just a named function and a pointer.
+> Lambdas are **lifted** to ordinary top-level functions at compile time. A non-capturing
+> lambda becomes a named function and a pointer, and nothing more.
 
 > [!NOTE]
-> Function values also work at **compile time**: a higher-order call evaluated in
-> `#run` (or any comptime context) folds to a constant — both non-capturing and
-> capturing closures. One edge: an inline lambda used *directly* as an argument in
-> a top-level constant initializer isn't supported yet — bind it to a local first
+> Function values also work at **compile time**. A higher-order call evaluated in `#run` (or
+> any comptime context) folds to a constant, for non-capturing and capturing closures alike.
+> One edge case: an inline lambda used *directly* as an argument in a top-level constant
+> initializer isn't supported yet. Bind it to a local first
 > (`f := fn(x){ … }; K :: #run g(f);`) or use a named function.
 
 ## Fallible Functions
 
-Functions that can fail use `!` after the return type to declare an error channel:
+A function that can fail declares an error channel with `!` after the return type:
 
 ```fels
 // Named error type
@@ -261,11 +266,12 @@ combine :: fn() -> i32 ! { ... }
 ```
 
 > [!TIP]
-> See the [Error Handling](04_error_handling.md) chapter for full details on error propagation, `catch`, and the `?` operator.
+> See the [Error Handling](04_error_handling.md) chapter for full details on error
+> propagation, `catch`, and the `?` operator.
 
 ## External Functions
 
-FFI declarations for calling C or system functions use the `#extern` attribute:
+To call C or system functions, you write an FFI declaration with the `#extern` attribute:
 
 ```fels
 #extern("kernel32", "GetStdHandle")
@@ -282,11 +288,12 @@ WriteFile :: fn(
 ```
 
 > [!WARNING]
-> External function calls are inherently unsafe. The compiler cannot verify the correctness of the foreign function's signature or behavior.
+> Calls to external functions are inherently unsafe, because the compiler cannot verify that
+> the foreign function's signature or behavior is correct.
 
 ## Function Attributes
 
-Attributes are placed before the function declaration to modify compilation behavior:
+Attributes go before the function declaration and change how it is compiled:
 
 ```fels
 #inline
@@ -341,10 +348,10 @@ if try_parse(input) |value| {
 }
 ```
 
-The name goes after the optional, as `while opt |x|` and `match … |p|` bind it. (`if x :=
-opt { … }`, the older spelling, still compiles, with a warning.)
+The name goes after the optional, the same way `while opt |x|` and `match … |p|` bind it.
+The older spelling `if x := opt { … }` still compiles, but with a warning.
 
-`else if` chains are supported and desugar to a nested `if` inside the `else`:
+You can chain `else if`, and each one desugars to a nested `if` inside the `else`:
 
 ```fels
 if x > 0 {
@@ -358,8 +365,8 @@ if x > 0 {
 
 #### If as an expression
 
-In value position, `if` produces a value. Each branch is a single expression in
-braces, and an `else` is mandatory (an expression must always yield something):
+In value position, `if` produces a value. Each branch is a single expression in braces, and
+the `else` is mandatory, because an expression must always yield something:
 
 ```fels
 sign := if n > 0 { 1 } else if n < 0 { -1 } else { 0 };
@@ -369,10 +376,10 @@ mode: u32 = if enabled { 1u32 } else { 0u32 };   // branch literal takes the typ
 return base + if hit { bonus } else { 0 };        // anywhere an expression fits
 ```
 
-The two branches must have compatible types, and the expected type flows into the
-branches — so an untyped branch value (`.{ … }`, a bare `.variant`) is typed from
-context, exactly like a `match` expression. (Statement-position `if { … }` is
-unchanged; the expression form only applies where a value is required.)
+The two branches must have compatible types. The expected type flows into the branches, so
+an untyped branch value (`.{ … }`, a bare `.variant`) is typed from context, exactly as in a
+`match` expression. (Statement-position `if { … }` is unchanged. The expression form only
+applies where a value is required.)
 
 ### While Loop
 
@@ -384,7 +391,7 @@ while i < 10 {
 }
 ```
 
-An infinite loop uses `while true`:
+For an infinite loop, write `while true`:
 
 ```fels
 while true {
@@ -393,9 +400,9 @@ while true {
 }
 ```
 
-**Optional-unwrap loop** — `while opt |x|` re-evaluates `opt` each iteration,
-binds the unwrapped payload to `x`, and exits when it is null. This is the clean
-way to walk a linked structure or drain an iterator:
+**Optional-unwrap loop**: `while opt |x|` re-evaluates `opt` on each iteration, binds the
+unwrapped payload to `x`, and exits when `opt` is null. It is the clean way to walk a linked
+structure or drain an iterator:
 
 ```fels
 cur: ?*Node = head;
@@ -405,8 +412,8 @@ while cur |n| {
 }
 ```
 
-The condition may be any optional; the `|x|` binding is optional itself
-(`while opt { … }` loops while `opt` is non-null without binding the payload).
+The condition may be any optional, and the `|x|` binding is itself optional:
+`while opt { … }` loops while `opt` is non-null without binding the payload.
 
 ### For Range Loop
 
@@ -427,10 +434,10 @@ for i in 0..=10 {
 | `0..10`    | Exclusive end    | 0, 1, 2, …, 9        |
 | `0..=10`   | Inclusive end     | 0, 1, 2, …, 10       |
 
-The index has the type of the bounds. A literal bound takes the other one's type, so
-`for i in 0..xs.len` counts in `usize` and `i` indexes `xs` as it is. Between two literals,
-as in `0..10`, the index has the type its uses ask for, like a local inferred from a literal
-(see [Types](02_types.md)), and is an `i32` when none does.
+The index has the type of the bounds. A literal bound takes the type of the other bound, so
+`for i in 0..xs.len` counts in `usize` and `i` indexes `xs` as it is. When both bounds are
+literals, as in `0..10`, the index takes the type its uses ask for, like a local inferred
+from a literal (see [Types](02_types.md)). When no use asks for one, it is an `i32`.
 
 ### For Slice Loop
 
@@ -454,14 +461,15 @@ for &val in data[:] {
 ```
 
 > [!TIP]
-> Use `data[:]` to create a slice from a fixed-size array. See the [Type System](02_types.md) chapter for more on slices and arrays.
+> Use `data[:]` to create a slice from a fixed-size array. See the [Type System](02_types.md)
+> chapter for more on slices and arrays.
 
 ### For Iterators
 
-`for x in it` also works over any value whose type has a method
-`next(self: *Self) -> ?T`. Each iteration calls `next`; the loop binds the
-unwrapped payload and stops when `next` returns `null` — exactly like
-`while it.next() |x| { … }`, but without exposing the loop plumbing.
+`for x in it` also works over any value whose type has a method `next(self: *Self) -> ?T`.
+Each iteration calls `next` and binds the unwrapped payload, and the loop stops when `next`
+returns `null`. That is exactly what `while it.next() |x| { … }` does, but the loop plumbing
+stays out of sight.
 
 ```fels
 Range :: struct { cur: i32, end: i32 }
@@ -482,15 +490,15 @@ main :: fn() -> i32 {
 }
 ```
 
-The index form `for x, i in it` is available too — `i` counts iterations from
-`0`. Iterating by reference (`for &x in it`) is not allowed: a `next` method
-yields values, not addresses.
+The index form `for x, i in it` is available too, and `i` counts iterations from `0`.
+Iterating by reference (`for &x in it`) is not allowed, because a `next` method yields
+values, not addresses.
 
 ### Match
 
-Pattern matching on enums and integers. An arm is `pattern => body,`: in a match
-statement the body is a block, in a match expression a value. The comma ends every arm
-(after the last one it may be left out):
+`match` does pattern matching on enums and integers. An arm is `pattern => body,`. In a
+match statement the body is a block, and in a match expression it is a value. The comma ends
+every arm, though you may leave it out after the last one:
 
 ```fels
 // Enum matching
@@ -555,37 +563,35 @@ return match code { 0 => 200, 1, 2, 3 => 400, else => 500 };
 ```
 
 > [!IMPORTANT]
-> Match on an enum is **exhaustiveness-checked**: every variant must be handled,
-> or an `else` arm must be present, otherwise the compiler errors
-> (*"non-exhaustive match: variant `.west` is not handled"*). A **total** match
-> (one that covers every variant) needs no `else`, and because it is provably
-> exhaustive it also **counts as returning on all paths** — so a function whose
-> body is just a total match over `return` arms type-checks without a trailing
-> `return`. A **duplicate** arm for the same variant is rejected. Integer matches
-> are unbounded, so they require an `else` to be exhaustive.
+> A match on an enum is **exhaustiveness-checked**. Every variant must be handled, or an
+> `else` arm must be present. Otherwise the compiler reports an error
+> (*"non-exhaustive match: variant `.west` is not handled"*). A **total** match (one that
+> covers every variant) needs no `else`. Because it is provably exhaustive, it also **counts
+> as returning on all paths**, so a function whose body is only a total match over `return`
+> arms type-checks without a trailing `return`. A **duplicate** arm for the same variant is
+> rejected. Integer matches are unbounded, so they require an `else` to be exhaustive.
 
 > [!IMPORTANT]
-> **Match as an expression**: in value position each arm is `pattern => value`
-> (an expression, comma-separated). All arms must unify to one type, and the
-> match must be **exhaustive** (it produces a value on every path) — a
-> non-exhaustive value-match is an error. Untyped arm values (`.{ … }`, bare
-> `.variant` enum literals) take their type from context (`c: C = match …`, a
-> `return`, a call argument).
+> **Match as an expression**: in value position each arm is `pattern => value`, where the
+> value is an expression and the arms are separated by commas. All arms must unify to one
+> type, and the match must be **exhaustive**, so that it produces a value on every path. A
+> non-exhaustive value-match is an error. Untyped arm values (`.{ … }`, bare `.variant` enum
+> literals) take their type from context (`c: C = match …`, a `return`, a call argument).
 
 > [!NOTE]
-> **Patterns**: enum variants (`.name`, optionally with a `|payload|` capture),
-> integer values (single or grouped `1, 2, 3`, negative `-1`, or characters `'a'`),
-> integer **ranges** (`1..5` exclusive, `'a'..='z'` inclusive), values and ranges
-> mixed in one arm (`'0'..='9', '_'`), **string** literals (single or grouped), a
-> bare **name** (binds the subject — a catch-all), and `else`. Any arm may carry a
-> **guard** `if <bool>` (evaluated after the binding; a failing guard falls
-> through to the next arm). A guarded arm does not count toward exhaustiveness.
-> String compares are length-gated, so a shorter subject is never read out of
-> bounds.
+> **Patterns**: an arm can match enum variants (`.name`, optionally with a `|payload|`
+> capture) and integer values (single or grouped `1, 2, 3`, negative `-1`, or characters
+> `'a'`). It can match integer **ranges** (`1..5` exclusive, `'a'..='z'` inclusive), and
+> values and ranges mixed in one arm (`'0'..='9', '_'`). It can also match **string**
+> literals (single or grouped), a bare **name** (which binds the subject as a catch-all), or
+> be `else`. Any arm may carry a **guard** `if <bool>`. The guard is evaluated after the
+> binding, and a failing guard falls through to the next arm. A guarded arm does not count
+> toward exhaustiveness. String compares are length-gated, so a shorter subject is never
+> read out of bounds.
 
 ### Break and Continue
 
-`break` exits the innermost loop. `continue` skips to the next iteration:
+`break` exits the innermost loop, and `continue` skips to the next iteration:
 
 ```fels
 while true {
@@ -597,7 +603,8 @@ while true {
 
 ### Defer
 
-`defer` schedules code to execute when the current scope exits. This guarantees cleanup regardless of how the scope is exited (normal return, error, break, etc.):
+`defer` schedules code to run when the current scope exits. That guarantees the cleanup no
+matter how the scope is exited (normal return, error, break, etc.):
 
 ```fels
 // Always defer
@@ -614,7 +621,8 @@ defer.err { rollback(); }
 ```
 
 > [!NOTE]
-> Multiple defers execute in **reverse order** (LIFO). The last defer registered runs first.
+> Multiple defers execute in **reverse order** (LIFO), so the last defer registered runs
+> first.
 
 ```fels
 // Example: LIFO order
@@ -627,7 +635,8 @@ defer { println("second registered, first to run"); }
 
 ### Unsafe Blocks
 
-`unsafe` blocks disable certain safety checks. They are required for raw pointer operations, inline assembly, and other low-level operations:
+An `unsafe` block disables certain safety checks. You need one for raw pointer operations,
+inline assembly and other low-level operations:
 
 ```fels
 unsafe {
@@ -639,16 +648,18 @@ unsafe {
 val := unsafe core::unaligned_read(u64, &x);
 ```
 
-As a statement, `unsafe` must be followed by a block: `unsafe (p as *u8);` on a
-line of its own is an error. The expression form is for places where the value
-is used, such as an initializer, an argument or an assignment.
+As a statement, `unsafe` must be followed by a block, so `unsafe (p as *u8);` on a line of
+its own is an error. The expression form is for places where the value is used, such as an
+initializer, an argument or an assignment.
 
 > [!CAUTION]
-> Unsafe code bypasses the compiler's safety guarantees. Use sparingly and audit carefully. Incorrect unsafe code can cause undefined behavior, memory corruption, or security vulnerabilities.
+> Unsafe code bypasses the compiler's safety guarantees, so use it sparingly and audit it
+> carefully. Incorrect unsafe code can cause undefined behavior, memory corruption, or
+> security vulnerabilities.
 
 ### Compile-time Directives
 
-Fels supports compile-time evaluation through special directives:
+Fels supports compile-time evaluation through a few special directives:
 
 ```fels
 // Compile-time if
@@ -672,13 +683,14 @@ size := #run compute_size();
 | `#if`     | Conditional compilation based on compile-time constants        |
 | `#run`    | Execute code or expressions at compile time                    |
 
-`#if` takes an optional `else { }`, and `else #if cond { }` for the next test of a
-chain. In a function body it chooses code; at the top level it chooses declarations, by
-the platform the program is built for (see [docs/08](08_attributes_builtins.md)).
+`#if` takes an optional `else { }`, and `else #if cond { }` for the next test of a chain. In
+a function body it chooses code. At the top level it chooses declarations, by the platform
+the program is built for (see [docs/08](08_attributes_builtins.md)).
 
 ### Zone Blocks
 
-Zone blocks provide scoped memory management. See the [Memory & Zones](05_memory_zones.md) chapter for full details:
+Zone blocks give you scoped memory management. The [Memory & Zones](05_memory_zones.md)
+chapter has the full details:
 
 ```fels
 zone scratch: Arena {
