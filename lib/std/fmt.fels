@@ -9,7 +9,7 @@
 // takes another interface pointer trips a compiler bug (bad bitcast / segfault), so
 // implement Writer directly on your type instead.
 
-#import std.io;
+#import std.io.{ Writer, IoError, null_writer };
 
 // Byte-slice padding
 //
