@@ -171,13 +171,11 @@ pub parse_guid :: fn(text: []const u8) -> Guid ! GuidError {
 #assert(core::offset_of(Guid, "data3") == 6);
 #assert(core::offset_of(Guid, "data4") == 8);
 
-// Well-known interface ids. They are ordinary globals: pass their address (`&IID_IUnknown`).
-// Treat them as constants - the language has no read-only aggregate yet, so nothing stops
-// a write, and a changed IID makes every later query_interface fail.
-pub IID_IUnknown: Guid = .{ 0x00000000, 0x0000, 0x0000, .{ 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };   // {00000000-0000-0000-C000-000000000046}
-pub IID_IInspectable: Guid = .{ 0xAF86E2E0, 0xB12D, 0x4C6A, .{ 0x9C, 0x5A, 0xD7, 0xAA, 0x65, 0x10, 0x1E, 0x90 } };   // {AF86E2E0-B12D-4C6A-9C5A-D7AA65101E90}
-pub IID_IAgileObject: Guid = .{ 0x94EA2B94, 0xE9CC, 0x49E0, .{ 0xC0, 0xFF, 0xEE, 0x64, 0xCA, 0x8F, 0x5B, 0x90 } };   // {94EA2B94-E9CC-49E0-C0FF-EE64CA8F5B90}
-pub IID_IActivationFactory: Guid = .{ 0x00000035, 0x0000, 0x0000, .{ 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };   // {00000035-0000-0000-C000-000000000046}
+// Well-known interface ids, as constants: pass their address (`&IID_IUnknown`, a `*const Guid`).
+pub IID_IUnknown : Guid : .{ 0x00000000, 0x0000, 0x0000, .{ 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };   // {00000000-0000-0000-C000-000000000046}
+pub IID_IInspectable : Guid : .{ 0xAF86E2E0, 0xB12D, 0x4C6A, .{ 0x9C, 0x5A, 0xD7, 0xAA, 0x65, 0x10, 0x1E, 0x90 } };   // {AF86E2E0-B12D-4C6A-9C5A-D7AA65101E90}
+pub IID_IAgileObject : Guid : .{ 0x94EA2B94, 0xE9CC, 0x49E0, .{ 0xC0, 0xFF, 0xEE, 0x64, 0xCA, 0x8F, 0x5B, 0x90 } };   // {94EA2B94-E9CC-49E0-C0FF-EE64CA8F5B90}
+pub IID_IActivationFactory : Guid : .{ 0x00000035, 0x0000, 0x0000, .{ 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };   // {00000035-0000-0000-C000-000000000046}
 
 // HRESULT ────────────────────────────────────────────────────────────────────
 // A signed 32-bit result code. Bit 31 is the severity (set = failure), bits 16-26 the
