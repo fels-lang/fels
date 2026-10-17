@@ -194,6 +194,19 @@ describe_kind :: fn(e: ParseError) -> []const u8 {
 }
 ```
 
+`ParseError.buffer_full` and `ParseError.overflow(n)` build one, as `Shape.circle(r)` builds
+an enum value. `fail e;` raises an error value: one a `catch` bound, a parameter, any error
+the function's set takes (the rule of `?`). Within one set it goes on whole, payload and all:
+
+```fels
+retry :: fn(text: []const u8) -> i32 ! ParseError {
+    return parse(text) catch err {
+        if err == .buffer_full { yield parse_slowly(text)?; }
+        fail err;                // anything else goes to the caller as it is
+    };
+}
+```
+
 ### Inspecting the error variant
 
 `err == .variant` and `err != .variant` ask whether an error is that variant, wherever the error
@@ -383,6 +396,8 @@ message.
 | `-> T ! E` | Function returns `T` on success, `E` on error |
 | `fail .variant` | Return an error |
 | `fail .variant(payload)` | Return an error with payload |
+| `fail err;` | Return an error value (a caught one, a parameter) |
+| `ParseError.overflow(n)` | An error value, built as an enum value is |
 | `expr?` | Propagate error, unwrap success |
 | `expr catch err { ... }` | Handle error locally |
 | `yield value;` | End a `catch` handler with the value of the expression |
