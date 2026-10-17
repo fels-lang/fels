@@ -208,6 +208,9 @@ fn defineOne(cg: *ModuleCg, func: ir.IrFunction) !void {
         };
     }
 
+    // Debug info: the parameters and locals, now that the slots exist.
+    if (cg.debug) |*d| d.declareVariables(cg, func, llvm_fn, first, &locals, &local_tys);
+
     var fncg = FnCg{
         .cg = cg,
         .func = func,
