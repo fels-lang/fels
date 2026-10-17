@@ -53,6 +53,8 @@ pub const ModuleCg = struct {
     /// Field name/type lists for each named struct.  Used for field-index lookup.
     struct_fields: std.StringHashMap([]StructField),
     struct_alignments: std.StringHashMap(u32),
+    /// The structs that are `union`s.
+    struct_unions: std.StringHashMap(void),
     /// Declared LLVM functions, keyed by mangled/extern name.
     fn_decls: std.StringHashMap(llvm.LLVMValueRef),
     /// Own LLVM function type of a declaration that shares another's LLVM function
@@ -155,6 +157,7 @@ pub const ModuleCg = struct {
             .struct_types = std.StringHashMap(llvm.LLVMTypeRef).init(allocator),
             .struct_fields = std.StringHashMap([]StructField).init(allocator),
             .struct_alignments = std.StringHashMap(u32).init(allocator),
+            .struct_unions = std.StringHashMap(void).init(allocator),
             .fn_decls = std.StringHashMap(llvm.LLVMValueRef).init(allocator),
             .fn_types = std.StringHashMap(llvm.LLVMTypeRef).init(allocator),
             .fn_abi = std.StringHashMap(abi.FnAbi).init(allocator),
@@ -186,6 +189,7 @@ pub const ModuleCg = struct {
 
         self.struct_types.deinit();
         self.struct_alignments.deinit();
+        self.struct_unions.deinit();
         self.fn_decls.deinit();
         self.fn_types.deinit();
         self.closure_thunks.deinit();
@@ -246,6 +250,11 @@ pub const ModuleCg = struct {
 
     /// Find the zero-based index of a named field in a struct.
     /// Returns null if the struct or field is unknown.
+    /// Whether the struct `name` is a `union` (its fields all at offset 0).
+    pub fn isUnion(self: *ModuleCg, name: []const u8) bool {
+        return self.struct_unions.contains(name);
+    }
+
     pub fn fieldIndex(self: *ModuleCg, struct_name: []const u8, field_name: []const u8) ?u32 {
         const fields = self.struct_fields.get(struct_name) orelse return null;
         for (fields, 0..) |f, i| {

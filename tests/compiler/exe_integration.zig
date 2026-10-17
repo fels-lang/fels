@@ -4270,6 +4270,59 @@ test "exe: a short positional literal zeroes the fields past it, and a value of 
     , "exe_positional_wrong_type"));
 }
 
+test "exe: a union's fields share its bytes" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Every field at offset 0, the size of the largest: an integer read as its halves, a float
+    // as its bits, a union inside a struct and through a pointer, a literal that sets one field
+    // and zeroes the rest, a zero global.
+    const src =
+        \\Halves :: struct { low: u32, high: u32 }
+        \\Large :: union { quad: u64, parts: Halves }
+        \\Bits :: union { f: f32, u: u32 }
+        \\Mixed :: union { b: u8, w: u64, h: [3]u16 }
+        \\Holder :: struct { tag: u8, v: Large }
+        \\G: Large = .{};
+        \\bump :: fn(l: *Large) { l.quad = unsafe (l.quad) + 1; }
+        \\main :: fn() -> i32 {
+        \\    l: Large = .{ 0x0000000500000007 };
+        \\    lo := unsafe (l.parts.low);
+        \\    hi := unsafe (l.parts.high);
+        \\    if lo != 7 || hi != 5 { return 1; }
+        \\    b: Bits = .{ .f = 1.0 };
+        \\    if unsafe (b.u) != 0x3F800000 { return 2; }
+        \\    if core::sizeof(Large) != 8 || core::sizeof(Mixed) != 8 || core::align_of(Mixed) != 8 { return 3; }
+        \\    if core::offset_of(Large, "parts") != 0 { return 4; }
+        \\    h: Holder = .{ 1, .{ .parts = .{ 1, 2 } } };
+        \\    if unsafe (h.v.quad) != 0x0000000200000001 { return 5; }
+        \\    h.v.quad = 9;
+        \\    bump(&h.v);
+        \\    if unsafe (h.v.parts.low) != 10 { return 6; }
+        \\    m: Mixed = .{ .b = 255 };
+        \\    if unsafe (m.w) != 255 { return 7; }   // the rest of the bytes are zero
+        \\    if unsafe (G.quad) != 0 { return 8; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_union", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_union_o2", 2, true));
+}
+
+test "exe: a union in static storage starts as zero" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Which field a static union's bytes hold is not known before run time; `.{}` is all zero.
+    try std.testing.expectError(error.CompileFailed, compileAndRun(arena.allocator(),
+        \\Large :: union { quad: u64, half: u32 }
+        \\G: Large = .{ 5 };
+        \\main :: fn() -> i32 { return 0; }
+    , "exe_union_static"));
+}
+
 test "exe: unknown field in a struct literal fails the build" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;

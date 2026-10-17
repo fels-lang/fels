@@ -432,6 +432,13 @@ pub const Parser = struct {
             decl.is_public = is_public;
             return .{ .type_decl = decl };
         }
+        // `union { a: T, b: U }` — a struct whose fields share their storage.
+        if (self.match(.keyword_union)) {
+            var decl = try self.finishStruct(attrs, name);
+            decl.is_public = is_public;
+            decl.kind.struct_type.is_union = true;
+            return .{ .type_decl = decl };
+        }
         if (self.match(.keyword_interface)) {
             var decl = try self.finishInterface(attrs, name);
             decl.is_public = is_public;

@@ -198,6 +198,8 @@ pub const StructDef = struct {
     name: []const u8,
     fields: []const FieldDef,
     is_packed: bool,
+    /// A `union`: every field at offset 0, the size of the largest.
+    is_union: bool = false,
     alignment: u32 = 0, // 0 = default; set by #align(N)
 };
 
@@ -1042,6 +1044,7 @@ fn lowerModuleInner(allocator: std.mem.Allocator, front_end: pipeline.FrontEnd, 
                     .name = mangled,
                     .fields = try ir_fields.toOwnedSlice(allocator),
                     .is_packed = layout.is_packed,
+                    .is_union = layout.is_union,
                     .alignment = layout.alignment,
                 });
             },
@@ -1621,6 +1624,7 @@ fn lowerStruct(allocator: std.mem.Allocator, decl: ast.TypeDecl, strukt: ast.Str
         .name = linkNameFor(symbols, decl.file_name, decl.name),
         .fields = try fields.toOwnedSlice(allocator),
         .is_packed = hasAttr(decl.attrs, "packed"),
+        .is_union = strukt.is_union,
         .alignment = alignAttr(decl.attrs),
     };
 }
@@ -3486,6 +3490,8 @@ const FunctionLowerer = struct {
                 // Lower each element with its field/element type so nested
                 // compound literals (`.{ .{1,2}, 3 }`) build their aggregate.
                 const ct = self.exprType(expr);
+                if (self.isUnionType(ct))
+                    break :blk try self.lowerUnionLiteral(ct, if (values.len > 0) 0 else null, if (values.len > 0) values[0] else null);
                 for (values, 0..) |value, i| {
                     if (self.compoundFieldType(ct, i)) |fty| {
                         if (isThinFnSlot(ct, fty))
@@ -4408,6 +4414,8 @@ const FunctionLowerer = struct {
         }
         return switch (expr.kind) {
             .compound_literal => |values| blk: {
+                if (self.isUnionType(expected_ty))
+                    break :blk try self.lowerUnionLiteral(expected_ty, if (values.len > 0) 0 else null, if (values.len > 0) values[0] else null);
                 var args = std.ArrayList(Value).empty;
                 errdefer args.deinit(self.allocator);
                 for (values, 0..) |value, i| {
@@ -4598,6 +4606,14 @@ const FunctionLowerer = struct {
             diag_mod.printErrorAt("a `.{ .field = … }` struct literal needs a known struct type here", self.file_name, self.source, span);
             return error.LoweringFailed;
         };
+        if (self.isUnionType(struct_ty)) {
+            if (inits.len == 0) return self.lowerUnionLiteral(struct_ty, null, null);
+            for (fields, 0..) |f, i| if (std.mem.eql(u8, f.name, inits[0].name))
+                return self.lowerUnionLiteral(struct_ty, i, inits[0].value);
+            const msg = std.fmt.allocPrint(self.allocator, "no field `{s}` in union `{s}`", .{ inits[0].name, struct_ty.struct_type }) catch "unknown field in union literal";
+            diag_mod.printErrorAt(msg, self.file_name, self.source, inits[0].span);
+            return error.LoweringFailed;
+        }
         // Reject names that aren't fields of the struct.
         for (inits) |fi| {
             var known = false;
@@ -4934,6 +4950,27 @@ const FunctionLowerer = struct {
         };
         if (self.symbols.symbol(id).kind != .type) return null;
         return id;
+    }
+
+    /// Whether `ty` is a `union`.
+    fn isUnionType(self: *FunctionLowerer, ty: IrType) bool {
+        if (ty != .struct_type) return false;
+        const id = self.symbols.resolve(self.symbols.root_scope, ty.struct_type) orelse return false;
+        const layout = self.types.layouts.get(id) orelse return false;
+        return layout.is_union;
+    }
+
+    /// A union value with field `field` (an index) set to `value`, the rest of its bytes zero;
+    /// all zero with no field.
+    fn lowerUnionLiteral(self: *FunctionLowerer, ty: IrType, field: ?usize, value: ?ast.Expr) LowerError!Value {
+        const index = field orelse return self.emit(ty, .{ .builtin = .{ .name = "union_literal", .args = &.{} } });
+        const fields = self.structFields(ty) orelse return error.LoweringFailed;
+        const fty = lowerSemaTypeWithEnv(self.allocator, fields[index].ty, self.types, self.symbols) catch IrType.unknown;
+        const v = try self.lowerExprAs(value.?, fty);
+        const args = try self.allocator.alloc(Value, 2);
+        args[0] = .{ .imm = .{ .uint = index } };
+        args[1] = v;
+        return self.emit(ty, .{ .builtin = .{ .name = "union_literal", .args = args } });
     }
 
     /// Whether `name` is a capture, a param or a declared local here (what `lowerExpr`
@@ -8467,7 +8504,7 @@ fn structDefFromSema(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols:
             .ty = lowerSemaTypeWithEnv(allocator, field.ty, types, symbols) catch return null,
         };
     }
-    return .{ .name = name, .fields = out, .is_packed = type_layout.is_packed, .alignment = type_layout.alignment };
+    return .{ .name = name, .fields = out, .is_packed = type_layout.is_packed, .is_union = type_layout.is_union, .alignment = type_layout.alignment };
 }
 
 /// Whether a value of `ty` has bytes no value sets: padding between or after the fields of a
@@ -8782,6 +8819,12 @@ const StaticInit = struct {
         return .{ .func_ref = sym.link_name };
     }
 
+    fn isUnion(self: StaticInit, name: []const u8) bool {
+        const id = self.env.symbols.resolve(self.env.symbols.root_scope, name) orelse return false;
+        const type_layout = self.env.types.layouts.get(id) orelse return false;
+        return type_layout.is_union;
+    }
+
     fn structFields(self: StaticInit, name: []const u8) ?[]const sema.FieldInfo {
         const id = self.env.symbols.resolve(self.env.symbols.root_scope, name) orelse return null;
         const type_layout = self.env.types.layouts.get(id) orelse return null;
@@ -8848,6 +8891,15 @@ const StaticInit = struct {
 
     fn buildStruct(self: StaticInit, expr: ast.Expr, name: []const u8) LowerError!ConstInit {
         if (self.enumVariants(name)) |variants| return self.buildEnum(expr, name, variants);
+        if (self.isUnion(name)) {
+            const empty = switch (expr.kind) {
+                .compound_literal => |items| items.len == 0,
+                .struct_literal => |inits| inits.len == 0,
+                else => false,
+            };
+            if (!empty) return self.fail(expr.span, "a union in static storage starts as zero, `.{{}}`: write its field at run time", .{});
+            return .zero;
+        }
         if (taggedErrorSetNamed(self.env.types, self.env.symbols, name)) |set| return self.buildError(expr, set);
         const fields = self.structFields(name) orelse
             return self.fail(expr.span, "`{s}` is not a struct whose fields are known here", .{name});

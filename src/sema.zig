@@ -396,6 +396,8 @@ pub const FnPtrTy = struct {
 pub const TypeLayout = struct {
     kind: TypeKind,
     is_packed: bool,
+    /// A `union`: its fields share the storage at offset 0.
+    is_union: bool = false,
     /// `#align(N)` on a struct (0 = natural alignment).
     alignment: u32 = 0,
 };
@@ -1524,6 +1526,8 @@ const Checker = struct {
     current_type_binding: []const TypeArg = &.{},
     current_self_ty: ?Ty = null,
     unsafe_depth: usize = 0,
+    /// While the target of an assignment is checked: a union field there is written, not read.
+    writing_place: bool = false,
     /// Recursion guard for resolving (possibly cyclic) type aliases.
     alias_depth: u32 = 0,
     // Diagnostics — collected instead of failing immediately where possible.
@@ -2267,6 +2271,7 @@ const Checker = struct {
                                 try self.env.layouts.put(id, .{
                                     .kind = .{ .struct_type = try fields.toOwnedSlice(self.allocator) },
                                     .is_packed = hasAttr(decl.attrs, "packed"),
+                                    .is_union = strukt.is_union,
                                     .alignment = try self.alignAttrValue(decl),
                                 });
                             }
@@ -2969,8 +2974,14 @@ const Checker = struct {
                         }
                     }
                 }
-                try self.checkAssignTarget(assign.target);
-                const target_ty = try self.inferExpr(assign.target);
+                const target_ty = blk: {
+                    // `u.f += 1` reads `u.f` before it writes it.
+                    const saved_writing = self.writing_place;
+                    self.writing_place = assign.op == .assign;
+                    defer self.writing_place = saved_writing;
+                    try self.checkAssignTarget(assign.target);
+                    break :blk try self.inferExpr(assign.target);
+                };
                 if (try self.coerceEnumLiteral(assign.value, target_ty)) return;
                 try self.coerceLiteralFields(assign.value, target_ty);
                 const value_ty = try self.inferExpr(assign.value);
@@ -3326,6 +3337,13 @@ const Checker = struct {
     }
 
     fn inferExpr(self: *Checker, expr: ast.Expr) SemanticError!Ty {
+        // Only the chain of fields and indexes that names the written place is written; any
+        // other expression in an assignment target (a call, a dereferenced operand) is read.
+        if (self.writing_place and expr.kind != .field and expr.kind != .index and expr.kind != .ident) {
+            self.writing_place = false;
+            defer self.writing_place = true;
+            return self.inferExpr(expr);
+        }
         const ty: Ty = switch (expr.kind) {
             .ident => |name| {
                 // A local named like a builtin (`any`, `narrow`) is the local.
@@ -3531,6 +3549,10 @@ const Checker = struct {
             .compound_literal => |values| blk: {
                 const struct_id = self.env.literal_types.get(expr.id);
                 const fields = if (struct_id) |id| self.structFieldInfos(.{ .named = id }) else null;
+                if (struct_id) |id| if (self.isUnion(id) and values.len > 1) {
+                    self.emitError(values[1].span, "a union literal sets one field: `.{{ value }}` for the first, `.{{ .name = value }}` for another", .{});
+                    return error.SemanticFailed;
+                };
                 if (fields) |fs| if (values.len > fs.len) {
                     const ty_name = self.formatTy(.{ .named = struct_id.? });
                     self.emitErrorRich(values[fs.len].span, "too many values for `{s}`: the literal has {d}, the struct has {d} field{s}", .{ ty_name, values.len, fs.len, if (fs.len == 1) "" else "s" }, .{
@@ -3547,6 +3569,10 @@ const Checker = struct {
             .struct_literal => |inits| blk: {
                 const struct_id = self.env.literal_types.get(expr.id);
                 const fields = if (struct_id) |id| self.structFieldInfos(.{ .named = id }) else null;
+                if (struct_id) |id| if (self.isUnion(id) and inits.len > 1) {
+                    self.emitError(inits[1].value.span, "a union literal sets one field: `.{{ .name = value }}`", .{});
+                    return error.SemanticFailed;
+                };
                 for (inits) |fi| {
                     const value_ty = try self.inferExpr(fi.value);
                     // A name that is no field is reported when the literal is lowered.
@@ -3774,6 +3800,13 @@ const Checker = struct {
             },
             .field => |field| blk: {
                 const base_ty = try self.inferExpr(field.base.*);
+                // Reading a field of a union reads its bytes as that field's type, whichever
+                // was written: `unsafe`, as a pointer cast is. Writing one is not.
+                if (self.unionOfBase(base_ty)) |uid| if (!self.writing_place and self.unsafe_depth == 0) {
+                    self.emitError(expr.span, "reading `.{s}` of the union `{s}` reads its bytes as that field, whichever was written: do it in `unsafe`", .{ field.name, self.symbols.symbol(uid).name });
+                    return error.SemanticFailed;
+                };
+                try self.checkUnionPointerRead(field.base.*, base_ty);
                 // `.len`/`.ptr` are slice/array builtins — but a real struct field
                 // of that name takes precedence (so a struct CAN have `len`/`ptr`).
                 if (std.mem.eql(u8, field.name, "len") and !self.structHasField(base_ty, "len")) break :blk .usize;
@@ -3813,7 +3846,13 @@ const Checker = struct {
             },
             .index => |index| blk: {
                 const base_ty = try self.inferExpr(index.base.*);
-                _ = try self.inferExpr(index.index.*);
+                try self.checkUnionPointerRead(index.base.*, base_ty);
+                {
+                    const saved_writing = self.writing_place;
+                    self.writing_place = false;
+                    defer self.writing_place = saved_writing;
+                    _ = try self.inferExpr(index.index.*);
+                }
                 break :blk switch (base_ty) {
                     .array => |array| array.elem.*,
                     .slice => |inner| inner.*,
@@ -5936,6 +5975,7 @@ const Checker = struct {
         try self.env.layouts.put(inst_id, .{
             .kind = .{ .struct_type = try fields.toOwnedSlice(self.allocator) },
             .is_packed = hasAttr(tmpl.attrs, "packed"),
+            .is_union = strukt.is_union,
             .alignment = try self.alignAttrValue(tmpl),
         });
 
@@ -6499,6 +6539,40 @@ const Checker = struct {
             },
             else => return null,
         }
+    }
+
+    /// Whether the type `id` is a `union`.
+    fn isUnion(self: *Checker, id: SymbolId) bool {
+        const layout = self.env.layouts.get(id) orelse return false;
+        return layout.is_union;
+    }
+
+    /// The union a field is read from, when its base (or what the base points to) is one.
+    fn unionOfBase(self: *Checker, base_ty: Ty) ?SymbolId {
+        const id = switch (base_ty) {
+            .named => |id| id,
+            .pointer, .const_ptr => |inner| switch (inner.*) {
+                .named => |id| id,
+                else => return null,
+            },
+            else => return null,
+        };
+        return if (self.isUnion(id)) id else null;
+    }
+
+    /// In an assignment's place, `u.p.x` / `u.s[i]` writes through the pointer it reads from
+    /// the union field `u.p`: that read is `unsafe` as any other.
+    fn checkUnionPointerRead(self: *Checker, base: ast.Expr, base_ty: Ty) SemanticError!void {
+        if (!self.writing_place or self.unsafe_depth > 0) return;
+        switch (base_ty) {
+            .pointer, .const_ptr, .slice, .borrow => {},
+            else => return,
+        }
+        if (base.kind != .field) return;
+        const union_ty = self.checkedType(base.kind.field.base.*) orelse return;
+        const uid = self.unionOfBase(union_ty) orelse return;
+        self.emitError(base.span, "reading `.{s}` of the union `{s}` reads its bytes as that field, whichever was written: do it in `unsafe`", .{ base.kind.field.name, self.symbols.symbol(uid).name });
+        return error.SemanticFailed;
     }
 
     /// The type an alias's symbol stands for, when it is a named one; any other symbol itself.
