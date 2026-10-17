@@ -44,16 +44,16 @@ pub lerp :: fn(a: Color, b: Color, t: f32) -> Color {
 
 // Pack to `0xRRGGBBAA`.
 pub to_u32 :: fn(c: Color) -> u32 {
-    return ((c.r as u32) << 24u32) | ((c.g as u32) << 16u32) | ((c.b as u32) << 8u32) | (c.a as u32);
+    return ((c.r as u32) << 24) | ((c.g as u32) << 16) | ((c.b as u32) << 8) | (c.a as u32);
 }
 
 // Unpack from `0xRRGGBBAA`.
 pub from_u32 :: fn(v: u32) -> Color {
     o: Color = .{
-        ((v >> 24u32) & 255u32) as u8,
-        ((v >> 16u32) & 255u32) as u8,
-        ((v >> 8u32) & 255u32) as u8,
-        (v & 255u32) as u8,
+        ((v >> 24) & 255) as u8,
+        ((v >> 16) & 255) as u8,
+        ((v >> 8) & 255) as u8,
+        (v & 255) as u8,
     };
     return o;
 }
