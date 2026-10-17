@@ -194,7 +194,7 @@ its captured environment. A plain (non-capturing) function or lambda has an empt
 environment, so it costs no more than a bare pointer. A capturing lambda copies the captured
 values into a small environment when it is created.
 
-**Where the environment lives** follows fels's region model:
+**Where the environment lives** follows Fels's region model:
 
 - Inside a `zone`, a capturing closure's environment is allocated on the **zone's
   Arena**. The closure is then valid for the whole zone, and you can store it and hand it
@@ -204,7 +204,7 @@ values into a small environment when it is created.
   zone scratch: Arena {
       base: i32 = 100;
       f := fn(x: i32) -> i32 { return base + x; }; // env on `scratch`
-      r = call_it(f, 7);                            // safe anywhere in the zone
+      r := call_it(f, 7);                           // safe anywhere in the zone
   }
   ```
 
@@ -219,7 +219,7 @@ values into a small environment when it is created.
 
   zone z: Arena {
       add5 := make_adder(&z, 5);
-      r = add5(10); // 15 — `add5` outlives `make_adder`, valid for the zone
+      r := add5(10); // 15 — `add5` outlives `make_adder`, valid for the zone
   }
   ```
 
@@ -497,8 +497,11 @@ values, not addresses.
 ### Match
 
 `match` does pattern matching on enums and integers. An arm is `pattern => body,`. In a
-match statement the body is a block, and in a match expression it is a value. The comma ends
-every arm, though you may leave it out after the last one:
+match statement the body is a block or a single statement, and in a match expression it is a
+value. The parser does not require the comma, but the style is a comma after each arm. A
+match on one line may leave out the last one. In a match expression the comma also keeps a
+value apart from the next pattern, because `x .zero` without it reads as `x.zero`. An arm of
+a single statement, such as `.a => return 1;`, is written with just its own `;`:
 
 ```fels
 // Enum matching
@@ -525,8 +528,8 @@ match shape {
 // Integer matching: single values, grouped values, and ranges
 match code {
     0        => { println("ok"); },
-    1, 2, 3  => { println("warning"); }  // grouped cases
-    400..=499 => { println("client"); }  // inclusive range (use `..` for exclusive)
+    1, 2, 3  => { println("warning"); }, // grouped cases
+    400..=499 => { println("client"); }, // inclusive range (use `..` for exclusive)
     else     => { println("error"); },
 }
 
@@ -546,9 +549,9 @@ match n {
 
 // Single-statement arms (no braces needed)
 match value {
-    .a   => { return 1; },
-    .b   => { return 2; },
-    else => { return 0; },
+    .a   => return 1;
+    .b   => return 2;
+    else => return 0;
 }
 
 // Match as an expression — each arm yields a value, the whole match is that value
@@ -564,12 +567,13 @@ return match code { 0 => 200, 1, 2, 3 => 400, else => 500 };
 
 > [!IMPORTANT]
 > A match on an enum is **exhaustiveness-checked**. Every variant must be handled, or an
-> `else` arm must be present. Otherwise the compiler reports an error
+> `else` arm or a catch-all name must be present. Otherwise the compiler reports an error
 > (*"non-exhaustive match: variant `.west` is not handled"*). A **total** match (one that
 > covers every variant) needs no `else`. Because it is provably exhaustive, it also **counts
 > as returning on all paths**, so a function whose body is only a total match over `return`
 > arms type-checks without a trailing `return`. A **duplicate** arm for the same variant is
-> rejected. Integer matches are unbounded, so they require an `else` to be exhaustive.
+> rejected. Integer matches are unbounded, so only an `else` or a catch-all name (`k => …`)
+> makes them exhaustive.
 
 > [!IMPORTANT]
 > **Match as an expression**: in value position each arm is `pattern => value`, where the
