@@ -675,7 +675,7 @@ MAX   :: LIMIT;         // names a constant, so a constant — not an alias
 ```
 
 An alias is accepted wherever its type can be written: annotations, parameters,
-returns, fields, pointers, slices, casts, generic type arguments and `sizeof`. A
+returns, fields, pointers, slices, casts, generic type arguments and `core::sizeof`. A
 `pub` alias can be imported without importing the type it names.
 
 Two things are not supported yet. A generic instantiation on the right-hand side

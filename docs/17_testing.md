@@ -9,7 +9,7 @@ Testing leans on two things the compiler already has:
 
 - **The comptime VM models real host memory.** A pure test can run while the program
   compiles, so a broken invariant stops the build.
-- **Reflection is total** (`type_info`, `Any`, the serde layer). The richer machinery,
+- **Reflection is total** (`core::type_info`, `Any`, the serde layer). The richer machinery,
   structural diffs, input generators and snapshots, can come from a type's shape with no
   per-type code (§6).
 
@@ -132,7 +132,7 @@ note: building src/main.fels, 1 #test function cannot run at compile time; `fels
 `eq` and `ne` are generic (`fn(self: *Self, a: $V, b: $V)`), so they take any two values
 of the same type.
 
-On the comptime VM every failed check ends the test (it is a `compiler_error`). In a test
+On the comptime VM every failed check ends the test (it is a `core::compiler_error`). In a test
 program a failed check is counted and the test goes on; only `t.fatal` ends it.
 
 ### What `t.eq` compares
@@ -201,10 +201,10 @@ parse, preludes, sema (Test added if a #test exists)
 
 - **Per-test zones** with leak accounting in the test program, a time limit for a test
   that hangs, and a TAP or JSON report for CI.
-- **Reflection-powered assertions**: on a failed `t.eq`, walk `type_info(V)` and print a
+- **Reflection-powered assertions**: on a failed `t.eq`, walk `core::type_info(V)` and print a
   field-by-field diff for any struct, enum or slice, no `#derive` needed.
 - **Property testing**: a `#test(prop)` function declares its generated inputs as extra
-  typed parameters; the runner derives a generator from `type_info` for each, runs N
+  typed parameters; the runner derives a generator from `core::type_info` for each, runs N
   seeded cases, and **shrinks** to a minimal counterexample. (Inputs go through
   parameters rather than an inline closure because fels lambdas don't capture.)
 - **Snapshots**: `t.snapshot(value, "name")` serializes any value through serde and diffs
