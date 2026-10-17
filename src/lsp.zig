@@ -1217,7 +1217,8 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, environ: ?*const std.process.Envi
     var in_buf: [1 << 16]u8 = undefined;
     var out_buf: [1 << 16]u8 = undefined;
     var reader = std.Io.File.stdin().reader(io, &in_buf);
-    var writer = std.Io.File.stdout().writer(io, &out_buf);
+    // The editor reads the server's stdout through a pipe: streaming writes, not positional ones.
+    var writer = std.Io.File.stdout().writerStreaming(io, &out_buf);
 
     var server = Server{ .gpa = gpa, .io = io, .out = &writer.interface, .environ = environ };
     server.timing = timing;
