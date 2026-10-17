@@ -33,11 +33,80 @@ pub fn start(name: []const u8, total: usize) void {
     root = std.Progress.start(std.Options.debug_io, .{ .root_name = name, .estimated_total_items = total });
 }
 
+/// Start the tree of a `fels test` worker, named after its file. It shows only when the
+/// parent `fels test` gave it a pipe for it (`ZIG_PROGRESS`): then it is drawn in the parent's
+/// tree, in place of the file's node there.
+pub fn startWorker(name: []const u8) void {
+    if (started) return;
+    started = true;
+    root = std.Progress.start(std.Options.debug_io, .{ .root_name = name });
+}
+
 /// Take the live tree away, before a summary, or before a program is run that writes to the
 /// terminal itself.
 pub fn finish() void {
     root.end();
     root = .none;
+}
+
+/// The stage that runs now (`Stages.stage` sets it), the item it is at, and how many items it
+/// has done, so the work inside a stage can show where it is, as `zig build` does:
+/// `lowering [812/1715]` with the function under it.
+var stage_node: std.Progress.Node = .none;
+var item_node: std.Progress.Node = .none;
+var items_done: usize = 0;
+
+/// Whether a stage is on the tree: the work inside it can skip making names when not.
+pub fn active() bool {
+    return stage_node.index != .none;
+}
+
+/// The stage will do `n` items: its node counts them, `[k/n]`. Without it the node shows
+/// only the count, `[k]`.
+pub fn itemTotal(n: usize) void {
+    stage_node.setEstimatedTotalItems(n);
+}
+
+/// The stage is at the item `name`, of the file `file` (shown by its last part): it shows
+/// under the stage, and the items before it count as done.
+pub fn item(name: []const u8, file: []const u8) void {
+    if (stage_node.index == .none) return;
+    var buf: [std.Progress.Node.max_name_len]u8 = undefined;
+    const text = if (file.len != 0)
+        std.fmt.bufPrint(&buf, "{s} ({s})", .{ name, std.fs.path.basename(file) }) catch name
+    else
+        name;
+    if (item_node.index == .none) item_node = stage_node.start(text, 0) else {
+        item_node.setName(text);
+        // What ended under the item before (a `#run`) is not counted on the next.
+        item_node.setCompletedItems(0);
+    }
+    stage_node.setCompletedItems(items_done);
+    items_done += 1;
+}
+
+/// Name the stage that runs now with what it works on: `emitting object, 1715 functions`.
+pub fn stageDetail(comptime fmt: []const u8, args: anytype) void {
+    if (stage_node.index == .none) return;
+    var buf: [std.Progress.Node.max_name_len]u8 = undefined;
+    stage_node.setName(std.fmt.bufPrint(&buf, fmt, args) catch return);
+}
+
+/// A node under the item the stage is at (or the stage), for something that runs inside it:
+/// a `#run`, the comptime VM getting ready. The caller ends it.
+pub fn sub(comptime fmt: []const u8, args: anytype) std.Progress.Node {
+    const parent = if (item_node.index != .none) item_node else stage_node;
+    if (parent.index == .none) return .none;
+    var buf: [std.Progress.Node.max_name_len]u8 = undefined;
+    return parent.start(std.fmt.bufPrint(&buf, fmt, args) catch return .none, 0);
+}
+
+/// `812 B`, `34 KB`, `4.1 MB`: the size of an output file.
+pub fn size(buf: []u8, bytes: u64) []const u8 {
+    if (bytes < 1024) return std.fmt.bufPrint(buf, "{d} B", .{bytes}) catch "?";
+    if (bytes < 1024 * 1024) return std.fmt.bufPrint(buf, "{d} KB", .{bytes / 1024}) catch "?";
+    const tenths = bytes * 10 / (1024 * 1024);
+    return std.fmt.bufPrint(buf, "{d}.{d} MB", .{ tenths / 10, tenths % 10 }) catch "?";
 }
 
 pub const Mark = enum { ok, fail, skip, run, warn };
@@ -88,10 +157,18 @@ pub const Stages = struct {
     node: std.Progress.Node,
     current: std.Progress.Node = .none,
     started: u64,
+    /// Whether `end` ends `node`: not when it is a worker's root (`in`).
+    own: bool = true,
 
     /// The stages of a compile named `name`, under `parent`.
     pub fn begin(parent: std.Progress.Node, name: []const u8) Stages {
         return .{ .node = parent.start(name, stage_count), .started = clock.monoNs() };
+    }
+
+    /// The stages right under `node`, which is named already and stays when they end.
+    pub fn in(node: std.Progress.Node) Stages {
+        node.setEstimatedTotalItems(stage_count);
+        return .{ .node = node, .started = clock.monoNs(), .own = false };
     }
 
     pub fn step(ctx: ?*anyopaque, phase: driver.Phase) void {
@@ -101,16 +178,26 @@ pub const Stages = struct {
 
     /// Begin the stage `name`, after the one before (ending a node counts it as done).
     pub fn stage(self: *Stages, name: []const u8) void {
+        endItem();
         self.current.end();
         self.current = self.node.start(name, 0);
+        stage_node = self.current;
     }
 
     /// End the compile's node; the time since `begin`.
     pub fn end(self: *Stages) u64 {
+        endItem();
+        stage_node = .none;
         self.current.end();
         self.current = .none;
-        self.node.end();
+        if (self.own) self.node.end();
         return clock.sinceNs(self.started);
+    }
+
+    fn endItem() void {
+        item_node.end();
+        item_node = .none;
+        items_done = 0;
     }
 
     const stage_count = @typeInfo(driver.Phase).@"enum".fields.len;
