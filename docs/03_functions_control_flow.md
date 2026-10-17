@@ -103,18 +103,24 @@ identity :: fn(value: $T) -> T {
 // Multiple type params
 swap :: fn(a: $T, b: $U) -> U { ... }
 
-// Explicit type param
+// A type parameter of its own
 max :: fn($T: type, a: T, b: T) -> T {
     if a > b { return a; }
     return b;
 }
-// Called as: max(i32, 10, 20)
+// Called as max(i32, 10, 20), or max(10, 20)
 
 // Constrained type param (must implement interface)
 print_to :: fn($W: Writer, writer: *W, data: []const u8) -> usize ! IoError {
     return writer.write(data)?;
 }
 ```
+
+A type parameter declared in the list (`$T: type`, or `$W: Writer` with a constraint) is
+an argument the caller may pass or leave to inference. A call passes the type arguments
+before the values: the `$T: type` ones, or all of them, or none. Each one not passed is
+inferred from the values (`max(10, 20)` makes `T` an `i32`); one that cannot be, like the
+`T` of `make :: fn($T: type) -> T`, has to be passed (`make(i64)`).
 
 A pointer type is a type argument like any other — `arena.new_slice(*Node, n)`,
 `core::sizeof(**Node)`. Where a type is expected (the first argument of `core::sizeof`,
