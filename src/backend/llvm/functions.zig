@@ -10,6 +10,7 @@ const terminators = @import("terminators.zig");
 const attrs = @import("attrs.zig");
 const abi = @import("abi.zig");
 const ModuleCg = @import("context.zig").ModuleCg;
+const ui = @import("../../ui.zig");
 
 /// Per-function codegen state.
 pub const FnCg = struct {
@@ -136,7 +137,29 @@ fn declareOne(cg: *ModuleCg, func: ir.IrFunction) !void {
 }
 
 pub fn defineAll(cg: *ModuleCg, funcs: []const ir.IrFunction) !void {
-    for (funcs) |f| if (f.blocks.len > 0) try defineOne(cg, f);
+    // The live tree counts the functions with a body, and names the one being generated.
+    if (ui.active()) {
+        var n: usize = 0;
+        for (funcs) |f| n += @intFromBool(f.blocks.len > 0);
+        ui.itemTotal(n);
+    }
+    for (funcs) |f| if (f.blocks.len > 0) {
+        if (ui.active()) ui.item(shortName(f.name), fileOf(f));
+        try defineOne(cg, f);
+    };
+}
+
+/// A function's name without the module part a link name starts with (`src_main_fels$run`).
+fn shortName(name: []const u8) []const u8 {
+    return if (std.mem.lastIndexOfScalar(u8, name, '$')) |i| name[i + 1 ..] else name;
+}
+
+/// The file a function is in, from the place of its first instruction; "" when it has none.
+fn fileOf(f: ir.IrFunction) []const u8 {
+    for (f.blocks) |b| for (b.instrs) |in| {
+        if (in.location.file.len != 0) return in.location.file;
+    };
+    return "";
 }
 
 fn defineOne(cg: *ModuleCg, func: ir.IrFunction) !void {

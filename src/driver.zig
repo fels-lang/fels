@@ -176,6 +176,7 @@ pub const LlvmCompileOptions = struct {
 };
 
 const clock = @import("clock.zig");
+const ui = @import("ui.zig");
 
 fn nowNs() u64 {
     return clock.monoNs();
@@ -313,6 +314,13 @@ pub fn compileFileWithLlvm(
     }
 }
 
+/// The functions of `module` with a body.
+fn definedCount(module: ir.IrModule) usize {
+    var n: usize = 0;
+    for (module.functions) |f| n += @intFromBool(f.blocks.len > 0);
+    return n;
+}
+
 /// Lower a checked front end and emit it: the object, and with `opts.exe_path` the linked
 /// program. `opts.file_name` names the module; `opts.source` is not read.
 pub fn emitLlvmFromFrontend(
@@ -391,6 +399,9 @@ pub fn emitLlvmFromFrontend(
         // bytes straight to the linker. The .obj is only written to disk if we
         // fall back to LLD.
         if (opts.progress) |p| p(opts.progress_ctx, .emit);
+        // LLVM makes the object in one call and says nothing on the way: the tree shows what
+        // it has to do.
+        ui.stageDetail("emitting object, {d} functions", .{definedCount(module)});
         const t_emit = nowNs();
         const obj_bytes = be.emitObjectToMemory(allocator, opts.opt_level) catch return error.EmitFailed;
         defer allocator.free(obj_bytes);
