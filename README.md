@@ -63,9 +63,7 @@ sum_to :: fn(n: i32) -> i32 {
 
 main :: fn() -> i32 {
     io::println("Hello from hello!");
-    io::print("1 + 2 + ... + 10 = ");
-    io::print_i64(sum_to(10) as i64);
-    io::println("");
+    io::println("1 + 2 + ... + 10 = {sum_to(10)}");
     return 0;
 }
 

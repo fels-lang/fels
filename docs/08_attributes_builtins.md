@@ -134,7 +134,7 @@ where you use it:
 | `core::arch` | `[]const u8` | the architecture the program is built for (`"x86_64"`), as `TARGET.arch` |
 
 ```fels
-log :: fn(msg: []const u8) { print(core::file); print_i64(core::line as i64); print(msg); }
+log :: fn(msg: []const u8) { println("{core::file}:{core::line}: {msg}"); }
 ```
 
 ### Math

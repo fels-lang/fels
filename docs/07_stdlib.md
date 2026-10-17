@@ -21,8 +21,50 @@ The I/O interfaces and utilities. Everything here is synchronous and allocation-
 - `write_all`, `write_line`, `write_char`, `write_repeat`
 - `write_bool`, `write_u64`, `write_i64`, `write_hex_u64`
 
-**Free functions for console:**
-- `print(data)`, `println(data)`, `print_u64(val)`, `eprintln(data)`
+**Printing:** `print`, `println`, `eprint` and `eprintln`, and `w.write_fmt(f)` and
+`w.write_fmt_line(f)` on any `*Writer`, take a `Format`: a string literal with values in braces.
+
+```fels
+io::println("{name} has {n} items");
+io::println("{p}");                                  // Point{ x: 1, y: 2 }
+io::println("[{x:>8}] [{id:06}] {flags:x} {ratio:.2} {s:?}");
+```
+
+- Any expression goes in the braces, and `{{` and `}}` are braces of the text. The compiler
+  reads the literal: the values are checked where the call is, and a mistake points at its
+  place in the string. No string literal fits in the braces; put one in a local first.
+- A spec after a `:` is `[[fill]align][0][width][.precision][kind]`. Align is `<`, `>` or `^`
+  (numbers go right by themselves, the rest left); `0` pads a number with zeros after its sign;
+  the precision is the digits after a float's point; the kind is `x` or `X` for hex, `b` binary,
+  `o` octal, and `?` for text in quotes. The width counts bytes.
+- Every type prints: numbers, `bool`, text, an enum as its variant, an error as its name, an
+  optional as its value or `null`, slices and arrays as `[1, 2]`, structs as
+  `Point{ x: 1, y: 2 }` (text inside them in quotes), pointers as their address. A float shows
+  up to 15 significant digits, without the zeros at the end (`3.14159265`, `0.1`, `2`).
+- A type with a method `format :: fn(self, f: *Formatter)` prints itself, also inside other
+  values. `f.text("…")` writes text and `f.value(x, "spec")` a value:
+
+  ```fels
+  Money :: struct {
+      cents: i64,
+      pub format :: fn(self: Money, f: *Formatter) {
+          f.value(self.cents / 100, "");
+          f.text(",");
+          f.value(self.cents % 100, "02");
+      }
+  }
+  ```
+
+- A function of the program can take a `Format` too, and pass it on (`println(f)`) or write it
+  (`w.write_fmt(f)`). Its values are read when it is written, so a log call that drops its
+  message reads none.
+- Any other `[]const u8` passed as a `Format` prints as it is, braces and all, so text from data
+  is never read as a format.
+- A format in a generic function cannot print values yet: its code is a lambda, and a lambda
+  there cannot use the function's values (KNOWN_ISSUES).
+
+`print_u64`, `print_i64`, `print_hex_u64`, `print_bool`, `eprint_u64` and `eprint_i64` are
+deprecated: a format says the same (`print("{n}")`).
 
 ## `std.fmt`
 Formatting utilities built on top of `std.io.Writer`.
