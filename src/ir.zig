@@ -594,7 +594,8 @@ pub const Imm = union(enum) {
 };
 
 /// A `catch err { … }` binding in scope while its handler is lowered.
-const CaughtError = struct { name: []const u8, ty: sema.Ty };
+/// An error a `catch` handler names, and the local its payload is stashed in.
+const CaughtError = struct { name: []const u8, ty: sema.Ty, payload: []const u8 };
 
 pub const LowerError = error{
     LoweringFailed,
@@ -2368,11 +2369,11 @@ const FunctionLowerer = struct {
             const ir_name = try self.declareLocal(name, payload_ty);
             try self.emitNoResult(payload_ty, .{ .store_local = .{ .name = ir_name, .value = payload } });
         }
-        if (error_payload_binding) |name| {
-            const pty = self.local_types.get("__errpayload") orelse .unknown;
+        if (error_payload_binding) |name| if (self.caughtPayload(iff.condition)) |stash| {
+            const pty = self.local_types.get(stash) orelse .unknown;
             const ir_name = try self.declareLocal(name, pty);
-            try self.emitNoResult(pty, .{ .store_local = .{ .name = ir_name, .value = .{ .local = "__errpayload" } } });
-        }
+            try self.emitNoResult(pty, .{ .store_local = .{ .name = ir_name, .value = .{ .local = stash } } });
+        };
         try self.lowerBlock(iff.then_block.statements, .{ .branch = after_id });
         self.leaveScope(then_scope);
 
@@ -3530,20 +3531,25 @@ const FunctionLowerer = struct {
                     .fallible => |f| f.err.*,
                     else => .unknown,
                 };
-                try self.catch_errors.append(self.allocator, .{ .name = catch_expr.err_name, .ty = caught_set });
+                // Each catch stashes its payload in a local of its own: the slot of a single shared
+                // one took the type of the first catch in the function, and a later catch with a
+                // wider success type wrote past it, over the locals beside it.
+                self.temp_id += 1;
+                const payload_name = try std.fmt.allocPrint(self.allocator, "__errpayload_{d}", .{self.temp_id});
+                try self.catch_errors.append(self.allocator, .{ .name = catch_expr.err_name, .ty = caught_set, .payload = payload_name });
                 defer _ = self.catch_errors.pop();
                 const err_value = try self.emit(error_ty, .{ .try_err = value });
                 try self.emitNoResult(error_ty, .{ .store_local = .{ .name = catch_expr.err_name, .value = err_value } });
                 // Stash the error payload so `if e == .v |c|` in the handler can
-                // recover it (the binding loads `__errpayload`). The payload
+                // recover it (the binding loads the stash). The payload
                 // shares the fallible's value slot, so its type is the ok type.
                 const ok_ty: IrType = switch (self.exprType(catch_expr.value.*)) {
                     .fallible => |fallible| fallible.ok.*,
                     else => .unknown,
                 };
                 const payload_value = try self.emit(ok_ty, .{ .try_payload = value });
-                try self.emitNoResult(ok_ty, .{ .store_local = .{ .name = "__errpayload", .value = payload_value } });
-                try self.local_types.put("__errpayload", ok_ty);
+                try self.emitNoResult(ok_ty, .{ .store_local = .{ .name = payload_name, .value = payload_value } });
+                try self.local_types.put(payload_name, ok_ty);
                 _ = try self.emit(.void, .{ .builtin = .{
                     .name = "catch_handler",
                     .args = try self.allocator.dupe(Value, &.{err_value}),
@@ -4813,6 +4819,22 @@ const FunctionLowerer = struct {
     /// The variants of the error set a sema type names, in declaration order.
     fn errorSetVariantsOf(self: *FunctionLowerer, ty: sema.Ty) ?[]const sema.ErrorVariantInfo {
         return errorSetVariantsIn(self.types, ty);
+    }
+
+    /// The payload stash of the catch whose error `e == .variant` compares: the innermost one
+    /// that names it, or the innermost catch when neither operand is a caught name.
+    fn caughtPayload(self: *FunctionLowerer, cond: ast.Expr) ?[]const u8 {
+        if (self.catch_errors.items.len == 0) return null;
+        const bin = cond.kind.binary;
+        for ([_]ast.Expr{ bin.left.*, bin.right.* }) |operand| if (operand.kind == .ident) {
+            var i = self.catch_errors.items.len;
+            while (i > 0) {
+                i -= 1;
+                const caught = self.catch_errors.items[i];
+                if (std.mem.eql(u8, caught.name, operand.kind.ident)) return caught.payload;
+            }
+        };
+        return self.catch_errors.items[self.catch_errors.items.len - 1].payload;
     }
 
     /// An operand that holds an error: its set's variants, or null for a set that has no list
