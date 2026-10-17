@@ -119,6 +119,76 @@ test "exe: cross-compile to a static Linux ELF (format + resolved entry)" {
     try std.testing.expect(std.mem.readInt(u64, elf[24..32], .little) != 0);
 }
 
+/// A program with a slice parameter: at `-O0` the backend takes the slice apart
+/// (`flatten`), which re-creates the function, and its debug info must go along.
+const debug_info_src =
+    \\first :: fn(xs: []const i32) -> i32 {
+    \\    v := xs[0];
+    \\    return v;
+    \\}
+    \\
+    \\main :: fn() -> i32 {
+    \\    xs: [3]i32 = .{ 4, 5, 6 };
+    \\    return first(xs[:]) - 4;
+    \\}
+;
+
+test "exe: -g writes a PDB beside the program, with its functions and their lines" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+
+    std.Io.Dir.cwd().deleteFile(io, ".zig-cache/dbg_pdb.pdb") catch {};
+    try fels.compileWithLlvm(a, io, .{
+        .file_name = "dbg_pdb.fels",
+        .source = debug_info_src,
+        .obj_path = ".zig-cache/dbg_pdb.o",
+        .exe_path = ".zig-cache/dbg_pdb.exe",
+        .opt_level = 0,
+        .llvm_bin = fels.llvm_path ++ "/bin",
+        // LLD links it (felsld writes no PDB), and needs the SDK's kernel32.lib.
+        .lib_paths = if (fels.windows_sdk_lib_path.len != 0) &.{fels.windows_sdk_lib_path} else &.{},
+        .debug_info = true,
+    });
+    const ran = try std.process.run(a, io, .{ .argv = &.{try runnable(a, ".zig-cache/dbg_pdb.exe")} });
+    try std.testing.expect(ran.term == .exited and ran.term.exited == 0);
+
+    const pdbutil = fels.llvm_path ++ "/bin/llvm-pdbutil.exe";
+    const lines = std.process.run(a, io, .{ .argv = &.{ pdbutil, "dump", "-l", ".zig-cache/dbg_pdb.pdb" } }) catch return error.SkipZigTest;
+    try std.testing.expect(std.mem.indexOf(u8, lines.stdout, "dbg_pdb.fels") != null);
+    const symbols = std.process.run(a, io, .{ .argv = &.{ pdbutil, "dump", "-symbols", ".zig-cache/dbg_pdb.pdb" } }) catch return error.SkipZigTest;
+    try std.testing.expect(std.mem.indexOf(u8, symbols.stdout, "`first`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, symbols.stdout, "`main`") != null);
+}
+
+test "exe: -g puts DWARF sections with the source file into a Linux program" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime !host_runs) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+
+    fels.compileWithLlvm(a, io, .{
+        .file_name = "dbg_dwarf.fels",
+        .source = debug_info_src,
+        .obj_path = ".zig-cache/dbg_dwarf.o",
+        .exe_path = ".zig-cache/dbg_dwarf.elf",
+        .opt_level = 0,
+        .llvm_bin = fels.llvm_path ++ "/bin",
+        .target_os = .linux,
+        .debug_info = true,
+    }) catch return error.SkipZigTest; // no ld.lld to link for Linux with
+    const elf = try std.Io.Dir.cwd().readFileAlloc(io, ".zig-cache/dbg_dwarf.elf", a, .unlimited);
+    try std.testing.expectEqualSlices(u8, "\x7fELF", elf[0..4]);
+    inline for (.{ ".debug_info", ".debug_line", "dbg_dwarf.fels" }) |part| {
+        try std.testing.expect(std.mem.indexOf(u8, elf, part) != null);
+    }
+}
+
 test "exe: the portable fixtures cross-compile to static Linux ELF executables" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
