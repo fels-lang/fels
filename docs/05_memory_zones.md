@@ -102,13 +102,14 @@ process_data :: fn(data: borrow []u8) {
     data[0] = 255u8;
 }
 
-main :: fn() {
+main :: fn() -> i32 {
     zone scratch: Arena {
         buf := scratch.new_slice(u8, 1024);
         
         // Allowed: passing zone memory to a borrow parameter
         process_data(buf);
     }
+    return 0;
 }
 ```
 
@@ -147,21 +148,27 @@ count_a :: fn(text: borrow []const u8) -> i32 {
 ## Example: Building a Temporary String
 
 Zones work well for temporary processing, where you would otherwise use a GC or manage
-malloc/free by hand:
+malloc/free by hand. This program builds a string in a zone buffer and then checks it:
 
 ```fels
 #import std.io.{ println };
 
-format_and_print :: fn() {
+// Copies `s` into `buf` at `at` and returns the position after it.
+put :: fn(buf: borrow []u8, at: usize, s: []const u8) -> usize {
+    for i in 0..s.len { buf[at + i] = s[i]; }
+    return at + s.len;
+}
+
+main :: fn() -> i32 {
     zone temp: Arena {
-        // Allocate buffer for a string
-        buf := temp.new_slice(u8, 128);
-        
-        // Fill it with data (assuming a hypothetical format_into function)
-        // length := format_into(borrow buf, "Hello {}!", 42);
-        
-        // Process the result
-        // println(buf[0..length]);
-    } // Buffer is instantly freed here
+        buf := temp.new_slice(u8, 64);    // the buffer lives in the zone
+        n := put(buf, 0, "Hello, ");      // a plain `buf`: `borrow` is only on the parameter
+        n = put(buf, n, "zones!");
+        if buf[0..n] == "Hello, zones!" { println("built it"); }
+    } // the buffer is freed here
+    return 0;
 }
 ```
+
+You write `borrow` on the parameter, never at the call. The buffer can only go to `borrow`
+parameters, so `println(buf[0..n])` is a compile error, because `println` takes a plain slice.
