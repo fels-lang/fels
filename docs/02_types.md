@@ -53,13 +53,15 @@ Fels's policy for plain `+`, `-`, `*` is fixed and never undefined behavior:
 
 | Build | Plain `+` `-` `*` on overflow |
 | --- | --- |
-| Debug (`-O0`) | **traps** — aborts at the operation, catching the bug at its source |
-| Release (`-O1`+) | **wraps** (two's complement) |
+| `debug`, `release_safe`, `release_small` (`fels build`, `--release`, `-O0` to `-O3`) | **traps** — aborts at the operation, catching the bug at its source |
+| `release_fast` (`--release-fast`, `--unchecked`) | **wraps** (two's complement) |
 
-So overflow is a loud crash while you develop and well-defined wraparound when you
-ship — there is no overflow UB to exploit. When you specifically *want* wraparound
-in every build (hashing, PRNGs, checksums, fixed-width counters), use the explicit
-wrapping operators `+%`, `-%`, `*%`, which never trap:
+So overflow is a loud crash in the builds you develop and ship by default, and well-defined
+wraparound in the one mode that asks for no checks; there is no overflow UB to exploit.
+(`release_fast` also drops the checks on indexing, null pointers, division by zero and shift
+amounts, which are undefined behavior there.) When you specifically *want* wraparound in
+every build (hashing, PRNGs, checksums, fixed-width counters), use the explicit wrapping
+operators `+%`, `-%`, `*%`, which never trap:
 
 ```fels
 a := 250u8 +% 10u8;   // 4   — wraps at 256, never traps
@@ -526,7 +528,7 @@ in `#run` constants and `#compiler` hooks, e.g. `if d.derives == "Sum"`).
 > `==` is defined for byte slices (strings). Compare those element-by-element.
 
 > [!TIP]
-> Slices are the preferred way to pass sequences of data. They are lightweight (just two machine words) and safe (bounds-checked at runtime).
+> Slices are the preferred way to pass sequences of data. They are lightweight (just two machine words) and safe (bounds-checked at runtime, in every build but `release_fast`).
 
 ## Array Types
 

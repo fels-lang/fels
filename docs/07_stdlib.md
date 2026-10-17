@@ -63,8 +63,8 @@ build :: fn(out: []u8, length: u16) -> void ! bytes::BytesError {
   `write_u8`, which have no order. Reads are `(self: []const u8, off: usize) -> T ! BytesError`;
   writes are `(self: []u8, off: usize, v: T) -> void ! BytesError`. A signed value is the
   unsigned one cast: `read_u16_le(b, 0)? as i16`.
-- **Bounds are always checked**, in every build mode (plain slice indexing is checked only
-  at `-O0`). An integer that would not lie wholly inside the slice fails with
+- **Bounds are always checked**, in every build mode (plain slice indexing is too, unless the
+  build is `release_fast`). An integer that would not lie wholly inside the slice fails with
   `.out_of_bounds`, and then nothing was read or written. The offset can be any `usize`
   (even `usize` max); the check cannot overflow. `BytesError` is its own error set, so to
   return a different one from a parser, handle it with `catch` (`?` needs matching sets).

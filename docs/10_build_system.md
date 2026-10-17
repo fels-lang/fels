@@ -55,7 +55,7 @@ because of that split.
 build :: fn(b: Build) {
     // the game
     game := b.executable("game", "src/main.fels");
-    game.release();                      // or .optimize(.release_fast)
+    game.release();                      // optimized, with the safety checks
     game.link("raylib");                 // raylib.lib
     game.link("user32");
     game.lib_path("vendor/raylib/lib");
@@ -324,7 +324,8 @@ fels build <name>           build a named artifact or step
 fels build run [-- args]    build the default exe, then run it
 fels build test             build + run the test step
 fels build --list           list artifacts and steps
-fels build --release        shorthand override (debug → release_fast)
+fels build --release        shorthand override (debug → release_safe)
+fels build --release-fast   the same, without the safety checks (debug → release_fast)
 fels build -D key=value     set an option the script reads via b.option(...)
 fels build --watch          rebuild affected steps on change
 fels build --explain        print the build graph + cache decisions
@@ -421,7 +422,7 @@ build :: fn(b: Build) {
 ```text
 $ fels build            # → bin/app.exe via felsld
 $ fels build run        # → builds, then runs app.exe
-$ fels build --release  # → release_fast override
+$ fels build --release  # → release_safe override
 ```
 
 ## API reference (expanded)
@@ -439,7 +440,14 @@ with it as `/DEFAULTLIB` directives, so the program does not have to name them.
 
 **Optimization** (on `Artifact`): `a.optimize(.debug|.release_safe|.release_fast|.release_small)`,
 or the shorthands `a.debug()`, `a.release_safe()`, `a.release_fast()`, `a.release()`
-(= release_fast), `a.release_small()`.
+(= release_safe), `a.release_small()`.
+
+Every mode but `release_fast` keeps the runtime safety checks: index bounds, null pointers,
+integer overflow, division by zero and shift amounts each stop the program with a message where
+they fail. `release_safe` is optimized as fully as `release_fast`. `release_fast` is the opt-out:
+there an index past the end, a null pointer, a division by zero or a shift past the width is
+undefined behavior and overflow wraps. A single file takes `--release-fast` (`-O2` without the
+checks) or `--unchecked` (no checks at any `-O`).
 
 **Linking**: `a.link_artifact(lib)` links a library this build makes (`b.static` or
 `b.shared`). The library is built first, each artifact once, and a shared library's DLL is
@@ -629,7 +637,7 @@ printed. Tests can import the project's packages.
 | --- | --- |
 | `t.recursive()` | also the tests in the folders below |
 | `t.filter(text)` | only the test files whose path contains `text` |
-| `t.optimize(.release_fast)` | the optimization level (default `.debug`, which keeps the checks) |
+| `t.optimize(.release_fast)` | the optimization level (default `.debug`; every mode but `.release_fast` keeps the checks) |
 | `t.link(lib)` | a library the tests link |
 | `t.link_artifact(lib)` | a library this build makes, built before the tests run |
 
