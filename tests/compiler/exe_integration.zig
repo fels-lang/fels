@@ -1211,6 +1211,35 @@ test "exe: an error's payload is read back, whatever its type" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_payload_kinds_o2", 2, true));
 }
 
+test "exe: a global holds an error of a set with payloads" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Static storage read such a set as a struct and refused it.
+    const src =
+        \\ParseError :: errors { invalid_input, overflow: i64, buffer_full }
+        \\last_error: ParseError = .invalid_input;
+        \\first: ParseError = .buffer_full;
+        \\parse :: fn(k: i32) -> i32 ! ParseError { if k == 1 { fail .overflow { 12i64 }; } fail .buffer_full; }
+        \\size :: fn(e: ParseError) -> i64 { return match e { .overflow |n| => n, .invalid_input => 100i64, .buffer_full => 1000i64 }; }
+        \\FIRST :: #run size(first);
+        \\main :: fn() -> i32 {
+        \\    if last_error != .invalid_input { return 1; }
+        \\    t := size(last_error);
+        \\    v := parse(1) catch e { last_error = e; yield 0; };
+        \\    t += size(last_error);
+        \\    w := parse(2) catch e { last_error = e; yield 0; };
+        \\    if t + size(last_error) != 1112i64 { return 2; }
+        \\    if last_error != .buffer_full { return 3; }
+        \\    if FIRST != 1000i64 { return 4; }
+        \\    return 42;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_global", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_global_o2", 2, true));
+}
+
 test "exe: errors with payloads through void, large, generic and forwarding functions" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
