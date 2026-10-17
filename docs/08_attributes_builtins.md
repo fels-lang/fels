@@ -81,6 +81,7 @@ error). Some builtins require an `unsafe` block (last column).
 | `core::sizeof` | `core::sizeof($T: type) -> usize` | No | Size of `T` in bytes, padding included. |
 | `core::align_of` | `core::align_of($T: type) -> usize` | No | Alignment `T` requires, in bytes. Folds at compile time. |
 | `core::offset_of` | `core::offset_of($T: type, "field") -> usize` | No | Byte offset of `field` in struct `T`; the field is a string literal. Folds at compile time. |
+| `core::has_padding` | `core::has_padding($T: type) -> bool` | No | Whether a `T` has bytes no value sets: padding between or after struct fields (nested ones too), an optional's flag byte, the bytes a smaller enum or error payload leaves. Folds at compile time. |
 | `core::narrow` | `core::narrow($T: type, val) -> T` | No | Truncate a wider integer into a narrower `T`. |
 | `core::type_name` | `core::type_name($T: type) -> []const u8` | No | The type's name as a string. |
 | `core::type_info` | `core::type_info($T: type) -> TypeInfo` | No | Compile-time reflection data (fields, variants, …). |
