@@ -155,7 +155,7 @@ test "self-referencing type: linked list node" {
         \\}
         \\
         \\has_next :: fn(n: *Node) -> bool {
-        \\    if next := n.next {
+        \\    if n.next |next| {
         \\        return true;
         \\    }
         \\    return false;

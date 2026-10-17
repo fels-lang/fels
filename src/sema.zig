@@ -3074,6 +3074,7 @@ const Checker = struct {
             .yield_stmt => |y| try self.checkYield(y),
             .if_stmt => |iff| {
                 if (iff.binding) |binding| {
+                    self.emitWarning(iff.span, "write the name after the optional, `if value |{s}| {{ … }}`, as `while` and `match` bind it: `if {s} := …` will go", .{ binding.name, binding.name });
                     const bound_ty = try self.inferExpr(binding.value);
                     if (bound_ty != .optional) {
                         self.emitError(binding.value.span, "`if {s} :=` requires an optional type, found `{s}`", .{ binding.name, self.formatTy(bound_ty) });
