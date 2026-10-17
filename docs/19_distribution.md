@@ -45,7 +45,9 @@ When all of them miss, `fels bindgen` prints that list.
 
 The compiler writes an object, and then a linker makes the exe from it. The LLD COFF driver is
 compiled into `felslld.dll` (`-Din-process-lld`, `src/backend/llvm/lld_shim.cpp`) and called
-in-process, so `lld-link.exe` is never spawned. The spawn path stays as a fallback.
+in-process. `link.zig` spawns `lld-link.exe` from the LLVM `bin` folder only when `felslld.dll`
+cannot be loaded or lacks its `fels_lld_link_coff` export. When the in-process link runs and
+fails, that error is reported, and there is no second try with the exe.
 
 ## felsld — the native linker
 
@@ -82,8 +84,9 @@ built from source at release time, so there is no committed blob.
 
 ## Optional components
 
-Optional components are folders that you drop into `bin/`. They are found by their location,
-with no env vars and no LLVM install.
+Optional components are zips that you extract into `bin/`, next to `fels.exe`. They are found
+by their location, so they need no LLVM install and no env vars. The variables in the lookup
+order above (`$FELS_LIBCLANG`, `$FELS_LLVM`) are optional overrides.
 
 `fels-bindgen-<ver>-<target>.zip`:
 
@@ -100,6 +103,9 @@ bindgen/
 ld.lld.exe
 README.txt
 ```
+
+These two files sit at the top of the zip, with no folder around them, so `ld.lld.exe` lands
+right next to `fels.exe`. The compiler looks for it there when it links for `--target linux`.
 
 ## Packaging — `scripts/package.ps1`
 
