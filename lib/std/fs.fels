@@ -51,10 +51,8 @@ pub FsError :: errors {
 // start of `buf` for the OS calls (UTF-8; on Windows the runtime makes UTF-16 of it).
 fs_to_cstr :: fn(path: []const u8, buf: []u8) -> *const u8 ! FsError {
     if path.len + 1 > buf.len { fail .path_too_long; }
-    i := 0usize;
-    while i < path.len {
+    for i in 0..path.len {
         buf[i] = path[i];
-        i += 1;
     }
     buf[path.len] = 0;
     return buf.ptr;
@@ -163,14 +161,12 @@ pub make_dir :: fn(path: []const u8) -> void ! FsError {
 
 // Make the folder `path` and every folder above it that is missing (`a/b/c`, with `/` or `\`).
 pub make_dirs :: fn(path: []const u8) -> void ! FsError {
-    i: usize = 1;
-    while i < path.len {
+    for i in 1..path.len {
         c := path[i];
         // the folder up to here, unless that is a drive (`C:`)
         if (c == 47 || c == 92) && path[i - 1] != 58 && !is_dir(path[0..i]) {
             make_dir(path[0..i])?;
         }
-        i += 1;
     }
     make_dir(path)?;
     return;
