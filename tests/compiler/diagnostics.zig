@@ -895,6 +895,23 @@ test "diagnostics: an error is compared with a variant wherever it is" {
     try expectFirstError(a, "Oops :: errors { a, b }\ncode_of :: fn(e: Oops) -> bool { return e == .c; }", &.{"`Oops` has no error variant `.c`"});
 }
 
+test "diagnostics: TARGET's fields are enums, so a misspelt platform is an error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `TARGET` comes with the pipeline's preludes, so these go through `compile`: "enum
+    // `TargetOs` has no variant `.windos`", "... `TargetArch` has no variant `.arm`", and
+    // "`TARGET` is a constant".
+    const bad = [_][]const u8{
+        "main :: fn() -> i32 { if TARGET.os == .windos { return 1; } return 0; }",
+        "main :: fn() -> i32 { if TARGET.arch == .arm { return 1; } return 0; }",
+        "main :: fn() -> i32 { TARGET.debug = false; return 0; }",
+    };
+    for (bad) |src| try std.testing.expectError(error.SemanticFailed, fels.compile(a, "target_bad.fels", src));
+    var fe = try fels.compile(a, "target_ok.fels", "main :: fn() -> i32 { if TARGET.os == .windows && !TARGET.debug { return 1; } return 0; }");
+    fe.deinit(a);
+}
+
 test "diagnostics: a constant is not written to" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

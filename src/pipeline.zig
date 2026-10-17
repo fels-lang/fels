@@ -27,6 +27,37 @@ const any_prelude_id_base: ast.NodeId = 400_000;
 const fieldnav_prelude_id_base: ast.NodeId = 300_000;
 /// Node-id base for the injected `Test` testing prelude (distinct range).
 const testing_prelude_id_base: ast.NodeId = 200_000;
+/// Node-id base for the injected `TARGET` prelude, far above any program's own ids.
+const target_prelude_id_base: ast.NodeId = 3_000_000;
+
+/// What the program is built for, as `TARGET` and `core::os`/`core::arch` report it. The driver
+/// sets it for each compile; anything else (a build script, `fels check`, the language server)
+/// sees the host, in a debug build.
+pub const BuildTarget = struct {
+    os: std.Target.Os.Tag = @import("builtin").os.tag,
+    /// Fels builds for x86-64 only.
+    arch: std.Target.Cpu.Arch = .x86_64,
+    /// Built without optimisation (`-O0`, the `debug` mode).
+    debug: bool = true,
+
+    pub fn osName(self: BuildTarget) []const u8 {
+        return switch (self.os) {
+            .windows => "windows",
+            .linux => "linux",
+            .macos => "macos",
+            else => "unknown",
+        };
+    }
+
+    pub fn archName(self: BuildTarget) []const u8 {
+        return switch (self.arch) {
+            .x86_64 => "x86_64",
+            .aarch64 => "aarch64",
+            else => "unknown",
+        };
+    }
+};
+pub threadlocal var build_target: BuildTarget = .{};
 /// Node-id base for the generated test runner (`test_runner`).
 const test_runner_id_base: ast.NodeId = 250_000;
 
@@ -714,13 +745,24 @@ fn preparePipeline(
     // ordinary programs stay free of these types. Parsed with a high id base so
     // its node ids never collide with the program's; diagnostics keep the
     // user's source/file.
-    const with_prelude = if (usesMetaprogramming(base_module))
-        prependAstPrelude(allocator, base_module) catch |err| switch (err) {
+    // `TARGET`, the platform the program is built for, is an ordinary constant of the
+    // types `TargetInfo`, `TargetOs` and `TargetArch`, declared for this build when the program
+    // names it.
+    const with_target = if (mentionsTarget(base_module, source) and !moduleDefinesConst(base_module, "TARGET"))
+        prependTargetPrelude(allocator, base_module) catch |err| switch (err) {
             error.ParseFailed => return error.ParseFailed,
             error.OutOfMemory => return error.OutOfMemory,
         }
     else
         base_module;
+
+    const with_prelude = if (usesMetaprogramming(with_target))
+        prependAstPrelude(allocator, with_target) catch |err| switch (err) {
+            error.ParseFailed => return error.ParseFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+        }
+    else
+        with_target;
 
     // `type_info(T)` yields a matchable `TypeInfo` value; inject that reflection
     // surface when the module uses it (and doesn't already define `TypeInfo`).
@@ -1414,6 +1456,60 @@ fn prependAnyPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module
     try items.appendSlice(allocator, parsed.module.items);
     try items.appendSlice(allocator, user.items);
     return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
+/// The declarations of `TARGET` for the build being made (`build_target`).
+fn prependTargetPrelude(allocator: std.mem.Allocator, user: ast.Module) !ast.Module {
+    const t = build_target;
+    const src = try std.fmt.allocPrint(allocator,
+        \\pub TargetOs :: enum {{ windows, linux, macos, unknown }}
+        \\pub TargetArch :: enum {{ x86_64, aarch64, unknown }}
+        \\pub TargetInfo :: struct {{ os: TargetOs, arch: TargetArch, debug: bool }}
+        \\pub TARGET : TargetInfo : .{{ .os = .{s}, .arch = .{s}, .debug = {s} }};
+        \\
+    , .{ t.osName(), t.archName(), if (t.debug) "true" else "false" });
+    const parsed = try parser.parseSourceFrom(allocator, "<runtime>", src, target_prelude_id_base);
+    var items: std.ArrayList(ast.Item) = .empty;
+    try items.appendSlice(allocator, parsed.module.items);
+    try items.appendSlice(allocator, user.items);
+    return .{ .file_name = user.file_name, .items = try items.toOwnedSlice(allocator) };
+}
+
+/// Whether a source of the module has the word `TARGET`. A source that has it in a comment
+/// or a string only brings in three declarations the program does not use.
+fn mentionsTarget(module: ast.Module, root_source: []const u8) bool {
+    if (hasWord(root_source, "TARGET")) return true;
+    for (module.items) |item| switch (item) {
+        .function => |f| if (hasWord(f.source, "TARGET")) return true,
+        .const_decl => |d| if (hasWord(d.source, "TARGET")) return true,
+        else => {},
+    };
+    return false;
+}
+
+fn hasWord(text: []const u8, word: []const u8) bool {
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, text, from, word)) |at| {
+        const before_ok = at == 0 or !isIdentChar(text[at - 1]);
+        const end = at + word.len;
+        const after_ok = end == text.len or !isIdentChar(text[end]);
+        if (before_ok and after_ok) return true;
+        from = at + 1;
+    }
+    return false;
+}
+
+fn isIdentChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_';
+}
+
+/// True when the module declares a top-level constant or global named `name`.
+fn moduleDefinesConst(module: ast.Module, name: []const u8) bool {
+    for (module.items) |item| switch (item) {
+        .const_decl => |d| if (std.mem.eql(u8, d.name, name)) return true,
+        else => {},
+    };
+    return false;
 }
 
 /// True when the module declares a top-level type named `name`.

@@ -239,6 +239,11 @@ fn runComptimeTestLane(allocator: std.mem.Allocator, fe: *pipeline.FrontEnd, fil
     fe.module = ir.pruneTestDecls(fe.arena.allocator(), fe.module) catch fe.module;
 }
 
+/// What `TARGET` and `core::os` report while `opts` is compiled.
+fn buildTargetOf(opts: LlvmCompileOptions) pipeline.BuildTarget {
+    return .{ .os = opts.target_os, .debug = opts.opt_level == 0 };
+}
+
 /// Full pipeline: source → IR → LLVM IR → .o → (optional) .exe
 pub fn compileWithLlvm(
     allocator: std.mem.Allocator,
@@ -246,6 +251,9 @@ pub fn compileWithLlvm(
     opts: LlvmCompileOptions,
 ) LlvmDriverError!void {
     if (!build_options.enable_llvm) return error.LlvmNotEnabled;
+    const saved_target = pipeline.build_target;
+    pipeline.build_target = buildTargetOf(opts);
+    defer pipeline.build_target = saved_target;
 
     // compileWithRuntime auto-prepends the platform runtime (@panic, assert, etc.)
     var fe = pipeline.compileWithRuntimeTarget(allocator, opts.file_name, opts.source, opts.target_os, opts.link_libc) catch |err| switch (err) {
@@ -273,6 +281,9 @@ pub fn compileFileWithLlvm(
     opts: LlvmCompileOptions,
 ) LlvmDriverError!void {
     if (!build_options.enable_llvm) return error.LlvmNotEnabled;
+    const saved_target = pipeline.build_target;
+    pipeline.build_target = buildTargetOf(opts);
+    defer pipeline.build_target = saved_target;
 
     const ct0 = ir.comptime_ns;
     const t_total = nowNs();
