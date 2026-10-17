@@ -1,20 +1,20 @@
 # The Fels Build System (`build.fels`)
 
-Your build is a Fels program that runs inside the compiler. No Makefiles, no CMake,
-no second language. The two pieces are already there: the comptime VM that executes
-the compiler's IR, and the `#compiler` message loop that inspects and generates the
-program. The build system sits on top.
+In Fels, your build is a Fels program that runs inside the compiler. There are no Makefiles,
+no CMake and no second language. The build system sits on top of two pieces the compiler
+already has: the comptime VM that executes the compiler's IR, and the `#compiler` message
+loop that inspects and generates the program.
 
-Planned on the same base: capability-sandboxed dependency builds (the structural fix
-for the `build.rs` problem), a content-hashed parallel build graph, typed-AST codegen,
-targets as values, and `--watch` on the `felsld` linker.
+More is planned on the same base. Dependency builds are to run in a capability sandbox, which
+is the structural fix for the `build.rs` problem. A content-hashed parallel build graph,
+typed-AST codegen, targets as values and `--watch` on the `felsld` linker are planned as well.
 
-This is the design. The VM/metaprogramming foundation is in
+This page is the design. The VM and metaprogramming foundation it builds on is described in
 [09_comptime.md](09_comptime.md).
 
 ## 1. The file and the execution model
 
-A project has a **`build.fels`** at its root. It defines a `build` procedure:
+A project keeps a **`build.fels`** at its root, and that file defines a `build` procedure:
 
 ```fels
 #import std.build.{ Build };
@@ -25,29 +25,29 @@ build :: fn(b: Build) {
 }
 ```
 
-`fels build` (no file argument) finds `./build.fels` and **runs `build(b)` inside the
-comptime VM** — the same engine behind `#run` and `#compiler`. There is no
-separate "build binary": the build script never touches the disk to compile
-itself; it executes as compile-time Fels. After it returns, the compiler reads the
+When you run `fels build` without a file argument, it finds `./build.fels` and **runs
+`build(b)` inside the comptime VM**. That is the same engine behind `#run` and `#compiler`.
+There is no separate "build binary": the build script never touches the disk to compile
+itself, because it executes as compile-time Fels. After it returns, the compiler reads the
 populated `Build` value back out of VM memory and executes the plan.
 
-This is Jai's model (`#run build()`), minus the boilerplate. For Jai familiarity
-`#run build();` is also accepted, but bare `fels build` is the idiom.
+This is Jai's model (`#run build()`) without the boilerplate. If you come from Jai,
+`#run build();` is also accepted, but the idiom in Fels is a bare `fels build`.
 
 **Three layers:**
 
 | Layer | Audience | Surface |
 | --- | --- | --- |
-| **0 — default** | `fels build main.fels` | No `build.fels`; CLI flags → options. (Exists today.) |
+| **0 — default** | `fels build main.fels` | No `build.fels`, CLI flags become options. (Exists today.) |
 | **1 — declarative builder** | 90% of projects | `Build`/`Artifact`/`Step` + methods. Pure data. |
 | **2 — workspaces & options** | power users | Jai-parity `Workspace`, full `Options` struct, `add_file`/`add_source`/`add_quote`. |
 | **3 — compiler intercept** | tooling, codegen | the message loop: `wait_message`, typed `Message`, `set_status`. |
 
 ## 2. Layer 1 — the declarative builder
 
-The everyday API. Methods on `*Build` and `*Artifact` (UFCS), which only populate
-data — the compiler performs the effects. The build is deterministic and sandboxable
-because of that split.
+Layer 1 is the everyday API. It is a set of methods on `*Build` and `*Artifact` (UFCS) that
+only populate data, while the compiler performs the effects. That split is what makes the
+build deterministic and sandboxable.
 
 ```fels
 #import std.build.{ Build };
@@ -121,11 +121,11 @@ pub Artifact :: struct {
 
 ## 3. Layer 2 — workspaces & build options (Jai parity)
 
-A workspace is an isolated compilation environment, as in Jai. Layer 1 makes one
-per artifact; in Layer 2 you drive them directly.
+A workspace is an isolated compilation environment, as in Jai. Layer 1 makes one for each
+artifact, and in Layer 2 you drive them yourself.
 
 > Planned: Layer 2 is not built yet (see the plan in section 9). Today
-> `b.workspace(name)` only names the build. `#quote { … }` holds statements, so quoting
+> `b.workspace(name)` only names the build. A `#quote { … }` holds statements, so quoting
 > a top-level declaration such as `build_id :: 0xC0FFEE;` is part of this plan too.
 
 ```fels
@@ -188,15 +188,15 @@ pub Check    :: enum { off, on, always }
 pub DeadCode :: enum { none, used, all }
 ```
 
-`set_optimization(o, .release_fast)` is sugar that flips the whole safety/codegen
-block at once, like Jai's `set_optimization`.
+`set_optimization(o, .release_fast)` is sugar that flips the whole safety and codegen block
+at once, like Jai's `set_optimization`.
 
 ## 4. Layer 3 — the compiler intercept (message loop)
 
-This is the Jai message loop, built on Fels's `#compiler` hook + `core::compiler_decls()`
-(already implemented). Register interest in a workspace, then pull typed messages
-as each phase finishes a unit — and **inspect or alter the program** before it
-lowers.
+This is the Jai message loop, built on Fels's `#compiler` hook and `core::compiler_decls()`,
+which are already implemented. You register interest in a workspace and then pull typed
+messages as each phase finishes a unit. That lets you **inspect or alter the program** before
+it lowers.
 
 > Planned: the Layer 3 surface below is not built yet (see the plan in section 9).
 
@@ -240,20 +240,20 @@ pub Message :: struct {
 }
 ```
 
-Today `core::compiler_decls()` already gives a hook the program's declarations (name +
-kind) at compile time; Layer 3 generalizes that into the streamed message form
-and adds the typed-AST/type-info handles.
+Today `core::compiler_decls()` already gives a hook the program's declarations (name and
+kind) at compile time. Layer 3 generalizes that into the streamed message form and adds the
+typed-AST and type-info handles.
 
 ## 5. The distinctive parts
 
-> Planned: this section is design. Of it, only the gating of comptime FFI is built so far
-> (see the plan in section 9); `*Caps`, `#provided`, `add_quote`, `Target` values,
-> `--watch` and `b.codegen` do not exist yet.
+> Planned: this section is design. The only part of it built so far is the gating of
+> comptime FFI (see the plan in section 9). `*Caps`, `#provided`, `add_quote`, `Target`
+> values, `--watch` and `b.codegen` do not exist yet.
 
 ### 5.1 Capability-sandboxed dependency builds — the supply-chain fix
-Jai's build is arbitrary code with full host access; so is `build.rs`. **Fels hands
-every build hook a capability set.** A dependency's `build.fels` receives a
-`*Caps` it cannot forge or widen:
+In Jai, the build is arbitrary code with full access to the host, and the same is true of
+`build.rs`. **Fels hands every build hook a capability set.** A dependency's `build.fels`
+receives a `*Caps` that it cannot forge or widen:
 
 ```fels
 // vendor/raylib/build.fels  — runs sandboxed
@@ -267,22 +267,22 @@ build :: fn(b: Build, caps: *Caps) {
 }
 ```
 
-The root build grants capabilities explicitly:
-`b.require_path("raylib", "vendor/raylib").allow(.read_self)`. A dependency that
-never received `shell`/`net`/`write` *physically cannot* reach them — it's
-enforced by the VM's capability table, not policy. This is the structural answer
-to the build-script supply-chain hole.
+The root build grants capabilities explicitly, as in
+`b.require_path("raylib", "vendor/raylib").allow(.read_self)`. A dependency that never
+received `shell`, `net` or `write` *physically cannot* reach them. The VM's capability table
+enforces this, so it does not rest on policy. This is the structural answer to the
+build-script supply-chain hole.
 
 ### 5.2 Content-hashed, parallel build graph
-Steps and artifacts form a DAG. Each step declares inputs/outputs and is
-**content-hashed**: unchanged steps are skipped, independent steps run in
-parallel. Jai's build is largely linear; Fels's is incremental by construction.
-`fels build --explain` prints the graph and why each step ran or was cached.
+Steps and artifacts form a DAG. Each step declares its inputs and outputs and is
+**content-hashed**, so unchanged steps are skipped and independent steps run in parallel.
+Jai's build is largely linear, while the one in Fels is incremental by construction.
+`fels build --explain` prints the graph and tells you why each step ran or was cached.
 
 ### 5.3 Typed-AST codegen + `#provided`
-Generated code goes in as **typed AST** (`w.add_quote(#quote { … })`), validated
-at the generation site — not a raw string that fails at splice time. The
-`#provided NAME;` directive is Fels's typed `#placeholder`: it promises a symbol the
+Generated code goes in as **typed AST** (`w.add_quote(#quote { … })`) and is validated at
+the generation site. It is not a raw string that would only fail at splice time. The
+`#provided NAME;` directive is Fels's typed `#placeholder`. It promises a symbol that the
 build will generate, and the type-checker trusts it until the build supplies it.
 
 ```fels
@@ -292,7 +292,7 @@ println(GIT_REV);
 ```
 
 ### 5.4 Targets as values → build matrices
-`Target` is an ordinary value, so cross-compilation is a loop:
+`Target` is an ordinary value, so cross-compilation becomes a loop:
 
 ```fels
 targets: [3]Target = .{ Target.win_x64, Target.linux_x64, Target.macos_arm64 };
@@ -304,17 +304,17 @@ for t in targets {
 ```
 
 ### 5.5 `--watch`, hermetic builds, asset pipelines
-- **`fels build --watch`** re-runs only affected steps on file change; the
-  microsecond-class `felsld` linker makes the loop feel instant.
-- **Hermetic/reproducible:** pin the toolchain, record input hashes, `--frozen`
+- **`fels build --watch`** re-runs only the affected steps when a file changes. The
+  microsecond-class `felsld` linker makes that loop feel instant.
+- **Hermetic/reproducible:** pin the toolchain and record input hashes, and `--frozen`
   fails on lockfile drift.
-- **Asset/codegen steps** (shader compile, embed-file, bindings) are first-class
-  graph nodes with declared inputs/outputs, so they cache and parallelize too.
+- **Asset/codegen steps** (shader compile, embed-file, bindings) are first-class graph nodes
+  with declared inputs and outputs, so they cache and parallelize too.
 
 ### 5.6 Bindings generation, on typed AST
-A `b.codegen` step can read C/C++ headers (or, natively, introspect Fels via
-`core::compiler_decls()`/`core::type_info`) and emit **typed AST** bindings into a workspace —
-the safer, faster cousin of Jai's `generate_bindings`.
+A `b.codegen` step can read C/C++ headers, or introspect Fels natively through
+`core::compiler_decls()` and `core::type_info`. From either it emits **typed AST** bindings
+into a workspace, which makes it the safer, faster cousin of Jai's `generate_bindings`.
 
 ## 6. CLI surface
 
@@ -333,13 +333,13 @@ fels build --frozen         fail if the lockfile would change
 fels build <file.fels>        direct single-file build (back-compat, today's behavior)
 ```
 
-Like Jai (`-- meta Build`) and the Default_Metaprogram, the no-`build.fels` path is
-the built-in default metaprogram: it just turns flags into `Options`.
+The path without a `build.fels` is the built-in default metaprogram, as in Jai
+(`-- meta Build`) with its Default_Metaprogram. All it does is turn flags into `Options`.
 
 ## 7. Source locations
 
-For asserts, logging and codegen, `core::` constants fold to a literal where they are written
-(see [Builtins](08_attributes_builtins.md#source-location--target-constants)):
+For asserts, logging and codegen, the `core::` constants below fold to a literal right where
+you write them (see [Builtins](08_attributes_builtins.md#source-location--target-constants)):
 
 | Constant | Meaning |
 | --- | --- |
@@ -349,8 +349,8 @@ For asserts, logging and codegen, `core::` constants fold to a literal where the
 | `core::line` | the line it is written on |
 | `core::column` | the column |
 
-Not there yet, compared with Jai: the folder of the file (`#filepath`), the location of a
-piece of code (`#location(x)`), and the caller's location as a default argument
+Compared with Jai, three things are not there yet: the folder of the file (`#filepath`), the
+location of a piece of code (`#location(x)`), and the caller's location as a default argument
 (`#caller_location`).
 
 ## 8. Jai → Fels mapping (and the extensions)
@@ -366,14 +366,14 @@ piece of code (`#location(x)`), and the caller's location as a default argument
 | `#placeholder` | `#provided` (typed) |
 | `compiler_begin_intercept` / `wait_for_message` / `end_intercept` | `w.intercept()` / `w.wait_message()` / `w.end_intercept()` |
 | `compiler_set_workspace_status(.FAILED)` | `w.set_status(.failed)` |
-| `set_build_options_dc(.{do_output=false})` | implicit — the build script never self-compiles to an exe |
+| `set_build_options_dc(.{do_output=false})` | implicit: the build script never self-compiles to an exe |
 | Default_Metaprogram | `fels build` with no `build.fels` |
 | `generate_bindings` | `b.codegen` step emitting typed AST |
 | — | **capabilities/sandbox, content-hashed parallel graph, `--watch`, target matrix, hermetic/`--frozen`** |
 
 ## 9. Implementation plan
 
-What the build system needs, against what already exists:
+Here is what the build system needs, set against what already exists:
 
 | Piece | Status |
 | --- | --- |
@@ -388,21 +388,21 @@ What the build system needs, against what already exists:
 | `test_dir` step execution | ✅ done |
 | Build graph: deps/steps DAG, topo order, parallel | later |
 | Content hashing + incremental + `--watch` | later |
-| Capabilities / `*Caps` sandbox + VM capability table | ⏳ slices 1–2 done — comptime FFI is gated in `src/vm/engine.zig`, and the grant is per-library with conservative narrowing; the `*Caps` surface in `build.fels` is open |
+| Capabilities / `*Caps` sandbox + VM capability table | ⏳ slices 1–2 done: comptime FFI is gated in `src/vm/engine.zig`, and the grant is per-library with conservative narrowing. The `*Caps` surface in `build.fels` is open |
 | `add_quote` typed codegen / `#provided` / `define` injection | later (extends `#quote`/`#insert`) |
 | Layer 2 (`workspace`/`Options`) + Layer 3 (intercept) surface | later |
-| Cross-compile targets | ✅ Linux x86-64 (`a.target(.linux)`, `.linux_gnu`); macOS later |
+| Cross-compile targets | ✅ Linux x86-64 (`a.target(.linux)`, `.linux_gnu`), macOS later |
 
-**Execution mechanism (as built):** instead of reading the `Build` struct back
-out of VM memory, the builder methods call `__build_*` compiler intrinsics that
-lower (in the VM) to a new `host_call` opcode. The VM's `Vm.host` bridge forwards
-each call to the build driver, which records it into a `BuildPlan` (so config is
-captured imperatively as the script runs — robust, no fragile offset math, and
-the model Jai itself uses). `Build`/`Artifact` are tiny value handles carrying an
-id; all state lives in the driver.
+**Execution mechanism (as built):** the compiler does not read the `Build` struct back out
+of VM memory. Instead, the builder methods call `__build_*` compiler intrinsics, which lower
+(in the VM) to a new `host_call` opcode. The VM's `Vm.host` bridge forwards each call to the
+build driver, and the driver records it into a `BuildPlan`. So the config is captured
+imperatively while the script runs. That is robust, needs no fragile offset math, and is the
+model Jai itself uses. `Build`/`Artifact` are tiny value handles that carry an id, and all
+the state lives in the driver.
 
-**Build order from here:** dependency/build graph + incremental → the rest of the
-capability system → Layers 2–3 surface → cross-compile.
+**Build order from here:** first the dependency/build graph and incremental builds, then the
+rest of the capability system, then the surface of Layers 2–3, and last cross-compile.
 
 ## 10. Minimal end-to-end (the target for v1)
 
@@ -427,31 +427,33 @@ $ fels build --release  # → release_safe override
 
 ## API reference (expanded)
 
-The full `std.build` surface. `b` is the `Build` handle; `a` an `Artifact`.
+This is the full `std.build` surface. Below, `b` is the `Build` handle and `a` is an
+`Artifact`.
 
-**Declare artifacts** (on `Build`):
-`b.executable(name, root)`, `b.shared(name, root)` (.dll),
-`b.static(name, root)` (.lib), `b.object(name, root)` (.o) — all return an `Artifact`.
+**Declare artifacts** (on `Build`): `b.executable(name, root)`, `b.shared(name, root)` (.dll),
+`b.static(name, root)` (.lib) and `b.object(name, root)` (.o). All of them return an
+`Artifact`.
 
-A static library is an archive of the compiled object. Only its `#export`ed functions and
-globals are visible to the program that links it; the runtime it carries stays private, so it
-does not clash with the program's own. The libraries its `#extern` functions come from travel
+A static library is an archive of the compiled object. The program that links it sees only
+its `#export`ed functions and globals. The runtime it carries stays private, so it does not
+clash with the program's own. The libraries that its `#extern` functions come from travel
 with it as `/DEFAULTLIB` directives, so the program does not have to name them.
 
 **Optimization** (on `Artifact`): `a.optimize(.debug|.release_safe|.release_fast|.release_small)`,
-or the shorthands `a.debug()`, `a.release_safe()`, `a.release_fast()`, `a.release()`
-(= release_safe), `a.release_small()`.
+or one of the shorthands `a.debug()`, `a.release_safe()`, `a.release_fast()`, `a.release()`
+(= release_safe) and `a.release_small()`.
 
-Every mode but `release_fast` keeps the runtime safety checks: index bounds, null pointers,
-integer overflow, division by zero and shift amounts each stop the program with a message where
-they fail. `release_safe` is optimized as fully as `release_fast`. `release_fast` is the opt-out:
-there an index past the end, a null pointer, a division by zero or a shift past the width is
-undefined behavior and overflow wraps. A single file takes `--release-fast` (`-O2` without the
-checks) or `--unchecked` (no checks at any `-O`).
+Every mode except `release_fast` keeps the runtime safety checks. Index bounds, null
+pointers, integer overflow, division by zero and shift amounts are all checked, and each one
+stops the program with a message where it fails. `release_safe` is optimized as fully as
+`release_fast`. `release_fast` is the opt-out. In it, an index past the end, a null pointer,
+a division by zero or a shift past the width is undefined behavior, and overflow wraps. When
+you build a single file, you can pass `--release-fast` (`-O2` without the checks) or
+`--unchecked` (no checks at any `-O`).
 
-**Linking**: `a.link_artifact(lib)` links a library this build makes (`b.static` or
-`b.shared`). The library is built first, each artifact once, and a shared library's DLL is
-copied next to the program:
+**Linking**: `a.link_artifact(lib)` links a library that this build makes (`b.static` or
+`b.shared`). The library is built first, each artifact is built once, and a shared library's
+DLL is copied next to the program:
 
 ```fels
 util := b.static("util", "src/util.fels");
@@ -459,46 +461,54 @@ app := b.executable("app", "src/main.fels");
 app.link_artifact(util);
 ```
 
-`a.link(lib)` (once per library), `a.system_library(name)` (alias),
-`a.lib_path(dir)`, `a.link_flag(raw)` — a raw flag passed straight to the linker,
-`a.link_libc()` — link the C runtime (for C libraries built against it),
-`a.link_mode(.dynamic|.static)` / `a.dynamic()` / `a.static_link()` — choose how C
-libraries link (`.static` also links the C runtime), and
-`a.runtime_file(path)` — copy a runtime dependency (e.g. a `.dll`) next to the
-output, and `a.no_default_libs()` — keep strict `/NODEFAULTLIB` instead of honoring
-a static C library's own `/DEFAULTLIB` directives. **Usually you need none of
-these:** the build inspects each linked `.lib` and auto-copies an import library's
-DLL or auto-links the C runtime (and pulls in its system deps via its `/DEFAULTLIB`
-directives) for a static archive. See [docs/11 → Linking](11_c_interop.md) for the
-static-vs-dynamic workflow and cross-platform linking.
+The other linking calls:
 
-**Executable settings**: `a.subsystem(.console|.windows)`, `a.console()`,
-`a.windowed()` (GUI — no console window), `a.entry(symbol)`, `a.stack_size(bytes)`.
-These force the LLD path (the fast felsld linker can't apply them).
+- `a.link(lib)` links a library, with one call per library. `a.system_library(name)` is an
+  alias for it.
+- `a.lib_path(dir)` adds a folder to search for libraries.
+- `a.link_flag(raw)` passes a raw flag straight to the linker.
+- `a.link_libc()` links the C runtime, for C libraries built against it.
+- `a.link_mode(.dynamic|.static)`, `a.dynamic()` and `a.static_link()` choose how C
+  libraries link (`.static` also links the C runtime).
+- `a.runtime_file(path)` copies a runtime dependency (e.g. a `.dll`) next to the output.
+- `a.no_default_libs()` keeps strict `/NODEFAULTLIB` instead of honoring a static C
+  library's own `/DEFAULTLIB` directives.
 
-**Target**: `a.target(.windows | .linux | .linux_gnu)` builds the artifact for another OS, also
-from Windows: `.linux` is a static ELF without libc, `.linux_gnu` links glibc dynamically, and
-`a.sysroot(dir)` says where glibc is. A Linux output has no `.exe`. `a.strip()` leaves the
-symbol table out of a Linux output (a Windows output has none). `b.host_os()` returns the OS
-`fels build` runs on (`.windows`, `.linux`, `.macos`, `.other`), so a script can choose per
-platform. Libraries for Linux are not supported yet, and there is no debug information
-(DWARF/CodeView) in the output yet.
+**Usually you need none of these.** The build inspects each linked `.lib`. For an import
+library it copies the DLL automatically. For a static archive it links the C runtime
+automatically and pulls in the archive's system deps through its `/DEFAULTLIB` directives.
+See [docs/11 → Linking](11_c_interop.md) for the static-vs-dynamic workflow and
+cross-platform linking.
 
-**Output**: `a.output(path)` (explicit), `a.out_dir(dir)` (a directory, name derived),
-and the workspace-wide `b.out_root(dir)` (a per-artifact `out_dir` wins).
+**Executable settings**: `a.subsystem(.console|.windows)`, `a.console()`, `a.windowed()`
+(GUI, without a console window), `a.entry(symbol)` and `a.stack_size(bytes)`. These force the
+LLD path, because the fast felsld linker can't apply them.
 
-**Metadata**: `a.version(semver)` and `a.description(text)`, shown by `--list` and the summary.
+**Target**: `a.target(.windows | .linux | .linux_gnu)` builds the artifact for another OS,
+and this works from Windows too. `.linux` is a static ELF without libc, `.linux_gnu` links
+glibc dynamically, and `a.sysroot(dir)` says where glibc is. A Linux output has no `.exe`.
+`a.strip()` leaves the symbol table out of a Linux output (a Windows output has none).
+`b.host_os()` returns the OS that `fels build` runs on (`.windows`, `.linux`, `.macos`,
+`.other`), so a script can choose per platform. Libraries for Linux are not supported yet,
+and the output does not carry debug information (DWARF/CodeView) yet.
+
+**Output**: `a.output(path)` sets an explicit path, and `a.out_dir(dir)` sets a directory and
+derives the name. There is also the workspace-wide `b.out_root(dir)`, but a per-artifact
+`out_dir` wins over it.
+
+**Metadata**: `a.version(semver)` and `a.description(text)` are shown by `--list` and in the
+summary.
 
 **Install**: `fels build install` builds every artifact marked with `a.install()` and copies
-it into the install prefix: programs and DLLs (with the DLLs copied next to them) to `bin/`,
-static and import libraries to `lib/`. `b.install_file(src, dest)` and
+it into the install prefix. Programs and DLLs go to `bin/` (with the DLLs copied next to
+them), and static and import libraries go to `lib/`. `b.install_file(src, dest)` and
 `b.install_dir(src, dest)` add files and folders, with `dest` relative to the prefix.
 `b.install_prefix(dir)` sets the prefix (default `dist`, relative to build.fels), and
-`fels build install --prefix <dir>` overrides it. A step or artifact the script names
-`install` takes the place of the built-in step.
+`fels build install --prefix <dir>` overrides it. If the script names a step or artifact
+`install`, that one takes the place of the built-in step.
 
 **Constants for the program**: `a.define(name, text)`, `a.define_int(name, value)` and
-`a.define_bool(name, value)` write a `build_options` module the program imports:
+`a.define_bool(name, value)` write a `build_options` module that the program imports:
 
 ```fels
 // build.fels
@@ -510,19 +520,20 @@ app.define_int("MAX_PLAYERS", 8);
 limit := build_options::MAX_PLAYERS;
 ```
 
-`#import build_options` works for every artifact; without a define the module is empty.
+`#import build_options` works for every artifact. Without a define, the module is empty.
 
 **Modules**: `a.add_module(name, dir)` maps an import name to a folder. With
 `app.add_module("mathlib", "deps/mathlib")`, `#import mathlib.ops` reads
-`deps/mathlib/ops.fels` and a bare `#import mathlib` reads `deps/mathlib/mathlib.fels`.
+`deps/mathlib/ops.fels`, and a bare `#import mathlib` reads `deps/mathlib/mathlib.fels`.
 
-**Dependencies**: `b.require_path(name, dir)` / `b.require_git(name, url)` → a dep id;
-`a.depend(dep_id)`.
+**Dependencies**: `b.require_path(name, dir)` and `b.require_git(name, url)` return a dep id,
+which you pass to `a.depend(dep_id)`.
 
-**Workspace**: `b.workspace(name)`, `b.summary()` (print a post-build summary).
+**Workspace**: `b.workspace(name)` names the build, and `b.summary()` prints a summary after
+the build.
 
-**Build options** come from the command line (`fels build -Dname` or `-Dname=value`).
-Each one is declared where the script reads it, with a default and a help text:
+**Build options** come from the command line (`fels build -Dname` or `-Dname=value`). The
+script declares each one at the place where it reads it, with a default and a help text:
 
 | Call | Command line | Returns |
 | --- | --- | --- |
@@ -531,11 +542,11 @@ Each one is declared where the script reads it, with a default and a help text:
 | `b.option_string(name, default, help)` | `-Dname=text` | `[]const u8` |
 | `b.option_choice(name, "a\|b\|c", default, help)` | `-Dname=b` | `[]const u8`, one of the words |
 
-`b.option(name) -> bool` and `b.option_str(name, default)` are the short forms without
-help text. When the same `-D` option is given twice, the last one wins.
+`b.option(name) -> bool` and `b.option_str(name, default)` are the short forms without help
+text. When the same `-D` option is given twice, the last one wins.
 
-`fels build` stops with an error for a `-D` option the script does not declare (usually a
-typo) and for a value of the wrong kind, and lists the options the script has:
+`fels build` stops with an error when it gets a `-D` option the script does not declare
+(usually a typo) or a value of the wrong kind. It then lists the options the script has:
 
 ```text
 $ fels build -Dthread=8
@@ -545,19 +556,20 @@ build options of this build.fels:
   -Dbackend=gl|vulkan|d3d      renderer (default: gl)
 ```
 
-An option read only inside an `if` is declared only when that branch runs, so read options
-at the top of `build`.
+An option that is read only inside an `if` is declared only when that branch runs, so read
+your options at the top of `build`.
 
 **Steps & default**: `b.run_step(name, artifact)`, `b.test_dir(name, dir)`, `b.step(name,
 description)`, `b.command(name, program)`, `b.default(artifact)` and `b.default_step(step)`.
 See [Steps](#steps) below.
 
-See `examples/build_showcase/` for a build.fels exercising most of these.
+For a build.fels that uses most of these, see `examples/build_showcase/`.
 
 ## Steps
 
-A step is a named piece of work: `fels build <name>` builds the artifacts it depends on, runs
-the steps it comes after, then its actions in order. Paths are relative to build.fels.
+A step is a named piece of work. `fels build <name>` first builds the artifacts the step
+depends on and runs the steps it comes after, and then it runs the step's actions in order.
+Paths are relative to build.fels.
 
 ```fels
 gen_tool := b.executable("gen", "tools/gen.fels");
@@ -593,25 +605,25 @@ b.default_step(all);                   // a bare `fels build` runs `all`
 | `s.remove(path)` | remove a file or a folder |
 | `s.print(text)` | print a line when the step runs (`print` from `std.io` prints while the script runs) |
 
-A `Command` takes `c.arg(text)`, `c.arg_output(artifact)` (the absolute path of an
-artifact's output), `c.cwd(dir)` (default: build.fels's folder) and `c.env(key, value)` (added
-to the environment `fels build` runs in). A command that exits with a code other than 0 stops
-the build. `b.command(name, program)` is a step with one command.
+A `Command` takes `c.arg(text)`, `c.arg_output(artifact)` (the absolute path of an artifact's
+output), `c.cwd(dir)` (default: build.fels's folder) and `c.env(key, value)` (added to the
+environment that `fels build` runs in). When a command exits with a code other than 0, the
+build stops. `b.command(name, program)` is a step with one command.
 
-`a.after(step)` runs the step before the artifact is built, for generated code. Each artifact
-is built once and each step runs once per `fels build`, and a step that comes after itself
-is an error.
+`a.after(step)` runs the step before the artifact is built, which is what you want for
+generated code. In one `fels build`, each artifact is built once and each step runs once. A
+step that comes after itself is an error.
 
-`b.run_step(name, artifact)` returns its `Command` too, so a run gets arguments, a working
-directory and environment variables. It also gets the arguments after `--`
-(`fels build run -- --verbose`), and an exit code other than 0 is reported without failing
+`b.run_step(name, artifact)` returns its `Command` too, so you can give a run arguments, a
+working directory and environment variables. It also gets the arguments after `--`
+(`fels build run -- --verbose`). An exit code other than 0 is reported, but it does not fail
 the build.
 
 ## Test steps
 
-`b.test_dir(name, dir)` declares a test step. Running it compiles and runs every
-`*.fels` file directly under `dir` as a standalone program — each one **passes when
-it exits 0**:
+`b.test_dir(name, dir)` declares a test step. When you run it, it compiles and runs every
+`*.fels` file directly under `dir` as a standalone program, and each one **passes when it
+exits 0**:
 
 ```sh
 fels build test          # the step named "test"
@@ -626,10 +638,10 @@ running tests in tests/
 2 passed, 1 failed
 ```
 
-A test is just a `.fels` with a `main :: fn() -> i32` that returns `0` on success
-and non-zero on failure. The step itself fails (non-zero `fels build` exit) if any
-test fails, so it drops cleanly into CI. A failing test shows its exit code and what it
-printed. Tests can import the project's packages.
+A test is a `.fels` file with a `main :: fn() -> i32` that returns `0` on success and
+non-zero on failure. If any test fails, the step itself fails (non-zero `fels build` exit),
+so it drops cleanly into CI. A failing test shows its exit code and what it printed. Tests
+can import the project's packages.
 
 `b.test_dir` returns a `Tests` handle:
 
@@ -645,12 +657,13 @@ printed. Tests can import the project's packages.
 
 ## Up to date
 
-`fels build` does not build an artifact again when nothing it depends on changed. Per artifact
-it keeps a stamp in `.fels-cache/build/<name>/inputs`: a hash of the artifact's settings, the
-import roots, the capabilities of the packages and the compiler itself, and the hash of every
-file the last build read (the sources and what they import, `std`, `build_options`, the
-libraries it linked). When all of them match and the output exists, the artifact is
-"up to date". A changed option reaches the program through `build_options` and builds it again.
+`fels build` does not build an artifact again when nothing it depends on has changed. For
+each artifact it keeps a stamp in `.fels-cache/build/<name>/inputs`. The stamp holds a hash
+of the artifact's settings, the import roots, the capabilities of the packages and the
+compiler itself. It also holds the hash of every file the last build read: the sources and
+what they import, `std`, `build_options` and the libraries it linked. When all of them match
+and the output exists, the artifact is "up to date". A changed option reaches the program
+through `build_options`, so the program is built again.
 
 ```text
 $ fels build
@@ -659,19 +672,19 @@ $ fels build
   up to date: plugin
 ```
 
-`fels build --rebuild` builds every artifact anyway. Compile-time code that reads other files
-through `#extern` calls is not tracked; rebuild after changing such a file.
+`fels build --rebuild` builds every artifact anyway. Compile-time code that reads other
+files through `#extern` calls is not tracked, so rebuild after you change such a file.
 
 ## Printing from build.fels
 
-`print` and `println` from `std.io` work in a build script and in `#run` code. At compile time
-their output goes to the compiler's output, next to `fels build`'s own lines.
+`print` and `println` from `std.io` work in a build script and in `#run` code. At compile
+time their output goes to the compiler's output, next to `fels build`'s own lines.
 
 ## Inspecting the plan
 
-`fels build --list` prints the resolved plan without building anything — every
-artifact with its kind, optimization level, version, install flag, and linked
-libraries, plus the declared steps and their targets and the build options:
+`fels build --list` prints the resolved plan without building anything. It shows every
+artifact with its kind, optimization level, version, install flag and linked libraries.
+After the artifacts come the declared steps with their targets, and then the build options:
 
 ```text
 workspace: my-app
