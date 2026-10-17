@@ -5,6 +5,19 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ## Unreleased
 
+### Added
+
+- **Values in printed text.** `io::println("{name} has {n} items")`: a string literal passed to
+  a `Format` parameter has its values in braces, any expression, with an optional spec
+  (`{x:>8}`, `{id:06}`, `{flags:x}`, `{ratio:.2}`, `{s:?}`). The compiler reads the literal,
+  checks the values where the call is, and points into the string at a mistake. Every type
+  prints by its shape: numbers, text, enums by their variant, errors by their name, optionals,
+  slices and arrays (`[1, 2]`), structs (`Point{ x: 1, y: 2 }`). A type with
+  `format :: fn(self, f: *Formatter)` prints itself, inside other values too. `print`,
+  `println`, `eprint`, `eprintln` and `w.write_fmt` on any `*Writer` take one, so does a
+  function of the program, and printing works at compile time. Other text passed as a
+  `Format` prints as it is. `print_u64`, `print_i64` and the rest are deprecated.
+
 ### Changed
 
 - **Builds and tests are much faster.** Strata, about 24,000 lines, builds in 3.0 s, not
@@ -40,6 +53,9 @@ the major version is `0`, any minor bump may break source compatibility.
 
 ### Fixed
 
+- A lambda that captured an optional compared it whole: `o == null` failed to build.
+- A `#compiler` hook ran without the types std uses (`TypeInfo`, `Any`), and stopped.
+- The field navigators of `Any` (`any_field_at`) know array fields (`[4]u8`).
 - On Linux and macOS every time read 0 (`-t` showed `0.00 ms` for every stage): the clock was
   only built for Windows.
 
