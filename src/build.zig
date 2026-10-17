@@ -1426,7 +1426,8 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
         .honor_defaultlibs = honor_defaultlibs,
     });
     const stamp = std.fmt.allocPrint(a, "{s}/.fels-cache/build/{s}/inputs", .{ base_dir, art.name }) catch return error.OutOfMemory;
-    const fresh = !opts.rebuild and fileExists(io, out_path) and upToDate(gpa, io, stamp, key);
+    const stale: Stale = if (opts.rebuild) .asked else if (!fileExists(io, out_path)) .no_output else try staleness(gpa, io, plan, stamp, key);
+    const fresh = stale == .fresh;
     if (fresh) {
         plan.fresh += 1;
         if (!opts.quiet) std.debug.print("{s} {s} {s}up to date{s}\n", .{ ui.mark(.skip), art.name, ui.pal.dim(), ui.pal.reset() });
@@ -1474,7 +1475,12 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
         plan.built += 1;
         var d: [48]u8 = undefined;
         var b: [160]u8 = undefined;
-        if (!opts.quiet) std.debug.print("{s} {s} {s}\u{2192}{s} {s}  {s}  {s}({s}){s}\n", .{ ui.mark(.ok), art.name, ui.pal.dim(), ui.pal.reset(), out_path, ui.dimDuration(&d, took), ui.pal.dim(), ui.stageBreakdown(&b, timings), ui.pal.reset() });
+        var z: [24]u8 = undefined;
+        const bytes = if (std.Io.Dir.cwd().statFile(io, out_path, .{})) |st| ui.size(&z, st.size) else |_| "";
+        if (!opts.quiet) {
+            std.debug.print("{s} {s} {s}\u{2192}{s} {s}  {s}{s}{s}  {s}  {s}({s}){s}\n", .{ ui.mark(.ok), art.name, ui.pal.dim(), ui.pal.reset(), out_path, ui.pal.dim(), bytes, ui.pal.reset(), ui.dimDuration(&d, took), ui.pal.dim(), ui.stageBreakdown(&b, timings), ui.pal.reset() });
+            printWhy(stale, out_path);
+        }
     }
 
     // Copy runtime dependencies next to the output — both the explicit
@@ -1631,24 +1637,28 @@ const KeyParts = struct {
     honor_defaultlibs: bool,
 };
 
-/// A hash of everything about an artifact's build that is not a file's text: its settings,
-/// the import roots, and the compiler that builds it.
-fn settingsKey(io: std.Io, plan: *BuildPlan, art: Artifact, parts: KeyParts) BuildError!u64 {
-    var h = std.hash.Wyhash.init(0x5fe15);
+/// What an artifact's build depends on besides the text of its files, as two hashes: the
+/// compiler that builds it, and its settings (and the import roots), so that the build can say
+/// which of them changed.
+const Keys = struct { fels: u64, settings: u64 };
+
+fn settingsKey(io: std.Io, plan: *BuildPlan, art: Artifact, parts: KeyParts) BuildError!Keys {
     const str = struct {
         fn add(hh: *std.hash.Wyhash, s: []const u8) void {
             hh.update(s);
             hh.update(&.{0});
         }
     }.add;
-    str(&h, build_options.version);
+    var f = std.hash.Wyhash.init(0xfe15);
+    str(&f, build_options.version);
     if (std.process.executablePathAlloc(io, plan.a())) |exe| {
-        str(&h, exe);
+        str(&f, exe);
         if (std.Io.Dir.cwd().statFile(io, exe, .{})) |st| {
-            h.update(std.mem.asBytes(&st.size));
-            h.update(std.mem.asBytes(&st.mtime));
+            f.update(std.mem.asBytes(&st.size));
+            f.update(std.mem.asBytes(&st.mtime));
         } else |_| {}
     } else |_| {}
+    var h = std.hash.Wyhash.init(0x5fe15);
     str(&h, art.name);
     str(&h, art.root);
     str(&h, @tagName(art.kind));
@@ -1677,7 +1687,7 @@ fn settingsKey(io: std.Io, plan: *BuildPlan, art: Artifact, parts: KeyParts) Bui
             .libs => |libs| for (libs) |l| str(&h, l),
         }
     }
-    return h.final();
+    return .{ .fels = f.final(), .settings = h.final() };
 }
 
 fn hashFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?u64 {
@@ -1686,32 +1696,89 @@ fn hashFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?u64 {
     return std.hash.Wyhash.hash(0, data);
 }
 
-/// Whether the stamp of the last build says the artifact is up to date: the same settings
-/// key, and every file it lists still has the text it had.
-fn upToDate(gpa: std.mem.Allocator, io: std.Io, stamp: []const u8, key: u64) bool {
-    const text = readSource(gpa, io, stamp) orelse return false;
+/// Why an artifact is built again, or that it is up to date.
+const Stale = union(enum) {
+    fresh,
+    /// `--rebuild`.
+    asked,
+    /// Its output is not there.
+    no_output,
+    /// There is no stamp of a build here before.
+    first,
+    /// Another fels built it.
+    fels,
+    /// Its settings changed: an option, a library, a package.
+    settings,
+    /// A file it read has other text now: the first one, and how many did.
+    changed: struct { path: []const u8, count: usize },
+    /// A file it read is gone.
+    gone: []const u8,
+};
+
+/// What the stamp of the last build says: up to date when the keys are the same and every
+/// file it lists still has the text it had, else why not. The paths are allocated on the plan.
+fn staleness(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, stamp: []const u8, keys: Keys) BuildError!Stale {
+    const text = readSource(gpa, io, stamp) orelse return .first;
     defer gpa.free(text);
     var lines = std.mem.tokenizeAny(u8, text, "\r\n");
-    const first = lines.next() orelse return false;
-    if (!std.mem.startsWith(u8, first, "key ")) return false;
-    if ((std.fmt.parseInt(u64, first[4..], 16) catch return false) != key) return false;
+    var fels_seen = false;
+    var changed: ?[]const u8 = null;
+    var count: usize = 0;
     while (lines.next()) |line| {
-        // file <hash> <path>
-        if (!std.mem.startsWith(u8, line, "file ")) return false;
-        const rest = line[5..];
-        const sp = std.mem.indexOfScalar(u8, rest, ' ') orelse return false;
-        const want = std.fmt.parseInt(u64, rest[0..sp], 16) catch return false;
-        const got = hashFile(gpa, io, rest[sp + 1 ..]) orelse return false;
-        if (got != want) return false;
+        const hex = struct {
+            fn at(l: []const u8, prefix: []const u8) ?u64 {
+                if (!std.mem.startsWith(u8, l, prefix)) return null;
+                return std.fmt.parseInt(u64, l[prefix.len..], 16) catch null;
+            }
+        }.at;
+        if (hex(line, "fels ")) |k| {
+            if (k != keys.fels) return .fels;
+            fels_seen = true;
+        } else if (hex(line, "key ")) |k| {
+            if (k != keys.settings) return if (fels_seen) .settings else .fels;
+        } else if (std.mem.startsWith(u8, line, "file ")) {
+            // file <hash> <path>
+            const rest = line[5..];
+            const sp = std.mem.indexOfScalar(u8, rest, ' ') orelse return .first;
+            const want = std.fmt.parseInt(u64, rest[0..sp], 16) catch return .first;
+            const path = rest[sp + 1 ..];
+            const got = hashFile(gpa, io, path) orelse
+                return .{ .gone = plan.a().dupe(u8, path) catch return error.OutOfMemory };
+            if (got != want) {
+                if (changed == null) changed = plan.a().dupe(u8, path) catch return error.OutOfMemory;
+                count += 1;
+            }
+        } else return .first;
     }
-    return true;
+    // A stamp of a fels from before the two keys has no `fels` line.
+    if (!fels_seen) return .fels;
+    if (changed) |path| return .{ .changed = .{ .path = path, .count = count } };
+    return .fresh;
 }
 
-/// Write the stamp of a build: the settings key and the hash of every file it read.
-fn writeStamp(gpa: std.mem.Allocator, io: std.Io, stamp: []const u8, key: u64, files: []const []const u8) void {
+/// The line under a built artifact that says why it was built again; nothing for a first
+/// build or `--rebuild`.
+fn printWhy(stale: Stale, out_path: []const u8) void {
+    const dim = ui.pal.dim();
+    const reset = ui.pal.reset();
+    switch (stale) {
+        .fresh, .asked, .first => {},
+        .no_output => std.debug.print("  {s}because {s} was missing{s}\n", .{ dim, out_path, reset }),
+        .fels => std.debug.print("  {s}because fels changed{s}\n", .{ dim, reset }),
+        .settings => std.debug.print("  {s}because its settings changed{s}\n", .{ dim, reset }),
+        .changed => |c| if (c.count == 1)
+            std.debug.print("  {s}because {s} changed{s}\n", .{ dim, c.path, reset })
+        else
+            std.debug.print("  {s}because {s} and {d} more files changed{s}\n", .{ dim, c.path, c.count - 1, reset }),
+        .gone => |path| std.debug.print("  {s}because {s} is gone{s}\n", .{ dim, path, reset }),
+    }
+}
+
+/// Write the stamp of a build: the two keys and the hash of every file it read.
+fn writeStamp(gpa: std.mem.Allocator, io: std.Io, stamp: []const u8, keys: Keys, files: []const []const u8) void {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
-    out.print(gpa, "key {x}\n", .{key}) catch return;
+    out.print(gpa, "fels {x}\nkey {x}\n", .{ keys.fels, keys.settings }) catch return;
     for (files) |f| {
         const h = hashFile(gpa, io, f) orelse continue;
         out.print(gpa, "file {x} {s}\n", .{ h, f }) catch return;
