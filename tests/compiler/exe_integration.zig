@@ -1046,6 +1046,33 @@ test "exe: error payload recovered via catch binding" {
     try std.testing.expectEqual(@as(u32, 77), code);
 }
 
+test "exe: an error is a value in a local, a parameter, a field and a return" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Outside the `catch` that bound it an error was a pointer: `k := e` took a pointer-sized
+    // slot, `give` returned `undef`, and a struct with an error field failed LLVM's verifier.
+    const src =
+        \\E :: errors { first, second }
+        \\Box :: struct { err: E, n: i32 }
+        \\num :: fn(n: i32) -> i32 ! E { if n < 0 { fail .second; } return n; }
+        \\take :: fn(e: E) -> i32 { return 5; }
+        \\give :: fn() -> E { return .second; }
+        \\main :: fn() -> i32 {
+        \\    v := num(-1) catch e {
+        \\        k := e;
+        \\        b: Box = .{ e, 3 };
+        \\        x: E = .first;
+        \\        return take(e) + take(k) + take(b.err) + take(give()) + take(x) + take(.first) + b.n + 9;
+        \\    };
+        \\    return v;
+        \\}
+    ;
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_value", 0, true));
+    try std.testing.expectEqual(@as(u32, 42), try compileAndRunChecked(arena.allocator(), src, "exe_error_value_o2", 2, true));
+}
+
 test "exe: each catch stashes its payload in a slot of its own" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
