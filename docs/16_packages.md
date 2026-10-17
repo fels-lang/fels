@@ -1,7 +1,7 @@
 # Packages
 
-A Fels project lists the packages it uses in `fels.pkg`, next to `build.fels`. `fels build`
-fetches what is missing, and the program imports a package by its name:
+A Fels project lists the packages it uses in `fels.pkg`, which sits next to `build.fels`.
+`fels build` fetches whatever is missing, and your program imports a package by its name:
 
 ```fels
 // fels.pkg
@@ -19,13 +19,13 @@ fetches what is missing, and the program imports a package by its name:
 #import mathlib;
 ```
 
-What sets Fels apart is in the `may` part. A package's compile-time code (its `#run`, its
+What sets Fels apart is the `may` part. A package's compile-time code (its `#run`, its
 `#compiler` hooks) can only reach the host when `fels.pkg` grants it, and the compiler enforces
-that. A new version of a package that wants more stops the update until you grant it.
+that. If a new version of a package wants more, the update stops until you grant it.
 
 ## fels.pkg
 
-`fels.pkg` is a list of `#` directives, each ended by `;`. Comments are `//`.
+`fels.pkg` is a list of `#` directives, and each one ends with `;`. Comments start with `//`.
 
 | Directive | Meaning |
 | --- | --- |
@@ -35,10 +35,12 @@ that. A new version of a package that wants more stops the update until you gran
 | `#needs caps;` | what this package's compile-time code needs (for packages others use) |
 | `#root "src";` | where its imports start (default: `src/` if there is one, else the folder) |
 
-**The source** is a path (it starts with `.`, `/` or a drive like `C:\`) or a git location:
-`github.com/user/repo`, a full `https://` URL, `git@...` or `file:///...`.
+**The source** is either a path or a git location. A path starts with `.`, `/` or a drive like
+`C:\`. A git location can be `github.com/user/repo`, a full `https://` URL, `git@...` or
+`file:///...`.
 
-**The version** of a git package is a range over its version tags (`v1.2.3` or `1.2.3`):
+**The version** of a git package is a range over its version tags, which look like `v1.2.3` or
+`1.2.3`:
 
 | Range | Matches |
 | --- | --- |
@@ -48,31 +50,32 @@ that. A new version of a package that wants more stops the update until you gran
 | `=1.4.2` | only `1.4.2` |
 | `*` or no version | the newest version |
 
-Pre-releases (`2.0.0-rc.1`) only match a range that names one. A version that is not a range,
-such as `"main"` or a full commit hash, names a branch or a commit. A repository without version
-tags and without a version in `fels.pkg` is used at its default branch.
+A pre-release (`2.0.0-rc.1`) only matches a range that names one. A version that is not a range,
+such as `"main"` or a full commit hash, names a branch or a commit. When a repository has no
+version tags and `fels.pkg` gives no version, the repository is used at its default branch.
 
 ## Capabilities
 
-The one capability Fels has today is `ffi`: compile-time code may call into host libraries. With
-library names (`ffi("user32")`), only into those; without (`ffi`), into any.
+Today Fels has one capability, `ffi`, which lets compile-time code call into host libraries.
+With library names (`ffi("user32")`) it may call only into those, and without them (`ffi`) it
+may call into any.
 
-- A package says what it needs: `#needs ffi("user32");` in its own `fels.pkg`.
-- You grant it on the `#use` line: `may ffi("user32")`.
-- When a package needs something its `#use` line does not grant, the build stops and says
-  which line to change:
+- A package says what it needs with `#needs ffi("user32");` in its own `fels.pkg`.
+- You grant it on the `#use` line with `may ffi("user32")`.
+- When a package needs something that its `#use` line does not grant, the build stops and tells
+  you which line to change:
 
   ```text
   fels.pkg:4:1: error: `mathlib` 1.2.0 needs ffi("user32") at compile time, which is not granted to it
     To allow it, add `may ffi("user32")` to this #use line.
   ```
 
-- A package can only pass on what it holds. If your project grants `helpers` the library
-  `gdi32`, and `helpers` grants `ffi("user32", "gdi32")` to a package it uses, that package gets
-  `gdi32` only.
-- The VM enforces the grant: a `#run` in a package's folder gets that package's capabilities, a
-  `#run` anywhere else gets none (only `build.fels` has host access). A package that calls a
-  library it did not declare is stopped when the call happens.
+- A package can only pass on what it holds. Say your project grants `helpers` the library
+  `gdi32`, and `helpers` grants `ffi("user32", "gdi32")` to a package it uses. That package then
+  gets `gdi32` only.
+- The VM enforces the grant. A `#run` in a package's folder gets that package's capabilities,
+  and a `#run` anywhere else gets none (only `build.fels` has host access). A package that calls
+  a library it did not declare is stopped when the call happens.
 
 ## fels.lock
 
@@ -83,13 +86,13 @@ library names (`ffi("user32")`), only into those; without (`ffi`), into any.
     commit "c1ab645ca298a2801097931d1079b10ff7eb9df8" hash "sha256-9f2c...";
 ```
 
-The commands write it; nobody writes a hash by hand. A build takes the locked commit as long as
-`fels.pkg`'s range still allows it, so a new tag upstream does not change your build until you
-run `fels update`. Commit `fels.lock` along with `fels.pkg`.
+The commands write this file, so nobody writes a hash by hand. A build takes the locked commit
+as long as the range in `fels.pkg` still allows it. That way a new tag upstream does not change
+your build until you run `fels update`. Commit `fels.lock` along with `fels.pkg`.
 
-The hash covers every file of the package: the sorted paths and their bytes, the same on every
-machine (the checkout ignores git's line ending settings). It is checked when a package is
-fetched and by `fels fetch --verify`, and a mismatch stops the build.
+The hash covers every file of the package, as the sorted paths and their bytes. It is the same
+on every machine, because the checkout ignores git's line ending settings. The hash is checked
+when a package is fetched and by `fels fetch --verify`, and a mismatch stops the build.
 
 ## Commands
 
@@ -108,10 +111,11 @@ $ fels add raylib github.com/raysan5/raylib ^5.0 --may 'ffi("opengl32")'
 added raylib 5.5.0
 ```
 
-`fels add` creates `fels.pkg` when there is none, and leaves it as it was when the package cannot
-be used. Without a version it writes the range of the version it found (`version "^5.5"` for
-5.5.0), so a later `fels update` stays within versions that should not break the project. `fels build` fetches missing packages by itself, and `fels build --list` shows the
-packages with their versions and grants.
+`fels add` creates `fels.pkg` when there is none, and it leaves the file as it was when the
+package cannot be used. Without a version, it writes the range of the version it found
+(`version "^5.5"` for 5.5.0). A later `fels update` then stays within versions that should not
+break the project. `fels build` fetches missing packages by itself, and `fels build --list`
+shows the packages with their versions and grants.
 
 ```text
 $ fels why mathlib
@@ -122,35 +126,35 @@ mathlib 1.2.0  github.com/ana/mathlib
   its compile-time code may: ffi("user32")
 ```
 
-**Builds that must not fetch:** `fels build --offline` takes packages from `fels.lock` and the
-cache only and never runs git; `fels build --frozen` stops when `fels.lock` would change, which
-is what CI wants. `fels vendor` copies every git package into `vendor/<name>`; a build then uses
-them from there, without git and without the cache, so a project can carry its packages along
-(commit `vendor/`). `fels fetch --verify` also checks the files in `vendor/`.
+**Builds that must not fetch:** `fels build --offline` takes packages only from `fels.lock` and
+the cache, and it never runs git. `fels build --frozen` stops when `fels.lock` would change,
+which is what CI wants. `fels vendor` copies every git package into `vendor/<name>`. A build then
+uses them from there, without git and without the cache, so a project can carry its packages
+along (commit `vendor/`). `fels fetch --verify` also checks the files in `vendor/`.
 
 ## How packages are resolved
 
 - **One version of each package.** When two packages use the same one, its version has to fit
-  both ranges, or the build stops and says which ones disagree. A package used from two
+  both ranges, or the build stops and tells you which ones disagree. A package used from two
   different places is an error too.
 - **The packages a package uses come along**, with their own `fels.pkg`.
-- **Imports:** a package's name becomes an import root for every artifact of the build:
-  `#import mathlib` reads `<root>/mathlib.fels`, `#import mathlib.ops` reads `<root>/ops.fels`.
-  `a.add_module(name, dir)` in `build.fels` can point a name somewhere else.
+- **Imports:** a package's name becomes an import root for every artifact of the build.
+  `#import mathlib` reads `<root>/mathlib.fels`, and `#import mathlib.ops` reads
+  `<root>/ops.fels`. `a.add_module(name, dir)` in `build.fels` can point a name somewhere else.
 - **The project's own name** is an import root too. A library with `#package mathx` imports
-  itself as its users do, so its examples and tests can say `#import mathx;`. This works in
+  itself the way its users do, so its examples and tests can say `#import mathx;`. This works in
   `fels build`, `fels test` and the editor. A `#use` with the project's own name is an error.
-- **The cache:** git packages live in `%LOCALAPPDATA%\fels\pkg` on Windows and
-  `~/.cache/fels/pkg` elsewhere, one folder per package and commit, without `.git`.
+- **The cache:** git packages live in `%LOCALAPPDATA%\fels\pkg` on Windows and in
+  `~/.cache/fels/pkg` elsewhere. There is one folder per package and commit, without `.git`.
   `FELS_PKG_DIR` sets another folder. Fetching needs `git` on the PATH.
 
 ## A package's build.fels
 
-A package is its Fels sources. When it also has a `build.fels`, `fels build` runs it for the
-project that uses the package, with the capabilities `fels.pkg` grants the package (not with the
-host access the project's own `build.fels` has). Its artifacts and steps are not built there;
-what counts is what it provides to every artifact of the project, and to the test programs of
-`fels test`:
+A package is its Fels sources. When it also has a `build.fels`, `fels build` runs that script
+for the project that uses the package. It runs with the capabilities that `fels.pkg` grants the
+package, not with the host access the project's own `build.fels` has. Its artifacts and steps
+are not built there. What counts is what it provides to every artifact of the project, and to
+the test programs of `fels test`:
 
 ```fels
 // the build.fels of a package that wraps a C library
@@ -163,13 +167,13 @@ build :: fn(b: Build) {
 
 ## In the editor
 
-The language server reads `fels.pkg` too: imports of packages resolve in the editor as they do in
-`fels build`. It never runs git; a package that is in `fels.pkg` but not fetched yet shows at its
-import with "run `fels fetch`".
+The language server reads `fels.pkg` too, so imports of packages resolve in the editor the same
+way they do in `fels build`. It never runs git. A package that is in `fels.pkg` but not fetched
+yet shows "run `fels fetch`" at its import.
 
 ## Not built yet
 
-- A registry or index of package names; today a package is used by its location.
-- More capabilities than `ffi` (reading files, the network, running programs) arrive with
-  compile-time features that need them.
-- Building a package's C sources; a package brings its C libraries prebuilt.
+- A registry or index of package names. Today you use a package by its location.
+- More capabilities than `ffi` (reading files, the network, running programs). These arrive
+  with the compile-time features that need them.
+- Building a package's C sources. A package brings its C libraries prebuilt.
