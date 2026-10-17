@@ -29,6 +29,11 @@ the major version is `0`, any minor bump may break source compatibility.
   done in `unsafe`; writing one is not. A literal sets one field and zeroes the rest; a static
   union starts as `.{}`. bindgen turns a C union into one (a union with a bitfield stays a byte
   blob), and `core::type_info` reports one as `.union_`.
+- **`.variant(payload)` where the type is known**, as `.variant` is: `s: Shape = .circle(2.0)`,
+  `return .status(404);`, `.{ .circle(1.0), .none }`. It was "unknown function `.circle`".
+- **An enum value or an error with a payload is static data**: a global, a table of them, a
+  struct field, a typed constant or a `#run` result can hold one, a string payload too. They were
+  refused ("cannot be initialised in static storage yet").
 - **Typed constants: `NAME : T : value;`**, for a struct or a table that is read-only data. A
   constant, typed or not, is not written to: `M = 3;`, `ORIGIN.x = 5` and `TABLE[1] = 9` are
   errors, and `&` of a constant is a `*const` pointer.
