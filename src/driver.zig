@@ -470,6 +470,27 @@ pub fn emitLlvmFromFrontend(
         try libs.appendSlice(allocator, module.extern_libs);
         try libs.appendSlice(allocator, opts.extra_libs);
 
+        if (opts.target_os == .uefi) {
+            be.linkWindowsMem(allocator, io, obj_bytes, .{
+                .llvm_bin = opts.llvm_bin,
+                .obj_files = &.{opts.obj_path},
+                .output = exe,
+                .subsystem = .efi_application,
+                .entry = "efi_main",
+                .extra_flags = opts.link_flags,
+                .debug = opts.debug_info,
+            }) catch {
+                // What a program declares with `#extern` is in no DLL here.
+                for (module.functions) |f| if (f.extern_lib != null) {
+                    std.debug.print("note: a UEFI program has no DLLs to call: `#extern` functions such as `{s}` are not there\n", .{f.extern_name orelse f.name});
+                    break;
+                };
+                return error.LinkFailed;
+            };
+            if (opts.timings) |tm| tm.link_ns = sinceNs(t_link);
+            return;
+        }
+
         if (opts.target_os == .linux) {
             be.linkLinuxMem(allocator, io, opts.obj_path, obj_bytes, .{
                 .llvm_bin = opts.llvm_bin,
