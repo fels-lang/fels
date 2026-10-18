@@ -27,6 +27,8 @@ const FelsLinkFn = *const fn (in_path: [*:0]const u8, out_path: [*:0]const u8) c
 fn felsldEligible(opts: WindowsLinkOptions) bool {
     if (opts.obj_files.len != 1) return false;
     if (opts.debug) return false; // felsld writes no PDB
+    // A UEFI program is loaded anywhere and needs base relocations, which felsld does not write.
+    if (opts.subsystem == .efi_application) return false;
     if (opts.extra_flags.len != 0) return false;
     if (opts.honor_defaultlibs) return false;
     return true;
@@ -87,6 +89,7 @@ fn tryGabldMem(allocator: std.mem.Allocator, obj_bytes: []const u8, opts: Window
     const subsystem: u32 = switch (opts.subsystem) {
         .console => 3,
         .windows => 2,
+        .efi_application => 10, // not reached: felsld does not link these
     };
     const is_dll: u32 = if (opts.dll) 1 else 0;
     return link_fn(obj_bytes.ptr, obj_bytes.len, out_z.ptr, subsystem, entry_z.ptr, @intCast(opts.stack_reserve), is_dll) == 0;
@@ -125,7 +128,7 @@ pub const LinkError = error{
 
 /// PE subsystem: a console app gets a terminal window, a `windows` (GUI) app
 /// doesn't — what you want for a game/windowed program (raylib, etc.).
-pub const Subsystem = enum { console, windows };
+pub const Subsystem = enum { console, windows, efi_application };
 
 pub const WindowsLinkOptions = struct {
     /// Directory containing lld-link.exe (e.g. <llvm>/bin).
@@ -195,6 +198,7 @@ pub fn buildArgs(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ![]cons
         const sub = switch (opts.subsystem) {
             .console => "CONSOLE",
             .windows => "WINDOWS",
+            .efi_application => "EFI_APPLICATION",
         };
         try args.append(allocator, try std.fmt.allocPrint(allocator, "/SUBSYSTEM:{s}", .{sub}));
         try args.append(allocator, try std.fmt.allocPrint(allocator, "/ENTRY:{s}", .{opts.entry orelse "mainCRTStartup"}));
@@ -215,7 +219,8 @@ pub fn buildArgs(allocator: std.mem.Allocator, opts: WindowsLinkOptions) ![]cons
         // Strict: ignore every embedded `/DEFAULTLIB` directive (Fels's minimal-runtime default).
         try args.append(allocator, try allocator.dupe(u8, "/NODEFAULTLIB"));
     }
-    try args.append(allocator, try allocator.dupe(u8, "kernel32.lib"));
+    // A UEFI program calls the firmware, not Windows.
+    if (opts.subsystem != .efi_application) try args.append(allocator, try allocator.dupe(u8, "kernel32.lib"));
     for (opts.lib_paths) |lp|
         try args.append(allocator, try std.fmt.allocPrint(allocator, "/LIBPATH:{s}", .{lp}));
     for (opts.libs) |lib|
