@@ -10,6 +10,7 @@
 const builtin = @import("builtin");
 
 pub const windows_src = @embedFile("runtime/windows.fels");
+pub const uefi_src = @embedFile("runtime/uefi.fels");
 
 const linux_body = @embedFile("runtime/linux.fels");
 const linux_start_none = @embedFile("runtime/linux_start_none.fels");
@@ -27,6 +28,7 @@ pub fn runtimeSourceFor(os: @TypeOf(builtin.os.tag), link_libc: bool) ?[]const u
     return switch (os) {
         .windows => windows_src,
         .linux => if (link_libc) linux_gnu_src else linux_none_src,
+        .uefi => uefi_src,
         else => null,
     };
 }

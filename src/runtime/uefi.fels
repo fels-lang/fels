@@ -1,0 +1,251 @@
+// SPDX-License-Identifier: Apache-2.0
+// uefi runtime: console output, pages for zones, exit; no os, so most of std is not there
+// efi_main (the compiler makes it) calls efi_start, then main
+
+// ---- the firmware's tables, as far as the runtime and std.uefi use them ----
+
+EfiTableHeader :: struct {
+    signature: u64,
+    revision: u32,
+    header_size: u32,
+    crc32: u32,
+    reserved: u32,
+}
+
+EfiGuid :: struct {
+    data1: u32,
+    data2: u16,
+    data3: u16,
+    data4: [8]u8,
+}
+
+EfiSimpleTextOutput :: struct {
+    reset: extern fn(*EfiSimpleTextOutput, u8) -> usize,
+    output_string: extern fn(*EfiSimpleTextOutput, *const u16) -> usize,
+    test_string: usize,
+    query_mode: usize,
+    set_mode: usize,
+    set_attribute: extern fn(*EfiSimpleTextOutput, usize) -> usize,
+    clear_screen: extern fn(*EfiSimpleTextOutput) -> usize,
+    set_cursor_position: extern fn(*EfiSimpleTextOutput, usize, usize) -> usize,
+    enable_cursor: extern fn(*EfiSimpleTextOutput, u8) -> usize,
+    mode: usize,
+}
+
+EfiInputKey :: struct {
+    scan_code: u16,
+    unicode_char: u16,
+}
+
+EfiSimpleTextInput :: struct {
+    reset: extern fn(*EfiSimpleTextInput, u8) -> usize,
+    read_key_stroke: extern fn(*EfiSimpleTextInput, *EfiInputKey) -> usize,
+    wait_for_key: usize,
+}
+
+EfiBootServices :: struct {
+    hdr: EfiTableHeader,
+    raise_tpl: usize,
+    restore_tpl: usize,
+    // (type, memory type, pages, *address)
+    allocate_pages: extern fn(u32, u32, usize, *u64) -> usize,
+    free_pages: extern fn(u64, usize) -> usize,
+    get_memory_map: usize,
+    allocate_pool: extern fn(u32, usize, *usize) -> usize,
+    free_pool: extern fn(usize) -> usize,
+    create_event: usize,
+    set_timer: usize,
+    // (count, *events, *index)
+    wait_for_event: extern fn(usize, *usize, *usize) -> usize,
+    signal_event: usize,
+    close_event: usize,
+    check_event: usize,
+    install_protocol_interface: usize,
+    reinstall_protocol_interface: usize,
+    uninstall_protocol_interface: usize,
+    handle_protocol: usize,
+    reserved: usize,
+    register_protocol_notify: usize,
+    locate_handle: usize,
+    locate_device_path: usize,
+    install_configuration_table: usize,
+    load_image: usize,
+    start_image: usize,
+    // (image, status, data size, data)
+    exit: extern fn(usize, usize, usize, usize) -> usize,
+    unload_image: usize,
+    exit_boot_services: extern fn(usize, usize) -> usize,
+    get_next_monotonic_count: usize,
+    // microseconds
+    stall: extern fn(usize) -> usize,
+    // (seconds, code, data size, data); 0 seconds turns it off
+    set_watchdog_timer: extern fn(usize, u64, usize, usize) -> usize,
+    connect_controller: usize,
+    disconnect_controller: usize,
+    open_protocol: usize,
+    close_protocol: usize,
+    open_protocol_information: usize,
+    protocols_per_handle: usize,
+    locate_handle_buffer: usize,
+    // (*guid, registration, *interface)
+    locate_protocol: extern fn(*const EfiGuid, usize, *usize) -> usize,
+}
+
+EfiRuntimeServices :: struct {
+    hdr: EfiTableHeader,
+    get_time: usize,
+    set_time: usize,
+    get_wakeup_time: usize,
+    set_wakeup_time: usize,
+    set_virtual_address_map: usize,
+    convert_pointer: usize,
+    get_variable: usize,
+    get_next_variable_name: usize,
+    set_variable: usize,
+    get_next_high_monotonic_count: usize,
+    // (0 cold, 1 warm, 2 shutdown; status, data size, data)
+    reset_system: extern fn(u32, usize, usize, usize),
+}
+
+EfiSystemTable :: struct {
+    hdr: EfiTableHeader,
+    firmware_vendor: *const u16,
+    firmware_revision: u32,
+    console_in_handle: usize,
+    con_in: *EfiSimpleTextInput,
+    console_out_handle: usize,
+    con_out: *EfiSimpleTextOutput,
+    standard_error_handle: usize,
+    std_err: *EfiSimpleTextOutput,
+    runtime_services: *EfiRuntimeServices,
+    boot_services: *EfiBootServices,
+    number_of_table_entries: usize,
+    configuration_table: usize,
+}
+
+// ---- the program's image and the system table ----
+
+efi_image: usize = 0usize;
+efi_table: usize = 0usize;
+
+// called by efi_main before main; turns off the firmware's 5-minute watchdog
+efi_start :: fn(image: usize, table: usize) {
+    efi_image = image;
+    efi_table = table;
+    ignored := efi_system_table().boot_services.set_watchdog_timer(0usize, 0u64, 0usize, 0usize);
+}
+
+efi_system_table :: fn() -> *EfiSystemTable {
+    return unsafe core::ptr_from_int(*EfiSystemTable, efi_table);
+}
+
+// ---- memory (backs std.heap) ----
+// no virtual memory: reserving is allocating
+
+efi_pages :: fn(size: usize) -> usize {
+    if efi_table == 0usize { return 0usize; }
+    addr: u64 = 0u64;
+    // AllocateAnyPages, EfiLoaderData
+    if efi_system_table().boot_services.allocate_pages(0u32, 2u32, (size + 4095usize) / 4096usize, &addr) != 0usize {
+        return 0usize;
+    }
+    return addr as usize;
+}
+
+os_reserve :: fn(size: usize) -> usize { return efi_pages(size); }
+os_commit :: fn(addr: usize, size: usize) -> bool { return true; }
+os_alloc :: fn(size: usize) -> usize { return efi_pages(size); }
+os_release :: fn(addr: usize, size: usize) {
+    ignored := efi_system_table().boot_services.free_pages(addr as u64, (size + 4095usize) / 4096usize);
+}
+
+// ---- console ----
+
+// utf-8 to the console's ucs-2, `\n` as `\r\n`; outside the bmp shows as U+FFFD
+efi_print :: fn(out: *EfiSimpleTextOutput, data: []const u8) -> usize {
+    buf: [130]u16 = .{};
+    n: usize = 0usize;
+    i: usize = 0usize;
+    while i < data.len {
+        c: u32 = data[i] as u32;
+        if c >= 0xF0u32 {
+            c = 0xFFFDu32;
+            i += 3usize;
+        } else if c >= 0xE0u32 && i + 2usize < data.len {
+            c = ((c & 0x0Fu32) << 12u32) | (((data[i + 1usize] as u32) & 0x3Fu32) << 6u32) | ((data[i + 2usize] as u32) & 0x3Fu32);
+            i += 2usize;
+        } else if c >= 0xC0u32 && i + 1usize < data.len {
+            c = ((c & 0x1Fu32) << 6u32) | ((data[i + 1usize] as u32) & 0x3Fu32);
+            i += 1usize;
+        }
+        if c == 10u32 {
+            buf[n] = 13u16;
+            n += 1usize;
+        }
+        buf[n] = c as u16;
+        n += 1usize;
+        i += 1usize;
+        if n >= 126usize {
+            buf[n] = 0u16;
+            ignored := out.output_string(out, &buf[0]);
+            n = 0usize;
+        }
+    }
+    if n > 0usize {
+        buf[n] = 0u16;
+        ignored := out.output_string(out, &buf[0]);
+    }
+    return data.len;
+}
+
+write_stdout :: fn(data: []const u8) -> usize {
+    if efi_table == 0usize { return 0usize; }
+    return efi_print(efi_system_table().con_out, data);
+}
+
+write_stderr :: fn(data: []const u8) -> usize {
+    if efi_table == 0usize { return 0usize; }
+    return efi_print(efi_system_table().std_err, data);
+}
+
+// no line input here; read keys with std.uefi
+read_stdin :: fn(buf: []u8) -> i64 {
+    return -1i64;
+}
+
+// ---- exit ----
+
+EFI_ABORTED :: 0x8000_0000_0000_0015usize;
+
+// back to the firmware with `code` as the status
+#noreturn
+exit :: fn(code: u32) {
+    if efi_table != 0usize {
+        ignored := efi_system_table().boot_services.exit(efi_image, code as usize, 0usize, 0usize);
+    }
+    while true {}
+}
+
+#noreturn
+abort :: fn() {
+    if efi_table != 0usize {
+        ignored := efi_system_table().boot_services.exit(efi_image, EFI_ABORTED, 0usize, 0usize);
+    }
+    while true {}
+}
+
+#noreturn
+@panic :: fn(msg: []const u8) {
+    write_stderr("panic: ");
+    write_stderr(msg);
+    write_stderr("\n");
+    abort();
+}
+
+assert :: fn(cond: bool) {
+    if !cond { core::panic("assertion failed"); }
+}
+
+assert_msg :: fn(cond: bool, msg: []const u8) {
+    if !cond { core::panic(msg); }
+}
