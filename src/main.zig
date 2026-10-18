@@ -285,8 +285,10 @@ pub fn main(init: std.process.Init) u8 {
                 .linux
             else if (std.mem.indexOf(u8, t, "windows") != null)
                 .windows
+            else if (std.mem.indexOf(u8, t, "uefi") != null)
+                .uefi
             else {
-                std.debug.print("fels: unknown --target `{s}` (expected linux, linux-gnu, or windows)\n", .{t});
+                std.debug.print("fels: unknown --target `{s}` (expected linux, linux-gnu, windows, or uefi)\n", .{t});
                 return 1;
             };
             // `-gnu` selects the dynamically-linked glibc ABI; otherwise Linux is
@@ -376,6 +378,7 @@ pub fn main(init: std.process.Init) u8 {
         // A Windows program is `hello.exe`, a Linux one `hello`, whatever the host.
         const ext = switch (opts.target_os) {
             .windows => if (opts.dll) ".dll" else ".exe",
+            .uefi => ".efi",
             else => if (opts.dll) ".so" else "",
         };
         const exe = opts.out_path orelse deriveOut(allocator, src_path, ext);
