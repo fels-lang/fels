@@ -321,10 +321,16 @@ pub const ModuleCg = struct {
     /// Windows x64 needs `__chkstk` (large-frame stack probe) since the CRT that
     /// normally supplies it isn't linked. Linux needs nothing here. Call once the
     /// target OS is set, before emission.
+    /// A COFF object with the Windows calling convention: Windows, and UEFI, whose programs are
+    /// PE files that call the firmware that way.
+    pub fn coff(self: *const ModuleCg) bool {
+        return self.target_os == .windows or self.target_os == .uefi;
+    }
+
     pub fn applyTargetStubs(self: *ModuleCg) void {
         // A static library's object calls the `__chkstk` of the program that links it.
         if (self.library_object) return;
-        if (self.target_os == .windows and builtin.target.cpu.arch == .x86_64)
+        if (self.coff() and builtin.target.cpu.arch == .x86_64)
             llvm.LLVMAppendModuleInlineAsm(self.mod, chkstk_x64_asm.ptr, chkstk_x64_asm.len);
     }
 
@@ -339,8 +345,8 @@ pub const ModuleCg = struct {
         text.appendSlice(self.allocator, ".text\n") catch return;
         inline for (all_mem_stubs) |stub| {
             if (llvm.LLVMGetNamedFunction(self.mod, stub.name.ptr) == null and llvm.LLVMGetNamedGlobal(self.mod, stub.name.ptr) == null) {
-                const body = if (self.target_os == .windows) stub.windows else stub.sysv;
-                const head = if (self.target_os == .windows)
+                const body = if (self.coff()) stub.windows else stub.sysv;
+                const head = if (self.coff())
                     ".weak " ++ stub.name ++ "\n" ++ stub.name ++ ":\n"
                 else
                     ".weak " ++ stub.name ++ "\n.type " ++ stub.name ++ ",@function\n" ++ stub.name ++ ":\n";

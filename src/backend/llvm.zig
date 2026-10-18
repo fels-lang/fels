@@ -51,7 +51,7 @@ pub const LlvmBackend = struct {
     /// relative source paths are taken from. Must be called before `lower`.
     pub fn setDebugInfo(self: *LlvmBackend, root_file: []const u8, cwd: []const u8) void {
         if (self.cg.debug != null) return;
-        const codeview = self.cg.target_os == .windows;
+        const codeview = self.cg.coff();
         self.cg.debug = ctx_mod.debug_mod.DebugCg.init(self.cg.allocator, self.cg.ctx, self.cg.mod, root_file, cwd, self.cg.opt_level > 0, codeview);
     }
 
@@ -85,16 +85,16 @@ pub const LlvmBackend = struct {
         try vtables.lowerAll(&self.cg, module.vtables);
         try fns.defineAll(&self.cg, module.functions);
 
+        // Windows float-support marker, needed for a standalone exe under /NODEFAULTLIB (and a
+        // UEFI program, which LLD links the same way). Skipped for a `--no-entry` library
+        // object: the host binary's CRT already provides `_fltused` (avoids a duplicate symbol).
+        if (self.cg.coff() and !self.cg.no_entry) {
+            const i32_ty = llvm_c.LLVMInt32TypeInContext(self.cg.ctx);
+            const fltused = llvm_c.LLVMAddGlobal(self.cg.mod, i32_ty, "_fltused");
+            llvm_c.LLVMSetInitializer(fltused, llvm_c.LLVMConstInt(i32_ty, 1, 0));
+            llvm_c.LLVMSetLinkage(fltused, llvm_c.LLVMExternalLinkage);
+        }
         if (self.cg.target_os == .windows) {
-            // Windows float-support marker, needed for a standalone exe under
-            // /NODEFAULTLIB. Skipped for a `--no-entry` library object: the host
-            // binary's CRT already provides `_fltused` (avoids a duplicate symbol).
-            if (!self.cg.no_entry) {
-                const i32_ty = llvm_c.LLVMInt32TypeInContext(self.cg.ctx);
-                const fltused = llvm_c.LLVMAddGlobal(self.cg.mod, i32_ty, "_fltused");
-                llvm_c.LLVMSetInitializer(fltused, llvm_c.LLVMConstInt(i32_ty, 1, 0));
-                llvm_c.LLVMSetLinkage(fltused, llvm_c.LLVMExternalLinkage);
-            }
 
             // The felsld import map (a `.skimp` section). Lets the self-hosted
             // linker resolve each import's DLL without parsing any `.lib`.
@@ -119,6 +119,15 @@ pub const LlvmBackend = struct {
             for (module.functions) |f| {
                 if (f.entry and !std.mem.eql(u8, f.name, "_start")) {
                     try emitLinuxMain(&self.cg, f);
+                    break;
+                }
+            }
+        }
+        // UEFI: the firmware calls `efi_main(image, system_table)`.
+        if (self.cg.target_os == .uefi and !self.cg.no_entry) {
+            for (module.functions) |f| {
+                if (f.entry) {
+                    try emitUefiEntryPoint(&self.cg, f);
                     break;
                 }
             }
@@ -376,6 +385,30 @@ fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {
     var ep_args = [_]llvm_c.LLVMValueRef{exit_code};
     _ = llvm_c.LLVMBuildCall2(cg.builder, ep_fn_ty, ep_fn, &ep_args, 1, "");
     _ = llvm_c.LLVMBuildUnreachable(cg.builder);
+}
+
+/// `efi_main(image, system_table) -> EFI_STATUS`, which the firmware starts a UEFI program at:
+/// it gives the runtime the image handle and the system table (`efi_start`), calls `main` and
+/// returns the status `main` ends with (0 is EFI_SUCCESS).
+fn emitUefiEntryPoint(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {
+    const i64_ty = llvm_c.LLVMInt64TypeInContext(cg.ctx);
+    const ptr_ty = llvm_c.LLVMPointerTypeInContext(cg.ctx, 0);
+    var param_tys = [_]llvm_c.LLVMTypeRef{ ptr_ty, ptr_ty };
+    const entry_ty = llvm_c.LLVMFunctionType(i64_ty, &param_tys, 2, 0);
+    const entry = llvm_c.LLVMAddFunction(cg.mod, "efi_main", entry_ty);
+    const bb = llvm_c.LLVMAppendBasicBlockInContext(cg.ctx, entry, "entry");
+    llvm_c.LLVMPositionBuilderAtEnd(cg.builder, bb);
+
+    if (cg.fn_decls.get("efi_start")) |start| {
+        var args = [_]llvm_c.LLVMValueRef{
+            llvm_c.LLVMBuildPtrToInt(cg.builder, llvm_c.LLVMGetParam(entry, 0), i64_ty, ""),
+            llvm_c.LLVMBuildPtrToInt(cg.builder, llvm_c.LLVMGetParam(entry, 1), i64_ty, ""),
+        };
+        _ = llvm_c.LLVMBuildCall2(cg.builder, llvm_c.LLVMGlobalGetValueType(start), start, &args, 2, "");
+    }
+    const main_fn = cg.fn_decls.get(main.name) orelse return;
+    const status = exitStatus(cg, main, callMain(cg, main_fn));
+    _ = llvm_c.LLVMBuildRet(cg.builder, llvm_c.LLVMBuildZExt(cg.builder, status, i64_ty, ""));
 }
 
 /// `__fels_main() -> i32` for Linux: the runtime's `_start` calls it (or glibc's
