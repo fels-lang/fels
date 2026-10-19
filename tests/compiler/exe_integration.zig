@@ -3464,6 +3464,21 @@ test "exe: a prefix operator binds tighter than as" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_as_precedence"));
 }
 
+test "exe: an asm template written as a block of lines is those lines" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\seven :: fn() -> i32 {
+        \\    return unsafe core::asm(volatile, """
+        \\        mov $$5, %eax
+        \\        add $$2, %eax
+        \\        """, inputs: {}, outputs: { "={eax}"(i32) }, clobbers: {});
+        \\}
+        \\main :: fn() -> i32 { return seven() - 7; }
+    , "asm_lines");
+    try std.testing.expectEqual(@as(u32, 0), code);
+}
+
 test "exe: a function passed or assigned where an extern fn goes is called through its address" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
