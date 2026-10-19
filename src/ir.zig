@@ -4916,6 +4916,9 @@ const FunctionLowerer = struct {
     }
 
     fn lowerExprAs(self: *FunctionLowerer, expr: ast.Expr, expected_ty: IrType) LowerError!Value {
+        // A function named where an `extern fn(...)` goes is its own address: a thin pointer with
+        // no environment. (A closure was made and cast to a pointer, which LLVM refuses.)
+        if (expected_ty == .fn_ptr and expected_ty.fn_ptr.thin) if (self.namedFunction(expr)) |link| return .{ .global = link };
         // A `match` in value position threads the expected type into its arms, so
         // untyped arm values (`.{ … }`, `.variant`) get the right target type.
         if (expr.kind == .match_expr) return self.lowerMatchExpr(expr, expected_ty);
@@ -6461,13 +6464,7 @@ const FunctionLowerer = struct {
     /// top-level function works — its signature matches C; a lambda/closure carries
     /// an environment, so it is rejected.
     fn lowerRawFnArg(self: *FunctionLowerer, value: ast.Expr) LowerError!Value {
-        if (value.kind == .ident) {
-            if (resolveTopLevel(self.symbols, self.file_name, value.kind.ident)) |id| {
-                if (self.symbols.symbol(id).kind == .function and !std.mem.startsWith(u8, value.kind.ident, "__lambda_")) {
-                    return Value{ .global = self.symbols.symbol(id).link_name };
-                }
-            }
-        }
+        if (self.namedFunction(value)) |link| return Value{ .global = link };
         diag_mod.printErrorAt(
             "a C callback argument must be a plain top-level function — a lambda or " ++
                 "captured closure carries an environment that C cannot call",
@@ -6476,6 +6473,15 @@ const FunctionLowerer = struct {
             value.span,
         );
         return error.LoweringFailed;
+    }
+
+    /// The link name of the top-level function `value` names (not a lambda); null for anything
+    /// else.
+    fn namedFunction(self: *FunctionLowerer, value: ast.Expr) ?[]const u8 {
+        if (value.kind != .ident) return null;
+        const id = resolveTopLevel(self.symbols, self.file_name, value.kind.ident) orelse return null;
+        if (self.symbols.symbol(id).kind != .function or std.mem.startsWith(u8, value.kind.ident, "__lambda_")) return null;
+        return self.symbols.symbol(id).link_name;
     }
 
     /// Build a capture environment for a lambda: allocate it and store the
