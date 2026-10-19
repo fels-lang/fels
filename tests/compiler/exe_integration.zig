@@ -194,6 +194,61 @@ test "exe: -g puts DWARF sections with the source file into a Linux program" {
     }
 }
 
+test "exe: --target uefi makes an EFI application with no imports, entered at efi_main" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest; // lld-link links it
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+
+    try fels.compileWithLlvm(a, io, .{
+        .file_name = "uefi_app.fels",
+        .source =
+        \\main :: fn() -> i32 {
+        \\    zone z: Arena { xs := z.new_slice(u8, 16); xs[0] = 1u8; }
+        \\    return 0;
+        \\}
+        ,
+        .obj_path = ".zig-cache/uefi_app.o",
+        .exe_path = ".zig-cache/uefi_app.efi",
+        .opt_level = 2,
+        .llvm_bin = fels.llvm_path ++ "/bin",
+        .target_os = .uefi,
+    });
+    const pe = try std.Io.Dir.cwd().readFileAlloc(io, ".zig-cache/uefi_app.efi", a, .unlimited);
+    const at = std.mem.readInt(u32, pe[0x3C..0x40], .little);
+    try std.testing.expectEqualSlices(u8, "PE\x00\x00", pe[at .. at + 4]);
+    const opt = at + 24; // the optional header, after the signature and the file header
+    try std.testing.expectEqual(@as(u16, 0x20B), std.mem.readInt(u16, pe[opt..][0..2], .little)); // PE32+
+    try std.testing.expectEqual(@as(u16, 10), std.mem.readInt(u16, pe[opt + 68 ..][0..2], .little)); // EFI application
+    // No import table: the firmware links nothing in.
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, pe[opt + 124 ..][0..4], .little));
+    // The firmware moves it where there is room: it needs its base relocations.
+    try std.testing.expect(std.mem.readInt(u32, pe[opt + 112 + 5 * 8 + 4 ..][0..4], .little) != 0);
+}
+
+test "exe: a UEFI program that uses #extern is refused" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try std.testing.expectError(error.LinkFailed, fels.compileWithLlvm(a, std.testing.io, .{
+        .file_name = "uefi_extern.fels",
+        .source =
+        \\#extern("kernel32", "GetTickCount")
+        \\GetTickCount :: fn() -> u32;
+        \\main :: fn() -> i32 { return GetTickCount() as i32; }
+        ,
+        .obj_path = ".zig-cache/uefi_extern.o",
+        .exe_path = ".zig-cache/uefi_extern.efi",
+        .llvm_bin = fels.llvm_path ++ "/bin",
+        .target_os = .uefi,
+    }));
+}
+
 test "exe: the portable fixtures cross-compile to static Linux ELF executables" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
