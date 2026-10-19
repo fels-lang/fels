@@ -1,0 +1,27 @@
+// a UEFI program: draws on the screen, waits for a key, turns the machine off
+// fels build examples/uefi/main.fels --target uefi; see README.md for QEMU
+
+#import std.io.{ println };
+#import std.uefi;
+
+main :: fn() -> i32 {
+    println("Hello from Fels on UEFI!");
+    if uefi::framebuffer() |fb| {
+        println("screen: {fb.width} x {fb.height}");
+        for y in 0u32..fb.height {
+            for x in 0u32..fb.width {
+                red := x * 255u32 / fb.width;
+                green := y * 255u32 / fb.height;
+                fb.put(x, y, (red << 16u32) | (green << 8u32) | 0x40u32);
+            }
+        }
+        fb.fill(fb.width / 2u32 - 60u32, fb.height / 2u32 - 40u32, 120u32, 80u32, 0xFFFFFFu32);
+    } else {
+        println("no framebuffer here");
+    }
+    println("press a key to turn off");
+    key := uefi::read_key();
+    println("key {key.char}, bye");
+    uefi::shutdown();
+    return 0;
+}
