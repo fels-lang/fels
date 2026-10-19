@@ -6238,8 +6238,9 @@ const FunctionLowerer = struct {
                 else => continue,
             };
             if (pos == 0) is_volatile = e.kind == .ident and std.mem.eql(u8, e.kind.ident, "volatile");
+            // The template's bytes: a `"""` block's lines and a string's escapes decoded.
             if (pos == 1) template = switch (e.kind) {
-                .string => |s| trimQuotes(s),
+                .string => |s| strlit.bytes(self.allocator, s),
                 else => "",
             };
             pos += 1;
