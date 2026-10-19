@@ -3464,6 +3464,29 @@ test "exe: a prefix operator binds tighter than as" {
     try std.testing.expectEqual(@as(u32, 42), try compileAndRun(arena.allocator(), src, "exe_as_precedence"));
 }
 
+test "exe: a function passed or assigned where an extern fn goes is called through its address" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const code = try compileAndRun(arena.allocator(),
+        \\hook: usize = 0usize;
+        \\got: usize = 0usize;
+        \\
+        \\set_output :: fn(f: extern fn(*const u8, usize)) { hook = unsafe (f as usize); }
+        \\my_write :: fn(p: *const u8, n: usize) { got += n; }
+        \\
+        \\main :: fn() -> i32 {
+        \\    set_output(my_write);
+        \\    s := "hello";
+        \\    w := unsafe (hook as extern fn(*const u8, usize));
+        \\    w(s.ptr, s.len);
+        \\    cb: extern fn(*const u8, usize) = my_write;
+        \\    cb(s.ptr, 2usize);
+        \\    return (got as i32) - 7;
+        \\}
+    , "thin_fn_arg");
+    try std.testing.expectEqual(@as(u32, 0), code);
+}
+
 test "exe: a lambda calls a function value it captured, in a method and in another lambda" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
