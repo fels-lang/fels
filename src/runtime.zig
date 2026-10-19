@@ -11,6 +11,7 @@ const builtin = @import("builtin");
 
 pub const windows_src = @embedFile("runtime/windows.fels");
 pub const uefi_src = @embedFile("runtime/uefi.fels");
+pub const freestanding_src = @embedFile("runtime/freestanding.fels");
 
 const linux_body = @embedFile("runtime/linux.fels");
 const linux_start_none = @embedFile("runtime/linux_start_none.fels");
@@ -29,6 +30,7 @@ pub fn runtimeSourceFor(os: @TypeOf(builtin.os.tag), link_libc: bool) ?[]const u
         .windows => windows_src,
         .linux => if (link_libc) linux_gnu_src else linux_none_src,
         .uefi => uefi_src,
+        .freestanding => freestanding_src,
         else => null,
     };
 }

@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: Apache-2.0
+// freestanding runtime: no os under the program
+// println goes where std.freestanding.set_output says; zones take a 1 MiB static heap; exit halts
+// with a main, the compiler makes _start: it calls main, then halts
+
+// an extern fn(*const u8, usize), from std.freestanding.set_output; 0 drops the output
+fels_output: usize = 0usize;
+
+write_stdout :: fn(data: []const u8) -> usize {
+    if fels_output == 0usize || data.len == 0usize { return 0usize; }
+    w := unsafe (fels_output as extern fn(*const u8, usize));
+    w(data.ptr, data.len);
+    return data.len;
+}
+
+write_stderr :: fn(data: []const u8) -> usize {
+    return write_stdout(data);
+}
+
+read_stdin :: fn(buf: []u8) -> i64 {
+    return -1i64;
+}
+
+// ---- memory (backs std.heap): bumps through a static heap, never gives back ----
+
+FELS_HEAP_SIZE :: 1048576usize;
+fels_heap: [1048576]u8 = .{};
+fels_heap_used: usize = 0usize;
+
+os_alloc :: fn(size: usize) -> usize {
+    start := (fels_heap_used + 15usize) & ~15usize;
+    if start + size > FELS_HEAP_SIZE { return 0usize; }
+    fels_heap_used = start + size;
+    return unsafe (&fels_heap[0] as usize) + start;
+}
+
+os_reserve :: fn(size: usize) -> usize { return os_alloc(size); }
+os_commit :: fn(addr: usize, size: usize) -> bool { return true; }
+os_release :: fn(addr: usize, size: usize) {}
+
+// ---- stopping ----
+
+// interrupts off, halted for good
+#noreturn
+fels_halt :: fn() {
+    while true {
+        unsafe {
+            core::asm(volatile, "cli; hlt", inputs: {}, outputs: {}, clobbers: { "memory" });
+        }
+    }
+}
+
+#noreturn
+exit :: fn(code: u32) {
+    fels_halt();
+}
+
+#noreturn
+abort :: fn() {
+    fels_halt();
+}
+
+#noreturn
+@panic :: fn(msg: []const u8) {
+    write_stderr("panic: ");
+    write_stderr(msg);
+    write_stderr("\n");
+    fels_halt();
+}
+
+assert :: fn(cond: bool) {
+    if !cond { core::panic("assertion failed"); }
+}
+
+assert_msg :: fn(cond: bool, msg: []const u8) {
+    if !cond { core::panic(msg); }
+}
