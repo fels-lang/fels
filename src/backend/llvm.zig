@@ -123,6 +123,18 @@ pub const LlvmBackend = struct {
                 }
             }
         }
+        // Freestanding: `_start` calls `main` and halts; a program with an `#entry` of its own is
+        // entered there. No function uses the red zone below the stack pointer, which an
+        // interrupt would overwrite.
+        if (self.cg.target_os == .freestanding) {
+            if (!self.cg.no_entry) for (module.functions) |f| {
+                if (f.entry) {
+                    if (std.mem.eql(u8, f.name, "main")) try emitFreestandingStart(&self.cg, f);
+                    break;
+                }
+            };
+            noRedZone(&self.cg);
+        }
         // UEFI: the firmware calls `efi_main(image, system_table)`.
         if (self.cg.target_os == .uefi and !self.cg.no_entry) {
             for (module.functions) |f| {
@@ -385,6 +397,30 @@ fn emitWindowsEntryPoint(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {
     var ep_args = [_]llvm_c.LLVMValueRef{exit_code};
     _ = llvm_c.LLVMBuildCall2(cg.builder, ep_fn_ty, ep_fn, &ep_args, 1, "");
     _ = llvm_c.LLVMBuildUnreachable(cg.builder);
+}
+
+/// `_start` for a freestanding program with a `main`: calls it, then halts (the runtime's
+/// `fels_halt`). A boot loader enters it with a stack.
+fn emitFreestandingStart(cg: *ctx_mod.ModuleCg, main: ir.IrFunction) !void {
+    const void_ty = llvm_c.LLVMVoidTypeInContext(cg.ctx);
+    const start = llvm_c.LLVMAddFunction(cg.mod, "_start", llvm_c.LLVMFunctionType(void_ty, null, 0, 0));
+    const bb = llvm_c.LLVMAppendBasicBlockInContext(cg.ctx, start, "entry");
+    llvm_c.LLVMPositionBuilderAtEnd(cg.builder, bb);
+    const main_fn = cg.fn_decls.get(main.name) orelse return;
+    _ = callMain(cg, main_fn);
+    if (cg.fn_decls.get("fels_halt")) |halt|
+        _ = llvm_c.LLVMBuildCall2(cg.builder, llvm_c.LLVMGlobalGetValueType(halt), halt, null, 0, "");
+    _ = llvm_c.LLVMBuildUnreachable(cg.builder);
+}
+
+/// Every defined function without the red zone, as a kernel needs.
+fn noRedZone(cg: *ctx_mod.ModuleCg) void {
+    const kind = llvm_c.LLVMGetEnumAttributeKindForName("noredzone", "noredzone".len);
+    const attr = llvm_c.LLVMCreateEnumAttribute(cg.ctx, kind, 0);
+    var f = llvm_c.LLVMGetFirstFunction(cg.mod);
+    while (f) |fv| : (f = llvm_c.LLVMGetNextFunction(fv)) {
+        if (llvm_c.LLVMIsDeclaration(fv) == 0) llvm_c.LLVMAddAttributeAtIndex(fv, 0xFFFF_FFFF, attr); // the function itself
+    }
 }
 
 /// `efi_main(image, system_table) -> EFI_STATUS`, which the firmware starts a UEFI program at:
