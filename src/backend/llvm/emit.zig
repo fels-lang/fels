@@ -97,6 +97,8 @@ pub const TargetMachine = struct {
             .linux => "x86_64-unknown-linux-musl",
             // A UEFI program is a PE file that calls the firmware with the Windows convention.
             .uefi => "x86_64-pc-windows-msvc",
+            // No OS: an ELF a boot loader loads, or a kernel's own.
+            .freestanding => "x86_64-unknown-none-elf",
             else => return error.TargetInitFailed,
         };
         const triple = llvm.LLVMCreateMessage(triple_lit); // disposable copy (deinit frees it)
