@@ -298,6 +298,14 @@ fn projectRootOf(allocator: std.mem.Allocator, io: std.Io, file: []const u8) ?[]
     return std.fs.path.resolve(allocator, &.{ cwd, dir }) catch null;
 }
 
+/// The symbol an ELF starts at: `_start`, made for `main`, or a freestanding program's own
+/// `#entry`.
+fn entrySymbol(module: ir.IrModule, target_os: std.Target.Os.Tag) []const u8 {
+    if (target_os != .freestanding) return "_start";
+    for (module.functions) |f| if (f.entry and !std.mem.eql(u8, f.name, "main")) return f.name;
+    return "_start";
+}
+
 pub fn compileFileWithLlvm(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -491,13 +499,13 @@ pub fn emitLlvmFromFrontend(
             return;
         }
 
-        if (opts.target_os == .linux) {
+        if (opts.target_os == .linux or opts.target_os == .freestanding) {
             be.linkLinuxMem(allocator, io, opts.obj_path, obj_bytes, .{
                 .llvm_bin = opts.llvm_bin,
                 .output = exe,
                 .lib_paths = opts.lib_paths,
                 .libs = libs.items,
-                .entry = opts.entry orelse "_start",
+                .entry = opts.entry orelse entrySymbol(module, opts.target_os),
                 .extra_flags = opts.link_flags,
                 .link_libc = opts.link_libc,
                 .sysroot = opts.sysroot,
