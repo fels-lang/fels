@@ -21,7 +21,9 @@ A target has three orthogonal axes:
 You write a target as an LLVM-style triple, such as `x86_64-linux-gnu`, `x86_64-linux-none` or
 `x86_64-windows-msvc`. The CLI also accepts shorthands. `--target linux` means
 `x86_64-linux-none`, the static, freestanding default, and `--target linux-gnu` means
-`x86_64-linux-gnu`. Today every build is x86_64. `--target` reads only the OS and whether the
+`x86_64-linux-gnu`. Two targets have no operating system under them: `--target uefi` makes a
+UEFI application and `--target freestanding` (or `none`) an ELF for a kernel or a boot loader
+(see §7). Today every build is x86_64. `--target` reads only the OS and whether the
 ABI is `gnu`, so an `aarch64-linux` triple still gives an x86_64 binary.
 
 **The front-end is target-independent.** The lexer, parser, sema, IR, comptime VM and macros
@@ -145,6 +147,8 @@ The tiers follow Rust's, adapted to how Fels keeps platform code behind the runt
 | `x86_64-windows-msvc` | **1** | original host target, full stdlib |
 | `x86_64-linux-none` (static) | **1** | Cross-compiles from Windows, and builds on Linux itself. Language, codegen and every `std` module work on it (see §6). By-value structs at C calls do not follow SysV yet (see §4) |
 | `x86_64-linux-gnu` (glibc) | **2** | implemented: `--target linux-gnu` + `--sysroot`. Our `_start` → `__libc_start_main`, links `libc.so.6` directly. Needs a sysroot with `libc.so.6` at link time |
+| `x86_64-uefi` | **2** | `--target uefi`: a PE32+ EFI application. Boots in QEMU's UEFI firmware (`tests/uefi_qemu_test.py`, not in CI). See §7 |
+| `x86_64-none-elf` | **2** | `--target freestanding`: a static ELF with no os. Boots in QEMU as a multiboot kernel (`tests/freestanding_qemu_test.py`, not in CI). See §7 |
 | `aarch64-linux` | **3** | not implemented yet, the compiler emits x86_64 only. Planned for Tier 2 once the aarch64 runtime + ABI arm exist |
 | `riscv64-linux`, `wasm32-wasi` | **3** | LLVM-ready, runtime/seam not yet written |
 | `*-macos` | **3** | Mach-O + Apple ABI, a larger effort |
@@ -171,3 +175,25 @@ The tiers follow Rust's, adapted to how Fels keeps platform code behind the runt
 > anchor a process-wide environ. That language feature has since been added (`name: T = init;`,
 > see [01_syntax](01_syntax.md)), so the runtime now keeps an env overlay. `get_env` consults it
 > first, and `spawn` merges it into the child's environment. No parity gap remains.
+
+## 7. No operating system: UEFI and freestanding
+
+Both targets keep the runtime seam: the runtime gives `write_stdout`, the `os_*` heap calls and
+`exit`, so `println`, zones, strings, `Vec`, maps and `fmt` work. Neither has files, processes,
+threads, the network, time or `#extern`, since nothing under the program provides them.
+
+| | `uefi` | `freestanding` |
+| --- | --- | --- |
+| Triple | `x86_64-pc-windows-msvc`, Windows calling convention | `x86_64-unknown-none-elf` |
+| File | `name.efi`: PE32+, subsystem `EFI_APPLICATION`, base relocations | `name.elf`: a static ELF; `--link-arg` takes a linker script or `--oformat=binary` |
+| Entry | `efi_main(image, system_table)`, made for `main`; `main`'s result is the EFI status | `_start`, made for `main`: calls it, then halts. Without `main`, the program's own `#entry` |
+| Printing | the firmware's console (UTF-8 turned into UCS-2) | whatever `std.freestanding.set_output` names, e.g. a serial port |
+| Heap | the firmware's `AllocatePages` | a 1 MiB static heap in `.bss`, never given back |
+| `exit`, `@panic` | the boot services' `Exit` | `cli; hlt` for good |
+| Std | `std.uefi`: the system table, `stall`, keys, `clear`, the framebuffer, `shutdown`, `reboot` | `std.freestanding` (`set_output`, `halt`), `std.x86` (ports, `cli`/`sti`/`hlt`, `lgdt`/`lidt`, control registers, MSRs, `rdtsc`, `cpuid`) |
+
+A freestanding program is built with `noredzone` on every function: an interrupt pushes onto
+the stack below the stack pointer, where the red zone would keep a function's locals. Code
+starts in 64-bit mode at the entry; a kernel booted from 32-bit mode (multiboot) brings its own
+start in `core::asm`, as `examples/kernel` does. `examples/uefi` and `examples/kernel` show
+both targets, with the QEMU commands to boot them.
