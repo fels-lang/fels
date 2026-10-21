@@ -863,6 +863,25 @@ test "LLVM: -g describes the parameters and locals with their types" {
     }
 }
 
+test "LLVM: a freestanding program's functions use no red zone, and _start is emitted for main" {
+    if (comptime !fels.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var fe = try fels.compile(a, "free_ir.fels", "main :: fn() -> i32 { return 0; }\n");
+    defer fe.deinit(a);
+    const module = try fels.lowerFrontend(a, fe);
+    var backend = fels.LlvmBackend.init(a, "free_ir");
+    defer backend.deinit();
+    backend.setTarget(.freestanding);
+    try backend.lower(module);
+    const text = try backend.getIrText(a);
+    try std.testing.expect(std.mem.indexOf(u8, text, "define void @_start()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "noredzone") != null);
+}
+
 test "LLVM: bindings of one C symbol share its function but keep their own signatures" {
     if (comptime !fels.llvm_enabled) return;
     if (comptime @import("builtin").os.tag != .windows) return error.SkipZigTest; // the Windows runtime's `CloseHandle`
