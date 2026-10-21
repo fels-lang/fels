@@ -1,0 +1,153 @@
+// a kernel: no os, no firmware calls. QEMU loads it as a multiboot kernel, boot32 takes the
+// cpu to 64-bit mode, the compiler's _start calls main. It prints on the screen and the
+// serial port, sums a slice from a zone and halts.
+
+#import std.io.{ println };
+#import std.freestanding;
+#import std.x86;
+
+// the multiboot header (with load addresses, as the image is no ELF), then the 32-bit start:
+// identity-map the first GiB with 2 MiB pages, turn on long mode and SSE, call _start
+#naked
+#keep
+boot32 :: fn() {
+    unsafe {
+        core::asm(volatile, """
+            .pushsection .multiboot, "a"
+            .align 4
+            mb_header:
+            .long 0x1BADB002
+            .long 0x00010000
+            .long -(0x1BADB002 + 0x00010000)
+            .long mb_header
+            .long mb_header
+            .long edata
+            .long end
+            .long _start32
+            .popsection
+            .pushsection .text.boot32, "ax"
+            .code32
+            .globl _start32
+            _start32:
+            cli
+            mov $$0x80000, %esp
+            mov $$0x1000, %edi
+            xor %eax, %eax
+            mov $$3072, %ecx
+            rep stosl
+            movl $$0x2003, 0x1000
+            movl $$0x3003, 0x2000
+            mov $$0x3000, %edi
+            mov $$0x83, %eax
+            mov $$512, %ecx
+            1:
+            mov %eax, (%edi)
+            add $$0x200000, %eax
+            add $$8, %edi
+            loop 1b
+            mov $$0x1000, %eax
+            mov %eax, %cr3
+            mov %cr4, %eax
+            or $$0x620, %eax
+            mov %eax, %cr4
+            mov $$0xC0000080, %ecx
+            rdmsr
+            or $$0x100, %eax
+            wrmsr
+            mov %cr0, %eax
+            and $$0xFFFFFFFB, %eax
+            or $$0x80000003, %eax
+            mov %eax, %cr0
+            lgdt gdt_ptr
+            ljmp $$0x08, $$long_mode
+            .code64
+            long_mode:
+            mov $$0x10, %ax
+            mov %ax, %ds
+            mov %ax, %es
+            mov %ax, %ss
+            mov %ax, %fs
+            mov %ax, %gs
+            mov $$0x80000, %rsp
+            call _start
+            2:
+            hlt
+            jmp 2b
+            .align 8
+            gdt:
+            .quad 0
+            .quad 0x00AF9B000000FFFF
+            .quad 0x00CF93000000FFFF
+            gdt_ptr:
+            .word gdt_ptr - gdt - 1
+            .long gdt
+            .popsection
+            """, inputs: {}, outputs: {}, clobbers: {});
+    }
+}
+
+// ---- output: the VGA text screen at 0xB8000 (80x25 cells of char and color) and COM1 ----
+
+COLS :: 80usize;
+ROWS :: 25usize;
+COLOR :: 0x0F00u16; // white on black
+cell: usize = 0usize;
+
+put_cell :: fn(at: usize, c: u8) {
+    p := unsafe core::ptr_from_int(*u16, 0xB8000usize + at * 2usize);
+    unsafe { *p = COLOR | (c as u16); }
+}
+
+screen_put :: fn(c: u8) {
+    if c == 10u8 {
+        cell = (cell / COLS + 1usize) * COLS;
+    } else {
+        put_cell(cell, c);
+        cell += 1usize;
+    }
+    if cell >= COLS * ROWS { cell = 0usize; } // back to the top, no scrolling
+}
+
+clear_screen :: fn() {
+    for i in 0usize..COLS * ROWS { put_cell(i, 32u8); }
+    cell = 0usize;
+}
+
+// the blinking cursor to `cell`, through the VGA controller's registers 0x0E and 0x0F
+move_cursor :: fn() {
+    x86::outb(0x3D4u16, 0x0Fu8);
+    x86::outb(0x3D5u16, (cell & 0xFFusize) as u8);
+    x86::outb(0x3D4u16, 0x0Eu8);
+    x86::outb(0x3D5u16, ((cell >> 8usize) & 0xFFusize) as u8);
+}
+
+// what println writes to: both the screen and the serial port
+console_write :: fn(p: *const u8, n: usize) {
+    for i in 0usize..n {
+        c := unsafe *core::ptr_from_int(*const u8, (p as usize) + i);
+        screen_put(c);
+        x86::outb(0x3F8u16, c);
+    }
+    move_cursor();
+}
+
+sum :: fn(n: u32) -> u32 {
+    total := 0u32;
+    zone z: Arena {
+        xs := z.new_slice(u32, n as usize);
+        for i in 0usize..xs.len { xs[i] = (i as u32) + 1u32; }
+        for x in xs { total += x; }
+    }
+    return total;
+}
+
+main :: fn() -> i32 {
+    clear_screen();
+    freestanding::set_output(console_write);
+    println("hello from a fels kernel");
+    id := x86::cpuid(0u32, 0u32);
+    println("cpuid leaf 0: max leaf {id.eax}");
+    println("1 + 2 + ... + 100 = {sum(100u32)}");
+    println("halting");
+    return 0;
+}

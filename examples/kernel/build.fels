@@ -1,0 +1,11 @@
+#import std.build.{ Build, executable, target, release, link_flag, output, default };
+
+build :: fn(b: Build) {
+    k := b.executable("kernel", "main.fels");
+    k.target(.freestanding);
+    k.release();
+    k.link_flag("--script=kernel.ld");
+    k.link_flag("--oformat=binary"); // a flat image, loaded by the multiboot header's addresses
+    k.output("kernel.bin");
+    b.default(k);
+}
