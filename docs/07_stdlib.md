@@ -992,6 +992,55 @@ ignored := srv.send_to("pong", d.from) catch e { return; };  // reply to sender
 > `tests/fixtures/stdlib/net_echo_app.fels` (TCP echo) and `net_udp_app.fels` (UDP echo).
 > HTTP is in `std.http`. Names resolve to IPv4 addresses only, as the sockets are IPv4.
 
+## Without an operating system: `std.uefi`, `std.freestanding`, `std.x86`
+
+For programs built with `--target uefi` or `--target freestanding`
+([18_targets_and_tiers](18_targets_and_tiers.md) §7). `println`, zones and the containers work
+there as anywhere; these modules give what the machine has instead of an operating system.
+
+**`std.uefi`** (`--target uefi`) calls the firmware:
+
+- `system_table()` and `image()`: what the firmware passed to `efi_main`, for calls the module
+  does not wrap.
+- `stall(us)` waits, `clear()` clears the console, `read_key() -> Key` waits for a key
+  (`char`, or 0 and a `scan` code for a special key).
+- `framebuffer() -> ?Framebuffer`: the screen of the graphics output protocol, with
+  `put(x, y, rgb)` and `fill(x, y, w, h, rgb)`; null without one.
+- `shutdown()` and `reboot()`.
+
+**`std.freestanding`** (`--target freestanding`): `set_output(write)` names the function that
+`println` and a panic message go to, such as one that writes to a serial port; until then
+nothing is printed. `halt()` turns interrupts off and halts for good.
+
+**`std.x86`**: the instructions a kernel needs, each a function over `core::asm`. Most work
+only in ring 0.
+
+| | |
+| --- | --- |
+| Ports | `outb`/`outw`/`outl(port, v)`, `inb`/`inw`/`inl(port)` |
+| Interrupts | `cli`, `sti`, `hlt`, `pause`, `lgdt(descriptor)`, `lidt(descriptor)` (10 bytes: the limit, then the base) |
+| Control registers | `read_cr0`, `read_cr2`, `read_cr3`, `write_cr3`, `read_cr4`, `invlpg(addr)` |
+| Model-specific registers | `rdmsr(msr) -> u64`, `wrmsr(msr, v)` |
+| The processor | `rdtsc() -> u64`, `cpuid(leaf, sub) -> Cpuid` (`eax`, `ebx`, `ecx`, `edx`) |
+
+```fels
+#import std.io.{ println };
+#import std.freestanding;
+#import std.x86;
+
+serial_write :: fn(p: *const u8, n: usize) {
+    for i in 0usize..n { x86::outb(0x3F8u16, unsafe *core::ptr_from_int(*const u8, (p as usize) + i)); }
+}
+
+main :: fn() -> i32 {
+    freestanding::set_output(serial_write);
+    println("max cpuid leaf {x86::cpuid(0u32, 0u32).eax}");
+    return 0;
+}
+```
+
+`examples/uefi` and `examples/kernel` are whole programs for both targets.
+
 ## Game & graphics modules
 
 Small, focused modules for 2D games and graphics. `std.math` and `std.color` are
