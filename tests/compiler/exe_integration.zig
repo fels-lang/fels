@@ -249,6 +249,64 @@ test "exe: a UEFI program that uses #extern is refused" {
     }));
 }
 
+/// Build `src` with --target freestanding and return the ELF's bytes; skipped without ld.lld.
+fn compileFreestanding(a: std.mem.Allocator, src: []const u8, label: []const u8) ![]u8 {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime !host_runs) return error.SkipZigTest;
+    const io = std.testing.io;
+    const elf_path = try std.fmt.allocPrint(a, ".zig-cache/{s}.elf", .{label});
+    fels.compileWithLlvm(a, io, .{
+        .file_name = label,
+        .source = src,
+        .obj_path = try std.fmt.allocPrint(a, ".zig-cache/{s}.o", .{label}),
+        .exe_path = elf_path,
+        .opt_level = 2,
+        .llvm_bin = fels.llvm_path ++ "/bin",
+        .target_os = .freestanding,
+    }) catch |err| {
+        if (err == error.LinkFailed) return error.SkipZigTest; // no ld.lld
+        return err;
+    };
+    return std.Io.Dir.cwd().readFileAlloc(io, elf_path, a, .unlimited);
+}
+
+/// A static ELF executable with a start address and no program interpreter.
+fn expectStandaloneElf(elf: []const u8) !void {
+    try std.testing.expectEqualSlices(u8, "\x7fELF", elf[0..4]);
+    try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, elf[16..18], .little)); // ET_EXEC
+    try std.testing.expect(std.mem.readInt(u64, elf[24..32], .little) != 0); // e_entry
+    const phoff = std.mem.readInt(u64, elf[32..40], .little);
+    const phentsize = std.mem.readInt(u16, elf[54..56], .little);
+    const phnum = std.mem.readInt(u16, elf[56..58], .little);
+    for (0..phnum) |k| {
+        const at: usize = @intCast(phoff + k * phentsize);
+        try std.testing.expect(std.mem.readInt(u32, elf[at..][0..4], .little) != 3); // PT_INTERP
+    }
+}
+
+test "exe: --target freestanding makes an ELF entered at _start, which calls main" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const elf = try compileFreestanding(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    zone z: Arena { xs := z.new_slice(u32, 8usize); xs[0] = 1u32; return xs[0] as i32; }
+        \\}
+    , "free_main");
+    try expectStandaloneElf(elf);
+}
+
+test "exe: a freestanding program with an #entry of its own is entered there" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const elf = try compileFreestanding(arena.allocator(),
+        \\#entry
+        \\kmain :: fn() {
+        \\    while true {}
+        \\}
+    , "free_kmain");
+    try expectStandaloneElf(elf);
+}
+
 test "exe: the portable fixtures cross-compile to static Linux ELF executables" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
