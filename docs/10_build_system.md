@@ -95,7 +95,7 @@ pub Tests    :: struct { id: i32 }   // its methods: see Test steps below
 pub Optimize  :: enum { debug, release_safe, release_fast, release_small }
 pub Subsystem :: enum { console, windows }
 pub LinkMode  :: enum { dynamic, static }
-pub Target    :: enum { windows, linux, linux_gnu }
+pub Target    :: enum { windows, linux, linux_gnu, uefi, freestanding }
 pub Os        :: enum { windows, linux, macos, other }
 ```
 
@@ -390,7 +390,7 @@ Here is what the build system needs, set against what already exists:
 | `define` injection: `define`/`define_int`/`define_bool` write a `build_options` module | done |
 | `add_quote` typed codegen / `#provided` | later (extends `#quote`/`#insert`) |
 | Layer 2 (`workspace`/`Options`) + Layer 3 (intercept) surface | later |
-| Cross-compile targets | Linux x86-64 (`a.target(.linux)`, `.linux_gnu`), macOS later |
+| Cross-compile targets | Linux x86-64 (`a.target(.linux)`, `.linux_gnu`), no OS (`.uefi`, `.freestanding`), macOS later |
 
 **Execution mechanism (as built):** the compiler does not read the `Build` struct back out
 of VM memory. Instead, the builder methods call `__build_*` compiler intrinsics, which lower
@@ -490,6 +490,9 @@ glibc dynamically, and `a.sysroot(dir)` says where glibc is. A Linux output has 
 `a.strip()` leaves the symbol table out of a Linux output (a Windows output has none).
 `b.host_os()` returns the OS that `fels build` runs on (`.windows`, `.linux`, `.macos`,
 `.other`), so a script can choose per platform. Libraries for Linux are not supported yet.
+`.uefi` makes a UEFI application (`name.efi`) and `.freestanding` an ELF with no operating
+system (`name.elf`), with `a.link_flag(flag)` for a linker script; both are executables or
+objects, not libraries ([18_targets_and_tiers](18_targets_and_tiers.md) §7).
 `fels build -g` gives every artifact debug info: a PDB beside a Windows program, DWARF in a
 Linux one.
 
