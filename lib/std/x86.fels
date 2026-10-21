@@ -112,12 +112,13 @@ pub Cpuid :: struct {
 
 // cpuid for `leaf` and `sub`
 pub cpuid :: fn(leaf: u32, sub: u32) -> Cpuid {
-    out: Cpuid = .{ .eax = 0u32, .ebx = 0u32, .ecx = 0u32, .edx = 0u32 };
+    // leaf and sub go in through `out`: cpuid overwrites eax and ecx, which an input must keep
+    out: Cpuid = .{ .eax = leaf, .ebx = 0u32, .ecx = sub, .edx = 0u32 };
     unsafe {
-        core::asm(volatile, "cpuid; mov %eax, (%rdi); mov %ebx, 4(%rdi); mov %ecx, 8(%rdi); mov %edx, 12(%rdi)",
-            inputs: { "{eax}"(leaf), "{ecx}"(sub), "{rdi}"(&out) },
+        core::asm(volatile, "mov (%rdi), %eax; mov 8(%rdi), %ecx; cpuid; mov %eax, (%rdi); mov %ebx, 4(%rdi); mov %ecx, 8(%rdi); mov %edx, 12(%rdi)",
+            inputs: { "{rdi}"(&out) },
             outputs: {},
-            clobbers: { "rbx", "rdx", "memory" },
+            clobbers: { "rax", "rbx", "rcx", "rdx", "memory" },
         );
     }
     return out;
