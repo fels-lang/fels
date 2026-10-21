@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // freestanding runtime: no os under the program
-// println goes where std.freestanding.set_output says; zones take a 1 MiB static heap; exit halts
+// println goes where std.freestanding.set_output says; zones take memory from a free list; exit halts
 // with a main, the compiler makes _start: it calls main, then halts
 
 // an extern fn(*const u8, usize), from std.freestanding.set_output; 0 drops the output
@@ -21,22 +21,118 @@ read_stdin :: fn(buf: []u8) -> i64 {
     return -1i64;
 }
 
-// ---- memory (backs std.heap): bumps through a static heap, never gives back ----
+// ---- memory (backs std.heap) ----
+// a free list in address order: a free block starts with its size and the next block's address.
+// it holds the memory std.freestanding.add_memory gives, and a 1 MiB static heap once that runs
+// out (or before any is given). a zone's chunks go back to it when the zone ends.
 
 FELS_HEAP_SIZE :: 1048576usize;
 fels_heap: [1048576]u8 = .{};
-fels_heap_used: usize = 0usize;
+fels_heap_added: bool = false;
+fels_free: usize = 0usize;
+fels_free_bytes: usize = 0usize;
+
+FreeBlock :: struct {
+    size: usize,
+    next: usize,
+}
+
+// every block is a multiple of 16 bytes, and at least one FreeBlock
+fels_round :: fn(size: usize) -> usize {
+    n := (size + 15usize) & ~15usize;
+    if n < 16usize { n = 16usize; }
+    return n;
+}
+
+// gives [addr, addr + size) to the free list, merged with the blocks it touches
+fels_heap_release :: fn(addr: usize, size: usize) {
+    if size == 0usize { return; }
+    prev: usize = 0usize;
+    cur := fels_free;
+    while cur != 0usize && cur < addr {
+        prev = cur;
+        cur = unsafe core::ptr_from_int(*FreeBlock, cur).next;
+    }
+    b := unsafe core::ptr_from_int(*FreeBlock, addr);
+    b.size = size;
+    b.next = cur;
+    if cur != 0usize && addr + size == cur {
+        c := unsafe core::ptr_from_int(*FreeBlock, cur);
+        b.size = b.size + c.size;
+        b.next = c.next;
+    }
+    if prev == 0usize {
+        fels_free = addr;
+    } else {
+        p := unsafe core::ptr_from_int(*FreeBlock, prev);
+        if prev + p.size == addr {
+            p.size = p.size + b.size;
+            p.next = b.next;
+        } else {
+            p.next = addr;
+        }
+    }
+    fels_free_bytes += size;
+}
+
+// std.freestanding.add_memory: [base, base + len) for zones, trimmed to 16-byte bounds
+fels_heap_add :: fn(base: usize, len: usize) {
+    start := (base + 15usize) & ~15usize;
+    if len < 32usize || start - base > len - 32usize { return; }
+    fels_heap_release(start, (len - (start - base)) & ~15usize);
+}
+
+// first fit; the rest of a block stays free
+fels_heap_take :: fn(size: usize) -> usize {
+    prev: usize = 0usize;
+    cur := fels_free;
+    while cur != 0usize {
+        b := unsafe core::ptr_from_int(*FreeBlock, cur);
+        if b.size >= size {
+            next := b.next;
+            if b.size - size >= 16usize {
+                rest := unsafe core::ptr_from_int(*FreeBlock, cur + size);
+                rest.size = b.size - size;
+                rest.next = b.next;
+                next = cur + size;
+            }
+            if prev == 0usize {
+                fels_free = next;
+            } else {
+                p := unsafe core::ptr_from_int(*FreeBlock, prev);
+                p.next = next;
+            }
+            fels_free_bytes -= size;
+            return cur;
+        }
+        prev = cur;
+        cur = b.next;
+    }
+    return 0usize;
+}
 
 os_alloc :: fn(size: usize) -> usize {
-    start := (fels_heap_used + 15usize) & ~15usize;
-    if start + size > FELS_HEAP_SIZE { return 0usize; }
-    fels_heap_used = start + size;
-    return unsafe (&fels_heap[0] as usize) + start;
+    n := fels_round(size);
+    got := fels_heap_take(n);
+    if got == 0usize && !fels_heap_added {
+        fels_heap_added = true;
+        fels_heap_add(unsafe (&fels_heap[0] as usize), FELS_HEAP_SIZE);
+        got = fels_heap_take(n);
+    }
+    return got;
 }
 
 os_reserve :: fn(size: usize) -> usize { return os_alloc(size); }
 os_commit :: fn(addr: usize, size: usize) -> bool { return true; }
-os_release :: fn(addr: usize, size: usize) {}
+os_release :: fn(addr: usize, size: usize) { fels_heap_release(addr, fels_round(size)); }
+
+// std.freestanding.free_memory: the bytes zones can still take, the static heap's among them
+fels_heap_free :: fn() -> usize {
+    if fels_heap_added { return fels_free_bytes; }
+    base := unsafe (&fels_heap[0] as usize);
+    start := (base + 15usize) & ~15usize;
+    return fels_free_bytes + ((FELS_HEAP_SIZE - (start - base)) & ~15usize);
+}
 
 // ---- stopping ----
 
