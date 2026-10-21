@@ -197,7 +197,10 @@ all.
 - `-g` gives a program debug info: source lines, functions, parameters and locals with their
   types, in a PDB on Windows and as DWARF on Linux. On Windows it needs the import libraries of
   the Windows SDK for now.
-- The compiler has 851 tests, and CI runs them on Windows and Linux on every push.
+- Programs can run without an operating system: `--target uefi` makes a UEFI application and
+  `--target freestanding` an ELF for a kernel. `examples/uefi` and `examples/kernel` boot in
+  QEMU.
+- The compiler has 856 tests, and CI runs them on Windows and Linux on every push.
 
 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) lists what is still rough, and the
 [changelog](CHANGELOG.md) shows what changed in each release.
