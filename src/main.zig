@@ -48,6 +48,8 @@ const Options = struct {
     llvm_bin_owned: bool = false,
     lib_paths: std.ArrayList([]const u8) = .empty,
     extra_libs: std.ArrayList([]const u8) = .empty,
+    /// `--link-arg`: flags passed to the linker as they are.
+    link_flags: std.ArrayList([]const u8) = .empty,
     opt_level: u2 = 0,
     /// The runtime safety checks; `--unchecked` and `--release-fast` turn them off.
     safety: bool = true,
@@ -231,6 +233,7 @@ pub fn main(init: std.process.Init) u8 {
     var opts = Options{};
     defer opts.lib_paths.deinit(allocator);
     defer opts.extra_libs.deinit(allocator);
+    defer opts.link_flags.deinit(allocator);
     defer if (opts.llvm_bin_owned) allocator.free(opts.llvm_bin);
     var discovered_msvc: ?[]const u8 = null;
     defer if (discovered_msvc) |p| allocator.free(p);
@@ -275,6 +278,9 @@ pub fn main(init: std.process.Init) u8 {
         } else if (std.mem.eql(u8, a, "--lib-path") and i + 1 < args.len) {
             i += 1;
             opts.lib_paths.append(allocator, args[i]) catch return 1;
+        } else if (std.mem.eql(u8, a, "--link-arg") and i + 1 < args.len) {
+            i += 1;
+            opts.link_flags.append(allocator, args[i]) catch return 1;
         } else if (std.mem.eql(u8, a, "--lib") and i + 1 < args.len) {
             i += 1;
             opts.extra_libs.append(allocator, args[i]) catch return 1;
@@ -608,6 +614,7 @@ fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source:
         .sysroot = opts.sysroot,
         .lib_paths = opts.lib_paths.items,
         .extra_libs = opts.extra_libs.items,
+        .link_flags = opts.link_flags.items,
         .progress = ui.Stages.step,
         .progress_ctx = &stages,
         .timings = &timings,
@@ -660,6 +667,7 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
         .llvm_bin = opts.llvm_bin,
         .lib_paths = opts.lib_paths.items,
         .extra_libs = opts.extra_libs.items,
+        .link_flags = opts.link_flags.items,
         .progress = ui.Stages.step,
         .progress_ctx = &stages,
         .timings = &timings,
@@ -1001,6 +1009,7 @@ fn printUsage() void {
         \\  --llvm-path <dir>      LLVM root (forward slashes)
         \\  --lib-path <dir>       add a linker library search directory
         \\  --lib <name>           link an extra import library (e.g. user32)
+        \\  --link-arg <flag>      pass a flag to the linker (e.g. --script=kernel.ld)
         \\
     , .{version});
 }
