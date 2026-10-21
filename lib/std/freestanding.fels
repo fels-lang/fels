@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.freestanding: for a program built with --target freestanding, which has no os under it
+
+// println and the panic message go to `write`, e.g. a serial port; nothing is printed before
+pub set_output :: fn(write: extern fn(*const u8, usize)) {
+    fels_output = unsafe (write as usize);
+}
+
+// interrupts off, halted for good
+#noreturn
+pub halt :: fn() {
+    fels_halt();
+}
