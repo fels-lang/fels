@@ -523,6 +523,11 @@ fn hostCall(ctx: *anyopaque, op_raw: u32, args: []const Value) Value {
                     if (art.kind == .static_library or art.kind == .shared_library)
                         plan.fail("`{s}`: libraries for Linux are not supported yet (executables and objects are)", .{art.name});
                 },
+                3, 4 => {
+                    art.target_os = if (argInt(args, 1) == 3) .uefi else .freestanding;
+                    if (art.kind == .static_library or art.kind == .shared_library)
+                        plan.fail("`{s}`: a UEFI or freestanding program is an executable or an object, not a library", .{art.name});
+                },
                 else => {},
             }
             return .void;
@@ -2020,7 +2025,12 @@ fn resolveOutput(plan: *BuildPlan, base_dir: []const u8, art: Artifact) BuildErr
     if (art.out_path) |p| return joinPath(a, base_dir, p) catch return error.OutOfMemory;
     const linux = art.target_os == .linux;
     const ext = switch (art.kind) {
-        .executable => if (linux) "" else ".exe",
+        .executable => switch (art.target_os) {
+            .linux => "",
+            .uefi => ".efi",
+            .freestanding => ".elf",
+            else => ".exe",
+        },
         .shared_library => if (linux) ".so" else ".dll",
         .static_library => if (linux) ".a" else ".lib",
         .object => ".o",

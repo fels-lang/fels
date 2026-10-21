@@ -190,13 +190,16 @@ pub stack_size :: fn(self: Artifact, bytes: u64) {
 // target
 
 // .linux: static ELF, no libc; .linux_gnu: glibc via `sysroot`; no libs for linux yet
-pub Target :: enum { windows, linux, linux_gnu }
+// .uefi: a UEFI application (name.efi); .freestanding: an ELF with no os under it (name.elf)
+pub Target :: enum { windows, linux, linux_gnu, uefi, freestanding }
 
 pub target :: fn(self: Artifact, t: Target) {
     match t {
-        .windows   => { __build_target(self.id, 0); }
-        .linux     => { __build_target(self.id, 1); }
-        .linux_gnu => { __build_target(self.id, 2); }
+        .windows      => { __build_target(self.id, 0); }
+        .linux        => { __build_target(self.id, 1); }
+        .linux_gnu    => { __build_target(self.id, 2); }
+        .uefi         => { __build_target(self.id, 3); }
+        .freestanding => { __build_target(self.id, 4); }
     }
 }
 
