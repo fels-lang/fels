@@ -11,11 +11,27 @@ the major version is `0`, any minor bump may break source compatibility.
   functions, parameters and locals with their types that a debugger shows: a PDB beside a
   Windows program, DWARF in a Linux one. On Windows the program is then linked by LLD, which
   needs the Windows SDK's import libraries.
+- **UEFI applications**: `--target uefi` (or `a.target(.uefi)` in build.fels) makes `name.efi`,
+  which the firmware starts with no operating system. `println` goes to the firmware's console,
+  zones take the firmware's pages, and `std.uefi` has the system table, `stall`, keys, `clear`,
+  the framebuffer, `shutdown` and `reboot`. `examples/uefi` draws on the screen and turns off.
+- **Freestanding programs**: `--target freestanding` (or `.freestanding`) makes a static ELF
+  with no operating system, for a kernel. A `_start` calls `main` and halts, or the program's
+  own `#entry` is the start; no function uses the red zone; zones take a 1 MiB static heap, and
+  `std.freestanding.set_output` names where `println` writes. `examples/kernel` boots in QEMU
+  as a multiboot kernel and prints on the screen and the serial port.
+- **`std.x86`**: port I/O, `cli`/`sti`/`hlt`, `lgdt`/`lidt`, the control registers, MSRs,
+  `rdtsc` and `cpuid`.
+- **`--link-arg <flag>`** passes a flag to the linker as it is, such as a linker script.
 
 ### Fixed
 
 - `#section`, `#weak`, `#cold`, `#keep` and `#link_name` were dropped from a function in every
   native build: the passes that run before code generation rebuilt it without them.
+- A function named where an `extern fn` goes (`set_output(serial_write)`) was passed as a
+  closure, so the callee called the wrong address. It is now the function's own address.
+- A `core::asm` template written as a `"""` block reached the assembler with its escapes and
+  quotes as written; it is now the block's lines.
 
 ## 0.13.0 - 2026-10-20
 
