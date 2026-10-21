@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.x86: x86-64 instructions a kernel needs: ports, interrupts, control registers, msrs
+// most only work in ring 0
+
+// ---- i/o ports ----
+
+pub outb :: fn(port: u16, v: u8) {
+    unsafe { core::asm(volatile, "outb %al, %dx", inputs: { "{dx}"(port), "{al}"(v) }, outputs: {}, clobbers: { "memory" }); }
+}
+
+pub outw :: fn(port: u16, v: u16) {
+    unsafe { core::asm(volatile, "outw %ax, %dx", inputs: { "{dx}"(port), "{ax}"(v) }, outputs: {}, clobbers: { "memory" }); }
+}
+
+pub outl :: fn(port: u16, v: u32) {
+    unsafe { core::asm(volatile, "outl %eax, %dx", inputs: { "{dx}"(port), "{eax}"(v) }, outputs: {}, clobbers: { "memory" }); }
+}
+
+pub inb :: fn(port: u16) -> u8 {
+    return unsafe core::asm(volatile, "inb %dx, %al", inputs: { "{dx}"(port) }, outputs: { "={al}"(u8) }, clobbers: { "memory" });
+}
+
+pub inw :: fn(port: u16) -> u16 {
+    return unsafe core::asm(volatile, "inw %dx, %ax", inputs: { "{dx}"(port) }, outputs: { "={ax}"(u16) }, clobbers: { "memory" });
+}
+
+pub inl :: fn(port: u16) -> u32 {
+    return unsafe core::asm(volatile, "inl %dx, %eax", inputs: { "{dx}"(port) }, outputs: { "={eax}"(u32) }, clobbers: { "memory" });
+}
+
+// ---- interrupts and halting ----
+
+pub cli :: fn() {
+    unsafe { core::asm(volatile, "cli", inputs: {}, outputs: {}, clobbers: { "memory" }); }
+}
+
+pub sti :: fn() {
+    unsafe { core::asm(volatile, "sti", inputs: {}, outputs: {}, clobbers: { "memory" }); }
+}
+
+// waits for the next interrupt
+pub hlt :: fn() {
+    unsafe { core::asm(volatile, "hlt", inputs: {}, outputs: {}, clobbers: { "memory" }); }
+}
+
+// spin-loop hint
+pub pause :: fn() {
+    unsafe { core::asm(volatile, "pause", inputs: {}, outputs: {}, clobbers: {}); }
+}
+
+// loads the gdt/idt from a 10-byte descriptor: u16 limit, then u64 base
+pub lgdt :: fn(descriptor: *const u8) {
+    unsafe { core::asm(volatile, "lgdt (%rdi)", inputs: { "{rdi}"(descriptor) }, outputs: {}, clobbers: { "memory" }); }
+}
+
+pub lidt :: fn(descriptor: *const u8) {
+    unsafe { core::asm(volatile, "lidt (%rdi)", inputs: { "{rdi}"(descriptor) }, outputs: {}, clobbers: { "memory" }); }
+}
+
+// ---- control registers ----
+
+pub read_cr0 :: fn() -> u64 {
+    return unsafe core::asm(volatile, "mov %cr0, %rax", inputs: {}, outputs: { "={rax}"(u64) }, clobbers: {});
+}
+
+// the address of the last page fault
+pub read_cr2 :: fn() -> u64 {
+    return unsafe core::asm(volatile, "mov %cr2, %rax", inputs: {}, outputs: { "={rax}"(u64) }, clobbers: {});
+}
+
+// the page table root
+pub read_cr3 :: fn() -> u64 {
+    return unsafe core::asm(volatile, "mov %cr3, %rax", inputs: {}, outputs: { "={rax}"(u64) }, clobbers: {});
+}
+
+pub write_cr3 :: fn(v: u64) {
+    unsafe { core::asm(volatile, "mov %rdi, %cr3", inputs: { "{rdi}"(v) }, outputs: {}, clobbers: { "memory" }); }
+}
+
+pub read_cr4 :: fn() -> u64 {
+    return unsafe core::asm(volatile, "mov %cr4, %rax", inputs: {}, outputs: { "={rax}"(u64) }, clobbers: {});
+}
+
+// drops the tlb entry of the page holding `addr`
+pub invlpg :: fn(addr: usize) {
+    unsafe { core::asm(volatile, "invlpg (%rdi)", inputs: { "{rdi}"(addr) }, outputs: {}, clobbers: { "memory" }); }
+}
+
+// ---- msrs, the time stamp counter, cpuid ----
+
+pub rdmsr :: fn(msr: u32) -> u64 {
+    return unsafe core::asm(volatile, "rdmsr; shl $$32, %rdx; or %rdx, %rax", inputs: { "{ecx}"(msr) }, outputs: { "={rax}"(u64) }, clobbers: { "rdx" });
+}
+
+pub wrmsr :: fn(msr: u32, v: u64) {
+    unsafe {
+        core::asm(volatile, "wrmsr", inputs: { "{ecx}"(msr), "{eax}"((v & 0xFFFF_FFFFu64) as u32), "{edx}"((v >> 32u64) as u32) }, outputs: {}, clobbers: { "memory" });
+    }
+}
+
+// cycles since reset
+pub rdtsc :: fn() -> u64 {
+    return unsafe core::asm(volatile, "rdtsc; shl $$32, %rdx; or %rdx, %rax", inputs: {}, outputs: { "={rax}"(u64) }, clobbers: { "rdx" });
+}
+
+pub Cpuid :: struct {
+    eax: u32,
+    ebx: u32,
+    ecx: u32,
+    edx: u32,
+}
+
+// cpuid for `leaf` and `sub`
+pub cpuid :: fn(leaf: u32, sub: u32) -> Cpuid {
+    out: Cpuid = .{ .eax = 0u32, .ebx = 0u32, .ecx = 0u32, .edx = 0u32 };
+    unsafe {
+        core::asm(volatile, "cpuid; mov %eax, (%rdi); mov %ebx, 4(%rdi); mov %ecx, 8(%rdi); mov %edx, 12(%rdi)",
+            inputs: { "{eax}"(leaf), "{ecx}"(sub), "{rdi}"(&out) },
+            outputs: {},
+            clobbers: { "rbx", "rdx", "memory" },
+        );
+    }
+    return out;
+}
