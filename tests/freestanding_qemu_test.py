@@ -119,6 +119,8 @@ main :: fn() -> i32 {
     freestanding::set_output(serial_write);
     println("fels kernel: start");
     println("sum {sum(100u32)}");
+    // leaf 0 gives the highest leaf, which is never 0 on a 64-bit cpu
+    println("cpuid max leaf {x86::cpuid(0u32, 0u32).eax}");
     println("fels kernel: done");
     // QEMU's isa-debug-exit: it exits with (0x10 << 1) | 1 = 33
     x86::outb(0xF4u16, 0x10u8);
@@ -181,6 +183,7 @@ def main():
     checks = [
         ("main runs and prints through the serial port", "fels kernel: start" in text and "fels kernel: done" in text),
         ("a zone takes the static heap", "sum 5050" in text),
+        ("cpuid answers", "cpuid max leaf " in text and "cpuid max leaf 0\n" not in text),
         ("the debug-exit port ends QEMU", code == 33),
     ]
     failed = False
