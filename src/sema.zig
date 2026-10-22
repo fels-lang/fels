@@ -10,6 +10,7 @@ const Diagnostic = diag_mod.Diagnostic;
 const DiagKind = diag_mod.DiagKind;
 const Span = @import("lexer/span.zig").Span;
 const BuildOp = @import("vm/instructions.zig").BuildOp;
+const build_target = @import("build_target.zig");
 
 pub const ScopeId = usize;
 pub const SymbolId = usize;
@@ -520,6 +521,8 @@ pub const FnSig = struct {
     no_return: bool,
     entry: bool,
     naked: bool,
+    /// `#interrupt`: the cpu calls it (`checkInterruptSignature`); code can't.
+    interrupt: bool = false,
     export_sym: ?[]const u8, // #export / #export("name")
     deprecated: ?[]const u8, // #deprecated / #deprecated("msg")
     type_params: []const []const u8,
@@ -2302,6 +2305,28 @@ const Checker = struct {
         return false;
     }
 
+    /// `#interrupt` (x86-64): the cpu calls the function with a pointer to the frame it pushed
+    /// and, for some exceptions, an error code, and it returns with `iretq`.
+    fn checkInterruptSignature(self: *Checker, decl: ast.FunctionDecl, params: []const ParamSig, ret: Ty, err_ty: ?Ty) SemanticError!void {
+        if (build_target.current.arch != .x86_64) {
+            self.emitError(decl.span, "`#interrupt` is for x86-64; on aarch64, `aarch64::set_exception_handler` takes an ordinary function", .{});
+            return error.SemanticFailed;
+        }
+        const frame_ok = params.len >= 1 and params.len <= 2 and !params[0].is_type_param and
+            (params[0].ty == .pointer or params[0].ty == .const_ptr);
+        const code_ok = params.len < 2 or params[1].ty == .u64;
+        if (!frame_ok or !code_ok or ret != .void or err_ty != null or decl.type_params.len != 0) {
+            self.emitError(decl.span, "an `#interrupt` function takes the frame the cpu pushes, and for some exceptions the error code: `fn(frame: *const x86::InterruptFrame)` or `fn(frame: *const x86::InterruptFrame, code: u64)`, returning nothing", .{});
+            return error.SemanticFailed;
+        }
+    }
+
+    /// The cpu calls an `#interrupt` function; a call in code is refused.
+    fn rejectInterruptCall(self: *Checker, call: ast.CallExpr, name: []const u8) SemanticError!void {
+        self.emitError(call.callee.span, "`{s}` is an `#interrupt` function: the cpu calls it, code can't. Its address goes in the interrupt table: `idt.set(vector, core::fn_ptr({s}))`", .{ name, name });
+        return error.SemanticFailed;
+    }
+
     fn validateBorrowParam(self: *Checker, ty: Ty, span: Span) SemanticError!void {
         if (ty != .borrow) {
             if (containsBorrow(ty)) {
@@ -2808,6 +2833,7 @@ const Checker = struct {
                     const ret = try self.typeFromRef(decl.return_ty);
                     try self.rejectBorrowOutsideParam(ret, decl.return_ty.span());
                     const err_ty = if (decl.error_ty) |err| try self.typeFromErrorSpec(err) else null;
+                    if (hasAttr(decl.attrs, "interrupt")) try self.checkInterruptSignature(decl, params.items, ret, err_ty);
                     try self.env.fn_sigs.put(id, .{
                         .params = try params.toOwnedSlice(self.allocator),
                         .return_ty = ret,
@@ -2820,6 +2846,7 @@ const Checker = struct {
                         .no_return = hasAttr(decl.attrs, "noreturn"),
                         .entry = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
                         .naked = hasAttr(decl.attrs, "naked"),
+                        .interrupt = hasAttr(decl.attrs, "interrupt"),
                         .export_sym = exportSym(decl.attrs),
                         .deprecated = deprecatedMsg(decl.attrs),
                         .type_params = decl.type_params,
@@ -5218,6 +5245,7 @@ const Checker = struct {
             .named => |n| n.value,
         });
         if (sig.spawns) try self.checkSpawnedClosures(call, name);
+        if (sig.interrupt) try self.rejectInterruptCall(call, name);
         // Emit a warning when calling a deprecated function.
         if (sig.deprecated) |msg| {
             if (msg.len > 0) {
@@ -6319,6 +6347,7 @@ const Checker = struct {
             try self.requireIntLitFits(arg_expr, expected);
         }
         if (sig.spawns) try self.checkSpawnedClosures(call, fn_name);
+        if (sig.interrupt) try self.rejectInterruptCall(call, fn_name);
 
         // Check static constraints: `$T: Numeric` (built-in predicate) or
         // `$T: Interface` (conformance). Built-ins are checked by type kind here,
