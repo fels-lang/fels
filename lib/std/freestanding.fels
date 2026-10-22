@@ -11,3 +11,15 @@ pub set_output :: fn(write: extern fn(*const u8, usize)) {
 pub halt :: fn() {
     fels_halt();
 }
+
+// gives zones the memory [base, base + len), e.g. a free range of the boot loader's memory map;
+// it must be memory nothing else uses. before any is given, and after it runs out, zones take
+// a 1 MiB static heap
+pub add_memory :: fn(base: usize, len: usize) {
+    fels_heap_add(base, len);
+}
+
+// the bytes zones can still take
+pub free_memory :: fn() -> usize {
+    return fels_heap_free();
+}
