@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Build a freestanding kernel with fels and boot it in QEMU as a multiboot kernel: a 32-bit
 start in its own assembly sets up long mode and calls `_start`, which calls `main`. It prints
-through the serial port (std.freestanding.set_output, std.x86.outb), uses a zone and ends
-QEMU through its debug-exit port.
+through the serial port (std.freestanding.set_output, std.x86.outb), uses zones on the static
+heap and on memory it adds, and ends QEMU through its debug-exit port.
 
     python tests/freestanding_qemu_test.py <fels.exe> <qemu folder> [--llvm-path <llvm>] [--std-path <lib>]
 
@@ -115,10 +115,24 @@ sum :: fn(n: u32) -> u32 {
     return total;
 }
 
+// 4 MiB zones, more than the static heap, from memory given at 4 MiB; each gives it back
+heap_reuse :: fn() -> bool {
+    freestanding::add_memory(0x400000usize, 0x2000000usize);
+    before := freestanding::free_memory();
+    for round in 0u32..200u32 {
+        zone z: Arena {
+            big := z.new_slice(u8, 4194304usize);
+            big[4194303usize] = 1u8;
+        }
+    }
+    return freestanding::free_memory() == before;
+}
+
 main :: fn() -> i32 {
     freestanding::set_output(serial_write);
     println("fels kernel: start");
     println("sum {sum(100u32)}");
+    if heap_reuse() { println("heap reused"); }
     // leaf 0 gives the highest leaf, which is never 0 on a 64-bit cpu
     println("cpuid max leaf {x86::cpuid(0u32, 0u32).eax}");
     println("fels kernel: done");
@@ -183,6 +197,7 @@ def main():
     checks = [
         ("main runs and prints through the serial port", "fels kernel: start" in text and "fels kernel: done" in text),
         ("a zone takes the static heap", "sum 5050" in text),
+        ("zones give their memory back, and take memory added at run time", "heap reused" in text),
         ("cpuid answers", "cpuid max leaf " in text and "cpuid max leaf 0\n" not in text),
         ("the debug-exit port ends QEMU", code == 33),
     ]
