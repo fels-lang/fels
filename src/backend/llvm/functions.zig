@@ -118,6 +118,13 @@ fn declareOne(cg: *ModuleCg, func: ir.IrFunction) !void {
 
     if (func.extern_name) |_| llvm.LLVMSetLinkage(lv, llvm.LLVMExternalLinkage);
     attrs.applyFunctionAttrs(cg, func, lv);
+    // `#interrupt`: LLVM's x86 interrupt convention saves every register the function uses and
+    // returns with `iretq`; the frame the cpu pushed is the first parameter, `byval`.
+    if (func.interrupt and func.params.len > 0 and func.params[0].ty == .ptr) {
+        llvm.LLVMSetFunctionCallConv(lv, llvm.LLVMX86INTRCallConv);
+        const kind = llvm.LLVMGetEnumAttributeKindForName("byval", "byval".len);
+        llvm.LLVMAddAttributeAtIndex(lv, 1, llvm.LLVMCreateTypeAttribute(cg.ctx, kind, types_mod.lower(cg, func.params[0].ty.ptr.*)));
+    }
 
     // A defined Fels function that isn't the entry point, `#export`ed, or external
     // gets INTERNAL linkage. Fels emits the whole program as one object, so these
