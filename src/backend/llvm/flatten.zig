@@ -241,6 +241,7 @@ const Pass = struct {
         const fty = llvm.LLVMGlobalGetValueType(f);
         if (llvm.LLVMIsFunctionVarArg(fty) != 0) return null;
         if (hasStringAttr(f, "naked")) return null;
+        if (llvm.LLVMGetFunctionCallConv(f) != llvm.LLVMCCallConv) return null; // `#interrupt`
         if (abi.sretOf(f) != null) return null; // already returns through memory
         if (!onlyCalledDirectly(f)) return null;
 
