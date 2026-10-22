@@ -137,6 +137,8 @@ pub const IrFunction = struct {
     no_return: bool,
     entry: bool,
     naked: bool,
+    /// `#interrupt` — the cpu calls it with its frame and returns from it with `iretq`.
+    interrupt: bool = false,
     export_sym: ?[]const u8,
     /// `#cold` — the function is rarely called (optimize for size / off the hot path).
     cold: bool = false,
@@ -2028,6 +2030,7 @@ fn lowerFunction(allocator: std.mem.Allocator, types: sema.TypeEnv, symbols: sem
         .no_return = hasAttr(decl.attrs, "noreturn"),
         .entry = std.mem.eql(u8, decl.name, "main") or hasAttr(decl.attrs, "entry"),
         .naked = hasAttr(decl.attrs, "naked"),
+        .interrupt = hasAttr(decl.attrs, "interrupt"),
         .export_sym = sema.exportSym(decl.attrs),
         .cold = hasAttr(decl.attrs, "cold"),
         .weak = hasAttr(decl.attrs, "weak"),
