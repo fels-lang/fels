@@ -57,6 +57,55 @@ pub lidt :: fn(descriptor: *const u8) {
     unsafe { core::asm(volatile, "lidt (%rdi)", inputs: { "{rdi}"(descriptor) }, outputs: {}, clobbers: { "memory" }); }
 }
 
+// int3: the breakpoint exception, vector 3
+pub breakpoint :: fn() {
+    unsafe { core::asm(volatile, "int3", inputs: {}, outputs: {}, clobbers: { "memory" }); }
+}
+
+// the code segment selector running now
+pub read_cs :: fn() -> u16 {
+    return unsafe core::asm(volatile, "mov %cs, %ax", inputs: {}, outputs: { "={ax}"(u16) }, clobbers: {});
+}
+
+// ---- the interrupt table ----
+
+// what the cpu pushes before it calls an #interrupt function; an exception with an error code
+// passes that as the function's second parameter
+pub InterruptFrame :: struct {
+    ip: u64,
+    cs: u64,
+    flags: u64,
+    sp: u64,
+    ss: u64,
+}
+
+// 256 gates of 16 bytes; a gate is two words
+pub Idt :: struct {
+    gates: [512]u64,
+
+    // `vector` calls `handler` (core::fn_ptr of an #interrupt function) with interrupts off
+    pub set :: fn(self: *Self, vector: u8, handler: *void) {
+        addr := unsafe (handler as u64);
+        cs := read_cs() as u64;
+        // present, ring 0, 64-bit interrupt gate
+        self.gates[(vector as usize) * 2usize] = (addr & 0xFFFFu64) | (cs << 16u64) | (0x8Eu64 << 40u64) | (((addr >> 16u64) & 0xFFFFu64) << 48u64);
+        self.gates[(vector as usize) * 2usize + 1usize] = addr >> 32u64;
+    }
+
+    // makes this the cpu's table; it must stay where it is from then on
+    pub load :: fn(self: *const Self) {
+        base := unsafe (&self.gates[0] as u64);
+        // the descriptor: a u16 limit, then the u64 base
+        d: [2]u64 = .{ 4095u64 | (base << 16u64), base >> 48u64 };
+        lidt(unsafe (&d[0] as *const u8));
+    }
+}
+
+// an empty table, to fill with `set`
+pub idt :: fn() -> Idt {
+    return .{ .gates = .{} };
+}
+
 // ---- control registers ----
 
 pub read_cr0 :: fn() -> u64 {
