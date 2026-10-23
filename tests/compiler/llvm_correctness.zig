@@ -882,6 +882,34 @@ test "LLVM: a freestanding program's functions use no red zone, and _start is em
     try std.testing.expect(std.mem.indexOf(u8, text, "noredzone") != null);
 }
 
+test "LLVM: an #interrupt function has the x86 interrupt convention and its frame byval" {
+    if (comptime !fels.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\Frame :: struct { ip: u64, cs: u64, flags: u64, sp: u64, ss: u64 }
+        \\hits: u32 = 0u32;
+        \\#interrupt
+        \\on_break :: fn(f: *const Frame) { hits += 1u32; }
+        \\#interrupt
+        \\on_fault :: fn(f: *const Frame, code: u64) { hits += code as u32; }
+        \\main :: fn() -> i32 { p := core::fn_ptr(on_break); q := core::fn_ptr(on_fault); return 0; }
+    ;
+    var fe = try fels.compile(a, "intr_ir.fels", src);
+    defer fe.deinit(a);
+    const module = try fels.lowerFrontend(a, fe);
+    var backend = fels.LlvmBackend.init(a, "intr_ir");
+    defer backend.deinit();
+    backend.setTarget(.freestanding);
+    try backend.lower(module);
+    const text = try backend.getIrText(a);
+    try std.testing.expect(std.mem.indexOf(u8, text, "x86_intrcc void @on_break(ptr byval(%Frame)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "x86_intrcc void @on_fault(ptr byval(%Frame) %f, i64 %code)") != null);
+}
+
 test "LLVM: bindings of one C symbol share its function but keep their own signatures" {
     if (comptime !fels.llvm_enabled) return;
     if (comptime @import("builtin").os.tag != .windows) return error.SkipZigTest; // the Windows runtime's `CloseHandle`
