@@ -193,6 +193,16 @@ pub stack_size :: fn(self: Artifact, bytes: u64) {
 // .uefi: a UEFI application (name.efi); .freestanding: an ELF with no os under it (name.elf)
 pub Target :: enum { windows, linux, linux_gnu, uefi, freestanding }
 
+// .aarch64 for a .uefi or .freestanding target; the rest are x86_64
+pub Arch :: enum { x86_64, aarch64 }
+
+pub arch :: fn(self: Artifact, a: Arch) {
+    match a {
+        .x86_64  => { __build_arch(self.id, 0); }
+        .aarch64 => { __build_arch(self.id, 1); }
+    }
+}
+
 pub target :: fn(self: Artifact, t: Target) {
     match t {
         .windows      => { __build_target(self.id, 0); }

@@ -38,14 +38,31 @@ const chkstk_x64_asm =
     \\
 ;
 
+/// `__chkstk` for AArch64 Windows and UEFI: x15 holds the frame's size in 16-byte units; it
+/// touches each page of it from the stack pointer down and keeps every register but x16/x17.
+const chkstk_arm64_asm =
+    \\.weak __chkstk
+    \\__chkstk:
+    \\  lsl x16, x15, #4
+    \\  mov x17, sp
+    \\1:
+    \\  sub x17, x17, #4096
+    \\  subs x16, x16, #4096
+    \\  ldr xzr, [x17]
+    \\  b.gt 1b
+    \\  ret
+    \\
+;
+
 /// The C library's memory functions, which LLVM's optimiser and code generator call on their
 /// own: a copy loop becomes `memcpy`, a zeroing loop `memset`, a chain of compares `memcmp`
 /// or `bcmp`, a large aggregate copy `memcpy`. Fels links no C library, so the program
 /// carries them, as Zig's and Rust's runtimes do. Each is weak: a C library linked in brings
 /// its own, and the linker takes that one. `rep movsb`/`rep stosb` are what the CPU copies and
 /// fills fastest with for the sizes that reach a call (smaller constant sizes are inlined).
-/// AT&T; one per calling convention, as the arguments come in different registers.
-const MemStub = struct { name: [:0]const u8, windows: []const u8, sysv: []const u8 };
+/// AT&T; one per calling convention, as the arguments come in different registers. AArch64 has
+/// one convention for both (x0, x1, x2) and copies a byte at a time.
+const MemStub = struct { name: [:0]const u8, windows: []const u8, sysv: []const u8, aarch64: []const u8 };
 
 const mem_stubs = [_]MemStub{
     .{
@@ -68,6 +85,18 @@ const mem_stubs = [_]MemStub{
         \\  mov %rdi, %rax
         \\  mov %rdx, %rcx
         \\  rep movsb
+        \\  ret
+        \\
+        ,
+        .aarch64 =
+        \\  mov x3, x0
+        \\  cbz x2, 2f
+        \\1:
+        \\  ldrb w4, [x1], #1
+        \\  strb w4, [x3], #1
+        \\  subs x2, x2, #1
+        \\  b.ne 1b
+        \\2:
         \\  ret
         \\
         ,
@@ -119,6 +148,30 @@ const mem_stubs = [_]MemStub{
         \\  ret
         \\
         ,
+        .aarch64 =
+        \\  mov x3, x0
+        \\  sub x4, x0, x1
+        \\  cmp x4, x2
+        \\  b.lo 3f
+        \\  cbz x2, 2f
+        \\1:
+        \\  ldrb w5, [x1], #1
+        \\  strb w5, [x3], #1
+        \\  subs x2, x2, #1
+        \\  b.ne 1b
+        \\2:
+        \\  ret
+        \\3:
+        \\  add x3, x0, x2
+        \\  add x1, x1, x2
+        \\4:
+        \\  ldrb w5, [x1, #-1]!
+        \\  strb w5, [x3, #-1]!
+        \\  subs x2, x2, #1
+        \\  b.ne 4b
+        \\  ret
+        \\
+        ,
     },
     .{
         .name = "memset",
@@ -140,6 +193,17 @@ const mem_stubs = [_]MemStub{
         \\  mov %rdx, %rcx
         \\  rep stosb
         \\  mov %r8, %rax
+        \\  ret
+        \\
+        ,
+        .aarch64 =
+        \\  mov x3, x0
+        \\  cbz x2, 2f
+        \\1:
+        \\  strb w1, [x3], #1
+        \\  subs x2, x2, #1
+        \\  b.ne 1b
+        \\2:
         \\  ret
         \\
         ,
@@ -182,11 +246,26 @@ const mem_stubs = [_]MemStub{
         \\  ret
         \\
         ,
+        .aarch64 =
+        \\  mov x5, x0
+        \\  mov w0, #0
+        \\  cbz x2, 2f
+        \\1:
+        \\  ldrb w3, [x5], #1
+        \\  ldrb w4, [x1], #1
+        \\  subs w0, w3, w4
+        \\  b.ne 2f
+        \\  subs x2, x2, #1
+        \\  b.ne 1b
+        \\2:
+        \\  ret
+        \\
+        ,
     },
 };
 
 /// `bcmp` only says whether the bytes differ: `memcmp` answers that too.
-const all_mem_stubs = mem_stubs ++ [_]MemStub{.{ .name = "bcmp", .windows = mem_stubs[3].windows, .sysv = mem_stubs[3].sysv }};
+const all_mem_stubs = mem_stubs ++ [_]MemStub{.{ .name = "bcmp", .windows = mem_stubs[3].windows, .sysv = mem_stubs[3].sysv, .aarch64 = mem_stubs[3].aarch64 }};
 
 /// One entry in a struct's field table.
 pub const StructField = struct {
@@ -279,6 +358,8 @@ pub const ModuleCg = struct {
     /// `--target` for cross-compilation. Drives the entry point, `__chkstk`, and
     /// `_fltused`.
     target_os: std.Target.Os.Tag = @import("builtin").os.tag,
+    /// x86_64, or aarch64 for a UEFI or freestanding program.
+    target_arch: std.Target.Cpu.Arch = .x86_64,
     /// `--no-entry`: emit no platform entry-point wrapper (`mainCRTStartup`). For
     /// compiling a library object to embed in another binary (e.g. felsld into fels).
     no_entry: bool = false,
@@ -330,8 +411,10 @@ pub const ModuleCg = struct {
     pub fn applyTargetStubs(self: *ModuleCg) void {
         // A static library's object calls the `__chkstk` of the program that links it.
         if (self.library_object) return;
-        if (self.coff() and builtin.target.cpu.arch == .x86_64)
-            llvm.LLVMAppendModuleInlineAsm(self.mod, chkstk_x64_asm.ptr, chkstk_x64_asm.len);
+        if (self.coff()) {
+            const chkstk = if (self.target_arch == .aarch64) chkstk_arm64_asm else chkstk_x64_asm;
+            llvm.LLVMAppendModuleInlineAsm(self.mod, chkstk.ptr, chkstk.len);
+        }
     }
 
     /// Append the C library's memory functions (`mem_stubs`) that LLVM may call, once the
@@ -339,17 +422,17 @@ pub const ModuleCg = struct {
     /// already has, as a function of its own or one it imports, is left to the program. A
     /// static library's object leaves them all to the program that links it.
     pub fn applyMemoryStubs(self: *ModuleCg) void {
-        if (self.library_object or builtin.target.cpu.arch != .x86_64) return;
+        if (self.library_object) return;
         var text: std.ArrayList(u8) = .empty;
         defer text.deinit(self.allocator);
         text.appendSlice(self.allocator, ".text\n") catch return;
         inline for (all_mem_stubs) |stub| {
             if (llvm.LLVMGetNamedFunction(self.mod, stub.name.ptr) == null and llvm.LLVMGetNamedGlobal(self.mod, stub.name.ptr) == null) {
-                const body = if (self.coff()) stub.windows else stub.sysv;
+                const body = if (self.target_arch == .aarch64) stub.aarch64 else if (self.coff()) stub.windows else stub.sysv;
                 const head = if (self.coff())
                     ".weak " ++ stub.name ++ "\n" ++ stub.name ++ ":\n"
                 else
-                    ".weak " ++ stub.name ++ "\n.type " ++ stub.name ++ ",@function\n" ++ stub.name ++ ":\n";
+                    ".weak " ++ stub.name ++ "\n.type " ++ stub.name ++ ",%function\n" ++ stub.name ++ ":\n";
                 text.appendSlice(self.allocator, head) catch return;
                 text.appendSlice(self.allocator, body) catch return;
             }
@@ -386,7 +469,7 @@ pub const ModuleCg = struct {
     /// `i64` is 4-aligned, so `{ i32, i64 }` measured 12 bytes instead of 16.)
     pub fn targetData(self: *ModuleCg) llvm.LLVMTargetDataRef {
         if (self.target_data) |td| return td;
-        const td = if (emit.TargetMachine.initTarget(self.target_os, 0)) |tm| blk: {
+        const td = if (emit.TargetMachine.initTarget(self.target_os, self.target_arch, 0)) |tm| blk: {
             defer tm.deinit();
             break :blk llvm.LLVMCreateTargetDataLayout(tm.tm);
         } else |_| llvm.LLVMCreateTargetData("");

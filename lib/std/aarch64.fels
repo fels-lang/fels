@@ -1,0 +1,320 @@
+// SPDX-License-Identifier: Apache-2.0
+// std.aarch64: AArch64 instructions a kernel needs: exception vectors, system registers, barriers
+// for --target aarch64-freestanding; most need EL1
+
+// ---- waiting and barriers ----
+
+// waits for the next interrupt
+pub wfi :: fn() {
+    unsafe { core::asm(volatile, "wfi", inputs: {}, outputs: {}, clobbers: { "memory" }); }
+}
+
+// waits for an event (sev, an interrupt)
+pub wfe :: fn() {
+    unsafe { core::asm(volatile, "wfe", inputs: {}, outputs: {}, clobbers: { "memory" }); }
+}
+
+pub sev :: fn() {
+    unsafe { core::asm(volatile, "sev", inputs: {}, outputs: {}, clobbers: { "memory" }); }
+}
+
+// instruction barrier: what follows sees a system register just written
+pub isb :: fn() {
+    unsafe { core::asm(volatile, "isb", inputs: {}, outputs: {}, clobbers: { "memory" }); }
+}
+
+// data barriers over the whole system
+pub dsb :: fn() {
+    unsafe { core::asm(volatile, "dsb sy", inputs: {}, outputs: {}, clobbers: { "memory" }); }
+}
+
+pub dmb :: fn() {
+    unsafe { core::asm(volatile, "dmb sy", inputs: {}, outputs: {}, clobbers: { "memory" }); }
+}
+
+// ---- interrupts ----
+
+// masks debug, SError, IRQ and FIQ
+pub mask_interrupts :: fn() {
+    unsafe { core::asm(volatile, "msr daifset, #0xf", inputs: {}, outputs: {}, clobbers: { "memory" }); }
+}
+
+pub unmask_interrupts :: fn() {
+    unsafe { core::asm(volatile, "msr daifclr, #0xf", inputs: {}, outputs: {}, clobbers: { "memory" }); }
+}
+
+// brk #0: a synchronous exception; the handler moves `elr` past it to go on
+pub breakpoint :: fn() {
+    unsafe { core::asm(volatile, "brk #0", inputs: {}, outputs: {}, clobbers: { "memory" }); }
+}
+
+// ---- system registers ----
+
+// the exception level running now: 0 to 3
+pub current_el :: fn() -> u64 {
+    v := unsafe core::asm(volatile, "mrs x0, CurrentEL", inputs: {}, outputs: { "={x0}"(u64) }, clobbers: {});
+    return (v >> 2u64) & 3u64;
+}
+
+pub read_mpidr :: fn() -> u64 {
+    return unsafe core::asm(volatile, "mrs x0, mpidr_el1", inputs: {}, outputs: { "={x0}"(u64) }, clobbers: {});
+}
+
+// the generic timer's count and its frequency in Hz
+pub read_cntpct :: fn() -> u64 {
+    return unsafe core::asm(volatile, "isb; mrs x0, cntpct_el0", inputs: {}, outputs: { "={x0}"(u64) }, clobbers: {});
+}
+
+pub read_cntfrq :: fn() -> u64 {
+    return unsafe core::asm(volatile, "mrs x0, cntfrq_el0", inputs: {}, outputs: { "={x0}"(u64) }, clobbers: {});
+}
+
+// the translation table base and control registers, for paging
+pub read_sctlr :: fn() -> u64 {
+    return unsafe core::asm(volatile, "mrs x0, sctlr_el1", inputs: {}, outputs: { "={x0}"(u64) }, clobbers: {});
+}
+
+pub write_sctlr :: fn(v: u64) {
+    unsafe { core::asm(volatile, "msr sctlr_el1, x0; isb", inputs: { "{x0}"(v) }, outputs: {}, clobbers: { "memory" }); }
+}
+
+pub write_ttbr0 :: fn(v: u64) {
+    unsafe { core::asm(volatile, "msr ttbr0_el1, x0; isb", inputs: { "{x0}"(v) }, outputs: {}, clobbers: { "memory" }); }
+}
+
+pub write_tcr :: fn(v: u64) {
+    unsafe { core::asm(volatile, "msr tcr_el1, x0; isb", inputs: { "{x0}"(v) }, outputs: {}, clobbers: { "memory" }); }
+}
+
+pub write_mair :: fn(v: u64) {
+    unsafe { core::asm(volatile, "msr mair_el1, x0; isb", inputs: { "{x0}"(v) }, outputs: {}, clobbers: { "memory" }); }
+}
+
+// ---- exceptions ----
+
+// the registers when the exception came, saved by the vectors; `elr` is where it goes back to
+// (a handler may change it and the x registers), `esr` says why (bits 26-31 the class) and `far`
+// is the faulting address of an abort
+pub ExceptionFrame :: struct {
+    x: [31]u64,
+    elr: u64,
+    spsr: u64,
+    esr: u64,
+    far: u64,
+}
+
+// the second parameter of a handler: which of the 16 vectors (a kind from the current level)
+pub SYNC :: 4u64;
+pub IRQ :: 5u64;
+pub FIQ :: 6u64;
+pub SERROR :: 7u64;
+
+handler_addr: usize = 0usize;
+
+// the vectors call this with the vector's number and the frame
+#keep
+#link_name("fels_aarch64_exception")
+dispatch :: fn(vector: u64, frame: *ExceptionFrame) {
+    if handler_addr == 0usize {
+        core::panic("aarch64: an exception and no handler");
+    }
+    h := unsafe (handler_addr as extern fn(*ExceptionFrame, u64));
+    h(frame, vector);
+}
+
+// the exception vectors: 16 entries of 128 bytes; each saves x0 and x1 and jumps to the common
+// part, which saves the rest (the x registers, then elr, spsr, esr, far, then q0-q31, fpsr and
+// fpcr, as a handler may use them), calls dispatch and puts it all back
+#naked
+#keep
+vectors :: fn() {
+    unsafe {
+        core::asm(volatile, """
+            .pushsection .text.fels_vectors, "ax"
+            .balign 2048
+            .globl fels_aarch64_vectors
+            fels_aarch64_vectors:
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #0
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #1
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #2
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #3
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #4
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #5
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #6
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #7
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #8
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #9
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #10
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #11
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #12
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #13
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #14
+            b fels_aarch64_vector_common
+            .balign 128
+            sub sp, sp, #816
+            stp x0, x1, [sp, #0]
+            mov x0, #15
+            b fels_aarch64_vector_common
+            fels_aarch64_vector_common:
+            stp x2, x3, [sp, #16]
+            stp x4, x5, [sp, #32]
+            stp x6, x7, [sp, #48]
+            stp x8, x9, [sp, #64]
+            stp x10, x11, [sp, #80]
+            stp x12, x13, [sp, #96]
+            stp x14, x15, [sp, #112]
+            stp x16, x17, [sp, #128]
+            stp x18, x19, [sp, #144]
+            stp x20, x21, [sp, #160]
+            stp x22, x23, [sp, #176]
+            stp x24, x25, [sp, #192]
+            stp x26, x27, [sp, #208]
+            stp x28, x29, [sp, #224]
+            str x30, [sp, #240]
+            mrs x1, elr_el1
+            mrs x2, spsr_el1
+            stp x1, x2, [sp, #248]
+            mrs x1, esr_el1
+            mrs x2, far_el1
+            stp x1, x2, [sp, #264]
+            stp q0, q1, [sp, #288]
+            stp q2, q3, [sp, #320]
+            stp q4, q5, [sp, #352]
+            stp q6, q7, [sp, #384]
+            stp q8, q9, [sp, #416]
+            stp q10, q11, [sp, #448]
+            stp q12, q13, [sp, #480]
+            stp q14, q15, [sp, #512]
+            stp q16, q17, [sp, #544]
+            stp q18, q19, [sp, #576]
+            stp q20, q21, [sp, #608]
+            stp q22, q23, [sp, #640]
+            stp q24, q25, [sp, #672]
+            stp q26, q27, [sp, #704]
+            stp q28, q29, [sp, #736]
+            stp q30, q31, [sp, #768]
+            mrs x1, fpsr
+            mrs x2, fpcr
+            add x3, sp, #800
+            stp x1, x2, [x3]
+            mov x1, sp
+            bl fels_aarch64_exception
+            add x3, sp, #800
+            ldp x1, x2, [x3]
+            msr fpsr, x1
+            msr fpcr, x2
+            ldp q0, q1, [sp, #288]
+            ldp q2, q3, [sp, #320]
+            ldp q4, q5, [sp, #352]
+            ldp q6, q7, [sp, #384]
+            ldp q8, q9, [sp, #416]
+            ldp q10, q11, [sp, #448]
+            ldp q12, q13, [sp, #480]
+            ldp q14, q15, [sp, #512]
+            ldp q16, q17, [sp, #544]
+            ldp q18, q19, [sp, #576]
+            ldp q20, q21, [sp, #608]
+            ldp q22, q23, [sp, #640]
+            ldp q24, q25, [sp, #672]
+            ldp q26, q27, [sp, #704]
+            ldp q28, q29, [sp, #736]
+            ldp q30, q31, [sp, #768]
+            ldp x1, x2, [sp, #248]
+            msr elr_el1, x1
+            msr spsr_el1, x2
+            ldp x0, x1, [sp, #0]
+            ldp x2, x3, [sp, #16]
+            ldp x4, x5, [sp, #32]
+            ldp x6, x7, [sp, #48]
+            ldp x8, x9, [sp, #64]
+            ldp x10, x11, [sp, #80]
+            ldp x12, x13, [sp, #96]
+            ldp x14, x15, [sp, #112]
+            ldp x16, x17, [sp, #128]
+            ldp x18, x19, [sp, #144]
+            ldp x20, x21, [sp, #160]
+            ldp x22, x23, [sp, #176]
+            ldp x24, x25, [sp, #192]
+            ldp x26, x27, [sp, #208]
+            ldp x28, x29, [sp, #224]
+            ldr x30, [sp, #240]
+            add sp, sp, #816
+            eret
+            .popsection
+            """, inputs: {}, outputs: {}, clobbers: {});
+    }
+}
+
+// every exception at EL1 goes to `handler`, an ordinary function: it gets the saved registers,
+// and the exception goes back to `frame.elr` when it returns
+pub set_exception_handler :: fn(handler: extern fn(*ExceptionFrame, u64)) {
+    handler_addr = unsafe (handler as usize);
+    unsafe {
+        core::asm(volatile, "adrp x0, fels_aarch64_vectors; add x0, x0, :lo12:fels_aarch64_vectors; msr vbar_el1, x0; isb",
+            inputs: {}, outputs: {}, clobbers: { "x0", "memory" });
+    }
+}
+
+// the exception class of an `esr`: 0x3C a brk, 0x15 an svc, 0x24 and 0x25 data aborts, ...
+pub exception_class :: fn(esr: u64) -> u64 {
+    return (esr >> 26u64) & 0x3Fu64;
+}

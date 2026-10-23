@@ -137,11 +137,22 @@ fels_heap_free :: fn() -> usize {
 // ---- stopping ----
 
 // interrupts off, halted for good
-#noreturn
-fels_halt :: fn() {
-    while true {
-        unsafe {
-            core::asm(volatile, "cli; hlt", inputs: {}, outputs: {}, clobbers: { "memory" });
+#if TARGET.arch == .aarch64 {
+    #noreturn
+    fels_halt :: fn() {
+        while true {
+            unsafe {
+                core::asm(volatile, "msr daifset, #0xf; wfi", inputs: {}, outputs: {}, clobbers: { "memory" });
+            }
+        }
+    }
+} else {
+    #noreturn
+    fels_halt :: fn() {
+        while true {
+            unsafe {
+                core::asm(volatile, "cli; hlt", inputs: {}, outputs: {}, clobbers: { "memory" });
+            }
         }
     }
 }

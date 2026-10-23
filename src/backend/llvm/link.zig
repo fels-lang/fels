@@ -337,8 +337,10 @@ pub fn linkLinux(
         try append(allocator, &argv, opts.output);
         try append(allocator, &argv, "-static"); // freestanding, ET_EXEC (no PIE / dynamic linker)
     }
-    try append(allocator, &argv, "-e");
-    try append(allocator, &argv, opts.entry);
+    if (opts.entry.len > 0) {
+        try append(allocator, &argv, "-e");
+        try append(allocator, &argv, opts.entry);
+    }
     // Search the sysroot too, so `#extern("<lib>", …)` libraries (`-l<lib>`)
     // resolve from it (e.g. a libm.so the user dropped in alongside libc.so.6).
     if (opts.link_libc and opts.sysroot.len > 0)

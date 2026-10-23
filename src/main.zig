@@ -65,6 +65,8 @@ const Options = struct {
     no_entry: bool = false,
     /// Codegen target OS (cross-compilation). Defaults to the host.
     target_os: std.Target.Os.Tag = @import("builtin").os.tag,
+    /// `--target aarch64-…`: aarch64 for a UEFI or freestanding program; x86_64 otherwise.
+    target_arch: std.Target.Cpu.Arch = .x86_64,
     /// The portable "link libc" switch (`--libc`, or `--target *-gnu`): the
     /// Windows CRT on Windows; glibc (dynamic `libc.so.6` + glibc entry) on Linux,
     /// where it also makes the freestanding default into a normal dynamic ELF.
@@ -293,12 +295,17 @@ pub fn main(init: std.process.Init) u8 {
                 .windows
             else if (std.mem.indexOf(u8, t, "uefi") != null)
                 .uefi
-            else if (std.mem.indexOf(u8, t, "freestanding") != null or std.mem.eql(u8, t, "none"))
+            else if (std.mem.indexOf(u8, t, "freestanding") != null or std.mem.indexOf(u8, t, "none") != null)
                 .freestanding
             else {
-                std.debug.print("fels: unknown --target `{s}` (expected linux, linux-gnu, windows, uefi, or freestanding)\n", .{t});
+                std.debug.print("fels: unknown --target `{s}` (expected linux, linux-gnu, windows, uefi, freestanding, aarch64-uefi or aarch64-freestanding)\n", .{t});
                 return 1;
             };
+            opts.target_arch = if (std.mem.startsWith(u8, t, "aarch64") or std.mem.startsWith(u8, t, "arm64")) .aarch64 else .x86_64;
+            if (opts.target_arch == .aarch64 and opts.target_os != .uefi and opts.target_os != .freestanding) {
+                std.debug.print("fels: aarch64 is built for UEFI and freestanding programs so far (aarch64-uefi, aarch64-freestanding), not for `{s}`\n", .{t});
+                return 1;
+            }
             // `-gnu` selects the dynamically-linked glibc ABI; otherwise Linux is
             // a static, freestanding, no-libc ELF.
             opts.link_libc = std.mem.indexOf(u8, t, "gnu") != null;
@@ -545,7 +552,7 @@ fn cmdCheck(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
 fn cmdIr(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []const u8, opts: *Options) u8 {
     if (!fels.llvm_enabled) return noLlvm();
     const saved_target = fels.pipeline_mod.build_target.current;
-    fels.pipeline_mod.build_target.current = .{ .os = opts.target_os, .debug = opts.opt_level == 0 };
+    fels.pipeline_mod.build_target.current = .{ .os = opts.target_os, .arch = opts.target_arch, .debug = opts.opt_level == 0 };
     defer fels.pipeline_mod.build_target.current = saved_target;
     var fe = fels.pipeline_mod.compileFileWithRuntimeTarget(allocator, io, path, opts.target_os, opts.link_libc) catch return 1;
     defer fe.deinit(allocator);
@@ -563,6 +570,7 @@ fn cmdIr(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []c
     var be = fels.LlvmBackend.init(allocator, "sk");
     defer be.deinit();
     be.setTarget(opts.target_os);
+    be.setArch(opts.target_arch);
     be.setSafety(opts.safety);
     be.lower(module) catch return 1;
     const text = be.getIrText(allocator) catch return 1;
@@ -609,6 +617,7 @@ fn cmdObject(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source:
         .safety = opts.safety,
         .debug_info = opts.debug_info,
         .target_os = opts.target_os,
+        .target_arch = opts.target_arch,
         .no_entry = opts.no_entry,
         .link_libc = opts.link_libc,
         .sysroot = opts.sysroot,
@@ -662,6 +671,7 @@ fn cmdBuild(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: 
         .safety = opts.safety,
         .debug_info = opts.debug_info,
         .target_os = opts.target_os,
+        .target_arch = opts.target_arch,
         .link_libc = opts.link_libc,
         .sysroot = opts.sysroot,
         .llvm_bin = opts.llvm_bin,

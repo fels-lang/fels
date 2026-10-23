@@ -60,6 +60,11 @@ pub const LlvmBackend = struct {
         self.cg.target_os = target_os;
     }
 
+    /// Set the target architecture: x86_64, or aarch64 for UEFI and freestanding. Before `lower`.
+    pub fn setArch(self: *LlvmBackend, arch: std.Target.Cpu.Arch) void {
+        self.cg.target_arch = arch;
+    }
+
     /// Lower a complete IrModule to LLVM IR in memory.
     pub fn lower(self: *LlvmBackend, module: ir.IrModule) !void {
         // Target-specific module-level stubs (Windows `__chkstk`; nothing on Linux).
@@ -123,13 +128,13 @@ pub const LlvmBackend = struct {
                 }
             }
         }
-        // Freestanding: `_start` calls `main` and halts; a program with an `#entry` of its own is
-        // entered there. No function uses the red zone below the stack pointer, which an
-        // interrupt would overwrite.
+        // Freestanding: `_start` calls `main` and halts, also for a program with an `#entry` of
+        // its own, which may call it. No function uses the red zone below the stack pointer,
+        // which an interrupt would overwrite.
         if (self.cg.target_os == .freestanding) {
-            if (!self.cg.no_entry) for (module.functions) |f| {
-                if (f.entry) {
-                    if (std.mem.eql(u8, f.name, "main")) try emitFreestandingStart(&self.cg, f);
+            if (!self.cg.no_entry and llvm_c.LLVMGetNamedFunction(self.cg.mod, "_start") == null) for (module.functions) |f| {
+                if (f.entry and std.mem.eql(u8, f.name, "main")) {
+                    try emitFreestandingStart(&self.cg, f);
                     break;
                 }
             };
@@ -183,7 +188,7 @@ pub const LlvmBackend = struct {
     /// Emit the object into an in-memory byte buffer (caller frees).
     pub fn emitObjectToMemory(self: *LlvmBackend, allocator: std.mem.Allocator, opt_level: u2) ![]u8 {
         self.setOptLevel(opt_level);
-        const tm = try emit.TargetMachine.initTarget(self.cg.target_os, opt_level);
+        const tm = try emit.TargetMachine.initTarget(self.cg.target_os, self.cg.target_arch, opt_level);
         defer tm.deinit();
         tm.applyToModule(&self.cg);
         emit.dropDeadFunctions(&self.cg);

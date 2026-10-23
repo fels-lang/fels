@@ -132,6 +132,8 @@ pub const LlvmCompileOptions = struct {
     safety: bool = true,
     /// Target OS to generate for (cross-compilation). Defaults to the host.
     target_os: std.Target.Os.Tag = @import("builtin").os.tag,
+    /// x86_64, or aarch64 for a UEFI or freestanding program.
+    target_arch: std.Target.Cpu.Arch = .x86_64,
     /// Emit no platform entry-point wrapper (`mainCRTStartup`) or `_fltused` — a
     /// freestanding library object to embed in another binary (felsld into fels.exe).
     no_entry: bool = false,
@@ -255,7 +257,7 @@ fn runComptimeTestLane(allocator: std.mem.Allocator, fe: *pipeline.FrontEnd, fil
 
 /// What `TARGET` and `core::os` report while `opts` is compiled.
 fn buildTargetOf(opts: LlvmCompileOptions) pipeline.build_target.BuildTarget {
-    return .{ .os = opts.target_os, .debug = opts.opt_level == 0 };
+    return .{ .os = opts.target_os, .arch = opts.target_arch, .debug = opts.opt_level == 0 };
 }
 
 /// Full pipeline: source → IR → LLVM IR → .o → (optional) .exe
@@ -298,12 +300,12 @@ fn projectRootOf(allocator: std.mem.Allocator, io: std.Io, file: []const u8) ?[]
     return std.fs.path.resolve(allocator, &.{ cwd, dir }) catch null;
 }
 
-/// The symbol an ELF starts at: `_start`, made for `main`, or a freestanding program's own
-/// `#entry`.
+/// The symbol an ELF starts at: `_start`, made for `main`. A freestanding program starts at its
+/// own `#entry`, or where its linker script's `ENTRY` says ("": no `-e`, and `_start` without one).
 fn entrySymbol(module: ir.IrModule, target_os: std.Target.Os.Tag) []const u8 {
     if (target_os != .freestanding) return "_start";
     for (module.functions) |f| if (f.entry and !std.mem.eql(u8, f.name, "main")) return f.name;
-    return "_start";
+    return "";
 }
 
 pub fn compileFileWithLlvm(
@@ -434,6 +436,7 @@ pub fn emitLlvmFromFrontend(
 
     be.discardValueNames();
     be.setTarget(opts.target_os);
+    be.setArch(opts.target_arch);
     be.cg.no_entry = opts.no_entry or opts.library_object;
     be.cg.library_object = opts.library_object;
     be.setOptLevel(opts.opt_level);

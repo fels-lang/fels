@@ -22,6 +22,16 @@ pub fn initNativeTarget() EmitError!void {
     fastIsel();
 }
 
+/// The AArch64 backend, for a target that isn't the host's.
+fn initAArch64() EmitError!void {
+    llvm.LLVMInitializeAArch64TargetInfo();
+    llvm.LLVMInitializeAArch64Target();
+    llvm.LLVMInitializeAArch64TargetMC();
+    llvm.LLVMInitializeAArch64AsmPrinter();
+    llvm.LLVMInitializeAArch64AsmParser();
+    fastIsel();
+}
+
 /// LLVM's command-line options, set once per process: at `-O0` it takes the instruction selector
 /// from them (`LLVMSetTargetMachineFastISel` does not reach it).
 var options_set = false;
@@ -85,15 +95,21 @@ pub const TargetMachine = struct {
         return .{ .tm = tm, .triple = triple };
     }
 
-    /// Create a TargetMachine for an explicit target OS (cross-compilation).
-    /// Falls back to the host path when the target is the host. The only non-host
-    /// target today is Linux x86-64: a static, non-PIE ELF using the SysV ABI
-    /// (LLVM derives both from the triple).
-    pub fn initTarget(target_os: std.Target.Os.Tag, opt_level: u2) EmitError!TargetMachine {
-        if (target_os == @import("builtin").os.tag) return initNative(opt_level);
-        try initNativeTarget(); // the host's X86 backend also emits for x86_64-linux
+    /// Create a TargetMachine for an explicit target OS and architecture (cross-compilation).
+    /// Falls back to the host path when the target is the host. Linux x86-64 is a static,
+    /// non-PIE ELF using the SysV ABI (LLVM derives both from the triple); aarch64 is built for
+    /// UEFI and freestanding programs.
+    pub fn initTarget(target_os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch, opt_level: u2) EmitError!TargetMachine {
+        const builtin = @import("builtin");
+        if (target_os == builtin.os.tag and arch == builtin.cpu.arch) return initNative(opt_level);
+        if (arch == .aarch64) try initAArch64() else try initNativeTarget(); // the host's X86 backend also emits for x86_64-linux
 
-        const triple_lit = switch (target_os) {
+        const triple_lit = if (arch == .aarch64) switch (target_os) {
+            // AArch64 UEFI is a PE file too, with the AAPCS64 convention.
+            .uefi => "aarch64-pc-windows-msvc",
+            .freestanding => "aarch64-unknown-none-elf",
+            else => return error.TargetInitFailed,
+        } else switch (target_os) {
             .linux => "x86_64-unknown-linux-musl",
             // A UEFI program is a PE file that calls the firmware with the Windows convention.
             .uefi => "x86_64-pc-windows-msvc",
@@ -121,7 +137,8 @@ pub const TargetMachine = struct {
         const tm = llvm.LLVMCreateTargetMachine(
             target,
             triple,
-            "x86-64", // generic baseline CPU so the binary runs on any x86-64
+            // a baseline CPU, so the binary runs on any x86-64 or ARMv8-A
+            if (arch == .aarch64) "generic" else "x86-64",
             "",
             llvm_opt,
             llvm.LLVMRelocStatic, // static, non-PIE executable

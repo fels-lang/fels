@@ -75,6 +75,8 @@ pub const Artifact = struct {
     after_steps: std.ArrayList(usize) = .empty,
     /// The OS the artifact is for (`target`); the host by default.
     target_os: std.Target.Os.Tag = builtin.os.tag,
+    /// `a.arch(.aarch64)`: for a UEFI or freestanding artifact.
+    target_arch: std.Target.Cpu.Arch = .x86_64,
     /// A Linux target with glibc (`.linux_gnu`) instead of a static, libc-free ELF.
     target_gnu: bool = false,
     sysroot: []const u8 = "",
@@ -530,6 +532,12 @@ fn hostCall(ctx: *anyopaque, op_raw: u32, args: []const Value) Value {
                 },
                 else => {},
             }
+            return .void;
+        },
+        .arch => {
+            const id: usize = @intCast(argInt(args, 0));
+            if (id >= plan.artifacts.items.len) return .void;
+            plan.artifacts.items[id].target_arch = if (argInt(args, 1) == 1) .aarch64 else .x86_64;
             return .void;
         },
         .sysroot => {
@@ -1487,6 +1495,7 @@ fn buildOne(gpa: std.mem.Allocator, io: std.Io, plan: *BuildPlan, base_dir: []co
         .link_libc = need_libc or art.target_gnu,
         .library_object = art.kind == .static_library,
         .target_os = art.target_os,
+        .target_arch = art.target_arch,
         .sysroot = if (art.sysroot.len != 0) joinPath(a, base_dir, art.sysroot) catch return error.OutOfMemory else "",
         .progress = ui.Stages.step,
         .progress_ctx = &stages,
@@ -1694,6 +1703,7 @@ fn settingsKey(io: std.Io, plan: *BuildPlan, art: Artifact, parts: KeyParts) Bui
     str(&h, art.root);
     str(&h, @tagName(art.kind));
     str(&h, @tagName(art.target_os));
+    str(&h, @tagName(art.target_arch));
     h.update(&.{ parts.opt_level, @intFromBool(parts.safety), art.subsystem, @intFromBool(art.target_gnu), @intFromBool(art.strip), @intFromBool(parts.need_libc), @intFromBool(parts.honor_defaultlibs), @intFromBool(parts.debug_info) });
     h.update(std.mem.asBytes(&art.stack));
     str(&h, art.sysroot);

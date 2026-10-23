@@ -5,7 +5,7 @@ const std = @import("std");
 
 pub const BuildTarget = struct {
     os: std.Target.Os.Tag = @import("builtin").os.tag,
-    /// Fels builds for x86-64 only.
+    /// x86-64, or aarch64 for a UEFI or freestanding program.
     arch: std.Target.Cpu.Arch = .x86_64,
     /// Built without optimisation (`-O0`, the `debug` mode).
     debug: bool = true,

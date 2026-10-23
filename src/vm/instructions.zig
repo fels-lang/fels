@@ -210,7 +210,8 @@ pub const BuildOp = enum(u32) {
     test_optimize,    // (step, level:i32)             the optimization level of the tests
     test_link,        // (step, lib)                   a library the tests link
     test_link_artifact, // (step, id)                  a library artifact the tests link, built first
-    target,           // (id, os:i32)                  0 windows, 1 linux (static, no libc), 2 linux with glibc
+    target,           // (id, os:i32)                  0 windows, 1 linux (static, no libc), 2 linux with glibc, 3 uefi, 4 freestanding
+    arch,             // (id, arch:i32)                0 x86_64, 1 aarch64 (uefi and freestanding)
     sysroot,          // (id, dir)                     where glibc is, for a linux-gnu target
     strip,            // (id)                          leave the symbols out of the output
     host_os,          // () -> i32                     0 windows, 1 linux, 2 macos, 3 other
