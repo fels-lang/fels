@@ -2310,3 +2310,15 @@ test "diagnostics: an escape that stands for nothing is an error where it is" {
     try std.testing.expect(std.mem.startsWith(u8, p.diagnostics.items[1].message, "`\\u` takes a code point"));
     try std.testing.expect(std.mem.startsWith(u8, p.diagnostics.items[2].message, "unknown escape"));
 }
+
+test "diagnostics: an #interrupt function takes the cpu's frame and code, and code can't call it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const frame = "F :: struct { ip: u64, cs: u64, flags: u64, sp: u64, ss: u64 }\n";
+    try expectNoError(a, frame, "#interrupt\nh :: fn(f: *const F) {}\n#interrupt\npf :: fn(f: *const F, code: u64) {}\nmain :: fn() -> i32 { p := core::fn_ptr(h); q := core::fn_ptr(pf); return 0; }");
+    try expectFirstError(a, frame ++ "#interrupt\nh :: fn(f: *const F) {}\nmain :: fn() -> i32 { f: F = .{ 0, 0, 0, 0, 0 }; h(&f); return 0; }", &.{ "`h` is an `#interrupt` function: the cpu calls it, code can't", "core::fn_ptr(h)" });
+    try expectFirstError(a, frame ++ "#interrupt\nh :: fn(code: u64) {}\nmain :: fn() -> i32 { return 0; }", &.{"an `#interrupt` function takes the frame the cpu pushes"});
+    try expectFirstError(a, frame ++ "#interrupt\nh :: fn(f: *const F, code: u32) {}\nmain :: fn() -> i32 { return 0; }", &.{"an `#interrupt` function takes the frame the cpu pushes"});
+    try expectFirstError(a, frame ++ "#interrupt\nh :: fn(f: *const F) -> i32 { return 0; }\nmain :: fn() -> i32 { return 0; }", &.{"returning nothing"});
+}
