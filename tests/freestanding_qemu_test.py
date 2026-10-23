@@ -2,7 +2,8 @@
 """Build a freestanding kernel with fels and boot it in QEMU as a multiboot kernel: a 32-bit
 start in its own assembly sets up long mode and calls `_start`, which calls `main`. It prints
 through the serial port (std.freestanding.set_output, std.x86.outb), uses zones on the static
-heap and on memory it adds, and ends QEMU through its debug-exit port.
+heap and on memory it adds, handles int3 and a page fault in #interrupt functions, and ends
+QEMU through its debug-exit port.
 
     python tests/freestanding_qemu_test.py <fels.exe> <qemu folder> [--llvm-path <llvm>] [--std-path <lib>]
 
@@ -128,6 +129,24 @@ heap_reuse :: fn() -> bool {
     return freestanding::free_memory() == before;
 }
 
+// ---- interrupts ----
+
+breakpoints: u32 = 0u32;
+table: x86::Idt = .{ .gates = .{} };
+
+#interrupt
+on_breakpoint :: fn(frame: *const x86::InterruptFrame) {
+    breakpoints += 1u32;
+}
+
+// a page fault can't return to the access, so it reports and ends QEMU (isa-debug-exit:
+// (0x10 << 1) | 1 = 33)
+#interrupt
+on_page_fault :: fn(frame: *const x86::InterruptFrame, code: u64) {
+    println("page fault at {x86::read_cr2()} code {code} from kernel code {frame.cs == (x86::read_cs() as u64)}");
+    x86::outb(0xF4u16, 0x10u8);
+}
+
 main :: fn() -> i32 {
     freestanding::set_output(serial_write);
     println("fels kernel: start");
@@ -135,9 +154,16 @@ main :: fn() -> i32 {
     if heap_reuse() { println("heap reused"); }
     // leaf 0 gives the highest leaf, which is never 0 on a 64-bit cpu
     println("cpuid max leaf {x86::cpuid(0u32, 0u32).eax}");
+    table.set(3u8, core::fn_ptr(on_breakpoint));
+    table.set(14u8, core::fn_ptr(on_page_fault));
+    table.load();
+    x86::breakpoint();
+    x86::breakpoint();
+    println("breakpoints {breakpoints}");
     println("fels kernel: done");
-    // QEMU's isa-debug-exit: it exits with (0x10 << 1) | 1 = 33
-    x86::outb(0xF4u16, 0x10u8);
+    // the boot maps the first GiB; 1 GiB faults
+    v := unsafe *core::ptr_from_int(*const u8, 0x40000000usize);
+    println("not reached {v}");
     return 0;
 }
 '''
@@ -199,7 +225,10 @@ def main():
         ("a zone takes the static heap", "sum 5050" in text),
         ("zones give their memory back, and take memory added at run time", "heap reused" in text),
         ("cpuid answers", "cpuid max leaf " in text and "cpuid max leaf 0\n" not in text),
-        ("the debug-exit port ends QEMU", code == 33),
+        ("an #interrupt function handles int3 and returns", "breakpoints 2" in text),
+        ("an #interrupt function gets the page fault's error code",
+         "page fault at 1073741824 code 0 from kernel code true" in text),
+        ("the debug-exit port ends QEMU", code == 33 and "not reached" not in text),
     ]
     failed = False
     for name, ok in checks:
