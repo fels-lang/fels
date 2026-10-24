@@ -1,6 +1,6 @@
 // a kernel: no os, no firmware calls. QEMU loads it as a multiboot kernel, boot32 takes the
 // cpu to 64-bit mode, the compiler's _start calls main. It prints on the screen and the
-// serial port, sums a slice from a zone and halts.
+// serial port, sums a slice from a zone, handles an int3 and halts.
 
 #import std.io.{ println };
 #import std.freestanding;
@@ -131,6 +131,16 @@ console_write :: fn(p: *const u8, n: usize) {
     move_cursor();
 }
 
+// ---- interrupts: the cpu calls an #interrupt function through the table ----
+
+table: x86::Idt = .{ .gates = .{} };
+breakpoints: u32 = 0u32;
+
+#interrupt
+on_breakpoint :: fn(frame: *const x86::InterruptFrame) {
+    breakpoints += 1u32;
+}
+
 sum :: fn(n: u32) -> u32 {
     total := 0u32;
     zone z: Arena {
@@ -148,6 +158,10 @@ main :: fn() -> i32 {
     id := x86::cpuid(0u32, 0u32);
     println("cpuid leaf 0: max leaf {id.eax}");
     println("1 + 2 + ... + 100 = {sum(100u32)}");
+    table.set(3u8, core::fn_ptr(on_breakpoint));
+    table.load();
+    x86::breakpoint();
+    println("int3 came back: {breakpoints}");
     println("halting");
     return 0;
 }
