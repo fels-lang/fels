@@ -322,7 +322,7 @@ vim.api.nvim_create_autocmd("FileType", {
 })
 ```
 
-**Zed**: the extension [zed-fels](https://codeberg.org/fels-lang/zed-fels) runs `fels lsp` from
+**Zed**: the extension [zed-fels](https://github.com/fels-lang/zed-fels) runs `fels lsp` from
 your `PATH`, or downloads a release of Fels when there is none. It colors completion items as
 Fels code (`add(a: i32, b: i32) -> i32`), and it puts a run button beside `main` (`fels run`
 the file, or `fels build run`) and beside each `#test` function (`fels test --filter` that
