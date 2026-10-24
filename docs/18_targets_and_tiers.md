@@ -23,8 +23,9 @@ You write a target as an LLVM-style triple, such as `x86_64-linux-gnu`, `x86_64-
 `x86_64-linux-none`, the static, freestanding default, and `--target linux-gnu` means
 `x86_64-linux-gnu`. Two targets have no operating system under them: `--target uefi` makes a
 UEFI application and `--target freestanding` (or `none`) an ELF for a kernel or a boot loader
-(see §7). Today every build is x86_64. `--target` reads only the OS and whether the
-ABI is `gnu`, so an `aarch64-linux` triple still gives an x86_64 binary.
+(see §7). These two are also built for 64-bit ARM: `--target aarch64-uefi` and
+`--target aarch64-freestanding` (`arm64-` works too). Every other build is x86_64: `--target`
+refuses an aarch64 Linux or Windows triple.
 
 **The front-end is target-independent.** The lexer, parser, sema, IR, comptime VM and macros
 describe *computation*, not a platform, so every language feature works on every target. The
@@ -107,7 +108,7 @@ boundaries need a classifier.
 | Arch | LLVM | Syscall ABI (nr / args / insn) | Aggregate ABI | Status |
 | --- | --- | --- | --- | --- |
 | **x86_64** | yes | `rax` / `rdi rsi rdx r10 r8 r9` / `syscall` | Win64 done, SysV AMD64 not done | **implemented**, except by-value structs at C calls on Linux |
-| **aarch64** | yes | `x8` / `x0…x5` / `svc #0` | AAPCS64 | Tier 3, not implemented yet: needs runtime + classifier + `--target` support |
+| **aarch64** | yes | `x8` / `x0…x5` / `svc #0` | AAPCS64 | UEFI and freestanding implemented; Linux needs the runtime and the classifier |
 | **riscv64** | yes | `a7` / `a0…a5` / `ecall` | RV calling conv | Tier 3, emerging |
 | **wasm32** | yes | no syscalls, WASI imports | wasm ABI | Tier 3, different seam (WASI), no `_start` asm |
 
@@ -149,7 +150,9 @@ The tiers follow Rust's, adapted to how Fels keeps platform code behind the runt
 | `x86_64-linux-gnu` (glibc) | **2** | implemented: `--target linux-gnu` + `--sysroot`. Our `_start` → `__libc_start_main`, links `libc.so.6` directly. Needs a sysroot with `libc.so.6` at link time |
 | `x86_64-uefi` | **2** | `--target uefi`: a PE32+ EFI application. Boots in QEMU's UEFI firmware (`tests/uefi_qemu_test.py`, not in CI). See §7 |
 | `x86_64-none-elf` | **2** | `--target freestanding`: a static ELF with no os. Boots in QEMU as a multiboot kernel (`tests/freestanding_qemu_test.py`, not in CI). See §7 |
-| `aarch64-linux` | **3** | not implemented yet, the compiler emits x86_64 only. Planned for Tier 2 once the aarch64 runtime + ABI arm exist |
+| `aarch64-uefi` | **2** | `--target aarch64-uefi`: an ARM64 PE32+ EFI application. Boots in QEMU's AArch64 UEFI firmware (`tests/uefi_qemu_test.py --arch aarch64`, not in CI). See §7 |
+| `aarch64-none-elf` | **2** | `--target aarch64-freestanding`: a static AArch64 ELF with no os. Boots on QEMU's `virt` machine (`tests/freestanding_aarch64_qemu_test.py`, not in CI). See §7 |
+| `aarch64-linux` | **3** | not implemented yet. Planned for Tier 2 once the aarch64 Linux runtime + ABI arm exist |
 | `riscv64-linux`, `wasm32-wasi` | **3** | LLVM-ready, runtime/seam not yet written |
 | `*-macos` | **3** | Mach-O + Apple ABI, a larger effort |
 
@@ -184,16 +187,24 @@ threads, the network, time or `#extern`, since nothing under the program provide
 
 | | `uefi` | `freestanding` |
 | --- | --- | --- |
-| Triple | `x86_64-pc-windows-msvc`, Windows calling convention | `x86_64-unknown-none-elf` |
+| Triple | `x86_64-pc-windows-msvc`, Windows calling convention; `aarch64-pc-windows-msvc` | `x86_64-unknown-none-elf`; `aarch64-unknown-none-elf` |
 | File | `name.efi`: PE32+, subsystem `EFI_APPLICATION`, base relocations | `name.elf`: a static ELF; `--link-arg` takes a linker script or `--oformat=binary` |
 | Entry | `efi_main(image, system_table)`, made for `main`; `main`'s result is the EFI status | `_start`, made for `main`: calls it, then halts. Without `main`, the program's own `#entry` |
 | Printing | the firmware's console (UTF-8 turned into UCS-2) | whatever `std.freestanding.set_output` names, e.g. a serial port |
-| Heap | the firmware's `AllocatePages` | a 1 MiB static heap in `.bss`, never given back |
-| `exit`, `@panic` | the boot services' `Exit` | `cli; hlt` for good |
-| Std | `std.uefi`: the system table, `stall`, keys, `clear`, the framebuffer, `shutdown`, `reboot` | `std.freestanding` (`set_output`, `halt`), `std.x86` (ports, `cli`/`sti`/`hlt`, `lgdt`/`lidt`, control registers, MSRs, `rdtsc`, `cpuid`) |
+| Heap | the firmware's `AllocatePages` | a free list: the memory `std.freestanding.add_memory` gives, and a 1 MiB static heap in `.bss` when that runs out; a zone gives its memory back when it ends |
+| Interrupts | the firmware's | x86-64: `#interrupt` functions in an `x86::Idt`; aarch64: `aarch64::set_exception_handler` with an ordinary function |
+| `exit`, `@panic` | the boot services' `Exit` | interrupts off and halted for good (`cli; hlt`, `msr daifset; wfi`) |
+| Std | `std.uefi`: the system table, `stall`, keys, `clear`, the framebuffer, `shutdown`, `reboot` | `std.freestanding` (`set_output`, `halt`, `add_memory`, `free_memory`), `std.x86` or `std.aarch64` |
 
 A freestanding program is built with `noredzone` on every function: an interrupt pushes onto
 the stack below the stack pointer, where the red zone would keep a function's locals. Code
 starts in 64-bit mode at the entry; a kernel booted from 32-bit mode (multiboot) brings its own
-start in `core::asm`, as `examples/kernel` does. `examples/uefi` and `examples/kernel` show
-both targets, with the QEMU commands to boot them.
+start in `core::asm`, as `examples/kernel` does. The ELF starts at the program's own `#entry`;
+without one, at its linker script's `ENTRY`, or at `_start`.
+
+On aarch64 a freestanding program makes no unaligned memory access (`+strict-align`): until a
+kernel turns the MMU on, the CPU treats memory as device memory and faults on one. Fels code
+uses the FP and SIMD registers, so a kernel turns them on (`CPACR_EL1.FPEN`) before its first
+Fels call, as `examples/kernel_aarch64` does; on x86-64 it turns SSE on. `examples/uefi`,
+`examples/kernel` and `examples/kernel_aarch64` show the targets, with the QEMU commands to
+boot them; `examples/uefi` builds for `aarch64-uefi` as it is.
