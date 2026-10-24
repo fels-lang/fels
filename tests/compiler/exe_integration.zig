@@ -251,6 +251,10 @@ test "exe: a UEFI program that uses #extern is refused" {
 
 /// Build `src` with --target freestanding and return the ELF's bytes; skipped without ld.lld.
 fn compileFreestanding(a: std.mem.Allocator, src: []const u8, label: []const u8) ![]u8 {
+    return compileFreestandingFor(a, src, label, .x86_64);
+}
+
+fn compileFreestandingFor(a: std.mem.Allocator, src: []const u8, label: []const u8, arch: std.Target.Cpu.Arch) ![]u8 {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     if (comptime !host_runs) return error.SkipZigTest;
     const io = std.testing.io;
@@ -263,6 +267,7 @@ fn compileFreestanding(a: std.mem.Allocator, src: []const u8, label: []const u8)
         .opt_level = 2,
         .llvm_bin = fels.llvm_path ++ "/bin",
         .target_os = .freestanding,
+        .target_arch = arch,
     }) catch |err| {
         if (err == error.LinkFailed) return error.SkipZigTest; // no ld.lld
         return err;
@@ -305,6 +310,70 @@ test "exe: a freestanding program with an #entry of its own is entered there" {
         \\}
     , "free_kmain");
     try expectStandaloneElf(elf);
+}
+
+test "exe: --target aarch64-freestanding makes an AArch64 ELF, entered at _start" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const elf = try compileFreestandingFor(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    zone z: Arena { xs := z.new_slice(u32, 8usize); xs[0] = 1u32; return xs[0] as i32; }
+        \\}
+    , "free_a64", .aarch64);
+    try expectStandaloneElf(elf);
+    try std.testing.expectEqual(@as(u16, 183), std.mem.readInt(u16, elf[18..20], .little)); // EM_AARCH64
+}
+
+test "exe: --target aarch64-uefi makes an ARM64 EFI application with no imports" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest; // lld-link links it
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+
+    try fels.compileWithLlvm(a, io, .{
+        .file_name = "uefi_a64.fels",
+        .source =
+        \\main :: fn() -> i32 {
+        \\    zone z: Arena { xs := z.new_slice(u8, 16); xs[0] = 1u8; }
+        \\    return 0;
+        \\}
+        ,
+        .obj_path = ".zig-cache/uefi_a64.o",
+        .exe_path = ".zig-cache/uefi_a64.efi",
+        .opt_level = 2,
+        .llvm_bin = fels.llvm_path ++ "/bin",
+        .target_os = .uefi,
+        .target_arch = .aarch64,
+    });
+    const pe = try std.Io.Dir.cwd().readFileAlloc(io, ".zig-cache/uefi_a64.efi", a, .unlimited);
+    const at = std.mem.readInt(u32, pe[0x3C..0x40], .little);
+    try std.testing.expectEqualSlices(u8, "PE\x00\x00", pe[at .. at + 4]);
+    try std.testing.expectEqual(@as(u16, 0xAA64), std.mem.readInt(u16, pe[at + 4 ..][0..2], .little)); // ARM64
+    const opt = at + 24;
+    try std.testing.expectEqual(@as(u16, 10), std.mem.readInt(u16, pe[opt + 68 ..][0..2], .little)); // EFI application
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, pe[opt + 124 ..][0..4], .little)); // no imports
+}
+
+test "exe: #interrupt is for x86-64, and refused on aarch64" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.CompileFailed, fels.compileWithLlvm(arena.allocator(), std.testing.io, .{
+        .file_name = "intr_a64.fels",
+        .source =
+        \\F :: struct { ip: u64, cs: u64, flags: u64, sp: u64, ss: u64 }
+        \\#interrupt
+        \\h :: fn(f: *const F) {}
+        \\main :: fn() -> i32 { p := core::fn_ptr(h); return 0; }
+        ,
+        .obj_path = ".zig-cache/intr_a64.o",
+        .exe_path = ".zig-cache/intr_a64.elf",
+        .llvm_bin = fels.llvm_path ++ "/bin",
+        .target_os = .freestanding,
+        .target_arch = .aarch64,
+    }));
 }
 
 test "exe: the portable fixtures cross-compile to static Linux ELF executables" {
