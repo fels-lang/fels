@@ -3,9 +3,10 @@
 it prints, allocates in a zone and turns the machine off, and the firmware's console (the
 serial port) must show what it printed.
 
-    python tests/uefi_qemu_test.py <fels.exe> <qemu folder> [--std-path <lib>]
+    python tests/uefi_qemu_test.py <fels.exe> <qemu folder> [--arch aarch64] [--std-path <lib>]
 
-The QEMU folder holds qemu-system-x86_64 and share/edk2-x86_64-code.fd. Prints PASS or FAIL.
+The QEMU folder holds qemu-system-x86_64 and share/edk2-x86_64-code.fd, or for --arch aarch64
+qemu-system-aarch64 and share/edk2-aarch64-code.fd. Prints PASS or FAIL.
 """
 import os
 import shutil
@@ -29,6 +30,7 @@ sum :: fn(n: u32) -> u32 {
 
 main :: fn() -> i32 {
     println("fels uefi test: start");
+    println("arch {core::arch}");
     println("sum {sum(100u32)}");
     println("fels uefi test: done");
     uefi::shutdown();
@@ -43,8 +45,13 @@ def main():
         sys.exit(2)
     fels, qemu_dir = sys.argv[1], sys.argv[2]
     extra = sys.argv[3:]
-    qemu = os.path.join(qemu_dir, "qemu-system-x86_64" + (".exe" if os.name == "nt" else ""))
-    firmware = os.path.join(qemu_dir, "share", "edk2-x86_64-code.fd")
+    arch = "x86_64"
+    if "--arch" in extra:
+        i = extra.index("--arch")
+        arch = extra[i + 1]
+        del extra[i:i + 2]
+    qemu = os.path.join(qemu_dir, "qemu-system-" + arch + (".exe" if os.name == "nt" else ""))
+    firmware = os.path.join(qemu_dir, "share", "edk2-" + arch + "-code.fd")
     for p in (qemu, firmware):
         if not os.path.exists(p):
             print("SKIP: no " + p)
@@ -55,7 +62,8 @@ def main():
     with open(src, "w", encoding="utf-8", newline="\n") as f:
         f.write(SRC)
     efi = os.path.join(work, "uefi_test.efi")
-    b = subprocess.run([fels, "build", src, "--target", "uefi", "-q", "-o", efi] + extra, capture_output=True, text=True)
+    target = "aarch64-uefi" if arch == "aarch64" else "uefi"
+    b = subprocess.run([fels, "build", src, "--target", target, "-q", "-o", efi] + extra, capture_output=True, text=True)
     if b.returncode != 0:
         print(b.stdout + b.stderr)
         print("RESULT: FAIL (build)")
@@ -63,11 +71,17 @@ def main():
 
     boot = os.path.join(work, "esp", "EFI", "BOOT")
     os.makedirs(boot)
-    shutil.copy(efi, os.path.join(boot, "BOOTX64.EFI"))
+    shutil.copy(efi, os.path.join(boot, "BOOTAA64.EFI" if arch == "aarch64" else "BOOTX64.EFI"))
     serial = os.path.join(work, "serial.txt")
-    cmd = [qemu, "-machine", "q35", "-m", "256",
+    esp = "format=raw,file=fat:rw:" + os.path.join(work, "esp")
+    if arch == "aarch64":
+        # the virt machine has no IDE: the FAT folder is a virtio disk
+        machine = ["-machine", "virt", "-cpu", "cortex-a57", "-drive", "if=none,id=esp," + esp,
+                   "-device", "virtio-blk-pci,drive=esp"]
+    else:
+        machine = ["-machine", "q35", "-drive", esp]
+    cmd = [qemu] + machine + ["-m", "256",
            "-drive", "if=pflash,format=raw,readonly=on,file=" + firmware,
-           "-drive", "format=raw,file=fat:rw:" + os.path.join(work, "esp"),
            "-display", "none", "-serial", "file:" + serial, "-no-reboot"]
     try:
         r = subprocess.run(cmd, capture_output=True, timeout=60)
@@ -78,6 +92,7 @@ def main():
 
     checks = [
         ("the program's lines on the firmware's console", "fels uefi test: start" in out and "fels uefi test: done" in out),
+        ("it is built for " + arch, "arch " + arch in out),
         ("a zone allocates the firmware's pages", "sum 5050" in out),
         ("shutdown ends QEMU", ended),
     ]
