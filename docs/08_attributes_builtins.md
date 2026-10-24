@@ -25,6 +25,11 @@ Attributes change the behavior or the layout of a declaration, and each one star
 - `#naked`: produces a function without the standard prologue or epilogue. You will mostly use
   it for raw inline assembly entry points.
 - `#entry`: makes the function the program's entry point, as an alternative to naming it `main`.
+- `#interrupt`: an x86-64 interrupt or exception handler, `fn(frame: *const x86::InterruptFrame)`
+  or, for an exception with an error code, `fn(frame: *const x86::InterruptFrame, code: u64)`.
+  The CPU calls it: it saves every register it uses and returns with `iretq`. Code can't call
+  it; `core::fn_ptr(f)` is the address for the interrupt table (`std.x86.Idt`). On aarch64,
+  `std.aarch64.set_exception_handler` takes an ordinary function instead.
 - `#cold`: marks a function that is rarely called, so the optimizer moves it off the hot path.
   It becomes a real LLVM `cold` attribute.
 - `#section("name")`: places the function in a specific section of the object file.
