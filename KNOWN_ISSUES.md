@@ -79,14 +79,18 @@ These compile without a message and give a wrong result.
   none, but writes no PDB. Locals of nested blocks all show in the function's scope, and the
   fields of a `#packed` struct with bit fields are not shown.
 - Libraries (`b.static`, `b.shared`) cannot target Linux yet; the archive writer reads COFF objects.
-- Without an operating system (`--target uefi`, `--target freestanding`), x86-64 only:
-  - There is no interrupt-handler function yet; a handler needs its own entry in `core::asm`
-    that saves the registers and ends with `iretq`.
-  - Fels code uses SSE registers (floats, copies), so a kernel turns SSE on (CR0, CR4) before
-    its first Fels call, as `examples/kernel`'s start does.
-  - A freestanding program's heap is a fixed 1 MiB static array that zones never give back.
+- Without an operating system (`--target uefi`, `--target freestanding`):
+  - Fels code uses the SSE registers (x86-64) or the FP and SIMD registers (aarch64), so a
+    kernel turns them on before its first Fels call, as `examples/kernel` and
+    `examples/kernel_aarch64` do.
   - `std.uefi` wraps no file system, network or other protocols beyond the console, the keys
     and the screen; `system_table()` reaches the rest by hand.
+  - On aarch64, `memcpy`, `memset` and the other memory functions the compiler adds copy a
+    byte at a time.
+  - On aarch64, a struct passed by value to or from C (an `#extern` function or an `extern fn`)
+    does not follow AAPCS64 yet; numbers and pointers do.
+- aarch64 is built for UEFI and freestanding programs only; Linux and Windows on ARM are not
+  supported yet.
 - At compile time (`#run`, `#assert`), `&5` and `&(x + 1)` are refused ("the comptime VM cannot
   run `f`"). Verified 2026-10-17.
 - The `atomic` field qualifier is not checked: a plain read or write of such a field compiles,
