@@ -265,14 +265,14 @@ pub fn build(b: *std.Build) void {
 
 /// LLVM linked into the compiler from llvm.org's Linux release, which has no shared LLVM:
 /// its static archives, the ones `llvm-config` names for what the compiler uses (the C API's
-/// core, the optimiser, the bitcode writer, the x86 code generator), and what they need of
-/// the system. The archives are C++ built with GCC, so they need its C++ library,
+/// core, the optimiser, the bitcode writer, the x86 and AArch64 code generators), and what
+/// they need of the system. The archives are C++ built with GCC, so they need its C++ library,
 /// libstdc++, and not the libc++ Zig carries: it is linked as the system has it, by path, as
 /// a distribution ships only the runtime file (`libstdc++.so.6`) without the development
 /// link (`libstdc++.so`). zlib and zstd likewise.
 fn linkStaticLlvm(b: *std.Build, mod: *std.Build.Module, lp: []const u8) void {
     const llvm_config = b.fmt("{s}/bin/llvm-config", .{lp});
-    const names = b.run(&.{ llvm_config, "--link-static", "--libnames", "core", "passes", "bitwriter", "analysis", "target", "x86codegen", "x86asmparser", "x86desc", "x86info" });
+    const names = b.run(&.{ llvm_config, "--link-static", "--libnames", "core", "passes", "bitwriter", "analysis", "target", "x86codegen", "x86asmparser", "x86desc", "x86info", "aarch64codegen", "aarch64asmparser", "aarch64desc", "aarch64info" });
     var it = std.mem.tokenizeAny(u8, names, " \t\r\n");
     while (it.next()) |name| mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/{s}", .{ lp, name }) });
     for ([_][]const u8{ "libstdc++.so.6", "libgcc_s.so.1", "libz.so.1", "libzstd.so.1" }) |lib| {
