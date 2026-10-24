@@ -402,7 +402,7 @@ const app_files = [_]File{
     .{ .path = "README.md", .text =
     \\# {{name}}
     \\
-    \\A program written in [Fels](https://github.com/fels-lang/fels).
+    \\A program written in [Fels](https://codeberg.org/fels-lang/fels).
     \\
     \\```
     \\fels build run        build it and run it
@@ -477,7 +477,7 @@ const lib_files = [_]File{
     .{ .path = "README.md", .text =
     \\# {{name}}
     \\
-    \\A library for [Fels](https://github.com/fels-lang/fels).
+    \\A library for [Fels](https://codeberg.org/fels-lang/fels).
     \\
     \\## Use it
     \\
@@ -593,7 +593,7 @@ const cbind_files = [_]File{
     .{ .path = "README.md", .text =
     \\# {{name}}
     \\
-    \\[Fels](https://github.com/fels-lang/fels) bindings to the C library {{name}}.
+    \\[Fels](https://codeberg.org/fels-lang/fels) bindings to the C library {{name}}.
     \\
     \\## Use it
     \\
