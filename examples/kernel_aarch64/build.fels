@@ -1,0 +1,11 @@
+#import std.build.{ Build, executable, target, arch, release, link_flag, output, default };
+
+build :: fn(b: Build) {
+    k := b.executable("kernel", "main.fels");
+    k.target(.freestanding);
+    k.arch(.aarch64);
+    k.release();
+    k.link_flag("--script=kernel.ld");
+    k.output("kernel.elf");
+    b.default(k);
+}

@@ -1,0 +1,86 @@
+// a kernel for QEMU's aarch64 virt machine: QEMU loads the ELF and starts it at EL1, _boot sets
+// the stack and turns FP and SIMD on, the compiler's _start calls main. It prints through the
+// PL011 UART, reads the timer, sums a slice from a zone, handles a brk in an ordinary function
+// and turns the machine off.
+
+#import std.io.{ println };
+#import std.freestanding;
+#import std.aarch64;
+
+// the stack (from kernel.ld), FP and SIMD on (CPACR_EL1.FPEN), as Fels code uses them, then _start
+#naked
+#keep
+boot :: fn() {
+    unsafe {
+        core::asm(volatile, """
+            .pushsection .text.boot, "ax"
+            .globl _boot
+            _boot:
+            mov x0, #0x300000
+            msr cpacr_el1, x0
+            isb
+            adrp x0, stack_top
+            add x0, x0, :lo12:stack_top
+            mov sp, x0
+            bl _start
+            1:
+            wfi
+            b 1b
+            .popsection
+            """, inputs: {}, outputs: {}, clobbers: {});
+    }
+}
+
+// a byte written to the PL011's data register goes out on the serial port
+UART :: 0x09000000usize;
+
+uart_write :: fn(p: *const u8, n: usize) {
+    for i in 0usize..n {
+        c := unsafe *core::ptr_from_int(*const u8, (p as usize) + i);
+        unsafe { core::volatile_store(core::ptr_from_int(*u8, UART), c); }
+    }
+}
+
+// PSCI SYSTEM_OFF, which QEMU answers through hvc when it starts a kernel at EL1
+power_off :: fn() {
+    unsafe { core::asm(volatile, "hvc #0", inputs: { "{x0}"(0x84000008u64) }, outputs: {}, clobbers: { "memory" }); }
+}
+
+breaks: u32 = 0u32;
+
+// a brk goes on after itself; anything else is reported, and the machine stops
+on_exception :: fn(frame: *aarch64::ExceptionFrame, vector: u64) {
+    class := aarch64::exception_class(frame.esr);
+    if vector == aarch64::SYNC && class == 0x3Cu64 {
+        breaks += 1u32;
+        frame.elr += 4u64;
+        return;
+    }
+    println("exception {vector}, class {class}, at {frame.elr}");
+    freestanding::halt();
+}
+
+sum :: fn(n: u32) -> u32 {
+    total := 0u32;
+    zone z: Arena {
+        xs := z.new_slice(u32, n as usize);
+        for i in 0usize..xs.len { xs[i] = (i as u32) + 1u32; }
+        for x in xs { total += x; }
+    }
+    return total;
+}
+
+main :: fn() -> i32 {
+    freestanding::set_output(uart_write);
+    aarch64::set_exception_handler(on_exception);
+    println("hello from a fels kernel on {core::arch}, at EL{aarch64::current_el()}");
+    start := aarch64::read_cntpct();
+    println("1 + 2 + ... + 100 = {sum(100u32)}");
+    aarch64::breakpoint();
+    println("a brk came back: {breaks}");
+    ticks := aarch64::read_cntpct() - start;
+    println("that took {ticks * 1000000u64 / aarch64::read_cntfrq()} us");
+    println("turning off");
+    power_off();
+    return 0;
+}
