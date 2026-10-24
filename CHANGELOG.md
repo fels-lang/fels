@@ -17,12 +17,27 @@ the major version is `0`, any minor bump may break source compatibility.
   the framebuffer, `shutdown` and `reboot`. `examples/uefi` draws on the screen and turns off.
 - **Freestanding programs**: `--target freestanding` (or `.freestanding`) makes a static ELF
   with no operating system, for a kernel. A `_start` calls `main` and halts, or the program's
-  own `#entry` is the start; no function uses the red zone; zones take a 1 MiB static heap, and
+  own `#entry` is the start; no function uses the red zone; zones take a static heap, and
   `std.freestanding.set_output` names where `println` writes. `examples/kernel` boots in QEMU
   as a multiboot kernel and prints on the screen and the serial port.
 - **`std.x86`**: port I/O, `cli`/`sti`/`hlt`, `lgdt`/`lidt`, the control registers, MSRs,
   `rdtsc` and `cpuid`.
 - **`--link-arg <flag>`** passes a flag to the linker as it is, such as a linker script.
+- **Interrupt handlers as functions**: `#interrupt` makes an x86-64 function the CPU calls with
+  the frame it pushed (`*const x86::InterruptFrame`) and, for some exceptions, an error code; it
+  saves every register it uses and returns with `iretq`. `x86::Idt` holds them
+  (`set(vector, core::fn_ptr(f))`, `load()`). Code can't call one.
+- **64-bit ARM without an operating system**: `--target aarch64-uefi` and
+  `--target aarch64-freestanding` (or `a.arch(.aarch64)` in build.fels). `std.aarch64` has the
+  barriers, the system registers and exception vectors that call an ordinary function with the
+  saved registers. `examples/kernel_aarch64` boots on QEMU's `virt` machine.
+- **Memory for a kernel**: `std.freestanding.add_memory(base, len)` gives zones more memory and
+  `free_memory()` says how much is left. Zones give their memory back when they end.
+
+### Changed
+
+- A freestanding program without an `#entry` of its own starts where its linker script's
+  `ENTRY` says, or at `_start`; the linker was told `_start` and ignored the script.
 
 ### Fixed
 
