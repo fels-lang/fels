@@ -139,7 +139,10 @@ pub const TargetMachine = struct {
             triple,
             // a baseline CPU, so the binary runs on any x86-64 or ARMv8-A
             if (arch == .aarch64) "generic" else "x86-64",
-            "",
+            // A kernel starts with the MMU off, where AArch64 treats memory as device memory and
+            // faults on an unaligned access: freestanding code makes none. (UEFI runs with the MMU
+            // on and allows them.)
+            if (arch == .aarch64 and target_os == .freestanding) "+strict-align" else "",
             llvm_opt,
             llvm.LLVMRelocStatic, // static, non-PIE executable
             llvm.LLVMCodeModelDefault,
