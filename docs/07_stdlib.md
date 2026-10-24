@@ -992,9 +992,9 @@ ignored := srv.send_to("pong", d.from) catch e { return; };  // reply to sender
 > `tests/fixtures/stdlib/net_echo_app.fels` (TCP echo) and `net_udp_app.fels` (UDP echo).
 > HTTP is in `std.http`. Names resolve to IPv4 addresses only, as the sockets are IPv4.
 
-## Without an operating system: `std.uefi`, `std.freestanding`, `std.x86`
+## Without an operating system: `std.uefi`, `std.freestanding`, `std.x86`, `std.aarch64`
 
-For programs built with `--target uefi` or `--target freestanding`
+For programs built with `--target uefi` or `--target freestanding`, on x86-64 or aarch64
 ([18_targets_and_tiers](18_targets_and_tiers.md) §7). `println`, zones and the containers work
 there as anywhere; these modules give what the machine has instead of an operating system.
 
@@ -1010,7 +1010,11 @@ there as anywhere; these modules give what the machine has instead of an operati
 
 **`std.freestanding`** (`--target freestanding`): `set_output(write)` names the function that
 `println` and a panic message go to, such as one that writes to a serial port; until then
-nothing is printed. `halt()` turns interrupts off and halts for good.
+nothing is printed. `halt()` turns interrupts off and halts for good. `add_memory(base, len)`
+gives zones memory, such as a free range of the boot loader's memory map, and
+`free_memory()` says how many bytes they can still take. Zones take memory from a free list and
+give it back when they end; until memory is added, and when it runs out, they take a 1 MiB
+static heap.
 
 **`std.x86`**: the instructions a kernel needs, each a function over `core::asm`. Most work
 only in ring 0.
@@ -1018,7 +1022,8 @@ only in ring 0.
 | | |
 | --- | --- |
 | Ports | `outb`/`outw`/`outl(port, v)`, `inb`/`inw`/`inl(port)` |
-| Interrupts | `cli`, `sti`, `hlt`, `pause`, `lgdt(descriptor)`, `lidt(descriptor)` (10 bytes: the limit, then the base) |
+| Interrupts | `cli`, `sti`, `hlt`, `pause`, `breakpoint` (`int3`), `lgdt(descriptor)`, `lidt(descriptor)` (10 bytes: the limit, then the base), `read_cs` |
+| The interrupt table | `idt() -> Idt`, `Idt.set(vector, core::fn_ptr(handler))`, `Idt.load()`, the `InterruptFrame` (`ip`, `cs`, `flags`, `sp`, `ss`) |
 | Control registers | `read_cr0`, `read_cr2`, `read_cr3`, `write_cr3`, `read_cr4`, `invlpg(addr)` |
 | Model-specific registers | `rdmsr(msr) -> u64`, `wrmsr(msr, v)` |
 | The processor | `rdtsc() -> u64`, `cpuid(leaf, sub) -> Cpuid` (`eax`, `ebx`, `ecx`, `edx`) |
@@ -1039,7 +1044,68 @@ main :: fn() -> i32 {
 }
 ```
 
-`examples/uefi` and `examples/kernel` are whole programs for both targets.
+An interrupt handler is a function marked `#interrupt` ([08](08_attributes_builtins.md)): the
+CPU calls it with the frame it pushed, and with the error code for the exceptions that have
+one. It saves every register it uses and returns with `iretq`. Code can't call it; its address
+goes in the table, which must stay where it is once loaded:
+
+```fels
+table: x86::Idt = .{ .gates = .{} };
+
+#interrupt
+on_breakpoint :: fn(frame: *const x86::InterruptFrame) {
+    println("int3 at {frame.ip}");
+}
+
+#interrupt
+on_page_fault :: fn(frame: *const x86::InterruptFrame, code: u64) {
+    println("page fault at {x86::read_cr2()}, code {code}");
+    freestanding::halt();
+}
+
+main :: fn() -> i32 {
+    table.set(3u8, core::fn_ptr(on_breakpoint));
+    table.set(14u8, core::fn_ptr(on_page_fault));
+    table.load();
+    x86::breakpoint();
+    return 0;
+}
+```
+
+**`std.aarch64`** (`--target aarch64-freestanding`): the instructions an AArch64 kernel needs,
+most at EL1.
+
+| | |
+| --- | --- |
+| Waiting and barriers | `wfi`, `wfe`, `sev`, `isb`, `dsb`, `dmb` |
+| Interrupts | `mask_interrupts`, `unmask_interrupts` (DAIF), `breakpoint` (`brk #0`) |
+| System registers | `current_el`, `read_mpidr`, `read_cntpct`, `read_cntfrq`, `read_sctlr`/`write_sctlr`, `write_ttbr0`, `write_tcr`, `write_mair` |
+| Exceptions | `set_exception_handler(handler)`, `ExceptionFrame` (`x`, `elr`, `spsr`, `esr`, `far`), `exception_class(esr)`, the vectors `SYNC`, `IRQ`, `FIQ`, `SERROR` |
+
+AArch64 has no interrupt calling convention: `set_exception_handler` points the CPU at a vector
+table of `std.aarch64`'s, which saves every register (the FP and SIMD ones too), calls the
+handler, an ordinary function, with them and the vector, and puts them back. The exception goes
+back to `frame.elr`, which the handler may move on:
+
+```fels
+on_exception :: fn(frame: *aarch64::ExceptionFrame, vector: u64) {
+    if vector == aarch64::SYNC && aarch64::exception_class(frame.esr) == 0x3Cu64 {
+        frame.elr += 4u64; // past the brk
+        return;
+    }
+    println("exception {vector}, class {aarch64::exception_class(frame.esr)}");
+    freestanding::halt();
+}
+
+main :: fn() -> i32 {
+    aarch64::set_exception_handler(on_exception);
+    aarch64::breakpoint();
+    return 0;
+}
+```
+
+`examples/uefi`, `examples/kernel` and `examples/kernel_aarch64` are whole programs for these
+targets.
 
 ## Game & graphics modules
 
