@@ -38,6 +38,9 @@ the major version is `0`, any minor bump may break source compatibility.
 
 - A freestanding program without an `#entry` of its own starts where its linker script's
   `ENTRY` says, or at `_start`; the linker was told `_start` and ignored the script.
+- `#extern("kernel32.dll", …)` built, but the program then did not start: Windows looked
+  for `kernel32.dll.dll`. A library name with `.dll` is now an error that shows the name
+  without it.
 
 ### Fixed
 
