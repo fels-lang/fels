@@ -557,9 +557,16 @@ fn cmdIr(allocator: std.mem.Allocator, io: std.Io, path: []const u8, source: []c
     var fe = fels.pipeline_mod.compileFileWithRuntimeTarget(allocator, io, path, opts.target_os, opts.link_libc) catch return 1;
     defer fe.deinit(allocator);
     printDiags(allocator, fe.diagnostics(), path, source);
-    var module = fels.lowerFrontend(allocator, fe) catch return 1;
+
+    // ArenaAllocator for IR Módule and passes
+    var ir_arena = std.heap.ArenaAllocator.init(allocator);
+    defer ir_arena.deinit();
+    const ir_alloc = ir_arena.allocator();
+
+    var module = fels.lowerFrontend(ir_alloc, fe) catch return 1;
+
     fels.driver_mod.checkCalls(path, module) catch return 1;
-    fels.ir_mod.runDefaultPasses(allocator, &module) catch return 1;
+    fels.ir_mod.runDefaultPasses(ir_alloc, &module) catch return 1;
     // `FELS_SLAB_ROUNDTRIP`: the IR as it comes back from a Slab (see `driver.zig`)
     var rt_arena = std.heap.ArenaAllocator.init(allocator);
     defer rt_arena.deinit();
