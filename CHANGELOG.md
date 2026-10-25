@@ -47,6 +47,9 @@ the major version is `0`, any minor bump may break source compatibility.
   closure, so the callee called the wrong address. It is now the function's own address.
 - A `core::asm` template written as a `"""` block reached the assembler with its escapes and
   quotes as written; it is now the block's lines.
+- A `println("{x})` in a loop crashed with a stack overflow after tens of thousands of passes with the Exit-Code *0xC00000FD*: each
+- pass took more stack for the values in the braces and never gave it back. Now they have one place
+- on the stack, which every pass reuses.
 
 ## 0.13.0 - 2026-10-20
 
