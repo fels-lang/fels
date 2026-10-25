@@ -951,9 +951,9 @@ pub fn fromBuiltinName(name: []const u8) ?Ty {
 /// The spellable built-in type names, used to offer a "did you mean" when an
 /// unknown type is referenced. (Not exhaustive — just the ones a user types.)
 const builtin_type_names = [_][]const u8{
-    "i8",   "i16",  "i32",  "i64",  "isize",
-    "u8",   "u16",  "u32",  "u64",  "usize",
-    "f32",  "f64",  "bool", "byte", "void",
+    "i8",   "i16",  "i32",  "i64",    "isize",
+    "u8",   "u16",  "u32",  "u64",    "usize",
+    "f32",  "f64",  "bool", "byte",   "void",
     "addr", "Text", "Rune", "Writer", "Reader",
 };
 
@@ -2810,10 +2810,23 @@ const Checker = struct {
                     // symbol, which failed later as an internal error.
                     for (decl.attrs) |attr| {
                         if (!std.mem.eql(u8, attr.name, "extern") and !std.mem.eql(u8, attr.name, "foreign")) continue;
-                        if (attr.args.len >= 2) continue;
+                        if (attr.args.len >= 2) {
+                            const text = switch (attr.args[0].kind) {
+                                .string => |value| trimQuotes(value),
+                                else => "",
+                            };
+
+                            if (std.ascii.endsWithIgnoreCase(text, ".dll")) {
+                                self.emitError(attr.span, "`#{s}` names the library without `.dll`: `#{s}(\"{s}\", \"{s}\")`", .{ attr.name, attr.name, text[0 .. text.len - 4], decl.name });
+                                return error.SemanticFailed;
+                            }
+
+                            continue;
+                        }
                         self.emitError(decl.span, "`#{s}` names the library and the symbol: `#{s}(\"kernel32\", \"{s}\")`", .{ attr.name, attr.name, decl.name });
                         return error.SemanticFailed;
                     }
+
                     if (decl.is_variadic and externName(decl.attrs) == null) {
                         self.emitError(decl.span, "only an `#extern` C function takes `...`: a Fels function takes any number of values as a slice", .{});
                         return error.SemanticFailed;
@@ -4739,7 +4752,10 @@ const Checker = struct {
         // IR). Other no-return forms (`@panic`, `exit`, `abort`) keep their handling.
         if (is_core and std.mem.eql(u8, name, "panic")) {
             for (call.args) |arg| {
-                const v = switch (arg) { .positional => |p| p, .named => |n| n.value };
+                const v = switch (arg) {
+                    .positional => |p| p,
+                    .named => |n| n.value,
+                };
                 _ = try self.inferExpr(v);
             }
             return .void;
@@ -4761,7 +4777,10 @@ const Checker = struct {
             if (isCoreScalarBuiltin(name)) {
                 var first_ty: Ty = .unknown;
                 for (call.args, 0..) |arg, i| {
-                    const v = switch (arg) { .positional => |p| p, .named => |n| n.value };
+                    const v = switch (arg) {
+                        .positional => |p| p,
+                        .named => |n| n.value,
+                    };
                     const t = try self.inferExpr(v);
                     if (i == 0) first_ty = t;
                 }
@@ -4773,7 +4792,10 @@ const Checker = struct {
                 std.mem.eql(u8, name, "unreachable"))
             {
                 for (call.args) |arg| {
-                    const v = switch (arg) { .positional => |p| p, .named => |n| n.value };
+                    const v = switch (arg) {
+                        .positional => |p| p,
+                        .named => |n| n.value,
+                    };
                     _ = try self.inferExpr(v);
                 }
                 return .void;
@@ -4790,7 +4812,10 @@ const Checker = struct {
         // at comptime now via host memory, but needs an explicit import).
         if (std.mem.eql(u8, name, "__str_cat")) {
             for (call.args) |arg| {
-                const v = switch (arg) { .positional => |p| p, .named => |n| n.value };
+                const v = switch (arg) {
+                    .positional => |p| p,
+                    .named => |n| n.value,
+                };
                 _ = try self.inferExpr(v);
             }
             return try self.sliceOf(.u8);
@@ -4800,7 +4825,10 @@ const Checker = struct {
         // drops an existing top-level declaration (mutation; does not halt).
         if (std.mem.eql(u8, name, "compiler_error") or std.mem.eql(u8, name, "compiler_remove")) {
             for (call.args) |arg| {
-                const v = switch (arg) { .positional => |p| p, .named => |n| n.value };
+                const v = switch (arg) {
+                    .positional => |p| p,
+                    .named => |n| n.value,
+                };
                 _ = try self.inferExpr(v);
             }
             return .void;
@@ -8604,7 +8632,7 @@ fn stmtDefinitelyReturns(self: *Checker, stmt: ast.Stmt) bool {
 /// (`mark`/`restore`/`reset`/`deinit` don't yield arena-interior pointers.)
 fn isArenaAllocMethod(name: []const u8) bool {
     const allocs = [_][]const u8{
-        "new", "new_slice", "alloc", "alloc_one", "alloc_bytes", "dupe",
+        "new",       "new_slice",       "alloc", "alloc_one", "alloc_bytes", "dupe",
         "try_alloc", "try_alloc_bytes",
     };
     for (allocs) |a| if (std.mem.eql(u8, name, a)) return true;
@@ -9006,7 +9034,7 @@ fn defaultLiteralType(ty: Ty) Ty {
 
 /// The integer-literal suffixes fels accepts (mirrors `intLiteralType`).
 const int_literal_suffixes = [_][]const u8{
-    "usize", "isize", "u64", "u32", "u16", "u8",
+    "usize", "isize", "u64", "u32", "u16",  "u8",
     "i64",   "i32",   "i16", "i8",  "byte",
 };
 
@@ -9361,10 +9389,12 @@ fn derefChainBase(expr: ast.Expr) ?[]const u8 {
 /// (`core::min(a,b)→type of a`, `core::count_ones(x)→type of x`, …).
 fn isCoreScalarBuiltin(name: []const u8) bool {
     inline for (.{
-        "count_ones",    "count_zeros",   "leading_zeros", "trailing_zeros",
-        "swap_bytes",    "reverse_bits",  "rotate_left",   "rotate_right",
-        "min", "max", "abs", "clamp", "sqrt", "floor", "ceil", "round",
-        "trunc", "sin", "cos", "pow", "fma",
+        "count_ones", "count_zeros",  "leading_zeros", "trailing_zeros",
+        "swap_bytes", "reverse_bits", "rotate_left",   "rotate_right",
+        "min",        "max",          "abs",           "clamp",
+        "sqrt",       "floor",        "ceil",          "round",
+        "trunc",      "sin",          "cos",           "pow",
+        "fma",
     }) |b| if (std.mem.eql(u8, name, b)) return true;
     return false;
 }
@@ -9374,35 +9404,34 @@ fn isCoreScalarBuiltin(name: []const u8) bool {
 /// `abort` runtime intrinsics and the compiler-internal `__str_cat`/`__build_*`.
 fn isMigratedBuiltin(name: []const u8) bool {
     inline for (.{
-        "sizeof",        "align_of",       "offset_of",    "type_info", "type_name", "typeid_of", "type_id",
-        "has_padding",
-        "truncate_to",   "narrow",         "slice_raw",     "any",
-        "slice_from_raw_parts", "ptr_from_int", "unaligned_read", "volatile_store",
-        "atomic_load",   "atomic_store",   "asm",           "reject",    "require",
-        "atomic_add",    "atomic_sub",     "atomic_and",    "atomic_or", "atomic_xor",
-        "atomic_exchange", "atomic_cas",   "atomic_fence",  "atomic_max", "atomic_min",
-        "atomic_nand",     "fn_ptr",
-        "compiler_decls", "compiler_error", "compiler_remove",
+        "sizeof",          "align_of",       "offset_of",   "type_info",    "type_name",  "typeid_of",            "type_id",
+        "has_padding",     "truncate_to",    "narrow",      "slice_raw",    "any",        "slice_from_raw_parts", "ptr_from_int",
+        "unaligned_read",  "volatile_store", "atomic_load", "atomic_store", "asm",        "reject",               "require",
+        "atomic_add",      "atomic_sub",     "atomic_and",  "atomic_or",    "atomic_xor", "atomic_exchange",      "atomic_cas",
+        "atomic_fence",    "atomic_max",     "atomic_min",  "atomic_nand",  "fn_ptr",     "compiler_decls",       "compiler_error",
+        "compiler_remove",
     }) |b| if (std.mem.eql(u8, name, b)) return true;
     return false;
 }
 
 pub fn isBuiltinValue(name: []const u8) bool {
     inline for (.{
-        "truncate_to", "ptr_from_int",   "volatile_store",
-        "slice_from_raw_parts",
-        "sizeof",      "align_of",       "offset_of",     "unaligned_read", "asm",
-        "has_padding",
-        "atomic_load", "atomic_store",   "volatile",
-        "atomic_add",  "atomic_sub",     "atomic_and",  "atomic_or", "atomic_xor",
-        "atomic_exchange", "atomic_cas", "atomic_fence", "atomic_max", "atomic_min",
-        "atomic_nand",     "fn_ptr",
-        ".acquire",
+        "truncate_to",          "ptr_from_int",   "volatile_store",
+        "slice_from_raw_parts", "sizeof",         "align_of",
+        "offset_of",            "unaligned_read", "asm",
+        "has_padding",          "atomic_load",    "atomic_store",
+        "volatile",             "atomic_add",     "atomic_sub",
+        "atomic_and",           "atomic_or",      "atomic_xor",
+        "atomic_exchange",      "atomic_cas",     "atomic_fence",
+        "atomic_max",           "atomic_min",     "atomic_nand",
+        "fn_ptr",               ".acquire",
         // Compile-time reflection builtins
-           "type_info",      "type_name",      "reject",          "require",
-           "typeid_of",      "any",
+              "type_info",
+        "type_name",            "reject",         "require",
+        "typeid_of",            "any",
         // Compile-time program introspection (Phase 3 message loop)
-        "compiler_decls", "__str_cat", "compiler_error", "compiler_remove",
+                   "compiler_decls",
+        "__str_cat",            "compiler_error", "compiler_remove",
     }) |builtin| {
         if (std.mem.eql(u8, name, builtin)) return true;
     }
