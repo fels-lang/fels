@@ -701,10 +701,10 @@ test "LLVM lowering applies #cold / #section / #weak / #link_name (Phase 3)" {
     const llvm_ir = try backend.getIrText(arena.allocator());
 
     inline for (.{
-        "cold",                // #cold enum attribute
-        "section \".hot\"",    // #section
-        "weak",                // #weak linkage keyword
-        "@renamed_sym",        // #link_name renamed the symbol
+        "cold", // #cold enum attribute
+        "section \".hot\"", // #section
+        "weak", // #weak linkage keyword
+        "@renamed_sym", // #link_name renamed the symbol
     }) |expected| {
         try std.testing.expect(std.mem.indexOf(u8, llvm_ir, expected) != null);
     }
@@ -880,6 +880,39 @@ test "LLVM: a freestanding program's functions use no red zone, and _start is em
     const text = try backend.getIrText(a);
     try std.testing.expect(std.mem.indexOf(u8, text, "define void @_start()") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "noredzone") != null);
+}
+
+test "LLVM: a format's closure env in a loop is allocated in the entry block" {
+    if (comptime !fels.llvm_enabled) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src =
+        \\sink :: fn(f: Format) {}
+        \\main :: fn() -> i32 {
+        \\    n := 0u32;
+        \\    while n < 300000u32 {
+        \\        a := (n & 0x1000u32) != 0u32;
+        \\        sink("A is PRESSED: {a} :!");
+        \\        n += 1u32;
+        \\    }
+        \\    return 0;
+        \\}
+    ;
+    var fe = try fels.compile(a, "alloca_loop.fels", src);
+    defer fe.deinit(a);
+    const module = try fels.lowerFrontend(a, fe);
+    var backend = fels.LlvmBackend.init(a, "alloca_loop");
+    defer backend.deinit();
+    try backend.lower(module);
+    const text = try backend.getIrText(a);
+
+    const main_at = std.mem.indexOf(u8, text, "define i32 @main(") orelse return error.TestUnexpectedResult;
+    const bb1 = std.mem.indexOfPos(u8, text, main_at, "bb1:") orelse return error.TestUnexpectedResult;
+    const clos_env = std.mem.indexOfPos(u8, text, main_at, "%clos.env = alloca") orelse return error.TestUnexpectedResult;
+
+    try std.testing.expect(clos_env < bb1);
 }
 
 test "LLVM: an #interrupt function has the x86 interrupt convention and its frame byval" {

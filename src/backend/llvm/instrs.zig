@@ -271,7 +271,10 @@ fn lowerClosureEnvMake(cg: *ModuleCg, fncg: anytype, mk: ir.ClosureEnvMakeInstr)
                 break :blk llvm.LLVMBuildExtractValue(cg.builder, slice, 0, "clos.env.heap");
             }
         }
-        break :blk llvm.LLVMBuildAlloca(cg.builder, struct_ty, "clos.env");
+        //break :blk llvm.LLVMBuildAlloca(cg.builder, struct_ty, "clos.env");
+        const env = abi.entryAlloca(cg, fncg.llvm_fn, struct_ty);
+        llvm.LLVMSetValueName2(env, "clos.env", "clos.env".len);
+        break :blk env;
     };
 
     for (mk.fields, 0..) |f, i| {
