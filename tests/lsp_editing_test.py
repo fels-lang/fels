@@ -17,6 +17,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 EXE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "zig-out", "bin", "fels.exe")
 
 SRC = """\
+#import std.time as t;
+
 LIMIT :: 10;
 counter: i32 = 0;
 
@@ -50,6 +52,8 @@ main :: fn() -> i32 {
     xs: [2]i32 = .{ 4, 5 };
     f := first(xs[:]);
     o := Point::origin();
+    n := t::now();
+    e := t::since_millis(n);
     return s + q.x;
 }
 """
@@ -124,7 +128,8 @@ def main():
     # text with the call's arguments gone is used for the call completions
     typed = SRC.replace("s := add(1, 2);", "s := ad;").replace("tick();", "ti;").replace(
         "k := make(i32, 3);", "k := ma;").replace("f := first(xs[:]);", "f := fir;").replace(
-        "o := Point::origin();", "o := Point::or;").replace("return s + q.x;", "q.sc;\n    return s + q.x;")
+        "o := Point::origin();", "o := Point::or;").replace("e := t::since_millis(n);", "e := t::sin;").replace(
+        "return s + q.x;", "q.sc;\n    return s + q.x;")
     with open(path, "w", newline="\n", encoding="utf-8") as f:
         f.write(typed)
     checks = []
@@ -140,8 +145,9 @@ def main():
         ("textDocument/completion", "q.sc;", 4),
         ("textDocument/completion", "Point::or;", 9),
         ("textDocument/completion", "s := ad;", 5),
+        ("textDocument/completion", "e := t::sin;", 11),
     ]
-    add, tick, make, first, scale, origin, stmt = run(path, typed, True, req)
+    add, tick, make, first, scale, origin, stmt, module_fn = run(path, typed, True, req)
     a = item(add, "add")
     check("a function completes as a call, a tab stop per argument", a.get("insertText") == "add(${1:a}, ${2:b})$0" and a.get("insertTextFormat") == 2, a)
     check("its parameters and result beside the name", (a.get("labelDetails") or {}).get("detail") == "(a: i32, b: i32) -> i32", a)
@@ -154,6 +160,10 @@ def main():
     check("a method's documentation", doc_of(s) == "Scale both coordinates.", s)
     o = item(origin, "origin")
     check("an associated function completes as a call", o.get("insertText") == "origin()$0" and doc_of(o) == "The origin, (0, 0).", o)
+    m = item(module_fn, "since_millis")
+    check("a module's function after `alias::` completes as a call", m.get("insertText") == "since_millis(${1:start})$0", m)
+    check("with its parameters, its module and its documentation", (m.get("labelDetails") or {}).get("detail") == "(start: Instant) -> i64"
+          and (m.get("labelDetails") or {}).get("description") == "time" and doc_of(m) == "ms since `start`", m)
     check("a global shows its type beside its name", (item(stmt, "counter").get("labelDetails") or {}).get("detail") == ": i32 = 0", item(stmt, "counter"))
     check("a constant shows its value", (item(stmt, "LIMIT").get("labelDetails") or {}).get("detail") == " :: 10", item(stmt, "LIMIT"))
     st = item(stmt, "for … in")
