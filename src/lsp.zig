@@ -1001,6 +1001,13 @@ fn handleCompletion(self: *Server, id: ?json.Value, params: json.Value) void {
     lsp_assist.addLocalNames(self, doc, params, &b, &seen, &first);
 
     if (lsp_assist.namesAnalysis(doc)) |analysis| if (analysis.symbols) |syms| {
+        var arena = std.heap.ArenaAllocator.init(self.gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const decls = functionDecls(a, analysis);
+        const word_end = if (cursorOffset(doc, params)) |off| identRangeAt(doc.text, off).end else doc.text.len;
+        const as_call = self.snippet_support and !lsp_snippets.parenFollows(doc.text, word_end);
+
         // After `alias::` offer the public names of that module, and nothing else.
         if (cursorOffset(doc, params)) |off| {
             const word = identRangeAt(doc.text, off);
@@ -1010,7 +1017,8 @@ fn handleCompletion(self: *Server, id: ?json.Value, params: json.Value) void {
                     for (syms.symbols.items) |sym| {
                         if (!sym.is_public or !topLevelKind(sym.kind) or hiddenName(sym.name)) continue;
                         if (!std.mem.eql(u8, sym.file_name, target)) continue;
-                        appendCompletionItem(self, &b, &seen, &first, sym.name, completionKind(sym.kind), moduleLabel(target));
+                        const extra = symbolItemExtra(a, analysis, &decls, sym, moduleLabel(target), as_call);
+                        appendCompletionItemExtra(self, &b, &seen, &first, sym.name, completionKind(sym.kind), extra);
                     }
                 };
                 b.append(self.gpa, ']') catch {};
@@ -1020,26 +1028,12 @@ fn handleCompletion(self: *Server, id: ?json.Value, params: json.Value) void {
 
         // The names in scope in this file: its own declarations and what its imports bring in.
         if (syms.visible_names.get(doc.path)) |visible| {
-            var arena = std.heap.ArenaAllocator.init(self.gpa);
-            defer arena.deinit();
-            const a = arena.allocator();
-            const decls = functionDecls(a, analysis);
-            const word_end = if (cursorOffset(doc, params)) |off| identRangeAt(doc.text, off).end else doc.text.len;
-            const as_call = self.snippet_support and !lsp_snippets.parenFollows(doc.text, word_end);
             var it = visible.iterator();
             while (it.next()) |e| {
                 const sym = syms.symbol(e.value_ptr.*);
                 if (!topLevelKind(sym.kind) or hiddenName(sym.name)) continue;
                 const module: ?[]const u8 = if (std.mem.eql(u8, sym.file_name, doc.path)) null else moduleLabel(sym.file_name);
-                var extra: ItemExtra = .{ .detail = module, .label_description = module };
-                if (analysis.fileNamed(sym.file_name)) |f| {
-                    extra.documentation = lsp_snippets.docComment(a, f.source, sym.span.start);
-                    if (sym.kind == .global_var or sym.kind == .const_symbol) extra.label_detail = declarationTail(f.source, sym);
-                }
-                if (sym.kind == .function) if (decls.get(declKey(a, sym.file_name, sym.name))) |decl| {
-                    extra.label_detail = signatureLabel(a, decl, false);
-                    if (as_call) extra.snippet = lsp_snippets.callSnippet(a, sym.name, lsp_snippets.callArgs(a, decl, false), decl.is_variadic);
-                };
+                const extra = symbolItemExtra(a, analysis, &decls, sym, module, as_call);
                 appendCompletionItemExtra(self, &b, &seen, &first, sym.name, completionKind(sym.kind), extra);
             }
         }
@@ -1082,6 +1076,29 @@ fn handleCompletion(self: *Server, id: ?json.Value, params: json.Value) void {
 /// What the declaration of a global or a constant says after its name, beside the name in a
 /// completion: `: i32 = 0` of `counter: i32 = 0;`, ` :: 10` of `LIMIT :: 10;`. Null when it goes
 /// on past the line or a `{`, or is long.
+/// What the completion item of a top-level `sym` shows beside its name: its module, the comment
+/// above it, a function's parameters and, when it is not called yet, the call as a snippet.
+/// The same for a name in scope and for one after `alias::`.
+fn symbolItemExtra(
+    a: std.mem.Allocator,
+    analysis: pipeline.Analysis,
+    decls: *const std.StringHashMapUnmanaged(ast.FunctionDecl),
+    sym: sema.Symbol,
+    module: ?[]const u8,
+    as_call: bool,
+) ItemExtra {
+    var extra: ItemExtra = .{ .detail = module, .label_description = module };
+    if (analysis.fileNamed(sym.file_name)) |f| {
+        extra.documentation = lsp_snippets.docComment(a, f.source, sym.span.start);
+        if (sym.kind == .global_var or sym.kind == .const_symbol) extra.label_detail = declarationTail(f.source, sym);
+    }
+    if (sym.kind == .function) if (decls.get(declKey(a, sym.file_name, sym.name))) |decl| {
+        extra.label_detail = signatureLabel(a, decl, false);
+        if (as_call) extra.snippet = lsp_snippets.callSnippet(a, sym.name, lsp_snippets.callArgs(a, decl, false), decl.is_variadic);
+    };
+    return extra;
+}
+
 fn declarationTail(source: []const u8, sym: sema.Symbol) ?[]const u8 {
     const start = @min(sym.span.start, source.len);
     const rest = source[start..];
