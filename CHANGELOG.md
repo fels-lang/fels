@@ -53,6 +53,9 @@ the major version is `0`, any minor bump may break source compatibility.
 - A `println("{x})` in a loop crashed with a stack overflow after tens of thousands of passes with the Exit-Code *0xC00000FD*: each
 - pass took more stack for the values in the braces and never gave it back. Now they have one place
 - on the stack, which every pass reuses.
+- In the editor, a module's function after `io::` (or any `alias::`) completed as its name only.
+  It now completes as the call, with a tab stop per argument, and shows its parameters and its
+  documentation, as a function in scope does.
 
 ## 0.13.0 - 2026-10-20
 
