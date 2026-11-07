@@ -50,9 +50,9 @@ the major version is `0`, any minor bump may break source compatibility.
   closure, so the callee called the wrong address. It is now the function's own address.
 - A `core::asm` template written as a `"""` block reached the assembler with its escapes and
   quotes as written; it is now the block's lines.
-- A `println("{x})` in a loop crashed with a stack overflow after tens of thousands of passes with the Exit-Code *0xC00000FD*: each
-- pass took more stack for the values in the braces and never gave it back. Now they have one place
-- on the stack, which every pass reuses.
+- A `println("{x}")` in a loop crashed with a stack overflow (exit code `0xC00000FD`) after tens
+  of thousands of passes: each pass took more stack for the values in the braces and never gave
+  it back. A format's values now have one place on the stack, which every pass reuses.
 - In the editor, a module's function after `io::` (or any `alias::`) completed as its name only.
   It now completes as the call, with a tab stop per argument, and shows its parameters and its
   documentation, as a function in scope does.

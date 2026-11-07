@@ -7,8 +7,6 @@ What doesn't work yet, roughly from most to least serious. Fixed issues move to 
 
 These compile without an error and give a wrong result.
 
-- **Closures made in a loop and kept after it share their captures.** Two closures made in
-  different passes of a loop, both stored outside it, see the values of the last pass.
 - **Some dangling pointers are not caught.** Returning the address of a local is an error, but
   a slice of a local array (`return buf[:]`), an address passed back through a call
   (`return id(&x);`) and one stored through a pointer (`*pp = &x;`) are not checked yet.
