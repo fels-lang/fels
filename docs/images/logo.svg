@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300" width="300" height="300">
+  <!-- Fels: a pebble with `::` carved in, the way every Fels declaration starts. -->
+  <rect width="300" height="300" rx="56" fill="#1c1916"/>
+
+  <!-- the pebble, with its shaded side and a faint shadow underneath -->
+  <ellipse cx="152" cy="252" rx="88" ry="9" fill="#000000" fill-opacity="0.35"/>
+  <path d="M150,52 C224,46 264,104 256,164 C248,224 198,252 140,248 C78,244 40,202 44,146 C48,92 90,56 150,52Z" fill="#e8dcc6"/>
+  <path d="M150,52 C224,46 264,104 256,164 C252,196 236,220 212,234 C232,200 236,148 214,110 C196,80 172,62 150,52Z" fill="#d3c4aa"/>
+  <path d="M74,206 C92,230 118,244 146,246 C114,236 92,222 74,206Z" fill="#d3c4aa"/>
+
+  <!-- `::` carved: a light rim below each hole makes it read as cut into the stone -->
+  <g fill="#fbf6ec">
+    <circle cx="122" cy="129" r="16"/><circle cx="122" cy="183" r="16"/>
+    <circle cx="178" cy="129" r="16"/><circle cx="178" cy="183" r="16"/>
+  </g>
+  <g fill="#2e2924">
+    <circle cx="122" cy="126" r="16"/><circle cx="122" cy="180" r="16"/>
+    <circle cx="178" cy="126" r="16"/>
+  </g>
+  <circle cx="178" cy="180" r="16" fill="#b9532b"/>
+</svg>
