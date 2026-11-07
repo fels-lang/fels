@@ -7,6 +7,7 @@
   <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-45403b" alt="platforms: Windows, Linux">
   <a href="https://github.com/fels-lang/fels/actions/workflows/ci.yml"><img src="https://github.com/fels-lang/fels/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSING.md"><img src="https://img.shields.io/badge/license-see%20LICENSING.md-45403b" alt="license"></a>
+  <a href="https://discord.gg/QBV3XgGhDn"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 # The Fels Programming Language
@@ -16,13 +17,15 @@ errors are values, and code can run while the program compiles. One tool builds,
 fetches packages.
 
 - **Website and docs:** [fels-lang.github.io](https://fels-lang.github.io)
+- **Community:** [Discord](https://discord.gg/QBV3XgGhDn) for questions, help and showing what you built
 - **Install:** [latest release](https://github.com/fels-lang/fels/releases/latest), then
   [these steps](https://fels-lang.github.io/start/install/)
 - **Known issues:** [KNOWN_ISSUES.md](KNOWN_ISSUES.md)
 - **Changes:** [CHANGELOG.md](CHANGELOG.md)
 
 If you try Fels, I would love to hear how it went. Open an
-[issue](https://github.com/fels-lang/fels/issues) for a bug, a question or an idea.
+[issue](https://github.com/fels-lang/fels/issues) for a bug or an idea, or ask on
+[Discord](https://discord.gg/QBV3XgGhDn).
 
 ## License
 
