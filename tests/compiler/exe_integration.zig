@@ -4765,6 +4765,29 @@ test "exe: a lambda captures enclosing locals by value (closure env)" {
     try std.testing.expectEqual(@as(u32, 220), code);
 }
 
+test "exe: closures made in a loop and kept after it each keep their own captures" {
+    if (comptime !fels.llvm_enabled) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Each pass makes a closure over its own `n`; one env slot for every pass would give both
+    // the last pass's `n` (11).
+    const code = try compileAndRunAt(arena.allocator(),
+        \\main :: fn() -> i32 {
+        \\    a := fn() -> i32 { return 100; };
+        \\    b := a;
+        \\    i := 0;
+        \\    while i < 2 {
+        \\        n := i;
+        \\        f := fn() -> i32 { return n; };
+        \\        if i == 0 { a = f; } else { b = f; }
+        \\        i += 1;
+        \\    }
+        \\    return a() * 10 + b();
+        \\}
+    , "exe_capture_loop", 0);
+    try std.testing.expectEqual(@as(u32, 1), code);
+}
+
 test "exe: a lambda calls methods on its captures and copies them into locals" {
     if (comptime !fels.llvm_enabled) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
