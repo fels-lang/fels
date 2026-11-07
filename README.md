@@ -58,7 +58,7 @@ Save it as `main.fels` and run `fels run main.fels`. If `count_lines` tried to `
 the compiler would stop you: the bytes belong to the zone.
 
 Fels is young and still changes. [Strata](https://fels-lang.github.io/start/showcase/), a portfolio
-app with a GUI, is written in it, and so is the compiler's own ELF linker.
+app with a GUI, is written in it, and so is the linker that makes Windows executables: it links itself.
 [Why Fels](https://fels-lang.github.io/start/why/) says what it is for and where it stands.
 
 ## Links
