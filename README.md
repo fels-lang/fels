@@ -1,8 +1,21 @@
-# Fels
+<p align="center">
+  <img src="docs/images/logo.svg" width="180" alt="Fels">
+</p>
+<p align="center">A small systems language for people who like to know what their code does.</p>
+<p align="center">
+  <a href="https://github.com/fels-lang/fels/releases/latest"><img src="https://img.shields.io/github/v/release/fels-lang/fels?label=release&color=b9532b" alt="latest release"></a>
+  <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-45403b" alt="platforms: Windows, Linux">
+  <a href="https://github.com/fels-lang/fels/actions/workflows/ci.yml"><img src="https://github.com/fels-lang/fels/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSING.md"><img src="https://img.shields.io/badge/license-see%20LICENSING.md-45403b" alt="license"></a>
+</p>
+
+# The Fels Programming Language
 
 Fels is a small systems language for people who like to know what their code does. It compiles
 to native code through LLVM and has no garbage collector. Everything you need comes in one tool:
 the compiler, a build system, a test runner, a package manager and even its own linker.
+
+**Website and docs: [fels-lang.github.io](https://fels-lang.github.io)**
 
 <p align="center">
   <img src="docs/images/waves.png" width="760" alt="A window with two moving waves, drawn by a Fels program">
@@ -26,136 +39,50 @@ the compiler, and I fixed them along the way.
 
 ## Install
 
-Fels runs on 64-bit Windows and Linux, and builds programs for both. The
-[latest release](https://github.com/fels-lang/fels/releases/latest) has a download for each.
-
-On Windows:
-
-1. Download `fels-0.14.0-x86_64-windows.zip`.
-2. Unpack it and run `install.ps1` in that folder. It copies Fels to `%LOCALAPPDATA%\fels` and
-   puts it on your PATH.
-3. Open a new terminal and type `fels version` to check that it works.
-
-On Linux:
-
-1. Download `fels-0.14.0-x86_64-linux.tar.gz` and unpack it.
-2. Run `./install.sh` in that folder. It copies Fels to `~/.fels` and puts it on your PATH.
-3. Open a new terminal and type `fels version`. Fels needs the C++ runtime of GCC 11 or newer
-   (Ubuntu 22.04, Debian 12, Fedora 35 and later).
-
-## Your first program
-
-`fels new` sets up a project with a build file, a small program and a test:
+Download Fels for 64-bit Windows or Linux from the
+[latest release](https://github.com/fels-lang/fels/releases/latest), unpack it and run
+`install.ps1` (Windows) or `./install.sh` (Linux). Then:
 
 ```text
 fels new hello
 cd hello
 fels build run
-fels test
 ```
 
-This is the `src/main.fels` it writes for you:
+[Install](https://fels-lang.github.io/start/install/) and
+[your first program](https://fels-lang.github.io/start/first-program/) on the website go
+through it step by step.
+
+## What it looks like
 
 ```fels
 #import std.io;
 
-// The sum of the numbers from 1 to `n`.
-sum_to :: fn(n: i32) -> i32 {
-    total := 0;
-    i := 1;
-    while i <= n {
-        total += i;
-        i += 1;
-    }
-    return total;
+// How many different bytes are in `text`?
+count_distinct :: fn(text: []const u8) -> usize {
+    zone scratch: Arena {
+        seen := scratch.new_slice(bool, 256);
+        for i in 0..256 { seen[i] = false; }
+        n: usize = 0;
+        for b in text {
+            if !seen[b] { seen[b] = true; n += 1; }
+        }
+        return n;
+    }   // `seen` is gone here, all at once
 }
 
 main :: fn() -> i32 {
-    io::println("Hello from hello!");
-    io::println("1 + 2 + ... + 10 = {sum_to(10)}");
+    n := count_distinct("hello, world");
+    io::println("{n} different bytes");
     return 0;
-}
-
-#test
-sum_to_adds_the_numbers :: fn(t: *Test) {
-    t.eq(sum_to(0), 0);
-    t.eq(sum_to(1), 1);
-    t.eq(sum_to(10), 55);
 }
 ```
 
-## Memory in zones
-
-A zone is an arena with a name and a block. Whatever you allocate in it lives until the block
-ends, and then all of it goes away in one step. You never call `free`, and nothing runs in the
-background to clean up after you.
-
-<p align="center"><img src="docs/images/zones.png" width="560" alt="A function that counts the different bytes of a text, with a table in a zone"></p>
-
-The compiler keeps track of what belongs to a zone, so nothing slips out of its block by
-accident. This, for example, does not compile:
-
-<p align="center"><img src="docs/images/escape-error.png" width="620" alt="The error: zone-owned value from scratch cannot be returned"></p>
-
-## Errors are values
-
-A function that can fail says so in its type, as in `-> i32 ! ParseError`. Inside it, `fail`
-returns an error. The caller passes it on with `?` or handles it with `catch`, where `yield` can
-give a value to use instead. An error can carry a payload, and `match` reads both. There are no
-exceptions, and nothing unwinds the stack.
-
-<p align="center"><img src="docs/images/errors.png" width="660" alt="A parser of digits with an error type, ? and catch"></p>
-
-## Code that runs while it compiles
-
-`#run` calls a function while your program is being compiled, and the result goes into the
-binary as a constant. A macro writes code from a template, and the compiler checks that code
-just like code you typed yourself.
-
-<p align="center"><img src="docs/images/comptime.png" width="620" alt="fib(30) computed at compile time, and a macro that repeats a block"></p>
-
-Compile-time code runs on a small virtual machine. It reads the same IR as the native backend, so
-it behaves the same way. Build files and tests can run there too.
-
-## Close to the machine
-
-Fels talks to C without glue code. `fels bindgen` turns a C header into Fels declarations,
-`#extern` calls a function in a DLL, and `#export` hands your own functions to C. Structs keep
-C's layout. `#packed` removes the padding, a packed struct with `u1` to `u7` fields gives you bit
-fields, and a `union` overlays its fields the way C does. The Win32 examples and the COM support
-in the standard library are built on this.
-
-The safety checks stay on in release builds. Index bounds, null pointers, integer overflow and
-division by zero are checked, unless you ask for `fels build --release-fast`.
-
-## One tool
-
-The build file is a Fels program as well, and the compiler runs it at compile time:
-
-<p align="center"><img src="docs/images/build.png" width="560" alt="A build.fels that makes a windowed executable"></p>
-
-- `fels build` builds your project, and `fels build run` runs it. `fels run hello.fels` builds
-  and runs a single file.
-- `fels test` runs every `#test` function, and `fels test --filter parse` the ones with `parse`
-  in their name.
-- `fels add imgui github.com/fels-lang/imgui` adds a package from a Git repository, and a lock
-  file pins its version.
-- `fels lsp` gives your editor errors, completion, hover and go to definition. Completion
-  writes the whole call, with a tab stop at each argument, and hover shows the comment above a
-  declaration. There is an extension for [Zed](https://github.com/fels-lang/zed-fels), with run
-  buttons beside `main` and each test, and a
-  [tree-sitter grammar](https://github.com/fels-lang/tree-sitter-fels) for other editors.
-- `fels bindgen` turns a C header into Fels bindings.
-
-Fels even brings its own linker. `felsld` is written in Fels, writes Windows executables and DLLs,
-and links itself. The release builds it into `fels.exe`, so you don't need LLD to link.
-
-## A GUI in Fels
-
-The [imgui package](https://github.com/fels-lang/imgui) brings Dear ImGui with docking, and
-ImPlot for charts. This is all the code behind the window at the top:
-
-<p align="center"><img src="docs/images/waves-code.png" width="720" alt="The code of the waves example"></p>
+The website walks through the rest: [zones](https://fels-lang.github.io/docs/memory-zones/),
+[errors as values](https://fels-lang.github.io/docs/error-handling/),
+[code that runs while it compiles](https://fels-lang.github.io/docs/comptime/),
+[C without glue](https://fels-lang.github.io/docs/c-interop/) and
+[the build tool](https://fels-lang.github.io/docs/build-system/).
 
 ## What I build with it
 
@@ -207,13 +134,8 @@ all.
 
 ## Documentation
 
-The language reference is in [docs](docs/). These are good places to start:
-
-- [Overview](docs/00_overview.md)
-- [Syntax](docs/01_syntax.md)
-- [Memory and zones](docs/05_memory_zones.md)
-- [Compile time](docs/09_comptime.md) and [metaprogramming](docs/13_metaprogramming.md)
-- [Packages](docs/16_packages.md)
+Everything is on [fels-lang.github.io](https://fels-lang.github.io): how to install, a first
+program, and the whole language reference. The pages are made from [docs](docs/) in this repo.
 
 ## Try it and tell me
 
