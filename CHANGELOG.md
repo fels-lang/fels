@@ -3,7 +3,14 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
-## Unreleased
+## 0.14.0 - 2026-11-07
+
+Fels runs without an operating system: `--target uefi` makes a UEFI application and
+`--target freestanding` an ELF for a kernel, on x86-64 and now on 64-bit ARM too, with
+interrupt handlers as plain functions and a heap a kernel can hand memory to. Programs can carry
+debug info (`-g`), so a debugger shows their source lines, parameters and locals. And a few
+fixes: a `println` in a long loop no longer runs out of stack, and in the editor a module's
+function completes as the whole call.
 
 ### Added
 
