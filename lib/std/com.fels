@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.com: COM/WinRT types as data (GUID, HRESULT, IUnknown, vtables); no OS calls
-// out-pointers carry one ref, release exactly once; lent pointers aren't yours
+//! std.com: COM/WinRT types as data (GUID, HRESULT, IUnknown, vtables); no OS calls
+//! out-pointers carry one ref, release exactly once; lent pointers aren't yours
 
-// ---- GUID ----
-// 16 bytes, align 4; IIDs and CLSIDs are GUIDs
+/// ---- GUID ----
+/// 16 bytes, align 4; IIDs and CLSIDs are GUIDs
 pub Guid :: struct {
     data1: u32
     data2: u16
@@ -22,7 +22,7 @@ pub Guid :: struct {
         return true;
     }
 
-    // all zero (GUID_NULL)
+    /// all zero (GUID_NULL)
     pub is_null :: fn(self: *const Self) -> bool {
         if self.data1 != 0 { return false; }
         if self.data2 != 0 { return false; }
@@ -35,7 +35,7 @@ pub Guid :: struct {
         return true;
     }
 
-    // upper-case "{8-4-4-4-12}" into `out`, returns 38; `.buffer_too_small` if shorter
+    /// upper-case "{8-4-4-4-12}" into `out`, returns 38; `.buffer_too_small` if shorter
     pub format :: fn(self: *const Self, out: []u8) -> usize ! GuidError {
         if out.len < 38 { fail .buffer_too_small; }
         out[0] = 123;                                  // '{'
@@ -59,17 +59,19 @@ pub Guid :: struct {
     }
 }
 
-// text form length, with braces
+/// text form length, with braces
 pub GUID_TEXT_LEN :: 38;
 
 pub GuidError :: errors {
-    invalid_format,     // not 8-4-4-4-12 hex, braces optional
-    buffer_too_small,   // the output buffer is shorter than GUID_TEXT_LEN
+    /// not 8-4-4-4-12 hex, braces optional
+    invalid_format,
+    /// the output buffer is shorter than GUID_TEXT_LEN
+    buffer_too_small,
 }
 
 HEX_DIGITS :: "0123456789ABCDEF";
 
-// `digits` upper-case hex digits of `v` at out[at..], msb first
+/// `digits` upper-case hex digits of `v` at out[at..], msb first
 put_hex :: fn(out: []u8, at: usize, v: u64, digits: usize) {
     for i in 0..digits {
         shift: u64 = ((digits - 1 - i) as u64) * 4;
@@ -77,7 +79,7 @@ put_hex :: fn(out: []u8, at: usize, v: u64, digits: usize) {
     }
 }
 
-// hex digit value, either case; 255 if not hex
+/// hex digit value, either case; 255 if not hex
 hex_val :: fn(c: u8) -> u8 {
     if c >= 48 && c <= 57 { return c - 48; }        // 0-9
     if c >= 65 && c <= 70 { return c - 55; }        // A-F
@@ -85,7 +87,7 @@ hex_val :: fn(c: u8) -> u8 {
     return 255;
 }
 
-// `digits` hex digits at s[at..]; false on a non-hex byte
+/// `digits` hex digits at s[at..]; false on a non-hex byte
 read_hex :: fn(s: []const u8, at: usize, digits: usize, out: *u64) -> bool {
     v: u64 = 0;
     for i in 0..digits {
@@ -97,7 +99,7 @@ read_hex :: fn(s: []const u8, at: usize, digits: usize, out: *u64) -> bool {
     return true;
 }
 
-// strict 8-4-4-4-12 hex, either case, braces optional; no spaces or extra text
+/// strict 8-4-4-4-12 hex, either case, braces optional; no spaces or extra text
 pub parse_guid :: fn(text: []const u8) -> Guid ! GuidError {
     start: usize = 0;
     if text.len == 38 {
@@ -138,8 +140,8 @@ pub IID_IInspectable : Guid : .{ 0xAF86E2E0, 0xB12D, 0x4C6A, .{ 0x9C, 0x5A, 0xD7
 pub IID_IAgileObject : Guid : .{ 0x94EA2B94, 0xE9CC, 0x49E0, .{ 0xC0, 0xFF, 0xEE, 0x64, 0xCA, 0x8F, 0x5B, 0x90 } };   // {94EA2B94-E9CC-49E0-C0FF-EE64CA8F5B90}
 pub IID_IActivationFactory : Guid : .{ 0x00000035, 0x0000, 0x0000, .{ 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };   // {00000035-0000-0000-C000-000000000046}
 
-// ---- HRESULT ----
-// bit 31 failure, bits 16-26 facility, bits 0-15 code; values from winerror.h
+/// ---- HRESULT ----
+/// bit 31 failure, bits 16-26 facility, bits 0-15 code; values from winerror.h
 pub Hresult :: i32;
 
 pub S_OK                   :: 0;
@@ -179,34 +181,51 @@ pub facility :: fn(hr: i32) -> u32 { return (((hr as u32) >> 16u32) & 0x7FFu32);
 
 pub code :: fn(hr: i32) -> u32 { return (hr as u32) & 0xFFFFu32; }
 
-// HRESULT_FROM_WIN32; 0 stays 0, negative passes through
+/// HRESULT_FROM_WIN32; 0 stays 0, negative passes through
 pub from_win32 :: fn(err: u32) -> i32 {
     if (err as i32) <= 0 { return err as i32; }
     return (((err & 0xFFFF) | 0x80070000) as i32);
 }
 
-// common failures by name; the rest are `.other`
+/// common failures by name; the rest are `.other`
 pub ComError :: errors {
-    not_implemented,        // E_NOTIMPL
-    no_interface,           // E_NOINTERFACE
-    invalid_pointer,        // E_POINTER
-    aborted,                // E_ABORT
-    failed,                 // E_FAIL
-    unexpected,             // E_UNEXPECTED
-    out_of_memory,          // E_OUTOFMEMORY
-    invalid_arg,            // E_INVALIDARG
-    access_denied,          // E_ACCESSDENIED
-    bad_handle,             // E_HANDLE
-    bounds,                 // E_BOUNDS
-    changed_state,          // E_CHANGED_STATE
-    illegal_call,           // E_ILLEGAL_METHOD_CALL
-    changed_mode,           // RPC_E_CHANGED_MODE: already initialised the other way
-    class_not_registered,   // REGDB_E_CLASSNOTREG
-    not_initialized,        // CO_E_NOTINITIALIZED
-    other,                  // any other failure
+    /// E_NOTIMPL
+    not_implemented,
+    /// E_NOINTERFACE
+    no_interface,
+    /// E_POINTER
+    invalid_pointer,
+    /// E_ABORT
+    aborted,
+    /// E_FAIL
+    failed,
+    /// E_UNEXPECTED
+    unexpected,
+    /// E_OUTOFMEMORY
+    out_of_memory,
+    /// E_INVALIDARG
+    invalid_arg,
+    /// E_ACCESSDENIED
+    access_denied,
+    /// E_HANDLE
+    bad_handle,
+    /// E_BOUNDS
+    bounds,
+    /// E_CHANGED_STATE
+    changed_state,
+    /// E_ILLEGAL_METHOD_CALL
+    illegal_call,
+    /// RPC_E_CHANGED_MODE: already initialised the other way
+    changed_mode,
+    /// REGDB_E_CLASSNOTREG
+    class_not_registered,
+    /// CO_E_NOTINITIALIZED
+    not_initialized,
+    /// any other failure
+    other,
 }
 
-// ok on any success (S_FALSE too); `.other` loses the code, keep hr if you need it
+/// ok on any success (S_FALSE too); `.other` loses the code, keep hr if you need it
 pub check :: fn(hr: i32) -> void ! ComError {
     if hr >= 0 { return; }
     if hr == E_NOTIMPL { fail .not_implemented; }
@@ -240,26 +259,29 @@ pub IUnknownVtbl :: struct {
 pub IUnknown :: struct {
     vtbl: *IUnknownVtbl
 
-    // on success `*out` has its own ref to release; null on E_NOINTERFACE
+    /// on success `*out` has its own ref to release; null on E_NOINTERFACE
     pub query_interface :: fn(self: *Self, iid: *const Guid, out: **void) -> i32 {
         return self.vtbl.query_interface(self, iid, out);
     }
 
-    // returns the count; diagnostics only, don't branch on it
+    /// returns the count; diagnostics only, don't branch on it
     pub add_ref :: fn(self: *Self) -> u32 { return self.vtbl.add_ref(self); }
 
-    // last ref destroys the object, pointer is dead after; count is diagnostics only
+    /// last ref destroys the object, pointer is dead after; count is diagnostics only
     pub release :: fn(self: *Self) -> u32 { return self.vtbl.release(self); }
 }
 
-// base of every WinRT interface; read/release its HSTRING with std.winrt
+/// base of every WinRT interface; read/release its HSTRING with std.winrt
 pub IInspectableVtbl :: struct {
     query_interface:        extern fn(*IInspectable, *const Guid, **void) -> i32
     add_ref:                extern fn(*IInspectable) -> u32
     release:                extern fn(*IInspectable) -> u32
-    get_iids:               extern fn(*IInspectable, *u32, **Guid) -> i32       // ULONG*, IID**: free the array with CoTaskMemFree
-    get_runtime_class_name: extern fn(*IInspectable, *usize) -> i32             // HSTRING*: an owned string
-    get_trust_level:        extern fn(*IInspectable, *i32) -> i32               // TrustLevel*
+    /// ULONG*, IID**: free the array with CoTaskMemFree
+    get_iids:               extern fn(*IInspectable, *u32, **Guid) -> i32
+    /// HSTRING*: an owned string
+    get_runtime_class_name: extern fn(*IInspectable, *usize) -> i32
+    /// TrustLevel*
+    get_trust_level:        extern fn(*IInspectable, *i32) -> i32
 }
 
 pub IInspectable :: struct {
@@ -271,11 +293,11 @@ pub IInspectable :: struct {
         return self.vtbl.query_interface(self, iid, out);
     }
 
-    // same object; first three vtable entries match
+    /// same object; first three vtable entries match
     pub as_unknown :: fn(self: *Self) -> *IUnknown { return unsafe (self as *IUnknown); }
 }
 
-// WinRT class factory, default construction
+/// WinRT class factory, default construction
 pub IActivationFactoryVtbl :: struct {
     query_interface:  extern fn(*IActivationFactory, *const Guid, **void) -> i32
     add_ref:          extern fn(*IActivationFactory) -> u32
@@ -292,7 +314,7 @@ pub IActivationFactory :: struct {
     pub add_ref :: fn(self: *Self) -> u32 { return self.vtbl.add_ref(self); }
     pub release :: fn(self: *Self) -> u32 { return self.vtbl.release(self); }
 
-    // default ctor; `*out` gets an owned IInspectable
+    /// default ctor; `*out` gets an owned IInspectable
     pub activate_instance :: fn(self: *Self, out: **IInspectable) -> i32 {
         return self.vtbl.activate_instance(self, out);
     }
@@ -307,27 +329,27 @@ pub IActivationFactory :: struct {
 #assert(core::offset_of(IInspectableVtbl, "get_trust_level") == 40);
 #assert(core::offset_of(IActivationFactoryVtbl, "activate_instance") == 48);
 
-// TrustLevel (inspectable.h)
+/// TrustLevel (inspectable.h)
 pub BASE_TRUST    :: 0;
 pub PARTIAL_TRUST :: 1;
 pub FULL_TRUST    :: 2;
 
-// ---- RefCount ----
-// atomic, thread-safe; start at 1, free your object when release() returns 0
+/// ---- RefCount ----
+/// atomic, thread-safe; start at 1, free your object when release() returns 0
 pub RefCount :: struct {
     n: u32
 
-    // returns the new count
+    /// returns the new count
     pub add :: fn(self: *Self) -> u32 { return core::atomic_add(&self.n, 1u32, 4) + 1u32; }
 
-    // returns the new count; release at zero is a caller bug, traps in checked builds
+    /// returns the new count; release at zero is a caller bug, traps in checked builds
     pub release :: fn(self: *Self) -> u32 { return core::atomic_sub(&self.n, 1u32, 4) - 1u32; }
 
-    // snapshot
+    /// snapshot
     pub get :: fn(self: *Self) -> u32 { return core::atomic_load(&self.n, 4); }
 }
 
-// starts at 1, the creator's ref
+/// starts at 1, the creator's ref
 pub new_refcount :: fn() -> RefCount {
     r: RefCount = .{ 1 };
     return r;

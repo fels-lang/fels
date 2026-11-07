@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.log: leveled format logging to stderr or any io::Writer
-// below-level messages are never formatted; failed writes are dropped, never fatal
+//! std.log: leveled format logging to stderr or any io::Writer
+//! below-level messages are never formatted; failed writes are dropped, never fatal
 
 #import std.io as io;
 #import std.io.{ Writer, Stderr };
 
-// severity, lowest first
+/// severity, lowest first
 pub Level :: enum { debug, info, warn, error }
 
 level_name :: fn(l: Level) -> []const u8 {
@@ -26,13 +26,13 @@ level_rank :: fn(l: Level) -> u8 {
     }
 }
 
-// writes `min` and above to `w`, one line each: `[level] scope: msg`
+/// writes `min` and above to `w`, one line each: `[level] scope: msg`
 pub Logger :: struct {
     w: *Writer,
     scope: []const u8,
     min: Level,
 
-    // would level `l` be written
+    /// would level `l` be written
     pub enabled :: fn(self: *Self, l: Level) -> bool { return level_rank(l) >= level_rank(self.min); }
 
     pub log :: fn(self: *Self, l: Level, f: Format) {
@@ -45,11 +45,11 @@ pub Logger :: struct {
     pub warn :: fn(self: *Self, f: Format) { self.log(.warn, f); }
     pub error :: fn(self: *Self, f: Format) { self.log(.error, f); }
 
-    // write `l` and above from now on
+    /// write `l` and above from now on
     pub set_level :: fn(self: *Self, l: Level) { self.min = l; }
 }
 
-// `[level] scope: message` + newline; a failed write is dropped
+/// `[level] scope: message` + newline; a failed write is dropped
 write_line :: fn(w: *Writer, l: Level, scope: []const u8, f: Format) {
     put(w, "[");
     put(w, level_name(l));
@@ -65,7 +65,7 @@ put :: fn(w: *Writer, s: []const u8) {
     n := io::write_all(w, s) catch err { yield 0usize; };
 }
 
-// logger to `w`; empty `scope` for none; writes `min` and above
+/// logger to `w`; empty `scope` for none; writes `min` and above
 pub to :: fn(w: *Writer, scope: []const u8, min: Level) -> Logger {
     l: Logger = .{ w, scope, min };
     return l;
@@ -75,10 +75,10 @@ pub to :: fn(w: *Writer, scope: []const u8, min: Level) -> Logger {
 
 LEVEL: Level = .info;
 
-// global level: log::debug etc. write `l` and above from now on
+/// global level: log::debug etc. write `l` and above from now on
 pub set_level :: fn(l: Level) { LEVEL = l; }
 
-// current global level
+/// current global level
 pub level :: fn() -> Level { return LEVEL; }
 
 global_log :: fn(l: Level, f: Format) {

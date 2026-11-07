@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.cli: flags, options, positionals and help text from one command description
+//! std.cli: flags, options, positionals and help text from one command description
 
 #import std.heap.{ Arena };
 #import std.vec as vec;
@@ -8,23 +8,31 @@
 #import std.fmt as fmt;
 
 pub CliError :: errors {
-    unknown_option,       // an option the command does not have
-    missing_value,        // an option that takes a value, at the end
-    unexpected_value,     // a value given to a flag (`--verbose=yes`)
-    missing_argument,     // too few positional arguments
-    too_many_arguments,   // more than it takes
-    invalid_number,       // `int_option` of a value that is no integer
+    /// an option the command does not have
+    unknown_option,
+    /// an option that takes a value, at the end
+    missing_value,
+    /// a value given to a flag (`--verbose=yes`)
+    unexpected_value,
+    /// too few positional arguments
+    missing_argument,
+    /// more than it takes
+    too_many_arguments,
+    /// `int_option` of a value that is no integer
+    invalid_number,
 }
 
-// option or flag spec
+/// option or flag spec
 Spec :: struct {
     long: []const u8,
-    short: u8,              // 0 for none
-    value_name: []const u8, // "" for a flag
+    /// 0 for none
+    short: u8,
+    /// "" for a flag
+    value_name: []const u8,
     about: []const u8,
 }
 
-// kind: 0 required, 1 optional, 2 rest
+/// kind: 0 required, 1 optional, 2 rest
 PosSpec :: struct {
     name: []const u8,
     about: []const u8,
@@ -40,31 +48,31 @@ pub Command :: struct {
     // user-facing reason the last parse failed
     message: []const u8,
 
-    // short 0 = none
+    /// short 0 = none
     pub flag :: fn(self: *Self, long: []const u8, short: u8, about: []const u8) {
         s: Spec = .{ long, short, "", about };
         self.specs.push(s);
     }
 
-    // takes a value; short 0 = none; value_name shows in help (FILE, N)
+    /// takes a value; short 0 = none; value_name shows in help (FILE, N)
     pub option :: fn(self: *Self, long: []const u8, short: u8, value_name: []const u8, about: []const u8) {
         s: Spec = .{ long, short, value_name, about };
         self.specs.push(s);
     }
 
-    // required; positionals match in declaration order
+    /// required; positionals match in declaration order
     pub positional :: fn(self: *Self, name: []const u8, about: []const u8) {
         p: PosSpec = .{ name, about, 0 };
         self.places.push(p);
     }
 
-    // may be omitted; goes after the required ones
+    /// may be omitted; goes after the required ones
     pub optional :: fn(self: *Self, name: []const u8, about: []const u8) {
         p: PosSpec = .{ name, about, 1 };
         self.places.push(p);
     }
 
-    // any number after the others (files...)
+    /// any number after the others (files...)
     pub rest :: fn(self: *Self, name: []const u8, about: []const u8) {
         p: PosSpec = .{ name, about, 2 };
         self.places.push(p);
@@ -84,7 +92,7 @@ pub Command :: struct {
         self.message = strings::str_concat(self.region, what, arg);
     }
 
-    // skips args[0]; --x V, --x=V, -o V, -oV, -vq; `--` ends options; -h skips checks
+    /// skips args[0]; --x V, --x=V, -o V, -oV, -vq; `--` ends options; -h skips checks
     pub parse :: fn(self: *Self, args: []const []const u8) -> Parsed ! CliError {
         r: Parsed = .{ vec::make(Given, self.region), vec::make([]const u8, self.region), false };
         self.message = "";
@@ -202,7 +210,7 @@ pub Command :: struct {
         return r;
     }
 
-    // usage and options text, in `a`
+    /// usage and options text, in `a`
     pub help :: fn(self: *Self, a: *Arena) -> []const u8 {
         sb := strings::builder(a);
         sb.append(self.name);
@@ -265,7 +273,7 @@ pub Command :: struct {
     }
 }
 
-// by long name; value "" for a flag
+/// by long name; value "" for a flag
 Given :: struct {
     name: []const u8,
     value: []const u8,
@@ -277,34 +285,34 @@ pub Parsed :: struct {
     // -h or --help given
     help: bool,
 
-    // flag or option given at all
+    /// flag or option given at all
     pub flag :: fn(self: *Self, long: []const u8) -> bool {
         for g in self.given.items() { if g.name == long { return true; } }
         return false;
     }
 
-    // times given (-vvv is 3)
+    /// times given (-vvv is 3)
     pub count :: fn(self: *Self, long: []const u8) -> usize {
         n: usize = 0;
         for g in self.given.items() { if g.name == long { n += 1; } }
         return n;
     }
 
-    // last value if repeated; null if not given
+    /// last value if repeated; null if not given
     pub option :: fn(self: *Self, long: []const u8) -> ?[]const u8 {
         found: ?[]const u8 = null;
         for g in self.given.items() { if g.name == long { found = g.value; } }
         return found;
     }
 
-    // all values in order (-I a -I b), in `a`
+    /// all values in order (-I a -I b), in `a`
     pub all :: fn(self: *Self, a: *Arena, long: []const u8) -> []const []const u8 {
         out := vec::make([]const u8, a);
         for g in self.given.items() { if g.name == long { out.push(g.value); } }
         return out.items();
     }
 
-    // null if not given; .invalid_number if not an integer
+    /// null if not given; .invalid_number if not an integer
     pub int_option :: fn(self: *Self, long: []const u8) -> ?i64 ! CliError {
         found := self.option(long);
         if found == null { return null; }
@@ -321,7 +329,7 @@ pub Parsed :: struct {
     pub positionals_all :: fn(self: *Self) -> []const []const u8 { return self.positionals.items(); }
 }
 
-// name as help shows it; everything lives in `a`
+/// name as help shows it; everything lives in `a`
 pub command :: fn(a: *Arena, name: []const u8, about: []const u8) -> Command {
     c: Command = .{ a, name, about, vec::make(Spec, a), vec::make(PosSpec, a), "" };
     return c;

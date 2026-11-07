@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.process: pid, args, env vars, child processes and pipes
+//! std.process: pid, args, env vars, child processes and pipes
 
 #import std.io.{ IoError };
 #import std.heap.{ Arena, alloc };
@@ -13,17 +13,23 @@ PROC_INVALID :: -1i64;
 MAX_NAME_BYTES :: 128usize;
 
 pub ProcessError :: errors {
-    spawn_failed,       // the child couldn't be launched
-    wait_failed,        // waiting on the child failed
-    exit_code_failed,   // the child's exit code couldn't be read
-    command_too_long,   // command line doesn't fit in the internal buffer
-    name_too_long,      // env name/value too long for the buffer
-    read_failed,        // reading what the child wrote failed
+    /// the child couldn't be launched
+    spawn_failed,
+    /// waiting on the child failed
+    wait_failed,
+    /// the child's exit code couldn't be read
+    exit_code_failed,
+    /// command line doesn't fit in the internal buffer
+    command_too_long,
+    /// env name/value too long for the buffer
+    name_too_long,
+    /// reading what the child wrote failed
+    read_failed,
 }
 
 // ---- internal ----
 
-// NUL-terminated copy of `s` in `buf`
+/// NUL-terminated copy of `s` in `buf`
 proc_to_cstr :: fn(s: []const u8, buf: []u8) -> *const u8 ! ProcessError {
     if s.len + 1 > buf.len { fail .name_too_long; }
     for i in 0..s.len {
@@ -39,14 +45,14 @@ pub current_pid :: fn() -> u32 {
     return os_pid() as u32;
 }
 
-// copied into `out`, truncated if it doesn't fit
+/// copied into `out`, truncated if it doesn't fit
 pub command_line :: fn(out: []u8) -> []const u8 {
     n := os_cmdline(out);
     if n < 0 { return out[0..0usize]; }
     return out[0..(n as usize)];
 }
 
-// program first, in `a`; windows splits like the C runtime, linux as the kernel passed
+/// program first, in `a`; windows splits like the C runtime, linux as the kernel passed
 pub args :: fn(a: *Arena) -> [][]const u8 {
     buf := alloc(u8, a, 32768);
     n := os_args_raw(buf);
@@ -65,7 +71,7 @@ pub args :: fn(a: *Arena) -> [][]const u8 {
     return out.items();
 }
 
-// windows command line split like the C runtime, in `a`; the program part has no escapes
+/// windows command line split like the C runtime, in `a`; the program part has no escapes
 pub split_command_line :: fn(line: []const u8, a: *Arena) -> [][]const u8 {
     out := vec::make([]const u8, a);
     text := alloc(u8, a, line.len);
@@ -137,7 +143,7 @@ pub split_command_line :: fn(line: []const u8, a: *Arena) -> [][]const u8 {
 
 // ---- env vars ----
 
-// value copied into `out`; null if unset or it doesn't fit
+/// value copied into `out`; null if unset or it doesn't fit
 pub get_env :: fn(name: []const u8, out: []u8) -> ?[]const u8 {
     name_buf: [128]u8 = .{};
     cname := proc_to_cstr(name, name_buf[:]) catch err { return null; };
@@ -146,7 +152,7 @@ pub get_env :: fn(name: []const u8, out: []u8) -> ?[]const u8 {
     return out[0..(n as usize)];
 }
 
-// later children see it too; linux: a process-wide overlay that get_env and spawn use
+/// later children see it too; linux: a process-wide overlay that get_env and spawn use
 pub set_env :: fn(name: []const u8, value: []const u8) -> bool {
     name_buf:  [128]u8 = .{};
     value_buf: [512]u8 = .{};
@@ -166,7 +172,7 @@ pub EnvVar :: struct {
     value: []const u8,
 }
 
-// all vars in `a`, set_env/unset_env applied; linux: first 8 KB of the startup env
+/// all vars in `a`, set_env/unset_env applied; linux: first 8 KB of the startup env
 pub env_vars :: fn(a: *Arena) -> []EnvVar {
     out := vec::make(EnvVar, a);
     size: usize = 16384;
@@ -195,7 +201,7 @@ pub env_vars :: fn(a: *Arena) -> []EnvVar {
     return out.items();
 }
 
-// in `a`; null when the OS won't say
+/// in `a`; null when the OS won't say
 pub exe_path :: fn(a: *Arena) -> ?[]const u8 {
     buf: [1024]u8 = .{};
     n := os_exe_path(buf[:]);
@@ -207,15 +213,18 @@ pub exe_path :: fn(a: *Arena) -> ?[]const u8 {
 
 // ---- child processes ----
 
-// call `release` when done
+/// call `release` when done
 pub Child :: struct {
     token: i64,
-    stdin: i64,    // our end of its stdin pipe, or -1 (spawn_piped)
-    stdout: i64,   // our end of the pipe from its stdout, or -1
-    stderr: i64,   // our end of the pipe from its stderr, or -1
+    /// our end of its stdin pipe, or -1 (spawn_piped)
+    stdin: i64,
+    /// our end of the pipe from its stdout, or -1
+    stdout: i64,
+    /// our end of the pipe from its stderr, or -1
+    stderr: i64,
 }
 
-// whole command line; inherits our std handles; linux runs it via /bin/sh -c
+/// whole command line; inherits our std handles; linux runs it via /bin/sh -c
 pub spawn :: fn(command: []const u8) -> Child ! ProcessError {
     cmd_buf: [1024]u8 = .{};
     if command.len + 1 > cmd_buf.len { fail .command_too_long; }
@@ -228,14 +237,14 @@ pub spawn :: fn(command: []const u8) -> Child ! ProcessError {
     return .{ token, PROC_INVALID, PROC_INVALID, PROC_INVALID };
 }
 
-// blocks; returns the exit code
+/// blocks; returns the exit code
 pub wait :: fn(self: *Child) -> u32 ! ProcessError {
     code := os_wait(self.token, true);
     if code < 0 { fail .wait_failed; }
     return code as u32;
 }
 
-// non-blocking; null while still running
+/// non-blocking; null while still running
 pub try_wait :: fn(self: *Child) -> ?u32 ! ProcessError {
     code := os_wait(self.token, false);
     if code == -2 { return null; }      // still running
@@ -243,12 +252,12 @@ pub try_wait :: fn(self: *Child) -> ?u32 ! ProcessError {
     return code as u32;
 }
 
-// force-terminate
+/// force-terminate
 pub kill :: fn(self: *Child) -> bool {
     return os_kill(self.token);
 }
 
-// frees the OS handle and pipes; safe to call twice
+/// frees the OS handle and pipes; safe to call twice
 pub release :: fn(self: *Child) {
     close_stdin(self);
     if self.stdout != PROC_INVALID { os_file_close(self.stdout); self.stdout = PROC_INVALID; }
@@ -260,15 +269,15 @@ pub release :: fn(self: *Child) {
 
 // ---- pipes ----
 
-// streams to pipe; the rest stay this process's
+/// streams to pipe; the rest stay this process's
 pub Pipes :: struct {
     stdin: bool,
     stdout: bool,
     stderr: bool,
 }
 
-// like spawn, with pipes; read while it runs, a full pipe blocks the child
-// piping both stdout and stderr: drain one on another thread or it can deadlock
+/// like spawn, with pipes; read while it runs, a full pipe blocks the child
+/// piping both stdout and stderr: drain one on another thread or it can deadlock
 pub spawn_piped :: fn(command: []const u8, pipes: Pipes) -> Child ! ProcessError {
     cmd_buf: [1024]u8 = .{};
     if command.len + 1 > cmd_buf.len { fail .command_too_long; }
@@ -287,25 +296,25 @@ pub spawn_piped :: fn(command: []const u8, pipes: Pipes) -> Child ! ProcessError
     return c;
 }
 
-// writable File; closed if stdin wasn't piped
+/// writable File; closed if stdin wasn't piped
 pub stdin_file :: fn(self: *Child) -> fs::File {
     f: fs::File = .{ self.stdin };
     return f;
 }
 
-// readable File, 0 at EOF; closed if stdout wasn't piped
+/// readable File, 0 at EOF; closed if stdout wasn't piped
 pub stdout_file :: fn(self: *Child) -> fs::File {
     f: fs::File = .{ self.stdout };
     return f;
 }
 
-// as stdout_file
+/// as stdout_file
 pub stderr_file :: fn(self: *Child) -> fs::File {
     f: fs::File = .{ self.stderr };
     return f;
 }
 
-// child sees EOF on stdin
+/// child sees EOF on stdin
 pub close_stdin :: fn(self: *Child) {
     if self.stdin == PROC_INVALID { return; }
     os_file_close(self.stdin);
@@ -317,7 +326,7 @@ pub Output :: struct {
     stdout: []u8,
 }
 
-// runs to completion, stdout kept in `a`; stdin and stderr stay ours
+/// runs to completion, stdout kept in `a`; stdin and stderr stay ours
 pub output :: fn(a: *Arena, command: []const u8) -> Output ! ProcessError {
     p: Pipes = .{ false, true, false };
     c := spawn_piped(command, p)?;

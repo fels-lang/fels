@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.winrt: COM/WinRT init, activation, HSTRING; windows only (ole32, combase)
+//! std.winrt: COM/WinRT init, activation, HSTRING; windows only (ole32, combase)
 
 #import std.com.{ Guid, IUnknown, IInspectable, ComError, check, failed, S_OK, E_POINTER };
 #import std.utf16;
@@ -16,28 +16,28 @@
 pub CO_MULTITHREADED     :: 0;
 pub CO_APARTMENTTHREADED :: 2;
 
-// the usual context for co_create_instance
+/// the usual context for co_create_instance
 pub CLSCTX_INPROC_SERVER :: 1;
 
-// this thread only; S_FALSE too owes a co_uninitialize on the same thread
-// `.changed_mode` if the thread already initialised the other way
+/// this thread only; S_FALSE too owes a co_uninitialize on the same thread
+/// `.changed_mode` if the thread already initialised the other way
 pub co_initialize :: fn(mode: u32) -> void ! ComError {
     check(winrt_co_initialize_ex(null, mode))?;
     return;
 }
 
-// undoes one co_initialize, same thread
+/// undoes one co_initialize, same thread
 pub co_uninitialize :: fn() { winrt_co_uninitialize(); }
 
-// `*out` has one ref to release, null on failure; `context` is a CLSCTX value
+/// `*out` has one ref to release, null on failure; `context` is a CLSCTX value
 pub co_create_instance :: fn(clsid: *const Guid, context: u32, iid: *const Guid, out: **void) -> i32 {
     return winrt_co_create_instance(clsid, null, context, iid, out);
 }
 
-// COM task allocator memory, e.g. the IInspectable.get_iids array
+/// COM task allocator memory, e.g. the IInspectable.get_iids array
 pub co_task_mem_free :: fn(p: ?*void) { winrt_co_task_mem_free(p); }
 
-// CoCreateGuid, random (RFC 4122 v4)
+/// CoCreateGuid, random (RFC 4122 v4)
 pub new_guid :: fn() -> Guid ! ComError {
     g: Guid = .{ 0, 0, 0, .{} };
     check(winrt_co_create_guid(&g))?;
@@ -55,17 +55,17 @@ pub new_guid :: fn() -> Guid ! ComError {
 pub RO_SINGLETHREADED :: 0;
 pub RO_MULTITHREADED  :: 1;
 
-// this thread only; S_FALSE too owes a ro_uninitialize on the same thread
-// `.changed_mode` if the thread already initialised the other way
+/// this thread only; S_FALSE too owes a ro_uninitialize on the same thread
+/// `.changed_mode` if the thread already initialised the other way
 pub ro_initialize :: fn(kind: i32) -> void ! ComError {
     check(winrt_ro_initialize(kind))?;
     return;
 }
 
-// undoes one ro_initialize, same thread
+/// undoes one ro_initialize, same thread
 pub ro_uninitialize :: fn() { winrt_ro_uninitialize(); }
 
-// `class_id` is an HSTRING; owned ref, release it; `.class_not_registered` if unknown
+/// `class_id` is an HSTRING; owned ref, release it; `.class_not_registered` if unknown
 pub activation_factory :: fn(class_id: usize, iid: *const Guid) -> *IUnknown ! ComError {
     out: *void = unsafe (core::ptr_from_int(*void, 0));
     check(winrt_ro_get_activation_factory(class_id, iid, &out))?;
@@ -73,7 +73,7 @@ pub activation_factory :: fn(class_id: usize, iid: *const Guid) -> *IUnknown ! C
     return unsafe (out as *IUnknown);
 }
 
-// default ctor; owned ref
+/// default ctor; owned ref
 pub activate_instance :: fn(class_id: usize) -> *IInspectable ! ComError {
     out: *IInspectable = unsafe (core::ptr_from_int(*IInspectable, 0));
     check(winrt_ro_activate_instance(class_id, &out))?;
@@ -92,11 +92,11 @@ pub activate_instance :: fn(class_id: usize) -> *IInspectable ! ComError {
 #extern("combase", "WindowsGetStringRawBuffer")     winrt_string_raw_buffer :: fn(h: usize, len: *u32) -> *const u16;
 #extern("combase", "WindowsCompareStringOrdinal")   winrt_compare_string_ordinal :: fn(a: usize, b: usize, result: *i32) -> i32;
 
-// owned; release once, never release two copies of one
+/// owned; release once, never release two copies of one
 pub HString :: struct {
     h: usize
 
-    // safe to call twice or on an empty string
+    /// safe to call twice or on an empty string
     pub release :: fn(self: *Self) {
         if self.h != 0 {
             ig := winrt_delete_string(self.h);
@@ -104,19 +104,19 @@ pub HString :: struct {
         }
     }
 
-    // UTF-16 code units
+    /// UTF-16 code units
     pub len :: fn(self: *const Self) -> usize { return winrt_string_len(self.h) as usize; }
 
     pub is_empty :: fn(self: *const Self) -> bool { return winrt_string_len(self.h) == 0u32; }
 
-    // borrowed, valid until release(); no NUL in the slice
+    /// borrowed, valid until release(); no NUL in the slice
     pub units :: fn(self: *const Self) -> []const u16 {
         n: u32 = 0;
         p := winrt_string_raw_buffer(self.h, &n);
         return unsafe core::slice_from_raw_parts(u16, p, n as usize);
     }
 
-    // cheap second owned ref; release both
+    /// cheap second owned ref; release both
     pub duplicate :: fn(self: *const Self) -> HString ! ComError {
         out: usize = 0;
         check(winrt_duplicate_string(self.h, &out))?;
@@ -124,7 +124,7 @@ pub HString :: struct {
         return r;
     }
 
-    // ordinal, case-sensitive
+    /// ordinal, case-sensitive
     pub eq :: fn(self: *const Self, other: *const HString) -> bool {
         r: i32 = 1;
         hr := winrt_compare_string_ordinal(self.h, other.h, &r);
@@ -132,14 +132,14 @@ pub HString :: struct {
         return r == 0;
     }
 
-    // `.invalid_utf16` or `.buffer_too_small`; size it with utf16::utf8_len(self.units())
+    /// `.invalid_utf16` or `.buffer_too_small`; size it with utf16::utf8_len(self.units())
     pub to_utf8 :: fn(self: *const Self, out: []u8) -> usize ! utf16::Utf16Error {
         n := utf16::utf16_to_utf8(self.units(), out)?;
         return n;
     }
 }
 
-// owned copy, may be empty or hold zeros; `.out_of_memory` if the OS can't allocate
+/// owned copy, may be empty or hold zeros; `.out_of_memory` if the OS can't allocate
 pub hstring :: fn(units: []const u16) -> HString ! ComError {
     out: usize = 0;
     check(winrt_create_string(units.ptr, units.len as u32, &out))?;
@@ -147,7 +147,7 @@ pub hstring :: fn(units: []const u16) -> HString ! ComError {
     return r;
 }
 
-// `scratch` needs utf16_len(text) units, free after; `.invalid_utf8`, `.buffer_too_small`
+/// `scratch` needs utf16_len(text) units, free after; `.invalid_utf8`, `.buffer_too_small`
 pub hstring_from_utf8 :: fn(text: []const u8, scratch: []u16) -> HString ! utf16::Utf16Error {
     n := utf16::utf8_to_utf16(text, scratch)?;
     out: usize = 0;
@@ -157,13 +157,15 @@ pub hstring_from_utf8 :: fn(text: []const u8, scratch: []u16) -> HString ! utf16
     return r;
 }
 
-// borrowed HSTRING, no alloc, nothing to release
-// don't move or copy after init(); the UTF-16 buffer must outlive `h`
+/// borrowed HSTRING, no alloc, nothing to release
+/// don't move or copy after init(); the UTF-16 buffer must outlive `h`
 pub HStringRef :: struct {
-    header: [3]u64      // HSTRING_HEADER, 24 bytes
-    h: usize            // the handle; valid after init()
+    /// HSTRING_HEADER, 24 bytes
+    header: [3]u64
+    /// the handle; valid after init()
+    h: usize
 
-    // `z` must end in one 0 unit (not part of the string), else `.invalid_arg`
+    /// `z` must end in one 0 unit (not part of the string), else `.invalid_arg`
     pub init :: fn(self: *Self, z: []const u16) -> void ! ComError {
         if z.len == 0 { fail .invalid_arg; }
         if z[z.len - 1] != 0 { fail .invalid_arg; }

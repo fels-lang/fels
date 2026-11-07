@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.aarch64: AArch64 instructions a kernel needs: exception vectors, system registers, barriers
-// for --target aarch64-freestanding; most need EL1
+//! std.aarch64: AArch64 instructions a kernel needs: exception vectors, system registers, barriers
+//! for --target aarch64-freestanding; most need EL1
 
 // ---- waiting and barriers ----
 
-// waits for the next interrupt
+/// waits for the next interrupt
 pub wfi :: fn() {
     unsafe { core::asm(volatile, "wfi", inputs: {}, outputs: {}, clobbers: { "memory" }); }
 }
 
-// waits for an event (sev, an interrupt)
+/// waits for an event (sev, an interrupt)
 pub wfe :: fn() {
     unsafe { core::asm(volatile, "wfe", inputs: {}, outputs: {}, clobbers: { "memory" }); }
 }
@@ -18,12 +18,12 @@ pub sev :: fn() {
     unsafe { core::asm(volatile, "sev", inputs: {}, outputs: {}, clobbers: { "memory" }); }
 }
 
-// instruction barrier: what follows sees a system register just written
+/// instruction barrier: what follows sees a system register just written
 pub isb :: fn() {
     unsafe { core::asm(volatile, "isb", inputs: {}, outputs: {}, clobbers: { "memory" }); }
 }
 
-// data barriers over the whole system
+/// data barriers over the whole system
 pub dsb :: fn() {
     unsafe { core::asm(volatile, "dsb sy", inputs: {}, outputs: {}, clobbers: { "memory" }); }
 }
@@ -34,7 +34,7 @@ pub dmb :: fn() {
 
 // ---- interrupts ----
 
-// masks debug, SError, IRQ and FIQ
+/// masks debug, SError, IRQ and FIQ
 pub mask_interrupts :: fn() {
     unsafe { core::asm(volatile, "msr daifset, #0xf", inputs: {}, outputs: {}, clobbers: { "memory" }); }
 }
@@ -43,14 +43,14 @@ pub unmask_interrupts :: fn() {
     unsafe { core::asm(volatile, "msr daifclr, #0xf", inputs: {}, outputs: {}, clobbers: { "memory" }); }
 }
 
-// brk #0: a synchronous exception; the handler moves `elr` past it to go on
+/// brk #0: a synchronous exception; the handler moves `elr` past it to go on
 pub breakpoint :: fn() {
     unsafe { core::asm(volatile, "brk #0", inputs: {}, outputs: {}, clobbers: { "memory" }); }
 }
 
 // ---- system registers ----
 
-// the exception level running now: 0 to 3
+/// the exception level running now: 0 to 3
 pub current_el :: fn() -> u64 {
     v := unsafe core::asm(volatile, "mrs x0, CurrentEL", inputs: {}, outputs: { "={x0}"(u64) }, clobbers: {});
     return (v >> 2u64) & 3u64;
@@ -60,7 +60,7 @@ pub read_mpidr :: fn() -> u64 {
     return unsafe core::asm(volatile, "mrs x0, mpidr_el1", inputs: {}, outputs: { "={x0}"(u64) }, clobbers: {});
 }
 
-// the generic timer's count and its frequency in Hz
+/// the generic timer's count and its frequency in Hz
 pub read_cntpct :: fn() -> u64 {
     return unsafe core::asm(volatile, "isb; mrs x0, cntpct_el0", inputs: {}, outputs: { "={x0}"(u64) }, clobbers: {});
 }
@@ -69,7 +69,7 @@ pub read_cntfrq :: fn() -> u64 {
     return unsafe core::asm(volatile, "mrs x0, cntfrq_el0", inputs: {}, outputs: { "={x0}"(u64) }, clobbers: {});
 }
 
-// the translation table base and control registers, for paging
+/// the translation table base and control registers, for paging
 pub read_sctlr :: fn() -> u64 {
     return unsafe core::asm(volatile, "mrs x0, sctlr_el1", inputs: {}, outputs: { "={x0}"(u64) }, clobbers: {});
 }
@@ -92,9 +92,9 @@ pub write_mair :: fn(v: u64) {
 
 // ---- exceptions ----
 
-// the registers when the exception came, saved by the vectors; `elr` is where it goes back to
-// (a handler may change it and the x registers), `esr` says why (bits 26-31 the class) and `far`
-// is the faulting address of an abort
+/// the registers when the exception came, saved by the vectors; `elr` is where it goes back to
+/// (a handler may change it and the x registers), `esr` says why (bits 26-31 the class) and `far`
+/// is the faulting address of an abort
 pub ExceptionFrame :: struct {
     x: [31]u64,
     elr: u64,
@@ -103,7 +103,7 @@ pub ExceptionFrame :: struct {
     far: u64,
 }
 
-// the second parameter of a handler: which of the 16 vectors (a kind from the current level)
+/// the second parameter of a handler: which of the 16 vectors (a kind from the current level)
 pub SYNC :: 4u64;
 pub IRQ :: 5u64;
 pub FIQ :: 6u64;
@@ -111,7 +111,7 @@ pub SERROR :: 7u64;
 
 handler_addr: usize = 0usize;
 
-// the vectors call this with the vector's number and the frame
+/// the vectors call this with the vector's number and the frame
 #keep
 #link_name("fels_aarch64_exception")
 dispatch :: fn(vector: u64, frame: *ExceptionFrame) {
@@ -122,9 +122,9 @@ dispatch :: fn(vector: u64, frame: *ExceptionFrame) {
     h(frame, vector);
 }
 
-// the exception vectors: 16 entries of 128 bytes; each saves x0 and x1 and jumps to the common
-// part, which saves the rest (the x registers, then elr, spsr, esr, far, then q0-q31, fpsr and
-// fpcr, as a handler may use them), calls dispatch and puts it all back
+/// the exception vectors: 16 entries of 128 bytes; each saves x0 and x1 and jumps to the common
+/// part, which saves the rest (the x registers, then elr, spsr, esr, far, then q0-q31, fpsr and
+/// fpcr, as a handler may use them), calls dispatch and puts it all back
 #naked
 #keep
 vectors :: fn() {
@@ -304,8 +304,8 @@ vectors :: fn() {
     }
 }
 
-// every exception at EL1 goes to `handler`, an ordinary function: it gets the saved registers,
-// and the exception goes back to `frame.elr` when it returns
+/// every exception at EL1 goes to `handler`, an ordinary function: it gets the saved registers,
+/// and the exception goes back to `frame.elr` when it returns
 pub set_exception_handler :: fn(handler: extern fn(*ExceptionFrame, u64)) {
     handler_addr = unsafe (handler as usize);
     unsafe {
@@ -314,7 +314,7 @@ pub set_exception_handler :: fn(handler: extern fn(*ExceptionFrame, u64)) {
     }
 }
 
-// the exception class of an `esr`: 0x3C a brk, 0x15 an svc, 0x24 and 0x25 data aborts, ...
+/// the exception class of an `esr`: 0x3C a brk, 0x15 an svc, 0x24 and 0x25 data aborts, ...
 pub exception_class :: fn(esr: u64) -> u64 {
     return (esr >> 26u64) & 0x3Fu64;
 }

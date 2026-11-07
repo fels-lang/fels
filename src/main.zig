@@ -207,6 +207,9 @@ pub fn main(init: std.process.Init) u8 {
     // `fels bindgen <header.h>` generates Fels FFI bindings from a C header.
     if (std.mem.eql(u8, cmd, "bindgen")) return cmdBindgen(allocator, io, init.environ_map, args[2..]);
 
+    // `fels doc [paths...]` writes a reference of the public declarations from their `///` comments.
+    if (std.mem.eql(u8, cmd, "doc")) return fels.doc_cmd.cmd(init.arena.allocator(), io, args[2..]);
+
     // `fels lsp` starts the language server (JSON-RPC over stdio). No source file.
     if (std.mem.eql(u8, cmd, "lsp")) {
         // The server loads `std` and the imports of the open files like the compiler does, so it

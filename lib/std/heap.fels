@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.heap: bump arena; growable (64 KiB chunks), reserved, or over a fixed buffer
+//! std.heap: bump arena; growable (64 KiB chunks), reserved, or over a fixed buffer
 
 #import std.ptr.{ align_up };
 
@@ -7,19 +7,19 @@
 
 // ---- tunables ----
 
-// growable chunk payload; bigger allocs get an exact-fit chunk
+/// growable chunk payload; bigger allocs get an exact-fit chunk
 DEFAULT_CHUNK :: 65536usize;
 
-// sizeof(Chunk), a multiple of ALIGN so the data stays aligned
+/// sizeof(Chunk), a multiple of ALIGN so the data stays aligned
 CHUNK_HEADER :: 32usize;
 
-// every allocation; the strictest any Fels scalar/pointer needs
+/// every allocation; the strictest any Fels scalar/pointer needs
 ALIGN :: 16usize;
 
-// x64 page; reserved arenas commit a page at a time
+/// x64 page; reserved arenas commit a page at a time
 PAGE :: 4096usize;
 
-// Arena.mode
+/// Arena.mode
 ARENA_FIXED    :: 0u8;       // over a caller buffer; never touches the OS
 ARENA_CHUNKED  :: 1u8;       // grows by reserving fresh 64 KiB chunks
 ARENA_RESERVED :: 2u8;       // one up-front reservation, pages committed lazily
@@ -27,10 +27,11 @@ ARENA_RESERVED :: 2u8;       // one up-front reservation, pages committed lazily
 // ---- types ----
 
 pub MemError :: errors {
-    out_of_memory,      // OS alloc failed, or fixed/reserved cap full
+    /// OS alloc failed, or fixed/reserved cap full
+    out_of_memory,
 }
 
-// in-place at each chunk's base; `next` in alloc order; `committed` lazy when reserved
+/// in-place at each chunk's base; `next` in alloc order; `committed` lazy when reserved
 Chunk :: struct {
     next:      usize,
     cap:       usize,
@@ -38,14 +39,14 @@ Chunk :: struct {
     used:      usize,
 }
 
-// `first` oldest chunk, `head` current bump chunk, `mode` an ARENA_* value
+/// `first` oldest chunk, `head` current bump chunk, `mode` an ARENA_* value
 pub Arena :: struct {
     first: usize,
     head:  usize,
     mode:  u8,
 }
 
-// saved bump position for `restore`
+/// saved bump position for `restore`
 pub Mark :: struct {
     chunk: usize,
     used:  usize,
@@ -53,12 +54,12 @@ pub Mark :: struct {
 
 // ---- constructors ----
 
-// reserves nothing until the first alloc
+/// reserves nothing until the first alloc
 pub make :: fn() -> Arena {
     return .{ 0, 0, ARENA_CHUNKED };
 }
 
-// `max` bytes of address space, committed lazily; pointers never move
+/// `max` bytes of address space, committed lazily; pointers never move
 pub reserve :: fn(max: usize) -> Arena {
     base := os_reserve(CHUNK_HEADER + max);
     if base == 0 { return .{ 0, 0, ARENA_RESERVED }; }
@@ -77,7 +78,7 @@ pub reserve :: fn(max: usize) -> Arena {
     return .{ base, base, ARENA_RESERVED };
 }
 
-// no syscalls, can't grow; `buf` must outlive the arena
+/// no syscalls, can't grow; `buf` must outlive the arena
 pub fixed :: fn(buf: []u8) -> Arena {
     if buf.len < CHUNK_HEADER { return .{ 0, 0, ARENA_FIXED }; }
     base := unsafe (buf.ptr as usize);
@@ -92,7 +93,7 @@ pub fixed :: fn(buf: []u8) -> Arena {
 
 // ---- bump ----
 
-// back `need_payload` bytes of `c`; only reserved arenas need this
+/// back `need_payload` bytes of `c`; only reserved arenas need this
 commit_more :: fn(chunk_addr: usize, c: *Chunk, need_payload: usize) -> bool {
     want := align_up(need_payload, PAGE);
     if want > c.cap { want = c.cap; }
@@ -103,7 +104,7 @@ commit_more :: fn(chunk_addr: usize, c: *Chunk, need_payload: usize) -> bool {
     return true;
 }
 
-// address of `need` aligned bytes; null when exhausted
+/// address of `need` aligned bytes; null when exhausted
 carve :: fn(self: *Arena, need: usize) -> ?usize {
     if self.head != 0 {
         c := unsafe core::ptr_from_int(*Chunk, self.head);
@@ -162,7 +163,7 @@ carve :: fn(self: *Arena, need: usize) -> ?usize {
 
 // ---- bytes ----
 
-// aborts on exhaustion
+/// aborts on exhaustion
 pub alloc_bytes :: fn(self: *Arena, n: usize) -> []u8 {
     addr := carve(self, n);
     if addr == null { core::panic("std.heap: out of memory"); }
@@ -170,7 +171,7 @@ pub alloc_bytes :: fn(self: *Arena, n: usize) -> []u8 {
     return unsafe core::slice_raw(u8, p, n);
 }
 
-// `.out_of_memory` instead of aborting
+/// `.out_of_memory` instead of aborting
 pub try_alloc_bytes :: fn(self: *Arena, n: usize) -> []u8 ! MemError {
     addr := carve(self, n);
     if addr == null { fail .out_of_memory; }
@@ -180,27 +181,27 @@ pub try_alloc_bytes :: fn(self: *Arena, n: usize) -> []u8 ! MemError {
 
 // ---- typed ----
 
-// 16-byte aligned; aborts on exhaustion
+/// 16-byte aligned; aborts on exhaustion
 pub alloc :: fn($T: type, self: *Arena, n: usize) -> []T {
     bytes := alloc_bytes(self, n * core::sizeof(T));
     tp := unsafe (bytes.ptr as *T);
     return unsafe core::slice_raw(T, tp, n);
 }
 
-// fallible alloc
+/// fallible alloc
 pub try_alloc :: fn($T: type, self: *Arena, n: usize) -> []T ! MemError {
     bytes := try_alloc_bytes(self, n * core::sizeof(T))?;
     tp := unsafe (bytes.ptr as *T);
     return unsafe core::slice_raw(T, tp, n);
 }
 
-// aborts on exhaustion
+/// aborts on exhaustion
 pub alloc_one :: fn($T: type, self: *Arena) -> *T {
     bytes := alloc_bytes(self, core::sizeof(T));
     return unsafe (bytes.ptr as *T);
 }
 
-// copy into the arena; aborts on exhaustion
+/// copy into the arena; aborts on exhaustion
 pub dupe :: fn($T: type, self: *Arena, src: []const T) -> []T {
     out := alloc(T, self, src.len);
     for i in 0..src.len {
@@ -209,7 +210,7 @@ pub dupe :: fn($T: type, self: *Arena, src: []const T) -> []T {
     return out;
 }
 
-// zone spellings of alloc_one / alloc
+/// zone spellings of alloc_one / alloc
 pub new :: fn($T: type, self: *Arena) -> *T {
     return alloc_one(T, self);
 }
@@ -220,7 +221,7 @@ pub new_slice :: fn($T: type, self: *Arena, n: usize) -> []T {
 
 // ---- reuse and lifetime ----
 
-// rewind, keep chunks, O(1); everything allocated before is invalid
+/// rewind, keep chunks, O(1); everything allocated before is invalid
 pub reset :: fn(self: *Arena) {
     if self.first != 0 {
         c := unsafe core::ptr_from_int(*Chunk, self.first);
@@ -229,14 +230,14 @@ pub reset :: fn(self: *Arena) {
     self.head = self.first;
 }
 
-// for restore; invalid after the next reset/deinit
+/// for restore; invalid after the next reset/deinit
 pub mark :: fn(self: *Arena) -> Mark {
     if self.head == 0 { return .{ 0, 0 }; }
     c := unsafe core::ptr_from_int(*Chunk, self.head);
     return .{ self.head, c.used };
 }
 
-// frees everything since `m` for reuse; chunks are kept
+/// frees everything since `m` for reuse; chunks are kept
 pub restore :: fn(self: *Arena, m: Mark) {
     if m.chunk == 0 {
         reset(self);
@@ -248,7 +249,7 @@ pub restore :: fn(self: *Arena, m: Mark) {
     self.head = m.chunk;
 }
 
-// memory back to the OS (fixed: just cleared); reusable after
+/// memory back to the OS (fixed: just cleared); reusable after
 pub deinit :: fn(self: *Arena) {
     if self.mode != ARENA_FIXED {
         cur := self.first;

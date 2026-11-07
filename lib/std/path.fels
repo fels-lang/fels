@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.path: pure path string ops; reads / and \, writes SEP; builders take an *Arena
+//! std.path: pure path string ops; reads / and \, writes SEP; builders take an *Arena
 
 #import std.heap.{ Arena };
 #import std.strings as strings;
 
-// separator written by join and normalize
+/// separator written by join and normalize
 #if TARGET.os == .windows {
     pub SEP :: 92u8;   // '\'
 } else {
     pub SEP :: 47u8;   // '/'
 }
 
-// either separator
+/// either separator
 pub is_sep :: fn(c: u8) -> bool { return c == 47u8 || c == 92u8; }   // '/' or '\'
 
-// after the last separator; `p` if none, "" on a trailing separator
+/// after the last separator; `p` if none, "" on a trailing separator
 pub basename :: fn(p: []const u8) -> []const u8 {
     i: usize = p.len;
     while i > 0 {
@@ -24,7 +24,7 @@ pub basename :: fn(p: []const u8) -> []const u8 {
     return p;
 }
 
-// up to the last separator, trailing ones trimmed; "." if none; a lone root stays
+/// up to the last separator, trailing ones trimmed; "." if none; a lone root stays
 pub dirname :: fn(p: []const u8) -> []const u8 {
     i: usize = p.len;
     while i > 0 {
@@ -41,10 +41,10 @@ pub dirname :: fn(p: []const u8) -> []const u8 {
     return ".";
 }
 
-// alias of dirname
+/// alias of dirname
 pub parent :: fn(p: []const u8) -> []const u8 { return dirname(p); }
 
-// includes the dot (".txt"); "" if none; ".gitignore" has none
+/// includes the dot (".txt"); "" if none; ".gitignore" has none
 pub extension :: fn(p: []const u8) -> []const u8 {
     b := basename(p);
     i: usize = b.len;
@@ -59,14 +59,14 @@ pub extension :: fn(p: []const u8) -> []const u8 {
     return "";
 }
 
-// basename minus extension
+/// basename minus extension
 pub stem :: fn(p: []const u8) -> []const u8 {
     b := basename(p);
     e := extension(p);
     return b[0..(b.len - e.len)];
 }
 
-// leading separator, \ UNC prefix, or X: drive
+/// leading separator, \ UNC prefix, or X: drive
 pub is_absolute :: fn(p: []const u8) -> bool {
     if p.len == 0 { return false; }
     if is_sep(p[0]) { return true; }
@@ -78,7 +78,7 @@ pub is_absolute :: fn(p: []const u8) -> bool {
 
 pub is_relative :: fn(p: []const u8) -> bool { return !is_absolute(p); }
 
-// leading dot in `want` optional
+/// leading dot in `want` optional
 pub has_extension :: fn(p: []const u8, want: []const u8) -> bool {
     e := extension(p);
     if want.len > 0 {
@@ -91,7 +91,7 @@ pub has_extension :: fn(p: []const u8, want: []const u8) -> bool {
 
 // builders (need an arena)
 
-// one SEP between; extra separators collapsed; an absolute `y` wins
+/// one SEP between; extra separators collapsed; an absolute `y` wins
 pub join :: fn(a: *Arena, x: []const u8, y: []const u8) -> []const u8 {
     if x.len == 0 { return strings::str_dup(a, y); }
     if y.len == 0 { return strings::str_dup(a, x); }
@@ -117,7 +117,7 @@ pub join3 :: fn(a: *Arena, x: []const u8, y: []const u8, z: []const u8) -> []con
     return join(a, join(a, x, y), z);
 }
 
-// leading dot optional; "" removes the extension
+/// leading dot optional; "" removes the extension
 pub with_extension :: fn(a: *Arena, p: []const u8, new_ext: []const u8) -> []const u8 {
     e := extension(p);
     base := p[0..(p.len - e.len)];
@@ -129,8 +129,8 @@ pub with_extension :: fn(a: *Arena, p: []const u8, new_ext: []const u8) -> []con
     }
     return strings::str(&sb);
 }
-// lexical clean-up: drops `.`, doubled seps and `x/..`; writes SEP; empty -> "."
-// no disk access, so `..` past a symlink is lexical; leading `..` kept, root `..` dropped
+/// lexical clean-up: drops `.`, doubled seps and `x/..`; writes SEP; empty -> "."
+/// no disk access, so `..` past a symlink is lexical; leading `..` kept, root `..` dropped
 pub normalize :: fn(a: *Arena, p: []const u8) -> []const u8 {
     out := a.alloc_bytes(p.len + 2);
     n: usize = 0;

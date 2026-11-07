@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.bitset: bits 0..n-1, 64 per word, in an arena; index past the end panics
+//! std.bitset: bits 0..n-1, 64 per word, in an arena; index past the end panics
 
 #import std.heap.{ Arena, alloc };
 #import std.bits as bits;
 
 pub BitSet :: struct {
     words: []u64,
-    n: usize,      // how many bits
+    /// how many bits
+    n: usize,
 
     pub len :: fn(self: *Self) -> usize { return self.n; }
 
@@ -30,12 +31,12 @@ pub BitSet :: struct {
         self.words[i / 64] = self.words[i / 64] ^ ((1 as u64) << ((i % 64) as u64));
     }
 
-    // set or clear bit `i`
+    /// set or clear bit `i`
     pub put :: fn(self: *Self, i: usize, on: bool) {
         if on { self.set(i); } else { self.unset(i); }
     }
 
-    // number of set bits
+    /// number of set bits
     pub count :: fn(self: *Self) -> usize {
         total: usize = 0;
         for w in self.words { total += bits::count_ones_u64(w) as usize; }
@@ -51,28 +52,28 @@ pub BitSet :: struct {
         for i in 0..self.words.len { self.words[i] = 0; }
     }
 
-    // self |= other; same length required
+    /// self |= other; same length required
     pub union_with :: fn(self: *Self, other: *BitSet) {
         for i in 0..self.words.len { self.words[i] = self.words[i] | other.words[i]; }
     }
 
-    // self &= other
+    /// self &= other
     pub intersect_with :: fn(self: *Self, other: *BitSet) {
         for i in 0..self.words.len { self.words[i] = self.words[i] & other.words[i]; }
     }
 
-    // self &= ~other
+    /// self &= ~other
     pub subtract :: fn(self: *Self, other: *BitSet) {
         for i in 0..self.words.len { self.words[i] = self.words[i] & ~other.words[i]; }
     }
 
-    // set bits, smallest first
+    /// set bits, smallest first
     pub ones :: fn(self: *Self) -> Ones {
         it: Ones = .{ self, 0, if self.words.len > 0 { self.words[0] } else { 0 } };
         return it;
     }
 
-    // keep bits past `n` clear so `count`/`ones` skip them
+    /// keep bits past `n` clear so `count`/`ones` skip them
     trim :: fn(self: *Self) {
         extra := self.n % 64;
         if extra != 0 && self.words.len > 0 {
@@ -82,11 +83,13 @@ pub BitSet :: struct {
     }
 }
 
-// iterator from BitSet.ones
+/// iterator from BitSet.ones
 pub Ones :: struct {
     s: *BitSet,
-    word: usize,   // the word being looked at
-    rest: u64,     // its bits not given yet
+    /// the word being looked at
+    word: usize,
+    /// its bits not given yet
+    rest: u64,
 
     pub next :: fn(self: *Self) -> ?usize {
         while self.rest == 0 {
@@ -100,7 +103,7 @@ pub Ones :: struct {
     }
 }
 
-// `n` clear bits in `a`
+/// `n` clear bits in `a`
 pub make :: fn(a: *Arena, n: usize) -> BitSet {
     words := alloc(u64, a, (n + 63) / 64);
     for i in 0..words.len { words[i] = 0; }

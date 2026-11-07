@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.mem: slice helpers; generics take the element type first: copy(u8, dst, src)
+//! std.mem: slice helpers; generics take the element type first: copy(u8, dst, src)
 
 shorter_len :: fn(a: usize, b: usize) -> usize {
     if a < b { return a; }
@@ -34,7 +34,7 @@ pub ends_with :: fn($T: type, self: []const T, suffix: []const T) -> bool {
     return true;
 }
 
-// copies min(len) elements, returns the count; must not overlap
+/// copies min(len) elements, returns the count; must not overlap
 pub copy :: fn($T: type, self: []T, source: []const T) -> usize {
     count := shorter_len(self.len, source.len);
     for i in 0..count {
@@ -84,7 +84,7 @@ pub eql_bytes :: fn(self: []const u8, b: []const u8) -> bool {
     return eql(u8, self, b);
 }
 
-// byte order: -1, 0 or 1; a prefix sorts first
+/// byte order: -1, 0 or 1; a prefix sorts first
 pub compare_bytes :: fn(self: []const u8, b: []const u8) -> i32 {
     n := shorter_len(self.len, b.len);
     i: usize = 0;
@@ -96,7 +96,7 @@ pub compare_bytes :: fn(self: []const u8, b: []const u8) -> i32 {
     return if self.len < b.len { -1 } else { 1 };
 }
 
-// byte-order less-than; for sort::by
+/// byte-order less-than; for sort::by
 pub less_bytes :: fn(self: []const u8, b: []const u8) -> bool {
     return compare_bytes(self, b) < 0;
 }
@@ -111,7 +111,7 @@ pub zero :: fn(self: []u8) {
 
 // searching
 
-// first start of `needle` in `self`, or null; empty needle -> 0
+/// first start of `needle` in `self`, or null; empty needle -> 0
 pub index_of_slice :: fn($T: type, self: []const T, needle: []const T) -> ?usize {
     if needle.len > self.len { return null; }
     i: usize = 0;
@@ -141,7 +141,7 @@ pub last_index_of_slice :: fn($T: type, self: []const T, needle: []const T) -> ?
     return null;
 }
 
-// non-overlapping occurrences; empty needle -> 0
+/// non-overlapping occurrences; empty needle -> 0
 pub count :: fn($T: type, self: []const T, needle: []const T) -> usize {
     if needle.len == 0 { return 0; }
     n: usize = 0;
@@ -159,28 +159,28 @@ pub count :: fn($T: type, self: []const T, needle: []const T) -> usize {
 
 // trimming
 
-// drops leading elements in `set`
+/// drops leading elements in `set`
 pub trim_left :: fn($T: type, self: []const T, set: []const T) -> []const T {
     i: usize = 0;
     while i < self.len && contains(T, set, self[i]) { i += 1; }
     return self[i..self.len];
 }
 
-// drops trailing elements in `set`
+/// drops trailing elements in `set`
 pub trim_right :: fn($T: type, self: []const T, set: []const T) -> []const T {
     n := self.len;
     while n > 0 && contains(T, set, self[n - 1]) { n -= 1; }
     return self[0..n];
 }
 
-// both ends
+/// both ends
 pub trim :: fn($T: type, self: []const T, set: []const T) -> []const T {
     return trim_right(T, trim_left(T, self, set), set);
 }
 
 // iterating over parts
 
-// parts between separators, empty ones kept: "a,,b" -> "a", "", "b"
+/// parts between separators, empty ones kept: "a,,b" -> "a", "", "b"
 pub Split :: struct($T: type) {
     rest: []const T,
     sep: []const T,
@@ -199,16 +199,16 @@ pub Split :: struct($T: type) {
         return self.rest;
     }
 
-    // the unsplit rest
+    /// the unsplit rest
     pub remaining :: fn(self: *Self) -> []const T { return self.rest; }
 }
 
-// empty `sep` gives `self` as one part
+/// empty `sep` gives `self` as one part
 pub split :: fn($T: type, self: []const T, sep: []const T) -> Split(T) {
     return .{ self, sep, false };
 }
 
-// parts between runs of delimiters, empty ones skipped
+/// parts between runs of delimiters, empty ones skipped
 pub Tokens :: struct($T: type) {
     rest: []const T,
     delims: []const T,
@@ -228,18 +228,18 @@ pub Tokens :: struct($T: type) {
     }
 }
 
-// any element of `delims` splits
+/// any element of `delims` splits
 pub tokenize :: fn($T: type, self: []const T, delims: []const T) -> Tokens(T) {
     return .{ self, delims };
 }
 
-// result of split_once
+/// result of split_once
 pub Halves :: struct($T: type) {
     before: []const T,
     after: []const T,
 }
 
-// before and after the first `sep`, or null if absent
+/// before and after the first `sep`, or null if absent
 pub split_once :: fn($T: type, self: []const T, sep: []const T) -> ?Halves(T) {
     if index_of_slice(T, self, sep) |i| {
         h: Halves(T) = .{ self[0..i], self[i + sep.len..self.len] };

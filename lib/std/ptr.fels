@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.ptr: pointer <-> address and alignment math (Fels has no pointer arithmetic)
+//! std.ptr: pointer <-> address and alignment math (Fels has no pointer arithmetic)
 
-// address of `p`
+/// address of `p`
 pub to_addr :: fn($T: type, p: *T) -> usize {
     return unsafe (p as usize);
 }
 
-// address -> *T; unsafe: caller ensures it is valid and aligned for `T`
+/// address -> *T; unsafe: caller ensures it is valid and aligned for `T`
 pub from_addr :: fn($T: type, addr: usize) -> *T {
     return unsafe core::ptr_from_int(*T, addr);
 }
@@ -15,17 +15,17 @@ pub is_null :: fn($T: type, p: *T) -> bool {
     return to_addr(T, p) == 0;
 }
 
-// addr + offset bytes
+/// addr + offset bytes
 pub add_bytes :: fn(addr: usize, offset: usize) -> usize {
     return addr + offset;
 }
 
-// addr - offset bytes
+/// addr - offset bytes
 pub sub_bytes :: fn(addr: usize, offset: usize) -> usize {
     return addr - offset;
 }
 
-// a - b in bytes; negative when `a` comes first
+/// a - b in bytes; negative when `a` comes first
 pub diff_bytes :: fn($T: type, a: *T, b: *T) -> isize {
     addr_a := to_addr(T, a);
     addr_b := to_addr(T, b);

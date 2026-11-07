@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.fs: sync files and folders; paths over 1023 bytes fail with path_too_long
+//! std.fs: sync files and folders; paths over 1023 bytes fail with path_too_long
 
 #import std.io.{ Writer, Reader, IoError };
 #import std.heap.{ Arena };
@@ -17,19 +17,27 @@ MAX_PATH_BYTES :: 1024usize;
 // errors
 
 pub FsError :: errors {
-    not_found,       // missing path (or access denied)
-    create_failed,   // create/append failed
-    read_failed,     // a read returned an error
-    write_failed,    // a write returned an error
-    seek_failed,     // a seek returned an error
-    delete_failed,   // delete failed (or folder not empty)
-    path_too_long,   // path + NUL over 1024 bytes
-    rename_failed,   // rename could not move the file
+    /// missing path (or access denied)
+    not_found,
+    /// create/append failed
+    create_failed,
+    /// a read returned an error
+    read_failed,
+    /// a write returned an error
+    write_failed,
+    /// a seek returned an error
+    seek_failed,
+    /// delete failed (or folder not empty)
+    delete_failed,
+    /// path + NUL over 1024 bytes
+    path_too_long,
+    /// rename could not move the file
+    rename_failed,
 }
 
 // path helpers
 
-// `path` + NUL into `buf` for OS calls; UTF-8 (windows runtime converts to UTF-16)
+/// `path` + NUL into `buf` for OS calls; UTF-8 (windows runtime converts to UTF-16)
 fs_to_cstr :: fn(path: []const u8, buf: []u8) -> *const u8 ! FsError {
     if path.len + 1 > buf.len { fail .path_too_long; }
     for i in 0..path.len {
@@ -41,7 +49,7 @@ fs_to_cstr :: fn(path: []const u8, buf: []u8) -> *const u8 ! FsError {
 
 // file
 
-// open OS file; a Reader and a Writer
+/// open OS file; a Reader and a Writer
 pub File :: struct {
     handle: i64,
 }
@@ -71,14 +79,14 @@ pub is_open :: fn(self: *File) -> bool {
     return self.handle != FS_INVALID;
 }
 
-// close the handle; idempotent
+/// close the handle; idempotent
 pub close :: fn(self: *File) {
     if self.handle == FS_INVALID { return; }
     os_file_close(self.handle);
     self.handle = FS_INVALID;
 }
 
-// open for reading; not_found if it can't be
+/// open for reading; not_found if it can't be
 pub open :: fn(path: []const u8) -> File ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -87,7 +95,7 @@ pub open :: fn(path: []const u8) -> File ! FsError {
     return .{ h };
 }
 
-// create for writing; truncates an existing file
+/// create for writing; truncates an existing file
 pub create :: fn(path: []const u8) -> File ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -96,7 +104,7 @@ pub create :: fn(path: []const u8) -> File ! FsError {
     return .{ h };
 }
 
-// open for appending; creates it if missing
+/// open for appending; creates it if missing
 pub append :: fn(path: []const u8) -> File ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -105,7 +113,7 @@ pub append :: fn(path: []const u8) -> File ! FsError {
     return .{ h };
 }
 
-// file or dir exists; never fails
+/// file or dir exists; never fails
 pub exists :: fn(path: []const u8) -> bool {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:]) catch err { return false; };
@@ -118,7 +126,7 @@ pub is_dir :: fn(path: []const u8) -> bool {
     return os_path_kind(cpath) == 2;
 }
 
-// remove a file; delete_failed if it can't
+/// remove a file; delete_failed if it can't
 pub delete :: fn(path: []const u8) -> void ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -126,7 +134,7 @@ pub delete :: fn(path: []const u8) -> void ! FsError {
     return;
 }
 
-// make folder `path` (ok if it exists); create_failed if no parent or a file is there
+/// make folder `path` (ok if it exists); create_failed if no parent or a file is there
 pub make_dir :: fn(path: []const u8) -> void ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -134,7 +142,7 @@ pub make_dir :: fn(path: []const u8) -> void ! FsError {
     return;
 }
 
-// make `path` and any missing parents (`/` or `\` separators)
+/// make `path` and any missing parents (`/` or `\` separators)
 pub make_dirs :: fn(path: []const u8) -> void ! FsError {
     for i in 1..path.len {
         c := path[i];
@@ -147,7 +155,7 @@ pub make_dirs :: fn(path: []const u8) -> void ! FsError {
     return;
 }
 
-// remove empty folder `path`; delete_failed otherwise
+/// remove empty folder `path`; delete_failed otherwise
 pub remove_dir :: fn(path: []const u8) -> void ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -155,7 +163,7 @@ pub remove_dir :: fn(path: []const u8) -> void ! FsError {
     return;
 }
 
-// whole file into a new buffer in `a`
+/// whole file into a new buffer in `a`
 pub read_all :: fn(path: []const u8, a: *Arena) -> []u8 ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -176,7 +184,7 @@ pub read_all :: fn(path: []const u8, a: *Arena) -> []u8 ! FsError {
     return buf[0..total];
 }
 
-// dir iteration; names include "." and "..", valid only until the next dir_next
+/// dir iteration; names include "." and "..", valid only until the next dir_next
 pub DirIter :: struct {
     handle:  i64,
     namebuf: [1024]u8,
@@ -192,7 +200,7 @@ pub open_dir :: fn(path: []const u8) -> DirIter ! FsError {
     return iter;
 }
 
-// next entry name, or null at the end
+/// next entry name, or null at the end
 pub dir_next :: fn(self: *DirIter) -> ?[]const u8 {
     if self.handle == FS_INVALID { return null; }
     n := os_dir_next(self.handle, self.namebuf[:]);
@@ -201,19 +209,19 @@ pub dir_next :: fn(self: *DirIter) -> ?[]const u8 {
     return self.namebuf[0..self.namelen];
 }
 
-// last entry is a dir
+/// last entry is a dir
 pub dir_is_dir :: fn(self: *DirIter) -> bool {
     if self.handle == FS_INVALID { return false; }
     return os_dir_is_dir(self.handle);
 }
 
-// last entry's size in bytes; always 0 on linux (stat the path)
+/// last entry's size in bytes; always 0 on linux (stat the path)
 pub dir_size :: fn(self: *DirIter) -> u64 {
     if self.handle == FS_INVALID { return 0; }
     return os_dir_size(self.handle);
 }
 
-// last entry is a symlink/reparse point; skip these to avoid cycles
+/// last entry is a symlink/reparse point; skip these to avoid cycles
 pub dir_is_reparse :: fn(self: *DirIter) -> bool {
     if self.handle == FS_INVALID { return false; }
     return os_dir_is_reparse(self.handle);
@@ -227,14 +235,16 @@ pub dir_close :: fn(self: *DirIter) {
 
 // metadata, rename, copy
 
-// result of `info`
+/// result of `info`
 pub Info :: struct {
-    size: u64,           // bytes (0 for a folder on Linux and others)
-    modified_ns: i64,    // last write, ns since the unix epoch
+    /// bytes (0 for a folder on Linux and others)
+    size: u64,
+    /// last write, ns since the unix epoch
+    modified_ns: i64,
     is_dir: bool,
 }
 
-// size, mtime, kind of `path`; not_found if nothing is there
+/// size, mtime, kind of `path`; not_found if nothing is there
 pub info :: fn(path: []const u8) -> Info ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -246,7 +256,7 @@ pub info :: fn(path: []const u8) -> Info ! FsError {
     return i;
 }
 
-// rename/move; replaces a file at `to`; rename_failed (missing, dir target, cross-volume)
+/// rename/move; replaces a file at `to`; rename_failed (missing, dir target, cross-volume)
 pub rename :: fn(from: []const u8, to: []const u8) -> void ! FsError {
     a_buf: [1024]u8 = .{};
     b_buf: [1024]u8 = .{};
@@ -255,7 +265,7 @@ pub rename :: fn(from: []const u8, to: []const u8) -> void ! FsError {
     if os_rename(a, b) != 0 { fail .rename_failed; }
 }
 
-// write `data` to `path`, created or truncated
+/// write `data` to `path`, created or truncated
 pub write_file :: fn(path: []const u8, data: []const u8) -> void ! FsError {
     f := create(path)?;
     done: usize = 0;
@@ -270,7 +280,7 @@ pub write_file :: fn(path: []const u8, data: []const u8) -> void ! FsError {
     close(&f);
 }
 
-// copy a file, `to` created or truncated; returns bytes copied
+/// copy a file, `to` created or truncated; returns bytes copied
 pub copy_file :: fn(from: []const u8, to: []const u8) -> u64 ! FsError {
     src := open(from)?;
     dst := create(to) catch err {
@@ -306,19 +316,24 @@ pub copy_file :: fn(from: []const u8, to: []const u8) -> u64 ! FsError {
 
 // tree walk
 
-// a `walk` entry
+/// a `walk` entry
 pub Entry :: struct {
-    path: []const u8,   // root + names below it, joined by "/"
-    name: []const u8,   // the last part of `path`
+    /// root + names below it, joined by "/"
+    path: []const u8,
+    /// the last part of `path`
+    name: []const u8,
     is_dir: bool,
-    depth: usize,       // 1 for an entry of the root folder itself
+    /// 1 for an entry of the root folder itself
+    depth: usize,
 }
 
-// recursive walk, folders before their contents; links listed but not followed
+/// recursive walk, folders before their contents; links listed but not followed
 pub Walker :: struct {
     region: *Arena,
-    dirs: Vec(DirIter),        // the open folders, the innermost last
-    paths: Vec([]const u8),    // their paths
+    /// the open folders, the innermost last
+    dirs: Vec(DirIter),
+    /// their paths
+    paths: Vec([]const u8),
     // set if a subfolder couldn't be opened; it was returned but not entered
     failed: bool,
 
@@ -348,7 +363,7 @@ pub Walker :: struct {
         return null;
     }
 
-    // close what's still open if the loop stops early
+    /// close what's still open if the loop stops early
     pub close :: fn(self: *Self) {
         while self.dirs.len() > 0 {
             d := self.dirs.pop();
@@ -367,7 +382,7 @@ join_path :: fn(a: *Arena, dir: []const u8, name: []const u8) -> []const u8 {
     return out;
 }
 
-// recursive walk; paths live in `a`
+/// recursive walk; paths live in `a`
 pub walk :: fn(a: *Arena, root: []const u8) -> Walker ! FsError {
     it := open_dir(root)?;
     w: Walker = .{ a, vec::make(DirIter, a), vec::make([]const u8, a), false };
@@ -378,7 +393,7 @@ pub walk :: fn(a: *Arena, root: []const u8) -> Walker ! FsError {
 
 // cwd and absolute paths
 
-// current folder, absolute, in `a`; not_found if removed or path too long
+/// current folder, absolute, in `a`; not_found if removed or path too long
 pub cwd :: fn(a: *Arena) -> []const u8 ! FsError {
     buf: [1024]u8 = .{};
     n := os_cwd(buf[:]);
@@ -386,14 +401,14 @@ pub cwd :: fn(a: *Arena) -> []const u8 ! FsError {
     return copy_text(a, buf[0..(n as usize)]);
 }
 
-// set the current folder, process-wide (all threads); not_found if not a folder
+/// set the current folder, process-wide (all threads); not_found if not a folder
 pub set_cwd :: fn(path: []const u8) -> void ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
     if os_chdir(cpath) != 0 { fail .not_found; }
 }
 
-// absolute `p` in `a` via path::normalize; only cwd is read, so `..` is lexical
+/// absolute `p` in `a` via path::normalize; only cwd is read, so `..` is lexical
 pub absolute :: fn(a: *Arena, p: []const u8) -> []const u8 ! FsError {
     if p.len >= 2 && path::is_sep(p[0]) && path::is_sep(p[1]) { return path::normalize(a, p); }
     if p.len >= 1 && path::is_sep(p[0]) {
@@ -428,7 +443,7 @@ concat :: fn(a: *Arena, x: []const u8, y: []const u8) -> []const u8 {
 
 lower :: fn(c: u8) -> u8 { return if c >= 'A' && c <= 'Z' { c + 32 } else { c }; }
 
-// env var `name` in `a`; null if unset or empty
+/// env var `name` in `a`; null if unset or empty
 env_value :: fn(a: *Arena, name: []const u8) -> ?[]const u8 {
     name_buf: [128]u8 = .{};
     cname := fs_to_cstr(name, name_buf[:]) catch err { return null; };
@@ -438,7 +453,7 @@ env_value :: fn(a: *Arena, name: []const u8) -> ?[]const u8 {
     return copy_text(a, value[0..(n as usize)]);
 }
 
-// `p` without a trailing separator, unless it is a root ("/", "C:\")
+/// `p` without a trailing separator, unless it is a root ("/", "C:\")
 trim_sep :: fn(p: []const u8) -> []const u8 {
     n := p.len;
     while n > 1 && path::is_sep(p[n - 1]) && !(n == 3 && p[1] == ':') { n -= 1; }
@@ -463,10 +478,10 @@ trim_sep :: fn(p: []const u8) -> []const u8 {
 
 // user folders
 
-// temp folder, no trailing sep (windows: TMP, TEMP, USERPROFILE; else TMPDIR or /tmp)
+/// temp folder, no trailing sep (windows: TMP, TEMP, USERPROFILE; else TMPDIR or /tmp)
 pub temp_dir :: fn(a: *Arena) -> []const u8 { return trim_sep(temp_default(a)); }
 
-// USERPROFILE on windows, HOME elsewhere; null if unset
+/// USERPROFILE on windows, HOME elsewhere; null if unset
 pub home_dir :: fn(a: *Arena) -> ?[]const u8 {
     if home_default(a) |h| { return trim_sep(h); }
     return null;
@@ -474,14 +489,14 @@ pub home_dir :: fn(a: *Arena) -> ?[]const u8 {
 
 // temp files and folders
 
-// from create_temp: the file, open to write, and its path
+/// from create_temp: the file, open to write, and its path
 pub TempFile :: struct {
     file: File,
     path: []const u8,
 }
 
-// new exclusive file in `dir` ("" = temp_dir()); last `*` of `pattern` -> 16 hex digits
-// caller closes and deletes it; owner-only on linux; create_failed if no name worked
+/// new exclusive file in `dir` ("" = temp_dir()); last `*` of `pattern` -> 16 hex digits
+/// caller closes and deletes it; owner-only on linux; create_failed if no name worked
 pub create_temp :: fn(a: *Arena, dir: []const u8, pattern: []const u8) -> TempFile ! FsError {
     folder := if dir.len == 0 { temp_dir(a) } else { dir };
     for attempt in 0..100 {
@@ -498,7 +513,7 @@ pub create_temp :: fn(a: *Arena, dir: []const u8, pattern: []const u8) -> TempFi
     fail .create_failed;
 }
 
-// new temp folder, named like create_temp; path in `a`; create_failed if none worked
+/// new temp folder, named like create_temp; path in `a`; create_failed if none worked
 pub make_temp_dir :: fn(a: *Arena, dir: []const u8, pattern: []const u8) -> []const u8 ! FsError {
     folder := if dir.len == 0 { temp_dir(a) } else { dir };
     for attempt in 0..100 {
@@ -511,7 +526,7 @@ pub make_temp_dir :: fn(a: *Arena, dir: []const u8, pattern: []const u8) -> []co
     fail .create_failed;
 }
 
-// `dir` + sep + `pattern` with 16 hex digits for its last `*` (or appended)
+/// `dir` + sep + `pattern` with 16 hex digits for its last `*` (or appended)
 temp_name :: fn(a: *Arena, dir: []const u8, pattern: []const u8, attempt: usize) -> []const u8 {
     star: usize = pattern.len;
     for k in 0..pattern.len { if pattern[k] == '*' { star = k; } }
@@ -548,8 +563,8 @@ temp_name :: fn(a: *Arena, dir: []const u8, pattern: []const u8, attempt: usize)
     return out;
 }
 
-// delete a file or a whole folder tree; links are removed, not followed
-// not_found if missing; delete_failed (open, read-only) after deleting what it could
+/// delete a file or a whole folder tree; links are removed, not followed
+/// not_found if missing; delete_failed (open, read-only) after deleting what it could
 pub remove_tree :: fn(path: []const u8) -> void ! FsError {
     path_buf: [1024]u8 = .{};
     cpath := fs_to_cstr(path, path_buf[:])?;
@@ -560,7 +575,7 @@ pub remove_tree :: fn(path: []const u8) -> void ! FsError {
     if kind == 1 || !remove_folder(path) { fail .delete_failed; }
 }
 
-// empty `dir` and delete it; false if anything stayed
+/// empty `dir` and delete it; false if anything stayed
 remove_folder :: fn(dir: []const u8) -> bool {
     it := open_dir(dir) catch err { return false; };
     ok := true;
@@ -578,7 +593,7 @@ remove_folder :: fn(dir: []const u8) -> bool {
     return ok;
 }
 
-// delete entry `name` of `dir` (where `it` is); false if anything stayed
+/// delete entry `name` of `dir` (where `it` is); false if anything stayed
 remove_entry :: fn(it: *DirIter, dir: []const u8, name: []const u8) -> bool {
     if name == "." || name == ".." { return true; }
     if name.len == 0 { return false; }             // a name too long to read

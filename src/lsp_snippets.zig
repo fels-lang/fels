@@ -5,11 +5,10 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 
-/// The comment right above the declaration at `start` in `source`, as its documentation: the
-/// `//` lines with no blank line between them and the declaration (attribute lines such as
-/// `#inline` may stand between), each without its `//` and one space. A decoration of `─` at a
-/// line's end goes too. Without one, a comment after the declaration on its own line
-/// (`x: i32, // the width`). Null when there is none.
+/// The doc comment right above the declaration at `start` in `source`: the `///` lines with no
+/// blank line between them and the declaration (attribute lines such as `#inline` may stand
+/// between), each without its `///` and one space. A decoration of `─` at a line's end goes too.
+/// A plain `//` comment is not documentation. Null when there is none.
 pub fn docComment(a: std.mem.Allocator, source: []const u8, start: usize) ?[]const u8 {
     if (start > source.len) return null;
     var line_start = start;
@@ -22,14 +21,14 @@ pub fn docComment(a: std.mem.Allocator, source: []const u8, start: usize) ?[]con
         var prev_start = prev_end;
         while (prev_start > 0 and source[prev_start - 1] != '\n') prev_start -= 1;
         const line = std.mem.trim(u8, source[prev_start..prev_end], " \t\r");
-        if (std.mem.startsWith(u8, line, "//")) {
+        if (isDocLine(line)) {
             lines.append(a, line) catch return null;
         } else if (lines.items.len == 0 and isAttributeLine(line)) {
             // `#spawns` between the comment and the declaration
         } else break;
         cursor = prev_start;
     }
-    if (lines.items.len == 0) return trailingComment(a, source, start);
+    if (lines.items.len == 0) return null;
 
     var out = std.ArrayList(u8).empty;
     var i = lines.items.len;
@@ -49,29 +48,15 @@ fn isAttributeLine(line: []const u8) bool {
     return line.len > 1 and line[0] == '#' and !std.mem.startsWith(u8, line, "#import");
 }
 
-/// The `// …` after the declaration at `start` on its line, outside a string.
-fn trailingComment(a: std.mem.Allocator, source: []const u8, start: usize) ?[]const u8 {
-    var in_string = false;
-    var i = start;
-    while (i + 1 < source.len and source[i] != '\n') : (i += 1) {
-        const c = source[i];
-        if (c == '"' and (i == 0 or source[i - 1] != '\\')) in_string = !in_string;
-        if (!in_string and c == '/' and source[i + 1] == '/') {
-            var end = i;
-            while (end < source.len and source[end] != '\n') end += 1;
-            var out = std.ArrayList(u8).empty;
-            appendCommentText(a, &out, std.mem.trim(u8, source[i..end], " \t\r"));
-            const text = std.mem.trim(u8, out.items, " ");
-            return if (text.len == 0) null else text;
-        }
-    }
-    return null;
+/// `/// text`, but not `//// rule` or a plain `//`.
+pub fn isDocLine(line: []const u8) bool {
+    return std.mem.startsWith(u8, line, "///") and !std.mem.startsWith(u8, line, "////");
 }
 
-/// A comment line's text: without `//` (or `///`), one space after it, and a trailing `─` rule.
-fn appendCommentText(a: std.mem.Allocator, out: *std.ArrayList(u8), line: []const u8) void {
+/// A comment line's text: without `///` (or `//!`), one space after it, and a trailing `─` rule.
+pub fn appendCommentText(a: std.mem.Allocator, out: *std.ArrayList(u8), line: []const u8) void {
     var text = line;
-    if (std.mem.startsWith(u8, text, "///")) text = text[3..] else if (std.mem.startsWith(u8, text, "//")) text = text[2..];
+    if (std.mem.startsWith(u8, text, "///") or std.mem.startsWith(u8, text, "//!")) text = text[3..] else if (std.mem.startsWith(u8, text, "//")) text = text[2..];
     if (std.mem.startsWith(u8, text, " ")) text = text[1..];
     while (true) {
         const trimmed = std.mem.trimEnd(u8, text, " \t\r");
@@ -197,20 +182,23 @@ pub const statement_snippets = [_]Snippet{
     .{ .label = "#import", .filter = "import", .detail = "import a module", .body = "#import std.${1:io} as ${2:io};" },
 };
 
-test "a declaration's comment, attributes between, a rule at the end" {
+test "a declaration's doc comment, attributes between, a rule at the end" {
     const a = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const src =
         \\x :: 1;
         \\
-        \\// Scope: threads ──────
-        \\//
-        \\// Joins them.
+        \\/// Scope: threads ──────
+        \\///
+        \\/// Joins them.
         \\#spawns
         \\pub spawn :: fn() {}
         \\P :: struct {
-        \\    w: i32, // the width
+        \\    /// the width
+        \\    w: i32,
+        \\    // not documentation
+        \\    h: i32,
         \\}
     ;
     const at = std.mem.indexOf(u8, src, "pub spawn").?;
@@ -218,6 +206,7 @@ test "a declaration's comment, attributes between, a rule at the end" {
     try std.testing.expect(docComment(arena.allocator(), src, 0) == null);
     const w = std.mem.indexOf(u8, src, "w: i32").?;
     try std.testing.expectEqualStrings("the width", docComment(arena.allocator(), src, w).?);
+    try std.testing.expect(docComment(arena.allocator(), src, std.mem.indexOf(u8, src, "h: i32").?) == null);
 }
 
 test "a call snippet" {

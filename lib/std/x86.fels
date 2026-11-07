@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.x86: x86-64 instructions a kernel needs: ports, interrupts, control registers, msrs
-// most only work in ring 0
+//! std.x86: x86-64 instructions a kernel needs: ports, interrupts, control registers, msrs
+//! most only work in ring 0
 
 // ---- i/o ports ----
 
@@ -38,17 +38,17 @@ pub sti :: fn() {
     unsafe { core::asm(volatile, "sti", inputs: {}, outputs: {}, clobbers: { "memory" }); }
 }
 
-// waits for the next interrupt
+/// waits for the next interrupt
 pub hlt :: fn() {
     unsafe { core::asm(volatile, "hlt", inputs: {}, outputs: {}, clobbers: { "memory" }); }
 }
 
-// spin-loop hint
+/// spin-loop hint
 pub pause :: fn() {
     unsafe { core::asm(volatile, "pause", inputs: {}, outputs: {}, clobbers: {}); }
 }
 
-// loads the gdt/idt from a 10-byte descriptor: u16 limit, then u64 base
+/// loads the gdt/idt from a 10-byte descriptor: u16 limit, then u64 base
 pub lgdt :: fn(descriptor: *const u8) {
     unsafe { core::asm(volatile, "lgdt (%rdi)", inputs: { "{rdi}"(descriptor) }, outputs: {}, clobbers: { "memory" }); }
 }
@@ -57,20 +57,20 @@ pub lidt :: fn(descriptor: *const u8) {
     unsafe { core::asm(volatile, "lidt (%rdi)", inputs: { "{rdi}"(descriptor) }, outputs: {}, clobbers: { "memory" }); }
 }
 
-// int3: the breakpoint exception, vector 3
+/// int3: the breakpoint exception, vector 3
 pub breakpoint :: fn() {
     unsafe { core::asm(volatile, "int3", inputs: {}, outputs: {}, clobbers: { "memory" }); }
 }
 
-// the code segment selector running now
+/// the code segment selector running now
 pub read_cs :: fn() -> u16 {
     return unsafe core::asm(volatile, "mov %cs, %ax", inputs: {}, outputs: { "={ax}"(u16) }, clobbers: {});
 }
 
 // ---- the interrupt table ----
 
-// what the cpu pushes before it calls an #interrupt function; an exception with an error code
-// passes that as the function's second parameter
+/// what the cpu pushes before it calls an #interrupt function; an exception with an error code
+/// passes that as the function's second parameter
 pub InterruptFrame :: struct {
     ip: u64,
     cs: u64,
@@ -79,11 +79,11 @@ pub InterruptFrame :: struct {
     ss: u64,
 }
 
-// 256 gates of 16 bytes; a gate is two words
+/// 256 gates of 16 bytes; a gate is two words
 pub Idt :: struct {
     gates: [512]u64,
 
-    // `vector` calls `handler` (core::fn_ptr of an #interrupt function) with interrupts off
+    /// `vector` calls `handler` (core::fn_ptr of an #interrupt function) with interrupts off
     pub set :: fn(self: *Self, vector: u8, handler: *void) {
         addr := unsafe (handler as u64);
         cs := read_cs() as u64;
@@ -92,7 +92,7 @@ pub Idt :: struct {
         self.gates[(vector as usize) * 2usize + 1usize] = addr >> 32u64;
     }
 
-    // makes this the cpu's table; it must stay where it is from then on
+    /// makes this the cpu's table; it must stay where it is from then on
     pub load :: fn(self: *const Self) {
         base := unsafe (&self.gates[0] as u64);
         // the descriptor: a u16 limit, then the u64 base
@@ -101,7 +101,7 @@ pub Idt :: struct {
     }
 }
 
-// an empty table, to fill with `set`
+/// an empty table, to fill with `set`
 pub idt :: fn() -> Idt {
     return .{ .gates = .{} };
 }
@@ -112,12 +112,12 @@ pub read_cr0 :: fn() -> u64 {
     return unsafe core::asm(volatile, "mov %cr0, %rax", inputs: {}, outputs: { "={rax}"(u64) }, clobbers: {});
 }
 
-// the address of the last page fault
+/// the address of the last page fault
 pub read_cr2 :: fn() -> u64 {
     return unsafe core::asm(volatile, "mov %cr2, %rax", inputs: {}, outputs: { "={rax}"(u64) }, clobbers: {});
 }
 
-// the page table root
+/// the page table root
 pub read_cr3 :: fn() -> u64 {
     return unsafe core::asm(volatile, "mov %cr3, %rax", inputs: {}, outputs: { "={rax}"(u64) }, clobbers: {});
 }
@@ -130,7 +130,7 @@ pub read_cr4 :: fn() -> u64 {
     return unsafe core::asm(volatile, "mov %cr4, %rax", inputs: {}, outputs: { "={rax}"(u64) }, clobbers: {});
 }
 
-// drops the tlb entry of the page holding `addr`
+/// drops the tlb entry of the page holding `addr`
 pub invlpg :: fn(addr: usize) {
     unsafe { core::asm(volatile, "invlpg (%rdi)", inputs: { "{rdi}"(addr) }, outputs: {}, clobbers: { "memory" }); }
 }
@@ -147,7 +147,7 @@ pub wrmsr :: fn(msr: u32, v: u64) {
     }
 }
 
-// cycles since reset
+/// cycles since reset
 pub rdtsc :: fn() -> u64 {
     return unsafe core::asm(volatile, "rdtsc; shl $$32, %rdx; or %rdx, %rax", inputs: {}, outputs: { "={rax}"(u64) }, clobbers: { "rdx" });
 }
@@ -159,7 +159,7 @@ pub Cpuid :: struct {
     edx: u32,
 }
 
-// cpuid for `leaf` and `sub`
+/// cpuid for `leaf` and `sub`
 pub cpuid :: fn(leaf: u32, sub: u32) -> Cpuid {
     // leaf and sub go in through `out`: cpuid overwrites eax and ecx, which an input must keep
     out: Cpuid = .{ .eax = leaf, .ebx = 0u32, .ecx = sub, .edx = 0u32 };

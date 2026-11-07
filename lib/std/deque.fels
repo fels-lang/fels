@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.deque: ring-buffer deque in an arena; O(1) push/pop at both ends; grows 2x
+//! std.deque: ring-buffer deque in an arena; O(1) push/pop at both ends; grows 2x
 
 #import std.heap.{ Arena, alloc };
 
 pub Deque :: struct($T: type) {
-    region: *Arena,   // where it grows (borrowed)
-    data: []T,        // the ring; capacity == data.len
-    head: usize,      // where the front element is
+    /// where it grows (borrowed)
+    region: *Arena,
+    /// the ring; capacity == data.len
+    data: []T,
+    /// where the front element is
+    head: usize,
     count: usize,
 
     pub len :: fn(self: *Self) -> usize { return self.count; }
     pub is_empty :: fn(self: *Self) -> bool { return self.count == 0; }
 
-    // ring slot of element `i`
+    /// ring slot of element `i`
     slot :: fn(self: *Self, i: usize) -> usize {
         s := self.head + i;
         if s >= self.data.len { s -= self.data.len; }
@@ -41,7 +44,7 @@ pub Deque :: struct($T: type) {
         self.count += 1;
     }
 
-    // take the front; null if empty
+    /// take the front; null if empty
     pub pop_front :: fn(self: *Self) -> ?T {
         if self.count == 0 { return null; }
         item := self.data[self.head];
@@ -50,7 +53,7 @@ pub Deque :: struct($T: type) {
         return item;
     }
 
-    // take the back; null if empty
+    /// take the back; null if empty
     pub pop_back :: fn(self: *Self) -> ?T {
         if self.count == 0 { return null; }
         self.count -= 1;
@@ -67,11 +70,11 @@ pub Deque :: struct($T: type) {
         return self.data[self.slot(self.count - 1)];
     }
 
-    // element `i` from the front; `i < len()`
+    /// element `i` from the front; `i < len()`
     pub get :: fn(self: *Self, i: usize) -> T { return self.data[self.slot(i)]; }
     pub set :: fn(self: *Self, i: usize, v: T) { self.data[self.slot(i)] = v; }
 
-    // front to back, left in place
+    /// front to back, left in place
     pub each :: fn(self: *Self) -> Each(T) {
         it: Each(T) = .{ self, 0 };
         return it;
@@ -83,7 +86,7 @@ pub Deque :: struct($T: type) {
     }
 }
 
-// iterator from Deque.each
+/// iterator from Deque.each
 pub Each :: struct($T: type) {
     d: *Deque(T),
     i: usize,
@@ -101,7 +104,7 @@ pub make :: fn($T: type, a: *Arena) -> Deque(T) {
     return d;
 }
 
-// deque in `a` with room for `cap` before it grows
+/// deque in `a` with room for `cap` before it grows
 pub with_cap :: fn($T: type, a: *Arena, cap: usize) -> Deque(T) {
     d: Deque(T) = .{ a, alloc(T, a, cap), 0, 0 };
     return d;

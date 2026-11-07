@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.time: wall/monotonic clocks, sleep, UTC and local calendar, dates, text formats
+//! std.time: wall/monotonic clocks, sleep, UTC and local calendar, dates, text formats
 
 #import std.process as process;
 #import std.fs as fs;
@@ -7,68 +7,76 @@
 
 // wall clock (unix epoch)
 
-// ns since the unix epoch
+/// ns since the unix epoch
 pub unix_nanos :: fn() -> i64 { return os_wall_nanos(); }
 
-// ms since the unix epoch
+/// ms since the unix epoch
 pub unix_millis :: fn() -> i64 { return os_wall_nanos() / 1000000i64; }
 
-// whole seconds since the unix epoch
+/// whole seconds since the unix epoch
 pub unix_seconds :: fn() -> i64 { return os_wall_nanos() / 1000000000i64; }
 
 // monotonic clock
 
-// monotonic time point; compare via since_*, not wall time
+/// monotonic time point; compare via since_*, not wall time
 pub Instant :: struct { nanos: i64 }
 
-// current monotonic instant
+/// current monotonic instant
 pub now :: fn() -> Instant { r: Instant = .{ os_monotonic_nanos() }; return r; }
 
-// ns since `start`; never negative
+/// ns since `start`; never negative
 pub since_nanos :: fn(start: Instant) -> i64 { return os_monotonic_nanos() - start.nanos; }
 
-// ms since `start`
+/// ms since `start`
 pub since_millis :: fn(start: Instant) -> i64 { return since_nanos(start) / 1000000i64; }
 
-// seconds since `start`, fractional
+/// seconds since `start`, fractional
 pub since_seconds :: fn(start: Instant) -> f64 {
     return (since_nanos(start) as f64) / 1000000000.0;
 }
 
-// monotonic ms (frame timing)
+/// monotonic ms (frame timing)
 pub monotonic_millis :: fn() -> u64 { return (os_monotonic_nanos() / 1000000i64) as u64; }
 
-// sleep at least `millis` ms
+/// sleep at least `millis` ms
 pub sleep_ms :: fn(millis: u32) { os_sleep_nanos((millis as i64) * 1000000i64); }
 
 // UTC calendar
 
-// broken-down UTC date and time
+/// broken-down UTC date and time
 pub DateTime :: struct {
     year:    i64,
-    month:   u8,   // 1..12
-    day:     u8,   // 1..31
-    hour:    u8,   // 0..23
-    minute:  u8,   // 0..59
-    second:  u8,   // 0..59
-    weekday: u8,   // 0=Sun..6=Sat
+    /// 1..12
+    month:   u8,
+    /// 1..31
+    day:     u8,
+    /// 0..23
+    hour:    u8,
+    /// 0..59
+    minute:  u8,
+    /// 0..59
+    second:  u8,
+    /// 0=Sun..6=Sat
+    weekday: u8,
 }
 
-// floor division (toward -inf), so pre-epoch times break down right
+/// floor division (toward -inf), so pre-epoch times break down right
 fdiv :: fn(a: i64, b: i64) -> i64 {
     q: i64 = a / b;
     if (a % b != 0) && ((a < 0) != (b < 0)) { return q - 1; }
     return q;
 }
 
-// year, month, day of a date
+/// year, month, day of a date
 pub DateParts :: struct {
     year:  i64,
-    month: u8,   // 1..12
-    day:   u8,   // 1..31
+    /// 1..12
+    month: u8,
+    /// 1..31
+    day:   u8,
 }
 
-// Hinnant's civil-from-days: the date `days` days after 1970-01-01
+/// Hinnant's civil-from-days: the date `days` days after 1970-01-01
 parts_from_days :: fn(days: i64) -> DateParts {
     // epoch moved to 0000-03-01 so the leap day ends the year
     z:   i64 = days + 719468;
@@ -86,7 +94,7 @@ parts_from_days :: fn(days: i64) -> DateParts {
     return out;
 }
 
-// days from 1970-01-01 to `year`-`month`-`day`; the date must exist
+/// days from 1970-01-01 to `year`-`month`-`day`; the date must exist
 days_from_parts :: fn(year: i64, month: i64, day: i64) -> i64 {
     y: i64 = year;
     if month <= 2 { y = year - 1; }
@@ -99,12 +107,12 @@ days_from_parts :: fn(year: i64, month: i64, day: i64) -> i64 {
     return era * 146097 + doe - 719468;
 }
 
-// weekday of day `days` (1970-01-01 was a Thursday); 0=Sunday..6=Saturday
+/// weekday of day `days` (1970-01-01 was a Thursday); 0=Sunday..6=Saturday
 weekday_of :: fn(days: i64) -> u8 {
     return (days + 4 - fdiv(days + 4, 7) * 7) as u8;
 }
 
-// unix seconds broken down as UTC
+/// unix seconds broken down as UTC
 pub utc :: fn(secs: i64) -> DateTime {
     days:    i64 = fdiv(secs, 86400);
     rem:     i64 = secs - days * 86400;   // 0..86399 (floor-correct)
@@ -121,31 +129,31 @@ pub utc :: fn(secs: i64) -> DateTime {
     return out;
 }
 
-// current UTC date and time
+/// current UTC date and time
 pub now_utc :: fn() -> DateTime { return utc(unix_seconds()); }
 
 // calendar dates
 
-// Gregorian day (also before 1582) as days since 1970-01-01; compare by `days`
+/// Gregorian day (also before 1582) as days since 1970-01-01; compare by `days`
 pub Date :: struct {
     days: i64
 
-    // year, month, day
+    /// year, month, day
     pub parts :: fn(self: *Self) -> DateParts { return parts_from_days(self.days); }
     pub year  :: fn(self: *Self) -> i64 { return parts_from_days(self.days).year; }
     pub month :: fn(self: *Self) -> u8  { return parts_from_days(self.days).month; }
     pub day   :: fn(self: *Self) -> u8  { return parts_from_days(self.days).day; }
 
-    // 0=Sunday..6=Saturday, as in DateTime
+    /// 0=Sunday..6=Saturday, as in DateTime
     pub weekday :: fn(self: *Self) -> u8 { return weekday_of(self.days); }
 
-    // `n` days later (earlier if negative)
+    /// `n` days later (earlier if negative)
     pub add_days :: fn(self: *Self, n: i64) -> Date {
         out: Date = .{ self.days + n };
         return out;
     }
 
-    // `n` months later (earlier if negative); the day clamps to the month's last
+    /// `n` months later (earlier if negative); the day clamps to the month's last
     pub add_months :: fn(self: *Self, n: i64) -> Date {
         p := parts_from_days(self.days);
         total: i64 = p.year * 12 + (p.month as i64) - 1 + n;
@@ -158,10 +166,10 @@ pub Date :: struct {
         return out;
     }
 
-    // add_months(12 * n); Feb 29 -> Feb 28
+    /// add_months(12 * n); Feb 29 -> Feb 28
     pub add_years :: fn(self: *Self, n: i64) -> Date { return self.add_months(n * 12i64); }
 
-    // days to `other`; positive if `other` is later
+    /// days to `other`; positive if `other` is later
     pub days_until :: fn(self: *Self, other: Date) -> i64 { return other.days - self.days; }
 }
 
@@ -171,7 +179,7 @@ pub is_leap_year :: fn(year: i64) -> bool {
     return year % 400 == 0;
 }
 
-// days in `month` (1..12) of `year`; 0 for an invalid month
+/// days in `month` (1..12) of `year`; 0 for an invalid month
 pub days_in_month :: fn(year: i64, month: i64) -> i64 {
     if month < 1 || month > 12 { return 0; }
     if month == 2 {
@@ -182,7 +190,7 @@ pub days_in_month :: fn(year: i64, month: i64) -> i64 {
     return 31;
 }
 
-// null if no such day (2023-02-29, month 13)
+/// null if no such day (2023-02-29, month 13)
 pub date :: fn(year: i64, month: i64, day: i64) -> ?Date {
     if day < 1 || day > days_in_month(year, month) { return null; }
     out: Date = .{ days_from_parts(year, month, day) };
@@ -194,7 +202,7 @@ pub today_utc :: fn() -> Date {
     return out;
 }
 
-// number from the `n` digits of `text` at `at`; -1 on a non-digit
+/// number from the `n` digits of `text` at `at`; -1 on a non-digit
 digits_at :: fn(text: []const u8, at: usize, n: usize) -> i64 {
     v: i64 = 0;
     for i in at..at + n {
@@ -205,7 +213,7 @@ digits_at :: fn(text: []const u8, at: usize, n: usize) -> i64 {
     return v;
 }
 
-// parse YYYY-MM-DD; null if it isn't one
+/// parse YYYY-MM-DD; null if it isn't one
 pub parse_date :: fn(text: []const u8) -> ?Date {
     if text.len != 10 || text[4] != 45 || text[7] != 45 { return null; }
     y := digits_at(text, 0, 4);
@@ -215,7 +223,7 @@ pub parse_date :: fn(text: []const u8) -> ?Date {
     return date(y, m, d);
 }
 
-// `d` as YYYY-MM-DD into `buf` (>= 10 bytes); empty for years outside 0..9999
+/// `d` as YYYY-MM-DD into `buf` (>= 10 bytes); empty for years outside 0..9999
 pub format_date :: fn(d: Date, buf: []u8) -> []const u8 {
     p := parts_from_days(d.days);
     if buf.len < 10 || p.year < 0 || p.year > 9999 { return buf[0..0usize]; }
@@ -227,7 +235,7 @@ pub format_date :: fn(d: Date, buf: []u8) -> []const u8 {
     return buf[0..10usize];
 }
 
-// `v` as `n` zero-padded digits into `buf` at `at`
+/// `v` as `n` zero-padded digits into `buf` at `at`
 put_digits :: fn(buf: []u8, at: usize, n: usize, v: i64) {
     rest: i64 = v;
     i: usize = n;
@@ -240,7 +248,7 @@ put_digits :: fn(buf: []u8, at: usize, n: usize, v: i64) {
 
 // back to seconds
 
-// inverse of `utc`: unix seconds of `dt` as UTC; weekday ignored
+/// inverse of `utc`: unix seconds of `dt` as UTC; weekday ignored
 pub to_unix :: fn(dt: DateTime) -> i64 {
     days := days_from_parts(dt.year, dt.month as i64, dt.day as i64);
     return days * 86400 + (dt.hour as i64) * 3600 + (dt.minute as i64) * 60 + (dt.second as i64);
@@ -254,33 +262,33 @@ MONTHS: [12][]const u8 = .{
     "July", "August", "September", "October", "November", "December",
 };
 
-// English weekday name; 0 = Sunday
+/// English weekday name; 0 = Sunday
 pub weekday_name :: fn(wd: u8) -> []const u8 { return WEEKDAYS[(wd % 7) as usize]; }
 
-// English month name; 1 = January
+/// English month name; 1 = January
 pub month_name :: fn(m: u8) -> []const u8 { return MONTHS[((m + 11) % 12) as usize]; }
 
 // local time zone
 
-// zone offset at an instant: seconds east of UTC, and whether it is DST
+/// zone offset at an instant: seconds east of UTC, and whether it is DST
 pub ZoneOffset :: struct {
     seconds: i64,
     dst: bool,
 }
 
-// local zone's seconds east of UTC at `secs`, DST included; 0 if the zone is unknown
+/// local zone's seconds east of UTC at `secs`, DST included; 0 if the zone is unknown
 pub local_offset :: fn(secs: i64) -> i64 { return os_local_offset_of(secs); }
 
-// `secs` in local time
+/// `secs` in local time
 pub local :: fn(secs: i64) -> DateTime { return utc(secs + local_offset(secs)); }
 
-// local date and time now
+/// local date and time now
 pub now_local :: fn() -> DateTime { return local(unix_seconds()); }
 
 #if TARGET.os == .windows {
     os_local_offset_of :: fn(secs: i64) -> i64 { return os_local_offset(secs); }
 } else {
-    // TZ (":Area/City", "Area/City" or a path), else /etc/localtime; a TZif file
+    /// TZ (":Area/City", "Area/City" or a path), else /etc/localtime; a TZif file
     os_local_offset_of :: fn(secs: i64) -> i64 {
         buf: [65536]u8 = .{};
         n := read_zone_file(buf[:]);
@@ -308,7 +316,7 @@ pub now_local :: fn() -> DateTime { return local(unix_seconds()); }
         return read_small_file(p, buf);
     }
 
-    // as much of `path` as fits in `buf`; 0 if unreadable
+    /// as much of `path` as fits in `buf`; 0 if unreadable
     read_small_file :: fn(path: []const u8, buf: []u8) -> usize {
         f := fs::open(path) catch err { return 0; };
         rd: *Reader = &f;
@@ -329,7 +337,8 @@ zero_offset :: fn() -> ZoneOffset {
 }
 
 pub TimeError :: errors {
-    bad_zone,     // a TZif file or POSIX TZ rule this cannot read
+    /// a TZif file or POSIX TZ rule this cannot read
+    bad_zone,
 }
 
 be32 :: fn(b: []const u8, at: usize) -> i64 {
@@ -345,7 +354,7 @@ be64 :: fn(b: []const u8, at: usize) -> i64 {
 
 be_count :: fn(b: []const u8, at: usize) -> usize { return be32(b, at) as usize; }
 
-// offset at `secs` from a TZif file (RFC 8536); past the last transition, its POSIX rule
+/// offset at `secs` from a TZif file (RFC 8536); past the last transition, its POSIX rule
 pub tzif_offset :: fn(data: []const u8, secs: i64) -> ZoneOffset ! TimeError {
     if data.len < 44 || data[0] != 'T' || data[1] != 'Z' || data[2] != 'i' || data[3] != 'f' { fail .bad_zone; }
     version := data[4];
@@ -411,7 +420,7 @@ TzReader :: struct {
     s: []const u8,
     i: usize,
 
-    // zone name: 3+ letters, or <...>
+    /// zone name: 3+ letters, or <...>
     name :: fn(self: *Self) -> bool {
         if self.i < self.s.len && self.s[self.i] == '<' {
             while self.i < self.s.len && self.s[self.i] != '>' { self.i += 1; }
@@ -433,7 +442,7 @@ TzReader :: struct {
         return v;
     }
 
-    // [+-]hh[:mm[:ss]] in seconds
+    /// [+-]hh[:mm[:ss]] in seconds
     hms :: fn(self: *Self) -> i64 {
         sign: i64 = 1;
         if self.i < self.s.len && (self.s[self.i] == '+' || self.s[self.i] == '-') {
@@ -455,7 +464,7 @@ TzReader :: struct {
     at :: fn(self: *Self, c: u8) -> bool { return self.i < self.s.len && self.s[self.i] == c; }
 }
 
-// rule day: Mm.w.d (kind 0), Jn (1, no Feb 29), n (2, from 0); plus time of day
+/// rule day: Mm.w.d (kind 0), Jn (1, no Feb 29), n (2, from 0); plus time of day
 TzRule :: struct {
     kind: u8,
     m: i64,
@@ -490,7 +499,7 @@ read_rule :: fn(r: *TzReader) -> TzRule ! TimeError {
     return out;
 }
 
-// local seconds since 1970 when `rule` fires in `year`
+/// local seconds since 1970 when `rule` fires in `year`
 rule_moment :: fn(rule: TzRule, year: i64) -> i64 {
     day: i64 = 0;
     if rule.kind == 0 {
@@ -510,7 +519,7 @@ rule_moment :: fn(rule: TzRule, year: i64) -> i64 {
     return day * 86400 + rule.time;
 }
 
-// offset at `secs` for a POSIX TZ rule; DST between its two dates each year
+/// offset at `secs` for a POSIX TZ rule; DST between its two dates each year
 pub posix_offset :: fn(rule: []const u8, secs: i64) -> ZoneOffset ! TimeError {
     r: TzReader = .{ rule, 0 };
     if !r.name() { fail .bad_zone; }
@@ -540,7 +549,7 @@ pub posix_offset :: fn(rule: []const u8, secs: i64) -> ZoneOffset ! TimeError {
 
 // text
 
-// writes into a buffer, cutting what doesn't fit
+/// writes into a buffer, cutting what doesn't fit
 Put :: struct {
     out: []u8,
     n: usize,
@@ -577,7 +586,7 @@ Put :: struct {
         }
     }
 
-    // +hhmm, or +hh:mm with `colon`
+    /// +hhmm, or +hh:mm with `colon`
     offset :: fn(self: *Self, secs: i64, colon: bool) {
         self.text(if secs < 0 { "-" } else { "+" });
         a := if secs < 0 { -secs } else { secs };
@@ -587,7 +596,7 @@ Put :: struct {
     }
 }
 
-// strftime-like (%Z = +01:00) into `out`, cut to fit; `offset`: secs east of UTC, for %z
+/// strftime-like (%Z = +01:00) into `out`, cut to fit; `offset`: secs east of UTC, for %z
 pub format_datetime :: fn(dt: DateTime, offset: i64, pattern: []const u8, out: []u8) -> []const u8 {
     w: Put = .{ out, 0 };
     i: usize = 0;
@@ -626,7 +635,7 @@ pub format_datetime :: fn(dt: DateTime, offset: i64, pattern: []const u8, out: [
     return out[0..w.n];
 }
 
-// `secs` as RFC 3339 at `offset` secs east of UTC (0 -> `Z`) into `out`; 32 bytes suffice
+/// `secs` as RFC 3339 at `offset` secs east of UTC (0 -> `Z`) into `out`; 32 bytes suffice
 pub format_rfc3339 :: fn(secs: i64, offset: i64, out: []u8) -> []const u8 {
     dt := utc(secs + offset);
     w: Put = .{ out, 0 };
@@ -645,14 +654,14 @@ pub format_rfc3339 :: fn(secs: i64, offset: i64, out: []u8) -> []const u8 {
     return out[0..w.n];
 }
 
-// parsed instant: unix secs (UTC), extra ns, and the offset it was written with
+/// parsed instant: unix secs (UTC), extra ns, and the offset it was written with
 pub Stamp :: struct {
     secs: i64,
     nanos: u32,
     offset: i64,
 }
 
-// parse RFC 3339 (`T`/`t`/space, `Z`/`z`/+hh:mm, optional fraction); null if invalid
+/// parse RFC 3339 (`T`/`t`/space, `Z`/`z`/+hh:mm, optional fraction); null if invalid
 pub parse_rfc3339 :: fn(text: []const u8) -> ?Stamp {
     if text.len < 20 { return null; }
     od := parse_date(text[0..10]);
@@ -702,7 +711,7 @@ pub parse_rfc3339 :: fn(text: []const u8) -> ?Stamp {
 
 // durations
 
-// `ns` as human text (`2d 3h 5m`, `4.25s`, `350ms`) into `out`; 32 bytes suffice
+/// `ns` as human text (`2d 3h 5m`, `4.25s`, `350ms`) into `out`; 32 bytes suffice
 pub format_duration :: fn(ns: i64, out: []u8) -> []const u8 {
     w: Put = .{ out, 0 };
     v := ns;
@@ -763,7 +772,7 @@ pub format_duration :: fn(ns: i64, out: []u8) -> []const u8 {
     return out[0..w.n];
 }
 
-// parse `1h30m`, `1.5s`, `-3m` to ns; units d h m s ms us ns; null otherwise
+/// parse `1h30m`, `1.5s`, `-3m` to ns; units d h m s ms us ns; null otherwise
 pub parse_duration :: fn(text: []const u8) -> ?i64 {
     i: usize = 0;
     negative := false;

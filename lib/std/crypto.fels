@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.crypto: sha-1/256/512 (fips 180-4), hmac (rfc 2104); not audited for adversarial use
+//! std.crypto: sha-1/256/512 (fips 180-4), hmac (rfc 2104); not audited for adversarial use
 
 #import std.heap.{ Arena };
 #import std.hash as hash;
@@ -11,12 +11,12 @@
 pub fnv1a_64 :: fn(data: []const u8) -> u64 { return hash::fnv1a_64(data); }
 pub fnv1a_32 :: fn(data: []const u8) -> u32 { return hash::fnv1a_32(data); }
 
-// ieee 802.3 polynomial (zip, png)
+/// ieee 802.3 polynomial (zip, png)
 pub crc32 :: fn(data: []const u8) -> u32 { return hash::crc32(data); }
 
 // sha-256
 
-// sha256_into's out must be at least this long
+/// sha256_into's out must be at least this long
 pub SHA256_LEN :: 32usize;
 
 pub Digest :: struct { bytes: [32]u8 }
@@ -39,7 +39,7 @@ SHA256_K: [64]u32 = .{
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 };
 
-// mixes blk[at..at + 64] into h
+/// mixes blk[at..at + 64] into h
 sha256_block :: fn(blk: []const u8, at: usize, h: []u32) {
     k := SHA256_K[0..64];
     w: [64]u32 = .{};
@@ -78,7 +78,7 @@ sha256_block :: fn(blk: []const u8, at: usize, h: []u32) {
     h[4] = h[4] +% e; h[5] = h[5] +% f; h[6] = h[6] +% g; h[7] = h[7] +% hh;
 }
 
-// incremental; also a hash::Hasher; a partial block waits in `block`
+/// incremental; also a hash::Hasher; a partial block waits in `block`
 pub Sha256 :: struct {
     h: [8]u32,
     block: [64]u8,
@@ -87,7 +87,7 @@ pub Sha256 :: struct {
 
     pub update :: fn(self: *Self, data: []const u8) { sha256_add(self, data); }
 
-    // digest so far; self unchanged
+    /// digest so far; self unchanged
     pub final :: fn(self: *Self) -> Digest {
         h: [8]u32 = self.h;
         // pad: 0x80, zeros, bit length in the last 8 bytes; 2 blocks if no room
@@ -147,7 +147,7 @@ pub sha256_start :: fn() -> Sha256 {
     return s;
 }
 
-// out must be >= SHA256_LEN bytes; caller owns it
+/// out must be >= SHA256_LEN bytes; caller owns it
 pub sha256_into :: fn(data: []const u8, out: []u8) {
     s := sha256_start();
     sha256_add(&s, data);
@@ -161,12 +161,12 @@ pub sha256 :: fn(data: []const u8) -> Digest {
     return d;
 }
 
-// lowercase hex, in `a`
+/// lowercase hex, in `a`
 pub hex :: fn(a: *Arena, bytes: []const u8) -> []const u8 {
     return hexes::encode_in(a, bytes);
 }
 
-// 64 lowercase hex chars, in `a`
+/// 64 lowercase hex chars, in `a`
 pub to_hex :: fn(a: *Arena, d: Digest) -> []const u8 {
     return hex(a, d.bytes[0..32usize]);
 }
@@ -204,7 +204,7 @@ SHA512_K: [80]u64 = .{
 
 rotr64 :: fn(x: u64, n: u64) -> u64 { return (x >> n) | (x << (64 - n)); }
 
-// mixes blk[at..at + 128] into h
+/// mixes blk[at..at + 128] into h
 sha512_block :: fn(blk: []const u8, at: usize, h: []u64) {
     k := SHA512_K[0..80];
     w: [80]u64 = .{};
@@ -235,16 +235,17 @@ sha512_block :: fn(blk: []const u8, at: usize, h: []u64) {
     h[4] = h[4] +% e; h[5] = h[5] +% f; h[6] = h[6] +% g; h[7] = h[7] +% hh;
 }
 
-// incremental; also a hash::Hasher
+/// incremental; also a hash::Hasher
 pub Sha512 :: struct {
     h: [8]u64,
     block: [128]u8,
     buffered: usize,
-    total: u64,     // bytes; low 67 bits of the 128-bit length
+    /// bytes; low 67 bits of the 128-bit length
+    total: u64,
 
     pub update :: fn(self: *Self, data: []const u8) { sha512_add(self, data); }
 
-    // digest so far; self unchanged
+    /// digest so far; self unchanged
     pub final :: fn(self: *Self) -> Sha512Digest {
         h: [8]u64 = self.h;
         rem := self.buffered;
@@ -312,7 +313,7 @@ pub Sha1Digest :: struct { bytes: [20]u8 }
 
 rotl32 :: fn(x: u32, n: u32) -> u32 { return (x << n) | (x >> (32 - n)); }
 
-// mixes blk[at..at + 64] into h (5 words)
+/// mixes blk[at..at + 64] into h (5 words)
 sha1_block :: fn(blk: []const u8, at: usize, h: []u32) {
     w: [80]u32 = .{};
     for t in 0..16 {
@@ -343,7 +344,7 @@ sha1_block :: fn(blk: []const u8, at: usize, h: []u32) {
     h[0] = h[0] +% a; h[1] = h[1] +% b; h[2] = h[2] +% c; h[3] = h[3] +% d; h[4] = h[4] +% e;
 }
 
-// incremental; also a hash::Hasher
+/// incremental; also a hash::Hasher
 pub Sha1 :: struct {
     h: [5]u32,
     block: [64]u8,
@@ -352,7 +353,7 @@ pub Sha1 :: struct {
 
     pub update :: fn(self: *Self, data: []const u8) { sha1_add(self, data); }
 
-    // digest so far; self unchanged
+    /// digest so far; self unchanged
     pub final :: fn(self: *Self) -> Sha1Digest {
         h: [5]u32 = self.h;
         rem := self.buffered;
@@ -459,7 +460,7 @@ pub hmac_sha512 :: fn(key: []const u8, msg: []const u8) -> Sha512Digest {
     return outer.final();
 }
 
-// constant-time compare (length not hidden); compare MACs with this, never ==
+/// constant-time compare (length not hidden); compare MACs with this, never ==
 pub equal_secure :: fn(a: []const u8, b: []const u8) -> bool {
     if a.len != b.len { return false; }
     diff: u8 = 0;

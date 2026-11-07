@@ -22,20 +22,21 @@ SRC = """\
 LIMIT :: 10;
 counter: i32 = 0;
 
-// A point on the grid.
+/// A point on the grid.
 Point :: struct {
-    x: i32, // across
+    /// across
+    x: i32,
     y: i32,
 
-    // Scale both coordinates.
+    /// Scale both coordinates.
     scale :: fn(self: *Self, by: i32, back: bool) -> Point { return .{ .x = self.x * by, .y = self.y * by }; }
-    // The origin, (0, 0).
+    /// The origin, (0, 0).
     origin :: fn() -> Point { return .{ .x = 0, .y = 0 }; }
 }
 
-// Add two numbers ──────
-//
-// The sum of `a` and `b`.
+/// Add two numbers ──────
+///
+/// The sum of `a` and `b`.
 #inline
 add :: fn(a: i32, b: i32) -> i32 { return a + b; }
 
@@ -188,7 +189,7 @@ def main():
     check("a call written already completes as the name", "insertText" not in item(written, "add"), item(written, "add"))
     check("hover shows the documentation", "The sum of `a` and `b`." in hover_text(hov_add), hover_text(hov_add))
     check("hover on a method shows its documentation", "The origin, (0, 0)." in hover_text(hov_method), hover_text(hov_method))
-    check("hover on a field shows the comment after it", "across" in hover_text(hov_field), hover_text(hov_field))
+    check("hover on a field shows its doc comment", "across" in hover_text(hov_field), hover_text(hov_field))
     check("hover on a type shows the comment above it", "A point on the grid." in hover_text(hov_type), hover_text(hov_type))
     sd = (sig or {}).get("signatures", [{}])[0].get("documentation") or {}
     check("signature help shows the documentation", "The sum of" in sd.get("value", ""), sig)

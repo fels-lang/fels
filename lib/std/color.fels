@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.color: 32-bit rgba color
+//! std.color: 32-bit rgba color
 
 pub Color :: struct { r: u8, g: u8, b: u8, a: u8 }
 
 pub rgb :: fn(r: u8, g: u8, b: u8) -> Color { c: Color = .{ r, g, b, 255u8 }; return c; }
 pub rgba :: fn(r: u8, g: u8, b: u8, a: u8) -> Color { c: Color = .{ r, g, b, a }; return c; }
 
-// same color, new alpha
+/// same color, new alpha
 pub with_alpha :: fn(c: Color, a: u8) -> Color { o: Color = .{ c.r, c.g, c.b, a }; return o; }
 
-// opaque gray
+/// opaque gray
 pub gray :: fn(v: u8) -> Color { c: Color = .{ v, v, v, 255u8 }; return c; }
 
 // named colors
@@ -32,18 +32,18 @@ lerp_u8 :: fn(a: u8, b: u8, t: f32) -> u8 {
     return v as u8;
 }
 
-// per-channel lerp; `a` at t=0, `b` at t=1
+/// per-channel lerp; `a` at t=0, `b` at t=1
 pub lerp :: fn(a: Color, b: Color, t: f32) -> Color {
     o: Color = .{ lerp_u8(a.r, b.r, t), lerp_u8(a.g, b.g, t), lerp_u8(a.b, b.b, t), lerp_u8(a.a, b.a, t) };
     return o;
 }
 
-// pack to 0xRRGGBBAA
+/// pack to 0xRRGGBBAA
 pub to_u32 :: fn(c: Color) -> u32 {
     return ((c.r as u32) << 24) | ((c.g as u32) << 16) | ((c.b as u32) << 8) | (c.a as u32);
 }
 
-// unpack from 0xRRGGBBAA
+/// unpack from 0xRRGGBBAA
 pub from_u32 :: fn(v: u32) -> Color {
     o: Color = .{
         ((v >> 24) & 255) as u8,

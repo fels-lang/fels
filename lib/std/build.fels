@@ -1,65 +1,65 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.build: build.fels defines `build :: fn(b: Build)`; runs in the comptime VM
+//! std.build: build.fels defines `build :: fn(b: Build)`; runs in the comptime VM
 
 // handles
 
 pub Build    :: struct { id: i32 }
 pub Artifact :: struct { id: i32 }
 
-// named step: deps first, then its actions in order; paths relative to build.fels
+/// named step: deps first, then its actions in order; paths relative to build.fels
 pub Step :: struct {
     id: i32,
 
-    // build `artifact` before this step's actions
+    /// build `artifact` before this step's actions
     pub depends_on :: fn(self: Step, artifact: Artifact) { __build_step_depends_on(self.id, artifact.id); }
 
-    // run `other` before this step
+    /// run `other` before this step
     pub after :: fn(self: Step, other: Step) { __build_step_after(self.id, other.id); }
 
-    // program on PATH or relative to build.fels; nonzero exit stops the build
+    /// program on PATH or relative to build.fels; nonzero exit stops the build
     pub command :: fn(self: Step, program: []const u8) -> Command {
         return .{ __build_step_command(self.id, program) };
     }
 
-    // build `artifact` (from this build) and run it, like `command`
+    /// build `artifact` (from this build) and run it, like `command`
     pub run :: fn(self: Step, artifact: Artifact) -> Command {
         return .{ __build_step_run(self.id, artifact.id) };
     }
 
     pub copy_file :: fn(self: Step, src: []const u8, dest: []const u8) { __build_step_copy_file(self.id, src, dest); }
 
-    // copy a folder recursively
+    /// copy a folder recursively
     pub copy_dir :: fn(self: Step, src: []const u8, dest: []const u8) { __build_step_copy_dir(self.id, src, dest); }
 
     pub write_file :: fn(self: Step, path: []const u8, text: []const u8) { __build_step_write_file(self.id, path, text); }
 
-    // remove a file or a folder recursively
+    /// remove a file or a folder recursively
     pub remove :: fn(self: Step, path: []const u8) { __build_step_remove(self.id, path, ""); }
 
-    // print a line when the step runs
+    /// print a line when the step runs
     pub print :: fn(self: Step, text: []const u8) { __build_step_print(self.id, text, ""); }
 }
 
-// program run by a step
+/// program run by a step
 pub Command :: struct {
     id: i32,
 
     pub arg :: fn(self: Command, text: []const u8) { __build_command_arg(self.id, text); }
 
-    // artifact's output path as an arg; built first only if the step depends on it
+    /// artifact's output path as an arg; built first only if the step depends on it
     pub arg_output :: fn(self: Command, artifact: Artifact) { __build_command_arg_output(self.id, artifact.id); }
 
-    // working dir, relative to build.fels (default: its folder)
+    /// working dir, relative to build.fels (default: its folder)
     pub cwd :: fn(self: Command, dir: []const u8) { __build_command_cwd(self.id, dir); }
 
-    // env var, on top of fels build's environment
+    /// env var, on top of fels build's environment
     pub env :: fn(self: Command, key: []const u8, value: []const u8) { __build_command_env(self.id, key, value); }
 }
 
 // enums
 
-// all but release_fast keep runtime checks; release_safe = release() = --release
-// release_fast: no checks, so OOB, null, div by 0, big shifts are UB; overflow wraps
+/// all but release_fast keep runtime checks; release_safe = release() = --release
+/// release_fast: no checks, so OOB, null, div by 0, big shifts are UB; overflow wraps
 pub Optimize  :: enum { debug, release_safe, release_fast, release_small }
 pub Subsystem :: enum { console, windows }
 
@@ -67,22 +67,22 @@ pub Subsystem :: enum { console, windows }
 
 // artifacts
 
-// executable; `root` is the entry source
+/// executable; `root` is the entry source
 pub executable :: fn(self: Build, name: []const u8, root: []const u8) -> Artifact {
     return .{ __build_artifact(name, root, 0) };
 }
 
-// shared library (.dll)
+/// shared library (.dll)
 pub shared :: fn(self: Build, name: []const u8, root: []const u8) -> Artifact {
     return .{ __build_artifact(name, root, 1) };
 }
 
-// static library (.lib)
+/// static library (.lib)
 pub static :: fn(self: Build, name: []const u8, root: []const u8) -> Artifact {
     return .{ __build_artifact(name, root, 2) };
 }
 
-// object file (.o), no link step
+/// object file (.o), no link step
 pub object :: fn(self: Build, name: []const u8, root: []const u8) -> Artifact {
     return .{ __build_artifact(name, root, 3) };
 }
@@ -107,37 +107,37 @@ pub release_small :: fn(self: Artifact) { __build_opt(self.id, 3); }
 
 // linking
 
-// link a system/import lib by name, no extension ("raylib"); once per lib
+/// link a system/import lib by name, no extension ("raylib"); once per lib
 pub link :: fn(self: Artifact, lib: []const u8) {
     __build_link(self.id, lib);
 }
 
-// link a lib from this build; built first; a shared lib's DLL lands next to the output
+/// link a lib from this build; built first; a shared lib's DLL lands next to the output
 pub link_artifact :: fn(self: Artifact, lib: Artifact) {
     __build_link_artifact(self.id, lib.id);
 }
 
-// alias for `link`
+/// alias for `link`
 pub system_library :: fn(self: Artifact, name: []const u8) {
     __build_link(self.id, name);
 }
 
-// add a lib search dir
+/// add a lib search dir
 pub lib_path :: fn(self: Artifact, dir: []const u8) {
     __build_lib_path(self.id, dir);
 }
 
-// raw linker flag, e.g. "/DEBUG"
+/// raw linker flag, e.g. "/DEBUG"
 pub link_flag :: fn(self: Artifact, flag: []const u8) {
     __build_link_flag(self.id, flag);
 }
 
-// link host libc (windows: UCRT + vcruntime; linux: dynamic glibc); same as --libc
+/// link host libc (windows: UCRT + vcruntime; linux: dynamic glibc); same as --libc
 pub link_libc :: fn(self: Artifact) {
     __build_link_libc(self.id);
 }
 
-// .dynamic (default): import lib, ship the runtime lib; .static: archive + C runtime
+/// .dynamic (default): import lib, ship the runtime lib; .static: archive + C runtime
 pub LinkMode :: enum { dynamic, static }
 
 pub link_mode :: fn(self: Artifact, mode: LinkMode) {
@@ -151,19 +151,19 @@ pub link_mode :: fn(self: Artifact, mode: LinkMode) {
 pub dynamic :: fn(self: Artifact) { __build_link_mode(self.id, 0); }
 pub static_link :: fn(self: Artifact) { __build_link_mode(self.id, 1); }
 
-// copy a runtime dep (a .dll) next to the output after building
+/// copy a runtime dep (a .dll) next to the output after building
 pub runtime_file :: fn(self: Artifact, path: []const u8) {
     __build_runtime_file(self.id, path);
 }
 
-// skip a static C lib's /DEFAULTLIB deps; you then link every system lib yourself
+/// skip a static C lib's /DEFAULTLIB deps; you then link every system lib yourself
 pub no_default_libs :: fn(self: Artifact) {
     __build_no_default_libs(self.id);
 }
 
 // executable settings
 
-// PE subsystem: console window or not
+/// PE subsystem: console window or not
 pub subsystem :: fn(self: Artifact, sub: Subsystem) {
     match sub {
         .console => { __build_subsystem(self.id, 0); }
@@ -171,29 +171,29 @@ pub subsystem :: fn(self: Artifact, sub: Subsystem) {
     }
 }
 
-// console app (default)
+/// console app (default)
 pub console :: fn(self: Artifact) { __build_subsystem(self.id, 0); }
 
-// GUI app, no console window
+/// GUI app, no console window
 pub windowed :: fn(self: Artifact) { __build_subsystem(self.id, 1); }
 
-// linker entry symbol (default: the runtime's `mainCRTStartup`)
+/// linker entry symbol (default: the runtime's `mainCRTStartup`)
 pub entry :: fn(self: Artifact, symbol: []const u8) {
     __build_entry(self.id, symbol);
 }
 
-// stack size in bytes
+/// stack size in bytes
 pub stack_size :: fn(self: Artifact, bytes: u64) {
     __build_stack(self.id, bytes as i64);
 }
 
 // target
 
-// .linux: static ELF, no libc; .linux_gnu: glibc via `sysroot`; no libs for linux yet
-// .uefi: a UEFI application (name.efi); .freestanding: an ELF with no os under it (name.elf)
+/// .linux: static ELF, no libc; .linux_gnu: glibc via `sysroot`; no libs for linux yet
+/// .uefi: a UEFI application (name.efi); .freestanding: an ELF with no os under it (name.elf)
 pub Target :: enum { windows, linux, linux_gnu, uefi, freestanding }
 
-// .aarch64 for a .uefi or .freestanding target; the rest are x86_64
+/// .aarch64 for a .uefi or .freestanding target; the rest are x86_64
 pub Arch :: enum { x86_64, aarch64 }
 
 pub arch :: fn(self: Artifact, a: Arch) {
@@ -213,19 +213,19 @@ pub target :: fn(self: Artifact, t: Target) {
     }
 }
 
-// folder with libc.so.6 and the dynamic linker, for .linux_gnu
+/// folder with libc.so.6 and the dynamic linker, for .linux_gnu
 pub sysroot :: fn(self: Artifact, dir: []const u8) {
     __build_sysroot(self.id, dir);
 }
 
-// drop the symbol table (linux; windows output has none)
+/// drop the symbol table (linux; windows output has none)
 pub strip :: fn(self: Artifact) {
     __build_strip(self.id);
 }
 
 pub Os :: enum { windows, linux, macos, other }
 
-// OS `fels build` runs on
+/// OS `fels build` runs on
 pub host_os :: fn(self: Build) -> Os {
     n := __build_host_os();
     if n == 0 { return .windows; }
@@ -236,34 +236,34 @@ pub host_os :: fn(self: Build) -> Os {
 
 // output
 
-// output path (default: from the name)
+/// output path (default: from the name)
 pub output :: fn(self: Artifact, path: []const u8) {
     __build_output(self.id, path);
 }
 
-// output dir for this artifact; overrides out_root
+/// output dir for this artifact; overrides out_root
 pub out_dir :: fn(self: Artifact, dir: []const u8) {
     __build_out_dir(self.id, dir);
 }
 
 // metadata
 
-// semver, shown in the build summary
+/// semver, shown in the build summary
 pub version :: fn(self: Artifact, v: []const u8) {
     __build_version(self.id, v);
 }
 
-// shown by --list
+/// shown by --list
 pub description :: fn(self: Artifact, text: []const u8) {
     __build_description(self.id, text);
 }
 
-// mark for `fels build install`: exes/DLLs to bin/, static/import libs to lib/
+/// mark for `fels build install`: exes/DLLs to bin/, static/import libs to lib/
 pub install :: fn(self: Artifact) {
     __build_install(self.id);
 }
 
-// const in the generated `build_options` module; importable even with no defines
+/// const in the generated `build_options` module; importable even with no defines
 pub define :: fn(self: Artifact, name: []const u8, value: []const u8) {
     __build_define(self.id, name, value);
 }
@@ -276,124 +276,124 @@ pub define_bool :: fn(self: Artifact, name: []const u8, value: bool) {
     __build_define_bool(self.id, name, value);
 }
 
-// named import root: `#import name.x` reads dir/x.fels, `#import name` dir/name.fels
+/// named import root: `#import name.x` reads dir/x.fels, `#import name` dir/name.fels
 pub add_module :: fn(self: Artifact, name: []const u8, dir: []const u8) {
     __build_add_module(self.id, name, dir);
 }
 
 // dependencies
 
-// dep from a local dir; its build.fels runs sandboxed
+/// dep from a local dir; its build.fels runs sandboxed
 pub require_path :: fn(self: Build, name: []const u8, dir: []const u8) -> i32 {
     return __build_require(name, dir, 0);
 }
 
-// dep fetched from git (no revision pinning yet)
+/// dep fetched from git (no revision pinning yet)
 pub require_git :: fn(self: Build, name: []const u8, url: []const u8) -> i32 {
     return __build_require(name, url, 1);
 }
 
-// `self` depends on `dep` (id from require_*)
+/// `self` depends on `dep` (id from require_*)
 pub depend :: fn(self: Artifact, dep: i32) {
     __build_depend(self.id, dep);
 }
 
 // fels.pkg side: users only get provide_*; runs with fels.pkg caps, no host access
 
-// lib dir for the users' linker, relative to this build.fels
+/// lib dir for the users' linker, relative to this build.fels
 pub provide_lib_path :: fn(self: Build, dir: []const u8) {
     __build_provide_lib_path(dir);
 }
 
-// lib every user artifact links, no extension ("winmm")
+/// lib every user artifact links, no extension ("winmm")
 pub provide_link :: fn(self: Build, lib: []const u8) {
     __build_provide_link(lib);
 }
 
-// file copied next to the users' output (a DLL), relative to this build.fels
+/// file copied next to the users' output (a DLL), relative to this build.fels
 pub provide_runtime_file :: fn(self: Build, path: []const u8) {
     __build_provide_runtime_file(path);
 }
 
 // workspace
 
-// workspace name, shown in the build summary
+/// workspace name, shown in the build summary
 pub workspace :: fn(self: Build, name: []const u8) {
     __build_workspace(name);
 }
 
-// install dir, relative to build.fels (default "dist"); --prefix overrides
+/// install dir, relative to build.fels (default "dist"); --prefix overrides
 pub install_prefix :: fn(self: Build, dir: []const u8) {
     __build_install_prefix(dir);
 }
 
-// copy a file into the install prefix
+/// copy a file into the install prefix
 pub install_file :: fn(self: Build, src: []const u8, dest: []const u8) {
     __build_install_file(src, dest);
 }
 
-// copy a folder recursively into the install prefix
+/// copy a folder recursively into the install prefix
 pub install_dir :: fn(self: Build, src: []const u8, dest: []const u8) {
     __build_install_dir(src, dest);
 }
 
-// default output dir for all artifacts; per-artifact out_dir wins
+/// default output dir for all artifacts; per-artifact out_dir wins
 pub out_root :: fn(self: Build, dir: []const u8) {
     __build_out_root(dir);
 }
 
-// print a summary of every artifact after the build
+/// print a summary of every artifact after the build
 pub summary :: fn(self: Build) {
     __build_summary(1);
 }
 
 // build options (-Dname, -Dname=value); an undeclared or ill-typed -D is an error
 
-// -Dname or -Dname=true|false (yes/no, on/off, 1/0)
+/// -Dname or -Dname=true|false (yes/no, on/off, 1/0)
 pub option_bool :: fn(self: Build, name: []const u8, default: bool, help: []const u8) -> bool {
     return __build_option_bool(name, default, help);
 }
 
-// -Dname=<int>; decimal or 0x/0o/0b
+/// -Dname=<int>; decimal or 0x/0o/0b
 pub option_int :: fn(self: Build, name: []const u8, default: i64, help: []const u8) -> i64 {
     return __build_option_int(name, default, help);
 }
 
-// -Dname=<text>
+/// -Dname=<text>
 pub option_string :: fn(self: Build, name: []const u8, default: []const u8, help: []const u8) -> []const u8 {
     return __build_option_string(name, default, help);
 }
 
-// -Dname=<word>, one of `choices` ("a|b|c")
+/// -Dname=<word>, one of `choices` ("a|b|c")
 pub option_choice :: fn(self: Build, name: []const u8, choices: []const u8, default: []const u8, help: []const u8) -> []const u8 {
     return __build_option_choice(name, choices, default, help);
 }
 
 // short forms, no help text
 
-// true if -Dname was passed
+/// true if -Dname was passed
 pub option :: fn(self: Build, name: []const u8) -> bool {
     return __build_option_flag(name) != 0;
 }
 
-// value of -Dname=value, else `default`
+/// value of -Dname=value, else `default`
 pub option_str :: fn(self: Build, name: []const u8, default: []const u8) -> []const u8 {
     return __build_option_str(name, default);
 }
 
 // steps and default
 
-// run step: build `target`, run it with the args after `--`; returns its Command
+/// run step: build `target`, run it with the args after `--`; returns its Command
 pub run_step :: fn(self: Build, name: []const u8, target: Artifact) -> Command {
     return .{ __build_run_step(name, target.id) };
 }
 
-// named step; see `Step`
+/// named step; see `Step`
 pub step :: fn(self: Build, name: []const u8, description: []const u8) -> Step {
     return .{ __build_step(name, description) };
 }
 
-// step that runs one program
+/// step that runs one program
 pub command :: fn(self: Build, name: []const u8, program: []const u8) -> Command {
     s := b_step(name);
     return s.command(program);
@@ -403,17 +403,17 @@ b_step :: fn(name: []const u8) -> Step {
     return .{ __build_step(name, "") };
 }
 
-// what bare `fels build` runs, instead of the default artifact
+/// what bare `fels build` runs, instead of the default artifact
 pub default_step :: fn(self: Build, step: Step) {
     __build_default_step(step.id);
 }
 
-// run `step` before building this artifact (codegen)
+/// run `step` before building this artifact (codegen)
 pub after :: fn(self: Artifact, step: Step) {
     __build_artifact_after(self.id, step.id);
 }
 
-// test step: each .fels in `dir` runs as a program, exit 0 passes; `-- <text>` filters
+/// test step: each .fels in `dir` runs as a program, exit 0 passes; `-- <text>` filters
 pub test_dir :: fn(self: Build, name: []const u8, dir: []const u8) -> Tests {
     return .{ __build_test_dir(name, dir) };
 }
@@ -421,13 +421,13 @@ pub test_dir :: fn(self: Build, name: []const u8, dir: []const u8) -> Tests {
 pub Tests :: struct {
     id: i32,
 
-    // also the tests in subfolders
+    /// also the tests in subfolders
     pub recursive :: fn(self: Tests) { __build_test_recursive(self.id); }
 
-    // only test files whose path contains `text`; repeatable
+    /// only test files whose path contains `text`; repeatable
     pub filter :: fn(self: Tests, text: []const u8) { __build_test_filter(self.id, text); }
 
-    // optimization level (default: debug, checks on)
+    /// optimization level (default: debug, checks on)
     pub optimize :: fn(self: Tests, level: Optimize) {
         match level {
             .debug         => { __build_test_optimize(self.id, 0); }
@@ -437,14 +437,14 @@ pub Tests :: struct {
         }
     }
 
-    // lib the tests link
+    /// lib the tests link
     pub link :: fn(self: Tests, lib: []const u8) { __build_test_link(self.id, lib); }
 
-    // lib from this build; built before the tests run
+    /// lib from this build; built before the tests run
     pub link_artifact :: fn(self: Tests, lib: Artifact) { __build_test_link_artifact(self.id, lib.id); }
 }
 
-// artifact bare `fels build` produces
+/// artifact bare `fels build` produces
 pub default :: fn(self: Build, target: Artifact) {
     __build_set_default(target.id);
 }

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.bufio: buffered io::Reader/io::Writer wrappers; the caller owns the buffer
+//! std.bufio: buffered io::Reader/io::Writer wrappers; the caller owns the buffer
 
 #import std.io.{ Reader, Writer, IoError };
 #import std.heap.{ Arena, alloc_bytes };
 
-// unread bytes are buf[start..end]
+/// unread bytes are buf[start..end]
 pub BufReader :: struct {
     src: *Reader,
     buf: []u8,
@@ -15,10 +15,10 @@ pub BufReader :: struct {
     // a read in lines() failed or a line overflowed the buffer; the loop stopped
     failed: bool,
 
-    // read but not yet taken
+    /// read but not yet taken
     pub buffered :: fn(self: *Self) -> []const u8 { return self.buf[self.start..self.end]; }
 
-    // compacts, reads more from src; returns bytes added (0 at end or when full)
+    /// compacts, reads more from src; returns bytes added (0 at end or when full)
     pub fill :: fn(self: *Self) -> usize ! IoError {
         if self.start > 0 {
             n := self.end - self.start;
@@ -33,7 +33,7 @@ pub BufReader :: struct {
         return got;
     }
 
-    // null at the end
+    /// null at the end
     pub read_byte :: fn(self: *Self) -> ?u8 ! IoError {
         if self.start == self.end {
             if self.fill()? == 0 { return null; }
@@ -43,8 +43,8 @@ pub BufReader :: struct {
         return b;
     }
 
-    // up to `delim`, excluded; the tail at end, then null; buffer_full if no delim fits
-    // slice into the buffer; valid until the next read
+    /// up to `delim`, excluded; the tail at end, then null; buffer_full if no delim fits
+    /// slice into the buffer; valid until the next read
     pub read_until :: fn(self: *Self, delim: u8) -> ?[]const u8 ! IoError {
         scanned: usize = 0;
         while true {
@@ -70,7 +70,7 @@ pub BufReader :: struct {
         return null;
     }
 
-    // like read_until('\n'), "\r" stripped too; no empty last line
+    /// like read_until('\n'), "\r" stripped too; no empty last line
     pub read_line :: fn(self: *Self) -> ?[]const u8 ! IoError {
         if self.read_until('\n')? |line| {
             if line.len > 0 && line[line.len - 1] == '\r' { return line[0..line.len - 1]; }
@@ -79,7 +79,7 @@ pub BufReader :: struct {
         return null;
     }
 
-    // remaining lines; a failed read ends the loop and sets `failed`
+    /// remaining lines; a failed read ends the loop and sets `failed`
     pub lines :: fn(self: *Self) -> Lines {
         it: Lines = .{ self };
         return it;
@@ -101,7 +101,7 @@ BufReader as Reader {
     }
 }
 
-// iterator from BufReader.lines
+/// iterator from BufReader.lines
 pub Lines :: struct {
     r: *BufReader,
 
@@ -114,24 +114,24 @@ pub Lines :: struct {
     }
 }
 
-// uses `buf` as the buffer
+/// uses `buf` as the buffer
 pub reader :: fn(src: *Reader, buf: []u8) -> BufReader {
     r: BufReader = .{ src, buf, 0, 0, false, false };
     return r;
 }
 
-// `size`-byte buffer in `a`
+/// `size`-byte buffer in `a`
 pub reader_in :: fn(a: *Arena, src: *Reader, size: usize) -> BufReader {
     return reader(src, a.alloc_bytes(size));
 }
 
-// buf[0..n] waits to be written; flush writes it
+/// buf[0..n] waits to be written; flush writes it
 pub BufWriter :: struct {
     dst: *Writer,
     buf: []u8,
     n: usize,
 
-    // writes the buffer to dst; does not flush dst
+    /// writes the buffer to dst; does not flush dst
     pub drain :: fn(self: *Self) -> void ! IoError {
         if self.n == 0 { return; }
         done: usize = 0;
@@ -167,18 +167,18 @@ BufWriter as Writer {
     }
 }
 
-// uses `buf` as the buffer
+/// uses `buf` as the buffer
 pub writer :: fn(dst: *Writer, buf: []u8) -> BufWriter {
     w: BufWriter = .{ dst, buf, 0 };
     return w;
 }
 
-// `size`-byte buffer in `a`
+/// `size`-byte buffer in `a`
 pub writer_in :: fn(a: *Arena, dst: *Writer, size: usize) -> BufWriter {
     return writer(dst, a.alloc_bytes(size));
 }
 
-// reads src to its end into `a`
+/// reads src to its end into `a`
 pub read_all :: fn(a: *Arena, src: *Reader) -> []u8 ! IoError {
     buf := a.alloc_bytes(4096);
     n: usize = 0;

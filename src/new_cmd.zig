@@ -374,7 +374,7 @@ const app_files = [_]File{
     .{ .path = "src/main.fels", .text =
     \\#import std.io;
     \\
-    \\// The sum of the numbers from 1 to `n`.
+    \\/// The sum of the numbers from 1 to `n`.
     \\sum_to :: fn(n: i32) -> i32 {
     \\    total := 0;
     \\    i := 1;
@@ -434,16 +434,17 @@ const lib_files = [_]File{
     \\
     },
     .{ .path = "src/{{name}}.fels", .text =
-    \\// {{name}}: what the library offers. Everything marked `pub` is for its users.
+    \\//! {{name}}: what the library offers. Everything marked `pub` is for its users, and
+    \\//! `fels doc` makes a reference of it from the `///` comments.
     \\
-    \\// `x`, kept between `lo` and `hi`.
+    \\/// `x`, kept between `lo` and `hi`.
     \\pub clamp :: fn(x: i32, lo: i32, hi: i32) -> i32 {
     \\    if x < lo { return lo; }
     \\    if x > hi { return hi; }
     \\    return x;
     \\}
     \\
-    \\// The larger of `a` and `b`.
+    \\/// The larger of `a` and `b`.
     \\pub max :: fn(a: i32, b: i32) -> i32 {
     \\    if a > b { return a; }
     \\    return b;
@@ -529,16 +530,16 @@ const cbind_files = [_]File{
     \\
     },
     .{ .path = "src/{{name}}.fels", .text =
-    \\// {{name}}: Fels bindings to a C library.
-    \\//
-    \\// A binding names the library and the C function, and gives its Fels type:
-    \\//
-    \\//     #extern("{{name}}", "{{name}}_init")
-    \\//     pub init :: fn(flags: u32) -> i32;
-    \\//
-    \\// That links {{name}}.lib from lib/ (see lib/README.md). The two bindings below call
-    \\// kernel32, which every Windows program links, so the package builds and its tests run
-    \\// before your library is there. Replace them with your library's functions.
+    \\//! {{name}}: Fels bindings to a C library.
+    \\//!
+    \\//! A binding names the library and the C function, and gives its Fels type:
+    \\//!
+    \\//!     #extern("{{name}}", "{{name}}_init")
+    \\//!     pub init :: fn(flags: u32) -> i32;
+    \\//!
+    \\//! That links {{name}}.lib from lib/ (see lib/README.md). The two bindings below call
+    \\//! kernel32, which every Windows program links, so the package builds and its tests run
+    \\//! before your library is there. Replace them with your library's functions.
     \\
     \\#extern("kernel32", "GetTickCount64")
     \\pub ticks_ms :: fn() -> u64;
@@ -546,7 +547,7 @@ const cbind_files = [_]File{
     \\#extern("kernel32", "GetCurrentProcessId")
     \\pub process_id :: fn() -> u32;
     \\
-    \\// A Fels function over a binding: the place for nicer types and checks.
+    \\/// A Fels function over a binding: the place for nicer types and checks.
     \\pub seconds_since_boot :: fn() -> u64 {
     \\    return ticks_ms() / 1000u64;
     \\}

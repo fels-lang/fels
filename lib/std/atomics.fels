@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.atomics: atomic ops; rmw returns the previous value; helpers are seq-cst
+//! std.atomics: atomic ops; rmw returns the previous value; helpers are seq-cst
 
-// orderings for core::atomic_*; must be comptime-known
+/// orderings for core::atomic_*; must be comptime-known
 pub Relaxed :: 0; // atomicity only, no ordering between threads
 pub Acquire :: 1; // later accesses can't move before this load
 pub Release :: 2; // earlier accesses can't move after this store
@@ -10,7 +10,7 @@ pub SeqCst  :: 4; // single total order over all seq-cst ops
 
 // type contracts; a bad T is rejected at the call site
 
-// int, float, bool or pointer, at most word-sized
+/// int, float, bool or pointer, at most word-sized
 pub Native :: constraint($T) {
     match core::type_info(T) {
         .int => {}
@@ -21,7 +21,7 @@ pub Native :: constraint($T) {
     }
 }
 
-// int or float, for add/sub/mul/div
+/// int or float, for add/sub/mul/div
 pub Numeric :: constraint($T) {
     match core::type_info(T) {
         .int => {}
@@ -30,7 +30,7 @@ pub Numeric :: constraint($T) {
     }
 }
 
-// int only: bitwise, shifts, min/max
+/// int only: bitwise, shifts, min/max
 pub Integer :: constraint($T) {
     match core::type_info(T) {
         .int => {}
@@ -38,7 +38,7 @@ pub Integer :: constraint($T) {
     }
 }
 
-// for flag helpers
+/// for flag helpers
 pub Boolean :: constraint($T) {
     match core::type_info(T) {
         .boolean => {}
@@ -52,34 +52,34 @@ pub load :: fn($T: Native, p: *T) -> T { return core::atomic_load(p, 4); }
 
 pub store :: fn($T: Native, p: *T, v: T) { core::atomic_store(p, v, 4); }
 
-// acquire load; pairs with store_release
+/// acquire load; pairs with store_release
 pub load_acquire :: fn($T: Native, p: *T) -> T { return core::atomic_load(p, 1); }
 
-// release store; pairs with load_acquire
+/// release store; pairs with load_acquire
 pub store_release :: fn($T: Native, p: *T, v: T) { core::atomic_store(p, v, 2); }
 
-// returns the previous value
+/// returns the previous value
 pub swap :: fn($T: Native, p: *T, v: T) -> T { return core::atomic_exchange(p, v, 4); }
 
 // compare-exchange
 
-// true if *p was `expected` and is now `desired`
+/// true if *p was `expected` and is now `desired`
 pub compare_exchange :: fn($T: Native, p: *T, expected: T, desired: T) -> bool {
     return core::atomic_cas(p, expected, desired, 4) == expected;
 }
 
-// returns the observed value (== expected on success)
+/// returns the observed value (== expected on success)
 pub compare_exchange_value :: fn($T: Native, p: *T, expected: T, desired: T) -> T {
     return core::atomic_cas(p, expected, desired, 4);
 }
 
 // arithmetic; returns the previous value
 
-// native for ints and floats
+/// native for ints and floats
 pub fetch_add :: fn($T: Numeric, p: *T, v: T) -> T { return core::atomic_add(p, v, 4); }
 pub fetch_sub :: fn($T: Numeric, p: *T, v: T) -> T { return core::atomic_sub(p, v, 4); }
 
-// no hardware atomic; cas retry loop
+/// no hardware atomic; cas retry loop
 pub fetch_mul :: fn($T: Numeric, p: *T, v: T) -> T {
     while true {
         old := core::atomic_load(p, 4);
@@ -96,17 +96,17 @@ pub fetch_div :: fn($T: Numeric, p: *T, v: T) -> T {
     return core::atomic_load(p, 4); // unreachable
 }
 
-// min / max (ints; signedness from T)
+/// min / max (ints; signedness from T)
 pub fetch_max :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_max(p, v, 4); }
 pub fetch_min :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_min(p, v, 4); }
 
-// bitwise (ints; returns the previous value)
+/// bitwise (ints; returns the previous value)
 pub fetch_and  :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_and(p, v, 4); }
 pub fetch_or   :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_or(p, v, 4); }
 pub fetch_xor  :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_xor(p, v, 4); }
 pub fetch_nand :: fn($T: Integer, p: *T, v: T) -> T { return core::atomic_nand(p, v, 4); }
 
-// no hardware atomic; cas retry loops
+/// no hardware atomic; cas retry loops
 pub fetch_shl :: fn($T: Integer, p: *T, bits: T) -> T {
     while true {
         old := core::atomic_load(p, 4);
@@ -125,42 +125,42 @@ pub fetch_shr :: fn($T: Integer, p: *T, bits: T) -> T {
 
 // fences
 
-// seq-cst fence
+/// seq-cst fence
 pub fence :: fn() { core::atomic_fence(4); }
 
-// nothing after it moves before it
+/// nothing after it moves before it
 pub fence_acquire :: fn() { core::atomic_fence(1); }
 
-// nothing before it moves after it
+/// nothing before it moves after it
 pub fence_release :: fn() { core::atomic_fence(2); }
 
 // u32 flags: 0 = clear, non-zero = set
 
 pub is_set :: fn(flag: *u32) -> bool { return load(flag) != 0u32; }
 
-// sets to 1; returns whether it was already set
+/// sets to 1; returns whether it was already set
 pub test_and_set :: fn(flag: *u32) -> bool { return swap(flag, 1u32) != 0u32; }
 
 pub clear :: fn(flag: *u32) { store(flag, 0u32); }
 
-// busy-waits
+/// busy-waits
 pub wait_until_set :: fn(flag: *u32) {
     while load(flag) == 0 {}
 }
 
-// busy-waits until *flag == value
+/// busy-waits until *flag == value
 pub wait_until_eq :: fn(flag: *u32, value: u32) {
     while load(flag) != value {}
 }
 
-// spins on test_and_set until it wins 0 -> 1
+/// spins on test_and_set until it wins 0 -> 1
 pub spin_lock :: fn(lock: *u32) {
     while test_and_set(lock) {}
 }
 
 pub spin_unlock :: fn(lock: *u32) { store_release(lock, 0u32); }
 
-// typed atomic cell; methods skip the Integer/Numeric checks the free fns do
+/// typed atomic cell; methods skip the Integer/Numeric checks the free fns do
 #sync
 pub Atomic :: struct($T: Native) {
     value: T
@@ -174,7 +174,7 @@ pub Atomic :: struct($T: Native) {
     pub set_release :: fn(self: *Self, v: T) { core::atomic_store(&self.value, v, 2); }
     pub exchange :: fn(self: *Self, v: T) -> T { return core::atomic_exchange(&self.value, v, 4); }
 
-    // cas: bool and observed-value variants
+    /// cas: bool and observed-value variants
     pub cas :: fn(self: *Self, expected: T, desired: T) -> bool {
         return core::atomic_cas(&self.value, expected, desired, 4) == expected;
     }
@@ -182,7 +182,7 @@ pub Atomic :: struct($T: Native) {
         return core::atomic_cas(&self.value, expected, desired, 4);
     }
 
-    // arithmetic; returns the previous value
+    /// arithmetic; returns the previous value
     pub add :: fn(self: *Self, v: T) -> T { return core::atomic_add(&self.value, v, 4); }
     pub sub :: fn(self: *Self, v: T) -> T { return core::atomic_sub(&self.value, v, 4); }
     pub mul :: fn(self: *Self, v: T) -> T {
@@ -200,7 +200,7 @@ pub Atomic :: struct($T: Native) {
         return core::atomic_load(&self.value, 4); // unreachable
     }
 
-    // min / max + bitwise; returns the previous value
+    /// min / max + bitwise; returns the previous value
     pub max  :: fn(self: *Self, v: T) -> T { return core::atomic_max(&self.value, v, 4); }
     pub min  :: fn(self: *Self, v: T) -> T { return core::atomic_min(&self.value, v, 4); }
     pub and  :: fn(self: *Self, v: T) -> T { return core::atomic_and(&self.value, v, 4); }

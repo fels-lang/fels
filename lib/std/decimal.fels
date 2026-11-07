@@ -1,20 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.decimal: exact decimals (money); coef / 10^scale, i64 coef, max 18 places
+//! std.decimal: exact decimals (money); coef / 10^scale, i64 coef, max 18 places
 
 pub DecimalError :: errors {
-    invalid,            // text that is no decimal number
-    overflow,           // coef past i64, or more than 18 places
+    /// text that is no decimal number
+    invalid,
+    /// coef past i64, or more than 18 places
+    overflow,
     division_by_zero,
 }
 
 pub Rounding :: enum {
-    half_even,     // ties to even (banker's): 2.5 -> 2, 3.5 -> 4
-    half_up,       // ties away from zero: 2.5 -> 3, -2.5 -> -3
-    half_down,     // ties toward zero: 2.5 -> 2
-    down,          // toward zero: 2.9 -> 2, -2.9 -> -2
-    up,            // away from zero: 2.1 -> 3, -2.1 -> -3
-    floor,         // toward -inf: -2.1 -> -3
-    ceiling,       // toward +inf: 2.1 -> 3
+    /// ties to even (banker's): 2.5 -> 2, 3.5 -> 4
+    half_even,
+    /// ties away from zero: 2.5 -> 3, -2.5 -> -3
+    half_up,
+    /// ties toward zero: 2.5 -> 2
+    half_down,
+    /// toward zero: 2.9 -> 2, -2.9 -> -2
+    down,
+    /// away from zero: 2.1 -> 3, -2.1 -> -3
+    up,
+    /// toward -inf: -2.1 -> -3
+    floor,
+    /// toward +inf: 2.1 -> 3
+    ceiling,
 }
 
 pub MAX_SCALE :: 18u32;
@@ -23,7 +32,7 @@ pub Decimal :: struct {
     coef: i64,
     scale: u32,
 
-    // for "{d}" in format strings; keeps all places
+    /// for "{d}" in format strings; keeps all places
     pub format :: fn(self: Decimal, f: *Formatter) {
         buf: [48]u8 = .{};
         n := write_text(self, buf[:]);
@@ -42,7 +51,7 @@ I64_MIN_MAG :: 9223372036854775808u64;    // of a negative one
 
 // building
 
-// coef / 10^scale; .overflow if scale > 18
+/// coef / 10^scale; .overflow if scale > 18
 pub from_parts :: fn(coef: i64, scale: u32) -> Decimal ! DecimalError {
     if scale > MAX_SCALE { fail .overflow; }
     d: Decimal = .{ coef, scale };
@@ -64,7 +73,7 @@ magnitude :: fn(c: i64) -> u64 {
     return (-c) as u64;
 }
 
-// coef from magnitude and sign; .overflow if it doesn't fit
+/// coef from magnitude and sign; .overflow if it doesn't fit
 signed :: fn(m: u64, negative: bool) -> i64 ! DecimalError {
     if negative {
         if m > I64_MIN_MAG { fail .overflow; }
@@ -93,7 +102,7 @@ mul64 :: fn(a: u64, b: u64) -> U128 {
     return r;
 }
 
-// n / d (d != 0): 128-bit quotient and remainder
+/// n / d (d != 0): 128-bit quotient and remainder
 DivResult :: struct { q: U128, rem: u64 }
 
 div128 :: fn(n: U128, d: u64) -> DivResult {
@@ -116,10 +125,10 @@ div128 :: fn(n: U128, d: u64) -> DivResult {
     return r;
 }
 
-// numerator scaled by up to 10^36; a = top word, c = bottom
+/// numerator scaled by up to 10^36; a = top word, c = bottom
 U192 :: struct { a: u64, b: u64, c: u64 }
 
-// x * f
+/// x * f
 mul3 :: fn(x: U128, f: u64) -> U192 {
     lo := mul64(x.lo, f);
     hi := mul64(x.hi, f);
@@ -131,7 +140,7 @@ mul3 :: fn(x: U128, f: u64) -> U192 {
 
 Div3Result :: struct { q: U192, rem: u64 }
 
-// n / d (d != 0), a bit at a time
+/// n / d (d != 0), a bit at a time
 div3 :: fn(n: U192, d: u64) -> Div3Result {
     q: U192 = .{ 0, 0, 0 };
     rem: u64 = 0;
@@ -152,7 +161,7 @@ div3 :: fn(n: U192, d: u64) -> Div3Result {
     return r;
 }
 
-// bump q? half: dropped part -1 below, 0 at, 1 above a half; inexact: dropped part != 0
+/// bump q? half: dropped part -1 below, 0 at, 1 above a half; inexact: dropped part != 0
 round_up :: fn(mode: Rounding, negative: bool, q_odd: bool, half: i32, inexact: bool) -> bool {
     if !inexact { return false; }
     match mode {
@@ -166,7 +175,7 @@ round_up :: fn(mode: Rounding, negative: bool, q_odd: bool, half: i32, inexact: 
     }
 }
 
-// m / 10^k rounded by mode, as a signed coef; sticky: nonzero digits already dropped
+/// m / 10^k rounded by mode, as a signed coef; sticky: nonzero digits already dropped
 shrink :: fn(m: U128, k: u32, negative: bool, mode: Rounding, sticky: bool) -> i64 ! DecimalError {
     q := m;
     half: i32 = -1;
@@ -194,12 +203,12 @@ shrink :: fn(m: U128, k: u32, negative: bool, mode: Rounding, sticky: bool) -> i
 
 // arithmetic
 
-// d's magnitude at a larger scale
+/// d's magnitude at a larger scale
 widen :: fn(d: Decimal, scale: u32) -> U128 {
     return mul64(magnitude(d.coef), POW10[(scale - d.scale) as usize]);
 }
 
-// exact, at the larger scale
+/// exact, at the larger scale
 pub add :: fn(a: Decimal, b: Decimal) -> Decimal ! DecimalError {
     scale := if a.scale > b.scale { a.scale } else { b.scale };
     x := widen(a, scale);
@@ -220,12 +229,12 @@ pub add :: fn(a: Decimal, b: Decimal) -> Decimal ! DecimalError {
     return r;
 }
 
-// exact, at the larger scale
+/// exact, at the larger scale
 pub sub :: fn(a: Decimal, b: Decimal) -> Decimal ! DecimalError {
     return add(a, neg(b)?);
 }
 
-// scale = a.scale + b.scale; past 18 or too big: drops places (half_even), then .overflow
+/// scale = a.scale + b.scale; past 18 or too big: drops places (half_even), then .overflow
 pub mul :: fn(a: Decimal, b: Decimal) -> Decimal ! DecimalError {
     p := mul64(magnitude(a.coef), magnitude(b.coef));
     negative := (a.coef < 0) != (b.coef < 0) && a.coef != 0 && b.coef != 0;
@@ -248,7 +257,7 @@ pub mul :: fn(a: Decimal, b: Decimal) -> Decimal ! DecimalError {
     fail .overflow;
 }
 
-// a / b at scale places, rounded by mode
+/// a / b at scale places, rounded by mode
 pub div :: fn(a: Decimal, b: Decimal, scale: u32, mode: Rounding) -> Decimal ! DecimalError {
     if b.coef == 0 { fail .division_by_zero; }
     if scale > MAX_SCALE { fail .overflow; }
@@ -277,7 +286,7 @@ pub div :: fn(a: Decimal, b: Decimal, scale: u32, mode: Rounding) -> Decimal ! D
     return out;
 }
 
-// more places is exact; fewer rounds by mode
+/// more places is exact; fewer rounds by mode
 pub round :: fn(d: Decimal, scale: u32, mode: Rounding) -> Decimal ! DecimalError {
     if scale > MAX_SCALE { fail .overflow; }
     if scale >= d.scale {
@@ -302,7 +311,7 @@ pub abs :: fn(d: Decimal) -> Decimal ! DecimalError {
     return d;
 }
 
-// strips trailing zeros: 2.500 -> 2.5, 3.00 -> 3
+/// strips trailing zeros: 2.500 -> 2.5, 3.00 -> 3
 pub normalize :: fn(d: Decimal) -> Decimal {
     r := d;
     while r.scale > 0 && r.coef % 10 == 0 {
@@ -314,7 +323,7 @@ pub normalize :: fn(d: Decimal) -> Decimal {
 
 // comparing
 
-// -1, 0, 1; ignores scale (2.50 == 2.5)
+/// -1, 0, 1; ignores scale (2.50 == 2.5)
 pub cmp :: fn(a: Decimal, b: Decimal) -> i32 {
     na := a.coef < 0;
     nb := b.coef < 0;
@@ -335,7 +344,7 @@ pub is_negative :: fn(d: Decimal) -> bool { return d.coef < 0; }
 
 // text
 
-// sign, digits, one point, optional exponent; scale = places written; .invalid, .overflow
+/// sign, digits, one point, optional exponent; scale = places written; .invalid, .overflow
 pub parse :: fn(text: []const u8) -> Decimal ! DecimalError {
     i: usize = 0;
     negative := false;
@@ -393,7 +402,7 @@ pub parse :: fn(text: []const u8) -> Decimal ! DecimalError {
     return r;
 }
 
-// writes d to out (48 bytes always enough); returns the length
+/// writes d to out (48 bytes always enough); returns the length
 write_text :: fn(d: Decimal, out: []u8) -> usize {
     digits: [24]u8 = .{};
     m := magnitude(d.coef);
@@ -421,18 +430,18 @@ write_text :: fn(d: Decimal, out: []u8) -> usize {
     return o;
 }
 
-// keeps all places (19.90 stays 19.90); slice of out; 48 bytes always enough
+/// keeps all places (19.90 stays 19.90); slice of out; 48 bytes always enough
 pub to_text :: fn(d: Decimal, out: []u8) -> []const u8 {
     n := write_text(d, out);
     return out[0..n];
 }
 
-// nearest f64; exact to ~15 significant digits
+/// nearest f64; exact to ~15 significant digits
 pub to_f64 :: fn(d: Decimal) -> f64 {
     return (d.coef as f64) / (POW10[d.scale as usize] as f64);
 }
 
-// rounds half-even to scale places; floats are binary, not for exact work
+/// rounds half-even to scale places; floats are binary, not for exact work
 pub from_f64 :: fn(x: f64, scale: u32) -> Decimal ! DecimalError {
     if scale > MAX_SCALE || x != x { fail .overflow; }
     y := x * (POW10[scale as usize] as f64);
@@ -445,7 +454,7 @@ pub from_f64 :: fn(x: f64, scale: u32) -> Decimal ! DecimalError {
     return r;
 }
 
-// exact, at the largest scale
+/// exact, at the largest scale
 pub sum :: fn(xs: []const Decimal) -> Decimal ! DecimalError {
     total := zero();
     for x in xs { total = add(total, x)?; }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.net: tcp/udp facade over net.os/addr/socket/tcp/udp; re-exports their types
-// call net::init() once per process before any socket call
+//! std.net: tcp/udp facade over net.os/addr/socket/tcp/udp; re-exports their types
+//! call net::init() once per process before any socket call
 
 #import std.net.os as os;
 #import std.net.addr as addr;
@@ -22,31 +22,31 @@ pub Datagram    :: udp::Datagram;
 
 // lifecycle
 
-// init winsock; once, before any socket call
+/// init winsock; once, before any socket call
 pub init :: fn() -> void ! NetError { os::init()?; return; }
 
-// tear down winsock; optional, at exit
+/// tear down winsock; optional, at exit
 pub shutdown :: fn() { os::cleanup(); }
 
-// last winsock error on this thread (WSAGetLastError)
+/// last winsock error on this thread (WSAGetLastError)
 pub last_error :: fn() -> i32 { return os::last_error(); }
 
 // tcp
 
-// connect to `sa` (client)
+/// connect to `sa` (client)
 pub connect :: fn(sa: SocketAddr) -> TcpStream ! NetError {
     return tcp::connect(sa)?;
 }
 
-// bind + listen on `sa`, backlog 16
+/// bind + listen on `sa`, backlog 16
 pub listen :: fn(sa: SocketAddr) -> TcpListener ! NetError {
     return tcp::listen(sa)?;
 }
 
 // names
 
-// ipv4 of `host`: dotted, localhost, or looked up (after init); files read into `a`
-// windows: system resolver; linux: /etc/hosts, then resolv.conf servers, 2 s each
+/// ipv4 of `host`: dotted, localhost, or looked up (after init); files read into `a`
+/// windows: system resolver; linux: /etc/hosts, then resolv.conf servers, 2 s each
 pub resolve :: fn(a: *Arena, host: []const u8) -> addr::IpV4 ! NetError {
     ok := true;
     ip := addr::parse(host) catch err {
@@ -58,7 +58,7 @@ pub resolve :: fn(a: *Arena, host: []const u8) -> addr::IpV4 ! NetError {
     return resolve_os(a, host);
 }
 
-// resolve `host`, connect at `port`
+/// resolve `host`, connect at `port`
 pub connect_host :: fn(a: *Arena, host: []const u8, port: u16) -> TcpStream ! NetError {
     ip := resolve(a, host)?;
     return connect(addr::socket_addr(ip, port));
@@ -105,7 +105,7 @@ pub connect_host :: fn(a: *Arena, host: []const u8, port: u16) -> TcpStream ! Ne
 
 // udp
 
-// UdpSocket bound to `sa`
+/// UdpSocket bound to `sa`
 pub udp_bind :: fn(sa: SocketAddr) -> UdpSocket ! NetError {
     return udp::bind(sa)?;
 }

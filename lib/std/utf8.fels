@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.utf8: strict utf-8 decode/encode/validate; a bad byte decodes as REPLACEMENT, len 1
+//! std.utf8: strict utf-8 decode/encode/validate; a bad byte decodes as REPLACEMENT, len 1
 
-// U+FFFD, what a bad byte decodes to
+/// U+FFFD, what a bad byte decodes to
 pub REPLACEMENT :: 0xFFFDu32;
 
-// rune + bytes used
+/// rune + bytes used
 pub Decoded :: struct {
     rune: u32,
     len: usize,
 }
 
-// rune at the start of `s`; REPLACEMENT, 1 for a bad sequence; `s` must not be empty
+/// rune at the start of `s`; REPLACEMENT, 1 for a bad sequence; `s` must not be empty
 pub decode :: fn(s: []const u8) -> Decoded {
     b0 := s[0];
     if b0 < 0x80 { return .{ b0 as u32, 1 }; }
@@ -48,7 +48,7 @@ pub decode :: fn(s: []const u8) -> Decoded {
     return .{ r, n };
 }
 
-// utf-8 length of `r`, 1..4; 0 if not a rune (surrogate or > U+10FFFF)
+/// utf-8 length of `r`, 1..4; 0 if not a rune (surrogate or > U+10FFFF)
 pub encoded_len :: fn(r: u32) -> usize {
     if r < 0x80 { return 1; }
     if r < 0x800 { return 2; }
@@ -58,7 +58,7 @@ pub encoded_len :: fn(r: u32) -> usize {
     return 0;
 }
 
-// encode `r` into `out`; its len, or 0 and nothing written if invalid or too short
+/// encode `r` into `out`; its len, or 0 and nothing written if invalid or too short
 pub encode :: fn(out: []u8, r: u32) -> usize {
     n := encoded_len(r);
     if n == 0 || out.len < n { return 0; }
@@ -80,7 +80,7 @@ pub encode :: fn(out: []u8, r: u32) -> usize {
     return n;
 }
 
-// all of `s` is valid utf-8
+/// all of `s` is valid utf-8
 pub valid :: fn(s: []const u8) -> bool {
     i: usize = 0;
     while i < s.len {
@@ -96,7 +96,7 @@ pub valid :: fn(s: []const u8) -> bool {
     return true;
 }
 
-// rune count; each bad byte counts as one
+/// rune count; each bad byte counts as one
 pub count :: fn(s: []const u8) -> usize {
     n: usize = 0;
     i: usize = 0;
@@ -107,7 +107,7 @@ pub count :: fn(s: []const u8) -> usize {
     return n;
 }
 
-// iterator from `runes`
+/// iterator from `runes`
 pub Runes :: struct {
     rest: []const u8,
 
@@ -119,11 +119,11 @@ pub Runes :: struct {
     }
 }
 
-// iterate the runes of `s`
+/// iterate the runes of `s`
 pub runes :: fn(s: []const u8) -> Runes {
     it: Runes = .{ s };
     return it;
 }
 
-// `b` is a continuation byte (10xxxxxx)
+/// `b` is a continuation byte (10xxxxxx)
 pub is_continuation :: fn(b: u8) -> bool { return (b & 0xC0) == 0x80; }

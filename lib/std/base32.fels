@@ -1,28 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.base32: rfc 4648; strict: padding as the codec says, lowercase ok, no whitespace
+//! std.base32: rfc 4648; strict: padding as the codec says, lowercase ok, no whitespace
 
 #import std.heap.{ Arena, alloc_bytes };
 
 pub Base32Error :: errors {
-    invalid_character,   // not in the alphabet, or a stray `=`
-    invalid_length,      // a length no encoding has
-    buffer_too_small,    // `out` too small; nothing written
+    /// not in the alphabet, or a stray `=`
+    invalid_character,
+    /// a length no encoding has
+    invalid_length,
+    /// `out` too small; nothing written
+    buffer_too_small,
 }
 
-// alphabet and padding
+/// alphabet and padding
 pub Codec :: struct {
     // 32 uppercase chars for values 0..31
     chars: []const u8,
     // pad with `=` to a multiple of 8
     pad: bool,
 
-    // text length for `n` bytes
+    /// text length for `n` bytes
     pub encoded_len :: fn(self: *Self, n: usize) -> usize {
         if self.pad { return (n + 4) / 5 * 8; }
         return (n * 8 + 4) / 5;
     }
 
-    // byte length of well-formed `text`
+    /// byte length of well-formed `text`
     pub decoded_len :: fn(self: *Self, text: []const u8) -> usize ! Base32Error {
         n := text.len;
         if self.pad {
@@ -37,7 +40,7 @@ pub Codec :: struct {
         return n * 5 / 8;
     }
 
-    // into `out`; returns the length (encoded_len)
+    /// into `out`; returns the length (encoded_len)
     pub encode :: fn(self: *Self, out: []u8, src: []const u8) -> usize ! Base32Error {
         need := self.encoded_len(src.len);
         if out.len < need { fail .buffer_too_small; }
@@ -66,7 +69,7 @@ pub Codec :: struct {
         return o;
     }
 
-    // into `out`; returns the length; bits past the last whole byte ignored
+    /// into `out`; returns the length; bits past the last whole byte ignored
     pub decode :: fn(self: *Self, out: []u8, text: []const u8) -> usize ! Base32Error {
         need := self.decoded_len(text)?;
         if out.len < need { fail .buffer_too_small; }
@@ -91,21 +94,21 @@ pub Codec :: struct {
         return o;
     }
 
-    // in `a`
+    /// in `a`
     pub encode_in :: fn(self: *Self, a: *Arena, src: []const u8) -> []u8 {
         out := a.alloc_bytes(self.encoded_len(src.len));
         n := self.encode(out, src) catch err { yield 0; };
         return out[0..n];
     }
 
-    // in `a`
+    /// in `a`
     pub decode_in :: fn(self: *Self, a: *Arena, text: []const u8) -> []u8 ! Base32Error {
         out := a.alloc_bytes(self.decoded_len(text)?);
         n := self.decode(out, text)?;
         return out[0..n];
     }
 
-    // value of `c`, either case; -1 if not in the alphabet
+    /// value of `c`, either case; -1 if not in the alphabet
     value_of :: fn(self: *Self, c: u8) -> i32 {
         u := if c >= 'a' && c <= 'z' { c - 32 } else { c };
         for k in 0..32 { if self.chars[k] == u { return k as i32; } }
@@ -124,13 +127,13 @@ pub STANDARD_NO_PAD: Codec = .{ STANDARD_CHARS, false };
 pub HEX: Codec = .{ HEX_CHARS, true };
 pub HEX_NO_PAD: Codec = .{ HEX_CHARS, false };
 
-// STANDARD.encode_in; in `a`
+/// STANDARD.encode_in; in `a`
 pub encode_in :: fn(a: *Arena, src: []const u8) -> []u8 {
     c := STANDARD;
     return c.encode_in(a, src);
 }
 
-// STANDARD.decode_in; in `a`
+/// STANDARD.decode_in; in `a`
 pub decode_in :: fn(a: *Arena, text: []const u8) -> []u8 ! Base32Error {
     c := STANDARD;
     return c.decode_in(a, text);

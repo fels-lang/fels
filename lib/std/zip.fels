@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.zip: read and write .zip (stored or DEFLATE); also .docx, .xlsx, .jar, .epub
-// no zip64 (> 4 GB or 65535 entries), encryption or other methods: `unsupported`
+//! std.zip: read and write .zip (stored or DEFLATE); also .docx, .xlsx, .jar, .epub
+//! no zip64 (> 4 GB or 65535 entries), encryption or other methods: `unsupported`
 
 #import std.heap.{ Arena, alloc_bytes };
 #import std.vec as vec;
@@ -10,26 +10,33 @@
 #import std.time as time;
 
 pub ZipError :: errors {
-    not_zip,        // no end record: not a zip, or truncated
-    corrupt,        // record out of bounds or bad signature
-    unsupported,    // zip64, encryption, or not stored/DEFLATE
-    bad_checksum,   // CRC-32 or size mismatch
+    /// no end record: not a zip, or truncated
+    not_zip,
+    /// record out of bounds or bad signature
+    corrupt,
+    /// zip64, encryption, or not stored/DEFLATE
+    unsupported,
+    /// CRC-32 or size mismatch
+    bad_checksum,
 }
 
-// file or folder, as the central directory lists it
+/// file or folder, as the central directory lists it
 pub Entry :: struct {
     name: []const u8,
-    method: u16,             // 0 stored, 8 DEFLATE
+    /// 0 stored, 8 DEFLATE
+    method: u16,
     crc: u32,
     compressed_size: u64,
     size: u64,
-    header_offset: u64,      // where its local header is
-    is_dir: bool,            // a name that ends in "/"
+    /// where its local header is
+    header_offset: u64,
+    /// a name that ends in "/"
+    is_dir: bool,
     flags: u16,
     dos_time: u16,
     dos_date: u16,
 
-    // unix seconds from the DOS date/time: local time, 2 s resolution
+    /// unix seconds from the DOS date/time: local time, 2 s resolution
     pub modified :: fn(self: *Self) -> i64 {
         dt: time::DateTime = .{
             1980 + ((self.dos_date >> 9) as i64), ((self.dos_date >> 5) & 15) as u8, (self.dos_date & 31) as u8,
@@ -42,7 +49,7 @@ pub Entry :: struct {
 le16 :: fn(b: []const u8, at: usize) -> u64 { return (b[at] as u64) | ((b[at + 1] as u64) << 8); }
 le32 :: fn(b: []const u8, at: usize) -> u64 { return le16(b, at) | (le16(b, at + 2) << 16); }
 
-// entries in central-directory order
+/// entries in central-directory order
 pub Archive :: struct {
     data: []const u8,
     entries: []Entry,
@@ -52,7 +59,7 @@ pub Archive :: struct {
         return null;
     }
 
-    // contents in `a`; CRC-32 and size checked
+    /// contents in `a`; CRC-32 and size checked
     pub read :: fn(self: *Self, a: *Arena, e: Entry) -> []const u8 ! ZipError {
         if (e.flags & 1) != 0 { fail .unsupported; }   // encrypted
         at := e.header_offset as usize;
@@ -72,7 +79,7 @@ pub Archive :: struct {
     }
 }
 
-// `data` is the whole .zip in memory; entries listed in `a`
+/// `data` is the whole .zip in memory; entries listed in `a`
 pub open :: fn(a: *Arena, data: []const u8) -> Archive ! ZipError {
     // end record: 22 bytes plus up to a 65535-byte comment, at the very end
     if data.len < 22 { fail .not_zip; }
@@ -117,7 +124,7 @@ pub open :: fn(a: *Arena, data: []const u8) -> Archive ! ZipError {
 
 // writing
 
-// archive being written; `finish` gives its bytes
+/// archive being written; `finish` gives its bytes
 pub Writer :: struct {
     region: *Arena,
     out: Vec(u8),
@@ -133,12 +140,12 @@ pub Writer :: struct {
         self.put16((v >> 16) & 0xFFFF);
     }
 
-    // level 0 stores; dated 1980-01-01
+    /// level 0 stores; dated 1980-01-01
     pub add :: fn(self: *Self, name: []const u8, data: []const u8, level: u32) {
         self.add_entry(name, data, level, 0, 0x21);
     }
 
-    // zip dates are local, no zone, 2 s steps: pass secs + time::local_offset(secs)
+    /// zip dates are local, no zone, 2 s steps: pass secs + time::local_offset(secs)
     pub add_at :: fn(self: *Self, name: []const u8, data: []const u8, level: u32, unix_secs: i64) {
         dt := time::utc(unix_secs);
         y := if dt.year < 1980 { 0 } else { dt.year - 1980 };
@@ -147,7 +154,7 @@ pub Writer :: struct {
         self.add_entry(name, data, level, tm as u16, dd as u16);
     }
 
-    // appends "/" if missing
+    /// appends "/" if missing
     pub add_dir :: fn(self: *Self, name: []const u8) {
         if name.len > 0 && name[name.len - 1] == '/' {
             self.add_entry(name, "", 0, 0, 0x21);
@@ -190,7 +197,7 @@ pub Writer :: struct {
         self.entries.push(e);
     }
 
-    // added data, then the central directory and end record
+    /// added data, then the central directory and end record
     pub finish :: fn(self: *Self) -> []const u8 {
         cd_off := self.out.len();
         for e in self.entries.items() {
@@ -226,7 +233,7 @@ pub Writer :: struct {
     }
 }
 
-// empty archive in `a`
+/// empty archive in `a`
 pub writer :: fn(a: *Arena) -> Writer {
     w: Writer = .{ a, vec::make(u8, a), vec::make(Entry, a) };
     return w;

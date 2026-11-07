@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.bytes: le/be fixed-width ints at any offset in a byte slice; no alignment needed
-// checked in every build mode: .out_of_bounds, and nothing read or written
+//! std.bytes: le/be fixed-width ints at any offset in a byte slice; no alignment needed
+//! checked in every build mode: .out_of_bounds, and nothing read or written
 
 pub BytesError :: errors {
-    out_of_bounds,      // value would run past the slice end
+    /// value would run past the slice end
+    out_of_bounds,
 }
 
-// `n` bytes at `off` fit in `len`; no overflow for any `off`
+/// `n` bytes at `off` fit in `len`; no overflow for any `off`
 fits :: fn(len: usize, off: usize, n: usize) -> bool {
     if off > len { return false; }
     return len - off >= n;

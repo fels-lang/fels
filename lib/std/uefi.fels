@@ -1,29 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.uefi: the firmware's services, for a program built with --target uefi
-// println works as everywhere; the console is the firmware's
+//! std.uefi: the firmware's services, for a program built with --target uefi
+//! println works as everywhere; the console is the firmware's
 
-// the system table the firmware started the program with
+/// the system table the firmware started the program with
 pub system_table :: fn() -> *EfiSystemTable {
     return efi_system_table();
 }
 
-// the program's image handle
+/// the program's image handle
 pub image :: fn() -> usize {
     return efi_image;
 }
 
-// waits `us` microseconds
+/// waits `us` microseconds
 pub stall :: fn(us: usize) {
     ignored := efi_system_table().boot_services.stall(us);
 }
 
-// clears the console
+/// clears the console
 pub clear :: fn() {
     out := efi_system_table().con_out;
     ignored := out.clear_screen(out);
 }
 
-// turns the machine off; ends QEMU
+/// turns the machine off; ends QEMU
 #noreturn
 pub shutdown :: fn() {
     efi_system_table().runtime_services.reset_system(2u32, 0usize, 0usize, 0usize);
@@ -38,13 +38,13 @@ pub reboot :: fn() {
 
 // ---- keys ----
 
-// `char` is the character typed, 0 for a special key; `scan` the key's scan code then
+/// `char` is the character typed, 0 for a special key; `scan` the key's scan code then
 pub Key :: struct {
     char: u16,
     scan: u16,
 }
 
-// waits for a key
+/// waits for a key
 pub read_key :: fn() -> Key {
     st := efi_system_table();
     input := st.con_in;
@@ -94,7 +94,7 @@ GOP_GUID: EfiGuid = .{
     .data4 = .{ 0x96u8, 0xfbu8, 0x7au8, 0xdeu8, 0xd0u8, 0x80u8, 0x51u8, 0x6au8 },
 };
 
-// 32-bit pixels, `stride` pixels per line; `bgr` when blue is the low byte
+/// 32-bit pixels, `stride` pixels per line; `bgr` when blue is the low byte
 pub Framebuffer :: struct {
     base: usize,
     width: u32,
@@ -102,7 +102,7 @@ pub Framebuffer :: struct {
     stride: u32,
     bgr: bool,
 
-    // `rgb` as 0xRRGGBB; nothing outside the screen
+    /// `rgb` as 0xRRGGBB; nothing outside the screen
     pub put :: fn(self: *const Self, x: u32, y: u32, rgb: u32) {
         if x >= self.width || y >= self.height { return; }
         v := rgb;
@@ -111,7 +111,7 @@ pub Framebuffer :: struct {
         unsafe { *p = v; }
     }
 
-    // a filled rectangle
+    /// a filled rectangle
     pub fill :: fn(self: *const Self, x: u32, y: u32, w: u32, h: u32, rgb: u32) {
         for j in 0u32..h {
             for i in 0u32..w { self.put(x + i, y + j, rgb); }
@@ -119,7 +119,7 @@ pub Framebuffer :: struct {
     }
 }
 
-// the screen of the graphics output protocol; null without one
+/// the screen of the graphics output protocol; null without one
 pub framebuffer :: fn() -> ?Framebuffer {
     raw: usize = 0usize;
     if efi_system_table().boot_services.locate_protocol(&GOP_GUID, 0usize, &raw) != 0usize { return null; }

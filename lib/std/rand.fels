@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.rand: xorshift64* prng; same seed, same sequence; not for crypto
+//! std.rand: xorshift64* prng; same seed, same sequence; not for crypto
 
 pub Rng :: struct { state: u64 }
 
-// generator from a seed; 0 is remapped to a valid state
+/// generator from a seed; 0 is remapped to a valid state
 pub seed :: fn(s: u64) -> Rng {
     st: u64 = s;
     if st == 0 { st = 0x9E3779B97F4A7C15; }
@@ -11,7 +11,7 @@ pub seed :: fn(s: u64) -> Rng {
     return r;
 }
 
-// next raw u64; advances the state
+/// next raw u64; advances the state
 pub next_u64 :: fn(self: *Rng) -> u64 {
     x: u64 = self.state;
     x = x ^ (x >> 12);
@@ -23,34 +23,34 @@ pub next_u64 :: fn(self: *Rng) -> u64 {
 
 pub next_u32 :: fn(self: *Rng) -> u32 { return (next_u64(self) >> 32u64) as u32; }
 
-// float in [0, 1), 24-bit mantissa
+/// float in [0, 1), 24-bit mantissa
 pub next_f32 :: fn(self: *Rng) -> f32 {
     bits: u32 = (next_u64(self) >> 40) as u32;   // top 24 bits
     return (bits as f32) / 16777216.0f32;            // / 2^24
 }
 
-// uniform int in [lo, hi); `lo` if empty
+/// uniform int in [lo, hi); `lo` if empty
 pub range_i32 :: fn(self: *Rng, lo: i32, hi: i32) -> i32 {
     if hi <= lo { return lo; }
     span := ((hi as i64) - (lo as i64)) as u64;
     return ((lo as i64) + (below(self, span) as i64)) as i32;
 }
 
-// float in [lo, hi)
+/// float in [lo, hi)
 pub range_f32 :: fn(self: *Rng, lo: f32, hi: f32) -> f32 {
     return lo + next_f32(self) * (hi - lo);
 }
 
-// true with probability `p`, clamped to 0..1
+/// true with probability `p`, clamped to 0..1
 pub chance :: fn(self: *Rng, p: f32) -> bool { return next_f32(self) < p; }
 
-// -1 or +1
+/// -1 or +1
 pub sign :: fn(self: *Rng) -> f32 {
     if (next_u64(self) & 1) == 0 { return -1.0f32; }
     return 1.0f32;
 }
 
-// uniform int in [0, n), unbiased (rejection); 0 if `n` is 0
+/// uniform int in [0, n), unbiased (rejection); 0 if `n` is 0
 pub below :: fn(self: *Rng, n: u64) -> u64 {
     if n == 0 { return 0; }
     // 2^64 mod n: low values that would bias small results
@@ -62,13 +62,13 @@ pub below :: fn(self: *Rng, n: u64) -> u64 {
     return 0;
 }
 
-// uniform int in [lo, hi); `lo` if empty
+/// uniform int in [lo, hi); `lo` if empty
 pub range_u64 :: fn(self: *Rng, lo: u64, hi: u64) -> u64 {
     if hi <= lo { return lo; }
     return lo + below(self, hi - lo);
 }
 
-// float in [0, 1), 53-bit mantissa
+/// float in [0, 1), 53-bit mantissa
 pub next_f64 :: fn(self: *Rng) -> f64 {
     return ((next_u64(self) >> 11) as f64) / 9007199254740992.0;   // / 2^53
 }
@@ -86,7 +86,7 @@ pub fill_bytes :: fn(self: *Rng, out: []u8) {
     }
 }
 
-// uniform shuffle, fisher-yates
+/// uniform shuffle, fisher-yates
 pub shuffle :: fn($T: type, self: *Rng, xs: []T) {
     i := xs.len;
     while i > 1 {
@@ -98,7 +98,7 @@ pub shuffle :: fn($T: type, self: *Rng, xs: []T) {
     }
 }
 
-// uniform pick; null if empty
+/// uniform pick; null if empty
 pub choose :: fn($T: type, self: *Rng, xs: []const T) -> ?T {
     if xs.len == 0 { return null; }
     return xs[below(self, xs.len as u64) as usize];

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.bits: bit twiddling on u32/u64
+//! std.bits: bit twiddling on u32/u64
 
 // popcount
 
-// count set bits; kernighan's loop, one pass per 1-bit
+/// count set bits; kernighan's loop, one pass per 1-bit
 pub count_ones_u32 :: fn(value: u32) -> u32 {
     v := value;
     count := 0u32;

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.json: rfc 8259; parse into an arena tree, write with Out
+//! std.json: rfc 8259; parse into an arena tree, write with Out
 
 #import std.heap.{ Arena };
 #import std.fmt as fmt;
@@ -10,25 +10,35 @@
 #import std.strings as strings;
 
 pub JsonError :: errors {
-    unexpected_end,     // the text ends inside a value
-    unexpected_byte,    // a byte that cannot stand where it stands
+    /// the text ends inside a value
+    unexpected_end,
+    /// a byte that cannot stand where it stands
+    unexpected_byte,
     bad_number,
-    bad_string,         // bad escape or control char in a string
-    too_deep,           // arrays and objects nested deeper than 512
-    trailing_text,      // something after the value
+    /// bad escape or control char in a string
+    bad_string,
+    /// arrays and objects nested deeper than 512
+    too_deep,
+    /// something after the value
+    trailing_text,
 }
 
 pub Kind :: enum { null_value, boolean, number, string, array, object }
 
 pub Value :: struct {
     kind: Kind,
-    flag: bool,             // the value of a boolean
-    number: f64,            // the value of a number
-    text: []const u8,       // string value, or a number's source text
-    items: []Value,         // array elements or object member values
-    keys: [][]const u8,     // object member names, parallel to `items`
+    /// the value of a boolean
+    flag: bool,
+    /// the value of a number
+    number: f64,
+    /// string value, or a number's source text
+    text: []const u8,
+    /// array elements or object member values
+    items: []Value,
+    /// object member names, parallel to `items`
+    keys: [][]const u8,
 
-    // first member named key; null value if none or not an object
+    /// first member named key; null value if none or not an object
     pub get :: fn(self: Self, key: []const u8) -> Value {
         if self.kind == .object {
             i: usize = 0;
@@ -40,13 +50,13 @@ pub Value :: struct {
         return null_value();
     }
 
-    // null value past the end or if not an array
+    /// null value past the end or if not an array
     pub at :: fn(self: Self, i: usize) -> Value {
         if self.kind == .array && i < self.items.len { return self.items[i]; }
         return null_value();
     }
 
-    // elements or members; 0 for anything else
+    /// elements or members; 0 for anything else
     pub len :: fn(self: Self) -> usize {
         if self.kind == .array || self.kind == .object { return self.items.len; }
         return 0;
@@ -59,7 +69,7 @@ pub Value :: struct {
         return null;
     }
 
-    // whole numbers that fit i64; exact over the full range
+    /// whole numbers that fit i64; exact over the full range
     pub as_i64 :: fn(self: Self) -> ?i64 {
         if self.kind != .number { return null; }
         exact := whole(self.text);
@@ -82,7 +92,7 @@ pub Value :: struct {
     }
 }
 
-// also what failed lookups return, so lookup chains need no checks
+/// also what failed lookups return, so lookup chains need no checks
 pub null_value :: fn() -> Value {
     none: [0]Value = .{};
     names: [0][]const u8 = .{};
@@ -90,7 +100,7 @@ pub null_value :: fn() -> Value {
     return out;
 }
 
-// tree in `a`; skips a utf-8 bom; escape-free strings slice `text`; max depth 512
+/// tree in `a`; skips a utf-8 bom; escape-free strings slice `text`; max depth 512
 pub parse :: fn(text: []const u8, a: *Arena) -> Value ! JsonError {
     p: Parser = .{ text, 0, a, 0 };
     if text.len >= 3 && text[0] == 0xEF && text[1] == 0xBB && text[2] == 0xBF { p.at = 3; }
@@ -202,7 +212,7 @@ array :: fn(p: *Parser) -> Value ! JsonError {
     return out;
 }
 
-// after a member/element: true at close, false at a comma (both consumed)
+/// after a member/element: true at close, false at a comma (both consumed)
 end_of :: fn(p: *Parser, close: u8) -> bool ! JsonError {
     skip_space(p);
     if p.at >= p.text.len { fail .unexpected_end; }
@@ -213,7 +223,7 @@ end_of :: fn(p: *Parser, close: u8) -> bool ! JsonError {
     fail .unexpected_byte;
 }
 
-// string at the quote at p.at; slice of text if no escapes, else unescaped copy in arena
+/// string at the quote at p.at; slice of text if no escapes, else unescaped copy in arena
 string :: fn(p: *Parser) -> []const u8 ! JsonError {
     p.at += 1;
     start := p.at;
@@ -277,7 +287,7 @@ string :: fn(p: *Parser) -> []const u8 ! JsonError {
     fail .unexpected_end;
 }
 
-// 4 hex digits at p.at
+/// 4 hex digits at p.at
 hex4 :: fn(p: *Parser) -> u32 ! JsonError {
     if p.at + 4 > p.text.len { fail .unexpected_end; }
     v: u32 = 0;
@@ -301,7 +311,7 @@ hex4 :: fn(p: *Parser) -> u32 ! JsonError {
     return v;
 }
 
-// appends cp as utf-8
+/// appends cp as utf-8
 utf8 :: fn(out: *Vec(u8), cp: u32) {
     if cp < 0x80 {
         out.push(cp as u8);
@@ -320,7 +330,7 @@ utf8 :: fn(out: *Vec(u8), cp: u32) {
     }
 }
 
-// minus, int part (no leading zero), fraction, exponent
+/// minus, int part (no leading zero), fraction, exponent
 number :: fn(p: *Parser) -> Value ! JsonError {
     start := p.at;
     if p.text[p.at] == 45 { p.at += 1; }
@@ -355,7 +365,7 @@ digits :: fn(p: *Parser) {
     while p.at < p.text.len && is_digit(p.text[p.at]) { p.at += 1; }
 }
 
-// text as i64, if it is a whole number that fits
+/// text as i64, if it is a whole number that fits
 whole :: fn(text: []const u8) -> ?i64 {
     return fmt::parse_int(i64, text, 10) catch e { return null; };
 }
@@ -368,7 +378,7 @@ skip_space :: fn(p: *Parser) {
     }
 }
 
-// expects literal w at p.at
+/// expects literal w at p.at
 word :: fn(p: *Parser, w: []const u8) -> void ! JsonError {
     if p.at + w.len > p.text.len { fail .unexpected_end; }
     if p.text[p.at..(p.at + w.len)] != w { fail .unexpected_byte; }
@@ -379,13 +389,16 @@ is_digit :: fn(c: u8) -> bool { return c >= 48u8 && c <= 57u8; }
 
 // writing
 
-// streaming writer; does commas, quotes, escapes; write errors show in finish
+/// streaming writer; does commas, quotes, escapes; write errors show in finish
 pub Out :: struct {
     w: *Writer,
-    indent: usize,     // spaces a level; 0 writes it all on one line
+    /// spaces a level; 0 writes it all on one line
+    indent: usize,
     depth: usize,
-    first: bool,       // nothing written yet at this depth
-    after_key: bool,   // a key was written: its value comes next
+    /// nothing written yet at this depth
+    first: bool,
+    /// a key was written: its value comes next
+    after_key: bool,
     failed: bool,
 
     put :: fn(self: *Self, s: []const u8) {
@@ -405,7 +418,7 @@ pub Out :: struct {
         };
     }
 
-    // comma + newline before a value, unless right after a key
+    /// comma + newline before a value, unless right after a key
     before :: fn(self: *Self) {
         if self.after_key {
             self.after_key = false;
@@ -444,7 +457,7 @@ pub Out :: struct {
         self.first = false;
     }
 
-    // next member's name; write its value right after
+    /// next member's name; write its value right after
     pub key :: fn(self: *Self, name: []const u8) {
         self.before();
         self.quoted(name);
@@ -475,7 +488,7 @@ pub Out :: struct {
         };
     }
 
-    // up to 15 significant digits; NaN/inf written as null
+    /// up to 15 significant digits; NaN/inf written as null
     pub float :: fn(self: *Self, v: f64) {
         if v != v || v > 1.7976931348623157e308 || v < -1.7976931348623157e308 {
             self.null_value();
@@ -499,7 +512,7 @@ pub Out :: struct {
         self.put("null");
     }
 
-    // whole tree; numbers written as they were read
+    /// whole tree; numbers written as they were read
     pub value :: fn(self: *Self, v: Value) {
         match v.kind {
             .null_value => { self.null_value(); },
@@ -529,12 +542,12 @@ pub Out :: struct {
         }
     }
 
-    // .write_failed if any write failed
+    /// .write_failed if any write failed
     pub finish :: fn(self: *Self) -> void ! IoError {
         if self.failed { fail .write_failed; }
     }
 
-    // quoted; escapes ", \ and control chars
+    /// quoted; escapes ", \ and control chars
     quoted :: fn(self: *Self, s: []const u8) {
         self.put("\"");
         start: usize = 0;
@@ -563,19 +576,19 @@ pub Out :: struct {
 
 HEX_DIGITS :: "0123456789abcdef";
 
-// single line
+/// single line
 pub writer :: fn(w: *Writer) -> Out {
     o: Out = .{ w, 0, 0, true, false, false };
     return o;
 }
 
-// one member/element per line, indent spaces per level
+/// one member/element per line, indent spaces per level
 pub pretty :: fn(w: *Writer, indent: usize) -> Out {
     o: Out = .{ w, indent, 0, true, false, false };
     return o;
 }
 
-// one line, in `a`
+/// one line, in `a`
 pub stringify :: fn(a: *Arena, v: Value) -> []const u8 {
     sb := strings::builder(a);
     o := writer(&sb);

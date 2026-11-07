@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.hash: non-crypto hashes (FNV-1a, CRC-32, Adler-32, XXH64), one-shot or streaming
-// not attack-resistant; use std.crypto for adversarial input
+//! std.hash: non-crypto hashes (FNV-1a, CRC-32, Adler-32, XXH64), one-shot or streaming
+//! not attack-resistant; use std.crypto for adversarial input
 
 #import std.io.{ Reader, IoError };
 
-// incremental hasher; all of these plus std.crypto's Sha256
+/// incremental hasher; all of these plus std.crypto's Sha256
 pub Hasher :: interface {
     update :: fn(self: *Self, data: []const u8);
 }
 
-// hashes all of `src` through `buf`; returns bytes hashed
+/// hashes all of `src` through `buf`; returns bytes hashed
 pub feed :: fn(h: *Hasher, src: *Reader, buf: []u8) -> u64 ! IoError {
     total: u64 = 0;
     while true {
@@ -28,7 +28,7 @@ FNV64_PRIME :: 0x100000001B3u64;
 FNV32_START :: 0x811C9DC5u32;
 FNV32_PRIME :: 0x01000193u32;
 
-// quick for short keys
+/// quick for short keys
 pub fnv1a_64 :: fn(data: []const u8) -> u64 {
     h := FNV64_START;
     for b in data { h = (h ^ (b as u64)) *% FNV64_PRIME; }
@@ -41,7 +41,7 @@ pub fnv1a_32 :: fn(data: []const u8) -> u32 {
     return h;
 }
 
-// streaming; from fnv1a_64_start
+/// streaming; from fnv1a_64_start
 pub Fnv1a64 :: struct {
     state: u64,
 
@@ -64,7 +64,7 @@ pub fnv1a_64_start :: fn() -> Fnv1a64 {
     return h;
 }
 
-// streaming; from fnv1a_32_start
+/// streaming; from fnv1a_32_start
 pub Fnv1a32 :: struct {
     state: u32,
 
@@ -124,14 +124,14 @@ CRC_TABLE: [256]u32 = .{
     0xB3667A2E, 0xC4614AB8, 0x5D681B02, 0x2A6F2B94, 0xB40BBE37, 0xC30C8EA1, 0x5A05DF1B, 0x2D02EF8D,
 };
 
-// crc32("123456789") == 0xCBF43926
+/// crc32("123456789") == 0xCBF43926
 pub crc32 :: fn(data: []const u8) -> u32 {
     h := crc32_start();
     crc32_add(&h, data);
     return h.final();
 }
 
-// streaming; from crc32_start
+/// streaming; from crc32_start
 pub Crc32 :: struct {
     crc: u32,
 
@@ -184,7 +184,7 @@ xx_merge :: fn(acc: u64, lane: u64) -> u64 {
     return ((acc ^ xx_round(0, lane)) *% P1) +% P4;
 }
 
-// fold the four lanes into one value
+/// fold the four lanes into one value
 xx_converge :: fn(v1: u64, v2: u64, v3: u64, v4: u64) -> u64 {
     h := rotl(v1, 1) +% rotl(v2, 7) +% rotl(v3, 12) +% rotl(v4, 18);
     h = xx_merge(h, v1);
@@ -193,7 +193,7 @@ xx_converge :: fn(v1: u64, v2: u64, v3: u64, v4: u64) -> u64 {
     return xx_merge(h, v4);
 }
 
-// tail (< 32 bytes) and final mix
+/// tail (< 32 bytes) and final mix
 xx_finish :: fn(start: u64, rest: []const u8) -> u64 {
     h := start;
     i: usize = 0;
@@ -214,7 +214,7 @@ xx_finish :: fn(start: u64, rest: []const u8) -> u64 {
     return h ^ (h >> 32);
 }
 
-// seed 0 is the usual; xxhash64(0, "") == 0xEF46DB3751D8E999
+/// seed 0 is the usual; xxhash64(0, "") == 0xEF46DB3751D8E999
 pub xxhash64 :: fn(seed: u64, data: []const u8) -> u64 {
     i: usize = 0;
     h: u64 = 0;
@@ -237,7 +237,7 @@ pub xxhash64 :: fn(seed: u64, data: []const u8) -> u64 {
     return xx_finish(h +% (data.len as u64), data[i..data.len]);
 }
 
-// streaming; from xxhash64_start; a partial round waits in `buf`
+/// streaming; from xxhash64_start; a partial round waits in `buf`
 pub XxHash64 :: struct {
     seed: u64,
     v1: u64,
@@ -303,14 +303,14 @@ pub xxhash64_start :: fn(seed: u64) -> XxHash64 {
 
 // Adler-32 (zlib)
 
-// as zlib appends it; adler32("Wikipedia") == 0x11E60398
+/// as zlib appends it; adler32("Wikipedia") == 0x11E60398
 pub adler32 :: fn(data: []const u8) -> u32 {
     h := adler32_start();
     adler32_add(&h, data);
     return h.final();
 }
 
-// streaming; from adler32_start
+/// streaming; from adler32_start
 pub Adler32 :: struct {
     a: u32,
     b: u32,
@@ -350,7 +350,7 @@ pub adler32_start :: fn() -> Adler32 {
 
 // one integer
 
-// MurmurHash3 finalizer: full avalanche, for integer keys
+/// MurmurHash3 finalizer: full avalanche, for integer keys
 pub mix64 :: fn(x: u64) -> u64 {
     h := (x ^ (x >> 33)) *% 0xFF51AFD7ED558CCDu64;
     h = (h ^ (h >> 33)) *% 0xC4CEB9FE1A85EC53u64;

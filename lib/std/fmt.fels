@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.fmt: padding, justified numbers and joining over io.Writer; number parsing
-// no Display interface: dispatch that passes another interface pointer hits a compiler bug
+//! std.fmt: padding, justified numbers and joining over io.Writer; number parsing
+//! no Display interface: dispatch that passes another interface pointer hits a compiler bug
 
 #import std.io.{ Writer, IoError, null_writer };
 
@@ -24,7 +24,7 @@ pub write_padded_right :: fn(w: *Writer, data: []const u8, width: usize, fill: u
     return a + b;
 }
 
-// odd leftover padding goes right
+/// odd leftover padding goes right
 pub write_padded_center :: fn(w: *Writer, data: []const u8, width: usize, fill: u8) -> usize ! IoError {
     if data.len >= width {
         return w.write_all(data)?;
@@ -78,7 +78,7 @@ pub write_hex_u64_padded :: fn(w: *Writer, value: u64, width: usize, fill: u8) -
 
 // joining
 
-// `items` separated by `sep`
+/// `items` separated by `sep`
 pub join_bytes :: fn(w: *Writer, items: []const []const u8, sep: []const u8) -> usize ! IoError {
     written := 0usize;
     for i in 0..items.len {
@@ -92,12 +92,15 @@ pub join_bytes :: fn(w: *Writer, items: []const []const u8, sep: []const u8) -> 
 // parsing numbers
 
 pub ParseError :: errors {
-    empty,      // no digits
-    invalid,    // non-digit for the base, or a misplaced sign or `_`
-    overflow,   // the number does not fit the type
+    /// no digits
+    empty,
+    /// non-digit for the base, or a misplaced sign or `_`
+    invalid,
+    /// the number does not fit the type
+    overflow,
 }
 
-// any integer T; base 2..36, or 0 to read a 0x/0o/0b prefix; `_` allowed between digits
+/// any integer T; base 2..36, or 0 to read a 0x/0o/0b prefix; `_` allowed between digits
 pub parse_int :: fn($T: type, text: []const u8, base: u8) -> T ! ParseError {
     i: usize = 0;
     negative := false;
@@ -160,7 +163,7 @@ pub parse_int :: fn($T: type, text: []const u8, base: u8) -> T ! ParseError {
     return value as T;
 }
 
-// digit value in bases up to 36, or 99
+/// digit value in bases up to 36, or 99
 digit_value :: fn(c: u8) -> u64 {
     if c >= '0' && c <= '9' { return (c - '0') as u64; }
     if c >= 'a' && c <= 'z' { return (c - 'a') as u64 + 10; }
@@ -168,8 +171,8 @@ digit_value :: fn(c: u8) -> u64 {
     return 99;
 }
 
-// sign, digits, optional `.` and exponent; inf/infinity/nan; too large -> inf
-// exact for <= 15 digits and |exp| <= 22; beyond that may be off by one ulp
+/// sign, digits, optional `.` and exponent; inf/infinity/nan; too large -> inf
+/// exact for <= 15 digits and |exp| <= 22; beyond that may be off by one ulp
 pub parse_float :: fn(text: []const u8) -> f64 ! ParseError {
     i: usize = 0;
     negative := false;
@@ -230,7 +233,7 @@ pub parse_float :: fn(text: []const u8) -> f64 ! ParseError {
     return if negative { -value } else { value };
 }
 
-// mantissa * 10^exp10; one exact op if mantissa < 2^53 and |exp10| <= 22, else in steps
+/// mantissa * 10^exp10; one exact op if mantissa < 2^53 and |exp10| <= 22, else in steps
 scale :: fn(mantissa: u64, exp10: i64) -> f64 {
     if mantissa == 0 { return 0.0; }
     m := mantissa as f64;
@@ -253,7 +256,7 @@ scale :: fn(mantissa: u64, exp10: i64) -> f64 {
     return m / pow10((-e) as u32);
 }
 
-// 10^n, exact for n <= 22
+/// 10^n, exact for n <= 22
 pow10 :: fn(n: u32) -> f64 {
     p: f64 = 1.0;
     k: u32 = 0;
@@ -264,7 +267,7 @@ pow10 :: fn(n: u32) -> f64 {
     return p;
 }
 
-// `text` equals lowercase `word`, ignoring case
+/// `text` equals lowercase `word`, ignoring case
 eq_lower :: fn(text: []const u8, word: []const u8) -> bool {
     if text.len != word.len { return false; }
     i: usize = 0;

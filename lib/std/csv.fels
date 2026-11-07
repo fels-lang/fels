@@ -1,33 +1,37 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.csv: rfc 4180 reader; sep ',' ';' or tab; LF/CRLF; skips empty lines and a bom
-// fields are slices of the text; only a quoted field with "" is copied into the arena
+//! std.csv: rfc 4180 reader; sep ',' ';' or tab; LF/CRLF; skips empty lines and a bom
+//! fields are slices of the text; only a quoted field with "" is copied into the arena
 
 #import std.heap.{ Arena, alloc };
 #import std.vec as vec;
 
 pub CsvError :: errors {
-    unterminated_quote,   // a field in quotes runs to the end of the text
+    /// a field in quotes runs to the end of the text
+    unterminated_quote,
 }
 
 QUOTE :: 34u8;
 CR :: 13u8;
 LF :: 10u8;
 
-// not `Reader`: would clash with std.io's (modules share one type namespace)
+/// not `Reader`: would clash with std.io's (modules share one type namespace)
 pub CsvReader :: struct {
     text: []const u8,
-    at: usize,            // where the next record starts
+    /// where the next record starts
+    at: usize,
     sep: u8,
-    line: usize,          // the line the last record started on, from 1
-    breaks: usize,        // the line breaks read so far
+    /// the line the last record started on, from 1
+    line: usize,
+    /// the line breaks read so far
+    breaks: usize,
 
-    // true once every record is read
+    /// true once every record is read
     pub done :: fn(self: *Self) -> bool {
         self.skip_empty_lines();
         return self.at >= self.text.len;
     }
 
-    // next record's fields, in `a`; empty when done
+    /// next record's fields, in `a`; empty when done
     pub next :: fn(self: *Self, a: *Arena) -> [][]const u8 ! CsvError {
         self.skip_empty_lines();
         fields := vec::make([]const u8, a);
@@ -57,7 +61,7 @@ pub CsvReader :: struct {
         }
     }
 
-    // one field, up to the separator or end of line
+    /// one field, up to the separator or end of line
     field :: fn(self: *Self, a: *Arena) -> []const u8 ! CsvError {
         t := self.text;
         if self.at < t.len && t[self.at] == QUOTE {
@@ -97,7 +101,7 @@ pub CsvReader :: struct {
     }
 }
 
-// reader over `text`; `sep` 44 ',', 59 ';', 9 tab
+/// reader over `text`; `sep` 44 ',', 59 ';', 9 tab
 pub reader :: fn(text: []const u8, sep: u8) -> CsvReader {
     at: usize = 0;
     if text.len >= 3 && text[0] == 0xEF && text[1] == 0xBB && text[2] == 0xBF { at = 3; }
@@ -105,7 +109,7 @@ pub reader :: fn(text: []const u8, sep: u8) -> CsvReader {
     return r;
 }
 
-// all records, fields in `a`
+/// all records, fields in `a`
 pub records :: fn(text: []const u8, sep: u8, a: *Arena) -> [][][]const u8 ! CsvError {
     out := vec::make([][]const u8, a);
     r := reader(text, sep);
@@ -116,7 +120,7 @@ pub records :: fn(text: []const u8, sep: u8, a: *Arena) -> [][][]const u8 ! CsvE
     return out.items();
 }
 
-// most common of ';' tab ',' on line 1, outside quotes; ',' if none
+/// most common of ';' tab ',' on line 1, outside quotes; ',' if none
 pub guess_separator :: fn(text: []const u8) -> u8 {
     semicolons: usize = 0;
     tabs: usize = 0;
@@ -141,7 +145,7 @@ pub guess_separator :: fn(text: []const u8) -> u8 {
     return 44;
 }
 
-// `raw` with "" made ", in `a`
+/// `raw` with "" made ", in `a`
 undouble :: fn(raw: []const u8, a: *Arena) -> []const u8 {
     out := alloc(u8, a, raw.len);
     n: usize = 0;

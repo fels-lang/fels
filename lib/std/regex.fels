@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.regex: linear-time Pike VM; UTF-8 runes, byte offsets, leftmost-first
-// not thread-safe: one thread per Regex; a Match is valid until the next search
+//! std.regex: linear-time Pike VM; UTF-8 runes, byte offsets, leftmost-first
+//! not thread-safe: one thread per Regex; a Match is valid until the next search
 
 #import std.heap.{ Arena, alloc };
 #import std.vec as vec;
@@ -9,16 +9,23 @@
 #import std.strings as strings;
 
 pub RegexError :: errors {
-    unclosed_group,     // a `(` without its `)`
-    unmatched_paren,    // a `)` without its `(`
-    bad_class,          // unclosed `[`, or a backwards range (`[z-a]`)
-    bad_escape,         // unknown escape letter or digit
-    nothing_to_repeat,  // `*`, `+`, `?` or `{` with nothing before it
-    bad_count,          // `{n,m}` with m < n, or more than 1000
-    too_big,            // a program past 50000 instructions
+    /// a `(` without its `)`
+    unclosed_group,
+    /// a `)` without its `(`
+    unmatched_paren,
+    /// unclosed `[`, or a backwards range (`[z-a]`)
+    bad_class,
+    /// unknown escape letter or digit
+    bad_escape,
+    /// `*`, `+`, `?` or `{` with nothing before it
+    nothing_to_repeat,
+    /// `{n,m}` with m < n, or more than 1000
+    bad_count,
+    /// a program past 50000 instructions
+    too_big,
 }
 
-// VM instructions
+/// VM instructions
 OP_RUNE :: 0u8;       // a: the rune
 OP_ANY :: 1u8;        // any rune but '\n'
 OP_ANY_NL :: 2u8;     // any rune
@@ -46,7 +53,8 @@ Inst :: struct {
 Range :: struct { lo: u32, hi: u32 }
 
 ClassRef :: struct {
-    first: usize,   // its ranges in `ranges`
+    /// its ranges in `ranges`
+    first: usize,
     count: usize,
     negated: bool,
 }
@@ -68,7 +76,8 @@ Node :: struct {
     a: i64,
     b: i64,
     greedy: bool,
-    kids: usize,      // first index in `Parser.kid_list`
+    /// first index in `Parser.kid_list`
+    kids: usize,
     nkids: usize,
 }
 
@@ -81,10 +90,14 @@ Parser :: struct {
     ranges: Vec(Range),
     classes: Vec(ClassRef),
     ngroups: usize,
-    names: Vec([]const u8),    // "" if unnamed; index = group - 1
-    fold: bool,                // (?i)
-    multiline: bool,           // (?m)
-    dotall: bool,              // (?s)
+    /// "" if unnamed; index = group - 1
+    names: Vec([]const u8),
+    /// (?i)
+    fold: bool,
+    /// (?m)
+    multiline: bool,
+    /// (?s)
+    dotall: bool,
 
     node :: fn(self: *Self, kind: u8, a: i64, b: i64) -> usize {
         n: Node = .{ kind, a, b, true, 0, 0 };
@@ -102,14 +115,14 @@ Parser :: struct {
     more :: fn(self: *Self) -> bool { return self.i < self.p.len; }
     peek :: fn(self: *Self) -> u8 { return self.p[self.i]; }
 
-    // next pattern rune
+    /// next pattern rune
     rune :: fn(self: *Self) -> u32 {
         d := utf8::decode(self.p[self.i..self.p.len]);
         self.i += d.len;
         return d.rune;
     }
 
-    // alternation: concat ( '|' concat )*
+    /// alternation: concat ( '|' concat )*
     alt :: fn(self: *Self) -> usize ! RegexError {
         first := self.concat()?;
         if !self.more() || self.peek() != '|' { return first; }
@@ -174,7 +187,7 @@ Parser :: struct {
         return atom;
     }
 
-    // `{` starts a count ({3}, {2,}, {2,5}), else it's a literal brace
+    /// `{` starts a count ({3}, {2,}, {2,5}), else it's a literal brace
     count_ahead :: fn(self: *Self) -> bool {
         j := self.i + 1;
         digits: usize = 0;
@@ -271,7 +284,7 @@ Parser :: struct {
         return self.literal(self.rune());
     }
 
-    // with (?i), both ASCII cases
+    /// with (?i), both ASCII cases
     literal :: fn(self: *Self, r: u32) -> usize {
         if self.fold && ((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
             first := self.ranges.len();
@@ -287,7 +300,7 @@ Parser :: struct {
         return self.node(N_RUNE, r as i64, 0);
     }
 
-    // after a backslash: the rune it names
+    /// after a backslash: the rune it names
     escape :: fn(self: *Self) -> u32 ! RegexError {
         e := self.peek();
         self.i += 1;
@@ -326,7 +339,7 @@ Parser :: struct {
         return self.rune();
     }
 
-    // \d \w \s ranges; negations negate the class
+    /// \d \w \s ranges; negations negate the class
     add_perl :: fn(self: *Self, e: u8) {
         if e == 'd' || e == 'D' {
             self.push_range('0', '9');
@@ -405,7 +418,7 @@ Parser :: struct {
         return self.node(N_CLASS, (self.classes.len() - 1) as i64, 0);
     }
 
-    // (?i): the other ASCII case of letters in lo..hi
+    /// (?i): the other ASCII case of letters in lo..hi
     fold_range :: fn(self: *Self, lo: u32, hi: u32) {
         a := if lo > 'a' { lo } else { 'a' };
         b := if hi < 'z' { hi } else { 'z' };
@@ -415,7 +428,7 @@ Parser :: struct {
         if c <= d { self.push_range(c + 32, d + 32); }
     }
 
-    // complement the ranges from `mark` on (sorted, non-overlapping)
+    /// complement the ranges from `mark` on (sorted, non-overlapping)
     complement_from :: fn(self: *Self, mark: usize) {
         n := self.ranges.len();
         tmp := alloc(Range, self.a, n - mark);
@@ -517,7 +530,7 @@ Compiler :: struct {
         for s in splits.items() { self.order(s, (s + 1) as u32, end, n.greedy); }
     }
 
-    // preferred branch first
+    /// preferred branch first
     order :: fn(self: *Self, split: usize, take: u32, skip: u32, greedy: bool) {
         if greedy {
             self.patch_a(split, take);
@@ -529,49 +542,55 @@ Compiler :: struct {
     }
 }
 
-// compiled pattern plus its match memory; one thread at a time
+/// compiled pattern plus its match memory; one thread at a time
 pub Regex :: struct {
     prog: []Inst,
     ranges: []Range,
     classes: []ClassRef,
     names: []const []const u8,
-    ncap: usize,             // 2 slots per group; group 0 = whole match
+    /// 2 slots per group; group 0 = whole match
+    ncap: usize,
     multiline: bool,
     // working memory, made once
     clist: []u32,
     nlist: []u32,
-    ccaps: []usize,          // a thread at slot k has its captures at k * ncap
+    /// a thread at slot k has its captures at k * ncap
+    ccaps: []usize,
     ncaps: []usize,
-    mark: []u32,             // the generation a pc was last added in
+    /// the generation a pc was last added in
+    mark: []u32,
     gen: u32,
-    stack: []u64,            // pc << 1, or restore: slot << 33 | old << 1 | 1
-    work: []usize,           // the captures being followed
-    result: []usize,         // the last match's captures
+    /// pc << 1, or restore: slot << 33 | old << 1 | 1
+    stack: []u64,
+    /// the captures being followed
+    work: []usize,
+    /// the last match's captures
+    result: []usize,
     region: *Arena,
 
-    // match anywhere
+    /// match anywhere
     pub is_match :: fn(self: *Self, text: []const u8) -> bool { return self.search(text, 0, false); }
 
-    // leftmost match, or null
+    /// leftmost match, or null
     pub find :: fn(self: *Self, text: []const u8) -> ?Match { return self.find_at(text, 0); }
 
-    // leftmost match starting at or after `start`
+    /// leftmost match starting at or after `start`
     pub find_at :: fn(self: *Self, text: []const u8, start: usize) -> ?Match {
         if !self.search(text, start, false) { return null; }
         m: Match = .{ self, text };
         return m;
     }
 
-    // non-overlapping matches, left to right
+    /// non-overlapping matches, left to right
     pub find_all :: fn(self: *Self, text: []const u8) -> Matches {
         it: Matches = .{ self, text, 0, false, false };
         return it;
     }
 
-    // capture groups, not counting group 0
+    /// capture groups, not counting group 0
     pub group_count :: fn(self: *Self) -> usize { return self.ncap / 2 - 1; }
 
-    // number of the group `name`, or null
+    /// number of the group `name`, or null
     pub group_index :: fn(self: *Self, name: []const u8) -> ?usize {
         for k in 0..self.names.len {
             if self.names[k] == name { return k + 1; }
@@ -579,7 +598,7 @@ pub Regex :: struct {
         return null;
     }
 
-    // result in `a`; `$0` match, `$1` / `${1}` / `${name}` group, `$$` a `$`
+    /// result in `a`; `$0` match, `$1` / `${1}` / `${name}` group, `$$` a `$`
     pub replace_all :: fn(self: *Self, a: *Arena, text: []const u8, with: []const u8) -> []const u8 {
         sb := strings::builder(a);
         last: usize = 0;
@@ -592,7 +611,7 @@ pub Regex :: struct {
         return sb.str();
     }
 
-    // pieces between matches, in `a`
+    /// pieces between matches, in `a`
     pub split :: fn(self: *Self, a: *Arena, text: []const u8) -> []const []const u8 {
         out := vec::make([]const u8, a);
         last: usize = 0;
@@ -605,7 +624,7 @@ pub Regex :: struct {
         return out.items();
     }
 
-    // true with `result` filled; `no_empty_at_start` skips an empty match at `start`
+    /// true with `result` filled; `no_empty_at_start` skips an empty match at `start`
     search :: fn(self: *Self, text: []const u8, start: usize, no_empty_at_start: bool) -> bool {
         n_c: usize = 0;
         matched := false;
@@ -659,7 +678,7 @@ pub Regex :: struct {
         return matched;
     }
 
-    // does `inst` take rune `r`
+    /// does `inst` take rune `r`
     step_ok :: fn(self: *Self, inst: Inst, r: u32) -> bool {
         if inst.op == OP_RUNE { return r == inst.a; }
         if inst.op == OP_ANY { return r != '\n'; }
@@ -679,7 +698,7 @@ pub Regex :: struct {
         return false;
     }
 
-    // new mark generation; all marks reset on wrap
+    /// new mark generation; all marks reset on wrap
     next_gen :: fn(self: *Self) {
         self.gen = self.gen +% 1;
         if self.gen == 0 {
@@ -688,7 +707,7 @@ pub Regex :: struct {
         }
     }
 
-    // push thread `pc0` onto `list` past `n`, following jmp/split/save/assert; new count
+    /// push thread `pc0` onto `list` past `n`, following jmp/split/save/assert; new count
     add :: fn(self: *Self, list: []u32, caps: []usize, n: usize, pc0: usize, text: []const u8, pos: usize) -> usize {
         count := n;
         sp: usize = 0;
@@ -761,7 +780,7 @@ is_word :: fn(c: u8) -> bool {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
 
-// `$1`, `${name}`, `$$` in a replacement
+/// `$1`, `${name}`, `$$` in a replacement
 expand :: fn(sb: *strings::StringBuilder, m: *Match, with: []const u8) {
     i: usize = 0;
     while i < with.len {
@@ -812,13 +831,13 @@ expand :: fn(sb: *strings::StringBuilder, m: *Match, with: []const u8) {
     }
 }
 
-// byte offsets
+/// byte offsets
 pub Span :: struct {
     start: usize,
     end: usize,
 }
 
-// valid until the next search with its Regex
+/// valid until the next search with its Regex
 pub Match :: struct {
     re: *Regex,
     text: []const u8,
@@ -826,10 +845,10 @@ pub Match :: struct {
     pub start :: fn(self: *Self) -> usize { return self.re.result[0]; }
     pub end :: fn(self: *Self) -> usize { return self.re.result[1]; }
 
-    // whole match
+    /// whole match
     pub str :: fn(self: *Self) -> []const u8 { return self.text[self.re.result[0]..self.re.result[1]]; }
 
-    // group `i` (0 = whole match); null if it took no part
+    /// group `i` (0 = whole match); null if it took no part
     pub group :: fn(self: *Self, i: usize) -> ?[]const u8 {
         if 2 * i + 1 >= self.re.ncap { return null; }
         s := self.re.result[2 * i];
@@ -838,7 +857,7 @@ pub Match :: struct {
         return self.text[s..e];
     }
 
-    // byte offsets of group `i`; null if it took no part
+    /// byte offsets of group `i`; null if it took no part
     pub span :: fn(self: *Self, i: usize) -> ?Span {
         if 2 * i + 1 >= self.re.ncap { return null; }
         s := self.re.result[2 * i];
@@ -848,14 +867,14 @@ pub Match :: struct {
         return sp;
     }
 
-    // group `name`, or null
+    /// group `name`, or null
     pub named :: fn(self: *Self, name: []const u8) -> ?[]const u8 {
         if self.re.group_index(name) |i| { return self.group(i); }
         return null;
     }
 }
 
-// non-overlapping; an empty match right after another is ok, two at one place aren't
+/// non-overlapping; an empty match right after another is ok, two at one place aren't
 pub Matches :: struct {
     re: *Regex,
     text: []const u8,
@@ -878,7 +897,7 @@ pub Matches :: struct {
     }
 }
 
-// working memory in `a`
+/// working memory in `a`
 pub compile :: fn(a: *Arena, pattern: []const u8) -> Regex ! RegexError {
     p: Parser = .{ a, pattern, 0, vec::make(Node, a), vec::make(usize, a), vec::make(Range, a),
         vec::make(ClassRef, a), 0, vec::make([]const u8, a), false, false, false };

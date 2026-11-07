@@ -17,6 +17,25 @@ x := 42; // inline comment
 > Fels leaves out block comments (`/* ... */`) on purpose. For a longer comment, write several
 > line comments in a row.
 
+### Doc comments
+
+A comment that starts with `///` documents the declaration right below it, and `//!` lines at
+the top of a file document the module. Hover and completion in the editor show them, and
+`fels doc` makes a reference out of them. A plain `//` comment is never documentation.
+
+```fels
+//! Shapes and their areas.
+
+/// A circle of radius `r`.
+pub Circle :: struct {
+    /// the radius, in metres
+    r: f64,
+}
+
+/// The area of `c`.
+pub area :: fn(c: Circle) -> f64 { return 3.14159 * c.r * c.r; }
+```
+
 ## Identifiers
 
 Identifiers are the names you give to variables, functions, types and other declarations.

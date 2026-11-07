@@ -3,6 +3,22 @@
 Notable changes, newest first. Versions follow [SemVer](https://semver.org/): while
 the major version is `0`, any minor bump may break source compatibility.
 
+## Unreleased
+
+### Added
+
+- **`fels doc`** writes a reference of a library's `pub` declarations from their `///`
+  comments: a Markdown page per module (`-o <dir>`), or one `doc.json` (`--json`). A struct
+  shows its fields and methods, an enum its variants. The standard library reference on
+  [fels-lang.github.io](https://fels-lang.github.io/std/) is made with it.
+
+### Changed
+
+- **Doc comments are `///`**, and `//!` at the top of a file documents the module. Hover and
+  completion show only these now; a plain `//` comment above a declaration is no longer its
+  documentation, and neither is a comment after a field on the same line. The standard library
+  and the `fels new` templates use them.
+
 ## 0.14.0 - 2026-11-07
 
 Fels runs without an operating system: `--target uefi` makes a UEFI application and

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.c: C abi type aliases for #extern; sized for win64 (LLP64, long is 32-bit)
-// c_char is i8 and won't take a Fels string; use c_string for `const char*`
+//! std.c: C abi type aliases for #extern; sized for win64 (LLP64, long is 32-bit)
+//! c_char is i8 and won't take a Fels string; use c_string for `const char*`
 
 // integer types
 

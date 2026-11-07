@@ -1,36 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.pqueue: arena binary heap; O(log n) push/pop; order = any type with less()
+//! std.pqueue: arena binary heap; O(log n) push/pop; order = any type with less()
 
 #import std.heap.{ Arena, alloc };
 
-// smallest first
+/// smallest first
 pub Min :: struct($T: type) {
     marker: u8,
     pub less :: fn(self: *Self, a: T, b: T) -> bool { return a < b; }
 }
 
-// largest first
+/// largest first
 pub Max :: struct($T: type) {
     marker: u8,
     pub less :: fn(self: *Self, a: T, b: T) -> bool { return a > b; }
 }
 
-// first by `f(a, b)`: true if a comes before b
+/// first by `f(a, b)`: true if a comes before b
 pub By :: struct($T: type) {
     f: fn(T, T) -> bool,
     pub less :: fn(self: *Self, a: T, b: T) -> bool { return self.f(a, b); }
 }
 
 pub PriorityQueue :: struct($T: type, $C: type) {
-    region: *Arena,   // where it grows (borrowed)
-    data: []T,        // heap, data[0] first; cap == data.len
+    /// where it grows (borrowed)
+    region: *Arena,
+    /// heap, data[0] first; cap == data.len
+    data: []T,
     count: usize,
     order: C,
 
     pub len :: fn(self: *Self) -> usize { return self.count; }
     pub is_empty :: fn(self: *Self) -> bool { return self.count == 0; }
 
-    // next `pop` result, left in place; null if empty
+    /// next `pop` result, left in place; null if empty
     pub peek :: fn(self: *Self) -> ?T {
         if self.count == 0 { return null; }
         return self.data[0];
@@ -56,12 +58,12 @@ pub PriorityQueue :: struct($T: type, $C: type) {
         self.data[i] = item;
     }
 
-    // push each of `items`
+    /// push each of `items`
     pub push_all :: fn(self: *Self, items: []const T) {
         for x in items { self.push(x); }
     }
 
-    // take the first; null if empty
+    /// take the first; null if empty
     pub pop :: fn(self: *Self) -> ?T {
         if self.count == 0 { return null; }
         top := self.data[0];
@@ -83,31 +85,31 @@ pub PriorityQueue :: struct($T: type, $C: type) {
         return top;
     }
 
-    // unordered; valid until the next push
+    /// unordered; valid until the next push
     pub items :: fn(self: *Self) -> []T { return self.data[0..self.count]; }
 
     pub clear :: fn(self: *Self) { self.count = 0; }
 }
 
-// queue in `a`; `order` decides what comes first
+/// queue in `a`; `order` decides what comes first
 pub with :: fn($T: type, $C: type, a: *Arena, order: C) -> PriorityQueue(T, C) {
     q: PriorityQueue(T, C) = .{ a, alloc(T, a, 0), 0, order };
     return q;
 }
 
-// smallest first
+/// smallest first
 pub min :: fn($T: type, a: *Arena) -> PriorityQueue(T, Min(T)) {
     o: Min(T) = .{ 0 };
     return with(T, Min(T), a, o);
 }
 
-// largest first
+/// largest first
 pub max :: fn($T: type, a: *Arena) -> PriorityQueue(T, Max(T)) {
     o: Max(T) = .{ 0 };
     return with(T, Max(T), a, o);
 }
 
-// first by `less(a, b)`: true if a comes before b
+/// first by `less(a, b)`: true if a comes before b
 pub by :: fn($T: type, a: *Arena, less: fn(T, T) -> bool) -> PriorityQueue(T, By(T)) {
     o: By(T) = .{ less };
     return with(T, By(T), a, o);

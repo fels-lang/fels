@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.net.os: raw socket layer under std.net; for options the higher layers lack
+//! std.net.os: raw socket layer under std.net; for options the higher layers lack
 
 #import std.net.addr as addr;
 
-// os socket seam: Winsock on windows, syscalls on linux (Windows constants translated)
+/// os socket seam: Winsock on windows, syscalls on linux (Windows constants translated)
 pub sys_wsa_startup  :: fn(version: u16, data: *u8) -> i32 { ignored := version; ignored2 := data; return os_net_init(); }
 pub sys_wsa_cleanup  :: fn() -> i32 { return os_net_cleanup(); }
 pub sys_wsa_lasterr  :: fn() -> i32 { return os_net_lasterr(); }
@@ -21,11 +21,11 @@ pub sys_setsockopt   :: fn(s: usize, level: i32, opt: i32, val: *const u8, len: 
 pub sys_getsockname  :: fn(s: usize, name: *u8, namelen: *i32) -> i32 { return os_net_getsockname(s, name, namelen); }
 pub sys_ioctlsocket  :: fn(s: usize, cmd: u32, argp: *u32) -> i32 { return os_net_ioctlsocket(s, cmd, argp); }
 pub sys_shutdown     :: fn(s: usize, how: i32) -> i32 { return os_net_shutdown(s, how); }
-// host <-> network order for a 16-bit port (x86 little-endian)
+/// host <-> network order for a 16-bit port (x86 little-endian)
 pub sys_htons        :: fn(x: u16) -> u16 { return (x << 8u16) | (x >> 8u16); }
 pub sys_ntohs        :: fn(x: u16) -> u16 { return (x << 8u16) | (x >> 8u16); }
 
-// protocol constants
+/// protocol constants
 pub AF_INET        :: 2;
 pub SOCK_STREAM    :: 1;        // TCP
 pub SOCK_DGRAM     :: 2;        // UDP
@@ -35,7 +35,7 @@ pub INVALID_SOCKET :: 0xFFFFFFFFFFFFFFFFusize;   // (SOCKET)(~0)
 pub SOCKET_ERROR   :: -1;
 pub SOCKADDR_LEN   :: 16;       // sizeof(sockaddr_in)
 
-// setsockopt levels and options
+/// setsockopt levels and options
 pub SOL_SOCKET     :: 0xFFFF;
 pub SO_REUSEADDR   :: 0x0004;
 pub SO_BROADCAST   :: 0x0020;
@@ -43,10 +43,10 @@ pub SO_RCVTIMEO    :: 0x1006;   // receive timeout, DWORD milliseconds
 pub SO_SNDTIMEO    :: 0x1005;   // send timeout, DWORD milliseconds
 pub TCP_NODELAY    :: 0x0001;   // at level IPPROTO_TCP; disables Nagle
 
-// ioctlsocket non-blocking mode; argp != 0 enables
+/// ioctlsocket non-blocking mode; argp != 0 enables
 pub FIONBIO        :: 0x8004667Eu32;
 
-// shutdown() directions
+/// shutdown() directions
 pub SHUT_RECV      :: 0;        // SD_RECEIVE
 pub SHUT_SEND      :: 1;        // SD_SEND
 pub SHUT_BOTH      :: 2;        // SD_BOTH
@@ -54,48 +54,61 @@ pub SHUT_BOTH      :: 2;        // SD_BOTH
 // WSAGetLastError codes
 pub WSAEWOULDBLOCK :: 10035;
 
-// shared by all of std.net; the variant names the failed call, last_error() has the code
+/// shared by all of std.net; the variant names the failed call, last_error() has the code
 pub NetError :: errors {
-    startup_failed,   // WSAStartup
-    socket_failed,    // socket()
-    connect_failed,   // connect()
-    bind_failed,      // bind()
-    listen_failed,    // listen()
-    accept_failed,    // accept()
-    send_failed,      // send()/sendto()
-    recv_failed,      // recv()/recvfrom()
-    option_failed,    // setsockopt()/ioctlsocket()
-    addr_failed,      // getsockname()
-    would_block,      // a non-blocking call had no data ready
-    closed,           // peer closed the connection
-    unknown_host,     // a name with no address (`resolve`)
+    /// WSAStartup
+    startup_failed,
+    /// socket()
+    socket_failed,
+    /// connect()
+    connect_failed,
+    /// bind()
+    bind_failed,
+    /// listen()
+    listen_failed,
+    /// accept()
+    accept_failed,
+    /// send()/sendto()
+    send_failed,
+    /// recv()/recvfrom()
+    recv_failed,
+    /// setsockopt()/ioctlsocket()
+    option_failed,
+    /// getsockname()
+    addr_failed,
+    /// a non-blocking call had no data ready
+    would_block,
+    /// peer closed the connection
+    closed,
+    /// a name with no address (`resolve`)
+    unknown_host,
 }
 
-// sockaddr_in, 16 bytes: family, port and addr in network order, 8 zero bytes
+/// sockaddr_in, 16 bytes: family, port and addr in network order, 8 zero bytes
 pub RawSockaddr :: struct { family: u16, port: u16, addr: u32, zero: u64 }
 
-// host order -> network order
+/// host order -> network order
 pub raw_from :: fn(sa: addr::SocketAddr) -> RawSockaddr {
     return .{ AF_INET as u16, sys_htons(sa.port), sa.ip.to_net(), 0 };
 }
 
-// network order -> host order
+/// network order -> host order
 pub addr_from_raw :: fn(r: RawSockaddr) -> addr::SocketAddr {
     return .{ addr::from_net(r.addr), sys_ntohs(r.port) };
 }
 
-// must be called once per process before any socket call
+/// must be called once per process before any socket call
 pub init :: fn() -> void ! NetError {
     data: [512]u8 = .{};                 // WSADATA
     if sys_wsa_startup(0x0202, &data[0]) != 0 { fail .startup_failed; }
     return;
 }
 
-// optional, at process exit
+/// optional, at process exit
 pub cleanup :: fn() { ignored := sys_wsa_cleanup(); }
 
-// last Winsock error on this thread
+/// last Winsock error on this thread
 pub last_error :: fn() -> i32 { return sys_wsa_lasterr(); }
 
-// last error was WSAEWOULDBLOCK
+/// last error was WSAEWOULDBLOCK
 pub is_would_block :: fn() -> bool { return sys_wsa_lasterr() == WSAEWOULDBLOCK; }

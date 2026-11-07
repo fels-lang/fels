@@ -1,20 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.leb128: 7-bit varints (wasm, dwarf, protobuf); padded forms ok, >64 bits fails
+//! std.leb128: 7-bit varints (wasm, dwarf, protobuf); padded forms ok, >64 bits fails
 
 pub LebError :: errors {
-    buffer_too_small,   // `out` too small; nothing written
-    truncated,          // the bytes end in the middle of a number
-    overflow,           // more than 64 bits
+    /// `out` too small; nothing written
+    buffer_too_small,
+    /// the bytes end in the middle of a number
+    truncated,
+    /// more than 64 bits
+    overflow,
 }
 
-// max bytes for a 64-bit value
+/// max bytes for a 64-bit value
 pub MAX_LEN :: 10usize;
 
-// decoded value + bytes used
+/// decoded value + bytes used
 pub Unsigned :: struct { value: u64, len: usize }
 pub Signed :: struct { value: i64, len: usize }
 
-// encoded size of `v`
+/// encoded size of `v`
 pub len_u64 :: fn(v: u64) -> usize {
     n: usize = 1;
     x := v >> 7;
@@ -25,7 +28,7 @@ pub len_u64 :: fn(v: u64) -> usize {
     return n;
 }
 
-// encoded size of `v`, signed
+/// encoded size of `v`, signed
 pub len_i64 :: fn(v: i64) -> usize {
     n: usize = 1;
     x := v;
@@ -36,7 +39,7 @@ pub len_i64 :: fn(v: i64) -> usize {
     return n;
 }
 
-// encode `v` into `out`; returns len_u64(v)
+/// encode `v` into `out`; returns len_u64(v)
 pub encode_u64 :: fn(out: []u8, v: u64) -> usize ! LebError {
     if out.len < len_u64(v) { fail .buffer_too_small; }
     n: usize = 0;
@@ -54,7 +57,7 @@ pub encode_u64 :: fn(out: []u8, v: u64) -> usize ! LebError {
     return n;
 }
 
-// encode signed `v` into `out`; returns len_i64(v)
+/// encode signed `v` into `out`; returns len_i64(v)
 pub encode_i64 :: fn(out: []u8, v: i64) -> usize ! LebError {
     if out.len < len_i64(v) { fail .buffer_too_small; }
     n: usize = 0;
@@ -73,7 +76,7 @@ pub encode_i64 :: fn(out: []u8, v: i64) -> usize ! LebError {
     return n;
 }
 
-// decode from the start of `bytes`
+/// decode from the start of `bytes`
 pub decode_u64 :: fn(bytes: []const u8) -> Unsigned ! LebError {
     v: u64 = 0;
     for i in 0..bytes.len {
@@ -89,7 +92,7 @@ pub decode_u64 :: fn(bytes: []const u8) -> Unsigned ! LebError {
     fail .truncated;
 }
 
-// decode signed from the start of `bytes`
+/// decode signed from the start of `bytes`
 pub decode_i64 :: fn(bytes: []const u8) -> Signed ! LebError {
     v: u64 = 0;
     for i in 0..bytes.len {

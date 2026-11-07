@@ -131,18 +131,25 @@ true style and no bikeshedding. It is idempotent: `fmt(fmt(x)) == fmt(x)`.
 - It drives the LSP `formatting`/`rangeFormatting` requests and a `--check` mode for CI
   (`fels fmt --check` exits non-zero on unformatted files).
 
-## 3. `fels doc`: reflection-driven documentation
+## 3. `fels doc`: a reference from the doc comments
 
-Here the reflection of Fels is the unfair advantage. `core::compiler_decls()` and
-`core::type_info` already expose the shape of every declaration. Doc generation reads those and
-the leading doc comments, and emits HTML/Markdown.
+`fels doc` writes a reference of every `pub` declaration, made from its `///` comment (see
+[doc comments](01_syntax.md#doc-comments)):
 
-- It shows the **derive-generated** API (the `eq`/`hash`/`format` a `#derive` added), because
-  those are real decls in the program. So the documentation matches what actually compiles.
-- It can render **comptime-evaluated constants** with their *values* (`#run`-folded consts),
-  not only their declarations.
-- The output is a static site (or Markdown for embedding). A `b.doc` build step makes it a
-  first-class, cacheable node in the build graph (doc 10 §5).
+```text
+fels doc                     # the .fels files in src/ (or here), into fels-doc/
+fels doc lib/std -o out      # a folder: its name starts the module names (std.net.tcp)
+fels doc util.fels --json    # everything in one out/doc.json, for a tool or a website
+```
+
+Each module gets a page, `<module>.md`: its `//!` comment, then each public declaration with its
+signature and its `///` comment. A struct shows its fields and its public methods, an enum or
+an error set its variants. `index.md` lists the modules with the first line of each one's `//!`.
+Only the parser runs, so a module that does not type check yet is documented all the same.
+The website's standard library reference is made this way.
+
+Still to come: the API a `#derive` adds, the values of `#run` constants, and a `b.doc` step
+in build.fels.
 
 ## 4. `fels test`, the test runner
 

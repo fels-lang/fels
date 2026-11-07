@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.flate: deflate both ways (rfc 1951), gzip (rfc 1952), zlib (rfc 1950)
+//! std.flate: deflate both ways (rfc 1951), gzip (rfc 1952), zlib (rfc 1950)
 
 #import std.heap.{ Arena, alloc_bytes };
 #import std.hash as hash;
@@ -8,17 +8,23 @@
 #import std.vec.{ Vec };
 
 pub FlateError :: errors {
-    truncated,       // the data ends before the stream does
-    bad_block,       // block type 3, or stored length check fails
-    bad_code,        // bad code lengths, or a code not in the table
-    bad_distance,    // back-ref before the start of the output
-    bad_header,      // not gzip/zlib, or a zlib preset dictionary
-    bad_checksum,    // crc-32, adler-32 or length mismatch
+    /// the data ends before the stream does
+    truncated,
+    /// block type 3, or stored length check fails
+    bad_block,
+    /// bad code lengths, or a code not in the table
+    bad_code,
+    /// back-ref before the start of the output
+    bad_distance,
+    /// not gzip/zlib, or a zlib preset dictionary
+    bad_header,
+    /// crc-32, adler-32 or length mismatch
+    bad_checksum,
 }
 
 MAX_BITS :: 15;
 
-// growing output in the arena; doubles when full
+/// growing output in the arena; doubles when full
 Out :: struct {
     a: *Arena,
     buf: []u8,
@@ -40,10 +46,11 @@ Out :: struct {
     }
 }
 
-// bit reader, lsb first
+/// bit reader, lsb first
 In :: struct {
     data: []const u8,
-    pos: usize,       // the next byte to take bits from
+    /// the next byte to take bits from
+    pos: usize,
     bitbuf: u32,
     bitcnt: u32,
 
@@ -61,13 +68,13 @@ In :: struct {
     }
 }
 
-// canonical huffman: count per length, symbols in code order
+/// canonical huffman: count per length, symbols in code order
 Huffman :: struct {
     count: [16]u16,
     symbol: [288]u16,
 }
 
-// .bad_code if over-subscribed; incomplete is ok (puff.c, single distance code)
+/// .bad_code if over-subscribed; incomplete is ok (puff.c, single distance code)
 construct :: fn(h: *Huffman, lengths: []const u16, n: usize) -> void ! FlateError {
     for len in 0..16 { h.count[len] = 0; }
     for s in 0..n { h.count[lengths[s] as usize] += 1; }
@@ -88,7 +95,7 @@ construct :: fn(h: *Huffman, lengths: []const u16, n: usize) -> void ! FlateErro
     }
 }
 
-// next symbol, decoded by h
+/// next symbol, decoded by h
 decode :: fn(s: *In, h: *Huffman) -> u32 ! FlateError {
     code: i32 = 0;
     first: i32 = 0;
@@ -121,7 +128,7 @@ DIST_EXTRA: [30]u16 = .{
     7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
 };
 
-// one block's symbols, up to the end code (256)
+/// one block's symbols, up to the end code (256)
 codes :: fn(s: *In, out: *Out, lencode: *Huffman, distcode: *Huffman) -> void ! FlateError {
     while true {
         sym := decode(s, lencode)?;
@@ -147,7 +154,7 @@ codes :: fn(s: *In, out: *Out, lencode: *Huffman, distcode: *Huffman) -> void ! 
     }
 }
 
-// stored block: len, ~len, raw bytes
+/// stored block: len, ~len, raw bytes
 stored :: fn(s: *In, out: *Out) -> void ! FlateError {
     s.bitbuf = 0;
     s.bitcnt = 0;
@@ -163,7 +170,7 @@ stored :: fn(s: *In, out: *Out) -> void ! FlateError {
     s.pos += len;
 }
 
-// fixed codes, rfc 1951 3.2.6
+/// fixed codes, rfc 1951 3.2.6
 fixed :: fn(s: *In, out: *Out) -> void ! FlateError {
     lengths: [288]u16 = .{};
     for i in 0..144 { lengths[i] = 8; }
@@ -181,7 +188,7 @@ fixed :: fn(s: *In, out: *Out) -> void ! FlateError {
 
 CL_ORDER: [19]u16 = .{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
 
-// dynamic codes, rfc 1951 3.2.7
+/// dynamic codes, rfc 1951 3.2.7
 dynamic :: fn(s: *In, out: *Out) -> void ! FlateError {
     nlen := ((s.bits(5)?) as usize) + 257;
     ndist := ((s.bits(5)?) as usize) + 1;
@@ -224,7 +231,7 @@ dynamic :: fn(s: *In, out: *Out) -> void ! FlateError {
     codes(s, out, &lencode, &distcode)?;
 }
 
-// inflates into out; returns bytes of data consumed
+/// inflates into out; returns bytes of data consumed
 run :: fn(out: *Out, data: []const u8) -> usize ! FlateError {
     s: In = .{ data, 0, 0, 0 };
     last: u32 = 0;
@@ -244,7 +251,7 @@ run :: fn(out: *Out, data: []const u8) -> usize ! FlateError {
     return s.pos;
 }
 
-// raw deflate (rfc 1951), result in `a`; bytes after the stream ignored
+/// raw deflate (rfc 1951), result in `a`; bytes after the stream ignored
 pub inflate :: fn(a: *Arena, data: []const u8) -> []u8 ! FlateError {
     out: Out = .{ a, a.alloc_bytes(0), 0 };
     used := run(&out, data)?;
@@ -255,7 +262,7 @@ le32 :: fn(b: []const u8, i: usize) -> u32 {
     return (b[i] as u32) | ((b[i + 1] as u32) << 8) | ((b[i + 2] as u32) << 16) | ((b[i + 3] as u32) << 24);
 }
 
-// gzip content in `a`; checks crc-32 and length; first member only
+/// gzip content in `a`; checks crc-32 and length; first member only
 pub gunzip :: fn(a: *Arena, data: []const u8) -> []u8 ! FlateError {
     if data.len < 18 || data[0] != 0x1F || data[1] != 0x8B || data[2] != 8 { fail .bad_header; }
     flags := data[3];
@@ -284,7 +291,7 @@ pub gunzip :: fn(a: *Arena, data: []const u8) -> []u8 ! FlateError {
     return content;
 }
 
-// zlib (rfc 1950) content in `a`; checks adler-32; preset dictionary -> .bad_header
+/// zlib (rfc 1950) content in `a`; checks adler-32; preset dictionary -> .bad_header
 pub unzlib :: fn(a: *Arena, data: []const u8) -> []u8 ! FlateError {
     if data.len < 6 { fail .truncated; }
     cmf := data[0] as u32;
@@ -303,7 +310,7 @@ pub unzlib :: fn(a: *Arena, data: []const u8) -> []u8 ! FlateError {
 
 // compressing
 
-// bit writer, lsb first
+/// bit writer, lsb first
 BitOut :: struct {
     out: *Out,
     acc: u64,
@@ -320,7 +327,7 @@ BitOut :: struct {
         }
     }
 
-    // zero-pad to the next byte
+    /// zero-pad to the next byte
     align :: fn(self: *Self) {
         if self.n > 0 {
             self.out.put((self.acc & 0xFF) as u8);
@@ -330,7 +337,7 @@ BitOut :: struct {
     }
 }
 
-// write-side code: lengths + bit-reversed codes (huffman msb first into an lsb stream)
+/// write-side code: lengths + bit-reversed codes (huffman msb first into an lsb stream)
 Code :: struct {
     lens: [288]u8,
     codes: [288]u16,
@@ -342,7 +349,7 @@ reverse_bits :: fn(v: u32, n: u32) -> u32 {
     return r;
 }
 
-// codes from lengths, rfc 1951 3.2.2
+/// codes from lengths, rfc 1951 3.2.2
 canonical :: fn(c: *Code, n: usize) {
     count: [16]u32 = .{};
     for s in 0..n { count[c.lens[s] as usize] += 1; }
@@ -362,7 +369,7 @@ canonical :: fn(c: *Code, n: usize) {
     }
 }
 
-// huffman lengths <= limit; flattens freqs until it fits; a lone symbol gets a partner
+/// huffman lengths <= limit; flattens freqs until it fits; a lone symbol gets a partner
 lengths_for :: fn(a: *Arena, freq_in: []const u32, n: usize, limit: u32, lens: []u8) {
     freq := alloc(u32, a, n);
     for s in 0..n { freq[s] = freq_in[s]; }
@@ -432,7 +439,7 @@ lengths_for :: fn(a: *Arena, freq_in: []const u32, n: usize, limit: u32, lens: [
     }
 }
 
-// LEN_BASE index for a match length 3..258; DIST_BASE index for a distance
+/// LEN_BASE index for a match length 3..258; DIST_BASE index for a distance
 len_index :: fn(len: usize) -> usize {
     i: usize = 28;
     while (LEN_BASE[i] as usize) > len { i -= 1; }
@@ -445,13 +452,13 @@ dist_index :: fn(dist: usize) -> usize {
     return i;
 }
 
-// literal (dist 0, len = the byte) or match
+/// literal (dist 0, len = the byte) or match
 Token :: struct {
     len: u16,
     dist: u16,
 }
 
-// one block's tokens plus the end code
+/// one block's tokens plus the end code
 write_tokens :: fn(w: *BitOut, toks: []const Token, lit: *Code, dist: *Code) {
     for t in toks {
         if t.dist == 0 {
@@ -469,7 +476,7 @@ write_tokens :: fn(w: *BitOut, toks: []const Token, lit: *Code, dist: *Code) {
     w.put(lit.codes[256] as u64, lit.lens[256] as u32);
 }
 
-// rle'd code lengths for a dynamic header: (symbol, extra)
+/// rle'd code lengths for a dynamic header: (symbol, extra)
 ClSym :: struct { sym: u8, extra: u8 }
 
 rle_lengths :: fn(lens: []const u8, out: *Vec(ClSym)) {
@@ -510,7 +517,7 @@ rle_lengths :: fn(lens: []const u8, out: *Vec(ClSym)) {
     }
 }
 
-// one block (toks encode raw); stored, fixed or dynamic, whichever is smallest
+/// one block (toks encode raw); stored, fixed or dynamic, whichever is smallest
 write_block :: fn(a: *Arena, w: *BitOut, toks: []const Token, raw: []const u8, last: bool) {
     lf: [288]u32 = .{};
     df: [30]u32 = .{};
@@ -627,8 +634,10 @@ hash3 :: fn(d: []const u8, i: usize) -> usize {
 
 Matcher :: struct {
     data: []const u8,
-    head: []u32,     // last pos + 1 per hash; 0 = none
-    prev: []u32,     // previous pos + 1 with the same hash, by window slot
+    /// last pos + 1 per hash; 0 = none
+    head: []u32,
+    /// previous pos + 1 with the same hash, by window slot
+    prev: []u32,
     chain: usize,
     nice: usize,
 
@@ -639,7 +648,7 @@ Matcher :: struct {
         self.head[h] = (i + 1) as u32;
     }
 
-    // longest match for i (already inserted): length in best (0 if < 3), returns dist
+    /// longest match for i (already inserted): length in best (0 if < 3), returns dist
     longest :: fn(self: *Self, i: usize, best: *usize) -> usize {
         *best = 0;
         dist: usize = 0;
@@ -671,7 +680,7 @@ Matcher :: struct {
     }
 }
 
-// raw deflate (rfc 1951) in `a`; level 0 stores, 1 fastest, 9 smallest, 6 balanced
+/// raw deflate (rfc 1951) in `a`; level 0 stores, 1 fastest, 9 smallest, 6 balanced
 pub deflate :: fn(a: *Arena, data: []const u8, level: u32) -> []u8 {
     lv: usize = if level > 9 { 9 } else { level as usize };
     out: Out = .{ a, a.alloc_bytes(0), 0 };
@@ -763,7 +772,7 @@ put_le32 :: fn(o: *Out, v: u32) {
     for k in 0..4 { o.put(((v >> ((8 * k) as u32)) & 0xFF) as u8); }
 }
 
-// gzip in `a`: header without name/time, deflate at level, crc-32, length
+/// gzip in `a`: header without name/time, deflate at level, crc-32, length
 pub gzip :: fn(a: *Arena, data: []const u8, level: u32) -> []u8 {
     body := deflate(a, data, level);
     out: Out = .{ a, a.alloc_bytes(body.len + 18), 0 };
@@ -775,7 +784,7 @@ pub gzip :: fn(a: *Arena, data: []const u8, level: u32) -> []u8 {
     return out.buf[0..out.n];
 }
 
-// zlib (rfc 1950) in `a`: 2-byte header, deflate at level, adler-32
+/// zlib (rfc 1950) in `a`: 2-byte header, deflate at level, adler-32
 pub zlib :: fn(a: *Arena, data: []const u8, level: u32) -> []u8 {
     body := deflate(a, data, level);
     out: Out = .{ a, a.alloc_bytes(body.len + 6), 0 };

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// std.sync: locks, condvars, queues, channels, wait groups; every type is #sync
-// share by address; never copy, move or free one while a thread uses it (join first)
+//! std.sync: locks, condvars, queues, channels, wait groups; every type is #sync
+//! share by address; never copy, move or free one while a thread uses it (join first)
 
 #import std.atomics as atomics;
 #import std.heap as heap;
@@ -8,60 +8,65 @@
 
 // runtime seam: os_mutex_lock/try_lock/unlock, os_cond_wait/signal/broadcast
 
-// no timeout, for os_cond_wait
+/// no timeout, for os_cond_wait
 WAIT_FOREVER :: 0xFFFFFFFFu32;
 
-// zero value is unlocked; no init, no destroy; not recursive, not fair
+/// zero value is unlocked; no init, no destroy; not recursive, not fair
 #sync
 pub Mutex :: struct {
-    word: u64   // OS lock state; all zero bits is the unlocked state
+    /// OS lock state; all zero bits is the unlocked state
+    word: u64
 
-    // sleeps until free; relocking from the same thread deadlocks
+    /// sleeps until free; relocking from the same thread deadlocks
     pub lock :: fn(self: *Self) { os_mutex_lock(&self.word); }
 
-    // take it only if free now; true = caller holds it
+    /// take it only if free now; true = caller holds it
     pub try_lock :: fn(self: *Self) -> bool { return os_mutex_try_lock(&self.word); }
 
-    // caller must hold it; unlocking one it does not hold is UB
+    /// caller must hold it; unlocking one it does not hold is UB
     pub unlock :: fn(self: *Self) { os_mutex_unlock(&self.word); }
 }
 
-// wait() may wake spuriously: loop on the condition with the lock held
-// signal/broadcast work with or without the lock; a signal with no waiter is lost
+/// wait() may wake spuriously: loop on the condition with the lock held
+/// signal/broadcast work with or without the lock; a signal with no waiter is lost
 #sync
 pub CondVar :: struct {
-    word: u64   // OS state; zero = nobody waiting
+    /// OS state; zero = nobody waiting
+    word: u64
 
-    // release `m`, sleep, retake `m`; caller holds `m`, same Mutex for every waiter
+    /// release `m`, sleep, retake `m`; caller holds `m`, same Mutex for every waiter
     pub wait :: fn(self: *Self, m: *Mutex) {
         woken := os_cond_wait(&self.word, &m.word, WAIT_FOREVER);
     }
 
-    // like wait(), but false after `ms` ms (0xFFFFFFFF = never); lock retaken either way
+    /// like wait(), but false after `ms` ms (0xFFFFFFFF = never); lock retaken either way
     pub wait_timeout :: fn(self: *Self, m: *Mutex, ms: u32) -> bool {
         return os_cond_wait(&self.word, &m.word, ms);
     }
 
-    // wake one waiter, if any
+    /// wake one waiter, if any
     pub signal :: fn(self: *Self) { os_cond_signal(&self.word); }
 
-    // wake every waiter
+    /// wake every waiter
     pub broadcast :: fn(self: *Self) { os_cond_broadcast(&self.word); }
 }
 
-// bounded blocking MPMC FIFO over caller storage; no alloc, nothing to destroy
-// after close(): push false, pop drains then null; free storage only after joining
+/// bounded blocking MPMC FIFO over caller storage; no alloc, nothing to destroy
+/// after close(): push false, pop drains then null; free storage only after joining
 #sync
 pub Queue :: struct($T: type) {
     mu:        Mutex
     not_empty: CondVar
     not_full:  CondVar
-    buf:       []T       // the caller's storage; capacity == buf.len
-    head:      usize     // index of the oldest item
-    count:     usize     // items queued
+    /// the caller's storage; capacity == buf.len
+    buf:       []T
+    /// index of the oldest item
+    head:      usize
+    /// items queued
+    count:     usize
     closed:    bool
 
-    // sleeps while full; false if closed or zero capacity (item not added)
+    /// sleeps while full; false if closed or zero capacity (item not added)
     pub push :: fn(self: *Self, item: T) -> bool {
         if self.buf.len == 0 { return false; }
         self.mu.lock();
@@ -80,7 +85,7 @@ pub Queue :: struct($T: type) {
         return true;
     }
 
-    // push only if room now; false if full, closed or zero capacity
+    /// push only if room now; false if full, closed or zero capacity
     pub try_push :: fn(self: *Self, item: T) -> bool {
         if self.buf.len == 0 { return false; }
         self.mu.lock();
@@ -95,7 +100,7 @@ pub Queue :: struct($T: type) {
         return true;
     }
 
-    // pop the oldest, sleeping while empty; null once closed and drained
+    /// pop the oldest, sleeping while empty; null once closed and drained
     pub pop :: fn(self: *Self) -> ?T {
         self.mu.lock();
         while self.count == 0 {
@@ -114,7 +119,7 @@ pub Queue :: struct($T: type) {
         return item;
     }
 
-    // pop the oldest if any now; null if empty
+    /// pop the oldest if any now; null if empty
     pub try_pop :: fn(self: *Self) -> ?T {
         self.mu.lock();
         if self.count == 0 {
@@ -129,7 +134,7 @@ pub Queue :: struct($T: type) {
         return item;
     }
 
-    // end the queue, wake all blocked producers and consumers; idempotent
+    /// end the queue, wake all blocked producers and consumers; idempotent
     pub close :: fn(self: *Self) {
         self.mu.lock();
         self.closed = true;
@@ -138,7 +143,7 @@ pub Queue :: struct($T: type) {
         self.not_full.broadcast();
     }
 
-    // items queued now; a snapshot
+    /// items queued now; a snapshot
     pub len :: fn(self: *Self) -> usize {
         self.mu.lock();
         n: usize = self.count;
@@ -156,34 +161,34 @@ pub Queue :: struct($T: type) {
     }
 }
 
-// queue over `storage`; it must outlive all users and nothing else may touch it
+/// queue over `storage`; it must outlive all users and nothing else may touch it
 pub make_queue :: fn($T: type, storage: []T) -> Queue(T) {
     q: Queue(T) = .{ .{}, .{}, .{}, storage, 0, 0, false };
     return q;
 }
 
-// Queue with its own storage; share by pointer, don't move it while threads use it
-// after close(): send gives false, recv drains then null
+/// Queue with its own storage; share by pointer, don't move it while threads use it
+/// after close(): send gives false, recv drains then null
 #sync
 pub Channel :: struct($T: type) {
     queue: Queue(T)
 
-    // waits while full; false if closed
+    /// waits while full; false if closed
     pub send :: fn(self: *Self, item: T) -> bool { return self.queue.push(item); }
 
-    // send if room now; false if full or closed
+    /// send if room now; false if full or closed
     pub try_send :: fn(self: *Self, item: T) -> bool { return self.queue.try_push(item); }
 
-    // waits while empty; null once closed and empty
+    /// waits while empty; null once closed and empty
     pub recv :: fn(self: *Self) -> ?T { return self.queue.pop(); }
 
-    // next item if any now, else null
+    /// next item if any now, else null
     pub try_recv :: fn(self: *Self) -> ?T { return self.queue.try_pop(); }
 
-    // no more sends; wakes all waiters; idempotent
+    /// no more sends; wakes all waiters; idempotent
     pub close :: fn(self: *Self) { self.queue.close(); }
 
-    // items now; a snapshot
+    /// items now; a snapshot
     pub len :: fn(self: *Self) -> usize { return self.queue.len(); }
 
     pub capacity :: fn(self: *Self) -> usize { return self.queue.capacity(); }
@@ -191,27 +196,27 @@ pub Channel :: struct($T: type) {
     pub is_closed :: fn(self: *Self) -> bool { return self.queue.is_closed(); }
 }
 
-// channel of `capacity` items; storage in `a`
+/// channel of `capacity` items; storage in `a`
 pub channel :: fn($T: type, a: *Arena, capacity: usize) -> Channel(T) {
     ch: Channel(T) = .{ make_queue(T, heap::alloc(T, a, capacity)) };
     return ch;
 }
 
-// add(n) before the tasks start, done() in each, wait() sleeps until all are done
+/// add(n) before the tasks start, done() in each, wait() sleeps until all are done
 #sync
 pub WaitGroup :: struct {
     mu:      Mutex
     cv:      CondVar
     pending: usize
 
-    // `n` more tasks to wait for
+    /// `n` more tasks to wait for
     pub add :: fn(self: *Self, n: usize) {
         self.mu.lock();
         self.pending += n;
         self.mu.unlock();
     }
 
-    // one task done; the last one wakes every waiter
+    /// one task done; the last one wakes every waiter
     pub done :: fn(self: *Self) {
         self.mu.lock();
         self.pending -= 1;
@@ -219,7 +224,7 @@ pub WaitGroup :: struct {
         self.mu.unlock();
     }
 
-    // sleep until every added task called `done`
+    /// sleep until every added task called `done`
     pub wait :: fn(self: *Self) {
         self.mu.lock();
         while self.pending > 0 { self.cv.wait(&self.mu); }
@@ -227,13 +232,14 @@ pub WaitGroup :: struct {
     }
 }
 
-// run something exactly once across threads; later callers wait for it to finish
+/// run something exactly once across threads; later callers wait for it to finish
 #sync
 pub Once :: struct {
     mu:   Mutex
-    done: u32       // 1 once the function has returned
+    /// 1 once the function has returned
+    done: u32
 
-    // run `f` unless already run; every caller returns after `f` has returned
+    /// run `f` unless already run; every caller returns after `f` has returned
     pub call :: fn(self: *Self, f: fn()) {
         if atomics::load_acquire(u32, &self.done) == 1 { return; }
         self.mu.lock();
@@ -247,14 +253,16 @@ pub Once :: struct {
     pub is_done :: fn(self: *Self) -> bool { return atomics::load_acquire(u32, &self.done) == 1; }
 }
 
-// many readers or one writer; a waiting writer blocks new readers; not recursive
+/// many readers or one writer; a waiting writer blocks new readers; not recursive
 #sync
 pub RwLock :: struct {
     mu:              Mutex
     readers_go:      CondVar
     writer_go:       CondVar
-    readers:         usize    // threads that hold it shared
-    writer:          bool     // a thread holds it exclusively
+    /// threads that hold it shared
+    readers:         usize
+    /// a thread holds it exclusively
+    writer:          bool
     writers_waiting: usize
 
     pub lock_shared :: fn(self: *Self) {
@@ -292,14 +300,14 @@ pub RwLock :: struct {
     }
 }
 
-// at most n threads at once
+/// at most n threads at once
 #sync
 pub Semaphore :: struct {
     mu:      Mutex
     cv:      CondVar
     permits: usize
 
-    // take a permit, sleeping until one is free
+    /// take a permit, sleeping until one is free
     pub acquire :: fn(self: *Self) {
         self.mu.lock();
         while self.permits == 0 { self.cv.wait(&self.mu); }
@@ -307,7 +315,7 @@ pub Semaphore :: struct {
         self.mu.unlock();
     }
 
-    // take a permit only if one is free now
+    /// take a permit only if one is free now
     pub try_acquire :: fn(self: *Self) -> bool {
         self.mu.lock();
         ok := self.permits > 0;
@@ -316,7 +324,7 @@ pub Semaphore :: struct {
         return ok;
     }
 
-    // give a permit back, wake one waiter
+    /// give a permit back, wake one waiter
     pub release :: fn(self: *Self) {
         self.mu.lock();
         self.permits += 1;
@@ -325,7 +333,7 @@ pub Semaphore :: struct {
     }
 }
 
-// semaphore with `permits` permits; keep it in place, share by address
+/// semaphore with `permits` permits; keep it in place, share by address
 pub semaphore :: fn(permits: usize) -> Semaphore {
     s: Semaphore = .{ .{}, .{}, permits };
     return s;
