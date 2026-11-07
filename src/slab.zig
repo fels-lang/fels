@@ -154,7 +154,7 @@ pub const Const = extern struct {
 /// | interface_make | | data | vtable (str) | |
 /// | interface_method | | value | method index | |
 /// | closure_make | 1 = takes env | function (str) | env | |
-/// | closure_env_make | | extra: [n, (value, type)...] | arena | alloc function (str) |
+/// | closure_env_make | 1 = consumed | extra: [n, (value, type)...] | arena | alloc function (str) |
 /// | closure_env_load | | env | field index | extra: [n, types...] |
 /// | store_local | | local | value | |
 /// | global_load | | name (str) | | |
@@ -770,6 +770,7 @@ const Builder = struct {
             },
             .closure_env_make => |em| {
                 op = .closure_env_make;
+                sub = @intFromBool(em.consumed);
                 a = @intCast(self.extra.items.len);
                 try self.extra.append(self.gpa, @intCast(em.fields.len));
                 for (em.fields) |f| {
@@ -1325,7 +1326,7 @@ const Rebuilder = struct {
                 const n = s.extra[a];
                 const fields = try self.a.alloc(ir.EnvField, n);
                 for (fields, 0..) |*fo, k| fo.* = .{ .value = self.value(s.extra[a + 1 + 2 * k]), .ty = (try self.ty(s.extra[a + 2 + 2 * k])).* };
-                break :blk .{ .closure_env_make = .{ .fields = fields, .arena = self.value(b), .alloc_fn = s.str(c) } };
+                break :blk .{ .closure_env_make = .{ .fields = fields, .arena = self.value(b), .alloc_fn = s.str(c), .consumed = sub != 0 } };
             },
             .closure_env_load => blk: {
                 const n = s.extra[c];

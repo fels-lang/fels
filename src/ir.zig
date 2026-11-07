@@ -421,6 +421,10 @@ pub const ClosureEnvMakeInstr = struct {
     /// The function that allocates the env on `arena`: std.heap's `alloc_bytes`, by its
     /// link name (qualified when another module declares an `alloc_bytes` too).
     alloc_fn: []const u8,
+    /// A format's closure (`__lambda_fmt_N`): the call it is an argument of uses it up, so a
+    /// stack env may be one slot of the frame that every pass of a loop reuses. Any other
+    /// closure may outlive its pass of a loop and keeps an env of its own.
+    consumed: bool = false,
 };
 
 pub const ClosureEnvLoadInstr = struct {
@@ -6530,6 +6534,7 @@ const FunctionLowerer = struct {
             .fields = fields,
             .arena = arena,
             .alloc_fn = alloc_fn,
+            .consumed = std.mem.indexOf(u8, link, "__lambda_fmt_") != null,
         } });
     }
 
