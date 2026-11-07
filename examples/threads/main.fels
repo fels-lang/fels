@@ -1,0 +1,79 @@
+// threads: the three ways to run code at once in Fels.
+//   1. thread::Scope: a zone of threads; the block waits for all of them where it ends
+//   2. thread::Pool: one loop spread over a worker per core
+//   3. sync::Channel: values sent from one thread to others
+// What a closure on another thread captures is checked: an Atomic or a Channel is shared
+// through a pointer, a plain local is copied.
+
+#import std.io.{ println };
+#import std.thread as thread;
+#import std.sync as sync;
+#import std.atomics.{ Atomic };
+#import std.heap as heap;
+#import std.time;
+
+is_prime :: fn(n: u64) -> bool {
+    if n < 2 { return false; }
+    d: u64 = 2;
+    while d * d <= n {
+        if n % d == 0 { return false; }
+        d += 1;
+    }
+    return true;
+}
+
+main :: fn() -> i32 {
+    // 1. Scope: four threads, each sums a quarter of 1..=1_000_000
+    total: Atomic(u64) = .{ 0 };
+    t := &total;
+    zone s: thread::Scope {
+        for part in 0..4 {
+            s.spawn(fn() {
+                start := (part as u64) * 250_000 + 1;
+                sum: u64 = 0;
+                for k in 0..250_000 { sum += start + (k as u64); }
+                ign := t.add(sum);
+            });
+        }
+    }   // all four threads are joined here
+    println("1. scope: 1 + 2 + ... + 1000000 = {total.get()}");
+
+    // 2. Pool: count the primes below 2 million, on one core and then on all of them
+    limit: usize = 2_000_000;
+    start := time::now();
+    one: u64 = 0;
+    for n in 0..limit { if is_prime(n as u64) { one += 1; } }
+    one_ms := time::since_millis(start);
+
+    primes: Atomic(u64) = .{ 0 };
+    p := &primes;
+    start = time::now();
+    zone pool: thread::Pool {
+        pool.range(0, limit, fn(n: usize) { if is_prime(n as u64) { ign := p.add(1); } });
+    }
+    all_ms := time::since_millis(start);
+    println("2. pool: {primes.get()} primes below {limit}: {one_ms} ms on one core, {all_ms} ms on {thread::cpu_count()} cores");
+
+    // 3. Channel: one thread sends 1..100, four workers square them, main adds the squares up
+    a := heap::make();
+    defer a.deinit();
+    jobs := sync::channel(u64, &a, 16);
+    results := sync::channel(u64, &a, 16);
+    j := &jobs;
+    r := &results;
+    squares: u64 = 0;
+    zone w: thread::Scope {
+        for k in 0..4 {
+            w.spawn(fn() { while j.recv() |n| { ok := r.send(n * n); } });
+        }
+        w.spawn(fn() {
+            for n in 1..101 { ok := j.send(n as u64); }
+            j.close();   // the workers' recv gives null once the channel is empty
+        });
+        for k in 0..100 {
+            if r.recv() |v| { squares += v; }
+        }
+    }
+    println("3. channel: 1² + 2² + ... + 100² = {squares}");
+    return 0;
+}
