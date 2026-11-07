@@ -271,7 +271,10 @@ fn lowerClosureEnvMake(cg: *ModuleCg, fncg: anytype, mk: ir.ClosureEnvMakeInstr)
                 break :blk llvm.LLVMBuildExtractValue(cg.builder, slice, 0, "clos.env.heap");
             }
         }
-        //break :blk llvm.LLVMBuildAlloca(cg.builder, struct_ty, "clos.env");
+        // A format's env is used up by its call: one slot in the entry block serves every pass
+        // of a loop, which an alloca where the format is would grow the stack by each pass.
+        // Any other closure may outlive its pass, so it keeps an env of its own.
+        if (!mk.consumed) break :blk llvm.LLVMBuildAlloca(cg.builder, struct_ty, "clos.env");
         const env = abi.entryAlloca(cg, fncg.llvm_fn, struct_ty);
         llvm.LLVMSetValueName2(env, "clos.env", "clos.env".len);
         break :blk env;
